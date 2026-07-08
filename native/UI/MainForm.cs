@@ -89,6 +89,7 @@ internal sealed class MainForm : Form
     private bool _viewZooming;
     private bool _marqueeSelecting;
     private bool _detachedSelectionForMove;
+    private bool _pointerHitWasAlreadySelected;
     private Point? _marqueeStart;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
     private int _activeDrawingObjectIndex;
@@ -1017,6 +1018,7 @@ internal sealed class MainForm : Form
         _lastMouse = e.Location;
         _startScreen = e.Location;
         _startWorld = _stage.ScreenToWorld(e.Location);
+        _pointerHitWasAlreadySelected = false;
         if (_tool == ToolMode.Select)
         {
             if (_selectedObject >= 0)
@@ -1035,6 +1037,7 @@ internal sealed class MainForm : Form
             if (hit.IsValid)
             {
                 var hitObject = hit.Key.ObjectIndex;
+                _pointerHitWasAlreadySelected = _selectedObjects.Contains(hitObject) && _selectedElement.Key == hit.Key;
                 if (!_selectedObjects.Contains(hitObject)) SetSelection(hit);
                 else
                 {
@@ -1105,6 +1108,12 @@ internal sealed class MainForm : Form
         }
         else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
         {
+            if (ShouldStartMarqueeFromPendingFillDrag(e.Location))
+            {
+                BeginMarqueeFromSelectedFill(e.Location);
+                return;
+            }
+
             var world = _stage.ScreenToWorld(e.Location);
             CapturePointerUndoSnapshot();
             if (_activeHandle != EditHandleKind.None)
@@ -1169,6 +1178,29 @@ internal sealed class MainForm : Form
         UpdateInspector();
     }
 
+    private bool ShouldStartMarqueeFromPendingFillDrag(Point current)
+    {
+        if (_pointerHitWasAlreadySelected) return false;
+        if (!_selectedElement.IsValid || _selectedElement.Key.Kind != DrawingElementKind.Fill) return false;
+        if (_startScreen is not { } start) return false;
+        return Math.Abs(current.X - start.X) + Math.Abs(current.Y - start.Y) > 6;
+    }
+
+    private void BeginMarqueeFromSelectedFill(Point current)
+    {
+        _marqueeSelecting = true;
+        _marqueeStart = _startScreen ?? current;
+        _selectedStart = null;
+        _curveControlStart = null;
+        _resizeStartCenter = null;
+        _resizeStartSize = null;
+        _activeHandle = EditHandleKind.None;
+        _selectedMoveStarts.Clear();
+        _selectedCurveStarts.Clear();
+        _lineEndpointEditStarts.Clear();
+        _stage.SetMarquee(_marqueeStart.Value, current);
+    }
+
     private void StageMouseUp(object? sender, MouseEventArgs e)
     {
         if (_viewPanning || _viewZooming)
@@ -1207,6 +1239,7 @@ internal sealed class MainForm : Form
         _selectedCurveStarts.Clear();
         _lineEndpointEditStarts.Clear();
         _detachedSelectionForMove = false;
+        _pointerHitWasAlreadySelected = false;
         _undoCapturedForPointerEdit = false;
         _resizeStartCenter = null;
         _resizeStartSize = null;
@@ -1310,6 +1343,7 @@ internal sealed class MainForm : Form
         _activeHandle = EditHandleKind.None;
         _marqueeSelecting = false;
         _marqueeStart = null;
+        _pointerHitWasAlreadySelected = false;
         _viewZooming = (ModifierKeys & Keys.Control) == Keys.Control;
         _viewPanning = !_viewZooming;
         _stage.ClearDrawingPreview();
