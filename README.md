@@ -35,7 +35,9 @@ generated on startup; use `Run Stress Scene` when you explicitly want to benchma
 - `Basic Drawing` hides the bottom timeline to prioritize drawing space.
 - Modern timeline strip with ruler, playhead dragging, exposure bars, and keyframe placeholders.
 - Playback settings panel with FPS, loop playback, and frame range controls.
+- Bottom status bar showing render FPS, animation FPS, and zoom.
 - Drawing tools for rectangle, ellipse, triangle, polygon, star, line, fill, select, and pan.
+- Global view navigation: middle mouse drags the canvas, and Ctrl + middle mouse drag zooms the canvas from any tool.
 - Drawing preview overlay while dragging shape and line tools.
 - Animated tool-name hints when hovering drawing tools.
 - Selection highlight with boundary handles for filled shapes.

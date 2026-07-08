@@ -29,6 +29,10 @@ internal sealed class MainForm : Form
     private readonly AnimatedToolTip _toolTip = new();
     private readonly WorkspaceTabs _workspaceTabs = new();
     private readonly TimelineStrip _timeline;
+    private readonly StatusStrip _statusBar = new();
+    private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS 0");
+    private readonly ToolStripStatusLabel _animationFpsStatus = StatusLabel("Animation FPS 24");
+    private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
     private readonly PlaybackSettingsPanel _playbackSettings = new();
     private readonly DrawSettingsPanel _drawSettingsPanel;
     private readonly MaterialEditorPanel _materialEditor = new();
@@ -53,6 +57,8 @@ internal sealed class MainForm : Form
     private bool _geometryDirty;
     private double _smoothedFps;
     private bool _syncingFrame;
+    private bool _viewPanning;
+    private bool _viewZooming;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
 
     public MainForm()
@@ -102,7 +108,11 @@ internal sealed class MainForm : Form
         fit.Left = Width - 124;
         fit.Top = 10;
         Theme.StyleButton(fit);
-        fit.Click += (_, _) => _stage.Fit();
+        fit.Click += (_, _) =>
+        {
+            _stage.Fit();
+            UpdateStatusBar();
+        };
         top.Controls.Add(generate);
         top.Controls.Add(fit);
         top.Resize += (_, _) =>
@@ -181,11 +191,19 @@ internal sealed class MainForm : Form
         var zoomIn = new Button { Text = "+", Width = 36, Height = 30, Top = 6, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         Theme.StyleButton(zoomIn);
         zoomIn.Left = stagePanel.Width - 44;
-        zoomIn.Click += (_, _) => _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), 1.22f);
+        zoomIn.Click += (_, _) =>
+        {
+            _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), 1.22f);
+            UpdateStatusBar();
+        };
         var zoomOut = new Button { Text = "-", Width = 36, Height = 30, Top = 6, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         Theme.StyleButton(zoomOut);
         zoomOut.Left = stagePanel.Width - 84;
-        zoomOut.Click += (_, _) => _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), 0.82f);
+        zoomOut.Click += (_, _) =>
+        {
+            _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), 0.82f);
+            UpdateStatusBar();
+        };
         metrics.Controls.Add(zoomIn);
         metrics.Controls.Add(zoomOut);
         stagePanel.Controls.Add(_stage);
@@ -194,6 +212,23 @@ internal sealed class MainForm : Form
         _workspaceTabs.BringToFront();
 
         Controls.Add(_timeline);
+        BuildStatusBar();
+        Controls.Add(_statusBar);
+    }
+
+    private void BuildStatusBar()
+    {
+        _statusBar.Dock = DockStyle.Bottom;
+        _statusBar.SizingGrip = false;
+        _statusBar.BackColor = Theme.Top;
+        _statusBar.ForeColor = Theme.Muted;
+        _statusBar.Font = Theme.UiFont(9);
+        _statusBar.Padding = new Padding(8, 2, 8, 2);
+        _statusBar.Items.Add(_renderFpsStatus);
+        _statusBar.Items.Add(StatusSeparator());
+        _statusBar.Items.Add(_animationFpsStatus);
+        _statusBar.Items.Add(StatusSeparator());
+        _statusBar.Items.Add(_zoomStatus);
     }
 
     private static TabControl BuildLeftTabs()
@@ -346,7 +381,11 @@ internal sealed class MainForm : Form
             if (_syncingFrame) return;
             SetFrame(_timeline.CurrentFrame);
         };
-        _playbackSettings.FpsChanged += (_, _) => _timer.Interval = Math.Max(1, (int)Math.Round(1000.0 / _playbackSettings.Fps));
+        _playbackSettings.FpsChanged += (_, _) =>
+        {
+            _timer.Interval = Math.Max(1, (int)Math.Round(1000.0 / _playbackSettings.Fps));
+            UpdateStatusBar();
+        };
         _playbackSettings.FrameRangeChanged += (_, _) =>
         {
             _timeline.StartFrame = _playbackSettings.StartFrame;
@@ -415,7 +454,11 @@ internal sealed class MainForm : Form
                 _stage.Invalidate();
             }
         };
-        _stage.MouseWheel += (_, e) => _stage.ZoomAt(e.Location, e.Delta > 0 ? 1.12f : 0.89f);
+        _stage.MouseWheel += (_, e) =>
+        {
+            _stage.ZoomAt(e.Location, e.Delta > 0 ? 1.12f : 0.89f);
+            UpdateStatusBar();
+        };
         _stage.MouseDown += StageMouseDown;
         _stage.MouseMove += StageMouseMove;
         _stage.MouseUp += StageMouseUp;
@@ -436,6 +479,7 @@ internal sealed class MainForm : Form
             _hierarchyPanel.BindScene(_scene);
             _stage.Fit();
             UpdateInspector();
+            UpdateStatusBar();
         }
         finally
         {
@@ -456,6 +500,7 @@ internal sealed class MainForm : Form
         _hierarchyPanel.BindScene(_scene);
         _stage.Fit();
         UpdateInspector();
+        UpdateStatusBar();
     }
 
     private void RefreshLayers()
@@ -502,7 +547,15 @@ internal sealed class MainForm : Form
             : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}";
         _atoms.Text = $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(_scene.VirtualAtomCount)}";
         _zoom.Text = $"Zoom {_stage.Zoom * 100:0}%";
+        UpdateStatusBar();
         _stage.Invalidate();
+    }
+
+    private void UpdateStatusBar()
+    {
+        _renderFpsStatus.Text = $"Render FPS {_smoothedFps:0}";
+        _animationFpsStatus.Text = $"Animation FPS {_playbackSettings.Fps}";
+        _zoomStatus.Text = $"Zoom {_stage.Zoom * 100:0}%";
     }
 
     private void SetFrame(int frame)
@@ -542,6 +595,12 @@ internal sealed class MainForm : Form
 
     private void StageMouseDown(object? sender, MouseEventArgs e)
     {
+        if (e.Button == MouseButtons.Middle)
+        {
+            BeginGlobalViewDrag(e);
+            return;
+        }
+
         _stage.Capture = true;
         _lastMouse = e.Location;
         _startScreen = e.Location;
@@ -586,9 +645,26 @@ internal sealed class MainForm : Form
         var dx = e.X - _lastMouse.Value.X;
         var dy = e.Y - _lastMouse.Value.Y;
         _lastMouse = e.Location;
+
+        if (_viewPanning)
+        {
+            _stage.Pan(dx, dy);
+            UpdateStatusBar();
+            return;
+        }
+
+        if (_viewZooming)
+        {
+            var factor = Math.Clamp(Math.Exp(-dy * 0.01), 0.2, 5.0);
+            _stage.ZoomAt(e.Location, (float)factor);
+            UpdateStatusBar();
+            return;
+        }
+
         if (_tool == ToolMode.Hand)
         {
             _stage.Pan(dx, dy);
+            UpdateStatusBar();
         }
         else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
         {
@@ -622,6 +698,12 @@ internal sealed class MainForm : Form
 
     private void StageMouseUp(object? sender, MouseEventArgs e)
     {
+        if (_viewPanning || _viewZooming)
+        {
+            EndGlobalViewDrag();
+            return;
+        }
+
         if (IsDrawingTool(_tool) && _startWorld is not null && _startScreen is not null)
         {
             var dx = e.X - _startScreen.Value.X;
@@ -645,6 +727,32 @@ internal sealed class MainForm : Form
             _geometryDirty = false;
         }
 
+        _stage.Capture = false;
+    }
+
+    private void BeginGlobalViewDrag(MouseEventArgs e)
+    {
+        _stage.Capture = true;
+        _lastMouse = e.Location;
+        _startScreen = null;
+        _startWorld = null;
+        _selectedStart = null;
+        _curveControlStart = null;
+        _resizeStartCenter = null;
+        _resizeStartSize = null;
+        _activeHandle = EditHandleKind.None;
+        _viewZooming = (ModifierKeys & Keys.Control) == Keys.Control;
+        _viewPanning = !_viewZooming;
+        _stage.ClearDrawingPreview();
+        _stage.Cursor = _viewZooming ? Cursors.SizeNS : Cursors.SizeAll;
+    }
+
+    private void EndGlobalViewDrag()
+    {
+        _lastMouse = null;
+        _viewPanning = false;
+        _viewZooming = false;
+        _stage.Cursor = Cursors.Default;
         _stage.Capture = false;
     }
 
@@ -847,6 +955,8 @@ internal sealed class MainForm : Form
     }
 
     private static Label MetricLabel(string text, int width) => new() { Text = text, Left = 8, Top = 10, Width = width, Height = 22, ForeColor = Theme.Muted, BackColor = Theme.Top, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private static ToolStripStatusLabel StatusLabel(string text) => new() { Text = text, ForeColor = Theme.Muted, Spring = false, Margin = new Padding(0, 0, 10, 0) };
+    private static ToolStripStatusLabel StatusSeparator() => new() { Text = "|", ForeColor = Theme.Border, Margin = new Padding(0, 0, 10, 0) };
     private static Label InspectorLabel(string text) => new() { Text = text, Height = 26, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private static Label FieldLabel(string text) => new()
     {
