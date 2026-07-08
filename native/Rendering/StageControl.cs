@@ -4,21 +4,42 @@ namespace VectorAnimationEngine;
 
 internal sealed class StageControl : Control
 {
+    private const int MaxSelectionOutlines = 512;
     private readonly Dictionary<int, SolidBrush> _brushCache = new(512);
     private readonly Pen _gridPen = new(Color.FromArgb(35, 58, 64, 69));
     private readonly Pen _strokePen = new(Color.FromArgb(210, 10, 12, 14));
     private readonly Pen _selectionPen = new(Color.FromArgb(255, 255, 217, 107), 2);
     private readonly Pen _selectionGlowPen = new(Color.FromArgb(135, 32, 172, 255), 6);
+    private readonly Pen _multiSelectionPen = new(Color.FromArgb(210, 112, 204, 255), 1);
+    private readonly Pen _multiSelectionGlowPen = new(Color.FromArgb(85, 32, 172, 255), 4);
     private readonly Pen _guidePen = new(Color.FromArgb(190, 112, 204, 255), 1);
     private readonly Pen _previewGuidePen = new(Color.FromArgb(170, 255, 255, 255), 1);
+    private readonly Pen _marqueePen = new(Color.FromArgb(230, 112, 204, 255), 1) { DashStyle = DashStyle.Dash };
+    private readonly SolidBrush _marqueeBrush = new(Color.FromArgb(34, 112, 204, 255));
     private readonly SolidBrush _handleBrush = new(Color.FromArgb(255, 255, 240, 168));
     private readonly SolidBrush _bezierHandleBrush = new(Color.FromArgb(255, 112, 204, 255));
     private readonly Pen _handleBorderPen = new(Color.FromArgb(255, 16, 18, 22), 1);
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
+    private int _selectedObject = -1;
+    private int[] _selectedObjects = Array.Empty<int>();
 
     public VectorScene Scene { get; }
     public int Frame { get; set; }
-    public int SelectedObject { get; set; } = -1;
+    public int SelectedObject
+    {
+        get => _selectedObject;
+        set
+        {
+            _selectedObject = value;
+            _selectedObjects = value >= 0 && value < Scene.ObjectCount ? new[] { value } : Array.Empty<int>();
+            Invalidate();
+        }
+    }
+
+    public IReadOnlyList<int> SelectedObjects => _selectedObjects;
+    public bool MarqueeVisible { get; private set; }
+    public Point MarqueeStart { get; private set; }
+    public Point MarqueeEnd { get; private set; }
     public bool DrawingPreviewVisible { get; private set; }
     public PointF DrawingPreviewStart { get; private set; }
     public PointF DrawingPreviewEnd { get; private set; }
@@ -134,6 +155,7 @@ internal sealed class StageControl : Control
                     : DrawObjects(g);
         DrawSelection(g);
         DrawDrawingPreview(g);
+        DrawMarquee(g);
     }
 
     protected override void OnResize(EventArgs e)
@@ -153,8 +175,12 @@ internal sealed class StageControl : Control
             _strokePen.Dispose();
             _selectionPen.Dispose();
             _selectionGlowPen.Dispose();
+            _multiSelectionPen.Dispose();
+            _multiSelectionGlowPen.Dispose();
             _guidePen.Dispose();
             _previewGuidePen.Dispose();
+            _marqueePen.Dispose();
+            _marqueeBrush.Dispose();
             _handleBrush.Dispose();
             _bezierHandleBrush.Dispose();
             _handleBorderPen.Dispose();
@@ -178,6 +204,36 @@ internal sealed class StageControl : Control
     {
         if (!DrawingPreviewVisible) return;
         DrawingPreviewVisible = false;
+        Invalidate();
+    }
+
+    public void SetSelection(IEnumerable<int> objectIndices, int primaryObject = -1)
+    {
+        var selected = objectIndices
+            .Where(index => index >= 0 && index < Scene.ObjectCount)
+            .Distinct()
+            .ToArray();
+
+        if (primaryObject < 0 && selected.Length > 0) primaryObject = selected[^1];
+        if (primaryObject >= 0 && !selected.Contains(primaryObject)) primaryObject = selected.Length > 0 ? selected[^1] : -1;
+
+        _selectedObjects = selected;
+        _selectedObject = primaryObject;
+        Invalidate();
+    }
+
+    public void SetMarquee(Point start, Point end)
+    {
+        MarqueeVisible = true;
+        MarqueeStart = start;
+        MarqueeEnd = end;
+        Invalidate();
+    }
+
+    public void ClearMarquee()
+    {
+        if (!MarqueeVisible) return;
+        MarqueeVisible = false;
         Invalidate();
     }
 
@@ -432,22 +488,42 @@ internal sealed class StageControl : Control
 
     private void DrawSelection(Graphics g)
     {
-        var i = SelectedObject;
-        if (i < 0 || i >= Scene.ObjectCount) return;
+        if ((SelectedObject < 0 || SelectedObject >= Scene.ObjectCount) && SelectedObjects.Count == 0) return;
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var drawn = 0;
+        foreach (var index in SelectedObjects)
+        {
+            if (index == SelectedObject || index < 0 || index >= Scene.ObjectCount) continue;
+            DrawSelectionOutline(g, index, primary: false);
+            drawn++;
+            if (drawn >= MaxSelectionOutlines) break;
+        }
+
+        var primary = SelectedObject;
+        if (primary >= 0 && primary < Scene.ObjectCount)
+        {
+            DrawSelectionOutline(g, primary, primary: true);
+        }
+
+        g.SmoothingMode = oldMode;
+    }
+
+    private void DrawSelectionOutline(Graphics g, int i, bool primary)
+    {
         var shape = Scene.ShapeKind.Length > i ? Scene.ShapeKind[i] : ShapeKind.Rectangle;
 
         if (shape == ShapeKind.Line)
         {
-            DrawBezierGuides(g, i);
+            if (primary) DrawBezierGuides(g, i);
+            else DrawBezierOutline(g, i, _multiSelectionGlowPen, _multiSelectionPen);
         }
         else
         {
-            DrawBoundaryOutline(g, i);
-            DrawBoundaryHandles(g, i);
+            DrawBoundaryOutline(g, i, primary ? _selectionGlowPen : _multiSelectionGlowPen, primary ? _selectionPen : _multiSelectionPen);
+            if (primary) DrawBoundaryHandles(g, i);
         }
-        g.SmoothingMode = oldMode;
     }
 
     private void DrawDrawingPreview(Graphics g)
@@ -496,6 +572,20 @@ internal sealed class StageControl : Control
         using var boundsPen = new Pen(Color.FromArgb(180, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
         g.DrawRectangle(boundsPen, center.X - w * 0.5f, center.Y - h * 0.5f, w, h);
         g.SmoothingMode = oldMode;
+    }
+
+    private void DrawMarquee(Graphics g)
+    {
+        if (!MarqueeVisible) return;
+        var rect = Rectangle.FromLTRB(
+            Math.Min(MarqueeStart.X, MarqueeEnd.X),
+            Math.Min(MarqueeStart.Y, MarqueeEnd.Y),
+            Math.Max(MarqueeStart.X, MarqueeEnd.X),
+            Math.Max(MarqueeStart.Y, MarqueeEnd.Y));
+
+        if (rect.Width < 2 || rect.Height < 2) return;
+        g.FillRectangle(_marqueeBrush, rect);
+        g.DrawRectangle(_marqueePen, rect);
     }
 
     private void DrawPreviewLocalShape(Graphics g, ShapeKind shape, Brush fill, Pen stroke, float w, float h)
@@ -559,11 +649,19 @@ internal sealed class StageControl : Control
         DrawHandle(g, control, _bezierHandleBrush, 10);
     }
 
-    private void DrawBoundaryOutline(Graphics g, int i)
+    private void DrawBezierOutline(Graphics g, int i, Pen glowPen, Pen pen)
+    {
+        var (start, control, end) = GetBezierScreenPoints(i);
+        using var path = BuildQuadraticPath(start, control, end);
+        g.DrawPath(glowPen, path);
+        g.DrawPath(pen, path);
+    }
+
+    private void DrawBoundaryOutline(Graphics g, int i, Pen glowPen, Pen pen)
     {
         var points = BoundaryHandles().Select(handle => WorldToScreen(GetBoundaryHandleWorldPoint(i, handle))).ToArray();
-        g.DrawPolygon(_selectionGlowPen, points);
-        g.DrawPolygon(_selectionPen, points);
+        g.DrawPolygon(glowPen, points);
+        g.DrawPolygon(pen, points);
     }
 
     private void DrawBoundaryHandles(Graphics g, int i)

@@ -216,28 +216,49 @@ internal sealed class VectorScene
 
         VirtualAtomCount = Math.Max(0, VirtualAtomCount - AtomCount[index]);
         var last = ObjectCount - 1;
-        if (index != last)
-        {
-            ObjectLayer[index] = ObjectLayer[last];
-            X[index] = X[last];
-            Y[index] = Y[last];
-            Width[index] = Width[last];
-            Height[index] = Height[last];
-            Angle[index] = Angle[last];
-            Stroke[index] = Stroke[last];
-            CurveControlX[index] = CurveControlX[last];
-            CurveControlY[index] = CurveControlY[last];
-            ShapeKind[index] = ShapeKind[last];
-            AtomCount[index] = AtomCount[last];
-            Argb[index] = Argb[last];
-            StrokeArgb[index] = StrokeArgb[last];
-        }
+        if (index != last) CopyObjectData(last, index);
 
         ObjectCount--;
         ResizeObjectArrays();
         RebuildGeometryIndex();
         RebuildSummaries();
         return true;
+    }
+
+    public int RemoveObjects(IEnumerable<int> indices)
+    {
+        if (ObjectCount <= 0) return 0;
+        var remove = new bool[ObjectCount];
+        var removeCount = 0;
+        foreach (var index in indices)
+        {
+            if ((uint)index >= ObjectCount || remove[index]) continue;
+            remove[index] = true;
+            removeCount++;
+        }
+
+        if (removeCount == 0) return 0;
+
+        long removedAtoms = 0;
+        var write = 0;
+        for (var read = 0; read < ObjectCount; read++)
+        {
+            if (remove[read])
+            {
+                removedAtoms += AtomCount[read];
+                continue;
+            }
+
+            if (write != read) CopyObjectData(read, write);
+            write++;
+        }
+
+        ObjectCount = write;
+        VirtualAtomCount = Math.Max(0, VirtualAtomCount - removedAtoms);
+        ResizeObjectArrays();
+        RebuildGeometryIndex();
+        RebuildSummaries();
+        return removeCount;
     }
 
     public void RebuildGeometryIndex()
@@ -293,6 +314,43 @@ internal sealed class VectorScene
         }
 
         return best;
+    }
+
+    public int[] QueryObjects(RectangleF worldBounds, int frame, int limit = 100_000)
+    {
+        if (ObjectCount <= 0 || limit <= 0) return Array.Empty<int>();
+        var bounds = Normalize(worldBounds);
+        if (bounds.Width <= 0.001f || bounds.Height <= 0.001f) return Array.Empty<int>();
+
+        GetIndexRange(bounds, out var minX, out var maxX, out var minY, out var maxY);
+        var result = new List<int>(Math.Min(ObjectCount, 1024));
+
+        for (var cy = minY; cy <= maxY; cy++)
+        {
+            for (var cx = minX; cx <= maxX; cx++)
+            {
+                var cell = CellIndex(cx, cy);
+                var start = CellStart[cell];
+                var end = CellStart[cell + 1];
+                for (var p = start; p < end; p++)
+                {
+                    var i = CellObjects[p];
+                    var layer = ObjectLayer[i];
+                    if (!IsLayerActive(layer, frame)) continue;
+                    if (!ObjectIntersectsBounds(i, bounds)) continue;
+
+                    result.Add(i);
+                    if (result.Count >= limit)
+                    {
+                        result.Sort();
+                        return result.ToArray();
+                    }
+                }
+            }
+        }
+
+        result.Sort();
+        return result.ToArray();
     }
 
     public void GetIndexRange(RectangleF worldBounds, out int minX, out int maxX, out int minY, out int maxY)
@@ -411,6 +469,59 @@ internal sealed class VectorScene
         return true;
     }
 
+    private bool ObjectIntersectsBounds(int i, RectangleF bounds)
+    {
+        var objectBounds = GetObjectWorldBounds(i);
+        return objectBounds.Left <= bounds.Right
+            && objectBounds.Right >= bounds.Left
+            && objectBounds.Top <= bounds.Bottom
+            && objectBounds.Bottom >= bounds.Top;
+    }
+
+    private RectangleF GetObjectWorldBounds(int i)
+    {
+        var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        var margin = Math.Max(Stroke[i] * 0.5f, 1);
+        if (shape == VectorAnimationEngine.ShapeKind.Line)
+        {
+            var halfW = Width[i] * 0.5f;
+            var start = LocalToWorld(i, -halfW, 0);
+            var end = LocalToWorld(i, halfW, 0);
+            var control = new PointF(CurveControlX[i], CurveControlY[i]);
+            var left = Math.Min(Math.Min(start.X, end.X), control.X) - margin;
+            var right = Math.Max(Math.Max(start.X, end.X), control.X) + margin;
+            var top = Math.Min(Math.Min(start.Y, end.Y), control.Y) - margin;
+            var bottom = Math.Max(Math.Max(start.Y, end.Y), control.Y) + margin;
+            return RectangleF.FromLTRB(left, top, right, bottom);
+        }
+
+        var halfWShape = Width[i] * 0.5f;
+        var halfHShape = Height[i] * 0.5f;
+        if (Math.Abs(Angle[i]) < 0.0001f)
+        {
+            return RectangleF.FromLTRB(X[i] - halfWShape - margin, Y[i] - halfHShape - margin, X[i] + halfWShape + margin, Y[i] + halfHShape + margin);
+        }
+
+        var p0 = LocalToWorld(i, -halfWShape, -halfHShape);
+        var p1 = LocalToWorld(i, halfWShape, -halfHShape);
+        var p2 = LocalToWorld(i, halfWShape, halfHShape);
+        var p3 = LocalToWorld(i, -halfWShape, halfHShape);
+        var leftRotated = Math.Min(Math.Min(p0.X, p1.X), Math.Min(p2.X, p3.X)) - margin;
+        var rightRotated = Math.Max(Math.Max(p0.X, p1.X), Math.Max(p2.X, p3.X)) + margin;
+        var topRotated = Math.Min(Math.Min(p0.Y, p1.Y), Math.Min(p2.Y, p3.Y)) - margin;
+        var bottomRotated = Math.Max(Math.Max(p0.Y, p1.Y), Math.Max(p2.Y, p3.Y)) + margin;
+        return RectangleF.FromLTRB(leftRotated, topRotated, rightRotated, bottomRotated);
+    }
+
+    private static RectangleF Normalize(RectangleF rect)
+    {
+        return RectangleF.FromLTRB(
+            Math.Min(rect.Left, rect.Right),
+            Math.Min(rect.Top, rect.Bottom),
+            Math.Max(rect.Left, rect.Right),
+            Math.Max(rect.Top, rect.Bottom));
+    }
+
     private PointF WorldToLocal(int i, PointF world)
     {
         var dx = world.X - X[i];
@@ -470,6 +581,23 @@ internal sealed class VectorScene
         var dx = a.X - b.X;
         var dy = a.Y - b.Y;
         return MathF.Sqrt(dx * dx + dy * dy);
+    }
+
+    private void CopyObjectData(int from, int to)
+    {
+        ObjectLayer[to] = ObjectLayer[from];
+        X[to] = X[from];
+        Y[to] = Y[from];
+        Width[to] = Width[from];
+        Height[to] = Height[from];
+        Angle[to] = Angle[from];
+        Stroke[to] = Stroke[from];
+        CurveControlX[to] = CurveControlX[from];
+        CurveControlY[to] = CurveControlY[from];
+        ShapeKind[to] = ShapeKind[from];
+        AtomCount[to] = AtomCount[from];
+        Argb[to] = Argb[from];
+        StrokeArgb[to] = StrokeArgb[from];
     }
 
     private void ResizeObjectArrays()

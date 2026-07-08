@@ -46,8 +46,9 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Drawing preview overlay while dragging shape and line tools.
 - Animated tool-name hints when hovering drawing tools.
 - Selection highlight with boundary handles for filled shapes.
+- Marquee selection for selecting, highlighting, moving, and deleting multiple objects.
 - Bezier control handle editing for selected lines.
-- Delete key removes the currently selected drawing object.
+- Delete key removes the currently selected drawing object or marquee-selected objects.
 - Right-side auxiliary panel next to the Inspector for layers.
 - Left-edge Vault drawer opened from the tool rail for Library/Vault asset storage.
 - Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.

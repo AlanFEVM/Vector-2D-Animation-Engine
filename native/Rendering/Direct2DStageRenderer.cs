@@ -14,6 +14,7 @@ namespace VectorAnimationEngine;
 
 internal sealed class Direct2DStageRenderer : IDisposable
 {
+    private const int MaxSelectionOutlines = 512;
     private readonly Dictionary<int, ID2D1SolidColorBrush> _brushCache = new(2048);
     private ID2D1Factory? _factory;
     private ID2D1HwndRenderTarget? _target;
@@ -48,6 +49,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
             DrawSelection(stage);
             DrawDrawingPreview(stage);
+            DrawMarquee(stage);
 
             var result = _target.EndDraw();
             if (result.Failure)
@@ -297,17 +299,36 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
     private void DrawSelection(StageControl stage)
     {
-        var i = stage.SelectedObject;
-        if (i < 0 || i >= stage.Scene.ObjectCount) return;
-        var shape = stage.Scene.ShapeKind.Length > i ? stage.Scene.ShapeKind[i] : ShapeKind.Rectangle;
-        if (shape == ShapeKind.Line) DrawBezierGuides(stage, i);
-        else
+        if ((stage.SelectedObject < 0 || stage.SelectedObject >= stage.Scene.ObjectCount) && stage.SelectedObjects.Count == 0) return;
+
+        var drawn = 0;
+        foreach (var index in stage.SelectedObjects)
         {
-            var points = BoundaryHandles().Select(handle => WorldToVector(stage, stage.GetBoundaryHandleWorldPoint(i, handle))).ToArray();
-            DrawOpenPolygon(points, BrushFor(GdiColor.FromArgb(135, 32, 172, 255).ToArgb()), 6);
-            DrawOpenPolygon(points, BrushFor(GdiColor.FromArgb(255, 255, 217, 107).ToArgb()), 2);
-            foreach (var point in points) DrawHandle(point, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 9);
+            if (index == stage.SelectedObject || index < 0 || index >= stage.Scene.ObjectCount) continue;
+            DrawSelectionOutline(stage, index, primary: false);
+            drawn++;
+            if (drawn >= MaxSelectionOutlines) break;
         }
+
+        var primary = stage.SelectedObject;
+        if (primary >= 0 && primary < stage.Scene.ObjectCount) DrawSelectionOutline(stage, primary, primary: true);
+    }
+
+    private void DrawSelectionOutline(StageControl stage, int i, bool primary)
+    {
+        var shape = stage.Scene.ShapeKind.Length > i ? stage.Scene.ShapeKind[i] : ShapeKind.Rectangle;
+        if (shape == ShapeKind.Line)
+        {
+            if (primary) DrawBezierGuides(stage, i);
+            else DrawBezierOutline(stage, i, BrushFor(GdiColor.FromArgb(85, 32, 172, 255).ToArgb()), BrushFor(GdiColor.FromArgb(210, 112, 204, 255).ToArgb()));
+            return;
+        }
+
+        var points = BoundaryHandles().Select(handle => WorldToVector(stage, stage.GetBoundaryHandleWorldPoint(i, handle))).ToArray();
+        DrawOpenPolygon(points, BrushFor((primary ? GdiColor.FromArgb(135, 32, 172, 255) : GdiColor.FromArgb(85, 32, 172, 255)).ToArgb()), primary ? 6 : 4);
+        DrawOpenPolygon(points, BrushFor((primary ? GdiColor.FromArgb(255, 255, 217, 107) : GdiColor.FromArgb(210, 112, 204, 255)).ToArgb()), primary ? 2 : 1);
+        if (!primary) return;
+        foreach (var point in points) DrawHandle(point, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 9);
     }
 
     private void DrawDrawingPreview(StageControl stage)
@@ -340,10 +361,31 @@ internal sealed class Direct2DStageRenderer : IDisposable
         _target!.DrawRectangle(in rect, stroke, Math.Max(0.1f, stage.DrawingPreviewStroke * stage.Zoom));
     }
 
+    private void DrawMarquee(StageControl stage)
+    {
+        if (!stage.MarqueeVisible) return;
+        var left = Math.Min(stage.MarqueeStart.X, stage.MarqueeEnd.X);
+        var top = Math.Min(stage.MarqueeStart.Y, stage.MarqueeEnd.Y);
+        var right = Math.Max(stage.MarqueeStart.X, stage.MarqueeEnd.X);
+        var bottom = Math.Max(stage.MarqueeStart.Y, stage.MarqueeEnd.Y);
+        if (right - left < 2 || bottom - top < 2) return;
+
+        var rect = Rect(left, top, right - left, bottom - top);
+        _target!.FillRectangle(in rect, BrushFor(GdiColor.FromArgb(34, 112, 204, 255).ToArgb()));
+        _target.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(230, 112, 204, 255).ToArgb()), 1);
+    }
+
     private void DrawBezierLine(StageControl stage, int i, ID2D1SolidColorBrush brush, float screenStroke)
     {
         using var path = BuildBezierPath(stage, i);
         _target!.DrawGeometry(path, brush, screenStroke);
+    }
+
+    private void DrawBezierOutline(StageControl stage, int i, ID2D1SolidColorBrush glow, ID2D1SolidColorBrush pen)
+    {
+        using var path = BuildBezierPath(stage, i);
+        _target!.DrawGeometry(path, glow, 4);
+        _target.DrawGeometry(path, pen, 1);
     }
 
     private void DrawBezierGuides(StageControl stage, int i)

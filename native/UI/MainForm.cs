@@ -43,6 +43,9 @@ internal sealed class MainForm : Form
     private bool _playing;
     private int _frame;
     private int _selectedObject = -1;
+    private readonly List<int> _selectedObjects = new();
+    private readonly Dictionary<int, PointF> _selectedMoveStarts = new();
+    private readonly Dictionary<int, PointF> _selectedCurveStarts = new();
     private Point? _lastMouse;
     private Point? _startScreen;
     private PointF? _startWorld;
@@ -58,6 +61,8 @@ internal sealed class MainForm : Form
     private bool _updatingStrokeInput;
     private bool _viewPanning;
     private bool _viewZooming;
+    private bool _marqueeSelecting;
+    private Point? _marqueeStart;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
 
     public MainForm()
@@ -473,8 +478,7 @@ internal sealed class MainForm : Form
             }
             else if (e.Kind == HierarchyNodeKind.Object && e.Index >= 0 && e.Index < _scene.ObjectCount)
             {
-                _selectedObject = e.Index;
-                _stage.SelectedObject = e.Index;
+                SetSelection(e.Index);
                 UpdateInspector();
                 _stage.Invalidate();
             }
@@ -539,8 +543,7 @@ internal sealed class MainForm : Form
             _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
             SyncFrameSliderRange();
             SetFrame(0);
-            _selectedObject = -1;
-            _stage.SelectedObject = -1;
+            ClearSelection();
             RefreshLayers();
             _hierarchyPanel.BindScene(_scene);
             _stage.Fit();
@@ -560,8 +563,7 @@ internal sealed class MainForm : Form
         _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
         SyncFrameSliderRange();
         SetFrame(0);
-        _selectedObject = -1;
-        _stage.SelectedObject = -1;
+        ClearSelection();
         RefreshLayers();
         _hierarchyPanel.BindScene(_scene);
         _stage.Fit();
@@ -691,9 +693,26 @@ internal sealed class MainForm : Form
                 }
             }
 
-            _selectedObject = _scene.HitTest(_startWorld.Value, _frame, SelectionToleranceWorld());
-            _stage.SelectedObject = _selectedObject;
-            if (_selectedObject >= 0) CaptureEditStart(_selectedObject);
+            var hit = _scene.HitTest(_startWorld.Value, _frame, SelectionToleranceWorld());
+            if (hit >= 0)
+            {
+                if (!_selectedObjects.Contains(hit)) SetSelection(hit);
+                else
+                {
+                    _selectedObject = hit;
+                    _stage.SetSelection(_selectedObjects, _selectedObject);
+                }
+
+                CaptureEditStart(hit);
+            }
+            else
+            {
+                ClearSelection();
+                _marqueeSelecting = true;
+                _marqueeStart = e.Location;
+                _stage.SetMarquee(e.Location, e.Location);
+            }
+
             UpdateInspector();
             _stage.Invalidate();
         }
@@ -703,8 +722,7 @@ internal sealed class MainForm : Form
             if (hit >= 0)
             {
                 _scene.Argb[hit] = ActiveColor().ToArgb();
-                _selectedObject = hit;
-                _stage.SelectedObject = hit;
+                SetSelection(hit);
                 UpdateInspector();
                 _stage.Invalidate();
             }
@@ -738,6 +756,10 @@ internal sealed class MainForm : Form
             _stage.Pan(dx, dy);
             UpdateStatusBar();
         }
+        else if (_tool == ToolMode.Select && _marqueeSelecting && _marqueeStart is not null && e.Button == MouseButtons.Left)
+        {
+            _stage.SetMarquee(_marqueeStart.Value, e.Location);
+        }
         else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
         {
             var world = _stage.ScreenToWorld(e.Location);
@@ -749,12 +771,30 @@ internal sealed class MainForm : Form
             {
                 var dxWorld = world.X - _startWorld.Value.X;
                 var dyWorld = world.Y - _startWorld.Value.Y;
-                _scene.X[_selectedObject] = _selectedStart.Value.X + dxWorld;
-                _scene.Y[_selectedObject] = _selectedStart.Value.Y + dyWorld;
-                if (_curveControlStart is not null)
+                if (_selectedMoveStarts.Count > 1)
                 {
-                    _scene.CurveControlX[_selectedObject] = _curveControlStart.Value.X + dxWorld;
-                    _scene.CurveControlY[_selectedObject] = _curveControlStart.Value.Y + dyWorld;
+                    foreach (var item in _selectedMoveStarts)
+                    {
+                        var index = item.Key;
+                        if ((uint)index >= _scene.ObjectCount) continue;
+                        _scene.X[index] = item.Value.X + dxWorld;
+                        _scene.Y[index] = item.Value.Y + dyWorld;
+                        if (_selectedCurveStarts.TryGetValue(index, out var curveStart))
+                        {
+                            _scene.CurveControlX[index] = curveStart.X + dxWorld;
+                            _scene.CurveControlY[index] = curveStart.Y + dyWorld;
+                        }
+                    }
+                }
+                else
+                {
+                    _scene.X[_selectedObject] = _selectedStart.Value.X + dxWorld;
+                    _scene.Y[_selectedObject] = _selectedStart.Value.Y + dyWorld;
+                    if (_curveControlStart is not null)
+                    {
+                        _scene.CurveControlX[_selectedObject] = _curveControlStart.Value.X + dxWorld;
+                        _scene.CurveControlY[_selectedObject] = _curveControlStart.Value.Y + dyWorld;
+                    }
                 }
             }
 
@@ -776,6 +816,14 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_marqueeSelecting)
+        {
+            CompleteMarqueeSelection(e.Location);
+            _stage.ClearDrawingPreview();
+            FinishPointerInteraction();
+            return;
+        }
+
         if (IsDrawingTool(_tool) && _startWorld is not null && _startScreen is not null)
         {
             var dx = e.X - _startScreen.Value.X;
@@ -784,12 +832,18 @@ internal sealed class MainForm : Form
         }
 
         _stage.ClearDrawingPreview();
+        FinishPointerInteraction();
+    }
 
+    private void FinishPointerInteraction()
+    {
         _lastMouse = null;
         _startScreen = null;
         _startWorld = null;
         _selectedStart = null;
         _curveControlStart = null;
+        _selectedMoveStarts.Clear();
+        _selectedCurveStarts.Clear();
         _resizeStartCenter = null;
         _resizeStartSize = null;
         _activeHandle = EditHandleKind.None;
@@ -802,16 +856,41 @@ internal sealed class MainForm : Form
         _stage.Capture = false;
     }
 
+    private void CompleteMarqueeSelection(Point endScreen)
+    {
+        var startScreen = _marqueeStart ?? endScreen;
+        var dx = endScreen.X - startScreen.X;
+        var dy = endScreen.Y - startScreen.Y;
+        if (Math.Abs(dx) + Math.Abs(dy) > 6)
+        {
+            var a = _stage.ScreenToWorld(startScreen);
+            var b = _stage.ScreenToWorld(endScreen);
+            var bounds = RectangleF.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
+            SetSelection(_scene.QueryObjects(bounds, _frame));
+        }
+        else
+        {
+            ClearSelection();
+        }
+
+        _marqueeSelecting = false;
+        _marqueeStart = null;
+        _stage.ClearMarquee();
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
     private bool DeleteSelectedObject()
     {
-        if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount) return false;
-        var deletedIndex = _selectedObject;
-        if (!_scene.RemoveObjectAt(deletedIndex)) return false;
+        var targets = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
+        if (targets.Length == 0 && _selectedObject >= 0 && _selectedObject < _scene.ObjectCount) targets = new[] { _selectedObject };
+        if (targets.Length == 0) return false;
+        if (_scene.RemoveObjects(targets) <= 0) return false;
 
-        _selectedObject = deletedIndex < _scene.ObjectCount ? deletedIndex : -1;
-        _stage.SelectedObject = _selectedObject;
+        ClearSelection();
         _geometryDirty = false;
         _stage.ClearDrawingPreview();
+        _stage.ClearMarquee();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
@@ -829,9 +908,12 @@ internal sealed class MainForm : Form
         _resizeStartCenter = null;
         _resizeStartSize = null;
         _activeHandle = EditHandleKind.None;
+        _marqueeSelecting = false;
+        _marqueeStart = null;
         _viewZooming = (ModifierKeys & Keys.Control) == Keys.Control;
         _viewPanning = !_viewZooming;
         _stage.ClearDrawingPreview();
+        _stage.ClearMarquee();
         _stage.Cursor = _viewZooming ? Cursors.SizeNS : Cursors.SizeAll;
     }
 
@@ -843,6 +925,30 @@ internal sealed class MainForm : Form
         _stage.Cursor = Cursors.Default;
         _stage.Capture = false;
     }
+
+    private void SetSelection(int objectIndex)
+    {
+        _selectedObjects.Clear();
+        _selectedObject = objectIndex >= 0 && objectIndex < _scene.ObjectCount ? objectIndex : -1;
+        if (_selectedObject >= 0) _selectedObjects.Add(_selectedObject);
+        _stage.SetSelection(_selectedObjects, _selectedObject);
+    }
+
+    private void SetSelection(IEnumerable<int> objectIndices)
+    {
+        _selectedObjects.Clear();
+        var seen = new HashSet<int>();
+        foreach (var index in objectIndices)
+        {
+            if (index < 0 || index >= _scene.ObjectCount || !seen.Add(index)) continue;
+            _selectedObjects.Add(index);
+        }
+
+        _selectedObject = _selectedObjects.Count > 0 ? _selectedObjects[_selectedObjects.Count - 1] : -1;
+        _stage.SetSelection(_selectedObjects, _selectedObject);
+    }
+
+    private void ClearSelection() => SetSelection(-1);
 
     private void UpdateDrawingPreview(PointF start, PointF end, ToolMode tool)
     {
@@ -867,6 +973,20 @@ internal sealed class MainForm : Form
         _resizeStartCenter = _selectedStart;
         _resizeStartSize = new SizeF(_scene.Width[objectIndex], _scene.Height[objectIndex]);
         _resizeStartAngle = _scene.Angle[objectIndex];
+        _selectedMoveStarts.Clear();
+        _selectedCurveStarts.Clear();
+        foreach (var index in _selectedObjects)
+        {
+            if ((uint)index >= _scene.ObjectCount) continue;
+            _selectedMoveStarts[index] = new PointF(_scene.X[index], _scene.Y[index]);
+            _selectedCurveStarts[index] = new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]);
+        }
+
+        if (!_selectedMoveStarts.ContainsKey(objectIndex))
+        {
+            _selectedMoveStarts[objectIndex] = _selectedStart.Value;
+            _selectedCurveStarts[objectIndex] = _curveControlStart.Value;
+        }
     }
 
     private void ApplyHandleDrag(PointF world)
@@ -950,8 +1070,7 @@ internal sealed class MainForm : Form
             angle = 0;
         }
 
-        _selectedObject = _scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, (float)_materialEditor.StrokeWidth, ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape);
-        _stage.SelectedObject = _selectedObject;
+        SetSelection(_scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, (float)_materialEditor.StrokeWidth, ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape));
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
@@ -960,6 +1079,25 @@ internal sealed class MainForm : Form
     private void UpdateInspector()
     {
         _objectMetric.Text = $"Objects: {CompactFormat.Number(_scene.ObjectCount)}";
+        var validSelection = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
+        if (validSelection.Length > 1)
+        {
+            var firstLayer = _scene.ObjectLayer[validSelection[0]];
+            var mixedLayer = false;
+            long atoms = 0;
+            foreach (var index in validSelection)
+            {
+                atoms += _scene.AtomCount[index];
+                if (_scene.ObjectLayer[index] != firstLayer) mixedLayer = true;
+            }
+
+            _selected.Text = $"Selected: {CompactFormat.Number(validSelection.Length)} objects";
+            _selectedLayer.Text = mixedLayer ? "Layer: Mixed" : $"Layer: {_scene.LayerNames[firstLayer]}";
+            _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(atoms)}";
+            return;
+        }
+
+        if (validSelection.Length == 1 && _selectedObject != validSelection[0]) _selectedObject = validSelection[0];
         if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount)
         {
             _selected.Text = "Selected: None";
