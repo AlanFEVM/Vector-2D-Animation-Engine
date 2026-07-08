@@ -139,6 +139,8 @@ internal sealed class StageControl : Control
         var shape = Scene.ShapeKind.Length > objectIndex ? Scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
         if (shape == ShapeKind.Line)
         {
+            if (Scene.TryGetLineEndpoint(objectIndex, startEndpoint: true, out var start) && Distance(screen, WorldToScreen(start)) <= 12) return EditHandleKind.LineStart;
+            if (Scene.TryGetLineEndpoint(objectIndex, startEndpoint: false, out var end) && Distance(screen, WorldToScreen(end)) <= 12) return EditHandleKind.LineEnd;
             var control = WorldToScreen(Scene.CurveControlX[objectIndex], Scene.CurveControlY[objectIndex]);
             if (Distance(screen, control) <= 12) return EditHandleKind.BezierControl;
             return EditHandleKind.None;

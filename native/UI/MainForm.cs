@@ -9,6 +9,7 @@ internal sealed class MainForm : Form
     private const double UpdateStepSeconds = 1.0 / TargetUps;
     private const double RenderStepSeconds = 1.0 / TargetRenderFps;
     private const double MaxFrameSeconds = 0.1;
+    private const float EndpointConnectionToleranceUnits = 1.25f;
 
     private readonly VectorScene _scene = new();
     private readonly StageControl _stage;
@@ -58,6 +59,7 @@ internal sealed class MainForm : Form
     private readonly List<int> _selectedObjects = new();
     private readonly Dictionary<int, PointF> _selectedMoveStarts = new();
     private readonly Dictionary<int, PointF> _selectedCurveStarts = new();
+    private readonly List<LineEndpointEditStart> _lineEndpointEditStarts = new();
     private Point? _lastMouse;
     private Point? _startScreen;
     private PointF? _startWorld;
@@ -86,6 +88,8 @@ internal sealed class MainForm : Form
     private Point? _marqueeStart;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
     private int _activeDrawingObjectIndex;
+
+    private readonly record struct LineEndpointEditStart(int ObjectIndex, bool StartEndpoint, PointF OriginalEndpoint, PointF OppositeEndpoint, PointF Control, bool KeepStraight);
 
     public MainForm()
     {
@@ -1066,6 +1070,7 @@ internal sealed class MainForm : Form
         _curveControlStart = null;
         _selectedMoveStarts.Clear();
         _selectedCurveStarts.Clear();
+        _lineEndpointEditStarts.Clear();
         _detachedSelectionForMove = false;
         _resizeStartCenter = null;
         _resizeStartSize = null;
@@ -1218,6 +1223,7 @@ internal sealed class MainForm : Form
         _resizeStartAngle = _scene.Angle[objectIndex];
         _selectedMoveStarts.Clear();
         _selectedCurveStarts.Clear();
+        _lineEndpointEditStarts.Clear();
         foreach (var index in _selectedObjects)
         {
             if ((uint)index >= _scene.ObjectCount) continue;
@@ -1230,6 +1236,8 @@ internal sealed class MainForm : Form
             _selectedMoveStarts[objectIndex] = _selectedStart.Value;
             _selectedCurveStarts[objectIndex] = _curveControlStart.Value;
         }
+
+        CaptureLineEndpointEditStart(objectIndex);
     }
 
     private void ApplyHandleDrag(PointF world)
@@ -1240,6 +1248,12 @@ internal sealed class MainForm : Form
             var snapped = VectorUnits.Quantize(_drawSettings.SnapPoint(world));
             _scene.CurveControlX[_selectedObject] = snapped.X;
             _scene.CurveControlY[_selectedObject] = snapped.Y;
+            return;
+        }
+
+        if (_activeHandle is EditHandleKind.LineStart or EditHandleKind.LineEnd)
+        {
+            ApplyLineEndpointDrag(world);
             return;
         }
 
@@ -1255,6 +1269,67 @@ internal sealed class MainForm : Form
         _scene.Y[_selectedObject] = VectorUnits.Quantize(centerWorld.Y);
         _scene.Width[_selectedObject] = Math.Max(1, VectorUnits.Quantize(width));
         _scene.Height[_selectedObject] = Math.Max(1, VectorUnits.Quantize(height));
+    }
+
+    private void CaptureLineEndpointEditStart(int objectIndex)
+    {
+        if (_activeHandle is not (EditHandleKind.LineStart or EditHandleKind.LineEnd)) return;
+        var startEndpoint = _activeHandle == EditHandleKind.LineStart;
+        if (!_scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var anchor)) return;
+        var layer = _scene.ObjectLayer[objectIndex];
+
+        for (var i = 0; i < _scene.ObjectCount; i++)
+        {
+            if (_scene.ShapeKind[i] != ShapeKind.Line || _scene.ObjectLayer[i] != layer) continue;
+            CaptureConnectedEndpoint(i, startEndpoint: true, anchor);
+            CaptureConnectedEndpoint(i, startEndpoint: false, anchor);
+        }
+    }
+
+    private void CaptureConnectedEndpoint(int objectIndex, bool startEndpoint, PointF anchor)
+    {
+        if (!_scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var endpoint)) return;
+        if (Distance(endpoint, anchor) > EndpointConnectionToleranceUnits) return;
+        if (!_scene.TryGetLineEndpoint(objectIndex, !startEndpoint, out var opposite)) return;
+        var control = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
+        _lineEndpointEditStarts.Add(new LineEndpointEditStart(objectIndex, startEndpoint, endpoint, opposite, control, _scene.IsLineStraight(objectIndex)));
+    }
+
+    private void ApplyLineEndpointDrag(PointF world)
+    {
+        if (_lineEndpointEditStarts.Count == 0) return;
+        var snapped = VectorUnits.Quantize(SnapEndpointToNearbyConnection(_drawSettings.SnapPoint(world)));
+        foreach (var edit in _lineEndpointEditStarts)
+        {
+            _scene.SetLineEndpoint(edit.ObjectIndex, edit.StartEndpoint, snapped, edit.OppositeEndpoint, edit.Control, edit.KeepStraight);
+        }
+    }
+
+    private PointF SnapEndpointToNearbyConnection(PointF world)
+    {
+        if (!_drawSettings.SnapEnabled || !_drawSettings.SnapToObjects || _selectedObject < 0 || _selectedObject >= _scene.ObjectCount) return world;
+        var layer = _scene.ObjectLayer[_selectedObject];
+        var tolerance = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(10));
+        var best = world;
+        var bestDistance = tolerance;
+        for (var i = 0; i < _scene.ObjectCount; i++)
+        {
+            if (_scene.ShapeKind[i] != ShapeKind.Line || _scene.ObjectLayer[i] != layer) continue;
+            if (_lineEndpointEditStarts.Any(edit => edit.ObjectIndex == i)) continue;
+            TrySnapToEndpoint(i, startEndpoint: true, world, ref best, ref bestDistance);
+            TrySnapToEndpoint(i, startEndpoint: false, world, ref best, ref bestDistance);
+        }
+
+        return best;
+    }
+
+    private void TrySnapToEndpoint(int objectIndex, bool startEndpoint, PointF world, ref PointF best, ref float bestDistance)
+    {
+        if (!_scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var endpoint)) return;
+        var distance = Distance(world, endpoint);
+        if (distance >= bestDistance) return;
+        bestDistance = distance;
+        best = endpoint;
     }
 
     private PointF WorldToLocalFromEditStart(PointF world)

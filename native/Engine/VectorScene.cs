@@ -396,6 +396,40 @@ internal sealed class VectorScene
         return true;
     }
 
+    public bool TryGetLineEndpoint(int objectIndex, bool startEndpoint, out PointF point)
+    {
+        point = PointF.Empty;
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return false;
+        var halfW = Width[objectIndex] * 0.5f;
+        point = LocalToWorld(objectIndex, startEndpoint ? -halfW : halfW, 0);
+        return true;
+    }
+
+    public bool IsLineStraight(int objectIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return false;
+        var halfW = Width[objectIndex] * 0.5f;
+        var start = LocalToWorld(objectIndex, -halfW, 0);
+        var end = LocalToWorld(objectIndex, halfW, 0);
+        return DistanceToSegment(new PointF(CurveControlX[objectIndex], CurveControlY[objectIndex]), start, end) <= DrawingTopologyRules.MinStrokeSegmentUnits;
+    }
+
+    public void SetLineEndpoint(int objectIndex, bool startEndpoint, PointF endpoint, PointF oppositeEndpoint, PointF control, bool keepStraight)
+    {
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return;
+        var start = startEndpoint ? endpoint : oppositeEndpoint;
+        var end = startEndpoint ? oppositeEndpoint : endpoint;
+        var center = Midpoint(start, end);
+        X[objectIndex] = center.X;
+        Y[objectIndex] = center.Y;
+        Width[objectIndex] = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, Distance(start, end));
+        Height[objectIndex] = Math.Max(VectorUnits.FromPixels(3), Height[objectIndex]);
+        Angle[objectIndex] = MathF.Atan2(end.Y - start.Y, end.X - start.X);
+        var newControl = keepStraight ? Midpoint(start, end) : control;
+        CurveControlX[objectIndex] = newControl.X;
+        CurveControlY[objectIndex] = newControl.Y;
+    }
+
     public DrawingElementHit DetachElementForMove(DrawingElementHit hit, int frame)
     {
         if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= ObjectCount) return hit;
