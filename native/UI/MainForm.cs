@@ -143,22 +143,43 @@ internal sealed class MainForm : Form
         AddTool(tools, "●", ToolMode.Fill, "Fill Tool");
         RefreshToolButtons();
 
-        var rightSidebar = new Panel { Dock = DockStyle.Right, Width = 610, BackColor = Theme.Panel };
+        var rightSidebar = new TableLayoutPanel
+        {
+            Dock = DockStyle.Right,
+            Width = 610,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        rightSidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 286));
+        rightSidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 324));
+        rightSidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         body.Controls.Add(rightSidebar);
 
-        var inspector = new Panel { Dock = DockStyle.Right, Width = 324, BackColor = Theme.Panel, Padding = new Padding(14, 16, 14, 12), AutoScroll = true };
+        var inspector = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(14, 16, 14, 12), AutoScroll = true };
         PaintLeftBorder(inspector);
-        rightSidebar.Controls.Add(inspector);
+        rightSidebar.Controls.Add(inspector, 1, 0);
         BuildInspectorPages(inspector);
 
-        var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel };
+        var leftPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        leftPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        leftPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         PaintLeftBorder(leftPanel);
-        rightSidebar.Controls.Add(leftPanel);
+        rightSidebar.Controls.Add(leftPanel, 0, 0);
 
         var leftTabStrip = new TableLayoutPanel
         {
-            Dock = DockStyle.Top,
-            Height = 36,
+            Dock = DockStyle.Fill,
             ColumnCount = 2,
             RowCount = 1,
             BackColor = Theme.Top,
@@ -170,17 +191,27 @@ internal sealed class MainForm : Form
         var layersTab = new Button { Text = "Layers", Dock = DockStyle.Fill, Margin = new Padding(0) };
         var vaultTab = new Button { Text = "Library / Vault", Dock = DockStyle.Fill, Margin = new Padding(0) };
         var leftContent = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(0) };
-        leftPanel.Controls.Add(leftContent);
         leftTabStrip.Controls.Add(layersTab, 0, 0);
         leftTabStrip.Controls.Add(vaultTab, 1, 0);
-        leftPanel.Controls.Add(leftTabStrip);
-        leftTabStrip.BringToFront();
+        leftPanel.Controls.Add(leftTabStrip, 0, 0);
+        leftPanel.Controls.Add(leftContent, 0, 1);
 
-        var layerPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(12, 10, 12, 12) };
+        var layerPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            Padding = new Padding(12, 10, 12, 12),
+            ColumnCount = 1,
+            RowCount = 3
+        };
+        layerPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layerPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        layerPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         leftContent.Controls.Add(layerPanel);
 
-        layerPanel.Controls.Add(new Label { Text = "Layers", Dock = DockStyle.Top, Height = 32, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft });
-        var layerButtons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44, FlowDirection = FlowDirection.LeftToRight, BackColor = Theme.Panel, Padding = new Padding(0, 2, 0, 8) };
+        var layerTitle = new Label { Text = "Layers", Dock = DockStyle.Fill, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+        layerPanel.Controls.Add(layerTitle, 0, 0);
+        var layerButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, BackColor = Theme.Panel, Padding = new Padding(0, 2, 0, 8) };
         var solo = new Button { Text = "Solo", Width = 78, Height = 32 };
         Theme.StyleButton(solo);
         solo.Click += (_, _) => { _scene.SoloLayer(_scene.ActiveLayer); RefreshLayers(); _stage.Invalidate(); };
@@ -189,14 +220,14 @@ internal sealed class MainForm : Form
         all.Click += (_, _) => { _scene.ShowAllLayers(); RefreshLayers(); _stage.Invalidate(); };
         layerButtons.Controls.Add(solo);
         layerButtons.Controls.Add(all);
-        layerPanel.Controls.Add(layerButtons);
+        layerPanel.Controls.Add(layerButtons, 0, 1);
         _layers.Dock = DockStyle.Fill;
         _layers.BackColor = Theme.Panel;
         _layers.ForeColor = Theme.Text;
         _layers.Font = Theme.UiFont(9.5f);
         _layers.ItemHeight = 22;
         _layers.BorderStyle = BorderStyle.None;
-        layerPanel.Controls.Add(_layers);
+        layerPanel.Controls.Add(_layers, 0, 2);
 
         var vaultPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(0) };
         _libraryVaultPanel.Dock = DockStyle.Fill;
