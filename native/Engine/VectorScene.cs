@@ -324,6 +324,73 @@ internal sealed class VectorScene
         RebuildSpatialIndex();
     }
 
+    public VectorSceneSnapshot CreateSnapshot()
+    {
+        return new VectorSceneSnapshot
+        {
+            LayerCount = LayerCount,
+            ObjectCount = ObjectCount,
+            VirtualAtomCount = VirtualAtomCount,
+            ActiveLayer = ActiveLayer,
+            MaxHalfExtent = MaxHalfExtent,
+            LayerNames = LayerNames.ToArray(),
+            LayerVisible = LayerVisible.ToArray(),
+            LayerOpacity = LayerOpacity.ToArray(),
+            LayerStart = LayerStart.ToArray(),
+            LayerEnd = LayerEnd.ToArray(),
+            ObjectLayer = ObjectLayer.ToArray(),
+            X = X.ToArray(),
+            Y = Y.ToArray(),
+            Width = Width.ToArray(),
+            Height = Height.ToArray(),
+            Angle = Angle.ToArray(),
+            Stroke = Stroke.ToArray(),
+            CurveControlX = CurveControlX.ToArray(),
+            CurveControlY = CurveControlY.ToArray(),
+            ShapeKind = ShapeKind.ToArray(),
+            AtomCount = AtomCount.ToArray(),
+            Argb = Argb.ToArray(),
+            StrokeArgb = StrokeArgb.ToArray(),
+            PathLocalPoints = _pathLocalPoints.ToDictionary(item => item.Key, item => item.Value.ToArray())
+        };
+    }
+
+    public void RestoreSnapshot(VectorSceneSnapshot snapshot)
+    {
+        LayerCount = snapshot.LayerCount;
+        ObjectCount = snapshot.ObjectCount;
+        VirtualAtomCount = snapshot.VirtualAtomCount;
+        ActiveLayer = Math.Clamp(snapshot.ActiveLayer, 0, Math.Max(0, snapshot.LayerCount - 1));
+        MaxHalfExtent = snapshot.MaxHalfExtent;
+        LayerNames = snapshot.LayerNames.ToArray();
+        LayerVisible = snapshot.LayerVisible.ToArray();
+        LayerOpacity = snapshot.LayerOpacity.ToArray();
+        LayerStart = snapshot.LayerStart.ToArray();
+        LayerEnd = snapshot.LayerEnd.ToArray();
+        ObjectLayer = snapshot.ObjectLayer.ToArray();
+        X = snapshot.X.ToArray();
+        Y = snapshot.Y.ToArray();
+        Width = snapshot.Width.ToArray();
+        Height = snapshot.Height.ToArray();
+        Angle = snapshot.Angle.ToArray();
+        Stroke = snapshot.Stroke.ToArray();
+        CurveControlX = snapshot.CurveControlX.ToArray();
+        CurveControlY = snapshot.CurveControlY.ToArray();
+        ShapeKind = snapshot.ShapeKind.ToArray();
+        AtomCount = snapshot.AtomCount.ToArray();
+        Argb = snapshot.Argb.ToArray();
+        StrokeArgb = snapshot.StrokeArgb.ToArray();
+        _pathLocalPoints.Clear();
+        foreach (var item in snapshot.PathLocalPoints)
+        {
+            if ((uint)item.Key >= ObjectCount) continue;
+            _pathLocalPoints[item.Key] = item.Value.ToArray();
+        }
+
+        RebuildGeometryIndex();
+        RebuildSummaries();
+    }
+
     public bool IsLayerActive(int layer, int frame)
     {
         return layer >= 0 && layer < LayerCount && LayerVisible[layer] && frame >= LayerStart[layer] && frame <= LayerEnd[layer];

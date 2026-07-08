@@ -10,6 +10,8 @@ internal sealed class MainForm : Form
     private const double RenderStepSeconds = 1.0 / TargetRenderFps;
     private const double MaxFrameSeconds = 0.1;
     private const float EndpointConnectionToleranceUnits = 1.25f;
+    private const int MaxUndoSnapshots = 32;
+    private const float PasteOffsetUnits = 96f;
 
     private readonly VectorScene _scene = new();
     private readonly StageControl _stage;
@@ -60,6 +62,8 @@ internal sealed class MainForm : Form
     private readonly Dictionary<int, PointF> _selectedMoveStarts = new();
     private readonly Dictionary<int, PointF> _selectedCurveStarts = new();
     private readonly List<LineEndpointEditStart> _lineEndpointEditStarts = new();
+    private readonly Stack<VectorSceneSnapshot> _undoStack = new();
+    private readonly List<ClipboardObject> _clipboardObjects = new();
     private Point? _lastMouse;
     private Point? _startScreen;
     private PointF? _startWorld;
@@ -88,8 +92,22 @@ internal sealed class MainForm : Form
     private Point? _marqueeStart;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
     private int _activeDrawingObjectIndex;
+    private bool _undoCapturedForPointerEdit;
 
     private readonly record struct LineEndpointEditStart(int ObjectIndex, bool StartEndpoint, PointF OriginalEndpoint, PointF OppositeEndpoint, PointF Control, bool KeepStraight);
+
+    private sealed record ClipboardObject(
+        int Layer,
+        PointF Center,
+        SizeF Size,
+        float Angle,
+        float Stroke,
+        Color FillColor,
+        Color StrokeColor,
+        uint Atoms,
+        ShapeKind Shape,
+        PointF CurveControl,
+        PointF[]? PathWorldPoints);
 
     public MainForm()
     {
@@ -602,6 +620,7 @@ internal sealed class MainForm : Form
 
             if (_selectedObject >= 0 && _selectedObject < _scene.ObjectCount)
             {
+                CaptureUndoSnapshot();
                 var strokeUnits = VectorUnits.StrokePointsToUnits(e.StrokeWidth);
                 _scene.Argb[_selectedObject] = Color.FromArgb((int)Math.Clamp(e.Opacity * 255, 0, 255), e.Fill).ToArgb();
                 _scene.Stroke[_selectedObject] = strokeUnits;
@@ -689,6 +708,7 @@ internal sealed class MainForm : Form
         try
         {
             _scene.Generate(1000, 100000, 100000000);
+            ResetEditHistory();
             _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
             SyncFrameSliderRange();
             SetFrame(0);
@@ -717,6 +737,7 @@ internal sealed class MainForm : Form
     {
         AppLog.Info("Creating new empty project");
         _scene.CreateEmpty();
+        ResetEditHistory();
         _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
         _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
         SyncFrameSliderRange();
@@ -730,6 +751,13 @@ internal sealed class MainForm : Form
         UpdateInspector();
         UpdateStatusBar();
         AppLog.Info("New empty project created");
+    }
+
+    private void ResetEditHistory()
+    {
+        _undoStack.Clear();
+        _clipboardObjects.Clear();
+        _undoCapturedForPointerEdit = false;
     }
 
     private void RefreshLayers()
@@ -852,6 +880,13 @@ internal sealed class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (!ContainsFocusedEditor(this))
+        {
+            if (keyData == (Keys.Control | Keys.Z) && UndoLastEdit()) return true;
+            if (keyData == (Keys.Control | Keys.C) && CopySelectedObjects()) return true;
+            if (keyData == (Keys.Control | Keys.V) && PasteCopiedObjects()) return true;
+        }
+
         if (keyData == Keys.Delete && !ContainsFocusedEditor(this) && DeleteSelectedObject()) return true;
         return base.ProcessCmdKey(ref msg, keyData);
     }
@@ -870,6 +905,104 @@ internal sealed class MainForm : Form
         {
             _syncingFrame = false;
         }
+    }
+
+    private void CaptureUndoSnapshot()
+    {
+        _undoStack.Push(_scene.CreateSnapshot());
+        while (_undoStack.Count > MaxUndoSnapshots)
+        {
+            var snapshots = _undoStack.Take(MaxUndoSnapshots).Reverse().ToArray();
+            _undoStack.Clear();
+            foreach (var snapshot in snapshots) _undoStack.Push(snapshot);
+        }
+    }
+
+    private void CapturePointerUndoSnapshot()
+    {
+        if (_undoCapturedForPointerEdit) return;
+        CaptureUndoSnapshot();
+        _undoCapturedForPointerEdit = true;
+    }
+
+    private bool UndoLastEdit()
+    {
+        if (_undoStack.Count == 0) return false;
+        _scene.RestoreSnapshot(_undoStack.Pop());
+        ClearSelection();
+        _geometryDirty = false;
+        _stage.ClearDrawingPreview();
+        _stage.ClearMarquee();
+        _hierarchyPanel.RefreshScene();
+        RefreshLayers();
+        UpdateInspector();
+        _stage.Invalidate();
+        return true;
+    }
+
+    private bool CopySelectedObjects()
+    {
+        var targets = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
+        if (targets.Length == 0 && _selectedObject >= 0 && _selectedObject < _scene.ObjectCount) targets = new[] { _selectedObject };
+        if (targets.Length == 0) return false;
+
+        _clipboardObjects.Clear();
+        foreach (var index in targets)
+        {
+            PointF[]? pathPoints = null;
+            if (_scene.ShapeKind[index] == ShapeKind.Path && _scene.TryGetPathWorldPoints(index, out var points)) pathPoints = points;
+            _clipboardObjects.Add(new ClipboardObject(
+                _scene.ObjectLayer[index],
+                new PointF(_scene.X[index], _scene.Y[index]),
+                new SizeF(_scene.Width[index], _scene.Height[index]),
+                _scene.Angle[index],
+                _scene.Stroke[index],
+                Color.FromArgb(_scene.Argb[index]),
+                Color.FromArgb(_scene.StrokeArgb[index]),
+                _scene.AtomCount[index],
+                _scene.ShapeKind[index],
+                new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]),
+                pathPoints));
+        }
+
+        return _clipboardObjects.Count > 0;
+    }
+
+    private bool PasteCopiedObjects()
+    {
+        if (_clipboardObjects.Count == 0) return false;
+        CaptureUndoSnapshot();
+        var pasted = new List<int>(_clipboardObjects.Count);
+        foreach (var item in _clipboardObjects)
+        {
+            var offset = new PointF(PasteOffsetUnits, PasteOffsetUnits);
+            var layer = Math.Clamp(item.Layer, 0, Math.Max(0, _scene.LayerCount - 1));
+            int index;
+            if (item.Shape == ShapeKind.Path && item.PathWorldPoints is { Length: >= 3 } pathPoints)
+            {
+                var shifted = pathPoints.Select(point => new PointF(point.X + offset.X, point.Y + offset.Y)).ToArray();
+                index = _scene.AddPathObject(layer, shifted, item.Stroke, item.FillColor, item.StrokeColor, item.Atoms);
+            }
+            else
+            {
+                var center = new PointF(item.Center.X + offset.X, item.Center.Y + offset.Y);
+                index = _scene.AddObject(layer, center, item.Size, item.Angle, item.Stroke, item.FillColor, item.StrokeColor, item.Atoms, item.Shape);
+                if (item.Shape == ShapeKind.Line)
+                {
+                    _scene.CurveControlX[index] = item.CurveControl.X + offset.X;
+                    _scene.CurveControlY[index] = item.CurveControl.Y + offset.Y;
+                }
+            }
+
+            if (index >= 0) pasted.Add(index);
+        }
+
+        if (pasted.Count == 0) return false;
+        SetSelection(pasted);
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+        return true;
     }
 
     private void StageMouseDown(object? sender, MouseEventArgs e)
@@ -930,6 +1063,7 @@ internal sealed class MainForm : Form
             if (hit.IsValid)
             {
                 var hitObject = hit.Key.ObjectIndex;
+                CaptureUndoSnapshot();
                 _scene.Argb[hitObject] = ActiveColor().ToArgb();
                 SetSelection(hit);
                 UpdateInspector();
@@ -972,6 +1106,7 @@ internal sealed class MainForm : Form
         else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
         {
             var world = _stage.ScreenToWorld(e.Location);
+            CapturePointerUndoSnapshot();
             if (_activeHandle != EditHandleKind.None)
             {
                 ApplyHandleDrag(world);
@@ -1072,6 +1207,7 @@ internal sealed class MainForm : Form
         _selectedCurveStarts.Clear();
         _lineEndpointEditStarts.Clear();
         _detachedSelectionForMove = false;
+        _undoCapturedForPointerEdit = false;
         _resizeStartCenter = null;
         _resizeStartSize = null;
         _activeHandle = EditHandleKind.None;
@@ -1113,6 +1249,7 @@ internal sealed class MainForm : Form
         var targets = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
         if (targets.Length == 0 && _selectedObject >= 0 && _selectedObject < _scene.ObjectCount) targets = new[] { _selectedObject };
         if (targets.Length == 0) return false;
+        CaptureUndoSnapshot();
         if (_scene.RemoveObjects(targets) <= 0) return false;
 
         ClearSelection();
@@ -1366,6 +1503,7 @@ internal sealed class MainForm : Form
 
     private void AddDrawnObject(PointF start, PointF end, ToolMode tool)
     {
+        CaptureUndoSnapshot();
         start = VectorUnits.Quantize(_drawSettings.SnapPoint(start));
         end = VectorUnits.Quantize(_drawSettings.SnapPoint(end));
         var center = new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
