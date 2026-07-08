@@ -54,7 +54,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Selection highlight with boundary handles for filled shapes.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects.
 - Bezier control handle editing for selected lines.
-- Drawing element topology foundation: fills and strokes are separate elements, strokes split at fill-boundary and stroke intersections, and selection reports the hit element part.
+- Drawing element topology foundation: fills and strokes are separate elements, fills have one owner per layer per 1vu unit, strokes split at valid fill-boundary/stroke intersections, and sub-1vu stroke fragments are suppressed.
 - Delete key removes the currently selected drawing object or marquee-selected objects.
 - Right-side auxiliary panel next to the Inspector for layers.
 - Left-edge Vault drawer opened from the tool rail for Library/Vault asset storage.

@@ -501,8 +501,28 @@ internal sealed class VectorScene
         }
 
         if (!HitObject(world, i, toleranceWorld)) return DrawingElementHit.None;
+        if (!OwnsFillUnit(world, i, candidates)) return DrawingElementHit.None;
         var part = FillPartIndex(world, i, candidates);
         return new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, part), 0, 0, 1);
+    }
+
+    private bool OwnsFillUnit(PointF world, int fillIndex, IReadOnlyList<int> candidates)
+    {
+        var layer = ObjectLayer[fillIndex];
+        var unit = DrawingUnitCell.FromPoint(layer, world);
+        var sample = new PointF(unit.X + 0.5f, unit.Y + 0.5f);
+        var owner = -1;
+
+        foreach (var candidate in candidates)
+        {
+            if (ObjectLayer[candidate] != layer) continue;
+            var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
+            if (shape == VectorAnimationEngine.ShapeKind.Line) continue;
+            if (!HitObject(sample, candidate, 0.5f)) continue;
+            if (candidate > owner) owner = candidate;
+        }
+
+        return owner == fillIndex;
     }
 
     private DrawingElementHit HitStrokeElement(PointF world, int lineIndex, IReadOnlyList<int> candidates, float toleranceWorld)
@@ -537,29 +557,61 @@ internal sealed class VectorScene
 
     private List<float> StrokeSplitParameters(int lineIndex, IReadOnlyList<int> candidates)
     {
-        var result = new List<float> { 0, 1 };
+        var splits = new List<DrawingTopologySplit>();
         var line = LinePolyline(lineIndex);
+        splits.Add(new DrawingTopologySplit(0, line[0]));
+        splits.Add(new DrawingTopologySplit(1, line[^1]));
         foreach (var other in candidates)
         {
             if (other == lineIndex) continue;
             var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape == VectorAnimationEngine.ShapeKind.Line)
             {
-                AddPolylineIntersections(result, line, LinePolyline(other));
+                AddPolylineIntersections(splits, line, LinePolyline(other));
             }
             else
             {
-                AddPolylineIntersections(result, line, ShapeBoundary(other));
+                AddPolylineIntersections(splits, line, ShapeBoundary(other));
             }
         }
 
-        result.Sort();
-        for (var i = result.Count - 2; i >= 0; i--)
+        return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
+    }
+
+    private List<DrawingTopologySplit> NormalizeStrokeSplits(List<DrawingTopologySplit> splits)
+    {
+        splits.Sort((a, b) => a.T.CompareTo(b.T));
+        var unique = new List<DrawingTopologySplit>(splits.Count);
+        foreach (var split in splits)
         {
-            if (Math.Abs(result[i + 1] - result[i]) < 0.01f) result.RemoveAt(i + 1);
+            var quantized = VectorUnits.Quantize(split.Point);
+            if (unique.Count > 0 && SameDrawingUnit(unique[^1].Point, quantized)) continue;
+            unique.Add(new DrawingTopologySplit(Math.Clamp(split.T, 0, 1), quantized));
         }
 
-        return result;
+        if (unique.Count <= 2) return unique;
+
+        var filtered = new List<DrawingTopologySplit> { unique[0] };
+        for (var i = 1; i < unique.Count - 1; i++)
+        {
+            var previous = filtered[^1];
+            var next = unique[i + 1];
+            var current = unique[i];
+            if (Distance(previous.Point, current.Point) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
+            if (Distance(current.Point, next.Point) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
+            filtered.Add(current);
+        }
+
+        if (Distance(filtered[^1].Point, unique[^1].Point) >= DrawingTopologyRules.MinStrokeSegmentUnits || filtered.Count == 1)
+        {
+            filtered.Add(unique[^1]);
+        }
+        else
+        {
+            filtered[^1] = unique[^1];
+        }
+
+        return filtered;
     }
 
     private int FillPartIndex(PointF world, int fillIndex, IReadOnlyList<int> candidates)
@@ -573,15 +625,15 @@ internal sealed class VectorScene
             var shape = ShapeKind.Length > lineIndex ? ShapeKind[lineIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
 
-            var intersections = new List<float>();
-            AddPolylineIntersections(intersections, LinePolyline(lineIndex), boundary);
+            var intersections = CollectPolylineIntersections(LinePolyline(lineIndex), boundary);
             intersections.Sort();
             var distinct = 0;
-            var previous = -10f;
-            foreach (var t in intersections)
+            PointF? previous = null;
+            foreach (var split in intersections)
             {
-                if (Math.Abs(t - previous) < 0.02f) continue;
-                previous = t;
+                var point = VectorUnits.Quantize(split.Point);
+                if (previous is { } previousPoint && SameDrawingUnit(previousPoint, point)) continue;
+                previous = point;
                 distinct++;
             }
 
@@ -598,7 +650,14 @@ internal sealed class VectorScene
         return part;
     }
 
-    private void AddPolylineIntersections(List<float> result, PointF[] source, PointF[] cutter)
+    private List<DrawingTopologySplit> CollectPolylineIntersections(PointF[] source, PointF[] cutter)
+    {
+        var result = new List<DrawingTopologySplit>();
+        AddPolylineIntersections(result, source, cutter);
+        return result;
+    }
+
+    private void AddPolylineIntersections(List<DrawingTopologySplit> result, PointF[] source, PointF[] cutter)
     {
         var sourceSegments = Math.Max(1, source.Length - 1);
         for (var i = 0; i < source.Length - 1; i++)
@@ -606,7 +665,8 @@ internal sealed class VectorScene
             for (var j = 0; j < cutter.Length - 1; j++)
             {
                 if (!TrySegmentIntersection(source[i], source[i + 1], cutter[j], cutter[j + 1], out var t)) continue;
-                result.Add(Math.Clamp((i + t) / sourceSegments, 0, 1));
+                var point = Lerp(source[i], source[i + 1], t);
+                result.Add(new DrawingTopologySplit(Math.Clamp((i + t) / sourceSegments, 0, 1), point));
             }
         }
     }
@@ -703,6 +763,16 @@ internal sealed class VectorScene
         t = (cax * sY - cay * sX) / denominator;
         var u = (cax * rY - cay * rX) / denominator;
         return t > 0.0001f && t < 0.9999f && u > 0.0001f && u < 0.9999f;
+    }
+
+    private static bool SameDrawingUnit(PointF a, PointF b)
+    {
+        return MathF.Floor(a.X) == MathF.Floor(b.X) && MathF.Floor(a.Y) == MathF.Floor(b.Y);
+    }
+
+    private static PointF Lerp(PointF a, PointF b, float t)
+    {
+        return new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
     }
 
     private static float SegmentProjectionT(PointF point, PointF start, PointF end)
