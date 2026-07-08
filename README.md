@@ -54,6 +54,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Selection highlight with boundary handles for filled shapes.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects.
 - Bezier control handle editing for selected lines.
+- Drawing element topology foundation: fills and strokes are separate elements, strokes split at fill-boundary and stroke intersections, and selection reports the hit element part.
 - Delete key removes the currently selected drawing object or marquee-selected objects.
 - Right-side auxiliary panel next to the Inspector for layers.
 - Left-edge Vault drawer opened from the tool rail for Library/Vault asset storage.
@@ -115,6 +116,8 @@ native/
     Benchmark.cs          Stress-scene benchmark helper.
   Engine/
     VectorScene.cs        Packed scene arrays, stress generator, spatial index.
+    DrawingElementTopology.cs
+                          Fill/stroke element identity and topology hit contracts.
     DrawingObjectDefinition.cs
                           Flash-style reusable drawing object metadata.
     VectorUnits.cs        Vector unit, pixel, and stroke point conversion rules.

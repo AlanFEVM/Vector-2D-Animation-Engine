@@ -293,9 +293,30 @@ internal sealed class VectorScene
 
     public int HitTest(PointF world, int frame, float toleranceWorld = 6)
     {
-        GetHitTestRange(world, toleranceWorld, out var minX, out var maxX, out var minY, out var maxY);
-        var best = -1;
+        var hit = HitTestElement(world, frame, toleranceWorld);
+        return hit.IsValid ? hit.Key.ObjectIndex : -1;
+    }
 
+    public DrawingElementHit HitTestElement(PointF world, int frame, float toleranceWorld = 6)
+    {
+        GetHitTestRange(world, toleranceWorld, out var minX, out var maxX, out var minY, out var maxY);
+        var candidates = CollectHitCandidates(minX, maxX, minY, maxY, frame);
+        var best = DrawingElementHit.None;
+
+        foreach (var i in candidates)
+        {
+            var hit = HitElement(world, i, candidates, toleranceWorld);
+            if (!hit.IsValid) continue;
+            if (hit.Key.ObjectIndex > best.Key.ObjectIndex || hit.Key.ObjectIndex == best.Key.ObjectIndex && hit.Distance < best.Distance) best = hit;
+        }
+
+        return best;
+    }
+
+    private List<int> CollectHitCandidates(int minX, int maxX, int minY, int maxY, int frame)
+    {
+        var result = new List<int>(128);
+        var seen = new HashSet<int>();
         for (var cy = minY; cy <= maxY; cy++)
         {
             for (var cx = minX; cx <= maxX; cx++)
@@ -306,15 +327,16 @@ internal sealed class VectorScene
                 for (var p = start; p < end; p++)
                 {
                     var i = CellObjects[p];
-                    if (i <= best) continue;
+                    if (!seen.Add(i)) continue;
                     var layer = ObjectLayer[i];
                     if (!IsLayerActive(layer, frame)) continue;
-                    if (HitObject(world, i, toleranceWorld)) best = i;
+                    result.Add(i);
                 }
             }
         }
 
-        return best;
+        result.Sort();
+        return result;
     }
 
     public int[] QueryObjects(RectangleF worldBounds, int frame, int limit = 100_000)
@@ -468,6 +490,233 @@ internal sealed class VectorScene
         }
 
         return true;
+    }
+
+    private DrawingElementHit HitElement(PointF world, int i, IReadOnlyList<int> candidates, float toleranceWorld)
+    {
+        var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (shape == VectorAnimationEngine.ShapeKind.Line)
+        {
+            return HitStrokeElement(world, i, candidates, toleranceWorld);
+        }
+
+        if (!HitObject(world, i, toleranceWorld)) return DrawingElementHit.None;
+        var part = FillPartIndex(world, i, candidates);
+        return new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, part), 0, 0, 1);
+    }
+
+    private DrawingElementHit HitStrokeElement(PointF world, int lineIndex, IReadOnlyList<int> candidates, float toleranceWorld)
+    {
+        var polyline = LinePolyline(lineIndex);
+        var hitRadius = Math.Max(Height[lineIndex] * 0.5f, 1) + toleranceWorld;
+        var bestDistance = float.MaxValue;
+        var bestT = 0f;
+        var segments = Math.Max(1, polyline.Length - 1);
+
+        for (var i = 0; i < polyline.Length - 1; i++)
+        {
+            var distance = DistanceToSegment(world, polyline[i], polyline[i + 1]);
+            if (distance >= bestDistance) continue;
+            bestDistance = distance;
+            bestT = (i + SegmentProjectionT(world, polyline[i], polyline[i + 1])) / segments;
+        }
+
+        if (bestDistance > hitRadius) return DrawingElementHit.None;
+
+        var splitPoints = StrokeSplitParameters(lineIndex, candidates);
+        var part = 0;
+        for (var i = 0; i < splitPoints.Count - 1; i++)
+        {
+            if (bestT < splitPoints[i] - 0.0001f || bestT > splitPoints[i + 1] + 0.0001f) continue;
+            part = i;
+            return new DrawingElementHit(new DrawingElementKey(lineIndex, DrawingElementKind.Stroke, part), bestDistance, splitPoints[i], splitPoints[i + 1]);
+        }
+
+        return new DrawingElementHit(new DrawingElementKey(lineIndex, DrawingElementKind.Stroke, part), bestDistance, 0, 1);
+    }
+
+    private List<float> StrokeSplitParameters(int lineIndex, IReadOnlyList<int> candidates)
+    {
+        var result = new List<float> { 0, 1 };
+        var line = LinePolyline(lineIndex);
+        foreach (var other in candidates)
+        {
+            if (other == lineIndex) continue;
+            var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
+            if (shape == VectorAnimationEngine.ShapeKind.Line)
+            {
+                AddPolylineIntersections(result, line, LinePolyline(other));
+            }
+            else
+            {
+                AddPolylineIntersections(result, line, ShapeBoundary(other));
+            }
+        }
+
+        result.Sort();
+        for (var i = result.Count - 2; i >= 0; i--)
+        {
+            if (Math.Abs(result[i + 1] - result[i]) < 0.01f) result.RemoveAt(i + 1);
+        }
+
+        return result;
+    }
+
+    private int FillPartIndex(PointF world, int fillIndex, IReadOnlyList<int> candidates)
+    {
+        var boundary = ShapeBoundary(fillIndex);
+        var part = 0;
+        var bit = 1;
+        foreach (var lineIndex in candidates)
+        {
+            if (lineIndex == fillIndex) continue;
+            var shape = ShapeKind.Length > lineIndex ? ShapeKind[lineIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
+            if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
+
+            var intersections = new List<float>();
+            AddPolylineIntersections(intersections, LinePolyline(lineIndex), boundary);
+            intersections.Sort();
+            var distinct = 0;
+            var previous = -10f;
+            foreach (var t in intersections)
+            {
+                if (Math.Abs(t - previous) < 0.02f) continue;
+                previous = t;
+                distinct++;
+            }
+
+            if (distinct < 2) continue;
+
+            var halfW = Width[lineIndex] * 0.5f;
+            var a = LocalToWorld(lineIndex, -halfW, 0);
+            var b = LocalToWorld(lineIndex, halfW, 0);
+            if (SignedSide(world, a, b) >= 0) part |= bit;
+            bit <<= 1;
+            if (bit >= 1 << 20) break;
+        }
+
+        return part;
+    }
+
+    private void AddPolylineIntersections(List<float> result, PointF[] source, PointF[] cutter)
+    {
+        var sourceSegments = Math.Max(1, source.Length - 1);
+        for (var i = 0; i < source.Length - 1; i++)
+        {
+            for (var j = 0; j < cutter.Length - 1; j++)
+            {
+                if (!TrySegmentIntersection(source[i], source[i + 1], cutter[j], cutter[j + 1], out var t)) continue;
+                result.Add(Math.Clamp((i + t) / sourceSegments, 0, 1));
+            }
+        }
+    }
+
+    private PointF[] LinePolyline(int i, int segments = 32)
+    {
+        var halfW = Width[i] * 0.5f;
+        var start = LocalToWorld(i, -halfW, 0);
+        var end = LocalToWorld(i, halfW, 0);
+        var control = new PointF(CurveControlX[i], CurveControlY[i]);
+        var points = new PointF[segments + 1];
+        for (var s = 0; s <= segments; s++) points[s] = QuadraticPoint(start, control, end, s / (float)segments);
+        return points;
+    }
+
+    private PointF[] ShapeBoundary(int i)
+    {
+        var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        var halfW = Width[i] * 0.5f;
+        var halfH = Height[i] * 0.5f;
+        var local = shape switch
+        {
+            VectorAnimationEngine.ShapeKind.Ellipse => EllipseBoundary(halfW, halfH),
+            VectorAnimationEngine.ShapeKind.Triangle => RegularBoundary(3, halfW, halfH, -MathF.PI / 2),
+            VectorAnimationEngine.ShapeKind.Polygon => RegularBoundary(6, halfW, halfH, -MathF.PI / 2),
+            VectorAnimationEngine.ShapeKind.Star => StarBoundary(halfW, halfH),
+            _ => new[]
+            {
+                new PointF(-halfW, -halfH),
+                new PointF(halfW, -halfH),
+                new PointF(halfW, halfH),
+                new PointF(-halfW, halfH),
+                new PointF(-halfW, -halfH)
+            }
+        };
+
+        var result = new PointF[local.Length];
+        for (var p = 0; p < local.Length; p++) result[p] = LocalToWorld(i, local[p].X, local[p].Y);
+        return result;
+    }
+
+    private static PointF[] EllipseBoundary(float halfW, float halfH)
+    {
+        const int count = 32;
+        var points = new PointF[count + 1];
+        for (var i = 0; i <= count; i++)
+        {
+            var angle = i * MathF.Tau / count;
+            points[i] = new PointF(MathF.Cos(angle) * halfW, MathF.Sin(angle) * halfH);
+        }
+
+        return points;
+    }
+
+    private static PointF[] RegularBoundary(int sides, float halfW, float halfH, float startAngle)
+    {
+        var points = new PointF[sides + 1];
+        for (var i = 0; i < sides; i++)
+        {
+            var angle = startAngle + i * MathF.Tau / sides;
+            points[i] = new PointF(MathF.Cos(angle) * halfW, MathF.Sin(angle) * halfH);
+        }
+
+        points[^1] = points[0];
+        return points;
+    }
+
+    private static PointF[] StarBoundary(float halfW, float halfH)
+    {
+        var points = new PointF[11];
+        for (var i = 0; i < 10; i++)
+        {
+            var radius = i % 2 == 0 ? 1f : 0.46f;
+            var angle = -MathF.PI / 2 + i * MathF.Tau / 10;
+            points[i] = new PointF(MathF.Cos(angle) * halfW * radius, MathF.Sin(angle) * halfH * radius);
+        }
+
+        points[^1] = points[0];
+        return points;
+    }
+
+    private static bool TrySegmentIntersection(PointF a, PointF b, PointF c, PointF d, out float t)
+    {
+        t = 0;
+        var rX = b.X - a.X;
+        var rY = b.Y - a.Y;
+        var sX = d.X - c.X;
+        var sY = d.Y - c.Y;
+        var denominator = rX * sY - rY * sX;
+        if (Math.Abs(denominator) < 0.0001f) return false;
+
+        var cax = c.X - a.X;
+        var cay = c.Y - a.Y;
+        t = (cax * sY - cay * sX) / denominator;
+        var u = (cax * rY - cay * rX) / denominator;
+        return t > 0.0001f && t < 0.9999f && u > 0.0001f && u < 0.9999f;
+    }
+
+    private static float SegmentProjectionT(PointF point, PointF start, PointF end)
+    {
+        var vx = end.X - start.X;
+        var vy = end.Y - start.Y;
+        var lengthSq = vx * vx + vy * vy;
+        if (lengthSq <= 0.0001f) return 0;
+        return Math.Clamp(((point.X - start.X) * vx + (point.Y - start.Y) * vy) / lengthSq, 0, 1);
+    }
+
+    private static float SignedSide(PointF point, PointF a, PointF b)
+    {
+        return (b.X - a.X) * (point.Y - a.Y) - (b.Y - a.Y) * (point.X - a.X);
     }
 
     private bool ObjectIntersectsBounds(int i, RectangleF bounds)

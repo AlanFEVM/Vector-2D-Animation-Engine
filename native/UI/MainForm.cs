@@ -54,6 +54,7 @@ internal sealed class MainForm : Form
     private bool _playing;
     private int _frame;
     private int _selectedObject = -1;
+    private DrawingElementHit _selectedElement = DrawingElementHit.None;
     private readonly List<int> _selectedObjects = new();
     private readonly Dictionary<int, PointF> _selectedMoveStarts = new();
     private readonly Dictionary<int, PointF> _selectedCurveStarts = new();
@@ -892,17 +893,20 @@ internal sealed class MainForm : Form
                 }
             }
 
-            var hit = _scene.HitTest(_startWorld.Value, _frame, SelectionToleranceWorld());
-            if (hit >= 0)
+            var hit = _scene.HitTestElement(_startWorld.Value, _frame, SelectionToleranceWorld());
+            if (hit.IsValid)
             {
-                if (!_selectedObjects.Contains(hit)) SetSelection(hit);
+                var hitObject = hit.Key.ObjectIndex;
+                if (!_selectedObjects.Contains(hitObject)) SetSelection(hit);
                 else
                 {
-                    _selectedObject = hit;
+                    _selectedObject = hitObject;
+                    _selectedElement = hit;
                     _stage.SetSelection(_selectedObjects, _selectedObject);
+                    _stage.SetSelectedElement(_selectedElement);
                 }
 
-                CaptureEditStart(hit);
+                CaptureEditStart(hitObject);
             }
             else
             {
@@ -917,10 +921,11 @@ internal sealed class MainForm : Form
         }
         else if (_tool == ToolMode.Fill)
         {
-            var hit = _scene.HitTest(_startWorld.Value, _frame, SelectionToleranceWorld());
-            if (hit >= 0)
+            var hit = _scene.HitTestElement(_startWorld.Value, _frame, SelectionToleranceWorld());
+            if (hit.IsValid)
             {
-                _scene.Argb[hit] = ActiveColor().ToArgb();
+                var hitObject = hit.Key.ObjectIndex;
+                _scene.Argb[hitObject] = ActiveColor().ToArgb();
                 SetSelection(hit);
                 UpdateInspector();
                 _stage.Invalidate();
@@ -1129,13 +1134,32 @@ internal sealed class MainForm : Form
     {
         _selectedObjects.Clear();
         _selectedObject = objectIndex >= 0 && objectIndex < _scene.ObjectCount ? objectIndex : -1;
+        _selectedElement = DrawingElementHit.None;
         if (_selectedObject >= 0) _selectedObjects.Add(_selectedObject);
         _stage.SetSelection(_selectedObjects, _selectedObject);
+        _stage.SetSelectedElement(_selectedElement);
+    }
+
+    private void SetSelection(DrawingElementHit hit)
+    {
+        if (!hit.IsValid)
+        {
+            ClearSelection();
+            return;
+        }
+
+        _selectedObjects.Clear();
+        _selectedObject = hit.Key.ObjectIndex;
+        _selectedElement = hit;
+        _selectedObjects.Add(_selectedObject);
+        _stage.SetSelection(_selectedObjects, _selectedObject);
+        _stage.SetSelectedElement(_selectedElement);
     }
 
     private void SetSelection(IEnumerable<int> objectIndices)
     {
         _selectedObjects.Clear();
+        _selectedElement = DrawingElementHit.None;
         var seen = new HashSet<int>();
         foreach (var index in objectIndices)
         {
@@ -1145,6 +1169,7 @@ internal sealed class MainForm : Form
 
         _selectedObject = _selectedObjects.Count > 0 ? _selectedObjects[_selectedObjects.Count - 1] : -1;
         _stage.SetSelection(_selectedObjects, _selectedObject);
+        _stage.SetSelectedElement(_selectedElement);
     }
 
     private void ClearSelection() => SetSelection(-1);
@@ -1307,7 +1332,9 @@ internal sealed class MainForm : Form
         }
 
         var layer = _scene.ObjectLayer[_selectedObject];
-        _selected.Text = $"Selected: #{_selectedObject}";
+        _selected.Text = _selectedElement.IsValid && _selectedElement.Key.ObjectIndex == _selectedObject
+            ? $"Selected: #{_selectedObject} {_selectedElement.Key.Kind} part {_selectedElement.Key.PartIndex}"
+            : $"Selected: #{_selectedObject}";
         _selectedLayer.Text = $"Layer: {_scene.LayerNames[layer]}";
         _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(_scene.AtomCount[_selectedObject])}";
         var fill = Color.FromArgb(_scene.Argb[_selectedObject]);

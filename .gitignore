@@ -18,6 +18,7 @@ publish/
 
 # Runtime logs and temp files
 logs/
+data/
 *.log
 *.tmp
 *.temp

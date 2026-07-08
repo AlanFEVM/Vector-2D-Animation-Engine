@@ -322,7 +322,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var shape = stage.Scene.ShapeKind.Length > i ? stage.Scene.ShapeKind[i] : ShapeKind.Rectangle;
         if (shape == ShapeKind.Line)
         {
-            if (primary) DrawBezierGuides(stage, i);
+            if (primary && stage.SelectedElement.Key.Kind == DrawingElementKind.Stroke && stage.SelectedElement.Key.ObjectIndex == i)
+            {
+                DrawBezierGuides(stage, i, stage.SelectedElement.StartT, stage.SelectedElement.EndT);
+            }
+            else if (primary) DrawBezierGuides(stage, i);
             else DrawBezierOutline(stage, i, BrushFor(GdiColor.FromArgb(85, 32, 172, 255).ToArgb()), BrushFor(GdiColor.FromArgb(210, 112, 204, 255).ToArgb()));
             return;
         }
@@ -405,6 +409,22 @@ internal sealed class Direct2DStageRenderer : IDisposable
         DrawHandle(control, BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb()), 10);
     }
 
+    private void DrawBezierGuides(StageControl stage, int i, float startT, float endT)
+    {
+        var (start, control, end) = GetBezierScreenPoints(stage, i);
+        using var fullPath = BuildBezierPath(stage, i);
+        using var partialPath = BuildBezierSamplePath(start, control, end, startT, endT);
+        var guide = BrushFor(GdiColor.FromArgb(190, 112, 204, 255).ToArgb());
+        _target!.DrawLine(start, control, guide, 1);
+        _target.DrawLine(control, end, guide, 1);
+        _target.DrawGeometry(fullPath, BrushFor(GdiColor.FromArgb(80, 255, 217, 107).ToArgb()), 1.2f);
+        _target.DrawGeometry(partialPath, BrushFor(GdiColor.FromArgb(135, 32, 172, 255).ToArgb()), 6);
+        _target.DrawGeometry(partialPath, BrushFor(GdiColor.FromArgb(255, 255, 217, 107).ToArgb()), 2);
+        DrawHandle(start, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 8);
+        DrawHandle(end, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 8);
+        DrawHandle(control, BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb()), 10);
+    }
+
     private ID2D1PathGeometry BuildBezierPath(StageControl stage, int i)
     {
         var (start, control, end) = GetBezierScreenPoints(stage, i);
@@ -421,6 +441,34 @@ internal sealed class Direct2DStageRenderer : IDisposable
         }
 
         return path;
+    }
+
+    private ID2D1PathGeometry BuildBezierSamplePath(Vector2 start, Vector2 control, Vector2 end, float startT, float endT)
+    {
+        startT = Math.Clamp(startT, 0, 1);
+        endT = Math.Clamp(endT, startT, 1);
+        var path = _factory!.CreatePathGeometry();
+        using (var sink = path.Open())
+        {
+            sink.BeginFigure(QuadraticPoint(start, control, end, startT), FigureBegin.Hollow);
+            const int samples = 20;
+            for (var i = 1; i <= samples; i++)
+            {
+                var t = startT + (endT - startT) * i / samples;
+                sink.AddLine(QuadraticPoint(start, control, end, t));
+            }
+
+            sink.EndFigure(FigureEnd.Open);
+            sink.Close();
+        }
+
+        return path;
+    }
+
+    private static Vector2 QuadraticPoint(Vector2 start, Vector2 control, Vector2 end, float t)
+    {
+        var inv = 1 - t;
+        return start * (inv * inv) + control * (2 * inv * t) + end * (t * t);
     }
 
     private (Vector2 Start, Vector2 Control, Vector2 End) GetBezierScreenPoints(StageControl stage, int i)

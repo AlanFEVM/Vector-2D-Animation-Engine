@@ -33,11 +33,13 @@ internal sealed class StageControl : Control
         {
             _selectedObject = value;
             _selectedObjects = value >= 0 && value < Scene.ObjectCount ? new[] { value } : Array.Empty<int>();
+            SelectedElement = DrawingElementHit.None;
             Invalidate();
         }
     }
 
     public IReadOnlyList<int> SelectedObjects => _selectedObjects;
+    public DrawingElementHit SelectedElement { get; private set; } = DrawingElementHit.None;
     public bool MarqueeVisible { get; private set; }
     public Point MarqueeStart { get; private set; }
     public Point MarqueeEnd { get; private set; }
@@ -255,6 +257,13 @@ internal sealed class StageControl : Control
 
         _selectedObjects = selected;
         _selectedObject = primaryObject;
+        if (!SelectedElement.IsValid || SelectedElement.Key.ObjectIndex != primaryObject) SelectedElement = DrawingElementHit.None;
+        Invalidate();
+    }
+
+    public void SetSelectedElement(DrawingElementHit hit)
+    {
+        SelectedElement = hit;
         Invalidate();
     }
 
@@ -554,7 +563,11 @@ internal sealed class StageControl : Control
 
         if (shape == ShapeKind.Line)
         {
-            if (primary) DrawBezierGuides(g, i);
+            if (primary && SelectedElement.Key.Kind == DrawingElementKind.Stroke && SelectedElement.Key.ObjectIndex == i)
+            {
+                DrawBezierGuides(g, i, SelectedElement.StartT, SelectedElement.EndT);
+            }
+            else if (primary) DrawBezierGuides(g, i);
             else DrawBezierOutline(g, i, _multiSelectionGlowPen, _multiSelectionPen);
         }
         else
@@ -687,6 +700,22 @@ internal sealed class StageControl : Control
         DrawHandle(g, control, _bezierHandleBrush, 10);
     }
 
+    private void DrawBezierGuides(Graphics g, int i, float startT, float endT)
+    {
+        var (start, control, end) = GetBezierScreenPoints(i);
+        using var fullPath = BuildQuadraticPath(start, control, end);
+        using var partialPath = BuildQuadraticSamplePath(start, control, end, startT, endT);
+        g.DrawLine(_guidePen, start, control);
+        g.DrawLine(_guidePen, control, end);
+        using var mutedPen = new Pen(Color.FromArgb(80, _selectionPen.Color), 1.2f);
+        g.DrawPath(mutedPen, fullPath);
+        g.DrawPath(_selectionGlowPen, partialPath);
+        g.DrawPath(_selectionPen, partialPath);
+        DrawHandle(g, start, _handleBrush, 8);
+        DrawHandle(g, end, _handleBrush, 8);
+        DrawHandle(g, control, _bezierHandleBrush, 10);
+    }
+
     private void DrawBezierOutline(Graphics g, int i, Pen glowPen, Pen pen)
     {
         var (start, control, end) = GetBezierScreenPoints(i);
@@ -733,6 +762,32 @@ internal sealed class StageControl : Control
         var path = new GraphicsPath();
         path.AddBezier(start, c1, c2, end);
         return path;
+    }
+
+    private static GraphicsPath BuildQuadraticSamplePath(PointF start, PointF control, PointF end, float startT, float endT)
+    {
+        startT = Math.Clamp(startT, 0, 1);
+        endT = Math.Clamp(endT, startT, 1);
+        var path = new GraphicsPath();
+        var previous = QuadraticPoint(start, control, end, startT);
+        const int samples = 20;
+        for (var i = 1; i <= samples; i++)
+        {
+            var t = startT + (endT - startT) * i / samples;
+            var current = QuadraticPoint(start, control, end, t);
+            path.AddLine(previous, current);
+            previous = current;
+        }
+
+        return path;
+    }
+
+    private static PointF QuadraticPoint(PointF start, PointF control, PointF end, float t)
+    {
+        var inv = 1 - t;
+        return new PointF(
+            inv * inv * start.X + 2 * inv * t * control.X + t * t * end.X,
+            inv * inv * start.Y + 2 * inv * t * control.Y + t * t * end.Y);
     }
 
     private PointF LocalToWorld(int i, PointF local)
