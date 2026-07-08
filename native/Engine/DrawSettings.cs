@@ -10,12 +10,12 @@ internal sealed class DrawSettings
     public event EventHandler? Changed;
 
     public ShapeKind ShapeKind { get; set; } = ShapeKind.Rectangle;
-    public bool SnapEnabled { get; set; } = true;
-    public bool SnapToGrid { get; set; } = true;
+    public bool SnapEnabled { get; set; }
+    public bool SnapToGrid { get; set; }
     public bool SnapToObjects { get; set; }
     public bool AdhesionEnabled { get; set; }
-    public bool AlignmentEnabled { get; set; } = true;
-    public bool AngleSnapEnabled { get; set; } = true;
+    public bool AlignmentEnabled { get; set; }
+    public bool AngleSnapEnabled { get; set; }
     public bool KeepAspectRatio { get; set; }
 
     public float GridSize

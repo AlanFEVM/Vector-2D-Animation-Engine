@@ -89,6 +89,7 @@ VectorAnimationEngine.exe
 
 在 `Basic Drawing` 工作区可以调整绘制设置：
 
+- 默认所有吸附、紧贴、对齐和角度吸附开关都关闭。
 - Snapping 图标组：集中放置吸附相关 SVG 图标开关。
 - Snap：总吸附开关。
 - Grid：网格吸附。
