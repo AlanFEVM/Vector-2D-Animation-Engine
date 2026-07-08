@@ -4,13 +4,14 @@ internal sealed class DrawSettingsPanel : UserControl
 {
     private readonly DrawSettings _settings;
     private readonly ComboBox _shape = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly CheckBox _snap = CheckBox("Snap");
-    private readonly CheckBox _snapGrid = CheckBox("Grid");
-    private readonly CheckBox _snapObjects = CheckBox("Objects");
-    private readonly CheckBox _adhesion = CheckBox("Tight fit");
-    private readonly CheckBox _alignment = CheckBox("Align");
-    private readonly CheckBox _angleSnap = CheckBox("Angle");
-    private readonly CheckBox _keepRatio = CheckBox("Ratio");
+    private readonly ToolTip _toolTip = new();
+    private readonly SvgToggleButton _snap = Toggle("Snap", SvgIconKind.Snap);
+    private readonly SvgToggleButton _snapGrid = Toggle("Grid", SvgIconKind.Grid);
+    private readonly SvgToggleButton _snapObjects = Toggle("Objects", SvgIconKind.Objects);
+    private readonly SvgToggleButton _adhesion = Toggle("Tight fit", SvgIconKind.TightFit);
+    private readonly SvgToggleButton _alignment = Toggle("Align", SvgIconKind.Align);
+    private readonly SvgToggleButton _angleSnap = Toggle("Angle", SvgIconKind.Angle);
+    private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
     private readonly NumericUpDown _gridSize = new() { Minimum = 1, Maximum = 10000, DecimalPlaces = 0, Increment = 8, Width = 112 };
     private readonly NumericUpDown _angleStep = new() { Minimum = 1, Maximum = 90, DecimalPlaces = 0, Increment = 1, Width = 112 };
     private bool _updating;
@@ -53,7 +54,7 @@ internal sealed class DrawSettingsPanel : UserControl
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
@@ -73,8 +74,9 @@ internal sealed class DrawSettingsPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true,
-            Margin = new Padding(0, 2, 0, 2)
+            WrapContents = false,
+            Margin = new Padding(0, 3, 0, 3),
+            Padding = new Padding(0)
         };
         AddCheck(snapping, _snap);
         AddCheck(snapping, _snapGrid);
@@ -97,9 +99,10 @@ internal sealed class DrawSettingsPanel : UserControl
             RowCount = 1,
             Margin = new Padding(0)
         };
-        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
         angle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         AddCheck(_angleSnap);
+        _toolTip.SetToolTip(_angleSnap, _angleSnap.AccessibleName);
         angle.Controls.Add(_angleSnap, 0, 0);
         _angleStep.Dock = DockStyle.Fill;
         _angleStep.Margin = new Padding(0, 3, 0, 3);
@@ -109,6 +112,7 @@ internal sealed class DrawSettingsPanel : UserControl
         AddField(content, "Angle snap", angle, 3);
 
         AddCheck(_keepRatio);
+        _toolTip.SetToolTip(_keepRatio, _keepRatio.AccessibleName);
         AddField(content, "Aspect", _keepRatio, 4);
     }
 
@@ -147,6 +151,7 @@ internal sealed class DrawSettingsPanel : UserControl
     private void AddCheck(FlowLayoutPanel parent, CheckBox checkBox)
     {
         AddCheck(checkBox);
+        _toolTip.SetToolTip(checkBox, checkBox.AccessibleName);
         parent.Controls.Add(checkBox);
     }
 
@@ -173,19 +178,5 @@ internal sealed class DrawSettingsPanel : UserControl
         parent.Controls.Add(input, 1, row);
     }
 
-    private static CheckBox CheckBox(string text)
-    {
-        return new CheckBox
-        {
-            Text = text,
-            AutoSize = true,
-            MinimumSize = new Size(72, 24),
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            FlatStyle = FlatStyle.Flat,
-            Font = Theme.UiFont(),
-            Margin = new Padding(0, 0, 8, 2),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-    }
+    private static SvgToggleButton Toggle(string name, SvgIconKind icon) => new(icon, name);
 }

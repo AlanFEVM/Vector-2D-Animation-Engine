@@ -62,7 +62,7 @@ VectorAnimationEngine.exe
 
 ## 绘制工具
 
-左侧工具栏支持：
+左侧工具栏使用 SVG 矢量图标按钮，鼠标悬浮会显示工具名称。当前支持：
 
 - Select：选择、移动、编辑已选对象。
 - Pan View：拖动画布视图。
@@ -89,8 +89,10 @@ VectorAnimationEngine.exe
 
 在 `Basic Drawing` 工作区可以调整绘制设置：
 
-- Grid Snap：网格吸附。
-- Object Snap：对象吸附占位。
+- Snapping 图标组：集中放置吸附相关 SVG 图标开关。
+- Snap：总吸附开关。
+- Grid：网格吸附。
+- Objects：对象吸附占位。
 - Tight Fit：紧贴占位。
 - Align：对齐占位。
 - Angle Snap：角度吸附。

@@ -46,6 +46,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Bottom status bar showing render FPS, animation FPS, and zoom.
 - Main loop targets 300 UPS with stage redraw requests capped at 144 FPS.
 - Drawing tools for rectangle, ellipse, triangle, polygon, star, line, fill, select, and pan.
+- SVG vector icon buttons for the tool rail and snapping controls.
 - Global view navigation: middle mouse drags the canvas, and Ctrl + middle mouse drag zooms the canvas from any tool.
 - Drawing preview overlay while dragging shape and line tools.
 - Animated tool-name hints when hovering drawing tools.
@@ -118,6 +119,8 @@ native/
     LibraryVaultPanel.cs  Library presets and persistent generic Vault.
     TimelineStrip.cs      Timeline renderer.
     Theme.cs              Shared desktop colors and control styling.
+    SvgIcons.cs           Code-native SVG primitive icon set.
+    SvgIconButton.cs      SVG icon button and toggle controls.
     PlaybackSettingsPanel.cs
     DrawSettingsPanel.cs
     WorkspaceTabs.cs

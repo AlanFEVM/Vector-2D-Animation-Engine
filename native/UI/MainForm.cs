@@ -151,15 +151,15 @@ internal sealed class MainForm : Form
         var tools = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 48, BackColor = Theme.Top, FlowDirection = FlowDirection.TopDown, Padding = new Padding(6, 10, 6, 6) };
         PaintRightBorder(tools);
         body.Controls.Add(tools);
-        AddTool(tools, "↖", ToolMode.Select, "Select");
-        AddTool(tools, "✥", ToolMode.Hand, "Pan View");
-        AddTool(tools, "■", ToolMode.Rectangle, "Rectangle Tool");
-        AddTool(tools, "○", ToolMode.Ellipse, "Ellipse Tool");
-        AddTool(tools, "△", ToolMode.Triangle, "Triangle Tool");
-        AddTool(tools, "⬡", ToolMode.Polygon, "Polygon Tool");
-        AddTool(tools, "★", ToolMode.Star, "Star Tool");
-        AddTool(tools, "╱", ToolMode.Line, "Line Tool");
-        AddTool(tools, "●", ToolMode.Fill, "Fill Tool");
+        AddTool(tools, SvgIconKind.Select, ToolMode.Select, "Select");
+        AddTool(tools, SvgIconKind.Pan, ToolMode.Hand, "Pan View");
+        AddTool(tools, SvgIconKind.Rectangle, ToolMode.Rectangle, "Rectangle Tool");
+        AddTool(tools, SvgIconKind.Ellipse, ToolMode.Ellipse, "Ellipse Tool");
+        AddTool(tools, SvgIconKind.Triangle, ToolMode.Triangle, "Triangle Tool");
+        AddTool(tools, SvgIconKind.Polygon, ToolMode.Polygon, "Polygon Tool");
+        AddTool(tools, SvgIconKind.Star, ToolMode.Star, "Star Tool");
+        AddTool(tools, SvgIconKind.Line, ToolMode.Line, "Line Tool");
+        AddTool(tools, SvgIconKind.Fill, ToolMode.Fill, "Fill Tool");
         RefreshToolButtons();
 
         var vaultDrawer = new Panel { Dock = DockStyle.Left, Width = 306, BackColor = Theme.Panel, Padding = new Padding(0), Visible = false };
@@ -168,7 +168,7 @@ internal sealed class MainForm : Form
         vaultDrawer.Controls.Add(_libraryVaultPanel);
         body.Controls.Add(vaultDrawer);
 
-        var vaultButton = new Button { Text = "V", Width = 34, Height = 34, Margin = new Padding(0, 16, 0, 8), AccessibleName = "Vault" };
+        var vaultButton = new SvgIconButton(SvgIconKind.Vault) { Margin = new Padding(0, 16, 0, 8), AccessibleName = "Vault" };
         Theme.StyleButton(vaultButton);
         vaultButton.MouseEnter += (_, _) => _toolTip.ShowFor(vaultButton, "Vault");
         vaultButton.MouseLeave += (_, _) => _toolTip.HideTip();
@@ -415,9 +415,9 @@ internal sealed class MainForm : Form
         parent.Controls.Add(input, 1, row);
     }
 
-    private void AddTool(FlowLayoutPanel panel, string text, ToolMode tool, string displayName)
+    private void AddTool(FlowLayoutPanel panel, SvgIconKind icon, ToolMode tool, string displayName)
     {
-        var button = new Button { Text = text, Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 8), Tag = tool, AccessibleName = displayName };
+        var button = new SvgIconButton(icon) { Margin = new Padding(0, 0, 0, 8), Tag = tool, AccessibleName = displayName };
         Theme.StyleButton(button);
         button.MouseEnter += (_, _) => _toolTip.ShowFor(button, displayName);
         button.MouseLeave += (_, _) => _toolTip.HideTip();
