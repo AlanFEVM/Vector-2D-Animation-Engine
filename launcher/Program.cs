@@ -6,7 +6,7 @@ namespace VectorAnimationEngine.Launcher;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
 
@@ -24,14 +24,20 @@ internal static class Program
             return;
         }
 
+        var hotReload = !args.Any(arg => arg.Equals("--no-hot-reload", StringComparison.OrdinalIgnoreCase));
         var startInfo = new ProcessStartInfo
         {
             FileName = dotnet,
-            Arguments = $"run --project \"{projectPath}\" -c Debug --no-restore",
+            Arguments = hotReload
+                ? $"watch --project \"{projectPath}\" run -c Debug --no-restore"
+                : $"run --project \"{projectPath}\" -c Debug --no-restore",
             WorkingDirectory = root,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        startInfo.Environment["V2D_DEV_HOT_RELOAD"] = hotReload ? "1" : "0";
+        startInfo.Environment["DOTNET_WATCH_RESTART_ON_RUDE_EDIT"] = "true";
+        startInfo.Environment["DOTNET_WATCH_SUPPRESS_LAUNCH_BROWSER"] = "true";
 
         try
         {

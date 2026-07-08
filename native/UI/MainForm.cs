@@ -30,6 +30,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS 0");
     private readonly ToolStripStatusLabel _animationFpsStatus = StatusLabel("Animation FPS 24");
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
+    private readonly ToolStripStatusLabel _hotReloadStatus = StatusLabel("Hot Reload On");
     private readonly PlaybackSettingsPanel _playbackSettings = new();
     private readonly DrawSettingsPanel _drawSettingsPanel;
     private readonly MaterialEditorPanel _materialEditor = new();
@@ -228,6 +229,11 @@ internal sealed class MainForm : Form
         _statusBar.Items.Add(_animationFpsStatus);
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_zoomStatus);
+        if (IsHotReloadEnabled())
+        {
+            _statusBar.Items.Add(StatusSeparator());
+            _statusBar.Items.Add(_hotReloadStatus);
+        }
     }
 
     private static TabControl BuildLeftTabs()
@@ -1010,6 +1016,7 @@ internal sealed class MainForm : Form
     private static Label MetricLabel(string text, int width) => new() { Text = text, Left = 8, Top = 10, Width = width, Height = 22, ForeColor = Theme.Muted, BackColor = Theme.Top, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private static ToolStripStatusLabel StatusLabel(string text) => new() { Text = text, ForeColor = Theme.Muted, Spring = false, Margin = new Padding(0, 0, 10, 0) };
     private static ToolStripStatusLabel StatusSeparator() => new() { Text = "|", ForeColor = Theme.Border, Margin = new Padding(0, 0, 10, 0) };
+    private static bool IsHotReloadEnabled() => Environment.GetEnvironmentVariable("V2D_DEV_HOT_RELOAD") == "1";
     private static Label InspectorLabel(string text) => new() { Text = text, Height = 26, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private static Label FieldLabel(string text) => new()
     {

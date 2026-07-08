@@ -11,15 +11,20 @@ VectorAnimationEngine.exe
 ```
 
 During development, the root EXE is a lightweight launcher. It starts the source
-project under `native/` through `dotnet run`, so normal code changes do not require
-republishing the self-contained app. You only need to rebuild the launcher when the
-launcher itself changes.
+project under `native/` through `dotnet watch run`, so normal code changes can be
+hot reloaded without republishing the self-contained app. You only need to rebuild
+the launcher when the launcher itself changes.
 
 This means the root `VectorAnimationEngine.exe` is intentionally small. It is the
 stable entry point for fast iteration, not the final distributable package.
 
 The app opens with an empty project and one visible layer. The stress scene is not
 generated on startup; use `Run Stress Scene` when you explicitly want to benchmark.
+
+The native app includes a development hot-reload hook. When .NET Hot Reload applies
+source changes, the main workbench window is rebuilt automatically so UI layout and
+control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
+--no-hot-reload` only when you need the older plain `dotnet run` behavior.
 
 ## Current Target Workload
 

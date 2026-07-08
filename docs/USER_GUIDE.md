@@ -14,6 +14,16 @@ VectorAnimationEngine.exe
 
 软件默认打开空项目，不会自动生成压测场景。
 
+## 开发热重载
+
+开发阶段双击根目录 `VectorAnimationEngine.exe` 会默认启用 `dotnet watch` 热重载。修改 `native/` 下的 C# 代码并保存后，.NET 会尽量把变更应用到正在运行的软件；软件收到热重载通知后会自动重建主窗口，方便快速检查 UI 布局和交互改动。
+
+底部状态栏显示 `Hot Reload On` 时表示当前处于开发热重载模式。需要排查启动问题时，可以使用：
+
+```powershell
+.\VectorAnimationEngine.exe --no-hot-reload
+```
+
 ## 主界面区域
 
 - 顶部栏：播放、帧滑块、运行压测场景、适配舞台。
