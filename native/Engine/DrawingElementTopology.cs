@@ -22,6 +22,10 @@ internal readonly record struct DrawingElementHit(DrawingElementKey Key, float D
 
 internal readonly record struct DrawingTopologySplit(float T, PointF Point);
 
+internal readonly record struct CurveSample(float T, PointF Point);
+
+internal readonly record struct CurveSegmentPart(int PartIndex, PointF Start, PointF Control, PointF End);
+
 internal readonly record struct DrawingUnitCell(int Layer, int X, int Y)
 {
     public static DrawingUnitCell FromPoint(int layer, PointF point)

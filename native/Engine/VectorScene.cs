@@ -216,12 +216,17 @@ internal sealed class VectorScene
 
     public int AddLineSegment(int layer, PointF start, PointF end, float stroke, Color color, Color strokeColor, uint atoms)
     {
-        var center = new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
+        return AddCurveSegment(layer, start, Midpoint(start, end), end, stroke, color, strokeColor, atoms);
+    }
+
+    public int AddCurveSegment(int layer, PointF start, PointF control, PointF end, float stroke, Color color, Color strokeColor, uint atoms)
+    {
+        var center = Midpoint(start, end);
         var width = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, Distance(start, end));
         var height = Math.Max(VectorUnits.FromPixels(3), stroke + VectorUnits.FromPixels(2));
         var index = AddObject(layer, center, new SizeF(width, height), MathF.Atan2(end.Y - start.Y, end.X - start.X), stroke, color, strokeColor, atoms, VectorAnimationEngine.ShapeKind.Line);
-        CurveControlX[index] = VectorUnits.Quantize(center.X);
-        CurveControlY[index] = VectorUnits.Quantize(center.Y);
+        CurveControlX[index] = VectorUnits.Quantize(control.X);
+        CurveControlY[index] = VectorUnits.Quantize(control.Y);
         return index;
     }
 
@@ -420,7 +425,7 @@ internal sealed class VectorScene
         var source = hit.Key.ObjectIndex;
         if ((uint)source >= ObjectCount || ShapeKind[source] != VectorAnimationEngine.ShapeKind.Line) return hit;
 
-        var polyline = LinePolyline(source);
+        var curve = LineCurve(source);
         var splits = StrokeSplitParameters(source, candidates);
         if (splits.Count <= 2) return hit;
 
@@ -430,13 +435,13 @@ internal sealed class VectorScene
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
         var atoms = AtomCount[source];
         var selectedPart = hit.Key.PartIndex;
-        var segments = BuildPolylineParts(polyline, splits);
+        var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
 
         RemoveObjectAt(source);
         var selectedIndex = -1;
         foreach (var segment in segments)
         {
-            var index = AddLineSegment(layer, segment.Start, segment.End, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
+            var index = AddCurveSegment(layer, segment.Start, segment.Control, segment.End, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
             if (segment.PartIndex == selectedPart) selectedIndex = index;
         }
 
@@ -534,7 +539,7 @@ internal sealed class VectorScene
             var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
 
-            var intersections = CollectPolylineIntersections(LinePolyline(candidate), boundary);
+            var intersections = CollectCurvePolylineIntersections(CurveSamples(candidate), boundary);
             var distinct = 0;
             PointF? previous = null;
             foreach (var split in intersections.OrderBy(split => split.T))
@@ -568,6 +573,22 @@ internal sealed class VectorScene
             var end = PolylinePointAt(polyline, splits[i + 1]);
             if (Distance(start, end) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
             result.Add((i, start, end));
+        }
+
+        return result;
+    }
+
+    private List<CurveSegmentPart> BuildCurveParts(PointF start, PointF control, PointF end, IReadOnlyList<float> splits)
+    {
+        var result = new List<CurveSegmentPart>();
+        for (var i = 0; i < splits.Count - 1; i++)
+        {
+            var startT = splits[i];
+            var endT = splits[i + 1];
+            if (endT - startT <= 0.0001f) continue;
+            var segment = QuadraticSubcurve(start, control, end, startT, endT);
+            if (Distance(segment.Start, segment.End) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
+            result.Add(new CurveSegmentPart(i, segment.Start, segment.Control, segment.End));
         }
 
         return result;
@@ -795,9 +816,9 @@ internal sealed class VectorScene
 
     private DrawingElementHit HitStrokeElement(PointF world, int lineIndex, IReadOnlyList<int> candidates, float toleranceWorld)
     {
-        var polyline = LinePolyline(lineIndex);
+        var polyline = CurveSamples(lineIndex);
         var hitRadius = Math.Max(Height[lineIndex] * 0.5f, 1) + toleranceWorld;
-        return HitPolylinePart(world, lineIndex, DrawingElementKind.Stroke, polyline, StrokeSplitParameters(lineIndex, candidates), hitRadius);
+        return HitCurvePart(world, lineIndex, DrawingElementKind.Stroke, polyline, StrokeSplitParameters(lineIndex, candidates), hitRadius);
     }
 
     private DrawingElementHit HitBoundaryStrokeElement(PointF world, int objectIndex, IReadOnlyList<int> candidates, float toleranceWorld)
@@ -835,23 +856,52 @@ internal sealed class VectorScene
         return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, 0, 1);
     }
 
+    private DrawingElementHit HitCurvePart(PointF world, int objectIndex, DrawingElementKind kind, CurveSample[] samples, List<float> splitPoints, float hitRadius)
+    {
+        var bestDistance = float.MaxValue;
+        var bestT = 0f;
+
+        for (var i = 0; i < samples.Length - 1; i++)
+        {
+            var a = samples[i];
+            var b = samples[i + 1];
+            var distance = DistanceToSegment(world, a.Point, b.Point);
+            if (distance >= bestDistance) continue;
+            var localT = SegmentProjectionT(world, a.Point, b.Point);
+            bestDistance = distance;
+            bestT = a.T + (b.T - a.T) * localT;
+        }
+
+        if (bestDistance > hitRadius) return DrawingElementHit.None;
+
+        var part = 0;
+        for (var i = 0; i < splitPoints.Count - 1; i++)
+        {
+            if (bestT < splitPoints[i] - 0.0001f || bestT > splitPoints[i + 1] + 0.0001f) continue;
+            part = i;
+            return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, splitPoints[i], splitPoints[i + 1]);
+        }
+
+        return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, 0, 1);
+    }
+
     private List<float> StrokeSplitParameters(int lineIndex, IReadOnlyList<int> candidates)
     {
         var splits = new List<DrawingTopologySplit>();
-        var line = LinePolyline(lineIndex);
-        splits.Add(new DrawingTopologySplit(0, line[0]));
-        splits.Add(new DrawingTopologySplit(1, line[^1]));
+        var line = CurveSamples(lineIndex);
+        splits.Add(new DrawingTopologySplit(0, line[0].Point));
+        splits.Add(new DrawingTopologySplit(1, line[^1].Point));
         foreach (var other in candidates)
         {
             if (other == lineIndex) continue;
             var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape == VectorAnimationEngine.ShapeKind.Line)
             {
-                AddPolylineIntersections(splits, line, LinePolyline(other), includeSourceEndpoints: false);
+                AddCurveCurveIntersections(splits, line, CurveSamples(other), includeSourceEndpoints: false);
             }
             else
             {
-                AddPolylineIntersections(splits, line, ShapeBoundary(other), includeSourceEndpoints: false);
+                AddCurvePolylineIntersections(splits, line, ShapeBoundary(other), includeSourceEndpoints: false);
             }
         }
 
@@ -873,7 +923,7 @@ internal sealed class VectorScene
             if (other == objectIndex) continue;
             var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
-            AddPolylineIntersections(splits, boundary, LinePolyline(other), includeSourceEndpoints: true);
+            AddPolylineCurveIntersections(splits, boundary, CurveSamples(other), includeSourceEndpoints: true);
         }
 
         return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
@@ -926,7 +976,7 @@ internal sealed class VectorScene
             var shape = ShapeKind.Length > lineIndex ? ShapeKind[lineIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
 
-            var intersections = CollectPolylineIntersections(LinePolyline(lineIndex), boundary);
+            var intersections = CollectCurvePolylineIntersections(CurveSamples(lineIndex), boundary);
             intersections.Sort((a, b) => a.T.CompareTo(b.T));
             var distinct = 0;
             PointF? previous = null;
@@ -951,21 +1001,51 @@ internal sealed class VectorScene
         return part;
     }
 
-    private List<DrawingTopologySplit> CollectPolylineIntersections(PointF[] source, PointF[] cutter)
+    private List<DrawingTopologySplit> CollectCurvePolylineIntersections(CurveSample[] source, PointF[] cutter)
     {
         var result = new List<DrawingTopologySplit>();
-        AddPolylineIntersections(result, source, cutter, includeSourceEndpoints: false);
+        AddCurvePolylineIntersections(result, source, cutter, includeSourceEndpoints: false);
         return result;
     }
 
-    private void AddPolylineIntersections(List<DrawingTopologySplit> result, PointF[] source, PointF[] cutter, bool includeSourceEndpoints)
+    private void AddCurveCurveIntersections(List<DrawingTopologySplit> result, CurveSample[] source, CurveSample[] cutter, bool includeSourceEndpoints)
+    {
+        for (var i = 0; i < source.Length - 1; i++)
+        {
+            for (var j = 0; j < cutter.Length - 1; j++)
+            {
+                if (!TrySegmentIntersection(source[i].Point, source[i + 1].Point, cutter[j].Point, cutter[j + 1].Point, out var t)) continue;
+                var globalT = source[i].T + (source[i + 1].T - source[i].T) * t;
+                if (!includeSourceEndpoints && (globalT <= 0.0001f || globalT >= 0.9999f)) continue;
+                var point = Lerp(source[i].Point, source[i + 1].Point, t);
+                result.Add(new DrawingTopologySplit(globalT, point));
+            }
+        }
+    }
+
+    private void AddCurvePolylineIntersections(List<DrawingTopologySplit> result, CurveSample[] source, PointF[] cutter, bool includeSourceEndpoints)
+    {
+        for (var i = 0; i < source.Length - 1; i++)
+        {
+            for (var j = 0; j < cutter.Length - 1; j++)
+            {
+                if (!TrySegmentIntersection(source[i].Point, source[i + 1].Point, cutter[j], cutter[j + 1], out var t)) continue;
+                var globalT = source[i].T + (source[i + 1].T - source[i].T) * t;
+                if (!includeSourceEndpoints && (globalT <= 0.0001f || globalT >= 0.9999f)) continue;
+                var point = Lerp(source[i].Point, source[i + 1].Point, t);
+                result.Add(new DrawingTopologySplit(globalT, point));
+            }
+        }
+    }
+
+    private void AddPolylineCurveIntersections(List<DrawingTopologySplit> result, PointF[] source, CurveSample[] cutter, bool includeSourceEndpoints)
     {
         var sourceSegments = Math.Max(1, source.Length - 1);
         for (var i = 0; i < source.Length - 1; i++)
         {
             for (var j = 0; j < cutter.Length - 1; j++)
             {
-                if (!TrySegmentIntersection(source[i], source[i + 1], cutter[j], cutter[j + 1], out var t)) continue;
+                if (!TrySegmentIntersection(source[i], source[i + 1], cutter[j].Point, cutter[j + 1].Point, out var t)) continue;
                 var globalT = Math.Clamp((i + t) / sourceSegments, 0, 1);
                 if (!includeSourceEndpoints && (globalT <= 0.0001f || globalT >= 0.9999f)) continue;
                 var point = Lerp(source[i], source[i + 1], t);
@@ -974,15 +1054,40 @@ internal sealed class VectorScene
         }
     }
 
-    private PointF[] LinePolyline(int i, int segments = 32)
+    private (PointF Start, PointF Control, PointF End) LineCurve(int i)
     {
         var halfW = Width[i] * 0.5f;
         var start = LocalToWorld(i, -halfW, 0);
         var end = LocalToWorld(i, halfW, 0);
         var control = new PointF(CurveControlX[i], CurveControlY[i]);
-        var points = new PointF[segments + 1];
-        for (var s = 0; s <= segments; s++) points[s] = QuadraticPoint(start, control, end, s / (float)segments);
-        return points;
+        return (start, control, end);
+    }
+
+    private CurveSample[] CurveSamples(int i)
+    {
+        var (start, control, end) = LineCurve(i);
+        var samples = new List<CurveSample>(32) { new(0, start) };
+        AddAdaptiveQuadraticSamples(samples, start, control, end, 0, 1, 0);
+        samples.Add(new CurveSample(1, end));
+        return samples.ToArray();
+    }
+
+    private static void AddAdaptiveQuadraticSamples(List<CurveSample> samples, PointF start, PointF control, PointF end, float startT, float endT, int depth)
+    {
+        const int maxDepth = 9;
+        const float flatnessUnits = 0.35f;
+        if (depth >= maxDepth || DistanceToSegment(control, start, end) <= flatnessUnits)
+        {
+            return;
+        }
+
+        var startControl = Midpoint(start, control);
+        var controlEnd = Midpoint(control, end);
+        var middle = Midpoint(startControl, controlEnd);
+        var middleT = (startT + endT) * 0.5f;
+        AddAdaptiveQuadraticSamples(samples, start, startControl, middle, startT, middleT, depth + 1);
+        samples.Add(new CurveSample(middleT, middle));
+        AddAdaptiveQuadraticSamples(samples, middle, controlEnd, end, middleT, endT, depth + 1);
     }
 
     private PointF[] ShapeBoundary(int i)
@@ -1089,6 +1194,11 @@ internal sealed class VectorScene
     private static PointF Lerp(PointF a, PointF b, float t)
     {
         return new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+    }
+
+    private static PointF Midpoint(PointF a, PointF b)
+    {
+        return new PointF((a.X + b.X) * 0.5f, (a.Y + b.Y) * 0.5f);
     }
 
     private static PointF PolylinePointAt(PointF[] points, float t)
@@ -1302,6 +1412,29 @@ internal sealed class VectorScene
         return new PointF(
             inv * inv * start.X + 2 * inv * t * control.X + t * t * end.X,
             inv * inv * start.Y + 2 * inv * t * control.Y + t * t * end.Y);
+    }
+
+    private static (PointF Start, PointF Control, PointF End) QuadraticSubcurve(PointF start, PointF control, PointF end, float startT, float endT)
+    {
+        startT = Math.Clamp(startT, 0, 1);
+        endT = Math.Clamp(endT, startT, 1);
+        var p0 = QuadraticPoint(start, control, end, startT);
+        var p2 = QuadraticPoint(start, control, end, endT);
+        if (endT - startT <= 0.0001f) return (p0, Midpoint(p0, p2), p2);
+
+        var derivativeStart = QuadraticDerivative(start, control, end, startT);
+        var derivativeEnd = QuadraticDerivative(start, control, end, endT);
+        var duration = endT - startT;
+        var c0 = new PointF(p0.X + derivativeStart.X * duration * 0.5f, p0.Y + derivativeStart.Y * duration * 0.5f);
+        var c1 = new PointF(p2.X - derivativeEnd.X * duration * 0.5f, p2.Y - derivativeEnd.Y * duration * 0.5f);
+        return (p0, Midpoint(c0, c1), p2);
+    }
+
+    private static PointF QuadraticDerivative(PointF start, PointF control, PointF end, float t)
+    {
+        return new PointF(
+            2 * ((1 - t) * (control.X - start.X) + t * (end.X - control.X)),
+            2 * ((1 - t) * (control.Y - start.Y) + t * (end.Y - control.Y)));
     }
 
     private static float DistanceToSegment(PointF point, PointF start, PointF end)
