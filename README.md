@@ -39,6 +39,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 
 - Workspace tabs: `Basic Drawing`, `Animation`, `Materials`, and `Hierarchy`.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
+- Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
 - `Basic Drawing` hides the bottom timeline to prioritize drawing space.
 - Modern timeline strip with ruler, playhead dragging, exposure bars, and keyframe placeholders.
 - Playback settings panel with FPS, loop playback, and frame range controls.

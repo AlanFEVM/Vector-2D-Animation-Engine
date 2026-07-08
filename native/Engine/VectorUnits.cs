@@ -6,6 +6,7 @@ internal static class VectorUnits
     public const float PixelsPerUnit = 1f / UnitsPerPixel;
     public const float PixelsPerStrokePoint = 0.5f;
     public const float UnitsPerStrokePoint = UnitsPerPixel * PixelsPerStrokePoint;
+    public const float DefaultVisibleWorldWidth = 4000f;
 
     public static float ToPixels(float vectorUnits) => vectorUnits * PixelsPerUnit;
 

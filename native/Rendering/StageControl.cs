@@ -22,6 +22,7 @@ internal sealed class StageControl : Control
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
     private int _selectedObject = -1;
     private int[] _selectedObjects = Array.Empty<int>();
+    private float? _pendingVisibleWorldWidth;
 
     public VectorScene Scene { get; }
     public int Frame { get; set; }
@@ -62,9 +63,28 @@ internal sealed class StageControl : Control
     public void Fit()
     {
         if (Width <= 0 || Height <= 0) return;
+        _pendingVisibleWorldWidth = null;
         CameraX = 0;
         CameraY = 0;
         Zoom = (float)Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(Scene.StageWidth), Height / VectorUnits.ToPixels(Scene.StageHeight)) * 0.9, 0.02, 64);
+        Invalidate();
+    }
+
+    public void ResetDefaultView() => SetVisibleWorldWidth(VectorUnits.DefaultVisibleWorldWidth);
+
+    public void SetVisibleWorldWidth(float vectorUnits)
+    {
+        vectorUnits = Math.Clamp(vectorUnits, 1, Scene.StageWidth);
+        if (Width <= 0 || Height <= 0)
+        {
+            _pendingVisibleWorldWidth = vectorUnits;
+            return;
+        }
+
+        _pendingVisibleWorldWidth = null;
+        CameraX = 0;
+        CameraY = 0;
+        Zoom = (float)Math.Clamp(Width / Math.Max(1, VectorUnits.ToPixels(vectorUnits)), 0.02, 64);
         Invalidate();
     }
 
@@ -177,6 +197,7 @@ internal sealed class StageControl : Control
     {
         base.OnResize(e);
         _direct2DRenderer.Resize(ClientSize);
+        if (_pendingVisibleWorldWidth is { } visibleWorldWidth) SetVisibleWorldWidth(visibleWorldWidth);
     }
 
     protected override void Dispose(bool disposing)

@@ -547,7 +547,7 @@ internal sealed class MainForm : Form
             ClearSelection();
             RefreshLayers();
             _hierarchyPanel.BindScene(_scene);
-            _stage.Fit();
+            _stage.ResetDefaultView();
             UpdateInspector();
             UpdateStatusBar();
         }
@@ -567,7 +567,7 @@ internal sealed class MainForm : Form
         ClearSelection();
         RefreshLayers();
         _hierarchyPanel.BindScene(_scene);
-        _stage.Fit();
+        _stage.ResetDefaultView();
         UpdateInspector();
         UpdateStatusBar();
     }
