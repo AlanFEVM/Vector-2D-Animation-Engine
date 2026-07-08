@@ -143,14 +143,17 @@ internal sealed class MainForm : Form
         AddTool(tools, "●", ToolMode.Fill, "Fill Tool");
         RefreshToolButtons();
 
+        var rightSidebar = new Panel { Dock = DockStyle.Right, Width = 610, BackColor = Theme.Panel };
+        body.Controls.Add(rightSidebar);
+
         var inspector = new Panel { Dock = DockStyle.Right, Width = 324, BackColor = Theme.Panel, Padding = new Padding(14, 16, 14, 12), AutoScroll = true };
         PaintLeftBorder(inspector);
-        body.Controls.Add(inspector);
+        rightSidebar.Controls.Add(inspector);
         BuildInspectorPages(inspector);
 
-        var leftPanel = new Panel { Dock = DockStyle.Left, Width = 286, BackColor = Theme.Panel };
-        PaintRightBorder(leftPanel);
-        body.Controls.Add(leftPanel);
+        var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel };
+        PaintLeftBorder(leftPanel);
+        rightSidebar.Controls.Add(leftPanel);
 
         var leftTabStrip = new TableLayoutPanel
         {

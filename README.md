@@ -48,7 +48,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Selection highlight with boundary handles for filled shapes.
 - Bezier control handle editing for selected lines.
 - Delete key removes the currently selected drawing object.
-- Left panel tabs for layers plus Library/Vault asset storage.
+- Right-side auxiliary panel next to the Inspector for layers plus Library/Vault asset storage.
 - Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.
 - Draw settings panel for snap, grid snap, object snap placeholder, tight fit, align, angle snap, grid size, and aspect ratio.
 - Material editor panel for fill, stroke color, stroke width, and opacity.
