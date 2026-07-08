@@ -33,6 +33,7 @@ internal sealed class MainForm : Form
     private readonly DrawSettingsPanel _drawSettingsPanel;
     private readonly MaterialEditorPanel _materialEditor = new();
     private readonly HierarchyPanel _hierarchyPanel = new();
+    private readonly LibraryVaultPanel _libraryVaultPanel = new();
     private readonly Panel _basicInspectorPage = new();
     private readonly Panel _objectInspector = new();
     private readonly Panel _animationPage = new();
@@ -134,8 +135,14 @@ internal sealed class MainForm : Form
         body.Controls.Add(inspector);
         BuildInspectorPages(inspector);
 
-        var layerPanel = new Panel { Dock = DockStyle.Left, Width = 282, BackColor = Theme.Panel, Padding = new Padding(10) };
-        body.Controls.Add(layerPanel);
+        var leftTabs = BuildLeftTabs();
+        body.Controls.Add(leftTabs);
+
+        var layerPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(10) };
+        var layerPage = new TabPage("Layers") { BackColor = Theme.Panel, Padding = new Padding(0) };
+        layerPage.Controls.Add(layerPanel);
+        leftTabs.TabPages.Add(layerPage);
+
         layerPanel.Controls.Add(new Label { Text = "Layers", Dock = DockStyle.Top, Height = 30, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft });
         var layerButtons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, FlowDirection = FlowDirection.LeftToRight, BackColor = Theme.Panel };
         var solo = new Button { Text = "Solo", Width = 78, Height = 32 };
@@ -154,6 +161,11 @@ internal sealed class MainForm : Form
         _layers.ItemHeight = 22;
         _layers.BorderStyle = BorderStyle.None;
         layerPanel.Controls.Add(_layers);
+
+        var vaultPage = new TabPage("Library / Vault") { BackColor = Theme.Panel, Padding = new Padding(0) };
+        _libraryVaultPanel.Dock = DockStyle.Fill;
+        vaultPage.Controls.Add(_libraryVaultPanel);
+        leftTabs.TabPages.Add(vaultPage);
 
         var stagePanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Stage };
         body.Controls.Add(stagePanel);
@@ -182,6 +194,31 @@ internal sealed class MainForm : Form
         _workspaceTabs.BringToFront();
 
         Controls.Add(_timeline);
+    }
+
+    private static TabControl BuildLeftTabs()
+    {
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Left,
+            Width = 282,
+            DrawMode = TabDrawMode.OwnerDrawFixed,
+            SizeMode = TabSizeMode.Fixed,
+            ItemSize = new Size(132, 34),
+            BackColor = Theme.Panel
+        };
+        tabs.DrawItem += (_, e) =>
+        {
+            var selected = e.Index == tabs.SelectedIndex;
+            using var bg = new SolidBrush(selected ? Theme.PanelStrong : Theme.Top);
+            using var text = new SolidBrush(selected ? Theme.Text : Theme.Muted);
+            e.Graphics.FillRectangle(bg, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, Theme.UiFont(9, selected ? FontStyle.Bold : FontStyle.Regular), e.Bounds, selected ? Theme.Text : Theme.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            using var border = new Pen(Theme.Border);
+            e.Graphics.DrawRectangle(border, e.Bounds.X, e.Bounds.Y, e.Bounds.Width - 1, e.Bounds.Height - 1);
+        };
+
+        return tabs;
     }
 
     private void BuildInspectorPages(Control inspector)
@@ -393,6 +430,7 @@ internal sealed class MainForm : Form
     private void CreateNewProject()
     {
         _scene.CreateEmpty();
+        _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
         _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
         SyncFrameSliderRange();
         SetFrame(0);
@@ -747,6 +785,7 @@ internal sealed class MainForm : Form
         _animationPage.Visible = view == WorkspaceView.Animation;
         _materialEditor.Visible = view == WorkspaceView.Materials;
         _hierarchyPanel.Visible = view == WorkspaceView.Hierarchy;
+        _timeline.Visible = view != WorkspaceView.BasicDrawing;
     }
 
     private static bool IsDrawingTool(ToolMode tool)

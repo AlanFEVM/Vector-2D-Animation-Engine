@@ -19,7 +19,7 @@ VectorAnimationEngine.exe
 - 顶部栏：播放、帧滑块、运行压测场景、适配舞台。
 - 左侧工具栏：选择、平移、基础形状、线条、填充。
 - 中央舞台：绘制、选择、移动和编辑对象。
-- 左侧图层面板：查看、切换、单独显示或显示全部图层。
+- 左侧面板：`Layers` 和 `Library / Vault` 标签页。
 - 右侧检查器：根据当前工作区显示绘制设置、动画设置、材质设置或层级面板。
 - 底部时间轴：查看帧尺、拖动播放头、查看图层曝光条和关键帧占位。
 
@@ -31,6 +31,8 @@ VectorAnimationEngine.exe
 - `Animation`：播放 FPS、循环、起止帧设置。
 - `Materials`：填色、描边、线宽、不透明度。
 - `Hierarchy`：场景、图层和对象层级浏览。
+
+`Basic Drawing` 工作区会隐藏底部时间轴，让绘制区域更大。切换到 `Animation`、`Materials` 或 `Hierarchy` 时，底部时间轴会重新显示。
 
 ## 绘制工具
 
@@ -99,9 +101,16 @@ VectorAnimationEngine.exe
 
 如果已选中对象，在材质面板调整参数会直接影响当前对象。
 
-## 图层面板
+## 左侧面板
 
-左侧图层面板显示当前场景图层：
+左侧面板包含两个页签：
+
+- `Layers`：管理当前场景图层。
+- `Library / Vault`：浏览内置库资产，并把任意内容存进 Vault。
+
+### Layers
+
+`Layers` 页显示当前场景图层：
 
 - 点击图层可设置为当前活动图层。
 - `Solo` 只显示当前活动图层。
@@ -109,6 +118,37 @@ VectorAnimationEngine.exe
 - 双击图层可切换图层可见性。
 
 新绘制对象会添加到当前活动图层。
+
+### Library
+
+`Library / Vault` 页上半部分是 Library。当前提供基础预设：
+
+- Basic Shapes。
+- Material Swatches。
+- Animation Timing。
+- Stress Scene Setup。
+
+选中库条目后点击 `Add to Vault`，可以把库预设保存到 Vault。
+
+### Vault
+
+`Library / Vault` 页下半部分是 Vault。Vault 是通用资产容器，用于保存任何后续可复用或需要记录的内容。
+
+当前支持：
+
+- `Capture`：把舞台上当前选中对象保存为对象快照。
+- `Note`：保存任意文字笔记。
+- `File`：保存任意外部文件路径引用。
+- `Remove`：删除当前选中的 Vault 条目。
+- `Open`：打开文件引用，或查看普通 Vault 条目的内容。
+
+Vault 数据持久化在：
+
+```text
+data/vault.json
+```
+
+当前 Vault 保存的是通用元数据和引用，不会复制外部文件本体。
 
 ## 时间轴和播放
 
@@ -118,6 +158,8 @@ VectorAnimationEngine.exe
 - 拖动播放头切换当前帧。
 - 查看图层曝光条。
 - 查看关键帧占位。
+
+注意：`Basic Drawing` 工作区默认隐藏底部时间轴，以优先保留绘制空间。
 
 顶部播放按钮用于播放/暂停。`Animation` 工作区可以设置：
 

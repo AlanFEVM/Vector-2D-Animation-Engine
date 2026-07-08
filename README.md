@@ -32,6 +32,7 @@ generated on startup; use `Run Stress Scene` when you explicitly want to benchma
 ## Current Features
 
 - Workspace tabs: `Basic Drawing`, `Animation`, `Materials`, and `Hierarchy`.
+- `Basic Drawing` hides the bottom timeline to prioritize drawing space.
 - Modern timeline strip with ruler, playhead dragging, exposure bars, and keyframe placeholders.
 - Playback settings panel with FPS, loop playback, and frame range controls.
 - Drawing tools for rectangle, ellipse, triangle, polygon, star, line, fill, select, and pan.
@@ -39,6 +40,8 @@ generated on startup; use `Run Stress Scene` when you explicitly want to benchma
 - Animated tool-name hints when hovering drawing tools.
 - Selection highlight with boundary handles for filled shapes.
 - Bezier control handle editing for selected lines.
+- Left panel tabs for layers plus Library/Vault asset storage.
+- Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.
 - Draw settings panel for snap, grid snap, object snap placeholder, tight fit, align, angle snap, grid size, and aspect ratio.
 - Material editor panel for fill, stroke, stroke width, and opacity.
 - Hierarchy panel showing scene, layers, and object placeholders/tree entries.
@@ -92,6 +95,7 @@ native/
     StageControl.cs       Stage viewport renderer and camera.
   UI/
     MainForm.cs           Desktop workbench shell and interaction logic.
+    LibraryVaultPanel.cs  Library presets and persistent generic Vault.
     TimelineStrip.cs      Timeline renderer.
     Theme.cs              Shared desktop colors and control styling.
     PlaybackSettingsPanel.cs
