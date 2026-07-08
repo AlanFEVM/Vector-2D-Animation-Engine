@@ -37,8 +37,8 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 
 ## Current Features
 
-- Workspace tabs: `Basic Drawing`, `Animation`, `Materials`, and `Hierarchy`.
-- Basic Drawing has secondary drawing-object tabs for rectangle, ellipse, triangle, polygon, star, line, fill, and edit.
+- Workspace tabs: `Basic Drawing`, `Scene Edit`, `Animation`, `Materials`, and `Hierarchy`.
+- Basic Drawing has secondary Flash-style drawing object tabs that can be dragged into Vault for reuse.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
 - `Basic Drawing` hides the bottom timeline to prioritize drawing space.
@@ -115,6 +115,8 @@ native/
     Benchmark.cs          Stress-scene benchmark helper.
   Engine/
     VectorScene.cs        Packed scene arrays, stress generator, spatial index.
+    DrawingObjectDefinition.cs
+                          Flash-style reusable drawing object metadata.
     VectorUnits.cs        Vector unit, pixel, and stroke point conversion rules.
     RenderStats.cs        Renderer telemetry contract.
     CompactFormat.cs      Human-readable metric formatting.
@@ -127,6 +129,7 @@ native/
   UI/
     MainForm.cs           Desktop workbench shell and interaction logic.
     LibraryVaultPanel.cs  Library presets and persistent generic Vault.
+    SceneEditorPanel.cs   Scene and active drawing object context panel.
     TimelineStrip.cs      Timeline renderer.
     Theme.cs              Shared desktop colors and control styling.
     SvgIcons.cs           Code-native SVG primitive icon set.

@@ -29,7 +29,8 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _stroke = new() { Minimum = 0, Maximum = 12, Value = 2, Width = 160 };
     private readonly Button _play = new() { Text = "Play", Width = 72 };
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
-    private readonly Dictionary<ToolMode, Button> _drawingObjectTabButtons = new();
+    private readonly Dictionary<string, Button> _drawingObjectTabButtons = new();
+    private readonly List<DrawingObjectDefinition> _drawingObjects = [];
     private readonly AnimatedToolTip _toolTip = new();
     private readonly WorkspaceTabs _workspaceTabs = new();
     private readonly Panel _workspaceHeader = new();
@@ -44,6 +45,7 @@ internal sealed class MainForm : Form
     private readonly DrawSettingsPanel _drawSettingsPanel;
     private readonly MaterialEditorPanel _materialEditor = new();
     private readonly HierarchyPanel _hierarchyPanel = new();
+    private readonly SceneEditorPanel _sceneEditorPanel = new();
     private readonly LibraryVaultPanel _libraryVaultPanel = new();
     private readonly Panel _basicInspectorPage = new();
     private readonly Panel _objectInspector = new();
@@ -81,6 +83,7 @@ internal sealed class MainForm : Form
     private bool _marqueeSelecting;
     private Point? _marqueeStart;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
+    private int _activeDrawingObjectIndex;
 
     public MainForm()
     {
@@ -95,6 +98,7 @@ internal sealed class MainForm : Form
         _stage = new StageControl(_scene) { Dock = DockStyle.Fill };
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = 192 };
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
+        CreateDefaultDrawingObjects();
         BuildUi();
         HookEvents();
         CreateNewProject();
@@ -362,10 +366,12 @@ internal sealed class MainForm : Form
 
         _materialEditor.Dock = DockStyle.Fill;
         _hierarchyPanel.Dock = DockStyle.Fill;
+        _sceneEditorPanel.Dock = DockStyle.Fill;
 
         inspector.Controls.Add(_hierarchyPanel);
         inspector.Controls.Add(_materialEditor);
         inspector.Controls.Add(_animationPage);
+        inspector.Controls.Add(_sceneEditorPanel);
         inspector.Controls.Add(_basicInspectorPage);
         ShowWorkspace(WorkspaceView.BasicDrawing);
     }
@@ -434,34 +440,102 @@ internal sealed class MainForm : Form
 
     private void BuildDrawingObjectTabs()
     {
-        AddDrawingObjectTab("Rectangle", ToolMode.Rectangle);
-        AddDrawingObjectTab("Ellipse", ToolMode.Ellipse);
-        AddDrawingObjectTab("Triangle", ToolMode.Triangle);
-        AddDrawingObjectTab("Polygon", ToolMode.Polygon);
-        AddDrawingObjectTab("Star", ToolMode.Star);
-        AddDrawingObjectTab("Line", ToolMode.Line);
-        AddDrawingObjectTab("Fill", ToolMode.Fill);
-        AddDrawingObjectTab("Edit", ToolMode.Select);
+        _drawingObjectTabs.Controls.Clear();
+        _drawingObjectTabButtons.Clear();
+        for (var i = 0; i < _drawingObjects.Count; i++) AddDrawingObjectTab(i);
+        AddNewDrawingObjectButton();
         RefreshToolButtons();
     }
 
-    private void AddDrawingObjectTab(string text, ToolMode tool)
+    private void AddDrawingObjectTab(int index)
     {
+        var drawingObject = _drawingObjects[index];
         var button = new Button
         {
-            Text = text,
-            Width = text.Length > 6 ? 96 : 84,
+            Text = drawingObject.Name,
+            Width = drawingObject.Name.Length > 10 ? 132 : 108,
             Height = 30,
             Margin = new Padding(0, 0, 6, 0),
-            Tag = tool,
+            Tag = index,
             AutoEllipsis = true
         };
         Theme.StyleButton(button);
-        button.Click += (_, _) => ActivateTool(tool);
-        button.MouseEnter += (_, _) => _toolTip.ShowFor(button, $"{text} drawing object");
+        button.Click += (_, _) => SelectDrawingObject(index);
+        button.MouseEnter += (_, _) => _toolTip.ShowFor(button, $"{drawingObject.Name} ({drawingObject.Kind})");
         button.MouseLeave += (_, _) => _toolTip.HideTip();
-        _drawingObjectTabButtons[tool] = button;
+        var dragStart = Point.Empty;
+        button.MouseDown += (_, e) => dragStart = e.Location;
+        button.MouseMove += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left || drawingObject.Kind == "Scene") return;
+            if (Math.Abs(e.X - dragStart.X) < SystemInformation.DragSize.Width / 2 && Math.Abs(e.Y - dragStart.Y) < SystemInformation.DragSize.Height / 2) return;
+            button.DoDragDrop(drawingObject.ToVaultItem(), DragDropEffects.Copy);
+        };
+        _drawingObjectTabButtons[drawingObject.Id] = button;
         _drawingObjectTabs.Controls.Add(button);
+    }
+
+    private void AddNewDrawingObjectButton()
+    {
+        var button = new Button
+        {
+            Text = "+ Object",
+            Width = 86,
+            Height = 30,
+            Margin = new Padding(4, 0, 6, 0),
+            AutoEllipsis = true
+        };
+        Theme.StyleButton(button);
+        button.Click += (_, _) =>
+        {
+            var index = _drawingObjects.Count;
+            _drawingObjects.Add(new DrawingObjectDefinition
+            {
+                Name = $"Drawing Object {index:000}",
+                Detail = "Reusable drawing object tab"
+            });
+            SelectDrawingObject(index);
+            BuildDrawingObjectTabs();
+        };
+        _drawingObjectTabs.Controls.Add(button);
+    }
+
+    private void CreateDefaultDrawingObjects()
+    {
+        _drawingObjects.Clear();
+        _drawingObjects.Add(new DrawingObjectDefinition
+        {
+            Name = "Scene",
+            Kind = "Scene",
+            Detail = "Master scene editing context"
+        });
+        _drawingObjects.Add(new DrawingObjectDefinition
+        {
+            Name = "Drawing Object 001",
+            Detail = "Reusable Flash-style drawing object"
+        });
+        _drawingObjects.Add(new DrawingObjectDefinition
+        {
+            Name = "Drawing Object 002",
+            Detail = "Reusable Flash-style drawing object"
+        });
+        _activeDrawingObjectIndex = 0;
+    }
+
+    private DrawingObjectDefinition? ActiveDrawingObject()
+    {
+        return _activeDrawingObjectIndex >= 0 && _activeDrawingObjectIndex < _drawingObjects.Count
+            ? _drawingObjects[_activeDrawingObjectIndex]
+            : null;
+    }
+
+    private void SelectDrawingObject(int index)
+    {
+        if (index < 0 || index >= _drawingObjects.Count) return;
+        _activeDrawingObjectIndex = index;
+        _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
+        RefreshToolButtons();
+        AppLog.Info($"Selected drawing object tab: {_drawingObjects[index].Name}");
     }
 
     private void AddTool(FlowLayoutPanel panel, SvgIconKind icon, ToolMode tool, string displayName)
@@ -615,6 +689,8 @@ internal sealed class MainForm : Form
             ClearSelection();
             RefreshLayers();
             _hierarchyPanel.BindScene(_scene);
+            _sceneEditorPanel.BindScene(_scene);
+            _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
             _stage.ResetDefaultView();
             UpdateInspector();
             UpdateStatusBar();
@@ -642,6 +718,8 @@ internal sealed class MainForm : Form
         ClearSelection();
         RefreshLayers();
         _hierarchyPanel.BindScene(_scene);
+        _sceneEditorPanel.BindScene(_scene);
+        _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
         _stage.ResetDefaultView();
         UpdateInspector();
         UpdateStatusBar();
@@ -1199,6 +1277,7 @@ internal sealed class MainForm : Form
 
     private void UpdateInspector()
     {
+        _sceneEditorPanel.RefreshSceneStats();
         _objectMetric.Text = $"Objects: {CompactFormat.Number(_scene.ObjectCount)}";
         var validSelection = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
         if (validSelection.Length > 1)
@@ -1273,6 +1352,7 @@ internal sealed class MainForm : Form
         _workspaceHeader.Height = basicDrawing ? 84 : 44;
         _drawingObjectTabs.Visible = basicDrawing;
         _basicInspectorPage.Visible = basicDrawing;
+        _sceneEditorPanel.Visible = view == WorkspaceView.SceneEditor;
         _animationPage.Visible = view == WorkspaceView.Animation;
         _materialEditor.Visible = view == WorkspaceView.Materials;
         _hierarchyPanel.Visible = view == WorkspaceView.Hierarchy;
@@ -1320,9 +1400,10 @@ internal sealed class MainForm : Form
             else Theme.StyleButton(button);
         }
 
-        foreach (var (tool, button) in _drawingObjectTabButtons)
+        var activeDrawingObject = ActiveDrawingObject();
+        foreach (var (id, button) in _drawingObjectTabButtons)
         {
-            if (tool == _tool) Theme.StyleActiveButton(button);
+            if (activeDrawingObject is not null && id == activeDrawingObject.Id) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
         }
     }

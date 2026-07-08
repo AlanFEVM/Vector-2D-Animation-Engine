@@ -40,6 +40,8 @@ internal sealed class LibraryVaultPanel : UserControl
 
         BuildLibrary(split.Panel1);
         BuildVault(split.Panel2);
+        EnableVaultDrop(this);
+        EnableVaultDrop(_vault);
         LoadVault();
         RefreshVault();
     }
@@ -199,6 +201,26 @@ internal sealed class LibraryVaultPanel : UserControl
             Detail = preset.Detail,
             Payload = preset.Payload
         });
+    }
+
+    private void EnableVaultDrop(Control control)
+    {
+        control.AllowDrop = true;
+        control.DragEnter += (_, e) =>
+        {
+            e.Effect = e.Data?.GetDataPresent(typeof(VaultItem)) == true ? DragDropEffects.Copy : DragDropEffects.None;
+        };
+        control.DragDrop += (_, e) =>
+        {
+            if (e.Data?.GetData(typeof(VaultItem)) is not VaultItem item) return;
+            AddVaultItem(new VaultItem
+            {
+                Kind = item.Kind,
+                Name = item.Name,
+                Detail = item.Detail,
+                Payload = item.Payload
+            });
+        };
     }
 
     private void CaptureSelectedObject()

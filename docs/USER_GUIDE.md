@@ -69,19 +69,20 @@ logs/
 顶部工作区标签用于切换不同编辑模式：
 
 - `Basic Drawing`：基础绘制和对象检查。
+- `Scene Edit`：场景信息和当前绘制对象编辑上下文。
 - `Animation`：播放 FPS、循环、起止帧设置。
 - `Materials`：填色、描边、线宽、不透明度。
 - `Hierarchy`：场景、图层和对象层级浏览。
 
-`Basic Drawing` 工作区会隐藏底部时间轴，让绘制区域更大。切换到 `Animation`、`Materials` 或 `Hierarchy` 时，底部时间轴会重新显示。
+`Basic Drawing` 工作区会隐藏底部时间轴，让绘制区域更大。切换到 `Scene Edit`、`Animation`、`Materials` 或 `Hierarchy` 时，底部时间轴会重新显示。
 
-在 `Basic Drawing` 工作区下方会显示基础绘制对象页签：
+在 `Basic Drawing` 工作区下方会显示绘制对象页签。这里的绘制对象类似 Flash 元件，用于表示可复用的绘制对象编辑上下文：
 
-- `Rectangle`、`Ellipse`、`Triangle`、`Polygon`、`Star`、`Line`：切换到对应基础绘制对象。
-- `Fill`：切换到填充已有对象。
-- `Edit`：切换到选择和编辑对象。
+- `Scene`：主场景编辑上下文。
+- `Drawing Object 001`、`Drawing Object 002`：默认可复用绘制对象。
+- `+ Object`：新增绘制对象页签。
 
-这些页签和左侧工具栏保持同步，点击任意一处都会更新当前绘制工具。
+点击绘制对象页签会切换当前编辑上下文。按住绘制对象页签并拖拽到 Vault，可以把该绘制对象保存为 Vault 条目，便于后续复用和切换。左侧工具栏仍然负责选择矩形、线条、填充等具体绘制工具。
 
 ## 绘制工具
 
@@ -195,6 +196,7 @@ Vault 抽屉下半部分是 Vault。Vault 是通用资产容器，用于保存�
 
 当前支持：
 
+- 从 `Basic Drawing` 的绘制对象页签拖拽到 Vault：保存可复用绘制对象条目。
 - `Capture`：把舞台上当前选中对象保存为对象快照。
 - `Note`：保存任意文字笔记。
 - `File`：保存任意外部文件路径引用。
