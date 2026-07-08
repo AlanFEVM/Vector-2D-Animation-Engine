@@ -14,6 +14,7 @@ internal sealed class StageControl : Control
     private readonly SolidBrush _handleBrush = new(Color.FromArgb(255, 255, 240, 168));
     private readonly SolidBrush _bezierHandleBrush = new(Color.FromArgb(255, 112, 204, 255));
     private readonly Pen _handleBorderPen = new(Color.FromArgb(255, 16, 18, 22), 1);
+    private readonly Direct2DStageRenderer _direct2DRenderer = new();
 
     public VectorScene Scene { get; }
     public int Frame { get; set; }
@@ -32,8 +33,8 @@ internal sealed class StageControl : Control
     public StageControl(VectorScene scene)
     {
         Scene = scene;
-        DoubleBuffered = true;
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        DoubleBuffered = false;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque | ControlStyles.ResizeRedraw, true);
         BackColor = Color.FromArgb(17, 19, 21);
     }
 
@@ -113,6 +114,12 @@ internal sealed class StageControl : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        if (_direct2DRenderer.TryRender(this, out var stats))
+        {
+            LastStats = stats;
+            return;
+        }
+
         var g = e.Graphics;
         g.Clear(BackColor);
         g.SmoothingMode = SmoothingMode.None;
@@ -127,6 +134,33 @@ internal sealed class StageControl : Control
                     : DrawObjects(g);
         DrawSelection(g);
         DrawDrawingPreview(g);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        _direct2DRenderer.Resize(ClientSize);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _direct2DRenderer.Dispose();
+            foreach (var item in _brushCache.Values) item.Dispose();
+            _brushCache.Clear();
+            _gridPen.Dispose();
+            _strokePen.Dispose();
+            _selectionPen.Dispose();
+            _selectionGlowPen.Dispose();
+            _guidePen.Dispose();
+            _previewGuidePen.Dispose();
+            _handleBrush.Dispose();
+            _bezierHandleBrush.Dispose();
+            _handleBorderPen.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 
     public void SetDrawingPreview(PointF start, PointF end, ShapeKind shape, Color color, float stroke)

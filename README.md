@@ -68,14 +68,17 @@ or investigated later.
 
 The manual stress scene avoids scanning every object every frame.
 
+- Stage rendering now prefers a Direct2D HWND render target through Vortice bindings.
+- The desktop shell remains WinForms; WPF is not used.
+- If Direct2D initialization fails on a machine, the stage falls back to the legacy GDI path instead of preventing startup.
 - Low zoom uses tile LOD summaries.
 - Object zoom uses a fixed spatial index to visit only visible cells.
 - Scene data is stored in packed arrays instead of per-object managed models.
 - Layer list and timeline are UI-virtualized to keep the workbench responsive.
 
-This is still a CPU/GDI renderer. The architecture is intentionally modular so the
-renderer can later be replaced with Direct2D, DirectComposition, or D3D without
-rewriting the scene model and UI shell.
+The current Direct2D renderer still shares the packed scene arrays and spatial
+index with the original GDI path. The next renderer-level step is moving large
+object batches into GPU-side geometry buffers and tile caches.
 
 ## Source Layout
 
@@ -93,6 +96,8 @@ native/
     ShapeKind.cs          Basic shape kind enum.
   Rendering/
     StageControl.cs       Stage viewport renderer and camera.
+    Direct2DStageRenderer.cs
+                          Direct2D HWND renderer with GDI fallback support.
   UI/
     MainForm.cs           Desktop workbench shell and interaction logic.
     LibraryVaultPanel.cs  Library presets and persistent generic Vault.
