@@ -44,6 +44,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Modern timeline strip with ruler, playhead dragging, exposure bars, and keyframe placeholders.
 - Playback settings panel with FPS, loop playback, and frame range controls.
 - Bottom status bar showing render FPS, animation FPS, and zoom.
+- Main loop targets 300 UPS with stage redraw requests capped at 144 FPS.
 - Drawing tools for rectangle, ellipse, triangle, polygon, star, line, fill, select, and pan.
 - Global view navigation: middle mouse drags the canvas, and Ctrl + middle mouse drag zooms the canvas from any tool.
 - Drawing preview overlay while dragging shape and line tools.

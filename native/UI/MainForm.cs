@@ -4,9 +4,15 @@ namespace VectorAnimationEngine;
 
 internal sealed class MainForm : Form
 {
+    private const double TargetUps = 300.0;
+    private const double TargetRenderFps = 144.0;
+    private const double UpdateStepSeconds = 1.0 / TargetUps;
+    private const double RenderStepSeconds = 1.0 / TargetRenderFps;
+    private const double MaxFrameSeconds = 0.1;
+
     private readonly VectorScene _scene = new();
     private readonly StageControl _stage;
-    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1 };
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly DrawSettings _drawSettings = new();
     private readonly ListBox _layers = new();
@@ -57,6 +63,14 @@ internal sealed class MainForm : Form
     private EditHandleKind _activeHandle = EditHandleKind.None;
     private bool _geometryDirty;
     private double _smoothedFps;
+    private double _smoothedUps;
+    private double _updateAccumulator;
+    private double _renderAccumulator;
+    private double _playbackAccumulator;
+    private double _timeSinceLastRender;
+    private double _upsSampleTime;
+    private int _updatesThisSample;
+    private bool _renderRequested = true;
     private bool _syncingFrame;
     private bool _updatingStrokeInput;
     private bool _viewPanning;
@@ -432,7 +446,7 @@ internal sealed class MainForm : Form
         };
         _playbackSettings.FpsChanged += (_, _) =>
         {
-            _timer.Interval = Math.Max(1, (int)Math.Round(1000.0 / _playbackSettings.Fps));
+            _playbackAccumulator = 0;
             UpdateStatusBar();
         };
         _playbackSettings.FrameRangeChanged += (_, _) =>
@@ -498,6 +512,7 @@ internal sealed class MainForm : Form
         _play.Click += (_, _) =>
         {
             _playing = !_playing;
+            if (_playing) _playbackAccumulator = 0;
             _play.Text = _playing ? "Pause" : "Play";
         };
         _frameSlider.ValueChanged += (_, _) =>
@@ -588,12 +603,63 @@ internal sealed class MainForm : Form
 
     private void Tick()
     {
-        var elapsed = Math.Max(0.001, _clock.Elapsed.TotalSeconds);
+        var elapsed = Math.Clamp(_clock.Elapsed.TotalSeconds, 0.001, MaxFrameSeconds);
         _clock.Restart();
-        var instant = 1 / elapsed;
-        _smoothedFps = _smoothedFps <= 0 ? instant : _smoothedFps * 0.9 + instant * 0.1;
-        if (_playing)
+
+        _updateAccumulator += elapsed;
+        _renderAccumulator += elapsed;
+        _timeSinceLastRender += elapsed;
+        _upsSampleTime += elapsed;
+
+        var updateCount = 0;
+        while (_updateAccumulator >= UpdateStepSeconds)
         {
+            UpdateSimulation(UpdateStepSeconds);
+            _updateAccumulator -= UpdateStepSeconds;
+            updateCount++;
+        }
+
+        if (updateCount > 0)
+        {
+            _updatesThisSample += updateCount;
+            if (_upsSampleTime >= 0.25)
+            {
+                var instantUps = _updatesThisSample / _upsSampleTime;
+                _smoothedUps = _smoothedUps <= 0 ? instantUps : _smoothedUps * 0.75 + instantUps * 0.25;
+                _updatesThisSample = 0;
+                _upsSampleTime = 0;
+            }
+        }
+
+        if (_renderAccumulator >= RenderStepSeconds || _renderRequested)
+        {
+            var instantRenderFps = _timeSinceLastRender > 0 ? 1.0 / _timeSinceLastRender : TargetRenderFps;
+            _smoothedFps = _smoothedFps <= 0 ? instantRenderFps : _smoothedFps * 0.85 + instantRenderFps * 0.15;
+            _renderAccumulator %= RenderStepSeconds;
+            _timeSinceLastRender = 0;
+            _renderRequested = false;
+
+            var stats = _stage.LastStats;
+            _fps.Text = $"FPS {_smoothedFps:0}";
+            _draw.Text = stats.TileLod
+                ? $"Tiles {CompactFormat.Number(stats.TileDraws)}"
+                : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}";
+            _atoms.Text = $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(_scene.VirtualAtomCount)}";
+            _zoom.Text = $"Zoom {_stage.Zoom * 100:0}%";
+            UpdateStatusBar();
+            _stage.Invalidate();
+        }
+    }
+
+    private void UpdateSimulation(double deltaSeconds)
+    {
+        if (!_playing) return;
+
+        _playbackAccumulator += deltaSeconds;
+        var frameStep = 1.0 / Math.Max(1, _playbackSettings.Fps);
+        while (_playbackAccumulator >= frameStep)
+        {
+            _playbackAccumulator -= frameStep;
             var next = _frame + 1;
             if (next > _playbackSettings.EndFrame)
             {
@@ -603,31 +669,24 @@ internal sealed class MainForm : Form
                     next = _playbackSettings.EndFrame;
                     _playing = false;
                     _play.Text = "Play";
+                    _playbackAccumulator = 0;
                 }
             }
 
-            SetFrame(next);
+            SetFrame(next, invalidate: false);
+            _renderRequested = true;
+            if (!_playing) break;
         }
-
-        var stats = _stage.LastStats;
-        _fps.Text = $"FPS {_smoothedFps:0}";
-        _draw.Text = stats.TileLod
-            ? $"Tiles {CompactFormat.Number(stats.TileDraws)}"
-            : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}";
-        _atoms.Text = $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(_scene.VirtualAtomCount)}";
-        _zoom.Text = $"Zoom {_stage.Zoom * 100:0}%";
-        UpdateStatusBar();
-        _stage.Invalidate();
     }
 
     private void UpdateStatusBar()
     {
         _renderFpsStatus.Text = $"Render FPS {_smoothedFps:0}";
-        _animationFpsStatus.Text = $"Animation FPS {_playbackSettings.Fps}";
+        _animationFpsStatus.Text = $"UPS {_smoothedUps:0}/{TargetUps:0}  Animation FPS {_playbackSettings.Fps}";
         _zoomStatus.Text = $"Zoom {_stage.Zoom * 100:0}%";
     }
 
-    private void SetFrame(int frame)
+    private void SetFrame(int frame, bool invalidate = true)
     {
         var next = Math.Clamp(frame, _playbackSettings.StartFrame, _playbackSettings.EndFrame);
         _syncingFrame = true;
@@ -643,7 +702,7 @@ internal sealed class MainForm : Form
             _syncingFrame = false;
         }
 
-        _stage.Invalidate();
+        if (invalidate) _stage.Invalidate();
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
