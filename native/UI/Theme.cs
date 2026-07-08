@@ -2,13 +2,13 @@ namespace VectorAnimationEngine;
 
 internal static class Theme
 {
-    public static readonly Color App = Color.FromArgb(21, 23, 25);
-    public static readonly Color Top = Color.FromArgb(25, 28, 31);
-    public static readonly Color Panel = Color.FromArgb(32, 35, 38);
-    public static readonly Color PanelStrong = Color.FromArgb(44, 49, 53);
-    public static readonly Color Field = Color.FromArgb(18, 20, 22);
-    public static readonly Color Stage = Color.FromArgb(17, 19, 21);
-    public static readonly Color Border = Color.FromArgb(76, 84, 90);
+    public static readonly Color App = Color.FromArgb(18, 20, 22);
+    public static readonly Color Top = Color.FromArgb(24, 27, 30);
+    public static readonly Color Panel = Color.FromArgb(30, 34, 37);
+    public static readonly Color PanelStrong = Color.FromArgb(42, 48, 53);
+    public static readonly Color Field = Color.FromArgb(15, 17, 19);
+    public static readonly Color Stage = Color.FromArgb(13, 15, 17);
+    public static readonly Color Border = Color.FromArgb(61, 69, 76);
     public static readonly Color Text = Color.FromArgb(242, 246, 245);
     public static readonly Color Muted = Color.FromArgb(190, 202, 202);
     public static readonly Color Accent = Color.FromArgb(79, 179, 162);
@@ -24,9 +24,10 @@ internal static class Theme
         button.ForeColor = Text;
         button.FlatAppearance.BorderColor = Border;
         button.FlatAppearance.BorderSize = 1;
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 64, 68);
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(53, 61, 66);
         button.FlatAppearance.MouseDownBackColor = Accent;
         button.Font = UiFont();
+        button.TextAlign = ContentAlignment.MiddleCenter;
     }
 
     public static void StyleActiveButton(Button button)

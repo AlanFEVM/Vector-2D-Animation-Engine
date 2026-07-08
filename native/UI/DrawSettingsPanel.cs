@@ -21,8 +21,8 @@ internal sealed class DrawSettingsPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(0, 12, 0, 8);
-        MinimumSize = new Size(260, 320);
+        Padding = new Padding(0, 8, 0, 8);
+        MinimumSize = new Size(248, 288);
 
         BuildUi();
         ReadSettings();
@@ -34,7 +34,7 @@ internal sealed class DrawSettingsPanel : UserControl
         {
             Text = "Draw Settings",
             Dock = DockStyle.Top,
-            Height = 30,
+            Height = 28,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -50,14 +50,14 @@ internal sealed class DrawSettingsPanel : UserControl
             RowCount = 6,
             Padding = new Padding(0, 4, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         Controls.Add(content);
         content.BringToFront();
 
@@ -97,7 +97,7 @@ internal sealed class DrawSettingsPanel : UserControl
             RowCount = 1,
             Margin = new Padding(0)
         };
-        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
         angle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         AddCheck(_angleSnap);
         angle.Controls.Add(_angleSnap, 0, 0);
@@ -179,12 +179,12 @@ internal sealed class DrawSettingsPanel : UserControl
         {
             Text = text,
             AutoSize = true,
-            MinimumSize = new Size(78, 26),
+            MinimumSize = new Size(72, 24),
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
             FlatStyle = FlatStyle.Flat,
             Font = Theme.UiFont(),
-            Margin = new Padding(0, 0, 10, 4),
+            Margin = new Padding(0, 0, 8, 2),
             TextAlign = ContentAlignment.MiddleLeft
         };
     }

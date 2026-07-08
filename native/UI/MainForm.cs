@@ -82,18 +82,19 @@ internal sealed class MainForm : Form
 
     private void BuildUi()
     {
-        var top = new Panel { Dock = DockStyle.Top, Height = 52, BackColor = Theme.Top };
+        var top = new Panel { Dock = DockStyle.Top, Height = 54, BackColor = Theme.Top };
+        PaintBottomBorder(top);
         Controls.Add(top);
-        top.Controls.Add(new Label { Text = "V2", Left = 12, Top = 10, Width = 34, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter });
-        top.Controls.Add(Theme.Label("Vector 2D Animation Engine", 56, 14, 260, Theme.Text, Theme.UiFont(10, FontStyle.Bold)));
+        top.Controls.Add(new Label { Text = "V2", Left = 14, Top = 11, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter });
+        top.Controls.Add(Theme.Label("Vector 2D Animation Engine", 58, 15, 260, Theme.Text, Theme.UiFont(10, FontStyle.Bold)));
         _play.Left = 330;
-        _play.Top = 10;
+        _play.Top = 11;
         _play.Height = 32;
         Theme.StyleButton(_play);
         top.Controls.Add(_play);
-        top.Controls.Add(Theme.Label("Frame", 420, 14, 58, Theme.Muted));
+        top.Controls.Add(Theme.Label("Frame", 420, 15, 58, Theme.Muted));
         _frameSlider.Left = 476;
-        _frameSlider.Top = 8;
+        _frameSlider.Top = 9;
         _frameSlider.Width = 430;
         _frameSlider.Minimum = 0;
         _frameSlider.Maximum = 239;
@@ -101,12 +102,12 @@ internal sealed class MainForm : Form
         top.Controls.Add(_frameSlider);
         var generate = new Button { Text = "Run Stress Scene", Width = 150, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         generate.Left = Width - 282;
-        generate.Top = 10;
+        generate.Top = 11;
         Theme.StyleButton(generate);
         generate.Click += (_, _) => Generate();
         var fit = new Button { Text = "Fit Stage", Width = 104, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         fit.Left = Width - 124;
-        fit.Top = 10;
+        fit.Top = 11;
         Theme.StyleButton(fit);
         fit.Click += (_, _) =>
         {
@@ -128,7 +129,8 @@ internal sealed class MainForm : Form
         _workspaceTabs.Height = 44;
         body.Controls.Add(_workspaceTabs);
 
-        var tools = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 52, BackColor = Theme.Top, FlowDirection = FlowDirection.TopDown, Padding = new Padding(7, 10, 7, 6) };
+        var tools = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 48, BackColor = Theme.Top, FlowDirection = FlowDirection.TopDown, Padding = new Padding(6, 10, 6, 6) };
+        PaintRightBorder(tools);
         body.Controls.Add(tools);
         AddTool(tools, "↖", ToolMode.Select, "Select");
         AddTool(tools, "✥", ToolMode.Hand, "Pan View");
@@ -141,20 +143,21 @@ internal sealed class MainForm : Form
         AddTool(tools, "●", ToolMode.Fill, "Fill Tool");
         RefreshToolButtons();
 
-        var inspector = new Panel { Dock = DockStyle.Right, Width = 340, BackColor = Theme.Panel, Padding = new Padding(12), AutoScroll = true };
+        var inspector = new Panel { Dock = DockStyle.Right, Width = 324, BackColor = Theme.Panel, Padding = new Padding(14, 16, 14, 12), AutoScroll = true };
+        PaintLeftBorder(inspector);
         body.Controls.Add(inspector);
         BuildInspectorPages(inspector);
 
         var leftTabs = BuildLeftTabs();
         body.Controls.Add(leftTabs);
 
-        var layerPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(10) };
+        var layerPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(12, 10, 12, 12) };
         var layerPage = new TabPage("Layers") { BackColor = Theme.Panel, Padding = new Padding(0) };
         layerPage.Controls.Add(layerPanel);
         leftTabs.TabPages.Add(layerPage);
 
-        layerPanel.Controls.Add(new Label { Text = "Layers", Dock = DockStyle.Top, Height = 30, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft });
-        var layerButtons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, FlowDirection = FlowDirection.LeftToRight, BackColor = Theme.Panel };
+        layerPanel.Controls.Add(new Label { Text = "Layers", Dock = DockStyle.Top, Height = 32, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft });
+        var layerButtons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44, FlowDirection = FlowDirection.LeftToRight, BackColor = Theme.Panel, Padding = new Padding(0, 2, 0, 8) };
         var solo = new Button { Text = "Solo", Width = 78, Height = 32 };
         Theme.StyleButton(solo);
         solo.Click += (_, _) => { _scene.SoloLayer(_scene.ActiveLayer); RefreshLayers(); _stage.Invalidate(); };
@@ -180,7 +183,8 @@ internal sealed class MainForm : Form
         var stagePanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Stage };
         body.Controls.Add(stagePanel);
         stagePanel.BringToFront();
-        var metrics = new Panel { Dock = DockStyle.Top, Height = 42, BackColor = Theme.Top };
+        var metrics = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Theme.Top };
+        PaintBottomBorder(metrics);
         metrics.Controls.Add(_fps);
         _draw.Left = 92;
         metrics.Controls.Add(_draw);
@@ -188,7 +192,7 @@ internal sealed class MainForm : Form
         metrics.Controls.Add(_atoms);
         _zoom.Left = 540;
         metrics.Controls.Add(_zoom);
-        var zoomIn = new Button { Text = "+", Width = 36, Height = 30, Top = 6, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        var zoomIn = new Button { Text = "+", Width = 34, Height = 28, Top = 6, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         Theme.StyleButton(zoomIn);
         zoomIn.Left = stagePanel.Width - 44;
         zoomIn.Click += (_, _) =>
@@ -196,7 +200,7 @@ internal sealed class MainForm : Form
             _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), 1.22f);
             UpdateStatusBar();
         };
-        var zoomOut = new Button { Text = "-", Width = 36, Height = 30, Top = 6, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        var zoomOut = new Button { Text = "-", Width = 34, Height = 28, Top = 6, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         Theme.StyleButton(zoomOut);
         zoomOut.Left = stagePanel.Width - 84;
         zoomOut.Click += (_, _) =>
@@ -236,15 +240,42 @@ internal sealed class MainForm : Form
         }
     }
 
+    private static void PaintBottomBorder(Control control)
+    {
+        control.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawLine(pen, 0, control.Height - 1, control.Width, control.Height - 1);
+        };
+    }
+
+    private static void PaintLeftBorder(Control control)
+    {
+        control.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawLine(pen, 0, 0, 0, control.Height);
+        };
+    }
+
+    private static void PaintRightBorder(Control control)
+    {
+        control.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawLine(pen, control.Width - 1, 0, control.Width - 1, control.Height);
+        };
+    }
+
     private static TabControl BuildLeftTabs()
     {
         var tabs = new TabControl
         {
             Dock = DockStyle.Left,
-            Width = 282,
+            Width = 286,
             DrawMode = TabDrawMode.OwnerDrawFixed,
             SizeMode = TabSizeMode.Fixed,
-            ItemSize = new Size(132, 34),
+            ItemSize = new Size(134, 32),
             BackColor = Theme.Panel
         };
         tabs.DrawItem += (_, e) =>
@@ -267,11 +298,11 @@ internal sealed class MainForm : Form
         _basicInspectorPage.BackColor = Theme.Panel;
         _basicInspectorPage.AutoScroll = true;
         _objectInspector.Dock = DockStyle.Top;
-        _objectInspector.Height = 242;
+        _objectInspector.Height = 224;
         _objectInspector.BackColor = Theme.Panel;
         BuildInspector(_objectInspector);
         _drawSettingsPanel.Dock = DockStyle.Top;
-        _drawSettingsPanel.Height = 334;
+        _drawSettingsPanel.Height = 304;
         _basicInspectorPage.Controls.Add(_drawSettingsPanel);
         _basicInspectorPage.Controls.Add(_objectInspector);
 
@@ -299,7 +330,7 @@ internal sealed class MainForm : Form
         {
             Text = "Inspector",
             Dock = DockStyle.Top,
-            Height = 30,
+            Height = 28,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -315,9 +346,9 @@ internal sealed class MainForm : Form
             RowCount = 6,
             Padding = new Padding(0, 4, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i <= 3 ? 28 : 34));
+        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i <= 3 ? 27 : 33));
         parent.Controls.Add(content);
         content.BringToFront();
 
@@ -355,7 +386,7 @@ internal sealed class MainForm : Form
 
     private void AddTool(FlowLayoutPanel panel, string text, ToolMode tool, string displayName)
     {
-        var button = new Button { Text = text, Width = 36, Height = 36, Margin = new Padding(0, 0, 0, 8), Tag = tool, AccessibleName = displayName };
+        var button = new Button { Text = text, Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 8), Tag = tool, AccessibleName = displayName };
         Theme.StyleButton(button);
         button.MouseEnter += (_, _) => _toolTip.ShowFor(button, displayName);
         button.MouseLeave += (_, _) => _toolTip.HideTip();
