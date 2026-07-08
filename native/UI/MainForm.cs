@@ -29,8 +29,11 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _stroke = new() { Minimum = 0, Maximum = 12, Value = 2, Width = 160 };
     private readonly Button _play = new() { Text = "Play", Width = 72 };
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
+    private readonly Dictionary<ToolMode, Button> _drawingObjectTabButtons = new();
     private readonly AnimatedToolTip _toolTip = new();
     private readonly WorkspaceTabs _workspaceTabs = new();
+    private readonly Panel _workspaceHeader = new();
+    private readonly FlowLayoutPanel _drawingObjectTabs = new();
     private readonly TimelineStrip _timeline;
     private readonly StatusStrip _statusBar = new();
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS 0");
@@ -144,9 +147,23 @@ internal sealed class MainForm : Form
         var body = new Panel { Dock = DockStyle.Fill, BackColor = Theme.App };
         Controls.Add(body);
         body.BringToFront();
+        _workspaceHeader.Dock = DockStyle.Top;
+        _workspaceHeader.Height = 84;
+        _workspaceHeader.BackColor = Theme.Top;
+        PaintBottomBorder(_workspaceHeader);
+        body.Controls.Add(_workspaceHeader);
         _workspaceTabs.Dock = DockStyle.Top;
         _workspaceTabs.Height = 44;
-        body.Controls.Add(_workspaceTabs);
+        _workspaceHeader.Controls.Add(_workspaceTabs);
+        _drawingObjectTabs.Dock = DockStyle.Bottom;
+        _drawingObjectTabs.Height = 40;
+        _drawingObjectTabs.BackColor = Theme.Top;
+        _drawingObjectTabs.FlowDirection = FlowDirection.LeftToRight;
+        _drawingObjectTabs.WrapContents = false;
+        _drawingObjectTabs.Padding = new Padding(8, 4, 8, 6);
+        _drawingObjectTabs.Margin = Padding.Empty;
+        _workspaceHeader.Controls.Add(_drawingObjectTabs);
+        BuildDrawingObjectTabs();
 
         var tools = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 48, BackColor = Theme.Top, FlowDirection = FlowDirection.TopDown, Padding = new Padding(6, 10, 6, 6) };
         PaintRightBorder(tools);
@@ -415,25 +432,60 @@ internal sealed class MainForm : Form
         parent.Controls.Add(input, 1, row);
     }
 
+    private void BuildDrawingObjectTabs()
+    {
+        AddDrawingObjectTab("Rectangle", ToolMode.Rectangle);
+        AddDrawingObjectTab("Ellipse", ToolMode.Ellipse);
+        AddDrawingObjectTab("Triangle", ToolMode.Triangle);
+        AddDrawingObjectTab("Polygon", ToolMode.Polygon);
+        AddDrawingObjectTab("Star", ToolMode.Star);
+        AddDrawingObjectTab("Line", ToolMode.Line);
+        AddDrawingObjectTab("Fill", ToolMode.Fill);
+        AddDrawingObjectTab("Edit", ToolMode.Select);
+        RefreshToolButtons();
+    }
+
+    private void AddDrawingObjectTab(string text, ToolMode tool)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Width = text.Length > 6 ? 96 : 84,
+            Height = 30,
+            Margin = new Padding(0, 0, 6, 0),
+            Tag = tool,
+            AutoEllipsis = true
+        };
+        Theme.StyleButton(button);
+        button.Click += (_, _) => ActivateTool(tool);
+        button.MouseEnter += (_, _) => _toolTip.ShowFor(button, $"{text} drawing object");
+        button.MouseLeave += (_, _) => _toolTip.HideTip();
+        _drawingObjectTabButtons[tool] = button;
+        _drawingObjectTabs.Controls.Add(button);
+    }
+
     private void AddTool(FlowLayoutPanel panel, SvgIconKind icon, ToolMode tool, string displayName)
     {
         var button = new SvgIconButton(icon) { Margin = new Padding(0, 0, 0, 8), Tag = tool, AccessibleName = displayName };
         Theme.StyleButton(button);
         button.MouseEnter += (_, _) => _toolTip.ShowFor(button, displayName);
         button.MouseLeave += (_, _) => _toolTip.HideTip();
-        button.Click += (_, _) =>
-        {
-            _tool = tool;
-            _stage.ClearDrawingPreview();
-            if (ToolShapeKind(tool) is { } shape)
-            {
-                _drawSettings.ShapeKind = shape;
-                _drawSettings.NotifyChanged();
-            }
-            RefreshToolButtons();
-        };
+        button.Click += (_, _) => ActivateTool(tool);
         _toolButtons[tool] = button;
         panel.Controls.Add(button);
+    }
+
+    private void ActivateTool(ToolMode tool)
+    {
+        _tool = tool;
+        _stage.ClearDrawingPreview();
+        if (ToolShapeKind(tool) is { } shape)
+        {
+            _drawSettings.ShapeKind = shape;
+            _drawSettings.NotifyChanged();
+        }
+
+        RefreshToolButtons();
     }
 
     private void HookEvents()
@@ -1217,7 +1269,10 @@ internal sealed class MainForm : Form
 
     private void ShowWorkspace(WorkspaceView view)
     {
-        _basicInspectorPage.Visible = view == WorkspaceView.BasicDrawing;
+        var basicDrawing = view == WorkspaceView.BasicDrawing;
+        _workspaceHeader.Height = basicDrawing ? 84 : 44;
+        _drawingObjectTabs.Visible = basicDrawing;
+        _basicInspectorPage.Visible = basicDrawing;
         _animationPage.Visible = view == WorkspaceView.Animation;
         _materialEditor.Visible = view == WorkspaceView.Materials;
         _hierarchyPanel.Visible = view == WorkspaceView.Hierarchy;
@@ -1260,6 +1315,12 @@ internal sealed class MainForm : Form
     private void RefreshToolButtons()
     {
         foreach (var (tool, button) in _toolButtons)
+        {
+            if (tool == _tool) Theme.StyleActiveButton(button);
+            else Theme.StyleButton(button);
+        }
+
+        foreach (var (tool, button) in _drawingObjectTabButtons)
         {
             if (tool == _tool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);

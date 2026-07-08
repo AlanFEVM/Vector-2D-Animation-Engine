@@ -75,6 +75,14 @@ logs/
 
 `Basic Drawing` 工作区会隐藏底部时间轴，让绘制区域更大。切换到 `Animation`、`Materials` 或 `Hierarchy` 时，底部时间轴会重新显示。
 
+在 `Basic Drawing` 工作区下方会显示基础绘制对象页签：
+
+- `Rectangle`、`Ellipse`、`Triangle`、`Polygon`、`Star`、`Line`：切换到对应基础绘制对象。
+- `Fill`：切换到填充已有对象。
+- `Edit`：切换到选择和编辑对象。
+
+这些页签和左侧工具栏保持同步，点击任意一处都会更新当前绘制工具。
+
 ## 绘制工具
 
 左侧工具栏使用 SVG 矢量图标按钮，鼠标悬浮会显示工具名称。当前支持：

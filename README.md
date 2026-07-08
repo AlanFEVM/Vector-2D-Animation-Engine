@@ -38,6 +38,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 ## Current Features
 
 - Workspace tabs: `Basic Drawing`, `Animation`, `Materials`, and `Hierarchy`.
+- Basic Drawing has secondary drawing-object tabs for rectangle, ellipse, triangle, polygon, star, line, fill, and edit.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
 - `Basic Drawing` hides the bottom timeline to prioritize drawing space.
