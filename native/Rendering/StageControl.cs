@@ -412,6 +412,12 @@ internal sealed class StageControl : Control
         var strokeColor = StrokeColorFor(i);
         var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[i]));
 
+        if (shape == ShapeKind.Path && scene.TryGetPathWorldPoints(i, out var pathPoints))
+        {
+            DrawPathObject(g, i, pathPoints, brush, strokeColor, scene.Stroke[i], screenStroke);
+            return;
+        }
+
         if (shape == ShapeKind.Line)
         {
             if (scene.Stroke[i] > 0) DrawBezierLine(g, i, BrushFor(strokeColor.ToArgb()), screenStroke);
@@ -434,6 +440,17 @@ internal sealed class StageControl : Control
             using var pen = StrokePen(strokeColor, screenStroke);
             g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
         }
+    }
+
+    private void DrawPathObject(Graphics g, int i, PointF[] worldPoints, Brush brush, Color strokeColor, float stroke, float screenStroke)
+    {
+        if (worldPoints.Length < 3) return;
+        var points = new PointF[worldPoints.Length];
+        for (var p = 0; p < worldPoints.Length; p++) points[p] = WorldToScreen(worldPoints[p]);
+        g.FillPolygon(brush, points);
+        if (stroke <= 0) return;
+        using var pen = StrokePen(strokeColor, screenStroke);
+        g.DrawPolygon(pen, points);
     }
 
     private void DrawLocalShape(Graphics g, ShapeKind shape, Brush brush, Color strokeColor, float stroke, float screenStroke, float w, float h)

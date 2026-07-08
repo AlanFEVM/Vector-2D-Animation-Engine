@@ -237,6 +237,12 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var strokeBrush = BrushFor(scene.StrokeArgb.Length > i ? scene.StrokeArgb[i] : GdiColor.FromArgb(238, 242, 241).ToArgb());
         var screenStroke = Math.Max(0.1f, stage.WorldLengthToScreen(scene.Stroke[i]));
 
+        if (shape == ShapeKind.Path && scene.TryGetPathWorldPoints(i, out var pathPoints))
+        {
+            DrawPathObject(stage, pathPoints, brush, strokeBrush, scene.Stroke[i], screenStroke);
+            return;
+        }
+
         if (shape == ShapeKind.Line)
         {
             if (scene.Stroke[i] > 0) DrawBezierLine(stage, i, strokeBrush, screenStroke);
@@ -247,6 +253,22 @@ internal sealed class Direct2DStageRenderer : IDisposable
         _target.Transform = Matrix3x2.CreateRotation(scene.Angle[i], new Vector2(screen.X, screen.Y));
         DrawLocalShape(shape, brush, strokeBrush, scene.Stroke[i], screenStroke, screen.X, screen.Y, w, h);
         _target.Transform = old;
+    }
+
+    private void DrawPathObject(StageControl stage, GdiPointF[] worldPoints, ID2D1SolidColorBrush brush, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke)
+    {
+        if (worldPoints.Length < 3) return;
+        using var path = _factory!.CreatePathGeometry();
+        using (var sink = path.Open())
+        {
+            sink.BeginFigure(WorldToVector(stage, worldPoints[0]), FigureBegin.Filled);
+            for (var i = 1; i < worldPoints.Length; i++) sink.AddLine(WorldToVector(stage, worldPoints[i]));
+            sink.EndFigure(FigureEnd.Closed);
+            sink.Close();
+        }
+
+        _target!.FillGeometry(path, brush);
+        if (stroke > 0) _target.DrawGeometry(path, strokeBrush, screenStroke);
     }
 
     private void DrawLocalShape(ShapeKind shape, ID2D1SolidColorBrush brush, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke, float cx, float cy, float w, float h)

@@ -82,6 +82,7 @@ internal sealed class MainForm : Form
     private bool _viewPanning;
     private bool _viewZooming;
     private bool _marqueeSelecting;
+    private bool _detachedSelectionForMove;
     private Point? _marqueeStart;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
     private int _activeDrawingObjectIndex;
@@ -973,6 +974,7 @@ internal sealed class MainForm : Form
             }
             else
             {
+                EnsureSelectedElementDetachedForMove();
                 var dxWorld = world.X - _startWorld.Value.X;
                 var dyWorld = world.Y - _startWorld.Value.Y;
                 if (_selectedMoveStarts.Count > 1)
@@ -1012,6 +1014,22 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void EnsureSelectedElementDetachedForMove()
+    {
+        if (_detachedSelectionForMove) return;
+        _detachedSelectionForMove = true;
+        if (!_selectedElement.IsValid || _selectedElement.Key.ObjectIndex != _selectedObject) return;
+        var detached = _scene.DetachElementForMove(_selectedElement, _frame);
+        if (!detached.IsValid) return;
+        if (detached.Distance >= 0 && detached.Key.ObjectIndex == _selectedObject && detached.Key.Kind == _selectedElement.Key.Kind && detached.Key.PartIndex == _selectedElement.Key.PartIndex) return;
+
+        SetSelection(detached);
+        CaptureEditStart(detached.Key.ObjectIndex);
+        _geometryDirty = true;
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+    }
+
     private void StageMouseUp(object? sender, MouseEventArgs e)
     {
         if (_viewPanning || _viewZooming)
@@ -1048,6 +1066,7 @@ internal sealed class MainForm : Form
         _curveControlStart = null;
         _selectedMoveStarts.Clear();
         _selectedCurveStarts.Clear();
+        _detachedSelectionForMove = false;
         _resizeStartCenter = null;
         _resizeStartSize = null;
         _activeHandle = EditHandleKind.None;

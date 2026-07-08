@@ -55,6 +55,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects.
 - Bezier control handle editing for selected lines.
 - Drawing element topology foundation: fills, free strokes, and filled-shape boundary strokes are separate selectable elements. Rectangle edges are individually selectable by default; crossing strokes and boundaries split each other at valid intersections, and sub-1vu stroke fragments are suppressed.
+- Topology parts are materialized on first drag: split stroke parts become independent line objects, boundary-stroke parts become movable line segments, and a rectangle fill cut by a through-line becomes two movable path fills.
 - Delete key removes the currently selected drawing object or marquee-selected objects.
 - Right-side auxiliary panel next to the Inspector for layers.
 - Left-edge Vault drawer opened from the tool rail for Library/Vault asset storage.
