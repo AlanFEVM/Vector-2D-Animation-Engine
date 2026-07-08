@@ -1230,7 +1230,8 @@ internal sealed class MainForm : Form
             var a = _stage.ScreenToWorld(startScreen);
             var b = _stage.ScreenToWorld(endScreen);
             var bounds = RectangleF.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
-            SetSelection(_scene.QueryObjects(bounds, _frame));
+            var objects = _scene.QueryObjects(bounds, _frame);
+            if (objects.Length > 3 || !TrySetTopologyMarqueeSelection(bounds)) SetSelection(objects);
         }
         else
         {
@@ -1242,6 +1243,40 @@ internal sealed class MainForm : Form
         _stage.ClearMarquee();
         UpdateInspector();
         _stage.Invalidate();
+    }
+
+    private bool TrySetTopologyMarqueeSelection(RectangleF bounds)
+    {
+        if (bounds.Width <= 0.001f || bounds.Height <= 0.001f) return false;
+        var columns = bounds.Width > bounds.Height * 1.8f ? 7 : 5;
+        var rows = bounds.Height > bounds.Width * 1.8f ? 7 : 5;
+        var hits = new Dictionary<DrawingElementKey, (DrawingElementHit Hit, int Count)>();
+        var tolerance = Math.Max(1, Math.Min(bounds.Width, bounds.Height) * 0.04f);
+
+        for (var y = 0; y < rows; y++)
+        {
+            for (var x = 0; x < columns; x++)
+            {
+                var world = new PointF(
+                    bounds.Left + bounds.Width * (x + 0.5f) / columns,
+                    bounds.Top + bounds.Height * (y + 0.5f) / rows);
+                var hit = _scene.HitTestElement(world, _frame, tolerance);
+                if (!hit.IsValid) continue;
+                var current = hits.GetValueOrDefault(hit.Key);
+                hits[hit.Key] = (hit, current.Count + 1);
+            }
+        }
+
+        if (hits.Count == 0) return false;
+        var best = hits.Values
+            .OrderByDescending(item => item.Count)
+            .ThenByDescending(item => item.Hit.Key.Kind == DrawingElementKind.Fill ? 1 : 0)
+            .First();
+        var totalSamples = columns * rows;
+        if (best.Count < Math.Max(2, totalSamples / 5)) return false;
+
+        SetSelection(best.Hit);
+        return true;
     }
 
     private bool DeleteSelectedObject()
