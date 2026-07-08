@@ -307,10 +307,29 @@ internal sealed class VectorScene
         {
             var hit = HitElement(world, i, candidates, toleranceWorld);
             if (!hit.IsValid) continue;
-            if (hit.Key.ObjectIndex > best.Key.ObjectIndex || hit.Key.ObjectIndex == best.Key.ObjectIndex && hit.Distance < best.Distance) best = hit;
+            if (IsBetterHit(hit, best)) best = hit;
         }
 
         return best;
+    }
+
+    private static bool IsBetterHit(DrawingElementHit hit, DrawingElementHit best)
+    {
+        if (!best.IsValid) return true;
+
+        var hitIsFill = hit.Key.Kind == DrawingElementKind.Fill;
+        var bestIsFill = best.Key.Kind == DrawingElementKind.Fill;
+        if (hitIsFill != bestIsFill) return !hitIsFill;
+        if (hitIsFill) return hit.Key.ObjectIndex > best.Key.ObjectIndex;
+
+        if (hit.Distance < best.Distance - 0.001f) return true;
+        if (hit.Distance > best.Distance + 0.001f) return false;
+        return hit.Key.ObjectIndex > best.Key.ObjectIndex;
+    }
+
+    public PointF[] GetShapeBoundary(int objectIndex)
+    {
+        return (uint)objectIndex < ObjectCount ? ShapeBoundary(objectIndex) : Array.Empty<PointF>();
     }
 
     private List<int> CollectHitCandidates(int minX, int maxX, int minY, int maxY, int frame)
@@ -500,6 +519,9 @@ internal sealed class VectorScene
             return HitStrokeElement(world, i, candidates, toleranceWorld);
         }
 
+        var boundaryHit = HitBoundaryStrokeElement(world, i, candidates, toleranceWorld);
+        if (boundaryHit.IsValid) return boundaryHit;
+
         if (!HitObject(world, i, toleranceWorld)) return DrawingElementHit.None;
         if (!OwnsFillUnit(world, i, candidates)) return DrawingElementHit.None;
         var part = FillPartIndex(world, i, candidates);
@@ -529,6 +551,19 @@ internal sealed class VectorScene
     {
         var polyline = LinePolyline(lineIndex);
         var hitRadius = Math.Max(Height[lineIndex] * 0.5f, 1) + toleranceWorld;
+        return HitPolylinePart(world, lineIndex, DrawingElementKind.Stroke, polyline, StrokeSplitParameters(lineIndex, candidates), hitRadius);
+    }
+
+    private DrawingElementHit HitBoundaryStrokeElement(PointF world, int objectIndex, IReadOnlyList<int> candidates, float toleranceWorld)
+    {
+        if (Stroke[objectIndex] <= 0) return DrawingElementHit.None;
+        var boundary = ShapeBoundary(objectIndex);
+        var hitRadius = Math.Max(Stroke[objectIndex] * 0.5f, 1) + toleranceWorld;
+        return HitPolylinePart(world, objectIndex, DrawingElementKind.BoundaryStroke, boundary, BoundarySplitParameters(objectIndex, candidates), hitRadius);
+    }
+
+    private DrawingElementHit HitPolylinePart(PointF world, int objectIndex, DrawingElementKind kind, PointF[] polyline, List<float> splitPoints, float hitRadius)
+    {
         var bestDistance = float.MaxValue;
         var bestT = 0f;
         var segments = Math.Max(1, polyline.Length - 1);
@@ -543,16 +578,15 @@ internal sealed class VectorScene
 
         if (bestDistance > hitRadius) return DrawingElementHit.None;
 
-        var splitPoints = StrokeSplitParameters(lineIndex, candidates);
         var part = 0;
         for (var i = 0; i < splitPoints.Count - 1; i++)
         {
             if (bestT < splitPoints[i] - 0.0001f || bestT > splitPoints[i + 1] + 0.0001f) continue;
             part = i;
-            return new DrawingElementHit(new DrawingElementKey(lineIndex, DrawingElementKind.Stroke, part), bestDistance, splitPoints[i], splitPoints[i + 1]);
+            return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, splitPoints[i], splitPoints[i + 1]);
         }
 
-        return new DrawingElementHit(new DrawingElementKey(lineIndex, DrawingElementKind.Stroke, part), bestDistance, 0, 1);
+        return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, 0, 1);
     }
 
     private List<float> StrokeSplitParameters(int lineIndex, IReadOnlyList<int> candidates)
@@ -567,12 +601,33 @@ internal sealed class VectorScene
             var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape == VectorAnimationEngine.ShapeKind.Line)
             {
-                AddPolylineIntersections(splits, line, LinePolyline(other));
+                AddPolylineIntersections(splits, line, LinePolyline(other), includeSourceEndpoints: false);
             }
             else
             {
-                AddPolylineIntersections(splits, line, ShapeBoundary(other));
+                AddPolylineIntersections(splits, line, ShapeBoundary(other), includeSourceEndpoints: false);
             }
+        }
+
+        return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
+    }
+
+    private List<float> BoundarySplitParameters(int objectIndex, IReadOnlyList<int> candidates)
+    {
+        var boundary = ShapeBoundary(objectIndex);
+        var splits = new List<DrawingTopologySplit>();
+        var segmentCount = Math.Max(1, boundary.Length - 1);
+        for (var i = 0; i < boundary.Length; i++)
+        {
+            splits.Add(new DrawingTopologySplit(Math.Clamp(i / (float)segmentCount, 0, 1), boundary[i]));
+        }
+
+        foreach (var other in candidates)
+        {
+            if (other == objectIndex) continue;
+            var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
+            if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
+            AddPolylineIntersections(splits, boundary, LinePolyline(other), includeSourceEndpoints: true);
         }
 
         return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
@@ -626,7 +681,7 @@ internal sealed class VectorScene
             if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
 
             var intersections = CollectPolylineIntersections(LinePolyline(lineIndex), boundary);
-            intersections.Sort();
+            intersections.Sort((a, b) => a.T.CompareTo(b.T));
             var distinct = 0;
             PointF? previous = null;
             foreach (var split in intersections)
@@ -653,11 +708,11 @@ internal sealed class VectorScene
     private List<DrawingTopologySplit> CollectPolylineIntersections(PointF[] source, PointF[] cutter)
     {
         var result = new List<DrawingTopologySplit>();
-        AddPolylineIntersections(result, source, cutter);
+        AddPolylineIntersections(result, source, cutter, includeSourceEndpoints: false);
         return result;
     }
 
-    private void AddPolylineIntersections(List<DrawingTopologySplit> result, PointF[] source, PointF[] cutter)
+    private void AddPolylineIntersections(List<DrawingTopologySplit> result, PointF[] source, PointF[] cutter, bool includeSourceEndpoints)
     {
         var sourceSegments = Math.Max(1, source.Length - 1);
         for (var i = 0; i < source.Length - 1; i++)
@@ -665,8 +720,10 @@ internal sealed class VectorScene
             for (var j = 0; j < cutter.Length - 1; j++)
             {
                 if (!TrySegmentIntersection(source[i], source[i + 1], cutter[j], cutter[j + 1], out var t)) continue;
+                var globalT = Math.Clamp((i + t) / sourceSegments, 0, 1);
+                if (!includeSourceEndpoints && (globalT <= 0.0001f || globalT >= 0.9999f)) continue;
                 var point = Lerp(source[i], source[i + 1], t);
-                result.Add(new DrawingTopologySplit(Math.Clamp((i + t) / sourceSegments, 0, 1), point));
+                result.Add(new DrawingTopologySplit(globalT, point));
             }
         }
     }
@@ -762,7 +819,12 @@ internal sealed class VectorScene
         var cay = c.Y - a.Y;
         t = (cax * sY - cay * sX) / denominator;
         var u = (cax * rY - cay * rX) / denominator;
-        return t > 0.0001f && t < 0.9999f && u > 0.0001f && u < 0.9999f;
+        var intersects = t >= -DrawingTopologyRules.UnitIntersectionTolerance
+            && t <= 1 + DrawingTopologyRules.UnitIntersectionTolerance
+            && u >= -DrawingTopologyRules.UnitIntersectionTolerance
+            && u <= 1 + DrawingTopologyRules.UnitIntersectionTolerance;
+        if (intersects) t = Math.Clamp(t, 0, 1);
+        return intersects;
     }
 
     private static bool SameDrawingUnit(PointF a, PointF b)

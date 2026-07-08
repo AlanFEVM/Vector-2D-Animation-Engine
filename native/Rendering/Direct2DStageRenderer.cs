@@ -331,11 +331,20 @@ internal sealed class Direct2DStageRenderer : IDisposable
             return;
         }
 
-        var points = BoundaryHandles().Select(handle => WorldToVector(stage, stage.GetBoundaryHandleWorldPoint(i, handle))).ToArray();
-        DrawOpenPolygon(points, BrushFor((primary ? GdiColor.FromArgb(135, 32, 172, 255) : GdiColor.FromArgb(85, 32, 172, 255)).ToArgb()), primary ? 6 : 4);
-        DrawOpenPolygon(points, BrushFor((primary ? GdiColor.FromArgb(255, 255, 217, 107) : GdiColor.FromArgb(210, 112, 204, 255)).ToArgb()), primary ? 2 : 1);
+        var points = GetBoundaryVectors(stage, i);
+        if (points.Length < 2) return;
+        if (primary && stage.SelectedElement.Key.Kind == DrawingElementKind.BoundaryStroke && stage.SelectedElement.Key.ObjectIndex == i)
+        {
+            DrawBoundaryPartialOutline(points, stage.SelectedElement.StartT, stage.SelectedElement.EndT);
+        }
+        else
+        {
+            DrawPolyline(points, BrushFor((primary ? GdiColor.FromArgb(135, 32, 172, 255) : GdiColor.FromArgb(85, 32, 172, 255)).ToArgb()), primary ? 6 : 4);
+            DrawPolyline(points, BrushFor((primary ? GdiColor.FromArgb(255, 255, 217, 107) : GdiColor.FromArgb(210, 112, 204, 255)).ToArgb()), primary ? 2 : 1);
+        }
+
         if (!primary) return;
-        foreach (var point in points) DrawHandle(point, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 9);
+        foreach (var handle in BoundaryHandles()) DrawHandle(WorldToVector(stage, stage.GetBoundaryHandleWorldPoint(i, handle)), BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 9);
     }
 
     private void DrawDrawingPreview(StageControl stage)
@@ -465,6 +474,49 @@ internal sealed class Direct2DStageRenderer : IDisposable
         return path;
     }
 
+    private void DrawBoundaryPartialOutline(Vector2[] points, float startT, float endT)
+    {
+        using var fullPath = BuildPolylineSamplePath(points, 0, 1);
+        using var partialPath = BuildPolylineSamplePath(points, startT, endT);
+        _target!.DrawGeometry(fullPath, BrushFor(GdiColor.FromArgb(80, 255, 217, 107).ToArgb()), 1.2f);
+        _target.DrawGeometry(partialPath, BrushFor(GdiColor.FromArgb(135, 32, 172, 255).ToArgb()), 6);
+        _target.DrawGeometry(partialPath, BrushFor(GdiColor.FromArgb(255, 255, 217, 107).ToArgb()), 2);
+    }
+
+    private ID2D1PathGeometry BuildPolylineSamplePath(Vector2[] points, float startT, float endT)
+    {
+        startT = Math.Clamp(startT, 0, 1);
+        endT = Math.Clamp(endT, startT, 1);
+        var path = _factory!.CreatePathGeometry();
+        using (var sink = path.Open())
+        {
+            sink.BeginFigure(PolylinePointAt(points, startT), FigureBegin.Hollow);
+            var segments = Math.Max(1, points.Length - 1);
+            var samples = Math.Max(2, (int)Math.Ceiling((endT - startT) * segments * 4));
+            for (var i = 1; i <= samples; i++)
+            {
+                var t = startT + (endT - startT) * i / samples;
+                sink.AddLine(PolylinePointAt(points, t));
+            }
+
+            sink.EndFigure(FigureEnd.Open);
+            sink.Close();
+        }
+
+        return path;
+    }
+
+    private static Vector2 PolylinePointAt(Vector2[] points, float t)
+    {
+        if (points.Length == 0) return default;
+        if (points.Length == 1) return points[0];
+        t = Math.Clamp(t, 0, 1);
+        var segments = points.Length - 1;
+        var scaled = t * segments;
+        var index = Math.Min(segments - 1, (int)MathF.Floor(scaled));
+        return Vector2.Lerp(points[index], points[index + 1], scaled - index);
+    }
+
     private static Vector2 QuadraticPoint(Vector2 start, Vector2 control, Vector2 end, float t)
     {
         var inv = 1 - t;
@@ -483,6 +535,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private void DrawOpenPolygon(Vector2[] points, ID2D1SolidColorBrush brush, float width)
     {
         for (var i = 0; i < points.Length; i++) _target!.DrawLine(points[i], points[(i + 1) % points.Length], brush, width);
+    }
+
+    private void DrawPolyline(Vector2[] points, ID2D1SolidColorBrush brush, float width)
+    {
+        for (var i = 0; i < points.Length - 1; i++) _target!.DrawLine(points[i], points[i + 1], brush, width);
     }
 
     private void DrawHandle(Vector2 point, ID2D1SolidColorBrush brush, float size)
@@ -531,6 +588,14 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private static Vector2 ToVector(GdiPointF point) => new(point.X, point.Y);
 
     private static Vector2 WorldToVector(StageControl stage, GdiPointF point) => ToVector(stage.WorldToScreen(point.X, point.Y));
+
+    private static Vector2[] GetBoundaryVectors(StageControl stage, int i)
+    {
+        var boundary = stage.Scene.GetShapeBoundary(i);
+        var points = new Vector2[boundary.Length];
+        for (var p = 0; p < boundary.Length; p++) points[p] = WorldToVector(stage, boundary[p]);
+        return points;
+    }
 
     private static Vector2[] RegularPolygonPoints(int sides, float cx, float cy, float w, float h, float startAngle)
     {

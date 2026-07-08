@@ -51,10 +51,10 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Global view navigation: middle mouse drags the canvas, and Ctrl + middle mouse drag zooms the canvas from any tool.
 - Drawing preview overlay while dragging shape and line tools.
 - Animated tool-name hints when hovering drawing tools.
-- Selection highlight with boundary handles for filled shapes.
+- Selection highlight with boundary handles for filled shapes and partial edge highlights for selected boundary-stroke segments.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects.
 - Bezier control handle editing for selected lines.
-- Drawing element topology foundation: fills and strokes are separate elements, fills have one owner per layer per 1vu unit, strokes split at valid fill-boundary/stroke intersections, and sub-1vu stroke fragments are suppressed.
+- Drawing element topology foundation: fills, free strokes, and filled-shape boundary strokes are separate selectable elements. Rectangle edges are individually selectable by default; crossing strokes and boundaries split each other at valid intersections, and sub-1vu stroke fragments are suppressed.
 - Delete key removes the currently selected drawing object or marquee-selected objects.
 - Right-side auxiliary panel next to the Inspector for layers.
 - Left-edge Vault drawer opened from the tool rail for Library/Vault asset storage.

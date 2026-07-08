@@ -572,7 +572,15 @@ internal sealed class StageControl : Control
         }
         else
         {
-            DrawBoundaryOutline(g, i, primary ? _selectionGlowPen : _multiSelectionGlowPen, primary ? _selectionPen : _multiSelectionPen);
+            if (primary && SelectedElement.Key.Kind == DrawingElementKind.BoundaryStroke && SelectedElement.Key.ObjectIndex == i)
+            {
+                DrawBoundaryPartialOutline(g, i, SelectedElement.StartT, SelectedElement.EndT);
+            }
+            else
+            {
+                DrawBoundaryOutline(g, i, primary ? _selectionGlowPen : _multiSelectionGlowPen, primary ? _selectionPen : _multiSelectionPen);
+            }
+
             if (primary) DrawBoundaryHandles(g, i);
         }
     }
@@ -726,9 +734,23 @@ internal sealed class StageControl : Control
 
     private void DrawBoundaryOutline(Graphics g, int i, Pen glowPen, Pen pen)
     {
-        var points = BoundaryHandles().Select(handle => WorldToScreen(GetBoundaryHandleWorldPoint(i, handle))).ToArray();
+        var points = GetBoundaryScreenPolyline(i);
+        if (points.Length < 2) return;
         g.DrawPolygon(glowPen, points);
         g.DrawPolygon(pen, points);
+    }
+
+    private void DrawBoundaryPartialOutline(Graphics g, int i, float startT, float endT)
+    {
+        var points = GetBoundaryScreenPolyline(i);
+        if (points.Length < 2) return;
+
+        using var fullPath = BuildPolylineSamplePath(points, 0, 1);
+        using var partialPath = BuildPolylineSamplePath(points, startT, endT);
+        using var mutedPen = new Pen(Color.FromArgb(80, _selectionPen.Color), 1.2f);
+        g.DrawPath(mutedPen, fullPath);
+        g.DrawPath(_selectionGlowPen, partialPath);
+        g.DrawPath(_selectionPen, partialPath);
     }
 
     private void DrawBoundaryHandles(Graphics g, int i)
@@ -782,6 +804,36 @@ internal sealed class StageControl : Control
         return path;
     }
 
+    private static GraphicsPath BuildPolylineSamplePath(PointF[] points, float startT, float endT)
+    {
+        startT = Math.Clamp(startT, 0, 1);
+        endT = Math.Clamp(endT, startT, 1);
+        var path = new GraphicsPath();
+        var previous = PolylinePointAt(points, startT);
+        var segments = Math.Max(1, points.Length - 1);
+        var samples = Math.Max(2, (int)Math.Ceiling((endT - startT) * segments * 4));
+        for (var i = 1; i <= samples; i++)
+        {
+            var t = startT + (endT - startT) * i / samples;
+            var current = PolylinePointAt(points, t);
+            path.AddLine(previous, current);
+            previous = current;
+        }
+
+        return path;
+    }
+
+    private static PointF PolylinePointAt(PointF[] points, float t)
+    {
+        if (points.Length == 0) return PointF.Empty;
+        if (points.Length == 1) return points[0];
+        t = Math.Clamp(t, 0, 1);
+        var segments = points.Length - 1;
+        var scaled = t * segments;
+        var index = Math.Min(segments - 1, (int)MathF.Floor(scaled));
+        return Lerp(points[index], points[index + 1], scaled - index);
+    }
+
     private static PointF QuadraticPoint(PointF start, PointF control, PointF end, float t)
     {
         var inv = 1 - t;
@@ -798,6 +850,19 @@ internal sealed class StageControl : Control
         return new PointF(
             Scene.X[i] + local.X * cos - local.Y * sin,
             Scene.Y[i] + local.X * sin + local.Y * cos);
+    }
+
+    private PointF[] GetBoundaryScreenPolyline(int i)
+    {
+        var boundary = Scene.GetShapeBoundary(i);
+        var points = new PointF[boundary.Length];
+        for (var p = 0; p < boundary.Length; p++) points[p] = WorldToScreen(boundary[p]);
+        return points;
+    }
+
+    private static PointF Lerp(PointF a, PointF b, float t)
+    {
+        return new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
     }
 
     private static IEnumerable<EditHandleKind> BoundaryHandles()

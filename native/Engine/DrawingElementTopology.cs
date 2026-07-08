@@ -4,7 +4,8 @@ internal enum DrawingElementKind
 {
     None,
     Fill,
-    Stroke
+    Stroke,
+    BoundaryStroke
 }
 
 internal readonly record struct DrawingElementKey(int ObjectIndex, DrawingElementKind Kind, int PartIndex)
