@@ -389,7 +389,7 @@ internal sealed class MainForm : Form
         _stroke.Dock = DockStyle.Fill;
         _stroke.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleNumeric(_stroke);
-        AddField(content, "Stroke width", _stroke, 5);
+        AddField(content, "Stroke pt", _stroke, 5);
     }
 
     private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
@@ -456,12 +456,13 @@ internal sealed class MainForm : Form
 
             if (_selectedObject >= 0 && _selectedObject < _scene.ObjectCount)
             {
+                var strokeUnits = VectorUnits.StrokePointsToUnits(e.StrokeWidth);
                 _scene.Argb[_selectedObject] = Color.FromArgb((int)Math.Clamp(e.Opacity * 255, 0, 255), e.Fill).ToArgb();
-                _scene.Stroke[_selectedObject] = e.StrokeWidth;
+                _scene.Stroke[_selectedObject] = strokeUnits;
                 _scene.StrokeArgb[_selectedObject] = e.Stroke.ToArgb();
                 if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line)
                 {
-                    _scene.Height[_selectedObject] = Math.Max(3, e.StrokeWidth + 2);
+                    _scene.Height[_selectedObject] = Math.Max(VectorUnits.FromPixels(3), strokeUnits + VectorUnits.FromPixels(2));
                     _scene.RebuildGeometryIndex();
                 }
 
@@ -777,23 +778,23 @@ internal sealed class MainForm : Form
                     {
                         var index = item.Key;
                         if ((uint)index >= _scene.ObjectCount) continue;
-                        _scene.X[index] = item.Value.X + dxWorld;
-                        _scene.Y[index] = item.Value.Y + dyWorld;
+                        _scene.X[index] = VectorUnits.Quantize(item.Value.X + dxWorld);
+                        _scene.Y[index] = VectorUnits.Quantize(item.Value.Y + dyWorld);
                         if (_selectedCurveStarts.TryGetValue(index, out var curveStart))
                         {
-                            _scene.CurveControlX[index] = curveStart.X + dxWorld;
-                            _scene.CurveControlY[index] = curveStart.Y + dyWorld;
+                            _scene.CurveControlX[index] = VectorUnits.Quantize(curveStart.X + dxWorld);
+                            _scene.CurveControlY[index] = VectorUnits.Quantize(curveStart.Y + dyWorld);
                         }
                     }
                 }
                 else
                 {
-                    _scene.X[_selectedObject] = _selectedStart.Value.X + dxWorld;
-                    _scene.Y[_selectedObject] = _selectedStart.Value.Y + dyWorld;
+                    _scene.X[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.X + dxWorld);
+                    _scene.Y[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.Y + dyWorld);
                     if (_curveControlStart is not null)
                     {
-                        _scene.CurveControlX[_selectedObject] = _curveControlStart.Value.X + dxWorld;
-                        _scene.CurveControlY[_selectedObject] = _curveControlStart.Value.Y + dyWorld;
+                        _scene.CurveControlX[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.X + dxWorld);
+                        _scene.CurveControlY[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.Y + dyWorld);
                     }
                 }
             }
@@ -952,8 +953,8 @@ internal sealed class MainForm : Form
 
     private void UpdateDrawingPreview(PointF start, PointF end, ToolMode tool)
     {
-        start = _drawSettings.SnapPoint(start);
-        end = _drawSettings.SnapPoint(end);
+        start = VectorUnits.Quantize(_drawSettings.SnapPoint(start));
+        end = VectorUnits.Quantize(_drawSettings.SnapPoint(end));
         var shape = ToolShapeKind(tool) ?? _drawSettings.ShapeKind;
         if (tool != ToolMode.Line)
         {
@@ -961,10 +962,10 @@ internal sealed class MainForm : Form
             end = new PointF(start.X + size.Width, start.Y + size.Height);
         }
 
-        _stage.SetDrawingPreview(start, end, shape, ActiveColor(), (float)_materialEditor.StrokeWidth);
+        _stage.SetDrawingPreview(start, end, shape, ActiveColor(), ActiveStrokeUnits());
     }
 
-    private float SelectionToleranceWorld() => Math.Max(4, 10 / Math.Max(0.02f, _stage.Zoom));
+    private float SelectionToleranceWorld() => Math.Max(4, _stage.ScreenLengthToWorld(10));
 
     private void CaptureEditStart(int objectIndex)
     {
@@ -994,7 +995,7 @@ internal sealed class MainForm : Form
         if (_selectedObject < 0 || _resizeStartCenter is null || _resizeStartSize is null) return;
         if (_activeHandle == EditHandleKind.BezierControl)
         {
-            var snapped = _drawSettings.SnapPoint(world);
+            var snapped = VectorUnits.Quantize(_drawSettings.SnapPoint(world));
             _scene.CurveControlX[_selectedObject] = snapped.X;
             _scene.CurveControlY[_selectedObject] = snapped.Y;
             return;
@@ -1002,16 +1003,16 @@ internal sealed class MainForm : Form
 
         var draggedLocal = WorldToLocalFromEditStart(world);
         var anchor = OppositeCorner(_activeHandle, _resizeStartSize.Value);
-        var minSize = 4f;
+        var minSize = VectorUnits.FromPixels(4);
         var width = Math.Max(minSize, Math.Abs(draggedLocal.X - anchor.X));
         var height = Math.Max(minSize, Math.Abs(draggedLocal.Y - anchor.Y));
         var centerLocal = new PointF((draggedLocal.X + anchor.X) * 0.5f, (draggedLocal.Y + anchor.Y) * 0.5f);
         var centerWorld = LocalToWorldFromEditStart(centerLocal);
 
-        _scene.X[_selectedObject] = centerWorld.X;
-        _scene.Y[_selectedObject] = centerWorld.Y;
-        _scene.Width[_selectedObject] = width;
-        _scene.Height[_selectedObject] = height;
+        _scene.X[_selectedObject] = VectorUnits.Quantize(centerWorld.X);
+        _scene.Y[_selectedObject] = VectorUnits.Quantize(centerWorld.Y);
+        _scene.Width[_selectedObject] = Math.Max(1, VectorUnits.Quantize(width));
+        _scene.Height[_selectedObject] = Math.Max(1, VectorUnits.Quantize(height));
     }
 
     private PointF WorldToLocalFromEditStart(PointF world)
@@ -1048,8 +1049,8 @@ internal sealed class MainForm : Form
 
     private void AddDrawnObject(PointF start, PointF end, ToolMode tool)
     {
-        start = _drawSettings.SnapPoint(start);
-        end = _drawSettings.SnapPoint(end);
+        start = VectorUnits.Quantize(_drawSettings.SnapPoint(start));
+        end = VectorUnits.Quantize(_drawSettings.SnapPoint(end));
         var center = new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
         float width;
         float height;
@@ -1057,20 +1058,20 @@ internal sealed class MainForm : Form
         var shape = ToolShapeKind(tool) ?? _drawSettings.ShapeKind;
         if (tool == ToolMode.Line)
         {
-            width = Math.Max(4, Distance(start, end));
-            height = Math.Max(3, (float)_materialEditor.StrokeWidth + 2);
+            width = Math.Max(VectorUnits.FromPixels(4), Distance(start, end));
+            height = Math.Max(VectorUnits.FromPixels(3), ActiveStrokeUnits() + VectorUnits.FromPixels(2));
             angle = _drawSettings.SnapAngle(MathF.Atan2(end.Y - start.Y, end.X - start.X));
             shape = ShapeKind.Line;
         }
         else
         {
             var size = _drawSettings.ApplyAspectRatio(new SizeF(end.X - start.X, end.Y - start.Y));
-            width = Math.Max(4, Math.Abs(size.Width));
-            height = Math.Max(4, Math.Abs(size.Height));
+            width = Math.Max(VectorUnits.FromPixels(4), Math.Abs(size.Width));
+            height = Math.Max(VectorUnits.FromPixels(4), Math.Abs(size.Height));
             angle = 0;
         }
 
-        SetSelection(_scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, (float)_materialEditor.StrokeWidth, ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape));
+        SetSelection(_scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, ActiveStrokeUnits(), ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape));
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
@@ -1112,11 +1113,12 @@ internal sealed class MainForm : Form
         _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(_scene.AtomCount[_selectedObject])}";
         var fill = Color.FromArgb(_scene.Argb[_selectedObject]);
         var stroke = _scene.StrokeArgb.Length > _selectedObject ? Color.FromArgb(_scene.StrokeArgb[_selectedObject]) : ActiveStrokeColor();
-        _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, _scene.Stroke[_selectedObject], fill.A / 255f);
+        var strokePoints = VectorUnits.UnitsToStrokePoints(_scene.Stroke[_selectedObject]);
+        _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, strokePoints, fill.A / 255f);
         _updatingStrokeInput = true;
         try
         {
-            _stroke.Value = (decimal)Math.Clamp(_scene.Stroke[_selectedObject], (float)_stroke.Minimum, (float)_stroke.Maximum);
+            _stroke.Value = (decimal)Math.Clamp(strokePoints, (float)_stroke.Minimum, (float)_stroke.Maximum);
         }
         finally
         {
@@ -1128,6 +1130,8 @@ internal sealed class MainForm : Form
     {
         return Color.FromArgb((int)Math.Clamp(_materialEditor.Opacity * 255, 0, 255), _materialEditor.Fill);
     }
+
+    private float ActiveStrokeUnits() => VectorUnits.StrokePointsToUnits((float)_materialEditor.StrokeWidth);
 
     private Color ActiveStrokeColor() => _materialEditor.Stroke;
 

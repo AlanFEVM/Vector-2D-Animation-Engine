@@ -31,12 +31,14 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - 1000+ layers.
 - 100000+ draw objects.
 - 100000000+ virtual vector primitives tracked as object complexity metadata.
+- Fixed unit model: 1 px = 25 vector units, and 1 stroke point = 0.5 px.
 - Adobe Animate-style stage/tools/layers/timeline.
 - Dense production-workbench layout inspired by Blender.
 
 ## Current Features
 
 - Workspace tabs: `Basic Drawing`, `Animation`, `Materials`, and `Hierarchy`.
+- Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - `Basic Drawing` hides the bottom timeline to prioritize drawing space.
 - Modern timeline strip with ruler, playhead dragging, exposure bars, and keyframe placeholders.
 - Playback settings panel with FPS, loop playback, and frame range controls.
@@ -100,6 +102,7 @@ native/
     Benchmark.cs          Stress-scene benchmark helper.
   Engine/
     VectorScene.cs        Packed scene arrays, stress generator, spatial index.
+    VectorUnits.cs        Vector unit, pixel, and stroke point conversion rules.
     RenderStats.cs        Renderer telemetry contract.
     CompactFormat.cs      Human-readable metric formatting.
     DrawSettings.cs       Snap, align, grid and shape drawing settings.

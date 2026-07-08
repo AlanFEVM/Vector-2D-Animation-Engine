@@ -21,7 +21,7 @@ internal sealed class DrawSettings
     public float GridSize
     {
         get => _gridSize;
-        set => _gridSize = Math.Clamp(value, 1, 10000);
+        set => _gridSize = Math.Clamp(VectorUnits.Quantize(value), 1, 10000);
     }
 
     public float AngleSnapDegrees

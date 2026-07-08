@@ -14,6 +14,18 @@ VectorAnimationEngine.exe
 
 软件默认打开空项目，不会自动生成压测场景。
 
+## 单位体系
+
+当前引擎把矢量单位作为最小绘制原子：
+
+- `1 px = 25 vu`，其中 `vu` 表示 vector unit。
+- `1 pt` 线宽固定显示为 `0.5 px`。
+- 因此 `1 pt = 12.5 vu`，材质面板中的 `Stroke pt` 会转换为内部矢量单位保存和计算。
+- 对象坐标、尺寸、吸附网格、命中测试、框选和移动编辑都以矢量单位为基础。
+- 状态栏中的 `Zoom 100%` 表示 `25 vu` 显示为 `1 px`。
+
+后续矢量布尔、路径编辑、吸附、对齐、材质和导出逻辑都需要遵守这个单位体系。
+
 ## 开发热重载
 
 开发阶段双击根目录 `VectorAnimationEngine.exe` 会默认启用 `dotnet watch` 热重载。修改 `native/` 下的 C# 代码并保存后，.NET 会尽量把变更应用到正在运行的软件；软件收到热重载通知后会自动重建主窗口，方便快速检查 UI 布局和交互改动。
@@ -81,7 +93,7 @@ VectorAnimationEngine.exe
 - Tight Fit：紧贴占位。
 - Align：对齐占位。
 - Angle Snap：角度吸附。
-- Grid Size：网格大小。
+- Grid vu：网格大小，单位为矢量单位。
 - Aspect Ratio：固定比例绘制。
 - Shape：当前绘制形状。
 
@@ -111,14 +123,14 @@ VectorAnimationEngine.exe
 
 - Fill：填色。
 - Stroke：描边颜色。新绘制对象会保存自己的描边颜色。
-- Stroke Width：描边宽度。新绘制对象和当前选中对象都会保存对象级绝对描边宽度；缩放画布时，描边会随对象一起放大或缩小。
+- Stroke pt：描边宽度，单位为点。`1 pt` 固定等于 `0.5 px`，并按 `1 px = 25 vu` 转换为内部矢量单位。
 - Opacity：透明度。
 
 使用 Fill Tool 点击已有对象，可以把当前材质颜色应用到该对象。
 
 如果已选中对象，在材质面板调整参数会直接影响当前对象。
 
-`Basic Drawing` 工作区右侧检查器中的 `Active color` 和 `Stroke width` 会同步到当前材质。调整 `Stroke width` 后，后续绘制的形状会使用新的描边粗细；如果当前已有对象被选中，也会立即更新该对象描边。
+`Basic Drawing` 工作区右侧检查器中的 `Active color` 和 `Stroke pt` 会同步到当前材质。调整 `Stroke pt` 后，后续绘制的形状会使用新的描边粗细；如果当前已有对象被选中，也会立即更新该对象描边。
 
 ## 图层和 Vault
 

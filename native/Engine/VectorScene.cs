@@ -157,13 +157,14 @@ internal sealed class VectorScene
             var color = ColorFromHsl(hue, 0.46 + rng.NextDouble() * 0.22, 0.42 + rng.NextDouble() * 0.24);
 
             ObjectLayer[i] = (ushort)layer;
-            X[i] = (float)(col * cellW - StageWidth * 0.5 + jitterX);
-            Y[i] = (float)(row * cellH - StageHeight * 0.5 + jitterY);
-            Width[i] = (float)(8 + sizeBias * (24 + rng.NextDouble() * 96));
-            Height[i] = (float)(8 + sizeBias * (18 + rng.NextDouble() * 72));
+            X[i] = VectorUnits.Quantize((float)(col * cellW - StageWidth * 0.5 + jitterX));
+            Y[i] = VectorUnits.Quantize((float)(row * cellH - StageHeight * 0.5 + jitterY));
+            Width[i] = VectorUnits.Quantize(VectorUnits.FromPixels((float)(8 + sizeBias * (24 + rng.NextDouble() * 96))));
+            Height[i] = VectorUnits.Quantize(VectorUnits.FromPixels((float)(8 + sizeBias * (18 + rng.NextDouble() * 72))));
             Angle[i] = (float)((rng.NextDouble() - 0.5) * 0.55);
-            Stroke[i] = rng.NextDouble() > 0.28 ? (float)(1 + rng.NextDouble() * 3) : 0;
+            Stroke[i] = rng.NextDouble() > 0.28 ? VectorUnits.StrokePointsToUnits((float)(1 + rng.NextDouble() * 3)) : 0;
             ShapeKind[i] = RandomShapeKind(rng);
+            if (ShapeKind[i] == VectorAnimationEngine.ShapeKind.Line) Height[i] = Math.Max(VectorUnits.FromPixels(3), Stroke[i] + VectorUnits.FromPixels(2));
             CurveControlX[i] = X[i];
             CurveControlY[i] = Y[i];
             AtomCount[i] = (uint)Math.Max(3, Math.Floor(avgAtoms * (0.18 + rng.NextDouble() * rng.NextDouble() * 2.35)));
@@ -193,15 +194,15 @@ internal sealed class VectorScene
         ResizeObjectArrays();
 
         ObjectLayer[index] = (ushort)Math.Clamp(layer, 0, LayerCount - 1);
-        X[index] = center.X;
-        Y[index] = center.Y;
-        Width[index] = Math.Max(1, size.Width);
-        Height[index] = Math.Max(1, size.Height);
+        X[index] = VectorUnits.Quantize(center.X);
+        Y[index] = VectorUnits.Quantize(center.Y);
+        Width[index] = Math.Max(1, VectorUnits.Quantize(size.Width));
+        Height[index] = Math.Max(1, VectorUnits.Quantize(size.Height));
         Angle[index] = angle;
         Stroke[index] = Math.Max(0, stroke);
         ShapeKind[index] = shapeKind ?? InferShapeKind(size, atoms);
-        CurveControlX[index] = center.X;
-        CurveControlY[index] = center.Y;
+        CurveControlX[index] = X[index];
+        CurveControlY[index] = Y[index];
         AtomCount[index] = Math.Max(3, atoms);
         Argb[index] = color.ToArgb();
         StrokeArgb[index] = strokeColor.ToArgb();

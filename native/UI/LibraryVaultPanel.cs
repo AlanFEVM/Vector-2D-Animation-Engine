@@ -220,8 +220,8 @@ internal sealed class LibraryVaultPanel : UserControl
             $"Kind: {shape}",
             $"Layer: {layer}",
             $"Center: {_scene.X[selected]:0.##}, {_scene.Y[selected]:0.##}",
-            $"Size: {_scene.Width[selected]:0.##} x {_scene.Height[selected]:0.##}",
-            $"Stroke: {_scene.Stroke[selected]:0.##}",
+            $"Size: {_scene.Width[selected]:0.##} x {_scene.Height[selected]:0.##} vu",
+            $"Stroke: {VectorUnits.UnitsToStrokePoints(_scene.Stroke[selected]):0.##} pt / {_scene.Stroke[selected]:0.##} vu",
             $"Color: #{color.ToArgb() & 0x00FFFFFF:X6}"
         });
 
@@ -229,7 +229,7 @@ internal sealed class LibraryVaultPanel : UserControl
         {
             Kind = "Object Snapshot",
             Name = $"{shape} #{selected}",
-            Detail = $"Layer {layer}, {_scene.Width[selected]:0.#} x {_scene.Height[selected]:0.#}",
+            Detail = $"Layer {layer}, {_scene.Width[selected]:0.#} x {_scene.Height[selected]:0.#} vu",
             Payload = payload
         });
     }

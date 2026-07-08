@@ -116,10 +116,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var scene = stage.Scene;
         var tileW = scene.StageWidth / scene.OverviewColumnCount;
         var tileH = scene.StageHeight / scene.OverviewRowCount;
-        var left = stage.CameraX - stage.Width * 0.5f / stage.Zoom;
-        var right = stage.CameraX + stage.Width * 0.5f / stage.Zoom;
-        var top = stage.CameraY - stage.Height * 0.5f / stage.Zoom;
-        var bottom = stage.CameraY + stage.Height * 0.5f / stage.Zoom;
+        var viewport = stage.VisibleWorldBounds();
+        var left = viewport.Left;
+        var right = viewport.Right;
+        var top = viewport.Top;
+        var bottom = viewport.Bottom;
         var minX = (int)Math.Clamp((left + scene.StageWidth * 0.5f) / tileW, 0, scene.OverviewColumnCount - 1);
         var maxX = (int)Math.Clamp((right + scene.StageWidth * 0.5f) / tileW, 0, scene.OverviewColumnCount - 1);
         var minY = (int)Math.Clamp((top + scene.StageHeight * 0.5f) / tileH, 0, scene.OverviewRowCount - 1);
@@ -136,7 +137,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
                 if (count <= 0) continue;
                 atoms += scene.OverviewAtoms[tile];
                 var screen = stage.WorldToScreen(tx * tileW - scene.StageWidth * 0.5f, ty * tileH - scene.StageHeight * 0.5f);
-                FillRectangle(screen.X, screen.Y, Math.Max(1, tileW * stage.Zoom + 1), Math.Max(1, tileH * stage.Zoom + 1), scene.OverviewArgb[tile]);
+                FillRectangle(screen.X, screen.Y, Math.Max(1, stage.WorldLengthToScreen(tileW) + 1), Math.Max(1, stage.WorldLengthToScreen(tileH) + 1), scene.OverviewArgb[tile]);
                 draws++;
             }
         }
@@ -149,10 +150,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var scene = stage.Scene;
         var tileW = scene.StageWidth / scene.TileColumnCount;
         var tileH = scene.StageHeight / scene.TileRowCount;
-        var left = stage.CameraX - stage.Width * 0.5f / stage.Zoom;
-        var right = stage.CameraX + stage.Width * 0.5f / stage.Zoom;
-        var top = stage.CameraY - stage.Height * 0.5f / stage.Zoom;
-        var bottom = stage.CameraY + stage.Height * 0.5f / stage.Zoom;
+        var viewport = stage.VisibleWorldBounds();
+        var left = viewport.Left;
+        var right = viewport.Right;
+        var top = viewport.Top;
+        var bottom = viewport.Bottom;
         var minX = (int)Math.Clamp((left + scene.StageWidth * 0.5f) / tileW, 0, scene.TileColumnCount - 1);
         var maxX = (int)Math.Clamp((right + scene.StageWidth * 0.5f) / tileW, 0, scene.TileColumnCount - 1);
         var minY = (int)Math.Clamp((top + scene.StageHeight * 0.5f) / tileH, 0, scene.TileRowCount - 1);
@@ -169,7 +171,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
                 if (count <= 0) continue;
                 atoms += scene.TileAtoms[tile];
                 var screen = stage.WorldToScreen(tx * tileW - scene.StageWidth * 0.5f, ty * tileH - scene.StageHeight * 0.5f);
-                FillRectangle(screen.X, screen.Y, Math.Max(1, tileW * stage.Zoom + 1), Math.Max(1, tileH * stage.Zoom + 1), scene.TileArgb[tile]);
+                FillRectangle(screen.X, screen.Y, Math.Max(1, stage.WorldLengthToScreen(tileW) + 1), Math.Max(1, stage.WorldLengthToScreen(tileH) + 1), scene.TileArgb[tile]);
                 draws++;
             }
         }
@@ -180,11 +182,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private RenderStats DrawObjects(StageControl stage)
     {
         var scene = stage.Scene;
-        var left = stage.CameraX - stage.Width * 0.5f / stage.Zoom;
-        var right = stage.CameraX + stage.Width * 0.5f / stage.Zoom;
-        var top = stage.CameraY - stage.Height * 0.5f / stage.Zoom;
-        var bottom = stage.CameraY + stage.Height * 0.5f / stage.Zoom;
-        var bounds = RectangleF.FromLTRB(left, top, right, bottom);
+        var bounds = stage.VisibleWorldBounds();
+        var left = bounds.Left;
+        var right = bounds.Right;
+        var top = bounds.Top;
+        var bottom = bounds.Bottom;
         scene.GetIndexRange(bounds, out var minX, out var maxX, out var minY, out var maxY);
 
         var visible = 0;
@@ -227,12 +229,12 @@ internal sealed class Direct2DStageRenderer : IDisposable
     {
         var scene = stage.Scene;
         var screen = stage.WorldToScreen(scene.X[i], scene.Y[i]);
-        var w = Math.Max(0.75f, scene.Width[i] * stage.Zoom);
-        var h = Math.Max(0.75f, scene.Height[i] * stage.Zoom);
+        var w = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Width[i]));
+        var h = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Height[i]));
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
         var brush = BrushFor(scene.Argb[i]);
         var strokeBrush = BrushFor(scene.StrokeArgb.Length > i ? scene.StrokeArgb[i] : GdiColor.FromArgb(238, 242, 241).ToArgb());
-        var screenStroke = Math.Max(0.1f, scene.Stroke[i] * stage.Zoom);
+        var screenStroke = Math.Max(0.1f, stage.WorldLengthToScreen(scene.Stroke[i]));
 
         if (shape == ShapeKind.Line)
         {
@@ -290,7 +292,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
     private void DrawGrid(StageControl stage)
     {
-        var step = Math.Max(24, 512 * stage.Zoom);
+        var step = Math.Max(24, stage.WorldLengthToScreen(512));
         var origin = stage.WorldToScreen(0, 0);
         var brush = BrushFor(GdiColor.FromArgb(35, 58, 64, 69).ToArgb());
         for (var x = origin.X % step; x < stage.Width; x += step) _target!.DrawLine(new Vector2(x, 0), new Vector2(x, stage.Height), brush, 1);
@@ -347,18 +349,18 @@ internal sealed class Direct2DStageRenderer : IDisposable
             var a = WorldToVector(stage, start);
             var b = WorldToVector(stage, end);
             _target!.DrawLine(a, b, BrushFor(GdiColor.FromArgb(170, 255, 255, 255).ToArgb()), 1);
-            _target.DrawLine(a, b, stroke, Math.Max(0.1f, stage.DrawingPreviewStroke * stage.Zoom));
+            _target.DrawLine(a, b, stroke, Math.Max(0.1f, stage.WorldLengthToScreen(stage.DrawingPreviewStroke)));
             DrawHandle(a, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 7);
             DrawHandle(b, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 7);
             return;
         }
 
         var center = stage.WorldToScreen((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
-        var w = Math.Max(2, Math.Abs(dx) * stage.Zoom);
-        var h = Math.Max(2, Math.Abs(dy) * stage.Zoom);
+        var w = Math.Max(2, stage.WorldLengthToScreen(Math.Abs(dx)));
+        var h = Math.Max(2, stage.WorldLengthToScreen(Math.Abs(dy)));
         DrawLocalShape(stage.DrawingPreviewShape, fill, stroke, 0, 0, center.X, center.Y, w, h);
         var rect = Rect(center.X - w * 0.5f, center.Y - h * 0.5f, w, h);
-        _target!.DrawRectangle(in rect, stroke, Math.Max(0.1f, stage.DrawingPreviewStroke * stage.Zoom));
+        _target!.DrawRectangle(in rect, stroke, Math.Max(0.1f, stage.WorldLengthToScreen(stage.DrawingPreviewStroke)));
     }
 
     private void DrawMarquee(StageControl stage)

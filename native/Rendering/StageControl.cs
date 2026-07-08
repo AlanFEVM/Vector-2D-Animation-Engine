@@ -64,24 +64,28 @@ internal sealed class StageControl : Control
         if (Width <= 0 || Height <= 0) return;
         CameraX = 0;
         CameraY = 0;
-        Zoom = (float)Math.Clamp(Math.Min(Width / Scene.StageWidth, Height / Scene.StageHeight) * 0.9, 0.02, 64);
+        Zoom = (float)Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(Scene.StageWidth), Height / VectorUnits.ToPixels(Scene.StageHeight)) * 0.9, 0.02, 64);
         Invalidate();
     }
 
     public PointF ScreenToWorld(Point screen)
     {
-        return new PointF(CameraX + (screen.X - Width * 0.5f) / Zoom, CameraY + (screen.Y - Height * 0.5f) / Zoom);
+        return new PointF(
+            CameraX + VectorUnits.FromPixels((screen.X - Width * 0.5f) / Zoom),
+            CameraY + VectorUnits.FromPixels((screen.Y - Height * 0.5f) / Zoom));
     }
 
     public PointF WorldToScreen(float x, float y)
     {
-        return new PointF(Width * 0.5f + (x - CameraX) * Zoom, Height * 0.5f + (y - CameraY) * Zoom);
+        return new PointF(
+            Width * 0.5f + VectorUnits.ToPixels(x - CameraX) * Zoom,
+            Height * 0.5f + VectorUnits.ToPixels(y - CameraY) * Zoom);
     }
 
     public void Pan(float dx, float dy)
     {
-        CameraX -= dx / Zoom;
-        CameraY -= dy / Zoom;
+        CameraX -= VectorUnits.FromPixels(dx / Zoom);
+        CameraY -= VectorUnits.FromPixels(dy / Zoom);
         Invalidate();
     }
 
@@ -93,6 +97,17 @@ internal sealed class StageControl : Control
         CameraX += before.X - after.X;
         CameraY += before.Y - after.Y;
         Invalidate();
+    }
+
+    public float WorldLengthToScreen(float vectorUnits) => Math.Abs(VectorUnits.ToPixels(vectorUnits)) * Zoom;
+
+    public float ScreenLengthToWorld(float pixels) => Math.Abs(VectorUnits.FromPixels(pixels / Zoom));
+
+    public RectangleF VisibleWorldBounds()
+    {
+        var topLeft = ScreenToWorld(new Point(0, 0));
+        var bottomRight = ScreenToWorld(new Point(Width, Height));
+        return RectangleF.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
     }
 
     public EditHandleKind HitTestHandle(Point screen, int objectIndex)
@@ -242,10 +257,11 @@ internal sealed class StageControl : Control
         var scene = Scene;
         var tileW = scene.StageWidth / scene.OverviewColumnCount;
         var tileH = scene.StageHeight / scene.OverviewRowCount;
-        var left = CameraX - Width * 0.5f / Zoom;
-        var right = CameraX + Width * 0.5f / Zoom;
-        var top = CameraY - Height * 0.5f / Zoom;
-        var bottom = CameraY + Height * 0.5f / Zoom;
+        var viewport = VisibleWorldBounds();
+        var left = viewport.Left;
+        var right = viewport.Right;
+        var top = viewport.Top;
+        var bottom = viewport.Bottom;
         var minX = (int)Math.Clamp((left + scene.StageWidth * 0.5f) / tileW, 0, scene.OverviewColumnCount - 1);
         var maxX = (int)Math.Clamp((right + scene.StageWidth * 0.5f) / tileW, 0, scene.OverviewColumnCount - 1);
         var minY = (int)Math.Clamp((top + scene.StageHeight * 0.5f) / tileH, 0, scene.OverviewRowCount - 1);
@@ -264,7 +280,7 @@ internal sealed class StageControl : Control
                 var wx = tx * tileW - scene.StageWidth * 0.5f;
                 var wy = ty * tileH - scene.StageHeight * 0.5f;
                 var screen = WorldToScreen(wx, wy);
-                g.FillRectangle(BrushFor(scene.OverviewArgb[tile]), screen.X, screen.Y, Math.Max(1, tileW * Zoom + 1), Math.Max(1, tileH * Zoom + 1));
+                g.FillRectangle(BrushFor(scene.OverviewArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
                 draws++;
             }
         }
@@ -277,10 +293,11 @@ internal sealed class StageControl : Control
         var scene = Scene;
         var tileW = scene.StageWidth / scene.TileColumnCount;
         var tileH = scene.StageHeight / scene.TileRowCount;
-        var left = CameraX - Width * 0.5f / Zoom;
-        var right = CameraX + Width * 0.5f / Zoom;
-        var top = CameraY - Height * 0.5f / Zoom;
-        var bottom = CameraY + Height * 0.5f / Zoom;
+        var viewport = VisibleWorldBounds();
+        var left = viewport.Left;
+        var right = viewport.Right;
+        var top = viewport.Top;
+        var bottom = viewport.Bottom;
         var minX = (int)Math.Clamp((left + scene.StageWidth * 0.5f) / tileW, 0, scene.TileColumnCount - 1);
         var maxX = (int)Math.Clamp((right + scene.StageWidth * 0.5f) / tileW, 0, scene.TileColumnCount - 1);
         var minY = (int)Math.Clamp((top + scene.StageHeight * 0.5f) / tileH, 0, scene.TileRowCount - 1);
@@ -299,7 +316,7 @@ internal sealed class StageControl : Control
                 var wx = tx * tileW - scene.StageWidth * 0.5f;
                 var wy = ty * tileH - scene.StageHeight * 0.5f;
                 var screen = WorldToScreen(wx, wy);
-                g.FillRectangle(BrushFor(scene.TileArgb[tile]), screen.X, screen.Y, Math.Max(1, tileW * Zoom + 1), Math.Max(1, tileH * Zoom + 1));
+                g.FillRectangle(BrushFor(scene.TileArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
                 draws++;
             }
         }
@@ -310,11 +327,11 @@ internal sealed class StageControl : Control
     private RenderStats DrawObjects(Graphics g)
     {
         var scene = Scene;
-        var left = CameraX - Width * 0.5f / Zoom;
-        var right = CameraX + Width * 0.5f / Zoom;
-        var top = CameraY - Height * 0.5f / Zoom;
-        var bottom = CameraY + Height * 0.5f / Zoom;
-        var bounds = RectangleF.FromLTRB(left, top, right, bottom);
+        var bounds = VisibleWorldBounds();
+        var left = bounds.Left;
+        var right = bounds.Right;
+        var top = bounds.Top;
+        var bottom = bounds.Bottom;
         scene.GetIndexRange(bounds, out var minX, out var maxX, out var minY, out var maxY);
 
         var visible = 0;
@@ -357,13 +374,13 @@ internal sealed class StageControl : Control
     {
         var scene = Scene;
         var screen = WorldToScreen(scene.X[i], scene.Y[i]);
-        var w = Math.Max(0.75f, scene.Width[i] * Zoom);
-        var h = Math.Max(0.75f, scene.Height[i] * Zoom);
+        var w = Math.Max(0.75f, WorldLengthToScreen(scene.Width[i]));
+        var h = Math.Max(0.75f, WorldLengthToScreen(scene.Height[i]));
         var rect = new RectangleF(screen.X - w * 0.5f, screen.Y - h * 0.5f, w, h);
         var brush = BrushFor(scene.Argb[i]);
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
         var strokeColor = StrokeColorFor(i);
-        var screenStroke = Math.Max(0.1f, scene.Stroke[i] * Zoom);
+        var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[i]));
 
         if (shape == ShapeKind.Line)
         {
@@ -480,7 +497,7 @@ internal sealed class StageControl : Control
 
     private void DrawGrid(Graphics g)
     {
-        var step = Math.Max(24, 512 * Zoom);
+        var step = Math.Max(24, WorldLengthToScreen(512));
         var origin = WorldToScreen(0, 0);
         for (var x = origin.X % step; x < Width; x += step) g.DrawLine(_gridPen, x, 0, x, Height);
         for (var y = origin.Y % step; y < Height; y += step) g.DrawLine(_gridPen, 0, y, Width, y);
@@ -541,7 +558,7 @@ internal sealed class StageControl : Control
         var fillColor = Color.FromArgb(72, DrawingPreviewColor);
         var strokeColor = Color.FromArgb(230, DrawingPreviewColor);
         using var fill = new SolidBrush(fillColor);
-        using var stroke = new Pen(strokeColor, Math.Max(0.1f, DrawingPreviewStroke * Zoom))
+        using var stroke = new Pen(strokeColor, Math.Max(0.1f, WorldLengthToScreen(DrawingPreviewStroke)))
         {
             DashStyle = DashStyle.Solid,
             LineJoin = LineJoin.Round,
@@ -562,8 +579,8 @@ internal sealed class StageControl : Control
         }
 
         var center = WorldToScreen((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
-        var w = Math.Max(2, Math.Abs(dx) * Zoom);
-        var h = Math.Max(2, Math.Abs(dy) * Zoom);
+        var w = Math.Max(2, WorldLengthToScreen(Math.Abs(dx)));
+        var h = Math.Max(2, WorldLengthToScreen(Math.Abs(dy)));
         var state = g.Save();
         g.TranslateTransform(center.X, center.Y);
         DrawPreviewLocalShape(g, DrawingPreviewShape, fill, stroke, w, h);

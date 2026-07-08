@@ -123,7 +123,7 @@ internal sealed class MaterialEditorPanel : UserControl
         ConfigurePreview(_strokePreview);
         content.Controls.Add(_strokePreview, 2, 1);
 
-        AddLabel(content, "Width", 2);
+        AddLabel(content, "Width pt", 2);
         _strokeWidth.Minimum = 0;
         _strokeWidth.Maximum = 32;
         _strokeWidth.DecimalPlaces = 1;

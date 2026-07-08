@@ -87,7 +87,7 @@ internal sealed class DrawSettingsPanel : UserControl
         _gridSize.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleNumeric(_gridSize);
         _gridSize.ValueChanged += (_, _) => UpdateSettings();
-        AddField(content, "Grid size", _gridSize, 2);
+        AddField(content, "Grid vu", _gridSize, 2);
 
         var angle = new TableLayoutPanel
         {
