@@ -19,9 +19,6 @@ internal sealed class MainForm : Form
     private readonly Label _selectedLayer = InspectorLabel("Layer: -");
     private readonly Label _selectedAtoms = InspectorLabel("Atoms: -");
     private readonly Label _objectMetric = InspectorLabel("Objects: 0");
-    private readonly TextBox _layerInput = InputBox("1000");
-    private readonly TextBox _objectInput = InputBox("100000");
-    private readonly TextBox _atomInput = InputBox("100000000");
     private readonly ComboBox _color = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
     private readonly NumericUpDown _stroke = new() { Minimum = 0, Maximum = 12, Value = 2, Width = 160 };
     private readonly Button _play = new() { Text = "Play", Width = 72 };
@@ -264,7 +261,7 @@ internal sealed class MainForm : Form
         _basicInspectorPage.BackColor = Theme.Panel;
         _basicInspectorPage.AutoScroll = true;
         _objectInspector.Dock = DockStyle.Top;
-        _objectInspector.Height = 344;
+        _objectInspector.Height = 242;
         _objectInspector.BackColor = Theme.Panel;
         BuildInspector(_objectInspector);
         _drawSettingsPanel.Dock = DockStyle.Top;
@@ -309,20 +306,16 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 9,
+            RowCount = 6,
             Padding = new Padding(0, 4, 0, 0)
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i is >= 3 and <= 6 ? 28 : 34));
+        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i <= 3 ? 28 : 34));
         parent.Controls.Add(content);
         content.BringToFront();
 
-        AddField(content, "Layer count", _layerInput, 0);
-        AddField(content, "Object count", _objectInput, 1);
-        AddField(content, "Virtual atoms", _atomInput, 2);
-
-        var row = 3;
+        var row = 0;
         foreach (var label in new[] { _selected, _selectedLayer, _selectedAtoms, _objectMetric })
         {
             label.Dock = DockStyle.Fill;
@@ -337,12 +330,12 @@ internal sealed class MainForm : Form
         _color.Dock = DockStyle.Fill;
         _color.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleComboBox(_color);
-        AddField(content, "Active color", _color, 7);
+        AddField(content, "Active color", _color, 4);
 
         _stroke.Dock = DockStyle.Fill;
         _stroke.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleNumeric(_stroke);
-        AddField(content, "Stroke width", _stroke, 8);
+        AddField(content, "Stroke width", _stroke, 5);
     }
 
     private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
@@ -493,7 +486,7 @@ internal sealed class MainForm : Form
         Cursor = Cursors.WaitCursor;
         try
         {
-            _scene.Generate(ParseInt(_layerInput.Text, 1000), ParseInt(_objectInput.Text, 100000), ParseLong(_atomInput.Text, 100000000));
+            _scene.Generate(1000, 100000, 100000000);
             _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
             SyncFrameSliderRange();
             SetFrame(0);
@@ -1029,14 +1022,6 @@ internal sealed class MainForm : Form
         AutoEllipsis = true,
         Margin = new Padding(0, 3, 8, 3)
     };
-    private static TextBox InputBox(string text)
-    {
-        var box = new TextBox { Text = text, Width = 190, Height = 28 };
-        Theme.StyleTextBox(box);
-        return box;
-    }
-    private static int ParseInt(string text, int fallback) => int.TryParse(text, out var value) ? value : fallback;
-    private static long ParseLong(string text, long fallback) => long.TryParse(text, out var value) ? value : fallback;
     private static float Distance(PointF a, PointF b) => MathF.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
     private static bool ContainsFocusedEditor(Control control)
     {
