@@ -431,7 +431,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         _brushCache.Clear();
     }
 
-    private static D2DRect Rect(float x, float y, float width, float height) => new(x, y, x + width, y + height);
+    private static D2DRect Rect(float x, float y, float width, float height) => new(x, y, width, height);
 
     private static D2DColor ToD2D(GdiColor color) => new(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f);
 
