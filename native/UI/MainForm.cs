@@ -131,7 +131,7 @@ internal sealed class MainForm : Form
         AddTool(tools, "●", ToolMode.Fill, "Fill Tool");
         RefreshToolButtons();
 
-        var inspector = new Panel { Dock = DockStyle.Right, Width = 306, BackColor = Theme.Panel, Padding = new Padding(12) };
+        var inspector = new Panel { Dock = DockStyle.Right, Width = 340, BackColor = Theme.Panel, Padding = new Padding(12), AutoScroll = true };
         body.Controls.Add(inspector);
         BuildInspectorPages(inspector);
 
@@ -225,11 +225,13 @@ internal sealed class MainForm : Form
     {
         _basicInspectorPage.Dock = DockStyle.Fill;
         _basicInspectorPage.BackColor = Theme.Panel;
+        _basicInspectorPage.AutoScroll = true;
         _objectInspector.Dock = DockStyle.Top;
-        _objectInspector.Height = 270;
+        _objectInspector.Height = 344;
         _objectInspector.BackColor = Theme.Panel;
         BuildInspector(_objectInspector);
-        _drawSettingsPanel.Dock = DockStyle.Fill;
+        _drawSettingsPanel.Dock = DockStyle.Top;
+        _drawSettingsPanel.Height = 334;
         _basicInspectorPage.Controls.Add(_drawSettingsPanel);
         _basicInspectorPage.Controls.Add(_objectInspector);
 
@@ -251,54 +253,68 @@ internal sealed class MainForm : Form
 
     private void BuildInspector(Control parent)
     {
-        var y = 8;
-        parent.Controls.Add(Theme.Label("Inspector", 0, y, 260, Theme.Text, Theme.UiFont(10, FontStyle.Bold)));
-        y += 34;
-        AddField(parent, "Layer count", _layerInput, ref y);
-        AddField(parent, "Object count", _objectInput, ref y);
-        AddField(parent, "Virtual atoms", _atomInput, ref y);
-        y += 8;
+        parent.Padding = new Padding(0, 4, 0, 8);
+
+        var title = new Label
+        {
+            Text = "Inspector",
+            Dock = DockStyle.Top,
+            Height = 30,
+            ForeColor = Theme.Text,
+            BackColor = Theme.Panel,
+            Font = Theme.UiFont(10, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        parent.Controls.Add(title);
+
+        var content = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 9,
+            Padding = new Padding(0, 4, 0, 0)
+        };
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i is >= 3 and <= 6 ? 28 : 34));
+        parent.Controls.Add(content);
+        content.BringToFront();
+
+        AddField(content, "Layer count", _layerInput, 0);
+        AddField(content, "Object count", _objectInput, 1);
+        AddField(content, "Virtual atoms", _atomInput, 2);
+
+        var row = 3;
         foreach (var label in new[] { _selected, _selectedLayer, _selectedAtoms, _objectMetric })
         {
-            label.Left = 0;
-            label.Top = y;
-            label.Width = 250;
-            parent.Controls.Add(label);
-            y += 26;
+            label.Dock = DockStyle.Fill;
+            label.Margin = new Padding(0, 0, 0, 3);
+            content.Controls.Add(label, 0, row);
+            content.SetColumnSpan(label, 2);
+            row++;
         }
 
-        y += 8;
-        parent.Controls.Add(Theme.Label("Active color", 0, y, 240, Theme.Muted));
-        y += 24;
         _color.Items.AddRange(["Teal", "Amber", "Coral", "Violet", "White"]);
         _color.SelectedIndex = 0;
-        _color.Left = 0;
-        _color.Top = y;
-        _color.Width = 190;
-        _color.Height = 30;
+        _color.Dock = DockStyle.Fill;
+        _color.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleComboBox(_color);
-        parent.Controls.Add(_color);
-        y += 42;
-        parent.Controls.Add(Theme.Label("Stroke width", 0, y, 240, Theme.Muted));
-        y += 24;
-        _stroke.Left = 0;
-        _stroke.Top = y;
-        _stroke.Width = 190;
-        _stroke.Height = 30;
+        AddField(content, "Active color", _color, 7);
+
+        _stroke.Dock = DockStyle.Fill;
+        _stroke.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleNumeric(_stroke);
-        parent.Controls.Add(_stroke);
+        AddField(content, "Stroke width", _stroke, 8);
     }
 
-    private static void AddField(Control parent, string label, TextBox box, ref int y)
+    private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
     {
-        parent.Controls.Add(Theme.Label(label, 0, y, 240, Theme.Muted));
-        y += 22;
-        box.Left = 0;
-        box.Top = y;
-        box.Width = 190;
-        box.Height = 28;
-        parent.Controls.Add(box);
-        y += 38;
+        parent.Controls.Add(FieldLabel(label), 0, row);
+        input.Dock = DockStyle.Fill;
+        input.Margin = new Padding(0, 3, 0, 3);
+        input.MinimumSize = new Size(120, 28);
+        parent.Controls.Add(input, 1, row);
     }
 
     private void AddTool(FlowLayoutPanel panel, string text, ToolMode tool, string displayName)
@@ -831,7 +847,18 @@ internal sealed class MainForm : Form
     }
 
     private static Label MetricLabel(string text, int width) => new() { Text = text, Left = 8, Top = 10, Width = width, Height = 22, ForeColor = Theme.Muted, BackColor = Theme.Top, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
-    private static Label InspectorLabel(string text) => new() { Text = text, Height = 24, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private static Label InspectorLabel(string text) => new() { Text = text, Height = 26, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private static Label FieldLabel(string text) => new()
+    {
+        Text = text,
+        Dock = DockStyle.Fill,
+        ForeColor = Theme.Muted,
+        BackColor = Theme.Panel,
+        Font = Theme.UiFont(),
+        TextAlign = ContentAlignment.MiddleLeft,
+        AutoEllipsis = true,
+        Margin = new Padding(0, 3, 8, 3)
+    };
     private static TextBox InputBox(string text)
     {
         var box = new TextBox { Text = text, Width = 190, Height = 28 };

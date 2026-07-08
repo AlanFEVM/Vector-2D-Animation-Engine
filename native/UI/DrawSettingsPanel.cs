@@ -21,9 +21,8 @@ internal sealed class DrawSettingsPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(10);
-        Width = 250;
-        Height = 336;
+        Padding = new Padding(0, 12, 0, 8);
+        MinimumSize = new Size(260, 320);
 
         BuildUi();
         ReadSettings();
@@ -31,49 +30,86 @@ internal sealed class DrawSettingsPanel : UserControl
 
     private void BuildUi()
     {
-        Controls.Add(new Label { Text = "Draw Settings", Left = 10, Top = 8, Width = 210, Height = 24, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(10, FontStyle.Bold) });
+        var title = new Label
+        {
+            Text = "Draw Settings",
+            Dock = DockStyle.Top,
+            Height = 30,
+            ForeColor = Theme.Text,
+            BackColor = Theme.Panel,
+            Font = Theme.UiFont(10, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        Controls.Add(title);
 
-        var y = 42;
-        Controls.Add(Theme.Label("Shape", 10, y, 210, Theme.Muted));
-        y += 24;
-        _shape.Left = 10;
-        _shape.Top = y;
-        _shape.Width = 180;
+        var content = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 6,
+            Padding = new Padding(0, 4, 0, 0)
+        };
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        Controls.Add(content);
+        content.BringToFront();
+
         _shape.Items.AddRange(Enum.GetNames<ShapeKind>());
+        _shape.Dock = DockStyle.Fill;
+        _shape.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleComboBox(_shape);
         _shape.SelectedIndexChanged += (_, _) => UpdateSettings();
-        Controls.Add(_shape);
+        AddField(content, "Shape", _shape, 0);
 
-        y += 42;
-        Controls.Add(Theme.Label("Snapping", 10, y, 210, Theme.Muted));
-        y += 26;
-        AddCheck(_snap, 10, y);
-        AddCheck(_snapGrid, 82, y);
-        AddCheck(_snapObjects, 154, y);
+        var snapping = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            Margin = new Padding(0, 2, 0, 2)
+        };
+        AddCheck(snapping, _snap);
+        AddCheck(snapping, _snapGrid);
+        AddCheck(snapping, _snapObjects);
+        AddCheck(snapping, _adhesion);
+        AddCheck(snapping, _alignment);
+        AddField(content, "Snapping", snapping, 1);
 
-        y += 32;
-        AddCheck(_adhesion, 10, y);
-        AddCheck(_alignment, 112, y);
-
-        y += 38;
-        Controls.Add(Theme.Label("Grid size", 10, y, 110, Theme.Muted));
-        _gridSize.Left = 118;
-        _gridSize.Top = y;
+        _gridSize.Dock = DockStyle.Fill;
+        _gridSize.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleNumeric(_gridSize);
         _gridSize.ValueChanged += (_, _) => UpdateSettings();
-        Controls.Add(_gridSize);
+        AddField(content, "Grid size", _gridSize, 2);
 
-        y += 40;
-        AddCheck(_angleSnap, 10, y);
-        Controls.Add(Theme.Label("Step", 82, y, 42, Theme.Muted));
-        _angleStep.Left = 124;
-        _angleStep.Top = y;
+        var angle = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        AddCheck(_angleSnap);
+        angle.Controls.Add(_angleSnap, 0, 0);
+        _angleStep.Dock = DockStyle.Fill;
+        _angleStep.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleNumeric(_angleStep);
         _angleStep.ValueChanged += (_, _) => UpdateSettings();
-        Controls.Add(_angleStep);
+        angle.Controls.Add(_angleStep, 1, 0);
+        AddField(content, "Angle snap", angle, 3);
 
-        y += 40;
-        AddCheck(_keepRatio, 10, y);
+        AddCheck(_keepRatio);
+        AddField(content, "Aspect", _keepRatio, 4);
     }
 
     private void ReadSettings()
@@ -108,12 +144,33 @@ internal sealed class DrawSettingsPanel : UserControl
         _settings.NotifyChanged();
     }
 
-    private void AddCheck(CheckBox checkBox, int left, int top)
+    private void AddCheck(FlowLayoutPanel parent, CheckBox checkBox)
     {
-        checkBox.Left = left;
-        checkBox.Top = top;
+        AddCheck(checkBox);
+        parent.Controls.Add(checkBox);
+    }
+
+    private void AddCheck(CheckBox checkBox)
+    {
         checkBox.CheckedChanged += (_, _) => UpdateSettings();
-        Controls.Add(checkBox);
+    }
+
+    private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
+    {
+        parent.Controls.Add(new Label
+        {
+            Text = label,
+            Dock = DockStyle.Fill,
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Panel,
+            Font = Theme.UiFont(),
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
+            Margin = new Padding(0, 3, 8, 3)
+        }, 0, row);
+
+        input.Dock = DockStyle.Fill;
+        parent.Controls.Add(input, 1, row);
     }
 
     private static CheckBox CheckBox(string text)
@@ -121,12 +178,14 @@ internal sealed class DrawSettingsPanel : UserControl
         return new CheckBox
         {
             Text = text,
-            Width = 92,
-            Height = 24,
+            AutoSize = true,
+            MinimumSize = new Size(78, 26),
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
             FlatStyle = FlatStyle.Flat,
-            Font = Theme.UiFont()
+            Font = Theme.UiFont(),
+            Margin = new Padding(0, 0, 10, 4),
+            TextAlign = ContentAlignment.MiddleLeft
         };
     }
 }
