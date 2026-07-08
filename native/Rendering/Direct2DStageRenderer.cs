@@ -229,20 +229,22 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var h = Math.Max(0.75f, scene.Height[i] * stage.Zoom);
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
         var brush = BrushFor(scene.Argb[i]);
+        var strokeBrush = BrushFor(scene.StrokeArgb.Length > i ? scene.StrokeArgb[i] : GdiColor.FromArgb(238, 242, 241).ToArgb());
+        var screenStroke = Math.Max(1.5f, scene.Stroke[i] * stage.Zoom);
 
         if (shape == ShapeKind.Line)
         {
-            DrawBezierLine(stage, i, brush, Math.Max(1, h));
+            if (scene.Stroke[i] > 0) DrawBezierLine(stage, i, strokeBrush, screenStroke);
             return;
         }
 
         var old = _target!.Transform;
         _target.Transform = Matrix3x2.CreateRotation(scene.Angle[i], new Vector2(screen.X, screen.Y));
-        DrawLocalShape(shape, brush, scene.Stroke[i], screen.X, screen.Y, w, h);
+        DrawLocalShape(shape, brush, strokeBrush, scene.Stroke[i], screenStroke, screen.X, screen.Y, w, h);
         _target.Transform = old;
     }
 
-    private void DrawLocalShape(ShapeKind shape, ID2D1SolidColorBrush brush, float stroke, float cx, float cy, float w, float h)
+    private void DrawLocalShape(ShapeKind shape, ID2D1SolidColorBrush brush, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke, float cx, float cy, float w, float h)
     {
         var rect = Rect(cx - w * 0.5f, cy - h * 0.5f, w, h);
         switch (shape)
@@ -251,25 +253,25 @@ internal sealed class Direct2DStageRenderer : IDisposable
                 var center = new Vector2(cx, cy);
                 var ellipse = new Ellipse(in center, w * 0.5f, h * 0.5f);
                 _target!.FillEllipse(ellipse, brush);
-                if (stroke > 0 && w > 4 && h > 4) _target.DrawEllipse(ellipse, StrokeBrush(), 1);
+                if (stroke > 0 && w > 4 && h > 4) _target.DrawEllipse(ellipse, strokeBrush, screenStroke);
                 break;
             case ShapeKind.Triangle:
-                DrawPolygon(RegularPolygonPoints(3, cx, cy, w, h, -MathF.PI / 2), brush, stroke);
+                DrawPolygon(RegularPolygonPoints(3, cx, cy, w, h, -MathF.PI / 2), brush, strokeBrush, stroke, screenStroke);
                 break;
             case ShapeKind.Polygon:
-                DrawPolygon(RegularPolygonPoints(6, cx, cy, w, h, -MathF.PI / 2), brush, stroke);
+                DrawPolygon(RegularPolygonPoints(6, cx, cy, w, h, -MathF.PI / 2), brush, strokeBrush, stroke, screenStroke);
                 break;
             case ShapeKind.Star:
-                DrawPolygon(StarPoints(5, cx, cy, w, h, -MathF.PI / 2), brush, stroke);
+                DrawPolygon(StarPoints(5, cx, cy, w, h, -MathF.PI / 2), brush, strokeBrush, stroke, screenStroke);
                 break;
             default:
                 _target!.FillRectangle(in rect, brush);
-                if (stroke > 0 && w > 4 && h > 4) _target.DrawRectangle(in rect, StrokeBrush(), 1);
+                if (stroke > 0 && w > 4 && h > 4) _target.DrawRectangle(in rect, strokeBrush, screenStroke);
                 break;
         }
     }
 
-    private void DrawPolygon(Vector2[] points, ID2D1SolidColorBrush fill, float stroke)
+    private void DrawPolygon(Vector2[] points, ID2D1SolidColorBrush fill, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke)
     {
         using var path = _factory!.CreatePathGeometry();
         using (var sink = path.Open())
@@ -281,7 +283,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         }
 
         _target!.FillGeometry(path, fill);
-        if (stroke > 0) _target.DrawGeometry(path, StrokeBrush(), 1);
+        if (stroke > 0) _target.DrawGeometry(path, strokeBrush, screenStroke);
     }
 
     private void DrawGrid(StageControl stage)
@@ -333,7 +335,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var center = stage.WorldToScreen((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
         var w = Math.Max(2, Math.Abs(dx) * stage.Zoom);
         var h = Math.Max(2, Math.Abs(dy) * stage.Zoom);
-        DrawLocalShape(stage.DrawingPreviewShape, fill, 0, center.X, center.Y, w, h);
+        DrawLocalShape(stage.DrawingPreviewShape, fill, stroke, 0, 0, center.X, center.Y, w, h);
         var rect = Rect(center.X - w * 0.5f, center.Y - h * 0.5f, w, h);
         _target!.DrawRectangle(in rect, stroke, Math.Max(1.5f, stage.DrawingPreviewStroke * stage.Zoom));
     }
@@ -414,8 +416,6 @@ internal sealed class Direct2DStageRenderer : IDisposable
         _brushCache[argb] = brush;
         return brush;
     }
-
-    private ID2D1SolidColorBrush StrokeBrush() => BrushFor(GdiColor.FromArgb(210, 10, 12, 14).ToArgb());
 
     private void ResetTarget()
     {

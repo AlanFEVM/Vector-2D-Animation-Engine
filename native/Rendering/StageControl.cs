@@ -306,10 +306,12 @@ internal sealed class StageControl : Control
         var rect = new RectangleF(screen.X - w * 0.5f, screen.Y - h * 0.5f, w, h);
         var brush = BrushFor(scene.Argb[i]);
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
+        var strokeColor = StrokeColorFor(i);
+        var screenStroke = Math.Max(1.5f, scene.Stroke[i] * Zoom);
 
         if (shape == ShapeKind.Line)
         {
-            DrawBezierLine(g, i, brush, Math.Max(1, h));
+            if (scene.Stroke[i] > 0) DrawBezierLine(g, i, BrushFor(strokeColor.ToArgb()), screenStroke);
             return;
         }
 
@@ -318,50 +320,81 @@ internal sealed class StageControl : Control
             var state = g.Save();
             g.TranslateTransform(screen.X, screen.Y);
             g.RotateTransform(scene.Angle[i] * 57.29578f);
-            DrawLocalShape(g, shape, brush, scene.Stroke[i], w, h);
+            DrawLocalShape(g, shape, brush, strokeColor, scene.Stroke[i], screenStroke, w, h);
             g.Restore(state);
             return;
         }
 
         g.FillRectangle(brush, rect);
-        if (scene.Stroke[i] > 0 && w > 4 && h > 4) g.DrawRectangle(_strokePen, rect.X, rect.Y, rect.Width, rect.Height);
+        if (scene.Stroke[i] > 0 && w > 4 && h > 4)
+        {
+            using var pen = StrokePen(strokeColor, screenStroke);
+            g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+        }
     }
 
-    private void DrawLocalShape(Graphics g, ShapeKind shape, Brush brush, float stroke, float w, float h)
+    private void DrawLocalShape(Graphics g, ShapeKind shape, Brush brush, Color strokeColor, float stroke, float screenStroke, float w, float h)
     {
         var rect = new RectangleF(-w * 0.5f, -h * 0.5f, w, h);
         switch (shape)
         {
             case ShapeKind.Ellipse:
                 g.FillEllipse(brush, rect);
-                if (stroke > 0 && w > 4 && h > 4) g.DrawEllipse(_strokePen, rect);
+                if (stroke > 0 && w > 4 && h > 4)
+                {
+                    using var pen = StrokePen(strokeColor, screenStroke);
+                    g.DrawEllipse(pen, rect);
+                }
                 break;
             case ShapeKind.Line:
-                using (var linePen = new Pen(((SolidBrush)brush).Color, Math.Max(1, h)))
+                using (var linePen = StrokePen(strokeColor, screenStroke))
                 {
                     g.DrawLine(linePen, -w * 0.5f, 0, w * 0.5f, 0);
                 }
                 break;
             case ShapeKind.Triangle:
-                DrawPolygonShape(g, brush, stroke, RegularPolygonPoints(3, w, h, -MathF.PI / 2));
+                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, RegularPolygonPoints(3, w, h, -MathF.PI / 2));
                 break;
             case ShapeKind.Polygon:
-                DrawPolygonShape(g, brush, stroke, RegularPolygonPoints(6, w, h, -MathF.PI / 2));
+                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, RegularPolygonPoints(6, w, h, -MathF.PI / 2));
                 break;
             case ShapeKind.Star:
-                DrawPolygonShape(g, brush, stroke, StarPoints(5, w, h, -MathF.PI / 2));
+                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, StarPoints(5, w, h, -MathF.PI / 2));
                 break;
             default:
                 g.FillRectangle(brush, rect);
-                if (stroke > 0 && w > 4 && h > 4) g.DrawRectangle(_strokePen, rect.X, rect.Y, rect.Width, rect.Height);
+                if (stroke > 0 && w > 4 && h > 4)
+                {
+                    using var pen = StrokePen(strokeColor, screenStroke);
+                    g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+                }
                 break;
         }
     }
 
-    private void DrawPolygonShape(Graphics g, Brush brush, float stroke, PointF[] points)
+    private static void DrawPolygonShape(Graphics g, Brush brush, Color strokeColor, float stroke, float screenStroke, PointF[] points)
     {
         g.FillPolygon(brush, points);
-        if (stroke > 0) g.DrawPolygon(_strokePen, points);
+        if (stroke <= 0) return;
+        using var pen = StrokePen(strokeColor, screenStroke);
+        g.DrawPolygon(pen, points);
+    }
+
+    private Color StrokeColorFor(int objectIndex)
+    {
+        return Scene.StrokeArgb.Length > objectIndex
+            ? Color.FromArgb(Scene.StrokeArgb[objectIndex])
+            : Color.FromArgb(238, 242, 241);
+    }
+
+    private static Pen StrokePen(Color color, float width)
+    {
+        return new Pen(color, Math.Max(1.5f, width))
+        {
+            LineJoin = LineJoin.Round,
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
     }
 
     private static PointF[] RegularPolygonPoints(int sides, float w, float h, float startAngle)

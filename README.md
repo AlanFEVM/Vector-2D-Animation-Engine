@@ -42,10 +42,11 @@ generated on startup; use `Run Stress Scene` when you explicitly want to benchma
 - Animated tool-name hints when hovering drawing tools.
 - Selection highlight with boundary handles for filled shapes.
 - Bezier control handle editing for selected lines.
+- Delete key removes the currently selected drawing object.
 - Left panel tabs for layers plus Library/Vault asset storage.
 - Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.
 - Draw settings panel for snap, grid snap, object snap placeholder, tight fit, align, angle snap, grid size, and aspect ratio.
-- Material editor panel for fill, stroke, stroke width, and opacity.
+- Material editor panel for fill, stroke color, stroke width, and opacity.
 - Hierarchy panel showing scene, layers, and object placeholders/tree entries.
 - Shape-aware scene model via `ShapeKind`.
 

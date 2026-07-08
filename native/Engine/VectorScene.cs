@@ -36,6 +36,7 @@ internal sealed class VectorScene
     public ShapeKind[] ShapeKind { get; private set; } = [];
     public uint[] AtomCount { get; private set; } = [];
     public int[] Argb { get; private set; } = [];
+    public int[] StrokeArgb { get; private set; } = [];
 
     public int TileColumnCount => TileColumns;
     public int TileRowCount => TileRows;
@@ -87,6 +88,7 @@ internal sealed class VectorScene
         ShapeKind = [];
         AtomCount = [];
         Argb = [];
+        StrokeArgb = [];
         ClearSummaries();
         RebuildSpatialIndex();
     }
@@ -127,6 +129,7 @@ internal sealed class VectorScene
         ShapeKind = GC.AllocateUninitializedArray<ShapeKind>(ObjectCount);
         AtomCount = GC.AllocateUninitializedArray<uint>(ObjectCount);
         Argb = GC.AllocateUninitializedArray<int>(ObjectCount);
+        StrokeArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
 
         var avgAtoms = (double)VirtualAtomCount / ObjectCount;
         var columns = (int)Math.Ceiling(Math.Sqrt(ObjectCount * 1.7));
@@ -165,6 +168,7 @@ internal sealed class VectorScene
             CurveControlY[i] = Y[i];
             AtomCount[i] = (uint)Math.Max(3, Math.Floor(avgAtoms * (0.18 + rng.NextDouble() * rng.NextDouble() * 2.35)));
             Argb[i] = color.ToArgb();
+            StrokeArgb[i] = Color.FromArgb(235, 238, 242, 241).ToArgb();
             MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[i], Height[i]) * 0.5f);
 
             AddObjectToTileSummary(i, color, tileR, tileG, tileB);
@@ -177,6 +181,11 @@ internal sealed class VectorScene
     }
 
     public int AddObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, uint atoms, ShapeKind? shapeKind = null)
+    {
+        return AddObject(layer, center, size, angle, stroke, color, Color.FromArgb(238, 242, 241), atoms, shapeKind);
+    }
+
+    public int AddObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
     {
         var index = ObjectCount;
         ObjectCount++;
@@ -195,9 +204,40 @@ internal sealed class VectorScene
         CurveControlY[index] = center.Y;
         AtomCount[index] = Math.Max(3, atoms);
         Argb[index] = color.ToArgb();
+        StrokeArgb[index] = strokeColor.ToArgb();
         MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[index], Height[index]) * 0.5f);
         RebuildSpatialIndex();
         return index;
+    }
+
+    public bool RemoveObjectAt(int index)
+    {
+        if ((uint)index >= ObjectCount) return false;
+
+        VirtualAtomCount = Math.Max(0, VirtualAtomCount - AtomCount[index]);
+        var last = ObjectCount - 1;
+        if (index != last)
+        {
+            ObjectLayer[index] = ObjectLayer[last];
+            X[index] = X[last];
+            Y[index] = Y[last];
+            Width[index] = Width[last];
+            Height[index] = Height[last];
+            Angle[index] = Angle[last];
+            Stroke[index] = Stroke[last];
+            CurveControlX[index] = CurveControlX[last];
+            CurveControlY[index] = CurveControlY[last];
+            ShapeKind[index] = ShapeKind[last];
+            AtomCount[index] = AtomCount[last];
+            Argb[index] = Argb[last];
+            StrokeArgb[index] = StrokeArgb[last];
+        }
+
+        ObjectCount--;
+        ResizeObjectArrays();
+        RebuildGeometryIndex();
+        RebuildSummaries();
+        return true;
     }
 
     public void RebuildGeometryIndex()
@@ -300,6 +340,27 @@ internal sealed class VectorScene
         Array.Clear(OverviewCount);
         Array.Clear(OverviewAtoms);
         Array.Clear(OverviewArgb);
+    }
+
+    private void RebuildSummaries()
+    {
+        ClearSummaries();
+        var tileR = new long[TileCount.Length];
+        var tileG = new long[TileCount.Length];
+        var tileB = new long[TileCount.Length];
+        var overviewR = new long[OverviewCount.Length];
+        var overviewG = new long[OverviewCount.Length];
+        var overviewB = new long[OverviewCount.Length];
+
+        for (var i = 0; i < ObjectCount; i++)
+        {
+            var color = Color.FromArgb(Argb[i]);
+            AddObjectToTileSummary(i, color, tileR, tileG, tileB);
+            AddObjectToOverviewSummary(i, color, overviewR, overviewG, overviewB);
+        }
+
+        FinalizeTileSummary(tileR, tileG, tileB);
+        FinalizeOverviewSummary(overviewR, overviewG, overviewB);
     }
 
     private int CellForWorld(float x, float y)
@@ -425,6 +486,7 @@ internal sealed class VectorScene
         var shapeKind = ShapeKind;
         var atomCount = AtomCount;
         var argb = Argb;
+        var strokeArgb = StrokeArgb;
         Array.Resize(ref objectLayer, ObjectCount);
         Array.Resize(ref x, ObjectCount);
         Array.Resize(ref y, ObjectCount);
@@ -437,6 +499,7 @@ internal sealed class VectorScene
         Array.Resize(ref shapeKind, ObjectCount);
         Array.Resize(ref atomCount, ObjectCount);
         Array.Resize(ref argb, ObjectCount);
+        Array.Resize(ref strokeArgb, ObjectCount);
         ObjectLayer = objectLayer;
         X = x;
         Y = y;
@@ -449,6 +512,7 @@ internal sealed class VectorScene
         ShapeKind = shapeKind;
         AtomCount = atomCount;
         Argb = argb;
+        StrokeArgb = strokeArgb;
     }
 
     private static ShapeKind InferShapeKind(SizeF size, uint atoms)

@@ -88,6 +88,7 @@ VectorAnimationEngine.exe
 - 拖动边界角点可以调整对象边界尺寸。
 - 选中线条后，会显示贝塞尔控制点。
 - 拖动贝塞尔控制点可以把线条调整为曲线。
+- 按 Delete：删除当前选中的绘制对象。
 
 选择命中支持填色对象和线条。线条按贝塞尔曲线距离判断，填色对象按对象边界判断。
 
@@ -96,13 +97,15 @@ VectorAnimationEngine.exe
 在 `Materials` 工作区可以调整：
 
 - Fill：填色。
-- Stroke：描边颜色。
-- Stroke Width：描边宽度。
+- Stroke：描边颜色。新绘制对象会保存自己的描边颜色。
+- Stroke Width：描边宽度。新绘制对象和当前选中对象都会按该宽度渲染描边。
 - Opacity：透明度。
 
 使用 Fill Tool 点击已有对象，可以把当前材质颜色应用到该对象。
 
 如果已选中对象，在材质面板调整参数会直接影响当前对象。
+
+`Basic Drawing` 工作区右侧检查器中的 `Active color` 和 `Stroke width` 会同步到当前材质。调整 `Stroke width` 后，后续绘制的形状会使用新的描边粗细；如果当前已有对象被选中，也会立即更新该对象描边。
 
 ## 左侧面板
 

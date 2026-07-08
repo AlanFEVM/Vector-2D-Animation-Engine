@@ -57,6 +57,7 @@ internal sealed class MainForm : Form
     private bool _geometryDirty;
     private double _smoothedFps;
     private bool _syncingFrame;
+    private bool _updatingStrokeInput;
     private bool _viewPanning;
     private bool _viewZooming;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
@@ -69,6 +70,7 @@ internal sealed class MainForm : Form
         MinimumSize = new Size(1120, 720);
         BackColor = Theme.App;
         Font = Theme.UiFont();
+        KeyPreview = true;
 
         _stage = new StageControl(_scene) { Dock = DockStyle.Fill };
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = 192 };
@@ -395,11 +397,27 @@ internal sealed class MainForm : Form
         };
         _materialEditor.MaterialChanged += (_, e) =>
         {
-            _stroke.Value = (decimal)Math.Clamp(e.StrokeWidth, (float)_stroke.Minimum, (float)_stroke.Maximum);
+            _updatingStrokeInput = true;
+            try
+            {
+                _stroke.Value = (decimal)Math.Clamp(e.StrokeWidth, (float)_stroke.Minimum, (float)_stroke.Maximum);
+            }
+            finally
+            {
+                _updatingStrokeInput = false;
+            }
+
             if (_selectedObject >= 0 && _selectedObject < _scene.ObjectCount)
             {
                 _scene.Argb[_selectedObject] = Color.FromArgb((int)Math.Clamp(e.Opacity * 255, 0, 255), e.Fill).ToArgb();
                 _scene.Stroke[_selectedObject] = e.StrokeWidth;
+                _scene.StrokeArgb[_selectedObject] = e.Stroke.ToArgb();
+                if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line)
+                {
+                    _scene.Height[_selectedObject] = Math.Max(3, e.StrokeWidth + 2);
+                    _scene.RebuildGeometryIndex();
+                }
+
                 _stage.Invalidate();
             }
         };
@@ -453,6 +471,12 @@ internal sealed class MainForm : Form
                 RefreshLayers();
                 _stage.Invalidate();
             }
+        };
+        _color.SelectedIndexChanged += (_, _) => _materialEditor.Fill = PaletteColor(_color.SelectedIndex);
+        _stroke.ValueChanged += (_, _) =>
+        {
+            if (_updatingStrokeInput) return;
+            _materialEditor.StrokeWidth = (float)_stroke.Value;
         };
         _stage.MouseWheel += (_, e) =>
         {
@@ -575,6 +599,12 @@ internal sealed class MainForm : Form
         }
 
         _stage.Invalidate();
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Delete && !ContainsFocusedEditor(this) && DeleteSelectedObject()) return true;
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     private void SyncFrameSliderRange()
@@ -730,6 +760,22 @@ internal sealed class MainForm : Form
         _stage.Capture = false;
     }
 
+    private bool DeleteSelectedObject()
+    {
+        if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount) return false;
+        var deletedIndex = _selectedObject;
+        if (!_scene.RemoveObjectAt(deletedIndex)) return false;
+
+        _selectedObject = deletedIndex < _scene.ObjectCount ? deletedIndex : -1;
+        _stage.SelectedObject = _selectedObject;
+        _geometryDirty = false;
+        _stage.ClearDrawingPreview();
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+        return true;
+    }
+
     private void BeginGlobalViewDrag(MouseEventArgs e)
     {
         _stage.Capture = true;
@@ -850,7 +896,7 @@ internal sealed class MainForm : Form
         if (tool == ToolMode.Line)
         {
             width = Math.Max(4, Distance(start, end));
-            height = Math.Max(3, (float)_stroke.Value + 2);
+            height = Math.Max(3, (float)_materialEditor.StrokeWidth + 2);
             angle = _drawSettings.SnapAngle(MathF.Atan2(end.Y - start.Y, end.X - start.X));
             shape = ShapeKind.Line;
         }
@@ -862,7 +908,7 @@ internal sealed class MainForm : Form
             angle = 0;
         }
 
-        _selectedObject = _scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, (float)_materialEditor.StrokeWidth, ActiveColor(), tool == ToolMode.Line ? 6u : 24u, shape);
+        _selectedObject = _scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, (float)_materialEditor.StrokeWidth, ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape);
         _stage.SelectedObject = _selectedObject;
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
@@ -884,16 +930,30 @@ internal sealed class MainForm : Form
         _selected.Text = $"Selected: #{_selectedObject}";
         _selectedLayer.Text = $"Layer: {_scene.LayerNames[layer]}";
         _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(_scene.AtomCount[_selectedObject])}";
+        var fill = Color.FromArgb(_scene.Argb[_selectedObject]);
+        var stroke = _scene.StrokeArgb.Length > _selectedObject ? Color.FromArgb(_scene.StrokeArgb[_selectedObject]) : ActiveStrokeColor();
+        _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, _scene.Stroke[_selectedObject], fill.A / 255f);
+        _updatingStrokeInput = true;
+        try
+        {
+            _stroke.Value = (decimal)Math.Clamp(_scene.Stroke[_selectedObject], (float)_stroke.Minimum, (float)_stroke.Maximum);
+        }
+        finally
+        {
+            _updatingStrokeInput = false;
+        }
     }
 
     private Color ActiveColor()
     {
-        if (_workspaceTabs.SelectedView == WorkspaceView.Materials || _materialEditor is not null)
-        {
-            return Color.FromArgb((int)Math.Clamp(_materialEditor.Opacity * 255, 0, 255), _materialEditor.Fill);
-        }
+        return Color.FromArgb((int)Math.Clamp(_materialEditor.Opacity * 255, 0, 255), _materialEditor.Fill);
+    }
 
-        return _color.SelectedIndex switch
+    private Color ActiveStrokeColor() => _materialEditor.Stroke;
+
+    private static Color PaletteColor(int selectedIndex)
+    {
+        return selectedIndex switch
         {
             1 => Color.FromArgb(213, 151, 74),
             2 => Color.FromArgb(200, 107, 99),
@@ -978,4 +1038,15 @@ internal sealed class MainForm : Form
     private static int ParseInt(string text, int fallback) => int.TryParse(text, out var value) ? value : fallback;
     private static long ParseLong(string text, long fallback) => long.TryParse(text, out var value) ? value : fallback;
     private static float Distance(PointF a, PointF b) => MathF.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+    private static bool ContainsFocusedEditor(Control control)
+    {
+        if (!control.ContainsFocus) return false;
+        if (control is TextBoxBase or NumericUpDown or ComboBox) return true;
+        foreach (Control child in control.Controls)
+        {
+            if (ContainsFocusedEditor(child)) return true;
+        }
+
+        return false;
+    }
 }
