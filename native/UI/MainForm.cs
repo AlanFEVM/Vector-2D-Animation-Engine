@@ -552,6 +552,7 @@ internal sealed class MainForm : Form
 
     private void Generate()
     {
+        AppLog.Info("Generating stress scene");
         Cursor = Cursors.WaitCursor;
         try
         {
@@ -565,6 +566,12 @@ internal sealed class MainForm : Form
             _stage.ResetDefaultView();
             UpdateInspector();
             UpdateStatusBar();
+            AppLog.Info($"Stress scene generated. Layers: {_scene.LayerCount}, Objects: {_scene.ObjectCount}, Atoms: {_scene.VirtualAtomCount}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Failed to generate stress scene", ex);
+            throw;
         }
         finally
         {
@@ -574,6 +581,7 @@ internal sealed class MainForm : Form
 
     private void CreateNewProject()
     {
+        AppLog.Info("Creating new empty project");
         _scene.CreateEmpty();
         _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
         _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
@@ -585,6 +593,7 @@ internal sealed class MainForm : Form
         _stage.ResetDefaultView();
         UpdateInspector();
         UpdateStatusBar();
+        AppLog.Info("New empty project created");
     }
 
     private void RefreshLayers()

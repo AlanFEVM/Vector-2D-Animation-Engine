@@ -60,8 +60,9 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            AppLog.Error("Direct2D rendering failed; falling back to GDI renderer", ex);
             ResetTarget();
             _disabled = true;
             return false;

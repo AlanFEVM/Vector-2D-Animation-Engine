@@ -79,6 +79,14 @@ This project is expected to keep a local git history. Each completed feature or
 bug fix should be committed with a concise message so changes can be rolled back
 or investigated later.
 
+## Runtime Logs
+
+Runtime logs are written to `logs/` in the project root when launched through the
+root EXE. Native app logs use `native-yyyyMMdd-HHmmss-pidN.log`; launcher startup
+events use `launcher.log`. Unhandled UI thread exceptions, domain crashes,
+Direct2D fallback failures, hot reload form rebuilds, and stress-scene generation
+events are recorded there.
+
 ## Performance Model
 
 The manual stress scene avoids scanning every object every frame.
@@ -101,6 +109,7 @@ object batches into GPU-side geometry buffers and tile caches.
 native/
   App/
     Program.cs            Application entry point.
+    AppLog.cs             Runtime logging and crash diagnostics.
     ToolMode.cs           Shared tool enum.
     Benchmark.cs          Stress-scene benchmark helper.
   Engine/

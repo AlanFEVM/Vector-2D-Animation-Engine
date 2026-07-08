@@ -37,6 +37,21 @@ VectorAnimationEngine.exe
 .\VectorAnimationEngine.exe --no-hot-reload
 ```
 
+## 日志和崩溃定位
+
+软件启动后会在项目根目录写入运行日志：
+
+```text
+logs/
+```
+
+常见文件：
+
+- `launcher.log`：根目录 EXE 启动 native 工程时的启动记录。
+- `native-yyyyMMdd-HHmmss-pidN.log`：桌面应用本体的运行日志。
+
+日志会记录启动环境、热重载窗口重建、压测场景生成、Direct2D 渲染失败回退、UI 线程未处理异常和进程级未处理异常。软件崩溃后，优先查看 `logs/` 中最新的 `native-*.log`。
+
 ## 主界面区域
 
 - 顶部栏：播放、帧滑块、运行压测场景、适配舞台。

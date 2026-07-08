@@ -9,6 +9,7 @@ internal sealed class AppHost : ApplicationContext
     public AppHost()
     {
         Current = this;
+        AppLog.Info("Creating application host");
         ShowMainForm();
     }
 
@@ -36,6 +37,7 @@ internal sealed class AppHost : ApplicationContext
     private void ShowMainForm(Rectangle? bounds = null, FormWindowState windowState = FormWindowState.Normal)
     {
         var form = new MainForm();
+        AppLog.Info(bounds is null ? "Showing main form" : $"Showing main form at {bounds.Value}");
         if (bounds is { } nextBounds)
         {
             form.StartPosition = FormStartPosition.Manual;
@@ -53,6 +55,7 @@ internal sealed class AppHost : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed) return;
 
+        AppLog.Info("Reloading main form for hot reload");
         var oldForm = _mainForm;
         var bounds = oldForm.WindowState == FormWindowState.Normal ? oldForm.Bounds : oldForm.RestoreBounds;
         var windowState = oldForm.WindowState;
@@ -64,6 +67,7 @@ internal sealed class AppHost : ApplicationContext
 
     private void MainFormClosed(object? sender, FormClosedEventArgs e)
     {
+        AppLog.Info($"Main form closed. Reason: {e.CloseReason}");
         ExitThread();
     }
 }

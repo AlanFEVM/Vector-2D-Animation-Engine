@@ -17,6 +17,7 @@ publish/
 *.sln.docstates
 
 # Runtime logs and temp files
+logs/
 *.log
 *.tmp
 *.temp
