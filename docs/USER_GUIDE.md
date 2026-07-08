@@ -98,7 +98,7 @@ VectorAnimationEngine.exe
 
 - Fill：填色。
 - Stroke：描边颜色。新绘制对象会保存自己的描边颜色。
-- Stroke Width：描边宽度。新绘制对象和当前选中对象都会按该宽度渲染描边。
+- Stroke Width：描边宽度。新绘制对象和当前选中对象都会按该宽度渲染描边，显示粗细不会因为当前画布缩放比例过低而被压扁到不可见。
 - Opacity：透明度。
 
 使用 Fill Tool 点击已有对象，可以把当前材质颜色应用到该对象。

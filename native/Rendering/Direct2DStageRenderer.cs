@@ -230,7 +230,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
         var brush = BrushFor(scene.Argb[i]);
         var strokeBrush = BrushFor(scene.StrokeArgb.Length > i ? scene.StrokeArgb[i] : GdiColor.FromArgb(238, 242, 241).ToArgb());
-        var screenStroke = Math.Max(1.5f, scene.Stroke[i] * stage.Zoom);
+        var screenStroke = Math.Max(1.5f, scene.Stroke[i]);
 
         if (shape == ShapeKind.Line)
         {
@@ -326,7 +326,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
             var a = WorldToVector(stage, start);
             var b = WorldToVector(stage, end);
             _target!.DrawLine(a, b, BrushFor(GdiColor.FromArgb(170, 255, 255, 255).ToArgb()), 1);
-            _target.DrawLine(a, b, stroke, Math.Max(1.5f, stage.DrawingPreviewStroke * stage.Zoom));
+            _target.DrawLine(a, b, stroke, Math.Max(1.5f, stage.DrawingPreviewStroke));
             DrawHandle(a, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 7);
             DrawHandle(b, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 7);
             return;
@@ -337,7 +337,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var h = Math.Max(2, Math.Abs(dy) * stage.Zoom);
         DrawLocalShape(stage.DrawingPreviewShape, fill, stroke, 0, 0, center.X, center.Y, w, h);
         var rect = Rect(center.X - w * 0.5f, center.Y - h * 0.5f, w, h);
-        _target!.DrawRectangle(in rect, stroke, Math.Max(1.5f, stage.DrawingPreviewStroke * stage.Zoom));
+        _target!.DrawRectangle(in rect, stroke, Math.Max(1.5f, stage.DrawingPreviewStroke));
     }
 
     private void DrawBezierLine(StageControl stage, int i, ID2D1SolidColorBrush brush, float screenStroke)

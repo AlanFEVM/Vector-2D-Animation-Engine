@@ -307,7 +307,7 @@ internal sealed class StageControl : Control
         var brush = BrushFor(scene.Argb[i]);
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
         var strokeColor = StrokeColorFor(i);
-        var screenStroke = Math.Max(1.5f, scene.Stroke[i] * Zoom);
+        var screenStroke = Math.Max(1.5f, scene.Stroke[i]);
 
         if (shape == ShapeKind.Line)
         {
@@ -465,7 +465,7 @@ internal sealed class StageControl : Control
         var fillColor = Color.FromArgb(72, DrawingPreviewColor);
         var strokeColor = Color.FromArgb(230, DrawingPreviewColor);
         using var fill = new SolidBrush(fillColor);
-        using var stroke = new Pen(strokeColor, Math.Max(1.5f, DrawingPreviewStroke * Zoom))
+        using var stroke = new Pen(strokeColor, Math.Max(1.5f, DrawingPreviewStroke))
         {
             DashStyle = DashStyle.Solid,
             LineJoin = LineJoin.Round,
