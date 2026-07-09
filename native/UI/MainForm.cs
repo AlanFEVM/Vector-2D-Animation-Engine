@@ -1206,7 +1206,15 @@ internal sealed class MainForm : Form
                 }
             }
 
-            var hit = _scene.HitTestElement(_startWorld.Value, _frame, SelectionToleranceWorld());
+            if (_startWorld is not { } startWorld) return;
+            if (TryBeginDragSelectedFill(startWorld))
+            {
+                UpdateInspector();
+                _stage.Invalidate();
+                return;
+            }
+
+            var hit = _scene.HitTestElement(startWorld, _frame, SelectionToleranceWorld());
             if (hit.IsValid)
             {
                 var hitObject = hit.Key.ObjectIndex;
@@ -1251,6 +1259,28 @@ internal sealed class MainForm : Form
                 _stage.Invalidate();
             }
         }
+    }
+
+    private bool TryBeginDragSelectedFill(PointF world)
+    {
+        if (_selectedObjects.Count == 0) return false;
+
+        for (var i = _selectedObjects.Count - 1; i >= 0; i--)
+        {
+            var index = _selectedObjects[i];
+            if ((uint)index >= _scene.ObjectCount) continue;
+            if (!_scene.FillContainsPoint(index, world)) continue;
+
+            _selectedObject = index;
+            _selectedElement = DrawingElementHit.None;
+            _pointerHitWasAlreadySelected = true;
+            _stage.SetSelection(_selectedObjects, _selectedObject);
+            _stage.SetSelectedElement(_selectedElement);
+            CaptureEditStart(index);
+            return true;
+        }
+
+        return false;
     }
 
     private void StageMouseMove(object? sender, MouseEventArgs e)

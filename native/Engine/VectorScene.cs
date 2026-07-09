@@ -464,6 +464,15 @@ internal sealed class VectorScene
         return (uint)objectIndex < ObjectCount ? ShapeBoundary(objectIndex) : Array.Empty<PointF>();
     }
 
+    public bool FillContainsPoint(int objectIndex, PointF world)
+    {
+        if ((uint)objectIndex >= ObjectCount) return false;
+        var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (shape == VectorAnimationEngine.ShapeKind.Line) return false;
+        var polygon = OpenPolygon(ShapeBoundary(objectIndex));
+        return polygon.Length >= 3 && PointInPolygonOrOnBoundary(world, polygon);
+    }
+
     public bool TryGetPathWorldPoints(int objectIndex, out PointF[] points)
     {
         if ((uint)objectIndex >= ObjectCount || !_pathLocalPoints.TryGetValue(objectIndex, out var local))
@@ -615,6 +624,7 @@ internal sealed class VectorScene
         var originalArea = Math.Abs(PolygonArea(polygon));
         var insideArea = Math.Abs(PolygonArea(pieces.Inside));
         if (originalArea < 0.5f || insideArea < 0.5f || insideArea >= originalArea - 0.5f) return;
+        if (!SplitCoversSourceFill(polygon, pieces.Inside, pieces.Outside)) return;
 
         remove.Add(index);
         var layer = ObjectLayer[index];
@@ -639,6 +649,38 @@ internal sealed class VectorScene
         }
 
         additions.Add(new MarqueePartAddition(false, layer, pieces.Inside.ToArray(), PointF.Empty, PointF.Empty, PointF.Empty, 0, fillColor, strokeColor, atomsPerPart, true));
+    }
+
+    private static bool SplitCoversSourceFill(PointF[] source, IReadOnlyList<PointF> inside, IReadOnlyList<List<PointF>> outside)
+    {
+        var totalArea = Math.Abs(PolygonArea(inside));
+        foreach (var polygon in outside) totalArea += Math.Abs(PolygonArea(polygon));
+        var sourceArea = Math.Abs(PolygonArea(source));
+        if (Math.Abs(totalArea - sourceArea) > Math.Max(1f, sourceArea * 0.02f)) return false;
+
+        foreach (var point in source)
+        {
+            if (!PointInSplitPieces(point, inside, outside)) return false;
+        }
+
+        for (var i = 0; i < source.Length; i++)
+        {
+            var midpoint = Midpoint(source[i], source[(i + 1) % source.Length]);
+            if (!PointInSplitPieces(midpoint, inside, outside)) return false;
+        }
+
+        return true;
+    }
+
+    private static bool PointInSplitPieces(PointF point, IReadOnlyList<PointF> inside, IReadOnlyList<List<PointF>> outside)
+    {
+        if (inside.Count >= 3 && PointInPolygonOrOnBoundary(point, inside.ToArray())) return true;
+        foreach (var polygon in outside)
+        {
+            if (polygon.Count >= 3 && PointInPolygonOrOnBoundary(point, polygon.ToArray())) return true;
+        }
+
+        return false;
     }
 
     private void AddLineMarqueeParts(int index, RectangleF bounds, List<MarqueePartAddition> additions, HashSet<int> remove)

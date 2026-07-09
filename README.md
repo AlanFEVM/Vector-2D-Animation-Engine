@@ -54,6 +54,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Animated tool-name hints when hovering drawing tools.
 - Selection highlight with boundary handles for filled shapes and partial edge highlights for selected boundary-stroke segments.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects, with `1 vu`-aligned fill and stroke part materialization for boxed regions.
+- Selected fills under the pointer take drag priority, so dragging an already selected fill moves it instead of starting a new selection.
 - Endpoint and Bezier control handle editing for selected lines, including linked endpoint movement for connected line segments.
 - Basic edit shortcuts: Ctrl+Z undo, Ctrl+C copy selected objects, and Ctrl+V paste copied objects with a small stage offset.
 - Drawing element topology foundation: fills, free strokes, and filled-shape boundary strokes are separate selectable elements. Rectangle edges are individually selectable by default; crossing strokes and boundaries split each other at valid intersections, and sub-1vu stroke fragments are suppressed.
