@@ -42,8 +42,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Basic Drawing has secondary Flash-style drawing object tabs that can be dragged into Vault for reuse.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
-- `Basic Drawing` hides the bottom timeline to prioritize drawing space.
-- Modern timeline strip with ruler, playhead dragging, exposure bars, and keyframe placeholders.
+- Flash-style combined layer/timeline strip with layer selection, visibility toggles, Solo/All controls, ruler, playhead dragging, exposure bars, and keyframe placeholders.
 - Playback settings panel with FPS, loop playback, and frame range controls.
 - Bottom status bar showing render FPS, animation FPS, and zoom.
 - Main loop targets 300 UPS with stage redraw requests capped at 144 FPS.
@@ -63,7 +62,6 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Path fills support compound contours: one fill object can contain an outer boundary plus inner hole boundaries, rendered and hit-tested with even-odd fill rules.
 - Stroke splitting uses a unified quadratic-curve model, so curve-curve and line-curve intersections share the same topology path; straight lines are treated as quadratic curves with a midpoint control handle.
 - Delete key removes the currently selected drawing object or marquee-selected objects.
-- Right-side auxiliary panel next to the Inspector for layers.
 - Left-edge Vault drawer opened from the tool rail for Library/Vault asset storage.
 - Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.
 - Basic Drawing header snapping strip for snap, grid snap, object snap placeholder, tight fit, align, angle snap, and grid size.
@@ -107,7 +105,7 @@ The manual stress scene avoids scanning every object every frame.
 - Low zoom uses tile LOD summaries.
 - Object zoom uses a fixed spatial index to visit only visible cells.
 - Scene data is stored in packed arrays instead of per-object managed models.
-- Layer list and timeline are UI-virtualized to keep the workbench responsive.
+- The combined layer/timeline strip limits visible rows and uses lightweight custom painting to keep the workbench responsive.
 
 The current Direct2D renderer still shares the packed scene arrays and spatial
 index with the original GDI path. The next renderer-level step is moving large

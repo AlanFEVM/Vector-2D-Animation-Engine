@@ -4,13 +4,16 @@ namespace VectorAnimationEngine;
 
 internal sealed class TimelineStrip : Control
 {
-    private const int GutterWidth = 132;
+    private const int GutterWidth = 214;
     private const int HeaderHeight = 34;
     private const int RulerHeight = 30;
     private const int RowHeight = 22;
     private const int RowGap = 2;
     private const int TrackPadding = 10;
     private const int HandleWidth = 13;
+    private const int VisibilityColumnWidth = 28;
+    private const int SoloButtonWidth = 58;
+    private const int AllButtonWidth = 52;
 
     private readonly VectorScene _scene;
     private bool _draggingPlayhead;
@@ -19,6 +22,8 @@ internal sealed class TimelineStrip : Control
     private int _endFrame;
 
     public event EventHandler? CurrentFrameChanged;
+    public event EventHandler? ActiveLayerChanged;
+    public event EventHandler? LayerVisibilityChanged;
 
     public TimelineStrip(VectorScene scene)
     {
@@ -77,6 +82,19 @@ internal sealed class TimelineStrip : Control
 
     private int FrameCount => Math.Max(1, _scene.FrameCount);
     private int VisibleFrameCount => Math.Max(1, EndFrame - StartFrame + 1);
+    private int ActiveLayer
+    {
+        get => Math.Clamp(_scene.ActiveLayer, 0, Math.Max(0, _scene.LayerCount - 1));
+        set
+        {
+            if (_scene.LayerCount <= 0) return;
+            var next = Math.Clamp(value, 0, _scene.LayerCount - 1);
+            if (_scene.ActiveLayer == next) return;
+            _scene.ActiveLayer = next;
+            Invalidate();
+            ActiveLayerChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -103,9 +121,20 @@ internal sealed class TimelineStrip : Control
     {
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
+        if (TryHandleLayerClick(e.Location)) return;
         _draggingPlayhead = true;
         Capture = true;
         CurrentFrame = FrameFromX(e.X);
+    }
+
+    protected override void OnMouseDoubleClick(MouseEventArgs e)
+    {
+        base.OnMouseDoubleClick(e);
+        if (e.Button != MouseButtons.Left) return;
+        if (LayerIndexFromPoint(e.Location) is { } layer)
+        {
+            ToggleLayerVisibility(layer);
+        }
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -143,6 +172,8 @@ internal sealed class TimelineStrip : Control
         g.DrawString("Timeline", titleFont, titleBrush, 12, 8);
         var rangeText = $"{StartFrame} - {EndFrame}  ({VisibleFrameCount} frames)";
         g.DrawString(rangeText, Font, mutedBrush, trackLeft, 9);
+        DrawHeaderButton(g, SoloButtonBounds(), "Solo");
+        DrawHeaderButton(g, AllButtonBounds(), "All");
 
         var rulerTop = HeaderHeight;
         g.DrawLine(softPen, trackLeft, rulerTop + RulerHeight - 1, trackRight, rulerTop + RulerHeight - 1);
@@ -183,8 +214,12 @@ internal sealed class TimelineStrip : Control
         using var exposureEdgePen = new Pen(Color.FromArgb(112, 218, 201));
         using var keyBrush = new SolidBrush(Color.FromArgb(227, 169, 86));
         using var textBrush = new SolidBrush(Theme.Muted);
+        using var activeTextBrush = new SolidBrush(Theme.Text);
         using var faintTextBrush = new SolidBrush(Color.FromArgb(136, 148, 148));
         using var gridPen = new Pen(Color.FromArgb(42, 48, 52));
+        using var activePen = new Pen(Theme.Accent, 2);
+        using var eyePen = new Pen(Color.FromArgb(210, 224, 224, 224), 1.4f);
+        using var hiddenPen = new Pen(Color.FromArgb(120, 136, 136, 136), 1.2f);
 
         var rowTop = HeaderHeight + RulerHeight;
         var availableRows = Math.Max(1, (Height - rowTop - 8) / (RowHeight + RowGap));
@@ -203,11 +238,17 @@ internal sealed class TimelineStrip : Control
             var y = rowTop + i * (RowHeight + RowGap);
             var rowBounds = new Rectangle(0, y, Width, RowHeight);
             g.FillRectangle(i % 2 == 0 ? rowBrush : altRowBrush, rowBounds);
+            if (i == ActiveLayer)
+            {
+                using var activeBack = new SolidBrush(Color.FromArgb(36, Theme.Accent));
+                g.FillRectangle(activeBack, rowBounds);
+                g.DrawRectangle(activePen, 1, y + 1, trackLeft - 4, RowHeight - 3);
+            }
 
             var name = i < _scene.LayerNames.Length ? _scene.LayerNames[i] : $"Layer {i:0000}";
-            g.DrawString(name, Font, textBrush, 12, y + 3);
-
             var visible = i < _scene.LayerVisible.Length && _scene.LayerVisible[i];
+            DrawVisibilityIcon(g, visible, 13, y + RowHeight / 2f, visible ? eyePen : hiddenPen);
+            g.DrawString(name, Font, i == ActiveLayer ? activeTextBrush : textBrush, VisibilityColumnWidth + 8, y + 3);
             if (!visible) g.FillRectangle(inactiveBrush, trackLeft, y, trackRight - trackLeft, RowHeight);
 
             if (i >= _scene.LayerStart.Length || i >= _scene.LayerEnd.Length) continue;
@@ -229,6 +270,92 @@ internal sealed class TimelineStrip : Control
         {
             var text = $"+ {_scene.LayerCount - rowCount} layers";
             g.DrawString(text, Font, faintTextBrush, 12, Height - 24);
+        }
+    }
+
+    private bool TryHandleLayerClick(Point point)
+    {
+        if (SoloButtonBounds().Contains(point))
+        {
+            if (_scene.LayerCount > 0)
+            {
+                _scene.SoloLayer(ActiveLayer);
+                Invalidate();
+                LayerVisibilityChanged?.Invoke(this, EventArgs.Empty);
+            }
+
+            return true;
+        }
+
+        if (AllButtonBounds().Contains(point))
+        {
+            _scene.ShowAllLayers();
+            Invalidate();
+            LayerVisibilityChanged?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+
+        if (LayerIndexFromPoint(point) is not { } layer) return false;
+        if (point.X < VisibilityColumnWidth)
+        {
+            ToggleLayerVisibility(layer);
+            return true;
+        }
+
+        ActiveLayer = layer;
+        return true;
+    }
+
+    private int? LayerIndexFromPoint(Point point)
+    {
+        var trackLeft = Math.Min(GutterWidth, Math.Max(120, Width / 3));
+        if (point.X < 0 || point.X >= trackLeft) return null;
+        var rowTop = HeaderHeight + RulerHeight;
+        if (point.Y < rowTop) return null;
+        var localY = point.Y - rowTop;
+        var stride = RowHeight + RowGap;
+        var row = localY / stride;
+        if (localY % stride >= RowHeight) return null;
+        var availableRows = Math.Max(1, (Height - rowTop - 8) / stride);
+        var rowCount = Math.Min(Math.Min(availableRows, 16), Math.Max(1, _scene.LayerCount));
+        return row >= 0 && row < rowCount ? row : null;
+    }
+
+    private void ToggleLayerVisibility(int layer)
+    {
+        if ((uint)layer >= _scene.LayerCount) return;
+        _scene.ToggleLayer(layer);
+        Invalidate();
+        LayerVisibilityChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static Rectangle SoloButtonBounds() => new(78, 6, SoloButtonWidth, 22);
+
+    private static Rectangle AllButtonBounds() => new(142, 6, AllButtonWidth, 22);
+
+    private void DrawHeaderButton(Graphics g, Rectangle bounds, string text)
+    {
+        using var fill = new SolidBrush(Theme.PanelStrong);
+        using var border = new Pen(Theme.Border);
+        using var textBrush = new SolidBrush(Theme.Text);
+        g.FillRectangle(fill, bounds);
+        g.DrawRectangle(border, bounds);
+        using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(text, Font, textBrush, bounds, format);
+    }
+
+    private static void DrawVisibilityIcon(Graphics g, bool visible, float x, float y, Pen pen)
+    {
+        var bounds = new RectangleF(x - 8, y - 5, 16, 10);
+        g.DrawEllipse(pen, bounds);
+        if (visible)
+        {
+            using var fill = new SolidBrush(pen.Color);
+            g.FillEllipse(fill, x - 2.5f, y - 2.5f, 5, 5);
+        }
+        else
+        {
+            g.DrawLine(pen, x - 8, y + 6, x + 8, y - 6);
         }
     }
 

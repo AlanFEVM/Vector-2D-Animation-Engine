@@ -32,7 +32,6 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1 };
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly DrawSettings _drawSettings = new();
-    private readonly ListBox _layers = new();
     private readonly TrackBar _frameSlider = new();
     private readonly Label _fps = MetricLabel("FPS 0", 76);
     private readonly Label _draw = MetricLabel("Draw 0", 210);
@@ -276,60 +275,10 @@ internal sealed class MainForm : Form
         };
         tools.Controls.Add(vaultButton);
 
-        var rightSidebar = new TableLayoutPanel
-        {
-            Dock = DockStyle.Right,
-            Width = 610,
-            BackColor = Theme.Panel,
-            ColumnCount = 2,
-            RowCount = 1,
-            Margin = new Padding(0),
-            Padding = new Padding(0)
-        };
-        rightSidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 286));
-        rightSidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 324));
-        rightSidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        body.Controls.Add(rightSidebar);
-
-        var inspector = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Padding = new Padding(14, 16, 14, 12), AutoScroll = true };
+        var inspector = new Panel { Dock = DockStyle.Right, Width = 324, BackColor = Theme.Panel, Padding = new Padding(14, 16, 14, 12), AutoScroll = true };
         PaintLeftBorder(inspector);
-        rightSidebar.Controls.Add(inspector, 1, 0);
+        body.Controls.Add(inspector);
         BuildInspectorPages(inspector);
-
-        var layerPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 1,
-            RowCount = 3,
-            Margin = new Padding(0),
-            Padding = new Padding(12, 10, 12, 12)
-        };
-        layerPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        layerPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        layerPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        PaintLeftBorder(layerPanel);
-        rightSidebar.Controls.Add(layerPanel, 0, 0);
-
-        var layerTitle = new Label { Text = "Layers", Dock = DockStyle.Fill, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
-        layerPanel.Controls.Add(layerTitle, 0, 0);
-        var layerButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, BackColor = Theme.Panel, Padding = new Padding(0, 2, 0, 8) };
-        var solo = new Button { Text = "Solo", Width = 78, Height = 32 };
-        Theme.StyleButton(solo);
-        solo.Click += (_, _) => { _scene.SoloLayer(_scene.ActiveLayer); RefreshLayers(); _stage.Invalidate(); };
-        var all = new Button { Text = "All", Width = 60, Height = 32 };
-        Theme.StyleButton(all);
-        all.Click += (_, _) => { _scene.ShowAllLayers(); RefreshLayers(); _stage.Invalidate(); };
-        layerButtons.Controls.Add(solo);
-        layerButtons.Controls.Add(all);
-        layerPanel.Controls.Add(layerButtons, 0, 1);
-        _layers.Dock = DockStyle.Fill;
-        _layers.BackColor = Theme.Panel;
-        _layers.ForeColor = Theme.Text;
-        _layers.Font = Theme.UiFont(9.5f);
-        _layers.ItemHeight = 22;
-        _layers.BorderStyle = BorderStyle.None;
-        layerPanel.Controls.Add(_layers, 0, 2);
 
         var stagePanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Stage };
         body.Controls.Add(stagePanel);
@@ -757,6 +706,16 @@ internal sealed class MainForm : Form
             if (_syncingFrame) return;
             SetFrame(_timeline.CurrentFrame);
         };
+        _timeline.ActiveLayerChanged += (_, _) =>
+        {
+            UpdateInspector();
+            _stage.Invalidate();
+        };
+        _timeline.LayerVisibilityChanged += (_, _) =>
+        {
+            UpdateInspector();
+            _stage.Invalidate();
+        };
         _playbackSettings.FpsChanged += (_, _) =>
         {
             _playbackAccumulator = 0;
@@ -809,7 +768,7 @@ internal sealed class MainForm : Form
             if (e.Kind == HierarchyNodeKind.Layer && e.Index >= 0 && e.Index < _scene.LayerCount)
             {
                 _scene.ActiveLayer = e.Index;
-                if (e.Index < _layers.Items.Count) _layers.SelectedIndex = e.Index;
+                RefreshLayers();
                 UpdateInspector();
             }
             else if (e.Kind == HierarchyNodeKind.Object && e.Index >= 0 && e.Index < _scene.ObjectCount)
@@ -840,20 +799,6 @@ internal sealed class MainForm : Form
         {
             if (_syncingFrame) return;
             SetFrame(_frameSlider.Value);
-        };
-        _layers.SelectedIndexChanged += (_, _) =>
-        {
-            if (_layers.SelectedIndex >= 0 && _layers.SelectedIndex < _scene.LayerCount) _scene.ActiveLayer = _layers.SelectedIndex;
-            UpdateInspector();
-        };
-        _layers.DoubleClick += (_, _) =>
-        {
-            if (_layers.SelectedIndex >= 0 && _layers.SelectedIndex < _scene.LayerCount)
-            {
-                _scene.ToggleLayer(_layers.SelectedIndex);
-                RefreshLayers();
-                _stage.Invalidate();
-            }
         };
         _color.SelectedIndexChanged += (_, _) => _materialEditor.Fill = PaletteColor(_color.SelectedIndex);
         _stroke.ValueChanged += (_, _) =>
@@ -932,16 +877,7 @@ internal sealed class MainForm : Form
 
     private void RefreshLayers()
     {
-        _layers.BeginUpdate();
-        _layers.Items.Clear();
-        var limit = Math.Min(300, _scene.LayerCount);
-        for (var i = 0; i < limit; i++)
-        {
-            _layers.Items.Add($"{(_scene.LayerVisible[i] ? "●" : "○")} {_scene.LayerNames[i]}  {_scene.LayerOpacity[i]:P0}");
-        }
-        if (_scene.LayerCount > limit) _layers.Items.Add($"+ {_scene.LayerCount - limit} virtualized layers");
-        if (_scene.ActiveLayer < limit) _layers.SelectedIndex = _scene.ActiveLayer;
-        _layers.EndUpdate();
+        _timeline.Invalidate();
     }
 
     private void Tick()
@@ -1979,7 +1915,7 @@ internal sealed class MainForm : Form
         _animationPage.Visible = view == WorkspaceView.Animation;
         _materialEditor.Visible = view == WorkspaceView.Materials;
         _hierarchyPanel.Visible = view == WorkspaceView.Hierarchy;
-        _timeline.Visible = view != WorkspaceView.BasicDrawing;
+        _timeline.Visible = true;
     }
 
     private static bool IsDrawingTool(ToolMode tool)
