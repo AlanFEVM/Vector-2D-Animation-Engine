@@ -679,109 +679,74 @@ internal sealed class VectorScene
         if ((uint)a >= ObjectCount || (uint)b >= ObjectCount) return false;
         if (ObjectLayer[a] != ObjectLayer[b] || Argb[a] != Argb[b]) return false;
         if (ShapeKind[a] == VectorAnimationEngine.ShapeKind.Line || ShapeKind[b] == VectorAnimationEngine.ShapeKind.Line) return false;
-        if (!TryGetFillMergeBounds(a, out var boundsA)) return false;
-        if (!TryGetFillMergeBounds(b, out var boundsB)) return false;
-        if (RectDistance(boundsA, boundsB) >= FillMergeDistanceUnits) return false;
 
-        var rects = new List<RectangleF> { boundsA, boundsB };
-        if (RectDistance(boundsA, boundsB) > 0.001f) rects.Add(ConnectorRect(boundsA, boundsB));
+        var polygonA = OpenPolygon(ShapeBoundary(a));
+        var polygonB = OpenPolygon(ShapeBoundary(b));
+        if (polygonA.Length < 3 || polygonB.Length < 3) return false;
+        var distance = PolygonDistance(polygonA, polygonB, out var nearestA, out var nearestB);
+        if (distance >= FillMergeDistanceUnits) return false;
 
-        mergedPath = BuildRectilinearUnionPath(rects);
+        var connector = distance > 0.001f ? ConnectorRect(nearestA, nearestB) : RectangleF.Empty;
+        mergedPath = BuildMergedFillPath(polygonA, polygonB, connector);
         return mergedPath.Length >= 3;
     }
 
-    private bool TryGetFillMergeBounds(int index, out RectangleF bounds)
+    private static RectangleF ConnectorRect(PointF a, PointF b)
     {
-        bounds = RectangleF.Empty;
-        var polygon = OpenPolygon(ShapeBoundary(index));
-        if (polygon.Length < 3) return false;
-
-        var left = polygon[0].X;
-        var right = polygon[0].X;
-        var top = polygon[0].Y;
-        var bottom = polygon[0].Y;
-        foreach (var point in polygon)
+        const float halfThickness = 0.5f;
+        var dx = Math.Abs(a.X - b.X);
+        var dy = Math.Abs(a.Y - b.Y);
+        if (dx >= dy)
         {
-            left = Math.Min(left, point.X);
-            right = Math.Max(right, point.X);
-            top = Math.Min(top, point.Y);
-            bottom = Math.Max(bottom, point.Y);
+            return Normalize(RectangleF.FromLTRB(a.X, Math.Min(a.Y, b.Y) - halfThickness, b.X, Math.Max(a.Y, b.Y) + halfThickness));
         }
 
-        bounds = RectangleF.FromLTRB(left, top, right, bottom);
-        if (bounds.Width < 1 || bounds.Height < 1) return false;
-        return true;
+        return Normalize(RectangleF.FromLTRB(Math.Min(a.X, b.X) - halfThickness, a.Y, Math.Max(a.X, b.X) + halfThickness, b.Y));
     }
 
-    private static float RectDistance(RectangleF a, RectangleF b)
+    private static PointF[] BuildMergedFillPath(PointF[] polygonA, PointF[] polygonB, RectangleF connector)
     {
-        var dx = Math.Max(0, Math.Max(a.Left - b.Right, b.Left - a.Right));
-        var dy = Math.Max(0, Math.Max(a.Top - b.Bottom, b.Top - a.Bottom));
-        return MathF.Sqrt(dx * dx + dy * dy);
-    }
-
-    private static RectangleF ConnectorRect(RectangleF a, RectangleF b)
-    {
-        var horizontalGap = Math.Max(0, Math.Max(a.Left - b.Right, b.Left - a.Right));
-        var verticalGap = Math.Max(0, Math.Max(a.Top - b.Bottom, b.Top - a.Bottom));
-
-        if (horizontalGap > 0 && verticalGap <= 0)
+        var xs = new SortedSet<float>();
+        var ys = new SortedSet<float>();
+        AddPolygonGridLines(polygonA, xs, ys);
+        AddPolygonGridLines(polygonB, xs, ys);
+        if (!connector.IsEmpty)
         {
-            var left = a.Right <= b.Left ? a.Right : b.Right;
-            var right = a.Right <= b.Left ? b.Left : a.Left;
-            var top = Math.Max(a.Top, b.Top);
-            var bottom = Math.Min(a.Bottom, b.Bottom);
-            return Normalize(RectangleF.FromLTRB(left, top, right, bottom));
+            xs.Add(VectorUnits.Quantize(connector.Left));
+            xs.Add(VectorUnits.Quantize(connector.Right));
+            ys.Add(VectorUnits.Quantize(connector.Top));
+            ys.Add(VectorUnits.Quantize(connector.Bottom));
         }
 
-        if (verticalGap > 0 && horizontalGap <= 0)
+        var xValues = xs.ToArray();
+        var yValues = ys.ToArray();
+        if (xValues.Length < 2 || yValues.Length < 2) return Array.Empty<PointF>();
+
+        var filled = new bool[xValues.Length - 1, yValues.Length - 1];
+        for (var x = 0; x < xValues.Length - 1; x++)
         {
-            var top = a.Bottom <= b.Top ? a.Bottom : b.Bottom;
-            var bottom = a.Bottom <= b.Top ? b.Top : a.Top;
-            var left = Math.Max(a.Left, b.Left);
-            var right = Math.Min(a.Right, b.Right);
-            return Normalize(RectangleF.FromLTRB(left, top, right, bottom));
-        }
-
-        var x1 = a.Right <= b.Left ? a.Right - 1 : b.Right - 1;
-        var x2 = a.Right <= b.Left ? b.Left + 1 : a.Left + 1;
-        var y1 = a.Bottom <= b.Top ? a.Bottom - 1 : b.Bottom - 1;
-        var y2 = a.Bottom <= b.Top ? b.Top + 1 : a.Top + 1;
-        return Normalize(RectangleF.FromLTRB(x1, y1, x2, y2));
-    }
-
-    private static PointF[] BuildRectilinearUnionPath(IReadOnlyList<RectangleF> rects)
-    {
-        var normalized = rects.Select(Normalize).Where(rect => rect.Width >= 0.001f && rect.Height >= 0.001f).ToArray();
-        if (normalized.Length == 0) return Array.Empty<PointF>();
-
-        var xs = normalized.SelectMany(rect => new[] { rect.Left, rect.Right }).Distinct().OrderBy(value => value).ToArray();
-        var ys = normalized.SelectMany(rect => new[] { rect.Top, rect.Bottom }).Distinct().OrderBy(value => value).ToArray();
-        if (xs.Length < 2 || ys.Length < 2) return Array.Empty<PointF>();
-
-        var filled = new bool[xs.Length - 1, ys.Length - 1];
-        for (var x = 0; x < xs.Length - 1; x++)
-        {
-            for (var y = 0; y < ys.Length - 1; y++)
+            for (var y = 0; y < yValues.Length - 1; y++)
             {
-                var center = new PointF((xs[x] + xs[x + 1]) * 0.5f, (ys[y] + ys[y + 1]) * 0.5f);
-                filled[x, y] = normalized.Any(rect => rect.Contains(center));
+                var center = new PointF((xValues[x] + xValues[x + 1]) * 0.5f, (yValues[y] + yValues[y + 1]) * 0.5f);
+                filled[x, y] = PointInPolygon(center, polygonA)
+                    || PointInPolygon(center, polygonB)
+                    || (!connector.IsEmpty && connector.Contains(center));
             }
         }
 
         var edges = new List<(MergePoint Start, MergePoint End)>();
-        for (var x = 0; x < xs.Length - 1; x++)
+        for (var x = 0; x < xValues.Length - 1; x++)
         {
-            for (var y = 0; y < ys.Length - 1; y++)
+            for (var y = 0; y < yValues.Length - 1; y++)
             {
                 if (!filled[x, y]) continue;
-                var left = Key(xs[x], ys[y]);
-                var right = Key(xs[x + 1], ys[y]);
-                var bottomRight = Key(xs[x + 1], ys[y + 1]);
-                var bottomLeft = Key(xs[x], ys[y + 1]);
+                var left = Key(xValues[x], yValues[y]);
+                var right = Key(xValues[x + 1], yValues[y]);
+                var bottomRight = Key(xValues[x + 1], yValues[y + 1]);
+                var bottomLeft = Key(xValues[x], yValues[y + 1]);
                 if (y == 0 || !filled[x, y - 1]) edges.Add((left, right));
-                if (x == xs.Length - 2 || !filled[x + 1, y]) edges.Add((right, bottomRight));
-                if (y == ys.Length - 2 || !filled[x, y + 1]) edges.Add((bottomRight, bottomLeft));
+                if (x == xValues.Length - 2 || !filled[x + 1, y]) edges.Add((right, bottomRight));
+                if (y == yValues.Length - 2 || !filled[x, y + 1]) edges.Add((bottomRight, bottomLeft));
                 if (x == 0 || !filled[x - 1, y]) edges.Add((bottomLeft, left));
             }
         }
@@ -816,6 +781,61 @@ internal sealed class VectorScene
         }
 
         return best;
+    }
+
+    private static void AddPolygonGridLines(PointF[] polygon, SortedSet<float> xs, SortedSet<float> ys)
+    {
+        foreach (var point in polygon)
+        {
+            xs.Add(VectorUnits.Quantize(point.X));
+            ys.Add(VectorUnits.Quantize(point.Y));
+        }
+    }
+
+    private static float PolygonDistance(PointF[] a, PointF[] b, out PointF nearestA, out PointF nearestB)
+    {
+        nearestA = a[0];
+        nearestB = b[0];
+        if (a.Any(point => PointInPolygon(point, b)) || b.Any(point => PointInPolygon(point, a)))
+        {
+            nearestA = nearestB = a[0];
+            return 0;
+        }
+
+        var best = float.MaxValue;
+        for (var i = 0; i < a.Length; i++)
+        {
+            var a0 = a[i];
+            var a1 = a[(i + 1) % a.Length];
+            for (var j = 0; j < b.Length; j++)
+            {
+                var b0 = b[j];
+                var b1 = b[(j + 1) % b.Length];
+                if (TrySegmentIntersection(a0, a1, b0, b1, out _))
+                {
+                    nearestA = nearestB = a0;
+                    return 0;
+                }
+
+                TryUpdateNearest(a0, b0, b1, ref best, ref nearestA, ref nearestB);
+                TryUpdateNearest(a1, b0, b1, ref best, ref nearestA, ref nearestB);
+                TryUpdateNearest(b0, a0, a1, ref best, ref nearestB, ref nearestA);
+                TryUpdateNearest(b1, a0, a1, ref best, ref nearestB, ref nearestA);
+            }
+        }
+
+        return best;
+    }
+
+    private static void TryUpdateNearest(PointF point, PointF segmentStart, PointF segmentEnd, ref float best, ref PointF nearestPoint, ref PointF nearestOnSegment)
+    {
+        var t = SegmentProjectionT(point, segmentStart, segmentEnd);
+        var projected = Lerp(segmentStart, segmentEnd, t);
+        var distance = Distance(point, projected);
+        if (distance >= best) return;
+        best = distance;
+        nearestPoint = point;
+        nearestOnSegment = projected;
     }
 
     private readonly record struct MergePoint(long X, long Y);
