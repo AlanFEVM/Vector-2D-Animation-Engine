@@ -39,6 +39,19 @@ internal sealed class VectorScene
     public int[] StrokeArgb { get; private set; } = [];
     private readonly Dictionary<int, PointF[]> _pathLocalPoints = new();
 
+    private readonly record struct MarqueePartAddition(
+        bool IsLine,
+        int Layer,
+        PointF[] Points,
+        PointF Start,
+        PointF Control,
+        PointF End,
+        float Stroke,
+        Color FillColor,
+        Color StrokeColor,
+        uint Atoms,
+        bool Selected);
+
     public int TileColumnCount => TileColumns;
     public int TileRowCount => TileRows;
     public int[] TileCount { get; } = new int[TileColumns * TileRows];
@@ -508,6 +521,231 @@ internal sealed class VectorScene
             DrawingElementKind.Fill => DetachFillPart(hit, candidates),
             _ => hit
         };
+    }
+
+    public (bool Changed, int[] SelectedObjects) MaterializeMarqueeParts(RectangleF worldBounds, int frame)
+    {
+        var bounds = NormalizeToDrawingUnits(worldBounds);
+        if (bounds.Width < DrawingTopologyRules.MinStrokeSegmentUnits || bounds.Height < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            return (false, Array.Empty<int>());
+        }
+
+        var candidates = QueryObjects(bounds, frame);
+        if (candidates.Length == 0) return (false, Array.Empty<int>());
+
+        var activeCandidates = CollectActiveCandidates(frame);
+        var remove = new HashSet<int>();
+        var additions = new List<MarqueePartAddition>();
+
+        foreach (var index in candidates)
+        {
+            if ((uint)index >= ObjectCount || !IsLayerActive(ObjectLayer[index], frame)) continue;
+            var shape = ShapeKind.Length > index ? ShapeKind[index] : VectorAnimationEngine.ShapeKind.Rectangle;
+            if (shape == VectorAnimationEngine.ShapeKind.Line)
+            {
+                AddLineMarqueeParts(index, bounds, additions, remove);
+            }
+            else
+            {
+                AddFillMarqueeParts(index, bounds, activeCandidates, additions, remove);
+            }
+        }
+
+        if (remove.Count == 0) return (false, Array.Empty<int>());
+
+        RemoveObjects(remove);
+        var selected = new List<int>();
+        foreach (var addition in additions)
+        {
+            int newIndex;
+            if (addition.IsLine)
+            {
+                newIndex = AddCurveSegment(addition.Layer, addition.Start, addition.Control, addition.End, addition.Stroke, addition.FillColor, addition.StrokeColor, addition.Atoms);
+            }
+            else
+            {
+                newIndex = AddPathObject(addition.Layer, addition.Points, addition.Stroke, addition.FillColor, addition.StrokeColor, addition.Atoms);
+            }
+
+            if (newIndex >= 0 && addition.Selected) selected.Add(newIndex);
+        }
+
+        return (true, selected.ToArray());
+    }
+
+    public int MergeSameColorFillsAround(int objectIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount) return objectIndex;
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Line) return objectIndex;
+
+        var current = objectIndex;
+        var merged = true;
+        while (merged && (uint)current < ObjectCount)
+        {
+            merged = false;
+            for (var other = 0; other < ObjectCount; other++)
+            {
+                if (other == current) continue;
+                if (!CanMergeSameColorFills(current, other, out var mergedBounds)) continue;
+
+                var layer = ObjectLayer[current];
+                var fillColor = Color.FromArgb(Argb[current]);
+                var strokeColor = Color.FromArgb(StrokeArgb[current]);
+                var atoms = Math.Max(3u, AtomCount[current] + AtomCount[other]);
+                RemoveObjects(new[] { current, other });
+                current = AddPathObject(layer, RectPoints(mergedBounds), 0, fillColor, strokeColor, atoms);
+                merged = current >= 0;
+                break;
+            }
+        }
+
+        return current;
+    }
+
+    private void AddFillMarqueeParts(int index, RectangleF bounds, IReadOnlyList<int> activeCandidates, List<MarqueePartAddition> additions, HashSet<int> remove)
+    {
+        var polygon = OpenPolygon(ShapeBoundary(index));
+        if (polygon.Length < 3) return;
+
+        var pieces = SplitPolygonByRect(polygon, bounds);
+        if (pieces.Inside.Count < 3) return;
+
+        var originalArea = Math.Abs(PolygonArea(polygon));
+        var insideArea = Math.Abs(PolygonArea(pieces.Inside));
+        if (originalArea < 0.5f || insideArea < 0.5f || insideArea >= originalArea - 0.5f) return;
+
+        remove.Add(index);
+        var layer = ObjectLayer[index];
+        var fillColor = Color.FromArgb(Argb[index]);
+        var strokeColor = Color.FromArgb(StrokeArgb[index]);
+        var atoms = AtomCount[index];
+        var splitCount = pieces.Outside.Count + 1;
+        var atomsPerPart = Math.Max(3u, atoms / (uint)Math.Max(1, splitCount));
+
+        if (Stroke[index] > 0)
+        {
+            foreach (var segment in BuildPolylineParts(ShapeBoundary(index), BoundarySplitParameters(index, activeCandidates)))
+            {
+                additions.Add(new MarqueePartAddition(true, layer, Array.Empty<PointF>(), segment.Start, Midpoint(segment.Start, segment.End), segment.End, Stroke[index], fillColor, strokeColor, atomsPerPart, false));
+            }
+        }
+
+        foreach (var outside in pieces.Outside)
+        {
+            if (outside.Count < 3 || Math.Abs(PolygonArea(outside)) < 0.5f) continue;
+            additions.Add(new MarqueePartAddition(false, layer, outside.ToArray(), PointF.Empty, PointF.Empty, PointF.Empty, 0, fillColor, strokeColor, atomsPerPart, false));
+        }
+
+        additions.Add(new MarqueePartAddition(false, layer, pieces.Inside.ToArray(), PointF.Empty, PointF.Empty, PointF.Empty, 0, fillColor, strokeColor, atomsPerPart, true));
+    }
+
+    private void AddLineMarqueeParts(int index, RectangleF bounds, List<MarqueePartAddition> additions, HashSet<int> remove)
+    {
+        var curve = LineCurve(index);
+        var splits = LineRectSplitParameters(index, bounds);
+        if (splits.Count <= 2) return;
+
+        var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+        if (segments.Count <= 1) return;
+
+        var layer = ObjectLayer[index];
+        var fillColor = Color.FromArgb(Argb[index]);
+        var strokeColor = Color.FromArgb(StrokeArgb[index]);
+        var atomsPerPart = Math.Max(3u, AtomCount[index] / (uint)Math.Max(1, segments.Count));
+        var selectedCount = 0;
+
+        foreach (var segment in segments)
+        {
+            var midpoint = QuadraticPoint(segment.Start, segment.Control, segment.End, 0.5f);
+            var selected = bounds.Contains(midpoint);
+            if (selected) selectedCount++;
+            additions.Add(new MarqueePartAddition(true, layer, Array.Empty<PointF>(), segment.Start, segment.Control, segment.End, Stroke[index], fillColor, strokeColor, atomsPerPart, selected));
+        }
+
+        if (selectedCount == 0)
+        {
+            additions.RemoveRange(additions.Count - segments.Count, segments.Count);
+            return;
+        }
+
+        remove.Add(index);
+    }
+
+    private bool CanMergeSameColorFills(int a, int b, out RectangleF mergedBounds)
+    {
+        mergedBounds = RectangleF.Empty;
+        if ((uint)a >= ObjectCount || (uint)b >= ObjectCount) return false;
+        if (ObjectLayer[a] != ObjectLayer[b] || Argb[a] != Argb[b]) return false;
+        if (ShapeKind[a] == VectorAnimationEngine.ShapeKind.Line || ShapeKind[b] == VectorAnimationEngine.ShapeKind.Line) return false;
+        if (!TryGetAxisAlignedFillBounds(a, out var boundsA, out var areaA)) return false;
+        if (!TryGetAxisAlignedFillBounds(b, out var boundsB, out var areaB)) return false;
+        if (!RectsTouchOrOverlap(boundsA, boundsB)) return false;
+
+        mergedBounds = RectangleF.FromLTRB(
+            Math.Min(boundsA.Left, boundsB.Left),
+            Math.Min(boundsA.Top, boundsB.Top),
+            Math.Max(boundsA.Right, boundsB.Right),
+            Math.Max(boundsA.Bottom, boundsB.Bottom));
+
+        var intersection = RectangleF.Intersect(boundsA, boundsB);
+        var intersectionArea = intersection.Width > 0 && intersection.Height > 0 ? intersection.Width * intersection.Height : 0;
+        var unionArea = areaA + areaB - intersectionArea;
+        var mergedArea = mergedBounds.Width * mergedBounds.Height;
+        return Math.Abs(unionArea - mergedArea) <= 1.0f;
+    }
+
+    private bool TryGetAxisAlignedFillBounds(int index, out RectangleF bounds, out float area)
+    {
+        bounds = RectangleF.Empty;
+        area = 0;
+        var polygon = OpenPolygon(ShapeBoundary(index));
+        if (polygon.Length < 3) return false;
+
+        var left = polygon[0].X;
+        var right = polygon[0].X;
+        var top = polygon[0].Y;
+        var bottom = polygon[0].Y;
+        foreach (var point in polygon)
+        {
+            left = Math.Min(left, point.X);
+            right = Math.Max(right, point.X);
+            top = Math.Min(top, point.Y);
+            bottom = Math.Max(bottom, point.Y);
+        }
+
+        bounds = RectangleF.FromLTRB(left, top, right, bottom);
+        area = Math.Abs(PolygonArea(polygon));
+        if (bounds.Width < 1 || bounds.Height < 1) return false;
+        if (Math.Abs(area - bounds.Width * bounds.Height) > 1.0f) return false;
+
+        foreach (var point in polygon)
+        {
+            var onVertical = Math.Abs(point.X - bounds.Left) <= 0.001f || Math.Abs(point.X - bounds.Right) <= 0.001f;
+            var onHorizontal = Math.Abs(point.Y - bounds.Top) <= 0.001f || Math.Abs(point.Y - bounds.Bottom) <= 0.001f;
+            if (!onVertical && !onHorizontal) return false;
+        }
+
+        return true;
+    }
+
+    private static bool RectsTouchOrOverlap(RectangleF a, RectangleF b)
+    {
+        return a.Left <= b.Right + 0.001f
+            && a.Right + 0.001f >= b.Left
+            && a.Top <= b.Bottom + 0.001f
+            && a.Bottom + 0.001f >= b.Top;
+    }
+
+    private static PointF[] RectPoints(RectangleF bounds)
+    {
+        return
+        [
+            new PointF(bounds.Left, bounds.Top),
+            new PointF(bounds.Right, bounds.Top),
+            new PointF(bounds.Right, bounds.Bottom),
+            new PointF(bounds.Left, bounds.Bottom)
+        ];
     }
 
     private List<int> CollectActiveCandidates(int frame)
@@ -1336,6 +1574,135 @@ internal sealed class VectorScene
         }
 
         return RemoveDuplicatePolygonPoints(result);
+    }
+
+    private static (List<PointF> Inside, List<List<PointF>> Outside) SplitPolygonByRect(PointF[] polygon, RectangleF bounds)
+    {
+        var left = ClipPolygonByAxis(polygon, vertical: true, bounds.Left, keepGreaterOrEqual: false);
+        var afterLeft = ClipPolygonByAxis(polygon, vertical: true, bounds.Left, keepGreaterOrEqual: true);
+        var right = ClipPolygonByAxis(afterLeft, vertical: true, bounds.Right, keepGreaterOrEqual: true);
+        var middleX = ClipPolygonByAxis(afterLeft, vertical: true, bounds.Right, keepGreaterOrEqual: false);
+        var top = ClipPolygonByAxis(middleX, vertical: false, bounds.Top, keepGreaterOrEqual: false);
+        var afterTop = ClipPolygonByAxis(middleX, vertical: false, bounds.Top, keepGreaterOrEqual: true);
+        var bottom = ClipPolygonByAxis(afterTop, vertical: false, bounds.Bottom, keepGreaterOrEqual: true);
+        var inside = ClipPolygonByAxis(afterTop, vertical: false, bounds.Bottom, keepGreaterOrEqual: false);
+
+        var outside = new List<List<PointF>>(4);
+        AddPolygonIfUseful(outside, left);
+        AddPolygonIfUseful(outside, right);
+        AddPolygonIfUseful(outside, top);
+        AddPolygonIfUseful(outside, bottom);
+        return (inside, outside);
+    }
+
+    private static List<PointF> ClipPolygonByAxis(IReadOnlyList<PointF> polygon, bool vertical, float value, bool keepGreaterOrEqual)
+    {
+        var result = new List<PointF>();
+        if (polygon.Count < 3) return result;
+
+        var previous = polygon[^1];
+        var previousInside = IsInsideAxis(previous, vertical, value, keepGreaterOrEqual);
+        foreach (var current in polygon)
+        {
+            var currentInside = IsInsideAxis(current, vertical, value, keepGreaterOrEqual);
+            if (currentInside != previousInside && TryAxisIntersection(previous, current, vertical, value, out var intersection))
+            {
+                result.Add(VectorUnits.Quantize(intersection));
+            }
+
+            if (currentInside) result.Add(VectorUnits.Quantize(current));
+            previous = current;
+            previousInside = currentInside;
+        }
+
+        return RemoveDuplicatePolygonPoints(result);
+    }
+
+    private static bool IsInsideAxis(PointF point, bool vertical, float value, bool keepGreaterOrEqual)
+    {
+        var coordinate = vertical ? point.X : point.Y;
+        return keepGreaterOrEqual ? coordinate >= value - 0.001f : coordinate <= value + 0.001f;
+    }
+
+    private static bool TryAxisIntersection(PointF a, PointF b, bool vertical, float value, out PointF point)
+    {
+        point = PointF.Empty;
+        var delta = vertical ? b.X - a.X : b.Y - a.Y;
+        if (Math.Abs(delta) < 0.0001f) return false;
+        var t = ((vertical ? value - a.X : value - a.Y) / delta);
+        t = Math.Clamp(t, 0, 1);
+        point = Lerp(a, b, t);
+        return true;
+    }
+
+    private static void AddPolygonIfUseful(List<List<PointF>> polygons, List<PointF> polygon)
+    {
+        if (polygon.Count >= 3 && Math.Abs(PolygonArea(polygon)) >= 0.5f) polygons.Add(polygon);
+    }
+
+    private List<float> LineRectSplitParameters(int lineIndex, RectangleF bounds)
+    {
+        var splits = new List<DrawingTopologySplit>();
+        var samples = CurveSamples(lineIndex);
+        splits.Add(new DrawingTopologySplit(0, samples[0].Point));
+        splits.Add(new DrawingTopologySplit(1, samples[^1].Point));
+
+        for (var i = 0; i < samples.Length - 1; i++)
+        {
+            AddSegmentRectIntersections(splits, samples[i], samples[i + 1], bounds);
+        }
+
+        return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
+    }
+
+    private static void AddSegmentRectIntersections(List<DrawingTopologySplit> splits, CurveSample a, CurveSample b, RectangleF bounds)
+    {
+        var topLeft = new PointF(bounds.Left, bounds.Top);
+        var topRight = new PointF(bounds.Right, bounds.Top);
+        var bottomRight = new PointF(bounds.Right, bounds.Bottom);
+        var bottomLeft = new PointF(bounds.Left, bounds.Bottom);
+        AddSegmentRectIntersection(splits, a, b, topLeft, topRight);
+        AddSegmentRectIntersection(splits, a, b, topRight, bottomRight);
+        AddSegmentRectIntersection(splits, a, b, bottomRight, bottomLeft);
+        AddSegmentRectIntersection(splits, a, b, bottomLeft, topLeft);
+    }
+
+    private static void AddSegmentRectIntersection(List<DrawingTopologySplit> splits, CurveSample a, CurveSample b, PointF edgeStart, PointF edgeEnd)
+    {
+        if (!TrySegmentIntersection(a.Point, b.Point, edgeStart, edgeEnd, out var localT)) return;
+        var globalT = a.T + (b.T - a.T) * localT;
+        if (globalT <= 0.0001f || globalT >= 0.9999f) return;
+        splits.Add(new DrawingTopologySplit(globalT, Lerp(a.Point, b.Point, localT)));
+    }
+
+    private static PointF[] OpenPolygon(PointF[] polygon)
+    {
+        if (polygon.Length > 1 && SameDrawingUnit(polygon[0], polygon[^1])) return polygon[..^1];
+        return polygon;
+    }
+
+    private static float PolygonArea(IReadOnlyList<PointF> polygon)
+    {
+        if (polygon.Count < 3) return 0;
+        var area = 0f;
+        for (var i = 0; i < polygon.Count; i++)
+        {
+            var a = polygon[i];
+            var b = polygon[(i + 1) % polygon.Count];
+            area += a.X * b.Y - b.X * a.Y;
+        }
+
+        return area * 0.5f;
+    }
+
+    private static RectangleF NormalizeToDrawingUnits(RectangleF rect)
+    {
+        var normalized = Normalize(rect);
+        var left = MathF.Floor(normalized.Left);
+        var top = MathF.Floor(normalized.Top);
+        var right = MathF.Ceiling(normalized.Right);
+        var bottom = MathF.Ceiling(normalized.Bottom);
+        return RectangleF.FromLTRB(left, top, Math.Max(left + 1, right), Math.Max(top + 1, bottom));
     }
 
     private static bool IsInsideHalfPlane(PointF point, PointF a, PointF b, bool keepPositive)

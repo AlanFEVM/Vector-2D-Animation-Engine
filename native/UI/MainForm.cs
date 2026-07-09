@@ -769,13 +769,20 @@ internal sealed class MainForm : Form
             {
                 CaptureUndoSnapshot();
                 var strokeUnits = VectorUnits.StrokePointsToUnits(e.StrokeWidth);
-                _scene.Argb[_selectedObject] = Color.FromArgb((int)Math.Clamp(e.Opacity * 255, 0, 255), e.Fill).ToArgb();
-                _scene.Stroke[_selectedObject] = strokeUnits;
-                _scene.StrokeArgb[_selectedObject] = e.Stroke.ToArgb();
-                if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line)
+                var editedObject = _selectedObject;
+                _scene.Argb[editedObject] = Color.FromArgb((int)Math.Clamp(e.Opacity * 255, 0, 255), e.Fill).ToArgb();
+                _scene.Stroke[editedObject] = strokeUnits;
+                _scene.StrokeArgb[editedObject] = e.Stroke.ToArgb();
+                if (_scene.ShapeKind[editedObject] == ShapeKind.Line)
                 {
-                    _scene.Height[_selectedObject] = Math.Max(VectorUnits.FromPixels(3), strokeUnits + VectorUnits.FromPixels(2));
+                    _scene.Height[editedObject] = Math.Max(VectorUnits.FromPixels(3), strokeUnits + VectorUnits.FromPixels(2));
                     _scene.RebuildGeometryIndex();
+                }
+                else
+                {
+                    var merged = _scene.MergeSameColorFillsAround(editedObject);
+                    if (merged != editedObject) SetSelection(merged);
+                    _hierarchyPanel.RefreshScene();
                 }
 
                 _stage.Invalidate();
@@ -1219,7 +1226,10 @@ internal sealed class MainForm : Form
                 var hitObject = hit.Key.ObjectIndex;
                 CaptureUndoSnapshot();
                 _scene.Argb[hitObject] = ActiveColor().ToArgb();
-                SetSelection(hit);
+                var merged = _scene.MergeSameColorFillsAround(hitObject);
+                if (merged != hitObject) SetSelection(merged);
+                else SetSelection(hit);
+                _hierarchyPanel.RefreshScene();
                 UpdateInspector();
                 _stage.Invalidate();
             }
@@ -1414,8 +1424,20 @@ internal sealed class MainForm : Form
             var a = _stage.ScreenToWorld(startScreen);
             var b = _stage.ScreenToWorld(endScreen);
             var bounds = RectangleF.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
-            var objects = _scene.QueryObjects(bounds, _frame);
-            if (objects.Length > 3 || !TrySetTopologyMarqueeSelection(bounds)) SetSelection(objects);
+            var snapshot = _scene.CreateSnapshot();
+            var materialized = _scene.MaterializeMarqueeParts(bounds, _frame);
+            if (materialized.Changed)
+            {
+                PushUndoSnapshot(snapshot);
+                SetSelection(materialized.SelectedObjects);
+                _geometryDirty = false;
+                _hierarchyPanel.RefreshScene();
+            }
+            else
+            {
+                var objects = _scene.QueryObjects(bounds, _frame);
+                if (objects.Length > 3 || !TrySetTopologyMarqueeSelection(bounds)) SetSelection(objects);
+            }
         }
         else
         {
@@ -1783,7 +1805,9 @@ internal sealed class MainForm : Form
             angle = 0;
         }
 
-        SetSelection(_scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, ActiveStrokeUnits(), ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape));
+        var newObject = _scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, ActiveStrokeUnits(), ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape);
+        if (tool != ToolMode.Line && newObject >= 0) newObject = _scene.MergeSameColorFillsAround(newObject);
+        SetSelection(newObject);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
