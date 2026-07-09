@@ -51,6 +51,7 @@ internal sealed class MainForm : Form
     private readonly AnimatedToolTip _toolTip = new();
     private readonly WorkspaceTabs _workspaceTabs = new();
     private readonly Panel _workspaceHeader = new();
+    private readonly TableLayoutPanel _drawingObjectRow = new();
     private readonly FlowLayoutPanel _drawingObjectTabs = new();
     private readonly DrawSnappingStrip _drawSnappingStrip;
     private readonly TimelineStrip _timeline;
@@ -219,20 +220,28 @@ internal sealed class MainForm : Form
         _workspaceTabs.Dock = DockStyle.Top;
         _workspaceTabs.Height = 44;
         _workspaceHeader.Controls.Add(_workspaceTabs);
-        _drawingObjectTabs.Dock = DockStyle.Bottom;
-        _drawingObjectTabs.Height = 40;
+        _drawingObjectRow.Dock = DockStyle.Bottom;
+        _drawingObjectRow.Height = 40;
+        _drawingObjectRow.BackColor = Theme.Top;
+        _drawingObjectRow.ColumnCount = 2;
+        _drawingObjectRow.RowCount = 1;
+        _drawingObjectRow.Margin = Padding.Empty;
+        _drawingObjectRow.Padding = Padding.Empty;
+        _drawingObjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _drawingObjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, _drawSnappingStrip.Width + 12));
+        _drawingObjectRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _workspaceHeader.Controls.Add(_drawingObjectRow);
+        _drawingObjectTabs.Dock = DockStyle.Fill;
         _drawingObjectTabs.BackColor = Theme.Top;
         _drawingObjectTabs.FlowDirection = FlowDirection.LeftToRight;
         _drawingObjectTabs.WrapContents = false;
         _drawingObjectTabs.Padding = new Padding(8, 4, 8, 6);
         _drawingObjectTabs.Margin = Padding.Empty;
-        _workspaceHeader.Controls.Add(_drawingObjectTabs);
-        _drawSnappingStrip.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _workspaceHeader.Controls.Add(_drawSnappingStrip);
-        _workspaceHeader.Resize += (_, _) => PositionHeaderSnappingStrip();
+        _drawSnappingStrip.Dock = DockStyle.Fill;
+        _drawSnappingStrip.Margin = Padding.Empty;
+        _drawingObjectRow.Controls.Add(_drawingObjectTabs, 0, 0);
+        _drawingObjectRow.Controls.Add(_drawSnappingStrip, 1, 0);
         BuildDrawingObjectTabs();
-        PositionHeaderSnappingStrip();
-        _drawSnappingStrip.BringToFront();
 
         var tools = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 48, BackColor = Theme.Top, FlowDirection = FlowDirection.TopDown, Padding = new Padding(6, 10, 6, 6) };
         PaintRightBorder(tools);
@@ -382,12 +391,6 @@ internal sealed class MainForm : Form
         minimize.Top = buttonTop;
         fit.Left = minimize.Left - fit.Width - 14;
         generate.Left = fit.Left - generate.Width - 8;
-    }
-
-    private void PositionHeaderSnappingStrip()
-    {
-        _drawSnappingStrip.Top = 44;
-        _drawSnappingStrip.Left = Math.Max(8, _workspaceHeader.ClientSize.Width - _drawSnappingStrip.Width - 10);
     }
 
     private void RegisterWindowDrag(Control control)
@@ -1970,9 +1973,7 @@ internal sealed class MainForm : Form
     {
         var basicDrawing = view == WorkspaceView.BasicDrawing;
         _workspaceHeader.Height = basicDrawing ? 84 : 44;
-        _drawingObjectTabs.Visible = basicDrawing;
-        _drawSnappingStrip.Visible = basicDrawing;
-        if (basicDrawing) PositionHeaderSnappingStrip();
+        _drawingObjectRow.Visible = basicDrawing;
         _basicInspectorPage.Visible = basicDrawing;
         _sceneEditorPanel.Visible = view == WorkspaceView.SceneEditor;
         _animationPage.Visible = view == WorkspaceView.Animation;
