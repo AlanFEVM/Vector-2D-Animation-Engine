@@ -1157,6 +1157,21 @@ internal sealed class MainForm : Form
         }
 
         if (pasted.Count == 0) return false;
+        var pastedMergeSeed = pasted.LastOrDefault(index => (uint)index < _scene.ObjectCount && _scene.ShapeKind[index] != ShapeKind.Line, -1);
+        if (pastedMergeSeed >= 0)
+        {
+            var beforeMergeCount = _scene.ObjectCount;
+            var merged = _scene.MergeSameColorFillsAround(pastedMergeSeed);
+            if (_scene.ObjectCount != beforeMergeCount || merged != pastedMergeSeed)
+            {
+                SetSelection(merged);
+                _hierarchyPanel.RefreshScene();
+                UpdateInspector();
+                _stage.Invalidate();
+                return true;
+            }
+        }
+
         SetSelection(pasted);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
@@ -1409,11 +1424,29 @@ internal sealed class MainForm : Form
         _activeHandle = EditHandleKind.None;
         if (_geometryDirty)
         {
+            MergeSelectedFillsAfterGeometryEdit();
             _scene.RebuildGeometryIndex();
             _geometryDirty = false;
         }
 
         _stage.Capture = false;
+    }
+
+    private void MergeSelectedFillsAfterGeometryEdit()
+    {
+        if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount) return;
+        if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line) return;
+
+        var beforeMergeCount = _scene.ObjectCount;
+        var merged = _scene.MergeSameColorFillsAround(_selectedObject);
+        if (_scene.ObjectCount == beforeMergeCount && merged == _selectedObject)
+        {
+            return;
+        }
+
+        SetSelection(merged);
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
     }
 
     private void CompleteMarqueeSelection(Point endScreen)
