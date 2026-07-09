@@ -1,9 +1,23 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace VectorAnimationEngine;
 
 internal sealed class MainForm : Form
 {
+    private const int ResizeGripSize = 7;
+    private const int WmNcHitTest = 0x0084;
+    private const int WmNcLeftButtonDown = 0x00A1;
+    private const int HtClient = 1;
+    private const int HtCaption = 2;
+    private const int HtLeft = 10;
+    private const int HtRight = 11;
+    private const int HtTop = 12;
+    private const int HtTopLeft = 13;
+    private const int HtTopRight = 14;
+    private const int HtBottom = 15;
+    private const int HtBottomLeft = 16;
+    private const int HtBottomRight = 17;
     private const double TargetUps = 300.0;
     private const double TargetRenderFps = 144.0;
     private const double UpdateStepSeconds = 1.0 / TargetUps;
@@ -44,6 +58,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _animationFpsStatus = StatusLabel("Animation FPS 24");
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
     private readonly ToolStripStatusLabel _hotReloadStatus = StatusLabel("Hot Reload On");
+    private WindowChromeButton? _maximizeButton;
     private readonly PlaybackSettingsPanel _playbackSettings = new();
     private readonly DrawSettingsPanel _drawSettingsPanel;
     private readonly MaterialEditorPanel _materialEditor = new();
@@ -113,10 +128,12 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text = "Vector 2D Animation Engine";
+        FormBorderStyle = FormBorderStyle.None;
         Width = 1480;
         Height = 920;
         MinimumSize = new Size(1120, 720);
-        BackColor = Theme.App;
+        Padding = new Padding(1);
+        BackColor = Theme.Border;
         Font = Theme.UiFont();
         KeyPreview = true;
 
@@ -133,19 +150,24 @@ internal sealed class MainForm : Form
 
     private void BuildUi()
     {
-        var top = new Panel { Dock = DockStyle.Top, Height = 54, BackColor = Theme.Top };
+        var top = new Panel { Dock = DockStyle.Top, Height = 56, BackColor = Theme.Top };
         PaintBottomBorder(top);
         Controls.Add(top);
-        top.Controls.Add(new Label { Text = "V2", Left = 14, Top = 11, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter });
-        top.Controls.Add(Theme.Label("Vector 2D Animation Engine", 58, 15, 260, Theme.Text, Theme.UiFont(10, FontStyle.Bold)));
+        RegisterWindowDrag(top);
+        var mark = new Label { Text = "V2", Left = 14, Top = 12, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+        RegisterWindowDrag(mark);
+        top.Controls.Add(mark);
+        var title = Theme.Label("Vector 2D Animation Engine", 58, 16, 260, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
+        RegisterWindowDrag(title);
+        top.Controls.Add(title);
         _play.Left = 330;
-        _play.Top = 11;
+        _play.Top = 12;
         _play.Height = 32;
         Theme.StyleButton(_play);
         top.Controls.Add(_play);
-        top.Controls.Add(Theme.Label("Frame", 420, 15, 58, Theme.Muted));
+        top.Controls.Add(Theme.Label("Frame", 420, 16, 58, Theme.Muted));
         _frameSlider.Left = 476;
-        _frameSlider.Top = 9;
+        _frameSlider.Top = 10;
         _frameSlider.Width = 430;
         _frameSlider.Minimum = 0;
         _frameSlider.Maximum = 239;
@@ -153,25 +175,36 @@ internal sealed class MainForm : Form
         top.Controls.Add(_frameSlider);
         var generate = new Button { Text = "Run Stress Scene", Width = 150, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         generate.Left = Width - 282;
-        generate.Top = 11;
+        generate.Top = 12;
         Theme.StyleButton(generate);
         generate.Click += (_, _) => Generate();
         var fit = new Button { Text = "Fit Stage", Width = 104, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         fit.Left = Width - 124;
-        fit.Top = 11;
+        fit.Top = 12;
         Theme.StyleButton(fit);
         fit.Click += (_, _) =>
         {
             _stage.Fit();
             UpdateStatusBar();
         };
+        var minimize = CreateWindowButton(WindowChromeButtonKind.Minimize, "Minimize");
+        minimize.Click += (_, _) => WindowState = FormWindowState.Minimized;
+        _maximizeButton = CreateWindowButton(WindowChromeButtonKind.Maximize, "Maximize");
+        _maximizeButton.Click += (_, _) => ToggleMaximized();
+        var close = CreateWindowButton(WindowChromeButtonKind.Close, "Close");
+        close.Click += (_, _) => Close();
         top.Controls.Add(generate);
         top.Controls.Add(fit);
+        top.Controls.Add(minimize);
+        top.Controls.Add(_maximizeButton);
+        top.Controls.Add(close);
         top.Resize += (_, _) =>
         {
-            fit.Left = top.ClientSize.Width - fit.Width - 12;
-            generate.Left = fit.Left - generate.Width - 8;
+            PositionTopBarActions(top, minimize, _maximizeButton, close, fit, generate);
         };
+        Resize += (_, _) => UpdateWindowChromeState();
+        PositionTopBarActions(top, minimize, _maximizeButton, close, fit, generate);
+        UpdateWindowChromeState();
 
         var body = new Panel { Dock = DockStyle.Fill, BackColor = Theme.App };
         Controls.Add(body);
@@ -321,6 +354,119 @@ internal sealed class MainForm : Form
         BuildStatusBar();
         Controls.Add(_statusBar);
     }
+
+    private static WindowChromeButton CreateWindowButton(WindowChromeButtonKind kind, string name)
+    {
+        return new WindowChromeButton(kind)
+        {
+            Top = 12,
+            AccessibleName = name
+        };
+    }
+
+    private static void PositionTopBarActions(Control top, Control minimize, Control maximize, Control close, Control fit, Control generate)
+    {
+        var buttonTop = Math.Max(0, (top.ClientSize.Height - close.Height) / 2);
+        close.Left = top.ClientSize.Width - close.Width - 8;
+        maximize.Left = close.Left - maximize.Width - 2;
+        minimize.Left = maximize.Left - minimize.Width - 2;
+        close.Top = buttonTop;
+        maximize.Top = buttonTop;
+        minimize.Top = buttonTop;
+        fit.Left = minimize.Left - fit.Width - 14;
+        generate.Left = fit.Left - generate.Width - 8;
+    }
+
+    private void RegisterWindowDrag(Control control)
+    {
+        control.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left || WindowState == FormWindowState.Minimized) return;
+            ReleaseCapture();
+            SendMessage(Handle, WmNcLeftButtonDown, HtCaption, 0);
+        };
+        control.MouseDoubleClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) ToggleMaximized();
+        };
+    }
+
+    private void ToggleMaximized()
+    {
+        if (WindowState == FormWindowState.Maximized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+        else
+        {
+            ApplyMaximizedBounds();
+            WindowState = FormWindowState.Maximized;
+        }
+
+        UpdateWindowChromeState();
+    }
+
+    private void UpdateWindowChromeState()
+    {
+        if (_maximizeButton is null) return;
+        _maximizeButton.Kind = WindowState == FormWindowState.Maximized
+            ? WindowChromeButtonKind.Restore
+            : WindowChromeButtonKind.Maximize;
+        _maximizeButton.AccessibleName = WindowState == FormWindowState.Maximized ? "Restore" : "Maximize";
+        _maximizeButton.Invalidate();
+        Padding = WindowState == FormWindowState.Maximized ? Padding.Empty : new Padding(1);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyMaximizedBounds();
+    }
+
+    private void ApplyMaximizedBounds()
+    {
+        if (!IsHandleCreated) return;
+        MaximizedBounds = Screen.FromHandle(Handle).WorkingArea;
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WmNcHitTest)
+        {
+            base.WndProc(ref m);
+            if (m.Result != (IntPtr)HtClient || WindowState == FormWindowState.Maximized) return;
+
+            var point = PointToClient(GetPointFromLParam(m.LParam));
+            var left = point.X <= ResizeGripSize;
+            var right = point.X >= ClientSize.Width - ResizeGripSize;
+            var top = point.Y <= ResizeGripSize;
+            var bottom = point.Y >= ClientSize.Height - ResizeGripSize;
+
+            if (left && top) m.Result = (IntPtr)HtTopLeft;
+            else if (right && top) m.Result = (IntPtr)HtTopRight;
+            else if (left && bottom) m.Result = (IntPtr)HtBottomLeft;
+            else if (right && bottom) m.Result = (IntPtr)HtBottomRight;
+            else if (left) m.Result = (IntPtr)HtLeft;
+            else if (right) m.Result = (IntPtr)HtRight;
+            else if (top) m.Result = (IntPtr)HtTop;
+            else if (bottom) m.Result = (IntPtr)HtBottom;
+            return;
+        }
+
+        base.WndProc(ref m);
+    }
+
+    private static Point GetPointFromLParam(IntPtr lParam)
+    {
+        var value = lParam.ToInt64();
+        return new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
 
     private void BuildStatusBar()
     {

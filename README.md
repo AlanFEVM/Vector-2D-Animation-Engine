@@ -38,6 +38,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 ## Current Features
 
 - Workspace tabs: `Basic Drawing`, `Scene Edit`, `Animation`, `Materials`, and `Hierarchy`.
+- Custom borderless desktop window shell with draggable title area, resizable edges, and in-app minimize/maximize/close controls.
 - Basic Drawing has secondary Flash-style drawing object tabs that can be dragged into Vault for reuse.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
