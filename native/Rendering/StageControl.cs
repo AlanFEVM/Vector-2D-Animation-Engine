@@ -414,9 +414,9 @@ internal sealed class StageControl : Control
         var strokeColor = StrokeColorFor(i);
         var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[i]));
 
-        if (shape == ShapeKind.Path && scene.TryGetPathWorldPoints(i, out var pathPoints))
+        if (shape == ShapeKind.Path && scene.TryGetPathWorldContours(i, out var pathContours))
         {
-            DrawPathObject(g, i, pathPoints, brush, strokeColor, scene.Stroke[i], screenStroke);
+            DrawPathObject(g, i, pathContours, brush, strokeColor, scene.Stroke[i], screenStroke);
             return;
         }
 
@@ -444,15 +444,23 @@ internal sealed class StageControl : Control
         }
     }
 
-    private void DrawPathObject(Graphics g, int i, PointF[] worldPoints, Brush brush, Color strokeColor, float stroke, float screenStroke)
+    private void DrawPathObject(Graphics g, int i, PointF[][] worldContours, Brush brush, Color strokeColor, float stroke, float screenStroke)
     {
-        if (worldPoints.Length < 3) return;
-        var points = new PointF[worldPoints.Length];
-        for (var p = 0; p < worldPoints.Length; p++) points[p] = WorldToScreen(worldPoints[p]);
-        g.FillPolygon(brush, points);
+        if (worldContours.Length == 0) return;
+        using var path = new GraphicsPath(FillMode.Alternate);
+        foreach (var contour in worldContours)
+        {
+            if (contour.Length < 3) continue;
+            var points = new PointF[contour.Length];
+            for (var p = 0; p < contour.Length; p++) points[p] = WorldToScreen(contour[p]);
+            path.AddPolygon(points);
+        }
+
+        if (path.PointCount == 0) return;
+        g.FillPath(brush, path);
         if (stroke <= 0) return;
         using var pen = StrokePen(strokeColor, screenStroke);
-        g.DrawPolygon(pen, points);
+        g.DrawPath(pen, path);
     }
 
     private void DrawLocalShape(Graphics g, ShapeKind shape, Brush brush, Color strokeColor, float stroke, float screenStroke, float w, float h)

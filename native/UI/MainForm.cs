@@ -123,7 +123,7 @@ internal sealed class MainForm : Form
         uint Atoms,
         ShapeKind Shape,
         PointF CurveControl,
-        PointF[]? PathWorldPoints);
+        PointF[][]? PathWorldContours);
 
     public MainForm()
     {
@@ -1108,8 +1108,8 @@ internal sealed class MainForm : Form
         _clipboardObjects.Clear();
         foreach (var index in targets)
         {
-            PointF[]? pathPoints = null;
-            if (_scene.ShapeKind[index] == ShapeKind.Path && _scene.TryGetPathWorldPoints(index, out var points)) pathPoints = points;
+            PointF[][]? pathContours = null;
+            if (_scene.ShapeKind[index] == ShapeKind.Path && _scene.TryGetPathWorldContours(index, out var contours)) pathContours = contours;
             _clipboardObjects.Add(new ClipboardObject(
                 _scene.ObjectLayer[index],
                 new PointF(_scene.X[index], _scene.Y[index]),
@@ -1121,7 +1121,7 @@ internal sealed class MainForm : Form
                 _scene.AtomCount[index],
                 _scene.ShapeKind[index],
                 new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]),
-                pathPoints));
+                pathContours));
         }
 
         return _clipboardObjects.Count > 0;
@@ -1137,10 +1137,12 @@ internal sealed class MainForm : Form
             var offset = new PointF(PasteOffsetUnits, PasteOffsetUnits);
             var layer = Math.Clamp(item.Layer, 0, Math.Max(0, _scene.LayerCount - 1));
             int index;
-            if (item.Shape == ShapeKind.Path && item.PathWorldPoints is { Length: >= 3 } pathPoints)
+            if (item.Shape == ShapeKind.Path && item.PathWorldContours is { Length: > 0 } pathContours)
             {
-                var shifted = pathPoints.Select(point => new PointF(point.X + offset.X, point.Y + offset.Y)).ToArray();
-                index = _scene.AddPathObject(layer, shifted, item.Stroke, item.FillColor, item.StrokeColor, item.Atoms);
+                var shifted = pathContours
+                    .Select(contour => contour.Select(point => new PointF(point.X + offset.X, point.Y + offset.Y)).ToArray())
+                    .ToArray();
+                index = _scene.AddPathObjectContours(layer, shifted, item.Stroke, item.FillColor, item.StrokeColor, item.Atoms);
             }
             else
             {

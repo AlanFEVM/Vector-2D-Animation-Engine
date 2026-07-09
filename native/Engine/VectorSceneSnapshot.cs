@@ -25,5 +25,5 @@ internal sealed class VectorSceneSnapshot
     public uint[] AtomCount { get; init; } = [];
     public int[] Argb { get; init; } = [];
     public int[] StrokeArgb { get; init; } = [];
-    public Dictionary<int, PointF[]> PathLocalPoints { get; init; } = new();
+    public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
 }

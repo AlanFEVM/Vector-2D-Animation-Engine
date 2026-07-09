@@ -237,9 +237,9 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var strokeBrush = BrushFor(scene.StrokeArgb.Length > i ? scene.StrokeArgb[i] : GdiColor.FromArgb(238, 242, 241).ToArgb());
         var screenStroke = Math.Max(0.1f, stage.WorldLengthToScreen(scene.Stroke[i]));
 
-        if (shape == ShapeKind.Path && scene.TryGetPathWorldPoints(i, out var pathPoints))
+        if (shape == ShapeKind.Path && scene.TryGetPathWorldContours(i, out var pathContours))
         {
-            DrawPathObject(stage, pathPoints, brush, strokeBrush, scene.Stroke[i], screenStroke);
+            DrawPathObject(stage, pathContours, brush, strokeBrush, scene.Stroke[i], screenStroke);
             return;
         }
 
@@ -255,15 +255,21 @@ internal sealed class Direct2DStageRenderer : IDisposable
         _target.Transform = old;
     }
 
-    private void DrawPathObject(StageControl stage, GdiPointF[] worldPoints, ID2D1SolidColorBrush brush, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke)
+    private void DrawPathObject(StageControl stage, GdiPointF[][] worldContours, ID2D1SolidColorBrush brush, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke)
     {
-        if (worldPoints.Length < 3) return;
+        if (worldContours.Length == 0) return;
         using var path = _factory!.CreatePathGeometry();
         using (var sink = path.Open())
         {
-            sink.BeginFigure(WorldToVector(stage, worldPoints[0]), FigureBegin.Filled);
-            for (var i = 1; i < worldPoints.Length; i++) sink.AddLine(WorldToVector(stage, worldPoints[i]));
-            sink.EndFigure(FigureEnd.Closed);
+            sink.SetFillMode(FillMode.Alternate);
+            foreach (var contour in worldContours)
+            {
+                if (contour.Length < 3) continue;
+                sink.BeginFigure(WorldToVector(stage, contour[0]), FigureBegin.Filled);
+                for (var i = 1; i < contour.Length; i++) sink.AddLine(WorldToVector(stage, contour[i]));
+                sink.EndFigure(FigureEnd.Closed);
+            }
+
             sink.Close();
         }
 

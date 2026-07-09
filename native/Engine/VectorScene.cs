@@ -38,7 +38,7 @@ internal sealed class VectorScene
     public uint[] AtomCount { get; private set; } = [];
     public int[] Argb { get; private set; } = [];
     public int[] StrokeArgb { get; private set; } = [];
-    private readonly Dictionary<int, PointF[]> _pathLocalPoints = new();
+    private readonly Dictionary<int, PointF[][]> _pathLocalContours = new();
 
     private readonly record struct MarqueePartAddition(
         bool IsLine,
@@ -104,7 +104,7 @@ internal sealed class VectorScene
         AtomCount = [];
         Argb = [];
         StrokeArgb = [];
-        _pathLocalPoints.Clear();
+        _pathLocalContours.Clear();
         ClearSummaries();
         RebuildSpatialIndex();
     }
@@ -146,7 +146,7 @@ internal sealed class VectorScene
         AtomCount = GC.AllocateUninitializedArray<uint>(ObjectCount);
         Argb = GC.AllocateUninitializedArray<int>(ObjectCount);
         StrokeArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
-        _pathLocalPoints.Clear();
+        _pathLocalContours.Clear();
 
         var avgAtoms = (double)VirtualAtomCount / ObjectCount;
         var columns = (int)Math.Ceiling(Math.Sqrt(ObjectCount * 1.7));
@@ -246,29 +246,46 @@ internal sealed class VectorScene
 
     public int AddPathObject(int layer, IReadOnlyList<PointF> worldPoints, float stroke, Color color, Color strokeColor, uint atoms)
     {
-        if (worldPoints.Count < 3) return -1;
+        return AddPathObjectContours(layer, new[] { worldPoints.ToArray() }, stroke, color, strokeColor, atoms);
+    }
 
-        var left = worldPoints[0].X;
-        var right = worldPoints[0].X;
-        var top = worldPoints[0].Y;
-        var bottom = worldPoints[0].Y;
-        for (var i = 1; i < worldPoints.Count; i++)
+    public int AddPathObjectContours(int layer, IReadOnlyList<PointF[]> worldContours, float stroke, Color color, Color strokeColor, uint atoms)
+    {
+        var contours = NormalizePathContours(worldContours);
+        if (contours.Length == 0) return -1;
+
+        var first = contours[0][0];
+        var left = first.X;
+        var right = first.X;
+        var top = first.Y;
+        var bottom = first.Y;
+        foreach (var contour in contours)
         {
-            left = Math.Min(left, worldPoints[i].X);
-            right = Math.Max(right, worldPoints[i].X);
-            top = Math.Min(top, worldPoints[i].Y);
-            bottom = Math.Max(bottom, worldPoints[i].Y);
+            foreach (var point in contour)
+            {
+                left = Math.Min(left, point.X);
+                right = Math.Max(right, point.X);
+                top = Math.Min(top, point.Y);
+                bottom = Math.Max(bottom, point.Y);
+            }
         }
 
         var center = new PointF((left + right) * 0.5f, (top + bottom) * 0.5f);
         var index = AddObject(layer, center, new SizeF(Math.Max(1, right - left), Math.Max(1, bottom - top)), 0, stroke, color, strokeColor, atoms, VectorAnimationEngine.ShapeKind.Path);
-        var local = new PointF[worldPoints.Count];
-        for (var i = 0; i < worldPoints.Count; i++)
+        var localContours = new PointF[contours.Length][];
+        for (var c = 0; c < contours.Length; c++)
         {
-            local[i] = new PointF(VectorUnits.Quantize(worldPoints[i].X - center.X), VectorUnits.Quantize(worldPoints[i].Y - center.Y));
+            var contour = contours[c];
+            var local = new PointF[contour.Length];
+            for (var i = 0; i < contour.Length; i++)
+            {
+                local[i] = new PointF(VectorUnits.Quantize(contour[i].X - center.X), VectorUnits.Quantize(contour[i].Y - center.Y));
+            }
+
+            localContours[c] = local;
         }
 
-        _pathLocalPoints[index] = local;
+        _pathLocalContours[index] = localContours;
         RebuildGeometryIndex();
         RebuildSummaries();
         return index;
@@ -365,7 +382,7 @@ internal sealed class VectorScene
             AtomCount = AtomCount.ToArray(),
             Argb = Argb.ToArray(),
             StrokeArgb = StrokeArgb.ToArray(),
-            PathLocalPoints = _pathLocalPoints.ToDictionary(item => item.Key, item => item.Value.ToArray())
+            PathLocalContours = _pathLocalContours.ToDictionary(item => item.Key, item => CloneContours(item.Value))
         };
     }
 
@@ -394,11 +411,11 @@ internal sealed class VectorScene
         AtomCount = snapshot.AtomCount.ToArray();
         Argb = snapshot.Argb.ToArray();
         StrokeArgb = snapshot.StrokeArgb.ToArray();
-        _pathLocalPoints.Clear();
-        foreach (var item in snapshot.PathLocalPoints)
+        _pathLocalContours.Clear();
+        foreach (var item in snapshot.PathLocalContours)
         {
             if ((uint)item.Key >= ObjectCount) continue;
-            _pathLocalPoints[item.Key] = item.Value.ToArray();
+            _pathLocalContours[item.Key] = CloneContours(item.Value);
         }
 
         RebuildGeometryIndex();
@@ -469,21 +486,45 @@ internal sealed class VectorScene
         if ((uint)objectIndex >= ObjectCount) return false;
         var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
         if (shape == VectorAnimationEngine.ShapeKind.Line) return false;
+        if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(objectIndex, out var contours))
+        {
+            return PointInCompoundPolygonOrOnBoundary(world, contours);
+        }
+
         var polygon = OpenPolygon(ShapeBoundary(objectIndex));
         return polygon.Length >= 3 && PointInPolygonOrOnBoundary(world, polygon);
     }
 
     public bool TryGetPathWorldPoints(int objectIndex, out PointF[] points)
     {
-        if ((uint)objectIndex >= ObjectCount || !_pathLocalPoints.TryGetValue(objectIndex, out var local))
+        if (!TryGetPathWorldContours(objectIndex, out var contours) || contours.Length == 0)
         {
             points = Array.Empty<PointF>();
             return false;
         }
 
-        points = new PointF[local.Length];
-        for (var i = 0; i < local.Length; i++) points[i] = LocalToWorld(objectIndex, local[i].X, local[i].Y);
+        points = contours[0];
         return true;
+    }
+
+    public bool TryGetPathWorldContours(int objectIndex, out PointF[][] contours)
+    {
+        if ((uint)objectIndex >= ObjectCount || !_pathLocalContours.TryGetValue(objectIndex, out var localContours))
+        {
+            contours = Array.Empty<PointF[]>();
+            return false;
+        }
+
+        contours = new PointF[localContours.Length][];
+        for (var c = 0; c < localContours.Length; c++)
+        {
+            var local = localContours[c];
+            var world = new PointF[local.Length];
+            for (var i = 0; i < local.Length; i++) world[i] = LocalToWorld(objectIndex, local[i].X, local[i].Y);
+            contours[c] = world;
+        }
+
+        return contours.Length > 0;
     }
 
     public bool TryGetLineEndpoint(int objectIndex, bool startEndpoint, out PointF point)
@@ -604,7 +645,7 @@ internal sealed class VectorScene
                 var strokeColor = Color.FromArgb(StrokeArgb[current]);
                 var atoms = Math.Max(3u, AtomCount[current] + AtomCount[other]);
                 RemoveObjects(new[] { current, other });
-                current = AddPathObject(layer, mergedPath, 0, fillColor, strokeColor, atoms);
+                current = AddPathObjectContours(layer, mergedPath, 0, fillColor, strokeColor, atoms);
                 merged = current >= 0;
                 break;
             }
@@ -715,24 +756,24 @@ internal sealed class VectorScene
         remove.Add(index);
     }
 
-    private bool TryBuildSameColorFillMerge(int a, int b, out PointF[] mergedPath)
+    private bool TryBuildSameColorFillMerge(int a, int b, out PointF[][] mergedPath)
     {
-        mergedPath = Array.Empty<PointF>();
+        mergedPath = Array.Empty<PointF[]>();
         if ((uint)a >= ObjectCount || (uint)b >= ObjectCount) return false;
         if (ObjectLayer[a] != ObjectLayer[b] || Argb[a] != Argb[b]) return false;
         if (ShapeKind[a] == VectorAnimationEngine.ShapeKind.Line || ShapeKind[b] == VectorAnimationEngine.ShapeKind.Line) return false;
 
-        var polygonA = OpenPolygon(ShapeBoundary(a));
-        var polygonB = OpenPolygon(ShapeBoundary(b));
-        if (polygonA.Length < 3 || polygonB.Length < 3) return false;
-        var distance = PolygonDistance(polygonA, polygonB, out var nearestA, out var nearestB);
+        var contoursA = FillWorldContours(a);
+        var contoursB = FillWorldContours(b);
+        if (contoursA.Length == 0 || contoursB.Length == 0) return false;
+        var distance = CompoundPolygonDistance(contoursA, contoursB, out var nearestA, out var nearestB);
         if (distance >= FillMergeDistanceUnits) return false;
 
         var connector = distance > 0.001f ? ConnectorRect(nearestA, nearestB) : RectangleF.Empty;
-        mergedPath = BuildMergedFillPath(polygonA, polygonB, connector);
-        if (mergedPath.Length < 3) return false;
-        return MergedPathCoversPolygon(mergedPath, polygonA)
-            && MergedPathCoversPolygon(mergedPath, polygonB);
+        mergedPath = BuildMergedFillPath(contoursA, contoursB, connector);
+        if (mergedPath.Length == 0) return false;
+        return MergedPathCoversPolygon(mergedPath, contoursA)
+            && MergedPathCoversPolygon(mergedPath, contoursB);
     }
 
     private static RectangleF ConnectorRect(PointF a, PointF b)
@@ -748,12 +789,12 @@ internal sealed class VectorScene
         return Normalize(RectangleF.FromLTRB(Math.Min(a.X, b.X) - halfThickness, a.Y, Math.Max(a.X, b.X) + halfThickness, b.Y));
     }
 
-    private static PointF[] BuildMergedFillPath(PointF[] polygonA, PointF[] polygonB, RectangleF connector)
+    private static PointF[][] BuildMergedFillPath(PointF[][] contoursA, PointF[][] contoursB, RectangleF connector)
     {
         var xs = new SortedSet<float>();
         var ys = new SortedSet<float>();
-        AddPolygonGridLines(polygonA, xs, ys);
-        AddPolygonGridLines(polygonB, xs, ys);
+        AddPolygonGridLines(contoursA, xs, ys);
+        AddPolygonGridLines(contoursB, xs, ys);
         if (!connector.IsEmpty)
         {
             xs.Add(VectorUnits.Quantize(connector.Left));
@@ -764,7 +805,7 @@ internal sealed class VectorScene
 
         var xValues = xs.ToArray();
         var yValues = ys.ToArray();
-        if (xValues.Length < 2 || yValues.Length < 2) return Array.Empty<PointF>();
+        if (xValues.Length < 2 || yValues.Length < 2) return Array.Empty<PointF[]>();
 
         var filled = new bool[xValues.Length - 1, yValues.Length - 1];
         var filledArea = 0f;
@@ -773,8 +814,8 @@ internal sealed class VectorScene
             for (var y = 0; y < yValues.Length - 1; y++)
             {
                 var center = new PointF((xValues[x] + xValues[x + 1]) * 0.5f, (yValues[y] + yValues[y + 1]) * 0.5f);
-                filled[x, y] = PointInPolygon(center, polygonA)
-                    || PointInPolygon(center, polygonB)
+                filled[x, y] = PointInCompoundPolygon(center, contoursA)
+                    || PointInCompoundPolygon(center, contoursB)
                     || (!connector.IsEmpty && connector.Contains(center));
                 if (filled[x, y]) filledArea += Math.Abs((xValues[x + 1] - xValues[x]) * (yValues[y + 1] - yValues[y]));
             }
@@ -820,20 +861,65 @@ internal sealed class VectorScene
             if (points.Length >= 3 && Math.Abs(PolygonArea(points)) >= 0.5f) loops.Add(points);
         }
 
-        if (loops.Count != 1) return Array.Empty<PointF>();
-        var mergedArea = Math.Abs(PolygonArea(loops[0]));
+        if (loops.Count == 0) return Array.Empty<PointF[]>();
+        var sorted = loops
+            .OrderByDescending(loop => Math.Abs(PolygonArea(loop)))
+            .ToArray();
+        var mergedArea = CompoundArea(sorted);
         return mergedArea <= filledArea + Math.Max(1f, filledArea * 0.02f)
-            ? loops[0]
-            : Array.Empty<PointF>();
+            ? sorted
+            : Array.Empty<PointF[]>();
     }
 
-    private static void AddPolygonGridLines(PointF[] polygon, SortedSet<float> xs, SortedSet<float> ys)
+    private static void AddPolygonGridLines(PointF[][] contours, SortedSet<float> xs, SortedSet<float> ys)
     {
-        foreach (var point in polygon)
+        foreach (var polygon in contours)
         {
-            xs.Add(VectorUnits.Quantize(point.X));
-            ys.Add(VectorUnits.Quantize(point.Y));
+            foreach (var point in polygon)
+            {
+                xs.Add(VectorUnits.Quantize(point.X));
+                ys.Add(VectorUnits.Quantize(point.Y));
+            }
         }
+    }
+
+    private PointF[][] FillWorldContours(int objectIndex)
+    {
+        var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(objectIndex, out var contours))
+        {
+            return contours;
+        }
+
+        var polygon = OpenPolygon(ShapeBoundary(objectIndex));
+        return polygon.Length >= 3 ? new[] { polygon } : Array.Empty<PointF[]>();
+    }
+
+    private static float CompoundPolygonDistance(PointF[][] a, PointF[][] b, out PointF nearestA, out PointF nearestB)
+    {
+        nearestA = a[0][0];
+        nearestB = b[0][0];
+        if (a.Any(contour => contour.Any(point => PointInCompoundPolygon(point, b)))
+            || b.Any(contour => contour.Any(point => PointInCompoundPolygon(point, a))))
+        {
+            nearestA = nearestB = a[0][0];
+            return 0;
+        }
+
+        var best = float.MaxValue;
+        foreach (var contourA in a)
+        {
+            foreach (var contourB in b)
+            {
+                var distance = PolygonDistance(contourA, contourB, out var candidateA, out var candidateB);
+                if (distance >= best) continue;
+                best = distance;
+                nearestA = candidateA;
+                nearestB = candidateB;
+            }
+        }
+
+        return best;
     }
 
     private static float PolygonDistance(PointF[] a, PointF[] b, out PointF nearestA, out PointF nearestB)
@@ -882,21 +968,26 @@ internal sealed class VectorScene
         nearestOnSegment = projected;
     }
 
-    private static bool MergedPathCoversPolygon(PointF[] mergedPath, PointF[] source)
+    private static bool MergedPathCoversPolygon(PointF[][] mergedPath, PointF[][] source)
     {
-        foreach (var point in source)
+        foreach (var polygon in source)
         {
-            if (!PointInPolygonOrOnBoundary(point, mergedPath)) return false;
+            foreach (var point in polygon)
+            {
+                if (!PointInCompoundPolygonOrOnBoundary(point, mergedPath)) return false;
+            }
+
+            for (var i = 0; i < polygon.Length; i++)
+            {
+                var midpoint = Midpoint(polygon[i], polygon[(i + 1) % polygon.Length]);
+                if (PointInCompoundPolygon(midpoint, source) && !PointInCompoundPolygonOrOnBoundary(midpoint, mergedPath)) return false;
+            }
+
+            var centroid = PolygonCentroid(polygon);
+            if (PointInCompoundPolygon(centroid, source) && !PointInCompoundPolygonOrOnBoundary(centroid, mergedPath)) return false;
         }
 
-        for (var i = 0; i < source.Length; i++)
-        {
-            var midpoint = Midpoint(source[i], source[(i + 1) % source.Length]);
-            if (!PointInPolygonOrOnBoundary(midpoint, mergedPath)) return false;
-        }
-
-        var centroid = PolygonCentroid(source);
-        return PointInPolygonOrOnBoundary(centroid, mergedPath) || !PointInPolygon(centroid, source);
+        return true;
     }
 
     private static bool PointInPolygonOrOnBoundary(PointF point, PointF[] polygon)
@@ -1310,7 +1401,7 @@ internal sealed class VectorScene
 
         if (shape == VectorAnimationEngine.ShapeKind.Path)
         {
-            return TryGetPathWorldPoints(i, out var points) && PointInPolygon(world, points);
+            return TryGetPathWorldContours(i, out var contours) && PointInCompoundPolygon(world, contours);
         }
 
         var local = WorldToLocal(i, world);
@@ -1644,8 +1735,11 @@ internal sealed class VectorScene
     private PointF[] ShapeBoundary(int i)
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
-        if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldPoints(i, out var pathPoints))
+        if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(i, out var pathContours) && pathContours.Length > 0)
         {
+            var pathPoints = pathContours
+                .OrderByDescending(contour => Math.Abs(PolygonArea(contour)))
+                .First();
             var boundary = new PointF[pathPoints.Length + 1];
             Array.Copy(pathPoints, boundary, pathPoints.Length);
             boundary[^1] = pathPoints[0];
@@ -1968,6 +2062,77 @@ internal sealed class VectorScene
         return inside;
     }
 
+    private static bool PointInCompoundPolygon(PointF point, PointF[][] contours)
+    {
+        var inside = false;
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            if (PointInPolygon(point, contour)) inside = !inside;
+        }
+
+        return inside;
+    }
+
+    private static bool PointInCompoundPolygonOrOnBoundary(PointF point, PointF[][] contours)
+    {
+        if (PointInCompoundPolygon(point, contours)) return true;
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            for (var i = 0; i < contour.Length; i++)
+            {
+                if (DistanceToSegment(point, contour[i], contour[(i + 1) % contour.Length]) <= 0.75f) return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static float CompoundArea(PointF[][] contours)
+    {
+        var area = 0f;
+        for (var i = 0; i < contours.Length; i++)
+        {
+            var contour = contours[i];
+            if (contour.Length < 3) continue;
+            var nesting = 0;
+            for (var j = 0; j < contours.Length; j++)
+            {
+                if (i == j || contours[j].Length < 3) continue;
+                if (PointInPolygon(contour[0], contours[j])) nesting++;
+            }
+
+            var contourArea = Math.Abs(PolygonArea(contour));
+            area += nesting % 2 == 0 ? contourArea : -contourArea;
+        }
+
+        return Math.Abs(area);
+    }
+
+    private static PointF[][] NormalizePathContours(IReadOnlyList<PointF[]> contours)
+    {
+        var result = new List<PointF[]>(contours.Count);
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            var cleaned = RemoveDuplicatePolygonPoints(contour.Select(VectorUnits.Quantize).ToList());
+            if (cleaned.Count < 3 || Math.Abs(PolygonArea(cleaned)) < 0.5f) continue;
+            result.Add(cleaned.ToArray());
+        }
+
+        return result
+            .OrderByDescending(contour => Math.Abs(PolygonArea(contour)))
+            .ToArray();
+    }
+
+    private static PointF[][] CloneContours(PointF[][] contours)
+    {
+        var clone = new PointF[contours.Length][];
+        for (var i = 0; i < contours.Length; i++) clone[i] = contours[i].ToArray();
+        return clone;
+    }
+
     private static float SegmentProjectionT(PointF point, PointF start, PointF end)
     {
         var vx = end.X - start.X;
@@ -1995,18 +2160,22 @@ internal sealed class VectorScene
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
         var margin = Math.Max(Stroke[i] * 0.5f, 1);
-        if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldPoints(i, out var pathPoints) && pathPoints.Length > 0)
+        if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(i, out var pathContours) && pathContours.Length > 0)
         {
-            var left = pathPoints[0].X;
-            var right = pathPoints[0].X;
-            var top = pathPoints[0].Y;
-            var bottom = pathPoints[0].Y;
-            for (var p = 1; p < pathPoints.Length; p++)
+            var first = pathContours[0][0];
+            var left = first.X;
+            var right = first.X;
+            var top = first.Y;
+            var bottom = first.Y;
+            foreach (var contour in pathContours)
             {
-                left = Math.Min(left, pathPoints[p].X);
-                right = Math.Max(right, pathPoints[p].X);
-                top = Math.Min(top, pathPoints[p].Y);
-                bottom = Math.Max(bottom, pathPoints[p].Y);
+                foreach (var point in contour)
+                {
+                    left = Math.Min(left, point.X);
+                    right = Math.Max(right, point.X);
+                    top = Math.Min(top, point.Y);
+                    bottom = Math.Max(bottom, point.Y);
+                }
             }
 
             return RectangleF.FromLTRB(left - margin, top - margin, right + margin, bottom + margin);
@@ -2151,21 +2320,21 @@ internal sealed class VectorScene
         AtomCount[to] = AtomCount[from];
         Argb[to] = Argb[from];
         StrokeArgb[to] = StrokeArgb[from];
-        if (_pathLocalPoints.TryGetValue(from, out var points))
+        if (_pathLocalContours.TryGetValue(from, out var contours))
         {
-            _pathLocalPoints[to] = points.ToArray();
+            _pathLocalContours[to] = CloneContours(contours);
         }
         else
         {
-            _pathLocalPoints.Remove(to);
+            _pathLocalContours.Remove(to);
         }
     }
 
     private void RemovePathDataOutsideObjectCount()
     {
-        foreach (var index in _pathLocalPoints.Keys.Where(index => index >= ObjectCount).ToArray())
+        foreach (var index in _pathLocalContours.Keys.Where(index => index >= ObjectCount).ToArray())
         {
-            _pathLocalPoints.Remove(index);
+            _pathLocalContours.Remove(index);
         }
     }
 
