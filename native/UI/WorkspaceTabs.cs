@@ -6,9 +6,7 @@ internal enum WorkspaceView
 {
     BasicDrawing,
     SceneEditor,
-    Animation,
-    Materials,
-    Hierarchy
+    Animation
 }
 
 internal enum WorkspaceTabPlacement
@@ -52,10 +50,8 @@ internal sealed class WorkspaceTabs : UserControl
         Controls.Add(_tabStrip);
 
         AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Shape drawing and direct object editing");
-        AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Edit", "Scene and drawing object editing");
+        AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Edit", "Scene assembly, hierarchy and library workflow");
         AddWorkspaceButton(WorkspaceView.Animation, "Animation", "Timeline, playback and keyframe workflow");
-        AddWorkspaceButton(WorkspaceView.Materials, "Materials", "Fill, stroke and opacity editing");
-        AddWorkspaceButton(WorkspaceView.Hierarchy, "Hierarchy", "Scene, layers and object organization");
 
         ApplyPlacement();
         RefreshButtons();

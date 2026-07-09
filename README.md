@@ -37,9 +37,10 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 
 ## Current Features
 
-- Workspace tabs: `Basic Drawing`, `Scene Edit`, `Animation`, `Materials`, and `Hierarchy`.
+- Workspace tabs: `Basic Drawing`, `Scene Edit`, and `Animation`.
 - Custom borderless desktop window shell with draggable title area, resizable edges, and in-app minimize/maximize/close controls.
-- Basic Drawing has secondary Flash-style drawing object tabs that can be dragged into Vault for reuse.
+- Basic Drawing is the drawing-object edit mode: the header shows one active drawing object at a time plus `+ Object`, and drawing/material tools focus on that object.
+- Scene Edit is the scene assembly mode: scene and drawing-object managers sit beside the hierarchy, and Library/Vault items can be dragged onto the stage as scene instances.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
 - Flash-style combined layer/timeline strip with layer selection, visibility toggles, Solo/All controls, ruler, playhead dragging, exposure bars, and keyframe placeholders.
@@ -66,8 +67,8 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.
 - Basic Drawing header snapping strip for snap, grid snap, object snap placeholder, tight fit, align, angle snap, and grid size.
 - Draw settings panel for shape and aspect-ratio controls.
-- Material editor panel for fill, stroke color, stroke width, and opacity.
-- Hierarchy panel showing scene, layers, and object placeholders/tree entries.
+- Material editor panel for fill, stroke color, stroke width, and opacity inside Basic Drawing.
+- Scene Edit panel for multi-scene and multi-drawing-object management, with hierarchy tree integration.
 - Shape-aware scene model via `ShapeKind`.
 
 ## User Guide
@@ -128,6 +129,7 @@ native/
                           Fill/stroke element identity and topology hit contracts.
     DrawingObjectDefinition.cs
                           Flash-style reusable drawing object metadata.
+    SceneDefinition.cs    Lightweight scene composition metadata.
     VectorUnits.cs        Vector unit, pixel, and stroke point conversion rules.
     RenderStats.cs        Renderer telemetry contract.
     CompactFormat.cs      Human-readable metric formatting.
@@ -140,7 +142,7 @@ native/
   UI/
     MainForm.cs           Desktop workbench shell and interaction logic.
     LibraryVaultPanel.cs  Library presets and persistent generic Vault.
-    SceneEditorPanel.cs   Scene and active drawing object context panel.
+    SceneEditorPanel.cs   Scene mode, scene list, drawing object manager.
     TimelineStrip.cs      Timeline renderer.
     Theme.cs              Shared desktop colors and control styling.
     SvgIcons.cs           Code-native SVG primitive icon set.

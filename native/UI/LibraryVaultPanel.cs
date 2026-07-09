@@ -91,6 +91,7 @@ internal sealed class LibraryVaultPanel : UserControl
         _library.Columns.Add("Asset", 112);
         _library.Columns.Add("Type", 86);
         _library.Dock = DockStyle.Fill;
+        _library.ItemDrag += (_, _) => BeginItemDrag(_library);
         parent.Controls.Add(_library);
         _library.BringToFront();
 
@@ -136,6 +137,7 @@ internal sealed class LibraryVaultPanel : UserControl
         _vault.Columns.Add("Item", 116);
         _vault.Columns.Add("Kind", 76);
         _vault.Dock = DockStyle.Fill;
+        _vault.ItemDrag += (_, _) => BeginItemDrag(_vault);
         parent.Controls.Add(_vault);
         _vault.BringToFront();
     }
@@ -174,6 +176,13 @@ internal sealed class LibraryVaultPanel : UserControl
         Theme.StyleButton(button);
         button.Click += (_, _) => action();
         parent.Controls.Add(button);
+    }
+
+    private static void BeginItemDrag(ListView list)
+    {
+        if (list.SelectedItems.Count == 0) return;
+        if (list.SelectedItems[0].Tag is not VaultItem item) return;
+        list.DoDragDrop(item, DragDropEffects.Copy);
     }
 
     private void AddLibraryPreset(string name, string kind, string detail)

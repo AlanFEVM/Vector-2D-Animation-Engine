@@ -46,6 +46,7 @@ internal sealed class MainForm : Form
     private readonly Button _play = new() { Text = "Play", Width = 72 };
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
     private readonly Dictionary<string, Button> _drawingObjectTabButtons = new();
+    private readonly List<SceneDefinition> _scenes = [];
     private readonly List<DrawingObjectDefinition> _drawingObjects = [];
     private readonly AnimatedToolTip _toolTip = new();
     private readonly WorkspaceTabs _workspaceTabs = new();
@@ -68,6 +69,7 @@ internal sealed class MainForm : Form
     private readonly LibraryVaultPanel _libraryVaultPanel = new();
     private readonly Panel _basicInspectorPage = new();
     private readonly Panel _objectInspector = new();
+    private readonly Panel _sceneEditPage = new();
     private readonly Panel _animationPage = new();
     private ToolMode _tool = ToolMode.Select;
     private bool _playing;
@@ -108,6 +110,7 @@ internal sealed class MainForm : Form
     private bool _pointerHitWasAlreadySelected;
     private Point? _marqueeStart;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
+    private int _activeSceneIndex;
     private int _activeDrawingObjectIndex;
     private bool _undoCapturedForPointerEdit;
 
@@ -139,9 +142,11 @@ internal sealed class MainForm : Form
         KeyPreview = true;
 
         _stage = new StageControl(_scene) { Dock = DockStyle.Fill };
+        _stage.AllowDrop = true;
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = 192 };
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
         _drawSnappingStrip = new DrawSnappingStrip(_drawSettings);
+        CreateDefaultScenes();
         CreateDefaultDrawingObjects();
         BuildUi();
         HookEvents();
@@ -489,10 +494,23 @@ internal sealed class MainForm : Form
         _objectInspector.Height = 224;
         _objectInspector.BackColor = Theme.Panel;
         BuildInspector(_objectInspector);
+        _materialEditor.Dock = DockStyle.Top;
+        _materialEditor.Height = 286;
         _drawSettingsPanel.Dock = DockStyle.Top;
         _drawSettingsPanel.Height = 124;
+        _basicInspectorPage.Controls.Add(_materialEditor);
         _basicInspectorPage.Controls.Add(_drawSettingsPanel);
         _basicInspectorPage.Controls.Add(_objectInspector);
+
+        _sceneEditPage.Dock = DockStyle.Fill;
+        _sceneEditPage.BackColor = Theme.Panel;
+        _sceneEditPage.AutoScroll = true;
+        _hierarchyPanel.Dock = DockStyle.Fill;
+        _sceneEditorPanel.Dock = DockStyle.Top;
+        _sceneEditorPanel.Height = 388;
+        _sceneEditPage.Controls.Add(_hierarchyPanel);
+        _sceneEditPage.Controls.Add(_sceneEditorPanel);
+        _sceneEditorPanel.BringToFront();
 
         _animationPage.Dock = DockStyle.Fill;
         _animationPage.BackColor = Theme.Panel;
@@ -500,14 +518,8 @@ internal sealed class MainForm : Form
         _playbackSettings.Height = 188;
         _animationPage.Controls.Add(_playbackSettings);
 
-        _materialEditor.Dock = DockStyle.Fill;
-        _hierarchyPanel.Dock = DockStyle.Fill;
-        _sceneEditorPanel.Dock = DockStyle.Fill;
-
-        inspector.Controls.Add(_hierarchyPanel);
-        inspector.Controls.Add(_materialEditor);
         inspector.Controls.Add(_animationPage);
-        inspector.Controls.Add(_sceneEditorPanel);
+        inspector.Controls.Add(_sceneEditPage);
         inspector.Controls.Add(_basicInspectorPage);
         ShowWorkspace(WorkspaceView.BasicDrawing);
     }
@@ -578,7 +590,7 @@ internal sealed class MainForm : Form
     {
         _drawingObjectTabs.Controls.Clear();
         _drawingObjectTabButtons.Clear();
-        for (var i = 0; i < _drawingObjects.Count; i++) AddDrawingObjectTab(i);
+        if (_activeDrawingObjectIndex >= 0 && _activeDrawingObjectIndex < _drawingObjects.Count) AddDrawingObjectTab(_activeDrawingObjectIndex);
         AddNewDrawingObjectButton();
         RefreshToolButtons();
     }
@@ -622,18 +634,19 @@ internal sealed class MainForm : Form
             AutoEllipsis = true
         };
         Theme.StyleButton(button);
-        button.Click += (_, _) =>
-        {
-            var index = _drawingObjects.Count;
-            _drawingObjects.Add(new DrawingObjectDefinition
-            {
-                Name = $"Drawing Object {index:000}",
-                Detail = "Reusable drawing object tab"
-            });
-            SelectDrawingObject(index);
-            BuildDrawingObjectTabs();
-        };
+        button.Click += (_, _) => AddDrawingObject();
         _drawingObjectTabs.Controls.Add(button);
+    }
+
+    private void CreateDefaultScenes()
+    {
+        _scenes.Clear();
+        _scenes.Add(new SceneDefinition
+        {
+            Name = "Master Scene",
+            Detail = "Primary scene composition"
+        });
+        _activeSceneIndex = 0;
     }
 
     private void CreateDefaultDrawingObjects()
@@ -655,7 +668,37 @@ internal sealed class MainForm : Form
             Name = "Drawing Object 002",
             Detail = "Reusable Flash-style drawing object"
         });
-        _activeDrawingObjectIndex = 0;
+        _activeDrawingObjectIndex = _drawingObjects.Count > 1 ? 1 : 0;
+    }
+
+    private void AddScene()
+    {
+        var index = _scenes.Count + 1;
+        _scenes.Add(new SceneDefinition
+        {
+            Name = $"Scene {index:000}",
+            Detail = "Additional scene composition"
+        });
+        SelectScene(_scenes.Count - 1);
+    }
+
+    private void SelectScene(int index)
+    {
+        if (index < 0 || index >= _scenes.Count) return;
+        _activeSceneIndex = index;
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        AppLog.Info($"Selected scene: {_scenes[index].Name}");
+    }
+
+    private void AddDrawingObject()
+    {
+        var index = _drawingObjects.Count;
+        _drawingObjects.Add(new DrawingObjectDefinition
+        {
+            Name = $"Drawing Object {index:000}",
+            Detail = "Reusable drawing object tab"
+        });
+        SelectDrawingObject(index);
     }
 
     private DrawingObjectDefinition? ActiveDrawingObject()
@@ -669,7 +712,9 @@ internal sealed class MainForm : Form
     {
         if (index < 0 || index >= _drawingObjects.Count) return;
         _activeDrawingObjectIndex = index;
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
         _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
+        BuildDrawingObjectTabs();
         RefreshToolButtons();
         AppLog.Info($"Selected drawing object tab: {_drawingObjects[index].Name}");
     }
@@ -687,6 +732,7 @@ internal sealed class MainForm : Form
 
     private void ActivateTool(ToolMode tool)
     {
+        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor && IsDrawingTool(tool)) return;
         _tool = tool;
         _stage.ClearDrawingPreview();
         if (ToolShapeKind(tool) is { } shape)
@@ -716,6 +762,10 @@ internal sealed class MainForm : Form
             UpdateInspector();
             _stage.Invalidate();
         };
+        _sceneEditorPanel.AddSceneRequested += (_, _) => AddScene();
+        _sceneEditorPanel.AddDrawingObjectRequested += (_, _) => AddDrawingObject();
+        _sceneEditorPanel.SceneSelectionChanged += (_, e) => SelectScene(e.Index);
+        _sceneEditorPanel.DrawingObjectSelectionChanged += (_, e) => SelectDrawingObject(e.Index);
         _playbackSettings.FpsChanged += (_, _) =>
         {
             _playbackAccumulator = 0;
@@ -814,6 +864,8 @@ internal sealed class MainForm : Form
         _stage.MouseDown += StageMouseDown;
         _stage.MouseMove += StageMouseMove;
         _stage.MouseUp += StageMouseUp;
+        _stage.DragEnter += StageDragEnter;
+        _stage.DragDrop += StageDragDrop;
     }
 
     private void Generate()
@@ -831,7 +883,7 @@ internal sealed class MainForm : Form
             RefreshLayers();
             _hierarchyPanel.BindScene(_scene);
             _sceneEditorPanel.BindScene(_scene);
-            _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
+            _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
             _stage.ResetDefaultView();
             UpdateInspector();
             UpdateStatusBar();
@@ -861,7 +913,7 @@ internal sealed class MainForm : Form
         RefreshLayers();
         _hierarchyPanel.BindScene(_scene);
         _sceneEditorPanel.BindScene(_scene);
-        _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
         _stage.ResetDefaultView();
         UpdateInspector();
         UpdateStatusBar();
@@ -1416,6 +1468,39 @@ internal sealed class MainForm : Form
         _stage.Capture = false;
     }
 
+    private void StageDragEnter(object? sender, DragEventArgs e)
+    {
+        e.Effect = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+            && e.Data?.GetDataPresent(typeof(VaultItem)) == true
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+    }
+
+    private void StageDragDrop(object? sender, DragEventArgs e)
+    {
+        if (_workspaceTabs.SelectedView != WorkspaceView.SceneEditor) return;
+        if (e.Data?.GetData(typeof(VaultItem)) is not VaultItem item) return;
+        var screen = _stage.PointToClient(new Point(e.X, e.Y));
+        AddLibraryItemInstanceToScene(item, _stage.ScreenToWorld(screen));
+    }
+
+    private void AddLibraryItemInstanceToScene(VaultItem item, PointF world)
+    {
+        CaptureUndoSnapshot();
+        var layer = Math.Clamp(_scene.ActiveLayer, 0, Math.Max(0, _scene.LayerCount - 1));
+        var color = item.Kind == "Drawing Object"
+            ? Color.FromArgb(190, 79, 179, 162)
+            : Color.FromArgb(190, 136, 122, 214);
+        var strokeColor = Color.FromArgb(238, 242, 241);
+        var index = _scene.AddObject(layer, world, new SizeF(420, 260), 0, VectorUnits.StrokePointsToUnits(1), color, strokeColor, 24, ShapeKind.Rectangle);
+        if (index >= 0) SetSelection(index);
+        _hierarchyPanel.RefreshScene();
+        _sceneEditorPanel.RefreshSceneStats();
+        UpdateInspector();
+        _stage.Invalidate();
+        AppLog.Info($"Dropped library item into scene: {item.Name} ({item.Kind})");
+    }
+
     private void MergeSelectedFillsAfterGeometryEdit()
     {
         if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount) return;
@@ -1908,14 +1993,20 @@ internal sealed class MainForm : Form
     private void ShowWorkspace(WorkspaceView view)
     {
         var basicDrawing = view == WorkspaceView.BasicDrawing;
+        var sceneEdit = view == WorkspaceView.SceneEditor;
         _workspaceHeader.Height = basicDrawing ? 84 : 44;
         _drawingObjectRow.Visible = basicDrawing;
         _basicInspectorPage.Visible = basicDrawing;
-        _sceneEditorPanel.Visible = view == WorkspaceView.SceneEditor;
+        _sceneEditPage.Visible = sceneEdit;
         _animationPage.Visible = view == WorkspaceView.Animation;
-        _materialEditor.Visible = view == WorkspaceView.Materials;
-        _hierarchyPanel.Visible = view == WorkspaceView.Hierarchy;
         _timeline.Visible = true;
+        if (sceneEdit && IsDrawingTool(_tool))
+        {
+            _tool = ToolMode.Select;
+            _stage.ClearDrawingPreview();
+        }
+
+        RefreshToolButtons();
     }
 
     private static bool IsDrawingTool(ToolMode tool)
@@ -1955,8 +2046,11 @@ internal sealed class MainForm : Form
     {
         foreach (var (tool, button) in _toolButtons)
         {
+            var enabled = _workspaceTabs.SelectedView != WorkspaceView.SceneEditor || !IsDrawingTool(tool);
+            button.Enabled = enabled;
             if (tool == _tool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
+            if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
         }
 
         var activeDrawingObject = ActiveDrawingObject();
