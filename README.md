@@ -53,11 +53,11 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Drawing preview overlay while dragging shape and line tools.
 - Animated tool-name hints when hovering drawing tools.
 - Selection highlight with boundary handles for filled shapes and partial edge highlights for selected boundary-stroke segments.
-- Marquee selection for selecting, highlighting, moving, and deleting multiple objects, with topology-aware part selection for small split regions and fill-origin drags.
+- Marquee selection for selecting, highlighting, moving, and deleting multiple objects, with topology-aware fill-region materialization for small split regions and fill-origin drags.
 - Endpoint and Bezier control handle editing for selected lines, including linked endpoint movement for connected line segments.
 - Basic edit shortcuts: Ctrl+Z undo, Ctrl+C copy selected objects, and Ctrl+V paste copied objects with a small stage offset.
 - Drawing element topology foundation: fills, free strokes, and filled-shape boundary strokes are separate selectable elements. Rectangle edges are individually selectable by default; crossing strokes and boundaries split each other at valid intersections, and sub-1vu stroke fragments are suppressed.
-- Topology parts are materialized on first drag: split stroke parts become independent line objects, boundary-stroke parts become movable line segments, and a rectangle fill cut by a through-line becomes two movable path fills.
+- Topology parts are materialized into editable objects: split stroke parts become independent line objects, boundary-stroke parts become movable line segments, and a rectangle fill cut by a through-line becomes two movable path fills when its region is marquee-selected or moved.
 - Stroke splitting uses a unified quadratic-curve model, so curve-curve and line-curve intersections share the same topology path; straight lines are treated as quadratic curves with a midpoint control handle.
 - Delete key removes the currently selected drawing object or marquee-selected objects.
 - Right-side auxiliary panel next to the Inspector for layers.

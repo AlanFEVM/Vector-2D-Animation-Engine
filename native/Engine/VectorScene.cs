@@ -729,6 +729,7 @@ internal sealed class VectorScene
 
         GetIndexRange(bounds, out var minX, out var maxX, out var minY, out var maxY);
         var result = new List<int>(Math.Min(ObjectCount, 1024));
+        var seen = new HashSet<int>();
 
         for (var cy = minY; cy <= maxY; cy++)
         {
@@ -740,6 +741,7 @@ internal sealed class VectorScene
                 for (var p = start; p < end; p++)
                 {
                     var i = CellObjects[p];
+                    if (!seen.Add(i)) continue;
                     var layer = ObjectLayer[i];
                     if (!IsLayerActive(layer, frame)) continue;
                     if (!ObjectIntersectsBounds(i, bounds)) continue;

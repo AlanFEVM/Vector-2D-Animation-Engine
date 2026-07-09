@@ -1056,12 +1056,17 @@ internal sealed class MainForm : Form
 
     private void CaptureUndoSnapshot()
     {
-        _undoStack.Push(_scene.CreateSnapshot());
+        PushUndoSnapshot(_scene.CreateSnapshot());
+    }
+
+    private void PushUndoSnapshot(VectorSceneSnapshot snapshot)
+    {
+        _undoStack.Push(snapshot);
         while (_undoStack.Count > MaxUndoSnapshots)
         {
             var snapshots = _undoStack.Take(MaxUndoSnapshots).Reverse().ToArray();
             _undoStack.Clear();
-            foreach (var snapshot in snapshots) _undoStack.Push(snapshot);
+            foreach (var item in snapshots) _undoStack.Push(item);
         }
     }
 
@@ -1454,8 +1459,45 @@ internal sealed class MainForm : Form
         var totalSamples = columns * rows;
         if (best.Count < Math.Max(2, totalSamples / 5)) return false;
 
-        SetSelection(best.Hit);
+        SetTopologyMarqueeSelection(best.Hit);
         return true;
+    }
+
+    private void SetTopologyMarqueeSelection(DrawingElementHit hit)
+    {
+        if (!hit.IsValid)
+        {
+            ClearSelection();
+            return;
+        }
+
+        if (hit.Key.Kind != DrawingElementKind.Fill)
+        {
+            SetSelection(hit);
+            return;
+        }
+
+        var snapshot = _scene.CreateSnapshot();
+        var detached = _scene.DetachElementForMove(hit, _frame);
+        if (!IsDetachedElement(hit, detached))
+        {
+            SetSelection(hit);
+            return;
+        }
+
+        PushUndoSnapshot(snapshot);
+        SetSelection(detached);
+        _geometryDirty = false;
+        _hierarchyPanel.RefreshScene();
+    }
+
+    private static bool IsDetachedElement(DrawingElementHit original, DrawingElementHit detached)
+    {
+        if (!detached.IsValid) return false;
+        if (detached.Distance < 0) return true;
+        return detached.Key.ObjectIndex != original.Key.ObjectIndex
+            || detached.Key.Kind != original.Key.Kind
+            || detached.Key.PartIndex != original.Key.PartIndex;
     }
 
     private bool DeleteSelectedObject()
