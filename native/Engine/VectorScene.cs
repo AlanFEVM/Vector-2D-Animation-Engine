@@ -688,7 +688,9 @@ internal sealed class VectorScene
 
         var connector = distance > 0.001f ? ConnectorRect(nearestA, nearestB) : RectangleF.Empty;
         mergedPath = BuildMergedFillPath(polygonA, polygonB, connector);
-        return mergedPath.Length >= 3;
+        if (mergedPath.Length < 3) return false;
+        return MergedPathCoversPolygon(mergedPath, polygonA)
+            && MergedPathCoversPolygon(mergedPath, polygonB);
     }
 
     private static RectangleF ConnectorRect(PointF a, PointF b)
@@ -836,6 +838,47 @@ internal sealed class VectorScene
         best = distance;
         nearestPoint = point;
         nearestOnSegment = projected;
+    }
+
+    private static bool MergedPathCoversPolygon(PointF[] mergedPath, PointF[] source)
+    {
+        foreach (var point in source)
+        {
+            if (!PointInPolygonOrOnBoundary(point, mergedPath)) return false;
+        }
+
+        for (var i = 0; i < source.Length; i++)
+        {
+            var midpoint = Midpoint(source[i], source[(i + 1) % source.Length]);
+            if (!PointInPolygonOrOnBoundary(midpoint, mergedPath)) return false;
+        }
+
+        var centroid = PolygonCentroid(source);
+        return PointInPolygonOrOnBoundary(centroid, mergedPath) || !PointInPolygon(centroid, source);
+    }
+
+    private static bool PointInPolygonOrOnBoundary(PointF point, PointF[] polygon)
+    {
+        if (PointInPolygon(point, polygon)) return true;
+        for (var i = 0; i < polygon.Length; i++)
+        {
+            if (DistanceToSegment(point, polygon[i], polygon[(i + 1) % polygon.Length]) <= 0.75f) return true;
+        }
+
+        return false;
+    }
+
+    private static PointF PolygonCentroid(PointF[] polygon)
+    {
+        var x = 0f;
+        var y = 0f;
+        foreach (var point in polygon)
+        {
+            x += point.X;
+            y += point.Y;
+        }
+
+        return new PointF(x / polygon.Length, y / polygon.Length);
     }
 
     private readonly record struct MergePoint(long X, long Y);
