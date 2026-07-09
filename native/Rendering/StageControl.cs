@@ -197,6 +197,12 @@ internal sealed class StageControl : Control
         DrawMarquee(g);
     }
 
+    protected override void OnPaintBackground(PaintEventArgs pevent)
+    {
+        // The stage is fully redrawn by Direct2D or the GDI fallback in OnPaint.
+        // Letting WinForms erase the background first can produce visible flashes.
+    }
+
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);

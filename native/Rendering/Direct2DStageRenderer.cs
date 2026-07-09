@@ -105,7 +105,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         {
             Hwnd = stage.Handle,
             PixelSize = nextSize,
-            PresentOptions = PresentOptions.Immediately
+            PresentOptions = PresentOptions.None
         };
 
         _target = _factory.CreateHwndRenderTarget(renderTargetProperties, hwndProperties);
