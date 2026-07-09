@@ -116,16 +116,16 @@ logs/
 在 `Basic Drawing` 工作区可以调整绘制设置：
 
 - 默认所有吸附、紧贴、对齐和角度吸附开关都关闭。
-- Snapping 图标组：集中放置吸附相关 SVG 图标开关。
+- Snapping 图标组：位于 `Basic Drawing` 顶部第二行右侧，集中放置吸附相关 SVG 图标开关。
 - Snap：总吸附开关。
 - Grid：网格吸附。
 - Objects：对象吸附；当前用于拖动线条端点时吸附到附近线条端点。
 - Tight Fit：紧贴占位。
 - Align：对齐占位。
 - Angle Snap：角度吸附。
-- Grid vu：网格大小，单位为矢量单位。
-- Aspect Ratio：固定比例绘制。
-- Shape：当前绘制形状。
+- Grid vu：位于顶部吸附条中，设置网格大小，单位为矢量单位。
+- Aspect Ratio：位于右侧 Inspector 的 Draw Settings 中，用于固定比例绘制。
+- Shape：位于右侧 Inspector 的 Draw Settings 中，用于设置当前绘制形状。
 
 当前吸附功能主要作用于创建和编辑时的点位计算。线条端点编辑支持对象端点吸附；部分高级紧贴和对齐仍是后续扩展占位。
 

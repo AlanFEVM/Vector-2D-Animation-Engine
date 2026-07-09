@@ -5,15 +5,7 @@ internal sealed class DrawSettingsPanel : UserControl
     private readonly DrawSettings _settings;
     private readonly ComboBox _shape = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ToolTip _toolTip = new();
-    private readonly SvgToggleButton _snap = Toggle("Snap", SvgIconKind.Snap);
-    private readonly SvgToggleButton _snapGrid = Toggle("Grid", SvgIconKind.Grid);
-    private readonly SvgToggleButton _snapObjects = Toggle("Objects", SvgIconKind.Objects);
-    private readonly SvgToggleButton _adhesion = Toggle("Tight fit", SvgIconKind.TightFit);
-    private readonly SvgToggleButton _alignment = Toggle("Align", SvgIconKind.Align);
-    private readonly SvgToggleButton _angleSnap = Toggle("Angle", SvgIconKind.Angle);
     private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
-    private readonly NumericUpDown _gridSize = new() { Minimum = 1, Maximum = 10000, DecimalPlaces = 0, Increment = 8, Width = 112 };
-    private readonly NumericUpDown _angleStep = new() { Minimum = 1, Maximum = 90, DecimalPlaces = 0, Increment = 1, Width = 112 };
     private bool _updating;
 
     public DrawSettingsPanel(DrawSettings settings)
@@ -23,10 +15,11 @@ internal sealed class DrawSettingsPanel : UserControl
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = new Padding(0, 8, 0, 8);
-        MinimumSize = new Size(248, 288);
+        MinimumSize = new Size(248, 112);
 
         BuildUi();
         ReadSettings();
+        _settings.Changed += (_, _) => ReadSettings();
     }
 
     private void BuildUi()
@@ -48,15 +41,11 @@ internal sealed class DrawSettingsPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 6,
+            RowCount = 2,
             Padding = new Padding(0, 4, 0, 0)
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         Controls.Add(content);
@@ -69,66 +58,16 @@ internal sealed class DrawSettingsPanel : UserControl
         _shape.SelectedIndexChanged += (_, _) => UpdateSettings();
         AddField(content, "Shape", _shape, 0);
 
-        var snapping = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            Margin = new Padding(0, 3, 0, 3),
-            Padding = new Padding(0)
-        };
-        AddCheck(snapping, _snap);
-        AddCheck(snapping, _snapGrid);
-        AddCheck(snapping, _snapObjects);
-        AddCheck(snapping, _adhesion);
-        AddCheck(snapping, _alignment);
-        AddField(content, "Snapping", snapping, 1);
-
-        _gridSize.Dock = DockStyle.Fill;
-        _gridSize.Margin = new Padding(0, 3, 0, 3);
-        Theme.StyleNumeric(_gridSize);
-        _gridSize.ValueChanged += (_, _) => UpdateSettings();
-        AddField(content, "Grid vu", _gridSize, 2);
-
-        var angle = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 2,
-            RowCount = 1,
-            Margin = new Padding(0)
-        };
-        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
-        angle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        AddCheck(_angleSnap);
-        _toolTip.SetToolTip(_angleSnap, _angleSnap.AccessibleName);
-        angle.Controls.Add(_angleSnap, 0, 0);
-        _angleStep.Dock = DockStyle.Fill;
-        _angleStep.Margin = new Padding(0, 3, 0, 3);
-        Theme.StyleNumeric(_angleStep);
-        _angleStep.ValueChanged += (_, _) => UpdateSettings();
-        angle.Controls.Add(_angleStep, 1, 0);
-        AddField(content, "Angle snap", angle, 3);
-
         AddCheck(_keepRatio);
         _toolTip.SetToolTip(_keepRatio, _keepRatio.AccessibleName);
-        AddField(content, "Aspect", _keepRatio, 4);
+        AddField(content, "Aspect", _keepRatio, 1);
     }
 
     private void ReadSettings()
     {
         _updating = true;
         _shape.SelectedItem = _settings.ShapeKind.ToString();
-        _snap.Checked = _settings.SnapEnabled;
-        _snapGrid.Checked = _settings.SnapToGrid;
-        _snapObjects.Checked = _settings.SnapToObjects;
-        _adhesion.Checked = _settings.AdhesionEnabled;
-        _alignment.Checked = _settings.AlignmentEnabled;
-        _angleSnap.Checked = _settings.AngleSnapEnabled;
         _keepRatio.Checked = _settings.KeepAspectRatio;
-        _gridSize.Value = (decimal)_settings.GridSize;
-        _angleStep.Value = (decimal)_settings.AngleSnapDegrees;
         _updating = false;
     }
 
@@ -136,23 +75,8 @@ internal sealed class DrawSettingsPanel : UserControl
     {
         if (_updating) return;
         if (_shape.SelectedItem is string selected && Enum.TryParse<ShapeKind>(selected, out var kind)) _settings.ShapeKind = kind;
-        _settings.SnapEnabled = _snap.Checked;
-        _settings.SnapToGrid = _snapGrid.Checked;
-        _settings.SnapToObjects = _snapObjects.Checked;
-        _settings.AdhesionEnabled = _adhesion.Checked;
-        _settings.AlignmentEnabled = _alignment.Checked;
-        _settings.AngleSnapEnabled = _angleSnap.Checked;
         _settings.KeepAspectRatio = _keepRatio.Checked;
-        _settings.GridSize = (float)_gridSize.Value;
-        _settings.AngleSnapDegrees = (float)_angleStep.Value;
         _settings.NotifyChanged();
-    }
-
-    private void AddCheck(FlowLayoutPanel parent, CheckBox checkBox)
-    {
-        AddCheck(checkBox);
-        _toolTip.SetToolTip(checkBox, checkBox.AccessibleName);
-        parent.Controls.Add(checkBox);
     }
 
     private void AddCheck(CheckBox checkBox)

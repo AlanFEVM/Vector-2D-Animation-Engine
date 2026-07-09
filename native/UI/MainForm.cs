@@ -52,6 +52,7 @@ internal sealed class MainForm : Form
     private readonly WorkspaceTabs _workspaceTabs = new();
     private readonly Panel _workspaceHeader = new();
     private readonly FlowLayoutPanel _drawingObjectTabs = new();
+    private readonly DrawSnappingStrip _drawSnappingStrip;
     private readonly TimelineStrip _timeline;
     private readonly StatusStrip _statusBar = new();
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS 0");
@@ -140,6 +141,7 @@ internal sealed class MainForm : Form
         _stage = new StageControl(_scene) { Dock = DockStyle.Fill };
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = 192 };
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
+        _drawSnappingStrip = new DrawSnappingStrip(_drawSettings);
         CreateDefaultDrawingObjects();
         BuildUi();
         HookEvents();
@@ -225,7 +227,12 @@ internal sealed class MainForm : Form
         _drawingObjectTabs.Padding = new Padding(8, 4, 8, 6);
         _drawingObjectTabs.Margin = Padding.Empty;
         _workspaceHeader.Controls.Add(_drawingObjectTabs);
+        _drawSnappingStrip.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _workspaceHeader.Controls.Add(_drawSnappingStrip);
+        _workspaceHeader.Resize += (_, _) => PositionHeaderSnappingStrip();
         BuildDrawingObjectTabs();
+        PositionHeaderSnappingStrip();
+        _drawSnappingStrip.BringToFront();
 
         var tools = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 48, BackColor = Theme.Top, FlowDirection = FlowDirection.TopDown, Padding = new Padding(6, 10, 6, 6) };
         PaintRightBorder(tools);
@@ -377,6 +384,12 @@ internal sealed class MainForm : Form
         generate.Left = fit.Left - generate.Width - 8;
     }
 
+    private void PositionHeaderSnappingStrip()
+    {
+        _drawSnappingStrip.Top = 44;
+        _drawSnappingStrip.Left = Math.Max(8, _workspaceHeader.ClientSize.Width - _drawSnappingStrip.Width - 10);
+    }
+
     private void RegisterWindowDrag(Control control)
     {
         control.MouseDown += (_, e) =>
@@ -525,7 +538,7 @@ internal sealed class MainForm : Form
         _objectInspector.BackColor = Theme.Panel;
         BuildInspector(_objectInspector);
         _drawSettingsPanel.Dock = DockStyle.Top;
-        _drawSettingsPanel.Height = 304;
+        _drawSettingsPanel.Height = 124;
         _basicInspectorPage.Controls.Add(_drawSettingsPanel);
         _basicInspectorPage.Controls.Add(_objectInspector);
 
@@ -1958,6 +1971,8 @@ internal sealed class MainForm : Form
         var basicDrawing = view == WorkspaceView.BasicDrawing;
         _workspaceHeader.Height = basicDrawing ? 84 : 44;
         _drawingObjectTabs.Visible = basicDrawing;
+        _drawSnappingStrip.Visible = basicDrawing;
+        if (basicDrawing) PositionHeaderSnappingStrip();
         _basicInspectorPage.Visible = basicDrawing;
         _sceneEditorPanel.Visible = view == WorkspaceView.SceneEditor;
         _animationPage.Visible = view == WorkspaceView.Animation;

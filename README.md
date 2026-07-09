@@ -48,7 +48,7 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Bottom status bar showing render FPS, animation FPS, and zoom.
 - Main loop targets 300 UPS with stage redraw requests capped at 144 FPS.
 - Drawing tools for rectangle, ellipse, triangle, polygon, star, line, fill, select, and pan.
-- SVG vector icon buttons for the tool rail and snapping controls.
+- SVG vector icon buttons for the tool rail and the Basic Drawing header snapping strip.
 - Global view navigation: middle mouse drags the canvas, and Ctrl + middle mouse drag zooms the canvas from any tool.
 - Drawing preview overlay while dragging shape and line tools.
 - Animated tool-name hints when hovering drawing tools.
@@ -66,7 +66,8 @@ control changes can be inspected quickly. Launch with `VectorAnimationEngine.exe
 - Right-side auxiliary panel next to the Inspector for layers.
 - Left-edge Vault drawer opened from the tool rail for Library/Vault asset storage.
 - Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.
-- Draw settings panel for snap, grid snap, object snap placeholder, tight fit, align, angle snap, grid size, and aspect ratio.
+- Basic Drawing header snapping strip for snap, grid snap, object snap placeholder, tight fit, align, angle snap, and grid size.
+- Draw settings panel for shape and aspect-ratio controls.
 - Material editor panel for fill, stroke color, stroke width, and opacity.
 - Hierarchy panel showing scene, layers, and object placeholders/tree entries.
 - Shape-aware scene model via `ShapeKind`.
