@@ -795,8 +795,7 @@ internal sealed class VectorScene
             }
         }
 
-        var best = Array.Empty<PointF>();
-        var bestArea = 0f;
+        var loops = new List<PointF[]>();
         while (edges.Count > 0)
         {
             var edge = edges[0];
@@ -816,15 +815,10 @@ internal sealed class VectorScene
 
             if (!current.Equals(loop[0]) || loop.Count < 3) continue;
             var points = RemoveCollinearPoints(loop.Select(PointFromKey).ToList()).ToArray();
-            var area = Math.Abs(PolygonArea(points));
-            if (area > bestArea)
-            {
-                bestArea = area;
-                best = points;
-            }
+            if (points.Length >= 3 && Math.Abs(PolygonArea(points)) >= 0.5f) loops.Add(points);
         }
 
-        return best;
+        return loops.Count == 1 ? loops[0] : Array.Empty<PointF>();
     }
 
     private static void AddPolygonGridLines(PointF[] polygon, SortedSet<float> xs, SortedSet<float> ys)
