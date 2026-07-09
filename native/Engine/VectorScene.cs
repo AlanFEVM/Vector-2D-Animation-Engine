@@ -767,6 +767,7 @@ internal sealed class VectorScene
         if (xValues.Length < 2 || yValues.Length < 2) return Array.Empty<PointF>();
 
         var filled = new bool[xValues.Length - 1, yValues.Length - 1];
+        var filledArea = 0f;
         for (var x = 0; x < xValues.Length - 1; x++)
         {
             for (var y = 0; y < yValues.Length - 1; y++)
@@ -775,6 +776,7 @@ internal sealed class VectorScene
                 filled[x, y] = PointInPolygon(center, polygonA)
                     || PointInPolygon(center, polygonB)
                     || (!connector.IsEmpty && connector.Contains(center));
+                if (filled[x, y]) filledArea += Math.Abs((xValues[x + 1] - xValues[x]) * (yValues[y + 1] - yValues[y]));
             }
         }
 
@@ -818,7 +820,11 @@ internal sealed class VectorScene
             if (points.Length >= 3 && Math.Abs(PolygonArea(points)) >= 0.5f) loops.Add(points);
         }
 
-        return loops.Count == 1 ? loops[0] : Array.Empty<PointF>();
+        if (loops.Count != 1) return Array.Empty<PointF>();
+        var mergedArea = Math.Abs(PolygonArea(loops[0]));
+        return mergedArea <= filledArea + Math.Max(1f, filledArea * 0.02f)
+            ? loops[0]
+            : Array.Empty<PointF>();
     }
 
     private static void AddPolygonGridLines(PointF[] polygon, SortedSet<float> xs, SortedSet<float> ys)
