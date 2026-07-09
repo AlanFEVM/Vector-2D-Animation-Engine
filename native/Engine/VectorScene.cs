@@ -2,6 +2,7 @@ namespace VectorAnimationEngine;
 
 internal sealed class VectorScene
 {
+    private const float FillMergeDistanceUnits = 10f;
     private const int TileColumns = 384;
     private const int TileRows = 224;
     private const int OverviewColumns = 120;
@@ -678,21 +679,16 @@ internal sealed class VectorScene
         if ((uint)a >= ObjectCount || (uint)b >= ObjectCount) return false;
         if (ObjectLayer[a] != ObjectLayer[b] || Argb[a] != Argb[b]) return false;
         if (ShapeKind[a] == VectorAnimationEngine.ShapeKind.Line || ShapeKind[b] == VectorAnimationEngine.ShapeKind.Line) return false;
-        if (!TryGetAxisAlignedFillBounds(a, out var boundsA, out var areaA)) return false;
-        if (!TryGetAxisAlignedFillBounds(b, out var boundsB, out var areaB)) return false;
-        if (!RectsTouchOrOverlap(boundsA, boundsB)) return false;
+        if (!TryGetAxisAlignedFillBounds(a, out var boundsA, out _)) return false;
+        if (!TryGetAxisAlignedFillBounds(b, out var boundsB, out _)) return false;
+        if (RectDistance(boundsA, boundsB) >= FillMergeDistanceUnits) return false;
 
         mergedBounds = RectangleF.FromLTRB(
             Math.Min(boundsA.Left, boundsB.Left),
             Math.Min(boundsA.Top, boundsB.Top),
             Math.Max(boundsA.Right, boundsB.Right),
             Math.Max(boundsA.Bottom, boundsB.Bottom));
-
-        var intersection = RectangleF.Intersect(boundsA, boundsB);
-        var intersectionArea = intersection.Width > 0 && intersection.Height > 0 ? intersection.Width * intersection.Height : 0;
-        var unionArea = areaA + areaB - intersectionArea;
-        var mergedArea = mergedBounds.Width * mergedBounds.Height;
-        return Math.Abs(unionArea - mergedArea) <= 1.0f;
+        return true;
     }
 
     private bool TryGetAxisAlignedFillBounds(int index, out RectangleF bounds, out float area)
@@ -729,12 +725,11 @@ internal sealed class VectorScene
         return true;
     }
 
-    private static bool RectsTouchOrOverlap(RectangleF a, RectangleF b)
+    private static float RectDistance(RectangleF a, RectangleF b)
     {
-        return a.Left <= b.Right + 0.001f
-            && a.Right + 0.001f >= b.Left
-            && a.Top <= b.Bottom + 0.001f
-            && a.Bottom + 0.001f >= b.Top;
+        var dx = Math.Max(0, Math.Max(a.Left - b.Right, b.Left - a.Right));
+        var dy = Math.Max(0, Math.Max(a.Top - b.Bottom, b.Top - a.Bottom));
+        return MathF.Sqrt(dx * dx + dy * dy);
     }
 
     private static PointF[] RectPoints(RectangleF bounds)
