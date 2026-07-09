@@ -588,14 +588,14 @@ internal sealed class VectorScene
             for (var other = 0; other < ObjectCount; other++)
             {
                 if (other == current) continue;
-                if (!CanMergeSameColorFills(current, other, out var mergedBounds)) continue;
+                if (!TryBuildSameColorFillMerge(current, other, out var mergedPath)) continue;
 
                 var layer = ObjectLayer[current];
                 var fillColor = Color.FromArgb(Argb[current]);
                 var strokeColor = Color.FromArgb(StrokeArgb[current]);
                 var atoms = Math.Max(3u, AtomCount[current] + AtomCount[other]);
                 RemoveObjects(new[] { current, other });
-                current = AddPathObject(layer, RectPoints(mergedBounds), 0, fillColor, strokeColor, atoms);
+                current = AddPathObject(layer, mergedPath, 0, fillColor, strokeColor, atoms);
                 merged = current >= 0;
                 break;
             }
@@ -673,28 +673,26 @@ internal sealed class VectorScene
         remove.Add(index);
     }
 
-    private bool CanMergeSameColorFills(int a, int b, out RectangleF mergedBounds)
+    private bool TryBuildSameColorFillMerge(int a, int b, out PointF[] mergedPath)
     {
-        mergedBounds = RectangleF.Empty;
+        mergedPath = Array.Empty<PointF>();
         if ((uint)a >= ObjectCount || (uint)b >= ObjectCount) return false;
         if (ObjectLayer[a] != ObjectLayer[b] || Argb[a] != Argb[b]) return false;
         if (ShapeKind[a] == VectorAnimationEngine.ShapeKind.Line || ShapeKind[b] == VectorAnimationEngine.ShapeKind.Line) return false;
-        if (!TryGetAxisAlignedFillBounds(a, out var boundsA, out _)) return false;
-        if (!TryGetAxisAlignedFillBounds(b, out var boundsB, out _)) return false;
+        if (!TryGetFillMergeBounds(a, out var boundsA)) return false;
+        if (!TryGetFillMergeBounds(b, out var boundsB)) return false;
         if (RectDistance(boundsA, boundsB) >= FillMergeDistanceUnits) return false;
 
-        mergedBounds = RectangleF.FromLTRB(
-            Math.Min(boundsA.Left, boundsB.Left),
-            Math.Min(boundsA.Top, boundsB.Top),
-            Math.Max(boundsA.Right, boundsB.Right),
-            Math.Max(boundsA.Bottom, boundsB.Bottom));
-        return true;
+        var rects = new List<RectangleF> { boundsA, boundsB };
+        if (RectDistance(boundsA, boundsB) > 0.001f) rects.Add(ConnectorRect(boundsA, boundsB));
+
+        mergedPath = BuildRectilinearUnionPath(rects);
+        return mergedPath.Length >= 3;
     }
 
-    private bool TryGetAxisAlignedFillBounds(int index, out RectangleF bounds, out float area)
+    private bool TryGetFillMergeBounds(int index, out RectangleF bounds)
     {
         bounds = RectangleF.Empty;
-        area = 0;
         var polygon = OpenPolygon(ShapeBoundary(index));
         if (polygon.Length < 3) return false;
 
@@ -711,17 +709,7 @@ internal sealed class VectorScene
         }
 
         bounds = RectangleF.FromLTRB(left, top, right, bottom);
-        area = Math.Abs(PolygonArea(polygon));
         if (bounds.Width < 1 || bounds.Height < 1) return false;
-        if (Math.Abs(area - bounds.Width * bounds.Height) > 1.0f) return false;
-
-        foreach (var point in polygon)
-        {
-            var onVertical = Math.Abs(point.X - bounds.Left) <= 0.001f || Math.Abs(point.X - bounds.Right) <= 0.001f;
-            var onHorizontal = Math.Abs(point.Y - bounds.Top) <= 0.001f || Math.Abs(point.Y - bounds.Bottom) <= 0.001f;
-            if (!onVertical && !onHorizontal) return false;
-        }
-
         return true;
     }
 
@@ -732,15 +720,137 @@ internal sealed class VectorScene
         return MathF.Sqrt(dx * dx + dy * dy);
     }
 
-    private static PointF[] RectPoints(RectangleF bounds)
+    private static RectangleF ConnectorRect(RectangleF a, RectangleF b)
     {
-        return
-        [
-            new PointF(bounds.Left, bounds.Top),
-            new PointF(bounds.Right, bounds.Top),
-            new PointF(bounds.Right, bounds.Bottom),
-            new PointF(bounds.Left, bounds.Bottom)
-        ];
+        var horizontalGap = Math.Max(0, Math.Max(a.Left - b.Right, b.Left - a.Right));
+        var verticalGap = Math.Max(0, Math.Max(a.Top - b.Bottom, b.Top - a.Bottom));
+
+        if (horizontalGap > 0 && verticalGap <= 0)
+        {
+            var left = a.Right <= b.Left ? a.Right : b.Right;
+            var right = a.Right <= b.Left ? b.Left : a.Left;
+            var top = Math.Max(a.Top, b.Top);
+            var bottom = Math.Min(a.Bottom, b.Bottom);
+            return Normalize(RectangleF.FromLTRB(left, top, right, bottom));
+        }
+
+        if (verticalGap > 0 && horizontalGap <= 0)
+        {
+            var top = a.Bottom <= b.Top ? a.Bottom : b.Bottom;
+            var bottom = a.Bottom <= b.Top ? b.Top : a.Top;
+            var left = Math.Max(a.Left, b.Left);
+            var right = Math.Min(a.Right, b.Right);
+            return Normalize(RectangleF.FromLTRB(left, top, right, bottom));
+        }
+
+        var x1 = a.Right <= b.Left ? a.Right - 1 : b.Right - 1;
+        var x2 = a.Right <= b.Left ? b.Left + 1 : a.Left + 1;
+        var y1 = a.Bottom <= b.Top ? a.Bottom - 1 : b.Bottom - 1;
+        var y2 = a.Bottom <= b.Top ? b.Top + 1 : a.Top + 1;
+        return Normalize(RectangleF.FromLTRB(x1, y1, x2, y2));
+    }
+
+    private static PointF[] BuildRectilinearUnionPath(IReadOnlyList<RectangleF> rects)
+    {
+        var normalized = rects.Select(Normalize).Where(rect => rect.Width >= 0.001f && rect.Height >= 0.001f).ToArray();
+        if (normalized.Length == 0) return Array.Empty<PointF>();
+
+        var xs = normalized.SelectMany(rect => new[] { rect.Left, rect.Right }).Distinct().OrderBy(value => value).ToArray();
+        var ys = normalized.SelectMany(rect => new[] { rect.Top, rect.Bottom }).Distinct().OrderBy(value => value).ToArray();
+        if (xs.Length < 2 || ys.Length < 2) return Array.Empty<PointF>();
+
+        var filled = new bool[xs.Length - 1, ys.Length - 1];
+        for (var x = 0; x < xs.Length - 1; x++)
+        {
+            for (var y = 0; y < ys.Length - 1; y++)
+            {
+                var center = new PointF((xs[x] + xs[x + 1]) * 0.5f, (ys[y] + ys[y + 1]) * 0.5f);
+                filled[x, y] = normalized.Any(rect => rect.Contains(center));
+            }
+        }
+
+        var edges = new List<(MergePoint Start, MergePoint End)>();
+        for (var x = 0; x < xs.Length - 1; x++)
+        {
+            for (var y = 0; y < ys.Length - 1; y++)
+            {
+                if (!filled[x, y]) continue;
+                var left = Key(xs[x], ys[y]);
+                var right = Key(xs[x + 1], ys[y]);
+                var bottomRight = Key(xs[x + 1], ys[y + 1]);
+                var bottomLeft = Key(xs[x], ys[y + 1]);
+                if (y == 0 || !filled[x, y - 1]) edges.Add((left, right));
+                if (x == xs.Length - 2 || !filled[x + 1, y]) edges.Add((right, bottomRight));
+                if (y == ys.Length - 2 || !filled[x, y + 1]) edges.Add((bottomRight, bottomLeft));
+                if (x == 0 || !filled[x - 1, y]) edges.Add((bottomLeft, left));
+            }
+        }
+
+        var best = Array.Empty<PointF>();
+        var bestArea = 0f;
+        while (edges.Count > 0)
+        {
+            var edge = edges[0];
+            edges.RemoveAt(0);
+            var loop = new List<MergePoint> { edge.Start };
+            var current = edge.End;
+            var guard = 0;
+            while (!current.Equals(loop[0]) && guard++ < 4096)
+            {
+                loop.Add(current);
+                var nextIndex = edges.FindIndex(item => item.Start.Equals(current));
+                if (nextIndex < 0) break;
+                var next = edges[nextIndex];
+                edges.RemoveAt(nextIndex);
+                current = next.End;
+            }
+
+            if (!current.Equals(loop[0]) || loop.Count < 3) continue;
+            var points = RemoveCollinearPoints(loop.Select(PointFromKey).ToList()).ToArray();
+            var area = Math.Abs(PolygonArea(points));
+            if (area > bestArea)
+            {
+                bestArea = area;
+                best = points;
+            }
+        }
+
+        return best;
+    }
+
+    private readonly record struct MergePoint(long X, long Y);
+
+    private static MergePoint Key(float x, float y)
+    {
+        return new MergePoint((long)MathF.Round(VectorUnits.Quantize(x) * 1000f), (long)MathF.Round(VectorUnits.Quantize(y) * 1000f));
+    }
+
+    private static PointF PointFromKey(MergePoint key)
+    {
+        return new PointF(key.X / 1000f, key.Y / 1000f);
+    }
+
+    private static List<PointF> RemoveCollinearPoints(List<PointF> points)
+    {
+        var cleaned = RemoveDuplicatePolygonPoints(points);
+        var changed = true;
+        while (changed && cleaned.Count >= 3)
+        {
+            changed = false;
+            for (var i = 0; i < cleaned.Count; i++)
+            {
+                var previous = cleaned[(i + cleaned.Count - 1) % cleaned.Count];
+                var current = cleaned[i];
+                var next = cleaned[(i + 1) % cleaned.Count];
+                var cross = (current.X - previous.X) * (next.Y - current.Y) - (current.Y - previous.Y) * (next.X - current.X);
+                if (Math.Abs(cross) > 0.001f) continue;
+                cleaned.RemoveAt(i);
+                changed = true;
+                break;
+            }
+        }
+
+        return cleaned;
     }
 
     private List<int> CollectActiveCandidates(int frame)
