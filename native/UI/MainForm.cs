@@ -1195,7 +1195,9 @@ internal sealed class MainForm : Form
             if (hit.IsValid)
             {
                 var hitObject = hit.Key.ObjectIndex;
-                _pointerHitWasAlreadySelected = _selectedObjects.Contains(hitObject) && _selectedElement.Key == hit.Key;
+                var hitObjectWasAlreadySelected = _selectedObjects.Contains(hitObject);
+                _pointerHitWasAlreadySelected = hitObjectWasAlreadySelected
+                    && (!_selectedElement.IsValid || _selectedElement.Key == hit.Key || hit.Key.Kind == DrawingElementKind.Fill);
                 if (!_selectedObjects.Contains(hitObject)) SetSelection(hit);
                 else
                 {
