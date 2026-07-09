@@ -59,8 +59,12 @@ internal sealed class DrawSettingsPanel : UserControl
         AddField(content, "Shape", _shape, 0);
 
         AddCheck(_keepRatio);
+        _keepRatio.Width = 32;
+        _keepRatio.Height = 32;
+        _keepRatio.Dock = DockStyle.Left;
+        _keepRatio.Margin = new Padding(0, 2, 0, 2);
         _toolTip.SetToolTip(_keepRatio, _keepRatio.AccessibleName);
-        AddField(content, "Aspect", _keepRatio, 1);
+        AddField(content, "Aspect", _keepRatio, 1, fillInput: false);
     }
 
     private void ReadSettings()
@@ -84,7 +88,7 @@ internal sealed class DrawSettingsPanel : UserControl
         checkBox.CheckedChanged += (_, _) => UpdateSettings();
     }
 
-    private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
+    private static void AddField(TableLayoutPanel parent, string label, Control input, int row, bool fillInput = true)
     {
         parent.Controls.Add(new Label
         {
@@ -98,7 +102,7 @@ internal sealed class DrawSettingsPanel : UserControl
             Margin = new Padding(0, 3, 8, 3)
         }, 0, row);
 
-        input.Dock = DockStyle.Fill;
+        if (fillInput) input.Dock = DockStyle.Fill;
         parent.Controls.Add(input, 1, row);
     }
 

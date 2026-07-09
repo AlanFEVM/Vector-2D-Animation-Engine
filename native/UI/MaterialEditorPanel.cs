@@ -34,8 +34,8 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
-        MinimumSize = new Size(240, 260);
-        Padding = new Padding(12);
+        MinimumSize = new Size(240, 232);
+        Padding = new Padding(0, 8, 0, 8);
 
         BuildUi();
         ApplyMaterial(_fill, _stroke, 2f, 1f, raiseEvent: false);
@@ -75,13 +75,6 @@ internal sealed class MaterialEditorPanel : UserControl
         ApplyMaterial(fill, stroke, strokeWidth, opacity, raiseEvent: false);
     }
 
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        using var pen = new Pen(Theme.Border);
-        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-    }
-
     private void BuildUi()
     {
         var title = new Label
@@ -100,28 +93,29 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 3,
+            ColumnCount = 2,
             RowCount = 5,
-            Padding = new Padding(0, 10, 0, 0)
+            Padding = new Padding(0, 4, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
-        for (var i = 0; i < 5; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i == 4 ? 56 : 42));
+        for (var i = 0; i < 5; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i == 4 ? 42 : 38));
         Controls.Add(content);
         content.BringToFront();
 
         AddLabel(content, "Fill", 0);
+        var fillRow = ColorRow(_fillPreset, _fillPreview);
+        content.Controls.Add(fillRow, 1, 0);
+
         ConfigurePreset(_fillPreset);
-        content.Controls.Add(_fillPreset, 1, 0);
         ConfigurePreview(_fillPreview);
-        content.Controls.Add(_fillPreview, 2, 0);
 
         AddLabel(content, "Stroke", 1);
+        var strokeRow = ColorRow(_strokePreset, _strokePreview);
+        content.Controls.Add(strokeRow, 1, 1);
+
         ConfigurePreset(_strokePreset);
-        content.Controls.Add(_strokePreset, 1, 1);
         ConfigurePreview(_strokePreview);
-        content.Controls.Add(_strokePreview, 2, 1);
 
         AddLabel(content, "Width pt", 2);
         _strokeWidth.Minimum = 0;
@@ -129,6 +123,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _strokeWidth.DecimalPlaces = 1;
         _strokeWidth.Increment = 0.5m;
         _strokeWidth.Dock = DockStyle.Fill;
+        _strokeWidth.Margin = new Padding(0, 4, 0, 4);
         Theme.StyleNumeric(_strokeWidth);
         _strokeWidth.ValueChanged += (_, _) => RaiseMaterialChanged(strokeChanged: true);
         content.Controls.Add(_strokeWidth, 1, 2);
@@ -138,20 +133,32 @@ internal sealed class MaterialEditorPanel : UserControl
         _opacity.Maximum = 100;
         _opacity.TickFrequency = 10;
         _opacity.Dock = DockStyle.Fill;
+        _opacity.Margin = new Padding(0, 3, 0, 0);
         _opacity.ValueChanged += (_, _) =>
         {
             _opacityValue.Text = $"{_opacity.Value}%";
             RaiseMaterialChanged(opacityChanged: true);
         };
-        content.Controls.Add(_opacity, 1, 3);
+        var opacityRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty
+        };
+        opacityRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        opacityRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
+        opacityRow.Controls.Add(_opacity, 0, 0);
         _opacityValue.Dock = DockStyle.Fill;
         _opacityValue.ForeColor = Theme.Muted;
         _opacityValue.BackColor = Theme.Panel;
-        _opacityValue.TextAlign = ContentAlignment.MiddleRight;
+        _opacityValue.TextAlign = ContentAlignment.MiddleCenter;
         _opacityValue.Font = Theme.UiFont();
-        content.Controls.Add(_opacityValue, 2, 3);
+        opacityRow.Controls.Add(_opacityValue, 1, 0);
+        content.Controls.Add(opacityRow, 1, 3);
 
-        var apply = new Button { Text = "Apply", Dock = DockStyle.Left, Width = 88, Height = 32 };
+        var apply = new Button { Text = "Apply", Dock = DockStyle.Left, Width = 86, Height = 30, Margin = new Padding(0, 5, 0, 0) };
         Theme.StyleButton(apply);
         apply.Click += (_, _) => RaiseMaterialChanged();
         content.Controls.Add(apply, 1, 4);
@@ -252,8 +259,25 @@ internal sealed class MaterialEditorPanel : UserControl
     private static void ConfigurePreview(Panel preview)
     {
         preview.Dock = DockStyle.Fill;
-        preview.Margin = new Padding(6, 4, 0, 8);
+        preview.Margin = new Padding(8, 5, 0, 5);
         preview.Cursor = Cursors.Hand;
+    }
+
+    private static TableLayoutPanel ColorRow(Control preset, Control preview)
+    {
+        var row = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+        row.Controls.Add(preset, 0, 0);
+        row.Controls.Add(preview, 1, 0);
+        return row;
     }
 
     private static void LoadPresets(ComboBox combo)

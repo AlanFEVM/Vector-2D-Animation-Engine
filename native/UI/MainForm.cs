@@ -146,6 +146,7 @@ internal sealed class MainForm : Form
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = 192 };
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
         _drawSnappingStrip = new DrawSnappingStrip(_drawSettings);
+        InitializeQuickMaterialInputs();
         CreateDefaultScenes();
         CreateDefaultDrawingObjects();
         BuildUi();
@@ -325,6 +326,14 @@ internal sealed class MainForm : Form
         Controls.Add(_statusBar);
     }
 
+    private void InitializeQuickMaterialInputs()
+    {
+        _color.Items.AddRange(["Teal", "Amber", "Coral", "Violet", "White"]);
+        _color.SelectedIndex = 0;
+        Theme.StyleComboBox(_color);
+        Theme.StyleNumeric(_stroke);
+    }
+
     private static WindowChromeButton CreateWindowButton(WindowChromeButtonKind kind, string name)
     {
         return new WindowChromeButton(kind)
@@ -490,12 +499,13 @@ internal sealed class MainForm : Form
         _basicInspectorPage.Dock = DockStyle.Fill;
         _basicInspectorPage.BackColor = Theme.Panel;
         _basicInspectorPage.AutoScroll = true;
+        _basicInspectorPage.Padding = new Padding(0, 0, 4, 0);
         _objectInspector.Dock = DockStyle.Top;
-        _objectInspector.Height = 224;
+        _objectInspector.Height = 142;
         _objectInspector.BackColor = Theme.Panel;
         BuildInspector(_objectInspector);
         _materialEditor.Dock = DockStyle.Top;
-        _materialEditor.Height = 286;
+        _materialEditor.Height = 252;
         _drawSettingsPanel.Dock = DockStyle.Top;
         _drawSettingsPanel.Height = 124;
         _basicInspectorPage.Controls.Add(_materialEditor);
@@ -545,12 +555,12 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 6,
+            RowCount = 4,
             Padding = new Padding(0, 4, 0, 0)
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, i <= 3 ? 27 : 33));
+        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
         parent.Controls.Add(content);
         content.BringToFront();
 
@@ -563,18 +573,6 @@ internal sealed class MainForm : Form
             content.SetColumnSpan(label, 2);
             row++;
         }
-
-        _color.Items.AddRange(["Teal", "Amber", "Coral", "Violet", "White"]);
-        _color.SelectedIndex = 0;
-        _color.Dock = DockStyle.Fill;
-        _color.Margin = new Padding(0, 3, 0, 3);
-        Theme.StyleComboBox(_color);
-        AddField(content, "Active color", _color, 4);
-
-        _stroke.Dock = DockStyle.Fill;
-        _stroke.Margin = new Padding(0, 3, 0, 3);
-        Theme.StyleNumeric(_stroke);
-        AddField(content, "Stroke pt", _stroke, 5);
     }
 
     private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
