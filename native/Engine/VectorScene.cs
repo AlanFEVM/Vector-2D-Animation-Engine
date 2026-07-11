@@ -300,7 +300,7 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
-    private int AppendObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
+    internal int AppendObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
     {
         var index = ObjectCount;
         ObjectCount++;
@@ -341,7 +341,7 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
-    private int AppendCurveSegment(int layer, PointF start, PointF control, PointF end, float stroke, Color color, Color strokeColor, uint atoms)
+    internal int AppendCurveSegment(int layer, PointF start, PointF control, PointF end, float stroke, Color color, Color strokeColor, uint atoms)
     {
         var center = Midpoint(start, end);
         var width = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, Distance(start, end));
@@ -372,7 +372,7 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
-    private int AppendPathObjectContours(int layer, IReadOnlyList<PointF[]> worldContours, float stroke, Color color, Color strokeColor, uint atoms)
+    internal int AppendPathObjectContours(int layer, IReadOnlyList<PointF[]> worldContours, float stroke, Color color, Color strokeColor, uint atoms)
     {
         var contours = NormalizePathContours(worldContours);
         if (contours.Length == 0) return -1;
@@ -433,7 +433,7 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
-    private int AppendFreehandStroke(int layer, PointF[] points, float stroke, Color color, uint atoms)
+    internal int AppendFreehandStroke(int layer, PointF[] points, float stroke, Color color, uint atoms)
     {
         if (points.Length == 0) return -1;
 
@@ -597,6 +597,12 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         RebuildSpatialIndex();
+    }
+
+    internal void CompleteDeferredBuild()
+    {
+        RebuildGeometryIndex();
+        RebuildSummaries();
     }
 
     public VectorSceneSnapshot CreateSnapshot()

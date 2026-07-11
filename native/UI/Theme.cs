@@ -44,15 +44,24 @@ internal static class Theme
 
     private static void StyleButton(Button button, bool active)
     {
-        button.UseVisualStyleBackColor = false;
-        button.FlatStyle = FlatStyle.Flat;
-        button.ForeColor = active ? AccentLabel : Text;
-        button.FlatAppearance.BorderColor = active ? Accent : Border;
-        button.FlatAppearance.BorderSize = 1;
-        button.FlatAppearance.MouseOverBackColor = active ? AccentSurface : PanelStrong;
-        button.FlatAppearance.MouseDownBackColor = active ? AccentSurface : PanelStrong;
-        button.Font = UiFont();
-        button.TextAlign = ContentAlignment.MiddleCenter;
+        var foreColor = active ? AccentLabel : Text;
+        var borderColor = active ? Accent : Border;
+        var hoverColor = active ? AccentSurface : PanelStrong;
+        if (button.UseVisualStyleBackColor) button.UseVisualStyleBackColor = false;
+        if (button.FlatStyle != FlatStyle.Flat) button.FlatStyle = FlatStyle.Flat;
+        if (button.ForeColor != foreColor) button.ForeColor = foreColor;
+        if (button.FlatAppearance.BorderColor != borderColor) button.FlatAppearance.BorderColor = borderColor;
+        if (button.FlatAppearance.BorderSize != 1) button.FlatAppearance.BorderSize = 1;
+        if (button.FlatAppearance.MouseOverBackColor != hoverColor) button.FlatAppearance.MouseOverBackColor = hoverColor;
+        if (button.FlatAppearance.MouseDownBackColor != hoverColor) button.FlatAppearance.MouseDownBackColor = hoverColor;
+        if (!string.Equals(button.Font.Name, "Segoe UI", StringComparison.Ordinal)
+            || Math.Abs(button.Font.Size - 9.5f) > 0.01f
+            || button.Font.Style != FontStyle.Regular)
+        {
+            button.Font = UiFont();
+        }
+
+        if (button.TextAlign != ContentAlignment.MiddleCenter) button.TextAlign = ContentAlignment.MiddleCenter;
         UiMotion.ConfigureButton(
             button,
             active ? AccentSurface : PanelStrong,

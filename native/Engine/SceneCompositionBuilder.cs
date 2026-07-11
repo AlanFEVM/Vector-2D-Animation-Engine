@@ -210,7 +210,7 @@ internal static class SceneCompositionBuilder
             }
         }
 
-        destination.RebuildGeometryIndex();
+        destination.CompleteDeferredBuild();
         return new SceneCompositionResult(owners);
     }
 
@@ -233,13 +233,13 @@ internal static class SceneCompositionBuilder
             var transformed = contours
                 .Select(contour => contour.Select(point => Transform(point, transform)).ToArray())
                 .ToArray();
-            return destination.AddPathObjectContours(destinationLayer, transformed, stroke, fill, strokeColor, atoms);
+            return destination.AppendPathObjectContours(destinationLayer, transformed, stroke, fill, strokeColor, atoms);
         }
 
         if (shape == ShapeKind.Freeform && source.TryGetFreehandWorldPoints(sourceObject, out var freehand))
         {
             var transformed = freehand.Select(point => Transform(point, transform)).ToArray();
-            return destination.AddFreehandStroke(destinationLayer, transformed, stroke, strokeColor, brushStroke: false, atoms);
+            return destination.AppendFreehandStroke(destinationLayer, transformed, stroke, strokeColor, atoms);
         }
 
         if (shape == ShapeKind.Line
@@ -247,7 +247,7 @@ internal static class SceneCompositionBuilder
             && source.TryGetLineEndpoint(sourceObject, startEndpoint: false, out var end))
         {
             var control = new PointF(source.CurveControlX[sourceObject], source.CurveControlY[sourceObject]);
-            return destination.AddCurveSegment(
+            return destination.AppendCurveSegment(
                 destinationLayer,
                 Transform(start, transform),
                 Transform(control, transform),
@@ -266,7 +266,7 @@ internal static class SceneCompositionBuilder
         var heightAxis = Vector2.TransformNormal(new Vector2(-sin * source.Height[sourceObject], cos * source.Height[sourceObject]), transform);
         var size = new SizeF(Math.Max(1, widthAxis.Length()), Math.Max(1, heightAxis.Length()));
         var angle = MathF.Atan2(widthAxis.Y, widthAxis.X);
-        return destination.AddObject(destinationLayer, center, size, angle, stroke, fill, strokeColor, atoms, shape);
+        return destination.AppendObject(destinationLayer, center, size, angle, stroke, fill, strokeColor, atoms, shape);
     }
 
     private static Matrix3x2 InstanceMatrix(DrawingObjectInstanceDefinition instance)

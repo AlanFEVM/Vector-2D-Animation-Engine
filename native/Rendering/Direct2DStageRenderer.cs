@@ -16,17 +16,18 @@ internal sealed class Direct2DStageRenderer : IDisposable
 {
     private const int MaxSelectionOutlines = 512;
     private readonly Dictionary<int, ID2D1SolidColorBrush> _brushCache = new(2048);
-    private readonly Dictionary<int, CachedFreehandGeometry> _freehandGeometryCache = new();
+    private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedFreehandGeometry> _freehandGeometryCache = new();
+    private readonly Dictionary<VectorScene, int> _freehandSceneObjectCounts = new(ReferenceEqualityComparer.Instance);
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private ID2D1Factory? _factory;
     private ID2D1HwndRenderTarget? _target;
     private ID2D1StrokeStyle? _roundStrokeStyle;
-    private VectorScene? _freehandGeometryScene;
-    private int _freehandGeometryObjectCount;
     private SizeI _targetSize;
     private IntPtr _targetHwnd;
     private int _consecutiveFailures;
     private bool _disabled;
+    private VectorScene? _cachedEditableScene;
+    private VectorScene? _cachedUnderlayScene;
 
     private sealed record CachedFreehandGeometry(GdiPointF[] Points, ID2D1PathGeometry Geometry) : IDisposable
     {
@@ -35,22 +36,23 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
     public bool IsActive => !_disabled && _target is not null;
 
+    internal bool HasCachedFreehandGeometry(VectorScene scene)
+    {
+        return _freehandGeometryCache.Keys.Any(key => ReferenceEquals(key.Scene, scene));
+    }
+
     public bool TryRender(StageControl stage, out RenderStats stats)
     {
         stats = default;
         if (_disabled || stage.Width <= 0 || stage.Height <= 0) return false;
         var drawingStarted = false;
+        var editableScene = stage.Scene;
 
         try
         {
             EnsureTarget(stage);
             if (_target is null) return false;
-            if ((_freehandGeometryScene is not null && !ReferenceEquals(_freehandGeometryScene, stage.Scene))
-                || stage.Scene.ObjectCount < _freehandGeometryObjectCount)
-            {
-                ClearFreehandGeometryCache();
-            }
-            _freehandGeometryObjectCount = stage.Scene.ObjectCount;
+            PrepareFreehandGeometryCache(editableScene, stage.UnderlayScene);
 
             _target.BeginDraw();
             drawingStarted = true;
@@ -77,13 +79,21 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
             DrawGrid(stage);
 
-            stats = stage.Scene.ObjectCount < 5000
-                ? DrawObjects(stage)
-                : stage.Zoom < 0.08f
-                    ? DrawOverviewTiles(stage)
-                    : stage.Zoom < 0.18f
-                        ? DrawTiles(stage)
-                        : DrawObjects(stage);
+            var underlayStats = default(RenderStats);
+            var objectDrawLimit = ObjectDrawLimit(stage.Zoom);
+            if (stage.UnderlayScene is { } underlay)
+            {
+                stage.Scene = underlay;
+                var underlayLimit = UsesObjectRenderer(underlay, stage.Zoom)
+                    && UsesObjectRenderer(editableScene, stage.Zoom)
+                        ? objectDrawLimit - Math.Min(editableScene.ObjectCount, objectDrawLimit * 3 / 4)
+                        : objectDrawLimit;
+                underlayStats = DrawScene(stage, underlayLimit);
+            }
+
+            stage.Scene = editableScene;
+            var editableLimit = Math.Max(0, objectDrawLimit - underlayStats.DrawnObjects);
+            stats = RenderStats.Combine(underlayStats, DrawScene(stage, editableLimit));
 
             DrawSelection(stage);
             DrawDrawingPreview(stage);
@@ -120,6 +130,10 @@ internal sealed class Direct2DStageRenderer : IDisposable
             RecordFailure();
             ResetTarget();
             return false;
+        }
+        finally
+        {
+            stage.Scene = editableScene;
         }
     }
 
@@ -183,6 +197,24 @@ internal sealed class Direct2DStageRenderer : IDisposable
         _targetHwnd = nextHwnd;
     }
 
+    private RenderStats DrawScene(StageControl stage, int objectDrawLimit)
+    {
+        return stage.Scene.ObjectCount < 5000
+            ? DrawObjects(stage, objectDrawLimit)
+            : stage.Zoom < 0.08f
+                ? DrawOverviewTiles(stage)
+                : stage.Zoom < 0.18f
+                    ? DrawTiles(stage)
+                    : DrawObjects(stage, objectDrawLimit);
+    }
+
+    private static int ObjectDrawLimit(float zoom) => zoom < 0.35f ? 95_000 : 220_000;
+
+    private static bool UsesObjectRenderer(VectorScene scene, float zoom)
+    {
+        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || zoom >= 0.18f);
+    }
+
     private RenderStats DrawOverviewTiles(StageControl stage)
     {
         var scene = stage.Scene;
@@ -214,7 +246,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
             }
         }
 
-        return new RenderStats(draws, draws, atoms, draws, draws, true);
+        return new RenderStats(0, 0, atoms, draws, 0, true);
     }
 
     private RenderStats DrawTiles(StageControl stage)
@@ -248,15 +280,14 @@ internal sealed class Direct2DStageRenderer : IDisposable
             }
         }
 
-        return new RenderStats(draws, draws, atoms, draws, draws, true);
+        return new RenderStats(0, 0, atoms, draws, 0, true);
     }
 
-    private RenderStats DrawObjects(StageControl stage)
+    private RenderStats DrawObjects(StageControl stage, int drawLimit)
     {
         var scene = stage.Scene;
         var bounds = stage.VisibleWorldBounds();
         _renderOrder.Collect(scene, bounds, stage.Frame);
-        var drawLimit = stage.Zoom < 0.35f ? 95_000 : 220_000;
 
         var drawn = _renderOrder.Draw(
             scene,
@@ -973,14 +1004,8 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
     private ID2D1PathGeometry FreehandGeometry(VectorScene scene, int objectIndex, GdiPointF[] localPoints)
     {
-        if (!ReferenceEquals(_freehandGeometryScene, scene))
-        {
-            ClearFreehandGeometryCache();
-            _freehandGeometryScene = scene;
-            _freehandGeometryObjectCount = scene.ObjectCount;
-        }
-
-        _freehandGeometryCache.TryGetValue(objectIndex, out var cached);
+        var key = (scene, objectIndex);
+        _freehandGeometryCache.TryGetValue(key, out var cached);
         if (cached is not null)
         {
             if (ReferenceEquals(cached.Points, localPoints)) return cached.Geometry;
@@ -995,7 +1020,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
             sink.Close();
         }
 
-        _freehandGeometryCache[objectIndex] = new CachedFreehandGeometry(localPoints, geometry);
+        _freehandGeometryCache[key] = new CachedFreehandGeometry(localPoints, geometry);
         cached?.Dispose();
         return geometry;
     }
@@ -1017,12 +1042,66 @@ internal sealed class Direct2DStageRenderer : IDisposable
         return _roundStrokeStyle;
     }
 
+    private void PrepareFreehandGeometryCache(VectorScene editableScene, VectorScene? underlayScene)
+    {
+        var sceneSetChanged = !ReferenceEquals(_cachedEditableScene, editableScene)
+            || !ReferenceEquals(_cachedUnderlayScene, underlayScene);
+        var editableShrank = _freehandSceneObjectCounts.TryGetValue(editableScene, out var previousEditableCount)
+            && editableScene.ObjectCount < previousEditableCount;
+        var underlayShrank = underlayScene is not null
+            && _freehandSceneObjectCounts.TryGetValue(underlayScene, out var previousUnderlayCount)
+            && underlayScene.ObjectCount < previousUnderlayCount;
+
+        if (sceneSetChanged || editableShrank || underlayShrank)
+        {
+            List<(VectorScene Scene, int ObjectIndex)>? staleKeys = null;
+            foreach (var item in _freehandGeometryCache)
+            {
+                var scene = item.Key.Scene;
+                var isEditable = ReferenceEquals(scene, editableScene);
+                var isUnderlay = underlayScene is not null && ReferenceEquals(scene, underlayScene);
+                if (!isEditable && !isUnderlay)
+                {
+                    (staleKeys ??= new List<(VectorScene Scene, int ObjectIndex)>()).Add(item.Key);
+                    continue;
+                }
+
+                var sceneShrank = (isEditable && editableShrank) || (isUnderlay && underlayShrank);
+                if (!sceneShrank) continue;
+                if ((uint)item.Key.ObjectIndex < scene.ObjectCount
+                    && scene.TryGetFreehandLocalPoints(item.Key.ObjectIndex, out var points)
+                    && ReferenceEquals(points, item.Value.Points))
+                {
+                    continue;
+                }
+
+                (staleKeys ??= new List<(VectorScene Scene, int ObjectIndex)>()).Add(item.Key);
+            }
+
+            if (staleKeys is not null)
+            {
+                foreach (var key in staleKeys)
+                {
+                    if (_freehandGeometryCache.Remove(key, out var cached)) cached.Dispose();
+                }
+            }
+        }
+
+        _freehandSceneObjectCounts.Clear();
+        _freehandSceneObjectCounts[editableScene] = editableScene.ObjectCount;
+        if (underlayScene is not null) _freehandSceneObjectCounts[underlayScene] = underlayScene.ObjectCount;
+        _cachedEditableScene = editableScene;
+        _cachedUnderlayScene = underlayScene;
+    }
+
     private void ClearFreehandGeometryCache()
     {
-        foreach (var item in _freehandGeometryCache.Values) item.Dispose();
+        var cachedItems = _freehandGeometryCache.Values.ToArray();
         _freehandGeometryCache.Clear();
-        _freehandGeometryScene = null;
-        _freehandGeometryObjectCount = 0;
+        _freehandSceneObjectCounts.Clear();
+        _cachedEditableScene = null;
+        _cachedUnderlayScene = null;
+        foreach (var item in cachedItems) item.Dispose();
     }
 
     private static D2DRect Rect(float x, float y, float width, float height) => new(x, y, width, height);

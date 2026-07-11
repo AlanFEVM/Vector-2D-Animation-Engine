@@ -776,7 +776,10 @@ internal static class Benchmark
             && NearlyEqual(destination.Height[0], 40)
             && NearlyEqual(destination.Angle[0], MathF.PI / 2f)
             && NearlyEqual(destination.X[1], 200)
-            && NearlyEqual(destination.Y[1], 360),
+            && NearlyEqual(destination.Y[1], 360)
+            && destination.GeometryRevision <= 2
+            && destination.TileCount.Sum() > 0
+            && destination.OverviewCount.Sum() > 0,
             "Scene composition did not resolve and transform the drawing-object instance.");
         AssertTimeline(
             composition.TryGetOwner(0, out var rootOwner)
@@ -822,6 +825,117 @@ internal static class Benchmark
     private static void AssertTimeline(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    public static void RunStageRendererRegression()
+    {
+        var editable = new VectorScene();
+        editable.CreateEmpty();
+        editable.AddObject(0, new PointF(120, 80), new SizeF(180, 120), 0, 0, Color.Teal, 12, ShapeKind.Rectangle);
+        var underlay = new VectorScene();
+        underlay.CreateEmpty();
+        underlay.AddFreehandStroke(
+            0,
+            [new PointF(-200, -120), new PointF(-120, -40), new PointF(-40, -100)],
+            12,
+            Color.Coral,
+            brushStroke: false,
+            12);
+
+        using var form = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            ClientSize = new Size(640, 420)
+        };
+        using var stage = new StageControl(editable) { Dock = DockStyle.Fill };
+        stage.BindUnderlayScene(underlay);
+        form.Controls.Add(stage);
+        form.Show();
+        Application.DoEvents();
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
+
+        if (!stage.LastFrameUsedDirect2D)
+        {
+            throw new InvalidOperationException("A nested underlay forced the stage renderer to fall back from Direct2D.");
+        }
+
+        if (stage.LastStats.VisibleObjects != 2)
+        {
+            throw new InvalidOperationException("The Direct2D underlay pass did not include both scene layers.");
+        }
+
+        if (!ReferenceEquals(stage.Scene, editable))
+        {
+            throw new InvalidOperationException("The renderer did not restore the editable scene after drawing its underlay.");
+        }
+
+        if (!stage.HasCachedDirect2DFreehandGeometry(underlay))
+        {
+            throw new InvalidOperationException("The Direct2D underlay pass did not populate the freehand geometry cache.");
+        }
+
+        var layeredVisibleObjects = stage.LastStats.VisibleObjects;
+        var tiledUnderlay = new VectorScene();
+        tiledUnderlay.CreateEmpty();
+        const int tiledUnderlayObjectCount = 56_000;
+        for (var index = 0; index < tiledUnderlayObjectCount; index++)
+        {
+            var x = (index % 1000) * 8 - 4000;
+            var y = (index / 1000) * 8 - 224;
+            tiledUnderlay.AppendObject(
+                0,
+                new PointF(x, y),
+                new SizeF(18, 18),
+                0,
+                0,
+                Color.Coral,
+                Color.Transparent,
+                3,
+                ShapeKind.Rectangle);
+        }
+        tiledUnderlay.CompleteDeferredBuild();
+
+        stage.BindUnderlayScene(tiledUnderlay);
+        stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 0.1f);
+        stage.Update();
+        Application.DoEvents();
+
+        if (!stage.LastFrameUsedDirect2D
+            || !stage.LastStats.TileLod
+            || stage.LastStats.TileDraws <= 0
+            || stage.LastStats.VisibleObjects != 1
+            || stage.LastStats.DrawnObjects != 1)
+        {
+            throw new InvalidOperationException("Mixed object and tile LOD rendering produced inconsistent statistics.");
+        }
+        var mixedLodTileDraws = stage.LastStats.TileDraws;
+
+        if (stage.HasCachedDirect2DFreehandGeometry(underlay))
+        {
+            throw new InvalidOperationException("Switching the underlay retained stale Direct2D freehand geometry.");
+        }
+
+        stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 10f);
+        stage.Update();
+        Application.DoEvents();
+        var expectedObjectDraws = tiledUnderlayObjectCount + editable.ObjectCount;
+        if (stage.LastStats.TileLod
+            || stage.LastStats.VisibleObjects != expectedObjectDraws
+            || stage.LastStats.DrawnObjects != expectedObjectDraws)
+        {
+            throw new InvalidOperationException("The shared object budget did not return unused editable capacity to the underlay.");
+        }
+
+        form.Close();
+        Console.WriteLine("underlay_direct2d=ok");
+        Console.WriteLine($"visible_objects={layeredVisibleObjects}");
+        Console.WriteLine($"mixed_lod_tiles={mixedLodTileDraws}");
+        Console.WriteLine("freehand_cache_switch=ok");
+        Console.WriteLine($"shared_object_draws={stage.LastStats.DrawnObjects}");
     }
 
     public static void RunFreehandStress()

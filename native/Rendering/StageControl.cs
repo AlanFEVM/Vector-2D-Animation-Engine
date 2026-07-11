@@ -42,7 +42,7 @@ internal sealed class StageControl : Control
 
     private readonly record struct SelectedPolylineOwnerCacheEntry(int Frame, long Revision, float X, float Y, DrawingPolylinePartGeometry[] Parts);
 
-    public VectorScene Scene { get; private set; }
+    public VectorScene Scene { get; internal set; }
     public VectorScene? UnderlayScene { get; private set; }
     public SceneDimension ReferenceDimension { get; private set; } = SceneDimension.TwoD;
     public CameraProjection ReferenceProjection { get; private set; } = CameraProjection.Orthographic;
@@ -88,6 +88,13 @@ internal sealed class StageControl : Control
     public float CameraY { get; private set; }
     public float Zoom { get; private set; } = 1;
     public RenderStats LastStats { get; private set; }
+    public bool LastFrameUsedDirect2D { get; private set; }
+    public event EventHandler? FrameRendered;
+
+    internal bool HasCachedDirect2DFreehandGeometry(VectorScene scene)
+    {
+        return _direct2DRenderer.HasCachedFreehandGeometry(scene);
+    }
 
     public StageControl(VectorScene scene)
     {
@@ -322,17 +329,23 @@ internal sealed class StageControl : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        var rendered = false;
         try
         {
-            if (UnderlayScene is null && _direct2DRenderer.TryRender(this, out var stats))
+            if (_direct2DRenderer.TryRender(this, out var stats))
             {
                 LastStats = stats;
+                LastFrameUsedDirect2D = true;
                 _paintFailureLogged = false;
-                return;
+            }
+            else
+            {
+                DrawBufferedGdi(e.Graphics);
+                LastFrameUsedDirect2D = false;
+                _paintFailureLogged = false;
             }
 
-            DrawBufferedGdi(e.Graphics);
-            _paintFailureLogged = false;
+            rendered = true;
         }
         catch (Exception ex)
         {
@@ -351,7 +364,11 @@ internal sealed class StageControl : Control
                 // A corrupted development session may fail before renderer cleanup runs.
             }
             DrawEmergencyBackground(e.Graphics);
+            LastStats = default;
+            LastFrameUsedDirect2D = false;
         }
+
+        if (rendered) FrameRendered?.Invoke(this, EventArgs.Empty);
     }
 
     private void DrawBufferedGdi(Graphics target)
@@ -390,41 +407,51 @@ internal sealed class StageControl : Control
         }
 
         var editableScene = Scene;
-        var underlayStats = UnderlayScene is { } underlay
-            ? DrawSceneGdi(g, underlay)
-            : default;
-        var editableStats = DrawSceneGdi(g, editableScene);
-        LastStats = new RenderStats(
-            underlayStats.VisibleObjects + editableStats.VisibleObjects,
-            underlayStats.DrawnObjects + editableStats.DrawnObjects,
-            underlayStats.VisibleAtoms + editableStats.VisibleAtoms,
-            underlayStats.TileDraws + editableStats.TileDraws,
-            underlayStats.ScannedObjects + editableStats.ScannedObjects,
-            underlayStats.TileLod || editableStats.TileLod);
+        var objectDrawLimit = ObjectDrawLimit();
+        var underlayStats = default(RenderStats);
+        if (UnderlayScene is { } underlay)
+        {
+            var underlayLimit = UsesObjectRenderer(underlay)
+                && UsesObjectRenderer(editableScene)
+                    ? objectDrawLimit - Math.Min(editableScene.ObjectCount, objectDrawLimit * 3 / 4)
+                    : objectDrawLimit;
+            underlayStats = DrawSceneGdi(g, underlay, underlayLimit);
+        }
+
+        var editableLimit = Math.Max(0, objectDrawLimit - underlayStats.DrawnObjects);
+        var editableStats = DrawSceneGdi(g, editableScene, editableLimit);
+        LastStats = RenderStats.Combine(underlayStats, editableStats);
         DrawSelection(g);
         DrawDrawingPreview(g);
         DrawFreehandPreview(g);
         DrawMarquee(g);
     }
 
-    private RenderStats DrawSceneGdi(Graphics graphics, VectorScene scene)
+    private RenderStats DrawSceneGdi(Graphics graphics, VectorScene scene, int objectDrawLimit)
     {
         var editableScene = Scene;
         Scene = scene;
         try
         {
             return Scene.ObjectCount < 5000
-                ? DrawObjects(graphics)
+                ? DrawObjects(graphics, objectDrawLimit)
                 : Zoom < 0.08f
                     ? DrawOverviewTiles(graphics)
                     : Zoom < 0.18f
                         ? DrawTiles(graphics)
-                        : DrawObjects(graphics);
+                        : DrawObjects(graphics, objectDrawLimit);
         }
         finally
         {
             Scene = editableScene;
         }
+    }
+
+    private int ObjectDrawLimit() => Zoom < 0.35f ? 65_000 : 160_000;
+
+    private bool UsesObjectRenderer(VectorScene scene)
+    {
+        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || Zoom >= 0.18f);
     }
 
     protected override void OnPaintBackground(PaintEventArgs pevent)
@@ -708,7 +735,7 @@ internal sealed class StageControl : Control
             }
         }
 
-        return new RenderStats(draws, draws, atoms, draws, draws, true);
+        return new RenderStats(0, 0, atoms, draws, 0, true);
     }
 
     private RenderStats DrawTiles(Graphics g)
@@ -744,15 +771,14 @@ internal sealed class StageControl : Control
             }
         }
 
-        return new RenderStats(draws, draws, atoms, draws, draws, true);
+        return new RenderStats(0, 0, atoms, draws, 0, true);
     }
 
-    private RenderStats DrawObjects(Graphics g)
+    private RenderStats DrawObjects(Graphics g, int drawLimit)
     {
         var scene = Scene;
         var bounds = VisibleWorldBounds();
         _renderOrder.Collect(scene, bounds, Frame);
-        var drawLimit = Zoom < 0.35f ? 65_000 : 160_000;
 
         var drawn = _renderOrder.Draw(
             scene,

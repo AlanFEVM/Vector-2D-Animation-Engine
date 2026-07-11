@@ -167,7 +167,6 @@ internal sealed class WorkspaceTabs : UserControl
         var previous = _selectedView;
         _selectedView = view;
         RefreshButtons();
-        UpdateIndicator(animate: true);
         if (raiseEvent) SelectedViewChanged?.Invoke(this, new WorkspaceViewChangedEventArgs(previous, _selectedView));
     }
 

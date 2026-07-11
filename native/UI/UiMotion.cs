@@ -96,6 +96,10 @@ internal static class UiMotion
 
         public void Configure(Color normal, Color hover, Color pressed, bool active)
         {
+            var configurationChanged = _normal != normal
+                || _hover != hover
+                || _pressed != pressed
+                || Active != active;
             _normal = normal;
             _hover = hover;
             _pressed = pressed;
@@ -110,12 +114,14 @@ internal static class UiMotion
                 return;
             }
 
-            Retarget();
+            if (configurationChanged) Retarget();
         }
 
         public bool Step()
         {
             if (_button.IsDisposed) return false;
+            var previousColor = _current;
+            var previousHover = _hoverProgress;
             _current = Mix(_current, _target, 0.30f);
             _hoverProgress += (_hoverTarget - _hoverProgress) * 0.30f;
             var settledColor = ColorDistance(_current, _target) < 1.2f;
@@ -123,15 +129,21 @@ internal static class UiMotion
             if (settledColor) _current = _target;
             if (settledHover) _hoverProgress = _hoverTarget;
 
-            _button.BackColor = _current;
-            _button.Invalidate();
+            var backColorChanged = previousColor != _current;
+            if (_button.BackColor != _current) _button.BackColor = _current;
+            if (!backColorChanged && Math.Abs(previousHover - _hoverProgress) > 0.001f) _button.Invalidate();
             return !settledColor || !settledHover;
         }
 
         private void Retarget()
         {
             if (!_initialized || _button.IsDisposed) return;
-            _target = ResolveTarget();
+            var nextTarget = ResolveTarget();
+            var alreadySettled = _target == nextTarget
+                && ColorDistance(_current, nextTarget) < 1.2f
+                && Math.Abs(_hoverProgress - _hoverTarget) < 0.015f;
+            _target = nextTarget;
+            if (alreadySettled) return;
             Schedule(this);
         }
 

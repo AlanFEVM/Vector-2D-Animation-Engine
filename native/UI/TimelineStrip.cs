@@ -34,11 +34,9 @@ internal sealed class TimelineStrip : Control
     private int _knownFrameCount;
     private int _firstVisibleFrame;
     private int _firstVisibleTrack;
-    private readonly System.Windows.Forms.Timer _motionTimer = new() { Interval = 33 };
     private int _hoverFrame = -1;
     private int _hoverTrack = -1;
     private bool _isPlaying;
-    private float _playheadPulse;
 
     public event EventHandler? CurrentFrameChanged;
     public event EventHandler? ActiveLayerChanged;
@@ -64,12 +62,6 @@ internal sealed class TimelineStrip : Control
         Cursor = Cursors.Default;
         MinimumSize = new Size(360, 118);
         TabStop = true;
-        _motionTimer.Tick += (_, _) =>
-        {
-            _playheadPulse = (_playheadPulse + 0.18f) % (MathF.PI * 2f);
-            Invalidate();
-        };
-
         BindContext(context);
     }
 
@@ -116,9 +108,6 @@ internal sealed class TimelineStrip : Control
         {
             if (_isPlaying == value) return;
             _isPlaying = value;
-            _playheadPulse = 0;
-            if (_isPlaying) _motionTimer.Start();
-            else _motionTimer.Stop();
             Invalidate();
         }
     }
@@ -235,7 +224,6 @@ internal sealed class TimelineStrip : Control
         if (disposing)
         {
             if (_timeline is not null) _timeline.Changed -= HandleTimelineChanged;
-            _motionTimer.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -664,7 +652,7 @@ internal sealed class TimelineStrip : Control
         var centerX = layout.TrackLeft + column * FrameCellWidth + FrameCellWidth / 2f;
         if (centerX < layout.TrackLeft || centerX >= layout.TrackRight) return;
 
-        var pulse = _isPlaying ? (MathF.Sin(_playheadPulse) + 1f) * 0.5f : 0f;
+        var pulse = _isPlaying ? 0.55f : 0f;
         var playhead = Color.FromArgb(242, 94, 91);
         using var glowPen = new Pen(Color.FromArgb((int)Math.Round(42 + pulse * 68), playhead), 4.5f + pulse * 2.5f);
         using var linePen = new Pen(playhead, 1.5f + pulse * 0.35f);

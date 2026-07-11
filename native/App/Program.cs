@@ -41,6 +41,13 @@ internal static class Program
             return;
         }
 
+        if (args.Length > 0 && args[0].Equals("--bench-render", StringComparison.OrdinalIgnoreCase))
+        {
+            AppLog.Info("Running stage renderer regression benchmark");
+            Benchmark.RunStageRendererRegression();
+            return;
+        }
+
         try
         {
             ApplicationConfiguration.Initialize();

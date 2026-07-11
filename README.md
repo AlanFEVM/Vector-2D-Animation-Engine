@@ -199,6 +199,12 @@ snapshot, track synchronization, and scene-instance track regression with:
 dotnet native\bin\Release\net8.0-windows\VectorAnimationEngine.dll --bench-timeline
 ```
 
+Run the Direct2D editable-scene plus nested-underlay renderer regression with:
+
+```powershell
+dotnet native\bin\Release\net8.0-windows\VectorAnimationEngine.dll --bench-render
+```
+
 ## Build Launcher Entry
 
 ```powershell

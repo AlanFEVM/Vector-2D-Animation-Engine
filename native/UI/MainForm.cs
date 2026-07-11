@@ -19,11 +19,10 @@ internal sealed class MainForm : Form
     private const int HtBottomLeft = 16;
     private const int HtBottomRight = 17;
     private const int VkMenu = 0x12;
-    private const double TargetUps = 300.0;
-    private const double TargetRenderFps = 144.0;
-    private const double UpdateStepSeconds = 1.0 / TargetUps;
-    private const double RenderStepSeconds = 1.0 / TargetRenderFps;
+    private const double MetricsRefreshSeconds = 0.25;
     private const double MaxFrameSeconds = 0.1;
+    private const int IdleTimerIntervalMs = 250;
+    private const int PlaybackTimerIntervalMs = 8;
     private const float EndpointConnectionToleranceUnits = 1.25f;
     private const int MaxUndoSnapshots = 32;
     private const float PasteOffsetUnits = 96f;
@@ -38,8 +37,9 @@ internal sealed class MainForm : Form
     private SceneCompositionResult _sceneCompositionResult = SceneCompositionResult.Empty;
     private SceneCompositionResult _drawingObjectUnderlayResult = SceneCompositionResult.Empty;
     private readonly StageControl _stage;
-    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1 };
+    private readonly System.Windows.Forms.Timer _timer = new() { Interval = IdleTimerIntervalMs };
     private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly Stopwatch _metricsClock = Stopwatch.StartNew();
     private readonly DrawSettings _drawSettings = new();
     private readonly TrackBar _frameSlider = new();
     private readonly Label _fps = MetricLabel("FPS 0", 76);
@@ -116,13 +116,9 @@ internal sealed class MainForm : Form
     private bool _geometryDirty;
     private double _smoothedFps;
     private double _smoothedUps;
-    private double _updateAccumulator;
-    private double _renderAccumulator;
     private double _playbackAccumulator;
-    private double _timeSinceLastRender;
-    private double _upsSampleTime;
     private int _updatesThisSample;
-    private bool _renderRequested = true;
+    private int _rendersThisSample;
     private bool _syncingFrame;
     private bool _updatingStrokeInput;
     private bool _viewPanning;
@@ -445,7 +441,6 @@ internal sealed class MainForm : Form
 
         var step = Math.Max(12, (int)Math.Ceiling(Math.Abs(remaining) * 0.30));
         _vaultDrawer.Width = Math.Clamp(_vaultDrawer.Width + Math.Sign(remaining) * step, 0, VaultDrawerExpandedWidth);
-        _vaultDrawer.Parent?.PerformLayout();
     }
 
     private void RegisterWindowDrag(Control control)
@@ -943,7 +938,6 @@ internal sealed class MainForm : Form
         if (!IsSceneCompositionContext()) return;
         _sceneCompositionResult = SceneCompositionBuilder.Build(_sceneEditStage, ActiveScene(), _drawingObjects, _frame);
         _scene = _sceneEditStage;
-        _renderRequested = true;
         if (!_playing)
         {
             _hierarchyPanel.BindScene(_sceneEditStage);
@@ -1440,6 +1434,7 @@ internal sealed class MainForm : Form
             _stage.ZoomAt(e.Location, e.Delta > 0 ? 1.12f : 0.89f);
             UpdateStatusBar();
         };
+        _stage.FrameRendered += (_, _) => _rendersThisSample++;
         _stage.MouseDown += StageMouseDown;
         _stage.MouseDoubleClick += StageMouseDoubleClick;
         _stage.MouseMove += StageMouseMove;
@@ -1525,51 +1520,29 @@ internal sealed class MainForm : Form
 
     private void Tick()
     {
-        var elapsed = Math.Clamp(_clock.Elapsed.TotalSeconds, 0.001, MaxFrameSeconds);
+        var measuredElapsed = Math.Max(0.001, _clock.Elapsed.TotalSeconds);
+        var elapsed = _playing
+            ? Math.Min(measuredElapsed, MaxFrameSeconds)
+            : Math.Min(measuredElapsed, 1.0);
         _clock.Restart();
 
-        _updateAccumulator += elapsed;
-        _renderAccumulator += elapsed;
-        _timeSinceLastRender += elapsed;
-        _upsSampleTime += elapsed;
-
-        var updateCount = 0;
-        while (_updateAccumulator >= UpdateStepSeconds)
+        if (_playing)
         {
-            UpdateSimulation(UpdateStepSeconds);
-            _updateAccumulator -= UpdateStepSeconds;
-            updateCount++;
+            _updatesThisSample++;
+            UpdateSimulation(elapsed);
         }
 
-        if (updateCount > 0)
+        var metricsElapsed = _metricsClock.Elapsed.TotalSeconds;
+        if (metricsElapsed >= MetricsRefreshSeconds)
         {
-            _updatesThisSample += updateCount;
-            if (_upsSampleTime >= 0.25)
-            {
-                var instantUps = _updatesThisSample / _upsSampleTime;
-                _smoothedUps = _smoothedUps <= 0 ? instantUps : _smoothedUps * 0.75 + instantUps * 0.25;
-                _updatesThisSample = 0;
-                _upsSampleTime = 0;
-            }
-        }
-
-        if (_renderAccumulator >= RenderStepSeconds || _renderRequested)
-        {
-            var instantRenderFps = _timeSinceLastRender > 0 ? 1.0 / _timeSinceLastRender : TargetRenderFps;
-            _smoothedFps = _smoothedFps <= 0 ? instantRenderFps : _smoothedFps * 0.85 + instantRenderFps * 0.15;
-            _renderAccumulator %= RenderStepSeconds;
-            _timeSinceLastRender = 0;
-            _renderRequested = false;
-
-            var stats = _stage.LastStats;
-            _fps.Text = $"FPS {_smoothedFps:0}";
-            _draw.Text = stats.TileLod
-                ? $"Tiles {CompactFormat.Number(stats.TileDraws)}"
-                : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}";
-            _atoms.Text = $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(_scene.VirtualAtomCount)}";
-            _zoom.Text = $"Zoom {_stage.Zoom * 100:0}%";
-            UpdateStatusBar();
-            _stage.Invalidate();
+            var instantRenderFps = _rendersThisSample / metricsElapsed;
+            var instantUps = _updatesThisSample / metricsElapsed;
+            _smoothedFps = _smoothedFps <= 0 ? instantRenderFps : _smoothedFps * 0.72 + instantRenderFps * 0.28;
+            _smoothedUps = _smoothedUps <= 0 ? instantUps : _smoothedUps * 0.72 + instantUps * 0.28;
+            _rendersThisSample = 0;
+            _updatesThisSample = 0;
+            _metricsClock.Restart();
+            UpdatePerformanceMetrics();
         }
     }
 
@@ -1579,47 +1552,86 @@ internal sealed class MainForm : Form
 
         _playbackAccumulator += deltaSeconds;
         var frameStep = 1.0 / Math.Max(1, _playbackSettings.Fps);
-        while (_playbackAccumulator >= frameStep)
-        {
-            _playbackAccumulator -= frameStep;
-            var next = _frame + 1;
-            if (next > _playbackSettings.EndFrame)
-            {
-                if (_playbackSettings.LoopPlayback) next = _playbackSettings.StartFrame;
-                else
-                {
-                    next = _playbackSettings.EndFrame;
-                    StopPlayback();
-                }
-            }
+        var framesToAdvance = (int)(_playbackAccumulator / frameStep);
+        if (framesToAdvance <= 0) return;
 
+        _playbackAccumulator -= framesToAdvance * frameStep;
+        var start = _playbackSettings.StartFrame;
+        var end = _playbackSettings.EndFrame;
+        var current = Math.Clamp(_frame, start, end);
+        if (_playbackSettings.LoopPlayback)
+        {
+            var span = Math.Max(1, end - start + 1);
+            var next = start + (int)(((long)current - start + framesToAdvance) % span);
             SetFrame(next, invalidate: false);
-            _renderRequested = true;
-            if (!_playing) break;
+            return;
         }
+
+        var finalFrame = (int)Math.Min(end, (long)current + framesToAdvance);
+        SetFrame(finalFrame, invalidate: false);
+        if (finalFrame >= end) StopPlayback();
     }
 
     private void TogglePlayback()
     {
-        _playing = !_playing;
+        if (_playing)
+        {
+            StopPlayback();
+            return;
+        }
+
+        _playing = true;
         _playbackAccumulator = 0;
-        _play.Text = _playing ? "Pause" : "Play";
-        _timeline.IsPlaying = _playing;
+        _timer.Interval = PlaybackTimerIntervalMs;
+        _clock.Restart();
+        _play.Text = "Pause";
+        _timeline.IsPlaying = true;
     }
 
     private void StopPlayback()
     {
+        if (!_playing) return;
         _playing = false;
         _playbackAccumulator = 0;
+        _timer.Interval = IdleTimerIntervalMs;
+        _clock.Restart();
         _play.Text = "Play";
         _timeline.IsPlaying = false;
     }
 
+    private void UpdatePerformanceMetrics()
+    {
+        var stats = _stage.LastStats;
+        SetLabelText(_fps, $"FPS {_smoothedFps:0}");
+        SetLabelText(
+            _draw,
+            stats.TileLod
+                ? stats.VisibleObjects > 0 || stats.DrawnObjects > 0
+                    ? $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)} + Tiles {CompactFormat.Number(stats.TileDraws)}"
+                    : $"Tiles {CompactFormat.Number(stats.TileDraws)}"
+                : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}");
+        var totalAtoms = _scene.VirtualAtomCount;
+        if (_stage.UnderlayScene is { } underlay && !ReferenceEquals(underlay, _scene)) totalAtoms += underlay.VirtualAtomCount;
+        SetLabelText(_atoms, $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(totalAtoms)}");
+        SetLabelText(_zoom, $"Zoom {_stage.Zoom * 100:0}%");
+        UpdateStatusBar();
+    }
+
     private void UpdateStatusBar()
     {
-        _renderFpsStatus.Text = $"Render FPS {_smoothedFps:0}";
-        _animationFpsStatus.Text = $"UPS {_smoothedUps:0}/{TargetUps:0}  Animation FPS {_playbackSettings.Fps}";
-        _zoomStatus.Text = $"Zoom {_stage.Zoom * 100:0}%";
+        SetToolStripText(_renderFpsStatus, $"Render FPS {_smoothedFps:0}");
+        SetToolStripText(_animationFpsStatus, $"UI UPS {_smoothedUps:0}  Animation FPS {_playbackSettings.Fps}");
+        SetToolStripText(_zoomStatus, $"Zoom {_stage.Zoom * 100:0}%");
+    }
+
+    private static void SetLabelText(Label label, string text)
+    {
+        if (!string.Equals(label.Text, text, StringComparison.Ordinal)) label.Text = text;
+    }
+
+    private static void SetToolStripText(ToolStripItem item, string text)
+    {
+        if (!string.Equals(item.Text, text, StringComparison.Ordinal)) item.Text = text;
     }
 
     private void SetFrame(int frame, bool invalidate = true)
@@ -2456,7 +2468,6 @@ internal sealed class MainForm : Form
 
         _geometryDirty = true;
         _stage.Invalidate();
-        UpdateInspector();
     }
 
     private bool TryBegin3DViewDragFromMove(MouseEventArgs e)
@@ -2660,6 +2671,7 @@ internal sealed class MainForm : Form
             MergeSelectedFillsAfterGeometryEdit();
             _scene.RebuildGeometryIndex();
             _geometryDirty = false;
+            UpdateInspector();
         }
 
         _stage.Capture = false;
@@ -2784,7 +2796,6 @@ internal sealed class MainForm : Form
             .ToArray();
         SetSelection(mergedSelection);
         if (changed) _hierarchyPanel.RefreshScene();
-        UpdateInspector();
     }
 
     private int FindObjectByStackKey(DrawingStackKey key)
