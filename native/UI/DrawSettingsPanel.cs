@@ -6,7 +6,7 @@ internal sealed class DrawSettingsPanel : UserControl
     private readonly ComboBox _shape = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ToolTip _toolTip = new();
     private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
-    private readonly TrackBar _freehandSmoothing = new();
+    private readonly ModernSlider _freehandSmoothing = new();
     private readonly Label _freehandSmoothingValue = new();
     private bool _updating;
 
@@ -18,10 +18,17 @@ internal sealed class DrawSettingsPanel : UserControl
         Font = Theme.UiFont();
         Padding = new Padding(0, 8, 0, 8);
         MinimumSize = new Size(248, 152);
+        Theme.StyleToolTip(_toolTip);
 
         BuildUi();
         ReadSettings();
         _settings.Changed += (_, _) => ReadSettings();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _toolTip.Dispose();
+        base.Dispose(disposing);
     }
 
     private void BuildUi()

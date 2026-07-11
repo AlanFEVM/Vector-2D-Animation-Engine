@@ -41,8 +41,8 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly Panel _strokePreview = new();
     private readonly ComboBox _fillPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _strokePreset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly NumericUpDown _strokeWidth = new();
-    private readonly TrackBar _opacity = new();
+    private readonly ModernNumericUpDown _strokeWidth = new() { Suffix = "pt" };
+    private readonly ModernSlider _opacity = new();
     private readonly Label _opacityValue = new();
     private readonly ColorDialog _colorDialog = new();
     private bool _updating;
@@ -64,6 +64,9 @@ internal sealed class MaterialEditorPanel : UserControl
     public event EventHandler? FillChanged;
     public event EventHandler? StrokeChanged;
     public event EventHandler? OpacityChanged;
+    public event EventHandler? ContinuousEditStarted;
+    public event EventHandler? ContinuousEditCompleted;
+    public event EventHandler? ContinuousEditCanceled;
 
     public Color Fill
     {
@@ -92,6 +95,12 @@ internal sealed class MaterialEditorPanel : UserControl
     public void SetMaterial(Color fill, Color stroke, float strokeWidth, float opacity)
     {
         ApplyMaterial(fill, stroke, strokeWidth, opacity, raiseEvent: false);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _colorDialog.Dispose();
+        base.Dispose(disposing);
     }
 
     private void BuildUi()
@@ -145,6 +154,9 @@ internal sealed class MaterialEditorPanel : UserControl
         _strokeWidth.Margin = new Padding(0, 4, 0, 4);
         Theme.StyleNumeric(_strokeWidth);
         _strokeWidth.ValueChanged += (_, _) => RaiseMaterialChanged(strokeWidthChanged: true);
+        _strokeWidth.InteractionStarted += (_, _) => ContinuousEditStarted?.Invoke(this, EventArgs.Empty);
+        _strokeWidth.InteractionCompleted += (_, _) => ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
+        _strokeWidth.InteractionCanceled += (_, _) => ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
         content.Controls.Add(_strokeWidth, 1, 2);
 
         AddLabel(content, "Opacity", 3);
@@ -158,6 +170,9 @@ internal sealed class MaterialEditorPanel : UserControl
             _opacityValue.Text = $"{_opacity.Value}%";
             RaiseMaterialChanged(opacityChanged: true);
         };
+        _opacity.InteractionStarted += (_, _) => ContinuousEditStarted?.Invoke(this, EventArgs.Empty);
+        _opacity.InteractionCompleted += (_, _) => ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
+        _opacity.InteractionCanceled += (_, _) => ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
         var opacityRow = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,

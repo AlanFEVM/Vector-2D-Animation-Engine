@@ -307,12 +307,7 @@ internal sealed class SceneEditorPanel : UserControl
     private static void ConfigureList(ListBox list)
     {
         list.Dock = DockStyle.Fill;
-        list.BackColor = Theme.Panel;
-        list.ForeColor = Theme.Text;
-        list.BorderStyle = BorderStyle.FixedSingle;
-        list.Font = Theme.UiFont(9.2f);
-        list.ItemHeight = 22;
-        list.IntegralHeight = false;
+        Theme.StyleListBox(list);
     }
 
     private static void AddRow(TableLayoutPanel parent, string label, Control value, int row)

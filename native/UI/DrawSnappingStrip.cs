@@ -10,8 +10,8 @@ internal sealed class DrawSnappingStrip : UserControl
     private readonly SvgToggleButton _adhesion = Toggle("Tight fit", SvgIconKind.TightFit);
     private readonly SvgToggleButton _alignment = Toggle("Align", SvgIconKind.Align);
     private readonly SvgToggleButton _angleSnap = Toggle("Angle snap", SvgIconKind.Angle);
-    private readonly NumericUpDown _gridSize = new() { Minimum = 1, Maximum = 10000, DecimalPlaces = 0, Increment = 8, Width = 64 };
-    private readonly NumericUpDown _angleStep = new() { Minimum = 1, Maximum = 90, DecimalPlaces = 0, Increment = 1, Width = 54 };
+    private readonly ModernNumericUpDown _gridSize = new() { Minimum = 1, Maximum = 10000, DecimalPlaces = 0, Increment = 8, Width = 64, Suffix = "vu" };
+    private readonly ModernNumericUpDown _angleStep = new() { Minimum = 1, Maximum = 90, DecimalPlaces = 0, Increment = 1, Width = 54, Suffix = "degrees" };
     private bool _updating;
 
     public DrawSnappingStrip(DrawSettings settings)
@@ -22,10 +22,17 @@ internal sealed class DrawSnappingStrip : UserControl
         BackColor = Theme.Top;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
+        Theme.StyleToolTip(_toolTip);
 
         BuildUi();
         ReadSettings();
         _settings.Changed += (_, _) => ReadSettings();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _toolTip.Dispose();
+        base.Dispose(disposing);
     }
 
     private void BuildUi()

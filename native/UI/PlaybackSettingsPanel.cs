@@ -2,16 +2,17 @@ namespace VectorAnimationEngine;
 
 internal sealed class PlaybackSettingsPanel : Panel
 {
-    private readonly NumericUpDown _fps = new()
+    private readonly ModernNumericUpDown _fps = new()
     {
         Minimum = 1,
         Maximum = 240,
         Value = 24,
+        Suffix = "fps",
         Width = 88,
         Height = 28
     };
 
-    private readonly CheckBox _loop = new()
+    private readonly ModernToggleSwitch _loop = new()
     {
         Text = "Loop",
         Checked = true,
@@ -21,7 +22,7 @@ internal sealed class PlaybackSettingsPanel : Panel
         TextAlign = ContentAlignment.MiddleLeft
     };
 
-    private readonly NumericUpDown _startFrame = new()
+    private readonly ModernNumericUpDown _startFrame = new()
     {
         Minimum = 0,
         Maximum = 999999,
@@ -30,7 +31,7 @@ internal sealed class PlaybackSettingsPanel : Panel
         Height = 28
     };
 
-    private readonly NumericUpDown _endFrame = new()
+    private readonly ModernNumericUpDown _endFrame = new()
     {
         Minimum = 0,
         Maximum = 999999,
@@ -150,8 +151,6 @@ internal sealed class PlaybackSettingsPanel : Panel
         Theme.StyleNumeric(_fps);
         Theme.StyleNumeric(_startFrame);
         Theme.StyleNumeric(_endFrame);
-        StyleCheckBox(_loop);
-
         Controls.Add(_fps);
         Controls.Add(_loop);
         Controls.Add(_startFrame);
@@ -235,14 +234,4 @@ internal sealed class PlaybackSettingsPanel : Panel
         SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private static void StyleCheckBox(CheckBox checkBox)
-    {
-        checkBox.BackColor = Theme.Panel;
-        checkBox.ForeColor = Theme.Text;
-        checkBox.Font = Theme.UiFont();
-        checkBox.FlatStyle = FlatStyle.Flat;
-        checkBox.FlatAppearance.BorderColor = Theme.Border;
-        checkBox.FlatAppearance.CheckedBackColor = Theme.Accent;
-        checkBox.FlatAppearance.MouseOverBackColor = Theme.PanelStrong;
-    }
 }

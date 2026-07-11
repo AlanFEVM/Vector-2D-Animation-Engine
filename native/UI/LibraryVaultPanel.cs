@@ -161,15 +161,7 @@ internal sealed class LibraryVaultPanel : UserControl
 
     private static void ConfigureList(ListView list)
     {
-        list.BackColor = Theme.Panel;
-        list.ForeColor = Theme.Text;
-        list.BorderStyle = BorderStyle.None;
-        list.Font = Theme.UiFont(9.2f);
-        list.View = View.Details;
-        list.FullRowSelect = true;
-        list.HideSelection = false;
-        list.MultiSelect = false;
-        list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+        Theme.StyleListView(list);
     }
 
     private static void AddVaultButton(Control parent, string text, int width, Action action)

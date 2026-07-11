@@ -46,6 +46,7 @@ internal sealed class WorkspaceTabs : UserControl
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Top;
         MinimumSize = new Size(48, 42);
+        Theme.StyleToolTip(_toolTip);
 
         _tabStrip.Dock = DockStyle.Fill;
         _tabStrip.BackColor = Theme.Top;
@@ -100,7 +101,11 @@ internal sealed class WorkspaceTabs : UserControl
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _indicatorTimer.Dispose();
+        if (disposing)
+        {
+            _indicatorTimer.Dispose();
+            _toolTip.Dispose();
+        }
         base.Dispose(disposing);
     }
 

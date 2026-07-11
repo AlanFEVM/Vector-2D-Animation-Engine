@@ -5,7 +5,7 @@ namespace VectorAnimationEngine;
 internal static class UiMotion
 {
     private static readonly ConditionalWeakTable<Button, ButtonMotionState> ButtonStates = new();
-    private static readonly HashSet<ButtonMotionState> RunningStates = [];
+    private static readonly List<ButtonMotionState> RunningStates = [];
     private static readonly System.Windows.Forms.Timer Timer = new() { Interval = 16 };
 
     static UiMotion()
@@ -32,15 +32,20 @@ internal static class UiMotion
 
     private static void Schedule(ButtonMotionState state)
     {
+        if (state.Scheduled) return;
+        state.Scheduled = true;
         RunningStates.Add(state);
         if (!Timer.Enabled) Timer.Start();
     }
 
     private static void Tick()
     {
-        foreach (var state in RunningStates.ToArray())
+        for (var i = RunningStates.Count - 1; i >= 0; i--)
         {
-            if (!state.Step()) RunningStates.Remove(state);
+            var state = RunningStates[i];
+            if (state.Step()) continue;
+            state.Scheduled = false;
+            RunningStates.RemoveAt(i);
         }
 
         if (RunningStates.Count == 0) Timer.Stop();
@@ -88,11 +93,16 @@ internal static class UiMotion
                 Retarget();
             };
             _button.EnabledChanged += (_, _) => Retarget();
-            _button.Disposed += (_, _) => RunningStates.Remove(this);
+            _button.Disposed += (_, _) =>
+            {
+                Scheduled = false;
+                RunningStates.Remove(this);
+            };
         }
 
         public bool Active { get; private set; }
         public float HoverProgress => _hoverProgress;
+        public bool Scheduled { get; set; }
 
         public void Configure(Color normal, Color hover, Color pressed, bool active)
         {

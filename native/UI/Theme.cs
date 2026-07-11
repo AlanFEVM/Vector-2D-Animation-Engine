@@ -1,17 +1,30 @@
+using System.Runtime.CompilerServices;
+
 namespace VectorAnimationEngine;
 
 internal static class Theme
 {
+    public const int ControlHeightCompact = 28;
+    public const int ControlHeight = 32;
+    public const int IconButtonSize = 34;
+    public const int GapXs = 4;
+    public const int GapSm = 8;
+    public const int GapMd = 12;
+
     public static readonly Color App = Color.FromArgb(18, 20, 22);
     public static readonly Color Top = Color.FromArgb(24, 27, 30);
     public static readonly Color Panel = Color.FromArgb(30, 34, 37);
     public static readonly Color PanelStrong = Color.FromArgb(42, 48, 53);
     public static readonly Color PanelHover = Color.FromArgb(55, 63, 68);
     public static readonly Color Field = Color.FromArgb(15, 17, 19);
+    public static readonly Color FieldHover = Color.FromArgb(22, 25, 28);
+    public static readonly Color FieldFocus = Color.FromArgb(24, 31, 32);
     public static readonly Color Stage = Color.FromArgb(13, 15, 17);
     public static readonly Color Border = Color.FromArgb(61, 69, 76);
+    public static readonly Color BorderHover = Color.FromArgb(91, 103, 110);
     public static readonly Color Text = Color.FromArgb(242, 246, 245);
     public static readonly Color Muted = Color.FromArgb(190, 202, 202);
+    public static readonly Color DisabledText = Color.FromArgb(116, 125, 128);
     public static readonly Color Accent = Color.FromArgb(79, 179, 162);
     public static readonly Color AccentSurface = Color.FromArgb(39, 83, 77);
     public static readonly Color AccentHoverSurface = Color.FromArgb(51, 107, 99);
@@ -19,6 +32,13 @@ internal static class Theme
     public static readonly Color DisabledSurface = Color.FromArgb(35, 39, 43);
     public static readonly Color AccentText = Color.FromArgb(5, 22, 20);
     public static readonly Color AccentLabel = Color.FromArgb(209, 247, 238);
+
+    private static readonly ConditionalWeakTable<Control, FieldInteractionState> FieldStates = new();
+    private static readonly ConditionalWeakTable<ComboBox, object> StyledComboBoxes = new();
+    private static readonly ConditionalWeakTable<ListBox, ListBoxInteractionState> StyledListBoxes = new();
+    private static readonly ConditionalWeakTable<TreeView, TreeViewInteractionState> StyledTreeViews = new();
+    private static readonly ConditionalWeakTable<ListView, ListViewInteractionState> StyledListViews = new();
+    private static readonly ConditionalWeakTable<ToolTip, object> StyledToolTips = new();
 
     public static Font UiFont(float size = 9.5f, FontStyle style = FontStyle.Regular) => new("Segoe UI", size, style);
 
@@ -76,6 +96,7 @@ internal static class Theme
         box.ForeColor = Text;
         box.BorderStyle = BorderStyle.FixedSingle;
         box.Font = UiFont();
+        ConfigureFieldInteraction(box);
     }
 
     public static void StyleComboBox(ComboBox box)
@@ -84,6 +105,12 @@ internal static class Theme
         box.ForeColor = Text;
         box.FlatStyle = FlatStyle.Flat;
         box.Font = UiFont();
+        box.DrawMode = DrawMode.OwnerDrawFixed;
+        box.ItemHeight = 26;
+        if (StyledComboBoxes.TryGetValue(box, out _)) return;
+        StyledComboBoxes.Add(box, new object());
+        box.DrawItem += DrawComboBoxItem;
+        ConfigureFieldInteraction(box);
     }
 
     public static void StyleNumeric(NumericUpDown input)
@@ -92,6 +119,109 @@ internal static class Theme
         input.ForeColor = Text;
         input.BorderStyle = BorderStyle.FixedSingle;
         input.Font = UiFont();
+        input.MinimumSize = new Size(0, ControlHeightCompact);
+        if (input is ModernNumericUpDown) return;
+        ConfigureFieldInteraction(input);
+    }
+
+    public static void StyleListBox(ListBox list)
+    {
+        list.BackColor = Panel;
+        list.ForeColor = Text;
+        list.BorderStyle = BorderStyle.FixedSingle;
+        list.Font = UiFont(9.2f);
+        list.DrawMode = DrawMode.OwnerDrawFixed;
+        list.ItemHeight = 28;
+        list.IntegralHeight = false;
+        if (StyledListBoxes.TryGetValue(list, out _)) return;
+        var state = new ListBoxInteractionState(list);
+        StyledListBoxes.Add(list, state);
+        list.DrawItem += DrawListBoxItem;
+    }
+
+    public static void StyleTreeView(TreeView tree)
+    {
+        tree.BackColor = Panel;
+        tree.ForeColor = Text;
+        tree.BorderStyle = BorderStyle.None;
+        tree.Font = UiFont(9.5f);
+        tree.HideSelection = false;
+        tree.FullRowSelect = true;
+        tree.ShowLines = false;
+        tree.ShowRootLines = false;
+        tree.ShowPlusMinus = true;
+        tree.ItemHeight = 28;
+        tree.DrawMode = TreeViewDrawMode.OwnerDrawAll;
+        tree.HotTracking = true;
+        if (StyledTreeViews.TryGetValue(tree, out _)) return;
+        var state = new TreeViewInteractionState(tree);
+        StyledTreeViews.Add(tree, state);
+        tree.DrawNode += DrawTreeNode;
+    }
+
+    public static void StyleListView(ListView list)
+    {
+        list.BackColor = Panel;
+        list.ForeColor = Text;
+        list.BorderStyle = BorderStyle.None;
+        list.Font = UiFont(9.2f);
+        list.View = View.Details;
+        list.FullRowSelect = true;
+        list.HideSelection = false;
+        list.MultiSelect = false;
+        list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+        list.OwnerDraw = true;
+        if (StyledListViews.TryGetValue(list, out _)) return;
+        var state = new ListViewInteractionState(list);
+        StyledListViews.Add(list, state);
+        list.DrawColumnHeader += DrawListViewHeader;
+        list.DrawItem += DrawListViewItem;
+        list.DrawSubItem += DrawListViewSubItem;
+    }
+
+    public static void StyleStatusStrip(StatusStrip strip)
+    {
+        strip.BackColor = Top;
+        strip.ForeColor = Muted;
+        strip.Font = UiFont(9);
+        strip.RenderMode = ToolStripRenderMode.Professional;
+        strip.Renderer = new ModernStatusStripRenderer();
+    }
+
+    public static void StyleToolTip(ToolTip toolTip)
+    {
+        toolTip.BackColor = PanelStrong;
+        toolTip.ForeColor = Text;
+        toolTip.AutoPopDelay = 6000;
+        toolTip.InitialDelay = 420;
+        toolTip.ReshowDelay = 90;
+        toolTip.ShowAlways = true;
+        toolTip.OwnerDraw = true;
+        if (StyledToolTips.TryGetValue(toolTip, out _)) return;
+        StyledToolTips.Add(toolTip, new object());
+        toolTip.Popup += (_, e) =>
+        {
+            var text = e.AssociatedControl is null ? string.Empty : toolTip.GetToolTip(e.AssociatedControl);
+            using var font = UiFont(9);
+            var size = TextRenderer.MeasureText(text, font, new Size(360, 0), TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
+            e.ToolTipSize = new Size(Math.Max(64, size.Width + 18), Math.Max(28, size.Height + 12));
+        };
+        toolTip.Draw += (_, e) =>
+        {
+            using var background = new SolidBrush(PanelStrong);
+            using var border = new Pen(BorderHover);
+            e.Graphics.FillRectangle(background, e.Bounds);
+            e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, e.Bounds.Width - 1), Math.Max(0, e.Bounds.Height - 1));
+            var bounds = Rectangle.Inflate(e.Bounds, -9, -6);
+            using var font = UiFont(9);
+            TextRenderer.DrawText(
+                e.Graphics,
+                e.ToolTipText,
+                font,
+                bounds,
+                Text,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+        };
     }
 
     public static Label Label(string text, int left, int top, int width, Color color, Font? font = null)
@@ -109,5 +239,314 @@ internal static class Theme
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
         };
+    }
+
+    private static void ConfigureFieldInteraction(Control control)
+    {
+        if (FieldStates.TryGetValue(control, out _)) return;
+        FieldStates.Add(control, new FieldInteractionState(control));
+    }
+
+    private static void DrawComboBoxItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ComboBox box) return;
+        var selected = (e.State & DrawItemState.Selected) != 0;
+        var focused = (e.State & DrawItemState.Focus) != 0;
+        var background = selected ? AccentSurface : box.BackColor;
+        using var backgroundBrush = new SolidBrush(background);
+        e.Graphics.FillRectangle(backgroundBrush, e.Bounds);
+
+        if (selected)
+        {
+            using var accent = new SolidBrush(Accent);
+            e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
+        }
+
+        var text = e.Index >= 0 && e.Index < box.Items.Count
+            ? box.GetItemText(box.Items[e.Index])
+            : box.Text;
+        var textBounds = Rectangle.Inflate(e.Bounds, -10, 0);
+        TextRenderer.DrawText(
+            e.Graphics,
+            text,
+            box.Font,
+            textBounds,
+            box.Enabled ? Text : DisabledText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if (focused && e.Index >= 0)
+        {
+            using var focus = new Pen(Accent);
+            var focusBounds = Rectangle.Inflate(e.Bounds, -1, -1);
+            e.Graphics.DrawRectangle(focus, focusBounds);
+        }
+    }
+
+    private static void DrawListBoxItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ListBox list || e.Index < 0 || e.Index >= list.Items.Count) return;
+        StyledListBoxes.TryGetValue(list, out var state);
+        var selected = (e.State & DrawItemState.Selected) != 0;
+        var hovered = state?.HoverIndex == e.Index;
+        var background = selected ? AccentSurface : hovered ? PanelHover : Panel;
+        using var backgroundBrush = new SolidBrush(background);
+        e.Graphics.FillRectangle(backgroundBrush, e.Bounds);
+        if (selected)
+        {
+            using var accent = new SolidBrush(Accent);
+            e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
+        }
+
+        var textBounds = new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, Math.Max(0, e.Bounds.Width - 14), e.Bounds.Height);
+        TextRenderer.DrawText(
+            e.Graphics,
+            list.GetItemText(list.Items[e.Index]),
+            list.Font,
+            textBounds,
+            list.Enabled ? Text : DisabledText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
+    private static void DrawTreeNode(object? sender, DrawTreeNodeEventArgs e)
+    {
+        if (sender is not TreeView tree || e.Node is null) return;
+        StyledTreeViews.TryGetValue(tree, out var state);
+        var selected = tree.SelectedNode == e.Node;
+        var hovered = state?.HoverNode == e.Node;
+        var row = new Rectangle(0, e.Bounds.Top, tree.ClientSize.Width, e.Bounds.Height);
+        using var background = new SolidBrush(selected ? AccentSurface : hovered ? PanelHover : Panel);
+        e.Graphics.FillRectangle(background, row);
+        if (selected)
+        {
+            using var accent = new SolidBrush(Accent);
+            e.Graphics.FillRectangle(accent, 0, row.Top, 3, row.Height);
+        }
+
+        if (e.Node.Nodes.Count > 0)
+        {
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var centerX = Math.Max(8, e.Bounds.Left - 10);
+            var centerY = e.Bounds.Top + e.Bounds.Height / 2f;
+            PointF[] points = e.Node.IsExpanded
+                ? [new(centerX - 4, centerY - 2), new(centerX + 4, centerY - 2), new(centerX, centerY + 3)]
+                : [new(centerX - 2, centerY - 4), new(centerX - 2, centerY + 4), new(centerX + 3, centerY)];
+            using var glyph = new SolidBrush(selected ? AccentLabel : Muted);
+            e.Graphics.FillPolygon(glyph, points);
+        }
+
+        var color = e.Node.ForeColor.IsEmpty ? tree.ForeColor : e.Node.ForeColor;
+        if (!tree.Enabled) color = DisabledText;
+        var bounds = new Rectangle(e.Bounds.Left, e.Bounds.Top, Math.Max(0, tree.ClientSize.Width - e.Bounds.Left - 6), e.Bounds.Height);
+        TextRenderer.DrawText(
+            e.Graphics,
+            e.Node.Text,
+            tree.Font,
+            bounds,
+            color,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if ((e.State & TreeNodeStates.Focused) != 0)
+        {
+            var focusBounds = new Rectangle(4, row.Top + 1, Math.Max(0, row.Width - 8), Math.Max(0, row.Height - 2));
+            ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, AccentLabel, background.Color);
+        }
+    }
+
+    private static void DrawListViewHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
+    {
+        using var background = new SolidBrush(PanelStrong);
+        using var border = new Pen(Border);
+        e.Graphics.FillRectangle(background, e.Bounds);
+        e.Graphics.DrawLine(border, e.Bounds.Right - 1, e.Bounds.Top, e.Bounds.Right - 1, e.Bounds.Bottom);
+        e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+        var bounds = Rectangle.Inflate(e.Bounds, -8, 0);
+        TextRenderer.DrawText(
+            e.Graphics,
+            e.Header?.Text ?? string.Empty,
+            e.Font ?? SystemFonts.MessageBoxFont,
+            bounds,
+            Muted,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
+    private static void DrawListViewItem(object? sender, DrawListViewItemEventArgs e)
+    {
+        if (sender is not ListView list) return;
+        StyledListViews.TryGetValue(list, out var state);
+        var selected = e.Item?.Selected == true;
+        var hovered = state?.HoverItem == e.ItemIndex;
+        using var background = new SolidBrush(selected ? AccentSurface : hovered ? PanelHover : Panel);
+        e.Graphics.FillRectangle(background, e.Bounds);
+        if (selected)
+        {
+            using var accent = new SolidBrush(Accent);
+            e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
+        }
+    }
+
+    private static void DrawListViewSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        if (sender is not ListView list) return;
+        StyledListViews.TryGetValue(list, out var state);
+        var selected = e.Item?.Selected == true;
+        var hovered = state?.HoverItem == e.ItemIndex;
+        using var background = new SolidBrush(selected ? AccentSurface : hovered ? PanelHover : Panel);
+        e.Graphics.FillRectangle(background, e.Bounds);
+        if (selected && e.ColumnIndex == 0)
+        {
+            using var accent = new SolidBrush(Accent);
+            e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
+        }
+
+        var bounds = new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
+        TextRenderer.DrawText(
+            e.Graphics,
+            e.SubItem?.Text ?? string.Empty,
+            list.Font,
+            bounds,
+            list.Enabled ? Text : DisabledText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
+    private sealed class FieldInteractionState
+    {
+        private readonly Control _control;
+        private bool _hovered;
+
+        public FieldInteractionState(Control control)
+        {
+            _control = control;
+            control.MouseEnter += (_, _) =>
+            {
+                _hovered = true;
+                Refresh();
+            };
+            control.MouseLeave += (_, _) =>
+            {
+                _hovered = false;
+                Refresh();
+            };
+            control.Enter += (_, _) => Refresh();
+            control.Leave += (_, _) => Refresh();
+            control.EnabledChanged += (_, _) => Refresh();
+        }
+
+        private void Refresh()
+        {
+            var color = !_control.Enabled ? DisabledSurface : _control.ContainsFocus ? FieldFocus : _hovered ? FieldHover : Field;
+            if (_control.BackColor != color) _control.BackColor = color;
+            if (_control.ForeColor != (_control.Enabled ? Text : DisabledText)) _control.ForeColor = _control.Enabled ? Text : DisabledText;
+            _control.Invalidate();
+        }
+    }
+
+    private sealed class ListBoxInteractionState
+    {
+        private readonly ListBox _list;
+
+        public ListBoxInteractionState(ListBox list)
+        {
+            _list = list;
+            list.MouseMove += (_, e) => SetHover(list.IndexFromPoint(e.Location));
+            list.MouseLeave += (_, _) => SetHover(-1);
+        }
+
+        public int HoverIndex { get; private set; } = -1;
+
+        private void SetHover(int index)
+        {
+            if (HoverIndex == index) return;
+            var previous = HoverIndex;
+            HoverIndex = index;
+            InvalidateItem(previous);
+            InvalidateItem(HoverIndex);
+        }
+
+        private void InvalidateItem(int index)
+        {
+            if (index >= 0 && index < _list.Items.Count) _list.Invalidate(_list.GetItemRectangle(index));
+        }
+    }
+
+    private sealed class TreeViewInteractionState
+    {
+        private readonly TreeView _tree;
+
+        public TreeViewInteractionState(TreeView tree)
+        {
+            _tree = tree;
+            tree.MouseMove += (_, e) => SetHover(tree.GetNodeAt(e.Location));
+            tree.MouseLeave += (_, _) => SetHover(null);
+        }
+
+        public TreeNode? HoverNode { get; private set; }
+
+        private void SetHover(TreeNode? node)
+        {
+            if (HoverNode == node) return;
+            var previous = HoverNode;
+            HoverNode = node;
+            if (previous is not null) _tree.Invalidate(new Rectangle(0, previous.Bounds.Top, _tree.ClientSize.Width, previous.Bounds.Height));
+            if (HoverNode is not null) _tree.Invalidate(new Rectangle(0, HoverNode.Bounds.Top, _tree.ClientSize.Width, HoverNode.Bounds.Height));
+        }
+    }
+
+    private sealed class ListViewInteractionState
+    {
+        private readonly ListView _list;
+        private readonly ImageList? _rowHeightImages;
+
+        public ListViewInteractionState(ListView list)
+        {
+            _list = list;
+            if (list.SmallImageList is null)
+            {
+                _rowHeightImages = new ImageList
+                {
+                    ColorDepth = ColorDepth.Depth32Bit,
+                    ImageSize = new Size(1, 28)
+                };
+                list.SmallImageList = _rowHeightImages;
+            }
+            list.MouseMove += (_, e) => SetHover(list.GetItemAt(e.X, e.Y)?.Index ?? -1);
+            list.MouseLeave += (_, _) => SetHover(-1);
+            list.Disposed += (_, _) => _rowHeightImages?.Dispose();
+        }
+
+        public int HoverItem { get; private set; } = -1;
+
+        private void SetHover(int index)
+        {
+            if (HoverItem == index) return;
+            var previous = HoverItem;
+            HoverItem = index;
+            if (previous >= 0 && previous < _list.Items.Count) _list.Invalidate(_list.Items[previous].Bounds);
+            if (HoverItem >= 0 && HoverItem < _list.Items.Count) _list.Invalidate(_list.Items[HoverItem].Bounds);
+        }
+    }
+
+    private sealed class ModernStatusStripRenderer : ToolStripProfessionalRenderer
+    {
+        public ModernStatusStripRenderer()
+            : base(new ModernStatusColorTable())
+        {
+            RoundedEdges = false;
+        }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+        {
+            using var border = new Pen(Border);
+            e.Graphics.DrawLine(border, 0, 0, e.ToolStrip.Width, 0);
+        }
+    }
+
+    private sealed class ModernStatusColorTable : ProfessionalColorTable
+    {
+        public override Color ToolStripGradientBegin => Top;
+        public override Color ToolStripGradientMiddle => Top;
+        public override Color ToolStripGradientEnd => Top;
+        public override Color StatusStripGradientBegin => Top;
+        public override Color StatusStripGradientEnd => Top;
+        public override Color ToolStripBorder => Border;
+        public override Color SeparatorDark => Border;
+        public override Color SeparatorLight => PanelStrong;
     }
 }

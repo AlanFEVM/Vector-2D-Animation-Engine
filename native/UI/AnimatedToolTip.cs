@@ -30,7 +30,16 @@ internal sealed class AnimatedToolTip : Control
         var textSize = TextRenderer.MeasureText(g, _message, Font, new Size(320, 32), TextFormatFlags.NoPadding);
         Size = new Size(Math.Max(92, textSize.Width + 24), 34);
         var screen = anchor.PointToScreen(new Point(anchor.Width + 12, (anchor.Height - Height) / 2));
-        _targetLocation = form.PointToClient(screen);
+        var location = form.PointToClient(screen);
+        if (location.X + Width > form.ClientSize.Width - 8)
+        {
+            screen = anchor.PointToScreen(new Point(-Width - 12, (anchor.Height - Height) / 2));
+            location = form.PointToClient(screen);
+        }
+
+        _targetLocation = new Point(
+            Math.Clamp(location.X, 8, Math.Max(8, form.ClientSize.Width - Width - 8)),
+            Math.Clamp(location.Y, 8, Math.Max(8, form.ClientSize.Height - Height - 8)));
         Location = new Point(_targetLocation.X - 10, _targetLocation.Y);
 
         _targetVisible = true;
@@ -65,6 +74,12 @@ internal sealed class AnimatedToolTip : Control
             Alignment = StringAlignment.Near
         };
         g.DrawString(_message, Font, text, new RectangleF(12, 0, Width - 24, Height), format);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _timer.Dispose();
+        base.Dispose(disposing);
     }
 
     private void TickAnimation()

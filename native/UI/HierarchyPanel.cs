@@ -59,14 +59,7 @@ internal sealed class HierarchyPanel : UserControl
         Controls.Add(_summary);
 
         _tree.Dock = DockStyle.Fill;
-        _tree.BackColor = Theme.Panel;
-        _tree.ForeColor = Theme.Text;
-        _tree.BorderStyle = BorderStyle.None;
-        _tree.Font = Theme.UiFont(9.5f);
-        _tree.HideSelection = false;
-        _tree.FullRowSelect = true;
-        _tree.ShowLines = true;
-        _tree.ShowRootLines = true;
+        Theme.StyleTreeView(_tree);
         _tree.AfterSelect += (_, e) => RaiseSelection(e.Node);
         Controls.Add(_tree);
 

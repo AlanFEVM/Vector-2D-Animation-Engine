@@ -43,7 +43,8 @@ internal sealed class MainForm : Form
     private readonly Stopwatch _metricsClock = Stopwatch.StartNew();
     private FixedStepBatcher _updateBatcher = new(TargetUps);
     private readonly DrawSettings _drawSettings = new();
-    private readonly TrackBar _frameSlider = new();
+    private readonly ModernSlider _frameSlider = new();
+    private readonly ModernNumericUpDown _frameInput = new() { Minimum = 0, Maximum = 239, Width = 68, Height = 28 };
     private readonly Label _fps = MetricLabel("FPS 0", 76);
     private readonly Label _draw = MetricLabel("Draw 0", 210);
     private readonly Label _atoms = MetricLabel("Atoms 0", 210);
@@ -52,8 +53,6 @@ internal sealed class MainForm : Form
     private readonly Label _selectedLayer = InspectorLabel("Layer: -");
     private readonly Label _selectedAtoms = InspectorLabel("Atoms: -");
     private readonly Label _objectMetric = InspectorLabel("Objects: 0");
-    private readonly ComboBox _color = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
-    private readonly NumericUpDown _stroke = new() { Minimum = 0, Maximum = 12, Value = 2, Width = 160 };
     private readonly Button _play = new() { Text = "Play", Width = 72 };
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
     private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
@@ -122,7 +121,6 @@ internal sealed class MainForm : Form
     private int _updatesThisSample;
     private int _rendersThisSample;
     private bool _syncingFrame;
-    private bool _updatingStrokeInput;
     private bool _viewPanning;
     private bool _viewZooming;
     private bool _viewOrbiting;
@@ -148,12 +146,23 @@ internal sealed class MainForm : Form
     private float _standardStrokeWidthPoints = 2;
     private float _pencilStrokeWidthPoints = 2;
     private float _brushStrokeWidthPoints = 8;
+    private MaterialEditSession? _materialEditSession;
 
     private readonly record struct LineEndpointEditStart(int ObjectIndex, bool StartEndpoint, PointF OriginalEndpoint, PointF OppositeEndpoint, PointF Control, bool KeepStraight);
 
     private readonly record struct DrawingStackKey(long Order, double SubOrder);
 
     private sealed record SceneTimelineUndoEntry(SceneDefinition Scene, AnimationTimelineSnapshot Snapshot);
+
+    private sealed class MaterialEditSession
+    {
+        public required VectorScene Scene { get; init; }
+        public required VectorSceneSnapshot Snapshot { get; init; }
+        public required int[] SelectedObjects { get; init; }
+        public required DrawingElementHit[] SelectedElements { get; init; }
+        public required DrawingElementHit PrimaryElement { get; init; }
+        public bool UndoPushed { get; set; }
+    }
 
     private sealed record ClipboardObject(
         int Layer,
@@ -191,7 +200,6 @@ internal sealed class MainForm : Form
         _shapeFlyoutHideTimer.Interval = 100;
         _shapeFlyoutHideTimer.Tick += (_, _) => UpdateShapeToolFlyoutVisibility();
         _vaultDrawerTimer.Tick += (_, _) => TickVaultDrawer();
-        InitializeQuickMaterialInputs();
         BuildUi();
         HookEvents();
         CreateNewProject();
@@ -224,6 +232,10 @@ internal sealed class MainForm : Form
         _frameSlider.Maximum = 239;
         _frameSlider.TickFrequency = 24;
         top.Controls.Add(_frameSlider);
+        _frameInput.Top = 14;
+        _frameInput.Suffix = "frame";
+        Theme.StyleNumeric(_frameInput);
+        top.Controls.Add(_frameInput);
         var generate = new Button { Text = "Run Stress Scene", Width = 150, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         generate.Left = Width - 282;
         generate.Top = 12;
@@ -251,10 +263,10 @@ internal sealed class MainForm : Form
         top.Controls.Add(close);
         top.Resize += (_, _) =>
         {
-            PositionTopBarActions(top, minimize, _maximizeButton, close, fit, generate);
+            PositionTopBarActions(top, minimize, _maximizeButton, close, fit, generate, _frameSlider, _frameInput);
         };
         Resize += (_, _) => UpdateWindowChromeState();
-        PositionTopBarActions(top, minimize, _maximizeButton, close, fit, generate);
+        PositionTopBarActions(top, minimize, _maximizeButton, close, fit, generate, _frameSlider, _frameInput);
         UpdateWindowChromeState();
 
         var body = new Panel { Dock = DockStyle.Fill, BackColor = Theme.App };
@@ -377,14 +389,6 @@ internal sealed class MainForm : Form
         Controls.Add(_statusBar);
     }
 
-    private void InitializeQuickMaterialInputs()
-    {
-        _color.Items.AddRange(["Teal", "Amber", "Coral", "Violet", "White"]);
-        _color.SelectedIndex = 0;
-        Theme.StyleComboBox(_color);
-        Theme.StyleNumeric(_stroke);
-    }
-
     private static WindowChromeButton CreateWindowButton(WindowChromeButtonKind kind, string name)
     {
         return new WindowChromeButton(kind)
@@ -394,7 +398,15 @@ internal sealed class MainForm : Form
         };
     }
 
-    private static void PositionTopBarActions(Control top, Control minimize, Control maximize, Control close, Control fit, Control generate)
+    private static void PositionTopBarActions(
+        Control top,
+        Control minimize,
+        Control maximize,
+        Control close,
+        Control fit,
+        Control generate,
+        Control frameSlider,
+        Control frameInput)
     {
         var buttonTop = Math.Max(0, (top.ClientSize.Height - close.Height) / 2);
         close.Left = top.ClientSize.Width - close.Width - 8;
@@ -405,6 +417,8 @@ internal sealed class MainForm : Form
         minimize.Top = buttonTop;
         fit.Left = minimize.Left - fit.Width - 14;
         generate.Left = fit.Left - generate.Width - 8;
+        frameInput.Left = generate.Left - frameInput.Width - 12;
+        frameSlider.Width = Math.Max(96, frameInput.Left - frameSlider.Left - 8);
     }
 
     private void ToggleVaultDrawer()
@@ -498,6 +512,7 @@ internal sealed class MainForm : Form
             _shapeFlyoutHideTimer.Dispose();
             _vaultDrawerTimer.Dispose();
             _timer.Dispose();
+            _toolTip.Dispose();
         }
 
         base.Dispose(disposing);
@@ -555,9 +570,7 @@ internal sealed class MainForm : Form
     {
         _statusBar.Dock = DockStyle.Bottom;
         _statusBar.SizingGrip = false;
-        _statusBar.BackColor = Theme.Top;
-        _statusBar.ForeColor = Theme.Muted;
-        _statusBar.Font = Theme.UiFont(9);
+        Theme.StyleStatusStrip(_statusBar);
         _statusBar.Padding = new Padding(8, 2, 8, 2);
         _statusBar.Items.Add(_renderFpsStatus);
         _statusBar.Items.Add(StatusSeparator());
@@ -630,7 +643,7 @@ internal sealed class MainForm : Form
         _sceneEditPage.AutoScroll = true;
         _hierarchyPanel.Dock = DockStyle.Fill;
         _sceneEditorPanel.Dock = DockStyle.Top;
-        _sceneEditorPanel.Height = 388;
+        _sceneEditorPanel.Height = 508;
         _sceneEditPage.Controls.Add(_hierarchyPanel);
         _sceneEditPage.Controls.Add(_sceneEditorPanel);
         _sceneEditorPanel.BringToFront();
@@ -699,6 +712,7 @@ internal sealed class MainForm : Form
 
     private void BuildDrawingObjectTabs()
     {
+        foreach (var tab in _drawingObjectTabs.Controls.Cast<Control>().ToArray()) tab.Dispose();
         _drawingObjectTabs.Controls.Clear();
         _drawingObjectTabButtons.Clear();
         if (_activeDrawingObjectIndex >= 0 && _activeDrawingObjectIndex < _drawingObjects.Count) AddDrawingObjectTab(_activeDrawingObjectIndex);
@@ -1189,15 +1203,6 @@ internal sealed class MainForm : Form
         if (width is null || Math.Abs(_materialEditor.StrokeWidth - width.Value) < 0.001f) return;
 
         _materialEditor.SetMaterial(_materialEditor.Fill, _materialEditor.Stroke, width.Value, _materialEditor.Opacity);
-        _updatingStrokeInput = true;
-        try
-        {
-            _stroke.Value = (decimal)Math.Clamp(width.Value, (float)_stroke.Minimum, (float)_stroke.Maximum);
-        }
-        finally
-        {
-            _updatingStrokeInput = false;
-        }
     }
 
     private void ApplyToolCursor()
@@ -1261,22 +1266,15 @@ internal sealed class MainForm : Form
             SyncFrameSliderRange();
             SetFrame(_frame);
         };
+        _materialEditor.ContinuousEditStarted += (_, _) => BeginMaterialContinuousEdit();
+        _materialEditor.ContinuousEditCompleted += (_, _) => CompleteMaterialContinuousEdit();
+        _materialEditor.ContinuousEditCanceled += (_, _) => CancelMaterialContinuousEdit();
         _materialEditor.MaterialChanged += (_, e) =>
         {
             if (IsSceneCompositionContext()) return;
             if (_tool == ToolMode.Pencil) _pencilStrokeWidthPoints = e.StrokeWidth;
             else if (_tool == ToolMode.Brush) _brushStrokeWidthPoints = e.StrokeWidth;
             else if (IsStandardStrokeTool(_tool)) _standardStrokeWidthPoints = e.StrokeWidth;
-
-            _updatingStrokeInput = true;
-            try
-            {
-                _stroke.Value = (decimal)Math.Clamp(e.StrokeWidth, (float)_stroke.Minimum, (float)_stroke.Maximum);
-            }
-            finally
-            {
-                _updatingStrokeInput = false;
-            }
 
             if (_selectedElements.Count > 0)
             {
@@ -1297,14 +1295,15 @@ internal sealed class MainForm : Form
                     ? _selectedElement.Key.Kind
                     : DrawingElementKind.None;
                 if (!MaterialChangeAffectsSelection(_selectedObject, selectedKind, e, strokeUnits)) return;
-                CaptureUndoSnapshot();
+                var snapshot = CreateMaterialUndoSnapshot();
                 var editedObject = _selectedObject;
                 if (selectedKind != DrawingElementKind.None)
                 {
                     var materialized = _scene.DetachElementForMove(_selectedElement, _frame);
                     if (!materialized.IsValid)
                     {
-                        if (_undoStack.Count > 0) _undoStack.Pop();
+                        _scene.RestoreSnapshot(snapshot);
+                        SyncSelectionToStage();
                         return;
                     }
 
@@ -1379,6 +1378,7 @@ internal sealed class MainForm : Form
                     }
                 }
 
+                PushMaterialUndoSnapshot(snapshot);
                 _hierarchyPanel.RefreshScene();
                 _stage.Invalidate();
             }
@@ -1417,12 +1417,13 @@ internal sealed class MainForm : Form
             if (_syncingFrame) return;
             SetFrame(_frameSlider.Value);
         };
-        _color.SelectedIndexChanged += (_, _) => _materialEditor.Fill = PaletteColor(_color.SelectedIndex);
-        _stroke.ValueChanged += (_, _) =>
+        _frameSlider.InteractionStarted += (_, _) => StopPlayback();
+        _frameInput.ValueChanged += (_, _) =>
         {
-            if (_updatingStrokeInput) return;
-            _materialEditor.StrokeWidth = (float)_stroke.Value;
+            if (_syncingFrame) return;
+            SetFrame((int)_frameInput.Value);
         };
+        _frameInput.InteractionStarted += (_, _) => StopPlayback();
         _stage.MouseWheel += (_, e) =>
         {
             if (IsScene3DView())
@@ -1677,6 +1678,7 @@ internal sealed class MainForm : Form
                 RebuildDrawingObjectUnderlay();
             }
             if (_frameSlider.Minimum <= next && next <= _frameSlider.Maximum) _frameSlider.Value = next;
+            if (_frameInput.Minimum <= next && next <= _frameInput.Maximum) _frameInput.Value = next;
             _timeline.CurrentFrame = next;
             _stage.Frame = next;
             if (frameChanged && (_selectedElements.Count > 0 || IsSceneCompositionContext())) ClearSelection();
@@ -1693,8 +1695,13 @@ internal sealed class MainForm : Form
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         var focusedEditor = ContainsFocusedEditor(this);
-        if (!focusedEditor && IsTimelineEditShortcut(keyData) && HandleTimelineShortcut(keyData)) return true;
-        if (!focusedEditor)
+        var interactiveControlFocused = ContainsFocusedInteractiveControl(this);
+        var commandButtonFocused = ContainsFocusedButton(this);
+        var canvasShortcutsEnabled = _materialEditSession is null
+            && !focusedEditor
+            && (!interactiveControlFocused || commandButtonFocused);
+        if (canvasShortcutsEnabled && IsTimelineEditShortcut(keyData) && HandleTimelineShortcut(keyData)) return true;
+        if (canvasShortcutsEnabled)
         {
             if (IsScene3DView() && HandleBlender3DShortcut(keyData)) return true;
             if (keyData == Keys.Escape && _freehandDrawing)
@@ -1703,7 +1710,7 @@ internal sealed class MainForm : Form
                 FinishPointerInteraction();
                 return true;
             }
-            if (HandleTimelineShortcut(keyData)) return true;
+            if (!(commandButtonFocused && keyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
             if (keyData == Keys.V)
             {
                 ActivateTool(ToolMode.Select);
@@ -1721,14 +1728,14 @@ internal sealed class MainForm : Form
             if (keyData == Keys.K && ActivateDrawingShortcut(ToolMode.Fill)) return true;
             if (keyData == Keys.OemOpenBrackets && AdjustFreehandWidth(increase: false)) return true;
             if (keyData == Keys.Oem6 && AdjustFreehandWidth(increase: true)) return true;
-            if (keyData == Keys.Tab && CycleShapeTool(reverse: false)) return true;
-            if (keyData == (Keys.Shift | Keys.Tab) && CycleShapeTool(reverse: true)) return true;
+            if (!commandButtonFocused && keyData == Keys.Tab && CycleShapeTool(reverse: false)) return true;
+            if (!commandButtonFocused && keyData == (Keys.Shift | Keys.Tab) && CycleShapeTool(reverse: true)) return true;
             if (keyData == (Keys.Control | Keys.Z) && UndoLastEdit()) return true;
             if (keyData == (Keys.Control | Keys.C) && CopySelectedObjects()) return true;
             if (keyData == (Keys.Control | Keys.V) && PasteCopiedObjects()) return true;
         }
 
-        if (keyData == Keys.Delete && !focusedEditor && DeleteSelectedObject()) return true;
+        if (keyData == Keys.Delete && canvasShortcutsEnabled && DeleteSelectedObject()) return true;
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
@@ -1951,6 +1958,8 @@ internal sealed class MainForm : Form
         {
             _frameSlider.Minimum = _playbackSettings.StartFrame;
             _frameSlider.Maximum = Math.Max(_playbackSettings.StartFrame, _playbackSettings.EndFrame);
+            _frameInput.Minimum = _playbackSettings.StartFrame;
+            _frameInput.Maximum = Math.Max(_playbackSettings.StartFrame, _playbackSettings.EndFrame);
             _timeline.StartFrame = _playbackSettings.StartFrame;
             _timeline.EndFrame = _playbackSettings.EndFrame;
         }
@@ -1977,6 +1986,78 @@ internal sealed class MainForm : Form
             SyncFrameSliderRange();
             SetFrame(Math.Clamp(_frame, startFrame, endFrame));
         }
+    }
+
+    private void BeginMaterialContinuousEdit()
+    {
+        if (_materialEditSession is not null || IsSceneCompositionContext()) return;
+        _materialEditSession = new MaterialEditSession
+        {
+            Scene = _scene,
+            Snapshot = _scene.CreateSnapshot(),
+            SelectedObjects = _selectedObjects.ToArray(),
+            SelectedElements = _selectedElements.ToArray(),
+            PrimaryElement = _selectedElement
+        };
+    }
+
+    private void CompleteMaterialContinuousEdit()
+    {
+        _materialEditSession = null;
+    }
+
+    private void CancelMaterialContinuousEdit()
+    {
+        var session = _materialEditSession;
+        _materialEditSession = null;
+        if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
+
+        if (session.UndoPushed
+            && _undoStack.TryPeek(out var undo)
+            && ReferenceEquals(undo, session.Snapshot))
+        {
+            _undoStack.Pop();
+        }
+
+        _scene.RestoreSnapshot(session.Snapshot);
+        if (session.SelectedElements.Length > 0)
+        {
+            SetSelection(session.SelectedElements, session.PrimaryElement);
+        }
+        else if (session.SelectedObjects.Length > 0)
+        {
+            SetSelection(session.SelectedObjects);
+        }
+        else
+        {
+            ClearSelection();
+        }
+
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
+    private void PushMaterialUndoSnapshot(VectorSceneSnapshot fallbackSnapshot)
+    {
+        var session = _materialEditSession;
+        if (session is null || !ReferenceEquals(session.Scene, _scene))
+        {
+            PushUndoSnapshot(fallbackSnapshot);
+            return;
+        }
+
+        if (session.UndoPushed) return;
+        PushUndoSnapshot(session.Snapshot);
+        session.UndoPushed = true;
+    }
+
+    private VectorSceneSnapshot CreateMaterialUndoSnapshot()
+    {
+        var session = _materialEditSession;
+        return session is not null && ReferenceEquals(session.Scene, _scene)
+            ? session.Snapshot
+            : _scene.CreateSnapshot();
     }
 
     private void CaptureUndoSnapshot()
@@ -3429,15 +3510,6 @@ internal sealed class MainForm : Form
         {
             _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, inspectorStrokePoints, fill.A / 255f);
         }
-        _updatingStrokeInput = true;
-        try
-        {
-            _stroke.Value = (decimal)Math.Clamp(inspectorStrokePoints, (float)_stroke.Minimum, (float)_stroke.Maximum);
-        }
-        finally
-        {
-            _updatingStrokeInput = false;
-        }
     }
 
     private Color ActiveColor()
@@ -3454,7 +3526,7 @@ internal sealed class MainForm : Form
             .ToHashSet();
         if (affected.Count == 0) return;
 
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateMaterialUndoSnapshot();
         var materialized = _scene.MaterializeSelectedParts(affected.ToArray(), _frame);
         if (!materialized.Success)
         {
@@ -3498,7 +3570,7 @@ internal sealed class MainForm : Form
         SetSelection(selectedObjects);
         if (affected.Any(key => key.Kind == DrawingElementKind.Fill)) MergeSelectedFillsAfterGeometryEdit();
 
-        PushUndoSnapshot(snapshot);
+        PushMaterialUndoSnapshot(snapshot);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
@@ -3508,7 +3580,7 @@ internal sealed class MainForm : Form
     {
         var targets = _selectedObjects.Where(index => (uint)index < _scene.ObjectCount).Distinct().ToArray();
         if (targets.Length < 2) return;
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateMaterialUndoSnapshot();
         var changed = false;
         foreach (var objectIndex in targets)
         {
@@ -3565,7 +3637,7 @@ internal sealed class MainForm : Form
         _scene.RebuildGeometryIndex();
         var changedFill = material.ApplyAll || material.FillChanged || material.OpacityChanged;
         if (changedFill) MergeSelectedFillsAfterGeometryEdit();
-        PushUndoSnapshot(snapshot);
+        PushMaterialUndoSnapshot(snapshot);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
@@ -3640,18 +3712,6 @@ internal sealed class MainForm : Form
     private float ActiveStrokeUnits() => VectorUnits.StrokePointsToUnits((float)_materialEditor.StrokeWidth);
 
     private Color ActiveStrokeColor() => _materialEditor.Stroke;
-
-    private static Color PaletteColor(int selectedIndex)
-    {
-        return selectedIndex switch
-        {
-            1 => Color.FromArgb(213, 151, 74),
-            2 => Color.FromArgb(200, 107, 99),
-            3 => Color.FromArgb(136, 122, 214),
-            4 => Color.FromArgb(238, 242, 241),
-            _ => Color.FromArgb(79, 179, 162)
-        };
-    }
 
     private void ShowWorkspace(WorkspaceView view)
     {
@@ -3841,6 +3901,30 @@ internal sealed class MainForm : Form
         foreach (Control child in control.Controls)
         {
             if (ContainsFocusedEditor(child)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsFocusedInteractiveControl(Control control)
+    {
+        if (!control.ContainsFocus) return false;
+        if (control is ButtonBase or ListControl or TreeView or ListView or ModernSlider) return true;
+        foreach (Control child in control.Controls)
+        {
+            if (ContainsFocusedInteractiveControl(child)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsFocusedButton(Control control)
+    {
+        if (!control.ContainsFocus) return false;
+        if (control is ButtonBase) return true;
+        foreach (Control child in control.Controls)
+        {
+            if (ContainsFocusedButton(child)) return true;
         }
 
         return false;
