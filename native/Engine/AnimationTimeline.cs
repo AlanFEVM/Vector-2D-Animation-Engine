@@ -231,11 +231,19 @@ internal sealed class AnimationTimeline
     private readonly List<AnimationTimelineTrack> _tracks = [];
     private readonly Dictionary<string, AnimationTimelineTrack> _tracksById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AnimationTimelineTrack> _tracksByTargetId = new(StringComparer.Ordinal);
+    private int _batchUpdateDepth;
+    private bool _batchChanged;
 
     public event EventHandler? Changed;
 
     public IReadOnlyList<AnimationTimelineTrack> Tracks => _tracks;
     public int Duration => _tracks.Count == 0 ? 0 : _tracks.Max(track => track.Duration);
+
+    internal IDisposable BeginBatchUpdate()
+    {
+        _batchUpdateDepth++;
+        return new BatchUpdateScope(this);
+    }
 
     public AnimationTimelineTrack? FindTrack(string trackId)
     {
@@ -425,7 +433,35 @@ internal sealed class AnimationTimeline
         return id;
     }
 
-    private void OnChanged() => Changed?.Invoke(this, EventArgs.Empty);
+    private void EndBatchUpdate()
+    {
+        if (_batchUpdateDepth <= 0) return;
+        _batchUpdateDepth--;
+        if (_batchUpdateDepth != 0 || !_batchChanged) return;
+        _batchChanged = false;
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnChanged()
+    {
+        if (_batchUpdateDepth > 0)
+        {
+            _batchChanged = true;
+            return;
+        }
+
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private sealed class BatchUpdateScope(AnimationTimeline timeline) : IDisposable
+    {
+        private AnimationTimeline? _timeline = timeline;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _timeline, null)?.EndBatchUpdate();
+        }
+    }
 }
 
 internal sealed class AnimationTimelineSnapshot

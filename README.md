@@ -58,7 +58,7 @@ session without file watching.
 - Adobe Animate timeline shortcuts: Enter play/pause, comma/period previous/next frame, Shift+comma/period first/last playback frame, F5 insert frame, Shift+F5 remove frame, F6 copy/insert keyframe, Shift+F6 clear keyframe, and F7 insert blank keyframe.
 - Playback settings panel with FPS, loop playback, and frame range controls.
 - Bottom status bar showing render FPS, animation FPS, and zoom.
-- Main loop targets 300 UPS with stage redraw requests capped at 144 FPS.
+- Playback processes fixed simulation steps in batches at 300 logical UPS. Stage redraw requests remain capped at 144 FPS, and render FPS reports completed stage frames rather than invalidation requests.
 - Drawing tools for pencil, brush, line, fill, select, pan, and a grouped shape tool with rectangle, ellipse, triangle, polygon, and star flyout choices.
 - SVG vector icon buttons for the floating tool palette and the Basic Drawing header snapping strip.
 - Global view navigation: middle mouse drags the 2D canvas, and Ctrl + middle mouse drag zooms the 2D canvas from any tool.
@@ -122,6 +122,9 @@ The manual stress scene avoids scanning every object every frame.
 - Low zoom uses tile LOD summaries.
 - Object zoom uses a fixed spatial index to visit only visible cells.
 - Scene data is stored in packed arrays instead of per-object managed models.
+- Stress generation, LOD summaries, spatial-index rebuilds, visible-object collection, and composition preparation use deterministic multi-core batches with stable ordered merges.
+- LOD selection uses effective pixel scale, so vector-unit zoom changes do not accidentally submit the full stress scene as individual draw calls.
+- Direct2D uploads versioned LOD summaries as premultiplied bitmap batches, reducing a Fit Stage frame from thousands of rectangle commands to one bitmap submission.
 - The combined layer/timeline strip limits visible rows and uses lightweight custom painting to keep the workbench responsive.
 
 The current Direct2D renderer still shares the packed scene arrays and spatial
@@ -185,6 +188,16 @@ launcher/
 ```powershell
 dotnet build native\VectorAnimationEngine.Native.csproj -c Release
 ```
+
+Run the full 1000-layer / 100000-object stress build, parallel render collection,
+spatial-index validation, and scene-composition benchmark with:
+
+```powershell
+dotnet native\bin\Release\net8.0-windows\VectorAnimationEngine.dll --bench
+```
+
+The benchmark checks the CPU visible-object collection phase against the 144 FPS
+frame budget and prints per-collection capacity plus composition phase timings.
 
 Run the freehand sampling, commit, hit-test, and snapshot regression benchmark with:
 

@@ -1,3 +1,4 @@
+using System.Buffers;
 using Clipper2Lib;
 
 namespace VectorAnimationEngine;
@@ -14,14 +15,17 @@ internal sealed class VectorScene : ITimelineContext
     private const int OverviewRows = 70;
     private const int IndexColumns = 256;
     private const int IndexRows = 160;
+    private const int DeferredKeyframeUnset = int.MinValue;
 
     public int LayerCount { get; private set; }
     public int ObjectCount { get; private set; }
     public long VirtualAtomCount { get; private set; }
     public long GeometryRevision { get; private set; }
+    public long SummaryRevision { get; private set; }
     private long _nextObjectOrder;
     private bool _synchronizingKeyframeContent;
     private Func<IReadOnlyList<string>>? _additionalTimelineTargets;
+    private int[]? _deferredAppendKeyframes;
     public int ActiveLayer { get; set; }
     public int EditFrame { get; set; }
     public int FrameCount => Timeline.Tracks.Count == 0 ? AnimationTimeline.DefaultDuration : Timeline.Duration;
@@ -138,6 +142,7 @@ internal sealed class VectorScene : ITimelineContext
 
     public void CreateEmpty(int layers = 1)
     {
+        _deferredAppendKeyframes = null;
         LayerCount = Math.Clamp(layers, 1, ushort.MaxValue);
         ObjectCount = 0;
         VirtualAtomCount = 0;
@@ -186,6 +191,7 @@ internal sealed class VectorScene : ITimelineContext
 
     public void Generate(int layers, int objects, long atoms)
     {
+        _deferredAppendKeyframes = null;
         LayerCount = Math.Clamp(layers, 1, ushort.MaxValue);
         ObjectCount = Math.Clamp(objects, 1, 1_000_000);
         VirtualAtomCount = Math.Max(atoms, ObjectCount * 3L);
@@ -194,7 +200,7 @@ internal sealed class VectorScene : ITimelineContext
         EditFrame = 0;
         MaxHalfExtent = 128;
 
-        var rng = new Random(0x2D0A2026);
+        var layerRng = new Random(0x2D0A2026);
         LayerIds = CreateStableIds(LayerCount, AdditionalTimelineTargetIds());
         LayerNames = new string[LayerCount];
         LayerVisible = new bool[LayerCount];
@@ -206,9 +212,9 @@ internal sealed class VectorScene : ITimelineContext
         for (var i = 0; i < LayerCount; i++)
         {
             LayerNames[i] = $"Layer {i:0000}";
-            LayerOpacity[i] = (float)(0.42 + rng.NextDouble() * 0.58);
-            LayerStart[i] = rng.Next(0, 18);
-            LayerEnd[i] = 180 + rng.Next(0, 60);
+            LayerOpacity[i] = (float)(0.42 + layerRng.NextDouble() * 0.58);
+            LayerStart[i] = layerRng.Next(0, 18);
+            LayerEnd[i] = 180 + layerRng.Next(0, 60);
         }
 
         ObjectLayer = GC.AllocateUninitializedArray<ushort>(ObjectCount);
@@ -236,51 +242,54 @@ internal sealed class VectorScene : ITimelineContext
         var cellW = StageWidth / columns;
         var cellH = StageHeight / rows;
 
-        ClearSummaries();
-        var tileR = new long[TileCount.Length];
-        var tileG = new long[TileCount.Length];
-        var tileB = new long[TileCount.Length];
-        var overviewR = new long[OverviewCount.Length];
-        var overviewG = new long[OverviewCount.Length];
-        var overviewB = new long[OverviewCount.Length];
-
-        for (var i = 0; i < ObjectCount; i++)
+        var workers = ParallelBatch.WorkerCount(ObjectCount);
+        var batchMaxHalfExtents = new float[workers];
+        var defaultStrokeArgb = Color.FromArgb(235, 238, 242, 241).ToArgb();
+        ParallelBatch.For(ObjectCount, ParallelBatch.DefaultMinItemsPerWorker, (worker, start, end) =>
         {
-            var layer = i % LayerCount;
-            var col = i % columns;
-            var row = i / columns;
-            var jitterX = (rng.NextDouble() - 0.5) * cellW * 0.72;
-            var jitterY = (rng.NextDouble() - 0.5) * cellH * 0.72;
-            var sizeBias = 0.35 + rng.NextDouble() * rng.NextDouble() * 1.8;
-            var hue = (layer / (double)Math.Max(1, LayerCount) + rng.NextDouble() * 0.08) % 1;
-            var color = ColorFromHsl(hue, 0.46 + rng.NextDouble() * 0.22, 0.42 + rng.NextDouble() * 0.24);
+            var maxHalfExtent = 128f;
+            for (var i = start; i < end; i++)
+            {
+                var rng = new StressRandom(i);
+                var layer = i % LayerCount;
+                var col = i % columns;
+                var row = i / columns;
+                var jitterX = (rng.NextDouble() - 0.5) * cellW * 0.72;
+                var jitterY = (rng.NextDouble() - 0.5) * cellH * 0.72;
+                var sizeBias = 0.35 + rng.NextDouble() * rng.NextDouble() * 1.8;
+                var hue = (layer / (double)Math.Max(1, LayerCount) + rng.NextDouble() * 0.08) % 1;
+                var color = ColorFromHsl(hue, 0.46 + rng.NextDouble() * 0.22, 0.42 + rng.NextDouble() * 0.24);
 
-            ObjectLayer[i] = (ushort)layer;
-            ObjectKeyframeFrame[i] = LayerStart[layer];
-            ObjectOrder[i] = i + 1L;
-            ObjectSubOrder[i] = 0;
-            X[i] = VectorUnits.Quantize((float)(col * cellW - StageWidth * 0.5 + jitterX));
-            Y[i] = VectorUnits.Quantize((float)(row * cellH - StageHeight * 0.5 + jitterY));
-            Width[i] = VectorUnits.Quantize(VectorUnits.FromPixels((float)(8 + sizeBias * (24 + rng.NextDouble() * 96))));
-            Height[i] = VectorUnits.Quantize(VectorUnits.FromPixels((float)(8 + sizeBias * (18 + rng.NextDouble() * 72))));
-            Angle[i] = (float)((rng.NextDouble() - 0.5) * 0.55);
-            Stroke[i] = rng.NextDouble() > 0.28 ? VectorUnits.StrokePointsToUnits((float)(1 + rng.NextDouble() * 3)) : 0;
-            ShapeKind[i] = RandomShapeKind(rng);
-            if (ShapeKind[i] == VectorAnimationEngine.ShapeKind.Line) Height[i] = Math.Max(VectorUnits.FromPixels(3), Stroke[i] + VectorUnits.FromPixels(2));
-            CurveControlX[i] = X[i];
-            CurveControlY[i] = Y[i];
-            AtomCount[i] = (uint)Math.Max(3, Math.Floor(avgAtoms * (0.18 + rng.NextDouble() * rng.NextDouble() * 2.35)));
-            Argb[i] = color.ToArgb();
-            StrokeArgb[i] = Color.FromArgb(235, 238, 242, 241).ToArgb();
-            MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[i], Height[i]) * 0.5f);
+                ObjectLayer[i] = (ushort)layer;
+                ObjectKeyframeFrame[i] = LayerStart[layer];
+                ObjectOrder[i] = i + 1L;
+                ObjectSubOrder[i] = 0;
+                X[i] = VectorUnits.Quantize((float)(col * cellW - StageWidth * 0.5 + jitterX));
+                Y[i] = VectorUnits.Quantize((float)(row * cellH - StageHeight * 0.5 + jitterY));
+                Width[i] = VectorUnits.Quantize(VectorUnits.FromPixels((float)(8 + sizeBias * (24 + rng.NextDouble() * 96))));
+                Height[i] = VectorUnits.Quantize(VectorUnits.FromPixels((float)(8 + sizeBias * (18 + rng.NextDouble() * 72))));
+                Angle[i] = (float)((rng.NextDouble() - 0.5) * 0.55);
+                Stroke[i] = rng.NextDouble() > 0.28 ? VectorUnits.StrokePointsToUnits((float)(1 + rng.NextDouble() * 3)) : 0;
+                ShapeKind[i] = RandomShapeKind(ref rng);
+                if (ShapeKind[i] == VectorAnimationEngine.ShapeKind.Line)
+                {
+                    Height[i] = Math.Max(VectorUnits.FromPixels(3), Stroke[i] + VectorUnits.FromPixels(2));
+                }
 
-            AddObjectToTileSummary(i, color, tileR, tileG, tileB);
-            AddObjectToOverviewSummary(i, color, overviewR, overviewG, overviewB);
-        }
+                CurveControlX[i] = X[i];
+                CurveControlY[i] = Y[i];
+                AtomCount[i] = (uint)Math.Max(3, Math.Floor(avgAtoms * (0.18 + rng.NextDouble() * rng.NextDouble() * 2.35)));
+                Argb[i] = color.ToArgb();
+                StrokeArgb[i] = defaultStrokeArgb;
+                maxHalfExtent = Math.Max(maxHalfExtent, Math.Max(Width[i], Height[i]) * 0.5f);
+            }
+
+            batchMaxHalfExtents[worker] = maxHalfExtent;
+        });
+        MaxHalfExtent = batchMaxHalfExtents.Max();
 
         InitializeTimelineFromLayerExposure();
-        FinalizeTileSummary(tileR, tileG, tileB);
-        FinalizeOverviewSummary(overviewR, overviewG, overviewB);
+        RebuildSummaries(useFillColorForStrokeShapes: true);
         RebuildSpatialIndex();
     }
 
@@ -302,14 +311,48 @@ internal sealed class VectorScene : ITimelineContext
 
     internal int AppendObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
     {
+        var shape = shapeKind ?? InferShapeKind(size, atoms);
+        return AppendPackedObject(
+            layer,
+            center,
+            size,
+            angle,
+            stroke,
+            color.ToArgb(),
+            strokeColor.ToArgb(),
+            atoms,
+            shape,
+            center);
+    }
+
+    internal int AppendPackedObject(
+        int layer,
+        PointF center,
+        SizeF size,
+        float angle,
+        float stroke,
+        int colorArgb,
+        int strokeColorArgb,
+        uint atoms,
+        ShapeKind shapeKind,
+        PointF curveControl)
+    {
+        var targetLayer = Math.Clamp(layer, 0, LayerCount - 1);
+        var keyframeFrame = _deferredAppendKeyframes is { } deferred
+            ? deferred[targetLayer]
+            : EnsureWritableKeyframe(targetLayer, EditFrame);
+        if (keyframeFrame == DeferredKeyframeUnset)
+        {
+            throw new InvalidOperationException("Deferred append received an object for a layer that was not marked as populated.");
+        }
+
         var index = ObjectCount;
         ObjectCount++;
         VirtualAtomCount += atoms;
         EnsureObjectCapacity(ObjectCount);
 
-        var targetLayer = Math.Clamp(layer, 0, LayerCount - 1);
         ObjectLayer[index] = (ushort)targetLayer;
-        ObjectKeyframeFrame[index] = EnsureWritableKeyframe(targetLayer, EditFrame);
+        ObjectKeyframeFrame[index] = keyframeFrame;
         ObjectOrder[index] = ++_nextObjectOrder;
         ObjectSubOrder[index] = 0;
         X[index] = VectorUnits.Quantize(center.X);
@@ -318,14 +361,66 @@ internal sealed class VectorScene : ITimelineContext
         Height[index] = Math.Max(1, VectorUnits.Quantize(size.Height));
         Angle[index] = angle;
         Stroke[index] = Math.Max(0, stroke);
-        ShapeKind[index] = shapeKind ?? InferShapeKind(size, atoms);
-        CurveControlX[index] = X[index];
-        CurveControlY[index] = Y[index];
+        ShapeKind[index] = shapeKind;
+        CurveControlX[index] = VectorUnits.Quantize(curveControl.X);
+        CurveControlY[index] = VectorUnits.Quantize(curveControl.Y);
         AtomCount[index] = Math.Max(3, atoms);
-        Argb[index] = color.ToArgb();
-        StrokeArgb[index] = strokeColor.ToArgb();
+        Argb[index] = colorArgb;
+        StrokeArgb[index] = strokeColorArgb;
         MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[index], Height[index]) * 0.5f);
         return index;
+    }
+
+    internal int AppendPackedObjects(PackedSceneObject[] objects)
+    {
+        ArgumentNullException.ThrowIfNull(objects);
+        if (objects.Length == 0) return ObjectCount;
+        var deferredKeyframes = _deferredAppendKeyframes
+            ?? throw new InvalidOperationException("Packed batches require an active deferred append.");
+        var firstObject = ObjectCount;
+        var firstOrder = _nextObjectOrder;
+        EnsureObjectCapacity(ObjectCount + objects.Length);
+        var workers = ParallelBatch.WorkerCount(objects.Length, 4096);
+        var batchAtoms = new long[workers];
+        var batchMaxHalfExtents = new float[workers];
+        ParallelBatch.For(objects.Length, 4096, (worker, start, end) =>
+        {
+            long atoms = 0;
+            var maxHalfExtent = 128f;
+            for (var offset = start; offset < end; offset++)
+            {
+                var item = objects[offset];
+                var index = firstObject + offset;
+                var layer = Math.Clamp(item.Layer, 0, LayerCount - 1);
+                ObjectLayer[index] = (ushort)layer;
+                ObjectKeyframeFrame[index] = deferredKeyframes[layer];
+                ObjectOrder[index] = firstOrder + offset + 1L;
+                ObjectSubOrder[index] = 0;
+                X[index] = VectorUnits.Quantize(item.Center.X);
+                Y[index] = VectorUnits.Quantize(item.Center.Y);
+                Width[index] = Math.Max(1, VectorUnits.Quantize(item.Size.Width));
+                Height[index] = Math.Max(1, VectorUnits.Quantize(item.Size.Height));
+                Angle[index] = item.Angle;
+                Stroke[index] = Math.Max(0, item.Stroke);
+                CurveControlX[index] = VectorUnits.Quantize(item.CurveControl.X);
+                CurveControlY[index] = VectorUnits.Quantize(item.CurveControl.Y);
+                ShapeKind[index] = item.Shape;
+                AtomCount[index] = Math.Max(3, item.Atoms);
+                Argb[index] = item.Argb;
+                StrokeArgb[index] = item.StrokeArgb;
+                atoms += item.Atoms;
+                maxHalfExtent = Math.Max(maxHalfExtent, Math.Max(Width[index], Height[index]) * 0.5f);
+            }
+
+            batchAtoms[worker] = atoms;
+            batchMaxHalfExtents[worker] = maxHalfExtent;
+        }, workers);
+
+        ObjectCount += objects.Length;
+        _nextObjectOrder += objects.Length;
+        VirtualAtomCount += batchAtoms.Sum();
+        MaxHalfExtent = Math.Max(MaxHalfExtent, batchMaxHalfExtents.Max());
+        return firstObject;
     }
 
     public int AddLineSegment(int layer, PointF start, PointF end, float stroke, Color color, Color strokeColor, uint atoms)
@@ -346,9 +441,17 @@ internal sealed class VectorScene : ITimelineContext
         var center = Midpoint(start, end);
         var width = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, Distance(start, end));
         var height = Math.Max(VectorUnits.FromPixels(3), stroke + VectorUnits.FromPixels(2));
-        var index = AppendObject(layer, center, new SizeF(width, height), MathF.Atan2(end.Y - start.Y, end.X - start.X), stroke, color, strokeColor, atoms, VectorAnimationEngine.ShapeKind.Line);
-        CurveControlX[index] = VectorUnits.Quantize(control.X);
-        CurveControlY[index] = VectorUnits.Quantize(control.Y);
+        var index = AppendPackedObject(
+            layer,
+            center,
+            new SizeF(width, height),
+            MathF.Atan2(end.Y - start.Y, end.X - start.X),
+            stroke,
+            color.ToArgb(),
+            strokeColor.ToArgb(),
+            atoms,
+            VectorAnimationEngine.ShapeKind.Line,
+            control);
         var margin = Math.Max(stroke * 0.5f, 1);
         var curveExtent = Math.Max(
             Math.Max(Math.Abs(start.X - X[index]), Math.Abs(end.X - X[index])),
@@ -586,23 +689,93 @@ internal sealed class VectorScene : ITimelineContext
 
     public void RebuildGeometryIndex()
     {
-        MaxHalfExtent = 128;
-        for (var i = 0; i < ObjectCount; i++)
+        var workers = ParallelBatch.WorkerCount(ObjectCount, 8192);
+        if (workers == 1)
         {
-            var bounds = GetObjectWorldBounds(i);
-            var extent = Math.Max(
-                Math.Max(Math.Abs(bounds.Left - X[i]), Math.Abs(bounds.Right - X[i])),
-                Math.Max(Math.Abs(bounds.Top - Y[i]), Math.Abs(bounds.Bottom - Y[i])));
-            MaxHalfExtent = Math.Max(MaxHalfExtent, extent);
+            MaxHalfExtent = 128;
+            for (var i = 0; i < ObjectCount; i++) MaxHalfExtent = Math.Max(MaxHalfExtent, ObjectHalfExtent(i));
+        }
+        else
+        {
+            var maxima = new float[workers];
+            ParallelBatch.For(ObjectCount, 8192, (worker, start, end) =>
+            {
+                var maximum = 128f;
+                for (var i = start; i < end; i++) maximum = Math.Max(maximum, ObjectHalfExtent(i));
+                maxima[worker] = maximum;
+            }, workers);
+            MaxHalfExtent = maxima.Max();
         }
 
         RebuildSpatialIndex();
+    }
+
+    private float ObjectHalfExtent(int objectIndex)
+    {
+        var bounds = GetObjectWorldBounds(objectIndex);
+        return Math.Max(
+            Math.Max(Math.Abs(bounds.Left - X[objectIndex]), Math.Abs(bounds.Right - X[objectIndex])),
+            Math.Max(Math.Abs(bounds.Top - Y[objectIndex]), Math.Abs(bounds.Bottom - Y[objectIndex])));
     }
 
     internal void CompleteDeferredBuild()
     {
         RebuildGeometryIndex();
         RebuildSummaries();
+    }
+
+    internal void BeginDeferredAppend(int expectedObjectCount, IReadOnlyList<int> populatedLayers)
+    {
+        ArgumentNullException.ThrowIfNull(populatedLayers);
+        if (_deferredAppendKeyframes is not null) throw new InvalidOperationException("A deferred append is already active.");
+        using var batchUpdate = Timeline.BeginBatchUpdate();
+        SynchronizeTimelineTracks();
+        var keyframes = new int[LayerCount];
+        Array.Fill(keyframes, DeferredKeyframeUnset);
+        foreach (var layer in populatedLayers)
+        {
+            if ((uint)layer >= LayerCount || keyframes[layer] != DeferredKeyframeUnset) continue;
+            var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+            keyframes[layer] = track is null ? 0 : EnsureWritableKeyframe(track, layer, EditFrame);
+        }
+
+        EnsureObjectCapacity(ObjectCount + Math.Max(0, expectedObjectCount));
+        _deferredAppendKeyframes = keyframes;
+    }
+
+    internal void EndDeferredAppend()
+    {
+        var keyframes = _deferredAppendKeyframes;
+        if (keyframes is null) return;
+        try
+        {
+            var occupied = new bool[LayerCount];
+            for (var objectIndex = 0; objectIndex < ObjectCount; objectIndex++)
+            {
+                var layer = ObjectLayer[objectIndex];
+                if (keyframes[layer] == DeferredKeyframeUnset
+                    || ObjectKeyframeFrame[objectIndex] != keyframes[layer])
+                {
+                    continue;
+                }
+
+                occupied[layer] = true;
+            }
+
+            using var batchUpdate = Timeline.BeginBatchUpdate();
+            for (var layer = 0; layer < LayerCount; layer++)
+            {
+                if (keyframes[layer] == DeferredKeyframeUnset || occupied[layer]) continue;
+                var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+                if (track is null) continue;
+                Timeline.InsertBlankKeyframe(track.Id, keyframes[layer]);
+                RefreshLegacyExposureBounds(layer);
+            }
+        }
+        finally
+        {
+            _deferredAppendKeyframes = null;
+        }
     }
 
     public VectorSceneSnapshot CreateSnapshot()
@@ -758,6 +931,23 @@ internal sealed class VectorScene : ITimelineContext
         return exposure.HasContent && ObjectKeyframeFrame[objectIndex] == exposure.SourceKeyframeFrame;
     }
 
+    internal void PopulateActiveKeyframeFrames(int frame, int[] destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        if (destination.Length < LayerCount) throw new ArgumentException("The active-frame buffer is too small.", nameof(destination));
+        for (var layer = 0; layer < LayerCount; layer++)
+        {
+            if (!LayerVisible[layer])
+            {
+                destination[layer] = int.MinValue;
+                continue;
+            }
+
+            var exposure = Timeline.EvaluateTargetExposure(LayerIds[layer], frame);
+            destination[layer] = exposure.HasContent ? exposure.SourceKeyframeFrame : int.MinValue;
+        }
+    }
+
     public bool InsertTimelineFrame(int layer, int frame, int count = 1)
     {
         var track = TimelineTrackForLayer(layer);
@@ -877,6 +1067,12 @@ internal sealed class VectorScene : ITimelineContext
     {
         var track = TimelineTrackForLayer(layer);
         if (track is null) return 0;
+
+        return EnsureWritableKeyframe(track, layer, frame);
+    }
+
+    private int EnsureWritableKeyframe(AnimationTimelineTrack track, int layer, int frame)
+    {
 
         frame = Math.Max(0, frame);
         if (frame >= track.Duration)
@@ -3361,26 +3557,93 @@ internal sealed class VectorScene : ITimelineContext
 
     private void RebuildSpatialIndex()
     {
-        GeometryRevision++;
         var cellCount = IndexColumns * IndexRows;
-        if (CellStart.Length != cellCount + 1) CellStart = new int[cellCount + 1];
-        Array.Clear(CellStart);
-        CellObjects = GC.AllocateUninitializedArray<int>(ObjectCount);
-
-        for (var i = 0; i < ObjectCount; i++)
+        var workers = ParallelBatch.WorkerCount(ObjectCount, 8192);
+        if (workers == 1)
         {
-            var cell = CellForWorld(X[i], Y[i]);
-            if (cell >= 0) CellStart[cell + 1]++;
+            var starts = new int[cellCount + 1];
+            var objects = GC.AllocateUninitializedArray<int>(ObjectCount);
+            for (var i = 0; i < ObjectCount; i++)
+            {
+                var cell = CellForWorld(X[i], Y[i]);
+                if (cell >= 0) starts[cell + 1]++;
+            }
+
+            for (var i = 1; i < starts.Length; i++) starts[i] += starts[i - 1];
+            var cursor = new int[cellCount];
+            Array.Copy(starts, cursor, cellCount);
+            for (var i = 0; i < ObjectCount; i++)
+            {
+                var cell = CellForWorld(X[i], Y[i]);
+                if (cell >= 0) objects[cursor[cell]++] = i;
+            }
+
+            CellStart = starts;
+            CellObjects = objects;
+            GeometryRevision++;
+            return;
         }
 
-        for (var i = 1; i < CellStart.Length; i++) CellStart[i] += CellStart[i - 1];
-
-        var cursor = new int[cellCount];
-        Array.Copy(CellStart, cursor, cellCount);
-        for (var i = 0; i < ObjectCount; i++)
+        var localCounts = new int[workers][];
+        try
         {
-            var cell = CellForWorld(X[i], Y[i]);
-            if (cell >= 0) CellObjects[cursor[cell]++] = i;
+            for (var worker = 0; worker < workers; worker++)
+            {
+                localCounts[worker] = ArrayPool<int>.Shared.Rent(cellCount);
+                Array.Clear(localCounts[worker], 0, cellCount);
+            }
+
+            ParallelBatch.For(ObjectCount, 8192, (worker, start, end) =>
+            {
+                var counts = localCounts[worker];
+                for (var i = start; i < end; i++)
+                {
+                    var cell = CellForWorld(X[i], Y[i]);
+                    if (cell >= 0) counts[cell]++;
+                }
+            }, workers);
+
+            var starts = new int[cellCount + 1];
+            for (var cell = 0; cell < cellCount; cell++)
+            {
+                var count = 0;
+                for (var worker = 0; worker < workers; worker++) count += localCounts[worker][cell];
+                starts[cell + 1] = count;
+            }
+
+            for (var cell = 1; cell < starts.Length; cell++) starts[cell] += starts[cell - 1];
+            for (var cell = 0; cell < cellCount; cell++)
+            {
+                var cursor = starts[cell];
+                for (var worker = 0; worker < workers; worker++)
+                {
+                    var count = localCounts[worker][cell];
+                    localCounts[worker][cell] = cursor;
+                    cursor += count;
+                }
+            }
+
+            var objects = GC.AllocateUninitializedArray<int>(ObjectCount);
+            ParallelBatch.For(ObjectCount, 8192, (worker, start, end) =>
+            {
+                var cursors = localCounts[worker];
+                for (var i = start; i < end; i++)
+                {
+                    var cell = CellForWorld(X[i], Y[i]);
+                    if (cell >= 0) objects[cursors[cell]++] = i;
+                }
+            }, workers);
+
+            CellStart = starts;
+            CellObjects = objects;
+            GeometryRevision++;
+        }
+        finally
+        {
+            foreach (var counts in localCounts)
+            {
+                if (counts is not null) ArrayPool<int>.Shared.Return(counts);
+            }
         }
     }
 
@@ -3392,10 +3655,18 @@ internal sealed class VectorScene : ITimelineContext
         Array.Clear(OverviewCount);
         Array.Clear(OverviewAtoms);
         Array.Clear(OverviewArgb);
+        SummaryRevision++;
     }
 
-    private void RebuildSummaries()
+    private void RebuildSummaries(bool useFillColorForStrokeShapes = false)
     {
+        var workers = ParallelBatch.WorkerCount(ObjectCount, 20_000, maxWorkers: 6);
+        if (workers > 1)
+        {
+            RebuildSummariesParallel(workers, useFillColorForStrokeShapes);
+            return;
+        }
+
         ClearSummaries();
         var tileR = new long[TileCount.Length];
         var tileG = new long[TileCount.Length];
@@ -3407,7 +3678,9 @@ internal sealed class VectorScene : ITimelineContext
         for (var i = 0; i < ObjectCount; i++)
         {
             var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
-            var color = Color.FromArgb(shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform ? StrokeArgb[i] : Argb[i]);
+            var color = Color.FromArgb(useFillColorForStrokeShapes
+                ? Argb[i]
+                : shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform ? StrokeArgb[i] : Argb[i]);
             if (IsFreehandShape(shape))
             {
                 AddObjectBoundsToSummary(i, color, TileColumns, TileRows, TileCount, TileAtoms, tileR, tileG, tileB);
@@ -3422,6 +3695,136 @@ internal sealed class VectorScene : ITimelineContext
 
         FinalizeTileSummary(tileR, tileG, tileB);
         FinalizeOverviewSummary(overviewR, overviewG, overviewB);
+    }
+
+    private void RebuildSummariesParallel(int workers, bool useFillColorForStrokeShapes)
+    {
+        var tileLength = TileCount.Length;
+        var overviewLength = OverviewCount.Length;
+        var tileCounts = new int[workers][];
+        var tileAtoms = new long[workers][];
+        var tileR = new long[workers][];
+        var tileG = new long[workers][];
+        var tileB = new long[workers][];
+        var overviewCounts = new int[workers][];
+        var overviewAtoms = new long[workers][];
+        var overviewR = new long[workers][];
+        var overviewG = new long[workers][];
+        var overviewB = new long[workers][];
+
+        try
+        {
+            for (var worker = 0; worker < workers; worker++)
+            {
+                tileCounts[worker] = RentCleared<int>(tileLength);
+                tileAtoms[worker] = RentCleared<long>(tileLength);
+                tileR[worker] = RentCleared<long>(tileLength);
+                tileG[worker] = RentCleared<long>(tileLength);
+                tileB[worker] = RentCleared<long>(tileLength);
+                overviewCounts[worker] = RentCleared<int>(overviewLength);
+                overviewAtoms[worker] = RentCleared<long>(overviewLength);
+                overviewR[worker] = RentCleared<long>(overviewLength);
+                overviewG[worker] = RentCleared<long>(overviewLength);
+                overviewB[worker] = RentCleared<long>(overviewLength);
+            }
+
+            ParallelBatch.For(ObjectCount, 20_000, (worker, start, end) =>
+            {
+                for (var i = start; i < end; i++)
+                {
+                    var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+                    var color = Color.FromArgb(useFillColorForStrokeShapes
+                        ? Argb[i]
+                        : shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform ? StrokeArgb[i] : Argb[i]);
+                    if (IsFreehandShape(shape))
+                    {
+                        AddObjectBoundsToSummary(i, color, TileColumns, TileRows, tileCounts[worker], tileAtoms[worker], tileR[worker], tileG[worker], tileB[worker]);
+                        AddObjectBoundsToSummary(i, color, OverviewColumns, OverviewRows, overviewCounts[worker], overviewAtoms[worker], overviewR[worker], overviewG[worker], overviewB[worker]);
+                    }
+                    else
+                    {
+                        AddObjectCenterToSummary(i, color, TileColumns, TileRows, tileCounts[worker], tileAtoms[worker], tileR[worker], tileG[worker], tileB[worker]);
+                        AddObjectCenterToSummary(i, color, OverviewColumns, OverviewRows, overviewCounts[worker], overviewAtoms[worker], overviewR[worker], overviewG[worker], overviewB[worker]);
+                    }
+                }
+            }, workers);
+
+            MergeSummaryBatches(tileLength, workers, tileCounts, tileAtoms, tileR, tileG, tileB, TileCount, TileAtoms, TileArgb, overview: false);
+            MergeSummaryBatches(overviewLength, workers, overviewCounts, overviewAtoms, overviewR, overviewG, overviewB, OverviewCount, OverviewAtoms, OverviewArgb, overview: true);
+            SummaryRevision++;
+        }
+        finally
+        {
+            ReturnBatches(tileCounts);
+            ReturnBatches(tileAtoms);
+            ReturnBatches(tileR);
+            ReturnBatches(tileG);
+            ReturnBatches(tileB);
+            ReturnBatches(overviewCounts);
+            ReturnBatches(overviewAtoms);
+            ReturnBatches(overviewR);
+            ReturnBatches(overviewG);
+            ReturnBatches(overviewB);
+        }
+    }
+
+    private static void MergeSummaryBatches(
+        int length,
+        int workers,
+        int[][] batchCounts,
+        long[][] batchAtoms,
+        long[][] batchR,
+        long[][] batchG,
+        long[][] batchB,
+        int[] counts,
+        long[] atoms,
+        int[] argb,
+        bool overview)
+    {
+        Parallel.For(0, length, new ParallelOptions { MaxDegreeOfParallelism = workers }, cell =>
+        {
+            var count = 0;
+            long atomCount = 0;
+            long red = 0;
+            long green = 0;
+            long blue = 0;
+            for (var worker = 0; worker < workers; worker++)
+            {
+                count += batchCounts[worker][cell];
+                atomCount += batchAtoms[worker][cell];
+                red += batchR[worker][cell];
+                green += batchG[worker][cell];
+                blue += batchB[worker][cell];
+            }
+
+            counts[cell] = count;
+            atoms[cell] = atomCount;
+            if (count == 0)
+            {
+                argb[cell] = Color.FromArgb(24, 36, 40, 42).ToArgb();
+                return;
+            }
+
+            var alpha = overview
+                ? Math.Clamp(58 + count * 6, 64, 230)
+                : Math.Clamp(44 + count * 9, 48, 230);
+            argb[cell] = Color.FromArgb(alpha, (int)(red / count), (int)(green / count), (int)(blue / count)).ToArgb();
+        });
+    }
+
+    private static T[] RentCleared<T>(int length)
+    {
+        var buffer = ArrayPool<T>.Shared.Rent(length);
+        Array.Clear(buffer, 0, length);
+        return buffer;
+    }
+
+    private static void ReturnBatches<T>(IEnumerable<T[]?> batches)
+    {
+        foreach (var batch in batches)
+        {
+            if (batch is not null) ArrayPool<T>.Shared.Return(batch);
+        }
     }
 
     private void AddObjectToSummariesIncremental(int objectIndex, Color color)
@@ -3442,6 +3845,7 @@ internal sealed class VectorScene : ITimelineContext
             OverviewCount,
             OverviewAtoms,
             OverviewArgb);
+        SummaryRevision++;
     }
 
     private void AddObjectToSummaryRange(
@@ -3513,6 +3917,27 @@ internal sealed class VectorScene : ITimelineContext
                 blue[cell] += color.B;
             }
         }
+    }
+
+    private void AddObjectCenterToSummary(
+        int objectIndex,
+        Color color,
+        int columns,
+        int rows,
+        int[] counts,
+        long[] atoms,
+        long[] red,
+        long[] green,
+        long[] blue)
+    {
+        var x = (int)Math.Clamp((X[objectIndex] + StageWidth * 0.5f) / StageWidth * columns, 0, columns - 1);
+        var y = (int)Math.Clamp((Y[objectIndex] + StageHeight * 0.5f) / StageHeight * rows, 0, rows - 1);
+        var cell = y * columns + x;
+        counts[cell]++;
+        atoms[cell] += AtomCount[objectIndex];
+        red[cell] += color.R;
+        green[cell] += color.G;
+        blue[cell] += color.B;
     }
 
     private int CellForWorld(float x, float y)
@@ -4986,7 +5411,7 @@ internal sealed class VectorScene : ITimelineContext
         return VectorAnimationEngine.ShapeKind.Rectangle;
     }
 
-    private static ShapeKind RandomShapeKind(Random rng)
+    private static ShapeKind RandomShapeKind(ref StressRandom rng)
     {
         return rng.Next(0, 6) switch
         {
@@ -4997,6 +5422,31 @@ internal sealed class VectorScene : ITimelineContext
             5 => VectorAnimationEngine.ShapeKind.Star,
             _ => VectorAnimationEngine.ShapeKind.Rectangle
         };
+    }
+
+    private struct StressRandom(int objectIndex)
+    {
+        private ulong _state = 0x2D0A2026D1B54A32UL ^ ((ulong)(uint)objectIndex * 0x9E3779B97F4A7C15UL);
+
+        public double NextDouble()
+        {
+            var value = NextUInt64();
+            return (value >> 11) * (1.0 / (1UL << 53));
+        }
+
+        public int Next(int minValue, int maxValue)
+        {
+            if (maxValue <= minValue) return minValue;
+            return minValue + (int)(NextUInt64() % (uint)(maxValue - minValue));
+        }
+
+        private ulong NextUInt64()
+        {
+            var value = _state += 0x9E3779B97F4A7C15UL;
+            value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9UL;
+            value = (value ^ (value >> 27)) * 0x94D049BB133111EBUL;
+            return value ^ (value >> 31);
+        }
     }
 
     private void AddObjectToTileSummary(int i, Color color, long[] tileR, long[] tileG, long[] tileB)
@@ -5057,6 +5507,7 @@ internal sealed class VectorScene : ITimelineContext
 
     private void InitializeTimelineFromLayerExposure()
     {
+        using var batchUpdate = Timeline.BeginBatchUpdate();
         var additionalTargetIds = AdditionalTimelineTargetIds();
         var additionalTargetSet = additionalTargetIds.ToHashSet(StringComparer.Ordinal);
         var preservedAdditionalTracks = Timeline.CreateSnapshot().Tracks

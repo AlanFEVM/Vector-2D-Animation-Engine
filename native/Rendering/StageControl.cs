@@ -89,6 +89,10 @@ internal sealed class StageControl : Control
     public float Zoom { get; private set; } = 1;
     public RenderStats LastStats { get; private set; }
     public bool LastFrameUsedDirect2D { get; private set; }
+    internal double LastDirect2DCommandMilliseconds => _direct2DRenderer.LastCommandMilliseconds;
+    internal double LastDirect2DPresentMilliseconds => _direct2DRenderer.LastPresentMilliseconds;
+    internal int LastDirect2DLodBitmapSubmissions => _direct2DRenderer.LastLodBitmapSubmissions;
+    internal int LastDirect2DLodBitmapBuilds => _direct2DRenderer.LastLodBitmapBuilds;
     public event EventHandler? FrameRendered;
 
     internal bool HasCachedDirect2DFreehandGeometry(VectorScene scene)
@@ -433,11 +437,12 @@ internal sealed class StageControl : Control
         Scene = scene;
         try
         {
+            var pixelZoom = EffectivePixelZoom();
             return Scene.ObjectCount < 5000
                 ? DrawObjects(graphics, objectDrawLimit)
-                : Zoom < 0.08f
+                : pixelZoom < 0.08f
                     ? DrawOverviewTiles(graphics)
-                    : Zoom < 0.18f
+                    : pixelZoom < 0.18f
                         ? DrawTiles(graphics)
                         : DrawObjects(graphics, objectDrawLimit);
         }
@@ -447,12 +452,14 @@ internal sealed class StageControl : Control
         }
     }
 
-    private int ObjectDrawLimit() => Zoom < 0.35f ? 65_000 : 160_000;
+    private int ObjectDrawLimit() => EffectivePixelZoom() < 0.35f ? 65_000 : 160_000;
 
     private bool UsesObjectRenderer(VectorScene scene)
     {
-        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || Zoom >= 0.18f);
+        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || EffectivePixelZoom() >= 0.18f);
     }
+
+    private float EffectivePixelZoom() => Zoom * VectorUnits.PixelsPerUnit;
 
     protected override void OnPaintBackground(PaintEventArgs pevent)
     {

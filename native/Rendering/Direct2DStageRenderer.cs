@@ -1,4 +1,7 @@
+using System.Buffers;
+using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using SharpGen.Runtime;
 using Vortice.DCommon;
 using Vortice.Direct2D1;
@@ -18,6 +21,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<int, ID2D1SolidColorBrush> _brushCache = new(2048);
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedFreehandGeometry> _freehandGeometryCache = new();
     private readonly Dictionary<VectorScene, int> _freehandSceneObjectCounts = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<LodBitmapKey, CachedLodBitmap> _lodBitmapCache = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private ID2D1Factory? _factory;
     private ID2D1HwndRenderTarget? _target;
@@ -34,7 +38,18 @@ internal sealed class Direct2DStageRenderer : IDisposable
         public void Dispose() => Geometry.Dispose();
     }
 
+    private readonly record struct LodBitmapKey(VectorScene Scene, bool Overview);
+
+    private sealed record CachedLodBitmap(long SummaryRevision, ID2D1Bitmap Bitmap) : IDisposable
+    {
+        public void Dispose() => Bitmap.Dispose();
+    }
+
     public bool IsActive => !_disabled && _target is not null;
+    public double LastCommandMilliseconds { get; private set; }
+    public double LastPresentMilliseconds { get; private set; }
+    public int LastLodBitmapSubmissions { get; private set; }
+    public int LastLodBitmapBuilds { get; private set; }
 
     internal bool HasCachedFreehandGeometry(VectorScene scene)
     {
@@ -44,6 +59,8 @@ internal sealed class Direct2DStageRenderer : IDisposable
     public bool TryRender(StageControl stage, out RenderStats stats)
     {
         stats = default;
+        LastLodBitmapSubmissions = 0;
+        LastLodBitmapBuilds = 0;
         if (_disabled || stage.Width <= 0 || stage.Height <= 0) return false;
         var drawingStarted = false;
         var editableScene = stage.Scene;
@@ -53,9 +70,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
             EnsureTarget(stage);
             if (_target is null) return false;
             PrepareFreehandGeometryCache(editableScene, stage.UnderlayScene);
+            PruneLodBitmapCache(editableScene, stage.UnderlayScene);
 
             _target.BeginDraw();
             drawingStarted = true;
+            var commandStarted = Stopwatch.GetTimestamp();
             _target.Transform = Matrix3x2.Identity;
             _target.AntialiasMode = AntialiasMode.PerPrimitive;
             var background = ToD2D(stage.BackColor);
@@ -64,7 +83,10 @@ internal sealed class Direct2DStageRenderer : IDisposable
             {
                 Draw3DReferenceGrid(stage);
                 DrawMarquee(stage);
+                LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
+                var presentStarted = Stopwatch.GetTimestamp();
                 var gridResult = _target.EndDraw();
+                LastPresentMilliseconds = Stopwatch.GetElapsedTime(presentStarted).TotalMilliseconds;
                 drawingStarted = false;
                 if (gridResult.Failure)
                 {
@@ -100,7 +122,10 @@ internal sealed class Direct2DStageRenderer : IDisposable
             DrawFreehandPreview(stage);
             DrawMarquee(stage);
 
+            LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
+            var framePresentStarted = Stopwatch.GetTimestamp();
             var result = _target.EndDraw();
+            LastPresentMilliseconds = Stopwatch.GetElapsedTime(framePresentStarted).TotalMilliseconds;
             drawingStarted = false;
             if (result.Failure)
             {
@@ -199,21 +224,24 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
     private RenderStats DrawScene(StageControl stage, int objectDrawLimit)
     {
+        var pixelZoom = EffectivePixelZoom(stage.Zoom);
         return stage.Scene.ObjectCount < 5000
             ? DrawObjects(stage, objectDrawLimit)
-            : stage.Zoom < 0.08f
+            : pixelZoom < 0.08f
                 ? DrawOverviewTiles(stage)
-                : stage.Zoom < 0.18f
+                : pixelZoom < 0.18f
                     ? DrawTiles(stage)
                     : DrawObjects(stage, objectDrawLimit);
     }
 
-    private static int ObjectDrawLimit(float zoom) => zoom < 0.35f ? 95_000 : 220_000;
+    private static int ObjectDrawLimit(float zoom) => EffectivePixelZoom(zoom) < 0.35f ? 95_000 : 220_000;
 
     private static bool UsesObjectRenderer(VectorScene scene, float zoom)
     {
-        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || zoom >= 0.18f);
+        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || EffectivePixelZoom(zoom) >= 0.18f);
     }
+
+    private static float EffectivePixelZoom(float zoom) => zoom * VectorUnits.PixelsPerUnit;
 
     private RenderStats DrawOverviewTiles(StageControl stage)
     {
@@ -240,11 +268,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
                 var count = scene.OverviewCount[tile];
                 if (count <= 0) continue;
                 atoms += scene.OverviewAtoms[tile];
-                var screen = stage.WorldToScreen(tx * tileW - scene.StageWidth * 0.5f, ty * tileH - scene.StageHeight * 0.5f);
-                FillRectangle(screen.X, screen.Y, Math.Max(1, stage.WorldLengthToScreen(tileW) + 1), Math.Max(1, stage.WorldLengthToScreen(tileH) + 1), scene.OverviewArgb[tile]);
                 draws++;
             }
         }
+
+        if (draws > 0) DrawLodBitmap(stage, overview: true);
 
         return new RenderStats(0, 0, atoms, draws, 0, true);
     }
@@ -274,13 +302,94 @@ internal sealed class Direct2DStageRenderer : IDisposable
                 var count = scene.TileCount[tile];
                 if (count <= 0) continue;
                 atoms += scene.TileAtoms[tile];
-                var screen = stage.WorldToScreen(tx * tileW - scene.StageWidth * 0.5f, ty * tileH - scene.StageHeight * 0.5f);
-                FillRectangle(screen.X, screen.Y, Math.Max(1, stage.WorldLengthToScreen(tileW) + 1), Math.Max(1, stage.WorldLengthToScreen(tileH) + 1), scene.TileArgb[tile]);
                 draws++;
             }
         }
 
+        if (draws > 0) DrawLodBitmap(stage, overview: false);
+
         return new RenderStats(0, 0, atoms, draws, 0, true);
+    }
+
+    private void DrawLodBitmap(StageControl stage, bool overview)
+    {
+        var scene = stage.Scene;
+        var bitmap = LodBitmap(scene, overview);
+        var topLeft = stage.WorldToScreen(-scene.StageWidth * 0.5f, -scene.StageHeight * 0.5f);
+        var bottomRight = stage.WorldToScreen(scene.StageWidth * 0.5f, scene.StageHeight * 0.5f);
+        var destination = Rect(topLeft.X, topLeft.Y, bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y);
+        var columns = overview ? scene.OverviewColumnCount : scene.TileColumnCount;
+        var rows = overview ? scene.OverviewRowCount : scene.TileRowCount;
+        var source = Rect(0, 0, columns, rows);
+        _target!.DrawBitmap(bitmap, destination, 1, BitmapInterpolationMode.NearestNeighbor, source);
+        LastLodBitmapSubmissions++;
+    }
+
+    private ID2D1Bitmap LodBitmap(VectorScene scene, bool overview)
+    {
+        if (_target is null) throw new InvalidOperationException("Direct2D render target is not ready.");
+        var key = new LodBitmapKey(scene, overview);
+        if (_lodBitmapCache.TryGetValue(key, out var cached)
+            && cached.SummaryRevision == scene.SummaryRevision)
+        {
+            return cached.Bitmap;
+        }
+
+        var columns = overview ? scene.OverviewColumnCount : scene.TileColumnCount;
+        var rows = overview ? scene.OverviewRowCount : scene.TileRowCount;
+        var counts = overview ? scene.OverviewCount : scene.TileCount;
+        var colors = overview ? scene.OverviewArgb : scene.TileArgb;
+        var pixelCount = columns * rows;
+        var pixels = ArrayPool<int>.Shared.Rent(pixelCount);
+        try
+        {
+            ParallelBatch.For(pixelCount, 4096, (_, start, end) =>
+            {
+                for (var pixel = start; pixel < end; pixel++)
+                {
+                    pixels[pixel] = counts[pixel] > 0 ? PremultiplyArgb(colors[pixel]) : 0;
+                }
+            });
+
+            var handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            ID2D1Bitmap bitmap;
+            try
+            {
+                var properties = new BitmapProperties(
+                    new PixelFormat(Format.B8G8R8A8_UNorm, DCommonAlphaMode.Premultiplied),
+                    96,
+                    96);
+                bitmap = _target.CreateBitmap(
+                    new SizeI(columns, rows),
+                    handle.AddrOfPinnedObject(),
+                    (uint)(columns * sizeof(int)),
+                    properties);
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            _lodBitmapCache[key] = new CachedLodBitmap(scene.SummaryRevision, bitmap);
+            cached?.Dispose();
+            LastLodBitmapBuilds++;
+            return bitmap;
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(pixels);
+        }
+    }
+
+    private static int PremultiplyArgb(int argb)
+    {
+        var alpha = (argb >>> 24) & 0xff;
+        if (alpha == 0) return 0;
+        if (alpha == 0xff) return argb;
+        var red = ((argb >>> 16) & 0xff) * alpha + 127;
+        var green = ((argb >>> 8) & 0xff) * alpha + 127;
+        var blue = (argb & 0xff) * alpha + 127;
+        return (alpha << 24) | ((red / 255) << 16) | ((green / 255) << 8) | (blue / 255);
     }
 
     private RenderStats DrawObjects(StageControl stage, int drawLimit)
@@ -984,6 +1093,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private void ResetTarget()
     {
         ClearBrushCache();
+        ClearLodBitmapCache();
         _target?.Dispose();
         _target = null;
         _targetSize = default;
@@ -1000,6 +1110,28 @@ internal sealed class Direct2DStageRenderer : IDisposable
     {
         foreach (var brush in _brushCache.Values) brush.Dispose();
         _brushCache.Clear();
+    }
+
+    private void PruneLodBitmapCache(VectorScene editableScene, VectorScene? underlayScene)
+    {
+        List<LodBitmapKey>? staleKeys = null;
+        foreach (var key in _lodBitmapCache.Keys)
+        {
+            if (ReferenceEquals(key.Scene, editableScene) || ReferenceEquals(key.Scene, underlayScene)) continue;
+            (staleKeys ??= []).Add(key);
+        }
+
+        if (staleKeys is null) return;
+        foreach (var key in staleKeys)
+        {
+            if (_lodBitmapCache.Remove(key, out var cached)) cached.Dispose();
+        }
+    }
+
+    private void ClearLodBitmapCache()
+    {
+        foreach (var cached in _lodBitmapCache.Values) cached.Dispose();
+        _lodBitmapCache.Clear();
     }
 
     private ID2D1PathGeometry FreehandGeometry(VectorScene scene, int objectIndex, GdiPointF[] localPoints)

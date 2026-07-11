@@ -4,12 +4,35 @@ namespace VectorAnimationEngine;
 
 internal static class Benchmark
 {
+    private const double TargetRenderFramesPerSecond = 144.0;
+    private const double RenderCollectBudgetMilliseconds = 1000.0 / TargetRenderFramesPerSecond;
+
     public static void RunDefaultStress()
     {
-        var scene = new VectorScene();
+        var project = VectorProject.CreateEmpty();
+        var drawingObject = project.DrawingObjects[0];
+        var scene = drawingObject.Scene;
+        var timelineChanges = 0;
+        scene.Timeline.Changed += (_, _) => timelineChanges++;
         var generate = Stopwatch.StartNew();
         scene.Generate(1000, 100000, 100000000);
         generate.Stop();
+        AssertStressScene(scene, timelineChanges);
+
+        var duplicate = new VectorScene();
+        duplicate.Generate(1000, 100000, 100000000);
+        var stressGeometryChecksum = StressGeometryChecksum(scene);
+        if (stressGeometryChecksum != StressGeometryChecksum(duplicate)
+            || !scene.TileCount.SequenceEqual(duplicate.TileCount)
+            || !scene.TileAtoms.SequenceEqual(duplicate.TileAtoms)
+            || !scene.TileArgb.SequenceEqual(duplicate.TileArgb)
+            || !scene.OverviewCount.SequenceEqual(duplicate.OverviewCount)
+            || !scene.OverviewAtoms.SequenceEqual(duplicate.OverviewAtoms)
+            || !scene.OverviewArgb.SequenceEqual(duplicate.OverviewArgb))
+        {
+            throw new InvalidOperationException("Parallel stress generation is not deterministic.");
+        }
+        RunParallelRenderOrderRegression(duplicate);
 
         var viewports = new[]
         {
@@ -40,17 +63,303 @@ internal static class Benchmark
         }
         scanWatch.Stop();
 
+        var renderOrder = new SceneRenderOrderBuffer();
+        for (var viewportIndex = 0; viewportIndex < viewports.Length; viewportIndex++)
+        {
+            var reference = CollectRenderStatsReference(scene, viewports[viewportIndex], 20);
+            renderOrder.Collect(scene, viewports[viewportIndex], 20);
+            if (renderOrder.VisibleCount != reference.VisibleObjects
+                || renderOrder.ScannedCount != reference.ScannedObjects
+                || renderOrder.VisibleAtoms != reference.VisibleAtoms
+                || (viewportIndex == 0 && ParallelBatch.MaximumWorkerCount > 1 && renderOrder.LastCollectBatchCount <= 1))
+            {
+                throw new InvalidOperationException($"Render collection diverged from the serial reference for viewport {viewportIndex}.");
+            }
+        }
+
+        const int renderCollectIterations = 20;
+        var collectWatch = Stopwatch.StartNew();
+        long collectedObjects = 0;
+        var maximumCollectBatches = 1;
+        for (var iteration = 0; iteration < renderCollectIterations; iteration++)
+        {
+            foreach (var viewport in viewports)
+            {
+                renderOrder.Collect(scene, viewport, 20);
+                collectedObjects += renderOrder.VisibleCount;
+                maximumCollectBatches = Math.Max(maximumCollectBatches, renderOrder.LastCollectBatchCount);
+            }
+        }
+        collectWatch.Stop();
+        var renderCollectSamples = renderCollectIterations * viewports.Length;
+        var averageRenderCollectMilliseconds = collectWatch.Elapsed.TotalMilliseconds / renderCollectSamples;
+        const int interactiveCollectSamples = 80;
+        var interactiveCollectWatch = Stopwatch.StartNew();
+        for (var sample = 0; sample < interactiveCollectSamples; sample++)
+        {
+            renderOrder.Collect(scene, viewports[2], 20);
+        }
+        interactiveCollectWatch.Stop();
+        var interactiveCollectMilliseconds = interactiveCollectWatch.Elapsed.TotalMilliseconds / interactiveCollectSamples;
+        var interactiveCollectBudgetMet = interactiveCollectMilliseconds <= RenderCollectBudgetMilliseconds;
+
+        var sceneDefinition = project.Scenes[0];
+        if (!project.TryAddSceneInstance(sceneDefinition.Id, drawingObject.Id, PointF.Empty, 0, out _))
+        {
+            throw new InvalidOperationException("The stress drawing object could not be instanced for composition benchmarking.");
+        }
+
+        var compositionDestination = new VectorScene();
+        var compositionWatch = Stopwatch.StartNew();
+        var composition = SceneCompositionBuilder.Build(compositionDestination, sceneDefinition, project.DrawingObjects, 20);
+        compositionWatch.Stop();
+        if (compositionDestination.LayerCount != scene.LayerCount
+            || compositionDestination.ObjectCount != scene.ObjectCount
+            || composition.ObjectOwners.Count != scene.ObjectCount
+            || compositionDestination.TileCount.Sum() <= 0
+            || compositionDestination.OverviewCount.Sum() <= 0)
+        {
+            throw new InvalidOperationException("Stress-scene composition lost layers, objects, ownership, or LOD summaries.");
+        }
+
         Console.WriteLine($"generate_ms={generate.Elapsed.TotalMilliseconds:0.0}");
+        Console.WriteLine($"batch_workers={ParallelBatch.MaximumWorkerCount}");
+        Console.WriteLine($"layers={scene.LayerCount}");
         Console.WriteLine($"objects={scene.ObjectCount}");
+        Console.WriteLine($"virtual_atoms={scene.VirtualAtomCount}");
+        Console.WriteLine($"timeline_notifications={timelineChanges}");
+        Console.WriteLine($"stress_geometry_checksum={stressGeometryChecksum:X16}");
         Console.WriteLine($"avg_scanned_objects={scanned / (double)(viewports.Length * 200):0.0}");
         Console.WriteLine($"avg_cells={cells / (double)(viewports.Length * 200):0.0}");
         Console.WriteLine($"overview_tiles={scene.OverviewCount.Count(count => count > 0)}");
         Console.WriteLine($"detail_tiles={scene.TileCount.Count(count => count > 0)}");
         Console.WriteLine($"query_ms={scanWatch.Elapsed.TotalMilliseconds:0.0}");
+        Console.WriteLine($"render_collect_ms={collectWatch.Elapsed.TotalMilliseconds:0.0}");
+        Console.WriteLine($"render_collect_mixed_avg_ms={averageRenderCollectMilliseconds:0.000}");
+        Console.WriteLine($"render_collect_interactive_avg_ms={interactiveCollectMilliseconds:0.000}");
+        Console.WriteLine($"render_collect_budget_ms={RenderCollectBudgetMilliseconds:0.000}");
+        Console.WriteLine($"render_collect_budget_met={interactiveCollectBudgetMet.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"render_collect_capacity_fps={1000.0 / interactiveCollectMilliseconds:0.0}");
+        Console.WriteLine($"render_collect_batches={maximumCollectBatches}");
+        Console.WriteLine($"render_collect_objects={collectedObjects}");
+        Console.WriteLine($"composition_ms={compositionWatch.Elapsed.TotalMilliseconds:0.0}");
+        Console.WriteLine($"composition_bucket_ms={SceneCompositionBuilder.LastBuildMetrics.BucketMilliseconds:0.0}");
+        Console.WriteLine($"composition_setup_ms={SceneCompositionBuilder.LastBuildMetrics.SetupMilliseconds:0.0}");
+        Console.WriteLine($"composition_append_ms={SceneCompositionBuilder.LastBuildMetrics.AppendMilliseconds:0.0}");
+        Console.WriteLine($"composition_finalize_ms={SceneCompositionBuilder.LastBuildMetrics.FinalizeMilliseconds:0.0}");
+        Console.WriteLine($"composition_objects={compositionDestination.ObjectCount}");
+    }
+
+    private static void AssertStressScene(VectorScene scene, int timelineChanges)
+    {
+        if (scene.LayerCount != 1000
+            || scene.ObjectCount != 100000
+            || scene.VirtualAtomCount != 100000000
+            || timelineChanges != 1
+            || scene.CellStart.Length == 0
+            || scene.CellStart[^1] != scene.ObjectCount
+            || scene.CellObjects.Length != scene.ObjectCount)
+        {
+            throw new InvalidOperationException("The generated stress scene did not meet its structural targets.");
+        }
+
+        var seen = new bool[scene.ObjectCount];
+        for (var cell = 0; cell < scene.CellStart.Length - 1; cell++)
+        {
+            var previous = -1;
+            for (var position = scene.CellStart[cell]; position < scene.CellStart[cell + 1]; position++)
+            {
+                var objectIndex = scene.CellObjects[position];
+                if ((uint)objectIndex >= scene.ObjectCount || seen[objectIndex] || objectIndex <= previous)
+                {
+                    throw new InvalidOperationException("The parallel spatial index is incomplete, duplicated, or unstable.");
+                }
+
+                seen[objectIndex] = true;
+                previous = objectIndex;
+            }
+        }
+
+        if (seen.Any(value => !value)) throw new InvalidOperationException("The parallel spatial index lost one or more objects.");
+    }
+
+    private static ulong StressGeometryChecksum(VectorScene scene)
+    {
+        var hash = 1469598103934665603UL;
+        for (var index = 0; index < scene.ObjectCount; index++)
+        {
+            hash = HashStressValue(hash, scene.ObjectLayer[index]);
+            hash = HashStressValue(hash, scene.ObjectKeyframeFrame[index]);
+            hash = HashStressValue(hash, scene.ObjectOrder[index]);
+            hash = HashStressValue(hash, BitConverter.SingleToInt32Bits(scene.X[index]));
+            hash = HashStressValue(hash, BitConverter.SingleToInt32Bits(scene.Y[index]));
+            hash = HashStressValue(hash, BitConverter.SingleToInt32Bits(scene.Width[index]));
+            hash = HashStressValue(hash, BitConverter.SingleToInt32Bits(scene.Height[index]));
+            hash = HashStressValue(hash, BitConverter.SingleToInt32Bits(scene.Angle[index]));
+            hash = HashStressValue(hash, BitConverter.SingleToInt32Bits(scene.Stroke[index]));
+            hash = HashStressValue(hash, (int)scene.ShapeKind[index]);
+            hash = HashStressValue(hash, scene.AtomCount[index]);
+            hash = HashStressValue(hash, scene.Argb[index]);
+            hash = HashStressValue(hash, scene.StrokeArgb[index]);
+        }
+
+        return hash;
+    }
+
+    private static ulong HashStressValue(ulong hash, long value)
+    {
+        hash ^= unchecked((ulong)value);
+        return hash * 1099511628211UL;
+    }
+
+    private static RenderStats CollectRenderStatsReference(VectorScene scene, RectangleF bounds, int frame)
+    {
+        var activeKeyframes = new int[scene.LayerCount];
+        scene.PopulateActiveKeyframeFrames(frame, activeKeyframes);
+        scene.GetIndexRange(bounds, out var minX, out var maxX, out var minY, out var maxY);
+        var visible = 0;
+        var scanned = 0;
+        long atoms = 0;
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++)
+            {
+                var cell = scene.CellIndex(x, y);
+                var start = scene.CellStart[cell];
+                var end = scene.CellStart[cell + 1];
+                scanned += end - start;
+                for (var position = start; position < end; position++)
+                {
+                    var objectIndex = scene.CellObjects[position];
+                    var layer = scene.ObjectLayer[objectIndex];
+                    if (scene.ObjectKeyframeFrame[objectIndex] != activeKeyframes[layer]) continue;
+                    var objectBounds = scene.GetObjectWorldBounds(objectIndex);
+                    if (objectBounds.Right < bounds.Left
+                        || objectBounds.Left > bounds.Right
+                        || objectBounds.Bottom < bounds.Top
+                        || objectBounds.Top > bounds.Bottom)
+                    {
+                        continue;
+                    }
+
+                    visible++;
+                    atoms += scene.AtomCount[objectIndex];
+                }
+            }
+        }
+
+        return new RenderStats(visible, visible, atoms, 0, scanned, false);
+    }
+
+    private static void RunParallelRenderOrderRegression(VectorScene scene)
+    {
+        const int frame = 20;
+        var bounds = new RectangleF(-7000, -4100, 14000, 8200);
+        scene.LayerVisible[1] = false;
+        if (!scene.InsertTimelineBlankKeyframe(2, frame))
+        {
+            throw new InvalidOperationException("The parallel render-order regression could not create a blank exposure.");
+        }
+
+        var tiedObjects = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index =>
+            {
+                if (scene.ObjectLayer[index] != 0 || !scene.IsObjectActive(index, frame)) return false;
+                var objectBounds = scene.GetObjectWorldBounds(index);
+                return objectBounds.Right >= bounds.Left
+                    && objectBounds.Left <= bounds.Right
+                    && objectBounds.Bottom >= bounds.Top
+                    && objectBounds.Top <= bounds.Bottom;
+            })
+            .Take(3)
+            .ToArray();
+        if (tiedObjects.Length != 3) throw new InvalidOperationException("The parallel render-order regression has too few tie-break objects.");
+        foreach (var objectIndex in tiedObjects) scene.ObjectOrder[objectIndex] = long.MaxValue / 2;
+        scene.ObjectSubOrder[tiedObjects[0]] = -0.5;
+        scene.ObjectSubOrder[tiedObjects[1]] = 0.25;
+        scene.ObjectSubOrder[tiedObjects[2]] = 0.25;
+
+        var expected = CollectRenderCommandsReference(scene, bounds, frame, out var expectedVisible, out var expectedAtoms);
+        var renderOrder = new SceneRenderOrderBuffer();
+        renderOrder.Collect(scene, bounds, frame);
+        var actual = new List<long>(expected.Length);
+        var drawn = renderOrder.Draw(
+            scene,
+            int.MaxValue,
+            index => actual.Add(RenderCommand(index, SceneRenderPass.Fill)),
+            index => actual.Add(RenderCommand(index, SceneRenderPass.Stroke)));
+
+        if (renderOrder.VisibleCount != expectedVisible
+            || renderOrder.VisibleAtoms != expectedAtoms
+            || drawn != expectedVisible
+            || !actual.SequenceEqual(expected)
+            || (ParallelBatch.MaximumWorkerCount > 1 && renderOrder.LastCollectBatchCount <= 1))
+        {
+            throw new InvalidOperationException("Parallel render collection changed visibility, atoms, or draw-command order.");
+        }
+    }
+
+    private static long[] CollectRenderCommandsReference(
+        VectorScene scene,
+        RectangleF bounds,
+        int frame,
+        out int visibleCount,
+        out long visibleAtoms)
+    {
+        var layers = new List<int>?[scene.LayerCount];
+        visibleCount = 0;
+        visibleAtoms = 0;
+        for (var objectIndex = 0; objectIndex < scene.ObjectCount; objectIndex++)
+        {
+            if (!scene.IsObjectActive(objectIndex, frame)) continue;
+            var objectBounds = scene.GetObjectWorldBounds(objectIndex);
+            if (objectBounds.Right < bounds.Left
+                || objectBounds.Left > bounds.Right
+                || objectBounds.Bottom < bounds.Top
+                || objectBounds.Top > bounds.Bottom)
+            {
+                continue;
+            }
+
+            var layer = scene.ObjectLayer[objectIndex];
+            (layers[layer] ??= new List<int>(64)).Add(objectIndex);
+            visibleCount++;
+            visibleAtoms += scene.AtomCount[objectIndex];
+        }
+
+        var commands = new List<long>(visibleCount * 2);
+        for (var layerIndex = scene.LayerCount - 1; layerIndex >= 0; layerIndex--)
+        {
+            var layer = layers[layerIndex];
+            if (layer is not { Count: > 0 }) continue;
+            layer.Sort((a, b) =>
+            {
+                var comparison = scene.ObjectOrder[a].CompareTo(scene.ObjectOrder[b]);
+                if (comparison != 0) return comparison;
+                comparison = scene.ObjectSubOrder[a].CompareTo(scene.ObjectSubOrder[b]);
+                return comparison != 0 ? comparison : a.CompareTo(b);
+            });
+            foreach (var objectIndex in layer)
+            {
+                if (SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) commands.Add(RenderCommand(objectIndex, SceneRenderPass.Fill));
+            }
+            foreach (var objectIndex in layer)
+            {
+                if (SceneRenderOrder.HasStroke(scene.ShapeKind[objectIndex], scene.Stroke[objectIndex])) commands.Add(RenderCommand(objectIndex, SceneRenderPass.Stroke));
+            }
+        }
+
+        return commands.ToArray();
+    }
+
+    private static long RenderCommand(int objectIndex, SceneRenderPass pass)
+    {
+        return ((long)objectIndex << 1) | (pass == SceneRenderPass.Stroke ? 1L : 0L);
     }
 
     public static void RunTimelineRegression()
     {
+        RunFixedStepBatchRegression();
         RunTimelineExposureRegression();
         RunTimelineFrameCommandRegression();
         RunTimelineTrackSynchronizationRegression();
@@ -62,6 +371,20 @@ internal static class Benchmark
         RunSceneInstanceTimelineRegression();
         RunSceneCompositionRegression();
         Console.WriteLine("timeline_regression=ok");
+    }
+
+    private static void RunFixedStepBatchRegression()
+    {
+        var batcher = new FixedStepBatcher(300);
+        var steps = 0;
+        for (var tick = 0; tick < 625; tick++) steps += batcher.Consume(0.008);
+        if (steps is < 1499 or > 1500)
+        {
+            throw new InvalidOperationException($"The batched fixed-step scheduler produced {steps} updates instead of approximately 1500.");
+        }
+
+        batcher.Reset();
+        if (batcher.Consume(0.001) != 0) throw new InvalidOperationException("The fixed-step scheduler did not reset its remainder.");
     }
 
     private static void RunTimelineExposureRegression()
@@ -806,7 +1129,13 @@ internal static class Benchmark
             ?? throw new InvalidOperationException("Scene composition regression lost its instance track.");
         scene.Timeline.InsertBlankKeyframe(track.Id, 5);
         SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 5);
-        AssertTimeline(destination.ObjectCount == 0, "Blank scene-instance exposure remained visible in the composition preview.");
+        var placeholderTrack = destination.Timeline.FindTrackByTargetId(destination.LayerIds[0]);
+        AssertTimeline(
+            destination.ObjectCount == 0
+            && destination.LayerCount == 1
+            && placeholderTrack is not null
+            && !placeholderTrack.EvaluateExposure(0).HasContent,
+            "Blank scene-instance exposure remained visible or populated the composition placeholder layer.");
 
         scene.Timeline.InsertKeyframe(track.Id, 8);
         SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 8);
@@ -820,6 +1149,133 @@ internal static class Benchmark
             destination.ObjectCount == 1
             && frameNineComposition.ObjectOwners.Values.All(owner => owner.DrawingObjectId != childDrawingObject.Id),
             "Nested drawing-object instance exposure did not hide only the child branch.");
+
+        RunSparseLayerCompositionRegression();
+        RunDegeneratePathCompositionRegression();
+        RunChunkedCompositionRegression();
+    }
+
+    private static void RunSparseLayerCompositionRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var drawingObject = project.DrawingObjects[0];
+        drawingObject.Scene.CreateEmpty(3);
+        var sourceLine = drawingObject.Scene.AddCurveSegment(
+            1,
+            new PointF(10.4f, 20.6f),
+            new PointF(43.7f, -18.2f),
+            new PointF(98.3f, 61.9f),
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.White,
+            8);
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, drawingObject.Id, PointF.Empty, 0, out _),
+            "Sparse-layer composition setup rejected a valid drawing-object instance.");
+
+        var destination = new VectorScene();
+        var result = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 0);
+        var tracks = destination.LayerIds
+            .Select(destination.Timeline.FindTrackByTargetId)
+            .ToArray();
+        drawingObject.Scene.TryGetLineEndpoint(sourceLine, startEndpoint: true, out var sourceStart);
+        drawingObject.Scene.TryGetLineEndpoint(sourceLine, startEndpoint: false, out var sourceEnd);
+        var reference = new VectorScene();
+        reference.CreateEmpty(3);
+        var referenceLine = reference.AddCurveSegment(
+            1,
+            VectorUnits.Quantize(sourceStart),
+            VectorUnits.Quantize(new PointF(
+                drawingObject.Scene.CurveControlX[sourceLine],
+                drawingObject.Scene.CurveControlY[sourceLine])),
+            VectorUnits.Quantize(sourceEnd),
+            drawingObject.Scene.Stroke[sourceLine],
+            Color.FromArgb(drawingObject.Scene.Argb[sourceLine]),
+            Color.FromArgb(drawingObject.Scene.StrokeArgb[sourceLine]),
+            drawingObject.Scene.AtomCount[sourceLine]);
+        AssertTimeline(
+            destination.LayerCount == 3
+            && destination.ObjectCount == 1
+            && result.ObjectOwners.Count == 1
+            && tracks[0] is not null
+            && !tracks[0]!.EvaluateExposure(0).HasContent
+            && tracks[1] is not null
+            && tracks[1]!.EvaluateExposure(0).HasContent
+            && tracks[2] is not null
+            && !tracks[2]!.EvaluateExposure(0).HasContent
+            && NearlyEqual(destination.X[0], reference.X[referenceLine])
+            && NearlyEqual(destination.Y[0], reference.Y[referenceLine])
+            && NearlyEqual(destination.Width[0], reference.Width[referenceLine])
+            && NearlyEqual(destination.Height[0], reference.Height[referenceLine])
+            && NearlyEqual(destination.Angle[0], reference.Angle[referenceLine])
+            && NearlyEqual(destination.CurveControlX[0], reference.CurveControlX[referenceLine])
+            && NearlyEqual(destination.CurveControlY[0], reference.CurveControlY[referenceLine]),
+            "Sparse-layer composition populated an empty layer or changed identity-transform line quantization.");
+    }
+
+    private static void RunChunkedCompositionRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var drawingObject = project.DrawingObjects[0];
+        drawingObject.Scene.Generate(8, 8192, 8_192_000);
+        drawingObject.Scene.EditFrame = 20;
+        drawingObject.Scene.AddPathObject(
+            0,
+            [new PointF(-80, -40), new PointF(80, -40), new PointF(60, 70), new PointF(-70, 65)],
+            0,
+            Color.Coral,
+            Color.Transparent,
+            12);
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, drawingObject.Id, PointF.Empty, 0, out _),
+            "Chunked composition setup rejected a valid drawing-object instance.");
+
+        var destination = new VectorScene();
+        var result = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 20);
+        var destinationPaths = Enumerable.Range(0, destination.ObjectCount)
+            .Where(index => destination.ShapeKind[index] == ShapeKind.Path)
+            .ToArray();
+        AssertTimeline(
+            destination.ObjectCount == drawingObject.Scene.ObjectCount
+            && result.ObjectOwners.Count == destination.ObjectCount
+            && destinationPaths.Length == 1
+            && destination.TryGetPathWorldContours(destinationPaths[0], out var contours)
+            && contours.Length == 1
+            && contours[0].Length == 4,
+            "Chunked mixed-geometry composition lost objects, owners, or path geometry.");
+    }
+
+    private static void RunDegeneratePathCompositionRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var drawingObject = project.DrawingObjects[0];
+        drawingObject.Scene.CreateEmpty();
+        drawingObject.Scene.AddPathObject(
+            0,
+            [new PointF(-40, -40), new PointF(40, -40), new PointF(40, 40), new PointF(-40, 40)],
+            0,
+            Color.Teal,
+            Color.Transparent,
+            8);
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, drawingObject.Id, PointF.Empty, 0, out var instance)
+            && instance is not null,
+            "Degenerate-path composition setup rejected a valid drawing-object instance.");
+        instance!.ScaleX = 0;
+        instance.ScaleY = 0;
+
+        var destination = new VectorScene();
+        var result = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 0);
+        var track = destination.Timeline.FindTrackByTargetId(destination.LayerIds[0]);
+        AssertTimeline(
+            destination.ObjectCount == 0
+            && result.ObjectOwners.Count == 0
+            && track is not null
+            && !track.EvaluateExposure(0).HasContent,
+            "A path discarded by a degenerate transform left a populated composition keyframe.");
     }
 
     private static void AssertTimeline(bool condition, string message)
@@ -884,8 +1340,8 @@ internal static class Benchmark
         const int tiledUnderlayObjectCount = 56_000;
         for (var index = 0; index < tiledUnderlayObjectCount; index++)
         {
-            var x = (index % 1000) * 8 - 4000;
-            var y = (index / 1000) * 8 - 224;
+            var x = (index % 1000) * 2 - 1000;
+            var y = (index / 1000) * 2 - 56;
             tiledUnderlay.AppendObject(
                 0,
                 new PointF(x, y),
@@ -919,7 +1375,7 @@ internal static class Benchmark
             throw new InvalidOperationException("Switching the underlay retained stale Direct2D freehand geometry.");
         }
 
-        stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 10f);
+        stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 50f);
         stage.Update();
         Application.DoEvents();
         var expectedObjectDraws = tiledUnderlayObjectCount + editable.ObjectCount;
@@ -930,12 +1386,71 @@ internal static class Benchmark
             throw new InvalidOperationException("The shared object budget did not return unused editable capacity to the underlay.");
         }
 
+        var stressScene = new VectorScene();
+        stressScene.Generate(1000, 100000, 100000000);
+        stage.BindScene(stressScene);
+        stage.Fit();
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D
+            || !stage.LastStats.TileLod
+            || stage.LastStats.TileDraws <= 0
+            || stage.LastStats.DrawnObjects != 0
+            || stage.LastDirect2DLodBitmapSubmissions != 1)
+        {
+            throw new InvalidOperationException("Fit Stage did not submit the stress scene as one cached LOD bitmap.");
+        }
+
+        const int renderSamples = 24;
+        for (var warmup = 0; warmup < 4; warmup++)
+        {
+            stage.Invalidate();
+            stage.Update();
+        }
+        var completedFrames = 0;
+        EventHandler rendered = (_, _) => completedFrames++;
+        stage.FrameRendered += rendered;
+        var renderWatch = Stopwatch.StartNew();
+        double commandMilliseconds = 0;
+        double presentMilliseconds = 0;
+        var lodBitmapBuilds = 0;
+        for (var sample = 0; sample < renderSamples; sample++)
+        {
+            stage.Invalidate();
+            stage.Update();
+            commandMilliseconds += stage.LastDirect2DCommandMilliseconds;
+            presentMilliseconds += stage.LastDirect2DPresentMilliseconds;
+            lodBitmapBuilds += stage.LastDirect2DLodBitmapBuilds;
+        }
+        renderWatch.Stop();
+        stage.FrameRendered -= rendered;
+        if (completedFrames != renderSamples
+            || !stage.LastFrameUsedDirect2D
+            || !stage.LastStats.TileLod
+            || stage.LastDirect2DLodBitmapSubmissions != 1
+            || lodBitmapBuilds != 0)
+        {
+            throw new InvalidOperationException("The repeated stress-scene render sample did not complete through the Direct2D LOD path.");
+        }
+        var fitStageRenderFps = renderSamples / renderWatch.Elapsed.TotalSeconds;
+        var averageCommandMilliseconds = commandMilliseconds / renderSamples;
+        var commandBudgetMet = averageCommandMilliseconds <= RenderCollectBudgetMilliseconds;
+
         form.Close();
         Console.WriteLine("underlay_direct2d=ok");
         Console.WriteLine($"visible_objects={layeredVisibleObjects}");
         Console.WriteLine($"mixed_lod_tiles={mixedLodTileDraws}");
         Console.WriteLine("freehand_cache_switch=ok");
-        Console.WriteLine($"shared_object_draws={stage.LastStats.DrawnObjects}");
+        Console.WriteLine($"shared_object_draws={expectedObjectDraws}");
+        Console.WriteLine($"fit_stage_lod_tiles={stage.LastStats.TileDraws}");
+        Console.WriteLine($"fit_stage_lod_bitmap_submissions={stage.LastDirect2DLodBitmapSubmissions}");
+        Console.WriteLine($"fit_stage_lod_bitmap_rebuilds={lodBitmapBuilds}");
+        Console.WriteLine($"fit_stage_offscreen_present_fps={fitStageRenderFps:0.0}");
+        Console.WriteLine($"fit_stage_command_avg_ms={averageCommandMilliseconds:0.000}");
+        Console.WriteLine($"fit_stage_command_budget_ms={RenderCollectBudgetMilliseconds:0.000}");
+        Console.WriteLine($"fit_stage_command_budget_met={commandBudgetMet.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"fit_stage_command_capacity_fps={1000.0 / averageCommandMilliseconds:0.0}");
+        Console.WriteLine($"fit_stage_present_avg_ms={presentMilliseconds / renderSamples:0.000}");
     }
 
     public static void RunFreehandStress()

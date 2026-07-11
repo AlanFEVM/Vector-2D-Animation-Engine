@@ -19,6 +19,7 @@ internal sealed class MainForm : Form
     private const int HtBottomLeft = 16;
     private const int HtBottomRight = 17;
     private const int VkMenu = 0x12;
+    private const double TargetUps = 300.0;
     private const double MetricsRefreshSeconds = 0.25;
     private const double MaxFrameSeconds = 0.1;
     private const int IdleTimerIntervalMs = 250;
@@ -40,6 +41,7 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = IdleTimerIntervalMs };
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly Stopwatch _metricsClock = Stopwatch.StartNew();
+    private FixedStepBatcher _updateBatcher = new(TargetUps);
     private readonly DrawSettings _drawSettings = new();
     private readonly TrackBar _frameSlider = new();
     private readonly Label _fps = MetricLabel("FPS 0", 76);
@@ -1528,8 +1530,15 @@ internal sealed class MainForm : Form
 
         if (_playing)
         {
-            _updatesThisSample++;
-            UpdateSimulation(elapsed);
+            var updateCount = _updateBatcher.Consume(elapsed);
+            if (updateCount > 0)
+            {
+                _updatesThisSample += UpdateSimulation(updateCount, _updateBatcher.StepSeconds);
+            }
+        }
+        else
+        {
+            _updateBatcher.Reset();
         }
 
         var metricsElapsed = _metricsClock.Elapsed.TotalSeconds;
@@ -1546,30 +1555,40 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void UpdateSimulation(double deltaSeconds)
+    private int UpdateSimulation(int updateCount, double fixedDeltaSeconds)
     {
-        if (!_playing) return;
+        if (!_playing || updateCount <= 0) return 0;
 
-        _playbackAccumulator += deltaSeconds;
         var frameStep = 1.0 / Math.Max(1, _playbackSettings.Fps);
-        var framesToAdvance = (int)(_playbackAccumulator / frameStep);
-        if (framesToAdvance <= 0) return;
-
-        _playbackAccumulator -= framesToAdvance * frameStep;
         var start = _playbackSettings.StartFrame;
         var end = _playbackSettings.EndFrame;
-        var current = Math.Clamp(_frame, start, end);
-        if (_playbackSettings.LoopPlayback)
+        var nextFrame = Math.Clamp(_frame, start, end);
+        var processedUpdates = 0;
+        var stopAtEnd = false;
+        for (var update = 0; update < updateCount; update++)
         {
-            var span = Math.Max(1, end - start + 1);
-            var next = start + (int)(((long)current - start + framesToAdvance) % span);
-            SetFrame(next, invalidate: false);
-            return;
+            processedUpdates++;
+            _playbackAccumulator += fixedDeltaSeconds;
+            var framesToAdvance = (int)(_playbackAccumulator / frameStep);
+            if (framesToAdvance <= 0) continue;
+
+            _playbackAccumulator -= framesToAdvance * frameStep;
+            if (_playbackSettings.LoopPlayback)
+            {
+                var span = Math.Max(1, end - start + 1);
+                nextFrame = start + (int)(((long)nextFrame - start + framesToAdvance) % span);
+                continue;
+            }
+
+            nextFrame = (int)Math.Min(end, (long)nextFrame + framesToAdvance);
+            if (nextFrame < end) continue;
+            stopAtEnd = true;
+            break;
         }
 
-        var finalFrame = (int)Math.Min(end, (long)current + framesToAdvance);
-        SetFrame(finalFrame, invalidate: false);
-        if (finalFrame >= end) StopPlayback();
+        if (nextFrame != _frame) SetFrame(nextFrame, invalidate: false);
+        if (stopAtEnd) StopPlayback();
+        return processedUpdates;
     }
 
     private void TogglePlayback()
@@ -1581,6 +1600,7 @@ internal sealed class MainForm : Form
         }
 
         _playing = true;
+        _updateBatcher.Reset();
         _playbackAccumulator = 0;
         _timer.Interval = PlaybackTimerIntervalMs;
         _clock.Restart();
@@ -1592,6 +1612,7 @@ internal sealed class MainForm : Form
     {
         if (!_playing) return;
         _playing = false;
+        _updateBatcher.Reset();
         _playbackAccumulator = 0;
         _timer.Interval = IdleTimerIntervalMs;
         _clock.Restart();
@@ -1620,7 +1641,7 @@ internal sealed class MainForm : Form
     private void UpdateStatusBar()
     {
         SetToolStripText(_renderFpsStatus, $"Render FPS {_smoothedFps:0}");
-        SetToolStripText(_animationFpsStatus, $"UI UPS {_smoothedUps:0}  Animation FPS {_playbackSettings.Fps}");
+        SetToolStripText(_animationFpsStatus, $"UPS {_smoothedUps:0}/{TargetUps:0}  Animation FPS {_playbackSettings.Fps}");
         SetToolStripText(_zoomStatus, $"Zoom {_stage.Zoom * 100:0}%");
     }
 
