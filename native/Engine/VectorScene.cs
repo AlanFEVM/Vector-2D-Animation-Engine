@@ -1,8 +1,13 @@
+using Clipper2Lib;
+
 namespace VectorAnimationEngine;
 
-internal sealed class VectorScene
+internal sealed class VectorScene : ITimelineContext
 {
     private const float FillMergeDistanceUnits = 10f;
+    private const float ConnectedStrokeEndpointToleranceUnits = 1.5f;
+    private const double ClipperCoordinateScale = 1000d;
+    private const double TopologyCutterHalfWidthClipper = 2d;
     private const int TileColumns = 384;
     private const int TileRows = 224;
     private const int OverviewColumns = 120;
@@ -13,12 +18,29 @@ internal sealed class VectorScene
     public int LayerCount { get; private set; }
     public int ObjectCount { get; private set; }
     public long VirtualAtomCount { get; private set; }
+    public long GeometryRevision { get; private set; }
+    private long _nextObjectOrder;
+    private bool _synchronizingKeyframeContent;
+    private Func<IReadOnlyList<string>>? _additionalTimelineTargets;
     public int ActiveLayer { get; set; }
-    public int FrameCount { get; } = 240;
+    public int EditFrame { get; set; }
+    public int FrameCount => Timeline.Tracks.Count == 0 ? AnimationTimeline.DefaultDuration : Timeline.Duration;
     public float StageWidth { get; } = 48000;
     public float StageHeight { get; } = 28000;
     public float MaxHalfExtent { get; private set; } = 128;
 
+    public AnimationTimeline Timeline { get; } = new();
+    public IReadOnlyList<string> TimelineTargetIds
+    {
+        get
+        {
+            var additionalTargets = AdditionalTimelineTargetIds();
+            return additionalTargets.Length == 0
+                ? LayerIds
+                : LayerIds.Concat(additionalTargets).ToArray();
+        }
+    }
+    public string[] LayerIds { get; private set; } = [];
     public string[] LayerNames { get; private set; } = [];
     public bool[] LayerVisible { get; private set; } = [];
     public float[] LayerOpacity { get; private set; } = [];
@@ -26,6 +48,9 @@ internal sealed class VectorScene
     public int[] LayerEnd { get; private set; } = [];
 
     public ushort[] ObjectLayer { get; private set; } = [];
+    public int[] ObjectKeyframeFrame { get; private set; } = [];
+    public long[] ObjectOrder { get; private set; } = [];
+    public double[] ObjectSubOrder { get; private set; } = [];
     public float[] X { get; private set; } = [];
     public float[] Y { get; private set; } = [];
     public float[] Width { get; private set; } = [];
@@ -39,6 +64,7 @@ internal sealed class VectorScene
     public int[] Argb { get; private set; } = [];
     public int[] StrokeArgb { get; private set; } = [];
     private readonly Dictionary<int, PointF[][]> _pathLocalContours = new();
+    private readonly Dictionary<int, PointF[]> _freehandLocalPoints = new();
 
     private readonly record struct MarqueePartAddition(
         bool IsLine,
@@ -52,6 +78,47 @@ internal sealed class VectorScene
         Color StrokeColor,
         uint Atoms,
         bool Selected);
+
+    private readonly record struct FillRegion(PointF[][] Contours, RectangleF Bounds, float Area);
+
+    private readonly record struct PolylinePart(int PartIndex, float StartT, float EndT, PointF[] Points);
+
+    private readonly record struct BoundaryStrokePart(int PartIndex, int ContourIndex, float StartT, float EndT, PointF[] Points);
+
+    private readonly record struct ConnectedStrokePart(DrawingElementHit Hit, PointF Start, PointF End);
+
+    private readonly record struct TopologyCutterPath(Path64 Path, bool Closed);
+
+    private enum MaterializedPartGeometry
+    {
+        Curve,
+        Freehand,
+        Polyline,
+        Fill
+    }
+
+    internal void ConfigureAdditionalTimelineTargets(Func<IReadOnlyList<string>>? provider)
+    {
+        _additionalTimelineTargets = provider;
+        SynchronizeTimelineTracks();
+    }
+
+    private readonly record struct MaterializedPartAddition(
+        MaterializedPartGeometry Geometry,
+        DrawingElementKey SourceKey,
+        int Layer,
+        long Order,
+        double SubOrder,
+        float Stroke,
+        Color FillColor,
+        Color StrokeColor,
+        uint Atoms,
+        PointF Start,
+        PointF Control,
+        PointF End,
+        PointF[] Points,
+        PointF[][] Contours);
+
 
     public int TileColumnCount => TileColumns;
     public int TileRowCount => TileRows;
@@ -74,9 +141,12 @@ internal sealed class VectorScene
         LayerCount = Math.Clamp(layers, 1, ushort.MaxValue);
         ObjectCount = 0;
         VirtualAtomCount = 0;
+        _nextObjectOrder = 0;
         ActiveLayer = 0;
+        EditFrame = 0;
         MaxHalfExtent = 128;
 
+        LayerIds = CreateStableIds(LayerCount, AdditionalTimelineTargetIds());
         LayerNames = new string[LayerCount];
         LayerVisible = new bool[LayerCount];
         LayerOpacity = new float[LayerCount];
@@ -88,10 +158,13 @@ internal sealed class VectorScene
             LayerVisible[i] = true;
             LayerOpacity[i] = 1.0f;
             LayerStart[i] = 0;
-            LayerEnd[i] = FrameCount - 1;
+            LayerEnd[i] = AnimationTimeline.DefaultDuration - 1;
         }
 
         ObjectLayer = [];
+        ObjectKeyframeFrame = [];
+        ObjectOrder = [];
+        ObjectSubOrder = [];
         X = [];
         Y = [];
         Width = [];
@@ -105,6 +178,8 @@ internal sealed class VectorScene
         Argb = [];
         StrokeArgb = [];
         _pathLocalContours.Clear();
+        _freehandLocalPoints.Clear();
+        InitializeTimelineFromLayerExposure();
         ClearSummaries();
         RebuildSpatialIndex();
     }
@@ -114,10 +189,13 @@ internal sealed class VectorScene
         LayerCount = Math.Clamp(layers, 1, ushort.MaxValue);
         ObjectCount = Math.Clamp(objects, 1, 1_000_000);
         VirtualAtomCount = Math.Max(atoms, ObjectCount * 3L);
+        _nextObjectOrder = ObjectCount;
         ActiveLayer = 0;
+        EditFrame = 0;
         MaxHalfExtent = 128;
 
         var rng = new Random(0x2D0A2026);
+        LayerIds = CreateStableIds(LayerCount, AdditionalTimelineTargetIds());
         LayerNames = new string[LayerCount];
         LayerVisible = new bool[LayerCount];
         LayerOpacity = new float[LayerCount];
@@ -134,6 +212,9 @@ internal sealed class VectorScene
         }
 
         ObjectLayer = GC.AllocateUninitializedArray<ushort>(ObjectCount);
+        ObjectKeyframeFrame = GC.AllocateUninitializedArray<int>(ObjectCount);
+        ObjectOrder = GC.AllocateUninitializedArray<long>(ObjectCount);
+        ObjectSubOrder = GC.AllocateUninitializedArray<double>(ObjectCount);
         X = GC.AllocateUninitializedArray<float>(ObjectCount);
         Y = GC.AllocateUninitializedArray<float>(ObjectCount);
         Width = GC.AllocateUninitializedArray<float>(ObjectCount);
@@ -147,6 +228,7 @@ internal sealed class VectorScene
         Argb = GC.AllocateUninitializedArray<int>(ObjectCount);
         StrokeArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
         _pathLocalContours.Clear();
+        _freehandLocalPoints.Clear();
 
         var avgAtoms = (double)VirtualAtomCount / ObjectCount;
         var columns = (int)Math.Ceiling(Math.Sqrt(ObjectCount * 1.7));
@@ -174,6 +256,9 @@ internal sealed class VectorScene
             var color = ColorFromHsl(hue, 0.46 + rng.NextDouble() * 0.22, 0.42 + rng.NextDouble() * 0.24);
 
             ObjectLayer[i] = (ushort)layer;
+            ObjectKeyframeFrame[i] = LayerStart[layer];
+            ObjectOrder[i] = i + 1L;
+            ObjectSubOrder[i] = 0;
             X[i] = VectorUnits.Quantize((float)(col * cellW - StageWidth * 0.5 + jitterX));
             Y[i] = VectorUnits.Quantize((float)(row * cellH - StageHeight * 0.5 + jitterY));
             Width[i] = VectorUnits.Quantize(VectorUnits.FromPixels((float)(8 + sizeBias * (24 + rng.NextDouble() * 96))));
@@ -193,6 +278,7 @@ internal sealed class VectorScene
             AddObjectToOverviewSummary(i, color, overviewR, overviewG, overviewB);
         }
 
+        InitializeTimelineFromLayerExposure();
         FinalizeTileSummary(tileR, tileG, tileB);
         FinalizeOverviewSummary(overviewR, overviewG, overviewB);
         RebuildSpatialIndex();
@@ -205,12 +291,27 @@ internal sealed class VectorScene
 
     public int AddObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
     {
+        var index = AppendObject(layer, center, size, angle, stroke, color, strokeColor, atoms, shapeKind);
+        RebuildSpatialIndex();
+        var summaryColor = ShapeKind[index] is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform
+            ? strokeColor
+            : color;
+        AddObjectToSummariesIncremental(index, summaryColor);
+        return index;
+    }
+
+    private int AppendObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
+    {
         var index = ObjectCount;
         ObjectCount++;
         VirtualAtomCount += atoms;
-        ResizeObjectArrays();
+        EnsureObjectCapacity(ObjectCount);
 
-        ObjectLayer[index] = (ushort)Math.Clamp(layer, 0, LayerCount - 1);
+        var targetLayer = Math.Clamp(layer, 0, LayerCount - 1);
+        ObjectLayer[index] = (ushort)targetLayer;
+        ObjectKeyframeFrame[index] = EnsureWritableKeyframe(targetLayer, EditFrame);
+        ObjectOrder[index] = ++_nextObjectOrder;
+        ObjectSubOrder[index] = 0;
         X[index] = VectorUnits.Quantize(center.X);
         Y[index] = VectorUnits.Quantize(center.Y);
         Width[index] = Math.Max(1, VectorUnits.Quantize(size.Width));
@@ -224,7 +325,6 @@ internal sealed class VectorScene
         Argb[index] = color.ToArgb();
         StrokeArgb[index] = strokeColor.ToArgb();
         MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[index], Height[index]) * 0.5f);
-        RebuildSpatialIndex();
         return index;
     }
 
@@ -235,12 +335,26 @@ internal sealed class VectorScene
 
     public int AddCurveSegment(int layer, PointF start, PointF control, PointF end, float stroke, Color color, Color strokeColor, uint atoms)
     {
+        var index = AppendCurveSegment(layer, start, control, end, stroke, color, strokeColor, atoms);
+        RebuildSpatialIndex();
+        AddObjectToSummariesIncremental(index, strokeColor);
+        return index;
+    }
+
+    private int AppendCurveSegment(int layer, PointF start, PointF control, PointF end, float stroke, Color color, Color strokeColor, uint atoms)
+    {
         var center = Midpoint(start, end);
         var width = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, Distance(start, end));
         var height = Math.Max(VectorUnits.FromPixels(3), stroke + VectorUnits.FromPixels(2));
-        var index = AddObject(layer, center, new SizeF(width, height), MathF.Atan2(end.Y - start.Y, end.X - start.X), stroke, color, strokeColor, atoms, VectorAnimationEngine.ShapeKind.Line);
+        var index = AppendObject(layer, center, new SizeF(width, height), MathF.Atan2(end.Y - start.Y, end.X - start.X), stroke, color, strokeColor, atoms, VectorAnimationEngine.ShapeKind.Line);
         CurveControlX[index] = VectorUnits.Quantize(control.X);
         CurveControlY[index] = VectorUnits.Quantize(control.Y);
+        var margin = Math.Max(stroke * 0.5f, 1);
+        var curveExtent = Math.Max(
+            Math.Max(Math.Abs(start.X - X[index]), Math.Abs(end.X - X[index])),
+            Math.Max(Math.Abs(start.Y - Y[index]), Math.Abs(end.Y - Y[index])));
+        curveExtent = Math.Max(curveExtent, Math.Max(Math.Abs(control.X - X[index]), Math.Abs(control.Y - Y[index]))) + margin;
+        MaxHalfExtent = Math.Max(MaxHalfExtent, curveExtent);
         return index;
     }
 
@@ -250,6 +364,15 @@ internal sealed class VectorScene
     }
 
     public int AddPathObjectContours(int layer, IReadOnlyList<PointF[]> worldContours, float stroke, Color color, Color strokeColor, uint atoms)
+    {
+        var index = AppendPathObjectContours(layer, worldContours, stroke, color, strokeColor, atoms);
+        if (index < 0) return -1;
+        RebuildGeometryIndex();
+        RebuildSummaries();
+        return index;
+    }
+
+    private int AppendPathObjectContours(int layer, IReadOnlyList<PointF[]> worldContours, float stroke, Color color, Color strokeColor, uint atoms)
     {
         var contours = NormalizePathContours(worldContours);
         if (contours.Length == 0) return -1;
@@ -270,8 +393,8 @@ internal sealed class VectorScene
             }
         }
 
-        var center = new PointF((left + right) * 0.5f, (top + bottom) * 0.5f);
-        var index = AddObject(layer, center, new SizeF(Math.Max(1, right - left), Math.Max(1, bottom - top)), 0, stroke, color, strokeColor, atoms, VectorAnimationEngine.ShapeKind.Path);
+        var center = VectorUnits.Quantize(new PointF((left + right) * 0.5f, (top + bottom) * 0.5f));
+        var index = AppendObject(layer, center, new SizeF(Math.Max(1, right - left), Math.Max(1, bottom - top)), 0, stroke, color, strokeColor, atoms, VectorAnimationEngine.ShapeKind.Path);
         var localContours = new PointF[contours.Length][];
         for (var c = 0; c < contours.Length; c++)
         {
@@ -286,15 +409,126 @@ internal sealed class VectorScene
         }
 
         _pathLocalContours[index] = localContours;
-        RebuildGeometryIndex();
-        RebuildSummaries();
         return index;
+    }
+
+    public int AddFreehandStroke(int layer, IReadOnlyList<PointF> worldPoints, float stroke, Color color, bool brushStroke, uint atoms)
+    {
+        var points = NormalizeFreehandPoints(worldPoints);
+        if (points.Length == 0) return -1;
+
+        if (brushStroke)
+        {
+            var outlines = FreehandStrokeProcessor.CreateBrushOutlines(points, stroke);
+            var outlineAtoms = outlines.Sum(contour => contour.Length);
+            return outlines.Length > 0
+                ? AddPathObjectContours(layer, outlines, 0, color, Color.Transparent, Math.Max(atoms, (uint)Math.Max(3, outlineAtoms)))
+                : -1;
+        }
+
+        var index = AppendFreehandStroke(layer, points, stroke, color, atoms);
+        if (index < 0) return -1;
+        RebuildSpatialIndex();
+        AddObjectToSummariesIncremental(index, color);
+        return index;
+    }
+
+    private int AppendFreehandStroke(int layer, PointF[] points, float stroke, Color color, uint atoms)
+    {
+        if (points.Length == 0) return -1;
+
+        var left = points[0].X;
+        var right = points[0].X;
+        var top = points[0].Y;
+        var bottom = points[0].Y;
+        for (var i = 1; i < points.Length; i++)
+        {
+            left = Math.Min(left, points[i].X);
+            right = Math.Max(right, points[i].X);
+            top = Math.Min(top, points[i].Y);
+            bottom = Math.Max(bottom, points[i].Y);
+        }
+
+        stroke = Math.Max(VectorUnits.StrokePointsToUnits(0.5f), stroke);
+        var center = new PointF((left + right) * 0.5f, (top + bottom) * 0.5f);
+        var shape = VectorAnimationEngine.ShapeKind.Freeform;
+        var transparent = Color.FromArgb(0, color);
+        var index = AppendObject(
+            layer,
+            center,
+            new SizeF(Math.Max(stroke, right - left + stroke), Math.Max(stroke, bottom - top + stroke)),
+            0,
+            stroke,
+            transparent,
+            color,
+            Math.Max(3u, atoms),
+            shape);
+
+        var local = new PointF[points.Length];
+        for (var i = 0; i < points.Length; i++)
+        {
+            local[i] = new PointF(
+                VectorUnits.Quantize(points[i].X - center.X),
+                VectorUnits.Quantize(points[i].Y - center.Y));
+        }
+
+        _freehandLocalPoints[index] = local;
+        return index;
+    }
+
+    public bool TryGetFreehandLocalPoints(int objectIndex, out PointF[] points)
+    {
+        if ((uint)objectIndex >= ObjectCount || !_freehandLocalPoints.TryGetValue(objectIndex, out points!))
+        {
+            points = Array.Empty<PointF>();
+            return false;
+        }
+
+        return points.Length > 0;
+    }
+
+    public bool TryGetFreehandWorldPoints(int objectIndex, out PointF[] points)
+    {
+        if (!TryGetFreehandLocalPoints(objectIndex, out var local))
+        {
+            points = Array.Empty<PointF>();
+            return false;
+        }
+
+        points = new PointF[local.Length];
+        for (var i = 0; i < local.Length; i++) points[i] = LocalToWorld(objectIndex, local[i].X, local[i].Y);
+        return true;
+    }
+
+    public void UpdateFreehandStrokeWidth(int objectIndex, float stroke)
+    {
+        if ((uint)objectIndex >= ObjectCount || !IsFreehandShape(ShapeKind[objectIndex]) || !TryGetFreehandLocalPoints(objectIndex, out var points)) return;
+        stroke = Math.Max(VectorUnits.StrokePointsToUnits(0.5f), stroke);
+        Stroke[objectIndex] = stroke;
+
+        var left = points[0].X;
+        var right = points[0].X;
+        var top = points[0].Y;
+        var bottom = points[0].Y;
+        for (var i = 1; i < points.Length; i++)
+        {
+            left = Math.Min(left, points[i].X);
+            right = Math.Max(right, points[i].X);
+            top = Math.Min(top, points[i].Y);
+            bottom = Math.Max(bottom, points[i].Y);
+        }
+
+        Width[objectIndex] = Math.Max(stroke, right - left + stroke);
+        Height[objectIndex] = Math.Max(stroke, bottom - top + stroke);
+        RebuildGeometryIndex();
     }
 
     public bool RemoveObjectAt(int index)
     {
         if ((uint)index >= ObjectCount) return false;
 
+        var removedLayer = ObjectLayer[index];
+        var removedKeyframeFrame = ObjectKeyframeFrame[index];
         VirtualAtomCount = Math.Max(0, VirtualAtomCount - AtomCount[index]);
         var last = ObjectCount - 1;
         if (index != last) CopyObjectData(last, index);
@@ -302,8 +536,10 @@ internal sealed class VectorScene
         ObjectCount--;
         ResizeObjectArrays();
         RemovePathDataOutsideObjectCount();
+        RemoveFreehandDataOutsideObjectCount();
         RebuildGeometryIndex();
         RebuildSummaries();
+        SynchronizeKeyframeContentKind(removedLayer, removedKeyframeFrame);
         return true;
     }
 
@@ -321,12 +557,14 @@ internal sealed class VectorScene
 
         if (removeCount == 0) return 0;
 
+        var affectedKeyframes = new HashSet<(int Layer, int Frame)>();
         long removedAtoms = 0;
         var write = 0;
         for (var read = 0; read < ObjectCount; read++)
         {
             if (remove[read])
             {
+                affectedKeyframes.Add((ObjectLayer[read], ObjectKeyframeFrame[read]));
                 removedAtoms += AtomCount[read];
                 continue;
             }
@@ -339,8 +577,10 @@ internal sealed class VectorScene
         VirtualAtomCount = Math.Max(0, VirtualAtomCount - removedAtoms);
         ResizeObjectArrays();
         RemovePathDataOutsideObjectCount();
+        RemoveFreehandDataOutsideObjectCount();
         RebuildGeometryIndex();
         RebuildSummaries();
+        foreach (var (layer, frame) in affectedKeyframes) SynchronizeKeyframeContentKind(layer, frame);
         return removeCount;
     }
 
@@ -349,7 +589,11 @@ internal sealed class VectorScene
         MaxHalfExtent = 128;
         for (var i = 0; i < ObjectCount; i++)
         {
-            MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[i], Height[i]) * 0.5f);
+            var bounds = GetObjectWorldBounds(i);
+            var extent = Math.Max(
+                Math.Max(Math.Abs(bounds.Left - X[i]), Math.Abs(bounds.Right - X[i])),
+                Math.Max(Math.Abs(bounds.Top - Y[i]), Math.Abs(bounds.Bottom - Y[i])));
+            MaxHalfExtent = Math.Max(MaxHalfExtent, extent);
         }
 
         RebuildSpatialIndex();
@@ -362,27 +606,34 @@ internal sealed class VectorScene
             LayerCount = LayerCount,
             ObjectCount = ObjectCount,
             VirtualAtomCount = VirtualAtomCount,
+            NextObjectOrder = _nextObjectOrder,
             ActiveLayer = ActiveLayer,
             MaxHalfExtent = MaxHalfExtent,
+            LayerIds = LayerIds.ToArray(),
             LayerNames = LayerNames.ToArray(),
             LayerVisible = LayerVisible.ToArray(),
             LayerOpacity = LayerOpacity.ToArray(),
             LayerStart = LayerStart.ToArray(),
             LayerEnd = LayerEnd.ToArray(),
-            ObjectLayer = ObjectLayer.ToArray(),
-            X = X.ToArray(),
-            Y = Y.ToArray(),
-            Width = Width.ToArray(),
-            Height = Height.ToArray(),
-            Angle = Angle.ToArray(),
-            Stroke = Stroke.ToArray(),
-            CurveControlX = CurveControlX.ToArray(),
-            CurveControlY = CurveControlY.ToArray(),
-            ShapeKind = ShapeKind.ToArray(),
-            AtomCount = AtomCount.ToArray(),
-            Argb = Argb.ToArray(),
-            StrokeArgb = StrokeArgb.ToArray(),
-            PathLocalContours = _pathLocalContours.ToDictionary(item => item.Key, item => CloneContours(item.Value))
+            ObjectLayer = ObjectLayer[..ObjectCount],
+            ObjectKeyframeFrame = ObjectKeyframeFrame[..ObjectCount],
+            ObjectOrder = ObjectOrder[..ObjectCount],
+            ObjectSubOrder = ObjectSubOrder[..ObjectCount],
+            X = X[..ObjectCount],
+            Y = Y[..ObjectCount],
+            Width = Width[..ObjectCount],
+            Height = Height[..ObjectCount],
+            Angle = Angle[..ObjectCount],
+            Stroke = Stroke[..ObjectCount],
+            CurveControlX = CurveControlX[..ObjectCount],
+            CurveControlY = CurveControlY[..ObjectCount],
+            ShapeKind = ShapeKind[..ObjectCount],
+            AtomCount = AtomCount[..ObjectCount],
+            Argb = Argb[..ObjectCount],
+            StrokeArgb = StrokeArgb[..ObjectCount],
+            Timeline = Timeline.CreateSnapshot(),
+            PathLocalContours = _pathLocalContours.ToDictionary(item => item.Key, item => CloneContours(item.Value)),
+            FreehandLocalPoints = _freehandLocalPoints.ToDictionary(item => item.Key, item => item.Value.ToArray())
         };
     }
 
@@ -391,14 +642,27 @@ internal sealed class VectorScene
         LayerCount = snapshot.LayerCount;
         ObjectCount = snapshot.ObjectCount;
         VirtualAtomCount = snapshot.VirtualAtomCount;
+        _nextObjectOrder = snapshot.NextObjectOrder;
         ActiveLayer = Math.Clamp(snapshot.ActiveLayer, 0, Math.Max(0, snapshot.LayerCount - 1));
         MaxHalfExtent = snapshot.MaxHalfExtent;
+        LayerIds = NormalizeStableIds(snapshot.LayerIds, LayerCount);
         LayerNames = snapshot.LayerNames.ToArray();
         LayerVisible = snapshot.LayerVisible.ToArray();
         LayerOpacity = snapshot.LayerOpacity.ToArray();
         LayerStart = snapshot.LayerStart.ToArray();
         LayerEnd = snapshot.LayerEnd.ToArray();
         ObjectLayer = snapshot.ObjectLayer.ToArray();
+        ObjectKeyframeFrame = snapshot.ObjectKeyframeFrame.Length == ObjectCount
+            ? snapshot.ObjectKeyframeFrame.ToArray()
+            : Enumerable.Range(0, ObjectCount)
+                .Select(index => ObjectLayer.Length > index && LayerStart.Length > ObjectLayer[index]
+                    ? LayerStart[ObjectLayer[index]]
+                    : 0)
+                .ToArray();
+        ObjectOrder = snapshot.ObjectOrder.ToArray();
+        ObjectSubOrder = snapshot.ObjectSubOrder.Length == ObjectCount
+            ? snapshot.ObjectSubOrder.ToArray()
+            : new double[ObjectCount];
         X = snapshot.X.ToArray();
         Y = snapshot.Y.ToArray();
         Width = snapshot.Width.ToArray();
@@ -418,13 +682,318 @@ internal sealed class VectorScene
             _pathLocalContours[item.Key] = CloneContours(item.Value);
         }
 
+        _freehandLocalPoints.Clear();
+        foreach (var item in snapshot.FreehandLocalPoints)
+        {
+            if ((uint)item.Key >= ObjectCount) continue;
+            _freehandLocalPoints[item.Key] = item.Value.ToArray();
+        }
+
+        if (snapshot.Timeline is null)
+        {
+            InitializeTimelineFromLayerExposure();
+        }
+        else
+        {
+            Timeline.RestoreSnapshot(snapshot.Timeline);
+            SynchronizeTimelineTracks();
+            SynchronizeAllKeyframeContentKinds();
+        }
+
         RebuildGeometryIndex();
         RebuildSummaries();
     }
 
     public bool IsLayerActive(int layer, int frame)
     {
-        return layer >= 0 && layer < LayerCount && LayerVisible[layer] && frame >= LayerStart[layer] && frame <= LayerEnd[layer];
+        return layer >= 0
+            && layer < LayerCount
+            && LayerVisible[layer]
+            && Timeline.EvaluateTargetExposure(LayerIds[layer], frame).HasContent;
+    }
+
+    public void SynchronizeTimelineTracks()
+    {
+        var additionalTargets = AdditionalTimelineTargetIds();
+        var targetIds = additionalTargets.Length == 0
+            ? LayerIds
+            : LayerIds.Concat(additionalTargets).ToArray();
+        Timeline.SynchronizeTracks(targetIds, FrameCount, populateNewTracks: false);
+        var additionalTargetSet = additionalTargets.ToHashSet(StringComparer.Ordinal);
+        foreach (var track in Timeline.Tracks)
+        {
+            if (track.Keyframes.Count == 0 || track.Keyframes[0].Frame > 0)
+            {
+                if (additionalTargetSet.Contains(track.TargetId)) Timeline.InsertKeyframe(track.Id, 0);
+                else Timeline.InsertBlankKeyframe(track.Id, 0);
+            }
+        }
+    }
+
+    private string[] AdditionalTimelineTargetIds()
+    {
+        var targets = _additionalTimelineTargets?.Invoke();
+        if (targets is null || targets.Count == 0) return [];
+
+        var layerIds = LayerIds.ToHashSet(StringComparer.Ordinal);
+        return targets
+            .Where(targetId => !string.IsNullOrWhiteSpace(targetId) && !layerIds.Contains(targetId))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    public bool IsObjectActive(int objectIndex, int frame)
+    {
+        if ((uint)objectIndex >= ObjectCount) return false;
+        var layer = ObjectLayer[objectIndex];
+        if ((uint)layer >= LayerCount || !LayerVisible[layer]) return false;
+
+        var exposure = Timeline.EvaluateTargetExposure(LayerIds[layer], frame);
+        return exposure.HasContent && ObjectKeyframeFrame[objectIndex] == exposure.SourceKeyframeFrame;
+    }
+
+    public bool InsertTimelineFrame(int layer, int frame, int count = 1)
+    {
+        var track = TimelineTrackForLayer(layer);
+        if (track is null || count <= 0) return false;
+        frame = Math.Max(0, frame);
+        if (frame > track.Duration) Timeline.SetTrackDuration(track.Id, frame);
+        if (!Timeline.InsertFrame(track.Id, frame, count)) return false;
+
+        for (var i = 0; i < ObjectCount; i++)
+        {
+            if (ObjectLayer[i] == layer && ObjectKeyframeFrame[i] > frame)
+            {
+                ObjectKeyframeFrame[i] += count;
+            }
+        }
+
+        RefreshLegacyExposureBounds(layer);
+        return true;
+    }
+
+    public bool RemoveTimelineFrame(int layer, int frame, int count = 1)
+    {
+        var track = TimelineTrackForLayer(layer);
+        if (track is null || count <= 0 || frame < 0 || frame >= track.Duration || track.Duration <= 1) return false;
+
+        var removeCount = Math.Min(Math.Min(count, track.Duration - frame), track.Duration - 1);
+        var removeEnd = frame + removeCount;
+        var continuation = removeEnd < track.Duration
+            ? track.EvaluateExposure(removeEnd)
+            : TimelineExposure.None(removeEnd);
+        var preservedSourceFrame = continuation.SourceKeyframeFrame >= frame
+            && continuation.SourceKeyframeFrame < removeEnd
+            ? continuation.SourceKeyframeFrame
+            : -1;
+        if (removeCount <= 0 || !Timeline.RemoveFrame(track.Id, frame, removeCount)) return false;
+
+        var removed = new List<int>();
+        for (var i = 0; i < ObjectCount; i++)
+        {
+            if (ObjectLayer[i] != layer) continue;
+            var sourceFrame = ObjectKeyframeFrame[i];
+            if (sourceFrame == preservedSourceFrame) ObjectKeyframeFrame[i] = frame;
+            else if (sourceFrame >= frame && sourceFrame < removeEnd) removed.Add(i);
+            else if (sourceFrame >= removeEnd) ObjectKeyframeFrame[i] -= removeCount;
+        }
+
+        if (removed.Count > 0) RemoveObjects(removed);
+        RefreshLegacyExposureBounds(layer);
+        return true;
+    }
+
+    public bool InsertTimelineKeyframe(int layer, int frame)
+    {
+        var track = TimelineTrackForLayer(layer);
+        if (track is null || frame < 0) return false;
+
+        var current = frame < track.Duration
+            ? track.EvaluateExposure(frame)
+            : track.EvaluateExposure(track.Duration - 1);
+        if (frame < track.Duration
+            && current.IsKeyframe
+            && current.SourceKind == TimelineKeyframeKind.Populated)
+        {
+            return false;
+        }
+        var sourceObjects = current.HasContent
+            ? Enumerable.Range(0, ObjectCount)
+                .Where(index => ObjectLayer[index] == layer && ObjectKeyframeFrame[index] == current.SourceKeyframeFrame)
+                .ToArray()
+            : [];
+
+        if (frame >= track.Duration) Timeline.SetTrackDuration(track.Id, frame + 1);
+
+        var inserted = sourceObjects.Length > 0
+            ? Timeline.InsertKeyframe(track.Id, frame)
+            : Timeline.InsertBlankKeyframe(track.Id, frame);
+        if (!inserted) return false;
+        CloneObjectsIntoKeyframe(sourceObjects, frame);
+        RefreshLegacyExposureBounds(layer);
+        return true;
+    }
+
+    public bool InsertTimelineBlankKeyframe(int layer, int frame)
+    {
+        var track = TimelineTrackForLayer(layer);
+        if (track is null || frame < 0) return false;
+        if (frame >= track.Duration) Timeline.SetTrackDuration(track.Id, frame + 1);
+        var existing = track.EvaluateExposure(frame);
+        if (existing.IsKeyframe && existing.SourceKind == TimelineKeyframeKind.Blank) return false;
+        if (!Timeline.InsertBlankKeyframe(track.Id, frame)) return false;
+
+        RemoveObjectsForKeyframe(layer, frame);
+        RefreshLegacyExposureBounds(layer);
+        return true;
+    }
+
+    public bool ClearTimelineKeyframe(int layer, int frame)
+    {
+        var track = TimelineTrackForLayer(layer);
+        if (track is null || frame < 0) return false;
+        var existing = track.EvaluateExposure(frame);
+        if (!existing.IsKeyframe || !Timeline.ClearKeyframe(track.Id, frame)) return false;
+
+        RemoveObjectsForKeyframe(layer, frame);
+        RefreshLegacyExposureBounds(layer);
+        return true;
+    }
+
+    private AnimationTimelineTrack? TimelineTrackForLayer(int layer)
+    {
+        if ((uint)layer >= LayerCount) return null;
+        SynchronizeTimelineTracks();
+        return Timeline.FindTrackByTargetId(LayerIds[layer]);
+    }
+
+    private int EnsureWritableKeyframe(int layer, int frame)
+    {
+        var track = TimelineTrackForLayer(layer);
+        if (track is null) return 0;
+
+        frame = Math.Max(0, frame);
+        if (frame >= track.Duration)
+        {
+            Timeline.SetTrackDuration(track.Id, frame + 1);
+            Timeline.InsertKeyframe(track.Id, frame);
+            RefreshLegacyExposureBounds(layer);
+            return frame;
+        }
+
+        var exposure = track.EvaluateExposure(frame);
+        if (exposure.HasContent) return exposure.SourceKeyframeFrame;
+
+        var keyframeFrame = exposure.SourceKeyframeFrame >= 0 ? exposure.SourceKeyframeFrame : frame;
+        Timeline.InsertKeyframe(track.Id, keyframeFrame);
+        RefreshLegacyExposureBounds(layer);
+        return keyframeFrame;
+    }
+
+    private void CloneObjectsIntoKeyframe(IReadOnlyList<int> sourceObjects, int keyframeFrame)
+    {
+        if (sourceObjects.Count == 0) return;
+
+        var sourceCount = ObjectCount;
+        EnsureObjectCapacity(ObjectCount + sourceObjects.Count);
+        foreach (var source in sourceObjects)
+        {
+            if ((uint)source >= sourceCount) continue;
+            var destination = ObjectCount++;
+            CopyObjectData(source, destination);
+            ObjectKeyframeFrame[destination] = keyframeFrame;
+            VirtualAtomCount += AtomCount[destination];
+        }
+
+        RebuildGeometryIndex();
+        RebuildSummaries();
+    }
+
+    private void RemoveObjectsForKeyframe(int layer, int keyframeFrame)
+    {
+        var removed = Enumerable.Range(0, ObjectCount)
+            .Where(index => ObjectLayer[index] == layer && ObjectKeyframeFrame[index] == keyframeFrame)
+            .ToArray();
+        if (removed.Length > 0) RemoveObjects(removed);
+    }
+
+    private void SynchronizeAllKeyframeContentKinds()
+    {
+        var occupied = new HashSet<(int Layer, int Frame)>();
+        for (var index = 0; index < ObjectCount; index++)
+        {
+            occupied.Add((ObjectLayer[index], ObjectKeyframeFrame[index]));
+        }
+
+        _synchronizingKeyframeContent = true;
+        try
+        {
+            for (var layer = 0; layer < LayerCount; layer++)
+            {
+                var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+                if (track is null) continue;
+                foreach (var keyframe in track.Keyframes.ToArray())
+                {
+                    var hasContent = occupied.Contains((layer, keyframe.Frame));
+                    if (keyframe.HasContent == hasContent) continue;
+                    if (hasContent) Timeline.InsertKeyframe(track.Id, keyframe.Frame);
+                    else Timeline.InsertBlankKeyframe(track.Id, keyframe.Frame);
+                }
+
+                RefreshLegacyExposureBounds(layer);
+            }
+        }
+        finally
+        {
+            _synchronizingKeyframeContent = false;
+        }
+    }
+
+    private void SynchronizeKeyframeContentKind(int layer, int keyframeFrame)
+    {
+        if (_synchronizingKeyframeContent || (uint)layer >= LayerCount) return;
+        var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+        var keyframe = track?.Keyframes
+            .Where(item => item.Frame == keyframeFrame)
+            .Select(item => (TimelineKeyframe?)item)
+            .FirstOrDefault();
+        if (track is null || keyframe is null) return;
+
+        var hasContent = Enumerable.Range(0, ObjectCount)
+            .Any(index => ObjectLayer[index] == layer && ObjectKeyframeFrame[index] == keyframeFrame);
+        if (keyframe.Value.HasContent == hasContent) return;
+
+        _synchronizingKeyframeContent = true;
+        try
+        {
+            if (hasContent) Timeline.InsertKeyframe(track.Id, keyframeFrame);
+            else Timeline.InsertBlankKeyframe(track.Id, keyframeFrame);
+            RefreshLegacyExposureBounds(layer);
+        }
+        finally
+        {
+            _synchronizingKeyframeContent = false;
+        }
+    }
+
+    private void RefreshLegacyExposureBounds(int layer)
+    {
+        if ((uint)layer >= LayerCount || layer >= LayerStart.Length || layer >= LayerEnd.Length) return;
+        var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+        if (track is null) return;
+
+        var populated = track.Keyframes.Where(keyframe => keyframe.HasContent).ToArray();
+        if (populated.Length == 0)
+        {
+            LayerStart[layer] = 0;
+            LayerEnd[layer] = -1;
+            return;
+        }
+
+        LayerStart[layer] = populated[0].Frame;
+        LayerEnd[layer] = populated
+            .Select(keyframe => track.EvaluateExposure(keyframe.Frame).EndFrame)
+            .Max();
     }
 
     public void SoloLayer(int layer)
@@ -454,7 +1023,7 @@ internal sealed class VectorScene
 
         foreach (var i in candidates)
         {
-            var hit = HitElement(world, i, candidates, toleranceWorld);
+            var hit = HitElement(world, i, candidates, frame, toleranceWorld);
             if (!hit.IsValid) continue;
             if (IsBetterHit(hit, best)) best = hit;
         }
@@ -462,18 +1031,30 @@ internal sealed class VectorScene
         return best;
     }
 
-    private static bool IsBetterHit(DrawingElementHit hit, DrawingElementHit best)
+    private bool IsBetterHit(DrawingElementHit hit, DrawingElementHit best)
     {
         if (!best.IsValid) return true;
+
+        var hitLayer = ObjectLayer[hit.Key.ObjectIndex];
+        var bestLayer = ObjectLayer[best.Key.ObjectIndex];
+        if (hitLayer != bestLayer) return hitLayer < bestLayer;
 
         var hitIsFill = hit.Key.Kind == DrawingElementKind.Fill;
         var bestIsFill = best.Key.Kind == DrawingElementKind.Fill;
         if (hitIsFill != bestIsFill) return !hitIsFill;
-        if (hitIsFill) return hit.Key.ObjectIndex > best.Key.ObjectIndex;
+        if (hitIsFill) return CompareObjectStack(hit.Key.ObjectIndex, best.Key.ObjectIndex) > 0;
 
         if (hit.Distance < best.Distance - 0.001f) return true;
         if (hit.Distance > best.Distance + 0.001f) return false;
-        return hit.Key.ObjectIndex > best.Key.ObjectIndex;
+        return CompareObjectStack(hit.Key.ObjectIndex, best.Key.ObjectIndex) > 0;
+    }
+
+    private int CompareObjectStack(int a, int b)
+    {
+        var comparison = ObjectOrder[a].CompareTo(ObjectOrder[b]);
+        if (comparison != 0) return comparison;
+        comparison = ObjectSubOrder[a].CompareTo(ObjectSubOrder[b]);
+        return comparison != 0 ? comparison : a.CompareTo(b);
     }
 
     public PointF[] GetShapeBoundary(int objectIndex)
@@ -481,11 +1062,291 @@ internal sealed class VectorScene
         return (uint)objectIndex < ObjectCount ? ShapeBoundary(objectIndex) : Array.Empty<PointF>();
     }
 
+    public PointF[][] GetFillPartContours(DrawingElementHit hit, int frame)
+    {
+        if (!hit.IsValid || hit.Key.Kind != DrawingElementKind.Fill || (uint)hit.Key.ObjectIndex >= ObjectCount)
+        {
+            return Array.Empty<PointF[]>();
+        }
+
+        foreach (var part in GetFillParts(hit.Key.ObjectIndex, frame))
+        {
+            if (part.PartIndex == hit.Key.PartIndex) return CloneContours(part.Contours);
+        }
+
+        return Array.Empty<PointF[]>();
+    }
+
+    public DrawingFillPartGeometry[] GetFillParts(int objectIndex, int frame)
+    {
+        if ((uint)objectIndex >= ObjectCount || !HasFill(objectIndex)) return Array.Empty<DrawingFillPartGeometry>();
+        var candidates = CollectTopologyCandidates(objectIndex, frame);
+        var regions = BuildFillRegions(objectIndex, candidates);
+        var result = new DrawingFillPartGeometry[regions.Count];
+        for (var part = 0; part < regions.Count; part++)
+        {
+            result[part] = new DrawingFillPartGeometry(part, CloneContours(regions[part].Contours));
+        }
+
+        return result;
+    }
+
+    public PointF[] GetBoundaryPartPoints(DrawingElementHit hit, int frame)
+    {
+        if (!hit.IsValid || hit.Key.Kind != DrawingElementKind.BoundaryStroke || (uint)hit.Key.ObjectIndex >= ObjectCount)
+        {
+            return Array.Empty<PointF>();
+        }
+
+        foreach (var part in GetBoundaryParts(hit.Key.ObjectIndex, frame))
+        {
+            if (part.PartIndex == hit.Key.PartIndex) return part.Points.ToArray();
+        }
+
+        return Array.Empty<PointF>();
+    }
+
+    public DrawingPolylinePartGeometry[] GetBoundaryParts(int objectIndex, int frame)
+    {
+        if ((uint)objectIndex >= ObjectCount || !HasStroke(objectIndex)) return Array.Empty<DrawingPolylinePartGeometry>();
+        var candidates = CollectTopologyCandidates(objectIndex, frame);
+        return BuildBoundaryStrokeParts(objectIndex, candidates)
+            .Select(part => new DrawingPolylinePartGeometry(part.PartIndex, part.Points.ToArray()))
+            .ToArray();
+    }
+
+    public PointF[] GetStrokePartPoints(DrawingElementHit hit, int frame)
+    {
+        if (!hit.IsValid || hit.Key.Kind != DrawingElementKind.Stroke || (uint)hit.Key.ObjectIndex >= ObjectCount)
+        {
+            return Array.Empty<PointF>();
+        }
+
+        foreach (var part in GetStrokeParts(hit.Key.ObjectIndex, frame))
+        {
+            if (part.PartIndex == hit.Key.PartIndex) return part.Points.ToArray();
+        }
+
+        return Array.Empty<PointF>();
+    }
+
+    public DrawingPolylinePartGeometry[] GetStrokeParts(int objectIndex, int frame)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || !IsFreehandShape(ShapeKind[objectIndex])
+            || !TryGetFreehandWorldPoints(objectIndex, out var points))
+        {
+            return Array.Empty<DrawingPolylinePartGeometry>();
+        }
+
+        var candidates = CollectTopologyCandidates(objectIndex, frame);
+        var splits = StrokeSplitParameters(objectIndex, candidates);
+        return BuildPolylinePathParts(points, splits)
+            .Select(part => new DrawingPolylinePartGeometry(part.PartIndex, part.Points.ToArray()))
+            .ToArray();
+    }
+
+    public DrawingElementHit[] GetConnectedStrokeElements(DrawingElementHit seed, int frame)
+    {
+        if (!seed.IsValid
+            || seed.Key.Kind is not (DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke)
+            || (uint)seed.Key.ObjectIndex >= ObjectCount
+            || !IsObjectActive(seed.Key.ObjectIndex, frame))
+        {
+            return Array.Empty<DrawingElementHit>();
+        }
+
+        var layer = ObjectLayer[seed.Key.ObjectIndex];
+        var parts = new List<ConnectedStrokePart>();
+        var partIndices = new Dictionary<DrawingElementKey, int>();
+        var endpointIndex = new Dictionary<(int X, int Y), List<int>>();
+        var indexedObjects = new HashSet<int>();
+
+        void AddEndpoint(PointF point, int partIndex)
+        {
+            var key = ConnectedEndpointKey(point);
+            if (!endpointIndex.TryGetValue(key, out var indexed))
+            {
+                indexed = new List<int>(4);
+                endpointIndex[key] = indexed;
+            }
+
+            indexed.Add(partIndex);
+        }
+
+        void IndexObject(int objectIndex)
+        {
+            if (!indexedObjects.Add(objectIndex)
+                || (uint)objectIndex >= ObjectCount
+                || ObjectLayer[objectIndex] != layer
+                || !IsObjectActive(objectIndex, frame))
+            {
+                return;
+            }
+
+            foreach (var part in BuildConnectedStrokeParts(objectIndex, frame))
+            {
+                if (partIndices.ContainsKey(part.Hit.Key)) continue;
+                var partIndex = parts.Count;
+                parts.Add(part);
+                partIndices[part.Hit.Key] = partIndex;
+                AddEndpoint(part.Start, partIndex);
+                AddEndpoint(part.End, partIndex);
+            }
+        }
+
+        IndexObject(seed.Key.ObjectIndex);
+        if (!partIndices.TryGetValue(seed.Key, out var seedPartIndex)) return Array.Empty<DrawingElementHit>();
+
+        var connected = new HashSet<int>();
+        var connectedOrder = new List<int>();
+        var endpoints = new Queue<PointF>();
+        var visitedEndpoints = new HashSet<(int X, int Y)>();
+
+        void SelectPart(int partIndex)
+        {
+            if (!connected.Add(partIndex)) return;
+            connectedOrder.Add(partIndex);
+            endpoints.Enqueue(parts[partIndex].Start);
+            endpoints.Enqueue(parts[partIndex].End);
+        }
+
+        SelectPart(seedPartIndex);
+        while (endpoints.Count > 0)
+        {
+            var endpoint = endpoints.Dequeue();
+            if (!visitedEndpoints.Add(ConnectedEndpointKey(endpoint))) continue;
+
+            var tolerance = ConnectedStrokeEndpointToleranceUnits;
+            var queryBounds = RectangleF.FromLTRB(
+                endpoint.X - tolerance,
+                endpoint.Y - tolerance,
+                endpoint.X + tolerance,
+                endpoint.Y + tolerance);
+            foreach (var objectIndex in QueryObjects(queryBounds, frame)) IndexObject(objectIndex);
+
+            var endpointKey = ConnectedEndpointKey(endpoint);
+            for (var y = endpointKey.Y - 2; y <= endpointKey.Y + 2; y++)
+            {
+                for (var x = endpointKey.X - 2; x <= endpointKey.X + 2; x++)
+                {
+                    if (!endpointIndex.TryGetValue((x, y), out var candidates)) continue;
+                    foreach (var candidateIndex in candidates)
+                    {
+                        var candidate = parts[candidateIndex];
+                        if (Distance(endpoint, candidate.Start) <= tolerance
+                            || Distance(endpoint, candidate.End) <= tolerance)
+                        {
+                            SelectPart(candidateIndex);
+                        }
+                    }
+                }
+            }
+        }
+
+        return connectedOrder.Select(index => parts[index].Hit).ToArray();
+    }
+
+    private ConnectedStrokePart[] BuildConnectedStrokeParts(int objectIndex, int frame)
+    {
+        if ((uint)objectIndex >= ObjectCount || !HasStroke(objectIndex)) return Array.Empty<ConnectedStrokePart>();
+        var shape = ShapeKind[objectIndex];
+        var candidates = CollectTopologyCandidates(objectIndex, frame);
+        var result = new List<ConnectedStrokePart>();
+
+        if (IsTopologyStrokeShape(shape))
+        {
+            var splits = StrokeSplitParameters(objectIndex, candidates);
+            if (shape == VectorAnimationEngine.ShapeKind.Line)
+            {
+                var curve = LineCurve(objectIndex);
+                foreach (var part in BuildCurveParts(curve.Start, curve.Control, curve.End, splits))
+                {
+                    result.Add(new ConnectedStrokePart(
+                        new DrawingElementHit(
+                            new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, part.PartIndex),
+                            0,
+                            splits[part.PartIndex],
+                            splits[part.PartIndex + 1]),
+                        part.Start,
+                        part.End));
+                }
+            }
+            else if (TryGetFreehandWorldPoints(objectIndex, out var points))
+            {
+                foreach (var part in BuildPolylinePathParts(points, splits))
+                {
+                    result.Add(new ConnectedStrokePart(
+                        new DrawingElementHit(
+                            new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, part.PartIndex),
+                            0,
+                            part.StartT,
+                            part.EndT),
+                        part.Points[0],
+                        part.Points[^1]));
+                }
+            }
+
+            return result.ToArray();
+        }
+
+        foreach (var part in BuildBoundaryStrokeParts(objectIndex, candidates))
+        {
+            result.Add(new ConnectedStrokePart(
+                new DrawingElementHit(
+                    new DrawingElementKey(objectIndex, DrawingElementKind.BoundaryStroke, part.PartIndex),
+                    0,
+                    part.StartT,
+                    part.EndT),
+                part.Points[0],
+                part.Points[^1]));
+        }
+
+        return result.ToArray();
+    }
+
+    private static (int X, int Y) ConnectedEndpointKey(PointF point)
+    {
+        return ((int)MathF.Round(point.X), (int)MathF.Round(point.Y));
+    }
+
+    public long EstimateElementAtomCount(DrawingElementHit hit, int frame)
+    {
+        if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= ObjectCount) return 0;
+        var atoms = Math.Max(1u, AtomCount[hit.Key.ObjectIndex]);
+        if (hit.Key.Kind == DrawingElementKind.Fill)
+        {
+            var candidates = CollectTopologyCandidates(hit.Key.ObjectIndex, frame);
+            var regions = BuildFillRegions(hit.Key.ObjectIndex, candidates);
+            if ((uint)hit.Key.PartIndex >= regions.Count) return 0;
+            var total = regions.Sum(region => Math.Max(0.001f, region.Area));
+            var fraction = total > 0 ? regions[hit.Key.PartIndex].Area / total : 1;
+            return Math.Max(1, (long)Math.Round(atoms * Math.Clamp(fraction, 0, 1)));
+        }
+
+        var parts = hit.Key.Kind == DrawingElementKind.BoundaryStroke
+            ? GetBoundaryParts(hit.Key.ObjectIndex, frame)
+            : GetStrokeParts(hit.Key.ObjectIndex, frame);
+        if (parts.Length > 0)
+        {
+            var total = parts.Sum(part => Math.Max(0.001f, PolylineLength(part.Points)));
+            var selected = parts.FirstOrDefault(part => part.PartIndex == hit.Key.PartIndex);
+            if (selected.Points is not null)
+            {
+                var fraction = total > 0 ? PolylineLength(selected.Points) / total : 1;
+                return Math.Max(1, (long)Math.Round(atoms * Math.Clamp(fraction, 0, 1)));
+            }
+        }
+
+        var parameterFraction = Math.Clamp(hit.EndT - hit.StartT, 0, 1);
+        return Math.Max(1, (long)Math.Round(atoms * parameterFraction));
+    }
+
     public bool FillContainsPoint(int objectIndex, PointF world)
     {
         if ((uint)objectIndex >= ObjectCount) return false;
         var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
-        if (shape == VectorAnimationEngine.ShapeKind.Line) return false;
+        if (!IsFillShape(shape) || !HasFill(objectIndex)) return false;
         if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(objectIndex, out var contours))
         {
             return PointInCompoundPolygonOrOnBoundary(world, contours);
@@ -564,14 +1425,528 @@ internal sealed class VectorScene
     public DrawingElementHit DetachElementForMove(DrawingElementHit hit, int frame)
     {
         if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= ObjectCount) return hit;
-        var candidates = CollectActiveCandidates(frame);
-        return hit.Key.Kind switch
+        var materialized = MaterializeSelectedParts(new[] { hit.Key }, frame);
+        if (!materialized.Success || materialized.Parts.Length != 1) return DrawingElementHit.None;
+        if (!materialized.Changed) return hit;
+        return new DrawingElementHit(materialized.Parts[0].Result, -1, 0, 1);
+    }
+
+    public MaterializeSelectedPartsResult MaterializeSelectedParts(IReadOnlyList<DrawingElementKey> selectedParts, int frame)
+    {
+        if (selectedParts.Count == 0 || selectedParts.Any(key => !key.IsValid))
         {
-            DrawingElementKind.Stroke => DetachStrokePart(hit, candidates),
-            DrawingElementKind.BoundaryStroke => DetachBoundaryStrokePart(hit, candidates),
-            DrawingElementKind.Fill => DetachFillPart(hit, candidates),
-            _ => hit
+            return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+        }
+
+        var keys = selectedParts.Distinct().ToArray();
+        var oldObjectCount = ObjectCount;
+        var remove = new bool[oldObjectCount];
+        var clearStroke = new HashSet<int>();
+        var additions = new List<MaterializedPartAddition>();
+        var mappedResults = new Dictionary<DrawingElementKey, DrawingElementKey>();
+
+        foreach (var group in keys.GroupBy(key => key.ObjectIndex).OrderBy(group => group.Key))
+        {
+            var source = group.Key;
+            if ((uint)source >= oldObjectCount || !IsObjectActive(source, frame))
+            {
+                return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+            }
+
+            var sourceKeys = group.ToArray();
+            var shape = ShapeKind[source];
+            var candidates = CollectTopologyCandidates(source, frame);
+            var layer = ObjectLayer[source];
+            var order = ObjectOrder[source];
+            var stroke = Stroke[source];
+            var fillColor = Color.FromArgb(Argb[source]);
+            var strokeColor = Color.FromArgb(StrokeArgb[source]);
+            var atoms = AtomCount[source];
+
+            if (IsTopologyStrokeShape(shape))
+            {
+                if (!HasStroke(source) || sourceKeys.Any(key => key.Kind != DrawingElementKind.Stroke))
+                {
+                    return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                }
+
+                var splits = StrokeSplitParameters(source, candidates);
+                var selectedByPart = sourceKeys.ToDictionary(key => key.PartIndex);
+                if (selectedByPart.Keys.Any(part => part < 0 || part >= Math.Max(0, splits.Count - 1)))
+                {
+                    return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                }
+
+                if (splits.Count <= 2)
+                {
+                    foreach (var key in sourceKeys) mappedResults[key] = key;
+                    continue;
+                }
+
+                remove[source] = true;
+                if (shape == VectorAnimationEngine.ShapeKind.Line)
+                {
+                    var curve = LineCurve(source);
+                    var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+                    if (selectedByPart.Keys.Any(part => segments.All(segment => segment.PartIndex != part)))
+                    {
+                        return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                    }
+
+                    var atomsPerPart = Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count));
+                    var subOrders = ReplacementSubOrders(source, segments.Count);
+                    var subOrderIndex = 0;
+                    foreach (var segment in segments)
+                    {
+                        additions.Add(CurveMaterialization(
+                            selectedByPart.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
+                            layer,
+                            order,
+                            subOrders[subOrderIndex++],
+                            stroke,
+                            fillColor,
+                            strokeColor,
+                            atomsPerPart,
+                            segment.Start,
+                            segment.Control,
+                            segment.End));
+                    }
+                }
+                else
+                {
+                    if (!TryGetFreehandWorldPoints(source, out var points))
+                    {
+                        return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                    }
+
+                    var segments = BuildPolylinePathParts(points, splits);
+                    if (selectedByPart.Keys.Any(part => segments.All(segment => segment.PartIndex != part)))
+                    {
+                        return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                    }
+
+                    var atomsPerPart = Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count));
+                    var subOrders = ReplacementSubOrders(source, segments.Count);
+                    var subOrderIndex = 0;
+                    foreach (var segment in segments)
+                    {
+                        additions.Add(FreehandMaterialization(
+                            selectedByPart.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
+                            layer,
+                            order,
+                            subOrders[subOrderIndex++],
+                            stroke,
+                            fillColor,
+                            strokeColor,
+                            atomsPerPart,
+                            segment.Points));
+                    }
+                }
+
+                continue;
+            }
+
+            if (!IsFillShape(shape)
+                || sourceKeys.Any(key => key.Kind is not DrawingElementKind.Fill and not DrawingElementKind.BoundaryStroke))
+            {
+                return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+            }
+
+            var fillKeys = sourceKeys.Where(key => key.Kind == DrawingElementKind.Fill).ToArray();
+            var boundaryKeys = sourceKeys.Where(key => key.Kind == DrawingElementKind.BoundaryStroke).ToArray();
+            if (fillKeys.Length > 0 && !HasFill(source) || boundaryKeys.Length > 0 && !HasStroke(source))
+            {
+                return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+            }
+
+            var selectedFillParts = fillKeys.ToDictionary(key => key.PartIndex);
+            var selectedBoundaryParts = boundaryKeys.ToDictionary(key => key.PartIndex);
+            var regions = fillKeys.Length > 0 ? BuildFillRegions(source, candidates) : new List<FillRegion>();
+            if (selectedFillParts.Keys.Any(part => part < 0 || part >= regions.Count))
+            {
+                return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+            }
+
+            var boundaryParts = boundaryKeys.Length > 0 || fillKeys.Length > 0 && HasStroke(source)
+                ? BuildBoundaryStrokeParts(source, candidates)
+                : new List<BoundaryStrokePart>();
+            if (selectedBoundaryParts.Keys.Any(part => boundaryParts.All(segment => segment.PartIndex != part)))
+            {
+                return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+            }
+
+            if (fillKeys.Length > 0)
+            {
+                var detachBoundary = HasStroke(source);
+                if (regions.Count <= 1 && !detachBoundary)
+                {
+                    foreach (var key in fillKeys) mappedResults[key] = key;
+                    continue;
+                }
+
+                remove[source] = true;
+                var replacementSubOrders = ReplacementSubOrders(
+                    source,
+                    (detachBoundary ? boundaryParts.Count : 0) + regions.Count);
+                var replacementSubOrderIndex = 0;
+                if (detachBoundary)
+                {
+                    var boundaryAtoms = Math.Max(3u, atoms / (uint)Math.Max(1, boundaryParts.Count));
+                    foreach (var segment in boundaryParts)
+                    {
+                        additions.Add(PolylineMaterialization(
+                            selectedBoundaryParts.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
+                            layer,
+                            order,
+                            replacementSubOrders[replacementSubOrderIndex++],
+                            stroke,
+                            fillColor,
+                            strokeColor,
+                            boundaryAtoms,
+                            segment.Points));
+                    }
+                }
+
+                var fillAtoms = Math.Max(3u, atoms / (uint)Math.Max(1, regions.Count));
+                for (var part = 0; part < regions.Count; part++)
+                {
+                    additions.Add(FillMaterialization(
+                        selectedFillParts.GetValueOrDefault(part, DrawingElementKey.None),
+                        layer,
+                        order,
+                        replacementSubOrders[replacementSubOrderIndex++],
+                        fillColor,
+                        strokeColor,
+                        fillAtoms,
+                        regions[part].Contours));
+                }
+
+                continue;
+            }
+
+            if (HasFill(source)) clearStroke.Add(source);
+            else remove[source] = true;
+            var atomsPerBoundary = Math.Max(3u, atoms / (uint)Math.Max(1, boundaryParts.Count));
+            var boundarySubOrders = ReplacementSubOrders(source, boundaryParts.Count, preserveSourceSubOrder: true);
+            var boundarySubOrderIndex = 0;
+            foreach (var segment in boundaryParts)
+            {
+                additions.Add(PolylineMaterialization(
+                    selectedBoundaryParts.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
+                    layer,
+                    order,
+                    boundarySubOrders[boundarySubOrderIndex++],
+                    stroke,
+                    fillColor,
+                    strokeColor,
+                    atomsPerBoundary,
+                    segment.Points));
+            }
+        }
+
+        var changed = remove.Any(value => value) || clearStroke.Count > 0 || additions.Count > 0;
+        if (!changed)
+        {
+            var identity = Enumerable.Range(0, oldObjectCount).ToArray();
+            var unchanged = keys.Select(key => new MaterializedPartMapping(key, mappedResults[key])).ToArray();
+            return new MaterializeSelectedPartsResult(true, false, unchanged, identity);
+        }
+
+        var snapshot = CreateSnapshot();
+        try
+        {
+            var oldToNew = CompactObjectsForMaterialization(remove);
+            foreach (var source in clearStroke)
+            {
+                var mapped = oldToNew[source];
+                if (mapped >= 0) Stroke[mapped] = 0;
+            }
+
+            foreach (var item in mappedResults.ToArray())
+            {
+                var mappedObject = oldToNew[item.Value.ObjectIndex];
+                if (mappedObject < 0) throw new InvalidOperationException("A retained selected object was removed during topology materialization.");
+                mappedResults[item.Key] = item.Value with { ObjectIndex = mappedObject };
+            }
+
+            foreach (var addition in additions)
+            {
+                var index = AppendMaterializedPart(addition);
+                if (index < 0) throw new InvalidOperationException("Topology materialization produced invalid replacement geometry.");
+                if (addition.SourceKey.IsValid)
+                {
+                    var kind = addition.Geometry == MaterializedPartGeometry.Fill
+                        ? DrawingElementKind.Fill
+                        : DrawingElementKind.Stroke;
+                    mappedResults[addition.SourceKey] = new DrawingElementKey(index, kind, 0);
+                }
+            }
+
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            var mappings = keys.Select(key => new MaterializedPartMapping(key, mappedResults[key])).ToArray();
+            return new MaterializeSelectedPartsResult(true, true, mappings, oldToNew);
+        }
+        catch
+        {
+            RestoreSnapshot(snapshot);
+            return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+        }
+    }
+
+    private static MaterializedPartAddition CurveMaterialization(
+        DrawingElementKey sourceKey,
+        int layer,
+        long order,
+        double subOrder,
+        float stroke,
+        Color fillColor,
+        Color strokeColor,
+        uint atoms,
+        PointF start,
+        PointF control,
+        PointF end)
+    {
+        return new MaterializedPartAddition(
+            MaterializedPartGeometry.Curve,
+            sourceKey,
+            layer,
+            order,
+            subOrder,
+            stroke,
+            fillColor,
+            strokeColor,
+            atoms,
+            start,
+            control,
+            end,
+            Array.Empty<PointF>(),
+            Array.Empty<PointF[]>());
+    }
+
+    private static MaterializedPartAddition PolylineMaterialization(
+        DrawingElementKey sourceKey,
+        int layer,
+        long order,
+        double subOrder,
+        float stroke,
+        Color fillColor,
+        Color strokeColor,
+        uint atoms,
+        PointF[] points)
+    {
+        return new MaterializedPartAddition(
+            MaterializedPartGeometry.Polyline,
+            sourceKey,
+            layer,
+            order,
+            subOrder,
+            stroke,
+            fillColor,
+            strokeColor,
+            atoms,
+            PointF.Empty,
+            PointF.Empty,
+            PointF.Empty,
+            points,
+            Array.Empty<PointF[]>());
+    }
+
+    private static MaterializedPartAddition FreehandMaterialization(
+        DrawingElementKey sourceKey,
+        int layer,
+        long order,
+        double subOrder,
+        float stroke,
+        Color fillColor,
+        Color strokeColor,
+        uint atoms,
+        PointF[] points)
+    {
+        return new MaterializedPartAddition(
+            MaterializedPartGeometry.Freehand,
+            sourceKey,
+            layer,
+            order,
+            subOrder,
+            stroke,
+            fillColor,
+            strokeColor,
+            atoms,
+            PointF.Empty,
+            PointF.Empty,
+            PointF.Empty,
+            points,
+            Array.Empty<PointF[]>());
+    }
+
+    private static MaterializedPartAddition FillMaterialization(
+        DrawingElementKey sourceKey,
+        int layer,
+        long order,
+        double subOrder,
+        Color fillColor,
+        Color strokeColor,
+        uint atoms,
+        PointF[][] contours)
+    {
+        return new MaterializedPartAddition(
+            MaterializedPartGeometry.Fill,
+            sourceKey,
+            layer,
+            order,
+            subOrder,
+            0,
+            fillColor,
+            strokeColor,
+            atoms,
+            PointF.Empty,
+            PointF.Empty,
+            PointF.Empty,
+            Array.Empty<PointF>(),
+            contours);
+    }
+
+    private int AppendMaterializedPart(MaterializedPartAddition addition)
+    {
+        var index = addition.Geometry switch
+        {
+            MaterializedPartGeometry.Curve => AppendCurveSegment(
+                addition.Layer,
+                addition.Start,
+                addition.Control,
+                addition.End,
+                addition.Stroke,
+                addition.FillColor,
+                addition.StrokeColor,
+                addition.Atoms),
+            MaterializedPartGeometry.Freehand => AppendFreehandStroke(
+                addition.Layer,
+                addition.Points,
+                addition.Stroke,
+                addition.StrokeColor,
+                addition.Atoms),
+            MaterializedPartGeometry.Polyline => AppendPolylineStroke(
+                addition.Layer,
+                addition.Points,
+                addition.Stroke,
+                addition.FillColor,
+                addition.StrokeColor,
+                addition.Atoms),
+            MaterializedPartGeometry.Fill => AppendPathObjectContours(
+                addition.Layer,
+                addition.Contours,
+                0,
+                addition.FillColor,
+                addition.StrokeColor,
+                addition.Atoms),
+            _ => -1
         };
+        if (index >= 0)
+        {
+            ObjectOrder[index] = addition.Order;
+            ObjectSubOrder[index] = addition.SubOrder;
+        }
+        return index;
+    }
+
+    private double[] ReplacementSubOrders(int source, int count, bool preserveSourceSubOrder = false)
+    {
+        if (count <= 0) return Array.Empty<double>();
+        var order = ObjectOrder[source];
+        var sourceSubOrder = ObjectSubOrder[source];
+        double? lower = null;
+        double? upper = null;
+        for (var index = 0; index < ObjectCount; index++)
+        {
+            if (index == source || ObjectOrder[index] != order) continue;
+            var candidate = ObjectSubOrder[index];
+            if (candidate < sourceSubOrder && (!lower.HasValue || candidate > lower.Value)) lower = candidate;
+            if (candidate > sourceSubOrder && (!upper.HasValue || candidate < upper.Value)) upper = candidate;
+        }
+
+        const double defaultGap = 1024d;
+        if (preserveSourceSubOrder)
+        {
+            var preservedUpperBound = upper ?? sourceSubOrder + defaultGap;
+            if (TryAllocateSubOrders(sourceSubOrder, preservedUpperBound, count, out var preserved)) return preserved;
+
+            var preservedLowerBound = lower ?? sourceSubOrder - defaultGap;
+            if (TryAllocateSubOrders(preservedLowerBound, sourceSubOrder, count, out preserved)) return preserved;
+
+            throw new InvalidOperationException("No distinct drawing sub-order remained beside the preserved source object.");
+        }
+
+        var lowerBound = lower ?? sourceSubOrder - defaultGap;
+        var upperBound = upper ?? sourceSubOrder + defaultGap;
+        var step = (upperBound - lowerBound) / (count + 1d);
+        if (!(step > 0) || double.IsInfinity(step) || double.IsNaN(step))
+        {
+            lowerBound = sourceSubOrder - defaultGap;
+            step = defaultGap * 2d / (count + 1d);
+        }
+
+        var result = new double[count];
+        for (var index = 0; index < count; index++) result[index] = lowerBound + step * (index + 1d);
+        return result;
+    }
+
+    private static bool TryAllocateSubOrders(double lowerExclusive, double upperExclusive, int count, out double[] result)
+    {
+        result = Array.Empty<double>();
+        var step = (upperExclusive - lowerExclusive) / (count + 1d);
+        if (!(step > 0) || double.IsInfinity(step) || double.IsNaN(step)) return false;
+
+        var allocated = new double[count];
+        var previous = lowerExclusive;
+        for (var index = 0; index < count; index++)
+        {
+            var candidate = lowerExclusive + step * (index + 1d);
+            if (!(candidate > previous) || !(candidate < upperExclusive)) return false;
+            allocated[index] = candidate;
+            previous = candidate;
+        }
+
+        result = allocated;
+        return true;
+    }
+
+    private int AppendPolylineStroke(int layer, PointF[] points, float stroke, Color fillColor, Color strokeColor, uint atoms)
+    {
+        if (points.Length < 2) return -1;
+        if (points.Length == 2)
+        {
+            return AppendCurveSegment(layer, points[0], Midpoint(points[0], points[1]), points[1], stroke, fillColor, strokeColor, atoms);
+        }
+
+        return AppendFreehandStroke(layer, points, stroke, strokeColor, atoms);
+    }
+
+    private int[] CompactObjectsForMaterialization(bool[] remove)
+    {
+        var oldCount = ObjectCount;
+        var oldToNew = Enumerable.Repeat(-1, oldCount).ToArray();
+        long removedAtoms = 0;
+        var write = 0;
+        for (var read = 0; read < oldCount; read++)
+        {
+            if (remove[read])
+            {
+                removedAtoms += AtomCount[read];
+                continue;
+            }
+
+            oldToNew[read] = write;
+            if (write != read) CopyObjectData(read, write);
+            write++;
+        }
+
+        ObjectCount = write;
+        VirtualAtomCount = Math.Max(0, VirtualAtomCount - removedAtoms);
+        ResizeObjectArrays();
+        RemovePathDataOutsideObjectCount();
+        RemoveFreehandDataOutsideObjectCount();
+        return oldToNew;
     }
 
     public (bool Changed, int[] SelectedObjects) MaterializeMarqueeParts(RectangleF worldBounds, int frame)
@@ -591,11 +1966,15 @@ internal sealed class VectorScene
 
         foreach (var index in candidates)
         {
-            if ((uint)index >= ObjectCount || !IsLayerActive(ObjectLayer[index], frame)) continue;
+            if ((uint)index >= ObjectCount || !IsObjectActive(index, frame)) continue;
             var shape = ShapeKind.Length > index ? ShapeKind[index] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (shape == VectorAnimationEngine.ShapeKind.Line)
             {
                 AddLineMarqueeParts(index, bounds, additions, remove);
+            }
+            else if (IsFreehandShape(shape))
+            {
+                continue;
             }
             else
             {
@@ -625,10 +2004,99 @@ internal sealed class VectorScene
         return (true, selected.ToArray());
     }
 
-    public int MergeSameColorFillsAround(int objectIndex)
+    public (bool Changed, int[] SelectedObjects) MaterializeMarqueeLineParts(RectangleF worldBounds, int frame)
+    {
+        var bounds = NormalizeToDrawingUnits(worldBounds);
+        if (bounds.Width < DrawingTopologyRules.MinStrokeSegmentUnits || bounds.Height < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            return (false, Array.Empty<int>());
+        }
+
+        var candidates = QueryObjects(bounds, frame);
+        if (candidates.Length == 0) return (false, Array.Empty<int>());
+
+        var remove = new bool[ObjectCount];
+        var additions = new List<(MaterializedPartAddition Addition, bool Selected)>();
+        foreach (var source in candidates)
+        {
+            if ((uint)source >= ObjectCount
+                || ShapeKind[source] != VectorAnimationEngine.ShapeKind.Line
+                || !IsObjectActive(source, frame))
+            {
+                continue;
+            }
+
+            var curve = LineCurve(source);
+            var splits = LineRectSplitParameters(source, bounds);
+            if (splits.Count <= 2) continue;
+
+            var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+            if (segments.Count <= 1) continue;
+
+            var selected = segments
+                .Select(segment => QuadraticCurveInsideRectangle(segment.Start, segment.Control, segment.End, bounds))
+                .ToArray();
+            if (!selected.Any(value => value)) continue;
+
+            remove[source] = true;
+            var subOrders = ReplacementSubOrders(source, segments.Count);
+            for (var part = 0; part < segments.Count; part++)
+            {
+                var segment = segments[part];
+                additions.Add((
+                    CurveMaterialization(
+                        DrawingElementKey.None,
+                        ObjectLayer[source],
+                        ObjectOrder[source],
+                        subOrders[part],
+                        Stroke[source],
+                        Color.FromArgb(Argb[source]),
+                        Color.FromArgb(StrokeArgb[source]),
+                        Math.Max(3u, AtomCount[source] / (uint)segments.Count),
+                        segment.Start,
+                        segment.Control,
+                        segment.End),
+                    selected[part]));
+            }
+        }
+
+        if (!remove.Any(value => value)) return (false, Array.Empty<int>());
+
+        var snapshot = CreateSnapshot();
+        var editFrame = EditFrame;
+        try
+        {
+            EditFrame = Math.Max(0, frame);
+            CompactObjectsForMaterialization(remove);
+            var selectedObjects = new List<int>();
+            foreach (var item in additions)
+            {
+                var index = AppendMaterializedPart(item.Addition);
+                if (index < 0) throw new InvalidOperationException("Marquee line materialization produced invalid replacement geometry.");
+                if (item.Selected) selectedObjects.Add(index);
+            }
+
+            SynchronizeAllKeyframeContentKinds();
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            return (true, selectedObjects.ToArray());
+        }
+        catch
+        {
+            RestoreSnapshot(snapshot);
+            return (false, Array.Empty<int>());
+        }
+        finally
+        {
+            EditFrame = editFrame;
+        }
+    }
+
+    public int MergeSameColorFillsAround(int objectIndex, bool connectNearby = true, int frame = 0)
     {
         if ((uint)objectIndex >= ObjectCount) return objectIndex;
-        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Line) return objectIndex;
+        if (!IsFillShape(ShapeKind[objectIndex])) return objectIndex;
+        if (!IsObjectActive(objectIndex, frame)) return objectIndex;
 
         var current = objectIndex;
         var merged = true;
@@ -638,20 +2106,87 @@ internal sealed class VectorScene
             for (var other = 0; other < ObjectCount; other++)
             {
                 if (other == current) continue;
-                if (!TryBuildSameColorFillMerge(current, other, out var mergedPath)) continue;
+                if (ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]) continue;
+                if (!TryBuildSameColorFillMerge(current, other, connectNearby, out var mergedPath)) continue;
 
                 var layer = ObjectLayer[current];
+                var topSource = CompareObjectStack(current, other) >= 0 ? current : other;
+                var order = ObjectOrder[topSource];
+                var subOrder = ObjectSubOrder[topSource];
                 var fillColor = Color.FromArgb(Argb[current]);
                 var strokeColor = Color.FromArgb(StrokeArgb[current]);
                 var atoms = Math.Max(3u, AtomCount[current] + AtomCount[other]);
-                RemoveObjects(new[] { current, other });
-                current = AddPathObjectContours(layer, mergedPath, 0, fillColor, strokeColor, atoms);
-                merged = current >= 0;
+                var boundaryAdditions = new List<MaterializedPartAddition>();
+                PlanBoundaryMaterializations(current, frame, boundaryAdditions, preserveSourceSubOrder: current == topSource);
+                PlanBoundaryMaterializations(other, frame, boundaryAdditions, preserveSourceSubOrder: other == topSource);
+                var mergeSource = current;
+                var snapshot = CreateSnapshot();
+                try
+                {
+                    var remove = new bool[ObjectCount];
+                    remove[current] = true;
+                    remove[other] = true;
+                    CompactObjectsForMaterialization(remove);
+                    current = AppendPathObjectContours(layer, mergedPath, 0, fillColor, strokeColor, atoms);
+                    if (current < 0) throw new InvalidOperationException("Merged fill geometry was invalid.");
+                    ObjectOrder[current] = order;
+                    ObjectSubOrder[current] = subOrder;
+                    foreach (var addition in boundaryAdditions)
+                    {
+                        if (AppendMaterializedPart(addition) < 0)
+                        {
+                            throw new InvalidOperationException("A fill boundary could not be preserved during merge.");
+                        }
+                    }
+
+                    RebuildGeometryIndex();
+                    RebuildSummaries();
+                    merged = true;
+                }
+                catch
+                {
+                    RestoreSnapshot(snapshot);
+                    current = mergeSource;
+                    merged = false;
+                }
+
                 break;
             }
         }
 
         return current;
+    }
+
+    private void PlanBoundaryMaterializations(
+        int source,
+        int frame,
+        List<MaterializedPartAddition> additions,
+        bool preserveSourceSubOrder)
+    {
+        if ((uint)source >= ObjectCount || !HasStroke(source)) return;
+        var candidates = CollectTopologyCandidates(source, frame);
+        var parts = BuildBoundaryStrokeParts(source, candidates);
+        var layer = ObjectLayer[source];
+        var order = ObjectOrder[source];
+        var stroke = Stroke[source];
+        var fillColor = Color.FromArgb(Argb[source]);
+        var strokeColor = Color.FromArgb(StrokeArgb[source]);
+        var atoms = Math.Max(3u, AtomCount[source] / (uint)Math.Max(1, parts.Count));
+        var subOrders = ReplacementSubOrders(source, parts.Count, preserveSourceSubOrder);
+        var subOrderIndex = 0;
+        foreach (var part in parts)
+        {
+            additions.Add(PolylineMaterialization(
+                DrawingElementKey.None,
+                layer,
+                order,
+                subOrders[subOrderIndex++],
+                stroke,
+                fillColor,
+                strokeColor,
+                atoms,
+                part.Points));
+        }
     }
 
     private void AddFillMarqueeParts(int index, RectangleF bounds, IReadOnlyList<int> activeCandidates, List<MarqueePartAddition> additions, HashSet<int> remove)
@@ -756,131 +2291,141 @@ internal sealed class VectorScene
         remove.Add(index);
     }
 
-    private bool TryBuildSameColorFillMerge(int a, int b, out PointF[][] mergedPath)
+    private bool TryBuildSameColorFillMerge(int a, int b, bool connectNearby, out PointF[][] mergedPath)
     {
         mergedPath = Array.Empty<PointF[]>();
         if ((uint)a >= ObjectCount || (uint)b >= ObjectCount) return false;
         if (ObjectLayer[a] != ObjectLayer[b] || Argb[a] != Argb[b]) return false;
-        if (ShapeKind[a] == VectorAnimationEngine.ShapeKind.Line || ShapeKind[b] == VectorAnimationEngine.ShapeKind.Line) return false;
+        if (!IsFillShape(ShapeKind[a]) || !IsFillShape(ShapeKind[b])) return false;
+
+        var mergeDistance = connectNearby ? FillMergeDistanceUnits : 0.001f;
+        var mergeBounds = GetObjectWorldBounds(a);
+        mergeBounds.Inflate(mergeDistance, mergeDistance);
+        if (!mergeBounds.IntersectsWith(GetObjectWorldBounds(b))) return false;
 
         var contoursA = FillWorldContours(a);
         var contoursB = FillWorldContours(b);
         if (contoursA.Length == 0 || contoursB.Length == 0) return false;
         var distance = CompoundPolygonDistance(contoursA, contoursB, out var nearestA, out var nearestB);
-        if (distance >= FillMergeDistanceUnits) return false;
+        if (distance > mergeDistance) return false;
 
-        var connector = distance > 0.001f ? ConnectorRect(nearestA, nearestB) : RectangleF.Empty;
+        var connector = connectNearby && distance > 0.001f ? CreateFillConnector(nearestA, nearestB) : Array.Empty<PointF>();
         mergedPath = BuildMergedFillPath(contoursA, contoursB, connector);
-        if (mergedPath.Length == 0) return false;
-        return MergedPathCoversPolygon(mergedPath, contoursA)
-            && MergedPathCoversPolygon(mergedPath, contoursB);
+        return mergedPath.Length > 0;
     }
 
-    private static RectangleF ConnectorRect(PointF a, PointF b)
+    private static PointF[] CreateFillConnector(PointF a, PointF b)
     {
-        const float halfThickness = 0.5f;
-        var dx = Math.Abs(a.X - b.X);
-        var dy = Math.Abs(a.Y - b.Y);
-        if (dx >= dy)
-        {
-            return Normalize(RectangleF.FromLTRB(a.X, Math.Min(a.Y, b.Y) - halfThickness, b.X, Math.Max(a.Y, b.Y) + halfThickness));
-        }
+        var dx = b.X - a.X;
+        var dy = b.Y - a.Y;
+        var length = MathF.Sqrt(dx * dx + dy * dy);
+        if (length <= 0.001f) return Array.Empty<PointF>();
 
-        return Normalize(RectangleF.FromLTRB(Math.Min(a.X, b.X) - halfThickness, a.Y, Math.Max(a.X, b.X) + halfThickness, b.Y));
+        const float halfThickness = 1f;
+        const float endpointOverlap = 1f;
+        var ux = dx / length;
+        var uy = dy / length;
+        var nx = -uy * halfThickness;
+        var ny = ux * halfThickness;
+        var start = new PointF(a.X - ux * endpointOverlap, a.Y - uy * endpointOverlap);
+        var end = new PointF(b.X + ux * endpointOverlap, b.Y + uy * endpointOverlap);
+
+        return
+        [
+            new PointF(start.X + nx, start.Y + ny),
+            new PointF(end.X + nx, end.Y + ny),
+            new PointF(end.X - nx, end.Y - ny),
+            new PointF(start.X - nx, start.Y - ny)
+        ];
     }
 
-    private static PointF[][] BuildMergedFillPath(PointF[][] contoursA, PointF[][] contoursB, RectangleF connector)
+    private static PointF[][] BuildMergedFillPath(PointF[][] contoursA, PointF[][] contoursB, PointF[] connector)
     {
-        var xs = new SortedSet<float>();
-        var ys = new SortedSet<float>();
-        AddPolygonGridLines(contoursA, xs, ys);
-        AddPolygonGridLines(contoursB, xs, ys);
-        if (!connector.IsEmpty)
+        try
         {
-            xs.Add(VectorUnits.Quantize(connector.Left));
-            xs.Add(VectorUnits.Quantize(connector.Right));
-            ys.Add(VectorUnits.Quantize(connector.Top));
-            ys.Add(VectorUnits.Quantize(connector.Bottom));
-        }
+            var subject = ToClipperPaths(contoursA);
+            var clip = ToClipperPaths(contoursB);
+            if (subject.Count == 0 || clip.Count == 0) return Array.Empty<PointF[]>();
 
-        var xValues = xs.ToArray();
-        var yValues = ys.ToArray();
-        if (xValues.Length < 2 || yValues.Length < 2) return Array.Empty<PointF[]>();
-
-        var filled = new bool[xValues.Length - 1, yValues.Length - 1];
-        var filledArea = 0f;
-        for (var x = 0; x < xValues.Length - 1; x++)
-        {
-            for (var y = 0; y < yValues.Length - 1; y++)
+            var solution = new Paths64();
+            var union = new Clipper64();
+            union.AddSubject(subject);
+            union.AddClip(clip);
+            if (!union.Execute(ClipType.Union, FillRule.EvenOdd, solution) || solution.Count == 0)
             {
-                var center = new PointF((xValues[x] + xValues[x + 1]) * 0.5f, (yValues[y] + yValues[y + 1]) * 0.5f);
-                filled[x, y] = PointInCompoundPolygon(center, contoursA)
-                    || PointInCompoundPolygon(center, contoursB)
-                    || (!connector.IsEmpty && connector.Contains(center));
-                if (filled[x, y]) filledArea += Math.Abs((xValues[x + 1] - xValues[x]) * (yValues[y + 1] - yValues[y]));
-            }
-        }
-
-        var edges = new List<(MergePoint Start, MergePoint End)>();
-        for (var x = 0; x < xValues.Length - 1; x++)
-        {
-            for (var y = 0; y < yValues.Length - 1; y++)
-            {
-                if (!filled[x, y]) continue;
-                var left = Key(xValues[x], yValues[y]);
-                var right = Key(xValues[x + 1], yValues[y]);
-                var bottomRight = Key(xValues[x + 1], yValues[y + 1]);
-                var bottomLeft = Key(xValues[x], yValues[y + 1]);
-                if (y == 0 || !filled[x, y - 1]) edges.Add((left, right));
-                if (x == xValues.Length - 2 || !filled[x + 1, y]) edges.Add((right, bottomRight));
-                if (y == yValues.Length - 2 || !filled[x, y + 1]) edges.Add((bottomRight, bottomLeft));
-                if (x == 0 || !filled[x - 1, y]) edges.Add((bottomLeft, left));
-            }
-        }
-
-        var loops = new List<PointF[]>();
-        while (edges.Count > 0)
-        {
-            var edge = edges[0];
-            edges.RemoveAt(0);
-            var loop = new List<MergePoint> { edge.Start };
-            var current = edge.End;
-            var guard = 0;
-            while (!current.Equals(loop[0]) && guard++ < 4096)
-            {
-                loop.Add(current);
-                var nextIndex = edges.FindIndex(item => item.Start.Equals(current));
-                if (nextIndex < 0) break;
-                var next = edges[nextIndex];
-                edges.RemoveAt(nextIndex);
-                current = next.End;
+                return Array.Empty<PointF[]>();
             }
 
-            if (!current.Equals(loop[0]) || loop.Count < 3) continue;
-            var points = RemoveCollinearPoints(loop.Select(PointFromKey).ToList()).ToArray();
-            if (points.Length >= 3 && Math.Abs(PolygonArea(points)) >= 0.5f) loops.Add(points);
-        }
+            if (connector.Length >= 3)
+            {
+                var connectorPaths = ToClipperPaths(new[] { connector });
+                if (connectorPaths.Count == 0) return Array.Empty<PointF[]>();
 
-        if (loops.Count == 0) return Array.Empty<PointF[]>();
-        var sorted = loops
-            .OrderByDescending(loop => Math.Abs(PolygonArea(loop)))
-            .ToArray();
-        var mergedArea = CompoundArea(sorted);
-        return mergedArea <= filledArea + Math.Max(1f, filledArea * 0.02f)
-            ? sorted
-            : Array.Empty<PointF[]>();
+                var connected = new Paths64();
+                var connectorUnion = new Clipper64();
+                connectorUnion.AddSubject(solution);
+                connectorUnion.AddClip(connectorPaths);
+                if (!connectorUnion.Execute(ClipType.Union, FillRule.EvenOdd, connected) || connected.Count == 0)
+                {
+                    return Array.Empty<PointF[]>();
+                }
+
+                solution = connected;
+            }
+
+            return FromClipperPaths(solution);
+        }
+        catch (Exception ex) when (ex is ClipperLibException or OverflowException)
+        {
+            return Array.Empty<PointF[]>();
+        }
     }
 
-    private static void AddPolygonGridLines(PointF[][] contours, SortedSet<float> xs, SortedSet<float> ys)
+    private static Paths64 ToClipperPaths(IReadOnlyList<PointF[]> contours)
     {
-        foreach (var polygon in contours)
+        var result = new Paths64(contours.Count);
+        foreach (var contour in contours)
         {
-            foreach (var point in polygon)
+            if (contour.Length < 3) continue;
+            var path = new Path64(contour.Length);
+            foreach (var point in contour)
             {
-                xs.Add(VectorUnits.Quantize(point.X));
-                ys.Add(VectorUnits.Quantize(point.Y));
+                path.Add(new Point64(ToClipperCoordinate(point.X), ToClipperCoordinate(point.Y)));
+            }
+
+            path = Clipper.StripDuplicates(path, true);
+            if (path.Count >= 3 && Math.Abs(Clipper.Area(path)) >= ClipperCoordinateScale * ClipperCoordinateScale * 0.5d)
+            {
+                result.Add(path);
             }
         }
+
+        return result;
+    }
+
+    private static PointF[][] FromClipperPaths(Paths64 paths)
+    {
+        var contours = new List<PointF[]>(paths.Count);
+        foreach (var path in paths)
+        {
+            if (path.Count < 3) continue;
+            var contour = new PointF[path.Count];
+            for (var i = 0; i < path.Count; i++)
+            {
+                contour[i] = new PointF(
+                    (float)(path[i].X / ClipperCoordinateScale),
+                    (float)(path[i].Y / ClipperCoordinateScale));
+            }
+
+            contours.Add(contour);
+        }
+
+        return NormalizePathContours(contours);
+    }
+
+    private static long ToClipperCoordinate(float value)
+    {
+        return checked((long)Math.Round(value * ClipperCoordinateScale, MidpointRounding.AwayFromZero));
     }
 
     private PointF[][] FillWorldContours(int objectIndex)
@@ -893,6 +2438,378 @@ internal sealed class VectorScene
 
         var polygon = OpenPolygon(ShapeBoundary(objectIndex));
         return polygon.Length >= 3 ? new[] { polygon } : Array.Empty<PointF[]>();
+    }
+
+    private List<FillRegion> BuildFillRegions(int fillIndex, IReadOnlyList<int> candidates)
+    {
+        if ((uint)fillIndex >= ObjectCount || !HasFill(fillIndex)) return new List<FillRegion>();
+
+        try
+        {
+            var source = ToClipperPaths(FillWorldContours(fillIndex));
+            if (source.Count == 0) return new List<FillRegion>();
+
+            var baseRegions = ExecuteFillRegions(source, new Paths64());
+            var cutterPaths = MergeConnectedOpenCutterPaths(BuildTopologyCutterPaths(fillIndex, candidates));
+            if (cutterPaths.Count == 0) return baseRegions;
+
+            var cutRegions = ExecuteFillRegions(source, BuildTopologyCutterAreas(cutterPaths));
+            return cutRegions.Count > baseRegions.Count ? cutRegions : baseRegions;
+        }
+        catch (Exception ex) when (ex is ClipperLibException or OverflowException)
+        {
+            return FallbackFillRegions(fillIndex);
+        }
+    }
+
+    private List<TopologyCutterPath> BuildTopologyCutterPaths(int fillIndex, IReadOnlyList<int> candidates)
+    {
+        var layer = ObjectLayer[fillIndex];
+        var result = new List<TopologyCutterPath>();
+        foreach (var candidate in candidates)
+        {
+            if (candidate == fillIndex || ObjectLayer[candidate] != layer || !HasStroke(candidate)) continue;
+            var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
+            if (IsTopologyStrokeShape(shape))
+            {
+                var samples = StrokeSamples(candidate);
+                var closed = samples.Length > 2 && SameDrawingUnit(samples[0].Point, samples[^1].Point);
+                var path = ToClipperPath(samples.Select(sample => sample.Point), closed);
+                if (path.Count >= 2) result.Add(new TopologyCutterPath(path, closed));
+            }
+            else if (IsFillShape(shape))
+            {
+                foreach (var contour in ShapeBoundaryContours(candidate))
+                {
+                    var path = ToClipperPath(contour, closed: true);
+                    if (path.Count >= 3) result.Add(new TopologyCutterPath(path, Closed: true));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static Paths64 BuildTopologyCutterAreas(IReadOnlyList<TopologyCutterPath> paths)
+    {
+        if (paths.Count == 0) return new Paths64();
+        var offset = new ClipperOffset(2d, 0d, preserveCollinear: true, reverseSolution: false)
+        {
+            MergeGroups = true
+        };
+        foreach (var path in paths)
+        {
+            var offsetPath = path.Closed ? path.Path : ExtendOpenClipperPath(path.Path);
+            offset.AddPath(offsetPath, JoinType.Miter, path.Closed ? EndType.Joined : EndType.Square);
+        }
+
+        var cutterAreas = new Paths64();
+        offset.Execute(TopologyCutterHalfWidthClipper, cutterAreas);
+        return cutterAreas.Count > 1 ? Clipper.Union(cutterAreas, FillRule.NonZero) : cutterAreas;
+    }
+
+    private static Path64 ExtendOpenClipperPath(Path64 source)
+    {
+        if (source.Count < 2) return source;
+        var result = new Path64(source.Count);
+        foreach (var point in source) result.Add(point);
+
+        var extension = DrawingTopologyRules.MinStrokeSegmentUnits * ClipperCoordinateScale;
+        result[0] = ExtendClipperEndpoint(result[0], result[1], extension);
+        result[^1] = ExtendClipperEndpoint(result[^1], result[^2], extension);
+        return result;
+    }
+
+    private static Point64 ExtendClipperEndpoint(Point64 endpoint, Point64 neighbor, double extension)
+    {
+        var dx = (double)endpoint.X - neighbor.X;
+        var dy = (double)endpoint.Y - neighbor.Y;
+        var length = Math.Sqrt(dx * dx + dy * dy);
+        if (length <= 0.001d) return endpoint;
+        return new Point64(
+            checked(endpoint.X + (long)Math.Round(dx / length * extension, MidpointRounding.AwayFromZero)),
+            checked(endpoint.Y + (long)Math.Round(dy / length * extension, MidpointRounding.AwayFromZero)));
+    }
+
+    private static List<TopologyCutterPath> MergeConnectedOpenCutterPaths(List<TopologyCutterPath> source)
+    {
+        var result = source.ToList();
+        var endpoints = new List<Point64>();
+        foreach (var path in source)
+        {
+            if (path.Closed || path.Path.Count < 2) continue;
+            AddClipperEndpoint(endpoints, path.Path[0]);
+            AddClipperEndpoint(endpoints, path.Path[^1]);
+        }
+
+        var joinable = endpoints
+            .Where(point => source.Count(path => ClipperPathTouchesPoint(path.Path, point, path.Closed)) == 2)
+            .ToArray();
+        var merged = true;
+        while (merged)
+        {
+            merged = false;
+            for (var a = 0; a < result.Count && !merged; a++)
+            {
+                if (result[a].Closed) continue;
+                for (var b = a + 1; b < result.Count; b++)
+                {
+                    if (result[b].Closed || !TryJoinClipperPaths(result[a].Path, result[b].Path, joinable, out var joined)) continue;
+                    var closed = joined.Count > 2 && joined[0] == joined[^1];
+                    if (closed) joined = Clipper.StripDuplicates(joined, true);
+                    result[a] = new TopologyCutterPath(joined, closed);
+                    result.RemoveAt(b);
+                    merged = true;
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static bool TryJoinClipperPaths(Path64 a, Path64 b, IReadOnlyList<Point64> joinable, out Path64 joined)
+    {
+        joined = new Path64();
+        if (a.Count < 2 || b.Count < 2) return false;
+
+        if (ClipperPointsNear(a[^1], b[0]) && IsJoinableClipperEndpoint(a[^1], joinable))
+        {
+            joined = ConcatClipperPaths(a, reverseA: false, b, reverseB: false);
+            return true;
+        }
+
+        if (ClipperPointsNear(a[^1], b[^1]) && IsJoinableClipperEndpoint(a[^1], joinable))
+        {
+            joined = ConcatClipperPaths(a, reverseA: false, b, reverseB: true);
+            return true;
+        }
+
+        if (ClipperPointsNear(a[0], b[^1]) && IsJoinableClipperEndpoint(a[0], joinable))
+        {
+            joined = ConcatClipperPaths(b, reverseA: false, a, reverseB: false);
+            return true;
+        }
+
+        if (ClipperPointsNear(a[0], b[0]) && IsJoinableClipperEndpoint(a[0], joinable))
+        {
+            joined = ConcatClipperPaths(a, reverseA: true, b, reverseB: false);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void AddClipperEndpoint(List<Point64> endpoints, Point64 point)
+    {
+        foreach (var endpoint in endpoints)
+        {
+            if (ClipperPointsNear(endpoint, point)) return;
+        }
+
+        endpoints.Add(point);
+    }
+
+    private static bool IsJoinableClipperEndpoint(Point64 point, IReadOnlyList<Point64> joinable)
+    {
+        foreach (var candidate in joinable)
+        {
+            if (ClipperPointsNear(point, candidate)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool ClipperPathTouchesPoint(Path64 path, Point64 point, bool closed)
+    {
+        if (path.Count == 0) return false;
+        if (path.Count == 1) return ClipperPointsNear(path[0], point);
+        for (var i = 0; i < path.Count - 1; i++)
+        {
+            if (DistanceToClipperSegment(point, path[i], path[i + 1]) <= DrawingTopologyRules.MinStrokeSegmentUnits * ClipperCoordinateScale)
+            {
+                return true;
+            }
+        }
+
+        if (closed && DistanceToClipperSegment(point, path[^1], path[0]) <= DrawingTopologyRules.MinStrokeSegmentUnits * ClipperCoordinateScale)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static double DistanceToClipperSegment(Point64 point, Point64 start, Point64 end)
+    {
+        var vx = (double)end.X - start.X;
+        var vy = (double)end.Y - start.Y;
+        var lengthSquared = vx * vx + vy * vy;
+        if (lengthSquared <= 0.001d)
+        {
+            var dx = (double)point.X - start.X;
+            var dy = (double)point.Y - start.Y;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        var t = Math.Clamp(((point.X - start.X) * vx + (point.Y - start.Y) * vy) / lengthSquared, 0d, 1d);
+        var projectedX = start.X + vx * t;
+        var projectedY = start.Y + vy * t;
+        var offsetX = point.X - projectedX;
+        var offsetY = point.Y - projectedY;
+        return Math.Sqrt(offsetX * offsetX + offsetY * offsetY);
+    }
+
+    private static bool ClipperPointsNear(Point64 a, Point64 b)
+    {
+        var tolerance = DrawingTopologyRules.MinStrokeSegmentUnits * ClipperCoordinateScale;
+        var dx = (double)a.X - b.X;
+        var dy = (double)a.Y - b.Y;
+        return dx * dx + dy * dy <= tolerance * tolerance;
+    }
+
+    private static Path64 ConcatClipperPaths(Path64 a, bool reverseA, Path64 b, bool reverseB)
+    {
+        var result = new Path64(a.Count + b.Count - 1);
+        AddClipperPath(result, a, reverseA, skipFirst: false);
+        AddClipperPath(result, b, reverseB, skipFirst: true);
+        return result;
+    }
+
+    private static void AddClipperPath(Path64 destination, Path64 source, bool reverse, bool skipFirst)
+    {
+        for (var i = skipFirst ? 1 : 0; i < source.Count; i++)
+        {
+            destination.Add(reverse ? source[source.Count - 1 - i] : source[i]);
+        }
+    }
+
+    private static Path64 ToClipperPath(IEnumerable<PointF> points, bool closed)
+    {
+        var result = new Path64();
+        foreach (var point in points)
+        {
+            result.Add(new Point64(ToClipperCoordinate(point.X), ToClipperCoordinate(point.Y)));
+        }
+
+        return Clipper.StripDuplicates(result, closed);
+    }
+
+    private static List<FillRegion> ExecuteFillRegions(Paths64 source, Paths64 cutters)
+    {
+        var tree = new PolyTree64();
+        var clipper = new Clipper64 { PreserveCollinear = true };
+        clipper.AddSubject(source);
+        if (cutters.Count > 0) clipper.AddClip(cutters);
+        var clipType = cutters.Count > 0 ? ClipType.Difference : ClipType.Union;
+        if (!clipper.Execute(clipType, FillRule.EvenOdd, tree)) return new List<FillRegion>();
+
+        var regions = new List<FillRegion>();
+        for (var i = 0; i < tree.Count; i++) CollectFillRegions(tree[i], regions);
+        regions.Sort(CompareFillRegions);
+        return regions;
+    }
+
+    private static void CollectFillRegions(PolyPath64 node, List<FillRegion> regions)
+    {
+        if (!node.IsHole)
+        {
+            var paths = new Paths64 { node.Polygon! };
+            for (var i = 0; i < node.Count; i++)
+            {
+                var child = node[i];
+                if (child.IsHole) paths.Add(child.Polygon!);
+            }
+
+            foreach (var region in NormalizeFillRegionContours(FromClipperPaths(paths))) regions.Add(region);
+        }
+
+        for (var i = 0; i < node.Count; i++) CollectFillRegions(node[i], regions);
+    }
+
+    private static List<FillRegion> NormalizeFillRegionContours(PointF[][] contours)
+    {
+        if (contours.Length == 0) return new List<FillRegion>();
+        var paths = ToClipperPaths(contours);
+        if (paths.Count == 0) return new List<FillRegion>();
+
+        var tree = new PolyTree64();
+        var clipper = new Clipper64 { PreserveCollinear = true };
+        clipper.AddSubject(paths);
+        if (!clipper.Execute(ClipType.Union, FillRule.EvenOdd, tree)) return new List<FillRegion>();
+
+        var regions = new List<FillRegion>();
+        for (var i = 0; i < tree.Count; i++) CollectNormalizedFillRegions(tree[i], regions);
+        return regions;
+    }
+
+    private static void CollectNormalizedFillRegions(PolyPath64 node, List<FillRegion> regions)
+    {
+        if (!node.IsHole)
+        {
+            var paths = new Paths64 { node.Polygon! };
+            for (var i = 0; i < node.Count; i++)
+            {
+                var child = node[i];
+                if (child.IsHole) paths.Add(child.Polygon!);
+            }
+
+            var contours = FromClipperPaths(paths);
+            if (contours.Length > 0)
+            {
+                regions.Add(new FillRegion(contours, ContourBounds(contours), CompoundContourArea(contours)));
+            }
+        }
+
+        for (var i = 0; i < node.Count; i++) CollectNormalizedFillRegions(node[i], regions);
+    }
+
+    private List<FillRegion> FallbackFillRegions(int fillIndex)
+    {
+        var contours = FillWorldContours(fillIndex);
+        return contours.Length > 0
+            ? new List<FillRegion> { new(contours, ContourBounds(contours), CompoundContourArea(contours)) }
+            : new List<FillRegion>();
+    }
+
+    private static int CompareFillRegions(FillRegion a, FillRegion b)
+    {
+        var comparison = a.Bounds.Top.CompareTo(b.Bounds.Top);
+        if (comparison != 0) return comparison;
+        comparison = a.Bounds.Left.CompareTo(b.Bounds.Left);
+        if (comparison != 0) return comparison;
+        comparison = b.Area.CompareTo(a.Area);
+        if (comparison != 0) return comparison;
+        comparison = a.Bounds.Bottom.CompareTo(b.Bounds.Bottom);
+        return comparison != 0 ? comparison : a.Bounds.Right.CompareTo(b.Bounds.Right);
+    }
+
+    private static RectangleF ContourBounds(PointF[][] contours)
+    {
+        var first = contours[0][0];
+        var left = first.X;
+        var right = first.X;
+        var top = first.Y;
+        var bottom = first.Y;
+        foreach (var contour in contours)
+        {
+            foreach (var point in contour)
+            {
+                left = Math.Min(left, point.X);
+                right = Math.Max(right, point.X);
+                top = Math.Min(top, point.Y);
+                bottom = Math.Max(bottom, point.Y);
+            }
+        }
+
+        return RectangleF.FromLTRB(left, top, right, bottom);
+    }
+
+    private static float CompoundContourArea(PointF[][] contours)
+    {
+        var area = 0f;
+        foreach (var contour in contours) area += Math.Abs(PolygonArea(contour));
+        return area;
     }
 
     private static float CompoundPolygonDistance(PointF[][] a, PointF[][] b, out PointF nearestA, out PointF nearestB)
@@ -968,28 +2885,6 @@ internal sealed class VectorScene
         nearestOnSegment = projected;
     }
 
-    private static bool MergedPathCoversPolygon(PointF[][] mergedPath, PointF[][] source)
-    {
-        foreach (var polygon in source)
-        {
-            foreach (var point in polygon)
-            {
-                if (!PointInCompoundPolygonOrOnBoundary(point, mergedPath)) return false;
-            }
-
-            for (var i = 0; i < polygon.Length; i++)
-            {
-                var midpoint = Midpoint(polygon[i], polygon[(i + 1) % polygon.Length]);
-                if (PointInCompoundPolygon(midpoint, source) && !PointInCompoundPolygonOrOnBoundary(midpoint, mergedPath)) return false;
-            }
-
-            var centroid = PolygonCentroid(polygon);
-            if (PointInCompoundPolygon(centroid, source) && !PointInCompoundPolygonOrOnBoundary(centroid, mergedPath)) return false;
-        }
-
-        return true;
-    }
-
     private static bool PointInPolygonOrOnBoundary(PointF point, PointF[] polygon)
     {
         if (PointInPolygon(point, polygon)) return true;
@@ -1001,88 +2896,70 @@ internal sealed class VectorScene
         return false;
     }
 
-    private static PointF PolygonCentroid(PointF[] polygon)
-    {
-        var x = 0f;
-        var y = 0f;
-        foreach (var point in polygon)
-        {
-            x += point.X;
-            y += point.Y;
-        }
-
-        return new PointF(x / polygon.Length, y / polygon.Length);
-    }
-
-    private readonly record struct MergePoint(long X, long Y);
-
-    private static MergePoint Key(float x, float y)
-    {
-        return new MergePoint((long)MathF.Round(VectorUnits.Quantize(x) * 1000f), (long)MathF.Round(VectorUnits.Quantize(y) * 1000f));
-    }
-
-    private static PointF PointFromKey(MergePoint key)
-    {
-        return new PointF(key.X / 1000f, key.Y / 1000f);
-    }
-
-    private static List<PointF> RemoveCollinearPoints(List<PointF> points)
-    {
-        var cleaned = RemoveDuplicatePolygonPoints(points);
-        var changed = true;
-        while (changed && cleaned.Count >= 3)
-        {
-            changed = false;
-            for (var i = 0; i < cleaned.Count; i++)
-            {
-                var previous = cleaned[(i + cleaned.Count - 1) % cleaned.Count];
-                var current = cleaned[i];
-                var next = cleaned[(i + 1) % cleaned.Count];
-                var cross = (current.X - previous.X) * (next.Y - current.Y) - (current.Y - previous.Y) * (next.X - current.X);
-                if (Math.Abs(cross) > 0.001f) continue;
-                cleaned.RemoveAt(i);
-                changed = true;
-                break;
-            }
-        }
-
-        return cleaned;
-    }
-
     private List<int> CollectActiveCandidates(int frame)
     {
         var result = new List<int>(ObjectCount);
         for (var i = 0; i < ObjectCount; i++)
         {
-            if (IsLayerActive(ObjectLayer[i], frame)) result.Add(i);
+            if (IsObjectActive(i, frame)) result.Add(i);
         }
 
         return result;
     }
 
+    private List<int> CollectTopologyCandidates(int objectIndex, int frame)
+    {
+        if ((uint)objectIndex >= ObjectCount) return new List<int>();
+
+        var layer = ObjectLayer[objectIndex];
+        var bounds = GetObjectWorldBounds(objectIndex);
+        bounds.Inflate(DrawingTopologyRules.MinStrokeSegmentUnits, DrawingTopologyRules.MinStrokeSegmentUnits);
+        return QueryObjects(bounds, frame)
+            .Where(index => ObjectLayer[index] == layer)
+            .ToList();
+    }
+
     private DrawingElementHit DetachStrokePart(DrawingElementHit hit, IReadOnlyList<int> candidates)
     {
         var source = hit.Key.ObjectIndex;
-        if ((uint)source >= ObjectCount || ShapeKind[source] != VectorAnimationEngine.ShapeKind.Line) return hit;
+        if ((uint)source >= ObjectCount || !IsTopologyStrokeShape(ShapeKind[source]) || !HasStroke(source)) return hit;
 
-        var curve = LineCurve(source);
         var splits = StrokeSplitParameters(source, candidates);
+        if ((uint)hit.Key.PartIndex >= (uint)Math.Max(0, splits.Count - 1)) return DrawingElementHit.None;
         if (splits.Count <= 2) return hit;
 
         var layer = ObjectLayer[source];
+        var order = ObjectOrder[source];
         var stroke = Stroke[source];
         var fillColor = Color.FromArgb(Argb[source]);
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
         var atoms = AtomCount[source];
         var selectedPart = hit.Key.PartIndex;
-        var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
-
-        RemoveObjectAt(source);
         var selectedIndex = -1;
-        foreach (var segment in segments)
+
+        if (ShapeKind[source] == VectorAnimationEngine.ShapeKind.Line)
         {
-            var index = AddCurveSegment(layer, segment.Start, segment.Control, segment.End, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
-            if (segment.PartIndex == selectedPart) selectedIndex = index;
+            var curve = LineCurve(source);
+            var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+            RemoveObjectAt(source);
+            foreach (var segment in segments)
+            {
+                var index = AddCurveSegment(layer, segment.Start, segment.Control, segment.End, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
+                if (index >= 0) ObjectOrder[index] = order;
+                if (segment.PartIndex == selectedPart) selectedIndex = index;
+            }
+        }
+        else
+        {
+            if (!TryGetFreehandWorldPoints(source, out var points)) return hit;
+            var segments = BuildPolylinePathParts(points, splits);
+            RemoveObjectAt(source);
+            foreach (var segment in segments)
+            {
+                var index = AddFreehandStroke(layer, segment.Points, stroke, strokeColor, brushStroke: false, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
+                if (index >= 0) ObjectOrder[index] = order;
+                if (segment.PartIndex == selectedPart) selectedIndex = index;
+            }
         }
 
         if (selectedIndex < 0 && ObjectCount > 0) selectedIndex = ObjectCount - 1;
@@ -1094,30 +2971,41 @@ internal sealed class VectorScene
     private DrawingElementHit DetachBoundaryStrokePart(DrawingElementHit hit, IReadOnlyList<int> candidates)
     {
         var source = hit.Key.ObjectIndex;
-        if ((uint)source >= ObjectCount || Stroke[source] <= 0) return hit;
+        if ((uint)source >= ObjectCount || !HasStroke(source)) return hit;
 
-        var boundary = ShapeBoundary(source);
-        var splits = BoundarySplitParameters(source, candidates);
-        if (splits.Count <= 1) return hit;
+        var segments = BuildBoundaryStrokeParts(source, candidates);
+        if (segments.Count == 0) return hit;
+        if (!segments.Any(segment => segment.PartIndex == hit.Key.PartIndex)) return DrawingElementHit.None;
 
         var layer = ObjectLayer[source];
+        var order = ObjectOrder[source];
         var stroke = Stroke[source];
         var fillColor = Color.FromArgb(Argb[source]);
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
         var atoms = AtomCount[source];
         var selectedPart = hit.Key.PartIndex;
-        var segments = BuildPolylineParts(boundary, splits);
 
         Stroke[source] = 0;
         var selectedIndex = -1;
         foreach (var segment in segments)
         {
-            var index = AddLineSegment(layer, segment.Start, segment.End, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
+            var index = AddPolylineStroke(layer, segment.Points, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
+            if (index >= 0) ObjectOrder[index] = order;
             if (segment.PartIndex == selectedPart) selectedIndex = index;
         }
 
-        RebuildGeometryIndex();
-        RebuildSummaries();
+        if (!HasFill(source))
+        {
+            var last = ObjectCount - 1;
+            if (selectedIndex == last) selectedIndex = source;
+            RemoveObjectAt(source);
+        }
+        else
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+        }
+
         return selectedIndex >= 0
             ? new DrawingElementHit(new DrawingElementKey(selectedIndex, DrawingElementKind.Stroke, 0), -1, 0, 1)
             : hit;
@@ -1126,29 +3014,31 @@ internal sealed class VectorScene
     private DrawingElementHit DetachFillPart(DrawingElementHit hit, IReadOnlyList<int> candidates)
     {
         var source = hit.Key.ObjectIndex;
-        if ((uint)source >= ObjectCount) return hit;
-        if (!TryFindPrimaryFillCutter(source, candidates, out var lineIndex, out var cutterStart, out var cutterEnd)) return hit;
+        if ((uint)source >= ObjectCount || !HasFill(source)) return hit;
 
-        var polygon = ShapeBoundary(source);
-        if (polygon.Length > 1 && SameDrawingUnit(polygon[0], polygon[^1])) polygon = polygon[..^1];
-        var positive = ClipPolygonByLine(polygon, cutterStart, cutterEnd, keepPositive: true);
-        var negative = ClipPolygonByLine(polygon, cutterStart, cutterEnd, keepPositive: false);
-        if (positive.Count < 3 || negative.Count < 3) return hit;
+        var regions = BuildFillRegions(source, candidates);
+        if ((uint)hit.Key.PartIndex >= regions.Count) return DrawingElementHit.None;
+        var detachBoundary = HasStroke(source);
+        if (regions.Count <= 1 && !detachBoundary) return hit;
 
         var layer = ObjectLayer[source];
+        var order = ObjectOrder[source];
         var fillColor = Color.FromArgb(Argb[source]);
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
-        var stroke = Stroke[source];
         var atoms = AtomCount[source];
-        var selectedPositive = (hit.Key.PartIndex & 1) != 0;
 
-        if (stroke > 0) MaterializeBoundaryStrokes(source, candidates);
+        if (detachBoundary) MaterializeBoundaryStrokes(source, candidates);
         RemoveObjectAt(source);
 
-        var negativeIndex = AddPathObject(layer, negative, 0, fillColor, strokeColor, Math.Max(3u, atoms / 2));
-        var positiveIndex = AddPathObject(layer, positive, 0, fillColor, strokeColor, Math.Max(3u, atoms / 2));
-        var selectedIndex = selectedPositive ? positiveIndex : negativeIndex;
-        _ = lineIndex;
+        var selectedIndex = -1;
+        var atomsPerPart = Math.Max(3u, atoms / (uint)Math.Max(1, regions.Count));
+        for (var part = 0; part < regions.Count; part++)
+        {
+            var index = AddPathObjectContours(layer, regions[part].Contours, 0, fillColor, strokeColor, atomsPerPart);
+            if (index >= 0) ObjectOrder[index] = order;
+            if (part == hit.Key.PartIndex) selectedIndex = index;
+        }
+
         return selectedIndex >= 0
             ? new DrawingElementHit(new DrawingElementKey(selectedIndex, DrawingElementKind.Fill, 0), -1, 0, 1)
             : DrawingElementHit.None;
@@ -1156,52 +3046,25 @@ internal sealed class VectorScene
 
     private void MaterializeBoundaryStrokes(int source, IReadOnlyList<int> candidates)
     {
-        var boundary = ShapeBoundary(source);
-        var splits = BoundarySplitParameters(source, candidates);
-        var segments = BuildPolylineParts(boundary, splits);
+        var segments = BuildBoundaryStrokeParts(source, candidates);
         var layer = ObjectLayer[source];
+        var order = ObjectOrder[source];
         var stroke = Stroke[source];
         var fillColor = Color.FromArgb(Argb[source]);
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
         var atoms = AtomCount[source];
         foreach (var segment in segments)
         {
-            AddLineSegment(layer, segment.Start, segment.End, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
+            var index = AddPolylineStroke(layer, segment.Points, stroke, fillColor, strokeColor, Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
+            if (index >= 0) ObjectOrder[index] = order;
         }
     }
 
-    private bool TryFindPrimaryFillCutter(int fillIndex, IReadOnlyList<int> candidates, out int lineIndex, out PointF start, out PointF end)
+    private int AddPolylineStroke(int layer, PointF[] points, float stroke, Color fillColor, Color strokeColor, uint atoms)
     {
-        var boundary = ShapeBoundary(fillIndex);
-        foreach (var candidate in candidates)
-        {
-            if (candidate == fillIndex) continue;
-            var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
-            if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
-
-            var intersections = CollectCurvePolylineIntersections(CurveSamples(candidate), boundary);
-            var distinct = 0;
-            PointF? previous = null;
-            foreach (var split in intersections.OrderBy(split => split.T))
-            {
-                var point = VectorUnits.Quantize(split.Point);
-                if (previous is { } previousPoint && SameDrawingUnit(previousPoint, point)) continue;
-                previous = point;
-                distinct++;
-            }
-
-            if (distinct < 2) continue;
-            var halfW = Width[candidate] * 0.5f;
-            start = LocalToWorld(candidate, -halfW, 0);
-            end = LocalToWorld(candidate, halfW, 0);
-            lineIndex = candidate;
-            return true;
-        }
-
-        lineIndex = -1;
-        start = PointF.Empty;
-        end = PointF.Empty;
-        return false;
+        if (points.Length < 2) return -1;
+        if (points.Length == 2) return AddLineSegment(layer, points[0], points[1], stroke, fillColor, strokeColor, atoms);
+        return AddFreehandStroke(layer, points, stroke, strokeColor, brushStroke: false, atoms);
     }
 
     private List<(int PartIndex, PointF Start, PointF End)> BuildPolylineParts(PointF[] polyline, IReadOnlyList<float> splits)
@@ -1213,6 +3076,23 @@ internal sealed class VectorScene
             var end = PolylinePointAt(polyline, splits[i + 1]);
             if (Distance(start, end) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
             result.Add((i, start, end));
+        }
+
+        return result;
+    }
+
+    private List<PolylinePart> BuildPolylinePathParts(PointF[] polyline, IReadOnlyList<float> splits)
+    {
+        var result = new List<PolylinePart>();
+        for (var i = 0; i < splits.Count - 1; i++)
+        {
+            var startT = splits[i];
+            var endT = splits[i + 1];
+            if (endT - startT <= 0.0001f) continue;
+
+            var points = PolylineSlice(polyline, startT, endT);
+            if (PolylineLength(points) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
+            result.Add(new PolylinePart(i, startT, endT, points));
         }
 
         return result;
@@ -1249,8 +3129,7 @@ internal sealed class VectorScene
                 {
                     var i = CellObjects[p];
                     if (!seen.Add(i)) continue;
-                    var layer = ObjectLayer[i];
-                    if (!IsLayerActive(layer, frame)) continue;
+                    if (!IsObjectActive(i, frame)) continue;
                     result.Add(i);
                 }
             }
@@ -1281,8 +3160,7 @@ internal sealed class VectorScene
                 {
                     var i = CellObjects[p];
                     if (!seen.Add(i)) continue;
-                    var layer = ObjectLayer[i];
-                    if (!IsLayerActive(layer, frame)) continue;
+                    if (!IsObjectActive(i, frame)) continue;
                     if (!ObjectIntersectsBounds(i, bounds)) continue;
 
                     result.Add(i);
@@ -1297,6 +3175,169 @@ internal sealed class VectorScene
 
         result.Sort();
         return result.ToArray();
+    }
+
+    public int[] QueryDrawingObjects(RectangleF worldBounds, int frame, int limit = 100_000)
+    {
+        var bounds = Normalize(worldBounds);
+        return QueryObjects(bounds, frame, limit)
+            .Where(index => ObjectGeometryIntersectsBounds(index, bounds))
+            .ToArray();
+    }
+
+    public DrawingElementHit[] QueryDrawingElementsInsideBounds(RectangleF worldBounds, int frame, int limit = 100_000)
+    {
+        var bounds = Normalize(worldBounds);
+        var result = new List<DrawingElementHit>();
+        foreach (var objectIndex in QueryDrawingObjects(bounds, frame, limit))
+        {
+            var shape = ShapeKind[objectIndex];
+            var candidates = CollectTopologyCandidates(objectIndex, frame);
+            if (IsTopologyStrokeShape(shape))
+            {
+                if (!HasStroke(objectIndex)) continue;
+                var splits = StrokeSplitParameters(objectIndex, candidates);
+                if (shape == VectorAnimationEngine.ShapeKind.Line)
+                {
+                    var curve = LineCurve(objectIndex);
+                    foreach (var part in BuildCurveParts(curve.Start, curve.Control, curve.End, splits))
+                    {
+                        if (!QuadraticCurveInsideRectangle(part.Start, part.Control, part.End, bounds)) continue;
+
+                        result.Add(new DrawingElementHit(
+                            new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, part.PartIndex),
+                            0,
+                            splits[part.PartIndex],
+                            splits[part.PartIndex + 1]));
+                    }
+                }
+                else if (TryGetFreehandWorldPoints(objectIndex, out var points))
+                {
+                    foreach (var part in BuildPolylinePathParts(points, splits))
+                    {
+                        if (!part.Points.All(point => PointInRectangle(point, bounds))) continue;
+                        result.Add(new DrawingElementHit(
+                            new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, part.PartIndex),
+                            0,
+                            part.StartT,
+                            part.EndT));
+                    }
+                }
+
+                continue;
+            }
+
+            if (HasFill(objectIndex))
+            {
+                var regions = BuildFillRegions(objectIndex, candidates);
+                for (var part = 0; part < regions.Count; part++)
+                {
+                    if (!regions[part].Contours.All(contour => contour.All(point => PointInRectangle(point, bounds)))) continue;
+                    result.Add(new DrawingElementHit(
+                        new DrawingElementKey(objectIndex, DrawingElementKind.Fill, part),
+                        0,
+                        0,
+                        1));
+                }
+            }
+
+            if (!HasStroke(objectIndex)) continue;
+            foreach (var part in BuildBoundaryStrokeParts(objectIndex, candidates))
+            {
+                if (!part.Points.All(point => PointInRectangle(point, bounds))) continue;
+                result.Add(new DrawingElementHit(
+                    new DrawingElementKey(objectIndex, DrawingElementKind.BoundaryStroke, part.PartIndex),
+                    0,
+                    part.StartT,
+                    part.EndT));
+            }
+        }
+
+        return result.ToArray();
+    }
+
+    public bool IsObjectGeometryInsideBounds(int objectIndex, RectangleF worldBounds)
+    {
+        if ((uint)objectIndex >= ObjectCount) return false;
+        var bounds = Normalize(worldBounds);
+        var shape = ShapeKind[objectIndex];
+        if (IsTopologyStrokeShape(shape))
+        {
+            var samples = StrokeSamples(objectIndex);
+            return samples.Length > 0 && samples.All(sample => PointInRectangle(sample.Point, bounds));
+        }
+
+        var contours = ShapeBoundaryContours(objectIndex);
+        return contours.Length > 0 && contours.All(contour => contour.All(point => PointInRectangle(point, bounds)));
+    }
+
+    private bool ObjectGeometryIntersectsBounds(int objectIndex, RectangleF bounds)
+    {
+        var shape = ShapeKind[objectIndex];
+        if (IsTopologyStrokeShape(shape))
+        {
+            if (!HasStroke(objectIndex)) return false;
+            var expanded = bounds;
+            var radius = Math.Max(Stroke[objectIndex] * 0.5f, 1);
+            expanded.Inflate(radius, radius);
+            return PolylineIntersectsRectangle(StrokeSamples(objectIndex).Select(sample => sample.Point).ToArray(), expanded);
+        }
+
+        if (!HasFill(objectIndex) && !HasStroke(objectIndex)) return false;
+        var contours = ShapeBoundaryContours(objectIndex);
+        var contourBounds = bounds;
+        if (HasStroke(objectIndex))
+        {
+            var radius = Math.Max(Stroke[objectIndex] * 0.5f, 1);
+            contourBounds.Inflate(radius, radius);
+        }
+
+        foreach (var contour in contours)
+        {
+            if (PolylineIntersectsRectangle(contour, contourBounds)) return true;
+        }
+
+        if (!HasFill(objectIndex)) return false;
+        var corners = new[]
+        {
+            new PointF(bounds.Left, bounds.Top),
+            new PointF(bounds.Right, bounds.Top),
+            new PointF(bounds.Right, bounds.Bottom),
+            new PointF(bounds.Left, bounds.Bottom)
+        };
+        return corners.Any(corner => FillContainsPoint(objectIndex, corner));
+    }
+
+    private static bool PolylineIntersectsRectangle(IReadOnlyList<PointF> points, RectangleF bounds)
+    {
+        if (points.Count == 0) return false;
+        if (points.Any(point => PointInRectangle(point, bounds))) return true;
+        for (var i = 0; i < points.Count - 1; i++)
+        {
+            if (SegmentIntersectsRectangle(points[i], points[i + 1], bounds)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool SegmentIntersectsRectangle(PointF start, PointF end, RectangleF bounds)
+    {
+        var topLeft = new PointF(bounds.Left, bounds.Top);
+        var topRight = new PointF(bounds.Right, bounds.Top);
+        var bottomRight = new PointF(bounds.Right, bounds.Bottom);
+        var bottomLeft = new PointF(bounds.Left, bounds.Bottom);
+        return TrySegmentIntersection(start, end, topLeft, topRight, out _)
+            || TrySegmentIntersection(start, end, topRight, bottomRight, out _)
+            || TrySegmentIntersection(start, end, bottomRight, bottomLeft, out _)
+            || TrySegmentIntersection(start, end, bottomLeft, topLeft, out _);
+    }
+
+    private static bool PointInRectangle(PointF point, RectangleF bounds)
+    {
+        return point.X >= bounds.Left - 0.001f
+            && point.X <= bounds.Right + 0.001f
+            && point.Y >= bounds.Top - 0.001f
+            && point.Y <= bounds.Bottom + 0.001f;
     }
 
     public void GetIndexRange(RectangleF worldBounds, out int minX, out int maxX, out int minY, out int maxY)
@@ -1314,6 +3355,7 @@ internal sealed class VectorScene
 
     private void RebuildSpatialIndex()
     {
+        GeometryRevision++;
         var cellCount = IndexColumns * IndexRows;
         if (CellStart.Length != cellCount + 1) CellStart = new int[cellCount + 1];
         Array.Clear(CellStart);
@@ -1358,13 +3400,113 @@ internal sealed class VectorScene
 
         for (var i = 0; i < ObjectCount; i++)
         {
-            var color = Color.FromArgb(Argb[i]);
-            AddObjectToTileSummary(i, color, tileR, tileG, tileB);
-            AddObjectToOverviewSummary(i, color, overviewR, overviewG, overviewB);
+            var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+            var color = Color.FromArgb(shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform ? StrokeArgb[i] : Argb[i]);
+            if (IsFreehandShape(shape))
+            {
+                AddObjectBoundsToSummary(i, color, TileColumns, TileRows, TileCount, TileAtoms, tileR, tileG, tileB);
+                AddObjectBoundsToSummary(i, color, OverviewColumns, OverviewRows, OverviewCount, OverviewAtoms, overviewR, overviewG, overviewB);
+            }
+            else
+            {
+                AddObjectToTileSummary(i, color, tileR, tileG, tileB);
+                AddObjectToOverviewSummary(i, color, overviewR, overviewG, overviewB);
+            }
         }
 
         FinalizeTileSummary(tileR, tileG, tileB);
         FinalizeOverviewSummary(overviewR, overviewG, overviewB);
+    }
+
+    private void AddObjectToSummariesIncremental(int objectIndex, Color color)
+    {
+        AddObjectToSummaryRange(
+            objectIndex,
+            color,
+            TileColumns,
+            TileRows,
+            TileCount,
+            TileAtoms,
+            TileArgb);
+        AddObjectToSummaryRange(
+            objectIndex,
+            color,
+            OverviewColumns,
+            OverviewRows,
+            OverviewCount,
+            OverviewAtoms,
+            OverviewArgb);
+    }
+
+    private void AddObjectToSummaryRange(
+        int objectIndex,
+        Color color,
+        int columns,
+        int rows,
+        int[] counts,
+        long[] atoms,
+        int[] colors)
+    {
+        var halfWidth = Width[objectIndex] * 0.5f;
+        var halfHeight = Height[objectIndex] * 0.5f;
+        var cellWidth = StageWidth / columns;
+        var cellHeight = StageHeight / rows;
+        var minX = (int)Math.Clamp((X[objectIndex] - halfWidth + StageWidth * 0.5f) / cellWidth, 0, columns - 1);
+        var maxX = (int)Math.Clamp((X[objectIndex] + halfWidth + StageWidth * 0.5f) / cellWidth, 0, columns - 1);
+        var minY = (int)Math.Clamp((Y[objectIndex] - halfHeight + StageHeight * 0.5f) / cellHeight, 0, rows - 1);
+        var maxY = (int)Math.Clamp((Y[objectIndex] + halfHeight + StageHeight * 0.5f) / cellHeight, 0, rows - 1);
+
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++)
+            {
+                var cell = y * columns + x;
+                var oldCount = counts[cell];
+                var oldColor = oldCount > 0 ? Color.FromArgb(colors[cell]) : Color.Empty;
+                var nextCount = oldCount + 1;
+                counts[cell] = nextCount;
+                atoms[cell] += AtomCount[objectIndex];
+                var red = (oldColor.R * oldCount + color.R) / nextCount;
+                var green = (oldColor.G * oldCount + color.G) / nextCount;
+                var blue = (oldColor.B * oldCount + color.B) / nextCount;
+                var alpha = Math.Clamp(44 + nextCount * 9, 48, 230);
+                colors[cell] = Color.FromArgb(alpha, red, green, blue).ToArgb();
+            }
+        }
+    }
+
+    private void AddObjectBoundsToSummary(
+        int objectIndex,
+        Color color,
+        int columns,
+        int rows,
+        int[] counts,
+        long[] atoms,
+        long[] red,
+        long[] green,
+        long[] blue)
+    {
+        var halfWidth = Width[objectIndex] * 0.5f;
+        var halfHeight = Height[objectIndex] * 0.5f;
+        var cellWidth = StageWidth / columns;
+        var cellHeight = StageHeight / rows;
+        var minX = (int)Math.Clamp((X[objectIndex] - halfWidth + StageWidth * 0.5f) / cellWidth, 0, columns - 1);
+        var maxX = (int)Math.Clamp((X[objectIndex] + halfWidth + StageWidth * 0.5f) / cellWidth, 0, columns - 1);
+        var minY = (int)Math.Clamp((Y[objectIndex] - halfHeight + StageHeight * 0.5f) / cellHeight, 0, rows - 1);
+        var maxY = (int)Math.Clamp((Y[objectIndex] + halfHeight + StageHeight * 0.5f) / cellHeight, 0, rows - 1);
+
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++)
+            {
+                var cell = y * columns + x;
+                counts[cell]++;
+                atoms[cell] += AtomCount[objectIndex];
+                red[cell] += color.R;
+                green[cell] += color.G;
+                blue[cell] += color.B;
+            }
+        }
     }
 
     private int CellForWorld(float x, float y)
@@ -1399,6 +3541,19 @@ internal sealed class VectorScene
             return DistanceToQuadratic(world, start, control, end) <= hitRadius;
         }
 
+        if (IsFreehandShape(shape))
+        {
+            if (!TryGetFreehandWorldPoints(i, out var points) || points.Length == 0) return false;
+            var hitRadius = Math.Max(Stroke[i] * 0.5f, 1) + toleranceWorld;
+            if (points.Length == 1) return Distance(world, points[0]) <= hitRadius;
+            for (var p = 0; p < points.Length - 1; p++)
+            {
+                if (DistanceToSegment(world, points[p], points[p + 1]) <= hitRadius) return true;
+            }
+
+            return false;
+        }
+
         if (shape == VectorAnimationEngine.ShapeKind.Path)
         {
             return TryGetPathWorldContours(i, out var contours) && PointInCompoundPolygon(world, contours);
@@ -1420,20 +3575,28 @@ internal sealed class VectorScene
         return true;
     }
 
-    private DrawingElementHit HitElement(PointF world, int i, IReadOnlyList<int> candidates, float toleranceWorld)
+    private DrawingElementHit HitElement(PointF world, int i, IReadOnlyList<int> hitCandidates, int frame, float toleranceWorld)
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
-        if (shape == VectorAnimationEngine.ShapeKind.Line)
+        if (IsTopologyStrokeShape(shape))
         {
-            return HitStrokeElement(world, i, candidates, toleranceWorld);
+            if (!HasStroke(i)) return DrawingElementHit.None;
+            return HitStrokeElement(world, i, CollectTopologyCandidates(i, frame), toleranceWorld);
         }
 
-        var boundaryHit = HitBoundaryStrokeElement(world, i, candidates, toleranceWorld);
-        if (boundaryHit.IsValid) return boundaryHit;
+        List<int>? topologyCandidates = null;
+        if (HasStroke(i))
+        {
+            topologyCandidates = CollectTopologyCandidates(i, frame);
+            var boundaryHit = HitBoundaryStrokeElement(world, i, topologyCandidates, toleranceWorld);
+            if (boundaryHit.IsValid) return boundaryHit;
+        }
 
-        if (!HitObject(world, i, toleranceWorld)) return DrawingElementHit.None;
-        if (!OwnsFillUnit(world, i, candidates)) return DrawingElementHit.None;
-        var part = FillPartIndex(world, i, candidates);
+        if (!HasFill(i) || !FillContainsPoint(i, world)) return DrawingElementHit.None;
+        if (!OwnsFillUnit(world, i, hitCandidates)) return DrawingElementHit.None;
+        topologyCandidates ??= CollectTopologyCandidates(i, frame);
+        var part = FillPartIndex(world, i, topologyCandidates);
+        if (part < 0) return DrawingElementHit.None;
         return new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, part), 0, 0, 1);
     }
 
@@ -1448,27 +3611,50 @@ internal sealed class VectorScene
         {
             if (ObjectLayer[candidate] != layer) continue;
             var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
-            if (shape == VectorAnimationEngine.ShapeKind.Line) continue;
-            if (!HitObject(sample, candidate, 0.5f)) continue;
-            if (candidate > owner) owner = candidate;
+            if (!IsFillShape(shape) || !HasFill(candidate)) continue;
+            if (!FillContainsPoint(candidate, sample)) continue;
+            if (owner < 0 || CompareObjectStack(candidate, owner) > 0)
+            {
+                owner = candidate;
+            }
         }
 
         return owner == fillIndex;
     }
 
-    private DrawingElementHit HitStrokeElement(PointF world, int lineIndex, IReadOnlyList<int> candidates, float toleranceWorld)
+    private DrawingElementHit HitStrokeElement(PointF world, int strokeIndex, IReadOnlyList<int> candidates, float toleranceWorld)
     {
-        var polyline = CurveSamples(lineIndex);
-        var hitRadius = Math.Max(Height[lineIndex] * 0.5f, 1) + toleranceWorld;
-        return HitCurvePart(world, lineIndex, DrawingElementKind.Stroke, polyline, StrokeSplitParameters(lineIndex, candidates), hitRadius);
+        var samples = StrokeSamples(strokeIndex);
+        if (samples.Length == 0) return DrawingElementHit.None;
+        var hitRadius = Math.Max(Stroke[strokeIndex] * 0.5f, 1) + toleranceWorld;
+        if (samples.Length == 1)
+        {
+            var distance = Distance(world, samples[0].Point);
+            return distance <= hitRadius
+                ? new DrawingElementHit(new DrawingElementKey(strokeIndex, DrawingElementKind.Stroke, 0), distance, 0, 1)
+                : DrawingElementHit.None;
+        }
+
+        return HitCurvePart(world, strokeIndex, DrawingElementKind.Stroke, samples, StrokeSplitParameters(strokeIndex, candidates), hitRadius);
     }
 
     private DrawingElementHit HitBoundaryStrokeElement(PointF world, int objectIndex, IReadOnlyList<int> candidates, float toleranceWorld)
     {
-        if (Stroke[objectIndex] <= 0) return DrawingElementHit.None;
-        var boundary = ShapeBoundary(objectIndex);
+        if (!HasStroke(objectIndex)) return DrawingElementHit.None;
         var hitRadius = Math.Max(Stroke[objectIndex] * 0.5f, 1) + toleranceWorld;
-        return HitPolylinePart(world, objectIndex, DrawingElementKind.BoundaryStroke, boundary, BoundarySplitParameters(objectIndex, candidates), hitRadius);
+        var best = DrawingElementHit.None;
+        foreach (var part in BuildBoundaryStrokeParts(objectIndex, candidates))
+        {
+            var distance = DistanceToPolyline(world, part.Points);
+            if (distance > hitRadius || (best.IsValid && distance >= best.Distance)) continue;
+            best = new DrawingElementHit(
+                new DrawingElementKey(objectIndex, DrawingElementKind.BoundaryStroke, part.PartIndex),
+                distance,
+                part.StartT,
+                part.EndT);
+        }
+
+        return best;
     }
 
     private DrawingElementHit HitPolylinePart(PointF world, int objectIndex, DrawingElementKind kind, PointF[] polyline, List<float> splitPoints, float hitRadius)
@@ -1527,23 +3713,28 @@ internal sealed class VectorScene
         return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, 0, 1);
     }
 
-    private List<float> StrokeSplitParameters(int lineIndex, IReadOnlyList<int> candidates)
+    private List<float> StrokeSplitParameters(int strokeIndex, IReadOnlyList<int> candidates)
     {
         var splits = new List<DrawingTopologySplit>();
-        var line = CurveSamples(lineIndex);
-        splits.Add(new DrawingTopologySplit(0, line[0].Point));
-        splits.Add(new DrawingTopologySplit(1, line[^1].Point));
+        var source = StrokeSamples(strokeIndex);
+        if (source.Length == 0) return new List<float>();
+        splits.Add(new DrawingTopologySplit(0, source[0].Point));
+        splits.Add(new DrawingTopologySplit(1, source[^1].Point));
+        var sourceLayer = ObjectLayer[strokeIndex];
         foreach (var other in candidates)
         {
-            if (other == lineIndex) continue;
+            if (other == strokeIndex || ObjectLayer[other] != sourceLayer) continue;
             var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
-            if (shape == VectorAnimationEngine.ShapeKind.Line)
+            if (IsTopologyStrokeShape(shape) && HasStroke(other))
             {
-                AddCurveCurveIntersections(splits, line, CurveSamples(other), includeSourceEndpoints: false);
+                AddCurveCurveIntersections(splits, source, StrokeSamples(other), includeSourceEndpoints: false);
             }
-            else
+            else if (IsFillShape(shape) && (HasFill(other) || HasStroke(other)))
             {
-                AddCurvePolylineIntersections(splits, line, ShapeBoundary(other), includeSourceEndpoints: false);
+                foreach (var contour in ShapeBoundaryContours(other))
+                {
+                    AddCurvePolylineIntersections(splits, source, contour, includeSourceEndpoints: false);
+                }
             }
         }
 
@@ -1552,23 +3743,64 @@ internal sealed class VectorScene
 
     private List<float> BoundarySplitParameters(int objectIndex, IReadOnlyList<int> candidates)
     {
-        var boundary = ShapeBoundary(objectIndex);
+        return BoundarySplitParameters(objectIndex, ShapeBoundary(objectIndex), candidates);
+    }
+
+    private List<float> BoundarySplitParameters(int objectIndex, PointF[] boundary, IReadOnlyList<int> candidates)
+    {
         var splits = new List<DrawingTopologySplit>();
         var segmentCount = Math.Max(1, boundary.Length - 1);
-        for (var i = 0; i < boundary.Length; i++)
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Ellipse)
         {
-            splits.Add(new DrawingTopologySplit(Math.Clamp(i / (float)segmentCount, 0, 1), boundary[i]));
+            splits.Add(new DrawingTopologySplit(0, boundary[0]));
+            splits.Add(new DrawingTopologySplit(1, boundary[^1]));
+        }
+        else
+        {
+            for (var i = 0; i < boundary.Length; i++)
+            {
+                splits.Add(new DrawingTopologySplit(Math.Clamp(i / (float)segmentCount, 0, 1), boundary[i]));
+            }
         }
 
+        var sourceLayer = ObjectLayer[objectIndex];
         foreach (var other in candidates)
         {
-            if (other == objectIndex) continue;
+            if (other == objectIndex || ObjectLayer[other] != sourceLayer) continue;
             var shape = ShapeKind.Length > other ? ShapeKind[other] : VectorAnimationEngine.ShapeKind.Rectangle;
-            if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
-            AddPolylineCurveIntersections(splits, boundary, CurveSamples(other), includeSourceEndpoints: true);
+            if (!HasStroke(other)) continue;
+            if (IsTopologyStrokeShape(shape))
+            {
+                AddPolylineCurveIntersections(splits, boundary, StrokeSamples(other), includeSourceEndpoints: true);
+            }
+            else if (IsFillShape(shape))
+            {
+                foreach (var contour in ShapeBoundaryContours(other))
+                {
+                    AddPolylinePolylineIntersections(splits, boundary, contour, includeSourceEndpoints: true);
+                }
+            }
         }
 
         return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
+    }
+
+    private List<BoundaryStrokePart> BuildBoundaryStrokeParts(int objectIndex, IReadOnlyList<int> candidates)
+    {
+        var result = new List<BoundaryStrokePart>();
+        var partIndex = 0;
+        var contours = ShapeBoundaryContours(objectIndex);
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            var splits = BoundarySplitParameters(objectIndex, contour, candidates);
+            foreach (var part in BuildPolylinePathParts(contour, splits))
+            {
+                result.Add(new BoundaryStrokePart(partIndex++, contourIndex, part.StartT, part.EndT, part.Points));
+            }
+        }
+
+        return result;
     }
 
     private List<DrawingTopologySplit> NormalizeStrokeSplits(List<DrawingTopologySplit> splits)
@@ -1578,7 +3810,13 @@ internal sealed class VectorScene
         foreach (var split in splits)
         {
             var quantized = VectorUnits.Quantize(split.Point);
-            if (unique.Count > 0 && SameDrawingUnit(unique[^1].Point, quantized)) continue;
+            if (unique.Count > 0
+                && Math.Abs(unique[^1].T - split.T) <= 0.0001f
+                && SameDrawingUnit(unique[^1].Point, quantized))
+            {
+                continue;
+            }
+
             unique.Add(new DrawingTopologySplit(Math.Clamp(split.T, 0, 1), quantized));
         }
 
@@ -1609,38 +3847,13 @@ internal sealed class VectorScene
 
     private int FillPartIndex(PointF world, int fillIndex, IReadOnlyList<int> candidates)
     {
-        var boundary = ShapeBoundary(fillIndex);
-        var part = 0;
-        var bit = 1;
-        foreach (var lineIndex in candidates)
+        var regions = BuildFillRegions(fillIndex, candidates);
+        for (var part = 0; part < regions.Count; part++)
         {
-            if (lineIndex == fillIndex) continue;
-            var shape = ShapeKind.Length > lineIndex ? ShapeKind[lineIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
-            if (shape != VectorAnimationEngine.ShapeKind.Line) continue;
-
-            var intersections = CollectCurvePolylineIntersections(CurveSamples(lineIndex), boundary);
-            intersections.Sort((a, b) => a.T.CompareTo(b.T));
-            var distinct = 0;
-            PointF? previous = null;
-            foreach (var split in intersections)
-            {
-                var point = VectorUnits.Quantize(split.Point);
-                if (previous is { } previousPoint && SameDrawingUnit(previousPoint, point)) continue;
-                previous = point;
-                distinct++;
-            }
-
-            if (distinct < 2) continue;
-
-            var halfW = Width[lineIndex] * 0.5f;
-            var a = LocalToWorld(lineIndex, -halfW, 0);
-            var b = LocalToWorld(lineIndex, halfW, 0);
-            if (SignedSide(world, a, b) >= 0) part |= bit;
-            bit <<= 1;
-            if (bit >= 1 << 20) break;
+            if (PointInCompoundPolygonOrOnBoundary(world, regions[part].Contours)) return part;
         }
 
-        return part;
+        return -1;
     }
 
     private List<DrawingTopologySplit> CollectCurvePolylineIntersections(CurveSample[] source, PointF[] cutter)
@@ -1656,11 +3869,7 @@ internal sealed class VectorScene
         {
             for (var j = 0; j < cutter.Length - 1; j++)
             {
-                if (!TrySegmentIntersection(source[i].Point, source[i + 1].Point, cutter[j].Point, cutter[j + 1].Point, out var t)) continue;
-                var globalT = source[i].T + (source[i + 1].T - source[i].T) * t;
-                if (!includeSourceEndpoints && (globalT <= 0.0001f || globalT >= 0.9999f)) continue;
-                var point = Lerp(source[i].Point, source[i + 1].Point, t);
-                result.Add(new DrawingTopologySplit(globalT, point));
+                AddTopologySegmentIntersections(result, source[i], source[i + 1], cutter[j].Point, cutter[j + 1].Point, includeSourceEndpoints);
             }
         }
     }
@@ -1671,11 +3880,7 @@ internal sealed class VectorScene
         {
             for (var j = 0; j < cutter.Length - 1; j++)
             {
-                if (!TrySegmentIntersection(source[i].Point, source[i + 1].Point, cutter[j], cutter[j + 1], out var t)) continue;
-                var globalT = source[i].T + (source[i + 1].T - source[i].T) * t;
-                if (!includeSourceEndpoints && (globalT <= 0.0001f || globalT >= 0.9999f)) continue;
-                var point = Lerp(source[i].Point, source[i + 1].Point, t);
-                result.Add(new DrawingTopologySplit(globalT, point));
+                AddTopologySegmentIntersections(result, source[i], source[i + 1], cutter[j], cutter[j + 1], includeSourceEndpoints);
             }
         }
     }
@@ -1685,15 +3890,59 @@ internal sealed class VectorScene
         var sourceSegments = Math.Max(1, source.Length - 1);
         for (var i = 0; i < source.Length - 1; i++)
         {
+            var sourceStart = new CurveSample(i / (float)sourceSegments, source[i]);
+            var sourceEnd = new CurveSample((i + 1) / (float)sourceSegments, source[i + 1]);
             for (var j = 0; j < cutter.Length - 1; j++)
             {
-                if (!TrySegmentIntersection(source[i], source[i + 1], cutter[j].Point, cutter[j + 1].Point, out var t)) continue;
-                var globalT = Math.Clamp((i + t) / sourceSegments, 0, 1);
-                if (!includeSourceEndpoints && (globalT <= 0.0001f || globalT >= 0.9999f)) continue;
-                var point = Lerp(source[i], source[i + 1], t);
-                result.Add(new DrawingTopologySplit(globalT, point));
+                AddTopologySegmentIntersections(result, sourceStart, sourceEnd, cutter[j].Point, cutter[j + 1].Point, includeSourceEndpoints);
             }
         }
+    }
+
+    private void AddPolylinePolylineIntersections(List<DrawingTopologySplit> result, PointF[] source, PointF[] cutter, bool includeSourceEndpoints)
+    {
+        var sourceSegments = Math.Max(1, source.Length - 1);
+        for (var i = 0; i < source.Length - 1; i++)
+        {
+            var sourceStart = new CurveSample(i / (float)sourceSegments, source[i]);
+            var sourceEnd = new CurveSample((i + 1) / (float)sourceSegments, source[i + 1]);
+            for (var j = 0; j < cutter.Length - 1; j++)
+            {
+                AddTopologySegmentIntersections(result, sourceStart, sourceEnd, cutter[j], cutter[j + 1], includeSourceEndpoints);
+            }
+        }
+    }
+
+    private void AddTopologySegmentIntersections(
+        List<DrawingTopologySplit> result,
+        CurveSample sourceStart,
+        CurveSample sourceEnd,
+        PointF cutterStart,
+        PointF cutterEnd,
+        bool includeSourceEndpoints)
+    {
+        var count = SegmentIntersectionParameters(sourceStart.Point, sourceEnd.Point, cutterStart, cutterEnd, out var first, out var second);
+        if (count >= 1) AddTopologySegmentIntersection(result, sourceStart, sourceEnd, first, includeSourceEndpoints);
+        if (count >= 2) AddTopologySegmentIntersection(result, sourceStart, sourceEnd, second, includeSourceEndpoints);
+    }
+
+    private static void AddTopologySegmentIntersection(
+        List<DrawingTopologySplit> result,
+        CurveSample sourceStart,
+        CurveSample sourceEnd,
+        float localT,
+        bool includeSourceEndpoints)
+    {
+        var globalT = sourceStart.T + (sourceEnd.T - sourceStart.T) * localT;
+        var point = Lerp(sourceStart.Point, sourceEnd.Point, localT);
+        if (!includeSourceEndpoints
+            && (sourceStart.T <= 0 && Distance(point, sourceStart.Point) <= DrawingTopologyRules.UnitIntersectionTolerance
+                || sourceEnd.T >= 1 && Distance(point, sourceEnd.Point) <= DrawingTopologyRules.UnitIntersectionTolerance))
+        {
+            return;
+        }
+
+        result.Add(new DrawingTopologySplit(globalT, point));
     }
 
     private (PointF Start, PointF Control, PointF End) LineCurve(int i)
@@ -1712,6 +3961,22 @@ internal sealed class VectorScene
         AddAdaptiveQuadraticSamples(samples, start, control, end, 0, 1, 0);
         samples.Add(new CurveSample(1, end));
         return samples.ToArray();
+    }
+
+    private CurveSample[] StrokeSamples(int objectIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount) return Array.Empty<CurveSample>();
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Line) return CurveSamples(objectIndex);
+        if (!IsFreehandShape(ShapeKind[objectIndex]) || !TryGetFreehandWorldPoints(objectIndex, out var points) || points.Length == 0)
+        {
+            return Array.Empty<CurveSample>();
+        }
+
+        if (points.Length == 1) return new[] { new CurveSample(0, points[0]) };
+        var samples = new CurveSample[points.Length];
+        var segmentCount = points.Length - 1;
+        for (var i = 0; i < points.Length; i++) samples[i] = new CurveSample(i / (float)segmentCount, points[i]);
+        return samples;
     }
 
     private static void AddAdaptiveQuadraticSamples(List<CurveSample> samples, PointF start, PointF control, PointF end, float startT, float endT, int depth)
@@ -1735,6 +4000,11 @@ internal sealed class VectorScene
     private PointF[] ShapeBoundary(int i)
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (IsFreehandShape(shape) && TryGetFreehandWorldPoints(i, out var freehandPoints))
+        {
+            return freehandPoints;
+        }
+
         if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(i, out var pathContours) && pathContours.Length > 0)
         {
             var pathPoints = pathContours
@@ -1767,6 +4037,26 @@ internal sealed class VectorScene
         var result = new PointF[local.Length];
         for (var p = 0; p < local.Length; p++) result[p] = LocalToWorld(i, local[p].X, local[p].Y);
         return result;
+    }
+
+    private PointF[][] ShapeBoundaryContours(int objectIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount) return Array.Empty<PointF[]>();
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Path
+            && TryGetPathWorldContours(objectIndex, out var pathContours))
+        {
+            var result = new List<PointF[]>(pathContours.Length);
+            foreach (var contour in pathContours)
+            {
+                var closed = ClosePolyline(contour);
+                if (closed.Length >= 4) result.Add(closed);
+            }
+
+            return result.ToArray();
+        }
+
+        var boundary = ShapeBoundary(objectIndex);
+        return boundary.Length >= 2 ? new[] { boundary } : Array.Empty<PointF[]>();
     }
 
     private static PointF[] EllipseBoundary(float halfW, float halfH)
@@ -1811,24 +4101,97 @@ internal sealed class VectorScene
 
     private static bool TrySegmentIntersection(PointF a, PointF b, PointF c, PointF d, out float t)
     {
-        t = 0;
-        var rX = b.X - a.X;
-        var rY = b.Y - a.Y;
-        var sX = d.X - c.X;
-        var sY = d.Y - c.Y;
-        var denominator = rX * sY - rY * sX;
-        if (Math.Abs(denominator) < 0.0001f) return false;
+        return SegmentIntersectionParameters(a, b, c, d, out t, out _) > 0;
+    }
 
-        var cax = c.X - a.X;
-        var cay = c.Y - a.Y;
-        t = (cax * sY - cay * sX) / denominator;
+    private static int SegmentIntersectionParameters(
+        PointF a,
+        PointF b,
+        PointF c,
+        PointF d,
+        out float first,
+        out float second)
+    {
+        first = 0;
+        second = 0;
+        var tolerance = (double)DrawingTopologyRules.UnitIntersectionTolerance;
+        var toleranceSquared = tolerance * tolerance;
+        var rX = (double)b.X - a.X;
+        var rY = (double)b.Y - a.Y;
+        var sX = (double)d.X - c.X;
+        var sY = (double)d.Y - c.Y;
+        var rLengthSquared = rX * rX + rY * rY;
+        var sLengthSquared = sX * sX + sY * sY;
+
+        if (rLengthSquared <= toleranceSquared)
+        {
+            if (DistanceToSegment(a, c, d) > tolerance) return 0;
+            return 1;
+        }
+
+        var rLength = Math.Sqrt(rLengthSquared);
+        var cax = (double)c.X - a.X;
+        var cay = (double)c.Y - a.Y;
+        if (sLengthSquared <= toleranceSquared)
+        {
+            var projected = (cax * rX + cay * rY) / rLengthSquared;
+            var parameterTolerance = tolerance / rLength;
+            if (projected < -parameterTolerance || projected > 1 + parameterTolerance) return 0;
+
+            var clamped = Math.Clamp(projected, 0, 1);
+            var pointX = a.X + rX * clamped;
+            var pointY = a.Y + rY * clamped;
+            var dx = c.X - pointX;
+            var dy = c.Y - pointY;
+            if (dx * dx + dy * dy > toleranceSquared) return 0;
+
+            first = second = (float)clamped;
+            return 1;
+        }
+
+        var sLength = Math.Sqrt(sLengthSquared);
+        var dax = (double)d.X - a.X;
+        var day = (double)d.Y - a.Y;
+        var collinearTolerance = tolerance * rLength;
+        if (Math.Abs(cax * rY - cay * rX) <= collinearTolerance
+            && Math.Abs(dax * rY - day * rX) <= collinearTolerance)
+        {
+            var cParameter = (cax * rX + cay * rY) / rLengthSquared;
+            var dParameter = (dax * rX + day * rY) / rLengthSquared;
+            var overlapStart = Math.Min(cParameter, dParameter);
+            var overlapEnd = Math.Max(cParameter, dParameter);
+            var overlapTolerance = tolerance / rLength;
+            if (overlapEnd < -overlapTolerance || overlapStart > 1 + overlapTolerance) return 0;
+
+            overlapStart = Math.Clamp(overlapStart, 0, 1);
+            overlapEnd = Math.Clamp(overlapEnd, 0, 1);
+            if ((overlapEnd - overlapStart) * rLength <= tolerance)
+            {
+                first = second = (float)((overlapStart + overlapEnd) * 0.5);
+                return 1;
+            }
+
+            first = (float)overlapStart;
+            second = (float)overlapEnd;
+            return 2;
+        }
+
+        var denominator = rX * sY - rY * sX;
+        var parallelTolerance = toleranceSquared * tolerance * Math.Max(1, rLength * sLength);
+        if (Math.Abs(denominator) <= parallelTolerance) return 0;
+
+        var t = (cax * sY - cay * sX) / denominator;
         var u = (cax * rY - cay * rX) / denominator;
-        var intersects = t >= -DrawingTopologyRules.UnitIntersectionTolerance
-            && t <= 1 + DrawingTopologyRules.UnitIntersectionTolerance
-            && u >= -DrawingTopologyRules.UnitIntersectionTolerance
-            && u <= 1 + DrawingTopologyRules.UnitIntersectionTolerance;
-        if (intersects) t = Math.Clamp(t, 0, 1);
-        return intersects;
+        if (t < -tolerance / rLength
+            || t > 1 + tolerance / rLength
+            || u < -tolerance / sLength
+            || u > 1 + tolerance / sLength)
+        {
+            return 0;
+        }
+
+        first = second = (float)Math.Clamp(t, 0, 1);
+        return 1;
     }
 
     private static bool SameDrawingUnit(PointF a, PointF b)
@@ -1855,6 +4218,61 @@ internal sealed class VectorScene
         var scaled = t * segments;
         var index = Math.Min(segments - 1, (int)MathF.Floor(scaled));
         return Lerp(points[index], points[index + 1], scaled - index);
+    }
+
+    private static PointF[] PolylineSlice(PointF[] points, float startT, float endT)
+    {
+        if (points.Length == 0) return Array.Empty<PointF>();
+        if (points.Length == 1) return new[] { points[0] };
+
+        startT = Math.Clamp(startT, 0, 1);
+        endT = Math.Clamp(endT, startT, 1);
+        var segmentCount = points.Length - 1;
+        var startScaled = startT * segmentCount;
+        var endScaled = endT * segmentCount;
+        var firstVertex = Math.Clamp((int)MathF.Floor(startScaled) + 1, 1, points.Length - 1);
+        var lastVertex = Math.Clamp((int)MathF.Ceiling(endScaled) - 1, 0, points.Length - 2);
+        var result = new List<PointF> { VectorUnits.Quantize(PolylinePointAt(points, startT)) };
+
+        for (var i = firstVertex; i <= lastVertex; i++)
+        {
+            var point = VectorUnits.Quantize(points[i]);
+            if (result[^1] != point) result.Add(point);
+        }
+
+        var end = VectorUnits.Quantize(PolylinePointAt(points, endT));
+        if (result[^1] != end) result.Add(end);
+        return result.ToArray();
+    }
+
+    private static float PolylineLength(IReadOnlyList<PointF> points)
+    {
+        var length = 0f;
+        for (var i = 0; i < points.Count - 1; i++) length += Distance(points[i], points[i + 1]);
+        return length;
+    }
+
+    private static float DistanceToPolyline(PointF point, IReadOnlyList<PointF> polyline)
+    {
+        if (polyline.Count == 0) return float.MaxValue;
+        if (polyline.Count == 1) return Distance(point, polyline[0]);
+        var distance = float.MaxValue;
+        for (var i = 0; i < polyline.Count - 1; i++)
+        {
+            distance = Math.Min(distance, DistanceToSegment(point, polyline[i], polyline[i + 1]));
+        }
+
+        return distance;
+    }
+
+    private static PointF[] ClosePolyline(PointF[] points)
+    {
+        if (points.Length == 0) return Array.Empty<PointF>();
+        if (points.Length > 1 && SameDrawingUnit(points[0], points[^1])) return points.ToArray();
+        var result = new PointF[points.Length + 1];
+        Array.Copy(points, result, points.Length);
+        result[^1] = points[0];
+        return result;
     }
 
     private static List<PointF> ClipPolygonByLine(PointF[] polygon, PointF a, PointF b, bool keepPositive)
@@ -1988,15 +4406,18 @@ internal sealed class VectorScene
     private static float PolygonArea(IReadOnlyList<PointF> polygon)
     {
         if (polygon.Count < 3) return 0;
-        var area = 0f;
-        for (var i = 0; i < polygon.Count; i++)
+        var origin = polygon[0];
+        var area = 0d;
+        for (var i = 1; i < polygon.Count - 1; i++)
         {
-            var a = polygon[i];
-            var b = polygon[(i + 1) % polygon.Count];
-            area += a.X * b.Y - b.X * a.Y;
+            var ax = (double)polygon[i].X - origin.X;
+            var ay = (double)polygon[i].Y - origin.Y;
+            var bx = (double)polygon[i + 1].X - origin.X;
+            var by = (double)polygon[i + 1].Y - origin.Y;
+            area += ax * by - bx * ay;
         }
 
-        return area * 0.5f;
+        return (float)(area * 0.5d);
     }
 
     private static RectangleF NormalizeToDrawingUnits(RectangleF rect)
@@ -2089,27 +4510,6 @@ internal sealed class VectorScene
         return false;
     }
 
-    private static float CompoundArea(PointF[][] contours)
-    {
-        var area = 0f;
-        for (var i = 0; i < contours.Length; i++)
-        {
-            var contour = contours[i];
-            if (contour.Length < 3) continue;
-            var nesting = 0;
-            for (var j = 0; j < contours.Length; j++)
-            {
-                if (i == j || contours[j].Length < 3) continue;
-                if (PointInPolygon(contour[0], contours[j])) nesting++;
-            }
-
-            var contourArea = Math.Abs(PolygonArea(contour));
-            area += nesting % 2 == 0 ? contourArea : -contourArea;
-        }
-
-        return Math.Abs(area);
-    }
-
     private static PointF[][] NormalizePathContours(IReadOnlyList<PointF[]> contours)
     {
         var result = new List<PointF[]>(contours.Count);
@@ -2124,6 +4524,19 @@ internal sealed class VectorScene
         return result
             .OrderByDescending(contour => Math.Abs(PolygonArea(contour)))
             .ToArray();
+    }
+
+    private static PointF[] NormalizeFreehandPoints(IReadOnlyList<PointF> points)
+    {
+        var result = new List<PointF>(points.Count);
+        foreach (var source in points)
+        {
+            var point = VectorUnits.Quantize(source);
+            if (result.Count > 0 && result[^1] == point) continue;
+            result.Add(point);
+        }
+
+        return result.ToArray();
     }
 
     private static PointF[][] CloneContours(PointF[][] contours)
@@ -2156,21 +4569,32 @@ internal sealed class VectorScene
             && objectBounds.Bottom >= bounds.Top;
     }
 
-    private RectangleF GetObjectWorldBounds(int i)
+    internal RectangleF GetObjectWorldBounds(int i)
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
         var margin = Math.Max(Stroke[i] * 0.5f, 1);
-        if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(i, out var pathContours) && pathContours.Length > 0)
+        if (shape == VectorAnimationEngine.ShapeKind.Path
+            && _pathLocalContours.TryGetValue(i, out var pathContours)
+            && pathContours.Length > 0)
         {
-            var first = pathContours[0][0];
-            var left = first.X;
-            var right = first.X;
-            var top = first.Y;
-            var bottom = first.Y;
+            var hasPoint = false;
+            var left = 0f;
+            var right = 0f;
+            var top = 0f;
+            var bottom = 0f;
             foreach (var contour in pathContours)
             {
-                foreach (var point in contour)
+                foreach (var local in contour)
                 {
+                    var point = LocalToWorld(i, local.X, local.Y);
+                    if (!hasPoint)
+                    {
+                        left = right = point.X;
+                        top = bottom = point.Y;
+                        hasPoint = true;
+                        continue;
+                    }
+
                     left = Math.Min(left, point.X);
                     right = Math.Max(right, point.X);
                     top = Math.Min(top, point.Y);
@@ -2178,7 +4602,7 @@ internal sealed class VectorScene
                 }
             }
 
-            return RectangleF.FromLTRB(left - margin, top - margin, right + margin, bottom + margin);
+            if (hasPoint) return RectangleF.FromLTRB(left - margin, top - margin, right + margin, bottom + margin);
         }
 
         if (shape == VectorAnimationEngine.ShapeKind.Line)
@@ -2187,11 +4611,30 @@ internal sealed class VectorScene
             var start = LocalToWorld(i, -halfW, 0);
             var end = LocalToWorld(i, halfW, 0);
             var control = new PointF(CurveControlX[i], CurveControlY[i]);
-            var left = Math.Min(Math.Min(start.X, end.X), control.X) - margin;
-            var right = Math.Max(Math.Max(start.X, end.X), control.X) + margin;
-            var top = Math.Min(Math.Min(start.Y, end.Y), control.Y) - margin;
-            var bottom = Math.Max(Math.Max(start.Y, end.Y), control.Y) + margin;
-            return RectangleF.FromLTRB(left, top, right, bottom);
+            var bounds = QuadraticCurveBounds(start, control, end);
+            bounds.Inflate(margin, margin);
+            return bounds;
+        }
+
+        if (IsFreehandShape(shape)
+            && _freehandLocalPoints.TryGetValue(i, out var freehandPoints)
+            && freehandPoints.Length > 0)
+        {
+            var first = LocalToWorld(i, freehandPoints[0].X, freehandPoints[0].Y);
+            var left = first.X;
+            var right = first.X;
+            var top = first.Y;
+            var bottom = first.Y;
+            for (var p = 1; p < freehandPoints.Length; p++)
+            {
+                var point = LocalToWorld(i, freehandPoints[p].X, freehandPoints[p].Y);
+                left = Math.Min(left, point.X);
+                right = Math.Max(right, point.X);
+                top = Math.Min(top, point.Y);
+                bottom = Math.Max(bottom, point.Y);
+            }
+
+            return RectangleF.FromLTRB(left - margin, top - margin, right + margin, bottom + margin);
         }
 
         var halfWShape = Width[i] * 0.5f;
@@ -2255,12 +4698,48 @@ internal sealed class VectorScene
         return best;
     }
 
-    private static PointF QuadraticPoint(PointF start, PointF control, PointF end, float t)
+    private static bool QuadraticCurveInsideRectangle(PointF start, PointF control, PointF end, RectangleF bounds)
+    {
+        var curveBounds = QuadraticCurveBounds(start, control, end);
+        return curveBounds.Left >= bounds.Left - DrawingTopologyRules.UnitIntersectionTolerance
+            && curveBounds.Right <= bounds.Right + DrawingTopologyRules.UnitIntersectionTolerance
+            && curveBounds.Top >= bounds.Top - DrawingTopologyRules.UnitIntersectionTolerance
+            && curveBounds.Bottom <= bounds.Bottom + DrawingTopologyRules.UnitIntersectionTolerance;
+    }
+
+    private static RectangleF QuadraticCurveBounds(PointF start, PointF control, PointF end)
+    {
+        var left = Math.Min(start.X, end.X);
+        var right = Math.Max(start.X, end.X);
+        var top = Math.Min(start.Y, end.Y);
+        var bottom = Math.Max(start.Y, end.Y);
+        IncludeQuadraticExtremum(start.X, control.X, end.X, ref left, ref right);
+        IncludeQuadraticExtremum(start.Y, control.Y, end.Y, ref top, ref bottom);
+        return RectangleF.FromLTRB(left, top, right, bottom);
+    }
+
+    private static void IncludeQuadraticExtremum(float start, float control, float end, ref float minimum, ref float maximum)
+    {
+        var denominator = start - 2 * control + end;
+        if (Math.Abs(denominator) <= 0.000001f) return;
+        var t = (start - control) / denominator;
+        if (t <= 0 || t >= 1) return;
+        var value = QuadraticCoordinate(start, control, end, t);
+        minimum = Math.Min(minimum, value);
+        maximum = Math.Max(maximum, value);
+    }
+
+    private static float QuadraticCoordinate(float start, float control, float end, float t)
     {
         var inv = 1 - t;
+        return inv * inv * start + 2 * inv * t * control + t * t * end;
+    }
+
+    private static PointF QuadraticPoint(PointF start, PointF control, PointF end, float t)
+    {
         return new PointF(
-            inv * inv * start.X + 2 * inv * t * control.X + t * t * end.X,
-            inv * inv * start.Y + 2 * inv * t * control.Y + t * t * end.Y);
+            QuadraticCoordinate(start.X, control.X, end.X, t),
+            QuadraticCoordinate(start.Y, control.Y, end.Y, t));
     }
 
     private static (PointF Start, PointF Control, PointF End) QuadraticSubcurve(PointF start, PointF control, PointF end, float startT, float endT)
@@ -2305,9 +4784,43 @@ internal sealed class VectorScene
         return MathF.Sqrt(dx * dx + dy * dy);
     }
 
+    private static bool IsFreehandShape(ShapeKind shape)
+    {
+        return shape is VectorAnimationEngine.ShapeKind.Freeform or VectorAnimationEngine.ShapeKind.BrushStroke;
+    }
+
+    private static bool IsTopologyStrokeShape(ShapeKind shape)
+    {
+        return shape == VectorAnimationEngine.ShapeKind.Line || IsFreehandShape(shape);
+    }
+
+    private bool HasFill(int objectIndex)
+    {
+        return (uint)objectIndex < ObjectCount
+            && IsFillShape(ShapeKind[objectIndex])
+            && Color.FromArgb(Argb[objectIndex]).A > 0;
+    }
+
+    private bool HasStroke(int objectIndex)
+    {
+        return (uint)objectIndex < ObjectCount
+            && Stroke[objectIndex] > 0
+            && Color.FromArgb(StrokeArgb[objectIndex]).A > 0;
+    }
+
+    private static bool IsFillShape(ShapeKind shape)
+    {
+        return shape is not VectorAnimationEngine.ShapeKind.Line
+            and not VectorAnimationEngine.ShapeKind.Freeform
+            and not VectorAnimationEngine.ShapeKind.BrushStroke;
+    }
+
     private void CopyObjectData(int from, int to)
     {
         ObjectLayer[to] = ObjectLayer[from];
+        ObjectKeyframeFrame[to] = ObjectKeyframeFrame[from];
+        ObjectOrder[to] = ObjectOrder[from];
+        ObjectSubOrder[to] = ObjectSubOrder[from];
         X[to] = X[from];
         Y[to] = Y[from];
         Width[to] = Width[from];
@@ -2328,6 +4841,15 @@ internal sealed class VectorScene
         {
             _pathLocalContours.Remove(to);
         }
+
+        if (_freehandLocalPoints.TryGetValue(from, out var freehandPoints))
+        {
+            _freehandLocalPoints[to] = freehandPoints.ToArray();
+        }
+        else
+        {
+            _freehandLocalPoints.Remove(to);
+        }
     }
 
     private void RemovePathDataOutsideObjectCount()
@@ -2338,9 +4860,20 @@ internal sealed class VectorScene
         }
     }
 
+    private void RemoveFreehandDataOutsideObjectCount()
+    {
+        foreach (var index in _freehandLocalPoints.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _freehandLocalPoints.Remove(index);
+        }
+    }
+
     private void ResizeObjectArrays()
     {
         var objectLayer = ObjectLayer;
+        var objectKeyframeFrame = ObjectKeyframeFrame;
+        var objectOrder = ObjectOrder;
+        var objectSubOrder = ObjectSubOrder;
         var x = X;
         var y = Y;
         var width = Width;
@@ -2354,6 +4887,9 @@ internal sealed class VectorScene
         var argb = Argb;
         var strokeArgb = StrokeArgb;
         Array.Resize(ref objectLayer, ObjectCount);
+        Array.Resize(ref objectKeyframeFrame, ObjectCount);
+        Array.Resize(ref objectOrder, ObjectCount);
+        Array.Resize(ref objectSubOrder, ObjectCount);
         Array.Resize(ref x, ObjectCount);
         Array.Resize(ref y, ObjectCount);
         Array.Resize(ref width, ObjectCount);
@@ -2367,6 +4903,63 @@ internal sealed class VectorScene
         Array.Resize(ref argb, ObjectCount);
         Array.Resize(ref strokeArgb, ObjectCount);
         ObjectLayer = objectLayer;
+        ObjectKeyframeFrame = objectKeyframeFrame;
+        ObjectOrder = objectOrder;
+        ObjectSubOrder = objectSubOrder;
+        X = x;
+        Y = y;
+        Width = width;
+        Height = height;
+        Angle = angleArray;
+        Stroke = strokeArray;
+        CurveControlX = curveControlX;
+        CurveControlY = curveControlY;
+        ShapeKind = shapeKind;
+        AtomCount = atomCount;
+        Argb = argb;
+        StrokeArgb = strokeArgb;
+    }
+
+    private void EnsureObjectCapacity(int required)
+    {
+        if (ObjectLayer.Length >= required) return;
+        var capacity = Math.Max(required, ObjectLayer.Length == 0 ? 16 : ObjectLayer.Length * 2);
+        var objectLayer = ObjectLayer;
+        var objectKeyframeFrame = ObjectKeyframeFrame;
+        var objectOrder = ObjectOrder;
+        var objectSubOrder = ObjectSubOrder;
+        var x = X;
+        var y = Y;
+        var width = Width;
+        var height = Height;
+        var angleArray = Angle;
+        var strokeArray = Stroke;
+        var curveControlX = CurveControlX;
+        var curveControlY = CurveControlY;
+        var shapeKind = ShapeKind;
+        var atomCount = AtomCount;
+        var argb = Argb;
+        var strokeArgb = StrokeArgb;
+        Array.Resize(ref objectLayer, capacity);
+        Array.Resize(ref objectKeyframeFrame, capacity);
+        Array.Resize(ref objectOrder, capacity);
+        Array.Resize(ref objectSubOrder, capacity);
+        Array.Resize(ref x, capacity);
+        Array.Resize(ref y, capacity);
+        Array.Resize(ref width, capacity);
+        Array.Resize(ref height, capacity);
+        Array.Resize(ref angleArray, capacity);
+        Array.Resize(ref strokeArray, capacity);
+        Array.Resize(ref curveControlX, capacity);
+        Array.Resize(ref curveControlY, capacity);
+        Array.Resize(ref shapeKind, capacity);
+        Array.Resize(ref atomCount, capacity);
+        Array.Resize(ref argb, capacity);
+        Array.Resize(ref strokeArgb, capacity);
+        ObjectLayer = objectLayer;
+        ObjectKeyframeFrame = objectKeyframeFrame;
+        ObjectOrder = objectOrder;
+        ObjectSubOrder = objectSubOrder;
         X = x;
         Y = y;
         Width = width;
@@ -2454,6 +5047,104 @@ internal sealed class VectorScene
             var alpha = Math.Clamp(58 + count * 6, 64, 230);
             OverviewArgb[i] = Color.FromArgb(alpha, (int)(overviewR[i] / count), (int)(overviewG[i] / count), (int)(overviewB[i] / count)).ToArgb();
         }
+    }
+
+    private void InitializeTimelineFromLayerExposure()
+    {
+        var additionalTargetIds = AdditionalTimelineTargetIds();
+        var additionalTargetSet = additionalTargetIds.ToHashSet(StringComparer.Ordinal);
+        var preservedAdditionalTracks = Timeline.CreateSnapshot().Tracks
+            .Where(track => additionalTargetSet.Contains(track.TargetId))
+            .ToDictionary(track => track.TargetId, track => track, StringComparer.Ordinal);
+
+        Timeline.Clear();
+        Timeline.SynchronizeTracks(LayerIds, AnimationTimeline.DefaultDuration, populateNewTracks: false);
+        var occupied = new HashSet<(int Layer, int Frame)>();
+        for (var index = 0; index < ObjectCount; index++)
+        {
+            occupied.Add((ObjectLayer[index], ObjectKeyframeFrame[index]));
+        }
+
+        for (var layer = 0; layer < LayerCount; layer++)
+        {
+            var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+            if (track is null) continue;
+
+            var startFrame = layer < LayerStart.Length
+                ? Math.Clamp(LayerStart[layer], 0, track.Duration - 1)
+                : 0;
+            var endFrame = layer < LayerEnd.Length
+                ? Math.Clamp(LayerEnd[layer], startFrame, track.Duration - 1)
+                : track.Duration - 1;
+            var hasContent = occupied.Contains((layer, startFrame));
+            if (startFrame > 0) Timeline.InsertBlankKeyframe(track.Id, 0);
+            if (hasContent) Timeline.InsertKeyframe(track.Id, startFrame);
+            else if (startFrame == 0) Timeline.InsertBlankKeyframe(track.Id, startFrame);
+            if (endFrame + 1 < track.Duration) Timeline.InsertBlankKeyframe(track.Id, endFrame + 1);
+            RefreshLegacyExposureBounds(layer);
+        }
+
+        if (additionalTargetIds.Length == 0) return;
+
+        var layerTracks = Timeline.CreateSnapshot().Tracks;
+        var additionalTracks = additionalTargetIds
+            .Select(targetId => preservedAdditionalTracks.GetValueOrDefault(targetId) ?? new AnimationTimelineTrackSnapshot
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                TargetId = targetId,
+                Duration = AnimationTimeline.DefaultDuration,
+                Keyframes = [new TimelineKeyframe(0, TimelineKeyframeKind.Populated)]
+            });
+        Timeline.RestoreSnapshot(new AnimationTimelineSnapshot
+        {
+            Tracks = layerTracks.Concat(additionalTracks).ToArray()
+        });
+    }
+
+    private static string[] CreateStableIds(int count, IEnumerable<string>? reservedIds = null)
+    {
+        var result = new string[Math.Max(0, count)];
+        var used = reservedIds is null
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : reservedIds.Where(id => !string.IsNullOrWhiteSpace(id)).ToHashSet(StringComparer.Ordinal);
+        for (var i = 0; i < result.Length; i++)
+        {
+            string id;
+            do
+            {
+                id = Guid.NewGuid().ToString("N");
+            }
+            while (!used.Add(id));
+            result[i] = id;
+        }
+
+        return result;
+    }
+
+    private static string[] NormalizeStableIds(IReadOnlyList<string>? source, int count)
+    {
+        var result = new string[Math.Max(0, count)];
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < result.Length; i++)
+        {
+            var candidate = source is not null && i < source.Count ? source[i] : "";
+            if (!string.IsNullOrWhiteSpace(candidate) && used.Add(candidate))
+            {
+                result[i] = candidate;
+                continue;
+            }
+
+            string id;
+            do
+            {
+                id = Guid.NewGuid().ToString("N");
+            }
+            while (!used.Add(id));
+
+            result[i] = id;
+        }
+
+        return result;
     }
 
     private static Color ColorFromHsl(double h, double s, double light)

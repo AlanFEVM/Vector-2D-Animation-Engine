@@ -6,6 +6,8 @@ internal sealed class DrawSettingsPanel : UserControl
     private readonly ComboBox _shape = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ToolTip _toolTip = new();
     private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
+    private readonly TrackBar _freehandSmoothing = new();
+    private readonly Label _freehandSmoothingValue = new();
     private bool _updating;
 
     public DrawSettingsPanel(DrawSettings settings)
@@ -15,7 +17,7 @@ internal sealed class DrawSettingsPanel : UserControl
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = new Padding(0, 8, 0, 8);
-        MinimumSize = new Size(248, 112);
+        MinimumSize = new Size(248, 152);
 
         BuildUi();
         ReadSettings();
@@ -41,17 +43,25 @@ internal sealed class DrawSettingsPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 2,
+            RowCount = 3,
             Padding = new Padding(0, 4, 0, 0)
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         Controls.Add(content);
         content.BringToFront();
 
-        _shape.Items.AddRange(Enum.GetNames<ShapeKind>());
+        _shape.Items.AddRange([
+            ShapeKind.Rectangle.ToString(),
+            ShapeKind.Ellipse.ToString(),
+            ShapeKind.Triangle.ToString(),
+            ShapeKind.Polygon.ToString(),
+            ShapeKind.Star.ToString(),
+            ShapeKind.Line.ToString()
+        ]);
         _shape.Dock = DockStyle.Fill;
         _shape.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleComboBox(_shape);
@@ -65,6 +75,35 @@ internal sealed class DrawSettingsPanel : UserControl
         _keepRatio.Margin = new Padding(0, 2, 0, 2);
         _toolTip.SetToolTip(_keepRatio, _keepRatio.AccessibleName);
         AddField(content, "Aspect", _keepRatio, 1, fillInput: false);
+
+        _freehandSmoothing.Minimum = 0;
+        _freehandSmoothing.Maximum = 100;
+        _freehandSmoothing.TickFrequency = 20;
+        _freehandSmoothing.Dock = DockStyle.Fill;
+        _freehandSmoothing.Margin = Padding.Empty;
+        _freehandSmoothing.ValueChanged += (_, _) =>
+        {
+            _freehandSmoothingValue.Text = $"{_freehandSmoothing.Value}%";
+            UpdateSettings();
+        };
+        _freehandSmoothingValue.Dock = DockStyle.Fill;
+        _freehandSmoothingValue.ForeColor = Theme.Muted;
+        _freehandSmoothingValue.BackColor = Theme.Panel;
+        _freehandSmoothingValue.TextAlign = ContentAlignment.MiddleCenter;
+        _freehandSmoothingValue.Font = Theme.UiFont();
+        var smoothingRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty
+        };
+        smoothingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        smoothingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
+        smoothingRow.Controls.Add(_freehandSmoothing, 0, 0);
+        smoothingRow.Controls.Add(_freehandSmoothingValue, 1, 0);
+        AddField(content, "Smoothing", smoothingRow, 2);
     }
 
     private void ReadSettings()
@@ -72,6 +111,8 @@ internal sealed class DrawSettingsPanel : UserControl
         _updating = true;
         _shape.SelectedItem = _settings.ShapeKind.ToString();
         _keepRatio.Checked = _settings.KeepAspectRatio;
+        _freehandSmoothing.Value = _settings.FreehandSmoothing;
+        _freehandSmoothingValue.Text = $"{_settings.FreehandSmoothing}%";
         _updating = false;
     }
 
@@ -80,6 +121,7 @@ internal sealed class DrawSettingsPanel : UserControl
         if (_updating) return;
         if (_shape.SelectedItem is string selected && Enum.TryParse<ShapeKind>(selected, out var kind)) _settings.ShapeKind = kind;
         _settings.KeepAspectRatio = _keepRatio.Checked;
+        _settings.FreehandSmoothing = _freehandSmoothing.Value;
         _settings.NotifyChanged();
     }
 

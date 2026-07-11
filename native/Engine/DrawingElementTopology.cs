@@ -20,6 +20,18 @@ internal readonly record struct DrawingElementHit(DrawingElementKey Key, float D
     public bool IsValid => Key.IsValid;
 }
 
+internal readonly record struct MaterializedPartMapping(DrawingElementKey Source, DrawingElementKey Result);
+
+internal sealed record MaterializeSelectedPartsResult(
+    bool Success,
+    bool Changed,
+    MaterializedPartMapping[] Parts,
+    int[] OldToNewObjectIndex);
+
+internal readonly record struct DrawingFillPartGeometry(int PartIndex, PointF[][] Contours);
+
+internal readonly record struct DrawingPolylinePartGeometry(int PartIndex, PointF[] Points);
+
 internal readonly record struct DrawingTopologySplit(float T, PointF Point);
 
 internal readonly record struct CurveSample(float T, PointF Point);

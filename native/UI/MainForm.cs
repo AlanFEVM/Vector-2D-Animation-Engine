@@ -18,6 +18,7 @@ internal sealed class MainForm : Form
     private const int HtBottom = 15;
     private const int HtBottomLeft = 16;
     private const int HtBottomRight = 17;
+    private const int VkMenu = 0x12;
     private const double TargetUps = 300.0;
     private const double TargetRenderFps = 144.0;
     private const double UpdateStepSeconds = 1.0 / TargetUps;
@@ -26,8 +27,16 @@ internal sealed class MainForm : Form
     private const float EndpointConnectionToleranceUnits = 1.25f;
     private const int MaxUndoSnapshots = 32;
     private const float PasteOffsetUnits = 96f;
+    private const int MaxFreehandSamples = 16_384;
+    private const float FreehandSampleSpacingPixels = 1.25f;
+    private const int VaultDrawerExpandedWidth = 306;
 
-    private readonly VectorScene _scene = new();
+    private VectorProject _project = VectorProject.CreateEmpty();
+    private VectorScene _scene;
+    private readonly VectorScene _sceneEditStage = new();
+    private readonly VectorScene _drawingObjectUnderlayStage = new();
+    private SceneCompositionResult _sceneCompositionResult = SceneCompositionResult.Empty;
+    private SceneCompositionResult _drawingObjectUnderlayResult = SceneCompositionResult.Empty;
     private readonly StageControl _stage;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1 };
     private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -45,9 +54,14 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _stroke = new() { Minimum = 0, Maximum = 12, Value = 2, Width = 160 };
     private readonly Button _play = new() { Text = "Play", Width = 72 };
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
+    private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
+    private readonly Dictionary<ToolMode, Button> _shapeFlyoutButtons = new();
+    private readonly System.Windows.Forms.Timer _shapeFlyoutHideTimer = new();
+    private readonly System.Windows.Forms.Timer _vaultDrawerTimer = new() { Interval = 16 };
+    private DateTime _shapeFlyoutHideAtUtc;
     private readonly Dictionary<string, Button> _drawingObjectTabButtons = new();
-    private readonly List<SceneDefinition> _scenes = [];
-    private readonly List<DrawingObjectDefinition> _drawingObjects = [];
+    private IReadOnlyList<SceneDefinition> _scenes => _project.Scenes;
+    private IReadOnlyList<DrawingObjectDefinition> _drawingObjects => _project.DrawingObjects;
     private readonly AnimatedToolTip _toolTip = new();
     private readonly WorkspaceTabs _workspaceTabs = new();
     private readonly Panel _workspaceHeader = new();
@@ -59,7 +73,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS 0");
     private readonly ToolStripStatusLabel _animationFpsStatus = StatusLabel("Animation FPS 24");
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
-    private readonly ToolStripStatusLabel _hotReloadStatus = StatusLabel("Hot Reload On");
+    private readonly ToolStripStatusLabel _devReloadStatus = StatusLabel("Auto Restart On");
     private WindowChromeButton? _maximizeButton;
     private readonly PlaybackSettingsPanel _playbackSettings = new();
     private readonly DrawSettingsPanel _drawSettingsPanel;
@@ -71,17 +85,25 @@ internal sealed class MainForm : Form
     private readonly Panel _objectInspector = new();
     private readonly Panel _sceneEditPage = new();
     private readonly Panel _animationPage = new();
+    private SvgIconButton? _shapeToolButton;
+    private FlowLayoutPanel? _shapeToolFlyout;
+    private Panel? _vaultDrawer;
+    private SvgIconButton? _vaultButton;
     private ToolMode _tool = ToolMode.Select;
+    private ToolMode _activeShapeTool = ToolMode.Rectangle;
     private bool _playing;
     private int _frame;
     private int _selectedObject = -1;
     private DrawingElementHit _selectedElement = DrawingElementHit.None;
+    private readonly List<DrawingElementHit> _selectedElements = new();
     private readonly List<int> _selectedObjects = new();
     private readonly Dictionary<int, PointF> _selectedMoveStarts = new();
     private readonly Dictionary<int, PointF> _selectedCurveStarts = new();
     private readonly List<LineEndpointEditStart> _lineEndpointEditStarts = new();
     private readonly Stack<VectorSceneSnapshot> _undoStack = new();
+    private readonly Stack<SceneTimelineUndoEntry> _sceneTimelineUndoStack = new();
     private readonly List<ClipboardObject> _clipboardObjects = new();
+    private readonly List<PointF> _freehandSamples = new(1024);
     private Point? _lastMouse;
     private Point? _startScreen;
     private PointF? _startWorld;
@@ -105,16 +127,35 @@ internal sealed class MainForm : Form
     private bool _updatingStrokeInput;
     private bool _viewPanning;
     private bool _viewZooming;
+    private bool _viewOrbiting;
+    private bool _viewReferencePanning;
+    private bool _viewReferenceZooming;
     private bool _marqueeSelecting;
     private bool _detachedSelectionForMove;
     private bool _pointerHitWasAlreadySelected;
+    private bool _selectionWasEmptyOnPointerDown;
+    private bool _forceMarqueeOnPointerDown;
+    private DrawingElementHit _pendingClickSelection = DrawingElementHit.None;
     private Point? _marqueeStart;
+    private Point? _freehandLastScreen;
     private ShapeKind _lastSettingsShape = ShapeKind.Rectangle;
     private int _activeSceneIndex;
     private int _activeDrawingObjectIndex;
     private bool _undoCapturedForPointerEdit;
+    private bool _freehandDrawing;
+    private bool _freehandBrushStroke;
+    private bool _vaultDrawerOpen;
+    private Color _freehandColor = Color.White;
+    private float _freehandStrokeUnits;
+    private float _standardStrokeWidthPoints = 2;
+    private float _pencilStrokeWidthPoints = 2;
+    private float _brushStrokeWidthPoints = 8;
 
     private readonly record struct LineEndpointEditStart(int ObjectIndex, bool StartEndpoint, PointF OriginalEndpoint, PointF OppositeEndpoint, PointF Control, bool KeepStraight);
+
+    private readonly record struct DrawingStackKey(long Order, double SubOrder);
+
+    private sealed record SceneTimelineUndoEntry(SceneDefinition Scene, AnimationTimelineSnapshot Snapshot);
 
     private sealed record ClipboardObject(
         int Layer,
@@ -131,6 +172,9 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
+        _scene = _project.DrawingObjects[0].Scene;
+        _sceneEditStage.CreateEmpty();
+        _drawingObjectUnderlayStage.CreateEmpty();
         Text = "Vector 2D Animation Engine";
         FormBorderStyle = FormBorderStyle.None;
         Width = 1480;
@@ -146,9 +190,10 @@ internal sealed class MainForm : Form
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = 192 };
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
         _drawSnappingStrip = new DrawSnappingStrip(_drawSettings);
+        _shapeFlyoutHideTimer.Interval = 100;
+        _shapeFlyoutHideTimer.Tick += (_, _) => UpdateShapeToolFlyoutVisibility();
+        _vaultDrawerTimer.Tick += (_, _) => TickVaultDrawer();
         InitializeQuickMaterialInputs();
-        CreateDefaultScenes();
-        CreateDefaultDrawingObjects();
         BuildUi();
         HookEvents();
         CreateNewProject();
@@ -248,38 +293,12 @@ internal sealed class MainForm : Form
         _drawingObjectRow.Controls.Add(_drawSnappingStrip, 1, 0);
         BuildDrawingObjectTabs();
 
-        var tools = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 48, BackColor = Theme.Top, FlowDirection = FlowDirection.TopDown, Padding = new Padding(6, 10, 6, 6) };
-        PaintRightBorder(tools);
-        body.Controls.Add(tools);
-        AddTool(tools, SvgIconKind.Select, ToolMode.Select, "Select");
-        AddTool(tools, SvgIconKind.Pan, ToolMode.Hand, "Pan View");
-        AddTool(tools, SvgIconKind.Rectangle, ToolMode.Rectangle, "Rectangle Tool");
-        AddTool(tools, SvgIconKind.Ellipse, ToolMode.Ellipse, "Ellipse Tool");
-        AddTool(tools, SvgIconKind.Triangle, ToolMode.Triangle, "Triangle Tool");
-        AddTool(tools, SvgIconKind.Polygon, ToolMode.Polygon, "Polygon Tool");
-        AddTool(tools, SvgIconKind.Star, ToolMode.Star, "Star Tool");
-        AddTool(tools, SvgIconKind.Line, ToolMode.Line, "Line Tool");
-        AddTool(tools, SvgIconKind.Fill, ToolMode.Fill, "Fill Tool");
-        RefreshToolButtons();
-
-        var vaultDrawer = new Panel { Dock = DockStyle.Left, Width = 306, BackColor = Theme.Panel, Padding = new Padding(0), Visible = false };
+        var vaultDrawer = new Panel { Dock = DockStyle.Left, Width = 0, BackColor = Theme.Panel, Padding = new Padding(0), Visible = false };
+        _vaultDrawer = vaultDrawer;
         PaintRightBorder(vaultDrawer);
         _libraryVaultPanel.Dock = DockStyle.Fill;
         vaultDrawer.Controls.Add(_libraryVaultPanel);
         body.Controls.Add(vaultDrawer);
-
-        var vaultButton = new SvgIconButton(SvgIconKind.Vault) { Margin = new Padding(0, 16, 0, 8), AccessibleName = "Vault" };
-        Theme.StyleButton(vaultButton);
-        vaultButton.MouseEnter += (_, _) => _toolTip.ShowFor(vaultButton, "Vault");
-        vaultButton.MouseLeave += (_, _) => _toolTip.HideTip();
-        vaultButton.Click += (_, _) =>
-        {
-            vaultDrawer.Visible = !vaultDrawer.Visible;
-            if (vaultDrawer.Visible) Theme.StyleActiveButton(vaultButton);
-            else Theme.StyleButton(vaultButton);
-            body.PerformLayout();
-        };
-        tools.Controls.Add(vaultButton);
 
         var inspector = new Panel { Dock = DockStyle.Right, Width = 324, BackColor = Theme.Panel, Padding = new Padding(14, 16, 14, 12), AutoScroll = true };
         PaintLeftBorder(inspector);
@@ -319,6 +338,40 @@ internal sealed class MainForm : Form
         stagePanel.Controls.Add(_stage);
         stagePanel.Controls.Add(metrics);
         metrics.BringToFront();
+
+        var tools = new FlowLayoutPanel
+        {
+            Left = 8,
+            Top = metrics.Height + 8,
+            Width = 48,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left,
+            BackColor = Theme.Top,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(6),
+            Margin = Padding.Empty
+        };
+        PaintFullBorder(tools);
+        AddTool(tools, SvgIconKind.Select, ToolMode.Select, "Select");
+        AddTool(tools, SvgIconKind.Pan, ToolMode.Hand, "Pan View");
+        AddShapeToolGroup(tools, stagePanel);
+        AddTool(tools, SvgIconKind.Line, ToolMode.Line, "Line Tool");
+        AddTool(tools, SvgIconKind.Pencil, ToolMode.Pencil, "Pencil Tool");
+        AddTool(tools, SvgIconKind.Brush, ToolMode.Brush, "Brush Tool");
+        AddTool(tools, SvgIconKind.Fill, ToolMode.Fill, "Fill Tool");
+
+        var vaultButton = new SvgIconButton(SvgIconKind.Vault) { Margin = new Padding(0, 8, 0, 0), AccessibleName = "Vault" };
+        _vaultButton = vaultButton;
+        Theme.StyleButton(vaultButton);
+        vaultButton.MouseEnter += (_, _) => _toolTip.ShowFor(vaultButton, "Vault");
+        vaultButton.MouseLeave += (_, _) => _toolTip.HideTip();
+        vaultButton.Click += (_, _) => ToggleVaultDrawer();
+        tools.Controls.Add(vaultButton);
+        stagePanel.Controls.Add(tools);
+        tools.BringToFront();
+        RefreshToolButtons();
         _workspaceTabs.BringToFront();
 
         Controls.Add(_timeline);
@@ -354,6 +407,45 @@ internal sealed class MainForm : Form
         minimize.Top = buttonTop;
         fit.Left = minimize.Left - fit.Width - 14;
         generate.Left = fit.Left - generate.Width - 8;
+    }
+
+    private void ToggleVaultDrawer()
+    {
+        if (_vaultDrawer is null) return;
+        _vaultDrawerOpen = !_vaultDrawerOpen;
+        if (_vaultDrawerOpen)
+        {
+            _vaultDrawer.Visible = true;
+            if (_vaultButton is not null) Theme.StyleActiveButton(_vaultButton);
+        }
+        else if (_vaultButton is not null)
+        {
+            Theme.StyleButton(_vaultButton);
+        }
+
+        if (!_vaultDrawerTimer.Enabled) _vaultDrawerTimer.Start();
+    }
+
+    private void TickVaultDrawer()
+    {
+        if (_vaultDrawer is null)
+        {
+            _vaultDrawerTimer.Stop();
+            return;
+        }
+
+        var target = _vaultDrawerOpen ? VaultDrawerExpandedWidth : 0;
+        var remaining = target - _vaultDrawer.Width;
+        if (remaining == 0)
+        {
+            if (!_vaultDrawerOpen) _vaultDrawer.Visible = false;
+            _vaultDrawerTimer.Stop();
+            return;
+        }
+
+        var step = Math.Max(12, (int)Math.Ceiling(Math.Abs(remaining) * 0.30));
+        _vaultDrawer.Width = Math.Clamp(_vaultDrawer.Width + Math.Sign(remaining) * step, 0, VaultDrawerExpandedWidth);
+        _vaultDrawer.Parent?.PerformLayout();
     }
 
     private void RegisterWindowDrag(Control control)
@@ -402,6 +494,18 @@ internal sealed class MainForm : Form
         ApplyMaximizedBounds();
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _shapeFlyoutHideTimer.Dispose();
+            _vaultDrawerTimer.Dispose();
+            _timer.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
     private void ApplyMaximizedBounds()
     {
         if (!IsHandleCreated) return;
@@ -447,6 +551,9 @@ internal sealed class MainForm : Form
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
 
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int keyCode);
+
     private void BuildStatusBar()
     {
         _statusBar.Dock = DockStyle.Bottom;
@@ -460,10 +567,10 @@ internal sealed class MainForm : Form
         _statusBar.Items.Add(_animationFpsStatus);
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_zoomStatus);
-        if (IsHotReloadEnabled())
+        if (IsAutoRestartEnabled())
         {
             _statusBar.Items.Add(StatusSeparator());
-            _statusBar.Items.Add(_hotReloadStatus);
+            _statusBar.Items.Add(_devReloadStatus);
         }
     }
 
@@ -494,6 +601,15 @@ internal sealed class MainForm : Form
         };
     }
 
+    private static void PaintFullBorder(Control control)
+    {
+        control.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawRectangle(pen, 0, 0, control.Width - 1, control.Height - 1);
+        };
+    }
+
     private void BuildInspectorPages(Control inspector)
     {
         _basicInspectorPage.Dock = DockStyle.Fill;
@@ -507,7 +623,7 @@ internal sealed class MainForm : Form
         _materialEditor.Dock = DockStyle.Top;
         _materialEditor.Height = 252;
         _drawSettingsPanel.Dock = DockStyle.Top;
-        _drawSettingsPanel.Height = 124;
+        _drawSettingsPanel.Height = 164;
         _basicInspectorPage.Controls.Add(_materialEditor);
         _basicInspectorPage.Controls.Add(_drawSettingsPanel);
         _basicInspectorPage.Controls.Add(_objectInspector);
@@ -615,7 +731,10 @@ internal sealed class MainForm : Form
         {
             if (e.Button != MouseButtons.Left || drawingObject.Kind == "Scene") return;
             if (Math.Abs(e.X - dragStart.X) < SystemInformation.DragSize.Width / 2 && Math.Abs(e.Y - dragStart.Y) < SystemInformation.DragSize.Height / 2) return;
-            button.DoDragDrop(drawingObject.ToVaultItem(), DragDropEffects.Copy);
+            var dragData = new DataObject();
+            dragData.SetData(typeof(DrawingObjectDragData), new DrawingObjectDragData(_project.Id, drawingObject.Id));
+            dragData.SetData(typeof(VaultItem), drawingObject.ToVaultItem());
+            button.DoDragDrop(dragData, DragDropEffects.Copy);
         };
         _drawingObjectTabButtons[drawingObject.Id] = button;
         _drawingObjectTabs.Controls.Add(button);
@@ -636,67 +755,119 @@ internal sealed class MainForm : Form
         _drawingObjectTabs.Controls.Add(button);
     }
 
-    private void CreateDefaultScenes()
-    {
-        _scenes.Clear();
-        _scenes.Add(new SceneDefinition
-        {
-            Name = "Master Scene",
-            Detail = "Primary scene composition"
-        });
-        _activeSceneIndex = 0;
-    }
-
-    private void CreateDefaultDrawingObjects()
-    {
-        _drawingObjects.Clear();
-        _drawingObjects.Add(new DrawingObjectDefinition
-        {
-            Name = "Scene",
-            Kind = "Scene",
-            Detail = "Master scene editing context"
-        });
-        _drawingObjects.Add(new DrawingObjectDefinition
-        {
-            Name = "Drawing Object 001",
-            Detail = "Reusable Flash-style drawing object"
-        });
-        _drawingObjects.Add(new DrawingObjectDefinition
-        {
-            Name = "Drawing Object 002",
-            Detail = "Reusable Flash-style drawing object"
-        });
-        _activeDrawingObjectIndex = _drawingObjects.Count > 1 ? 1 : 0;
-    }
-
     private void AddScene()
     {
-        var index = _scenes.Count + 1;
-        _scenes.Add(new SceneDefinition
-        {
-            Name = $"Scene {index:000}",
-            Detail = "Additional scene composition"
-        });
+        _project.AddScene();
         SelectScene(_scenes.Count - 1);
     }
 
     private void SelectScene(int index)
     {
         if (index < 0 || index >= _scenes.Count) return;
+        if (_activeSceneIndex != index) ResetUndoHistory();
         _activeSceneIndex = index;
         _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor) BindSceneEditStage(resetView: false);
+        _sceneEditorPanel.RefreshSceneStats();
         AppLog.Info($"Selected scene: {_scenes[index].Name}");
+    }
+
+    private SceneDefinition? ActiveScene()
+    {
+        return _activeSceneIndex >= 0 && _activeSceneIndex < _scenes.Count ? _scenes[_activeSceneIndex] : null;
+    }
+
+    private bool IsScene3DView()
+    {
+        return IsSceneCompositionContext()
+            && _stage.ReferenceDimension == SceneDimension.ThreeD;
+    }
+
+    private bool IsSceneCompositionContext() => _timeline.Context is ICompositionDefinition { CanDraw: false };
+
+    private bool IsNestedInstanceTimelineTrackActive()
+    {
+        if (_timeline.Context is not DrawingObjectDefinition drawingObject
+            || string.IsNullOrWhiteSpace(_timeline.ActiveTrackId))
+        {
+            return false;
+        }
+
+        var targetId = drawingObject.Timeline.FindTrack(_timeline.ActiveTrackId)?.TargetId;
+        return targetId is not null
+            && drawingObject.Instances.Any(instance => string.Equals(instance.Id, targetId, StringComparison.Ordinal));
+    }
+
+    private bool DrawingToolsBlocked() => IsSceneCompositionContext() || IsNestedInstanceTimelineTrackActive();
+
+    private static bool IsAltPressed()
+    {
+        return (ModifierKeys & Keys.Alt) == Keys.Alt || (GetKeyState(VkMenu) & 0x8000) != 0;
+    }
+
+    private static bool IsShiftPressed()
+    {
+        return (ModifierKeys & Keys.Shift) == Keys.Shift;
+    }
+
+    private static bool IsControlPressed()
+    {
+        return (ModifierKeys & Keys.Control) == Keys.Control;
+    }
+
+    private static bool MouseButtonDown(MouseEventArgs e, MouseButtons button)
+    {
+        return (e.Button & button) == button;
+    }
+
+    private void UpdateSceneSettings(SceneSettingsChangedEventArgs e)
+    {
+        if (e.SceneIndex < 0 || e.SceneIndex >= _scenes.Count) return;
+        var scene = _scenes[e.SceneIndex];
+        scene.Dimension = e.Dimension;
+        scene.Camera.Projection = e.Projection;
+        if (scene.Dimension == SceneDimension.TwoD && scene.Camera.Projection == CameraProjection.Perspective)
+        {
+            scene.Camera.Depth = Math.Max(scene.Camera.Depth, 1000);
+        }
+
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor) _stage.ConfigureReferenceView(scene);
+        AppLog.Info($"Updated scene settings: {scene.Name}, {scene.Dimension}, {scene.Camera.Projection}");
+    }
+
+    private void AddSceneInstanceFromActiveDrawingObject()
+    {
+        var scene = ActiveScene();
+        var drawingObject = ActiveDrawingObject();
+        if (scene is null || drawingObject is null) return;
+
+        var index = scene.Instances.Count + 1;
+        if (!_project.TryAddSceneInstance(
+                scene.Id,
+                drawingObject.Id,
+                PointF.Empty,
+                scene.Dimension == SceneDimension.TwoD ? index : 0,
+                out _))
+        {
+            return;
+        }
+
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        _sceneEditorPanel.RefreshSceneStats();
+        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor)
+        {
+            _timeline.RefreshTimeline();
+            ApplyBoundTimelineDuration();
+            RebuildSceneComposition();
+        }
+        AppLog.Info($"Added scene instance: {drawingObject.Name} -> {scene.Name}");
     }
 
     private void AddDrawingObject()
     {
-        var index = _drawingObjects.Count;
-        _drawingObjects.Add(new DrawingObjectDefinition
-        {
-            Name = $"Drawing Object {index:000}",
-            Detail = "Reusable drawing object tab"
-        });
-        SelectDrawingObject(index);
+        _project.AddDrawingObject();
+        SelectDrawingObject(_drawingObjects.Count - 1);
     }
 
     private DrawingObjectDefinition? ActiveDrawingObject()
@@ -706,40 +877,336 @@ internal sealed class MainForm : Form
             : null;
     }
 
+    private void BindActiveDrawingObjectScene(bool resetView)
+    {
+        var drawingObject = ActiveDrawingObject();
+        if (drawingObject is null)
+        {
+            if (_drawingObjects.Count == 0)
+            {
+                _project.AddDrawingObject("Drawing Object 001");
+            }
+
+            _activeDrawingObjectIndex = 0;
+            drawingObject = _drawingObjects[0];
+        }
+
+        var nextScene = drawingObject.Scene;
+        if (!ReferenceEquals(_scene, nextScene)) ResetUndoHistory();
+        _scene = nextScene;
+        if (_scene.LayerCount <= 0) _scene.CreateEmpty();
+        _stage.BindScene(_scene);
+        _stage.ConfigureReferenceView(null);
+        _timeline.BindContext(drawingObject);
+        _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
+        _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
+        SyncFrameSliderRange();
+        SetFrame(Math.Clamp(_frame, 0, _scene.FrameCount - 1));
+        ClearSelection();
+        RefreshLayers();
+        _hierarchyPanel.BindScene(_scene);
+        _sceneEditorPanel.BindScene(_scene);
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        _sceneEditorPanel.SetActiveDrawingObject(drawingObject);
+        if (resetView) _stage.ResetDefaultView();
+        UpdateInspector();
+        UpdateStatusBar();
+    }
+
+    private void BindSceneEditStage(bool resetView)
+    {
+        if (!ReferenceEquals(_scene, _sceneEditStage)) ResetUndoHistory();
+        _scene = _sceneEditStage;
+        var sceneDefinition = ActiveScene();
+        _sceneCompositionResult = SceneCompositionBuilder.Build(_sceneEditStage, sceneDefinition, _drawingObjects, _frame);
+        _stage.BindScene(_scene);
+        _stage.ConfigureReferenceView(sceneDefinition);
+        if (sceneDefinition is not null) _timeline.BindSceneDefinition(sceneDefinition);
+        else _timeline.BindScene(_scene);
+        _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
+        _playbackSettings.SetFrameRange(0, Math.Max(0, (sceneDefinition?.FrameCount ?? _scene.FrameCount) - 1));
+        SyncFrameSliderRange();
+        SetFrame(Math.Clamp(_frame, 0, _playbackSettings.EndFrame));
+        ClearSelection();
+        RefreshLayers();
+        _hierarchyPanel.BindScene(_scene);
+        _sceneEditorPanel.BindScene(_scene);
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
+        if (resetView) _stage.ResetDefaultView();
+        UpdateInspector();
+        UpdateStatusBar();
+    }
+
+    private void RebuildSceneComposition()
+    {
+        if (!IsSceneCompositionContext()) return;
+        _sceneCompositionResult = SceneCompositionBuilder.Build(_sceneEditStage, ActiveScene(), _drawingObjects, _frame);
+        _scene = _sceneEditStage;
+        _renderRequested = true;
+        if (!_playing)
+        {
+            _hierarchyPanel.BindScene(_sceneEditStage);
+            _sceneEditorPanel.BindScene(_sceneEditStage);
+        }
+
+        _stage.Invalidate();
+    }
+
+    private void RebuildDrawingObjectUnderlay()
+    {
+        if (IsSceneCompositionContext())
+        {
+            _drawingObjectUnderlayResult = SceneCompositionResult.Empty;
+            _stage.BindUnderlayScene(null);
+            return;
+        }
+
+        _drawingObjectUnderlayResult = SceneCompositionBuilder.BuildDrawingObjectChildren(
+            _drawingObjectUnderlayStage,
+            ActiveDrawingObject(),
+            _drawingObjects,
+            _frame);
+        _stage.BindUnderlayScene(_drawingObjectUnderlayStage);
+    }
+
     private void SelectDrawingObject(int index)
     {
         if (index < 0 || index >= _drawingObjects.Count) return;
         _activeDrawingObjectIndex = index;
-        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
-        _sceneEditorPanel.SetActiveDrawingObject(ActiveDrawingObject());
+        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor) BindSceneEditStage(resetView: false);
+        else BindActiveDrawingObjectScene(resetView: true);
         BuildDrawingObjectTabs();
         RefreshToolButtons();
         AppLog.Info($"Selected drawing object tab: {_drawingObjects[index].Name}");
+    }
+
+    private bool OpenDrawingObjectEditor(string drawingObjectId)
+    {
+        var index = -1;
+        for (var i = 0; i < _drawingObjects.Count; i++)
+        {
+            if (!string.Equals(_drawingObjects[i].Id, drawingObjectId, StringComparison.Ordinal)) continue;
+            index = i;
+            break;
+        }
+
+        if (index < 0) return false;
+
+        StopPlayback();
+        FinishPointerInteractionForFrameChange();
+        _activeDrawingObjectIndex = index;
+        BuildDrawingObjectTabs();
+        if (_workspaceTabs.SelectedView == WorkspaceView.BasicDrawing)
+        {
+            BindActiveDrawingObjectScene(resetView: false);
+        }
+        else
+        {
+            _workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
+        }
+
+        AppLog.Info($"Opened drawing object editor: {_drawingObjects[index].Name}");
+        return true;
     }
 
     private void AddTool(FlowLayoutPanel panel, SvgIconKind icon, ToolMode tool, string displayName)
     {
         var button = new SvgIconButton(icon) { Margin = new Padding(0, 0, 0, 8), Tag = tool, AccessibleName = displayName };
         Theme.StyleButton(button);
-        button.MouseEnter += (_, _) => _toolTip.ShowFor(button, displayName);
+        button.MouseEnter += (_, _) =>
+        {
+            if (!IsShapeTool(tool)) HideShapeToolFlyout();
+            _toolTip.ShowFor(button, displayName);
+        };
         button.MouseLeave += (_, _) => _toolTip.HideTip();
         button.Click += (_, _) => ActivateTool(tool);
         _toolButtons[tool] = button;
         panel.Controls.Add(button);
     }
 
+    private void AddShapeToolGroup(FlowLayoutPanel panel, Control overlayParent)
+    {
+        _shapeToolButton = new SvgIconButton(ToolIconKind(_activeShapeTool))
+        {
+            Margin = new Padding(0, 0, 0, 8),
+            Tag = _activeShapeTool,
+            AccessibleName = ShapeToolName(_activeShapeTool)
+        };
+        Theme.StyleButton(_shapeToolButton);
+        _shapeToolButton.MouseEnter += (_, _) =>
+        {
+            _toolTip.HideTip();
+            ShowShapeToolFlyout();
+        };
+        _shapeToolButton.MouseLeave += (_, _) =>
+        {
+            StartShapeFlyoutVisibilityCheck();
+        };
+        _shapeToolButton.Click += (_, _) => ActivateTool(_activeShapeTool);
+        panel.Controls.Add(_shapeToolButton);
+
+        _shapeToolFlyout = new FlowLayoutPanel
+        {
+            Width = 46,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = Theme.Top,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(6),
+            Visible = false
+        };
+        PaintFullBorder(_shapeToolFlyout);
+        _shapeToolFlyout.MouseEnter += (_, _) => ShowShapeToolFlyout();
+        _shapeToolFlyout.MouseLeave += (_, _) => StartShapeFlyoutVisibilityCheck();
+        overlayParent.Controls.Add(_shapeToolFlyout);
+
+        foreach (var tool in _shapeTools)
+        {
+            var button = new SvgIconButton(ToolIconKind(tool))
+            {
+                Margin = new Padding(0, 0, 0, tool == _shapeTools[^1] ? 0 : 8),
+                Tag = tool,
+                AccessibleName = ShapeToolName(tool)
+            };
+            Theme.StyleButton(button);
+            button.MouseEnter += (_, _) =>
+            {
+                _toolTip.HideTip();
+                ShowShapeToolFlyout();
+            };
+            button.MouseLeave += (_, _) =>
+            {
+                StartShapeFlyoutVisibilityCheck();
+            };
+            button.Click += (_, _) =>
+            {
+                ActivateTool(tool);
+                HideShapeToolFlyout();
+            };
+            _shapeFlyoutButtons[tool] = button;
+            _shapeToolFlyout.Controls.Add(button);
+        }
+    }
+
+    private void ShowShapeToolFlyout()
+    {
+        if (_shapeToolButton is null || _shapeToolFlyout is null || _shapeToolButton.Parent is not Control tools) return;
+        _shapeFlyoutHideAtUtc = default;
+        tools.PerformLayout();
+        _toolTip.HideTip();
+        _shapeToolFlyout.Left = tools.Left + tools.Width - 1;
+        _shapeToolFlyout.Top = tools.Top + _shapeToolButton.Top;
+        _shapeToolFlyout.Visible = true;
+        _shapeToolFlyout.BringToFront();
+        StartShapeFlyoutVisibilityCheck();
+        RefreshToolButtons();
+    }
+
+    private void HideShapeToolFlyout()
+    {
+        _shapeFlyoutHideTimer.Stop();
+        _shapeFlyoutHideAtUtc = default;
+        if (_shapeToolFlyout is null) return;
+        _shapeToolFlyout.Visible = false;
+    }
+
+    private void ScheduleShapeToolFlyoutHideAfter(int delayMilliseconds)
+    {
+        if (_shapeToolFlyout is null) return;
+        _shapeFlyoutHideAtUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(1, delayMilliseconds));
+        StartShapeFlyoutVisibilityCheck();
+    }
+
+    private void StartShapeFlyoutVisibilityCheck()
+    {
+        if (_shapeToolFlyout is null || !_shapeToolFlyout.Visible) return;
+        if (!_shapeFlyoutHideTimer.Enabled) _shapeFlyoutHideTimer.Start();
+    }
+
+    private void UpdateShapeToolFlyoutVisibility()
+    {
+        if (_shapeToolButton is null || _shapeToolFlyout is null || !_shapeToolFlyout.Visible)
+        {
+            _shapeFlyoutHideTimer.Stop();
+            return;
+        }
+
+        if (_shapeFlyoutHideAtUtc != default && DateTime.UtcNow >= _shapeFlyoutHideAtUtc)
+        {
+            HideShapeToolFlyout();
+            return;
+        }
+
+        if (_shapeFlyoutHideAtUtc != default) return;
+        if (!IsPointerInsideShapeToolFlyout()) HideShapeToolFlyout();
+    }
+
+    private bool IsPointerInsideShapeToolFlyout()
+    {
+        if (_shapeToolButton is null || _shapeToolFlyout is null) return false;
+        var keepOpen = Rectangle.Union(
+            _shapeToolButton.RectangleToScreen(_shapeToolButton.ClientRectangle),
+            _shapeToolFlyout.RectangleToScreen(_shapeToolFlyout.ClientRectangle));
+        keepOpen.Inflate(8, 8);
+        return keepOpen.Contains(Cursor.Position);
+    }
+
     private void ActivateTool(ToolMode tool)
     {
-        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor && IsDrawingTool(tool)) return;
+        if (DrawingToolsBlocked() && IsBasicDrawingOnlyTool(tool)) return;
+        RememberToolStrokeWidth(_tool);
         _tool = tool;
         _stage.ClearDrawingPreview();
+        CancelFreehandStroke();
+        if (!IsShapeTool(tool)) HideShapeToolFlyout();
+        ApplyToolStrokeWidth(tool);
         if (ToolShapeKind(tool) is { } shape)
         {
+            if (IsShapeTool(tool)) _activeShapeTool = tool;
             _drawSettings.ShapeKind = shape;
             _drawSettings.NotifyChanged();
         }
 
         RefreshToolButtons();
+        ApplyToolCursor();
+    }
+
+    private void RememberToolStrokeWidth(ToolMode tool)
+    {
+        var width = (float)_materialEditor.StrokeWidth;
+        if (tool == ToolMode.Pencil) _pencilStrokeWidthPoints = width;
+        else if (tool == ToolMode.Brush) _brushStrokeWidthPoints = width;
+        else if (IsStandardStrokeTool(tool)) _standardStrokeWidthPoints = width;
+    }
+
+    private void ApplyToolStrokeWidth(ToolMode tool)
+    {
+        float? width = tool switch
+        {
+            ToolMode.Pencil => _pencilStrokeWidthPoints,
+            ToolMode.Brush => _brushStrokeWidthPoints,
+            _ when IsStandardStrokeTool(tool) => _standardStrokeWidthPoints,
+            _ => null
+        };
+        if (width is null || Math.Abs(_materialEditor.StrokeWidth - width.Value) < 0.001f) return;
+
+        _materialEditor.SetMaterial(_materialEditor.Fill, _materialEditor.Stroke, width.Value, _materialEditor.Opacity);
+        _updatingStrokeInput = true;
+        try
+        {
+            _stroke.Value = (decimal)Math.Clamp(width.Value, (float)_stroke.Minimum, (float)_stroke.Maximum);
+        }
+        finally
+        {
+            _updatingStrokeInput = false;
+        }
+    }
+
+    private void ApplyToolCursor()
+    {
+        _stage.Cursor = IsDrawingTool(_tool) ? Cursors.Cross : _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
     }
 
     private void HookEvents()
@@ -748,22 +1215,35 @@ internal sealed class MainForm : Form
         _timeline.CurrentFrameChanged += (_, _) =>
         {
             if (_syncingFrame) return;
+            StopPlayback();
             SetFrame(_timeline.CurrentFrame);
         };
         _timeline.ActiveLayerChanged += (_, _) =>
         {
+            if (IsNestedInstanceTimelineTrackActive() && IsBasicDrawingOnlyTool(_tool))
+            {
+                ActivateTool(ToolMode.Select);
+            }
+
+            RefreshToolButtons();
             UpdateInspector();
             _stage.Invalidate();
         };
         _timeline.LayerVisibilityChanged += (_, _) =>
         {
+            if (IsSceneCompositionContext()) RebuildSceneComposition();
+            else RebuildDrawingObjectUnderlay();
+            ClearInactiveSelection();
             UpdateInspector();
             _stage.Invalidate();
         };
         _sceneEditorPanel.AddSceneRequested += (_, _) => AddScene();
         _sceneEditorPanel.AddDrawingObjectRequested += (_, _) => AddDrawingObject();
+        _sceneEditorPanel.AddSceneInstanceRequested += (_, _) => AddSceneInstanceFromActiveDrawingObject();
         _sceneEditorPanel.SceneSelectionChanged += (_, e) => SelectScene(e.Index);
         _sceneEditorPanel.DrawingObjectSelectionChanged += (_, e) => SelectDrawingObject(e.Index);
+        _sceneEditorPanel.DrawingObjectOpenRequested += (_, e) => OpenDrawingObjectEditor(e.DrawingObjectId);
+        _sceneEditorPanel.SceneSettingsChanged += (_, e) => UpdateSceneSettings(e);
         _playbackSettings.FpsChanged += (_, _) =>
         {
             _playbackAccumulator = 0;
@@ -771,6 +1251,15 @@ internal sealed class MainForm : Form
         };
         _playbackSettings.FrameRangeChanged += (_, _) =>
         {
+            var timelineLastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
+            var clampedEnd = Math.Clamp(_playbackSettings.EndFrame, 0, timelineLastFrame);
+            var clampedStart = Math.Clamp(_playbackSettings.StartFrame, 0, clampedEnd);
+            if (clampedStart != _playbackSettings.StartFrame || clampedEnd != _playbackSettings.EndFrame)
+            {
+                _playbackSettings.SetFrameRange(clampedStart, clampedEnd);
+                return;
+            }
+
             _timeline.StartFrame = _playbackSettings.StartFrame;
             _timeline.EndFrame = _playbackSettings.EndFrame;
             SyncFrameSliderRange();
@@ -778,6 +1267,11 @@ internal sealed class MainForm : Form
         };
         _materialEditor.MaterialChanged += (_, e) =>
         {
+            if (IsSceneCompositionContext()) return;
+            if (_tool == ToolMode.Pencil) _pencilStrokeWidthPoints = e.StrokeWidth;
+            else if (_tool == ToolMode.Brush) _brushStrokeWidthPoints = e.StrokeWidth;
+            else if (IsStandardStrokeTool(_tool)) _standardStrokeWidthPoints = e.StrokeWidth;
+
             _updatingStrokeInput = true;
             try
             {
@@ -788,26 +1282,108 @@ internal sealed class MainForm : Form
                 _updatingStrokeInput = false;
             }
 
+            if (_selectedElements.Count > 0)
+            {
+                ApplyMaterialToSelectedElements(e, VectorUnits.StrokePointsToUnits(e.StrokeWidth));
+                return;
+            }
+
+            if (_selectedObjects.Count > 1)
+            {
+                ApplyMaterialToSelectedObjects(e, VectorUnits.StrokePointsToUnits(e.StrokeWidth));
+                return;
+            }
+
             if (_selectedObject >= 0 && _selectedObject < _scene.ObjectCount)
             {
-                CaptureUndoSnapshot();
                 var strokeUnits = VectorUnits.StrokePointsToUnits(e.StrokeWidth);
+                var selectedKind = _selectedElement.IsValid && _selectedElement.Key.ObjectIndex == _selectedObject
+                    ? _selectedElement.Key.Kind
+                    : DrawingElementKind.None;
+                if (!MaterialChangeAffectsSelection(_selectedObject, selectedKind, e, strokeUnits)) return;
+                CaptureUndoSnapshot();
                 var editedObject = _selectedObject;
-                _scene.Argb[editedObject] = Color.FromArgb((int)Math.Clamp(e.Opacity * 255, 0, 255), e.Fill).ToArgb();
-                _scene.Stroke[editedObject] = strokeUnits;
-                _scene.StrokeArgb[editedObject] = e.Stroke.ToArgb();
-                if (_scene.ShapeKind[editedObject] == ShapeKind.Line)
+                if (selectedKind != DrawingElementKind.None)
                 {
-                    _scene.Height[editedObject] = Math.Max(VectorUnits.FromPixels(3), strokeUnits + VectorUnits.FromPixels(2));
-                    _scene.RebuildGeometryIndex();
+                    var materialized = _scene.DetachElementForMove(_selectedElement, _frame);
+                    if (!materialized.IsValid)
+                    {
+                        if (_undoStack.Count > 0) _undoStack.Pop();
+                        return;
+                    }
+
+                    SetSelection(materialized);
+                    editedObject = materialized.Key.ObjectIndex;
+                }
+
+                var shape = _scene.ShapeKind[editedObject];
+                var alpha = (int)Math.Clamp(e.Opacity * 255, 0, 255);
+                if (selectedKind == DrawingElementKind.Fill)
+                {
+                    _scene.Argb[editedObject] = Color.FromArgb(alpha, e.Fill).ToArgb();
+                    _scene.Stroke[editedObject] = 0;
+                    var beforeMergeCount = _scene.ObjectCount;
+                    var merged = _scene.MergeSameColorFillsAround(editedObject, frame: _frame);
+                    if (_scene.ObjectCount != beforeMergeCount || merged != editedObject) SetSelection(merged);
+                }
+                else if (selectedKind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke)
+                {
+                    var color = Color.FromArgb(alpha, e.Stroke);
+                    _scene.Argb[editedObject] = Color.FromArgb(0, color).ToArgb();
+                    _scene.StrokeArgb[editedObject] = color.ToArgb();
+                    if (IsFreehandShape(shape))
+                    {
+                        _scene.UpdateFreehandStrokeWidth(editedObject, strokeUnits);
+                    }
+                    else
+                    {
+                        _scene.Stroke[editedObject] = strokeUnits;
+                        _scene.Height[editedObject] = Math.Max(VectorUnits.FromPixels(3), strokeUnits + VectorUnits.FromPixels(2));
+                        _scene.RebuildGeometryIndex();
+                    }
+                }
+                else if (_tool == ToolMode.Brush && IsFillShape(shape))
+                {
+                    _scene.Argb[editedObject] = Color.FromArgb(alpha, e.Fill).ToArgb();
+                    _scene.Stroke[editedObject] = 0;
+                    _scene.StrokeArgb[editedObject] = Color.Transparent.ToArgb();
+                    var beforeMergeCount = _scene.ObjectCount;
+                    var merged = _scene.MergeSameColorFillsAround(editedObject, frame: _frame);
+                    if (_scene.ObjectCount != beforeMergeCount || merged != editedObject) SetSelection(merged);
+                }
+                else if (shape == ShapeKind.BrushStroke)
+                {
+                    var color = Color.FromArgb(alpha, e.Fill);
+                    _scene.Argb[editedObject] = color.ToArgb();
+                    _scene.StrokeArgb[editedObject] = color.ToArgb();
+                    _scene.UpdateFreehandStrokeWidth(editedObject, strokeUnits);
+                }
+                else if (shape == ShapeKind.Freeform)
+                {
+                    var color = Color.FromArgb(alpha, e.Stroke);
+                    _scene.Argb[editedObject] = Color.FromArgb(0, color).ToArgb();
+                    _scene.StrokeArgb[editedObject] = color.ToArgb();
+                    _scene.UpdateFreehandStrokeWidth(editedObject, strokeUnits);
                 }
                 else
                 {
-                    var merged = _scene.MergeSameColorFillsAround(editedObject);
-                    if (merged != editedObject) SetSelection(merged);
-                    _hierarchyPanel.RefreshScene();
+                    _scene.Argb[editedObject] = Color.FromArgb(alpha, e.Fill).ToArgb();
+                    _scene.Stroke[editedObject] = strokeUnits;
+                    _scene.StrokeArgb[editedObject] = Color.FromArgb(alpha, e.Stroke).ToArgb();
+                    if (shape == ShapeKind.Line)
+                    {
+                        _scene.Height[editedObject] = Math.Max(VectorUnits.FromPixels(3), strokeUnits + VectorUnits.FromPixels(2));
+                        _scene.RebuildGeometryIndex();
+                    }
+                    else
+                    {
+                        var beforeMergeCount = _scene.ObjectCount;
+                        var merged = _scene.MergeSameColorFillsAround(editedObject, frame: _frame);
+                        if (_scene.ObjectCount != beforeMergeCount || merged != editedObject) SetSelection(merged);
+                    }
                 }
 
+                _hierarchyPanel.RefreshScene();
                 _stage.Invalidate();
             }
         };
@@ -833,16 +1409,13 @@ internal sealed class MainForm : Form
             if (ToolModeForShape(_drawSettings.ShapeKind) is { } tool)
             {
                 _tool = tool;
+                if (IsShapeTool(tool)) _activeShapeTool = tool;
+                else HideShapeToolFlyout();
                 RefreshToolButtons();
             }
         };
 
-        _play.Click += (_, _) =>
-        {
-            _playing = !_playing;
-            if (_playing) _playbackAccumulator = 0;
-            _play.Text = _playing ? "Pause" : "Play";
-        };
+        _play.Click += (_, _) => TogglePlayback();
         _frameSlider.ValueChanged += (_, _) =>
         {
             if (_syncingFrame) return;
@@ -856,18 +1429,35 @@ internal sealed class MainForm : Form
         };
         _stage.MouseWheel += (_, e) =>
         {
+            if (IsScene3DView())
+            {
+                if (IsControlPressed()) _stage.ZoomReferenceCamera(e.Delta > 0 ? 1.12f : 0.89f);
+                else _stage.DollyReferenceCamera(e.Delta);
+                UpdateStatusBar();
+                return;
+            }
+
             _stage.ZoomAt(e.Location, e.Delta > 0 ? 1.12f : 0.89f);
             UpdateStatusBar();
         };
         _stage.MouseDown += StageMouseDown;
+        _stage.MouseDoubleClick += StageMouseDoubleClick;
         _stage.MouseMove += StageMouseMove;
         _stage.MouseUp += StageMouseUp;
+        _stage.MouseCaptureChanged += StageMouseCaptureChanged;
         _stage.DragEnter += StageDragEnter;
         _stage.DragDrop += StageDragDrop;
+        Deactivate += (_, _) => FinishLostPointerCapture();
     }
 
     private void Generate()
     {
+        if (IsSceneCompositionContext())
+        {
+            AppLog.Info("Stress generation is disabled for non-drawable scene compositions.");
+            return;
+        }
+
         AppLog.Info("Generating stress scene");
         Cursor = Cursors.WaitCursor;
         try
@@ -901,33 +1491,36 @@ internal sealed class MainForm : Form
     private void CreateNewProject()
     {
         AppLog.Info("Creating new empty project");
-        _scene.CreateEmpty();
+        _project = VectorProject.CreateEmpty();
+        _sceneEditStage.CreateEmpty();
+        _drawingObjectUnderlayStage.CreateEmpty();
+        _sceneCompositionResult = SceneCompositionResult.Empty;
+        _drawingObjectUnderlayResult = SceneCompositionResult.Empty;
+        _activeSceneIndex = 0;
+        _activeDrawingObjectIndex = 0;
+        _scene = _drawingObjects[0].Scene;
         ResetEditHistory();
-        _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
-        _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
-        SyncFrameSliderRange();
-        SetFrame(0);
-        ClearSelection();
-        RefreshLayers();
-        _hierarchyPanel.BindScene(_scene);
-        _sceneEditorPanel.BindScene(_scene);
-        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
-        _stage.ResetDefaultView();
-        UpdateInspector();
-        UpdateStatusBar();
-        AppLog.Info("New empty project created");
+        BuildDrawingObjectTabs();
+        BindActiveDrawingObjectScene(resetView: true);
+        AppLog.Info("New empty project created with one empty drawing object");
     }
 
     private void ResetEditHistory()
     {
-        _undoStack.Clear();
+        ResetUndoHistory();
         _clipboardObjects.Clear();
+    }
+
+    private void ResetUndoHistory()
+    {
+        _undoStack.Clear();
+        _sceneTimelineUndoStack.Clear();
         _undoCapturedForPointerEdit = false;
     }
 
     private void RefreshLayers()
     {
-        _timeline.Invalidate();
+        _timeline.RefreshTimeline();
     }
 
     private void Tick()
@@ -996,9 +1589,7 @@ internal sealed class MainForm : Form
                 else
                 {
                     next = _playbackSettings.EndFrame;
-                    _playing = false;
-                    _play.Text = "Play";
-                    _playbackAccumulator = 0;
+                    StopPlayback();
                 }
             }
 
@@ -1006,6 +1597,22 @@ internal sealed class MainForm : Form
             _renderRequested = true;
             if (!_playing) break;
         }
+    }
+
+    private void TogglePlayback()
+    {
+        _playing = !_playing;
+        _playbackAccumulator = 0;
+        _play.Text = _playing ? "Pause" : "Play";
+        _timeline.IsPlaying = _playing;
+    }
+
+    private void StopPlayback()
+    {
+        _playing = false;
+        _playbackAccumulator = 0;
+        _play.Text = "Play";
+        _timeline.IsPlaying = false;
     }
 
     private void UpdateStatusBar()
@@ -1017,14 +1624,30 @@ internal sealed class MainForm : Form
 
     private void SetFrame(int frame, bool invalidate = true)
     {
-        var next = Math.Clamp(frame, _playbackSettings.StartFrame, _playbackSettings.EndFrame);
+        var timelineLastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
+        var maximum = Math.Min(_playbackSettings.EndFrame, timelineLastFrame);
+        var minimum = Math.Min(_playbackSettings.StartFrame, maximum);
+        var next = Math.Clamp(frame, minimum, maximum);
+        var frameChanged = next != _frame;
+        if (frameChanged) FinishPointerInteractionForFrameChange();
         _syncingFrame = true;
         try
         {
             _frame = next;
+            if (IsSceneCompositionContext())
+            {
+                RebuildSceneComposition();
+            }
+            else
+            {
+                _scene.EditFrame = next;
+                RebuildDrawingObjectUnderlay();
+            }
             if (_frameSlider.Minimum <= next && next <= _frameSlider.Maximum) _frameSlider.Value = next;
             _timeline.CurrentFrame = next;
             _stage.Frame = next;
+            if (frameChanged && (_selectedElements.Count > 0 || IsSceneCompositionContext())) ClearSelection();
+            ClearInactiveSelection();
         }
         finally
         {
@@ -1036,15 +1659,256 @@ internal sealed class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (!ContainsFocusedEditor(this))
+        var focusedEditor = ContainsFocusedEditor(this);
+        if (!focusedEditor && IsTimelineEditShortcut(keyData) && HandleTimelineShortcut(keyData)) return true;
+        if (!focusedEditor)
         {
+            if (IsScene3DView() && HandleBlender3DShortcut(keyData)) return true;
+            if (keyData == Keys.Escape && _freehandDrawing)
+            {
+                CancelFreehandStroke();
+                FinishPointerInteraction();
+                return true;
+            }
+            if (HandleTimelineShortcut(keyData)) return true;
+            if (keyData == Keys.V)
+            {
+                ActivateTool(ToolMode.Select);
+                return true;
+            }
+
+            if (keyData == Keys.H)
+            {
+                ActivateTool(ToolMode.Hand);
+                return true;
+            }
+            if (keyData == Keys.N && ActivateDrawingShortcut(ToolMode.Line)) return true;
+            if (keyData == Keys.Y && ActivateDrawingShortcut(ToolMode.Pencil)) return true;
+            if (keyData == Keys.B && ActivateDrawingShortcut(ToolMode.Brush)) return true;
+            if (keyData == Keys.K && ActivateDrawingShortcut(ToolMode.Fill)) return true;
+            if (keyData == Keys.OemOpenBrackets && AdjustFreehandWidth(increase: false)) return true;
+            if (keyData == Keys.Oem6 && AdjustFreehandWidth(increase: true)) return true;
+            if (keyData == Keys.Tab && CycleShapeTool(reverse: false)) return true;
+            if (keyData == (Keys.Shift | Keys.Tab) && CycleShapeTool(reverse: true)) return true;
             if (keyData == (Keys.Control | Keys.Z) && UndoLastEdit()) return true;
             if (keyData == (Keys.Control | Keys.C) && CopySelectedObjects()) return true;
             if (keyData == (Keys.Control | Keys.V) && PasteCopiedObjects()) return true;
         }
 
-        if (keyData == Keys.Delete && !ContainsFocusedEditor(this) && DeleteSelectedObject()) return true;
+        if (keyData == Keys.Delete && !focusedEditor && DeleteSelectedObject()) return true;
         return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private static bool IsTimelineEditShortcut(Keys keyData)
+    {
+        return keyData is Keys.F5
+            or (Keys.Shift | Keys.F5)
+            or Keys.F6
+            or (Keys.Shift | Keys.F6)
+            or Keys.F7;
+    }
+
+    private bool HandleTimelineShortcut(Keys keyData)
+    {
+        switch (keyData)
+        {
+            case Keys.Enter:
+                TogglePlayback();
+                return true;
+            case Keys.Oemcomma:
+                StopPlayback();
+                SetFrame(_frame - 1);
+                return true;
+            case Keys.OemPeriod:
+                StopPlayback();
+                SetFrame(_frame + 1);
+                return true;
+            case Keys.Shift | Keys.Oemcomma:
+                StopPlayback();
+                SetFrame(_playbackSettings.StartFrame);
+                return true;
+            case Keys.Shift | Keys.OemPeriod:
+                StopPlayback();
+                SetFrame(_playbackSettings.EndFrame);
+                return true;
+            case Keys.F5:
+                return ExecuteTimelineEdit(TimelineEditKind.InsertFrame);
+            case Keys.Shift | Keys.F5:
+                return ExecuteTimelineEdit(TimelineEditKind.RemoveFrame);
+            case Keys.F6:
+                return ExecuteTimelineEdit(TimelineEditKind.InsertKeyframe);
+            case Keys.Shift | Keys.F6:
+                return ExecuteTimelineEdit(TimelineEditKind.ClearKeyframe);
+            case Keys.F7:
+                return ExecuteTimelineEdit(TimelineEditKind.InsertBlankKeyframe);
+            default:
+                return false;
+        }
+    }
+
+    private bool ExecuteTimelineEdit(TimelineEditKind edit)
+    {
+        var context = _timeline.Context;
+        context.SynchronizeTimelineTracks();
+        var previousLastFrame = Math.Max(0, context.FrameCount - 1);
+        var trackId = _timeline.ActiveTrackId;
+        if (string.IsNullOrWhiteSpace(trackId)) return false;
+
+        var timeline = context.Timeline;
+        var track = timeline.FindTrack(trackId);
+        if (track is null) return false;
+
+        VectorSceneSnapshot? vectorSnapshot = null;
+        AnimationTimelineSnapshot? sceneSnapshot = null;
+        SceneDefinition? sceneDefinition = null;
+        var drawingScene = context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            _ => null
+        };
+        if (drawingScene is not null)
+        {
+            vectorSnapshot = drawingScene.CreateSnapshot();
+        }
+        else if (context is SceneDefinition scene)
+        {
+            sceneDefinition = scene;
+            sceneSnapshot = timeline.CreateSnapshot();
+        }
+
+        bool changed;
+        var layer = drawingScene is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
+        if (drawingScene is not null && layer >= 0)
+        {
+            changed = edit switch
+            {
+                TimelineEditKind.InsertFrame => drawingScene.InsertTimelineFrame(layer, _frame),
+                TimelineEditKind.RemoveFrame => drawingScene.RemoveTimelineFrame(layer, _frame),
+                TimelineEditKind.InsertKeyframe => drawingScene.InsertTimelineKeyframe(layer, _frame),
+                TimelineEditKind.InsertBlankKeyframe => drawingScene.InsertTimelineBlankKeyframe(layer, _frame),
+                TimelineEditKind.ClearKeyframe => drawingScene.ClearTimelineKeyframe(layer, _frame),
+                _ => false
+            };
+        }
+        else
+        {
+            changed = edit switch
+            {
+                TimelineEditKind.InsertFrame => timeline.InsertFrame(trackId, _frame),
+                TimelineEditKind.RemoveFrame => timeline.RemoveFrame(trackId, _frame),
+                TimelineEditKind.InsertKeyframe => timeline.InsertKeyframe(trackId, _frame),
+                TimelineEditKind.InsertBlankKeyframe => timeline.InsertBlankKeyframe(trackId, _frame),
+                TimelineEditKind.ClearKeyframe => timeline.ClearKeyframe(trackId, _frame),
+                _ => false
+            };
+        }
+
+        if (!changed) return false;
+        if (vectorSnapshot is not null) PushUndoSnapshot(vectorSnapshot);
+        if (sceneDefinition is not null && sceneSnapshot is not null)
+        {
+            PushSceneTimelineUndo(sceneDefinition, sceneSnapshot);
+        }
+
+        StopPlayback();
+        ClearSelection();
+        _timeline.RefreshTimeline();
+        ApplyBoundTimelineDuration(previousLastFrame);
+        if (drawingScene is not null)
+        {
+            _hierarchyPanel.RefreshScene();
+            if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
+            _stage.Invalidate();
+        }
+        else
+        {
+            RebuildSceneComposition();
+        }
+
+        UpdateInspector();
+        return true;
+    }
+
+    private enum TimelineEditKind
+    {
+        InsertFrame,
+        RemoveFrame,
+        InsertKeyframe,
+        InsertBlankKeyframe,
+        ClearKeyframe
+    }
+
+    private bool ActivateDrawingShortcut(ToolMode tool)
+    {
+        if (DrawingToolsBlocked() && IsBasicDrawingOnlyTool(tool)) return false;
+        ActivateTool(tool);
+        return true;
+    }
+
+    private bool AdjustFreehandWidth(bool increase)
+    {
+        if (!IsFreehandTool(_tool)) return false;
+        var current = Math.Max(0.5f, _materialEditor.StrokeWidth);
+        var next = increase ? current * 1.25f : current / 1.25f;
+        _materialEditor.StrokeWidth = Math.Clamp(next, 0.5f, 32f);
+        return true;
+    }
+
+    private bool HandleBlender3DShortcut(Keys keyData)
+    {
+        var key = keyData & Keys.KeyCode;
+        var control = (keyData & Keys.Control) == Keys.Control;
+        switch (key)
+        {
+            case Keys.NumPad1:
+                _stage.SetReferenceCameraOrientation(control ? MathF.PI : 0, 0);
+                UpdateStatusBar();
+                return true;
+            case Keys.NumPad3:
+                _stage.SetReferenceCameraOrientation(control ? -MathF.PI / 2f : MathF.PI / 2f, 0);
+                UpdateStatusBar();
+                return true;
+            case Keys.NumPad7:
+                _stage.SetReferenceCameraOrientation(0, control ? -1.5f : 1.5f);
+                UpdateStatusBar();
+                return true;
+            case Keys.NumPad5:
+                ToggleActiveSceneProjection();
+                return true;
+            case Keys.Home:
+                _stage.ResetReferenceCameraView();
+                UpdateStatusBar();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void ToggleActiveSceneProjection()
+    {
+        var scene = ActiveScene();
+        if (scene is null) return;
+        scene.Camera.Projection = scene.Camera.Projection == CameraProjection.Perspective
+            ? CameraProjection.Orthographic
+            : CameraProjection.Perspective;
+        _stage.ConfigureReferenceView(scene);
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        UpdateStatusBar();
+    }
+
+    private bool CycleShapeTool(bool reverse)
+    {
+        if (IsSceneCompositionContext()) return false;
+        var index = Array.IndexOf(_shapeTools, _activeShapeTool);
+        if (index < 0) index = 0;
+        var next = reverse
+            ? (index - 1 + _shapeTools.Length) % _shapeTools.Length
+            : (index + 1) % _shapeTools.Length;
+        ActivateTool(_shapeTools[next]);
+        ShowShapeToolFlyout();
+        ScheduleShapeToolFlyoutHideAfter(2000);
+        return true;
     }
 
     private void SyncFrameSliderRange()
@@ -1060,6 +1924,25 @@ internal sealed class MainForm : Form
         finally
         {
             _syncingFrame = false;
+        }
+    }
+
+    private void ApplyBoundTimelineDuration(int previousLastFrame = -1)
+    {
+        var lastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
+        var followTimelineEnd = previousLastFrame >= 0 && _playbackSettings.EndFrame >= previousLastFrame;
+        var endFrame = followTimelineEnd
+            ? lastFrame
+            : Math.Clamp(_playbackSettings.EndFrame, 0, lastFrame);
+        var startFrame = Math.Clamp(_playbackSettings.StartFrame, 0, endFrame);
+        if (startFrame != _playbackSettings.StartFrame || endFrame != _playbackSettings.EndFrame)
+        {
+            _playbackSettings.SetFrameRange(startFrame, endFrame);
+        }
+        else
+        {
+            SyncFrameSliderRange();
+            SetFrame(Math.Clamp(_frame, startFrame, endFrame));
         }
     }
 
@@ -1079,6 +1962,17 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void PushSceneTimelineUndo(SceneDefinition scene, AnimationTimelineSnapshot snapshot)
+    {
+        _sceneTimelineUndoStack.Push(new SceneTimelineUndoEntry(scene, snapshot));
+        while (_sceneTimelineUndoStack.Count > MaxUndoSnapshots)
+        {
+            var snapshots = _sceneTimelineUndoStack.Take(MaxUndoSnapshots).Reverse().ToArray();
+            _sceneTimelineUndoStack.Clear();
+            foreach (var item in snapshots) _sceneTimelineUndoStack.Push(item);
+        }
+    }
+
     private void CapturePointerUndoSnapshot()
     {
         if (_undoCapturedForPointerEdit) return;
@@ -1088,14 +1982,37 @@ internal sealed class MainForm : Form
 
     private bool UndoLastEdit()
     {
+        if (IsSceneCompositionContext()
+            && _timeline.Context is SceneDefinition activeScene
+            && _sceneTimelineUndoStack.TryPeek(out var timelineUndo)
+            && ReferenceEquals(timelineUndo.Scene, activeScene))
+        {
+            var previousLastFrame = Math.Max(0, activeScene.FrameCount - 1);
+            _sceneTimelineUndoStack.Pop();
+            activeScene.Timeline.RestoreSnapshot(timelineUndo.Snapshot);
+            activeScene.SynchronizeTimelineTracks();
+            _timeline.RefreshTimeline();
+            ApplyBoundTimelineDuration(previousLastFrame);
+            RebuildSceneComposition();
+            ClearSelection();
+            UpdateInspector();
+            return true;
+        }
+
+        if (IsSceneCompositionContext()) return false;
         if (_undoStack.Count == 0) return false;
+        var previousDrawingLastFrame = Math.Max(0, _scene.FrameCount - 1);
         _scene.RestoreSnapshot(_undoStack.Pop());
+        _scene.EditFrame = _frame;
         ClearSelection();
         _geometryDirty = false;
+        CancelFreehandStroke();
         _stage.ClearDrawingPreview();
         _stage.ClearMarquee();
         _hierarchyPanel.RefreshScene();
-        RefreshLayers();
+        _timeline.RefreshTimeline();
+        ApplyBoundTimelineDuration(previousDrawingLastFrame);
+        RebuildDrawingObjectUnderlay();
         UpdateInspector();
         _stage.Invalidate();
         return true;
@@ -1103,34 +2020,71 @@ internal sealed class MainForm : Form
 
     private bool CopySelectedObjects()
     {
-        var targets = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
-        if (targets.Length == 0 && _selectedObject >= 0 && _selectedObject < _scene.ObjectCount) targets = new[] { _selectedObject };
+        if (IsSceneCompositionContext()) return false;
+        var targets = _selectedObjects
+            .Where(index => index >= 0 && index < _scene.ObjectCount && _scene.IsObjectActive(index, _frame))
+            .ToArray();
+        if (targets.Length == 0
+            && _selectedObject >= 0
+            && _selectedObject < _scene.ObjectCount
+            && _scene.IsObjectActive(_selectedObject, _frame))
+        {
+            targets = new[] { _selectedObject };
+        }
         if (targets.Length == 0) return false;
 
-        _clipboardObjects.Clear();
-        foreach (var index in targets)
+        VectorSceneSnapshot? restoreAfterCopy = null;
+        if (_selectedElements.Count > 0)
         {
-            PointF[][]? pathContours = null;
-            if (_scene.ShapeKind[index] == ShapeKind.Path && _scene.TryGetPathWorldContours(index, out var contours)) pathContours = contours;
-            _clipboardObjects.Add(new ClipboardObject(
-                _scene.ObjectLayer[index],
-                new PointF(_scene.X[index], _scene.Y[index]),
-                new SizeF(_scene.Width[index], _scene.Height[index]),
-                _scene.Angle[index],
-                _scene.Stroke[index],
-                Color.FromArgb(_scene.Argb[index]),
-                Color.FromArgb(_scene.StrokeArgb[index]),
-                _scene.AtomCount[index],
-                _scene.ShapeKind[index],
-                new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]),
-                pathContours));
+            restoreAfterCopy = _scene.CreateSnapshot();
+            var materialized = _scene.MaterializeSelectedParts(_selectedElements.Select(hit => hit.Key).ToArray(), _frame);
+            if (!materialized.Success)
+            {
+                _scene.RestoreSnapshot(restoreAfterCopy);
+                return false;
+            }
+
+            targets = materialized.Parts.Select(part => part.Result.ObjectIndex).Distinct().ToArray();
         }
 
-        return _clipboardObjects.Count > 0;
+        try
+        {
+            _clipboardObjects.Clear();
+            foreach (var index in targets)
+            {
+                PointF[][]? pathContours = null;
+                if (_scene.ShapeKind[index] == ShapeKind.Path && _scene.TryGetPathWorldContours(index, out var contours)) pathContours = contours;
+                else if (IsFreehandShape(_scene.ShapeKind[index]) && _scene.TryGetFreehandWorldPoints(index, out var freehandPoints)) pathContours = new[] { freehandPoints };
+                _clipboardObjects.Add(new ClipboardObject(
+                    _scene.ObjectLayer[index],
+                    new PointF(_scene.X[index], _scene.Y[index]),
+                    new SizeF(_scene.Width[index], _scene.Height[index]),
+                    _scene.Angle[index],
+                    _scene.Stroke[index],
+                    Color.FromArgb(_scene.Argb[index]),
+                    Color.FromArgb(_scene.StrokeArgb[index]),
+                    _scene.AtomCount[index],
+                    _scene.ShapeKind[index],
+                    new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]),
+                    pathContours));
+            }
+
+            return _clipboardObjects.Count > 0;
+        }
+        finally
+        {
+            if (restoreAfterCopy is not null)
+            {
+                _scene.RestoreSnapshot(restoreAfterCopy);
+                SyncSelectionToStage();
+                _stage.Invalidate();
+            }
+        }
     }
 
     private bool PasteCopiedObjects()
     {
+        if (DrawingToolsBlocked()) return false;
         if (_clipboardObjects.Count == 0) return false;
         CaptureUndoSnapshot();
         var pasted = new List<int>(_clipboardObjects.Count);
@@ -1145,6 +2099,14 @@ internal sealed class MainForm : Form
                     .Select(contour => contour.Select(point => new PointF(point.X + offset.X, point.Y + offset.Y)).ToArray())
                     .ToArray();
                 index = _scene.AddPathObjectContours(layer, shifted, item.Stroke, item.FillColor, item.StrokeColor, item.Atoms);
+            }
+            else if (IsFreehandShape(item.Shape) && item.PathWorldContours is { Length: > 0 } freehandContours)
+            {
+                var shifted = freehandContours[0]
+                    .Select(point => new PointF(point.X + offset.X, point.Y + offset.Y))
+                    .ToArray();
+                var color = item.Shape == ShapeKind.BrushStroke ? item.FillColor : item.StrokeColor;
+                index = _scene.AddFreehandStroke(layer, shifted, item.Stroke, color, item.Shape == ShapeKind.BrushStroke, item.Atoms);
             }
             else
             {
@@ -1161,22 +2123,8 @@ internal sealed class MainForm : Form
         }
 
         if (pasted.Count == 0) return false;
-        var pastedMergeSeed = pasted.LastOrDefault(index => (uint)index < _scene.ObjectCount && _scene.ShapeKind[index] != ShapeKind.Line, -1);
-        if (pastedMergeSeed >= 0)
-        {
-            var beforeMergeCount = _scene.ObjectCount;
-            var merged = _scene.MergeSameColorFillsAround(pastedMergeSeed);
-            if (_scene.ObjectCount != beforeMergeCount || merged != pastedMergeSeed)
-            {
-                SetSelection(merged);
-                _hierarchyPanel.RefreshScene();
-                UpdateInspector();
-                _stage.Invalidate();
-                return true;
-            }
-        }
-
         SetSelection(pasted);
+        MergeSelectedFillsAfterGeometryEdit();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
@@ -1185,20 +2133,41 @@ internal sealed class MainForm : Form
 
     private void StageMouseDown(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Middle)
+        if (IsScene3DView() && MouseButtonDown(e, MouseButtons.Right) && IsAltPressed())
+        {
+            BeginGlobalViewDrag(e, referencePan: true);
+            return;
+        }
+
+        if (MouseButtonDown(e, MouseButtons.Middle))
         {
             BeginGlobalViewDrag(e);
             return;
         }
+
+        if (IsSceneCompositionContext())
+        {
+            return;
+        }
+
+        if (IsNestedInstanceTimelineTrackActive() && IsBasicDrawingOnlyTool(_tool)) return;
 
         _stage.Capture = true;
         _lastMouse = e.Location;
         _startScreen = e.Location;
         _startWorld = _stage.ScreenToWorld(e.Location);
         _pointerHitWasAlreadySelected = false;
+        _selectionWasEmptyOnPointerDown = _selectedObjects.Count == 0;
+        _forceMarqueeOnPointerDown = e.Button == MouseButtons.Left && (ModifierKeys & Keys.Control) == Keys.Control;
+        _pendingClickSelection = DrawingElementHit.None;
         if (_tool == ToolMode.Select)
         {
-            if (_selectedObject >= 0)
+            if (_forceMarqueeOnPointerDown)
+            {
+                return;
+            }
+
+            if (_selectedObject >= 0 && !_selectedElement.IsValid)
             {
                 _activeHandle = _stage.HitTestHandle(e.Location, _selectedObject);
                 if (_activeHandle != EditHandleKind.None)
@@ -1211,37 +2180,41 @@ internal sealed class MainForm : Form
             }
 
             if (_startWorld is not { } startWorld) return;
-            if (TryBeginDragSelectedFill(startWorld))
-            {
-                UpdateInspector();
-                _stage.Invalidate();
-                return;
-            }
-
             var hit = _scene.HitTestElement(startWorld, _frame, SelectionToleranceWorld());
             if (hit.IsValid)
             {
-                var hitObject = hit.Key.ObjectIndex;
-                var hitObjectWasAlreadySelected = _selectedObjects.Contains(hitObject);
-                _pointerHitWasAlreadySelected = hitObjectWasAlreadySelected
-                    && (!_selectedElement.IsValid || _selectedElement.Key == hit.Key || hit.Key.Kind == DrawingElementKind.Fill);
-                if (!_selectedObjects.Contains(hitObject)) SetSelection(hit);
-                else
+                if (_selectionWasEmptyOnPointerDown && e.Button == MouseButtons.Left)
                 {
-                    _selectedObject = hitObject;
-                    _selectedElement = hit;
-                    _stage.SetSelection(_selectedObjects, _selectedObject);
-                    _stage.SetSelectedElement(_selectedElement);
+                    _pendingClickSelection = hit;
+                    UpdateInspector();
+                    _stage.Invalidate();
+                    return;
                 }
 
-                CaptureEditStart(hitObject);
+                var hitObject = hit.Key.ObjectIndex;
+                var hitPartWasAlreadySelected = _selectedElements.Any(selected => selected.Key == hit.Key);
+                var hitWholeObjectWasAlreadySelected = _selectedElements.Count == 0 && _selectedObjects.Contains(hitObject);
+                _pointerHitWasAlreadySelected = hitPartWasAlreadySelected || hitWholeObjectWasAlreadySelected;
+                if (hitPartWasAlreadySelected)
+                {
+                    _selectedObject = hitObject;
+                    _selectedElement = _selectedElements.First(selected => selected.Key == hit.Key);
+                    SyncSelectionToStage();
+                }
+                else if (hitWholeObjectWasAlreadySelected)
+                {
+                    _selectedObject = hitObject;
+                    _selectedElement = DrawingElementHit.None;
+                    SyncSelectionToStage();
+                }
+                else SetSelection(hit);
+
+                CaptureEditStart(_selectedObject);
             }
             else
             {
                 ClearSelection();
-                _marqueeSelecting = true;
-                _marqueeStart = e.Location;
-                _stage.SetMarquee(e.Location, e.Location);
+                if (e.Button == MouseButtons.Left) BeginMarqueeFromPendingSelection(e.Location);
             }
 
             UpdateInspector();
@@ -1250,49 +2223,131 @@ internal sealed class MainForm : Form
         else if (_tool == ToolMode.Fill)
         {
             var hit = _scene.HitTestElement(_startWorld.Value, _frame, SelectionToleranceWorld());
-            if (hit.IsValid)
+            if (hit.IsValid && hit.Key.Kind == DrawingElementKind.Fill && IsFillShape(_scene.ShapeKind[hit.Key.ObjectIndex]))
             {
-                var hitObject = hit.Key.ObjectIndex;
-                CaptureUndoSnapshot();
-                _scene.Argb[hitObject] = ActiveColor().ToArgb();
-                var merged = _scene.MergeSameColorFillsAround(hitObject);
-                if (merged != hitObject) SetSelection(merged);
-                else SetSelection(hit);
+                var color = ActiveColor();
+                if (_scene.Argb[hit.Key.ObjectIndex] == color.ToArgb()) return;
+                var snapshot = _scene.CreateSnapshot();
+                var materialized = hit.Key.Kind == DrawingElementKind.Fill
+                    ? _scene.DetachElementForMove(hit, _frame)
+                    : hit;
+                if (!materialized.IsValid)
+                {
+                    _scene.RestoreSnapshot(snapshot);
+                    return;
+                }
+
+                var hitObject = materialized.Key.ObjectIndex;
+                _scene.Argb[hitObject] = color.ToArgb();
+                var beforeMergeCount = _scene.ObjectCount;
+                var merged = _scene.MergeSameColorFillsAround(hitObject, frame: _frame);
+                if (_scene.ObjectCount != beforeMergeCount || merged != hitObject) SetSelection(merged);
+                else SetSelection(materialized);
+                PushUndoSnapshot(snapshot);
                 _hierarchyPanel.RefreshScene();
                 UpdateInspector();
                 _stage.Invalidate();
             }
         }
+        else if (IsFreehandTool(_tool) && e.Button == MouseButtons.Left && _startWorld is { } freehandStart)
+        {
+            BeginFreehandStroke(e.Location, freehandStart);
+        }
     }
 
-    private bool TryBeginDragSelectedFill(PointF world)
+    private void StageMouseDoubleClick(object? sender, MouseEventArgs e)
     {
-        if (_selectedObjects.Count == 0) return false;
-
-        for (var i = _selectedObjects.Count - 1; i >= 0; i--)
+        if (e.Button != MouseButtons.Left
+            || _forceMarqueeOnPointerDown
+            || IsScene3DView())
         {
-            var index = _selectedObjects[i];
-            if ((uint)index >= _scene.ObjectCount) continue;
-            if (!_scene.FillContainsPoint(index, world)) continue;
-
-            _selectedObject = index;
-            _selectedElement = DrawingElementHit.None;
-            _pointerHitWasAlreadySelected = true;
-            _stage.SetSelection(_selectedObjects, _selectedObject);
-            _stage.SetSelectedElement(_selectedElement);
-            CaptureEditStart(index);
-            return true;
+            return;
         }
 
-        return false;
+        var world = _stage.ScreenToWorld(e.Location);
+        var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+        if (IsSceneCompositionContext())
+        {
+            if (hit.IsValid && _sceneCompositionResult.TryGetOwner(hit.Key.ObjectIndex, out var owner))
+            {
+                OpenDrawingObjectEditor(owner.DrawingObjectId);
+            }
+
+            return;
+        }
+
+        if (!hit.IsValid && _stage.UnderlayScene is { } underlay)
+        {
+            var underlayHit = underlay.HitTestElement(world, 0, SelectionToleranceWorld());
+            if (underlayHit.IsValid
+                && _drawingObjectUnderlayResult.TryGetOwner(underlayHit.Key.ObjectIndex, out var owner)
+                && OpenDrawingObjectEditor(owner.DrawingObjectId))
+            {
+                return;
+            }
+        }
+
+        if (_tool != ToolMode.Select) return;
+        if (!hit.IsValid || hit.Key.Kind is not (DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke)) return;
+
+        var connected = _scene.GetConnectedStrokeElements(hit, _frame);
+        if (connected.Length == 0) return;
+
+        _pendingClickSelection = DrawingElementHit.None;
+        _marqueeSelecting = false;
+        _marqueeStart = null;
+        _stage.ClearMarquee();
+        SetSelection(connected, hit);
+        _pointerHitWasAlreadySelected = true;
+        CaptureEditStart(_selectedObject);
+        UpdateInspector();
+        _stage.Invalidate();
     }
 
     private void StageMouseMove(object? sender, MouseEventArgs e)
     {
-        if (_lastMouse is null) return;
+        if (_lastMouse is null)
+        {
+            TryBegin3DViewDragFromMove(e);
+            return;
+        }
+
         var dx = e.X - _lastMouse.Value.X;
         var dy = e.Y - _lastMouse.Value.Y;
         _lastMouse = e.Location;
+
+        if (TryPromote3DViewDragFromMove(e))
+        {
+            if (_viewReferencePanning)
+            {
+                _stage.PanReferenceCamera(dx, dy);
+            }
+            else if (_viewReferenceZooming)
+            {
+                _stage.DollyReferenceCameraByPixels(dy);
+            }
+            else if (_viewOrbiting)
+            {
+                _stage.RotateReferenceCamera(dx, dy);
+            }
+
+            UpdateStatusBar();
+            return;
+        }
+
+        if (_viewReferencePanning)
+        {
+            _stage.PanReferenceCamera(dx, dy);
+            UpdateStatusBar();
+            return;
+        }
+
+        if (_viewReferenceZooming)
+        {
+            _stage.DollyReferenceCameraByPixels(dy);
+            UpdateStatusBar();
+            return;
+        }
 
         if (_viewPanning)
         {
@@ -1309,6 +2364,13 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_viewOrbiting)
+        {
+            _stage.RotateReferenceCamera(dx, dy);
+            UpdateStatusBar();
+            return;
+        }
+
         if (_tool == ToolMode.Hand)
         {
             _stage.Pan(dx, dy);
@@ -1318,55 +2380,33 @@ internal sealed class MainForm : Form
         {
             _stage.SetMarquee(_marqueeStart.Value, e.Location);
         }
+        else if (_tool == ToolMode.Select && _pendingClickSelection.IsValid && e.Button == MouseButtons.Left)
+        {
+            if (PointerDragExceeded(e.Location))
+            {
+                var hit = _pendingClickSelection;
+                _pendingClickSelection = DrawingElementHit.None;
+                SetSelection(hit);
+                _pointerHitWasAlreadySelected = true;
+                CaptureEditStart(hit.Key.ObjectIndex);
+                MoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
+            }
+        }
+        else if (_tool == ToolMode.Select && _forceMarqueeOnPointerDown && e.Button == MouseButtons.Left)
+        {
+            if (PointerDragExceeded(e.Location))
+            {
+                BeginMarqueeFromPendingSelection(e.Location);
+            }
+        }
         else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
         {
-            if (ShouldStartMarqueeFromPendingFillDrag(e.Location))
-            {
-                BeginMarqueeFromSelectedFill(e.Location);
-                return;
-            }
-
-            var world = _stage.ScreenToWorld(e.Location);
-            CapturePointerUndoSnapshot();
-            if (_activeHandle != EditHandleKind.None)
-            {
-                ApplyHandleDrag(world);
-            }
-            else
-            {
-                EnsureSelectedElementDetachedForMove();
-                var dxWorld = world.X - _startWorld.Value.X;
-                var dyWorld = world.Y - _startWorld.Value.Y;
-                if (_selectedMoveStarts.Count > 1)
-                {
-                    foreach (var item in _selectedMoveStarts)
-                    {
-                        var index = item.Key;
-                        if ((uint)index >= _scene.ObjectCount) continue;
-                        _scene.X[index] = VectorUnits.Quantize(item.Value.X + dxWorld);
-                        _scene.Y[index] = VectorUnits.Quantize(item.Value.Y + dyWorld);
-                        if (_selectedCurveStarts.TryGetValue(index, out var curveStart))
-                        {
-                            _scene.CurveControlX[index] = VectorUnits.Quantize(curveStart.X + dxWorld);
-                            _scene.CurveControlY[index] = VectorUnits.Quantize(curveStart.Y + dyWorld);
-                        }
-                    }
-                }
-                else
-                {
-                    _scene.X[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.X + dxWorld);
-                    _scene.Y[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.Y + dyWorld);
-                    if (_curveControlStart is not null)
-                    {
-                        _scene.CurveControlX[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.X + dxWorld);
-                        _scene.CurveControlY[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.Y + dyWorld);
-                    }
-                }
-            }
-
-            _geometryDirty = true;
-            _stage.Invalidate();
-            UpdateInspector();
+            if (!PointerDragExceeded(e.Location)) return;
+            MoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
+        }
+        else if (IsFreehandTool(_tool) && _freehandDrawing && e.Button == MouseButtons.Left)
+        {
+            AppendFreehandSample(e.Location);
         }
         else if (IsDrawingTool(_tool) && _startWorld is not null && e.Button == MouseButtons.Left)
         {
@@ -1374,34 +2414,130 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void EnsureSelectedElementDetachedForMove()
+    private void MoveSelectedFromPointer(PointF world)
     {
-        if (_detachedSelectionForMove) return;
-        _detachedSelectionForMove = true;
-        if (!_selectedElement.IsValid || _selectedElement.Key.ObjectIndex != _selectedObject) return;
-        var detached = _scene.DetachElementForMove(_selectedElement, _frame);
-        if (!detached.IsValid) return;
-        if (detached.Distance >= 0 && detached.Key.ObjectIndex == _selectedObject && detached.Key.Kind == _selectedElement.Key.Kind && detached.Key.PartIndex == _selectedElement.Key.PartIndex) return;
+        if (_selectedObject < 0 || _startWorld is null || _selectedStart is null) return;
+        CapturePointerUndoSnapshot();
+        if (_activeHandle != EditHandleKind.None)
+        {
+            ApplyHandleDrag(world);
+        }
+        else
+        {
+            if (!EnsureSelectedElementDetachedForMove()) return;
+            var dxWorld = world.X - _startWorld.Value.X;
+            var dyWorld = world.Y - _startWorld.Value.Y;
+            if (_selectedMoveStarts.Count > 1)
+            {
+                foreach (var item in _selectedMoveStarts)
+                {
+                    var index = item.Key;
+                    if ((uint)index >= _scene.ObjectCount) continue;
+                    _scene.X[index] = VectorUnits.Quantize(item.Value.X + dxWorld);
+                    _scene.Y[index] = VectorUnits.Quantize(item.Value.Y + dyWorld);
+                    if (_selectedCurveStarts.TryGetValue(index, out var curveStart))
+                    {
+                        _scene.CurveControlX[index] = VectorUnits.Quantize(curveStart.X + dxWorld);
+                        _scene.CurveControlY[index] = VectorUnits.Quantize(curveStart.Y + dyWorld);
+                    }
+                }
+            }
+            else
+            {
+                _scene.X[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.X + dxWorld);
+                _scene.Y[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.Y + dyWorld);
+                if (_curveControlStart is not null)
+                {
+                    _scene.CurveControlX[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.X + dxWorld);
+                    _scene.CurveControlY[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.Y + dyWorld);
+                }
+            }
+        }
 
-        SetSelection(detached);
-        CaptureEditStart(detached.Key.ObjectIndex);
         _geometryDirty = true;
-        _hierarchyPanel.RefreshScene();
+        _stage.Invalidate();
         UpdateInspector();
     }
 
-    private bool ShouldStartMarqueeFromPendingFillDrag(Point current)
+    private bool TryBegin3DViewDragFromMove(MouseEventArgs e)
     {
-        if (_pointerHitWasAlreadySelected) return false;
-        if (!_selectedElement.IsValid || _selectedElement.Key.Kind != DrawingElementKind.Fill) return false;
+        if (!IsScene3DView()) return false;
+        if (MouseButtonDown(e, MouseButtons.Middle))
+        {
+            BeginGlobalViewDrag(e);
+            return true;
+        }
+
+        if (MouseButtonDown(e, MouseButtons.Right) && IsAltPressed())
+        {
+            BeginGlobalViewDrag(e, referencePan: true);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryPromote3DViewDragFromMove(MouseEventArgs e)
+    {
+        if (!IsScene3DView()) return false;
+        if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming) return false;
+        if (MouseButtonDown(e, MouseButtons.Middle))
+        {
+            BeginGlobalViewDrag(e);
+            return true;
+        }
+
+        if (MouseButtonDown(e, MouseButtons.Right) && IsAltPressed())
+        {
+            BeginGlobalViewDrag(e, referencePan: true);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool EnsureSelectedElementDetachedForMove()
+    {
+        if (_detachedSelectionForMove) return _selectedElements.Count == 0;
+        _detachedSelectionForMove = true;
+        if (_selectedElements.Count == 0) return true;
+        var materialized = _scene.MaterializeSelectedParts(_selectedElements.Select(hit => hit.Key).ToArray(), _frame);
+        if (!materialized.Success || materialized.Parts.Length == 0)
+        {
+            if (_undoCapturedForPointerEdit && _undoStack.Count > 0) _undoStack.Pop();
+            _undoCapturedForPointerEdit = false;
+            return false;
+        }
+
+        var primaryPart = materialized.Parts.FirstOrDefault(part => part.Source == _selectedElement.Key);
+        var primaryObject = primaryPart.Source.IsValid
+            ? primaryPart.Result.ObjectIndex
+            : materialized.Parts[^1].Result.ObjectIndex;
+        var selectedObjects = materialized.Parts
+            .Select(part => part.Result.ObjectIndex)
+            .Distinct()
+            .Where(index => index != primaryObject)
+            .Append(primaryObject)
+            .ToArray();
+        SetSelection(selectedObjects);
+        CaptureEditStart(_selectedObject);
+        _geometryDirty |= materialized.Changed;
+        if (materialized.Changed) _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        return true;
+    }
+
+    private bool PointerDragExceeded(Point current)
+    {
         if (_startScreen is not { } start) return false;
         return Math.Abs(current.X - start.X) + Math.Abs(current.Y - start.Y) > 6;
     }
 
-    private void BeginMarqueeFromSelectedFill(Point current)
+    private void BeginMarqueeFromPendingSelection(Point current)
     {
         _marqueeSelecting = true;
         _marqueeStart = _startScreen ?? current;
+        _pendingClickSelection = DrawingElementHit.None;
         _selectedStart = null;
         _curveControlStart = null;
         _resizeStartCenter = null;
@@ -1415,7 +2551,7 @@ internal sealed class MainForm : Form
 
     private void StageMouseUp(object? sender, MouseEventArgs e)
     {
-        if (_viewPanning || _viewZooming)
+        if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming)
         {
             EndGlobalViewDrag();
             return;
@@ -1429,7 +2565,22 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (IsDrawingTool(_tool) && _startWorld is not null && _startScreen is not null)
+        if (_tool == ToolMode.Select && _pendingClickSelection.IsValid)
+        {
+            SetSelection(_pendingClickSelection);
+            UpdateInspector();
+            _stage.Invalidate();
+        }
+
+        if (_freehandDrawing)
+        {
+            AppendFreehandSample(e.Location, force: true);
+            CommitFreehandStroke();
+            FinishPointerInteraction();
+            return;
+        }
+
+        if (IsDrawingTool(_tool) && !IsFreehandTool(_tool) && _startWorld is not null && _startScreen is not null)
         {
             var dx = e.X - _startScreen.Value.X;
             var dy = e.Y - _startScreen.Value.Y;
@@ -1438,6 +2589,51 @@ internal sealed class MainForm : Form
 
         _stage.ClearDrawingPreview();
         FinishPointerInteraction();
+    }
+
+    private void StageMouseCaptureChanged(object? sender, EventArgs e)
+    {
+        if (_stage.Capture) return;
+        FinishLostPointerCapture();
+    }
+
+    private void FinishLostPointerCapture()
+    {
+        if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming)
+        {
+            EndGlobalViewDrag();
+            return;
+        }
+
+        if (_lastMouse is null && !_freehandDrawing && !_marqueeSelecting) return;
+        CancelFreehandStroke();
+        _marqueeSelecting = false;
+        _marqueeStart = null;
+        _stage.ClearDrawingPreview();
+        _stage.ClearMarquee();
+        FinishPointerInteraction();
+        _stage.Invalidate();
+    }
+
+    private void FinishPointerInteractionForFrameChange()
+    {
+        if (_lastMouse is not null
+            || _freehandDrawing
+            || _marqueeSelecting
+            || _viewPanning
+            || _viewZooming
+            || _viewOrbiting
+            || _viewReferencePanning
+            || _viewReferenceZooming)
+        {
+            FinishLostPointerCapture();
+        }
+
+        _pendingClickSelection = DrawingElementHit.None;
+        _forceMarqueeOnPointerDown = false;
+        _marqueeSelecting = false;
+        _marqueeStart = null;
+        _stage.ClearMarquee();
     }
 
     private void FinishPointerInteraction()
@@ -1452,6 +2648,9 @@ internal sealed class MainForm : Form
         _lineEndpointEditStarts.Clear();
         _detachedSelectionForMove = false;
         _pointerHitWasAlreadySelected = false;
+        _selectionWasEmptyOnPointerDown = false;
+        _forceMarqueeOnPointerDown = false;
+        _pendingClickSelection = DrawingElementHit.None;
         _undoCapturedForPointerEdit = false;
         _resizeStartCenter = null;
         _resizeStartSize = null;
@@ -1468,52 +2667,134 @@ internal sealed class MainForm : Form
 
     private void StageDragEnter(object? sender, DragEventArgs e)
     {
-        e.Effect = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
-            && e.Data?.GetDataPresent(typeof(VaultItem)) == true
-            ? DragDropEffects.Copy
-            : DragDropEffects.None;
+        if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject))
+        {
+            e.Effect = DragDropEffects.None;
+            return;
+        }
+
+        var canPlace = IsSceneCompositionContext()
+            ? ActiveScene() is not null
+            : ActiveDrawingObject() is { } container && _project.CanContainDrawingObject(container.Id, drawingObject.Id);
+        e.Effect = canPlace ? DragDropEffects.Copy : DragDropEffects.None;
     }
 
     private void StageDragDrop(object? sender, DragEventArgs e)
     {
-        if (_workspaceTabs.SelectedView != WorkspaceView.SceneEditor) return;
-        if (e.Data?.GetData(typeof(VaultItem)) is not VaultItem item) return;
-        var screen = _stage.PointToClient(new Point(e.X, e.Y));
-        AddLibraryItemInstanceToScene(item, _stage.ScreenToWorld(screen));
+        if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject)) return;
+        var client = _stage.PointToClient(new Point(e.X, e.Y));
+        var world = _stage.ScreenToWorld(client);
+
+        if (IsSceneCompositionContext())
+        {
+            var scene = ActiveScene();
+            if (scene is null) return;
+            if (!_project.TryAddSceneInstance(
+                    scene.Id,
+                    drawingObject.Id,
+                    world,
+                    scene.Dimension == SceneDimension.TwoD ? scene.Instances.Count + 1 : 0,
+                    out _))
+            {
+                return;
+            }
+
+            _timeline.RefreshTimeline();
+            ApplyBoundTimelineDuration();
+            RebuildSceneComposition();
+            _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+            _sceneEditorPanel.RefreshSceneStats();
+            AppLog.Info($"Placed drawing object in scene: {drawingObject.Name} -> {scene.Name}");
+            return;
+        }
+
+        var container = ActiveDrawingObject();
+        if (container is null) return;
+        if (!_project.TryAddDrawingObjectInstance(container.Id, drawingObject.Id, world, out _))
+        {
+            MessageBox.Show(
+                "A drawing object cannot contain itself or create a recursive containment cycle.",
+                "Drawing Object",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        RebuildDrawingObjectUnderlay();
+        _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
+        _stage.Invalidate();
+        AppLog.Info($"Placed nested drawing object: {drawingObject.Name} -> {container.Name}");
     }
 
-    private void AddLibraryItemInstanceToScene(VaultItem item, PointF world)
+    private bool TryResolveDroppedDrawingObject(IDataObject? data, out DrawingObjectDefinition drawingObject)
     {
-        CaptureUndoSnapshot();
-        var layer = Math.Clamp(_scene.ActiveLayer, 0, Math.Max(0, _scene.LayerCount - 1));
-        var color = item.Kind == "Drawing Object"
-            ? Color.FromArgb(190, 79, 179, 162)
-            : Color.FromArgb(190, 136, 122, 214);
-        var strokeColor = Color.FromArgb(238, 242, 241);
-        var index = _scene.AddObject(layer, world, new SizeF(420, 260), 0, VectorUnits.StrokePointsToUnits(1), color, strokeColor, 24, ShapeKind.Rectangle);
-        if (index >= 0) SetSelection(index);
-        _hierarchyPanel.RefreshScene();
-        _sceneEditorPanel.RefreshSceneStats();
-        UpdateInspector();
-        _stage.Invalidate();
-        AppLog.Info($"Dropped library item into scene: {item.Name} ({item.Kind})");
+        drawingObject = null!;
+        string? drawingObjectId = null;
+        if (data?.GetData(typeof(DrawingObjectDragData)) is DrawingObjectDragData reference
+            && string.Equals(reference.ProjectId, _project.Id, StringComparison.Ordinal))
+        {
+            drawingObjectId = reference.DrawingObjectId;
+        }
+        else if (data?.GetData(typeof(VaultItem)) is VaultItem item
+            && string.Equals(item.ReferenceKind, "DrawingObject", StringComparison.Ordinal))
+        {
+            drawingObjectId = item.ReferenceId;
+        }
+        else if (data?.GetData(typeof(VaultItem)) is VaultItem legacyItem)
+        {
+            const string prefix = "DrawingObjectId:";
+            drawingObjectId = legacyItem.Payload
+                .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault(line => line.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..]
+                .Trim();
+        }
+
+        drawingObject = _drawingObjects.FirstOrDefault(item => item.Id == drawingObjectId)!;
+        return drawingObject is not null;
     }
 
     private void MergeSelectedFillsAfterGeometryEdit()
     {
-        if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount) return;
-        if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line) return;
-
-        var beforeMergeCount = _scene.ObjectCount;
-        var merged = _scene.MergeSameColorFillsAround(_selectedObject);
-        if (_scene.ObjectCount == beforeMergeCount && merged == _selectedObject)
+        var selected = _selectedObjects.Where(index => (uint)index < _scene.ObjectCount).Distinct().ToArray();
+        if (selected.Length == 0) return;
+        var retainedKeys = selected
+            .Where(index => !IsFillShape(_scene.ShapeKind[index]))
+            .Select(index => new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index]))
+            .ToHashSet();
+        var fillKeys = selected
+            .Where(index => IsFillShape(_scene.ShapeKind[index]))
+            .Select(index => new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index]))
+            .Distinct()
+            .ToArray();
+        var changed = false;
+        foreach (var key in fillKeys)
         {
-            return;
+            var source = FindObjectByStackKey(key);
+            if (source < 0 || !IsFillShape(_scene.ShapeKind[source])) continue;
+            var beforeCount = _scene.ObjectCount;
+            var merged = _scene.MergeSameColorFillsAround(source, connectNearby: false, frame: _frame);
+            if ((uint)merged >= _scene.ObjectCount) continue;
+            retainedKeys.Add(new DrawingStackKey(_scene.ObjectOrder[merged], _scene.ObjectSubOrder[merged]));
+            changed |= _scene.ObjectCount != beforeCount || merged != source;
         }
 
-        SetSelection(merged);
-        _hierarchyPanel.RefreshScene();
+        if (fillKeys.Length == 0) return;
+        var mergedSelection = Enumerable.Range(0, _scene.ObjectCount)
+            .Where(index => retainedKeys.Contains(new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index])))
+            .ToArray();
+        SetSelection(mergedSelection);
+        if (changed) _hierarchyPanel.RefreshScene();
         UpdateInspector();
+    }
+
+    private int FindObjectByStackKey(DrawingStackKey key)
+    {
+        for (var index = 0; index < _scene.ObjectCount; index++)
+        {
+            if (_scene.ObjectOrder[index] == key.Order && _scene.ObjectSubOrder[index].Equals(key.SubOrder)) return index;
+        }
+
+        return -1;
     }
 
     private void CompleteMarqueeSelection(Point endScreen)
@@ -1527,18 +2808,26 @@ internal sealed class MainForm : Form
             var b = _stage.ScreenToWorld(endScreen);
             var bounds = RectangleF.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
             var snapshot = _scene.CreateSnapshot();
-            var materialized = _scene.MaterializeMarqueeParts(bounds, _frame);
+            var materialized = _scene.MaterializeMarqueeLineParts(bounds, _frame);
+            var objects = _scene.QueryDrawingObjects(bounds, _frame);
+            var selectedObjects = objects
+                .Where(index => _scene.IsObjectGeometryInsideBounds(index, bounds))
+                .Concat(materialized.SelectedObjects)
+                .Distinct()
+                .ToArray();
             if (materialized.Changed)
             {
                 PushUndoSnapshot(snapshot);
-                SetSelection(materialized.SelectedObjects);
-                _geometryDirty = false;
                 _hierarchyPanel.RefreshScene();
             }
-            else
+
+            if (selectedObjects.Length > 0)
             {
-                var objects = _scene.QueryObjects(bounds, _frame);
-                if (objects.Length > 3 || !TrySetTopologyMarqueeSelection(bounds)) SetSelection(objects);
+                SetSelection(selectedObjects);
+            }
+            else if (!TrySetTopologyMarqueeSelection(bounds))
+            {
+                ClearSelection();
             }
         }
         else
@@ -1556,81 +2845,57 @@ internal sealed class MainForm : Form
     private bool TrySetTopologyMarqueeSelection(RectangleF bounds)
     {
         if (bounds.Width <= 0.001f || bounds.Height <= 0.001f) return false;
-        var columns = bounds.Width > bounds.Height * 1.8f ? 7 : 5;
-        var rows = bounds.Height > bounds.Width * 1.8f ? 7 : 5;
-        var hits = new Dictionary<DrawingElementKey, (DrawingElementHit Hit, int Count)>();
-        var tolerance = Math.Max(1, Math.Min(bounds.Width, bounds.Height) * 0.04f);
-
-        for (var y = 0; y < rows; y++)
-        {
-            for (var x = 0; x < columns; x++)
-            {
-                var world = new PointF(
-                    bounds.Left + bounds.Width * (x + 0.5f) / columns,
-                    bounds.Top + bounds.Height * (y + 0.5f) / rows);
-                var hit = _scene.HitTestElement(world, _frame, tolerance);
-                if (!hit.IsValid) continue;
-                var current = hits.GetValueOrDefault(hit.Key);
-                hits[hit.Key] = (hit, current.Count + 1);
-            }
-        }
-
-        if (hits.Count == 0) return false;
-        var best = hits.Values
-            .OrderByDescending(item => item.Count)
-            .ThenByDescending(item => item.Hit.Key.Kind == DrawingElementKind.Fill ? 1 : 0)
+        var selected = _scene.QueryDrawingElementsInsideBounds(bounds, _frame);
+        if (selected.Length == 0) return false;
+        var primary = selected
+            .OrderBy(hit => _scene.ObjectLayer[hit.Key.ObjectIndex])
+            .ThenByDescending(hit => hit.Key.Kind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke ? 1 : 0)
+            .ThenByDescending(hit => _scene.ObjectOrder[hit.Key.ObjectIndex])
+            .ThenByDescending(hit => _scene.ObjectSubOrder[hit.Key.ObjectIndex])
             .First();
-        var totalSamples = columns * rows;
-        if (best.Count < Math.Max(2, totalSamples / 5)) return false;
-
-        SetTopologyMarqueeSelection(best.Hit);
+        SetTopologyMarqueeSelection(selected, primary);
         return true;
     }
 
-    private void SetTopologyMarqueeSelection(DrawingElementHit hit)
+    private void SetTopologyMarqueeSelection(IEnumerable<DrawingElementHit> hits, DrawingElementHit primary)
     {
-        if (!hit.IsValid)
+        var selected = hits.Where(hit => hit.IsValid).ToArray();
+        if (selected.Length == 0)
         {
             ClearSelection();
             return;
         }
 
-        if (hit.Key.Kind != DrawingElementKind.Fill)
-        {
-            SetSelection(hit);
-            return;
-        }
-
-        var snapshot = _scene.CreateSnapshot();
-        var detached = _scene.DetachElementForMove(hit, _frame);
-        if (!IsDetachedElement(hit, detached))
-        {
-            SetSelection(hit);
-            return;
-        }
-
-        PushUndoSnapshot(snapshot);
-        SetSelection(detached);
-        _geometryDirty = false;
-        _hierarchyPanel.RefreshScene();
-    }
-
-    private static bool IsDetachedElement(DrawingElementHit original, DrawingElementHit detached)
-    {
-        if (!detached.IsValid) return false;
-        if (detached.Distance < 0) return true;
-        return detached.Key.ObjectIndex != original.Key.ObjectIndex
-            || detached.Key.Kind != original.Key.Kind
-            || detached.Key.PartIndex != original.Key.PartIndex;
+        SetSelection(selected, primary);
     }
 
     private bool DeleteSelectedObject()
     {
+        if (IsSceneCompositionContext()) return false;
         var targets = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
         if (targets.Length == 0 && _selectedObject >= 0 && _selectedObject < _scene.ObjectCount) targets = new[] { _selectedObject };
         if (targets.Length == 0) return false;
-        CaptureUndoSnapshot();
-        if (_scene.RemoveObjects(targets) <= 0) return false;
+        var snapshot = _scene.CreateSnapshot();
+
+        if (_selectedElements.Count > 0)
+        {
+            var materialized = _scene.MaterializeSelectedParts(_selectedElements.Select(hit => hit.Key).ToArray(), _frame);
+            if (!materialized.Success)
+            {
+                _scene.RestoreSnapshot(snapshot);
+                return false;
+            }
+
+            targets = materialized.Parts.Select(part => part.Result.ObjectIndex).Distinct().ToArray();
+        }
+
+        if (_scene.RemoveObjects(targets) <= 0)
+        {
+            _scene.RestoreSnapshot(snapshot);
+            return false;
+        }
+
+        PushUndoSnapshot(snapshot);
 
         ClearSelection();
         _geometryDirty = false;
@@ -1642,7 +2907,7 @@ internal sealed class MainForm : Form
         return true;
     }
 
-    private void BeginGlobalViewDrag(MouseEventArgs e)
+    private void BeginGlobalViewDrag(MouseEventArgs e, bool referencePan = false)
     {
         _stage.Capture = true;
         _lastMouse = e.Location;
@@ -1656,11 +2921,16 @@ internal sealed class MainForm : Form
         _marqueeSelecting = false;
         _marqueeStart = null;
         _pointerHitWasAlreadySelected = false;
-        _viewZooming = (ModifierKeys & Keys.Control) == Keys.Control;
-        _viewPanning = !_viewZooming;
+        var is3DView = IsScene3DView();
+        _viewReferencePanning = is3DView && (referencePan || IsShiftPressed());
+        _viewReferenceZooming = is3DView && !referencePan && !IsShiftPressed() && IsControlPressed();
+        _viewOrbiting = is3DView && !_viewReferencePanning && !_viewReferenceZooming;
+        _viewZooming = !is3DView && IsControlPressed();
+        _viewPanning = !is3DView && !_viewZooming;
+        CancelFreehandStroke();
         _stage.ClearDrawingPreview();
         _stage.ClearMarquee();
-        _stage.Cursor = _viewZooming ? Cursors.SizeNS : Cursors.SizeAll;
+        _stage.Cursor = _viewZooming || _viewReferenceZooming ? Cursors.SizeNS : Cursors.SizeAll;
     }
 
     private void EndGlobalViewDrag()
@@ -1668,39 +2938,46 @@ internal sealed class MainForm : Form
         _lastMouse = null;
         _viewPanning = false;
         _viewZooming = false;
-        _stage.Cursor = Cursors.Default;
+        _viewOrbiting = false;
+        _viewReferencePanning = false;
+        _viewReferenceZooming = false;
+        ApplyToolCursor();
         _stage.Capture = false;
     }
 
     private void SetSelection(int objectIndex)
     {
         _selectedObjects.Clear();
+        _selectedElements.Clear();
         _selectedObject = objectIndex >= 0 && objectIndex < _scene.ObjectCount ? objectIndex : -1;
         _selectedElement = DrawingElementHit.None;
         if (_selectedObject >= 0) _selectedObjects.Add(_selectedObject);
-        _stage.SetSelection(_selectedObjects, _selectedObject);
-        _stage.SetSelectedElement(_selectedElement);
+        SyncSelectionToStage();
     }
 
     private void SetSelection(DrawingElementHit hit)
     {
-        if (!hit.IsValid)
+        if (!hit.IsValid
+            || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount
+            || !_scene.IsObjectActive(hit.Key.ObjectIndex, _frame))
         {
             ClearSelection();
             return;
         }
 
         _selectedObjects.Clear();
+        _selectedElements.Clear();
         _selectedObject = hit.Key.ObjectIndex;
         _selectedElement = hit;
         _selectedObjects.Add(_selectedObject);
-        _stage.SetSelection(_selectedObjects, _selectedObject);
-        _stage.SetSelectedElement(_selectedElement);
+        _selectedElements.Add(hit);
+        SyncSelectionToStage();
     }
 
     private void SetSelection(IEnumerable<int> objectIndices)
     {
         _selectedObjects.Clear();
+        _selectedElements.Clear();
         _selectedElement = DrawingElementHit.None;
         var seen = new HashSet<int>();
         foreach (var index in objectIndices)
@@ -1710,11 +2987,51 @@ internal sealed class MainForm : Form
         }
 
         _selectedObject = _selectedObjects.Count > 0 ? _selectedObjects[_selectedObjects.Count - 1] : -1;
+        SyncSelectionToStage();
+    }
+
+    private void SetSelection(IEnumerable<DrawingElementHit> hits, DrawingElementHit primary = default)
+    {
+        _selectedObjects.Clear();
+        _selectedElements.Clear();
+        var seenKeys = new HashSet<DrawingElementKey>();
+        var seenObjects = new HashSet<int>();
+        foreach (var hit in hits)
+        {
+            if (!hit.IsValid
+                || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount
+                || !_scene.IsObjectActive(hit.Key.ObjectIndex, _frame)
+                || !seenKeys.Add(hit.Key))
+            {
+                continue;
+            }
+
+            _selectedElements.Add(hit);
+            if (seenObjects.Add(hit.Key.ObjectIndex)) _selectedObjects.Add(hit.Key.ObjectIndex);
+        }
+
+        _selectedElement = primary.IsValid && _selectedElements.Any(hit => hit.Key == primary.Key)
+            ? _selectedElements.First(hit => hit.Key == primary.Key)
+            : _selectedElements.Count > 0 ? _selectedElements[^1] : DrawingElementHit.None;
+        _selectedObject = _selectedElement.IsValid ? _selectedElement.Key.ObjectIndex : -1;
+        SyncSelectionToStage();
+    }
+
+    private void SyncSelectionToStage()
+    {
         _stage.SetSelection(_selectedObjects, _selectedObject);
-        _stage.SetSelectedElement(_selectedElement);
+        _stage.SetSelectedElements(_selectedElements, _selectedElement);
     }
 
     private void ClearSelection() => SetSelection(-1);
+
+    private void ClearInactiveSelection()
+    {
+        if (_selectedObjects.Any(index => (uint)index >= _scene.ObjectCount || !_scene.IsObjectActive(index, _frame)))
+        {
+            ClearSelection();
+        }
+    }
 
     private void UpdateDrawingPreview(PointF start, PointF end, ToolMode tool)
     {
@@ -1728,6 +3045,95 @@ internal sealed class MainForm : Form
         }
 
         _stage.SetDrawingPreview(start, end, shape, ActiveColor(), ActiveStrokeUnits());
+    }
+
+    private void BeginFreehandStroke(Point screen, PointF world)
+    {
+        _freehandSamples.Clear();
+        _freehandSamples.Add(VectorUnits.Quantize(world));
+        _freehandLastScreen = screen;
+        _freehandDrawing = true;
+        _freehandBrushStroke = _tool == ToolMode.Brush;
+        _freehandStrokeUnits = Math.Max(VectorUnits.StrokePointsToUnits(0.5f), ActiveStrokeUnits());
+        var alpha = (int)Math.Clamp(_materialEditor.Opacity * 255, 0, 255);
+        _freehandColor = _freehandBrushStroke
+            ? ActiveColor()
+            : Color.FromArgb(alpha, ActiveStrokeColor());
+        _stage.SetFreehandPreview(_freehandSamples, _freehandColor, _freehandStrokeUnits);
+    }
+
+    private void AppendFreehandSample(Point screen, bool force = false)
+    {
+        if (!_freehandDrawing || _freehandLastScreen is not { } previousScreen || _freehandSamples.Count == 0) return;
+        var dx = screen.X - previousScreen.X;
+        var dy = screen.Y - previousScreen.Y;
+        var distancePixels = MathF.Sqrt(dx * dx + dy * dy);
+        if (!force && distancePixels < FreehandSampleSpacingPixels) return;
+
+        var start = _freehandSamples[^1];
+        var end = _stage.ScreenToWorld(screen);
+        var steps = Math.Max(1, (int)MathF.Ceiling(distancePixels / 2f));
+        for (var step = 1; step <= steps && _freehandSamples.Count < MaxFreehandSamples; step++)
+        {
+            var t = step / (float)steps;
+            var point = VectorUnits.Quantize(new PointF(
+                start.X + (end.X - start.X) * t,
+                start.Y + (end.Y - start.Y) * t));
+            if (_freehandSamples[^1] == point) continue;
+            _freehandSamples.Add(point);
+        }
+
+        _freehandLastScreen = screen;
+        _stage.SetFreehandPreview(_freehandSamples, _freehandColor, _freehandStrokeUnits);
+    }
+
+    private void CommitFreehandStroke()
+    {
+        if (!_freehandDrawing || _freehandSamples.Count == 0)
+        {
+            CancelFreehandStroke();
+            return;
+        }
+
+        var smoothing = Math.Clamp(_drawSettings.FreehandSmoothing + (_freehandBrushStroke ? 12 : 0), 0, 100);
+        var tolerancePixels = _freehandBrushStroke ? 0.9f : 0.65f;
+        var points = FreehandStrokeProcessor.Process(
+            _freehandSamples,
+            smoothing,
+            _stage.ScreenLengthToWorld(tolerancePixels));
+        if (points.Length == 0)
+        {
+            CancelFreehandStroke();
+            return;
+        }
+
+        CaptureUndoSnapshot();
+        var newObject = _scene.AddFreehandStroke(
+            _scene.ActiveLayer,
+            points,
+            _freehandStrokeUnits,
+            _freehandColor,
+            _freehandBrushStroke,
+            (uint)Math.Max(3, points.Length));
+        if (newObject >= 0)
+        {
+            if (_freehandBrushStroke) newObject = _scene.MergeSameColorFillsAround(newObject, frame: _frame);
+            SetSelection(newObject);
+            _hierarchyPanel.RefreshScene();
+            UpdateInspector();
+        }
+
+        CancelFreehandStroke();
+        _stage.Invalidate();
+    }
+
+    private void CancelFreehandStroke()
+    {
+        _freehandDrawing = false;
+        _freehandBrushStroke = false;
+        _freehandLastScreen = null;
+        _freehandSamples.Clear();
+        _stage.ClearFreehandPreview();
     }
 
     private float SelectionToleranceWorld() => Math.Max(4, _stage.ScreenLengthToWorld(10));
@@ -1884,6 +3290,7 @@ internal sealed class MainForm : Form
 
     private void AddDrawnObject(PointF start, PointF end, ToolMode tool)
     {
+        if (DrawingToolsBlocked()) return;
         CaptureUndoSnapshot();
         start = VectorUnits.Quantize(_drawSettings.SnapPoint(start));
         end = VectorUnits.Quantize(_drawSettings.SnapPoint(end));
@@ -1908,7 +3315,7 @@ internal sealed class MainForm : Form
         }
 
         var newObject = _scene.AddObject(_scene.ActiveLayer, center, new SizeF(width, height), angle, ActiveStrokeUnits(), ActiveColor(), ActiveStrokeColor(), tool == ToolMode.Line ? 6u : 24u, shape);
-        if (tool != ToolMode.Line && newObject >= 0) newObject = _scene.MergeSameColorFillsAround(newObject);
+        if (tool != ToolMode.Line && newObject >= 0) newObject = _scene.MergeSameColorFillsAround(newObject, frame: _frame);
         SetSelection(newObject);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
@@ -1920,6 +3327,19 @@ internal sealed class MainForm : Form
         _sceneEditorPanel.RefreshSceneStats();
         _objectMetric.Text = $"Objects: {CompactFormat.Number(_scene.ObjectCount)}";
         var validSelection = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
+        if (_selectedElements.Count > 1)
+        {
+            var kinds = _selectedElements.Select(hit => hit.Key.Kind).Distinct().ToArray();
+            var firstLayer = validSelection.Length > 0 ? _scene.ObjectLayer[validSelection[0]] : -1;
+            var mixedLayer = validSelection.Any(index => _scene.ObjectLayer[index] != firstLayer);
+            var atoms = _selectedElements.Sum(hit => _scene.EstimateElementAtomCount(hit, _frame));
+            var kindLabel = kinds.Length == 1 ? kinds[0].ToString() : "Mixed";
+            _selected.Text = $"Selected: {CompactFormat.Number(_selectedElements.Count)} {kindLabel} parts";
+            _selectedLayer.Text = mixedLayer ? "Layer: Mixed" : firstLayer >= 0 ? $"Layer: {_scene.LayerNames[firstLayer]}" : "Layer: -";
+            _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(atoms)}";
+            return;
+        }
+
         if (validSelection.Length > 1)
         {
             var firstLayer = _scene.ObjectLayer[validSelection[0]];
@@ -1951,15 +3371,36 @@ internal sealed class MainForm : Form
             ? $"Selected: #{_selectedObject} {_selectedElement.Key.Kind} part {_selectedElement.Key.PartIndex}"
             : $"Selected: #{_selectedObject}";
         _selectedLayer.Text = $"Layer: {_scene.LayerNames[layer]}";
-        _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(_scene.AtomCount[_selectedObject])}";
+        var selectedAtoms = _selectedElement.IsValid
+            ? _scene.EstimateElementAtomCount(_selectedElement, _frame)
+            : _scene.AtomCount[_selectedObject];
+        _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(selectedAtoms)}";
         var fill = Color.FromArgb(_scene.Argb[_selectedObject]);
         var stroke = _scene.StrokeArgb.Length > _selectedObject ? Color.FromArgb(_scene.StrokeArgb[_selectedObject]) : ActiveStrokeColor();
         var strokePoints = VectorUnits.UnitsToStrokePoints(_scene.Stroke[_selectedObject]);
-        _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, strokePoints, fill.A / 255f);
+        var shape = _scene.ShapeKind[_selectedObject];
+        var brushFill = _tool == ToolMode.Brush && IsFillShape(shape);
+        var inspectorStrokePoints = brushFill ? _brushStrokeWidthPoints : strokePoints;
+        if (shape is ShapeKind.Freeform or ShapeKind.Line)
+        {
+            _materialEditor.SetMaterial(_materialEditor.Fill, Color.FromArgb(stroke.R, stroke.G, stroke.B), inspectorStrokePoints, stroke.A / 255f);
+        }
+        else if (shape == ShapeKind.BrushStroke)
+        {
+            _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), _materialEditor.Stroke, inspectorStrokePoints, fill.A / 255f);
+        }
+        else if (brushFill)
+        {
+            _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), _materialEditor.Stroke, inspectorStrokePoints, fill.A / 255f);
+        }
+        else
+        {
+            _materialEditor.SetMaterial(Color.FromArgb(fill.A, fill), stroke, inspectorStrokePoints, fill.A / 255f);
+        }
         _updatingStrokeInput = true;
         try
         {
-            _stroke.Value = (decimal)Math.Clamp(strokePoints, (float)_stroke.Minimum, (float)_stroke.Maximum);
+            _stroke.Value = (decimal)Math.Clamp(inspectorStrokePoints, (float)_stroke.Minimum, (float)_stroke.Maximum);
         }
         finally
         {
@@ -1970,6 +3411,198 @@ internal sealed class MainForm : Form
     private Color ActiveColor()
     {
         return Color.FromArgb((int)Math.Clamp(_materialEditor.Opacity * 255, 0, 255), _materialEditor.Fill);
+    }
+
+    private void ApplyMaterialToSelectedElements(MaterialChangedEventArgs material, float strokeUnits)
+    {
+        var selected = _selectedElements.ToArray();
+        var affected = selected
+            .Where(hit => MaterialChangeAffectsSelection(hit.Key.ObjectIndex, hit.Key.Kind, material, strokeUnits))
+            .Select(hit => hit.Key)
+            .ToHashSet();
+        if (affected.Count == 0) return;
+
+        var snapshot = _scene.CreateSnapshot();
+        var materialized = _scene.MaterializeSelectedParts(affected.ToArray(), _frame);
+        if (!materialized.Success)
+        {
+            _scene.RestoreSnapshot(snapshot);
+            SyncSelectionToStage();
+            return;
+        }
+
+        foreach (var part in materialized.Parts)
+        {
+            if (!affected.Contains(part.Source)) continue;
+            var objectIndex = part.Result.ObjectIndex;
+            if (part.Source.Kind == DrawingElementKind.Fill)
+            {
+                _scene.Argb[objectIndex] = TargetFillArgb(objectIndex, material);
+                _scene.Stroke[objectIndex] = 0;
+                continue;
+            }
+
+            var color = TargetStrokeColor(objectIndex, material);
+            _scene.Argb[objectIndex] = Color.FromArgb(0, color).ToArgb();
+            _scene.StrokeArgb[objectIndex] = color.ToArgb();
+            var targetStrokeUnits = TargetStrokeUnits(objectIndex, material, strokeUnits);
+            if ((material.ApplyAll || material.StrokeWidthChanged) && IsFreehandShape(_scene.ShapeKind[objectIndex]))
+            {
+                _scene.UpdateFreehandStrokeWidth(objectIndex, targetStrokeUnits);
+            }
+            else if (material.ApplyAll || material.StrokeWidthChanged)
+            {
+                _scene.Stroke[objectIndex] = targetStrokeUnits;
+                _scene.Height[objectIndex] = Math.Max(VectorUnits.FromPixels(3), targetStrokeUnits + VectorUnits.FromPixels(2));
+            }
+        }
+
+        _scene.RebuildGeometryIndex();
+        var selectedObjects = materialized.Parts
+            .Where(part => affected.Contains(part.Source))
+            .Select(part => part.Result.ObjectIndex)
+            .Distinct()
+            .ToArray();
+        SetSelection(selectedObjects);
+        if (affected.Any(key => key.Kind == DrawingElementKind.Fill)) MergeSelectedFillsAfterGeometryEdit();
+
+        PushUndoSnapshot(snapshot);
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
+    private void ApplyMaterialToSelectedObjects(MaterialChangedEventArgs material, float strokeUnits)
+    {
+        var targets = _selectedObjects.Where(index => (uint)index < _scene.ObjectCount).Distinct().ToArray();
+        if (targets.Length < 2) return;
+        var snapshot = _scene.CreateSnapshot();
+        var changed = false;
+        foreach (var objectIndex in targets)
+        {
+            var shape = _scene.ShapeKind[objectIndex];
+            var fillCapable = IsFillShape(shape) || shape == ShapeKind.BrushStroke;
+            var strokeCapable = shape is ShapeKind.Line or ShapeKind.Freeform
+                || _scene.Stroke[objectIndex] > 0
+                || material.ApplyAll
+                || material.StrokeWidthChanged;
+
+            if (fillCapable && (material.ApplyAll || material.FillChanged || material.OpacityChanged))
+            {
+                var fill = TargetFillArgb(objectIndex, material);
+                if (_scene.Argb[objectIndex] != fill)
+                {
+                    _scene.Argb[objectIndex] = fill;
+                    changed = true;
+                }
+            }
+
+            if (!strokeCapable || (!material.ApplyAll && !material.StrokeChanged && !material.StrokeWidthChanged && !material.OpacityChanged))
+            {
+                continue;
+            }
+
+            var strokeColor = TargetStrokeColor(objectIndex, material);
+            if (_scene.StrokeArgb[objectIndex] != strokeColor.ToArgb())
+            {
+                _scene.StrokeArgb[objectIndex] = strokeColor.ToArgb();
+                changed = true;
+            }
+
+            if (material.ApplyAll || material.StrokeWidthChanged)
+            {
+                var targetStrokeUnits = TargetStrokeUnits(objectIndex, material, strokeUnits);
+                if (Math.Abs(_scene.Stroke[objectIndex] - targetStrokeUnits) > 0.001f)
+                {
+                    if (IsFreehandShape(shape)) _scene.UpdateFreehandStrokeWidth(objectIndex, targetStrokeUnits);
+                    else
+                    {
+                        _scene.Stroke[objectIndex] = targetStrokeUnits;
+                        if (shape == ShapeKind.Line)
+                        {
+                            _scene.Height[objectIndex] = Math.Max(VectorUnits.FromPixels(3), targetStrokeUnits + VectorUnits.FromPixels(2));
+                        }
+                    }
+
+                    changed = true;
+                }
+            }
+        }
+
+        if (!changed) return;
+        _scene.RebuildGeometryIndex();
+        var changedFill = material.ApplyAll || material.FillChanged || material.OpacityChanged;
+        if (changedFill) MergeSelectedFillsAfterGeometryEdit();
+        PushUndoSnapshot(snapshot);
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
+    private bool MaterialChangeAffectsSelection(int objectIndex, DrawingElementKind selectedKind, MaterialChangedEventArgs material, float strokeUnits)
+    {
+        if (selectedKind == DrawingElementKind.Fill)
+        {
+            if (!material.ApplyAll && !material.FillChanged && !material.OpacityChanged) return false;
+            return _scene.Argb[objectIndex] != TargetFillArgb(objectIndex, material);
+        }
+
+        if (selectedKind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke)
+        {
+            if (!material.ApplyAll && !material.StrokeChanged && !material.StrokeWidthChanged && !material.OpacityChanged) return false;
+            return _scene.StrokeArgb[objectIndex] != TargetStrokeColor(objectIndex, material).ToArgb()
+                || Math.Abs(_scene.Stroke[objectIndex] - TargetStrokeUnits(objectIndex, material, strokeUnits)) > 0.001f;
+        }
+
+        var alpha = (int)Math.Clamp(material.Opacity * 255, 0, 255);
+        var fill = Color.FromArgb(alpha, material.Fill).ToArgb();
+        var stroke = Color.FromArgb(alpha, material.Stroke).ToArgb();
+        var shape = _scene.ShapeKind[objectIndex];
+        if (_tool == ToolMode.Brush && IsFillShape(shape))
+        {
+            return _scene.Argb[objectIndex] != fill || _scene.Stroke[objectIndex] > 0;
+        }
+
+        if (shape == ShapeKind.BrushStroke)
+        {
+            return _scene.Argb[objectIndex] != fill
+                || _scene.StrokeArgb[objectIndex] != fill
+                || Math.Abs(_scene.Stroke[objectIndex] - strokeUnits) > 0.001f;
+        }
+
+        if (shape == ShapeKind.Freeform)
+        {
+            return _scene.StrokeArgb[objectIndex] != stroke || Math.Abs(_scene.Stroke[objectIndex] - strokeUnits) > 0.001f;
+        }
+
+        return _scene.Argb[objectIndex] != fill
+            || _scene.StrokeArgb[objectIndex] != stroke
+            || Math.Abs(_scene.Stroke[objectIndex] - strokeUnits) > 0.001f;
+    }
+
+    private int TargetFillArgb(int objectIndex, MaterialChangedEventArgs material)
+    {
+        var current = Color.FromArgb(_scene.Argb[objectIndex]);
+        var rgb = material.ApplyAll || material.FillChanged ? material.Fill : current;
+        var alpha = material.ApplyAll || material.OpacityChanged
+            ? (int)Math.Clamp(material.Opacity * 255, 0, 255)
+            : current.A;
+        return Color.FromArgb(alpha, rgb).ToArgb();
+    }
+
+    private Color TargetStrokeColor(int objectIndex, MaterialChangedEventArgs material)
+    {
+        var current = Color.FromArgb(_scene.StrokeArgb[objectIndex]);
+        var rgb = material.ApplyAll || material.StrokeChanged ? material.Stroke : current;
+        var alpha = material.ApplyAll || material.OpacityChanged
+            ? (int)Math.Clamp(material.Opacity * 255, 0, 255)
+            : current.A;
+        return Color.FromArgb(alpha, rgb);
+    }
+
+    private float TargetStrokeUnits(int objectIndex, MaterialChangedEventArgs material, float requestedStrokeUnits)
+    {
+        return material.ApplyAll || material.StrokeWidthChanged ? requestedStrokeUnits : _scene.Stroke[objectIndex];
     }
 
     private float ActiveStrokeUnits() => VectorUnits.StrokePointsToUnits((float)_materialEditor.StrokeWidth);
@@ -1998,18 +3631,59 @@ internal sealed class MainForm : Form
         _sceneEditPage.Visible = sceneEdit;
         _animationPage.Visible = view == WorkspaceView.Animation;
         _timeline.Visible = true;
-        if (sceneEdit && IsDrawingTool(_tool))
+        if (basicDrawing)
+        {
+            BindActiveDrawingObjectScene(resetView: false);
+        }
+        else if (sceneEdit)
+        {
+            BindSceneEditStage(resetView: false);
+        }
+
+        if (sceneEdit && IsBasicDrawingOnlyTool(_tool))
         {
             _tool = ToolMode.Select;
+            CancelFreehandStroke();
             _stage.ClearDrawingPreview();
         }
 
         RefreshToolButtons();
+        ApplyToolCursor();
     }
 
     private static bool IsDrawingTool(ToolMode tool)
     {
+        return tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star or ToolMode.Line or ToolMode.Pencil or ToolMode.Brush;
+    }
+
+    private static bool IsBasicDrawingOnlyTool(ToolMode tool)
+    {
+        return IsDrawingTool(tool) || tool == ToolMode.Fill;
+    }
+
+    private static bool IsStandardStrokeTool(ToolMode tool)
+    {
         return tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star or ToolMode.Line;
+    }
+
+    private static bool IsFreehandTool(ToolMode tool)
+    {
+        return tool is ToolMode.Pencil or ToolMode.Brush;
+    }
+
+    private static bool IsFreehandShape(ShapeKind shape)
+    {
+        return shape is ShapeKind.Freeform or ShapeKind.BrushStroke;
+    }
+
+    private static bool IsFillShape(ShapeKind shape)
+    {
+        return shape is not ShapeKind.Line and not ShapeKind.Freeform and not ShapeKind.BrushStroke;
+    }
+
+    private static bool IsShapeTool(ToolMode tool)
+    {
+        return tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star;
     }
 
     private static ShapeKind? ToolShapeKind(ToolMode tool)
@@ -2023,6 +3697,36 @@ internal sealed class MainForm : Form
             ToolMode.Star => ShapeKind.Star,
             ToolMode.Line => ShapeKind.Line,
             _ => null
+        };
+    }
+
+    private static SvgIconKind ToolIconKind(ToolMode tool)
+    {
+        return tool switch
+        {
+            ToolMode.Ellipse => SvgIconKind.Ellipse,
+            ToolMode.Triangle => SvgIconKind.Triangle,
+            ToolMode.Polygon => SvgIconKind.Polygon,
+            ToolMode.Star => SvgIconKind.Star,
+            ToolMode.Line => SvgIconKind.Line,
+            ToolMode.Pencil => SvgIconKind.Pencil,
+            ToolMode.Brush => SvgIconKind.Brush,
+            ToolMode.Fill => SvgIconKind.Fill,
+            ToolMode.Hand => SvgIconKind.Pan,
+            ToolMode.Select => SvgIconKind.Select,
+            _ => SvgIconKind.Rectangle
+        };
+    }
+
+    private static string ShapeToolName(ToolMode tool)
+    {
+        return tool switch
+        {
+            ToolMode.Ellipse => "Ellipse Tool",
+            ToolMode.Triangle => "Triangle Tool",
+            ToolMode.Polygon => "Polygon Tool",
+            ToolMode.Star => "Star Tool",
+            _ => "Rectangle Tool"
         };
     }
 
@@ -2044,9 +3748,31 @@ internal sealed class MainForm : Form
     {
         foreach (var (tool, button) in _toolButtons)
         {
-            var enabled = _workspaceTabs.SelectedView != WorkspaceView.SceneEditor || !IsDrawingTool(tool);
+            var enabled = !DrawingToolsBlocked() || !IsBasicDrawingOnlyTool(tool);
             button.Enabled = enabled;
             if (tool == _tool) Theme.StyleActiveButton(button);
+            else Theme.StyleButton(button);
+            if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
+        }
+
+        if (_shapeToolButton is not null)
+        {
+            var enabled = !DrawingToolsBlocked();
+            _shapeToolButton.Enabled = enabled;
+            _shapeToolButton.Icon = ToolIconKind(_activeShapeTool);
+            _shapeToolButton.Tag = _activeShapeTool;
+            _shapeToolButton.AccessibleName = ShapeToolName(_activeShapeTool);
+            if (IsShapeTool(_tool)) Theme.StyleActiveButton(_shapeToolButton);
+            else Theme.StyleButton(_shapeToolButton);
+            if (!enabled) _shapeToolButton.ForeColor = Color.FromArgb(120, Theme.Text);
+            _shapeToolButton.Invalidate();
+        }
+
+        foreach (var (tool, button) in _shapeFlyoutButtons)
+        {
+            var enabled = !DrawingToolsBlocked();
+            button.Enabled = enabled;
+            if (tool == _activeShapeTool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
             if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
         }
@@ -2062,7 +3788,7 @@ internal sealed class MainForm : Form
     private static Label MetricLabel(string text, int width) => new() { Text = text, Left = 8, Top = 10, Width = width, Height = 22, ForeColor = Theme.Muted, BackColor = Theme.Top, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private static ToolStripStatusLabel StatusLabel(string text) => new() { Text = text, ForeColor = Theme.Muted, Spring = false, Margin = new Padding(0, 0, 10, 0) };
     private static ToolStripStatusLabel StatusSeparator() => new() { Text = "|", ForeColor = Theme.Border, Margin = new Padding(0, 0, 10, 0) };
-    private static bool IsHotReloadEnabled() => Environment.GetEnvironmentVariable("V2D_DEV_HOT_RELOAD") == "1";
+    private static bool IsAutoRestartEnabled() => Environment.GetEnvironmentVariable("V2D_DEV_AUTO_RESTART") == "1";
     private static Label InspectorLabel(string text) => new() { Text = text, Height = 26, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private static Label FieldLabel(string text) => new()
     {

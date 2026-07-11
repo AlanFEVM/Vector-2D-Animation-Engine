@@ -32,8 +32,14 @@ internal sealed class WorkspaceTabs : UserControl
     private readonly FlowLayoutPanel _tabStrip = new();
     private readonly Dictionary<WorkspaceView, Button> _buttons = new();
     private readonly ToolTip _toolTip = new();
+    private readonly System.Windows.Forms.Timer _indicatorTimer = new() { Interval = 16 };
     private WorkspaceView _selectedView = WorkspaceView.BasicDrawing;
     private WorkspaceTabPlacement _placement = WorkspaceTabPlacement.Top;
+    private float _indicatorPosition;
+    private float _indicatorExtent;
+    private float _indicatorTargetPosition;
+    private float _indicatorTargetExtent;
+    private bool _indicatorInitialized;
 
     public WorkspaceTabs()
     {
@@ -53,6 +59,7 @@ internal sealed class WorkspaceTabs : UserControl
         AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Edit", "Scene assembly, hierarchy and library workflow");
         AddWorkspaceButton(WorkspaceView.Animation, "Animation", "Timeline, playback and keyframe workflow");
 
+        _indicatorTimer.Tick += (_, _) => TickIndicator();
         ApplyPlacement();
         RefreshButtons();
     }
@@ -88,6 +95,13 @@ internal sealed class WorkspaceTabs : UserControl
     {
         base.OnResize(e);
         LayoutButtons();
+        UpdateIndicator(animate: false);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _indicatorTimer.Dispose();
+        base.Dispose(disposing);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -97,10 +111,28 @@ internal sealed class WorkspaceTabs : UserControl
         if (_placement == WorkspaceTabPlacement.Top)
         {
             e.Graphics.DrawLine(pen, 0, Height - 1, Width, Height - 1);
+            if (_indicatorInitialized)
+            {
+                using var glow = new SolidBrush(Color.FromArgb(45, Theme.Accent));
+                using var accent = new SolidBrush(Theme.Accent);
+                var x = (int)Math.Round(_indicatorPosition);
+                var width = Math.Max(0, (int)Math.Round(_indicatorExtent));
+                e.Graphics.FillRectangle(glow, x - 3, Height - 6, width + 6, 4);
+                e.Graphics.FillRectangle(accent, x, Height - 4, width, 3);
+            }
         }
         else
         {
             e.Graphics.DrawLine(pen, Width - 1, 0, Width - 1, Height);
+            if (_indicatorInitialized)
+            {
+                using var glow = new SolidBrush(Color.FromArgb(45, Theme.Accent));
+                using var accent = new SolidBrush(Theme.Accent);
+                var y = (int)Math.Round(_indicatorPosition);
+                var height = Math.Max(0, (int)Math.Round(_indicatorExtent));
+                e.Graphics.FillRectangle(glow, Width - 6, y - 3, 4, height + 6);
+                e.Graphics.FillRectangle(accent, Width - 4, y, 3, height);
+            }
         }
     }
 
@@ -135,6 +167,7 @@ internal sealed class WorkspaceTabs : UserControl
         var previous = _selectedView;
         _selectedView = view;
         RefreshButtons();
+        UpdateIndicator(animate: true);
         if (raiseEvent) SelectedViewChanged?.Invoke(this, new WorkspaceViewChangedEventArgs(previous, _selectedView));
     }
 
@@ -181,5 +214,42 @@ internal sealed class WorkspaceTabs : UserControl
             if (view == _selectedView) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
         }
+
+        UpdateIndicator(animate: _indicatorInitialized);
+    }
+
+    private void UpdateIndicator(bool animate)
+    {
+        if (!_buttons.TryGetValue(_selectedView, out var button)) return;
+        var bounds = button.Bounds;
+        var position = _placement == WorkspaceTabPlacement.Top ? bounds.Left : bounds.Top;
+        var extent = _placement == WorkspaceTabPlacement.Top ? bounds.Width : bounds.Height;
+        _indicatorTargetPosition = position;
+        _indicatorTargetExtent = extent;
+        if (!_indicatorInitialized || !animate)
+        {
+            _indicatorInitialized = true;
+            _indicatorPosition = _indicatorTargetPosition;
+            _indicatorExtent = _indicatorTargetExtent;
+            Invalidate();
+            return;
+        }
+
+        if (!_indicatorTimer.Enabled) _indicatorTimer.Start();
+    }
+
+    private void TickIndicator()
+    {
+        _indicatorPosition += (_indicatorTargetPosition - _indicatorPosition) * 0.28f;
+        _indicatorExtent += (_indicatorTargetExtent - _indicatorExtent) * 0.28f;
+        if (Math.Abs(_indicatorTargetPosition - _indicatorPosition) < 0.25f
+            && Math.Abs(_indicatorTargetExtent - _indicatorExtent) < 0.25f)
+        {
+            _indicatorPosition = _indicatorTargetPosition;
+            _indicatorExtent = _indicatorTargetExtent;
+            _indicatorTimer.Stop();
+        }
+
+        Invalidate();
     }
 }

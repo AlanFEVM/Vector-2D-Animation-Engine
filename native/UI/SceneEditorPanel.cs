@@ -14,17 +14,42 @@ internal sealed class DrawingObjectSelectionChangedEventArgs : EventArgs
     public int Index { get; }
 }
 
+internal sealed class DrawingObjectOpenRequestedEventArgs : EventArgs
+{
+    public DrawingObjectOpenRequestedEventArgs(string drawingObjectId) => DrawingObjectId = drawingObjectId;
+
+    public string DrawingObjectId { get; }
+}
+
+internal sealed class SceneSettingsChangedEventArgs : EventArgs
+{
+    public SceneSettingsChangedEventArgs(int sceneIndex, SceneDimension dimension, CameraProjection projection)
+    {
+        SceneIndex = sceneIndex;
+        Dimension = dimension;
+        Projection = projection;
+    }
+
+    public int SceneIndex { get; }
+    public SceneDimension Dimension { get; }
+    public CameraProjection Projection { get; }
+}
+
 internal sealed class SceneEditorPanel : UserControl
 {
     private readonly Label _mode = InfoLabel();
     private readonly Label _sceneName = InfoLabel();
     private readonly Label _activeObject = InfoLabel();
+    private readonly ComboBox _sceneType = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly ComboBox _cameraProjection = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _stageSize = InfoLabel();
     private readonly Label _sceneStats = InfoLabel();
     private readonly ListBox _scenes = new();
     private readonly ListBox _drawingObjects = new();
+    private readonly ListBox _instances = new();
     private readonly Button _addScene = new() { Text = "+ Scene", Width = 82, Height = 28 };
     private readonly Button _addObject = new() { Text = "+ Object", Width = 82, Height = 28 };
+    private readonly Button _addInstance = new() { Text = "+ Instance", Width = 92, Height = 28 };
     private VectorScene? _scene;
     private IReadOnlyList<SceneDefinition> _sceneDefinitions = [];
     private IReadOnlyList<DrawingObjectDefinition> _drawingObjectDefinitions = [];
@@ -37,6 +62,10 @@ internal sealed class SceneEditorPanel : UserControl
         BackColor = Theme.Panel;
         Padding = new Padding(10);
         MinimumSize = new Size(240, 340);
+        _sceneType.Items.AddRange(["2D scene with depth", "3D scene"]);
+        _cameraProjection.Items.AddRange(["Orthographic", "Perspective"]);
+        Theme.StyleComboBox(_sceneType);
+        Theme.StyleComboBox(_cameraProjection);
 
         BuildUi();
         RefreshText();
@@ -44,8 +73,11 @@ internal sealed class SceneEditorPanel : UserControl
 
     public event EventHandler? AddSceneRequested;
     public event EventHandler? AddDrawingObjectRequested;
+    public event EventHandler? AddSceneInstanceRequested;
+    public event EventHandler<SceneSettingsChangedEventArgs>? SceneSettingsChanged;
     public event EventHandler<SceneSelectionChangedEventArgs>? SceneSelectionChanged;
     public event EventHandler<DrawingObjectSelectionChangedEventArgs>? DrawingObjectSelectionChanged;
+    public event EventHandler<DrawingObjectOpenRequestedEventArgs>? DrawingObjectOpenRequested;
 
     public void BindScene(VectorScene scene)
     {
@@ -86,7 +118,7 @@ internal sealed class SceneEditorPanel : UserControl
             Padding = Padding.Empty
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 164));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 224));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
@@ -106,32 +138,36 @@ internal sealed class SceneEditorPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 5,
+            RowCount = 7,
             Padding = new Padding(0, 8, 0, 0)
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 5; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        for (var i = 0; i < 7; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         root.Controls.Add(content, 0, 1);
 
         AddRow(content, "Mode", _mode, 0);
         AddRow(content, "Scene", _sceneName, 1);
-        AddRow(content, "Edit object", _activeObject, 2);
-        AddRow(content, "Stage", _stageSize, 3);
-        AddRow(content, "Contents", _sceneStats, 4);
+        AddRow(content, "Scene type", _sceneType, 2);
+        AddRow(content, "Camera", _cameraProjection, 3);
+        AddRow(content, "Edit object", _activeObject, 4);
+        AddRow(content, "Stage", _stageSize, 5);
+        AddRow(content, "Contents", _sceneStats, 6);
 
         var managers = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 6,
             Padding = new Padding(0, 8, 0, 0)
         };
         managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        managers.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
+        managers.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
         managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        managers.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
+        managers.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
+        managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        managers.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
         root.Controls.Add(managers, 0, 2);
 
         managers.Controls.Add(HeaderWithButton("Scenes", _addScene), 0, 0);
@@ -140,9 +176,13 @@ internal sealed class SceneEditorPanel : UserControl
         managers.Controls.Add(HeaderWithButton("Drawing Objects", _addObject), 0, 2);
         ConfigureList(_drawingObjects);
         managers.Controls.Add(_drawingObjects, 0, 3);
+        managers.Controls.Add(HeaderWithButton("Scene Instances", _addInstance), 0, 4);
+        ConfigureList(_instances);
+        managers.Controls.Add(_instances, 0, 5);
 
         _addScene.Click += (_, _) => AddSceneRequested?.Invoke(this, EventArgs.Empty);
         _addObject.Click += (_, _) => AddDrawingObjectRequested?.Invoke(this, EventArgs.Empty);
+        _addInstance.Click += (_, _) => AddSceneInstanceRequested?.Invoke(this, EventArgs.Empty);
         _scenes.SelectedIndexChanged += (_, _) =>
         {
             if (_updating || _scenes.SelectedIndex < 0) return;
@@ -153,6 +193,25 @@ internal sealed class SceneEditorPanel : UserControl
             if (_updating || _drawingObjects.SelectedIndex < 0) return;
             DrawingObjectSelectionChanged?.Invoke(this, new DrawingObjectSelectionChangedEventArgs(_drawingObjects.SelectedIndex));
         };
+        _drawingObjects.DoubleClick += (_, _) =>
+        {
+            if (_drawingObjects.SelectedIndex < 0 || _drawingObjects.SelectedIndex >= _drawingObjectDefinitions.Count) return;
+            DrawingObjectOpenRequested?.Invoke(
+                this,
+                new DrawingObjectOpenRequestedEventArgs(_drawingObjectDefinitions[_drawingObjects.SelectedIndex].Id));
+        };
+        _instances.DoubleClick += (_, _) =>
+        {
+            var scene = _activeSceneIndex >= 0 && _activeSceneIndex < _sceneDefinitions.Count
+                ? _sceneDefinitions[_activeSceneIndex]
+                : null;
+            if (scene is null || _instances.SelectedIndex < 0 || _instances.SelectedIndex >= scene.Instances.Count) return;
+            DrawingObjectOpenRequested?.Invoke(
+                this,
+                new DrawingObjectOpenRequestedEventArgs(scene.Instances[_instances.SelectedIndex].DrawingObjectId));
+        };
+        _sceneType.SelectedIndexChanged += (_, _) => RaiseSceneSettingsChanged();
+        _cameraProjection.SelectedIndexChanged += (_, _) => RaiseSceneSettingsChanged();
     }
 
     private void RefreshLists()
@@ -170,13 +229,37 @@ internal sealed class SceneEditorPanel : UserControl
         }
 
         if (_activeDrawingObjectIndex >= 0 && _activeDrawingObjectIndex < _drawingObjects.Items.Count) _drawingObjects.SelectedIndex = _activeDrawingObjectIndex;
+        _instances.Items.Clear();
+        var sceneDefinition = _activeSceneIndex >= 0 && _activeSceneIndex < _sceneDefinitions.Count ? _sceneDefinitions[_activeSceneIndex] : null;
+        if (sceneDefinition is not null)
+        {
+            foreach (var instance in sceneDefinition.Instances)
+            {
+                var drawingObject = _drawingObjectDefinitions.FirstOrDefault(item => item.Id == instance.DrawingObjectId);
+                var source = drawingObject?.Name ?? "Missing object";
+                _instances.Items.Add($"{instance.Name} -> {source}");
+            }
+        }
+
+        if (sceneDefinition is not null)
+        {
+            _sceneType.SelectedIndex = sceneDefinition.Dimension == SceneDimension.TwoD ? 0 : 1;
+            _cameraProjection.SelectedIndex = sceneDefinition.Camera.Projection == CameraProjection.Orthographic ? 0 : 1;
+        }
+        else
+        {
+            _sceneType.SelectedIndex = -1;
+            _cameraProjection.SelectedIndex = -1;
+        }
+
         _updating = false;
     }
 
     private void RefreshText()
     {
         _mode.Text = "Scene Edit";
-        _sceneName.Text = _activeSceneIndex >= 0 && _activeSceneIndex < _sceneDefinitions.Count ? _sceneDefinitions[_activeSceneIndex].Name : "Master Scene";
+        var sceneDefinition = _activeSceneIndex >= 0 && _activeSceneIndex < _sceneDefinitions.Count ? _sceneDefinitions[_activeSceneIndex] : null;
+        _sceneName.Text = sceneDefinition?.Name ?? "Scene";
         if (_activeDrawingObjectIndex >= 0 && _activeDrawingObjectIndex < _drawingObjectDefinitions.Count)
         {
             var drawingObject = _drawingObjectDefinitions[_activeDrawingObjectIndex];
@@ -188,7 +271,17 @@ internal sealed class SceneEditorPanel : UserControl
         }
 
         _stageSize.Text = _scene is null ? "-" : $"{_scene.StageWidth:0} x {_scene.StageHeight:0} vu";
-        _sceneStats.Text = _scene is null ? "-" : $"{_scene.LayerCount} layers, {CompactFormat.Number(_scene.ObjectCount)} objects";
+        var instanceCount = sceneDefinition?.Instances.Count ?? 0;
+        _sceneStats.Text = _scene is null ? "-" : $"{_scene.LayerCount} layers, {CompactFormat.Number(_scene.ObjectCount)} objects, {instanceCount} scene instances";
+    }
+
+    private void RaiseSceneSettingsChanged()
+    {
+        if (_updating || _activeSceneIndex < 0) return;
+        if (_sceneType.SelectedIndex < 0 || _cameraProjection.SelectedIndex < 0) return;
+        var dimension = _sceneType.SelectedIndex == 0 ? SceneDimension.TwoD : SceneDimension.ThreeD;
+        var projection = _cameraProjection.SelectedIndex == 0 ? CameraProjection.Orthographic : CameraProjection.Perspective;
+        SceneSettingsChanged?.Invoke(this, new SceneSettingsChangedEventArgs(_activeSceneIndex, dimension, projection));
     }
 
     private static Panel HeaderWithButton(string text, Button button)

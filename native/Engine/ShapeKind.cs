@@ -9,5 +9,6 @@ internal enum ShapeKind : byte
     Polygon = 4,
     Star = 5,
     Path = 6,
-    Freeform = 7
+    Freeform = 7,
+    BrushStroke = 8
 }

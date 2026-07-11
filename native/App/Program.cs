@@ -27,6 +27,20 @@ internal static class Program
             return;
         }
 
+        if (args.Length > 0 && args[0].Equals("--bench-freehand", StringComparison.OrdinalIgnoreCase))
+        {
+            AppLog.Info("Running freehand benchmark");
+            Benchmark.RunFreehandStress();
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--bench-timeline", StringComparison.OrdinalIgnoreCase))
+        {
+            AppLog.Info("Running timeline regression benchmark");
+            Benchmark.RunTimelineRegression();
+            return;
+        }
+
         try
         {
             ApplicationConfiguration.Initialize();

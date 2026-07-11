@@ -6,6 +6,7 @@ internal sealed class DrawSettings
     private float _angleSnapDegrees = 15;
     private int _polygonSides = 6;
     private int _starPoints = 5;
+    private int _freehandSmoothing = 52;
 
     public event EventHandler? Changed;
 
@@ -40,6 +41,12 @@ internal sealed class DrawSettings
     {
         get => _starPoints;
         set => _starPoints = Math.Clamp(value, 3, 32);
+    }
+
+    public int FreehandSmoothing
+    {
+        get => _freehandSmoothing;
+        set => _freehandSmoothing = Math.Clamp(value, 0, 100);
     }
 
     public PointF SnapPoint(PointF point)

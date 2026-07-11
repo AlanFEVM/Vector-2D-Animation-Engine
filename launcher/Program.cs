@@ -29,25 +29,25 @@ internal static class Program
             return;
         }
 
-        var hotReload = !args.Any(arg => arg.Equals("--no-hot-reload", StringComparison.OrdinalIgnoreCase));
+        var autoRestart = !args.Any(arg => arg.Equals("--no-hot-reload", StringComparison.OrdinalIgnoreCase));
         var startInfo = new ProcessStartInfo
         {
             FileName = dotnet,
-            Arguments = hotReload
-                ? $"watch --project \"{projectPath}\" run -c Debug --no-restore"
+            Arguments = autoRestart
+                ? $"watch --no-hot-reload --project \"{projectPath}\" run -c Debug --no-restore"
                 : $"run --project \"{projectPath}\" -c Debug --no-restore",
             WorkingDirectory = root,
             UseShellExecute = false,
             CreateNoWindow = true
         };
         startInfo.Environment["V2D_LOG_DIR"] = logDir;
-        startInfo.Environment["V2D_DEV_HOT_RELOAD"] = hotReload ? "1" : "0";
-        startInfo.Environment["DOTNET_WATCH_RESTART_ON_RUDE_EDIT"] = "true";
+        startInfo.Environment["V2D_DEV_HOT_RELOAD"] = "0";
+        startInfo.Environment["V2D_DEV_AUTO_RESTART"] = autoRestart ? "1" : "0";
         startInfo.Environment["DOTNET_WATCH_SUPPRESS_LAUNCH_BROWSER"] = "true";
 
         try
         {
-            Log(logDir, $"Launching native app. Hot reload: {hotReload}. Command: {startInfo.FileName} {startInfo.Arguments}");
+            Log(logDir, $"Launching native app. Auto restart: {autoRestart}. Command: {startInfo.FileName} {startInfo.Arguments}");
             Process.Start(startInfo);
         }
         catch (Exception ex)

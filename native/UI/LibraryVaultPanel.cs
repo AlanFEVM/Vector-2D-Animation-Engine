@@ -9,6 +9,8 @@ internal sealed class VaultItem
     public string Name { get; set; } = "Untitled";
     public string Detail { get; set; } = "";
     public string Payload { get; set; } = "";
+    public string ReferenceKind { get; set; } = "";
+    public string ReferenceId { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -208,7 +210,9 @@ internal sealed class LibraryVaultPanel : UserControl
             Kind = preset.Kind,
             Name = preset.Name,
             Detail = preset.Detail,
-            Payload = preset.Payload
+            Payload = preset.Payload,
+            ReferenceKind = preset.ReferenceKind,
+            ReferenceId = preset.ReferenceId
         });
     }
 
@@ -227,7 +231,9 @@ internal sealed class LibraryVaultPanel : UserControl
                 Kind = item.Kind,
                 Name = item.Name,
                 Detail = item.Detail,
-                Payload = item.Payload
+                Payload = item.Payload,
+                ReferenceKind = item.ReferenceKind,
+                ReferenceId = item.ReferenceId
             });
         };
     }

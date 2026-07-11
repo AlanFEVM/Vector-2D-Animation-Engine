@@ -10,5 +10,7 @@ internal enum ToolMode
     Polygon,
     Star,
     Line,
+    Pencil,
+    Brush,
     Fill
 }

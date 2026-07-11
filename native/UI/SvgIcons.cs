@@ -12,6 +12,8 @@ internal enum SvgIconKind
     Polygon,
     Star,
     Line,
+    Pencil,
+    Brush,
     Fill,
     Vault,
     Snap,
@@ -68,6 +70,19 @@ internal static class SvgIcons
                 g.DrawLine(pen, P(r, 4, 20), P(r, 20, 4));
                 g.DrawEllipse(thinPen, Rect(r, 3, 19, 3, 3));
                 g.DrawEllipse(thinPen, Rect(r, 19, 3, 3, 3));
+                break;
+            case SvgIconKind.Pencil:
+                g.DrawLine(pen, P(r, 5, 19), P(r, 17, 7));
+                g.DrawLine(pen, P(r, 8, 22), P(r, 20, 10));
+                g.DrawLine(thinPen, P(r, 5, 19), P(r, 8, 22));
+                g.DrawLine(thinPen, P(r, 17, 7), P(r, 20, 10));
+                DrawPolygon(g, thinPen, [P(r, 5, 19), P(r, 3, 22), P(r, 8, 22)]);
+                break;
+            case SvgIconKind.Brush:
+                g.DrawLine(pen, P(r, 14, 4), P(r, 9, 15));
+                g.DrawLine(pen, P(r, 20, 7), P(r, 11, 17));
+                g.FillEllipse(fill, Rect(r, 4, 14, 9, 8));
+                g.DrawArc(pen, Rect(r, 4, 14, 9, 8), 205, 285);
                 break;
             case SvgIconKind.Fill:
                 DrawPolygon(g, pen, [P(r, 8, 4), P(r, 19, 15), P(r, 13, 21), P(r, 2, 10)]);

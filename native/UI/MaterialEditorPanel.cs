@@ -2,18 +2,37 @@ namespace VectorAnimationEngine;
 
 internal sealed class MaterialChangedEventArgs : EventArgs
 {
-    public MaterialChangedEventArgs(Color fill, Color stroke, float strokeWidth, float opacity)
+    public MaterialChangedEventArgs(
+        Color fill,
+        Color stroke,
+        float strokeWidth,
+        float opacity,
+        bool fillChanged,
+        bool strokeChanged,
+        bool strokeWidthChanged,
+        bool opacityChanged,
+        bool applyAll)
     {
         Fill = fill;
         Stroke = stroke;
         StrokeWidth = strokeWidth;
         Opacity = opacity;
+        FillChanged = fillChanged;
+        StrokeChanged = strokeChanged;
+        StrokeWidthChanged = strokeWidthChanged;
+        OpacityChanged = opacityChanged;
+        ApplyAll = applyAll;
     }
 
     public Color Fill { get; }
     public Color Stroke { get; }
     public float StrokeWidth { get; }
     public float Opacity { get; }
+    public bool FillChanged { get; }
+    public bool StrokeChanged { get; }
+    public bool StrokeWidthChanged { get; }
+    public bool OpacityChanged { get; }
+    public bool ApplyAll { get; }
 }
 
 internal sealed class MaterialEditorPanel : UserControl
@@ -125,7 +144,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _strokeWidth.Dock = DockStyle.Fill;
         _strokeWidth.Margin = new Padding(0, 4, 0, 4);
         Theme.StyleNumeric(_strokeWidth);
-        _strokeWidth.ValueChanged += (_, _) => RaiseMaterialChanged(strokeChanged: true);
+        _strokeWidth.ValueChanged += (_, _) => RaiseMaterialChanged(strokeWidthChanged: true);
         content.Controls.Add(_strokeWidth, 1, 2);
 
         AddLabel(content, "Opacity", 3);
@@ -160,7 +179,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
         var apply = new Button { Text = "Apply", Dock = DockStyle.Left, Width = 86, Height = 30, Margin = new Padding(0, 5, 0, 0) };
         Theme.StyleButton(apply);
-        apply.Click += (_, _) => RaiseMaterialChanged();
+        apply.Click += (_, _) => RaiseMaterialChanged(applyAll: true);
         content.Controls.Add(apply, 1, 4);
 
         LoadPresets(_fillPreset);
@@ -174,7 +193,8 @@ internal sealed class MaterialEditorPanel : UserControl
     private void ApplyMaterial(Color fill, Color stroke, float strokeWidth, float opacity, bool raiseEvent)
     {
         var fillChanged = _fill.ToArgb() != fill.ToArgb();
-        var strokeChanged = _stroke.ToArgb() != stroke.ToArgb() || Math.Abs(StrokeWidth - strokeWidth) > 0.001f;
+        var strokeChanged = _stroke.ToArgb() != stroke.ToArgb();
+        var strokeWidthChanged = Math.Abs(StrokeWidth - strokeWidth) > 0.001f;
         var opacityChanged = Math.Abs(Opacity - opacity) > 0.001f;
 
         _updating = true;
@@ -189,18 +209,32 @@ internal sealed class MaterialEditorPanel : UserControl
         MatchPreset(_strokePreset, _stroke);
         _updating = false;
 
-        if (raiseEvent) RaiseMaterialChanged(fillChanged, strokeChanged, opacityChanged);
+        if (raiseEvent) RaiseMaterialChanged(fillChanged, strokeChanged, strokeWidthChanged, opacityChanged);
     }
 
-    private void RaiseMaterialChanged(bool fillChanged = false, bool strokeChanged = false, bool opacityChanged = false)
+    private void RaiseMaterialChanged(
+        bool fillChanged = false,
+        bool strokeChanged = false,
+        bool strokeWidthChanged = false,
+        bool opacityChanged = false,
+        bool applyAll = false)
     {
         if (_updating) return;
 
         _fillPreview.BackColor = _fill;
         _strokePreview.BackColor = _stroke;
-        MaterialChanged?.Invoke(this, new MaterialChangedEventArgs(_fill, _stroke, StrokeWidth, Opacity));
+        MaterialChanged?.Invoke(this, new MaterialChangedEventArgs(
+            _fill,
+            _stroke,
+            StrokeWidth,
+            Opacity,
+            fillChanged,
+            strokeChanged,
+            strokeWidthChanged,
+            opacityChanged,
+            applyAll));
         if (fillChanged) FillChanged?.Invoke(this, EventArgs.Empty);
-        if (strokeChanged) StrokeChanged?.Invoke(this, EventArgs.Empty);
+        if (strokeChanged || strokeWidthChanged) StrokeChanged?.Invoke(this, EventArgs.Empty);
         if (opacityChanged) OpacityChanged?.Invoke(this, EventArgs.Empty);
     }
 
