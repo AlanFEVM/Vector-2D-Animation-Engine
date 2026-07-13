@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Stage Workflow"
+  short_description: "Stage tools, overlays, and rendering changes"
+  default_prompt: "Use $vector2d-stage-workflow to implement a stage tool, interaction, overlay, or rendering change."

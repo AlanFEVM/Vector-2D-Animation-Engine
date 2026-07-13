@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Project Model"
+  short_description: "Project, timeline, and composition model changes"
+  default_prompt: "Use $vector2d-project-model to implement a project, timeline, or composition model change."

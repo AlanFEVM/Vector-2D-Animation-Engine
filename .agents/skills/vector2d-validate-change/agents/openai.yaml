@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Change Validation"
+  short_description: "Build, regression, visual, and release validation"
+  default_prompt: "Use $vector2d-validate-change to select and run validation for the current repository change."
