@@ -15,6 +15,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
     private Size _targetSize;
     private Point _targetLocation;
     private long _animationStartedAt;
+    private ToolStripItem? _hoveredItem;
 
     public AnimatedContextMenuStrip()
     {
@@ -27,7 +28,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         ShowImageMargin = false;
         ShowCheckMargin = false;
         AccessibleRole = AccessibleRole.MenuPopup;
-        Renderer = new ContextMenuRenderer();
+        Renderer = new ContextMenuRenderer(this);
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
         ItemAdded += (_, e) =>
@@ -40,6 +41,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
     protected override void OnOpening(CancelEventArgs e)
     {
         StopOpeningAnimation();
+        SetHoveredItem(null);
         RestoreMinimumSize();
         AutoSize = true;
         base.OnOpening(e);
@@ -65,6 +67,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
     protected override void OnClosed(ToolStripDropDownClosedEventArgs e)
     {
         StopOpeningAnimation();
+        SetHoveredItem(null);
         RestoreMinimumSize();
         AutoSize = true;
         base.OnClosed(e);
@@ -79,6 +82,18 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         }
 
         base.Dispose(disposing);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        SetHoveredItem(GetItemAt(e.Location));
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        SetHoveredItem(null);
     }
 
     private void LayoutItems()
@@ -135,6 +150,20 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         if (string.IsNullOrWhiteSpace(item.AccessibleName)) item.AccessibleName = item.Text;
     }
 
+    private bool IsHovered(ToolStripItem item) => ReferenceEquals(item, _hoveredItem);
+
+    private void SetHoveredItem(ToolStripItem? item)
+    {
+        if (item is ToolStripSeparator || item?.Enabled != true) item = null;
+        if (ReferenceEquals(item, _hoveredItem)) return;
+
+        var previous = _hoveredItem;
+        _hoveredItem = item;
+        _hoveredItem?.Select();
+        if (previous is not null) Invalidate(previous.Bounds);
+        if (_hoveredItem is not null) Invalidate(_hoveredItem.Bounds);
+    }
+
     private void TickOpeningAnimation()
     {
         if (IsDisposed || !Visible)
@@ -187,9 +216,12 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
     private sealed class ContextMenuRenderer : ToolStripProfessionalRenderer
     {
-        public ContextMenuRenderer()
+        private readonly AnimatedContextMenuStrip _menu;
+
+        public ContextMenuRenderer(AnimatedContextMenuStrip menu)
             : base(new ContextMenuColorTable())
         {
+            _menu = menu;
             RoundedEdges = false;
         }
 
@@ -207,9 +239,10 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            if (!e.Item.Selected || !e.Item.Enabled) return;
+            var hovered = _menu.IsHovered(e.Item);
+            if ((!e.Item.Selected && !hovered) || !e.Item.Enabled) return;
 
-            var bounds = Rectangle.Inflate(e.Item.Bounds, -4, -2);
+            var bounds = Rectangle.Inflate(e.Item.Bounds, -2, -1);
             using var background = new SolidBrush(Theme.AccentSurface);
             using var accent = new SolidBrush(Theme.Accent);
             e.Graphics.FillRectangle(background, bounds);

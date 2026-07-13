@@ -52,6 +52,6 @@ Handle `MouseCaptureChanged`, Escape, focus loss, and disposal so a session cann
 
 ## Right-Click Menus
 
-Use `AnimatedContextMenuStrip` for every context menu. It is the component contract for Theme colors, 30px menu rows, high-contrast `TextRenderer` labels, keyboard accessibility, and the 180ms scale-back opening animation. Populate it with normal `ToolStripMenuItem` and `ToolStripSeparator` instances; set enablement in `Opening`, then call `Show` or assign it to `Control.ContextMenuStrip`.
+Use `AnimatedContextMenuStrip` for every context menu. It is the component contract for Theme colors, 30px menu rows, immediate pointer hit highlighting, high-contrast `TextRenderer` labels, keyboard accessibility, and the 180ms scale-back opening animation. Populate it with normal `ToolStripMenuItem` and `ToolStripSeparator` instances; set enablement in `Opening`, then call `Show` or assign it to `Control.ContextMenuStrip`.
 
 Do not create or theme a raw `ContextMenuStrip` at individual call sites.
