@@ -51,3 +51,7 @@ Keep transient Stage state paired and self-clearing:
 - transform/selection overlays: update after every selection or geometry change
 
 Do not store preview geometry in `VectorScene` unless it is intended to become editable project data.
+
+## Right-Click Commands
+
+Use `AnimatedContextMenuStrip` for every Stage or list right-click menu. Keep hit-testing and command enablement in the owning panel's `Opening` handler, keep the click coordinate/selection in explicit state, and let the shared component provide themed rendering, crisp text, accessible defaults, and the opening scale-back animation.

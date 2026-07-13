@@ -1,6 +1,6 @@
 ---
 name: vector2d-winforms-ui
-description: Build and revise Vector 2D Animation Engine WinForms workbench UI under native/UI, including panels, inspectors, toolbars, dialogs, owner-drawn controls, icons, themes, motion, keyboard and accessibility behavior, model binding, and hot-reload refresh routing. Use when a task changes non-stage UI layout or reusable desktop controls.
+description: Build and revise Vector 2D Animation Engine WinForms workbench UI under native/UI, including panels, inspectors, toolbars, dialogs, right-click/context menus, owner-drawn controls, icons, themes, motion, keyboard and accessibility behavior, model binding, and hot-reload refresh routing. Use when a task changes non-stage UI layout or reusable desktop controls.
 ---
 
 # Vector2D WinForms UI
@@ -24,6 +24,7 @@ Follow the project's programmatic WinForms system. It does not use the Designer,
 - Use stable `TableLayoutPanel` or `FlowLayoutPanel` tracks, explicit compact heights, and bounded widths. Avoid layout that changes size when text, hover, or selection changes.
 - Use `Theme` colors, fonts, spacing, and style helpers. Reapply `StyleButton` or `StyleActiveButton` when active state changes.
 - Use icons for familiar tool actions. `SvgIcons` is a code-native 24x24 GDI path set despite its name; extend it instead of embedding ad hoc bitmaps or SVG XML.
+- Create every right-click/context menu with `AnimatedContextMenuStrip`, never a raw `ContextMenuStrip`. The component owns Theme styling, crisp high-contrast text, accessible menu-item defaults, and the opening scale-back animation.
 - Set `AccessibleName` on icon-only buttons and meaningful accessible role/description/unit text on custom inputs.
 - Preserve keyboard access and focus cues. Canvas shortcuts must not consume keys while a text, numeric, combo, or slider editor owns them.
 - Handle hover, focus, disabled, mouse capture loss, cancellation, keyboard adjustment, and DPI-aware sizing in owner-drawn controls.

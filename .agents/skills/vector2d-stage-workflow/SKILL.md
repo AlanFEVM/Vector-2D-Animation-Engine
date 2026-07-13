@@ -1,6 +1,6 @@
 ---
 name: vector2d-stage-workflow
-description: Implement and review Vector 2D Animation Engine stage changes involving canvas tools, pointer and keyboard interaction, selection, drag or transform sessions, previews, overlays, cursors, coordinate conversion, 2D/3D navigation, StageControl, Direct2D/GDI rendering parity, render order, LOD, caches, camera behavior, fallback, and renderer performance.
+description: Implement and review Vector 2D Animation Engine stage changes involving canvas tools, right-click commands/context menus, pointer and keyboard interaction, selection, drag or transform sessions, previews, overlays, cursors, coordinate conversion, 2D/3D navigation, StageControl, Direct2D/GDI rendering parity, render order, LOD, caches, camera behavior, fallback, and renderer performance.
 ---
 
 # Vector2D Stage Workflow
@@ -9,7 +9,7 @@ Keep input state, editable model state, Stage overlays, and both render backends
 
 ## Route The Task
 
-- Read [tool-lifecycle.md](references/tool-lifecycle.md) for tools, shortcuts, pointer sessions, selection, transforms, drag/drop, undo, or preview state.
+- Read [tool-lifecycle.md](references/tool-lifecycle.md) for tools, right-click commands, shortcuts, pointer sessions, selection, transforms, drag/drop, undo, or preview state.
 - Read [rendering-pipeline.md](references/rendering-pipeline.md) for new visuals/shapes, Direct2D or GDI drawing, render order, LOD, caches, camera, fallback, or performance.
 - Read both when a new tool introduces a preview or committed geometry that must render.
 
