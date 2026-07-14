@@ -2,6 +2,7 @@ namespace VectorAnimationEngine;
 
 internal enum WindowChromeButtonKind
 {
+    Restart,
     Minimize,
     Maximize,
     Restore,
@@ -77,6 +78,11 @@ internal sealed class WindowChromeButton : Control
         var cy = Height / 2f;
         switch (Kind)
         {
+            case WindowChromeButtonKind.Restart:
+                g.DrawArc(pen, cx - 6, cy - 6, 12, 12, 42, 280);
+                g.DrawLine(pen, cx + 6, cy - 3, cx + 6, cy - 7);
+                g.DrawLine(pen, cx + 6, cy - 7, cx + 2, cy - 7);
+                break;
             case WindowChromeButtonKind.Minimize:
                 g.DrawLine(pen, cx - 5, cy + 4, cx + 5, cy + 4);
                 break;

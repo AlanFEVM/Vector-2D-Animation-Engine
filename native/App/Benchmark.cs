@@ -361,15 +361,19 @@ internal static class Benchmark
     {
         RunFixedStepBatchRegression();
         RunTimelineExposureRegression();
+        RunTimelineShortcutAdvanceRegression();
         RunTimelineFrameCommandRegression();
         RunTimelineTrackSynchronizationRegression();
         RunTimelineSnapshotRegression();
         RunVectorSceneTimelineSnapshotRegression();
+        RunVectorSceneSnapshotMemoryEstimateRegression();
         RunVectorSceneCelOwnershipRegression();
+        RunTimelineLayerWorkflowRegression();
         RunVectorSceneKeyframeBoundaryRegression();
         RunProjectDocumentStructureRegression();
         RunSceneInstanceTimelineRegression();
         RunSceneCompositionRegression();
+        RunEditorRestartSnapshotRegression();
         Console.WriteLine("timeline_regression=ok");
     }
 
@@ -443,6 +447,19 @@ internal static class Benchmark
             && cleared.EndFrame == 8,
             "Clearing a keyframe did not restore the preceding held exposure.");
         AssertTimeline(!timeline.ClearKeyframe(track.Id, 6), "Clearing a missing keyframe reported a change.");
+    }
+
+    private static void RunTimelineShortcutAdvanceRegression()
+    {
+        var source = new TimelineFrameCell("layer-a", 12);
+        var target = MainForm.AdvanceTimelineKeyframeShortcutCell(source);
+        AssertTimeline(
+            target.TrackId == source.TrackId && target.Frame == 13,
+            "F6/F7 did not advance the playhead cell before choosing the insertion frame.");
+        AssertTimeline(
+            MainForm.AdvanceTimelineKeyframeShortcutCell(new TimelineFrameCell("layer-a", int.MaxValue - 1))
+                == new TimelineFrameCell("layer-a", int.MaxValue - 1),
+            "F6/F7 shortcut frame advance overflowed at the maximum supported frame.");
     }
 
     private static void RunTimelineFrameCommandRegression()
@@ -609,6 +626,120 @@ internal static class Benchmark
             && scene.IsLayerActive(0, 8)
             && restoredSecond?.Duration == 16,
             "Vector scene snapshot did not restore timeline-backed layer exposure.");
+    }
+
+    private static void RunVectorSceneSnapshotMemoryEstimateRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var baseline = scene.CreateSnapshot().EstimateMemoryBytes();
+        for (var index = 0; index < 32; index++)
+        {
+            var offset = index * 24f;
+            var path = scene.AddPathObjectContours(
+                0,
+                [[
+                    new PointF(offset, 0),
+                    new PointF(offset + 16, 0),
+                    new PointF(offset + 8, 16),
+                    new PointF(offset, 0)
+                ]],
+                0,
+                Color.Teal,
+                Color.Transparent,
+                8);
+            scene.SetLinearGradient(path, Color.Teal, Color.Coral);
+            scene.AddFreehandStroke(
+                0,
+                [
+                    new PointF(offset, 32),
+                    new PointF(offset + 8, 48),
+                    new PointF(offset + 16, 32)
+                ],
+                6,
+                Color.White,
+                brushStroke: false,
+                8);
+        }
+
+        var estimate = scene.CreateSnapshot().EstimateMemoryBytes();
+        AssertTimeline(
+            estimate > baseline + 16_000,
+            "Vector scene snapshot memory estimation did not include geometry, gradients, and freehand point buffers.");
+    }
+
+    private static void RunTimelineLayerWorkflowRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(layers: 2);
+        scene.EditFrame = 0;
+        scene.AddObject(0, PointF.Empty, new SizeF(40, 40), 0, 0, Color.Teal, 6, ShapeKind.Rectangle);
+        scene.SetLinearGradient(0, Color.Black, Color.White);
+        AssertTimeline(scene.InsertTimelineKeyframe(0, 2), "Timeline layer workflow could not create a neighboring drawing cel.");
+
+        var clipboardSource = new VectorScene();
+        clipboardSource.RestoreSnapshot(scene.CreateSnapshot());
+        AssertTimeline(
+            scene.CopyTimelineFrameFrom(clipboardSource, 0, 2, 1, 4),
+            "Timeline layer workflow could not copy a drawing cel between layers.");
+        AssertTimeline(
+            scene.Timeline.EvaluateTargetExposure(scene.LayerIds[1], 4).HasContent
+            && Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ObjectLayer[index] == 1 && scene.ObjectKeyframeFrame[index] == 4),
+            "Timeline cel copy did not materialize independent destination content.");
+
+        AssertTimeline(scene.SetLayerColor(1, Color.Orange), "Timeline layer workflow could not set a layer color.");
+        AssertTimeline(scene.ToggleLayerOnionSkin(0), "Timeline layer workflow could not enable onion skin.");
+        AssertTimeline(scene.SetOnionSkinRange(0, 0), "Timeline layer workflow could not disable both onion-skin ranges.");
+        var emptyOnionPreview = new VectorScene();
+        scene.BuildOnionSkinPreview(emptyOnionPreview, 1);
+        AssertTimeline(
+            emptyOnionPreview.ObjectCount == 0,
+            "A zero onion-skin range still rendered neighboring cels.");
+        AssertTimeline(scene.SetOnionSkinRange(3, 1), "Timeline layer workflow could not set the onion-skin frame range.");
+        var onionPreview = new VectorScene();
+        scene.BuildOnionSkinPreview(onionPreview, 1);
+        var previousOnionPreview = new VectorScene();
+        scene.BuildOnionSkinPreview(previousOnionPreview, 2);
+        AssertTimeline(
+            onionPreview.ObjectCount > 0
+            && scene.ObjectCount > onionPreview.ObjectCount
+            && onionPreview.IsObjectActive(0, 1)
+            && onionPreview.GetGradientStops(0).All(stop => ((stop.Argb >>> 24) & 0xff) is > 0 and < 160)
+            && onionPreview.GetGradientStops(0).All(stop => (stop.Argb & 0x00ffffff) == 0x006fc3da)
+            && previousOnionPreview.ObjectCount > 0
+            && previousOnionPreview.GetGradientStops(0).All(stop => (stop.Argb & 0x00ffffff) == 0x00e0867e),
+            "Onion skin preview did not build a visible non-destructive neighboring-frame scene.");
+
+        var sourceLayerId = scene.LayerIds[0];
+        var sourceTrackId = scene.Timeline.FindTrackByTargetId(sourceLayerId)?.Id;
+        AssertTimeline(scene.MoveLayer(0, 1), "Timeline layer workflow could not reorder drawing layers.");
+        AssertTimeline(
+            scene.LayerIds[1] == sourceLayerId
+            && scene.Timeline.FindTrackByTargetId(sourceLayerId)?.Id == sourceTrackId
+            && Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ObjectLayer[index] == 1),
+            "Drawing-layer reorder changed stable track identity or object ownership.");
+
+        var snapshot = scene.CreateSnapshot();
+        scene.SetLayerColor(0, Color.Black);
+        scene.ToggleLayerOnionSkin(1);
+        scene.SetOnionSkinRange(0, 0);
+        scene.RestoreSnapshot(snapshot);
+        AssertTimeline(
+            scene.GetLayerColor(0).ToArgb() == Color.Orange.ToArgb()
+            && scene.LayerOnionSkin[1]
+            && scene.OnionSkinPreviousFrames == 3
+            && scene.OnionSkinNextFrames == 1,
+            "Layer color or onion-skin state did not survive a scene snapshot round trip.");
+
+        var project = VectorProject.CreateEmpty();
+        var sceneDefinition = project.Scenes[0];
+        AssertTimeline(project.TryAddSceneLayer(sceneDefinition.Id, out var addedLayer) && addedLayer is not null, "Scene-layer workflow could not add a layer.");
+        AssertTimeline(
+            project.TrySetSceneLayerColor(sceneDefinition.Id, addedLayer!.Id, Color.Coral)
+            && project.TryMoveSceneLayer(sceneDefinition.Id, addedLayer.Id, 0)
+            && sceneDefinition.Layers[0].Id == addedLayer.Id
+            && sceneDefinition.Layers[0].ColorArgb == Color.Coral.ToArgb(),
+            "Scene-layer color or reordering did not route through the project model.");
     }
 
     private static void RunVectorSceneCelOwnershipRegression()
@@ -892,46 +1023,77 @@ internal static class Benchmark
 
         AssertTimeline(
             rejectedDuplicateSceneInstanceId && scene.Instances.Count == 2,
-            "A scene accepted duplicate instance IDs that would share one timeline track.");
+            "A scene accepted duplicate instance IDs.");
 
         var timeline = scene.Timeline;
-        var firstTrack = timeline.FindTrackByTargetId(first!.Id)
-            ?? throw new InvalidOperationException("Scene timeline did not create a track for its first instance.");
-        var secondTrack = timeline.FindTrackByTargetId(second!.Id)
-            ?? throw new InvalidOperationException("Scene timeline did not create a track for its second instance.");
+        var firstLayer = scene.Layers[0];
+        var firstTrack = timeline.FindTrackByTargetId(firstLayer.Id)
+            ?? throw new InvalidOperationException("Scene timeline did not create a track for its first layer.");
         AssertTimeline(
-            scene.TimelineTargetIds.SequenceEqual(new[] { first.Id, second.Id })
+            first!.SceneLayerId == firstLayer.Id
+            && second!.SceneLayerId == firstLayer.Id
+            && scene.InstancesInLayer(firstLayer.Id).Count == 2
+            && scene.TimelineTargetIds.SequenceEqual(new[] { firstLayer.Id })
             && timeline.Tracks.Select(item => item.TargetId).SequenceEqual(scene.TimelineTargetIds)
-            && timeline.EvaluateTargetExposure(first.Id, 0).HasContent
-            && timeline.EvaluateTargetExposure(second.Id, 0).HasContent,
-            "Scene instances did not receive populated frame-zero tracks in instance order.");
+            && timeline.EvaluateTargetExposure(firstLayer.Id, 0).HasContent,
+            "Scene instances in one layer did not share a populated frame-zero layer track.");
 
-        timeline.InsertBlankKeyframe(secondTrack.Id, 10);
-        var expectedSecondTrackId = secondTrack.Id;
+        firstDrawingObject.Scene.AddObject(
+            0,
+            new PointF(-20, 0),
+            new SizeF(20, 20),
+            0,
+            0,
+            Color.Teal,
+            2,
+            ShapeKind.Rectangle);
+        secondDrawingObject.Scene.AddObject(
+            0,
+            new PointF(20, 0),
+            new SizeF(20, 20),
+            0,
+            0,
+            Color.Coral,
+            2,
+            ShapeKind.Rectangle);
+        var groupedDestination = new VectorScene();
+        var groupedComposition = SceneCompositionBuilder.Build(groupedDestination, scene, project.DrawingObjects, 0);
+        AssertTimeline(
+            groupedDestination.ObjectCount == 2
+            && groupedComposition.ObjectOwners.Values.Select(owner => owner.RootInstanceId).Distinct().Count() == 2,
+            "Multiple drawing objects in one scene layer were not composed together.");
+
+        timeline.InsertBlankKeyframe(firstTrack.Id, 10);
+        var expectedFirstTrackId = firstTrack.Id;
         var removedFirst = scene.RemoveInstance(first);
-        var addedThird = project.TryAddSceneInstance(scene.Id, thirdDrawingObject.Id, PointF.Empty, 2, out var third);
+        var addedLayer = project.TryAddSceneLayer(scene.Id, out var secondLayer);
+        DrawingObjectInstanceDefinition? third = null;
+        var addedThird = secondLayer is not null
+            && project.TryAddSceneInstance(scene.Id, thirdDrawingObject.Id, PointF.Empty, 2, secondLayer.Id, out third);
         AssertTimeline(
             removedFirst
             && addedThird
             && third is not null,
-            "Scene-instance removal or reinsertion failed during timeline synchronization.");
+            "Scene-instance removal, scene-layer insertion, or reinsertion failed during timeline synchronization.");
 
-        var synchronizedSecond = timeline.FindTrackByTargetId(second.Id);
-        var thirdTrack = timeline.FindTrackByTargetId(third!.Id);
+        var synchronizedFirst = timeline.FindTrackByTargetId(firstLayer.Id);
+        var secondTrack = secondLayer is null ? null : timeline.FindTrackByTargetId(secondLayer.Id);
         AssertTimeline(
-            timeline.Tracks.Select(item => item.TargetId).SequenceEqual(new[] { second.Id, third.Id })
-            && timeline.FindTrackByTargetId(first.Id) is null,
-            "Scene timeline tracks did not synchronize to the current instance IDs.");
+            scene.Layers.Count == 2
+            && timeline.Tracks.Select(item => item.TargetId).SequenceEqual(scene.TimelineTargetIds)
+            && scene.InstancesInLayer(firstLayer.Id).Count == 1
+            && scene.InstancesInLayer(secondLayer!.Id).Count == 1,
+            "Scene timeline tracks did not synchronize to scene layers or retain grouped instances.");
         AssertTimeline(
-            synchronizedSecond is not null
-            && synchronizedSecond.Id == expectedSecondTrackId
-            && synchronizedSecond.Keyframes.Any(item => item.Frame == 10 && item.Kind == TimelineKeyframeKind.Blank),
-            "Scene timeline synchronization discarded a surviving instance track.");
+            synchronizedFirst is not null
+            && synchronizedFirst.Id == expectedFirstTrackId
+            && synchronizedFirst.Keyframes.Any(item => item.Frame == 10 && item.Kind == TimelineKeyframeKind.Blank),
+            "Scene timeline synchronization discarded a surviving scene-layer track.");
         AssertTimeline(
-            thirdTrack is not null
-            && thirdTrack.Keyframes.Count == 1
-            && thirdTrack.Keyframes[0] == new TimelineKeyframe(0, TimelineKeyframeKind.Populated),
-            "New scene instance track did not start with populated content at frame zero.");
+            secondTrack is not null
+            && third!.SceneLayerId == secondLayer!.Id
+            && secondTrack.EvaluateExposure(0).HasContent,
+            "A new scene layer did not expose its grouped drawing-object instance at frame zero.");
     }
 
     private static void RunProjectDocumentStructureRegression()
@@ -1047,7 +1209,7 @@ internal static class Benchmark
         var drawingObject = project.DrawingObjects[0];
         drawingObject.Name = "Composition source";
         drawingObject.Scene.CreateEmpty();
-        drawingObject.Scene.AddObject(
+        var sourceGradientObject = drawingObject.Scene.AddObject(
             0,
             new PointF(100, 50),
             new SizeF(80, 40),
@@ -1056,6 +1218,16 @@ internal static class Benchmark
             Color.Teal,
             12,
             ShapeKind.Rectangle);
+        drawingObject.Scene.SetGradientPaint(
+            sourceGradientObject,
+            GradientKind.Linear,
+            [
+                new GradientStop(0, Color.Teal),
+                new GradientStop(0.5f, Color.Gold),
+                new GradientStop(1, Color.Coral)
+            ],
+            new PointF(60, 50),
+            new PointF(140, 50));
 
         var childDrawingObject = project.AddDrawingObject("Nested source");
         childDrawingObject.Scene.CreateEmpty();
@@ -1098,6 +1270,13 @@ internal static class Benchmark
             && NearlyEqual(destination.Width[0], 160)
             && NearlyEqual(destination.Height[0], 40)
             && NearlyEqual(destination.Angle[0], MathF.PI / 2f)
+            && destination.HasLinearGradient(0)
+            && destination.GradientStartArgb[0] == Color.Teal.ToArgb()
+            && destination.GradientEndArgb[0] == Color.Coral.ToArgb()
+            && destination.GetGradientStops(0).Length == 3
+            && destination.GetGradientStops(0)[1].Argb == Color.Gold.ToArgb()
+            && PointsNear(destination.GetGradientStart(0), new PointF(150, 420))
+            && PointsNear(destination.GetGradientEnd(0), new PointF(150, 580))
             && NearlyEqual(destination.X[1], 200)
             && NearlyEqual(destination.Y[1], 360)
             && destination.GeometryRevision <= 2
@@ -1108,9 +1287,11 @@ internal static class Benchmark
             composition.TryGetOwner(0, out var rootOwner)
             && rootOwner.InstanceId == instance.Id
             && rootOwner.DrawingObjectId == drawingObject.Id
+            && rootOwner.RootInstanceId == instance.Id
             && composition.TryGetOwner(1, out var nestedOwner)
             && nestedOwner.InstanceId == nestedInstance!.Id
-            && nestedOwner.DrawingObjectId == childDrawingObject.Id,
+            && nestedOwner.DrawingObjectId == childDrawingObject.Id
+            && nestedOwner.RootInstanceId == instance.Id,
             "Scene composition did not preserve drawing-object provenance for editor navigation.");
 
         var childPreview = new VectorScene();
@@ -1125,8 +1306,26 @@ internal static class Benchmark
             && previewOwner.DrawingObjectId == childDrawingObject.Id,
             "Drawing-object editing preview did not expose its nested child instance.");
 
-        var track = scene.Timeline.FindTrackByTargetId(instance.Id)
-            ?? throw new InvalidOperationException("Scene composition regression lost its instance track.");
+        var dragPreview = new VectorScene();
+        var dragPreviewResult = SceneCompositionBuilder.BuildDrawingObjectPreview(
+            dragPreview,
+            drawingObject,
+            project.DrawingObjects,
+            new PointF(320, 180),
+            0);
+        AssertTimeline(
+            dragPreview.ObjectCount == 2
+            && NearlyEqual(dragPreview.X[0], 420)
+            && NearlyEqual(dragPreview.Y[0], 230)
+            && NearlyEqual(dragPreview.X[1], 350)
+            && NearlyEqual(dragPreview.Y[1], 180)
+            && Color.FromArgb(dragPreview.Argb[0]).A is > 0 and < 255
+            && dragPreviewResult.TryGetOwner(1, out var dragPreviewOwner)
+            && dragPreviewOwner.DrawingObjectId == childDrawingObject.Id,
+            "Drag preview did not preserve nested drawing-object geometry, placement, or opacity.");
+
+        var track = scene.Timeline.FindTrackByTargetId(instance.SceneLayerId)
+            ?? throw new InvalidOperationException("Scene composition regression lost its scene-layer track.");
         scene.Timeline.InsertBlankKeyframe(track.Id, 5);
         SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 5);
         var placeholderTrack = destination.Timeline.FindTrackByTargetId(destination.LayerIds[0]);
@@ -1135,11 +1334,11 @@ internal static class Benchmark
             && destination.LayerCount == 1
             && placeholderTrack is not null
             && !placeholderTrack.EvaluateExposure(0).HasContent,
-            "Blank scene-instance exposure remained visible or populated the composition placeholder layer.");
+            "Blank scene-layer exposure remained visible or populated the composition placeholder layer.");
 
         scene.Timeline.InsertKeyframe(track.Id, 8);
         SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 8);
-        AssertTimeline(destination.ObjectCount == 2, "Populated scene-instance exposure did not resume composition rendering.");
+        AssertTimeline(destination.ObjectCount == 2, "Populated scene-layer exposure did not resume composition rendering.");
 
         var nestedTrack = drawingObject.InstanceTimeline.FindTrackByTargetId(nestedInstance!.Id)
             ?? throw new InvalidOperationException("Nested composition regression lost its child-instance track.");
@@ -1153,6 +1352,94 @@ internal static class Benchmark
         RunSparseLayerCompositionRegression();
         RunDegeneratePathCompositionRegression();
         RunChunkedCompositionRegression();
+        RunSkewedSceneCompositionRegression();
+    }
+
+    private static void RunEditorRestartSnapshotRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        project.Name = "Restart Snapshot";
+        var root = project.DrawingObjects[0];
+        root.Scene.CreateEmpty();
+        var rootLine = root.Scene.AddLineSegment(
+            0,
+            new PointF(-120, 0),
+            new PointF(120, 0),
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Round);
+        var child = project.AddDrawingObject("Restart Child");
+        child.Scene.AddObject(0, new PointF(24, 12), new SizeF(48, 36), 0, 0, Color.Teal, 6, ShapeKind.Rectangle);
+        if (!project.TryAddDrawingObjectInstance(root.Id, child.Id, new PointF(40, 20), out var nested)
+            || nested is null
+            || !project.TryAddSceneInstance(project.Scenes[0].Id, root.Id, new PointF(320, 180), 2, out var sceneInstance)
+            || sceneInstance is null)
+        {
+            throw new InvalidOperationException("Editor restart snapshot regression could not create its source project graph.");
+        }
+
+        var restored = VectorProject.RestoreRestartSnapshot(
+            EditorRestartStore.RoundTripProjectSnapshot(project.CreateRestartSnapshot()));
+        var restoredRoot = restored.DrawingObjects.SingleOrDefault(item => item.Id == root.Id);
+        var restoredChild = restored.DrawingObjects.SingleOrDefault(item => item.Id == child.Id);
+        var restoredScene = restored.Scenes.SingleOrDefault(item => item.Id == project.Scenes[0].Id);
+        if (restored.Name != project.Name
+            || restored.DrawingObjects.Count != 2
+            || restored.Scenes.Count != 1
+            || restoredRoot is null
+            || restoredChild is null
+            || restoredRoot.Instances.Count != 1
+            || restoredRoot.Instances[0].Id != nested.Id
+            || restoredRoot.Instances[0].DrawingObjectId != child.Id
+            || restoredRoot.Scene.ObjectCount != 1
+            || restoredRoot.Scene.GetLineEndpointStyle(rootLine, startEndpoint: true) != LineEndpointStyle.Sharp
+            || restoredRoot.Scene.GetLineEndpointStyle(rootLine, startEndpoint: false) != LineEndpointStyle.Round
+            || restoredScene is null
+            || restoredScene.Instances.Count != 1
+            || restoredScene.Instances[0].Id != sceneInstance.Id
+            || restoredScene.Instances[0].DrawingObjectId != root.Id
+            || !restoredScene.Timeline.EvaluateTargetExposure(restoredScene.ActiveLayerId, 0).HasContent)
+        {
+            throw new InvalidOperationException("Editor restart snapshot did not preserve project geometry, instance ownership, or timeline state.");
+        }
+
+        Console.WriteLine("editor_restart_snapshot_regression=ok");
+    }
+
+    private static void RunSkewedSceneCompositionRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var drawingObject = project.DrawingObjects[0];
+        drawingObject.Scene.CreateEmpty();
+        drawingObject.Scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(120, 80),
+            0,
+            6,
+            Color.Teal,
+            Color.White,
+            6,
+            ShapeKind.Rectangle);
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, drawingObject.Id, new PointF(180, 120), 0, out var instance)
+            && instance is not null,
+            "Validated skewed scene-instance insertion was rejected.");
+        instance!.SkewX = 28;
+
+        var destination = new VectorScene();
+        SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 0);
+        AssertTimeline(
+            destination.ObjectCount == 1
+            && destination.ShapeKind[0] == ShapeKind.Path
+            && destination.TryGetPathWorldContours(0, out var contours)
+            && contours.Length == 1
+            && contours[0].Length >= 4,
+            "Scene composition did not preserve a skewed drawing-object instance as real path geometry.");
     }
 
     private static void RunSparseLayerCompositionRegression()
@@ -1285,9 +1572,23 @@ internal static class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunHotReloadModuleRoutingRegression();
+        RunColorHarmonyRegression();
+        RunGradientPresetRegression();
+        RunGradientPaintRegression();
+        RunLineSegmentMergeRegression();
+        RunClosedFillRegionRegression();
+        RunTransformGeometryRegression();
+        RunSoftBrushRegression();
+        RunBrushFrequencyRegression();
+        RunPressureBrushRegression();
+        RunBrushWorldScaleRegression();
+        RunBrushEraserRegression();
+
         var editable = new VectorScene();
         editable.CreateEmpty();
-        editable.AddObject(0, new PointF(120, 80), new SizeF(180, 120), 0, 0, Color.Teal, 12, ShapeKind.Rectangle);
+        var editableObject = editable.AddObject(0, new PointF(120, 80), new SizeF(180, 120), 0, 0, Color.Teal, 12, ShapeKind.Rectangle);
+        editable.SetLinearGradient(editableObject, Color.Teal, Color.Coral);
         var underlay = new VectorScene();
         underlay.CreateEmpty();
         underlay.AddFreehandStroke(
@@ -1451,6 +1752,61 @@ internal static class Benchmark
         Console.WriteLine($"fit_stage_command_budget_met={commandBudgetMet.ToString().ToLowerInvariant()}");
         Console.WriteLine($"fit_stage_command_capacity_fps={1000.0 / averageCommandMilliseconds:0.0}");
         Console.WriteLine($"fit_stage_present_avg_ms={presentMilliseconds / renderSamples:0.000}");
+    }
+
+    private static void RunClosedFillRegionRegression()
+    {
+        var stroke = VectorUnits.StrokePointsToUnits(2);
+        var color = Color.FromArgb(79, 179, 162);
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddLineSegment(0, new PointF(0, 0), new PointF(200, 0), stroke, Color.Transparent, Color.White, 6);
+        scene.AddLineSegment(0, new PointF(200, 0), new PointF(200, 120), stroke, Color.Transparent, Color.White, 6);
+        scene.AddLineSegment(0, new PointF(200, 120), new PointF(0, 120), stroke, Color.Transparent, Color.White, 6);
+        scene.AddLineSegment(0, new PointF(0, 120), new PointF(0, 0), stroke, Color.Transparent, Color.White, 6);
+        scene.AddLineSegment(0, new PointF(100, 0), new PointF(100, 120), stroke, Color.Transparent, Color.White, 6);
+
+        if (!scene.TryCreateFillFromClosedStrokeRegion(new PointF(50, 60), 0, color, out var created, out var contours)
+            || created < 0
+            || scene.ShapeKind[created] != ShapeKind.Path
+            || scene.Argb[created] != color.ToArgb()
+            || scene.Stroke[created] != 0
+            || contours.Length != 1
+            || !scene.FillContainsPoint(created, new PointF(50, 60))
+            || scene.FillContainsPoint(created, new PointF(150, 60)))
+        {
+            throw new InvalidOperationException("Closed stroke fill did not create only the clicked bounded region.");
+        }
+
+        if (scene.TryCreateFillFromClosedStrokeRegion(new PointF(260, 60), 0, color, out _, out _))
+        {
+            throw new InvalidOperationException("Closed stroke fill created geometry outside every bounded region.");
+        }
+
+        var pencilScene = new VectorScene();
+        pencilScene.CreateEmpty();
+        pencilScene.AddFreehandStroke(
+            0,
+            new[]
+            {
+                new PointF(0, 0),
+                new PointF(100, 100),
+                new PointF(0, 100),
+                new PointF(100, 0)
+            },
+            stroke,
+            Color.White,
+            brushStroke: false,
+            12);
+        if (!pencilScene.TryCreateFillFromClosedStrokeRegion(new PointF(50, 78), 0, Color.Coral, out var pencilFill, out _)
+            || pencilFill < 0
+            || !pencilScene.FillContainsPoint(pencilFill, new PointF(50, 78))
+            || pencilScene.FillContainsPoint(pencilFill, new PointF(50, 22)))
+        {
+            throw new InvalidOperationException("A self-intersecting pencil stroke did not expose an independently fillable loop.");
+        }
+
+        Console.WriteLine("closed_fill_region_regression=ok");
     }
 
     public static void RunFreehandStress()
@@ -1705,6 +2061,7 @@ internal static class Benchmark
     {
         RunCrossingFillTopologyRegression();
         RunTerminatingLineTopologyRegression();
+        RunTerminatingStrokeContactRegression();
         RunCrossingLinesTopologyRegression();
         RunCollinearOverlapTopologyRegression();
         RunOutlinedBoundaryTopologyRegression();
@@ -1720,7 +2077,1077 @@ internal static class Benchmark
         RunOutlinedFillMergeRegression();
         RunMarqueeElementQueryRegression();
         RunMarqueeLineMaterializationRegression();
-        Console.WriteLine("drawing_topology_regressions=17");
+        RunMarqueeFillMaterializationRegression();
+        RunMarqueeOutlinedBoundarySelectionRegression();
+        RunLineToFillConversionRegression();
+        RunLineSegmentMergeRegression();
+        Console.WriteLine("drawing_topology_regressions=22");
+    }
+
+    private static void RunTransformGeometryRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var line = scene.AddCurveSegment(0, new PointF(0, 0), new PointF(40, 80), new PointF(100, 0), 6, Color.Transparent, Color.Coral, 6);
+        var freehand = scene.AddFreehandStroke(0, new[] { new PointF(-80, -40), new PointF(-20, 60) }, 6, Color.White, brushStroke: false, 6);
+        var path = scene.AddPathObjectContours(0, new[] { new[] { new PointF(140, 0), new PointF(180, 0), new PointF(160, 40), new PointF(140, 0) } }, 0, Color.Teal, Color.Transparent, 6);
+        var rectangle = scene.AddObject(0, PointF.Empty, new SizeF(100, 60), 0, 4, Color.Teal, Color.White, 6, ShapeKind.Rectangle);
+        scene.TransformObjects(new[] { line, freehand, path }, point => new PointF(point.X + 30, point.Y - 20));
+        scene.ShearObjects(new[] { rectangle }, point => new PointF(point.X + (point.Y - 30) * 0.5f, point.Y));
+
+        scene.TryGetLineEndpoint(line, startEndpoint: true, out var lineStart);
+        scene.TryGetLineEndpoint(line, startEndpoint: false, out var lineEnd);
+        var lineControl = new PointF(scene.CurveControlX[line], scene.CurveControlY[line]);
+        var freehandValid = scene.TryGetFreehandWorldPoints(freehand, out var freehandPoints);
+        var pathValid = scene.TryGetPathWorldContours(path, out var pathContours);
+        var skewValid = scene.TryGetPathWorldContours(rectangle, out var skewContours);
+        if (!PointsNear(lineStart, new PointF(30, -20))
+            || !PointsNear(lineEnd, new PointF(130, -20))
+            || !PointsNear(lineControl, new PointF(70, 60))
+            || !freehandValid
+            || freehandPoints.Length != 2
+            || !PointsNear(freehandPoints[0], new PointF(-50, -60))
+            || !pathValid
+            || pathContours.Length != 1
+            || !PointsNear(pathContours[0][0], new PointF(170, -20))
+            || scene.ShapeKind[rectangle] != ShapeKind.Path
+            || !skewValid
+            || skewContours.Length != 1
+            || !PointsNear(skewContours[0][0], new PointF(-80, -30)))
+        {
+            throw new InvalidOperationException("Free transform did not preserve line, freehand, path, and skew geometry.");
+        }
+
+        Console.WriteLine("transform_geometry_regression=ok");
+    }
+
+    private static void RunGradientPaintRegression()
+    {
+        var lineAxisScene = new VectorScene();
+        lineAxisScene.CreateEmpty();
+        var verticalLine = lineAxisScene.AddLineSegment(
+            0,
+            new PointF(240, 40),
+            new PointF(240, 180),
+            VectorUnits.StrokePointsToUnits(12),
+            Color.Transparent,
+            Color.White,
+            8);
+        lineAxisScene.SetGradientPaint(
+            verticalLine,
+            GradientKind.Linear,
+            [new GradientStop(0, Color.Coral), new GradientStop(1, Color.RoyalBlue)]);
+        var lineDefaultAxis = lineAxisScene.HasGradient(verticalLine)
+            && lineAxisScene.GetGradientKind(verticalLine) == GradientKind.Linear
+            && PointsNear(lineAxisScene.GetGradientStart(verticalLine), new PointF(240, 40))
+            && PointsNear(lineAxisScene.GetGradientEnd(verticalLine), new PointF(240, 180));
+        var adjacentLine = lineAxisScene.AddLineSegment(
+            0,
+            new PointF(240, 184),
+            new PointF(240, 324),
+            VectorUnits.StrokePointsToUnits(12),
+            Color.Transparent,
+            Color.White,
+            8);
+        var gradientLineMerge = lineAxisScene.MergeCompatibleLineSegments(0);
+        var lineGradientMergeProtected = !gradientLineMerge.Changed
+            && lineAxisScene.ObjectCount == 2
+            && lineAxisScene.HasGradient(verticalLine)
+            && !lineAxisScene.HasGradient(adjacentLine);
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var rectangle = scene.AddObject(
+            0,
+            new PointF(100, 50),
+            new SizeF(80, 40),
+            0,
+            0,
+            Color.Teal,
+            12,
+            ShapeKind.Rectangle);
+        var line = scene.AddLineSegment(
+            0,
+            new PointF(20, 150),
+            new PointF(180, 150),
+            VectorUnits.StrokePointsToUnits(18),
+            Color.Transparent,
+            Color.White,
+            12);
+        scene.SetLinearGradient(
+            rectangle,
+            Color.Coral,
+            Color.RoyalBlue,
+            new PointF(60, 50),
+            new PointF(140, 50));
+        var snapshot = scene.CreateSnapshot();
+        scene.TransformObjects([rectangle], point => new PointF(point.X + 25, point.Y - 10));
+        var transformed = scene.HasLinearGradient(rectangle)
+            && scene.GradientStartArgb[rectangle] == Color.Coral.ToArgb()
+            && scene.GradientEndArgb[rectangle] == Color.RoyalBlue.ToArgb()
+            && PointsNear(scene.GetGradientStart(rectangle), new PointF(85, 40))
+            && PointsNear(scene.GetGradientEnd(rectangle), new PointF(165, 40));
+        scene.RestoreSnapshot(snapshot);
+        var restored = scene.HasLinearGradient(rectangle)
+            && PointsNear(scene.GetGradientStart(rectangle), new PointF(60, 50))
+            && PointsNear(scene.GetGradientEnd(rectangle), new PointF(140, 50));
+        scene.ShearObjects([rectangle], point => new PointF(point.X + point.Y * 0.5f, point.Y));
+        var sheared = scene.HasLinearGradient(rectangle)
+            && PointsNear(scene.GetGradientStart(rectangle), new PointF(85, 50))
+            && PointsNear(scene.GetGradientEnd(rectangle), new PointF(165, 50));
+        scene.RestoreSnapshot(snapshot);
+        scene.SetGradientPaint(
+            rectangle,
+            GradientKind.Radial,
+            [
+                new GradientStop(0, Color.Coral),
+                new GradientStop(0.45f, Color.Gold),
+                new GradientStop(1, Color.RoyalBlue)
+            ],
+            new PointF(100, 50),
+            new PointF(160, 50));
+        var radialSnapshot = scene.CreateSnapshot();
+        scene.TransformObjects([rectangle], point => new PointF(point.X - 10, point.Y + 30));
+        var radial = scene.GetGradientKind(rectangle) == GradientKind.Radial
+            && scene.GetGradientStops(rectangle).Length == 3
+            && scene.GetGradientStops(rectangle)[1].Argb == Color.Gold.ToArgb()
+            && PointsNear(scene.GetGradientStart(rectangle), new PointF(90, 80))
+            && PointsNear(scene.GetGradientEnd(rectangle), new PointF(150, 80));
+        scene.RestoreSnapshot(radialSnapshot);
+        var radialRestored = scene.GetGradientKind(rectangle) == GradientKind.Radial
+            && scene.GetGradientStops(rectangle).Length == 3
+            && PointsNear(scene.GetGradientStart(rectangle), new PointF(100, 50));
+        scene.SetGradientPaint(
+            line,
+            GradientKind.Linear,
+            [
+                new GradientStop(0, Color.Coral),
+                new GradientStop(0.5f, Color.Gold),
+                new GradientStop(1, Color.RoyalBlue)
+            ],
+            new PointF(20, 150),
+            new PointF(180, 150));
+        var lineSnapshot = scene.CreateSnapshot();
+        scene.TransformObjects([line], point => new PointF(point.X + 20, point.Y - 10));
+        var lineLinear = scene.HasGradient(line)
+            && scene.GetGradientKind(line) == GradientKind.Linear
+            && scene.GetGradientStops(line).Length == 3
+            && PointsNear(scene.GetGradientStart(line), new PointF(40, 140))
+            && PointsNear(scene.GetGradientEnd(line), new PointF(200, 140));
+        scene.RestoreSnapshot(lineSnapshot);
+        scene.SetGradientPaint(
+            line,
+            GradientKind.Radial,
+            [
+                new GradientStop(0, Color.Coral),
+                new GradientStop(1, Color.RoyalBlue)
+            ],
+            new PointF(100, 150),
+            new PointF(180, 150));
+        var lineRadial = scene.HasGradient(line)
+            && scene.GetGradientKind(line) == GradientKind.Radial
+            && scene.GetGradientStops(line).Length == 2;
+        scene.SetGradientStops(
+            rectangle,
+            [
+                new GradientStop(0, Color.Coral),
+                new GradientStop(0.2f, Color.Gold),
+                new GradientStop(0.65f, Color.MediumPurple),
+                new GradientStop(1, Color.RoyalBlue)
+            ]);
+        var editableStops = scene.GetGradientStops(rectangle);
+        editableStops[2] = new GradientStop(0.72f, editableStops[2].Argb);
+        scene.SetGradientStops(rectangle, editableStops);
+        var stopMovePreserved = scene.GetGradientStops(rectangle).Length == 4
+            && Math.Abs(scene.GetGradientStops(rectangle)[2].Position - 0.72f) < 0.0001f;
+        if (!lineDefaultAxis || !lineGradientMergeProtected || !transformed || !restored || !sheared || !radial || !radialRestored || !lineLinear || !lineRadial || !stopMovePreserved)
+        {
+            throw new InvalidOperationException(
+                $"Gradient paint regression failed: axis={lineDefaultAxis}, merge={lineGradientMergeProtected}, transformed={transformed}, restored={restored}, sheared={sheared}, radial={radial}, radialRestored={radialRestored}, lineLinear={lineLinear}, lineRadial={lineRadial}, stops={stopMovePreserved}.");
+        }
+
+        using var form = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            ClientSize = new Size(320, 220)
+        };
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill };
+        form.Controls.Add(stage);
+        form.Show();
+        Application.DoEvents();
+        stage.SetGradientOverlay(
+            new PointF(0, 0),
+            new PointF(1_000, 0),
+            scene.GetGradientKind(rectangle),
+            scene.GetGradientStops(rectangle));
+        var overlayStop = stage.WorldToScreen(720, 0);
+        var overlayHit = stage.HitTestGradientOverlay(Point.Round(overlayStop));
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D || stage.LastStats.DrawnObjects != 2 || overlayHit.Kind != GradientHandleKind.Stop || overlayHit.StopIndex != 2)
+        {
+            throw new InvalidOperationException($"The Direct2D radial multi-stop gradient annotator did not produce an interactive stage frame: direct2d={stage.LastFrameUsedDirect2D}, drawn={stage.LastStats.DrawnObjects}, hit={overlayHit.Kind}/{overlayHit.StopIndex}.");
+        }
+        form.Close();
+
+        Console.WriteLine("gradient_paint_regression=ok");
+    }
+
+    private static void RunHotReloadModuleRoutingRegression()
+    {
+        var rendering = HotReloadModuleResolver.Resolve([typeof(Direct2DStageRenderer)]);
+        var timeline = HotReloadModuleResolver.Resolve([typeof(TimelineStrip)]);
+        var inspector = HotReloadModuleResolver.Resolve([typeof(MaterialEditorPanel)]);
+        var themedScroll = HotReloadModuleResolver.Resolve([typeof(ThemedScrollPanel)]);
+        var harmonyWheel = HotReloadModuleResolver.Resolve([typeof(HarmonyColorWheel)]);
+        var gradientPreset = HotReloadModuleResolver.Resolve([typeof(GradientPresetGrid)]);
+        var engine = HotReloadModuleResolver.Resolve([typeof(VectorScene)]);
+        if (rendering.Modules != HotReloadModule.Rendering
+            || timeline.Modules != HotReloadModule.Timeline
+            || inspector.Modules != HotReloadModule.Inspector
+            || themedScroll.Modules != HotReloadModule.Inspector
+            || harmonyWheel.Modules != HotReloadModule.Inspector
+            || gradientPreset.Modules != HotReloadModule.Inspector
+            || engine.Modules != HotReloadModule.Engine
+            || rendering.RequiresWorkbenchRebuild
+            || !timeline.RequiresWorkbenchRebuild
+            || !inspector.RequiresWorkbenchRebuild
+            || !themedScroll.RequiresWorkbenchRebuild
+            || !harmonyWheel.RequiresWorkbenchRebuild
+            || !gradientPreset.RequiresWorkbenchRebuild
+            || engine.RequiresWorkbenchRebuild)
+        {
+            throw new InvalidOperationException(
+                $"Module hot reload routing was not scoped: rendering={rendering.Modules}/{rendering.RequiresWorkbenchRebuild}, timeline={timeline.Modules}/{timeline.RequiresWorkbenchRebuild}, inspector={inspector.Modules}/{inspector.RequiresWorkbenchRebuild}, themedScroll={themedScroll.Modules}/{themedScroll.RequiresWorkbenchRebuild}, harmonyWheel={harmonyWheel.Modules}/{harmonyWheel.RequiresWorkbenchRebuild}, gradientPreset={gradientPreset.Modules}/{gradientPreset.RequiresWorkbenchRebuild}, engine={engine.Modules}/{engine.RequiresWorkbenchRebuild}.");
+        }
+
+        Console.WriteLine("module_reload_routing_regression=ok");
+    }
+
+    private static void RunColorHarmonyRegression()
+    {
+        var red = Color.FromArgb(255, 255, 0, 0);
+        var complementary = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.Complementary);
+        var analogous = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.Analogous);
+        var triadic = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.Triadic);
+        var splitComplementary = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.SplitComplementary);
+        var tetradic = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.Tetradic);
+        if (complementary.Length != 2
+            || complementary[0].ToArgb() != red.ToArgb()
+            || complementary[1].R > 2 || complementary[1].G < 253 || complementary[1].B < 253
+            || analogous.Length != 3
+            || triadic.Length != 3 || triadic[1].G < 253 || triadic[2].B < 253
+            || splitComplementary.Length != 3
+            || tetradic.Length != 4)
+        {
+            throw new InvalidOperationException("Color harmony rules did not generate the expected complementary, analogous, triadic, split-complementary, and tetradic palettes.");
+        }
+
+        Console.WriteLine("color_harmony_regression=ok");
+    }
+
+    private static void RunGradientPresetRegression()
+    {
+        var presets = MaterialEditorPanel.BuiltInGradientPresets;
+        var midpoint = GradientPreviewRenderer.Sample(
+            [new GradientStop(0, Color.Black), new GradientStop(1, Color.White)],
+            0.5f);
+        if (presets.Count != 6
+            || presets.Count(preset => preset.Kind == GradientKind.Linear) != 4
+            || presets.Count(preset => preset.Kind == GradientKind.Radial) != 2
+            || presets.Any(preset => preset.Stops.Length < 2 || preset.Stops[0].Position != 0f || preset.Stops[^1].Position != 1f)
+            || midpoint.R is < 126 or > 129 || midpoint.G != midpoint.R || midpoint.B != midpoint.R)
+        {
+            throw new InvalidOperationException("Built-in gradient presets or their multi-stop preview sampling were invalid.");
+        }
+
+        Console.WriteLine("gradient_preset_regression=ok");
+    }
+
+    private static void RunSoftBrushRegression()
+    {
+        RunTraditionalBrushContourRegression();
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var centerline = new[] { new PointF(-180, 0), new PointF(0, 0), new PointF(180, 0) };
+        var objects = scene.AddSoftBrushStroke(
+            0,
+            centerline,
+            VectorUnits.StrokePointsToUnits(16),
+            Color.Coral,
+            BrushShape.CreateSoftRound(),
+            32);
+        if (objects.Length != 3
+            || objects.Any(index => (uint)index >= scene.ObjectCount || scene.ShapeKind[index] != ShapeKind.Path)
+            || objects.Any(index => !scene.FillContainsPoint(index, PointF.Empty)))
+        {
+            throw new InvalidOperationException("RGB soft brush did not create layered Path fills over its centerline.");
+        }
+
+        var mergeScene = new VectorScene();
+        mergeScene.CreateEmpty();
+        var traditional = BrushShape.CreateTraditionalBrush();
+        var first = mergeScene.AddSoftBrushStroke(0, centerline, VectorUnits.StrokePointsToUnits(16), Color.Coral, traditional, 32);
+        var second = mergeScene.AddSoftBrushStroke(
+            0,
+            centerline.Select(point => new PointF(point.X, point.Y + 8)).ToArray(),
+            VectorUnits.StrokePointsToUnits(16),
+            Color.Coral,
+            traditional,
+            32);
+        var merged = mergeScene.MergeSameColorFillsAroundNewObjects(second, connectNearby: true);
+        if (first.Length != 1
+            || second.Length != 1
+            || mergeScene.ObjectCount != 1
+            || merged.Length != 1
+            || !mergeScene.FillContainsPoint(merged[0], PointF.Empty))
+        {
+            throw new InvalidOperationException("A newly committed brush fill did not immediately merge with the matching prior brush fill.");
+        }
+
+        Console.WriteLine("soft_brush_regression=ok");
+    }
+
+    private static void RunBrushColorPaletteRegression()
+    {
+        using var material = new MaterialEditorPanel();
+        material.Fill = Color.FromArgb(96, 20, 30, 40);
+        var materialChanged = false;
+        material.MaterialChanged += (_, _) => materialChanged = true;
+        material.SetFillColorForBrush(Color.Coral);
+        if (materialChanged
+            || material.Fill.A != 96
+            || material.Fill.R != Color.Coral.R
+            || material.Fill.G != Color.Coral.G
+            || material.Fill.B != Color.Coral.B
+            || material.RecentColors.Count == 0)
+        {
+            throw new InvalidOperationException("Brush palette color selection altered scene material state or did not preserve the brush alpha.");
+        }
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene) { Size = new Size(640, 420) };
+        var colors = new[] { Color.Coral, Color.Teal, Color.Gold, Color.MediumPurple };
+        stage.SetBrushColorPalette(new Point(320, 210), colors);
+        if (!stage.BrushColorPaletteVisible || stage.BrushColorPaletteColors.Count != colors.Length)
+        {
+            throw new InvalidOperationException("Brush recent-color palette did not become visible with its requested colors.");
+        }
+
+        for (var index = 0; index < colors.Length; index++)
+        {
+            var bounds = stage.BrushColorPaletteSwatchBounds(index);
+            if (bounds.IsEmpty || stage.HitTestBrushColorPalette(new Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2)) != index)
+            {
+                throw new InvalidOperationException("Brush recent-color palette swatch layout or hit testing was invalid.");
+            }
+        }
+
+        stage.SetBrushColorPalette(new Point(320, 210), colors, hoveredIndex: 2);
+        if (stage.BrushColorPaletteHoveredIndex != 2)
+        {
+            throw new InvalidOperationException("Brush recent-color palette did not retain its hovered swatch.");
+        }
+
+        stage.ClearBrushColorPalette();
+        if (stage.BrushColorPaletteVisible)
+        {
+            throw new InvalidOperationException("Brush recent-color palette did not clear after its Shift interaction ended.");
+        }
+
+        Console.WriteLine("brush_color_palette_regression=ok");
+    }
+
+    private static void RunTraditionalBrushContourRegression()
+    {
+        var traditionalContour = BrushShape.CreateTraditionalBrush().NormalizedContour(0.5f);
+        var radii = traditionalContour.Select(point => MathF.Sqrt(point.X * point.X + point.Y * point.Y)).ToArray();
+        var traditionalRadiusSpread = radii.Max() - radii.Min();
+        if (traditionalRadiusSpread > 0.0001f)
+        {
+            throw new InvalidOperationException("Traditional brush contour introduced radial spikes instead of a circular hard edge.");
+        }
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var diameter = VectorUnits.StrokePointsToUnits(16);
+        var objects = scene.AddSoftBrushStroke(
+            0,
+            [new PointF(-180, 0), new PointF(0, 0), new PointF(180, 0)],
+            diameter,
+            Color.Coral,
+            BrushShape.CreateTraditionalBrush(),
+            32,
+            frequency: 8,
+            continuous: true);
+        if (objects.Length != 1
+            || scene.ShapeKind[objects[0]] != ShapeKind.Path
+            || !scene.FillContainsPoint(objects[0], PointF.Empty))
+        {
+            throw new InvalidOperationException("Traditional brush did not create one continuous rounded stroke contour.");
+        }
+    }
+
+    private static void RunBrushFrequencyRegression()
+    {
+        var diameter = VectorUnits.StrokePointsToUnits(24);
+        var centerline = new[] { new PointF(-diameter * 4, 0), new PointF(diameter * 4, 0) };
+        var continuous = new VectorScene();
+        continuous.CreateEmpty();
+        var continuousObjects = continuous.AddSoftBrushStroke(
+            0,
+            centerline,
+            diameter,
+            Color.Coral,
+            BrushShape.CreateSoftRound(),
+            32,
+            frequency: 8,
+            continuous: true);
+        if (continuousObjects.Length == 0 || !continuousObjects.Any(index => continuous.FillContainsPoint(index, PointF.Empty)))
+        {
+            throw new InvalidOperationException("Continuous brush spacing left a gap between distant pointer samples.");
+        }
+
+        var stamped = new VectorScene();
+        stamped.CreateEmpty();
+        var stampedObjects = stamped.AddSoftBrushStroke(
+            0,
+            centerline,
+            diameter,
+            Color.Coral,
+            BrushShape.CreateSoftRound(),
+            32,
+            frequency: 8,
+            continuous: false);
+        if (stampedObjects.Length == 0 || stampedObjects.Any(index => stamped.FillContainsPoint(index, PointF.Empty)))
+        {
+            throw new InvalidOperationException("Non-continuous brush mode did not retain stamp spacing.");
+        }
+
+        var softRadius = BrushShape.CreateSoftRound(0).NormalizedContour(0.70f)
+            .Select(point => MathF.Sqrt(point.X * point.X + point.Y * point.Y))
+            .Average();
+        var hardRadius = BrushShape.CreateSoftRound(80).NormalizedContour(0.70f)
+            .Select(point => MathF.Sqrt(point.X * point.X + point.Y * point.Y))
+            .Average();
+        if (hardRadius <= softRadius + 0.1f)
+        {
+            throw new InvalidOperationException("Default soft round brush hardness did not widen its opaque core.");
+        }
+
+        Console.WriteLine("brush_frequency_regression=ok");
+    }
+
+    public static void RunPressureBrushRegression()
+    {
+        RunSoftBrushRegression();
+        RunBrushColorPaletteRegression();
+
+        var onsetSamples = new[]
+        {
+            new PressureBrushSample(new PointF(0, 0), 0, 0),
+            new PressureBrushSample(new PointF(20, 0), 0, 0.02f),
+            new PressureBrushSample(new PointF(1000, 0), 0, 0.8f)
+        };
+        var onsetDiameter = VectorUnits.StrokePointsToUnits(18);
+        var onsetPreview = FreehandStrokeProcessor.CreatePressurePreview(onsetSamples, onsetDiameter);
+        var onsetCommit = FreehandStrokeProcessor.ProcessPressure(onsetSamples, onsetDiameter, smoothing: 0, simplifyTolerance: 0.25f);
+        var minimumDiameter = VectorUnits.StrokePointsToUnits(0.5f);
+        if (onsetPreview.Length != onsetSamples.Length
+            || onsetPreview[0].Diameter > minimumDiameter * 0.7f
+            || onsetPreview[1].Diameter <= onsetPreview[0].Diameter
+            || onsetPreview[^1].Diameter <= onsetPreview[1].Diameter * 2f
+            || onsetCommit.Length < 2
+            || onsetCommit[0].Diameter > minimumDiameter * 0.7f
+            || onsetCommit[^1].Diameter <= onsetCommit[0].Diameter * 8f)
+        {
+            throw new InvalidOperationException("Pressure brush onset did not diffuse from a minimal initial deposit.");
+        }
+
+        var samples = new PressureBrushSample[513];
+        for (var i = 0; i < samples.Length; i++)
+        {
+            var x = -640 + i * 2.5f;
+            samples[i] = new PressureBrushSample(
+                new PointF(x, MathF.Sin(i * 0.08f) * 18),
+                120 + i % 9 * 40,
+                i / 120f);
+        }
+
+        var diameter = VectorUnits.StrokePointsToUnits(18);
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var stopwatch = Stopwatch.StartNew();
+        var softObjects = scene.AddPressureBrushStroke(
+            0,
+            samples,
+            diameter,
+            Color.Coral,
+            BrushShape.CreateSoftRound(),
+            (uint)samples.Length,
+            smoothing: 58,
+            simplifyTolerance: 1,
+            frequency: 8,
+            continuous: true);
+        stopwatch.Stop();
+        if (softObjects.Length != 3
+            || softObjects.Any(index => scene.ShapeKind[index] != ShapeKind.Path)
+            || !softObjects.All(index => scene.FillContainsPoint(index, samples[samples.Length / 2].Point)))
+        {
+            throw new InvalidOperationException("Continuous pressure brush did not commit layered variable-width Path fills.");
+        }
+
+        var traditional = new VectorScene();
+        traditional.CreateEmpty();
+        var traditionalObjects = traditional.AddPressureBrushStroke(
+            0,
+            samples,
+            diameter,
+            Color.Coral,
+            BrushShape.CreateTraditionalBrush(),
+            (uint)samples.Length,
+            smoothing: 58,
+            simplifyTolerance: 1,
+            frequency: 8,
+            continuous: true);
+        if (traditionalObjects.Length != 1
+            || traditional.ShapeKind[traditionalObjects[0]] != ShapeKind.Path
+            || !traditional.FillContainsPoint(traditionalObjects[0], samples[samples.Length / 2].Point))
+        {
+            throw new InvalidOperationException("Traditional pressure brush did not commit a solid Path fill.");
+        }
+
+        var cornerSamples = new[]
+        {
+            new PressureBrushSample(new PointF(-120, -80), 240, 0),
+            new PressureBrushSample(new PointF(0, 80), 160, 0.3f),
+            new PressureBrushSample(new PointF(120, -80), 240, 0.6f)
+        };
+        var cornerScene = new VectorScene();
+        cornerScene.CreateEmpty();
+        var cornerObjects = cornerScene.AddPressureBrushStroke(
+            0,
+            cornerSamples,
+            diameter,
+            Color.Coral,
+            BrushShape.CreateTraditionalBrush(),
+            12,
+            smoothing: 70,
+            simplifyTolerance: 1,
+            frequency: 8,
+            continuous: true);
+        if (cornerObjects.Length != 1 || !cornerScene.FillContainsPoint(cornerObjects[0], cornerSamples[1].Point))
+        {
+            throw new InvalidOperationException("Pressure brush left an unfilled gap at a sharp corner.");
+        }
+
+        Console.WriteLine($"pressure_brush_commit_ms={stopwatch.Elapsed.TotalMilliseconds:0.00}");
+    }
+
+    private static void RunBrushWorldScaleRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene) { Size = new Size(960, 540) };
+        stage.SetVisibleWorldWidth(VectorUnits.DefaultVisibleWorldWidth);
+        var diameter = VectorUnits.StrokePointsToUnits(18);
+        var initialScreenDiameter = stage.WorldLengthToScreen(diameter);
+        stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 2);
+        var zoomedScreenDiameter = stage.WorldLengthToScreen(diameter);
+        var restoredWorldDiameter = stage.ScreenLengthToWorld(zoomedScreenDiameter);
+        if (Math.Abs(zoomedScreenDiameter - initialScreenDiameter * 2) > 0.001f
+            || Math.Abs(restoredWorldDiameter - diameter) > 0.001f)
+        {
+            throw new InvalidOperationException("Brush size did not retain its world-unit diameter across stage zoom changes.");
+        }
+
+        Console.WriteLine("brush_world_scale_regression=ok");
+    }
+
+    private static void RunBrushEraserRegression()
+    {
+        var shape = BrushShape.CreateSoftRound();
+        var diameter = VectorUnits.StrokePointsToUnits(24);
+        var center = new[] { PointF.Empty };
+
+        var fillScene = new VectorScene();
+        fillScene.CreateEmpty();
+        fillScene.AddObject(0, PointF.Empty, new SizeF(400, 240), 0, 0, Color.Coral, Color.Transparent, 12, ShapeKind.Rectangle);
+        if (!fillScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: false, eraseFills: true)
+            || Enumerable.Range(0, fillScene.ObjectCount).Any(index => fillScene.FillContainsPoint(index, PointF.Empty)))
+        {
+            throw new InvalidOperationException("Brush eraser did not punch a local hole through a fill.");
+        }
+
+        var lineScene = new VectorScene();
+        lineScene.CreateEmpty();
+        lineScene.AddLineSegment(0, new PointF(-240, 0), new PointF(240, 0), VectorUnits.StrokePointsToUnits(10), Color.Transparent, Color.Aqua, 12);
+        if (!lineScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: true, eraseFills: false)
+            || !Enumerable.Range(0, lineScene.ObjectCount).Any(lineScene.IsBrushEraserStrokePath)
+            || Enumerable.Range(0, lineScene.ObjectCount).Any(index => lineScene.IsBrushEraserStrokePath(index) && lineScene.FillContainsPoint(index, PointF.Empty)))
+        {
+            throw new InvalidOperationException("Brush eraser did not remove only the contacted portion of a line.");
+        }
+
+        var secondContact = new[] { new PointF(-120, 0) };
+        if (!lineScene.EraseWithBrushStroke(0, secondContact, diameter, shape, eraseLines: true, eraseFills: false)
+            || Enumerable.Range(0, lineScene.ObjectCount).Any(index => lineScene.IsBrushEraserStrokePath(index) && lineScene.FillContainsPoint(index, secondContact[0])))
+        {
+            throw new InvalidOperationException("A previously erased line could not be erased again as a line.");
+        }
+
+        Console.WriteLine("brush_eraser_regression=ok");
+    }
+
+    private static void RunLineToFillConversionRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(2);
+        var preservedLine = scene.AddLineSegment(
+            1,
+            new PointF(-200, 0),
+            new PointF(-100, 0),
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Teal,
+            6);
+        if (!scene.InsertTimelineBlankKeyframe(1, 10))
+        {
+            throw new InvalidOperationException("Line-to-fill conversion regression could not create an independent cel.");
+        }
+
+        scene.EditFrame = 10;
+        var source = scene.AddCurveSegment(
+            1,
+            new PointF(0, 0),
+            new PointF(50, 60),
+            new PointF(100, 0),
+            VectorUnits.StrokePointsToUnits(4),
+            Color.Transparent,
+            Color.Coral,
+            17);
+        scene.ObjectSubOrder[source] = 0.375;
+        var secondSource = scene.AddLineSegment(
+            1,
+            new PointF(0, 100),
+            new PointF(100, 100),
+            VectorUnits.StrokePointsToUnits(3),
+            Color.Transparent,
+            Color.Gold,
+            13);
+        scene.ObjectSubOrder[secondSource] = 0.625;
+        var unrelated = scene.AddObject(0, new PointF(180, 0), new SizeF(40, 40), 0, 0, Color.Aqua, Color.Transparent, 6, ShapeKind.Rectangle);
+        var sourceLayer = scene.ObjectLayer[source];
+        var sourceKeyframe = scene.ObjectKeyframeFrame[source];
+        var sourceOrder = scene.ObjectOrder[source];
+        var sourceSubOrder = scene.ObjectSubOrder[source];
+        var sourceAtoms = scene.AtomCount[source];
+        var sourceStrokeColor = scene.StrokeArgb[source];
+        var snapshot = scene.CreateSnapshot();
+
+        if (!scene.CanConvertLineToFill(source, 10)
+            || scene.CanConvertLineToFill(source, 0)
+            || scene.CanConvertLineToFill(unrelated, 10)
+            || !scene.TryConvertLineToFill(source, 10, out var fill))
+        {
+            throw new InvalidOperationException("A visible line could not be converted to a fill.");
+        }
+
+        if (scene.ObjectCount != 4
+            || scene.ShapeKind[fill] != ShapeKind.Path
+            || scene.ObjectLayer[fill] != sourceLayer
+            || scene.ObjectKeyframeFrame[fill] != sourceKeyframe
+            || scene.ObjectOrder[fill] != sourceOrder
+            || scene.ObjectSubOrder[fill] != sourceSubOrder
+            || scene.AtomCount[fill] != sourceAtoms
+            || scene.Argb[fill] != sourceStrokeColor
+            || scene.Stroke[fill] != 0
+            || scene.StrokeArgb[fill] != Color.Transparent.ToArgb()
+            || !scene.TryGetPathWorldContours(fill, out var contours)
+            || contours.Length == 0
+            || !scene.FillContainsPoint(fill, new PointF(50, 30))
+            || Enumerable.Range(0, scene.ObjectCount).Count(index => scene.ShapeKind[index] == ShapeKind.Line) != 2
+            || Enumerable.Range(0, scene.ObjectCount).Count(index => scene.ShapeKind[index] == ShapeKind.Rectangle) != 1)
+        {
+            throw new InvalidOperationException("Line-to-fill conversion did not preserve the source cel, style, order, or outline geometry.");
+        }
+
+        scene.RestoreSnapshot(snapshot);
+        if (scene.ObjectCount != 4
+            || scene.ShapeKind[source] != ShapeKind.Line
+            || scene.ShapeKind[secondSource] != ShapeKind.Line
+            || !scene.IsObjectActive(source, 10)
+            || scene.IsObjectActive(source, 0)
+            || !scene.CanConvertLineToFill(source, 10))
+        {
+            throw new InvalidOperationException("Line-to-fill conversion snapshot restoration did not recover the source line.");
+        }
+
+        var batchSources = new[] { source, secondSource };
+        var batchSourceProperties = batchSources
+            .Select(index => (
+                Layer: scene.ObjectLayer[index],
+                KeyframeFrame: scene.ObjectKeyframeFrame[index],
+                Order: scene.ObjectOrder[index],
+                SubOrder: scene.ObjectSubOrder[index],
+                Atoms: scene.AtomCount[index],
+                StrokeColor: scene.StrokeArgb[index]))
+            .ToArray();
+        var batchFills = new List<int>(batchSources.Length);
+        foreach (var batchSource in batchSources)
+        {
+            if (scene.TryConvertLineToFill(batchSource, 10, out var batchFill))
+            {
+                batchFills.Add(batchFill);
+                continue;
+            }
+
+            scene.RestoreSnapshot(snapshot);
+            throw new InvalidOperationException("Multiple selected lines could not be converted to fills as one operation.");
+        }
+
+        if (batchFills.Count != batchSources.Length
+            || scene.ObjectCount != 4
+            || Enumerable.Range(0, scene.ObjectCount).Count(index => scene.ShapeKind[index] == ShapeKind.Path) != 2
+            || Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ShapeKind[index] == ShapeKind.Line && scene.IsObjectActive(index, 10)))
+        {
+            throw new InvalidOperationException("Multiple selected lines could not be converted to fills as one operation.");
+        }
+
+        for (var index = 0; index < batchFills.Count; index++)
+        {
+            var fillIndex = batchFills[index];
+            var sourceProperties = batchSourceProperties[index];
+            if ((uint)fillIndex >= scene.ObjectCount
+                || scene.ShapeKind[fillIndex] != ShapeKind.Path
+                || scene.ObjectLayer[fillIndex] != sourceProperties.Layer
+                || scene.ObjectKeyframeFrame[fillIndex] != sourceProperties.KeyframeFrame
+                || scene.ObjectOrder[fillIndex] != sourceProperties.Order
+                || scene.ObjectSubOrder[fillIndex] != sourceProperties.SubOrder
+                || scene.AtomCount[fillIndex] != sourceProperties.Atoms
+                || scene.Argb[fillIndex] != sourceProperties.StrokeColor
+                || scene.Stroke[fillIndex] != 0
+                || scene.StrokeArgb[fillIndex] != Color.Transparent.ToArgb())
+            {
+                throw new InvalidOperationException("Multiple line-to-fill conversion did not preserve source metadata.");
+            }
+        }
+
+        if (!scene.FillContainsPoint(batchFills[0], new PointF(50, 30))
+            || !scene.FillContainsPoint(batchFills[1], new PointF(50, 100)))
+        {
+            throw new InvalidOperationException("Multiple line-to-fill conversion did not retain each stroke outline.");
+        }
+
+        Console.WriteLine("line_to_fill_conversion_regression=ok");
+    }
+
+    private static void RunLineSegmentMergeRegression()
+    {
+        var stroke = VectorUnits.StrokePointsToUnits(2);
+        var endpointStyleScene = new VectorScene();
+        endpointStyleScene.CreateEmpty();
+        endpointStyleScene.AddLineSegment(
+            0,
+            new PointF(0, 0),
+            new PointF(100, 0),
+            stroke,
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Sharp);
+        endpointStyleScene.AddLineSegment(
+            0,
+            new PointF(104, 0),
+            new PointF(204, 0),
+            stroke,
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Sharp);
+        if (!endpointStyleScene.MergeCompatibleLineSegments(0).Changed
+            || endpointStyleScene.ObjectCount != 1
+            || endpointStyleScene.GetLineEndpointStyle(0) != LineEndpointStyle.Sharp)
+        {
+            throw new InvalidOperationException("Merged sharp-end lines did not retain their endpoint style.");
+        }
+
+        var independentEndpointScene = new VectorScene();
+        independentEndpointScene.CreateEmpty();
+        independentEndpointScene.AddLineSegment(
+            0,
+            new PointF(0, 0),
+            new PointF(100, 0),
+            stroke,
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Round);
+        var independentEndpointSnapshot = independentEndpointScene.CreateSnapshot();
+        independentEndpointScene.RestoreSnapshot(independentEndpointSnapshot);
+        if (independentEndpointScene.GetLineEndpointStyle(0, startEndpoint: true) != LineEndpointStyle.Sharp
+            || independentEndpointScene.GetLineEndpointStyle(0, startEndpoint: false) != LineEndpointStyle.Round)
+        {
+            throw new InvalidOperationException("Independent start and end line styles were not preserved by snapshot restoration.");
+        }
+
+        var mixedEndpointStyleScene = new VectorScene();
+        mixedEndpointStyleScene.CreateEmpty();
+        mixedEndpointStyleScene.AddLineSegment(
+            0,
+            new PointF(0, 0),
+            new PointF(100, 0),
+            stroke,
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Sharp);
+        mixedEndpointStyleScene.AddLineSegment(
+            0,
+            new PointF(104, 0),
+            new PointF(204, 0),
+            stroke,
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Round);
+        var mixedStyleSnapshot = mixedEndpointStyleScene.CreateSnapshot();
+        mixedEndpointStyleScene.RestoreSnapshot(mixedStyleSnapshot);
+        if (mixedEndpointStyleScene.GetLineEndpointStyle(0) != LineEndpointStyle.Sharp
+            || mixedEndpointStyleScene.GetLineEndpointStyle(1) != LineEndpointStyle.Round
+            || mixedEndpointStyleScene.MergeCompatibleLineSegments(0).Changed)
+        {
+            throw new InvalidOperationException("Different line endpoint styles were not preserved or were merged together.");
+        }
+
+        var miterJoinScene = new VectorScene();
+        miterJoinScene.CreateEmpty();
+        var miterFirst = miterJoinScene.AddLineSegment(
+            0,
+            new PointF(-100, 0),
+            PointF.Empty,
+            stroke,
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Sharp);
+        var miterSecond = miterJoinScene.AddLineSegment(
+            0,
+            PointF.Empty,
+            new PointF(0, 100),
+            stroke,
+            Color.Transparent,
+            Color.Coral,
+            6,
+            LineEndpointStyle.Round);
+        if (!miterJoinScene.TryGetLineJoinNeighbor(miterFirst, startEndpoint: false, 0, out var joinNeighbor, out var neighborStarts)
+            || joinNeighbor != miterSecond
+            || !neighborStarts
+            || !LineJoinGeometry.TryCreateMiter(PointF.Empty, new PointF(-100, 0), new PointF(0, 100), 10, out var miter)
+            || Math.Abs(miter.OuterMiter.X - 10) > 0.001f
+            || Math.Abs(miter.OuterMiter.Y + 10) > 0.001f
+            || Math.Abs(miter.InnerMiter.X + 10) > 0.001f
+            || Math.Abs(miter.InnerMiter.Y - 10) > 0.001f)
+        {
+            throw new InvalidOperationException("Sharp line joins did not resolve the width-offset miter intersection.");
+        }
+
+        var reverseScene = new VectorScene();
+        reverseScene.CreateEmpty();
+        var first = reverseScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Transparent, Color.Coral, 6);
+        var reversed = reverseScene.AddLineSegment(0, new PointF(204, 0), new PointF(104, 0), stroke, Color.Transparent, Color.Coral, 6);
+        var reverseMerge = reverseScene.MergeCompatibleLineSegments(0);
+        if (!reverseMerge.Changed
+            || reverseMerge.MergeCount != 1
+            || reverseScene.ObjectCount != 1
+            || reverseMerge.OldToNewObjectIndex[first] != reverseMerge.OldToNewObjectIndex[reversed]
+            || !LineMatches(reverseScene, 0, new PointF(0, 0), new PointF(204, 0)))
+        {
+            throw new InvalidOperationException("Reverse-oriented line endpoints under 5 vu did not merge into one straight segment.");
+        }
+
+        var quantizedStraightScene = new VectorScene();
+        quantizedStraightScene.CreateEmpty();
+        quantizedStraightScene.AddLineSegment(0, new PointF(0, 0), new PointF(101, 0), stroke, Color.Transparent, Color.Coral, 6);
+        quantizedStraightScene.AddLineSegment(0, new PointF(105, 0), new PointF(205, 0), stroke, Color.Transparent, Color.Coral, 6);
+        if (!quantizedStraightScene.MergeCompatibleLineSegments(0).Changed
+            || quantizedStraightScene.ObjectCount != 1
+            || !quantizedStraightScene.IsLineStraight(0)
+            || !quantizedStraightScene.TryGetLineEndpoint(0, startEndpoint: true, out var quantizedStart)
+            || !quantizedStraightScene.TryGetLineEndpoint(0, startEndpoint: false, out var quantizedEnd)
+            || quantizedStart.X > 1
+            || quantizedEnd.X < 204)
+        {
+            throw new InvalidOperationException("A quantized odd-length straight segment did not merge despite zero curvature and endpoints under 5 vu apart.");
+        }
+
+        var marqueeSplitScene = new VectorScene();
+        marqueeSplitScene.CreateEmpty();
+        marqueeSplitScene.AddLineSegment(0, new PointF(-200, 0), new PointF(200, 0), stroke, Color.Transparent, Color.Coral, 6);
+        var marqueeMaterialization = marqueeSplitScene.MaterializeMarqueeLineParts(new RectangleF(-20, -40, 40, 80), 0);
+        if (!marqueeMaterialization.Changed
+            || marqueeSplitScene.ObjectCount < 2
+            || !marqueeSplitScene.MergeCompatibleLineSegments(0).Changed
+            || marqueeSplitScene.ObjectCount != 1
+            || !LineMatches(marqueeSplitScene, 0, new PointF(-200, 0), new PointF(200, 0)))
+        {
+            throw new InvalidOperationException("A marquee-materialized straight line did not restore to one compatible segment.");
+        }
+
+        var scopedMarqueeScene = new VectorScene();
+        scopedMarqueeScene.CreateEmpty();
+        scopedMarqueeScene.AddLineSegment(0, new PointF(-200, 0), new PointF(200, 0), stroke, Color.Transparent, Color.Coral, 6);
+        var scopedMarqueeMaterialization = scopedMarqueeScene.MaterializeMarqueeLineParts(new RectangleF(-20, -40, 40, 80), 0);
+        var selectedMarqueeSegment = scopedMarqueeMaterialization.SelectedObjects.Single();
+        var siblingScope = Enumerable.Range(0, scopedMarqueeScene.ObjectCount)
+            .Where(index => scopedMarqueeScene.ShapeKind[index] == ShapeKind.Line
+                && scopedMarqueeScene.ObjectOrder[index] == scopedMarqueeScene.ObjectOrder[selectedMarqueeSegment])
+            .ToArray();
+        if (!scopedMarqueeMaterialization.Changed
+            || siblingScope.Length < 2
+            || !scopedMarqueeScene.MergeCompatibleLineSegments(0, siblingScope).Changed
+            || scopedMarqueeScene.ObjectCount != 1
+            || !LineMatches(scopedMarqueeScene, 0, new PointF(-200, 0), new PointF(200, 0)))
+        {
+            throw new InvalidOperationException("A selected marquee segment did not simplify with all of its materialized line siblings.");
+        }
+
+        var scopedMergeScene = new VectorScene();
+        scopedMergeScene.CreateEmpty();
+        var scopedFirst = scopedMergeScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Transparent, Color.Coral, 6);
+        var scopedSecond = scopedMergeScene.AddLineSegment(0, new PointF(104, 0), new PointF(204, 0), stroke, Color.Transparent, Color.Coral, 6);
+        scopedMergeScene.AddLineSegment(0, new PointF(0, 100), new PointF(100, 100), stroke, Color.Transparent, Color.Coral, 6);
+        scopedMergeScene.AddLineSegment(0, new PointF(104, 100), new PointF(204, 100), stroke, Color.Transparent, Color.Coral, 6);
+        if (!scopedMergeScene.MergeCompatibleLineSegments(0, new[] { scopedFirst, scopedSecond }).Changed
+            || scopedMergeScene.ObjectCount != 3
+            || !Enumerable.Range(0, scopedMergeScene.ObjectCount).Any(index => LineMatches(scopedMergeScene, index, new PointF(0, 100), new PointF(100, 100)))
+            || !Enumerable.Range(0, scopedMergeScene.ObjectCount).Any(index => LineMatches(scopedMergeScene, index, new PointF(104, 100), new PointF(204, 100))))
+        {
+            throw new InvalidOperationException("Scoped line merge changed segments outside its requested line chain.");
+        }
+
+        var exactThresholdScene = new VectorScene();
+        exactThresholdScene.CreateEmpty();
+        AddTopologyLine(exactThresholdScene, 0, new PointF(0, 0), new PointF(100, 0));
+        AddTopologyLine(exactThresholdScene, 0, new PointF(105, 0), new PointF(205, 0));
+        if (exactThresholdScene.MergeCompatibleLineSegments(0).Changed || exactThresholdScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Line endpoints exactly 5 vu apart were merged despite the strict distance boundary.");
+        }
+
+        var offsetParallelScene = new VectorScene();
+        offsetParallelScene.CreateEmpty();
+        AddTopologyLine(offsetParallelScene, 0, new PointF(0, 0), new PointF(100, 0));
+        AddTopologyLine(offsetParallelScene, 0, new PointF(100, 4), new PointF(200, 4));
+        if (offsetParallelScene.MergeCompatibleLineSegments(0).Changed || offsetParallelScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Parallel but non-collinear line segments were merged into distorted geometry.");
+        }
+
+        var accumulatedOffsetScene = new VectorScene();
+        accumulatedOffsetScene.CreateEmpty();
+        AddTopologyLine(accumulatedOffsetScene, 0, new PointF(0, 0), new PointF(100, 0));
+        AddTopologyLine(accumulatedOffsetScene, 0, new PointF(104, 1), new PointF(204, 1));
+        AddTopologyLine(accumulatedOffsetScene, 0, new PointF(208, 2), new PointF(308, 2));
+        if (accumulatedOffsetScene.MergeCompatibleLineSegments(0).Changed || accumulatedOffsetScene.ObjectCount != 3)
+        {
+            throw new InvalidOperationException("Line merge accumulated a one-unit parallel offset through a transitive group.");
+        }
+
+        var nearToleranceChainScene = new VectorScene();
+        nearToleranceChainScene.CreateEmpty();
+        var nearToleranceOffset = DrawingTopologyRules.UnitIntersectionTolerance * 0.75f;
+        AddTopologyLine(nearToleranceChainScene, 0, new PointF(0, 0), new PointF(100, 0));
+        var nearMiddle = AddTopologyLine(nearToleranceChainScene, 0, new PointF(104, 0), new PointF(204, 0));
+        var nearEnd = AddTopologyLine(nearToleranceChainScene, 0, new PointF(208, 0), new PointF(308, 0));
+        // Keep sub-vu offsets that AddLineSegment normally quantizes so the transitive grouping path is exercised.
+        nearToleranceChainScene.Y[nearMiddle] = nearToleranceOffset;
+        nearToleranceChainScene.CurveControlY[nearMiddle] = nearToleranceOffset;
+        nearToleranceChainScene.Y[nearEnd] = nearToleranceOffset * 2;
+        nearToleranceChainScene.CurveControlY[nearEnd] = nearToleranceOffset * 2;
+        if (nearToleranceChainScene.MergeCompatibleLineSegments(0).Changed || nearToleranceChainScene.ObjectCount != 3)
+        {
+            throw new InvalidOperationException("Line merge accumulated near-tolerance offsets through a transitive group.");
+        }
+
+        var directionScene = new VectorScene();
+        directionScene.CreateEmpty();
+        AddTopologyLine(directionScene, 0, new PointF(0, 0), new PointF(100, 0));
+        AddTopologyLine(directionScene, 0, new PointF(100, 4), new PointF(100, 104));
+        if (directionScene.MergeCompatibleLineSegments(0).Changed || directionScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Line segments with different directions were merged.");
+        }
+
+        var colorScene = new VectorScene();
+        colorScene.CreateEmpty();
+        colorScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Transparent, Color.Coral, 6);
+        colorScene.AddLineSegment(0, new PointF(104, 0), new PointF(204, 0), stroke, Color.Transparent, Color.Aqua, 6);
+        if (colorScene.MergeCompatibleLineSegments(0).Changed || colorScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Lines with different stroke ARGB values were merged.");
+        }
+
+        var fillColorScene = new VectorScene();
+        fillColorScene.CreateEmpty();
+        fillColorScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Coral, Color.White, 6);
+        fillColorScene.AddLineSegment(0, new PointF(104, 0), new PointF(204, 0), stroke, Color.Aqua, Color.White, 6);
+        if (fillColorScene.MergeCompatibleLineSegments(0).Changed || fillColorScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Lines with different fill ARGB values were merged.");
+        }
+
+        var widthScene = new VectorScene();
+        widthScene.CreateEmpty();
+        widthScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Transparent, Color.Coral, 6);
+        widthScene.AddLineSegment(0, new PointF(104, 0), new PointF(204, 0), stroke + 1, Color.Transparent, Color.Coral, 6);
+        if (widthScene.MergeCompatibleLineSegments(0).Changed || widthScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Lines with different stroke widths were merged.");
+        }
+
+        var curvedScene = new VectorScene();
+        curvedScene.CreateEmpty();
+        curvedScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Transparent, Color.Coral, 6);
+        curvedScene.AddCurveSegment(0, new PointF(104, 0), new PointF(154, 40), new PointF(204, 0), stroke, Color.Transparent, Color.Coral, 6);
+        if (curvedScene.MergeCompatibleLineSegments(0).Changed || curvedScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("A curved line was treated as a mergeable straight segment.");
+        }
+
+        var layerScene = new VectorScene();
+        layerScene.CreateEmpty(2);
+        layerScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Transparent, Color.Coral, 6);
+        layerScene.AddLineSegment(1, new PointF(104, 0), new PointF(204, 0), stroke, Color.Transparent, Color.Coral, 6);
+        if (layerScene.MergeCompatibleLineSegments(0).Changed || layerScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Compatible lines on different layers were merged.");
+        }
+
+        var frameScene = new VectorScene();
+        frameScene.CreateEmpty();
+        frameScene.AddLineSegment(0, new PointF(0, 0), new PointF(100, 0), stroke, Color.Transparent, Color.Coral, 6);
+        if (!frameScene.InsertTimelineBlankKeyframe(0, 10))
+        {
+            throw new InvalidOperationException("Line merge frame regression could not create an independent blank cel.");
+        }
+
+        frameScene.EditFrame = 10;
+        frameScene.AddLineSegment(0, new PointF(104, 0), new PointF(204, 0), stroke, Color.Transparent, Color.Coral, 6);
+        if (frameScene.MergeCompatibleLineSegments(0).Changed
+            || frameScene.MergeCompatibleLineSegments(10).Changed
+            || frameScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("Line merge crossed active keyframe ownership.");
+        }
+
+        Console.WriteLine("line_segment_merge_regression=ok");
     }
 
     private static void RunCrossingFillTopologyRegression()
@@ -1789,6 +3216,37 @@ internal static class Benchmark
                 (new PointF(-200, 0), PointF.Empty)
             },
             "terminating line detach");
+    }
+
+    private static void RunTerminatingStrokeContactRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var terminating = AddTopologyLine(scene, 0, new PointF(-200, 0), PointF.Empty);
+        var through = AddTopologyLine(scene, 0, new PointF(0, -200), new PointF(0, 200));
+
+        var upper = AssertTopologyHit(scene, new PointF(0, -100), through, DrawingElementKind.Stroke, 0, 0, 0.5f, "terminating contact upper");
+        var lower = AssertTopologyHit(scene, new PointF(0, 100), through, DrawingElementKind.Stroke, 1, 0.5f, 1, "terminating contact lower");
+        var connected = scene.GetConnectedStrokeElements(upper, 0);
+        var materialized = scene.MaterializeSelectedParts(connected.Select(hit => hit.Key).ToArray(), 0);
+        var contactEndpoints = Enumerable.Range(0, scene.ObjectCount)
+            .Sum(index =>
+            {
+                scene.TryGetLineEndpoint(index, startEndpoint: true, out var start);
+                scene.TryGetLineEndpoint(index, startEndpoint: false, out var end);
+                return (PointsNear(start, PointF.Empty) ? 1 : 0) + (PointsNear(end, PointF.Empty) ? 1 : 0);
+            });
+
+        if (lower.Key.PartIndex != 1
+            || connected.Length != 3
+            || !connected.Select(hit => hit.Key.ObjectIndex).ToHashSet().SetEquals(new[] { terminating, through })
+            || !materialized.Success
+            || !materialized.Changed
+            || scene.ObjectCount != 3
+            || contactEndpoints != 3)
+        {
+            throw new InvalidOperationException("A terminating stroke contact did not preserve editable endpoints on the joined node.");
+        }
     }
 
     private static void RunCrossingLinesTopologyRegression()
@@ -2193,6 +3651,36 @@ internal static class Benchmark
             || crossingSelection.Count(hit => hit.Key.ObjectIndex == vertical) != 2)
         {
             throw new InvalidOperationException("Connected stroke selection did not traverse a split crossing network.");
+        }
+
+        var crossingNodeParts = crossingSelection
+            .Where(hit =>
+            {
+                var points = crossingScene.GetStrokePartPoints(hit, 0);
+                return points.Length > 0
+                    && (Math.Abs(points[0].X) <= 0.001f && Math.Abs(points[0].Y) <= 0.001f
+                        || Math.Abs(points[^1].X) <= 0.001f && Math.Abs(points[^1].Y) <= 0.001f);
+            })
+            .ToArray();
+        var crossingNodeMaterialized = crossingScene.MaterializeSelectedParts(
+            crossingNodeParts.Select(hit => hit.Key).ToArray(),
+            0);
+        var crossingNodeEndpoints = Enumerable.Range(0, crossingScene.ObjectCount)
+            .Sum(index =>
+            {
+                crossingScene.TryGetLineEndpoint(index, startEndpoint: true, out var start);
+                crossingScene.TryGetLineEndpoint(index, startEndpoint: false, out var end);
+                return (Math.Abs(start.X) <= 0.001f && Math.Abs(start.Y) <= 0.001f ? 1 : 0)
+                    + (Math.Abs(end.X) <= 0.001f && Math.Abs(end.Y) <= 0.001f ? 1 : 0);
+            });
+        if (!crossingNodeMaterialized.Success
+            || !crossingNodeMaterialized.Changed
+            || crossingNodeParts.Length != 4
+            || crossingScene.ObjectCount != 4
+            || crossingNodeEndpoints != 4)
+        {
+            throw new InvalidOperationException(
+                $"Crossing endpoint materialization did not preserve all node-linked line endpoints: success={crossingNodeMaterialized.Success}, changed={crossingNodeMaterialized.Changed}, parts={crossingNodeParts.Length}, objects={crossingScene.ObjectCount}, endpoints={crossingNodeEndpoints}.");
         }
 
         var boundaryScene = new VectorScene();
@@ -2602,6 +4090,56 @@ internal static class Benchmark
             || replacementLines.Any(index => scene.ObjectKeyframeFrame[index] != 0))
         {
             throw new InvalidOperationException("Marquee line materialization did not preserve drawing order or keyframe ownership.");
+        }
+    }
+
+    private static void RunMarqueeFillMaterializationRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddObject(0, PointF.Empty, new SizeF(240, 160), 0, 0, Color.Teal, Color.Transparent, 12, ShapeKind.Rectangle);
+        var materialized = scene.MaterializeMarqueeFillParts(new RectangleF(-40, -30, 80, 60), 0);
+        var selected = materialized.SelectedObjects.SingleOrDefault(-1);
+        var outside = Enumerable.Range(0, scene.ObjectCount).FirstOrDefault(index => index != selected, -1);
+        if (!materialized.Changed
+            || materialized.SelectedObjects.Length != 1
+            || (uint)selected >= scene.ObjectCount
+            || (uint)outside >= scene.ObjectCount
+            || scene.ObjectCount != 2
+            || scene.ShapeKind[selected] != ShapeKind.Path
+            || scene.ShapeKind[outside] != ShapeKind.Path
+            || !scene.FillContainsPoint(selected, PointF.Empty)
+            || scene.FillContainsPoint(selected, new PointF(80, 0))
+            || scene.FillContainsPoint(outside, PointF.Empty)
+            || !scene.FillContainsPoint(outside, new PointF(80, 0)))
+        {
+            throw new InvalidOperationException("Marquee fill materialization did not preserve the outside region as one compound path with a marquee hole.");
+        }
+    }
+
+    private static void RunMarqueeOutlinedBoundarySelectionRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var stroke = VectorUnits.StrokePointsToUnits(2);
+        scene.AddObject(0, PointF.Empty, new SizeF(240, 160), 0, stroke, Color.Teal, Color.White, 12, ShapeKind.Rectangle);
+
+        var materialized = scene.MaterializeMarqueeFillParts(new RectangleF(-40, -100, 80, 200), 0);
+        var selectedLines = materialized.SelectedObjects
+            .Where(index => (uint)index < scene.ObjectCount && scene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        var selectedFill = materialized.SelectedObjects
+            .SingleOrDefault(index => (uint)index < scene.ObjectCount && scene.ShapeKind[index] == ShapeKind.Path, -1);
+
+        if (!materialized.Changed
+            || materialized.SelectedObjects.Length != 3
+            || selectedLines.Length != 2
+            || selectedFill < 0
+            || !scene.FillContainsPoint(selectedFill, PointF.Empty)
+            || !selectedLines.Any(index => LineMatches(scene, index, new PointF(-40, -80), new PointF(40, -80)))
+            || !selectedLines.Any(index => LineMatches(scene, index, new PointF(-40, 80), new PointF(40, 80))))
+        {
+            throw new InvalidOperationException("Marquee fill materialization did not split and select the enclosed outlined boundary segments.");
         }
     }
 

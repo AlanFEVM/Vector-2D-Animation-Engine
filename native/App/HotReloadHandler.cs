@@ -12,6 +12,6 @@ internal static class HotReloadHandler
 
     public static void UpdateApplication(Type[]? updatedTypes)
     {
-        AppHost.ReloadMainFormForHotReload();
+        AppHost.ReloadModulesForHotReload(updatedTypes);
     }
 }

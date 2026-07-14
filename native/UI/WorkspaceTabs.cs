@@ -33,6 +33,17 @@ internal sealed class WorkspaceTabs : UserControl
     private readonly Dictionary<WorkspaceView, Button> _buttons = new();
     private readonly ToolTip _toolTip = new();
     private readonly System.Windows.Forms.Timer _indicatorTimer = new() { Interval = 16 };
+    private readonly ModernSlider _gridOpacity = new()
+    {
+        Minimum = 0,
+        Maximum = 100,
+        SmallChange = 1,
+        LargeChange = 10,
+        TickFrequency = 10,
+        Value = 100,
+        AccessibleName = "World grid opacity"
+    };
+    private readonly Label _gridOpacityValue = new();
     private WorkspaceView _selectedView = WorkspaceView.BasicDrawing;
     private WorkspaceTabPlacement _placement = WorkspaceTabPlacement.Top;
     private float _indicatorPosition;
@@ -56,6 +67,51 @@ internal sealed class WorkspaceTabs : UserControl
         _tabStrip.AutoScroll = false;
         Controls.Add(_tabStrip);
 
+        var gridOpacity = new TableLayoutPanel
+        {
+            Dock = DockStyle.Right,
+            Width = 228,
+            BackColor = Theme.Top,
+            ColumnCount = 3,
+            RowCount = 1,
+            Padding = new Padding(0, 6, 10, 6),
+            Margin = Padding.Empty
+        };
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+        gridOpacity.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var gridLabel = new Label
+        {
+            Text = "Grid",
+            Dock = DockStyle.Fill,
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Top,
+            Font = Theme.UiFont(8.5f, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        gridOpacity.Controls.Add(gridLabel, 0, 0);
+
+        _gridOpacity.Dock = DockStyle.Fill;
+        _gridOpacity.Margin = Padding.Empty;
+        _gridOpacity.ValueChanged += (_, _) =>
+        {
+            _gridOpacityValue.Text = $"{_gridOpacity.Value}%";
+            WorldGridOpacityChanged?.Invoke(this, EventArgs.Empty);
+        };
+        _toolTip.SetToolTip(_gridOpacity, "World grid opacity");
+        gridOpacity.Controls.Add(_gridOpacity, 1, 0);
+
+        _gridOpacityValue.Text = "100%";
+        _gridOpacityValue.Dock = DockStyle.Fill;
+        _gridOpacityValue.ForeColor = Theme.Muted;
+        _gridOpacityValue.BackColor = Theme.Top;
+        _gridOpacityValue.Font = Theme.UiFont(8.5f);
+        _gridOpacityValue.TextAlign = ContentAlignment.MiddleRight;
+        gridOpacity.Controls.Add(_gridOpacityValue, 2, 0);
+        Controls.Add(gridOpacity);
+
         AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Shape drawing and direct object editing");
         AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Edit", "Scene assembly, hierarchy and library workflow");
         AddWorkspaceButton(WorkspaceView.Animation, "Animation", "Timeline, playback and keyframe workflow");
@@ -66,6 +122,7 @@ internal sealed class WorkspaceTabs : UserControl
     }
 
     public event EventHandler<WorkspaceViewChangedEventArgs>? SelectedViewChanged;
+    public event EventHandler? WorldGridOpacityChanged;
 
     [DefaultValue(WorkspaceView.BasicDrawing)]
     public WorkspaceView SelectedView
@@ -89,6 +146,13 @@ internal sealed class WorkspaceTabs : UserControl
     }
 
     public IReadOnlyCollection<WorkspaceView> Views => _buttons.Keys;
+
+    [DefaultValue(100)]
+    public int WorldGridOpacity
+    {
+        get => _gridOpacity.Value;
+        set => _gridOpacity.Value = Math.Clamp(value, _gridOpacity.Minimum, _gridOpacity.Maximum);
+    }
 
     public void SelectView(WorkspaceView view) => SelectView(view, raiseEvent: true);
 

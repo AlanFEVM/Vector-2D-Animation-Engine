@@ -8,6 +8,9 @@ internal sealed class DrawSettingsPanel : UserControl
     private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
     private readonly ModernSlider _freehandSmoothing = new();
     private readonly Label _freehandSmoothingValue = new();
+    private readonly Panel _eraserOptions = new();
+    private readonly CheckBox _eraseLines = EraserOption("Erase Lines");
+    private readonly CheckBox _eraseFills = EraserOption("Erase Fills");
     private bool _updating;
 
     public DrawSettingsPanel(DrawSettings settings)
@@ -23,6 +26,15 @@ internal sealed class DrawSettingsPanel : UserControl
         BuildUi();
         ReadSettings();
         _settings.Changed += (_, _) => ReadSettings();
+    }
+
+    public void SetEraserOptionsVisible(bool visible)
+    {
+        if (_eraserOptions.Visible == visible) return;
+        _eraserOptions.Visible = visible;
+        Height = visible ? 204 : 164;
+        MinimumSize = new Size(248, visible ? 192 : 152);
+        PerformLayout();
     }
 
     protected override void Dispose(bool disposing)
@@ -61,6 +73,37 @@ internal sealed class DrawSettingsPanel : UserControl
         Controls.Add(content);
         content.BringToFront();
 
+        _eraserOptions.Dock = DockStyle.Bottom;
+        _eraserOptions.Height = 40;
+        _eraserOptions.BackColor = Theme.Panel;
+        _eraserOptions.Padding = new Padding(0, 4, 0, 4);
+        _eraserOptions.Visible = false;
+        var eraseLabel = new Label
+        {
+            Text = "Erase",
+            Dock = DockStyle.Left,
+            Width = 104,
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Panel,
+            Font = Theme.UiFont(),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var eraseControls = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Padding = Padding.Empty,
+            Margin = Padding.Empty
+        };
+        eraseControls.Controls.Add(_eraseLines);
+        eraseControls.Controls.Add(_eraseFills);
+        _eraserOptions.Controls.Add(eraseControls);
+        _eraserOptions.Controls.Add(eraseLabel);
+        Controls.Add(_eraserOptions);
+        _eraserOptions.BringToFront();
+
         _shape.Items.AddRange([
             ShapeKind.Rectangle.ToString(),
             ShapeKind.Ellipse.ToString(),
@@ -74,6 +117,9 @@ internal sealed class DrawSettingsPanel : UserControl
         Theme.StyleComboBox(_shape);
         _shape.SelectedIndexChanged += (_, _) => UpdateSettings();
         AddField(content, "Shape", _shape, 0);
+
+        _eraseLines.CheckedChanged += (_, _) => UpdateSettings();
+        _eraseFills.CheckedChanged += (_, _) => UpdateSettings();
 
         AddCheck(_keepRatio);
         _keepRatio.Width = 32;
@@ -120,6 +166,8 @@ internal sealed class DrawSettingsPanel : UserControl
         _keepRatio.Checked = _settings.KeepAspectRatio;
         _freehandSmoothing.Value = _settings.FreehandSmoothing;
         _freehandSmoothingValue.Text = $"{_settings.FreehandSmoothing}%";
+        _eraseLines.Checked = _settings.EraseLines;
+        _eraseFills.Checked = _settings.EraseFills;
         _updating = false;
     }
 
@@ -129,6 +177,8 @@ internal sealed class DrawSettingsPanel : UserControl
         if (_shape.SelectedItem is string selected && Enum.TryParse<ShapeKind>(selected, out var kind)) _settings.ShapeKind = kind;
         _settings.KeepAspectRatio = _keepRatio.Checked;
         _settings.FreehandSmoothing = _freehandSmoothing.Value;
+        _settings.EraseLines = _eraseLines.Checked;
+        _settings.EraseFills = _eraseFills.Checked;
         _settings.NotifyChanged();
     }
 
@@ -156,4 +206,16 @@ internal sealed class DrawSettingsPanel : UserControl
     }
 
     private static SvgToggleButton Toggle(string name, SvgIconKind icon) => new(icon, name);
+
+    private static CheckBox EraserOption(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Checked = true,
+        ForeColor = Theme.Text,
+        BackColor = Theme.Panel,
+        FlatStyle = FlatStyle.Flat,
+        Font = Theme.UiFont(),
+        Margin = new Padding(0, 4, 10, 0)
+    };
 }

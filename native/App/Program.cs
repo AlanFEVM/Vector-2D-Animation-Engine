@@ -2,10 +2,23 @@ namespace VectorAnimationEngine;
 
 internal static class Program
 {
+    private sealed record BenchmarkCommand(string LogMessage, Action Execute);
+
+    private static readonly IReadOnlyDictionary<string, BenchmarkCommand> BenchmarkCommands =
+        new Dictionary<string, BenchmarkCommand>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["--bench"] = new("Running default benchmark", Benchmark.RunDefaultStress),
+            ["--bench-freehand"] = new("Running freehand benchmark", Benchmark.RunFreehandStress),
+            ["--bench-pressure"] = new("Running pressure brush benchmark", Benchmark.RunPressureBrushRegression),
+            ["--bench-timeline"] = new("Running timeline regression benchmark", Benchmark.RunTimelineRegression),
+            ["--bench-render"] = new("Running stage renderer regression benchmark", Benchmark.RunStageRendererRegression)
+        };
+
     [STAThread]
     private static void Main(string[] args)
     {
         AppLog.Initialize(args);
+        LauncherShutdownSignal.Configure(args);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => AppLog.Error("Unhandled UI thread exception", e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -20,39 +33,24 @@ internal static class Program
             e.SetObserved();
         };
 
-        if (args.Length > 0 && args[0].Equals("--bench", StringComparison.OrdinalIgnoreCase))
-        {
-            AppLog.Info("Running default benchmark");
-            Benchmark.RunDefaultStress();
-            return;
-        }
+        if (TryRunBenchmark(args)) return;
 
-        if (args.Length > 0 && args[0].Equals("--bench-freehand", StringComparison.OrdinalIgnoreCase))
+        if (!SingleInstanceLease.TryAcquire(out var instanceLease))
         {
-            AppLog.Info("Running freehand benchmark");
-            Benchmark.RunFreehandStress();
-            return;
-        }
-
-        if (args.Length > 0 && args[0].Equals("--bench-timeline", StringComparison.OrdinalIgnoreCase))
-        {
-            AppLog.Info("Running timeline regression benchmark");
-            Benchmark.RunTimelineRegression();
-            return;
-        }
-
-        if (args.Length > 0 && args[0].Equals("--bench-render", StringComparison.OrdinalIgnoreCase))
-        {
-            AppLog.Info("Running stage renderer regression benchmark");
-            Benchmark.RunStageRendererRegression();
+            AppLog.Info("A native application instance is already active; skipping duplicate startup.");
             return;
         }
 
         try
         {
             ApplicationConfiguration.Initialize();
-            Application.Run(new AppHost());
+            using (instanceLease)
+            {
+                EditorRestartStore.TryConsume(out var restartState);
+                Application.Run(new AppHost(restartState));
+            }
             AppLog.Info("Application exited normally");
+            AppLog.Flush();
         }
         catch (Exception ex)
         {
@@ -64,5 +62,13 @@ internal static class Program
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
+    }
+
+    private static bool TryRunBenchmark(IReadOnlyList<string> args)
+    {
+        if (args.Count == 0 || !BenchmarkCommands.TryGetValue(args[0], out var command)) return false;
+        AppLog.Info(command.LogMessage);
+        command.Execute();
+        return true;
     }
 }

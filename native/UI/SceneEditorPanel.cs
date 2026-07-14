@@ -21,6 +21,11 @@ internal sealed class DrawingObjectOpenRequestedEventArgs : EventArgs
     public string DrawingObjectId { get; }
 }
 
+internal sealed class DrawingObjectAssetRequestedEventArgs(string drawingObjectId) : EventArgs
+{
+    public string DrawingObjectId { get; } = drawingObjectId;
+}
+
 internal sealed class SceneSettingsChangedEventArgs : EventArgs
 {
     public SceneSettingsChangedEventArgs(int sceneIndex, SceneDimension dimension, CameraProjection projection)
@@ -49,7 +54,9 @@ internal sealed class SceneEditorPanel : UserControl
     private readonly ListBox _instances = new();
     private readonly Button _addScene = new() { Text = "+ Scene", Width = 82, Height = 28 };
     private readonly Button _addObject = new() { Text = "+ Object", Width = 82, Height = 28 };
+    private readonly Button _objectActions = new() { Text = "...", Width = 30, Height = 28, AccessibleName = "Drawing object actions" };
     private readonly Button _addInstance = new() { Text = "+ Instance", Width = 92, Height = 28 };
+    private readonly AnimatedContextMenuStrip _drawingObjectMenu = new();
     private VectorScene? _scene;
     private IReadOnlyList<SceneDefinition> _sceneDefinitions = [];
     private IReadOnlyList<DrawingObjectDefinition> _drawingObjectDefinitions = [];
@@ -71,6 +78,12 @@ internal sealed class SceneEditorPanel : UserControl
         RefreshText();
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _drawingObjectMenu.Dispose();
+        base.Dispose(disposing);
+    }
+
     public event EventHandler? AddSceneRequested;
     public event EventHandler? AddDrawingObjectRequested;
     public event EventHandler? AddSceneInstanceRequested;
@@ -78,6 +91,9 @@ internal sealed class SceneEditorPanel : UserControl
     public event EventHandler<SceneSelectionChangedEventArgs>? SceneSelectionChanged;
     public event EventHandler<DrawingObjectSelectionChangedEventArgs>? DrawingObjectSelectionChanged;
     public event EventHandler<DrawingObjectOpenRequestedEventArgs>? DrawingObjectOpenRequested;
+    public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectRenameRequested;
+    public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDuplicateRequested;
+    public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDeleteRequested;
 
     public void BindScene(VectorScene scene)
     {
@@ -101,7 +117,7 @@ internal sealed class SceneEditorPanel : UserControl
 
     public void SetActiveDrawingObject(DrawingObjectDefinition? drawingObject)
     {
-        _activeObject.Text = drawingObject is null ? "Scene" : $"{drawingObject.Name} ({drawingObject.Kind})";
+        SetInfoText(_activeObject, drawingObject is null ? "Scene" : $"{drawingObject.Name} ({drawingObject.Kind})");
     }
 
     public void RefreshSceneStats() => RefreshText();
@@ -173,7 +189,7 @@ internal sealed class SceneEditorPanel : UserControl
         managers.Controls.Add(HeaderWithButton("Scenes", _addScene), 0, 0);
         ConfigureList(_scenes);
         managers.Controls.Add(_scenes, 0, 1);
-        managers.Controls.Add(HeaderWithButton("Drawing Objects", _addObject), 0, 2);
+        managers.Controls.Add(HeaderWithButton("Drawing Objects", _addObject, _objectActions), 0, 2);
         ConfigureList(_drawingObjects);
         managers.Controls.Add(_drawingObjects, 0, 3);
         managers.Controls.Add(HeaderWithButton("Scene Instances", _addInstance), 0, 4);
@@ -183,6 +199,8 @@ internal sealed class SceneEditorPanel : UserControl
         _addScene.Click += (_, _) => AddSceneRequested?.Invoke(this, EventArgs.Empty);
         _addObject.Click += (_, _) => AddDrawingObjectRequested?.Invoke(this, EventArgs.Empty);
         _addInstance.Click += (_, _) => AddSceneInstanceRequested?.Invoke(this, EventArgs.Empty);
+        BuildDrawingObjectMenu();
+        _objectActions.Click += (_, _) => ShowDrawingObjectActions(_objectActions);
         _scenes.SelectedIndexChanged += (_, _) =>
         {
             if (_updating || _scenes.SelectedIndex < 0) return;
@@ -199,6 +217,12 @@ internal sealed class SceneEditorPanel : UserControl
             DrawingObjectOpenRequested?.Invoke(
                 this,
                 new DrawingObjectOpenRequestedEventArgs(_drawingObjectDefinitions[_drawingObjects.SelectedIndex].Id));
+        };
+        _drawingObjects.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right) return;
+            var index = _drawingObjects.IndexFromPoint(e.Location);
+            if (index >= 0) _drawingObjects.SelectedIndex = index;
         };
         _instances.DoubleClick += (_, _) =>
         {
@@ -257,22 +281,27 @@ internal sealed class SceneEditorPanel : UserControl
 
     private void RefreshText()
     {
-        _mode.Text = "Scene Edit";
+        SetInfoText(_mode, "Scene Edit");
         var sceneDefinition = _activeSceneIndex >= 0 && _activeSceneIndex < _sceneDefinitions.Count ? _sceneDefinitions[_activeSceneIndex] : null;
-        _sceneName.Text = sceneDefinition?.Name ?? "Scene";
+        SetInfoText(_sceneName, sceneDefinition?.Name ?? "Scene");
         if (_activeDrawingObjectIndex >= 0 && _activeDrawingObjectIndex < _drawingObjectDefinitions.Count)
         {
             var drawingObject = _drawingObjectDefinitions[_activeDrawingObjectIndex];
-            _activeObject.Text = $"{drawingObject.Name} ({drawingObject.Kind})";
+            SetInfoText(_activeObject, $"{drawingObject.Name} ({drawingObject.Kind})");
         }
         else
         {
-            _activeObject.Text = "Scene";
+            SetInfoText(_activeObject, "Scene");
         }
 
-        _stageSize.Text = _scene is null ? "-" : $"{_scene.StageWidth:0} x {_scene.StageHeight:0} vu";
+        SetInfoText(_stageSize, _scene is null ? "-" : $"{_scene.StageWidth:0} x {_scene.StageHeight:0} vu");
         var instanceCount = sceneDefinition?.Instances.Count ?? 0;
-        _sceneStats.Text = _scene is null ? "-" : $"{_scene.LayerCount} layers, {CompactFormat.Number(_scene.ObjectCount)} objects, {instanceCount} scene instances";
+        SetInfoText(_sceneStats, _scene is null ? "-" : $"{_scene.LayerCount} layers, {CompactFormat.Number(_scene.ObjectCount)} objects, {instanceCount} scene instances");
+    }
+
+    private static void SetInfoText(Label label, string text)
+    {
+        if (!string.Equals(label.Text, text, StringComparison.Ordinal)) label.Text = text;
     }
 
     private void RaiseSceneSettingsChanged()
@@ -284,7 +313,45 @@ internal sealed class SceneEditorPanel : UserControl
         SceneSettingsChanged?.Invoke(this, new SceneSettingsChangedEventArgs(_activeSceneIndex, dimension, projection));
     }
 
-    private static Panel HeaderWithButton(string text, Button button)
+    private void BuildDrawingObjectMenu()
+    {
+        var rename = new ToolStripMenuItem("Rename");
+        rename.Click += (_, _) => RaiseDrawingObjectAssetRequest(DrawingObjectRenameRequested);
+        var duplicate = new ToolStripMenuItem("Duplicate");
+        duplicate.Click += (_, _) => RaiseDrawingObjectAssetRequest(DrawingObjectDuplicateRequested);
+        var delete = new ToolStripMenuItem("Delete");
+        delete.Click += (_, _) => RaiseDrawingObjectAssetRequest(DrawingObjectDeleteRequested);
+        _drawingObjectMenu.Items.AddRange(new ToolStripItem[] { rename, duplicate, new ToolStripSeparator(), delete });
+        _drawingObjectMenu.Opening += (_, _) =>
+        {
+            var hasSelection = SelectedDrawingObjectId() is not null;
+            rename.Enabled = hasSelection;
+            duplicate.Enabled = hasSelection;
+            delete.Enabled = hasSelection && _drawingObjectDefinitions.Count > 1;
+        };
+        _drawingObjects.ContextMenuStrip = _drawingObjectMenu;
+    }
+
+    private void ShowDrawingObjectActions(Control anchor)
+    {
+        _drawingObjectMenu.Show(anchor, new Point(Math.Max(0, anchor.Width - _drawingObjectMenu.Width), anchor.Height));
+    }
+
+    private void RaiseDrawingObjectAssetRequest(EventHandler<DrawingObjectAssetRequestedEventArgs>? requested)
+    {
+        var drawingObjectId = SelectedDrawingObjectId();
+        if (drawingObjectId is null) return;
+        requested?.Invoke(this, new DrawingObjectAssetRequestedEventArgs(drawingObjectId));
+    }
+
+    private string? SelectedDrawingObjectId()
+    {
+        return _drawingObjects.SelectedIndex >= 0 && _drawingObjects.SelectedIndex < _drawingObjectDefinitions.Count
+            ? _drawingObjectDefinitions[_drawingObjects.SelectedIndex].Id
+            : null;
+    }
+
+    private static Panel HeaderWithButton(string text, params Button[] buttons)
     {
         var panel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty };
         var label = new Label
@@ -296,11 +363,26 @@ internal sealed class SceneEditorPanel : UserControl
             Font = Theme.UiFont(9.5f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft
         };
-        button.Dock = DockStyle.Right;
-        Theme.StyleButton(button);
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Right,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = Theme.Panel,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        foreach (var button in buttons)
+        {
+            button.Margin = Padding.Empty;
+            Theme.StyleButton(button);
+            actions.Controls.Add(button);
+        }
         panel.Controls.Add(label);
-        panel.Controls.Add(button);
-        button.BringToFront();
+        panel.Controls.Add(actions);
+        actions.BringToFront();
         return panel;
     }
 

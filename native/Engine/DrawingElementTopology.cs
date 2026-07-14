@@ -28,6 +28,11 @@ internal sealed record MaterializeSelectedPartsResult(
     MaterializedPartMapping[] Parts,
     int[] OldToNewObjectIndex);
 
+internal sealed record LineSegmentMergeResult(
+    bool Changed,
+    int MergeCount,
+    int[] OldToNewObjectIndex);
+
 internal readonly record struct DrawingFillPartGeometry(int PartIndex, PointF[][] Contours);
 
 internal readonly record struct DrawingPolylinePartGeometry(int PartIndex, PointF[] Points);

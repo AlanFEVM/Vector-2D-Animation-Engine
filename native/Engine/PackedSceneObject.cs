@@ -10,4 +10,13 @@ internal readonly record struct PackedSceneObject(
     int StrokeArgb,
     uint Atoms,
     ShapeKind Shape,
-    PointF CurveControl);
+    PointF CurveControl,
+    LineEndpointStyle StartEndpointStyle = LineEndpointStyle.Round,
+    LineEndpointStyle EndEndpointStyle = LineEndpointStyle.Round,
+    bool LinearGradientEnabled = false,
+    GradientKind GradientKind = GradientKind.Solid,
+    int GradientStartArgb = 0,
+    int GradientEndArgb = 0,
+    PointF GradientStart = default,
+    PointF GradientEnd = default,
+    GradientStop[]? GradientStops = null);

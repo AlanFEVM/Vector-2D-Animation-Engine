@@ -6,14 +6,17 @@ namespace VectorAnimationEngine;
 internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 {
     private const int ItemHeight = 30;
-    private const int MinimumWidth = 176;
+    private const int MinimumWidth = 300;
     private const int MaximumWidth = 360;
-    private const float OpeningScale = 0.86f;
     private const int OpeningDurationMilliseconds = 180;
+    private const int OpeningOffsetPixels = 6;
+    private const int ItemHorizontalPadding = 11;
+    private const int ShortcutGap = 18;
+    private const int ShortcutColumnWidth = 72;
 
     private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 16 };
-    private Size _targetSize;
     private Point _targetLocation;
+    private Point _openingStartLocation;
     private long _animationStartedAt;
     private ToolStripItem? _hoveredItem;
 
@@ -28,12 +31,21 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         ShowImageMargin = false;
         ShowCheckMargin = false;
         AccessibleRole = AccessibleRole.MenuPopup;
-        Renderer = new ContextMenuRenderer(this);
+        Renderer = new ContextMenuRenderer();
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
         ItemAdded += (_, e) =>
         {
-            if (e.Item is not null) StyleItem(e.Item);
+            if (e.Item is null) return;
+
+            StyleItem(e.Item);
+            if (e.Item.Tag is null) e.Item.Tag = "VectorAnimationEngine.AnimatedContextMenuStrip.HoverRouting";
+            e.Item.MouseEnter += (_, _) => SetHoveredItem(e.Item);
+            e.Item.MouseMove += (_, _) => SetHoveredItem(e.Item);
+            e.Item.MouseLeave += (_, _) =>
+            {
+                if (ReferenceEquals(_hoveredItem, e.Item)) SetHoveredItem(null);
+            };
         };
         _animationTimer.Tick += (_, _) => TickOpeningAnimation();
     }
@@ -51,16 +63,26 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
     protected override void OnOpened(EventArgs e)
     {
         base.OnOpened(e);
+        const string hoverRoutingTag = "VectorAnimationEngine.AnimatedContextMenuStrip.HoverRouting";
+        foreach (ToolStripItem item in Items)
+        {
+            if (item.Tag is not null) continue;
+
+            item.Tag = hoverRoutingTag;
+            item.MouseEnter += (_, _) => SetHoveredItem(item);
+            item.MouseMove += (_, _) => SetHoveredItem(item);
+            item.MouseLeave += (_, _) =>
+            {
+                if (ReferenceEquals(_hoveredItem, item)) SetHoveredItem(null);
+            };
+        }
+
         if (!Visible || !SystemInformation.IsMenuAnimationEnabled) return;
 
-        _targetSize = Size;
         _targetLocation = Location;
-        if (_targetSize.Width <= 0 || _targetSize.Height <= 0) return;
-
-        AutoSize = false;
-        MinimumSize = Size.Empty;
+        _openingStartLocation = new Point(_targetLocation.X, _targetLocation.Y + OpeningOffsetPixels);
         _animationStartedAt = Environment.TickCount64;
-        ApplyOpeningScale(OpeningScale);
+        Location = _openingStartLocation;
         _animationTimer.Start();
     }
 
@@ -93,6 +115,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        if (ClientRectangle.Contains(PointToClient(Control.MousePosition))) return;
         SetHoveredItem(null);
     }
 
@@ -112,14 +135,10 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
                 Font,
                 new Size(MaximumWidth, ItemHeight),
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width;
-            var shortcutWidth = item is ToolStripMenuItem menuItem && menuItem.ShortcutKeys != Keys.None
-                ? TextRenderer.MeasureText(
-                    ShortcutText(menuItem),
-                    Font,
-                    new Size(MaximumWidth, ItemHeight),
-                    TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width + 18
-                : 0;
-            width = Math.Max(width, Math.Min(MaximumWidth, textWidth + shortcutWidth + 28));
+            var hasShortcut = item is ToolStripMenuItem { ShortcutKeys: not Keys.None };
+            var shortcutWidth = hasShortcut ? ShortcutColumnWidth : 0;
+            var contentWidth = textWidth + shortcutWidth + (hasShortcut ? ShortcutGap : 0);
+            width = Math.Max(width, Math.Min(MaximumWidth, contentWidth + ItemHorizontalPadding * 2));
         }
 
         foreach (ToolStripItem item in Items)
@@ -134,7 +153,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
             item.AutoSize = false;
             item.Margin = Padding.Empty;
-            item.Padding = new Padding(11, 0, 11, 0);
+            item.Padding = new Padding(ItemHorizontalPadding, 0, ItemHorizontalPadding, 0);
             item.Size = new Size(width, ItemHeight);
         }
 
@@ -146,6 +165,10 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         item.BackColor = Theme.PanelStrong;
         item.ForeColor = item.Enabled ? Theme.Text : Theme.DisabledText;
         item.Font = Font;
+        if (item is ToolStripMenuItem { ShortcutKeys: not Keys.None } menuItem)
+        {
+            menuItem.ShortcutKeyDisplayString = ShortcutText(menuItem);
+        }
         item.AccessibleRole = item is ToolStripSeparator ? AccessibleRole.Separator : AccessibleRole.MenuItem;
         if (string.IsNullOrWhiteSpace(item.AccessibleName)) item.AccessibleName = item.Text;
     }
@@ -174,12 +197,13 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
         var elapsed = Environment.TickCount64 - _animationStartedAt;
         var progress = Math.Clamp(elapsed / (float)OpeningDurationMilliseconds, 0f, 1f);
-        var scale = OpeningScale + (1f - OpeningScale) * EaseOutBack(progress);
-        ApplyOpeningScale(scale);
+        var easedProgress = EaseOutBack(progress);
+        Location = new Point(
+            (int)Math.Round(_openingStartLocation.X + (_targetLocation.X - _openingStartLocation.X) * easedProgress),
+            (int)Math.Round(_openingStartLocation.Y + (_targetLocation.Y - _openingStartLocation.Y) * easedProgress));
         if (progress < 1f) return;
 
         StopOpeningAnimation();
-        Size = _targetSize;
         Location = _targetLocation;
         RestoreMinimumSize();
         AutoSize = true;
@@ -192,15 +216,6 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
     private void RestoreMinimumSize() => MinimumSize = new Size(MinimumWidth, 0);
 
-    private void ApplyOpeningScale(float scale)
-    {
-        var width = Math.Max(1, (int)Math.Round(_targetSize.Width * scale));
-        var height = Math.Max(1, (int)Math.Round(_targetSize.Height * scale));
-        var x = _targetLocation.X + (_targetSize.Width - width) / 2;
-        var y = _targetLocation.Y + (_targetSize.Height - height) / 2;
-        SetBounds(x, y, width, height, BoundsSpecified.All);
-    }
-
     private static float EaseOutBack(float value)
     {
         value = Math.Clamp(value, 0f, 1f) - 1f;
@@ -209,19 +224,33 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
     private static string ShortcutText(ToolStripMenuItem item)
     {
-        return string.IsNullOrWhiteSpace(item.ShortcutKeyDisplayString)
-            ? item.ShortcutKeys.ToString()
-            : item.ShortcutKeyDisplayString;
+        var shortcut = item.ShortcutKeys;
+        var parts = new List<string>(3);
+        if ((shortcut & Keys.Control) == Keys.Control) parts.Add("Ctrl");
+        if ((shortcut & Keys.Shift) == Keys.Shift) parts.Add("Shift");
+        if ((shortcut & Keys.Alt) == Keys.Alt) parts.Add("Alt");
+
+        var key = shortcut & Keys.KeyCode;
+        if (key != Keys.None)
+        {
+            parts.Add(key switch
+            {
+                Keys.Oemcomma => ",",
+                Keys.OemPeriod => ".",
+                Keys.Delete => "Del",
+                Keys.Return => "Enter",
+                _ => key.ToString()
+            });
+        }
+
+        return string.Join("+", parts);
     }
 
     private sealed class ContextMenuRenderer : ToolStripProfessionalRenderer
     {
-        private readonly AnimatedContextMenuStrip _menu;
-
-        public ContextMenuRenderer(AnimatedContextMenuStrip menu)
+        public ContextMenuRenderer()
             : base(new ContextMenuColorTable())
         {
-            _menu = menu;
             RoundedEdges = false;
         }
 
@@ -239,8 +268,8 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            var hovered = _menu.IsHovered(e.Item);
-            if ((!e.Item.Selected && !hovered) || !e.Item.Enabled) return;
+            base.OnRenderMenuItemBackground(e);
+            if (!e.Item.Enabled || !e.Item.Selected) return;
 
             var bounds = Rectangle.Inflate(e.Item.Bounds, -2, -1);
             using var background = new SolidBrush(Theme.AccentSurface);
@@ -251,29 +280,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
-            var textBounds = e.TextRectangle;
-            var color = e.Item.Enabled ? Theme.Text : Theme.DisabledText;
-            var flags = TextFormatFlags.Left
-                | TextFormatFlags.VerticalCenter
-                | TextFormatFlags.EndEllipsis
-                | TextFormatFlags.NoPadding
-                | TextFormatFlags.NoPrefix
-                | TextFormatFlags.SingleLine;
-
-            if (e.Item is ToolStripMenuItem menuItem && menuItem.ShortcutKeys != Keys.None)
-            {
-                var shortcut = ShortcutText(menuItem);
-                var shortcutWidth = TextRenderer.MeasureText(shortcut, e.TextFont, Size.Empty, flags).Width;
-                var shortcutBounds = new Rectangle(
-                    Math.Max(textBounds.Left, textBounds.Right - shortcutWidth),
-                    textBounds.Top,
-                    shortcutWidth,
-                    textBounds.Height);
-                TextRenderer.DrawText(e.Graphics, shortcut, e.TextFont, shortcutBounds, Theme.Muted, flags | TextFormatFlags.Right);
-                textBounds.Width = Math.Max(0, shortcutBounds.Left - textBounds.Left - 12);
-            }
-
-            TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, textBounds, color, flags);
+            base.OnRenderItemText(e);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
@@ -306,6 +313,11 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         public override Color ToolStripBorder => Theme.BorderHover;
         public override Color MenuItemSelected => Theme.AccentSurface;
         public override Color MenuItemBorder => Theme.Accent;
+        public override Color MenuItemSelectedGradientBegin => Theme.AccentSurface;
+        public override Color MenuItemSelectedGradientEnd => Theme.AccentSurface;
+        public override Color MenuItemPressedGradientBegin => Theme.AccentPressedSurface;
+        public override Color MenuItemPressedGradientMiddle => Theme.AccentPressedSurface;
+        public override Color MenuItemPressedGradientEnd => Theme.AccentPressedSurface;
         public override Color SeparatorDark => Theme.Border;
         public override Color SeparatorLight => Theme.PanelStrong;
     }

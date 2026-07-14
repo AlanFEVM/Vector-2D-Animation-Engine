@@ -13,6 +13,8 @@ internal class SvgIconButton : Button
 
     public SvgIconKind Icon { get; set; }
 
+    public bool ShowsToolGroupIndicator { get; set; }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var active = UiMotion.IsActive(this);
@@ -25,6 +27,16 @@ internal class SvgIconButton : Button
         if (hover > 0.01f) e.Graphics.FillRectangle(hoverWash, new Rectangle(1, 1, Math.Max(0, Width - 2), Math.Max(0, Height - 2)));
         e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
         SvgIcons.Draw(e.Graphics, Icon, ClientRectangle, ForeColor);
+        if (ShowsToolGroupIndicator)
+        {
+            using var indicator = new SolidBrush(Color.FromArgb(220, ForeColor));
+            e.Graphics.FillPolygon(indicator, new Point[]
+            {
+                new Point(Width - 10, Height - 4),
+                new Point(Width - 4, Height - 4),
+                new Point(Width - 4, Height - 10)
+            });
+        }
     }
 }
 

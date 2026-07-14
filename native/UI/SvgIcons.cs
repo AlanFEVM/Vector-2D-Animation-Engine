@@ -5,6 +5,7 @@ namespace VectorAnimationEngine;
 internal enum SvgIconKind
 {
     Select,
+    Transform,
     Pan,
     Rectangle,
     Ellipse,
@@ -12,9 +13,14 @@ internal enum SvgIconKind
     Polygon,
     Star,
     Line,
+    Pen,
     Pencil,
     Brush,
+    PressureBrush,
     Fill,
+    InkBottle,
+    Gradient,
+    Eraser,
     Vault,
     Snap,
     Grid,
@@ -40,6 +46,13 @@ internal static class SvgIcons
         {
             case SvgIconKind.Select:
                 DrawPolygon(g, pen, [P(r, 4, 3), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12)]);
+                break;
+            case SvgIconKind.Transform:
+                DrawRectangle(g, pen, Rect(r, 6, 6, 12, 12));
+                g.DrawLine(thinPen, P(r, 3, 3), P(r, 8, 3));
+                g.DrawLine(thinPen, P(r, 3, 3), P(r, 3, 8));
+                g.DrawLine(thinPen, P(r, 21, 21), P(r, 16, 21));
+                g.DrawLine(thinPen, P(r, 21, 21), P(r, 21, 16));
                 break;
             case SvgIconKind.Pan:
                 g.DrawLine(pen, P(r, 12, 3), P(r, 12, 21));
@@ -71,6 +84,11 @@ internal static class SvgIcons
                 g.DrawEllipse(thinPen, Rect(r, 3, 19, 3, 3));
                 g.DrawEllipse(thinPen, Rect(r, 19, 3, 3, 3));
                 break;
+            case SvgIconKind.Pen:
+                DrawPolygon(g, pen, [P(r, 12, 3), P(r, 19, 10), P(r, 13, 21), P(r, 5, 13)]);
+                g.DrawLine(thinPen, P(r, 9, 15), P(r, 15, 9));
+                g.FillEllipse(fill, Rect(r, 10.5f, 10.5f, 3, 3));
+                break;
             case SvgIconKind.Pencil:
                 g.DrawLine(pen, P(r, 5, 19), P(r, 17, 7));
                 g.DrawLine(pen, P(r, 8, 22), P(r, 20, 10));
@@ -84,10 +102,38 @@ internal static class SvgIcons
                 g.FillEllipse(fill, Rect(r, 4, 14, 9, 8));
                 g.DrawArc(pen, Rect(r, 4, 14, 9, 8), 205, 285);
                 break;
+            case SvgIconKind.PressureBrush:
+                g.DrawLine(pen, P(r, 15, 4), P(r, 10, 15));
+                g.DrawLine(pen, P(r, 20, 7), P(r, 12, 17));
+                g.FillEllipse(fill, Rect(r, 4, 14, 10, 8));
+                g.DrawArc(pen, Rect(r, 4, 14, 10, 8), 205, 285);
+                g.FillEllipse(fill, Rect(r, 17, 17, 4, 4));
+                g.DrawEllipse(thinPen, Rect(r, 17, 17, 4, 4));
+                break;
             case SvgIconKind.Fill:
                 DrawPolygon(g, pen, [P(r, 8, 4), P(r, 19, 15), P(r, 13, 21), P(r, 2, 10)]);
                 g.DrawLine(pen, P(r, 5, 13), P(r, 16, 13));
                 g.FillEllipse(fill, Rect(r, 17, 18, 4, 4));
+                break;
+            case SvgIconKind.InkBottle:
+                DrawPolygon(g, pen, [P(r, 8, 3), P(r, 17, 3), P(r, 20, 8), P(r, 18, 12), P(r, 7, 12), P(r, 5, 8)]);
+                g.DrawLine(pen, P(r, 9, 12), P(r, 7, 20));
+                g.DrawLine(pen, P(r, 16, 12), P(r, 18, 20));
+                g.DrawLine(thinPen, P(r, 7, 20), P(r, 18, 20));
+                g.FillEllipse(fill, Rect(r, 10, 15, 5, 5));
+                break;
+            case SvgIconKind.Gradient:
+                using (var gradient = new LinearGradientBrush(Rect(r, 3, 6, 18, 12), Color.FromArgb(238, color), Color.FromArgb(55, color), LinearGradientMode.Horizontal))
+                {
+                    g.FillRectangle(gradient, Rect(r, 3, 6, 18, 12));
+                }
+                DrawRectangle(g, pen, Rect(r, 3, 6, 18, 12));
+                g.DrawLine(thinPen, P(r, 5, 18), P(r, 19, 6));
+                break;
+            case SvgIconKind.Eraser:
+                DrawPolygon(g, pen, [P(r, 7, 5), P(r, 19, 17), P(r, 13, 22), P(r, 2, 11)]);
+                g.DrawLine(thinPen, P(r, 5, 14), P(r, 15, 4));
+                g.DrawLine(thinPen, P(r, 10, 19), P(r, 20, 9));
                 break;
             case SvgIconKind.Vault:
                 DrawRectangle(g, pen, Rect(r, 4, 5, 16, 15));

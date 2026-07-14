@@ -7,6 +7,8 @@ internal sealed class DrawSettings
     private int _polygonSides = 6;
     private int _starPoints = 5;
     private int _freehandSmoothing = 52;
+    private int _pressureBrushSmoothing = 70;
+    private int _brushFrequency = 8;
 
     public event EventHandler? Changed;
 
@@ -18,6 +20,9 @@ internal sealed class DrawSettings
     public bool AlignmentEnabled { get; set; }
     public bool AngleSnapEnabled { get; set; }
     public bool KeepAspectRatio { get; set; }
+    public bool EraseLines { get; set; } = true;
+    public bool EraseFills { get; set; } = true;
+    public bool BrushContinuous { get; set; } = true;
 
     public float GridSize
     {
@@ -47,6 +52,18 @@ internal sealed class DrawSettings
     {
         get => _freehandSmoothing;
         set => _freehandSmoothing = Math.Clamp(value, 0, 100);
+    }
+
+    public int PressureBrushSmoothing
+    {
+        get => _pressureBrushSmoothing;
+        set => _pressureBrushSmoothing = Math.Clamp(value, 0, 100);
+    }
+
+    public int BrushFrequency
+    {
+        get => _brushFrequency;
+        set => _brushFrequency = Math.Clamp(value, 1, 24);
     }
 
     public PointF SnapPoint(PointF point)

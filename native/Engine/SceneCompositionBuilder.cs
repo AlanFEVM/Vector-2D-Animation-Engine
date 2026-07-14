@@ -3,7 +3,10 @@ using System.Numerics;
 
 namespace VectorAnimationEngine;
 
-internal readonly record struct SceneCompositionObjectOwner(string InstanceId, string DrawingObjectId);
+internal readonly record struct SceneCompositionObjectOwner(
+    string InstanceId,
+    string DrawingObjectId,
+    string RootInstanceId = "");
 
 internal readonly record struct SceneCompositionBuildMetrics(
     double BucketMilliseconds,
@@ -111,7 +114,18 @@ internal static class SceneCompositionBuilder
         PointF Control,
         PointF End,
         PointF[] Points,
-        PointF[][] Contours);
+        PointF[][] Contours,
+        LineEndpointStyle StartEndpointStyle = LineEndpointStyle.Round,
+        LineEndpointStyle EndEndpointStyle = LineEndpointStyle.Round)
+    {
+        public bool LinearGradientEnabled { get; init; }
+        public GradientKind GradientKind { get; init; }
+        public int GradientStartArgb { get; init; }
+        public int GradientEndArgb { get; init; }
+        public PointF GradientStart { get; init; }
+        public PointF GradientEnd { get; init; }
+        public GradientStop[] GradientStops { get; init; } = [];
+    }
 
     public static SceneCompositionResult Build(
         VectorScene destination,
@@ -131,27 +145,37 @@ internal static class SceneCompositionBuilder
         var definitionsById = DefinitionsById(drawingObjects);
         var layers = new List<CompositionLayer>();
         sceneDefinition.SynchronizeTimelineTracks();
-        foreach (var instance in sceneDefinition.Instances)
+        var localFrame = Math.Clamp(frame, 0, Math.Max(0, sceneDefinition.FrameCount - 1));
+        foreach (var sceneLayer in sceneDefinition.Layers)
         {
-            if (!instance.Visible
-                || !sceneDefinition.Timeline.EvaluateTargetExposure(instance.Id, frame).HasContent
-                || !definitionsById.TryGetValue(instance.DrawingObjectId, out var drawingObject))
+            if (!sceneLayer.Visible
+                || !sceneDefinition.Timeline.EvaluateTargetExposure(sceneLayer.Id, localFrame).HasContent)
             {
                 continue;
             }
 
-            CollectDrawingObjectLayers(
-                drawingObject,
-                instance,
-                InstanceMatrix(instance),
-                frame,
-                definitionsById,
-                layers,
-                new HashSet<string>(StringComparer.Ordinal),
-                instance.Name);
+            foreach (var instance in sceneDefinition.InstancesInLayer(sceneLayer.Id))
+            {
+                if (!instance.Visible
+                    || !definitionsById.TryGetValue(instance.DrawingObjectId, out var drawingObject))
+                {
+                    continue;
+                }
+
+                CollectDrawingObjectLayers(
+                    drawingObject,
+                    instance,
+                    InstanceMatrix(instance),
+                    localFrame,
+                    definitionsById,
+                    layers,
+                    new HashSet<string>(StringComparer.Ordinal),
+                    $"{instance.Name} / {sceneLayer.Name}",
+                    instance.Id);
+            }
         }
 
-        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, sceneDefinition.FrameCount), frame);
+        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, sceneDefinition.FrameCount), localFrame);
     }
 
     public static SceneCompositionResult BuildDrawingObjectChildren(
@@ -190,10 +214,53 @@ internal static class SceneCompositionBuilder
                 definitionsById,
                 layers,
                 ancestry,
-                instance.Name);
+                instance.Name,
+                instance.Id);
         }
 
         return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount), localFrame);
+    }
+
+    public static SceneCompositionResult BuildDrawingObjectPreview(
+        VectorScene destination,
+        DrawingObjectDefinition? drawingObject,
+        IReadOnlyList<DrawingObjectDefinition> drawingObjects,
+        PointF position,
+        int frame,
+        float opacity = 0.48f)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(drawingObjects);
+        if (drawingObject is null || !drawingObjects.Any(item => string.Equals(item.Id, drawingObject.Id, StringComparison.Ordinal)))
+        {
+            destination.CreateEmpty();
+            return SceneCompositionResult.Empty;
+        }
+
+        var definitionsById = DefinitionsById(drawingObjects);
+        var previewInstance = new DrawingObjectInstanceDefinition
+        {
+            Id = $"drag-preview-{drawingObject.Id}",
+            DrawingObjectId = drawingObject.Id,
+            Name = drawingObject.Name,
+            X = position.X,
+            Y = position.Y
+        };
+        var layers = new List<CompositionLayer>();
+        var localFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
+        CollectDrawingObjectLayers(
+            drawingObject,
+            previewInstance,
+            InstanceMatrix(previewInstance),
+            localFrame,
+            definitionsById,
+            layers,
+            new HashSet<string>(StringComparer.Ordinal),
+            drawingObject.Name,
+            previewInstance.Id);
+        var result = BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount), localFrame);
+        destination.ApplyOpacity(opacity);
+        return result;
     }
 
     private static Dictionary<string, DrawingObjectDefinition> DefinitionsById(IReadOnlyList<DrawingObjectDefinition> drawingObjects)
@@ -212,7 +279,8 @@ internal static class SceneCompositionBuilder
         IReadOnlyDictionary<string, DrawingObjectDefinition> definitionsById,
         ICollection<CompositionLayer> layers,
         ISet<string> ancestry,
-        string path)
+        string path,
+        string rootInstanceId)
     {
         if (!ancestry.Add(drawingObject.Id)) return;
         try
@@ -226,7 +294,7 @@ internal static class SceneCompositionBuilder
                     sourceLayer,
                     $"{path} / {source.LayerNames[sourceLayer]}",
                     transform,
-                    new SceneCompositionObjectOwner(instance.Id, drawingObject.Id)));
+                    new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId)));
             }
 
             drawingObject.SynchronizeInstanceTimelineTracks();
@@ -248,7 +316,8 @@ internal static class SceneCompositionBuilder
                     definitionsById,
                     layers,
                     ancestry,
-                    $"{path} / {childInstance.Name}");
+                    $"{path} / {childInstance.Name}",
+                    rootInstanceId);
             }
         }
         finally
@@ -296,6 +365,7 @@ internal static class SceneCompositionBuilder
             destination.LayerNames[destinationLayer] = layer.Name;
             destination.LayerVisible[destinationLayer] = true;
             destination.LayerOpacity[destinationLayer] = layer.Source.LayerOpacity[layer.SourceLayer];
+            destination.LayerColorArgb[destinationLayer] = layer.Source.LayerColorArgb[layer.SourceLayer];
         }
         var setupMilliseconds = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
 
@@ -393,6 +463,7 @@ internal static class SceneCompositionBuilder
     {
         foreach (var layer in layers)
         {
+            if (HasShear(layer.Transform)) return false;
             var sourceFrame = sourceFrames[layer.Source];
             var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, sourceFrame)][layer.SourceLayer];
             foreach (var sourceObject in sourceObjects)
@@ -536,7 +607,7 @@ internal static class SceneCompositionBuilder
                 }
             }
 
-            return new PreparedCompositionObject(
+            return WithGradient(new PreparedCompositionObject(
                 PreparedCompositionKind.Path,
                 destinationLayer,
                 shape,
@@ -551,7 +622,7 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 [],
-                contours);
+                contours), source, sourceObject, transform, identityTransform);
         }
 
         if (shape == ShapeKind.Freeform && source.TryGetFreehandWorldPoints(sourceObject, out var freehand))
@@ -560,7 +631,7 @@ internal static class SceneCompositionBuilder
             {
                 freehand[pointIndex] = TransformPoint(freehand[pointIndex], transform, identityTransform);
             }
-            return new PreparedCompositionObject(
+            return WithGradient(new PreparedCompositionObject(
                 PreparedCompositionKind.Freehand,
                 destinationLayer,
                 shape,
@@ -575,7 +646,7 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 freehand,
-                []);
+                []), source, sourceObject, transform, identityTransform);
         }
 
         if (shape == ShapeKind.Line
@@ -592,7 +663,7 @@ internal static class SceneCompositionBuilder
             var curveSize = new SizeF(
                 Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, MathF.Sqrt(dx * dx + dy * dy)),
                 Math.Max(VectorUnits.FromPixels(3), stroke + VectorUnits.FromPixels(2)));
-            return new PreparedCompositionObject(
+            return WithGradient(new PreparedCompositionObject(
                 PreparedCompositionKind.Curve,
                 destinationLayer,
                 shape,
@@ -607,12 +678,47 @@ internal static class SceneCompositionBuilder
                 transformedControl,
                 transformedEnd,
                 [],
-                []);
+                [],
+                source.GetLineEndpointStyle(sourceObject, startEndpoint: true),
+                source.GetLineEndpointStyle(sourceObject, startEndpoint: false)), source, sourceObject, transform, identityTransform);
+        }
+
+        if (!identityTransform && HasShear(transform))
+        {
+            var skewContours = source.GetObjectBoundaryContours(sourceObject);
+            for (var contourIndex = 0; contourIndex < skewContours.Length; contourIndex++)
+            {
+                var contour = skewContours[contourIndex];
+                for (var pointIndex = 0; pointIndex < contour.Length; pointIndex++)
+                {
+                    contour[pointIndex] = TransformPoint(contour[pointIndex], transform, identityTransform);
+                }
+            }
+
+            if (skewContours.Length > 0)
+            {
+                return WithGradient(new PreparedCompositionObject(
+                    PreparedCompositionKind.Path,
+                    destinationLayer,
+                    ShapeKind.Path,
+                    PointF.Empty,
+                    SizeF.Empty,
+                    0,
+                    stroke,
+                    fillArgb,
+                    strokeArgb,
+                    atoms,
+                    PointF.Empty,
+                    PointF.Empty,
+                    PointF.Empty,
+                    [],
+                    skewContours), source, sourceObject, transform, identityTransform);
+            }
         }
 
         if (identityTransform)
         {
-            return new PreparedCompositionObject(
+            return WithGradient(new PreparedCompositionObject(
                 PreparedCompositionKind.Primitive,
                 destinationLayer,
                 shape,
@@ -627,7 +733,7 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 [],
-                []);
+                []), source, sourceObject, transform, identityTransform);
         }
 
         var center = Transform(new PointF(source.X[sourceObject], source.Y[sourceObject]), transform);
@@ -638,7 +744,7 @@ internal static class SceneCompositionBuilder
         var heightAxis = Vector2.TransformNormal(new Vector2(-sin * source.Height[sourceObject], cos * source.Height[sourceObject]), transform);
         var size = new SizeF(Math.Max(1, widthAxis.Length()), Math.Max(1, heightAxis.Length()));
         var angle = MathF.Atan2(widthAxis.Y, widthAxis.X);
-        return new PreparedCompositionObject(
+        return WithGradient(new PreparedCompositionObject(
             PreparedCompositionKind.Primitive,
             destinationLayer,
             shape,
@@ -653,7 +759,7 @@ internal static class SceneCompositionBuilder
             PointF.Empty,
             PointF.Empty,
             [],
-            []);
+            []), source, sourceObject, transform, identityTransform);
     }
 
     private static PackedSceneObject PreparePackedObject(CompositionWorkItem workItem)
@@ -674,12 +780,21 @@ internal static class SceneCompositionBuilder
             item.StrokeArgb,
             item.Atoms,
             item.Shape,
-            item.Kind == PreparedCompositionKind.Curve ? item.Control : item.Center);
+            item.Kind == PreparedCompositionKind.Curve ? item.Control : item.Center,
+            item.StartEndpointStyle,
+            item.EndEndpointStyle,
+            item.LinearGradientEnabled,
+            item.GradientKind,
+            item.GradientStartArgb,
+            item.GradientEndArgb,
+            item.GradientStart,
+            item.GradientEnd,
+            item.GradientStops);
     }
 
     private static int AppendPreparedObject(VectorScene destination, PreparedCompositionObject item)
     {
-        return item.Kind switch
+        var index = item.Kind switch
         {
             PreparedCompositionKind.Path => destination.AppendPathObjectContours(
                 item.DestinationLayer,
@@ -704,7 +819,9 @@ internal static class SceneCompositionBuilder
                 item.StrokeArgb,
                 item.Atoms,
                 ShapeKind.Line,
-                item.Control),
+                item.Control,
+                item.StartEndpointStyle,
+                item.EndEndpointStyle),
             _ => destination.AppendPackedObject(
                 item.DestinationLayer,
                 item.Center,
@@ -715,15 +832,60 @@ internal static class SceneCompositionBuilder
                 item.StrokeArgb,
                 item.Atoms,
                 item.Shape,
-                item.Center)
+                item.Center,
+                item.StartEndpointStyle,
+                item.EndEndpointStyle)
+        };
+        if (item.LinearGradientEnabled)
+        {
+            destination.SetGradientPaint(
+                index,
+                item.GradientKind,
+                item.GradientStops,
+                item.GradientStart,
+                item.GradientEnd);
+        }
+
+        return index;
+    }
+
+    private static PreparedCompositionObject WithGradient(
+        PreparedCompositionObject item,
+        VectorScene source,
+        int sourceObject,
+        Matrix3x2 transform,
+        bool identityTransform)
+    {
+        if (!source.HasGradient(sourceObject)) return item;
+        return item with
+        {
+            LinearGradientEnabled = true,
+            GradientKind = source.GetGradientKind(sourceObject),
+            GradientStartArgb = source.GradientStartArgb[sourceObject],
+            GradientEndArgb = source.GradientEndArgb[sourceObject],
+            GradientStart = TransformPoint(source.GetGradientStart(sourceObject), transform, identityTransform),
+            GradientEnd = TransformPoint(source.GetGradientEnd(sourceObject), transform, identityTransform),
+            GradientStops = source.GetGradientStops(sourceObject)
         };
     }
 
     private static Matrix3x2 InstanceMatrix(DrawingObjectInstanceDefinition instance)
     {
         return Matrix3x2.CreateScale(instance.ScaleX, instance.ScaleY)
+            * Matrix3x2.CreateSkew(instance.SkewX * MathF.PI / 180f, instance.SkewY * MathF.PI / 180f)
             * Matrix3x2.CreateRotation(instance.RotationZ * MathF.PI / 180f)
             * Matrix3x2.CreateTranslation(instance.X, instance.Y);
+    }
+
+    private static bool HasShear(Matrix3x2 transform)
+    {
+        var axisDot = transform.M11 * transform.M21 + transform.M12 * transform.M22;
+        var scale = Math.Max(1, MathF.Sqrt(
+            transform.M11 * transform.M11
+            + transform.M12 * transform.M12
+            + transform.M21 * transform.M21
+            + transform.M22 * transform.M22));
+        return Math.Abs(axisDot) > 0.0001f * scale * scale;
     }
 
     private static PointF Transform(PointF point, Matrix3x2 transform)

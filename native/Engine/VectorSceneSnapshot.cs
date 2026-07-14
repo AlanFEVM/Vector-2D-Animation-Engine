@@ -12,6 +12,10 @@ internal sealed class VectorSceneSnapshot
     public string[] LayerNames { get; init; } = [];
     public bool[] LayerVisible { get; init; } = [];
     public float[] LayerOpacity { get; init; } = [];
+    public int[] LayerColorArgb { get; init; } = [];
+    public bool[] LayerOnionSkin { get; init; } = [];
+    public int? OnionSkinPreviousFrames { get; init; }
+    public int? OnionSkinNextFrames { get; init; }
     public int[] LayerStart { get; init; } = [];
     public int[] LayerEnd { get; init; } = [];
     public ushort[] ObjectLayer { get; init; } = [];
@@ -26,11 +30,96 @@ internal sealed class VectorSceneSnapshot
     public float[] Stroke { get; init; } = [];
     public float[] CurveControlX { get; init; } = [];
     public float[] CurveControlY { get; init; } = [];
+    public LineEndpointStyle[] LineEndpointStyles { get; init; } = [];
+    public LineEndpointStyle[] LineEndEndpointStyles { get; init; } = [];
     public ShapeKind[] ShapeKind { get; init; } = [];
     public uint[] AtomCount { get; init; } = [];
     public int[] Argb { get; init; } = [];
     public int[] StrokeArgb { get; init; } = [];
+    public bool[] LinearGradientEnabled { get; init; } = [];
+    public GradientKind[] GradientKinds { get; init; } = [];
+    public int[] GradientStartArgb { get; init; } = [];
+    public int[] GradientEndArgb { get; init; } = [];
+    public float[] GradientStartX { get; init; } = [];
+    public float[] GradientStartY { get; init; } = [];
+    public float[] GradientEndX { get; init; } = [];
+    public float[] GradientEndY { get; init; } = [];
+    public Dictionary<int, GradientStop[]> GradientStops { get; init; } = new();
     public AnimationTimelineSnapshot? Timeline { get; init; }
     public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
     public Dictionary<int, PointF[]> FreehandLocalPoints { get; init; } = new();
+
+    internal long EstimateMemoryBytes()
+    {
+        long bytes = 384;
+        bytes += StringArrayBytes(LayerIds);
+        bytes += StringArrayBytes(LayerNames);
+        bytes += ArrayBytes(LayerVisible.Length, 1);
+        bytes += ArrayBytes(LayerOpacity.Length, 4);
+        bytes += ArrayBytes(LayerColorArgb.Length, 4);
+        bytes += ArrayBytes(LayerOnionSkin.Length, 1);
+        bytes += ArrayBytes(LayerStart.Length, 4);
+        bytes += ArrayBytes(LayerEnd.Length, 4);
+        bytes += ArrayBytes(ObjectLayer.Length, 2);
+        bytes += ArrayBytes(ObjectKeyframeFrame.Length, 4);
+        bytes += ArrayBytes(ObjectOrder.Length, 8);
+        bytes += ArrayBytes(ObjectSubOrder.Length, 8);
+        bytes += ArrayBytes(X.Length, 4);
+        bytes += ArrayBytes(Y.Length, 4);
+        bytes += ArrayBytes(Width.Length, 4);
+        bytes += ArrayBytes(Height.Length, 4);
+        bytes += ArrayBytes(Angle.Length, 4);
+        bytes += ArrayBytes(Stroke.Length, 4);
+        bytes += ArrayBytes(CurveControlX.Length, 4);
+        bytes += ArrayBytes(CurveControlY.Length, 4);
+        bytes += ArrayBytes(LineEndpointStyles.Length, 4);
+        bytes += ArrayBytes(LineEndEndpointStyles.Length, 4);
+        bytes += ArrayBytes(ShapeKind.Length, 4);
+        bytes += ArrayBytes(AtomCount.Length, 4);
+        bytes += ArrayBytes(Argb.Length, 4);
+        bytes += ArrayBytes(StrokeArgb.Length, 4);
+        bytes += ArrayBytes(LinearGradientEnabled.Length, 1);
+        bytes += ArrayBytes(GradientKinds.Length, 4);
+        bytes += ArrayBytes(GradientStartArgb.Length, 4);
+        bytes += ArrayBytes(GradientEndArgb.Length, 4);
+        bytes += ArrayBytes(GradientStartX.Length, 4);
+        bytes += ArrayBytes(GradientStartY.Length, 4);
+        bytes += ArrayBytes(GradientEndX.Length, 4);
+        bytes += ArrayBytes(GradientEndY.Length, 4);
+
+        bytes += 72L * GradientStops.Count;
+        foreach (var stops in GradientStops.Values) bytes += ArrayBytes(stops.Length, 8);
+
+        bytes += 72L * PathLocalContours.Count;
+        foreach (var contours in PathLocalContours.Values)
+        {
+            bytes += ArrayBytes(contours.Length, IntPtr.Size);
+            foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 8);
+        }
+
+        bytes += 64L * FreehandLocalPoints.Count;
+        foreach (var points in FreehandLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);
+
+        if (Timeline is { } timeline)
+        {
+            bytes += ArrayBytes(timeline.Tracks.Length, IntPtr.Size);
+            foreach (var track in timeline.Tracks)
+            {
+                bytes += 96 + StringBytes(track.Id) + StringBytes(track.TargetId) + ArrayBytes(track.Keyframes.Length, 8);
+            }
+        }
+
+        return bytes;
+    }
+
+    private static long StringArrayBytes(IReadOnlyList<string> values)
+    {
+        var bytes = ArrayBytes(values.Count, IntPtr.Size);
+        foreach (var value in values) bytes += StringBytes(value);
+        return bytes;
+    }
+
+    private static long StringBytes(string? value) => string.IsNullOrEmpty(value) ? 0 : 26L + value.Length * 2L;
+
+    private static long ArrayBytes(int length, int elementBytes) => 24L + Math.Max(0, length) * (long)elementBytes;
 }

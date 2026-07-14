@@ -10,9 +10,16 @@ Double-click:
 VectorAnimationEngine.exe
 ```
 
-During development, the root EXE is a lightweight launcher. It starts the source
-project under `native/` through `dotnet watch --no-hot-reload`, so source changes
-restart the native process cleanly without republishing the self-contained app.
+The root EXE is a lightweight launcher. It prefers the framework-dependent ReadyToRun runtime
+under `runtime\\win-x64`, avoiding both startup JIT work and a source build. If that runtime
+is absent or older than the native source inputs, the launcher falls back to the source project.
+Launch with `VectorAnimationEngine.exe --dev` to force non-interactive `dotnet watch` with
+Metadata Hot Reload; current Debug output skips the redundant initial build in that mode.
+The precompiled runtime and lightweight root launcher require the .NET 8 Desktop Runtime, but
+do not require an SDK.
+Changed engine and rendering method bodies apply in-process. Shell, inspector,
+workspace, and timeline updates automatically rebuild the workbench window from
+the updated code while preserving the open project, selection context, frame, and view.
 You only need to rebuild the launcher when the launcher itself changes.
 
 The repository selects the stable .NET 8 SDK line through `global.json` and refuses
@@ -25,8 +32,11 @@ stable entry point for fast iteration, not the final distributable package.
 The app opens with an empty project and one visible layer. The stress scene is not
 generated on startup; use `Run Stress Scene` when you explicitly want to benchmark.
 
-Development watching uses full-process restart because metadata hot reload can
-corrupt long-running WinForms/Direct2D sessions after structural edits. Launch with
+The hot-reload coordinator releases Direct2D resources only for rendering edits,
+refreshes bound controls only for UI edits, and rebuilds composition caches only
+for engine edits. Unsupported structural runtime edits are left running instead
+of automatically restarting the process; use the editor's upper-right restart
+button when a changed type cannot be applied by the .NET runtime. Launch with
 `VectorAnimationEngine.exe --no-hot-reload` when you need a plain `dotnet run`
 session without file watching.
 
@@ -38,23 +48,25 @@ session without file watching.
 - Fixed unit model: 1 px = 25 vector units, and 1 stroke point = 0.5 px.
 - Adobe Animate-style stage/tools/layers/timeline.
 - Dense production-workbench layout inspired by Blender.
+- Free Transform with edge/corner scaling, four-corner rotation, edge skew handles, and a movable rotation focus.
 
 ## Current Features
 
 - Workspace tabs: `Basic Drawing`, `Scene Edit`, and `Animation`.
 - Custom borderless desktop window shell with draggable title area, resizable edges, and in-app minimize/maximize/close controls.
 - Basic Drawing is the drawing-object edit mode: the header shows one active drawing object at a time plus `+ Object`, and drawing/material tools focus on that object.
-- Scene Edit is the non-drawable assembly mode: scenes store drawing-object instances rather than standalone geometry. Drawing objects may recursively instance other drawing objects, with project-level self/cycle rejection, accumulated 2D transforms, current-frame exposure evaluation, and source provenance retained for double-click editor navigation.
+- Scene Edit is the non-drawable assembly mode: scenes store drawing-object instances rather than standalone geometry. Drawing objects may recursively instance other drawing objects, with project-level self/cycle rejection, accumulated 2D transforms, current-frame exposure evaluation, source provenance retained for double-click editor navigation, and green instance bounds for 2D select/move/free-transform editing.
 - Drawing-object timelines combine stable drawing-layer IDs and nested-instance IDs in one editable track list, while scene timelines target stable scene-instance IDs. Synchronization preserves surviving track IDs and keyframe data when the target list changes.
 - 3D scenes use Blender-style viewport navigation: middle mouse orbits, Shift + middle mouse pans, Ctrl + middle mouse dollies, mouse wheel dollies, Ctrl + wheel changes the view zoom scale, Numpad 1/3/7 switches front/right/top views, Numpad 5 toggles perspective/orthographic, and Home resets the reference view.
 - New projects start with one empty drawing object. All shape and line drawing is stored inside the active drawing object.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
-- Flash-style combined layer/timeline strip with fixed-width frame cells, layer/instance track selection, visibility toggles, Solo/All controls, ruler, playhead dragging, held exposure spans, populated keyframes, blank keyframes, and horizontal/vertical scrolling.
-- Timeline tracks use ordered populated/blank keyframes. Empty drawing layers start with a hollow blank key; marker fill follows actual cel content, so deleting the last object turns the key hollow and F6 on empty exposure stays blank.
-- Drawing-object keyframes own independent cels. F6 clones the currently held layer content into a new cel, later edits or deletion stay isolated from the source cel, F7 creates a blank cel, and drawing on a blank exposure promotes it to a populated keyframe automatically.
+- Flash-style combined layer/timeline strip with fixed-width frame cells, `+` layer insertion, layer/instance track selection, visibility toggles, Solo/All controls, ruler, playhead dragging, held exposure spans, populated/blank keyframes, horizontal/vertical scrolling, rectangular multi-frame selection, and themed right-click commands.
+- Timeline tracks use ordered populated/blank keyframes. Empty drawing layers start with a hollow blank key; marker fill follows actual cel content, so deleting the last object turns the key hollow and F6 on empty exposure stays blank. In Scene Edit, tracks belong to scene layers, and each scene layer can contain multiple drawing-object instances.
+- Drawing-object keyframes own independent cels. F6 clones the currently held layer content into a new cel, later edits or deletion stay isolated from the source cel, F7 creates a blank cel, and drawing on a blank exposure promotes it to a populated keyframe automatically. F6/F7 extend the timeline when needed; a single-frame command advances the playhead, while a multi-frame command keeps the selection in place.
 - Drawing inside a held blank exposure populates that exposure's source key rather than silently creating a key at the playhead; use F6 or F7 first when content must begin on a new frame.
-- F5 extends the selected exposure while shifting later keys right. Frame removal preserves any cel whose held frames survive the removed range, and shifts key markers plus object ownership together.
+- F5 extends the selected exposure while shifting later keys right. Frame removal preserves any cel whose held frames survive the removed range, and shifts key markers plus object ownership together. Batch frame/key commands apply to the selected timeline cells and create one undo entry.
+- Timeline `Ctrl+C` / `Ctrl+V` copies independent drawing cels with their geometry, paths, and strokes, then pastes them using the copied track/frame offsets. Layer rows can be dragged to reorder; their stable timeline IDs and object ownership remain aligned. Right-click also exposes layer color and per-drawing-layer onion skin, rendered as a non-editable warm previous-frame/cool next-frame preview in both Direct2D and GDI; changing a non-zero onion range enables it for the active layer.
 - Adobe Animate timeline shortcuts: Enter play/pause, comma/period previous/next frame, Shift+comma/period first/last playback frame, F5 insert frame, Shift+F5 remove frame, F6 copy/insert keyframe, Shift+F6 clear keyframe, and F7 insert blank keyframe.
 - Playback settings panel with FPS, loop playback, and frame range controls.
 - Bottom status bar showing render FPS, animation FPS, and zoom.
@@ -63,27 +75,28 @@ session without file watching.
 - SVG vector icon buttons for the floating tool palette and the Basic Drawing header snapping strip.
 - Global view navigation: middle mouse drags the 2D canvas, and Ctrl + middle mouse drag zooms the 2D canvas from any tool.
 - Drawing preview overlay while dragging shape, line, pencil, and brush tools.
-- Flash-style freehand drawing: Pencil creates an open stroke with the stroke swatch, while Brush creates a closed filled outline with the fill swatch; each tool remembers its own width, and Draw Settings exposes smoothing control.
-- Freehand input is sampled in screen space and simplified on pointer-up. Pencil commits one selectable open stroke per gesture; Brush expands the sampled centerline into a closed Path fill and automatically merges it with intersecting or nearby fills on the same layer that have the same ARGB color. Nearby fill boundaries merge when their distance is under `10 vu`.
-- Flash-style tool shortcuts include V/H/N/Y/B/K for Select/Pan/Line/Pencil/Brush/Fill; bracket keys adjust Pencil and Brush width.
+- Flash-style freehand drawing: Pencil creates an open stroke with the stroke swatch, while Brush and Pressure Brush create closed filled outlines with the fill swatch; Pencil, Brush, and Eraser retain independent pt sizes. Pressure Brush derives fluid width from mouse speed and press duration. Brush Tip exposes Soft Round, Traditional Brush, and imported 128x128 tips, plus size in document units, frequency, continuity, and Soft Round hardness.
+- Freehand input is sampled in screen space and simplified on pointer-up. Pencil commits one selectable open stroke per gesture; Brush and Pressure Brush expand the sampled centerline into closed Path fills and immediately merge them with intersecting or nearby fills on the same layer that have the same ARGB color, then leave the Stage selection clear. Nearby fill boundaries merge when their distance is under `10 vu`.
+- Flash-style tool shortcuts include V/H/N/Y/B/K for Select/Pan/Line/Pencil/Brush/Fill; bracket keys adjust Pencil and Brush width. While Brush or Pressure Brush is active, hold Shift to open recent-color swatches around the cursor and hover a swatch to set the brush fill color.
 - Animated tool-name hints when hovering drawing tools.
 - Selection highlight with boundary handles for filled shapes and partial edge highlights for selected boundary-stroke segments.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects, with `1 vu`-aligned fill and stroke part materialization for boxed regions.
 - Selected fills under the pointer take drag priority, so dragging an already selected fill moves it instead of starting a new selection.
-- Endpoint and Bezier control handle editing for selected lines, including linked endpoint movement for connected line segments.
+- Selected lines immediately expose start, end, and Bezier control handles, including topology-part selections; connected endpoints move together, and holding Ctrl temporarily snaps edited or newly drawn endpoints to nearby line endpoints.
 - Basic edit shortcuts: Ctrl+Z undo, Ctrl+C copy selected objects, and Ctrl+V paste copied objects with a small stage offset.
 - Drawing element topology foundation: fills, free strokes, and filled-shape boundary strokes are separate selectable elements. Rectangle edges are individually selectable by default; crossing strokes and boundaries split each other at valid intersections, and sub-1vu stroke fragments are suppressed.
 - Topology parts are materialized into editable objects: split stroke parts become independent line objects, boundary-stroke parts become movable line segments, and a rectangle fill cut by a through-line becomes two movable path fills when its region is marquee-selected or moved.
 - Same-color fill regions can merge automatically after drawing, moving, resizing, pasting, or recoloring when their distance is under 10 vector units, using compound fill contours that can preserve closed holes such as ring and donut regions.
+- Collinear straight line segments on the same layer and cel automatically merge after drawing edits when their directions, stroke ARGB, and stroke widths match and a pair of endpoints is strictly under `5 vu` apart.
 - Path fills support compound contours: one fill object can contain an outer boundary plus inner hole boundaries, rendered and hit-tested with even-odd fill rules.
 - Rendering follows the Flash layer stack: timeline row 0 is the top layer; inside each layer all fills render first, then lines, Pencil strokes, and filled-shape boundary strokes render above them.
 - Stroke splitting uses a unified quadratic-curve model, so curve-curve and line-curve intersections share the same topology path; straight lines are treated as quadratic curves with a midpoint control handle.
 - Delete key removes the currently selected drawing object or marquee-selected objects.
-- Left-edge Vault drawer opened from the floating tool palette for Library/Vault asset storage.
-- Vault can persist object snapshots, notes, file references, and library presets to `data/vault.json`.
+- Left-edge Vault drawer opened from the floating tool palette, with distinct Library, Project, and Stored sources, contextual actions, real-geometry hover previews, and semi-transparent drag placement previews for drawing objects and nested content.
+- Vault persists stored object references, snapshots, notes, file references, and library presets to `data/vault.json`; live Project Objects remain project data and are not duplicated into the Vault file.
 - Basic Drawing header snapping strip for snap, grid snap, object snap, tight fit, align, angle snap, grid size, and angle step.
 - Draw settings panel for shape, aspect-ratio, and freehand smoothing controls.
-- Material editor panel for fill, stroke color, stroke width, and opacity inside Basic Drawing.
+- Blender-style material editor for Fill/Stroke targets, RGB/HSV/HSL/Hex modes, gradient component controls, built-in/recent/custom palettes, stroke width, and opacity inside Basic Drawing.
 - Scene Edit panel for multi-scene, multi-drawing-object, and scene-instance management, with editable scene dimension and camera projection metadata.
 - Shape-aware scene model via `ShapeKind`.
 
@@ -138,6 +151,7 @@ native/
   App/
     Program.cs            Application entry point.
     AppLog.cs             Runtime logging and crash diagnostics.
+    HotReloadModules.cs   Scoped Metadata Hot Reload module routing and refresh contracts.
     ToolMode.cs           Shared tool enum.
     Benchmark.cs          Stress-scene benchmark helper.
   Engine/
@@ -168,7 +182,7 @@ native/
                           Direct2D HWND renderer with GDI fallback support.
   UI/
     MainForm.cs           Desktop workbench shell and interaction logic.
-    LibraryVaultPanel.cs  Library presets and persistent generic Vault.
+    LibraryVaultPanel.cs  Live project-object library, hover previews, and persistent Vault items.
     SceneEditorPanel.cs   Scene mode, scene list, drawing object manager.
     TimelineStrip.cs      Timeline renderer.
     Theme.cs              Shared desktop colors and control styling.
@@ -179,6 +193,7 @@ native/
     WorkspaceTabs.cs
     HierarchyPanel.cs
     MaterialEditorPanel.cs
+    ColorPickerControls.cs Gradient color channels, editable stop rail, target swatches, and palette grid controls.
 launcher/
   Program.cs              Lightweight root EXE launcher for development.
 ```
@@ -226,15 +241,21 @@ Move-Item publish-launcher\VectorAnimationEngine.exe .\VectorAnimationEngine.exe
 Remove-Item publish-launcher -Recurse -Force
 ```
 
-## Publish Standalone Release EXE
+## Publish Precompiled Runtime
 
-Use this only when creating a distributable build:
+Build the compact framework-dependent ReadyToRun runtime used by the root launcher:
 
 ```powershell
-dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -o publish-native
-Move-Item publish-native\VectorAnimationEngine.exe .\VectorAnimationEngine.exe -Force
-Remove-Item publish-native -Recurse -Force
+dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained false -p:PublishReadyToRun=true -p:DebugType=None -p:DebugSymbols=false --no-restore -o runtime\win-x64
 ```
+
+This multi-file deployment uses the installed .NET 8 Desktop Runtime and avoids single-file extraction and compression work on startup. For a portable standalone distribution, use:
+
+```powershell
+dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish-native
+```
+
+Use `--dev` when source watching and Metadata Hot Reload are required.
 
 ## Next Engineering Steps
 

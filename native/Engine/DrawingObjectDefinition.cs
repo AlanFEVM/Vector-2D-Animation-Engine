@@ -57,6 +57,15 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         SynchronizeInstanceTimelineTracks();
     }
 
+    internal int RemoveInstancesReferencing(string drawingObjectId)
+    {
+        if (string.IsNullOrWhiteSpace(drawingObjectId)) return 0;
+        var removed = _instances.RemoveAll(instance =>
+            string.Equals(instance.DrawingObjectId, drawingObjectId, StringComparison.Ordinal));
+        if (removed > 0) SynchronizeInstanceTimelineTracks();
+        return removed;
+    }
+
     public VaultItem ToVaultItem()
     {
         var payload = string.Join(Environment.NewLine, new[]

@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace VectorAnimationEngine;
 
@@ -120,8 +121,15 @@ internal static class Theme
         input.BorderStyle = BorderStyle.FixedSingle;
         input.Font = UiFont();
         input.MinimumSize = new Size(0, ControlHeightCompact);
-        if (input is ModernNumericUpDown) return;
         ConfigureFieldInteraction(input);
+    }
+
+    public static void StyleNumeric(ModernNumericUpDown input)
+    {
+        input.BackColor = Field;
+        input.ForeColor = Text;
+        input.Font = UiFont();
+        input.MinimumSize = new Size(0, ControlHeightCompact);
     }
 
     public static void StyleListBox(ListBox list)
@@ -133,6 +141,7 @@ internal static class Theme
         list.DrawMode = DrawMode.OwnerDrawFixed;
         list.ItemHeight = 28;
         list.IntegralHeight = false;
+        StyleNativeScrollBars(list);
         if (StyledListBoxes.TryGetValue(list, out _)) return;
         var state = new ListBoxInteractionState(list);
         StyledListBoxes.Add(list, state);
@@ -153,6 +162,7 @@ internal static class Theme
         tree.ItemHeight = 28;
         tree.DrawMode = TreeViewDrawMode.OwnerDrawAll;
         tree.HotTracking = true;
+        StyleNativeScrollBars(tree);
         if (StyledTreeViews.TryGetValue(tree, out _)) return;
         var state = new TreeViewInteractionState(tree);
         StyledTreeViews.Add(tree, state);
@@ -171,6 +181,7 @@ internal static class Theme
         list.MultiSelect = false;
         list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
         list.OwnerDraw = true;
+        StyleNativeScrollBars(list);
         if (StyledListViews.TryGetValue(list, out _)) return;
         var state = new ListViewInteractionState(list);
         StyledListViews.Add(list, state);
@@ -186,6 +197,30 @@ internal static class Theme
         strip.Font = UiFont(9);
         strip.RenderMode = ToolStripRenderMode.Professional;
         strip.Renderer = new ModernStatusStripRenderer();
+    }
+
+    /// <summary>
+    /// Applies the dark Explorer theme to stock control scrollbars. Complex
+    /// scrolling surfaces use <see cref="ThemedScrollPanel"/> for the fully
+    /// custom accent treatment.
+    /// </summary>
+    private static void StyleNativeScrollBars(Control control)
+    {
+        void ApplyTheme()
+        {
+            if (control.IsDisposed || !control.IsHandleCreated) return;
+            try
+            {
+                SetWindowTheme(control.Handle, "DarkMode_Explorer", null);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // Older Windows versions keep their native scrollbar rendering.
+            }
+        }
+
+        if (control.IsHandleCreated) ApplyTheme();
+        else control.HandleCreated += (_, _) => ApplyTheme();
     }
 
     public static void StyleToolTip(ToolTip toolTip)
@@ -549,4 +584,7 @@ internal static class Theme
         public override Color SeparatorDark => Border;
         public override Color SeparatorLight => PanelStrong;
     }
+
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr hWnd, string? pszSubAppName, string? pszSubIdList);
 }
