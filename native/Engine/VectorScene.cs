@@ -58,6 +58,10 @@ internal sealed class VectorScene : ITimelineContext
     }
     public string[] LayerIds { get; private set; } = [];
     public string[] LayerNames { get; private set; } = [];
+    public DrawingLayerKind[] LayerKinds { get; private set; } = [];
+    public string[] LayerParentIds { get; private set; } = [];
+    public string[] LayerMaskIds { get; private set; } = [];
+    public bool[] LayerLocked { get; private set; } = [];
     public bool[] LayerVisible { get; private set; } = [];
     public float[] LayerOpacity { get; private set; } = [];
     public int[] LayerColorArgb { get; private set; } = [];
@@ -66,6 +70,8 @@ internal sealed class VectorScene : ITimelineContext
     public int OnionSkinNextFrames { get; private set; } = DefaultOnionSkinNextFrames;
     public int[] LayerStart { get; private set; } = [];
     public int[] LayerEnd { get; private set; } = [];
+    public bool HasLayerEffects => LayerKinds.Any(kind => kind != DrawingLayerKind.Drawing)
+        || LayerMaskIds.Any(id => !string.IsNullOrWhiteSpace(id));
 
     public ushort[] ObjectLayer { get; private set; } = [];
     public int[] ObjectKeyframeFrame { get; private set; } = [];
@@ -82,6 +88,7 @@ internal sealed class VectorScene : ITimelineContext
     public LineEndpointStyle[] LineEndpointStyles { get; private set; } = [];
     public LineEndpointStyle[] LineEndEndpointStyles { get; private set; } = [];
     public ShapeKind[] ShapeKind { get; private set; } = [];
+    public int[] ShapeVertexCounts { get; private set; } = [];
     public uint[] AtomCount { get; private set; } = [];
     public int[] Argb { get; private set; } = [];
     public int[] StrokeArgb { get; private set; } = [];
@@ -193,6 +200,22 @@ internal sealed class VectorScene : ITimelineContext
         int KeyframeFrame,
         IReadOnlyList<MaterializedPartAddition> Replacements);
 
+    private sealed record FillOverwritePlan(
+        int Source,
+        int Layer,
+        int KeyframeFrame,
+        long Order,
+        int FillArgb,
+        bool HasGradient,
+        GradientKind GradientKind,
+        GradientStop[] GradientStops,
+        PointF GradientStart,
+        PointF GradientEnd,
+        IReadOnlyList<FillRegion> RemainingRegions,
+        IReadOnlyList<MaterializedPartAddition> BoundaryAdditions,
+        IReadOnlyList<double> ReplacementSubOrders,
+        uint AtomsPerReplacement);
+
 
     public int TileColumnCount => TileColumns;
     public int TileRowCount => TileRows;
@@ -210,10 +233,11 @@ internal sealed class VectorScene : ITimelineContext
     public int IndexColumnCount => IndexColumns;
     public int IndexRowCount => IndexRows;
 
-    public void CreateEmpty(int layers = 1)
+    public void CreateEmpty(int layers = 1, int frameCount = AnimationTimeline.DefaultDuration)
     {
         _deferredAppendKeyframes = null;
         LayerCount = Math.Clamp(layers, 1, ushort.MaxValue);
+        frameCount = Math.Max(1, frameCount);
         ObjectCount = 0;
         VirtualAtomCount = 0;
         _nextObjectOrder = 0;
@@ -225,6 +249,12 @@ internal sealed class VectorScene : ITimelineContext
 
         LayerIds = CreateStableIds(LayerCount, AdditionalTimelineTargetIds());
         LayerNames = new string[LayerCount];
+        LayerKinds = new DrawingLayerKind[LayerCount];
+        LayerParentIds = new string[LayerCount];
+        LayerMaskIds = new string[LayerCount];
+        Array.Fill(LayerParentIds, string.Empty);
+        Array.Fill(LayerMaskIds, string.Empty);
+        LayerLocked = new bool[LayerCount];
         LayerVisible = new bool[LayerCount];
         LayerOpacity = new float[LayerCount];
         LayerColorArgb = new int[LayerCount];
@@ -238,7 +268,7 @@ internal sealed class VectorScene : ITimelineContext
             LayerOpacity[i] = 1.0f;
             LayerColorArgb[i] = DefaultLayerColor(i).ToArgb();
             LayerStart[i] = 0;
-            LayerEnd[i] = AnimationTimeline.DefaultDuration - 1;
+            LayerEnd[i] = frameCount - 1;
         }
 
         ObjectLayer = [];
@@ -256,6 +286,7 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyles = [];
         LineEndEndpointStyles = [];
         ShapeKind = [];
+        ShapeVertexCounts = [];
         AtomCount = [];
         Argb = [];
         StrokeArgb = [];
@@ -270,7 +301,7 @@ internal sealed class VectorScene : ITimelineContext
         _gradientStops.Clear();
         _pathLocalContours.Clear();
         _freehandLocalPoints.Clear();
-        InitializeTimelineFromLayerExposure();
+        InitializeTimelineFromLayerExposure(frameCount);
         ClearSummaries();
         RebuildSpatialIndex();
     }
@@ -291,6 +322,12 @@ internal sealed class VectorScene : ITimelineContext
         var layerRng = new Random(0x2D0A2026);
         LayerIds = CreateStableIds(LayerCount, AdditionalTimelineTargetIds());
         LayerNames = new string[LayerCount];
+        LayerKinds = new DrawingLayerKind[LayerCount];
+        LayerParentIds = new string[LayerCount];
+        LayerMaskIds = new string[LayerCount];
+        Array.Fill(LayerParentIds, string.Empty);
+        Array.Fill(LayerMaskIds, string.Empty);
+        LayerLocked = new bool[LayerCount];
         LayerVisible = new bool[LayerCount];
         LayerOpacity = new float[LayerCount];
         LayerColorArgb = new int[LayerCount];
@@ -323,6 +360,7 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyles = new LineEndpointStyle[ObjectCount];
         LineEndEndpointStyles = new LineEndpointStyle[ObjectCount];
         ShapeKind = GC.AllocateUninitializedArray<ShapeKind>(ObjectCount);
+        ShapeVertexCounts = GC.AllocateUninitializedArray<int>(ObjectCount);
         AtomCount = GC.AllocateUninitializedArray<uint>(ObjectCount);
         Argb = GC.AllocateUninitializedArray<int>(ObjectCount);
         StrokeArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
@@ -373,6 +411,7 @@ internal sealed class VectorScene : ITimelineContext
                 Angle[i] = (float)((rng.NextDouble() - 0.5) * 0.55);
                 Stroke[i] = rng.NextDouble() > 0.28 ? VectorUnits.StrokePointsToUnits((float)(1 + rng.NextDouble() * 3)) : 0;
                 ShapeKind[i] = RandomShapeKind(ref rng);
+                ShapeVertexCounts[i] = DefaultShapeVertexCount(ShapeKind[i]);
                 if (ShapeKind[i] == VectorAnimationEngine.ShapeKind.Line)
                 {
                     Height[i] = Math.Max(VectorUnits.FromPixels(3), Stroke[i] + VectorUnits.FromPixels(2));
@@ -401,14 +440,43 @@ internal sealed class VectorScene : ITimelineContext
         RebuildSpatialIndex();
     }
 
-    public int AddObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, uint atoms, ShapeKind? shapeKind = null)
+    public int AddObject(
+        int layer,
+        PointF center,
+        SizeF size,
+        float angle,
+        float stroke,
+        Color color,
+        uint atoms,
+        ShapeKind? shapeKind = null,
+        int shapeVertexCount = 0)
     {
-        return AddObject(layer, center, size, angle, stroke, color, Color.FromArgb(238, 242, 241), atoms, shapeKind);
+        return AddObject(
+            layer,
+            center,
+            size,
+            angle,
+            stroke,
+            color,
+            Color.FromArgb(238, 242, 241),
+            atoms,
+            shapeKind,
+            shapeVertexCount);
     }
 
-    public int AddObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
+    public int AddObject(
+        int layer,
+        PointF center,
+        SizeF size,
+        float angle,
+        float stroke,
+        Color color,
+        Color strokeColor,
+        uint atoms,
+        ShapeKind? shapeKind = null,
+        int shapeVertexCount = 0)
     {
-        var index = AppendObject(layer, center, size, angle, stroke, color, strokeColor, atoms, shapeKind);
+        var index = AppendObject(layer, center, size, angle, stroke, color, strokeColor, atoms, shapeKind, shapeVertexCount);
         RebuildSpatialIndex();
         var summaryColor = ShapeKind[index] is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform
             ? strokeColor
@@ -417,7 +485,17 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
-    internal int AppendObject(int layer, PointF center, SizeF size, float angle, float stroke, Color color, Color strokeColor, uint atoms, ShapeKind? shapeKind = null)
+    internal int AppendObject(
+        int layer,
+        PointF center,
+        SizeF size,
+        float angle,
+        float stroke,
+        Color color,
+        Color strokeColor,
+        uint atoms,
+        ShapeKind? shapeKind = null,
+        int shapeVertexCount = 0)
     {
         var shape = shapeKind ?? InferShapeKind(size, atoms);
         return AppendPackedObject(
@@ -430,7 +508,8 @@ internal sealed class VectorScene : ITimelineContext
             strokeColor.ToArgb(),
             atoms,
             shape,
-            center);
+            center,
+            shapeVertexCount: shapeVertexCount);
     }
 
     internal int AppendPackedObject(
@@ -445,9 +524,10 @@ internal sealed class VectorScene : ITimelineContext
         ShapeKind shapeKind,
         PointF curveControl,
         LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
-        LineEndpointStyle endEndpointStyle = LineEndpointStyle.Round)
+        LineEndpointStyle endEndpointStyle = LineEndpointStyle.Round,
+        int shapeVertexCount = 0)
     {
-        var targetLayer = Math.Clamp(layer, 0, LayerCount - 1);
+        var targetLayer = ResolveObjectLayer(layer);
         var keyframeFrame = _deferredAppendKeyframes is { } deferred
             ? deferred[targetLayer]
             : EnsureWritableKeyframe(targetLayer, EditFrame);
@@ -472,6 +552,7 @@ internal sealed class VectorScene : ITimelineContext
         Angle[index] = angle;
         Stroke[index] = Math.Max(0, stroke);
         ShapeKind[index] = shapeKind;
+        ShapeVertexCounts[index] = NormalizeShapeVertexCount(shapeKind, shapeVertexCount);
         CurveControlX[index] = VectorUnits.Quantize(curveControl.X);
         CurveControlY[index] = VectorUnits.Quantize(curveControl.Y);
         LineEndpointStyles[index] = NormalizeLineEndpointStyle(startEndpointStyle);
@@ -511,7 +592,7 @@ internal sealed class VectorScene : ITimelineContext
             {
                 var item = objects[offset];
                 var index = firstObject + offset;
-                var layer = Math.Clamp(item.Layer, 0, LayerCount - 1);
+                var layer = ResolveObjectLayer(item.Layer);
                 ObjectLayer[index] = (ushort)layer;
                 ObjectKeyframeFrame[index] = deferredKeyframes[layer];
                 ObjectOrder[index] = firstOrder + offset + 1L;
@@ -527,6 +608,7 @@ internal sealed class VectorScene : ITimelineContext
                 LineEndpointStyles[index] = NormalizeLineEndpointStyle(item.StartEndpointStyle);
                 LineEndEndpointStyles[index] = NormalizeLineEndpointStyle(item.EndEndpointStyle);
                 ShapeKind[index] = item.Shape;
+                ShapeVertexCounts[index] = NormalizeShapeVertexCount(item.Shape, item.ShapeVertexCount);
                 AtomCount[index] = Math.Max(3, item.Atoms);
                 Argb[index] = item.Argb;
                 StrokeArgb[index] = item.StrokeArgb;
@@ -558,6 +640,13 @@ internal sealed class VectorScene : ITimelineContext
         VirtualAtomCount += batchAtoms.Sum();
         MaxHalfExtent = Math.Max(MaxHalfExtent, batchMaxHalfExtents.Max());
         return firstObject;
+    }
+
+    public int GetShapeVertexCount(int objectIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount) return 0;
+        var stored = ShapeVertexCounts.Length > objectIndex ? ShapeVertexCounts[objectIndex] : 0;
+        return NormalizeShapeVertexCount(ShapeKind[objectIndex], stored);
     }
 
     public int AddLineSegment(
@@ -614,12 +703,19 @@ internal sealed class VectorScene : ITimelineContext
 
     public void TransformObjects(IEnumerable<int> objectIndices, Func<PointF, PointF> transform, bool rebuildGeometryIndex = true)
     {
-        foreach (var objectIndex in objectIndices.Distinct())
+        ArgumentNullException.ThrowIfNull(objectIndices);
+        ArgumentNullException.ThrowIfNull(transform);
+        var targets = objectIndices
+            .Distinct()
+            .Where(objectIndex => (uint)objectIndex < ObjectCount)
+            .ToArray();
+        var linkedBoundaries = CaptureLinkedFillBoundariesForTransform(targets);
+        foreach (var objectIndex in targets)
         {
-            if ((uint)objectIndex >= ObjectCount) continue;
             TransformObject(objectIndex, transform);
         }
 
+        UpdateFillBoundaryLineLinks(linkedBoundaries, rebuildGeometryIndex: false);
         if (!rebuildGeometryIndex) return;
         RebuildGeometryIndex();
         RebuildSummaries();
@@ -779,9 +875,13 @@ internal sealed class VectorScene : ITimelineContext
     {
         ArgumentNullException.ThrowIfNull(objectIndices);
         ArgumentNullException.ThrowIfNull(transform);
-        foreach (var objectIndex in objectIndices.Distinct())
+        var targets = objectIndices
+            .Distinct()
+            .Where(objectIndex => (uint)objectIndex < ObjectCount)
+            .ToArray();
+        var linkedBoundaries = CaptureLinkedFillBoundariesForTransform(targets);
+        foreach (var objectIndex in targets)
         {
-            if ((uint)objectIndex >= ObjectCount) continue;
             var shape = ShapeKind[objectIndex];
             if (shape is VectorAnimationEngine.ShapeKind.Rectangle
                 or VectorAnimationEngine.ShapeKind.Ellipse
@@ -797,6 +897,7 @@ internal sealed class VectorScene : ITimelineContext
             }
         }
 
+        UpdateFillBoundaryLineLinks(linkedBoundaries, rebuildGeometryIndex: false);
         RebuildGeometryIndex();
         RebuildSummaries();
     }
@@ -1155,14 +1256,15 @@ internal sealed class VectorScene : ITimelineContext
         var added = new List<int>();
         foreach (var layerDefinition in brushShape.Layers)
         {
-            var contours = continuous && brushShape.IsTraditionalBrush
+            var contours = continuous && brushShape.IsTraditionalBrush && brushShape.IsRadiallySymmetric
                 ? FreehandStrokeProcessor.CreateBrushOutlines(points, diameter)
                 : CreateBrushSweepContours(
                     points,
                     diameter,
                     brushShape.NormalizedContour(layerDefinition.Threshold),
                     frequency,
-                    continuous);
+                    continuous,
+                    brushShape.StampSpacingScale);
             if (contours.Length == 0) continue;
             var alpha = (int)Math.Clamp(Math.Round(color.A * layerDefinition.Opacity), 1, 255);
             var layerColor = Color.FromArgb(alpha, color.R, color.G, color.B);
@@ -1206,7 +1308,8 @@ internal sealed class VectorScene : ITimelineContext
                         simplifyTolerance),
                     normalizedContour,
                     frequency,
-                    continuous);
+                    continuous,
+                    brushShape.StampSpacingScale);
             if (contours.Length == 0) continue;
 
             var alpha = (int)Math.Clamp(Math.Round(color.A * layerDefinition.Opacity), 1, 255);
@@ -1242,7 +1345,13 @@ internal sealed class VectorScene : ITimelineContext
         var centerline = NormalizeFreehandPoints(worldPoints);
         if (centerline.Length == 0) return false;
         var contour = brushShape.NormalizedContour(0.10f);
-        var sweepContours = CreateBrushSweepContours(centerline, diameter, contour, frequency, continuous);
+        var sweepContours = CreateBrushSweepContours(
+            centerline,
+            diameter,
+            contour,
+            frequency,
+            continuous,
+            brushShape.StampSpacingScale);
         var cutter = ToClipperPaths(sweepContours);
         if (cutter.Count == 0) return false;
 
@@ -1517,7 +1626,8 @@ internal sealed class VectorScene : ITimelineContext
         float diameter,
         IReadOnlyList<PointF> normalizedContour,
         int frequency,
-        bool continuous)
+        bool continuous,
+        float stampSpacingScale = 1f)
     {
         if (centerline.Count == 0 || normalizedContour.Count < 3) return Array.Empty<PointF[]>();
         try
@@ -1525,7 +1635,10 @@ internal sealed class VectorScene : ITimelineContext
             var stamps = new Paths64();
             var radius = Math.Max(VectorUnits.StrokePointsToUnits(0.5f), diameter) * 0.5f;
             frequency = Math.Clamp(frequency, 1, 24);
-            var spacing = Math.Max(VectorUnits.StrokePointsToUnits(0.25f), diameter / frequency);
+            stampSpacingScale = Math.Clamp(stampSpacingScale, 0.1f, 1f);
+            var spacing = Math.Max(
+                VectorUnits.StrokePointsToUnits(0.25f),
+                diameter / frequency * stampSpacingScale);
             var lastStamp = PointF.Empty;
             var hasLastStamp = false;
 
@@ -1595,13 +1708,15 @@ internal sealed class VectorScene : ITimelineContext
         IReadOnlyList<PressureBrushPoint> profile,
         IReadOnlyList<PointF> normalizedContour,
         int frequency,
-        bool continuous)
+        bool continuous,
+        float stampSpacingScale = 1f)
     {
         if (profile.Count == 0 || normalizedContour.Count < 3) return Array.Empty<PointF[]>();
         try
         {
             var stamps = new Paths64();
             frequency = Math.Clamp(frequency, 1, 24);
+            stampSpacingScale = Math.Clamp(stampSpacingScale, 0.1f, 1f);
             var lastStamp = PointF.Empty;
             var hasLastStamp = false;
 
@@ -1634,7 +1749,7 @@ internal sealed class VectorScene : ITimelineContext
                     var distance = Distance(start.Point, end.Point);
                     var spacing = Math.Max(
                         VectorUnits.StrokePointsToUnits(0.25f),
-                        Math.Min(start.Diameter, end.Diameter) / frequency);
+                        Math.Min(start.Diameter, end.Diameter) / frequency * stampSpacingScale);
                     var steps = Math.Max(1, (int)MathF.Ceiling(distance / spacing));
                     for (var step = 1; step <= steps; step++)
                     {
@@ -1914,6 +2029,10 @@ internal sealed class VectorScene : ITimelineContext
             MaxHalfExtent = MaxHalfExtent,
             LayerIds = LayerIds.ToArray(),
             LayerNames = LayerNames.ToArray(),
+            LayerKinds = LayerKinds.ToArray(),
+            LayerParentIds = LayerParentIds.ToArray(),
+            LayerMaskIds = LayerMaskIds.ToArray(),
+            LayerLocked = LayerLocked.ToArray(),
             LayerVisible = LayerVisible.ToArray(),
             LayerOpacity = LayerOpacity.ToArray(),
             LayerColorArgb = LayerColorArgb.ToArray(),
@@ -1937,6 +2056,7 @@ internal sealed class VectorScene : ITimelineContext
             LineEndpointStyles = LineEndpointStyles[..ObjectCount],
             LineEndEndpointStyles = LineEndEndpointStyles[..ObjectCount],
             ShapeKind = ShapeKind[..ObjectCount],
+            ShapeVertexCounts = ShapeVertexCounts[..ObjectCount],
             AtomCount = AtomCount[..ObjectCount],
             Argb = Argb[..ObjectCount],
             StrokeArgb = StrokeArgb[..ObjectCount],
@@ -1965,6 +2085,11 @@ internal sealed class VectorScene : ITimelineContext
         MaxHalfExtent = snapshot.MaxHalfExtent;
         LayerIds = NormalizeStableIds(snapshot.LayerIds, LayerCount);
         LayerNames = snapshot.LayerNames.ToArray();
+        LayerKinds = NormalizeLayerKinds(snapshot.LayerKinds, LayerCount);
+        LayerParentIds = NormalizeLayerParentIds(snapshot.LayerParentIds, LayerIds, LayerKinds);
+        LayerMaskIds = NormalizeLayerMaskIds(snapshot.LayerMaskIds, LayerIds, LayerKinds);
+        NormalizeMaskedLayerParents(LayerParentIds, LayerIds, LayerMaskIds);
+        LayerLocked = NormalizeLayerLocked(snapshot.LayerLocked, LayerCount);
         LayerVisible = snapshot.LayerVisible.ToArray();
         LayerOpacity = snapshot.LayerOpacity.ToArray();
         LayerColorArgb = NormalizeLayerColors(snapshot.LayerColorArgb, LayerCount);
@@ -2000,6 +2125,11 @@ internal sealed class VectorScene : ITimelineContext
             ? snapshot.LineEndEndpointStyles.Select(NormalizeLineEndpointStyle).ToArray()
             : LineEndpointStyles.ToArray();
         ShapeKind = snapshot.ShapeKind.ToArray();
+        ShapeVertexCounts = snapshot.ShapeVertexCounts.Length == ObjectCount
+            ? snapshot.ShapeVertexCounts
+                .Select((value, index) => NormalizeShapeVertexCount(ShapeKind[index], value))
+                .ToArray()
+            : ShapeKind.Select(DefaultShapeVertexCount).ToArray();
         AtomCount = snapshot.AtomCount.ToArray();
         Argb = snapshot.Argb.ToArray();
         StrokeArgb = snapshot.StrokeArgb.ToArray();
@@ -2066,8 +2196,303 @@ internal sealed class VectorScene : ITimelineContext
     {
         return layer >= 0
             && layer < LayerCount
-            && LayerVisible[layer]
+            && GetLayerKind(layer) != DrawingLayerKind.Folder
+            && IsLayerEffectivelyVisible(layer)
             && Timeline.EvaluateTargetExposure(LayerIds[layer], frame).HasContent;
+    }
+
+    public DrawingLayerKind GetLayerKind(int layer)
+    {
+        return (uint)layer < LayerKinds.Length ? LayerKinds[layer] : DrawingLayerKind.Drawing;
+    }
+
+    public int GetLayerParentIndex(int layer)
+    {
+        if ((uint)layer >= LayerCount || layer >= LayerParentIds.Length) return -1;
+        var parentId = LayerParentIds[layer];
+        if (string.IsNullOrWhiteSpace(parentId)) return -1;
+        var parent = Array.IndexOf(LayerIds, parentId);
+        return parent >= 0 && GetLayerKind(parent) == DrawingLayerKind.Folder ? parent : -1;
+    }
+
+    public int GetLayerDepth(int layer)
+    {
+        if ((uint)layer >= LayerCount) return 0;
+        var depth = 0;
+        var current = layer;
+        var visited = new HashSet<int>();
+        while (visited.Add(current))
+        {
+            var parent = GetLayerParentIndex(current);
+            if (parent < 0) break;
+            depth++;
+            current = parent;
+        }
+
+        return depth;
+    }
+
+    public bool IsLayerEffectivelyVisible(int layer)
+    {
+        if ((uint)layer >= LayerCount) return false;
+        var current = layer;
+        var visited = new HashSet<int>();
+        while (visited.Add(current))
+        {
+            if (!LayerVisible[current]) return false;
+            var parent = GetLayerParentIndex(current);
+            if (parent < 0) return true;
+            current = parent;
+        }
+
+        return false;
+    }
+
+    public bool IsLayerEffectivelyLocked(int layer)
+    {
+        if ((uint)layer >= LayerCount) return false;
+        var current = layer;
+        var visited = new HashSet<int>();
+        while (visited.Add(current))
+        {
+            if (current < LayerLocked.Length && LayerLocked[current]) return true;
+            var parent = GetLayerParentIndex(current);
+            if (parent < 0) return false;
+            current = parent;
+        }
+
+        return true;
+    }
+
+    public bool IsObjectSelectable(int objectIndex, int frame)
+    {
+        return (uint)objectIndex < ObjectCount
+            && IsObjectActive(objectIndex, frame)
+            && !IsLayerEffectivelyLocked(ObjectLayer[objectIndex]);
+    }
+
+    public bool ShouldRenderLayerContent(int layer)
+    {
+        if ((uint)layer >= LayerCount) return false;
+        return GetLayerKind(layer) switch
+        {
+            DrawingLayerKind.Folder => false,
+            DrawingLayerKind.Mask => !IsLayerEffectivelyLocked(layer),
+            _ => true
+        };
+    }
+
+    public bool TryGetMaskLayerIndex(int layer, out int maskLayer)
+    {
+        maskLayer = -1;
+        if ((uint)layer >= LayerCount
+            || GetLayerKind(layer) != DrawingLayerKind.Drawing
+            || layer >= LayerMaskIds.Length
+            || string.IsNullOrWhiteSpace(LayerMaskIds[layer]))
+        {
+            return false;
+        }
+
+        var candidate = Array.IndexOf(LayerIds, LayerMaskIds[layer]);
+        if (candidate < 0 || GetLayerKind(candidate) != DrawingLayerKind.Mask) return false;
+        maskLayer = candidate;
+        return true;
+    }
+
+    public int GetMaskContentLayerIndex(int maskLayer)
+    {
+        if ((uint)maskLayer >= LayerCount || GetLayerKind(maskLayer) != DrawingLayerKind.Mask) return -1;
+        var maskId = LayerIds[maskLayer];
+        for (var layer = 0; layer < LayerCount; layer++)
+        {
+            if (string.Equals(LayerMaskIds[layer], maskId, StringComparison.Ordinal)) return layer;
+        }
+
+        return -1;
+    }
+
+    public bool SetLayerMask(int contentLayer, int maskLayer)
+    {
+        if ((uint)contentLayer >= LayerCount
+            || (uint)maskLayer >= LayerCount
+            || GetLayerKind(contentLayer) != DrawingLayerKind.Drawing
+            || GetLayerKind(maskLayer) != DrawingLayerKind.Mask)
+        {
+            return false;
+        }
+
+        var maskId = LayerIds[maskLayer];
+        var changed = false;
+        for (var layer = 0; layer < LayerCount; layer++)
+        {
+            if (layer == contentLayer || !string.Equals(LayerMaskIds[layer], maskId, StringComparison.Ordinal)) continue;
+            LayerMaskIds[layer] = string.Empty;
+            changed = true;
+        }
+
+        if (!string.Equals(LayerMaskIds[contentLayer], maskId, StringComparison.Ordinal))
+        {
+            LayerMaskIds[contentLayer] = maskId;
+            changed = true;
+        }
+
+        var parentId = LayerParentIds[maskLayer];
+        if (!string.Equals(LayerParentIds[contentLayer], parentId, StringComparison.Ordinal))
+        {
+            LayerParentIds[contentLayer] = parentId;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    public bool ClearLayerMask(int contentLayer)
+    {
+        if ((uint)contentLayer >= LayerCount || GetLayerKind(contentLayer) != DrawingLayerKind.Drawing) return false;
+        if (string.IsNullOrWhiteSpace(LayerMaskIds[contentLayer])) return false;
+        LayerMaskIds[contentLayer] = string.Empty;
+        return true;
+    }
+
+    public bool ClearMaskLayerLinks(int maskLayer)
+    {
+        if ((uint)maskLayer >= LayerCount || GetLayerKind(maskLayer) != DrawingLayerKind.Mask) return false;
+        var maskId = LayerIds[maskLayer];
+        var changed = false;
+        for (var layer = 0; layer < LayerCount; layer++)
+        {
+            if (!string.Equals(LayerMaskIds[layer], maskId, StringComparison.Ordinal)) continue;
+            LayerMaskIds[layer] = string.Empty;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    public bool CanSetLayerParent(int layer, int parentLayer)
+    {
+        if ((uint)layer >= LayerCount) return false;
+        if (parentLayer < 0) return true;
+        if ((uint)parentLayer >= LayerCount || GetLayerKind(parentLayer) != DrawingLayerKind.Folder) return false;
+        if (layer == parentLayer) return false;
+
+        var current = parentLayer;
+        var visited = new HashSet<int>();
+        while (visited.Add(current))
+        {
+            if (current == layer) return false;
+            current = GetLayerParentIndex(current);
+            if (current < 0) return true;
+        }
+
+        return false;
+    }
+
+    public bool SetLayerParent(int layer, int parentLayer)
+    {
+        if (!CanSetLayerParent(layer, parentLayer)) return false;
+        var parentId = parentLayer >= 0 ? LayerIds[parentLayer] : string.Empty;
+        var relatedLayers = GetLinkedLayerIndices(layer);
+        var changed = false;
+        foreach (var relatedLayer in relatedLayers)
+        {
+            if (string.Equals(LayerParentIds[relatedLayer], parentId, StringComparison.Ordinal)) continue;
+            LayerParentIds[relatedLayer] = parentId;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    public bool RenameLayer(int layer, string? name)
+    {
+        if ((uint)layer >= LayerCount) return false;
+        var normalized = name?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized)) return false;
+        normalized = normalized.Length <= 80 ? normalized : normalized[..80];
+        if (string.Equals(LayerNames[layer], normalized, StringComparison.Ordinal)) return false;
+        LayerNames[layer] = normalized;
+        return true;
+    }
+
+    public bool ToggleLayerLocked(int layer)
+    {
+        if ((uint)layer >= LayerCount) return false;
+        LayerLocked[layer] = !LayerLocked[layer];
+        return true;
+    }
+
+    public bool SetLayerLocked(int layer, bool locked)
+    {
+        if ((uint)layer >= LayerCount || LayerLocked[layer] == locked) return false;
+        LayerLocked[layer] = locked;
+        return true;
+    }
+
+    public bool IsLayerDescendantOf(int layer, int ancestor)
+    {
+        if ((uint)layer >= LayerCount || (uint)ancestor >= LayerCount || layer == ancestor) return false;
+        var current = GetLayerParentIndex(layer);
+        var visited = new HashSet<int>();
+        while (current >= 0 && visited.Add(current))
+        {
+            if (current == ancestor) return true;
+            current = GetLayerParentIndex(current);
+        }
+
+        return false;
+    }
+
+    public int GetLayerSubtreeEnd(int layer)
+    {
+        if ((uint)layer >= LayerCount) return -1;
+        var last = layer;
+        for (var candidate = layer + 1; candidate < LayerCount; candidate++)
+        {
+            if (IsLayerDescendantOf(candidate, layer)) last = candidate;
+        }
+
+        return last;
+    }
+
+    public IReadOnlyList<int> GetLayerDisplayOrder()
+    {
+        if (LayerCount == 0) return [];
+
+        var result = new List<int>(LayerCount);
+        var appended = new bool[LayerCount];
+
+        void AppendLayer(int layer)
+        {
+            if ((uint)layer >= LayerCount || appended[layer]) return;
+            appended[layer] = true;
+            result.Add(layer);
+
+            if (GetLayerKind(layer) == DrawingLayerKind.Folder)
+            {
+                for (var candidate = 0; candidate < LayerCount; candidate++)
+                {
+                    if (GetLayerParentIndex(candidate) != layer) continue;
+                    if (TryGetMaskLayerIndex(candidate, out _)) continue;
+                    AppendLayer(candidate);
+                }
+
+                return;
+            }
+
+            if (GetLayerKind(layer) != DrawingLayerKind.Mask) return;
+            var contentLayer = GetMaskContentLayerIndex(layer);
+            if (contentLayer >= 0) AppendLayer(contentLayer);
+        }
+
+        for (var layer = 0; layer < LayerCount; layer++)
+        {
+            if (GetLayerParentIndex(layer) >= 0 || TryGetMaskLayerIndex(layer, out _)) continue;
+            AppendLayer(layer);
+        }
+
+        for (var layer = 0; layer < LayerCount; layer++) AppendLayer(layer);
+        return result;
     }
 
     public void SynchronizeTimelineTracks()
@@ -2088,51 +2513,75 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
-    public int AddLayer(string? name = null)
+    public int AddLayer(string? name = null) => InsertLayer(DrawingLayerKind.Drawing, LayerCount, name);
+
+    public int AddFolderLayer(string? name = null)
+    {
+        var contentLayer = FindEditableLayer(ActiveLayer, allowMask: false);
+        if (contentLayer < 0) return AddLayer(name);
+
+        var parentId = LayerParentIds[contentLayer];
+        var folderLayer = InsertLayer(DrawingLayerKind.Folder, contentLayer, name ?? $"Folder {LayerCount:0000}");
+        LayerParentIds[folderLayer] = parentId;
+        LayerParentIds[contentLayer + 1] = LayerIds[folderLayer];
+        ActiveLayer = contentLayer + 1;
+        return folderLayer;
+    }
+
+    public int AddMaskLayer(string? name = null)
+    {
+        var contentLayer = FindEditableLayer(ActiveLayer, allowMask: false);
+        if (contentLayer < 0) return AddLayer(name);
+
+        var parentId = LayerParentIds[contentLayer];
+        var maskLayer = InsertLayer(DrawingLayerKind.Mask, contentLayer, name ?? $"Mask {LayerCount:0000}");
+        LayerParentIds[maskLayer] = parentId;
+        LayerMaskIds[contentLayer + 1] = LayerIds[maskLayer];
+        ActiveLayer = maskLayer;
+        return maskLayer;
+    }
+
+    private int InsertLayer(DrawingLayerKind kind, int index, string? name)
     {
         if (LayerCount >= ushort.MaxValue) return Math.Max(0, LayerCount - 1);
 
         var duration = Math.Max(1, FrameCount);
-        var nextLayer = LayerCount;
-        LayerCount++;
-        var layerIds = LayerIds;
-        var layerNames = LayerNames;
-        var layerVisible = LayerVisible;
-        var layerOpacity = LayerOpacity;
-        var layerColorArgb = LayerColorArgb;
-        var layerOnionSkin = LayerOnionSkin;
-        var layerStart = LayerStart;
-        var layerEnd = LayerEnd;
-        Array.Resize(ref layerIds, LayerCount);
-        Array.Resize(ref layerNames, LayerCount);
-        Array.Resize(ref layerVisible, LayerCount);
-        Array.Resize(ref layerOpacity, LayerCount);
-        Array.Resize(ref layerColorArgb, LayerCount);
-        Array.Resize(ref layerOnionSkin, LayerCount);
-        Array.Resize(ref layerStart, LayerCount);
-        Array.Resize(ref layerEnd, LayerCount);
-        LayerIds = layerIds;
-        LayerNames = layerNames;
-        LayerVisible = layerVisible;
-        LayerOpacity = layerOpacity;
-        LayerColorArgb = layerColorArgb;
-        LayerOnionSkin = layerOnionSkin;
-        LayerStart = layerStart;
-        LayerEnd = layerEnd;
-
-        var knownIds = LayerIds.Take(nextLayer).ToHashSet(StringComparer.Ordinal);
+        var previousCount = LayerCount;
+        index = Math.Clamp(index, 0, previousCount);
+        var knownIds = LayerIds.ToHashSet(StringComparer.Ordinal);
         var layerId = Guid.NewGuid().ToString("N");
         while (!knownIds.Add(layerId)) layerId = Guid.NewGuid().ToString("N");
-        LayerIds[nextLayer] = layerId;
-        LayerNames[nextLayer] = string.IsNullOrWhiteSpace(name) ? $"Layer {nextLayer:0000}" : name.Trim();
-        LayerVisible[nextLayer] = true;
-        LayerOpacity[nextLayer] = 1f;
-        LayerColorArgb[nextLayer] = DefaultLayerColor(nextLayer).ToArgb();
-        LayerOnionSkin[nextLayer] = false;
-        LayerStart[nextLayer] = 0;
-        LayerEnd[nextLayer] = -1;
-        ActiveLayer = nextLayer;
 
+        LayerIds = InsertLayerValue(LayerIds, index, layerId);
+        LayerNames = InsertLayerValue(
+            LayerNames,
+            index,
+            string.IsNullOrWhiteSpace(name)
+                ? kind switch
+                {
+                    DrawingLayerKind.Folder => $"Folder {previousCount:0000}",
+                    DrawingLayerKind.Mask => $"Mask {previousCount:0000}",
+                    _ => $"Layer {previousCount:0000}"
+                }
+                : name.Trim());
+        LayerKinds = InsertLayerValue(LayerKinds, index, kind);
+        LayerParentIds = InsertLayerValue(LayerParentIds, index, string.Empty);
+        LayerMaskIds = InsertLayerValue(LayerMaskIds, index, string.Empty);
+        LayerLocked = InsertLayerValue(LayerLocked, index, false);
+        LayerVisible = InsertLayerValue(LayerVisible, index, true);
+        LayerOpacity = InsertLayerValue(LayerOpacity, index, 1f);
+        LayerColorArgb = InsertLayerValue(LayerColorArgb, index, DefaultLayerColor(index).ToArgb());
+        LayerOnionSkin = InsertLayerValue(LayerOnionSkin, index, false);
+        LayerStart = InsertLayerValue(LayerStart, index, 0);
+        LayerEnd = InsertLayerValue(LayerEnd, index, -1);
+        LayerCount++;
+
+        for (var objectIndex = 0; objectIndex < ObjectCount; objectIndex++)
+        {
+            if (ObjectLayer[objectIndex] >= index) ObjectLayer[objectIndex]++;
+        }
+
+        ActiveLayer = index;
         using (Timeline.BeginBatchUpdate())
         {
             SynchronizeTimelineTracks();
@@ -2144,8 +2593,43 @@ internal sealed class VectorScene : ITimelineContext
             }
         }
 
+        RebuildGeometryIndex();
         RebuildSummaries();
-        return nextLayer;
+        return index;
+    }
+
+    private int ResolveObjectLayer(int requestedLayer)
+    {
+        var layer = FindEditableLayer(requestedLayer, allowMask: true);
+        return layer >= 0 ? layer : Math.Clamp(requestedLayer, 0, LayerCount - 1);
+    }
+
+    private int FindEditableLayer(int requestedLayer, bool allowMask)
+    {
+        if (LayerCount == 0) return -1;
+        requestedLayer = Math.Clamp(requestedLayer, 0, LayerCount - 1);
+        var requestedKind = GetLayerKind(requestedLayer);
+        if (requestedKind == DrawingLayerKind.Drawing || (allowMask && requestedKind == DrawingLayerKind.Mask)) return requestedLayer;
+        if (requestedKind != DrawingLayerKind.Folder) return -1;
+
+        var folderId = LayerIds[requestedLayer];
+        for (var layer = requestedLayer + 1; layer < LayerCount; layer++)
+        {
+            if (!string.Equals(LayerParentIds[layer], folderId, StringComparison.Ordinal)) continue;
+            var kind = GetLayerKind(layer);
+            if (kind == DrawingLayerKind.Drawing || (allowMask && kind == DrawingLayerKind.Mask)) return layer;
+        }
+
+        return -1;
+    }
+
+    private static T[] InsertLayerValue<T>(IReadOnlyList<T> source, int index, T value)
+    {
+        var result = new T[source.Count + 1];
+        for (var sourceIndex = 0; sourceIndex < index; sourceIndex++) result[sourceIndex] = source[sourceIndex];
+        result[index] = value;
+        for (var sourceIndex = index; sourceIndex < source.Count; sourceIndex++) result[sourceIndex + 1] = source[sourceIndex];
+        return result;
     }
 
     public Color GetLayerColor(int layer)
@@ -2186,20 +2670,31 @@ internal sealed class VectorScene : ITimelineContext
     {
         if ((uint)from >= LayerCount || (uint)to >= LayerCount || from == to) return false;
 
+        var moving = GetLayerMoveSet(from);
+        if (moving.Contains(to)) return false;
+        return MoveLayerToRemainingIndex(from, moving, Math.Clamp(to, 0, LayerCount - moving.Count));
+    }
+
+    private bool MoveLayerToRemainingIndex(int from, IReadOnlySet<int> moving, int destinationIndex)
+    {
+        var ordered = Enumerable.Range(0, LayerCount).ToList();
+        var remaining = ordered.Where(layer => !moving.Contains(layer)).ToList();
+        var block = ordered.Where(moving.Contains).ToList();
+        var insertAt = Math.Clamp(destinationIndex, 0, remaining.Count);
+        remaining.InsertRange(insertAt, block);
+        if (remaining.SequenceEqual(ordered)) return false;
         var destinationBySource = new int[LayerCount];
-        for (var source = 0; source < LayerCount; source++)
+        for (var destination = 0; destination < remaining.Count; destination++)
         {
-            destinationBySource[source] = source == from
-                ? to
-                : from < to && source > from && source <= to
-                    ? source - 1
-                    : from > to && source >= to && source < from
-                        ? source + 1
-                        : source;
+            destinationBySource[remaining[destination]] = destination;
         }
 
         LayerIds = ReorderLayers(LayerIds, destinationBySource);
         LayerNames = ReorderLayers(LayerNames, destinationBySource);
+        LayerKinds = ReorderLayers(LayerKinds, destinationBySource);
+        LayerParentIds = ReorderLayers(LayerParentIds, destinationBySource);
+        LayerMaskIds = ReorderLayers(LayerMaskIds, destinationBySource);
+        LayerLocked = ReorderLayers(LayerLocked, destinationBySource);
         LayerVisible = ReorderLayers(LayerVisible, destinationBySource);
         LayerOpacity = ReorderLayers(LayerOpacity, destinationBySource);
         LayerColorArgb = ReorderLayers(LayerColorArgb, destinationBySource);
@@ -2216,6 +2711,74 @@ internal sealed class VectorScene : ITimelineContext
         RebuildGeometryIndex();
         RebuildSummaries();
         return true;
+    }
+
+    public bool MoveLayerBefore(int from, int beforeLayer)
+    {
+        if ((uint)from >= LayerCount || (uint)beforeLayer >= LayerCount || from == beforeLayer) return false;
+        if (TryGetMaskLayerIndex(beforeLayer, out var maskLayer)) beforeLayer = maskLayer;
+        var moving = GetLayerMoveSet(from);
+        if (moving.Contains(beforeLayer)) return false;
+        var destination = Enumerable.Range(0, beforeLayer).Count(layer => !moving.Contains(layer));
+        return MoveLayerToRemainingIndex(from, moving, destination);
+    }
+
+    public bool MoveLayerAfter(int from, int afterLayer)
+    {
+        if ((uint)from >= LayerCount || (uint)afterLayer >= LayerCount || from == afterLayer) return false;
+        var moving = GetLayerMoveSet(from);
+        if (moving.Contains(afterLayer)) return false;
+        var boundary = GetLayerGroupEnd(afterLayer) + 1;
+        var destination = Enumerable.Range(0, boundary).Count(layer => !moving.Contains(layer));
+        return MoveLayerToRemainingIndex(from, moving, destination);
+    }
+
+    private int GetLayerGroupEnd(int layer)
+    {
+        var last = layer;
+        foreach (var member in GetLayerMoveSet(layer)) last = Math.Max(last, member);
+        return last;
+    }
+
+    private HashSet<int> GetLayerMoveSet(int rootLayer)
+    {
+        var result = new HashSet<int> { rootLayer };
+        var pending = new Queue<int>();
+        pending.Enqueue(rootLayer);
+        while (pending.Count > 0)
+        {
+            var current = pending.Dequeue();
+            var currentId = LayerIds[current];
+            for (var candidate = 0; candidate < LayerCount; candidate++)
+            {
+                if (result.Contains(candidate)) continue;
+                var isChild = string.Equals(LayerParentIds[candidate], currentId, StringComparison.Ordinal);
+                var isLinkedMask = string.Equals(LayerMaskIds[candidate], currentId, StringComparison.Ordinal)
+                    || string.Equals(LayerMaskIds[current], LayerIds[candidate], StringComparison.Ordinal);
+                if (!isChild && !isLinkedMask) continue;
+                result.Add(candidate);
+                pending.Enqueue(candidate);
+            }
+        }
+
+        return result;
+    }
+
+    private int[] GetLinkedLayerIndices(int layer)
+    {
+        var related = new List<int> { layer };
+        var layerId = LayerIds[layer];
+        for (var candidate = 0; candidate < LayerCount; candidate++)
+        {
+            if (candidate == layer) continue;
+            if (string.Equals(LayerMaskIds[candidate], layerId, StringComparison.Ordinal)
+                || string.Equals(LayerMaskIds[layer], LayerIds[candidate], StringComparison.Ordinal))
+            {
+                related.Add(candidate);
+            }
+        }
+
+        return related.ToArray();
     }
 
     public bool CopyTimelineFrameFrom(
@@ -2392,7 +2955,7 @@ internal sealed class VectorScene : ITimelineContext
     {
         if ((uint)objectIndex >= ObjectCount) return false;
         var layer = ObjectLayer[objectIndex];
-        if ((uint)layer >= LayerCount || !LayerVisible[layer]) return false;
+        if ((uint)layer >= LayerCount || !IsLayerEffectivelyVisible(layer)) return false;
 
         var exposure = Timeline.EvaluateTargetExposure(LayerIds[layer], frame);
         return exposure.HasContent && ObjectKeyframeFrame[objectIndex] == exposure.SourceKeyframeFrame;
@@ -2404,7 +2967,7 @@ internal sealed class VectorScene : ITimelineContext
         if (destination.Length < LayerCount) throw new ArgumentException("The active-frame buffer is too small.", nameof(destination));
         for (var layer = 0; layer < LayerCount; layer++)
         {
-            if (!LayerVisible[layer])
+            if (GetLayerKind(layer) == DrawingLayerKind.Folder || !IsLayerEffectivelyVisible(layer))
             {
                 destination[layer] = int.MinValue;
                 continue;
@@ -2694,6 +3257,13 @@ internal sealed class VectorScene : ITimelineContext
     }
 
     public void ShowAllLayers() => Array.Fill(LayerVisible, true);
+
+    public bool SetLayerVisible(int layer, bool visible)
+    {
+        if ((uint)layer >= LayerCount || LayerVisible[layer] == visible) return false;
+        LayerVisible[layer] = visible;
+        return true;
+    }
 
     public void ToggleLayer(int layer)
     {
@@ -3567,6 +4137,147 @@ internal sealed class VectorScene : ITimelineContext
         return new DrawingElementHit(materialized.Parts[0].Result, -1, 0, 1);
     }
 
+    public FillBoundaryLineLink[] CaptureFillBoundaryLineLinks(int lineObjectIndex, int frame)
+    {
+        if ((uint)lineObjectIndex >= ObjectCount
+            || !IsFillBoundaryLinkedStrokeShape(ShapeKind[lineObjectIndex])
+            || !IsObjectActive(lineObjectIndex, frame))
+        {
+            return Array.Empty<FillBoundaryLineLink>();
+        }
+
+        var linePoints = StrokeSamples(lineObjectIndex)
+            .Select(sample => VectorUnits.Quantize(sample.Point))
+            .ToArray();
+        if (linePoints.Length < 2) return Array.Empty<FillBoundaryLineLink>();
+        var reverseLinePoints = linePoints.Reverse().ToArray();
+
+        var links = new List<FillBoundaryLineLink>();
+        for (var fillObjectIndex = 0; fillObjectIndex < ObjectCount; fillObjectIndex++)
+        {
+            if (!IsObjectActive(fillObjectIndex, frame) || !HasFill(fillObjectIndex)) continue;
+            var contours = ShapeBoundaryContours(fillObjectIndex);
+            for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+            {
+                var contour = contours[contourIndex];
+                for (var segmentIndex = 0; segmentIndex < contour.Length - 1; segmentIndex++)
+                {
+                    var forward = BoundarySequenceMatches(contour, segmentIndex, linePoints);
+                    var reverse = !forward
+                        && BoundarySequenceMatches(contour, segmentIndex, reverseLinePoints);
+                    if (!forward && !reverse) continue;
+                    links.Add(new FillBoundaryLineLink(
+                        lineObjectIndex,
+                        fillObjectIndex,
+                        CloneContours(contours),
+                        contourIndex,
+                        segmentIndex,
+                        linePoints.Length - 1,
+                        Reversed: reverse));
+                }
+            }
+        }
+
+        return links.ToArray();
+    }
+
+    private FillBoundaryLineLink[] CaptureLinkedFillBoundariesForTransform(IReadOnlyCollection<int> targets)
+    {
+        if (targets.Count == 0) return Array.Empty<FillBoundaryLineLink>();
+
+        var transformed = targets.ToHashSet();
+        var links = new List<FillBoundaryLineLink>();
+        foreach (var lineObjectIndex in targets)
+        {
+            if (!IsFillBoundaryLinkedStrokeShape(ShapeKind[lineObjectIndex])) continue;
+            foreach (var link in CaptureFillBoundaryLineLinks(lineObjectIndex, EditFrame))
+            {
+                // A selected fill has already received the same affine transform.
+                // Replacing it from a pre-transform contour would undo that transform.
+                if (!transformed.Contains(link.FillObjectIndex)) links.Add(link);
+            }
+        }
+
+        return links.ToArray();
+    }
+
+    public bool UpdateFillBoundaryLineLinks(
+        IReadOnlyList<FillBoundaryLineLink> links,
+        bool rebuildGeometryIndex = true)
+    {
+        if (links.Count == 0) return false;
+
+        var changed = false;
+        foreach (var fillLinks in links
+                     .GroupBy(link => link.FillObjectIndex)
+                     .OrderBy(group => group.Key))
+        {
+            var fillObjectIndex = fillLinks.Key;
+            if ((uint)fillObjectIndex >= ObjectCount
+                || !IsFillShape(ShapeKind[fillObjectIndex]))
+            {
+                continue;
+            }
+
+            var template = fillLinks.First();
+            var contours = CloneContours(template.OriginalContours);
+            var fillChanged = false;
+            foreach (var contourLinks in fillLinks
+                         .GroupBy(link => link.ContourIndex)
+                         .OrderBy(group => group.Key))
+            {
+                var contourIndex = contourLinks.Key;
+                if (contourIndex < 0 || contourIndex >= contours.Length) continue;
+
+                var contour = contours[contourIndex];
+                foreach (var link in contourLinks
+                             .OrderByDescending(link => link.SegmentIndex)
+                             .ThenBy(link => link.LineObjectIndex))
+                {
+                    if ((uint)link.LineObjectIndex >= ObjectCount
+                        || !IsFillBoundaryLinkedStrokeShape(ShapeKind[link.LineObjectIndex])
+                        || link.SegmentIndex < 0
+                        || link.SegmentCount <= 0
+                        || link.SegmentIndex + link.SegmentCount >= contour.Length)
+                    {
+                        continue;
+                    }
+
+                    var linePoints = StrokeSamples(link.LineObjectIndex)
+                        .Select(sample => VectorUnits.Quantize(sample.Point))
+                        .ToArray();
+                    if (linePoints.Length < 2) continue;
+
+                    var replacement = link.Reversed ? linePoints.Reverse().ToArray() : linePoints;
+                    var updatedContour = ReplaceBoundarySegment(
+                        contour,
+                        link.SegmentIndex,
+                        link.SegmentCount,
+                        replacement);
+                    if (updatedContour.Length < 3) continue;
+                    contour = updatedContour;
+                    fillChanged = true;
+                }
+
+                contours[contourIndex] = contour;
+            }
+
+            if (!fillChanged) continue;
+            ShapeKind[fillObjectIndex] = VectorAnimationEngine.ShapeKind.Path;
+            ShapeVertexCounts[fillObjectIndex] = 0;
+            SetPathContours(fillObjectIndex, contours);
+            changed = true;
+        }
+
+        if (changed && rebuildGeometryIndex)
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+        }
+
+        return changed;
+    }
+
     public MaterializeSelectedPartsResult MaterializeSelectedParts(IReadOnlyList<DrawingElementKey> selectedParts, int frame)
     {
         if (selectedParts.Count == 0 || selectedParts.Any(key => !key.IsValid))
@@ -4364,6 +5075,184 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return results.Distinct().ToArray();
+    }
+
+    public int[] ApplyFillOverwriteToNewObjects(IReadOnlyList<int> objectIndices, int frame = 0)
+    {
+        ArgumentNullException.ThrowIfNull(objectIndices);
+        var newObjects = objectIndices
+            .Where(index => (uint)index < ObjectCount && HasFill(index))
+            .Distinct()
+            .ToArray();
+        if (newObjects.Length == 0) return Array.Empty<int>();
+
+        var newObjectSet = newObjects.ToHashSet();
+        var plans = new List<FillOverwritePlan>();
+        try
+        {
+            foreach (var group in newObjects.GroupBy(index => (Layer: ObjectLayer[index], Keyframe: ObjectKeyframeFrame[index])))
+            {
+                var cutterObjects = group.ToArray();
+                var bounds = GetObjectWorldBounds(cutterObjects[0]);
+                for (var index = 1; index < cutterObjects.Length; index++) bounds = RectangleF.Union(bounds, GetObjectWorldBounds(cutterObjects[index]));
+
+                foreach (var source in QueryObjects(bounds, frame))
+                {
+                    if (newObjectSet.Contains(source)
+                        || ObjectLayer[source] != group.Key.Layer
+                        || ObjectKeyframeFrame[source] != group.Key.Keyframe
+                        || !HasFill(source)
+                        || !TryBuildFillOverwritePlan(source, cutterObjects, frame, out var plan))
+                    {
+                        continue;
+                    }
+
+                    plans.Add(plan);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is ClipperLibException or OverflowException or InvalidOperationException)
+        {
+            return newObjects;
+        }
+
+        if (plans.Count == 0) return newObjects;
+
+        var snapshot = CreateSnapshot();
+        var previousEditFrame = EditFrame;
+        try
+        {
+            var remove = new bool[ObjectCount];
+            foreach (var plan in plans) remove[plan.Source] = true;
+            var oldToNew = CompactObjectsForMaterialization(remove);
+            var result = newObjects
+                .Select(index => oldToNew[index])
+                .Where(index => index >= 0)
+                .ToArray();
+
+            foreach (var plan in plans)
+            {
+                EditFrame = plan.KeyframeFrame;
+                var subOrderIndex = 0;
+                foreach (var region in plan.RemainingRegions)
+                {
+                    var replacement = AppendPathObjectContours(
+                        plan.Layer,
+                        region.Contours,
+                        0,
+                        Color.FromArgb(plan.FillArgb),
+                        Color.Transparent,
+                        plan.AtomsPerReplacement);
+                    if (replacement < 0) throw new InvalidOperationException("Fill overwrite produced invalid replacement geometry.");
+                    ObjectKeyframeFrame[replacement] = plan.KeyframeFrame;
+                    ObjectOrder[replacement] = plan.Order;
+                    ObjectSubOrder[replacement] = plan.ReplacementSubOrders[subOrderIndex++];
+                    if (plan.HasGradient)
+                    {
+                        SetGradientPaint(
+                            replacement,
+                            plan.GradientKind,
+                            plan.GradientStops,
+                            plan.GradientStart,
+                            plan.GradientEnd);
+                    }
+                }
+
+                foreach (var boundary in plan.BoundaryAdditions)
+                {
+                    var replacement = AppendMaterializedPart(boundary with
+                    {
+                        SubOrder = plan.ReplacementSubOrders[subOrderIndex++],
+                        Atoms = plan.AtomsPerReplacement
+                    });
+                    if (replacement < 0) throw new InvalidOperationException("Fill overwrite could not preserve a boundary stroke.");
+                    ObjectKeyframeFrame[replacement] = plan.KeyframeFrame;
+                }
+            }
+
+            SynchronizeAllKeyframeContentKinds();
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            return result;
+        }
+        catch
+        {
+            RestoreSnapshot(snapshot);
+            return newObjects;
+        }
+        finally
+        {
+            EditFrame = previousEditFrame;
+        }
+    }
+
+    private bool TryBuildFillOverwritePlan(
+        int source,
+        IReadOnlyList<int> cutterObjects,
+        int frame,
+        out FillOverwritePlan plan)
+    {
+        plan = null!;
+        if ((uint)source >= ObjectCount || !HasFill(source)) return false;
+
+        var remainingContours = FillWorldContours(source);
+        var changed = false;
+        List<FillRegion>? remainingRegions = null;
+        foreach (var cutterObject in cutterObjects)
+        {
+            if (SameFillMaterial(source, cutterObject)) continue;
+            var cutter = ToClipperPaths(FillWorldContours(cutterObject));
+            if (!TryDifferenceFillRegions(remainingContours, cutter, out var regions)) continue;
+            changed = true;
+            remainingRegions = regions;
+            remainingContours = regions.SelectMany(region => region.Contours).ToArray();
+            if (remainingContours.Length == 0) break;
+        }
+
+        if (!changed) return false;
+
+        var boundaries = new List<MaterializedPartAddition>();
+        if (HasStroke(source)) AddUnchangedStrokeMaterializations(source, boundaries);
+        var replacementCount = (remainingRegions?.Count ?? 0) + boundaries.Count;
+        var subOrders = replacementCount switch
+        {
+            0 => Array.Empty<double>(),
+            1 => new[] { ObjectSubOrder[source] },
+            _ => ReplacementSubOrders(source, replacementCount)
+        };
+        var hasGradient = HasGradient(source);
+        plan = new FillOverwritePlan(
+            source,
+            ObjectLayer[source],
+            ObjectKeyframeFrame[source],
+            ObjectOrder[source],
+            Argb[source],
+            hasGradient,
+            hasGradient ? GradientKinds[source] : GradientKind.Solid,
+            hasGradient ? GetGradientStops(source) : Array.Empty<GradientStop>(),
+            hasGradient ? GetGradientStart(source) : PointF.Empty,
+            hasGradient ? GetGradientEnd(source) : PointF.Empty,
+            remainingRegions ?? new List<FillRegion>(),
+            boundaries,
+            subOrders,
+            Math.Max(3u, AtomCount[source] / (uint)Math.Max(1, replacementCount)));
+        return true;
+    }
+
+    private bool SameFillMaterial(int first, int second)
+    {
+        if (Argb[first] != Argb[second]) return false;
+        var firstHasGradient = HasGradient(first);
+        if (firstHasGradient != HasGradient(second)) return false;
+        if (!firstHasGradient) return true;
+        if (GradientKinds[first] != GradientKinds[second]
+            || GetGradientStart(first) != GetGradientStart(second)
+            || GetGradientEnd(first) != GetGradientEnd(second))
+        {
+            return false;
+        }
+
+        return GetGradientStops(first).SequenceEqual(GetGradientStops(second));
     }
 
     public LineSegmentMergeResult MergeCompatibleLineSegments(
@@ -6982,8 +7871,8 @@ internal sealed class VectorScene : ITimelineContext
         {
             VectorAnimationEngine.ShapeKind.Ellipse => EllipseBoundary(halfW, halfH),
             VectorAnimationEngine.ShapeKind.Triangle => RegularBoundary(3, halfW, halfH, -MathF.PI / 2),
-            VectorAnimationEngine.ShapeKind.Polygon => RegularBoundary(6, halfW, halfH, -MathF.PI / 2),
-            VectorAnimationEngine.ShapeKind.Star => StarBoundary(halfW, halfH),
+            VectorAnimationEngine.ShapeKind.Polygon => RegularBoundary(GetShapeVertexCount(i), halfW, halfH, -MathF.PI / 2),
+            VectorAnimationEngine.ShapeKind.Star => StarBoundary(GetShapeVertexCount(i), halfW, halfH),
             _ => new[]
             {
                 new PointF(-halfW, -halfH),
@@ -7047,18 +7936,18 @@ internal sealed class VectorScene : ITimelineContext
         return points;
     }
 
-    private static PointF[] StarBoundary(float halfW, float halfH)
+    private static PointF[] StarBoundary(int points, float halfW, float halfH)
     {
-        var points = new PointF[11];
-        for (var i = 0; i < 10; i++)
+        var result = new PointF[points * 2 + 1];
+        for (var i = 0; i < points * 2; i++)
         {
             var radius = i % 2 == 0 ? 1f : 0.46f;
-            var angle = -MathF.PI / 2 + i * MathF.Tau / 10;
-            points[i] = new PointF(MathF.Cos(angle) * halfW * radius, MathF.Sin(angle) * halfH * radius);
+            var angle = -MathF.PI / 2 + i * MathF.Tau / (points * 2);
+            result[i] = new PointF(MathF.Cos(angle) * halfW * radius, MathF.Sin(angle) * halfH * radius);
         }
 
-        points[^1] = points[0];
-        return points;
+        result[^1] = result[0];
+        return result;
     }
 
     private static bool TrySegmentIntersection(PointF a, PointF b, PointF c, PointF d, out float t)
@@ -7235,6 +8124,49 @@ internal sealed class VectorScene : ITimelineContext
         Array.Copy(points, result, points.Length);
         result[^1] = points[0];
         return result;
+    }
+
+    private static PointF[] ReplaceBoundarySegment(
+        IReadOnlyList<PointF> closedContour,
+        int segmentIndex,
+        int segmentCount,
+        IReadOnlyList<PointF> replacement)
+    {
+        if (closedContour.Count < 4
+            || segmentIndex < 0
+            || segmentCount <= 0
+            || segmentIndex + segmentCount >= closedContour.Count
+            || replacement.Count < 2)
+        {
+            return Array.Empty<PointF>();
+        }
+
+        var result = new List<PointF>(closedContour.Count + replacement.Count);
+        void Add(PointF point)
+        {
+            point = VectorUnits.Quantize(point);
+            if (result.Count == 0 || !SameDrawingUnit(result[^1], point)) result.Add(point);
+        }
+
+        for (var index = 0; index < segmentIndex; index++) Add(closedContour[index]);
+        for (var index = 0; index < replacement.Count; index++) Add(replacement[index]);
+        for (var index = segmentIndex + segmentCount + 1; index < closedContour.Count; index++) Add(closedContour[index]);
+        if (result.Count > 1 && SameDrawingUnit(result[0], result[^1])) result.RemoveAt(result.Count - 1);
+        return result.Count >= 3 ? result.ToArray() : Array.Empty<PointF>();
+    }
+
+    private static bool BoundarySequenceMatches(
+        IReadOnlyList<PointF> contour,
+        int segmentIndex,
+        IReadOnlyList<PointF> linePoints)
+    {
+        if (linePoints.Count < 2 || segmentIndex < 0 || segmentIndex + linePoints.Count > contour.Count) return false;
+        for (var pointIndex = 0; pointIndex < linePoints.Count; pointIndex++)
+        {
+            if (!SameDrawingUnit(contour[segmentIndex + pointIndex], linePoints[pointIndex])) return false;
+        }
+
+        return true;
     }
 
     private List<float> LineRectSplitParameters(int lineIndex, RectangleF bounds)
@@ -7693,6 +8625,11 @@ internal sealed class VectorScene : ITimelineContext
         return shape == VectorAnimationEngine.ShapeKind.Line || IsFreehandShape(shape);
     }
 
+    private static bool IsFillBoundaryLinkedStrokeShape(ShapeKind shape)
+    {
+        return shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform;
+    }
+
     private bool HasFill(int objectIndex)
     {
         return (uint)objectIndex < ObjectCount
@@ -7738,6 +8675,7 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyles[to] = source.LineEndpointStyles[from];
         LineEndEndpointStyles[to] = source.LineEndEndpointStyles[from];
         ShapeKind[to] = source.ShapeKind[from];
+        ShapeVertexCounts[to] = source.GetShapeVertexCount(from);
         AtomCount[to] = source.AtomCount[from];
         Argb[to] = source.Argb[from];
         StrokeArgb[to] = source.StrokeArgb[from];
@@ -7817,6 +8755,7 @@ internal sealed class VectorScene : ITimelineContext
         var lineEndpointStyles = LineEndpointStyles;
         var lineEndEndpointStyles = LineEndEndpointStyles;
         var shapeKind = ShapeKind;
+        var shapeVertexCounts = ShapeVertexCounts;
         var atomCount = AtomCount;
         var argb = Argb;
         var strokeArgb = StrokeArgb;
@@ -7843,6 +8782,7 @@ internal sealed class VectorScene : ITimelineContext
         Array.Resize(ref lineEndpointStyles, ObjectCount);
         Array.Resize(ref lineEndEndpointStyles, ObjectCount);
         Array.Resize(ref shapeKind, ObjectCount);
+        Array.Resize(ref shapeVertexCounts, ObjectCount);
         Array.Resize(ref atomCount, ObjectCount);
         Array.Resize(ref argb, ObjectCount);
         Array.Resize(ref strokeArgb, ObjectCount);
@@ -7869,6 +8809,7 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyles = lineEndpointStyles;
         LineEndEndpointStyles = lineEndEndpointStyles;
         ShapeKind = shapeKind;
+        ShapeVertexCounts = shapeVertexCounts;
         AtomCount = atomCount;
         Argb = argb;
         StrokeArgb = strokeArgb;
@@ -7901,6 +8842,7 @@ internal sealed class VectorScene : ITimelineContext
         var lineEndpointStyles = LineEndpointStyles;
         var lineEndEndpointStyles = LineEndEndpointStyles;
         var shapeKind = ShapeKind;
+        var shapeVertexCounts = ShapeVertexCounts;
         var atomCount = AtomCount;
         var argb = Argb;
         var strokeArgb = StrokeArgb;
@@ -7927,6 +8869,7 @@ internal sealed class VectorScene : ITimelineContext
         Array.Resize(ref lineEndpointStyles, capacity);
         Array.Resize(ref lineEndEndpointStyles, capacity);
         Array.Resize(ref shapeKind, capacity);
+        Array.Resize(ref shapeVertexCounts, capacity);
         Array.Resize(ref atomCount, capacity);
         Array.Resize(ref argb, capacity);
         Array.Resize(ref strokeArgb, capacity);
@@ -7953,6 +8896,7 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyles = lineEndpointStyles;
         LineEndEndpointStyles = lineEndEndpointStyles;
         ShapeKind = shapeKind;
+        ShapeVertexCounts = shapeVertexCounts;
         AtomCount = atomCount;
         Argb = argb;
         StrokeArgb = strokeArgb;
@@ -7977,6 +8921,28 @@ internal sealed class VectorScene : ITimelineContext
     {
         if (atoms <= 8 || Math.Min(size.Width, size.Height) <= 4) return VectorAnimationEngine.ShapeKind.Line;
         return VectorAnimationEngine.ShapeKind.Rectangle;
+    }
+
+    private static int DefaultShapeVertexCount(ShapeKind shape)
+    {
+        return shape switch
+        {
+            VectorAnimationEngine.ShapeKind.Triangle => 3,
+            VectorAnimationEngine.ShapeKind.Polygon => 6,
+            VectorAnimationEngine.ShapeKind.Star => 5,
+            _ => 0
+        };
+    }
+
+    private static int NormalizeShapeVertexCount(ShapeKind shape, int value)
+    {
+        return shape switch
+        {
+            VectorAnimationEngine.ShapeKind.Triangle => 3,
+            VectorAnimationEngine.ShapeKind.Polygon => Math.Clamp(value == 0 ? 6 : value, 3, 64),
+            VectorAnimationEngine.ShapeKind.Star => Math.Clamp(value == 0 ? 5 : value, 3, 32),
+            _ => 0
+        };
     }
 
     private static ShapeKind RandomShapeKind(ref StressRandom rng)
@@ -8073,8 +9039,9 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
-    private void InitializeTimelineFromLayerExposure()
+    private void InitializeTimelineFromLayerExposure(int defaultDuration = AnimationTimeline.DefaultDuration)
     {
+        defaultDuration = Math.Max(1, defaultDuration);
         using var batchUpdate = Timeline.BeginBatchUpdate();
         var additionalTargetIds = AdditionalTimelineTargetIds();
         var additionalTargetSet = additionalTargetIds.ToHashSet(StringComparer.Ordinal);
@@ -8083,7 +9050,7 @@ internal sealed class VectorScene : ITimelineContext
             .ToDictionary(track => track.TargetId, track => track, StringComparer.Ordinal);
 
         Timeline.Clear();
-        Timeline.SynchronizeTracks(LayerIds, AnimationTimeline.DefaultDuration, populateNewTracks: false);
+        Timeline.SynchronizeTracks(LayerIds, defaultDuration, populateNewTracks: false);
         var occupied = new HashSet<(int Layer, int Frame)>();
         for (var index = 0; index < ObjectCount; index++)
         {
@@ -8117,7 +9084,7 @@ internal sealed class VectorScene : ITimelineContext
             {
                 Id = Guid.NewGuid().ToString("N"),
                 TargetId = targetId,
-                Duration = AnimationTimeline.DefaultDuration,
+                Duration = defaultDuration,
                 Keyframes = [new TimelineKeyframe(0, TimelineKeyframeKind.Populated)]
             });
         Timeline.RestoreSnapshot(new AnimationTimelineSnapshot
@@ -8172,6 +9139,110 @@ internal sealed class VectorScene : ITimelineContext
         return result;
     }
 
+    private static DrawingLayerKind[] NormalizeLayerKinds(IReadOnlyList<DrawingLayerKind>? source, int count)
+    {
+        var result = new DrawingLayerKind[Math.Max(0, count)];
+        if (source is null) return result;
+        for (var index = 0; index < result.Length && index < source.Count; index++)
+        {
+            result[index] = Enum.IsDefined(source[index]) ? source[index] : DrawingLayerKind.Drawing;
+        }
+
+        return result;
+    }
+
+    private static string[] NormalizeLayerParentIds(
+        IReadOnlyList<string>? source,
+        IReadOnlyList<string> layerIds,
+        IReadOnlyList<DrawingLayerKind> layerKinds)
+    {
+        var result = Enumerable.Repeat(string.Empty, layerIds.Count).ToArray();
+        if (source is null) return result;
+        var indexes = layerIds
+            .Select((id, index) => (id, index))
+            .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
+        for (var layer = 0; layer < result.Length && layer < source.Count; layer++)
+        {
+            var parentId = source[layer];
+            if (string.IsNullOrWhiteSpace(parentId)
+                || !indexes.TryGetValue(parentId, out var parent)
+                || parent == layer
+                || layerKinds[parent] != DrawingLayerKind.Folder)
+            {
+                continue;
+            }
+
+            var visited = new HashSet<int> { layer };
+            var current = parent;
+            var valid = true;
+            while (true)
+            {
+                if (!visited.Add(current))
+                {
+                    valid = false;
+                    break;
+                }
+
+                if (current >= source.Count || string.IsNullOrWhiteSpace(source[current])) break;
+                if (!indexes.TryGetValue(source[current], out current) || layerKinds[current] != DrawingLayerKind.Folder)
+                {
+                    valid = false;
+                    break;
+                }
+            }
+
+            if (valid) result[layer] = parentId;
+        }
+
+        return result;
+    }
+
+    private static string[] NormalizeLayerMaskIds(
+        IReadOnlyList<string>? source,
+        IReadOnlyList<string> layerIds,
+        IReadOnlyList<DrawingLayerKind> layerKinds)
+    {
+        var result = Enumerable.Repeat(string.Empty, layerIds.Count).ToArray();
+        if (source is null) return result;
+        var claimedMaskIds = new HashSet<string>(StringComparer.Ordinal);
+        var indexes = layerIds
+            .Select((id, index) => (id, index))
+            .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
+        for (var layer = 0; layer < result.Length && layer < source.Count; layer++)
+        {
+            var maskId = source[layer];
+            if (layerKinds[layer] != DrawingLayerKind.Drawing
+                || string.IsNullOrWhiteSpace(maskId)
+                || !indexes.TryGetValue(maskId, out var maskLayer)
+                || layerKinds[maskLayer] != DrawingLayerKind.Mask)
+            {
+                continue;
+            }
+
+            if (!claimedMaskIds.Add(maskId)) continue;
+            result[layer] = maskId;
+        }
+
+        return result;
+    }
+
+    private static void NormalizeMaskedLayerParents(
+        string[] layerParentIds,
+        IReadOnlyList<string> layerIds,
+        IReadOnlyList<string> layerMaskIds)
+    {
+        var indexes = layerIds
+            .Select((id, index) => (id, index))
+            .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
+        for (var contentLayer = 0; contentLayer < layerMaskIds.Count; contentLayer++)
+        {
+            var maskId = layerMaskIds[contentLayer];
+            if (string.IsNullOrWhiteSpace(maskId)) continue;
+            if (!indexes.TryGetValue(maskId, out var maskLayer) || maskLayer >= layerParentIds.Length) continue;
+            layerParentIds[contentLayer] = layerParentIds[maskLayer];
+        }
+    }
+
     private static Color DefaultLayerColor(int index)
     {
         var colors = new[]
@@ -8202,6 +9273,14 @@ internal sealed class VectorScene : ITimelineContext
     }
 
     private static bool[] NormalizeLayerOnionSkin(IReadOnlyList<bool>? source, int count)
+    {
+        var result = new bool[Math.Max(0, count)];
+        if (source is null) return result;
+        for (var index = 0; index < result.Length && index < source.Count; index++) result[index] = source[index];
+        return result;
+    }
+
+    private static bool[] NormalizeLayerLocked(IReadOnlyList<bool>? source, int count)
     {
         var result = new bool[Math.Max(0, count)];
         if (source is null) return result;

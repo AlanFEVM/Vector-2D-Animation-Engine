@@ -152,6 +152,7 @@ internal sealed class StageControl : Control
     public PointF DrawingPreviewControl { get; private set; }
     public bool DrawingPreviewHasCurve { get; private set; }
     public ShapeKind DrawingPreviewShape { get; private set; } = ShapeKind.Rectangle;
+    public int DrawingPreviewShapeVertexCount { get; private set; }
     public Color DrawingPreviewColor { get; private set; } = Color.White;
     public float DrawingPreviewStroke { get; private set; } = 2;
     public bool FreehandPreviewVisible { get; private set; }
@@ -159,6 +160,7 @@ internal sealed class StageControl : Control
     public IReadOnlyList<float> FreehandPreviewDiameters { get; private set; } = Array.Empty<float>();
     public Color FreehandPreviewColor { get; private set; } = Color.White;
     public float FreehandPreviewStroke { get; private set; } = 2;
+    public BrushShape? FreehandPreviewBrushShape { get; private set; }
     public bool BrushTipCursorVisible { get; private set; }
     public Point BrushTipCursorScreen { get; private set; }
     public float BrushTipCursorRadiusPixels { get; private set; }
@@ -200,6 +202,7 @@ internal sealed class StageControl : Control
     internal double LastDirect2DPresentMilliseconds => _direct2DRenderer.LastPresentMilliseconds;
     internal int LastDirect2DLodBitmapSubmissions => _direct2DRenderer.LastLodBitmapSubmissions;
     internal int LastDirect2DLodBitmapBuilds => _direct2DRenderer.LastLodBitmapBuilds;
+    internal int LastDirect2DLodDetailObjectDraws => _direct2DRenderer.LastLodDetailObjectDraws;
     public event EventHandler? FrameRendered;
 
     internal bool HasCachedDirect2DFreehandGeometry(VectorScene scene)
@@ -464,6 +467,13 @@ internal sealed class StageControl : Control
     {
         if (objectIndex < 0 || objectIndex >= Scene.ObjectCount) return EditHandleKind.None;
         var shape = Scene.ShapeKind.Length > objectIndex ? Scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
+        if (SelectedElement.IsValid
+            && SelectedElement.Key.ObjectIndex == objectIndex
+            && SelectedElement.Key.Kind == DrawingElementKind.BoundaryStroke)
+        {
+            var boundaryHandle = HitTestLineBezierHandle(screen, SelectedElement);
+            if (boundaryHandle != EditHandleKind.None) return boundaryHandle;
+        }
         if (_selectedElements.Any(hit => hit.Key.ObjectIndex == objectIndex)
             && (shape != ShapeKind.Line
                 || !_selectedElements.Any(hit => hit.Key.ObjectIndex == objectIndex && hit.Key.Kind == DrawingElementKind.Stroke)))
@@ -672,6 +682,8 @@ internal sealed class StageControl : Control
             DrawSceneGdi(g, dragPreview, Math.Min(objectDrawLimit, 80_000));
         }
         LastStats = RenderStats.Combine(RenderStats.Combine(underlayStats, onionSkinStats), editableStats);
+        if (editableStats.TileLod) DrawLodDetailObjects(g);
+        DrawActiveMaskOutline(g);
         DrawSelection(g);
         DrawDrawingPreview(g);
         DrawFreehandPreview(g);
@@ -691,13 +703,29 @@ internal sealed class StageControl : Control
         try
         {
             var pixelZoom = EffectivePixelZoom();
-            return Scene.ObjectCount < 5000
-                ? DrawObjects(graphics, objectDrawLimit)
-                : pixelZoom < 0.08f
+            if (Scene.HasLayerEffects || pixelZoom >= 0.18f) return DrawObjects(graphics, objectDrawLimit);
+            if (Scene.ObjectCount >= 5000)
+            {
+                return pixelZoom < 0.08f
                     ? DrawOverviewTiles(graphics)
-                    : pixelZoom < 0.18f
-                        ? DrawTiles(graphics)
-                        : DrawObjects(graphics, objectDrawLimit);
+                    : DrawTiles(graphics);
+            }
+
+            if (Scene.ObjectCount < SceneRenderOrder.DenseObjectLodMinimumVisibleObjects)
+            {
+                return DrawObjects(graphics, objectDrawLimit);
+            }
+
+            var bounds = VisibleWorldBounds();
+            _renderOrder.Collect(Scene, bounds, Frame);
+            if (SceneRenderOrder.ShouldUseDenseObjectLod(Scene, pixelZoom, bounds, _renderOrder))
+            {
+                return pixelZoom < 0.08f
+                    ? DrawOverviewTiles(graphics)
+                    : DrawTiles(graphics);
+            }
+
+            return DrawCollectedObjects(graphics, objectDrawLimit);
         }
         finally
         {
@@ -709,7 +737,7 @@ internal sealed class StageControl : Control
 
     private bool UsesObjectRenderer(VectorScene scene)
     {
-        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || EffectivePixelZoom() >= 0.18f);
+        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || scene.HasLayerEffects || EffectivePixelZoom() >= 0.18f);
     }
 
     private float EffectivePixelZoom() => Zoom * VectorUnits.PixelsPerUnit;
@@ -771,7 +799,13 @@ internal sealed class StageControl : Control
         base.Dispose(disposing);
     }
 
-    public void SetDrawingPreview(PointF start, PointF end, ShapeKind shape, Color color, float stroke)
+    public void SetDrawingPreview(
+        PointF start,
+        PointF end,
+        ShapeKind shape,
+        Color color,
+        float stroke,
+        int shapeVertexCount = 0)
     {
         DrawingPreviewVisible = true;
         DrawingPreviewStart = start;
@@ -779,6 +813,7 @@ internal sealed class StageControl : Control
         DrawingPreviewControl = new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
         DrawingPreviewHasCurve = false;
         DrawingPreviewShape = shape;
+        DrawingPreviewShapeVertexCount = shapeVertexCount;
         DrawingPreviewColor = color;
         DrawingPreviewStroke = stroke;
         Invalidate();
@@ -792,6 +827,7 @@ internal sealed class StageControl : Control
         DrawingPreviewEnd = end;
         DrawingPreviewHasCurve = true;
         DrawingPreviewShape = ShapeKind.Line;
+        DrawingPreviewShapeVertexCount = 0;
         DrawingPreviewColor = color;
         DrawingPreviewStroke = stroke;
         Invalidate();
@@ -805,13 +841,19 @@ internal sealed class StageControl : Control
         Invalidate();
     }
 
-    public void SetFreehandPreview(IReadOnlyList<PointF> points, Color color, float stroke, IReadOnlyList<float>? diameters = null)
+    public void SetFreehandPreview(
+        IReadOnlyList<PointF> points,
+        Color color,
+        float stroke,
+        IReadOnlyList<float>? diameters = null,
+        BrushShape? brushShape = null)
     {
         FreehandPreviewVisible = points.Count > 0;
         FreehandPreviewPoints = points;
         FreehandPreviewDiameters = diameters is { Count: > 0 } ? diameters : Array.Empty<float>();
         FreehandPreviewColor = color;
         FreehandPreviewStroke = Math.Max(VectorUnits.StrokePointsToUnits(0.5f), stroke);
+        FreehandPreviewBrushShape = brushShape;
         Invalidate();
     }
 
@@ -821,6 +863,7 @@ internal sealed class StageControl : Control
         FreehandPreviewVisible = false;
         FreehandPreviewPoints = Array.Empty<PointF>();
         FreehandPreviewDiameters = Array.Empty<float>();
+        FreehandPreviewBrushShape = null;
         Invalidate();
     }
 
@@ -1128,7 +1171,7 @@ internal sealed class StageControl : Control
 
     public void SetHoveredLineElement(DrawingElementHit hit)
     {
-        if (!IsValidLineStrokeHit(hit)) hit = DrawingElementHit.None;
+        if (!IsValidEditableBezierHit(hit)) hit = DrawingElementHit.None;
         if (_hoveredLineElement == hit) return;
         _hoveredLineElement = hit;
         Invalidate();
@@ -1136,38 +1179,45 @@ internal sealed class StageControl : Control
 
     public void ClearHoveredLineElement() => SetHoveredLineElement(DrawingElementHit.None);
 
+    internal IReadOnlyList<int> GetLodDetailObjectIndices()
+    {
+        List<int>? detail = null;
+
+        void Add(int objectIndex)
+        {
+            if ((uint)objectIndex >= Scene.ObjectCount || detail?.Contains(objectIndex) == true) return;
+            (detail ??= new List<int>(4)).Add(objectIndex);
+        }
+
+        foreach (var objectIndex in SelectedObjects) Add(objectIndex);
+        foreach (var hit in SelectedElements) Add(hit.Key.ObjectIndex);
+        Add(SelectedObject);
+        Add(HoveredLineElement.Key.ObjectIndex);
+        return detail is { Count: > 0 } ? detail : Array.Empty<int>();
+    }
+
     public EditHandleKind HitTestHoveredLineHandle(Point screen)
     {
-        return IsValidLineStrokeHit(_hoveredLineElement)
+        return IsValidEditableBezierHit(_hoveredLineElement)
             ? HitTestLineBezierHandle(screen, _hoveredLineElement)
             : EditHandleKind.None;
     }
 
     public EditHandleKind HitTestLineElementHandle(Point screen, DrawingElementHit hit)
     {
-        return IsValidLineStrokeHit(hit)
+        return IsValidEditableBezierHit(hit)
             ? HitTestLineBezierHandle(screen, hit)
             : EditHandleKind.None;
     }
 
-    private bool IsValidLineStrokeHit(DrawingElementHit hit)
+    internal bool IsValidEditableBezierHit(DrawingElementHit hit)
     {
-        return hit.IsValid
-            && hit.Key.Kind == DrawingElementKind.Stroke
-            && (uint)hit.Key.ObjectIndex < Scene.ObjectCount
-            && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
-            && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame);
+        return TryGetEditableBezierWorldPoints(hit, out _, out _, out _);
     }
 
     private EditHandleKind HitTestLineBezierHandle(Point screen, DrawingElementHit hit)
     {
-        if (!TryGetLineBezierWorldPoints(
-                hit.Key.ObjectIndex,
-                hit.StartT,
-                hit.EndT,
-                out var start,
-                out var control,
-                out var end))
+        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control, out var end))
         {
             return EditHandleKind.None;
         }
@@ -1184,6 +1234,37 @@ internal sealed class StageControl : Control
         return Distance(screen, WorldToScreen(control)) <= controlHitRadius
             ? EditHandleKind.BezierControl
             : EditHandleKind.None;
+    }
+
+    internal bool TryGetEditableBezierWorldPoints(
+        DrawingElementHit hit,
+        out PointF start,
+        out PointF control,
+        out PointF end)
+    {
+        start = PointF.Empty;
+        control = PointF.Empty;
+        end = PointF.Empty;
+        if (!hit.IsValid
+            || (uint)hit.Key.ObjectIndex >= Scene.ObjectCount
+            || !Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
+        {
+            return false;
+        }
+
+        if (hit.Key.Kind == DrawingElementKind.Stroke
+            && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        {
+            return TryGetLineBezierWorldPoints(hit.Key.ObjectIndex, hit.StartT, hit.EndT, out start, out control, out end);
+        }
+
+        if (hit.Key.Kind != DrawingElementKind.BoundaryStroke) return false;
+        var points = GetSelectedBoundaryPartPoints(hit);
+        if (points.Length != 2) return false;
+        start = points[0];
+        end = points[1];
+        control = new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
+        return true;
     }
 
     public PointF[][] GetSelectedFillPartContours() => GetSelectedFillPartContours(SelectedElement);
@@ -1384,12 +1465,123 @@ internal sealed class StageControl : Control
         var bounds = VisibleWorldBounds();
         _renderOrder.Collect(scene, bounds, Frame);
 
-        var drawn = _renderOrder.Draw(
+        return DrawCollectedObjects(g, drawLimit);
+    }
+
+    private RenderStats DrawCollectedObjects(Graphics g, int drawLimit)
+    {
+        var scene = Scene;
+        var drawn = _renderOrder.DrawLayers(
             scene,
             drawLimit,
-            index => DrawObject(g, index, SceneRenderPass.Fill),
-            index => DrawObject(g, index, SceneRenderPass.Stroke));
+            (layer, objects, start) => DrawLayerObjects(g, scene, layer, objects, start));
         return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
+    }
+
+    private void DrawLodDetailObjects(Graphics graphics)
+    {
+        foreach (var objectIndex in GetLodDetailObjectIndices())
+        {
+            if (!Scene.IsObjectActive(objectIndex, Frame)
+                || !Scene.ShouldRenderLayerContent(Scene.ObjectLayer[objectIndex]))
+            {
+                continue;
+            }
+
+            if (SceneRenderOrder.HasFill(Scene.ShapeKind[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Fill);
+            if (SceneRenderOrder.HasStroke(Scene.ShapeKind[objectIndex], Scene.Stroke[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Stroke);
+        }
+    }
+
+    internal bool TryGetActiveMaskLayer(out int layer)
+    {
+        layer = Scene.ActiveLayer;
+        return (uint)layer < Scene.LayerCount
+            && Scene.GetLayerKind(layer) == DrawingLayerKind.Mask
+            && Scene.IsLayerEffectivelyVisible(layer)
+            && !Scene.IsLayerEffectivelyLocked(layer);
+    }
+
+    private void DrawActiveMaskOutline(Graphics graphics)
+    {
+        if (!TryGetActiveMaskLayer(out var maskLayer)) return;
+        var maskObjects = Enumerable.Range(0, Scene.ObjectCount)
+            .Where(index => Scene.ObjectLayer[index] == maskLayer
+                && Scene.IsObjectActive(index, Frame)
+                && SceneRenderOrder.HasFill(Scene.ShapeKind[index]))
+            .ToArray();
+        if (maskObjects.Length == 0) return;
+
+        using var path = CreateMaskPath(Scene, maskObjects);
+        if (path.PointCount == 0) return;
+        using var fill = new SolidBrush(Color.FromArgb(48, 112, 205, 209));
+        using var glow = new Pen(Color.FromArgb(110, 104, 231, 232), 4f);
+        using var outline = new Pen(Color.FromArgb(244, 159, 242, 242), 1.4f) { DashStyle = DashStyle.Dash };
+        graphics.FillPath(fill, path);
+        graphics.DrawPath(glow, path);
+        graphics.DrawPath(outline, path);
+    }
+
+    private void DrawLayerObjects(Graphics graphics, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)
+    {
+        var layerKind = scene.GetLayerKind(layer);
+        if (!scene.ShouldRenderLayerContent(layer)) return;
+        if (layerKind == DrawingLayerKind.Mask)
+        {
+            DrawLayerObjectsUnmasked(graphics, objects, start);
+            return;
+        }
+        if (!scene.TryGetMaskLayerIndex(layer, out var maskLayer))
+        {
+            DrawLayerObjectsUnmasked(graphics, objects, start);
+            return;
+        }
+
+        if (!scene.IsLayerEffectivelyVisible(maskLayer)) return;
+        using var maskPath = CreateMaskPath(scene, _renderOrder.GetLayerObjects(maskLayer));
+        if (maskPath.PointCount == 0) return;
+
+        var state = graphics.Save();
+        try
+        {
+            graphics.SetClip(maskPath, CombineMode.Intersect);
+            DrawLayerObjectsUnmasked(graphics, objects, start);
+        }
+        finally
+        {
+            graphics.Restore(state);
+        }
+    }
+
+    private void DrawLayerObjectsUnmasked(Graphics graphics, IReadOnlyList<int> objects, int start)
+    {
+        for (var index = start; index < objects.Count; index++)
+        {
+            var objectIndex = objects[index];
+            if (SceneRenderOrder.HasFill(Scene.ShapeKind[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Fill);
+        }
+
+        for (var index = start; index < objects.Count; index++)
+        {
+            var objectIndex = objects[index];
+            if (SceneRenderOrder.HasStroke(Scene.ShapeKind[objectIndex], Scene.Stroke[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Stroke);
+        }
+    }
+
+    private GraphicsPath CreateMaskPath(VectorScene scene, IReadOnlyList<int> maskObjects)
+    {
+        var path = new GraphicsPath(FillMode.Alternate);
+        foreach (var objectIndex in maskObjects)
+        {
+            if (!SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) continue;
+            foreach (var contour in scene.GetObjectBoundaryContours(objectIndex))
+            {
+                if (contour.Length < 3) continue;
+                path.AddPolygon(contour.Select(WorldToScreen).ToArray());
+            }
+        }
+
+        return path;
     }
 
     private void DrawObject(Graphics g, int i, SceneRenderPass pass)
@@ -1401,6 +1593,7 @@ internal sealed class StageControl : Control
         var rect = new RectangleF(screen.X - w * 0.5f, screen.Y - h * 0.5f, w, h);
         var brush = BrushFor(scene.Argb[i]);
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
+        var shapeVertexCount = scene.GetShapeVertexCount(i);
         var strokeColor = StrokeColorFor(i);
         var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[i]));
 
@@ -1443,7 +1636,7 @@ internal sealed class StageControl : Control
             var state = g.Save();
             g.TranslateTransform(screen.X, screen.Y);
             g.RotateTransform(scene.Angle[i] * 57.29578f);
-            DrawLocalShape(g, shape, brush, strokeColor, scene.Stroke[i], screenStroke, w, h, pass);
+            DrawLocalShape(g, shape, shapeVertexCount, brush, strokeColor, scene.Stroke[i], screenStroke, w, h, pass);
             g.Restore(state);
             return;
         }
@@ -1600,7 +1793,17 @@ internal sealed class StageControl : Control
         g.SmoothingMode = oldMode;
     }
 
-    private void DrawLocalShape(Graphics g, ShapeKind shape, Brush brush, Color strokeColor, float stroke, float screenStroke, float w, float h, SceneRenderPass pass)
+    private void DrawLocalShape(
+        Graphics g,
+        ShapeKind shape,
+        int shapeVertexCount,
+        Brush brush,
+        Color strokeColor,
+        float stroke,
+        float screenStroke,
+        float w,
+        float h,
+        SceneRenderPass pass)
     {
         var rect = new RectangleF(-w * 0.5f, -h * 0.5f, w, h);
         switch (shape)
@@ -1627,10 +1830,10 @@ internal sealed class StageControl : Control
                 DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, RegularPolygonPoints(3, w, h, -MathF.PI / 2), pass);
                 break;
             case ShapeKind.Polygon:
-                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, RegularPolygonPoints(6, w, h, -MathF.PI / 2), pass);
+                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, RegularPolygonPoints(PolygonVertexCount(shapeVertexCount), w, h, -MathF.PI / 2), pass);
                 break;
             case ShapeKind.Star:
-                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, StarPoints(5, w, h, -MathF.PI / 2), pass);
+                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, StarPoints(StarVertexCount(shapeVertexCount), w, h, -MathF.PI / 2), pass);
                 break;
             default:
                 if (pass == SceneRenderPass.Fill)
@@ -1710,6 +1913,10 @@ internal sealed class StageControl : Control
 
         return result;
     }
+
+    private static int PolygonVertexCount(int value) => Math.Clamp(value == 0 ? 6 : value, 3, 64);
+
+    private static int StarVertexCount(int value) => Math.Clamp(value == 0 ? 5 : value, 3, 32);
 
     private void DrawGrid(Graphics g)
     {
@@ -1870,7 +2077,7 @@ internal sealed class StageControl : Control
     {
         if ((SelectedObject < 0 || SelectedObject >= Scene.ObjectCount)
             && SelectedObjects.Count == 0
-            && !IsValidLineStrokeHit(_hoveredLineElement)
+            && !IsValidEditableBezierHit(_hoveredLineElement)
             && !DrawingObjectSelectionVisible)
         {
             return;
@@ -1912,8 +2119,7 @@ internal sealed class StageControl : Control
                 && Scene.IsObjectActive(SelectedElement.Key.ObjectIndex, Frame))
             {
                 DrawElementSelectionOutline(g, SelectedElement, primary: true);
-                if (SelectedElement.Key.Kind == DrawingElementKind.Stroke
-                    && Scene.ShapeKind[SelectedElement.Key.ObjectIndex] == ShapeKind.Line)
+                if (IsValidEditableBezierHit(SelectedElement))
                 {
                     if (!TransformMode) DrawBezierHandles(g, SelectedElement);
                 }
@@ -2078,7 +2284,7 @@ internal sealed class StageControl : Control
         var h = Math.Max(2, WorldLengthToScreen(Math.Abs(dy)));
         var state = g.Save();
         g.TranslateTransform(center.X, center.Y);
-        DrawPreviewLocalShape(g, DrawingPreviewShape, fill, stroke, w, h);
+        DrawPreviewLocalShape(g, DrawingPreviewShape, DrawingPreviewShapeVertexCount, fill, stroke, w, h);
         g.Restore(state);
 
         using var boundsPen = new Pen(Color.FromArgb(180, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
@@ -2093,6 +2299,13 @@ internal sealed class StageControl : Control
         var variableWidth = FreehandPreviewDiameters.Count == FreehandPreviewPoints.Count;
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        if (FreehandPreviewBrushShape is { IsTraditionalBrush: true, IsRadiallySymmetric: false } tipShape)
+        {
+            DrawTraditionalBrushPreview(g, tipShape, screenWidth, variableWidth);
+            g.SmoothingMode = oldMode;
+            return;
+        }
+
         if (FreehandPreviewPoints.Count == 1)
         {
             var point = WorldToScreen(FreehandPreviewPoints[0]);
@@ -2130,6 +2343,31 @@ internal sealed class StageControl : Control
         }
 
         g.SmoothingMode = oldMode;
+    }
+
+    private void DrawTraditionalBrushPreview(Graphics g, BrushShape tipShape, float defaultWidth, bool variableWidth)
+    {
+        var contour = tipShape.NormalizedContour(0.5f);
+        if (contour.Length < 3) return;
+
+        using var fill = new SolidBrush(FreehandPreviewColor);
+        for (var index = 0; index < FreehandPreviewPoints.Count; index++)
+        {
+            var diameter = variableWidth
+                ? Math.Max(0.75f, WorldLengthToScreen(FreehandPreviewDiameters[index]))
+                : defaultWidth;
+            var center = WorldToScreen(FreehandPreviewPoints[index]);
+            var radius = diameter * 0.5f;
+            var points = new PointF[contour.Length];
+            for (var pointIndex = 0; pointIndex < contour.Length; pointIndex++)
+            {
+                points[pointIndex] = new PointF(
+                    center.X + contour[pointIndex].X * radius,
+                    center.Y + contour[pointIndex].Y * radius);
+            }
+
+            g.FillPolygon(fill, points);
+        }
     }
 
     private void DrawBrushTipCursor(Graphics g)
@@ -2374,7 +2612,7 @@ internal sealed class StageControl : Control
         g.DrawRectangle(_marqueePen, rect);
     }
 
-    private void DrawPreviewLocalShape(Graphics g, ShapeKind shape, Brush fill, Pen stroke, float w, float h)
+    private void DrawPreviewLocalShape(Graphics g, ShapeKind shape, int shapeVertexCount, Brush fill, Pen stroke, float w, float h)
     {
         var rect = new RectangleF(-w * 0.5f, -h * 0.5f, w, h);
         switch (shape)
@@ -2387,10 +2625,10 @@ internal sealed class StageControl : Control
                 DrawPreviewPolygon(g, fill, stroke, RegularPolygonPoints(3, w, h, -MathF.PI / 2));
                 break;
             case ShapeKind.Polygon:
-                DrawPreviewPolygon(g, fill, stroke, RegularPolygonPoints(6, w, h, -MathF.PI / 2));
+                DrawPreviewPolygon(g, fill, stroke, RegularPolygonPoints(PolygonVertexCount(shapeVertexCount), w, h, -MathF.PI / 2));
                 break;
             case ShapeKind.Star:
-                DrawPreviewPolygon(g, fill, stroke, StarPoints(5, w, h, -MathF.PI / 2));
+                DrawPreviewPolygon(g, fill, stroke, StarPoints(StarVertexCount(shapeVertexCount), w, h, -MathF.PI / 2));
                 break;
             default:
                 g.FillRectangle(fill, rect);
@@ -2422,11 +2660,8 @@ internal sealed class StageControl : Control
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.DrawPath(linePen, path);
-        if (brush is SolidBrush solid)
-        {
-            DrawMiterJoin(g, i, startEndpoint: true, screenStroke, solid.Color);
-            DrawMiterJoin(g, i, startEndpoint: false, screenStroke, solid.Color);
-        }
+        DrawMiterJoin(g, i, startEndpoint: true, screenStroke, brush);
+        DrawMiterJoin(g, i, startEndpoint: false, screenStroke, brush);
         g.SmoothingMode = oldMode;
     }
 
@@ -2471,6 +2706,9 @@ internal sealed class StageControl : Control
             g.DrawLine(pen, a, b);
         }
 
+        DrawRadialGradientMiterJoin(g, scene, objectIndex, startEndpoint: true, screenStroke);
+        DrawRadialGradientMiterJoin(g, scene, objectIndex, startEndpoint: false, screenStroke);
+
         g.SmoothingMode = oldMode;
     }
 
@@ -2479,34 +2717,63 @@ internal sealed class StageControl : Control
         return endpointStyle == LineEndpointStyle.Sharp ? LineCap.Flat : LineCap.Round;
     }
 
-    private void DrawMiterJoin(Graphics g, int objectIndex, bool startEndpoint, float screenStroke, Color color)
+    private void DrawMiterJoin(Graphics g, int objectIndex, bool startEndpoint, float screenStroke, Brush brush)
     {
+        if (!TryGetMiterJoin(objectIndex, startEndpoint, screenStroke, out var joint, out var miter)) return;
+        FillMiterJoin(g, brush, joint, miter);
+    }
+
+    private void DrawRadialGradientMiterJoin(
+        Graphics g,
+        VectorScene scene,
+        int objectIndex,
+        bool startEndpoint,
+        float screenStroke)
+    {
+        if (!TryGetMiterJoin(objectIndex, startEndpoint, screenStroke, out var joint, out var miter)) return;
+        using var path = new GraphicsPath(FillMode.Winding);
+        AddMiterJoinPolygons(path, joint, miter);
+        DrawRadialGradientFill(g, path, scene, objectIndex);
+    }
+
+    private bool TryGetMiterJoin(
+        int objectIndex,
+        bool startEndpoint,
+        float screenStroke,
+        out PointF joint,
+        out LineMiterJoin miter)
+    {
+        joint = PointF.Empty;
+        miter = default;
         if (Scene.GetLineEndpointStyle(objectIndex, startEndpoint) != LineEndpointStyle.Sharp
             || !Scene.TryGetLineJoinNeighbor(objectIndex, startEndpoint, Frame, out var neighbor, out var neighborStart)
             || Scene.GetLineEndpointStyle(neighbor, neighborStart) != LineEndpointStyle.Sharp
             || objectIndex > neighbor)
         {
-            return;
+            return false;
         }
 
         var current = GetBezierScreenPoints(objectIndex);
         var adjacent = GetBezierScreenPoints(neighbor);
-        var joint = startEndpoint ? current.Start : current.End;
-        var currentInterior = EndpointInteriorPoint(current, startEndpoint);
-        var adjacentInterior = EndpointInteriorPoint(adjacent, neighborStart);
-        if (!LineJoinGeometry.TryCreateMiter(
-                joint,
-                currentInterior,
-                adjacentInterior,
-                screenStroke * 0.5f,
-                out var miter))
-        {
-            return;
-        }
+        joint = startEndpoint ? current.Start : current.End;
+        return LineJoinGeometry.TryCreateMiter(
+            joint,
+            EndpointInteriorPoint(current, startEndpoint),
+            EndpointInteriorPoint(adjacent, neighborStart),
+            screenStroke * 0.5f,
+            out miter);
+    }
 
-        using var fill = new SolidBrush(color);
-        g.FillPolygon(fill, [joint, miter.OuterFirstOffset, miter.OuterMiter, miter.OuterSecondOffset]);
-        g.FillPolygon(fill, [joint, miter.InnerFirstOffset, miter.InnerMiter, miter.InnerSecondOffset]);
+    private static void FillMiterJoin(Graphics g, Brush brush, PointF joint, LineMiterJoin miter)
+    {
+        g.FillPolygon(brush, [joint, miter.OuterFirstOffset, miter.OuterMiter, miter.OuterSecondOffset]);
+        g.FillPolygon(brush, [joint, miter.InnerFirstOffset, miter.InnerMiter, miter.InnerSecondOffset]);
+    }
+
+    private static void AddMiterJoinPolygons(GraphicsPath path, PointF joint, LineMiterJoin miter)
+    {
+        path.AddPolygon([joint, miter.OuterFirstOffset, miter.OuterMiter, miter.OuterSecondOffset]);
+        path.AddPolygon([joint, miter.InnerFirstOffset, miter.InnerMiter, miter.InnerSecondOffset]);
     }
 
     private static PointF EndpointInteriorPoint((PointF Start, PointF Control, PointF End) curve, bool startEndpoint)
@@ -2535,29 +2802,32 @@ internal sealed class StageControl : Control
 
     private void DrawBezierHandles(Graphics g, DrawingElementHit hit)
     {
-        var (start, control, end) = GetBezierScreenPoints(hit);
-        DrawBezierHandles(g, start, control, end);
+        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control, out var end)) return;
+        DrawBezierHandles(g, WorldToScreen(start), WorldToScreen(control), WorldToScreen(end));
     }
 
     private void DrawHoveredLineControls(Graphics g)
     {
         var hit = _hoveredLineElement;
-        if (!IsValidLineStrokeHit(hit)
+        if (!IsValidEditableBezierHit(hit)
             || (SelectedElement.IsValid && SelectedElement.Key == hit.Key)
             || (!SelectedElement.IsValid && SelectedObject == hit.Key.ObjectIndex))
         {
             return;
         }
 
-        var (start, control, end) = GetBezierScreenPoints(hit);
+        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control, out var end)) return;
+        var startScreen = WorldToScreen(start);
+        var controlScreen = WorldToScreen(control);
+        var endScreen = WorldToScreen(end);
         using var guide = new Pen(Color.FromArgb(120, 112, 204, 255), 1);
         using var endpoint = new SolidBrush(Color.FromArgb(210, 255, 240, 168));
         using var controlBrush = new SolidBrush(Color.FromArgb(210, 112, 204, 255));
-        g.DrawLine(guide, start, control);
-        g.DrawLine(guide, control, end);
-        DrawHandle(g, start, endpoint, 7);
-        DrawHandle(g, end, endpoint, 7);
-        DrawHandle(g, control, controlBrush, 9);
+        g.DrawLine(guide, startScreen, controlScreen);
+        g.DrawLine(guide, controlScreen, endScreen);
+        DrawHandle(g, startScreen, endpoint, 7);
+        DrawHandle(g, endScreen, endpoint, 7);
+        DrawHandle(g, controlScreen, controlBrush, 9);
     }
 
     private void DrawBezierHandles(Graphics g, PointF start, PointF control, PointF end)

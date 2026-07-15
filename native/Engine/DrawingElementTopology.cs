@@ -37,6 +37,15 @@ internal readonly record struct DrawingFillPartGeometry(int PartIndex, PointF[][
 
 internal readonly record struct DrawingPolylinePartGeometry(int PartIndex, PointF[] Points);
 
+internal sealed record FillBoundaryLineLink(
+    int LineObjectIndex,
+    int FillObjectIndex,
+    PointF[][] OriginalContours,
+    int ContourIndex,
+    int SegmentIndex,
+    int SegmentCount,
+    bool Reversed);
+
 internal readonly record struct DrawingTopologySplit(float T, PointF Point);
 
 internal readonly record struct CurveSample(float T, PointF Point);

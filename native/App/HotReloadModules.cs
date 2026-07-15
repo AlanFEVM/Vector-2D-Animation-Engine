@@ -58,7 +58,7 @@ internal static class HotReloadModuleResolver
             return HotReloadModule.Rendering;
         }
 
-        if (typeName is nameof(TimelineStrip) or nameof(OnionSkinRangeDialog) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
+        if (typeName is nameof(TimelineStrip) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
         {
             return HotReloadModule.Timeline;
         }
@@ -69,6 +69,8 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(MaterialEditorPanel)
+            or nameof(SvgIcons)
+            or nameof(SvgIconButton)
             or nameof(ThemedScrollPanel)
             or nameof(ColorComponentSlider)
             or nameof(HsvColorPlane)
@@ -77,6 +79,7 @@ internal static class HotReloadModuleResolver
             or nameof(ColorPaletteGrid)
             or nameof(GradientPreset)
             or nameof(GradientPresetGrid)
+            or nameof(MaterialPaletteStore)
             or nameof(GradientPreviewRenderer)
             or nameof(GradientStopStrip)
             or nameof(BrushTipPanel)

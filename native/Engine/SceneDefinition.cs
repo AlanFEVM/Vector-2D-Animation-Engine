@@ -25,11 +25,14 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     private readonly IReadOnlyList<SceneLayerDefinition> _layerView;
     private readonly IReadOnlyList<DrawingObjectInstanceDefinition> _instanceView;
 
-    public SceneDefinition()
+    public SceneDefinition(int initialFrameCount = AnimationTimeline.DefaultDuration)
     {
         _layerView = _layers.AsReadOnly();
         _instanceView = _instances.AsReadOnly();
-        _layers.Add(new SceneLayerDefinition { Name = "Layer 0001" });
+        var firstLayer = new SceneLayerDefinition { Name = "Layer 0001" };
+        _layers.Add(firstLayer);
+        _timeline.SynchronizeTracks([firstLayer.Id], Math.Max(1, initialFrameCount), populateNewTracks: false);
+        _timeline.InsertBlankKeyframe(_timeline.Tracks[0].Id, 0);
     }
 
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
@@ -104,11 +107,32 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         foreach (var layer in _layers) layer.Visible = true;
     }
 
+    public bool SetLayerVisible(string layerId, bool visible)
+    {
+        var layer = FindLayer(layerId);
+        if (layer is null || layer.Visible == visible) return false;
+        layer.Visible = visible;
+        return true;
+    }
+
     public bool SetLayerColor(string layerId, Color color)
     {
         var layer = FindLayer(layerId);
         if (layer is null || layer.ColorArgb == color.ToArgb()) return false;
         layer.ColorArgb = color.ToArgb();
+        return true;
+    }
+
+    internal bool RenameLayer(VectorProject project, string layerId, string? name)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        if (!project.OwnsScene(this)) throw new InvalidOperationException("The scene is not owned by this project.");
+        var layer = FindLayer(layerId);
+        var normalized = name?.Trim();
+        if (layer is null || string.IsNullOrWhiteSpace(normalized)) return false;
+        normalized = normalized.Length <= 80 ? normalized : normalized[..80];
+        if (string.Equals(layer.Name, normalized, StringComparison.Ordinal)) return false;
+        layer.Name = normalized;
         return true;
     }
 

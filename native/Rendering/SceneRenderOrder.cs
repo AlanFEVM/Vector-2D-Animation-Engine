@@ -8,6 +8,10 @@ internal enum SceneRenderPass : byte
 
 internal static class SceneRenderOrder
 {
+    internal const int DenseObjectLodMinimumVisibleObjects = 320;
+    private const long DenseObjectLodMinimumVisibleAtoms = 1024;
+    private const double DenseObjectLodCoverageMultiplier = 8d;
+
     public static bool HasFill(ShapeKind shape)
     {
         return shape is not ShapeKind.Line and not ShapeKind.Freeform;
@@ -16,6 +20,25 @@ internal static class SceneRenderOrder
     public static bool HasStroke(ShapeKind shape, float stroke)
     {
         return stroke > 0 && shape != ShapeKind.BrushStroke;
+    }
+
+    public static bool ShouldUseDenseObjectLod(
+        VectorScene scene,
+        float pixelZoom,
+        RectangleF visibleBounds,
+        SceneRenderOrderBuffer renderOrder)
+    {
+        if (scene.HasLayerEffects
+            || !renderOrder.SummaryMatchesActiveContent
+            || pixelZoom >= 0.18f
+            || renderOrder.VisibleCount < DenseObjectLodMinimumVisibleObjects
+            || renderOrder.VisibleAtoms < DenseObjectLodMinimumVisibleAtoms)
+        {
+            return false;
+        }
+
+        var viewportArea = Math.Max(1d, visibleBounds.Width * visibleBounds.Height);
+        return renderOrder.VisibleBoundsArea >= viewportArea * DenseObjectLodCoverageMultiplier;
     }
 }
 
@@ -29,6 +52,8 @@ internal sealed class SceneRenderOrderBuffer
     public int VisibleCount { get; private set; }
     public int ScannedCount { get; private set; }
     public long VisibleAtoms { get; private set; }
+    public double VisibleBoundsArea { get; private set; }
+    public bool SummaryMatchesActiveContent { get; private set; }
     public int LastCollectBatchCount { get; private set; } = 1;
 
     public void Collect(VectorScene scene, RectangleF bounds, int frame)
@@ -37,10 +62,12 @@ internal sealed class SceneRenderOrderBuffer
         foreach (var layer in _layers) layer?.Clear();
         if (_activeKeyframes.Length < scene.LayerCount) Array.Resize(ref _activeKeyframes, scene.LayerCount);
         scene.PopulateActiveKeyframeFrames(frame, _activeKeyframes);
+        SummaryMatchesActiveContent = HasSummaryMatchingActiveContent(scene);
 
         VisibleCount = 0;
         ScannedCount = 0;
         VisibleAtoms = 0;
+        VisibleBoundsArea = 0;
         var left = bounds.Left;
         var right = bounds.Right;
         var top = bounds.Top;
@@ -83,6 +110,7 @@ internal sealed class SceneRenderOrderBuffer
         {
             VisibleCount += _collectBatches[worker].VisibleCount;
             VisibleAtoms += _collectBatches[worker].VisibleAtoms;
+            VisibleBoundsArea += _collectBatches[worker].VisibleBoundsArea;
         }
 
         SortLayers(scene, parallel: true, workers);
@@ -121,6 +149,7 @@ internal sealed class SceneRenderOrderBuffer
                 (_layers[layer] ??= new List<int>(64)).Add(index);
                 VisibleCount++;
                 VisibleAtoms += scene.AtomCount[index];
+                VisibleBoundsArea += VisibleArea(objectBounds, left, right, top, bottom);
             }
         }
     }
@@ -150,8 +179,36 @@ internal sealed class SceneRenderOrderBuffer
                 continue;
             }
 
-            batch.Add(layer, index, scene.AtomCount[index]);
+            batch.Add(layer, index, scene.AtomCount[index], VisibleArea(objectBounds, left, right, top, bottom));
         }
+    }
+
+    private static double VisibleArea(RectangleF bounds, float left, float right, float top, float bottom)
+    {
+        var width = Math.Max(0f, Math.Min(bounds.Right, right) - Math.Max(bounds.Left, left));
+        var height = Math.Max(0f, Math.Min(bounds.Bottom, bottom) - Math.Max(bounds.Top, top));
+        return width * (double)height;
+    }
+
+    private bool HasSummaryMatchingActiveContent(VectorScene scene)
+    {
+        if (scene.HasLayerEffects) return false;
+        for (var layer = 0; layer < scene.LayerCount; layer++)
+        {
+            if (!scene.IsLayerEffectivelyVisible(layer)) return false;
+        }
+
+        for (var objectIndex = 0; objectIndex < scene.ObjectCount; objectIndex++)
+        {
+            var layer = scene.ObjectLayer[objectIndex];
+            if ((uint)layer >= _activeKeyframes.Length
+                || scene.ObjectKeyframeFrame[objectIndex] != _activeKeyframes[layer])
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void SortLayers(VectorScene scene, bool parallel, int workers)
@@ -197,6 +254,34 @@ internal sealed class SceneRenderOrderBuffer
 
     public int Draw(VectorScene scene, int drawLimit, Action<int> drawFill, Action<int> drawStroke)
     {
+        ArgumentNullException.ThrowIfNull(drawFill);
+        ArgumentNullException.ThrowIfNull(drawStroke);
+        return DrawLayers(scene, drawLimit, (_, objects, start) =>
+        {
+            for (var index = start; index < objects.Count; index++)
+            {
+                var objectIndex = objects[index];
+                if (SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) drawFill(objectIndex);
+            }
+
+            for (var index = start; index < objects.Count; index++)
+            {
+                var objectIndex = objects[index];
+                if (SceneRenderOrder.HasStroke(scene.ShapeKind[objectIndex], scene.Stroke[objectIndex])) drawStroke(objectIndex);
+            }
+        });
+    }
+
+    public IReadOnlyList<int> GetLayerObjects(int layer)
+    {
+        return (uint)layer < _layers.Length && _layers[layer] is { } objects
+            ? objects
+            : Array.Empty<int>();
+    }
+
+    public int DrawLayers(VectorScene scene, int drawLimit, Action<int, IReadOnlyList<int>, int> drawLayer)
+    {
+        ArgumentNullException.ThrowIfNull(drawLayer);
         if (VisibleCount == 0 || drawLimit <= 0) return 0;
 
         var skip = Math.Max(0, VisibleCount - drawLimit);
@@ -213,17 +298,7 @@ internal sealed class SceneRenderOrderBuffer
                 skip -= start;
             }
 
-            for (var i = start; i < layer.Count; i++)
-            {
-                var index = layer[i];
-                if (SceneRenderOrder.HasFill(scene.ShapeKind[index])) drawFill(index);
-            }
-
-            for (var i = start; i < layer.Count; i++)
-            {
-                var index = layer[i];
-                if (SceneRenderOrder.HasStroke(scene.ShapeKind[index], scene.Stroke[index])) drawStroke(index);
-            }
+            drawLayer(layerIndex, layer, start);
 
             drawn += layer.Count - start;
         }
@@ -252,6 +327,7 @@ internal sealed class SceneRenderOrderBuffer
         public List<int>?[] Layers = [];
         public int VisibleCount { get; private set; }
         public long VisibleAtoms { get; private set; }
+        public double VisibleBoundsArea { get; private set; }
 
         public void EnsureLayerCapacity(int layerCount)
         {
@@ -264,13 +340,15 @@ internal sealed class SceneRenderOrderBuffer
             foreach (var layer in Layers) layer?.Clear();
             VisibleCount = 0;
             VisibleAtoms = 0;
+            VisibleBoundsArea = 0;
         }
 
-        public void Add(int layer, int objectIndex, uint atoms)
+        public void Add(int layer, int objectIndex, uint atoms, double visibleBoundsArea)
         {
             (Layers[layer] ??= new List<int>(32)).Add(objectIndex);
             VisibleCount++;
             VisibleAtoms += atoms;
+            VisibleBoundsArea += visibleBoundsArea;
         }
     }
 }

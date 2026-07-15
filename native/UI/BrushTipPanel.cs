@@ -12,9 +12,15 @@ internal sealed class BrushTipPanel : UserControl
     private readonly CheckBox _continuous = new();
     private readonly ModernSlider _hardness = new();
     private readonly Label _hardnessValue = new();
+    private readonly ComboBox _traditionalTip = new();
+    private readonly ModernNumericUpDown _traditionalWidth = new();
+    private readonly ModernSlider _traditionalDirection = new();
+    private readonly Label _traditionalDirectionValue = new();
     private readonly ModernSlider _pressureSmoothing = new();
     private readonly Label _pressureSmoothingValue = new();
+    private readonly TableLayoutPanel _content;
     private bool _updating;
+    private bool _traditionalRowsVisible;
 
     public BrushTipPanel()
     {
@@ -22,7 +28,7 @@ internal sealed class BrushTipPanel : UserControl
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = new Padding(0, 8, 0, 8);
-        MinimumSize = new Size(248, 248);
+        MinimumSize = new Size(280, 248);
 
         var title = new Label
         {
@@ -34,27 +40,23 @@ internal sealed class BrushTipPanel : UserControl
             Font = Theme.UiFont(10, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft
         };
-        var content = new TableLayoutPanel
+        _content = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 3,
-            RowCount = 6,
+            RowCount = 8,
             Padding = new Padding(0, 2, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        _content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+        _content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
+        _content.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        for (var row = 1; row < _content.RowCount; row++) _content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
 
         _preview.Dock = DockStyle.Fill;
         _preview.Margin = new Padding(0, 2, 8, 4);
-        content.Controls.Add(_preview, 0, 0);
+        _content.Controls.Add(_preview, 0, 0);
 
         var tipDetails = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty };
         _name.Dock = DockStyle.Top;
@@ -105,8 +107,8 @@ internal sealed class BrushTipPanel : UserControl
         actions.Controls.Add(import);
         actions.Controls.Add(_preset);
         tipDetails.Controls.Add(actions);
-        content.Controls.Add(tipDetails, 1, 0);
-        content.SetColumnSpan(tipDetails, 2);
+        _content.Controls.Add(tipDetails, 1, 0);
+        _content.SetColumnSpan(tipDetails, 2);
 
         _size.Minimum = 0.5m;
         _size.Maximum = 128m;
@@ -119,7 +121,48 @@ internal sealed class BrushTipPanel : UserControl
             if (!_updating) BrushSizeChanged?.Invoke(this, EventArgs.Empty);
         };
         _sizeUnit.Text = "pt";
-        AddSettingRow(content, "Size", _size, _sizeUnit, 1);
+        AddSettingRow(_content, "Size", _size, _sizeUnit, 1);
+
+        Theme.StyleComboBox(_traditionalTip);
+        _traditionalTip.DropDownStyle = ComboBoxStyle.DropDownList;
+        _traditionalTip.Width = 96;
+        _traditionalTip.Dock = DockStyle.Left;
+        _traditionalTip.AccessibleName = "Traditional brush tip shape";
+        _traditionalTip.Items.AddRange(["Round", "Square"]);
+        _traditionalTip.SelectedIndex = 0;
+        _traditionalTip.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateTraditionalInputState();
+            if (!_updating) TraditionalSettingsChanged?.Invoke(this, EventArgs.Empty);
+        };
+        _traditionalWidth.Minimum = 25m;
+        _traditionalWidth.Maximum = 400m;
+        _traditionalWidth.DecimalPlaces = 0;
+        _traditionalWidth.Increment = 5m;
+        _traditionalWidth.Suffix = "%";
+        _traditionalWidth.Value = 100m;
+        _traditionalWidth.Dock = DockStyle.Fill;
+        _traditionalWidth.Margin = Padding.Empty;
+        _traditionalWidth.AccessibleName = "Traditional brush shape width";
+        _traditionalWidth.AccessibleDescription = "Width percentage relative to the brush size";
+        _traditionalWidth.ValueChanged += (_, _) =>
+        {
+            UpdateTraditionalInputState();
+            if (!_updating) TraditionalSettingsChanged?.Invoke(this, EventArgs.Empty);
+        };
+        var shapeInput = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel, Margin = Padding.Empty };
+        shapeInput.Controls.Add(_traditionalWidth);
+        shapeInput.Controls.Add(_traditionalTip);
+        AddSettingRow(_content, "Shape %", shapeInput, null, 2);
+
+        ConfigureSlider(_traditionalDirection, 0, 359, 0, 45);
+        _traditionalDirection.AccessibleName = "Traditional brush direction in degrees";
+        _traditionalDirection.ValueChanged += (_, _) =>
+        {
+            _traditionalDirectionValue.Text = $"{_traditionalDirection.Value}°";
+            if (!_updating) TraditionalSettingsChanged?.Invoke(this, EventArgs.Empty);
+        };
+        AddSettingRow(_content, "Angle", _traditionalDirection, _traditionalDirectionValue, 3);
 
         ConfigureSlider(_frequency, 1, 24, 8, 4);
         _frequency.ValueChanged += (_, _) =>
@@ -127,7 +170,7 @@ internal sealed class BrushTipPanel : UserControl
             _frequencyValue.Text = $"{_frequency.Value}x";
             if (!_updating) FrequencyChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(content, "Frequency", _frequency, _frequencyValue, 2);
+        AddSettingRow(_content, "Freq", _frequency, _frequencyValue, 4);
 
         _continuous.Text = "Continuous";
         _continuous.AutoSize = true;
@@ -141,7 +184,7 @@ internal sealed class BrushTipPanel : UserControl
         {
             if (!_updating) ContinuousChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(content, "Stroke", _continuous, null, 3);
+        AddSettingRow(_content, "Stroke", _continuous, null, 5);
 
         ConfigureSlider(_hardness, 0, 100, 0, 20);
         _hardness.ValueChanged += (_, _) =>
@@ -149,7 +192,7 @@ internal sealed class BrushTipPanel : UserControl
             _hardnessValue.Text = $"{_hardness.Value}%";
             if (!_updating) HardnessChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(content, "Hardness", _hardness, _hardnessValue, 4);
+        AddSettingRow(_content, "Hard", _hardness, _hardnessValue, 6);
 
         ConfigureSlider(_pressureSmoothing, 0, 100, 70, 20);
         _pressureSmoothing.ValueChanged += (_, _) =>
@@ -157,10 +200,11 @@ internal sealed class BrushTipPanel : UserControl
             _pressureSmoothingValue.Text = $"{_pressureSmoothing.Value}%";
             if (!_updating) PressureSmoothingChanged?.Invoke(this, EventArgs.Empty);
         };
-        AddSettingRow(content, "P Smooth", _pressureSmoothing, _pressureSmoothingValue, 5);
+        AddSettingRow(_content, "Smooth", _pressureSmoothing, _pressureSmoothingValue, 7);
 
-        Controls.Add(content);
+        Controls.Add(_content);
         Controls.Add(title);
+        SetBrushShape(BrushShape.CreateTraditionalBrush());
     }
 
     public event EventHandler? ImportRequested;
@@ -171,16 +215,25 @@ internal sealed class BrushTipPanel : UserControl
     public event EventHandler? HardnessChanged;
     public event EventHandler? PressureSmoothingChanged;
     public event EventHandler? BrushSizeChanged;
+    public event EventHandler? TraditionalSettingsChanged;
+    public event EventHandler? PreferredHeightChanged;
 
     public float SizePoints => (float)_size.Value;
     public int Frequency => _frequency.Value;
     public bool Continuous => _continuous.Checked;
     public int Hardness => _hardness.Value;
     public int PressureSmoothing => _pressureSmoothing.Value;
+    public TraditionalBrushTipKind TraditionalTipKind => _traditionalTip.SelectedIndex == 1
+        ? TraditionalBrushTipKind.Square
+        : TraditionalBrushTipKind.Round;
+    public int TraditionalWidthPercent => (int)_traditionalWidth.Value;
+    public int TraditionalDirectionDegrees => _traditionalDirection.Value;
+    public int PreferredHeight => _traditionalRowsVisible ? 308 : 248;
 
     public void SetBrushShape(BrushShape brushShape)
     {
         _updating = true;
+        SetTraditionalRowsVisible(brushShape.IsTraditionalBrush);
         _preview.BrushShape = brushShape;
         _name.Text = brushShape.Name;
         _preset.SelectedIndex = brushShape.IsDefaultSoftRound
@@ -191,6 +244,21 @@ internal sealed class BrushTipPanel : UserControl
         _hardness.Enabled = brushShape.IsDefaultSoftRound;
         _hardness.Value = brushShape.Hardness;
         _hardnessValue.Text = brushShape.IsDefaultSoftRound ? $"{brushShape.Hardness}%" : "-";
+        if (brushShape.IsTraditionalBrush)
+        {
+            _traditionalTip.SelectedIndex = brushShape.TraditionalTipKind == TraditionalBrushTipKind.Square ? 1 : 0;
+            _traditionalWidth.Value = Math.Clamp(
+                (decimal)brushShape.TraditionalWidthPercent,
+                _traditionalWidth.Minimum,
+                _traditionalWidth.Maximum);
+            _traditionalDirection.Value = Math.Clamp(
+                brushShape.TraditionalDirectionDegrees,
+                _traditionalDirection.Minimum,
+                _traditionalDirection.Maximum);
+            _traditionalDirectionValue.Text = $"{_traditionalDirection.Value}°";
+        }
+
+        UpdateTraditionalInputState();
         _updating = false;
         _preview.Invalidate();
     }
@@ -227,6 +295,7 @@ internal sealed class BrushTipPanel : UserControl
             ForeColor = Theme.Muted,
             Font = Theme.UiFont(),
             TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
             Margin = new Padding(0, 2, 8, 2)
         }, 0, row);
 
@@ -239,6 +308,34 @@ internal sealed class BrushTipPanel : UserControl
         value.Font = Theme.UiFont();
         value.TextAlign = ContentAlignment.MiddleRight;
         parent.Controls.Add(value, 2, row);
+    }
+
+    private void SetTraditionalRowsVisible(bool visible)
+    {
+        if (_traditionalRowsVisible == visible) return;
+        _traditionalRowsVisible = visible;
+        SetSettingRowVisible(2, visible);
+        SetSettingRowVisible(3, visible);
+        MinimumSize = new Size(280, PreferredHeight);
+        PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void SetSettingRowVisible(int row, bool visible)
+    {
+        _content.RowStyles[row].Height = visible ? 30 : 0;
+        for (var column = 0; column < _content.ColumnCount; column++)
+        {
+            var control = _content.GetControlFromPosition(column, row);
+            if (control is not null) control.Visible = visible;
+        }
+    }
+
+    private void UpdateTraditionalInputState()
+    {
+        var hasDirectionalShape = _traditionalTip.SelectedIndex == 1 || _traditionalWidth.Value != 100m;
+        _traditionalDirection.Enabled = _traditionalRowsVisible && hasDirectionalShape;
+        _traditionalDirectionValue.ForeColor = _traditionalDirection.Enabled ? Theme.Muted : Theme.DisabledText;
+        _traditionalDirectionValue.Text = _traditionalDirection.Enabled ? $"{_traditionalDirection.Value}°" : "-";
     }
 
     private sealed class BrushTipPreview : Control

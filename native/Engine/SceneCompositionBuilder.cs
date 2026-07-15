@@ -125,6 +125,7 @@ internal static class SceneCompositionBuilder
         public PointF GradientStart { get; init; }
         public PointF GradientEnd { get; init; }
         public GradientStop[] GradientStops { get; init; } = [];
+        public int ShapeVertexCount { get; init; }
     }
 
     public static SceneCompositionResult Build(
@@ -359,13 +360,41 @@ internal static class SceneCompositionBuilder
             }
         }
 
+        var destinationLayerBySource = new Dictionary<VectorScene, Dictionary<string, int>>(ReferenceEqualityComparer.Instance);
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
             destination.LayerNames[destinationLayer] = layer.Name;
-            destination.LayerVisible[destinationLayer] = true;
+            destination.LayerKinds[destinationLayer] = layer.Source.GetLayerKind(layer.SourceLayer);
+            destination.LayerLocked[destinationLayer] = layer.Source.LayerLocked[layer.SourceLayer];
+            destination.LayerVisible[destinationLayer] = layer.Source.LayerVisible[layer.SourceLayer];
             destination.LayerOpacity[destinationLayer] = layer.Source.LayerOpacity[layer.SourceLayer];
             destination.LayerColorArgb[destinationLayer] = layer.Source.LayerColorArgb[layer.SourceLayer];
+            if (!destinationLayerBySource.TryGetValue(layer.Source, out var map))
+            {
+                map = new Dictionary<string, int>(StringComparer.Ordinal);
+                destinationLayerBySource.Add(layer.Source, map);
+            }
+
+            map[layer.Source.LayerIds[layer.SourceLayer]] = destinationLayer;
+        }
+
+        for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
+        {
+            var layer = layers[destinationLayer];
+            var map = destinationLayerBySource[layer.Source];
+            var sourceLayer = layer.SourceLayer;
+            if (sourceLayer < layer.Source.LayerParentIds.Length
+                && map.TryGetValue(layer.Source.LayerParentIds[sourceLayer], out var parentLayer))
+            {
+                destination.LayerParentIds[destinationLayer] = destination.LayerIds[parentLayer];
+            }
+
+            if (sourceLayer < layer.Source.LayerMaskIds.Length
+                && map.TryGetValue(layer.Source.LayerMaskIds[sourceLayer], out var maskLayer))
+            {
+                destination.LayerMaskIds[destinationLayer] = destination.LayerIds[maskLayer];
+            }
         }
         var setupMilliseconds = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
 
@@ -789,7 +818,8 @@ internal static class SceneCompositionBuilder
             item.GradientEndArgb,
             item.GradientStart,
             item.GradientEnd,
-            item.GradientStops);
+            item.GradientStops,
+            item.ShapeVertexCount);
     }
 
     private static int AppendPreparedObject(VectorScene destination, PreparedCompositionObject item)
@@ -821,7 +851,8 @@ internal static class SceneCompositionBuilder
                 ShapeKind.Line,
                 item.Control,
                 item.StartEndpointStyle,
-                item.EndEndpointStyle),
+                item.EndEndpointStyle,
+                item.ShapeVertexCount),
             _ => destination.AppendPackedObject(
                 item.DestinationLayer,
                 item.Center,
@@ -834,7 +865,8 @@ internal static class SceneCompositionBuilder
                 item.Shape,
                 item.Center,
                 item.StartEndpointStyle,
-                item.EndEndpointStyle)
+                item.EndEndpointStyle,
+                item.ShapeVertexCount)
         };
         if (item.LinearGradientEnabled)
         {
@@ -856,6 +888,7 @@ internal static class SceneCompositionBuilder
         Matrix3x2 transform,
         bool identityTransform)
     {
+        item = item with { ShapeVertexCount = source.GetShapeVertexCount(sourceObject) };
         if (!source.HasGradient(sourceObject)) return item;
         return item with
         {

@@ -48,7 +48,7 @@ internal sealed class VectorProject
     public SceneDefinition AddScene(string? name = null)
     {
         var index = _scenes.Count + 1;
-        var scene = new SceneDefinition
+        var scene = new SceneDefinition(initialFrameCount: 1)
         {
             Name = string.IsNullOrWhiteSpace(name) ? $"Scene {index:000}" : name,
             Detail = "2D scene composition",
@@ -72,7 +72,7 @@ internal sealed class VectorProject
             Name = string.IsNullOrWhiteSpace(name) ? $"Drawing Object {index:000}" : name,
             Detail = "Reusable drawing object"
         };
-        drawingObject.Scene.CreateEmpty();
+        drawingObject.Scene.CreateEmpty(frameCount: 1);
         _drawingObjects.Add(drawingObject);
         Changed?.Invoke(this, EventArgs.Empty);
         return drawingObject;
@@ -239,6 +239,14 @@ internal sealed class VectorProject
     {
         var scene = FindScene(sceneId);
         if (scene is null || !scene.SetLayerColor(layerId, color)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryRenameSceneLayer(string sceneId, string layerId, string? name)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.RenameLayer(this, layerId, name)) return false;
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }

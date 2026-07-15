@@ -5,8 +5,8 @@ internal sealed class PlaybackSettingsPanel : Panel
     private readonly ModernNumericUpDown _fps = new()
     {
         Minimum = 1,
-        Maximum = 240,
-        Value = 24,
+        Maximum = 120,
+        Value = 30,
         Suffix = "fps",
         Width = 88,
         Height = 28

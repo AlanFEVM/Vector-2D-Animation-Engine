@@ -1040,7 +1040,7 @@ internal sealed class GradientStopsChangedEventArgs(GradientStop[] stops, int se
 
 internal sealed class GradientPreset
 {
-    public GradientPreset(string name, GradientKind kind, IReadOnlyList<GradientStop> stops)
+    public GradientPreset(string name, GradientKind kind, IReadOnlyList<GradientStop> stops, bool isUserSaved = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         if (kind == GradientKind.Solid) throw new ArgumentOutOfRangeException(nameof(kind));
@@ -1052,11 +1052,13 @@ internal sealed class GradientPreset
             .OrderBy(stop => stop.Position)
             .ToArray();
         if (Stops.Length < 2) throw new ArgumentException("A gradient preset needs at least two color stops.", nameof(stops));
+        IsUserSaved = isUserSaved;
     }
 
     public string Name { get; }
     public GradientKind Kind { get; }
     public GradientStop[] Stops { get; }
+    public bool IsUserSaved { get; }
 }
 
 internal sealed class GradientPresetSelectedEventArgs(GradientPreset preset) : EventArgs

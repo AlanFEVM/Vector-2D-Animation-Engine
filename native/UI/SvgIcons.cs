@@ -19,7 +19,9 @@ internal enum SvgIconKind
     PressureBrush,
     Fill,
     InkBottle,
+    Eyedropper,
     Gradient,
+    Swatches,
     Eraser,
     Vault,
     Snap,
@@ -122,6 +124,12 @@ internal static class SvgIcons
                 g.DrawLine(thinPen, P(r, 7, 20), P(r, 18, 20));
                 g.FillEllipse(fill, Rect(r, 10, 15, 5, 5));
                 break;
+            case SvgIconKind.Eyedropper:
+                g.DrawLine(pen, P(r, 5, 19), P(r, 16, 8));
+                g.DrawLine(pen, P(r, 8, 22), P(r, 19, 11));
+                DrawPolygon(g, pen, [P(r, 15, 4), P(r, 20, 9), P(r, 17, 12), P(r, 12, 7)]);
+                g.DrawLine(thinPen, P(r, 4, 20), P(r, 9, 20));
+                break;
             case SvgIconKind.Gradient:
                 using (var gradient = new LinearGradientBrush(Rect(r, 3, 6, 18, 12), Color.FromArgb(238, color), Color.FromArgb(55, color), LinearGradientMode.Horizontal))
                 {
@@ -130,6 +138,29 @@ internal static class SvgIcons
                 DrawRectangle(g, pen, Rect(r, 3, 6, 18, 12));
                 g.DrawLine(thinPen, P(r, 5, 18), P(r, 19, 6));
                 break;
+            case SvgIconKind.Swatches:
+            {
+                var swatchSize = Math.Max(3f, r.Width * 0.28f);
+                var gap = Math.Max(1.5f, r.Width * 0.10f);
+                var swatchLeft = r.X + (r.Width - swatchSize * 2 - gap) * 0.5f;
+                var swatchTop = r.Y + (r.Height - swatchSize * 2 - gap) * 0.5f;
+                using (var first = new SolidBrush(Color.FromArgb(220, color))) g.FillRectangle(first, swatchLeft, swatchTop, swatchSize, swatchSize);
+                using (var second = new SolidBrush(Color.FromArgb(150, color))) g.FillRectangle(second, swatchLeft + swatchSize + gap, swatchTop, swatchSize, swatchSize);
+                using (var third = new SolidBrush(Color.FromArgb(85, color))) g.FillRectangle(third, swatchLeft, swatchTop + swatchSize + gap, swatchSize, swatchSize);
+                using (var gradient = new LinearGradientBrush(
+                    new RectangleF(swatchLeft + swatchSize + gap, swatchTop + swatchSize + gap, swatchSize, swatchSize),
+                    Color.FromArgb(235, color),
+                    Color.FromArgb(45, color),
+                    LinearGradientMode.Horizontal))
+                {
+                    g.FillRectangle(gradient, swatchLeft + swatchSize + gap, swatchTop + swatchSize + gap, swatchSize, swatchSize);
+                }
+                g.DrawRectangle(thinPen, swatchLeft, swatchTop, swatchSize, swatchSize);
+                g.DrawRectangle(thinPen, swatchLeft + swatchSize + gap, swatchTop, swatchSize, swatchSize);
+                g.DrawRectangle(thinPen, swatchLeft, swatchTop + swatchSize + gap, swatchSize, swatchSize);
+                g.DrawRectangle(thinPen, swatchLeft + swatchSize + gap, swatchTop + swatchSize + gap, swatchSize, swatchSize);
+                break;
+            }
             case SvgIconKind.Eraser:
                 DrawPolygon(g, pen, [P(r, 7, 5), P(r, 19, 17), P(r, 13, 22), P(r, 2, 11)]);
                 g.DrawLine(thinPen, P(r, 5, 14), P(r, 15, 4));

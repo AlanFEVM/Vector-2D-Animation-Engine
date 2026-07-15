@@ -4,6 +4,12 @@ namespace VectorAnimationEngine;
 
 internal readonly record struct BrushSoftLayer(float Threshold, float Opacity);
 
+internal enum TraditionalBrushTipKind
+{
+    Round,
+    Square
+}
+
 internal sealed class BrushShape
 {
     public const int PixelSize = 128;
@@ -17,13 +23,12 @@ internal sealed class BrushShape
     [
         new BrushSoftLayer(0.50f, 1f)
     ];
-    private static readonly PointF[] TraditionalContour = CreateCircularContour(64);
-
     private readonly float[] _mask;
     private readonly BrushSoftLayer[] _layers;
     private readonly Dictionary<int, PointF[]> _contourCache = new();
     private readonly float _centerX;
     private readonly float _centerY;
+    private readonly PointF[]? _traditionalContour;
 
     private BrushShape(
         string name,
@@ -31,15 +36,31 @@ internal sealed class BrushShape
         bool isDefaultSoftRound = false,
         bool isTraditionalBrush = false,
         bool isRadiallySymmetric = false,
-        int hardness = 0)
+        int hardness = 0,
+        TraditionalBrushTipKind traditionalTipKind = TraditionalBrushTipKind.Round,
+        int traditionalWidthPercent = 100,
+        int traditionalDirectionDegrees = 0)
     {
         Name = name;
         _mask = mask;
         IsDefaultSoftRound = isDefaultSoftRound;
         IsTraditionalBrush = isTraditionalBrush;
-        IsRadiallySymmetric = isRadiallySymmetric;
+        TraditionalTipKind = traditionalTipKind;
+        TraditionalWidthPercent = Math.Clamp(traditionalWidthPercent, 25, 400);
+        TraditionalDirectionDegrees = NormalizeDegrees(traditionalDirectionDegrees);
+        IsRadiallySymmetric = isTraditionalBrush
+            ? traditionalTipKind == TraditionalBrushTipKind.Round && TraditionalWidthPercent == 100
+            : isRadiallySymmetric;
         _layers = isTraditionalBrush ? TraditionalLayers : SoftLayers;
         Hardness = Math.Clamp(hardness, 0, 100);
+        if (isTraditionalBrush)
+        {
+            _traditionalContour = CreateTraditionalContour(
+                TraditionalTipKind,
+                TraditionalWidthPercent / 100f,
+                TraditionalDirectionDegrees);
+        }
+
         (_centerX, _centerY) = WeightedCenter(mask);
     }
 
@@ -48,6 +69,12 @@ internal sealed class BrushShape
     public bool IsTraditionalBrush { get; }
     public bool IsRadiallySymmetric { get; }
     public int Hardness { get; }
+    public TraditionalBrushTipKind TraditionalTipKind { get; }
+    public int TraditionalWidthPercent { get; }
+    public int TraditionalDirectionDegrees { get; }
+    public float StampSpacingScale => IsTraditionalBrush
+        ? Math.Min(1f, TraditionalWidthPercent / 100f)
+        : 1f;
     public IReadOnlyList<BrushSoftLayer> Layers => _layers;
     public float MeanStrength => _mask.Average();
 
@@ -74,7 +101,10 @@ internal sealed class BrushShape
         return new BrushShape("Soft Round", mask, isDefaultSoftRound: true, isRadiallySymmetric: true, hardness: hardness);
     }
 
-    public static BrushShape CreateTraditionalBrush()
+    public static BrushShape CreateTraditionalBrush(
+        TraditionalBrushTipKind tipKind = TraditionalBrushTipKind.Round,
+        int widthPercent = 100,
+        int directionDegrees = 0)
     {
         var mask = new float[PixelSize * PixelSize];
         for (var y = 0; y < PixelSize; y++)
@@ -92,7 +122,9 @@ internal sealed class BrushShape
             "Traditional Brush",
             mask,
             isTraditionalBrush: true,
-            isRadiallySymmetric: true);
+            traditionalTipKind: tipKind,
+            traditionalWidthPercent: widthPercent,
+            traditionalDirectionDegrees: directionDegrees);
     }
 
     public static bool TryLoad(string path, out BrushShape? brushShape, out string error)
@@ -147,7 +179,7 @@ internal sealed class BrushShape
 
     public PointF[] NormalizedContour(float threshold)
     {
-        if (IsTraditionalBrush) return TraditionalContour;
+        if (IsTraditionalBrush) return _traditionalContour ?? Array.Empty<PointF>();
 
         var key = (int)MathF.Round(Math.Clamp(threshold, 0.01f, 0.99f) * 1000);
         if (_contourCache.TryGetValue(key, out var cached)) return cached;
@@ -186,16 +218,54 @@ internal sealed class BrushShape
         return contour;
     }
 
-    private static PointF[] CreateCircularContour(int segments)
+    private static PointF[] CreateTraditionalContour(
+        TraditionalBrushTipKind tipKind,
+        float widthScale,
+        int directionDegrees)
     {
-        var contour = new PointF[segments];
-        for (var segment = 0; segment < segments; segment++)
+        widthScale = Math.Clamp(widthScale, 0.25f, 4f);
+        PointF[] contour;
+        if (tipKind == TraditionalBrushTipKind.Square)
         {
-            var angle = -MathF.PI / 2 + segment * MathF.Tau / segments;
-            contour[segment] = new PointF(MathF.Cos(angle), MathF.Sin(angle));
+            contour =
+            [
+                new PointF(-widthScale, -1),
+                new PointF(widthScale, -1),
+                new PointF(widthScale, 1),
+                new PointF(-widthScale, 1)
+            ];
+        }
+        else
+        {
+            const int segments = 64;
+            contour = new PointF[segments];
+            for (var segment = 0; segment < segments; segment++)
+            {
+                var angle = -MathF.PI / 2 + segment * MathF.Tau / segments;
+                contour[segment] = new PointF(MathF.Cos(angle) * widthScale, MathF.Sin(angle));
+            }
+        }
+
+        if (directionDegrees == 0) return contour;
+
+        var radians = directionDegrees * MathF.PI / 180f;
+        var cos = MathF.Cos(radians);
+        var sin = MathF.Sin(radians);
+        for (var index = 0; index < contour.Length; index++)
+        {
+            var point = contour[index];
+            contour[index] = new PointF(
+                point.X * cos - point.Y * sin,
+                point.X * sin + point.Y * cos);
         }
 
         return contour;
+    }
+
+    private static int NormalizeDegrees(int degrees)
+    {
+        degrees %= 360;
+        return degrees < 0 ? degrees + 360 : degrees;
     }
 
     private float SampleMask(float x, float y)

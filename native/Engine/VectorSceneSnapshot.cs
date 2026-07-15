@@ -10,6 +10,10 @@ internal sealed class VectorSceneSnapshot
     public float MaxHalfExtent { get; init; }
     public string[] LayerIds { get; init; } = [];
     public string[] LayerNames { get; init; } = [];
+    public DrawingLayerKind[] LayerKinds { get; init; } = [];
+    public string[] LayerParentIds { get; init; } = [];
+    public string[] LayerMaskIds { get; init; } = [];
+    public bool[] LayerLocked { get; init; } = [];
     public bool[] LayerVisible { get; init; } = [];
     public float[] LayerOpacity { get; init; } = [];
     public int[] LayerColorArgb { get; init; } = [];
@@ -33,6 +37,7 @@ internal sealed class VectorSceneSnapshot
     public LineEndpointStyle[] LineEndpointStyles { get; init; } = [];
     public LineEndpointStyle[] LineEndEndpointStyles { get; init; } = [];
     public ShapeKind[] ShapeKind { get; init; } = [];
+    public int[] ShapeVertexCounts { get; init; } = [];
     public uint[] AtomCount { get; init; } = [];
     public int[] Argb { get; init; } = [];
     public int[] StrokeArgb { get; init; } = [];
@@ -54,6 +59,10 @@ internal sealed class VectorSceneSnapshot
         long bytes = 384;
         bytes += StringArrayBytes(LayerIds);
         bytes += StringArrayBytes(LayerNames);
+        bytes += ArrayBytes(LayerKinds.Length, 1);
+        bytes += StringArrayBytes(LayerParentIds);
+        bytes += StringArrayBytes(LayerMaskIds);
+        bytes += ArrayBytes(LayerLocked.Length, 1);
         bytes += ArrayBytes(LayerVisible.Length, 1);
         bytes += ArrayBytes(LayerOpacity.Length, 4);
         bytes += ArrayBytes(LayerColorArgb.Length, 4);
@@ -75,6 +84,7 @@ internal sealed class VectorSceneSnapshot
         bytes += ArrayBytes(LineEndpointStyles.Length, 4);
         bytes += ArrayBytes(LineEndEndpointStyles.Length, 4);
         bytes += ArrayBytes(ShapeKind.Length, 4);
+        bytes += ArrayBytes(ShapeVertexCounts.Length, 4);
         bytes += ArrayBytes(AtomCount.Length, 4);
         bytes += ArrayBytes(Argb.Length, 4);
         bytes += ArrayBytes(StrokeArgb.Length, 4);

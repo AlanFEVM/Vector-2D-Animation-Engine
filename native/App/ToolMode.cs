@@ -17,6 +17,7 @@ internal enum ToolMode
     PressureBrush,
     Fill,
     InkBottle,
+    Eyedropper,
     Gradient,
     Eraser
 }

@@ -19,4 +19,5 @@ internal readonly record struct PackedSceneObject(
     int GradientEndArgb = 0,
     PointF GradientStart = default,
     PointF GradientEnd = default,
-    GradientStop[]? GradientStops = null);
+    GradientStop[]? GradientStops = null,
+    int ShapeVertexCount = 0);
