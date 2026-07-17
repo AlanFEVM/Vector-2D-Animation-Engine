@@ -44,6 +44,7 @@ internal static class Program
         try
         {
             ApplicationConfiguration.Initialize();
+            UiLocalization.SetLanguage(ApplicationSettingsStore.Load().Language);
             using (instanceLease)
             {
                 EditorRestartStore.TryConsume(out var restartState);
@@ -57,7 +58,9 @@ internal static class Program
             AppLog.Error("Fatal application exception", ex);
             AppLog.Flush();
             MessageBox.Show(
-                $"The application crashed. See the latest log file for details:\n\n{AppLog.LogPath}",
+                UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese
+                    ? $"应用程序已崩溃。详细信息请查看最新日志文件：\n\n{AppLog.LogPath}"
+                    : $"The application crashed. See the latest log file for details:\n\n{AppLog.LogPath}",
                 "Vector 2D Animation Engine",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);

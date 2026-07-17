@@ -33,6 +33,8 @@ internal static class Theme
     public static readonly Color DisabledSurface = Color.FromArgb(35, 39, 43);
     public static readonly Color AccentText = Color.FromArgb(5, 22, 20);
     public static readonly Color AccentLabel = Color.FromArgb(209, 247, 238);
+    public static readonly Color Warning = Color.FromArgb(232, 184, 92);
+    public static readonly Color Danger = Color.FromArgb(232, 104, 104);
 
     private static readonly ConditionalWeakTable<Control, FieldInteractionState> FieldStates = new();
     private static readonly ConditionalWeakTable<ComboBox, object> StyledComboBoxes = new();
@@ -236,7 +238,9 @@ internal static class Theme
         StyledToolTips.Add(toolTip, new object());
         toolTip.Popup += (_, e) =>
         {
-            var text = e.AssociatedControl is null ? string.Empty : toolTip.GetToolTip(e.AssociatedControl);
+            var text = e.AssociatedControl is null
+                ? string.Empty
+                : UiLocalization.T(toolTip.GetToolTip(e.AssociatedControl));
             using var font = UiFont(9);
             var size = TextRenderer.MeasureText(text, font, new Size(360, 0), TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
             e.ToolTipSize = new Size(Math.Max(64, size.Width + 18), Math.Max(28, size.Height + 12));
@@ -251,7 +255,7 @@ internal static class Theme
             using var font = UiFont(9);
             TextRenderer.DrawText(
                 e.Graphics,
-                e.ToolTipText,
+                UiLocalization.T(e.ToolTipText),
                 font,
                 bounds,
                 Text,
@@ -300,6 +304,7 @@ internal static class Theme
         var text = e.Index >= 0 && e.Index < box.Items.Count
             ? box.GetItemText(box.Items[e.Index])
             : box.Text;
+        text = UiLocalization.T(text);
         var textBounds = Rectangle.Inflate(e.Bounds, -10, 0);
         TextRenderer.DrawText(
             e.Graphics,
@@ -334,7 +339,7 @@ internal static class Theme
         var textBounds = new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, Math.Max(0, e.Bounds.Width - 14), e.Bounds.Height);
         TextRenderer.DrawText(
             e.Graphics,
-            list.GetItemText(list.Items[e.Index]),
+            UiLocalization.T(list.GetItemText(list.Items[e.Index])),
             list.Font,
             textBounds,
             list.Enabled ? Text : DisabledText,
@@ -373,7 +378,7 @@ internal static class Theme
         var bounds = new Rectangle(e.Bounds.Left, e.Bounds.Top, Math.Max(0, tree.ClientSize.Width - e.Bounds.Left - 6), e.Bounds.Height);
         TextRenderer.DrawText(
             e.Graphics,
-            e.Node.Text,
+            UiLocalization.T(e.Node.Text),
             tree.Font,
             bounds,
             color,
@@ -395,7 +400,7 @@ internal static class Theme
         var bounds = Rectangle.Inflate(e.Bounds, -8, 0);
         TextRenderer.DrawText(
             e.Graphics,
-            e.Header?.Text ?? string.Empty,
+            UiLocalization.T(e.Header?.Text ?? string.Empty),
             e.Font ?? SystemFonts.MessageBoxFont,
             bounds,
             Muted,
@@ -434,7 +439,7 @@ internal static class Theme
         var bounds = new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
         TextRenderer.DrawText(
             e.Graphics,
-            e.SubItem?.Text ?? string.Empty,
+            UiLocalization.T(e.SubItem?.Text ?? string.Empty),
             list.Font,
             bounds,
             list.Enabled ? Text : DisabledText,

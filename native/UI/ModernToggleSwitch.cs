@@ -50,7 +50,7 @@ internal sealed class ModernToggleSwitch : CheckBox
         var textSize = string.IsNullOrEmpty(Text)
             ? Size.Empty
             : TextRenderer.MeasureText(
-                Text,
+                UiLocalization.T(Text),
                 Font,
                 Size.Empty,
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);

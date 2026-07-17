@@ -78,11 +78,14 @@ internal static class SceneCompositionBuilder
     private readonly record struct CompositionLayer(
         VectorScene Source,
         int SourceLayer,
+        int SourceFrame,
         string Name,
         Matrix3x2 Transform,
         SceneCompositionObjectOwner Owner);
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
+
+    private readonly record struct CompositionLayerGroupKey(VectorScene Source, string InstanceId);
 
     private readonly record struct CompositionWorkItem(
         VectorScene Source,
@@ -125,6 +128,8 @@ internal static class SceneCompositionBuilder
         public PointF GradientStart { get; init; }
         public PointF GradientEnd { get; init; }
         public GradientStop[] GradientStops { get; init; } = [];
+        public PointF[] GradientPath { get; init; } = [];
+        public PointF[][] ShapeGradientMappingContours { get; init; } = [];
         public int ShapeVertexCount { get; init; }
     }
 
@@ -132,7 +137,8 @@ internal static class SceneCompositionBuilder
         VectorScene destination,
         SceneDefinition? sceneDefinition,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
-        int frame)
+        int frame,
+        int parentFps = 30)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -157,7 +163,7 @@ internal static class SceneCompositionBuilder
 
             foreach (var instance in sceneDefinition.InstancesInLayer(sceneLayer.Id))
             {
-                if (!instance.Visible
+                if (!instance.EvaluateState(localFrame).Visible
                     || !definitionsById.TryGetValue(instance.DrawingObjectId, out var drawingObject))
                 {
                     continue;
@@ -166,8 +172,9 @@ internal static class SceneCompositionBuilder
                 CollectDrawingObjectLayers(
                     drawingObject,
                     instance,
-                    InstanceMatrix(instance),
+                    InstanceMatrix(instance, localFrame),
                     localFrame,
+                    parentFps,
                     definitionsById,
                     layers,
                     new HashSet<string>(StringComparer.Ordinal),
@@ -176,14 +183,15 @@ internal static class SceneCompositionBuilder
             }
         }
 
-        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, sceneDefinition.FrameCount), localFrame);
+        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, sceneDefinition.FrameCount));
     }
 
     public static SceneCompositionResult BuildDrawingObjectChildren(
         VectorScene destination,
         DrawingObjectDefinition? drawingObject,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
-        int frame)
+        int frame,
+        int parentFps = 30)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -193,33 +201,139 @@ internal static class SceneCompositionBuilder
             return SceneCompositionResult.Empty;
         }
 
-        var definitionsById = DefinitionsById(drawingObjects);
-        var layers = new List<CompositionLayer>();
-        drawingObject.SynchronizeInstanceTimelineTracks();
-        var localFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
-        var ancestry = new HashSet<string>(StringComparer.Ordinal) { drawingObject.Id };
-        foreach (var instance in drawingObject.Instances)
+        return BuildDrawingObjectChildrenCore(destination, drawingObject, drawingObjects, frame, parentFps, hostLayerFilter: null);
+    }
+
+    public static void BuildDrawingObjectOnionSkin(
+        VectorScene destination,
+        DrawingObjectDefinition? drawingObject,
+        IReadOnlyList<DrawingObjectDefinition> drawingObjects,
+        int frame,
+        int parentFps = 30)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(drawingObjects);
+        if (drawingObject is null || drawingObject.Instances.Count == 0)
         {
-            if (!instance.Visible
-                || !drawingObject.InstanceTimeline.EvaluateTargetExposure(instance.Id, localFrame).HasContent
-                || !definitionsById.TryGetValue(instance.DrawingObjectId, out var child))
+            destination.CreateEmpty();
+            return;
+        }
+
+        drawingObject.SynchronizeTimelineTracks();
+        var scene = drawingObject.Scene;
+        if (!scene.HasOnionSkinPreviewEnabled)
+        {
+            destination.CreateEmpty();
+            return;
+        }
+
+        var currentFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
+        var candidates = new List<(int Layer, int Frame, float Opacity, bool IsPrevious)>();
+        var seen = new HashSet<(int Layer, int Keyframe)>();
+        for (var layer = 0; layer < scene.LayerCount; layer++)
+        {
+            if (!scene.LayerVisible[layer] || !scene.LayerOnionSkin[layer]) continue;
+            var track = scene.Timeline.FindTrackByTargetId(scene.LayerIds[layer]);
+            if (track is null) continue;
+            var currentExposure = track.EvaluateExposure(Math.Min(currentFrame, track.Duration - 1));
+            var currentKeyframe = currentExposure.HasContent ? currentExposure.SourceKeyframeFrame : -1;
+            for (var offset = scene.OnionSkinPreviousFrames; offset >= 1; offset--)
+            {
+                var previewFrame = currentFrame - offset;
+                if (previewFrame < 0) continue;
+                AddCandidate(previewFrame, offset, isPrevious: true);
+            }
+            for (var offset = 1; offset <= scene.OnionSkinNextFrames; offset++)
+            {
+                var previewFrame = currentFrame + offset;
+                if (previewFrame >= track.Duration) continue;
+                AddCandidate(previewFrame, offset, isPrevious: false);
+            }
+
+            void AddCandidate(int previewFrame, int offset, bool isPrevious)
+            {
+                var exposure = track.EvaluateExposure(previewFrame);
+                if (!exposure.HasContent
+                    || exposure.SourceKeyframeFrame == currentKeyframe
+                    || !seen.Add((layer, exposure.SourceKeyframeFrame)))
+                {
+                    return;
+                }
+                candidates.Add((layer, previewFrame, 0.18f + 0.32f / offset, isPrevious));
+            }
+        }
+
+        var definitionsById = DefinitionsById(drawingObjects);
+        var previews = new List<(VectorScene Scene, float Opacity, bool? IsPrevious)>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            if (!drawingObject.InstancesInLayer(scene.LayerIds[candidate.Layer]).Any(instance =>
+                    IsDrawingObjectInstanceActive(drawingObject, instance, candidate.Frame)
+                    && definitionsById.ContainsKey(instance.DrawingObjectId)))
             {
                 continue;
             }
 
-            CollectDrawingObjectLayers(
-                child,
-                instance,
-                InstanceMatrix(instance),
-                localFrame,
-                definitionsById,
-                layers,
-                ancestry,
-                instance.Name,
-                instance.Id);
+            var preview = new VectorScene();
+            BuildDrawingObjectChildrenCore(
+                preview,
+                drawingObject,
+                drawingObjects,
+                candidate.Frame,
+                parentFps,
+                candidate.Layer,
+                definitionsById);
+            if (preview.ObjectCount > 0) previews.Add((preview, candidate.Opacity, candidate.IsPrevious));
+        }
+        destination.CombineOnionSkinPreviews(previews);
+    }
+
+    private static SceneCompositionResult BuildDrawingObjectChildrenCore(
+        VectorScene destination,
+        DrawingObjectDefinition? drawingObject,
+        IReadOnlyList<DrawingObjectDefinition> drawingObjects,
+        int frame,
+        int parentFps,
+        int? hostLayerFilter,
+        IReadOnlyDictionary<string, DrawingObjectDefinition>? definitionsById = null)
+    {
+        if (drawingObject is null || drawingObject.Instances.Count == 0)
+        {
+            destination.CreateEmpty();
+            return SceneCompositionResult.Empty;
         }
 
-        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount), localFrame);
+        definitionsById ??= DefinitionsById(drawingObjects);
+        var layers = new List<CompositionLayer>();
+        drawingObject.SynchronizeTimelineTracks();
+        var localFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
+        var ancestry = new HashSet<string>(StringComparer.Ordinal) { drawingObject.Id };
+        for (var hostLayer = 0; hostLayer < drawingObject.Scene.LayerCount; hostLayer++)
+        {
+            if (hostLayerFilter is not null && hostLayer != hostLayerFilter.Value) continue;
+            foreach (var instance in drawingObject.InstancesInLayer(drawingObject.Scene.LayerIds[hostLayer]))
+            {
+                if (!IsDrawingObjectInstanceActive(drawingObject, instance, localFrame)
+                    || !definitionsById.TryGetValue(instance.DrawingObjectId, out var child))
+                {
+                    continue;
+                }
+
+                CollectDrawingObjectLayers(
+                    child,
+                    instance,
+                    InstanceMatrix(instance, localFrame),
+                    localFrame,
+                    parentFps,
+                    definitionsById,
+                    layers,
+                    ancestry,
+                    instance.Name,
+                    instance.Id);
+            }
+        }
+
+        return BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount));
     }
 
     public static SceneCompositionResult BuildDrawingObjectPreview(
@@ -228,7 +342,8 @@ internal static class SceneCompositionBuilder
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         PointF position,
         int frame,
-        float opacity = 0.48f)
+        float opacity = 0.48f,
+        int parentFps = 30)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -252,14 +367,15 @@ internal static class SceneCompositionBuilder
         CollectDrawingObjectLayers(
             drawingObject,
             previewInstance,
-            InstanceMatrix(previewInstance),
+            InstanceMatrix(previewInstance, localFrame),
             localFrame,
+            parentFps,
             definitionsById,
             layers,
             new HashSet<string>(StringComparer.Ordinal),
             drawingObject.Name,
             previewInstance.Id);
-        var result = BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount), localFrame);
+        var result = BuildLayers(destination, layers, Math.Max(AnimationTimeline.DefaultDuration, drawingObject.FrameCount));
         destination.ApplyOpacity(opacity);
         return result;
     }
@@ -276,7 +392,8 @@ internal static class SceneCompositionBuilder
         DrawingObjectDefinition drawingObject,
         DrawingObjectInstanceDefinition instance,
         Matrix3x2 transform,
-        int frame,
+        int parentFrame,
+        int parentFps,
         IReadOnlyDictionary<string, DrawingObjectDefinition> definitionsById,
         ICollection<CompositionLayer> layers,
         ISet<string> ancestry,
@@ -288,37 +405,42 @@ internal static class SceneCompositionBuilder
         {
             var source = drawingObject.Scene;
             source.SynchronizeTimelineTracks();
+            drawingObject.SynchronizeTimelineTracks();
+            var state = instance.EvaluateState(parentFrame);
+            var localFrame = DrawingObjectInstanceDefinition.ResolvePlaybackFrame(
+                parentFrame,
+                parentFps,
+                drawingObject.FrameCount,
+                state);
             for (var sourceLayer = 0; sourceLayer < source.LayerCount; sourceLayer++)
             {
                 layers.Add(new CompositionLayer(
                     source,
                     sourceLayer,
+                    localFrame,
                     $"{path} / {source.LayerNames[sourceLayer]}",
                     transform,
                     new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId)));
-            }
-
-            drawingObject.SynchronizeInstanceTimelineTracks();
-            var localFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
-            foreach (var childInstance in drawingObject.Instances)
-            {
-                if (!childInstance.Visible
-                    || !drawingObject.InstanceTimeline.EvaluateTargetExposure(childInstance.Id, localFrame).HasContent
-                    || !definitionsById.TryGetValue(childInstance.DrawingObjectId, out var child))
+                foreach (var childInstance in drawingObject.InstancesInLayer(source.LayerIds[sourceLayer]))
                 {
-                    continue;
-                }
+                    if (!IsDrawingObjectInstanceActive(drawingObject, childInstance, localFrame)
+                        || !definitionsById.TryGetValue(childInstance.DrawingObjectId, out var child))
+                    {
+                        continue;
+                    }
 
-                CollectDrawingObjectLayers(
-                    child,
-                    childInstance,
-                    InstanceMatrix(childInstance) * transform,
-                    localFrame,
-                    definitionsById,
-                    layers,
-                    ancestry,
-                    $"{path} / {childInstance.Name}",
-                    rootInstanceId);
+                    CollectDrawingObjectLayers(
+                        child,
+                        childInstance,
+                        InstanceMatrix(childInstance, localFrame) * transform,
+                        localFrame,
+                        state.PlaybackFps,
+                        definitionsById,
+                        layers,
+                        ancestry,
+                        $"{path} / {childInstance.Name}",
+                        rootInstanceId);
+                }
             }
         }
         finally
@@ -327,22 +449,32 @@ internal static class SceneCompositionBuilder
         }
     }
 
+    private static bool IsDrawingObjectInstanceActive(
+        DrawingObjectDefinition drawingObject,
+        DrawingObjectInstanceDefinition instance,
+        int frame)
+    {
+        if (!instance.EvaluateState(frame).Visible) return false;
+        var scene = drawingObject.Scene;
+        var layer = Array.IndexOf(scene.LayerIds, instance.SceneLayerId);
+        return layer >= 0
+            && scene.IsLayerEffectivelyVisible(layer)
+            && drawingObject.Timeline.EvaluateTargetExposure(instance.SceneLayerId, frame).HasContent;
+    }
+
     private static SceneCompositionResult BuildLayers(
         VectorScene destination,
         IReadOnlyList<CompositionLayer> layers,
-        int duration,
-        int frame)
+        int duration)
     {
         var phaseStarted = Stopwatch.GetTimestamp();
-        var sourceFrames = BuildSourceFrames(layers, frame);
-        var sourceObjectsByLayer = BuildSourceObjectBuckets(layers, sourceFrames);
+        var sourceObjectsByLayer = BuildSourceObjectBuckets(layers);
         var expectedObjectCount = 0;
         var populatedDestinationLayers = new List<int>(layers.Count);
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
-            var sourceFrame = sourceFrames[layer.Source];
-            var sourceObjectCount = sourceObjectsByLayer[new SourceFrameKey(layer.Source, sourceFrame)][layer.SourceLayer].Length;
+            var sourceObjectCount = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer].Length;
             expectedObjectCount += sourceObjectCount;
             if (sourceObjectCount > 0) populatedDestinationLayers.Add(destinationLayer);
         }
@@ -360,7 +492,7 @@ internal static class SceneCompositionBuilder
             }
         }
 
-        var destinationLayerBySource = new Dictionary<VectorScene, Dictionary<string, int>>(ReferenceEqualityComparer.Instance);
+        var destinationLayerBySource = new Dictionary<CompositionLayerGroupKey, Dictionary<string, int>>();
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
@@ -370,10 +502,11 @@ internal static class SceneCompositionBuilder
             destination.LayerVisible[destinationLayer] = layer.Source.LayerVisible[layer.SourceLayer];
             destination.LayerOpacity[destinationLayer] = layer.Source.LayerOpacity[layer.SourceLayer];
             destination.LayerColorArgb[destinationLayer] = layer.Source.LayerColorArgb[layer.SourceLayer];
-            if (!destinationLayerBySource.TryGetValue(layer.Source, out var map))
+            var groupKey = new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId);
+            if (!destinationLayerBySource.TryGetValue(groupKey, out var map))
             {
                 map = new Dictionary<string, int>(StringComparer.Ordinal);
-                destinationLayerBySource.Add(layer.Source, map);
+                destinationLayerBySource.Add(groupKey, map);
             }
 
             map[layer.Source.LayerIds[layer.SourceLayer]] = destinationLayer;
@@ -382,7 +515,7 @@ internal static class SceneCompositionBuilder
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
-            var map = destinationLayerBySource[layer.Source];
+            var map = destinationLayerBySource[new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId)];
             var sourceLayer = layer.SourceLayer;
             if (sourceLayer < layer.Source.LayerParentIds.Length
                 && map.TryGetValue(layer.Source.LayerParentIds[sourceLayer], out var parentLayer))
@@ -403,10 +536,10 @@ internal static class SceneCompositionBuilder
         destination.BeginDeferredAppend(expectedObjectCount, populatedDestinationLayers);
         try
         {
-            var packedBatch = expectedObjectCount >= 8192 && CanUsePackedBatch(layers, sourceObjectsByLayer, sourceFrames);
+            var packedBatch = expectedObjectCount >= 8192 && CanUsePackedBatch(layers, sourceObjectsByLayer);
             if (packedBatch)
             {
-                var workItems = BuildWorkItems(layers, sourceObjectsByLayer, sourceFrames, expectedObjectCount);
+                var workItems = BuildWorkItems(layers, sourceObjectsByLayer, expectedObjectCount);
                 var packedObjects = new PackedSceneObject[workItems.Length];
                 ParallelBatch.For(workItems.Length, 4096, (_, start, end) =>
                 {
@@ -419,7 +552,7 @@ internal static class SceneCompositionBuilder
             }
             else if (expectedObjectCount >= 8192)
             {
-                var workItems = BuildWorkItems(layers, sourceObjectsByLayer, sourceFrames, expectedObjectCount);
+                var workItems = BuildWorkItems(layers, sourceObjectsByLayer, expectedObjectCount);
                 AppendPreparedChunks(destination, workItems, owners);
             }
             else
@@ -427,8 +560,7 @@ internal static class SceneCompositionBuilder
                 for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
                 {
                     var layer = layers[destinationLayer];
-                    var sourceFrame = sourceFrames[layer.Source];
-                    var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, sourceFrame)][layer.SourceLayer];
+                    var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
                     foreach (var sourceObject in sourceObjects)
                     {
                         var item = new CompositionWorkItem(layer.Source, sourceObject, destinationLayer, layer.Transform, layer.Owner);
@@ -487,14 +619,12 @@ internal static class SceneCompositionBuilder
 
     private static bool CanUsePackedBatch(
         IReadOnlyList<CompositionLayer> layers,
-        IReadOnlyDictionary<SourceFrameKey, int[][]> sourceObjectsByLayer,
-        IReadOnlyDictionary<VectorScene, int> sourceFrames)
+        IReadOnlyDictionary<SourceFrameKey, int[][]> sourceObjectsByLayer)
     {
         foreach (var layer in layers)
         {
             if (HasShear(layer.Transform)) return false;
-            var sourceFrame = sourceFrames[layer.Source];
-            var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, sourceFrame)][layer.SourceLayer];
+            var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
             foreach (var sourceObject in sourceObjects)
             {
                 if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path or ShapeKind.Freeform) return false;
@@ -507,7 +637,6 @@ internal static class SceneCompositionBuilder
     private static CompositionWorkItem[] BuildWorkItems(
         IReadOnlyList<CompositionLayer> layers,
         IReadOnlyDictionary<SourceFrameKey, int[][]> sourceObjectsByLayer,
-        IReadOnlyDictionary<VectorScene, int> sourceFrames,
         int expectedObjectCount)
     {
         var workItems = new CompositionWorkItem[expectedObjectCount];
@@ -515,8 +644,7 @@ internal static class SceneCompositionBuilder
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
-            var sourceFrame = sourceFrames[layer.Source];
-            var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, sourceFrame)][layer.SourceLayer];
+            var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
             foreach (var sourceObject in sourceObjects)
             {
                 workItems[index++] = new CompositionWorkItem(layer.Source, sourceObject, destinationLayer, layer.Transform, layer.Owner);
@@ -526,32 +654,14 @@ internal static class SceneCompositionBuilder
         return workItems;
     }
 
-    private static Dictionary<VectorScene, int> BuildSourceFrames(
-        IReadOnlyList<CompositionLayer> layers,
-        int frame)
-    {
-        var result = new Dictionary<VectorScene, int>(ReferenceEqualityComparer.Instance);
-        foreach (var layer in layers)
-        {
-            if (!result.ContainsKey(layer.Source))
-            {
-                result[layer.Source] = Math.Clamp(frame, 0, Math.Max(0, layer.Source.FrameCount - 1));
-            }
-        }
-
-        return result;
-    }
-
     private static Dictionary<SourceFrameKey, int[][]> BuildSourceObjectBuckets(
-        IReadOnlyList<CompositionLayer> layers,
-        IReadOnlyDictionary<VectorScene, int> sourceFrames)
+        IReadOnlyList<CompositionLayer> layers)
     {
         var result = new Dictionary<SourceFrameKey, int[][]>();
         foreach (var layer in layers)
         {
-            var sourceFrame = sourceFrames[layer.Source];
-            var key = new SourceFrameKey(layer.Source, sourceFrame);
-            if (!result.ContainsKey(key)) result[key] = BuildActiveObjectsByLayer(layer.Source, sourceFrame);
+            var key = new SourceFrameKey(layer.Source, layer.SourceFrame);
+            if (!result.ContainsKey(key)) result[key] = BuildActiveObjectsByLayer(layer.Source, layer.SourceFrame);
         }
 
         return result;
@@ -876,6 +986,11 @@ internal static class SceneCompositionBuilder
                 item.GradientStops,
                 item.GradientStart,
                 item.GradientEnd);
+            if (item.GradientPath.Length > 1) destination.SetGradientPath(index, item.GradientPath);
+            if (item.ShapeGradientMappingContours.Length > 0)
+            {
+                destination.SetShapeGradientMapping(index, item.ShapeGradientMappingContours);
+            }
         }
 
         return index;
@@ -898,16 +1013,25 @@ internal static class SceneCompositionBuilder
             GradientEndArgb = source.GradientEndArgb[sourceObject],
             GradientStart = TransformPoint(source.GetGradientStart(sourceObject), transform, identityTransform),
             GradientEnd = TransformPoint(source.GetGradientEnd(sourceObject), transform, identityTransform),
-            GradientStops = source.GetGradientStops(sourceObject)
+            GradientStops = source.GetGradientStops(sourceObject),
+            GradientPath = source.TryGetGradientPathWorldPoints(sourceObject, out var gradientPath)
+                ? gradientPath.Select(point => TransformPoint(point, transform, identityTransform)).ToArray()
+                : [],
+            ShapeGradientMappingContours = source.TryGetShapeGradientMappingWorldContours(sourceObject, out var mappingContours)
+                ? mappingContours
+                    .Select(contour => contour.Select(point => TransformPoint(point, transform, identityTransform)).ToArray())
+                    .ToArray()
+                : []
         };
     }
 
-    private static Matrix3x2 InstanceMatrix(DrawingObjectInstanceDefinition instance)
+    private static Matrix3x2 InstanceMatrix(DrawingObjectInstanceDefinition instance, int frame)
     {
-        return Matrix3x2.CreateScale(instance.ScaleX, instance.ScaleY)
-            * Matrix3x2.CreateSkew(instance.SkewX * MathF.PI / 180f, instance.SkewY * MathF.PI / 180f)
-            * Matrix3x2.CreateRotation(instance.RotationZ * MathF.PI / 180f)
-            * Matrix3x2.CreateTranslation(instance.X, instance.Y);
+        var state = instance.EvaluateState(frame);
+        return Matrix3x2.CreateScale(state.ScaleX, state.ScaleY)
+            * Matrix3x2.CreateSkew(state.SkewX * MathF.PI / 180f, state.SkewY * MathF.PI / 180f)
+            * Matrix3x2.CreateRotation(state.RotationZ * MathF.PI / 180f)
+            * Matrix3x2.CreateTranslation(state.X, state.Y);
     }
 
     private static bool HasShear(Matrix3x2 transform)

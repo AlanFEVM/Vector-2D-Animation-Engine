@@ -48,6 +48,12 @@ internal sealed class SceneRenderOrderBuffer
     private List<int>?[] _layers = [];
     private int[] _activeKeyframes = [];
     private CollectBatchBuffer[] _collectBatches = [];
+    private VectorScene? _summaryMatchScene;
+    private int _summaryMatchFrame = int.MinValue;
+    private long _summaryMatchGeometryRevision = -1;
+    private long _summaryMatchSummaryRevision = -1;
+    private int[] _summaryMatchKeyframes = [];
+    private bool _summaryMatchValue;
 
     public int VisibleCount { get; private set; }
     public int ScannedCount { get; private set; }
@@ -62,7 +68,7 @@ internal sealed class SceneRenderOrderBuffer
         foreach (var layer in _layers) layer?.Clear();
         if (_activeKeyframes.Length < scene.LayerCount) Array.Resize(ref _activeKeyframes, scene.LayerCount);
         scene.PopulateActiveKeyframeFrames(frame, _activeKeyframes);
-        SummaryMatchesActiveContent = HasSummaryMatchingActiveContent(scene);
+        SummaryMatchesActiveContent = HasSummaryMatchingActiveContent(scene, frame);
 
         VisibleCount = 0;
         ScannedCount = 0;
@@ -79,7 +85,7 @@ internal sealed class SceneRenderOrderBuffer
         for (var slot = 0; slot < cellSlots; slot++)
         {
             var cell = CellForSlot(scene, slot, minX, minY, columns);
-            ScannedCount += scene.CellStart[cell + 1] - scene.CellStart[cell];
+            ScannedCount += scene.GetSpatialCellObjectCount(cell);
         }
 
         var workers = Math.Min(cellSlots, ParallelBatch.WorkerCount(ScannedCount, ParallelCollectThreshold));
@@ -151,6 +157,25 @@ internal sealed class SceneRenderOrderBuffer
                 VisibleAtoms += scene.AtomCount[index];
                 VisibleBoundsArea += VisibleArea(objectBounds, left, right, top, bottom);
             }
+
+            foreach (var index in scene.GetPendingSpatialCellObjects(cell))
+            {
+                var layer = scene.ObjectLayer[index];
+                if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
+                var objectBounds = scene.GetObjectWorldBounds(index);
+                if (objectBounds.Right < left
+                    || objectBounds.Left > right
+                    || objectBounds.Bottom < top
+                    || objectBounds.Top > bottom)
+                {
+                    continue;
+                }
+
+                (_layers[layer] ??= new List<int>(64)).Add(index);
+                VisibleCount++;
+                VisibleAtoms += scene.AtomCount[index];
+                VisibleBoundsArea += VisibleArea(objectBounds, left, right, top, bottom);
+            }
         }
     }
 
@@ -181,6 +206,22 @@ internal sealed class SceneRenderOrderBuffer
 
             batch.Add(layer, index, scene.AtomCount[index], VisibleArea(objectBounds, left, right, top, bottom));
         }
+
+        foreach (var index in scene.GetPendingSpatialCellObjects(cell))
+        {
+            var layer = scene.ObjectLayer[index];
+            if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
+            var objectBounds = scene.GetObjectWorldBounds(index);
+            if (objectBounds.Right < left
+                || objectBounds.Left > right
+                || objectBounds.Bottom < top
+                || objectBounds.Top > bottom)
+            {
+                continue;
+            }
+
+            batch.Add(layer, index, scene.AtomCount[index], VisibleArea(objectBounds, left, right, top, bottom));
+        }
     }
 
     private static double VisibleArea(RectangleF bounds, float left, float right, float top, float bottom)
@@ -190,7 +231,40 @@ internal sealed class SceneRenderOrderBuffer
         return width * (double)height;
     }
 
-    private bool HasSummaryMatchingActiveContent(VectorScene scene)
+    private bool HasSummaryMatchingActiveContent(VectorScene scene, int frame)
+    {
+        if (ReferenceEquals(_summaryMatchScene, scene)
+            && _summaryMatchFrame == frame
+            && _summaryMatchGeometryRevision == scene.GeometryRevision
+            && _summaryMatchSummaryRevision == scene.SummaryRevision
+            && ActiveKeyframesMatch())
+        {
+            return _summaryMatchValue;
+        }
+
+        var matches = ComputeSummaryMatchingActiveContent(scene);
+        _summaryMatchScene = scene;
+        _summaryMatchFrame = frame;
+        _summaryMatchGeometryRevision = scene.GeometryRevision;
+        _summaryMatchSummaryRevision = scene.SummaryRevision;
+        if (_summaryMatchKeyframes.Length != _activeKeyframes.Length) Array.Resize(ref _summaryMatchKeyframes, _activeKeyframes.Length);
+        Array.Copy(_activeKeyframes, _summaryMatchKeyframes, _activeKeyframes.Length);
+        _summaryMatchValue = matches;
+        return matches;
+    }
+
+    private bool ActiveKeyframesMatch()
+    {
+        if (_summaryMatchKeyframes.Length != _activeKeyframes.Length) return false;
+        for (var layer = 0; layer < _activeKeyframes.Length; layer++)
+        {
+            if (_summaryMatchKeyframes[layer] != _activeKeyframes[layer]) return false;
+        }
+
+        return true;
+    }
+
+    private bool ComputeSummaryMatchingActiveContent(VectorScene scene)
     {
         if (scene.HasLayerEffects) return false;
         for (var layer = 0; layer < scene.LayerCount; layer++)

@@ -87,10 +87,8 @@ internal sealed class BrushTipPanel : UserControl
         };
         Theme.StyleButton(import);
         import.Click += (_, _) => ImportRequested?.Invoke(this, EventArgs.Empty);
+        Theme.StyleComboBox(_preset);
         _preset.DropDownStyle = ComboBoxStyle.DropDownList;
-        _preset.FlatStyle = FlatStyle.Flat;
-        _preset.BackColor = Theme.Field;
-        _preset.ForeColor = Theme.Text;
         _preset.Font = Theme.UiFont(8.5f);
         _preset.Width = 106;
         _preset.Height = 26;

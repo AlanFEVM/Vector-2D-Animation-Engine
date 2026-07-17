@@ -4,6 +4,7 @@ namespace VectorAnimationEngine;
 
 internal enum SvgIconKind
 {
+    Menu,
     Select,
     Transform,
     Pan,
@@ -30,7 +31,8 @@ internal enum SvgIconKind
     TightFit,
     Align,
     Angle,
-    Ratio
+    Ratio,
+    RestoreSize
 }
 
 internal static class SvgIcons
@@ -46,6 +48,11 @@ internal static class SvgIcons
 
         switch (kind)
         {
+            case SvgIconKind.Menu:
+                g.DrawLine(pen, P(r, 4, 6), P(r, 20, 6));
+                g.DrawLine(pen, P(r, 4, 12), P(r, 20, 12));
+                g.DrawLine(pen, P(r, 4, 18), P(r, 20, 18));
+                break;
             case SvgIconKind.Select:
                 DrawPolygon(g, pen, [P(r, 4, 3), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12)]);
                 break;
@@ -210,6 +217,13 @@ internal static class SvgIcons
                 DrawRectangle(g, pen, Rect(r, 4, 7, 16, 10));
                 g.DrawLine(thinPen, P(r, 8, 7), P(r, 8, 17));
                 g.DrawLine(thinPen, P(r, 16, 7), P(r, 16, 17));
+                break;
+            case SvgIconKind.RestoreSize:
+                DrawRectangle(g, thinPen, Rect(r, 5, 5, 14, 14));
+                g.DrawLine(pen, P(r, 3, 12), P(r, 9, 12));
+                g.DrawLine(pen, P(r, 15, 12), P(r, 21, 12));
+                DrawChevron(g, pen, P(r, 9, 12), 1);
+                DrawChevron(g, pen, P(r, 15, 12), 3);
                 break;
         }
 

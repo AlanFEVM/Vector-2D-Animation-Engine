@@ -116,6 +116,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly Button _solidFillMode = new() { Text = "Solid" };
     private readonly Button _linearGradientMode = new() { Text = "Linear" };
     private readonly Button _radialGradientMode = new() { Text = "Radial" };
+    private readonly Button _shapeRadialGradientMode = new() { Text = "Shape" };
     private readonly Button _addGradientStop = new() { Text = "+" };
     private readonly Button _removeGradientStop = new() { Text = "-" };
     private readonly SvgIconButton _paletteButton = new(SvgIconKind.Swatches);
@@ -174,6 +175,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private int _selectedGradientStop;
     private bool _hexInvalid;
     private int _colorInteractionDepth;
+    private int _continuousControlInteractionDepth;
     private int _continuousColorStartArgb;
     private ColorMode _colorMode = ColorMode.Rgb;
     private Color _fill = Color.FromArgb(79, 179, 162);
@@ -298,6 +300,12 @@ internal sealed class MaterialEditorPanel : UserControl
     internal bool EditingGradientStop => _editingGradientTarget == GradientColorTarget.Stop;
     internal bool GradientSettingsExpanded => _gradientSettingsExpanded;
 
+    internal (GradientKind Kind, GradientStop[] Stops) GetGradientPaintForTarget(bool strokeTarget)
+    {
+        var paint = GradientForPreview(strokeTarget);
+        return (paint.Kind, paint.Stops.ToArray());
+    }
+
     public void SetGradientPreviewTarget(bool strokeTarget)
     {
         var editingFill = !strokeTarget;
@@ -306,6 +314,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _gradientPreviewOnStroke = strokeTarget;
         _editingFill = editingFill;
         LoadGradientForTarget(strokeTarget);
+        RefreshGradientPresentation();
         UpdateTargetPresentation();
         if (!_handlingColorChange && _colorInteractionDepth == 0) UpdateEditorFromColor();
     }
@@ -455,7 +464,7 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 5,
+            ColumnCount = 6,
             RowCount = 1,
             Margin = Padding.Empty
         };
@@ -928,9 +937,9 @@ internal sealed class MaterialEditorPanel : UserControl
         _strokeWidth.Margin = new Padding(0, 4, 0, 4);
         Theme.StyleNumeric(_strokeWidth);
         _strokeWidth.ValueChanged += (_, _) => RaiseMaterialChanged(strokeWidthChanged: true);
-        _strokeWidth.InteractionStarted += (_, _) => ContinuousEditStarted?.Invoke(this, EventArgs.Empty);
-        _strokeWidth.InteractionCompleted += (_, _) => ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
-        _strokeWidth.InteractionCanceled += (_, _) => ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
+        _strokeWidth.InteractionStarted += (_, _) => BeginGradientContinuousEdit();
+        _strokeWidth.InteractionCompleted += (_, _) => CompleteGradientContinuousEdit(recordGradient: false);
+        _strokeWidth.InteractionCanceled += (_, _) => CancelGradientContinuousEdit();
         settings.Controls.Add(_strokeWidth, 1, 0);
 
         settings.Controls.Add(CreateFieldLabel("All alpha"), 0, 1);
@@ -944,9 +953,9 @@ internal sealed class MaterialEditorPanel : UserControl
             _opacityValue.Text = $"{_opacity.Value}%";
             if (!_updating) SetUniformAlpha(_opacity.Value / 100f);
         };
-        _opacity.InteractionStarted += (_, _) => ContinuousEditStarted?.Invoke(this, EventArgs.Empty);
-        _opacity.InteractionCompleted += (_, _) => ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
-        _opacity.InteractionCanceled += (_, _) => ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
+        _opacity.InteractionStarted += (_, _) => BeginGradientContinuousEdit();
+        _opacity.InteractionCompleted += (_, _) => CompleteGradientContinuousEdit(recordGradient: true);
+        _opacity.InteractionCanceled += (_, _) => CancelGradientContinuousEdit();
 
         var opacityRow = new TableLayoutPanel
         {
@@ -984,9 +993,7 @@ internal sealed class MaterialEditorPanel : UserControl
             Margin = Padding.Empty
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34f));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        for (var index = 0; index < 4; index++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
@@ -1000,6 +1007,7 @@ internal sealed class MaterialEditorPanel : UserControl
             var compact = grid.ClientSize.Width < 270;
             _linearGradientMode.Text = compact ? "Lin" : "Linear";
             _radialGradientMode.Text = compact ? "Rad" : "Radial";
+            _shapeRadialGradientMode.Text = compact ? "Shp" : "Shape";
         }
         grid.SizeChanged += (_, _) => UpdateGradientModeLabels();
         UpdateGradientModeLabels();
@@ -1008,25 +1016,28 @@ internal sealed class MaterialEditorPanel : UserControl
         ConfigureGradientModeButton(_solidFillMode, GradientKind.Solid, "Use a solid fill color");
         ConfigureGradientModeButton(_linearGradientMode, GradientKind.Linear, "Use a linear fill gradient");
         ConfigureGradientModeButton(_radialGradientMode, GradientKind.Radial, "Use a radial fill gradient");
+        ConfigureGradientModeButton(_shapeRadialGradientMode, GradientKind.ShapeRadial, "Use a shape radial fill gradient");
         _solidFillMode.Margin = new Padding(0, 3, 2, 3);
         _linearGradientMode.Margin = new Padding(2, 3, 2, 3);
-        _radialGradientMode.Margin = new Padding(2, 3, 0, 3);
+        _radialGradientMode.Margin = new Padding(2, 3, 2, 3);
+        _shapeRadialGradientMode.Margin = new Padding(2, 3, 0, 3);
         grid.Controls.Add(_solidFillMode, 1, 0);
         grid.Controls.Add(_linearGradientMode, 2, 0);
         grid.Controls.Add(_radialGradientMode, 3, 0);
-        grid.Controls.Add(_paletteButton, 4, 0);
+        grid.Controls.Add(_shapeRadialGradientMode, 4, 0);
+        grid.Controls.Add(_paletteButton, 5, 0);
 
-        grid.Controls.Add(CreateFieldLabel("Gradient"), 0, 1);
+        grid.Controls.Add(CreateFieldLabel("Stops"), 0, 1);
         _gradientStopStrip.Dock = DockStyle.Fill;
         _gradientStopStrip.Margin = new Padding(0, 2, 0, 2);
         _gradientStopStrip.AccessibleName = "Gradient color stops";
         _gradientStopStrip.StopSelected += (_, e) => SelectGradientStop(e.Index);
         _gradientStopStrip.StopsChanged += (_, e) => SetGradientStopsFromStrip(e.Stops, e.SelectedIndex);
-        _gradientStopStrip.InteractionStarted += (_, _) => ContinuousEditStarted?.Invoke(this, EventArgs.Empty);
-        _gradientStopStrip.InteractionCompleted += (_, _) => ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
-        _gradientStopStrip.InteractionCanceled += (_, _) => ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
+        _gradientStopStrip.InteractionStarted += (_, _) => BeginGradientContinuousEdit();
+        _gradientStopStrip.InteractionCompleted += (_, _) => CompleteGradientContinuousEdit();
+        _gradientStopStrip.InteractionCanceled += (_, _) => CancelGradientContinuousEdit();
         grid.Controls.Add(_gradientStopStrip, 1, 1);
-        grid.SetColumnSpan(_gradientStopStrip, 4);
+        grid.SetColumnSpan(_gradientStopStrip, 5);
 
         grid.Controls.Add(CreateFieldLabel("Stop"), 0, 2);
         _gradientStopTarget.Dock = DockStyle.Fill;
@@ -1039,7 +1050,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _gradientStopTarget.AccessibleName = "Selected gradient stop color";
         _toolTip.SetToolTip(_gradientStopTarget, "Edit the selected gradient stop color");
         grid.Controls.Add(_gradientStopTarget, 1, 2);
-        grid.SetColumnSpan(_gradientStopTarget, 4);
+        grid.SetColumnSpan(_gradientStopTarget, 5);
 
         grid.Controls.Add(CreateFieldLabel("Position"), 0, 3);
         _gradientStopPosition.Minimum = 0;
@@ -1050,17 +1061,17 @@ internal sealed class MaterialEditorPanel : UserControl
         _gradientStopPosition.Margin = new Padding(0, 3, 2, 3);
         Theme.StyleNumeric(_gradientStopPosition);
         _gradientStopPosition.ValueChanged += (_, _) => UpdateGradientStopPosition();
-        _gradientStopPosition.InteractionStarted += (_, _) => ContinuousEditStarted?.Invoke(this, EventArgs.Empty);
-        _gradientStopPosition.InteractionCompleted += (_, _) => ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
-        _gradientStopPosition.InteractionCanceled += (_, _) => ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
+        _gradientStopPosition.InteractionStarted += (_, _) => BeginGradientContinuousEdit();
+        _gradientStopPosition.InteractionCompleted += (_, _) => CompleteGradientContinuousEdit();
+        _gradientStopPosition.InteractionCanceled += (_, _) => CancelGradientContinuousEdit();
         grid.Controls.Add(_gradientStopPosition, 1, 3);
-        grid.SetColumnSpan(_gradientStopPosition, 2);
+        grid.SetColumnSpan(_gradientStopPosition, 3);
         ConfigureGradientStopButton(_addGradientStop, "Add a color stop after the selected stop", AddGradientStop);
         ConfigureGradientStopButton(_removeGradientStop, "Remove the selected color stop", RemoveGradientStop);
         _addGradientStop.Margin = new Padding(2, 3, 2, 3);
         _removeGradientStop.Margin = new Padding(2, 3, 0, 3);
-        grid.Controls.Add(_addGradientStop, 3, 3);
-        grid.Controls.Add(_removeGradientStop, 4, 3);
+        grid.Controls.Add(_addGradientStop, 4, 3);
+        grid.Controls.Add(_removeGradientStop, 5, 3);
         RefreshGradientPresentation();
     }
 
@@ -1071,6 +1082,7 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             GradientKind.Linear => "Linear gradient fill",
             GradientKind.Radial => "Radial gradient fill",
+            GradientKind.ShapeRadial => "Shape radial gradient fill",
             _ => "Solid fill"
         };
         Theme.StyleButton(button);
@@ -1089,6 +1101,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
     internal void SetGradientKind(GradientKind kind)
     {
+        if (kind == GradientKind.ShapeRadial && _gradientPreviewOnStroke) return;
         if (_gradientKind == kind) return;
         _gradientKind = kind;
         if (kind == GradientKind.Solid)
@@ -1118,6 +1131,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private void ApplyGradientPreset(GradientPreset preset)
     {
         if (_updating) return;
+        if (preset.Kind == GradientKind.ShapeRadial && _gradientPreviewOnStroke) return;
         _gradientKind = preset.Kind;
         _gradientStops = NormalizeGradientStops(preset.Stops);
         _selectedGradientStop = 0;
@@ -1240,23 +1254,34 @@ internal sealed class MaterialEditorPanel : UserControl
         _gradientStopPosition.Value = (decimal)Math.Clamp(MathF.Round(stop.Position * 100f), 0f, 100f);
         _addGradientStop.Enabled = enabled;
         _removeGradientStop.Enabled = movable;
+        _shapeRadialGradientMode.Enabled = !_gradientPreviewOnStroke;
         if (_gradientKind == GradientKind.Linear)
         {
             Theme.StyleButton(_solidFillMode);
             Theme.StyleActiveButton(_linearGradientMode);
             Theme.StyleButton(_radialGradientMode);
+            Theme.StyleButton(_shapeRadialGradientMode);
         }
         else if (_gradientKind == GradientKind.Radial)
         {
             Theme.StyleButton(_solidFillMode);
             Theme.StyleButton(_linearGradientMode);
             Theme.StyleActiveButton(_radialGradientMode);
+            Theme.StyleButton(_shapeRadialGradientMode);
+        }
+        else if (_gradientKind == GradientKind.ShapeRadial)
+        {
+            Theme.StyleButton(_solidFillMode);
+            Theme.StyleButton(_linearGradientMode);
+            Theme.StyleButton(_radialGradientMode);
+            Theme.StyleActiveButton(_shapeRadialGradientMode);
         }
         else
         {
             Theme.StyleActiveButton(_solidFillMode);
             Theme.StyleButton(_linearGradientMode);
             Theme.StyleButton(_radialGradientMode);
+            Theme.StyleButton(_shapeRadialGradientMode);
         }
         RefreshGradientPresetActions();
     }
@@ -1327,7 +1352,7 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         StoreActiveGradient();
         if (_selectedSavedGradientPreset is not null && !GradientMatches(_selectedSavedGradientPreset, _gradientKind, _gradientStops)) _selectedSavedGradientPreset = null;
-        AddRecentGradient(_gradientKind, _gradientStops);
+        if (_colorInteractionDepth == 0 && _continuousControlInteractionDepth == 0) AddRecentGradient(_gradientKind, _gradientStops);
         GradientChanged?.Invoke(this, new GradientChangedEventArgs(_gradientKind, _gradientStops));
     }
 
@@ -1518,6 +1543,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _gradientPreviewOnStroke = gradientPreviewOnStroke;
         LoadGradientForTarget(gradientPreviewOnStroke);
         _editingGradientTarget = GradientColorTarget.None;
+        RefreshGradientPresentation();
         UpdateTargetPresentation();
         UpdateEditorFromColor();
     }
@@ -1932,11 +1958,19 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private static string GradientTargetDetail(GradientPaintState gradient, Color solidColor) => gradient.Kind == GradientKind.Solid
         ? ToHex(solidColor)
-        : $"{gradient.Kind}, {gradient.Stops.Length} stops";
+        : $"{GradientKindLabel(gradient.Kind, compact: true)}, {gradient.Stops.Length} stops";
 
     private static string GradientTargetDescription(string targetName, GradientPaintState gradient, Color solidColor) => gradient.Kind == GradientKind.Solid
         ? $"{targetName} color {ToHex(solidColor)}"
-        : $"{gradient.Kind} {targetName.ToLowerInvariant()} gradient with {gradient.Stops.Length} color stops";
+        : $"{GradientKindLabel(gradient.Kind, compact: false)} {targetName.ToLowerInvariant()} gradient with {gradient.Stops.Length} color stops";
+
+    private static string GradientKindLabel(GradientKind kind, bool compact) => kind switch
+    {
+        GradientKind.ShapeRadial => UiLocalization.T(compact ? "Shape" : "Shape radial"),
+        GradientKind.Radial => UiLocalization.T("Radial"),
+        GradientKind.Linear => UiLocalization.T("Linear"),
+        _ => UiLocalization.T("Solid")
+    };
 
     private void UpdateColorSelectionIndicators()
     {
@@ -1958,7 +1992,11 @@ internal sealed class MaterialEditorPanel : UserControl
         if (_colorInteractionDepth <= 0) return;
         _colorInteractionDepth--;
         if (_colorInteractionDepth > 0) return;
-        if (EditedColor.ToArgb() != _continuousColorStartArgb) AddRecentColor(EditedColor);
+        if (EditedColor.ToArgb() != _continuousColorStartArgb)
+        {
+            AddRecentColor(EditedColor);
+            if (_editingGradientTarget == GradientColorTarget.Stop) AddRecentGradient(_gradientKind, _gradientStops);
+        }
         ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -1966,6 +2004,28 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         if (_colorInteractionDepth <= 0) return;
         _colorInteractionDepth = 0;
+        ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void BeginGradientContinuousEdit()
+    {
+        if (_continuousControlInteractionDepth++ > 0) return;
+        ContinuousEditStarted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void CompleteGradientContinuousEdit(bool recordGradient = true)
+    {
+        if (_continuousControlInteractionDepth <= 0) return;
+        _continuousControlInteractionDepth--;
+        if (_continuousControlInteractionDepth > 0) return;
+        if (recordGradient) AddRecentGradient(_gradientKind, _gradientStops);
+        ContinuousEditCompleted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void CancelGradientContinuousEdit()
+    {
+        if (_continuousControlInteractionDepth <= 0) return;
+        _continuousControlInteractionDepth = 0;
         ContinuousEditCanceled?.Invoke(this, EventArgs.Empty);
     }
 

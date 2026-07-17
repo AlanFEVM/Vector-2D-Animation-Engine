@@ -1093,6 +1093,34 @@ internal static class GradientPreviewRenderer
             return;
         }
 
+        if (kind == GradientKind.ShapeRadial)
+        {
+            var path = new GraphicsPath(FillMode.Winding);
+            path.AddPolygon(
+            [
+                new PointF(bounds.Left + bounds.Width * 0.08f, bounds.Top + bounds.Height * 0.42f),
+                new PointF(bounds.Left + bounds.Width * 0.28f, bounds.Top + bounds.Height * 0.08f),
+                new PointF(bounds.Left + bounds.Width * 0.86f, bounds.Top + bounds.Height * 0.18f),
+                new PointF(bounds.Left + bounds.Width * 0.96f, bounds.Top + bounds.Height * 0.58f),
+                new PointF(bounds.Left + bounds.Width * 0.62f, bounds.Top + bounds.Height * 0.92f),
+                new PointF(bounds.Left + bounds.Width * 0.16f, bounds.Top + bounds.Height * 0.82f)
+            ]);
+            using (path)
+            using (var brush = new PathGradientBrush(path)
+            {
+                CenterPoint = new PointF(bounds.Left + bounds.Width * 0.48f, bounds.Top + bounds.Height * 0.5f),
+                InterpolationColors = new ColorBlend
+                {
+                    Colors = normalized.Select(stop => Color.FromArgb(stop.Argb)).ToArray(),
+                    Positions = normalized.Select(stop => stop.Position).ToArray()
+                }
+            })
+            {
+                graphics.FillPath(brush, path);
+            }
+            return;
+        }
+
         using var bitmap = new Bitmap(bounds.Width, bounds.Height);
         var centerX = (bounds.Width - 1) / 2f;
         var centerY = (bounds.Height - 1) / 2f;
@@ -1294,7 +1322,7 @@ internal sealed class GradientPresetGrid : Control
         var hovered = index == _hoverIndex;
         using var border = new Pen(selected ? Theme.Accent : hovered || focused ? Theme.Text : Theme.Border, selected ? 2f : 1f);
         graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
-        if (preset.Kind == GradientKind.Radial)
+        if (preset.Kind is GradientKind.Radial or GradientKind.ShapeRadial)
         {
             var radius = Math.Max(2, Math.Min(4, preview.Height / 3));
             var center = new Rectangle(preview.Left + preview.Width / 2 - radius, preview.Top + preview.Height / 2 - radius, radius * 2, radius * 2);
@@ -1768,7 +1796,7 @@ internal sealed class ColorTargetButton : Control
         var titleBounds = new Rectangle(textLeft, 5, textWidth, Math.Max(0, Height / 2 - 3));
         TextRenderer.DrawText(
             e.Graphics,
-            Text,
+            UiLocalization.T(Text),
             Font,
             titleBounds,
             Selected ? Theme.AccentLabel : Theme.Text,
@@ -1780,7 +1808,7 @@ internal sealed class ColorTargetButton : Control
             using var detailFont = Theme.UiFont(8.2f);
             TextRenderer.DrawText(
                 e.Graphics,
-                DetailText,
+                UiLocalization.T(DetailText),
                 detailFont,
                 detailBounds,
                 Selected ? Theme.AccentLabel : Theme.Muted,
@@ -1949,7 +1977,7 @@ internal sealed class ColorPaletteGrid : Control
             using var emptyFont = Theme.UiFont(8.5f);
             TextRenderer.DrawText(
                 e.Graphics,
-                _emptyText,
+                UiLocalization.T(_emptyText),
                 emptyFont,
                 ClientRectangle,
                 Theme.DisabledText,

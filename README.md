@@ -32,11 +32,12 @@ stable entry point for fast iteration, not the final distributable package.
 The app opens with an empty project and one visible layer. The stress scene is not
 generated on startup; use `Run Stress Scene` when you explicitly want to benchmark.
 
-The hot-reload coordinator releases Direct2D resources only for rendering edits,
-refreshes bound controls only for UI edits, and rebuilds composition caches only
-for engine edits. Unsupported structural runtime edits are left running instead
-of automatically restarting the process; use the editor's upper-right restart
-button when a changed type cannot be applied by the .NET runtime. Launch with
+The hot-reload coordinator coalesces each save burst, applies one serialized module plan,
+releases Direct2D resources only for rendering edits, refreshes bound controls only for UI
+edits, and rebuilds composition caches only for engine edits. Failed module refreshes fall
+back to a preserved-state workbench rebuild and then a preserved-state process restart.
+Unsupported structural runtime edits that are rejected before a metadata callback still
+require the editor's upper-right restart button. Launch with
 `VectorAnimationEngine.exe --no-hot-reload` when you need a plain `dotnet run`
 session without file watching.
 
@@ -55,34 +56,37 @@ session without file watching.
 - Workspace tabs: `Basic Drawing`, `Scene Edit`, and `Animation`.
 - Custom borderless desktop window shell with draggable title area, resizable edges, and in-app minimize/maximize/close controls.
 - Basic Drawing is the drawing-object edit mode: the header shows one active drawing object at a time plus `+ Object`, and drawing/material tools focus on that object.
-- Scene Edit is the non-drawable assembly mode: scenes store drawing-object instances rather than standalone geometry. Drawing objects may recursively instance other drawing objects, with project-level self/cycle rejection, accumulated 2D transforms, current-frame exposure evaluation, source provenance retained for double-click editor navigation, and green instance bounds for 2D select/move/free-transform editing.
-- Drawing-object timelines combine stable drawing-layer IDs and nested-instance IDs in one editable track list, while scene timelines target stable scene-instance IDs. Synchronization preserves surviving track IDs and keyframe data when the target list changes.
+- Scene Edit is the non-drawable assembly mode: scenes store drawing-object instances rather than standalone geometry. Drawing objects may recursively instance other drawing objects, with project-level self/cycle rejection, accumulated 2D transforms, per-instance FPS plus play-once/loop/held-frame playback, current-frame exposure evaluation, source provenance retained for double-click editor navigation, green instance bounds for 2D select/move/free-transform editing, and an inspector action that restores X/Y scale without changing other transform state.
+- Drawing-object timelines contain only stable drawing-layer tracks. Each layer can own multiple nested drawing-object instances, and its exposure controls both local cel geometry and those instances without generating synthetic instance rows. Scene timelines likewise target stable scene-layer IDs, with multiple instances allowed per layer.
 - 3D scenes use Blender-style viewport navigation: middle mouse orbits, Shift + middle mouse pans, Ctrl + middle mouse dollies, mouse wheel dollies, Ctrl + wheel changes the view zoom scale, Numpad 1/3/7 switches front/right/top views, Numpad 5 toggles perspective/orthographic, and Home resets the reference view.
+- 2D stages use an origin-aware decimal world grid at 10% default opacity: the minimum cell is 10 vu, every tenth line becomes a major line, and line opacity/weight transitions continuously as zoom changes.
 - New projects start with one empty drawing object. All shape and line drawing is stored inside the active drawing object.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
-- Flash-style combined layer/timeline strip with fixed-width frame cells, `+` layer insertion, layer/instance track selection, visibility toggles, Solo/All controls, ruler, playhead dragging, held exposure spans, populated/blank keyframes, horizontal/vertical scrolling, rectangular multi-frame selection, and themed right-click commands.
+- Adobe Animate-style combined layer/timeline strip with fixed-width frame cells, `+` layer insertion, layer/instance track selection, visibility toggles, Solo/All controls, ruler, red playhead, low-contrast held exposure spans, populated/blank keyframe dots, horizontal/vertical scrolling, rectangular multi-frame selection, and themed right-click commands.
 - Timeline tracks use ordered populated/blank keyframes. Empty drawing layers start with a hollow blank key; marker fill follows actual cel content, so deleting the last object turns the key hollow and F6 on empty exposure stays blank. In Scene Edit, tracks belong to scene layers, and each scene layer can contain multiple drawing-object instances.
 - Drawing-object keyframes own independent cels. F6 clones the currently held layer content into a new cel, later edits or deletion stay isolated from the source cel, F7 creates a blank cel, and drawing on a blank exposure promotes it to a populated keyframe automatically. F6/F7 extend the timeline when needed; a single-frame command advances the playhead, while a multi-frame command keeps the selection in place.
 - Drawing inside a held blank exposure populates that exposure's source key rather than silently creating a key at the playhead; use F6 or F7 first when content must begin on a new frame.
-- F5 extends the selected exposure while shifting later keys right. Frame removal preserves any cel whose held frames survive the removed range, and shifts key markers plus object ownership together. Batch frame/key commands apply to the selected timeline cells and create one undo entry.
+- F5 extends the selected exposure while shifting later keys right. A scrollable future-frame grid remains selectable beyond the current timeline end, and inserting there extends the target track through the chosen cell. Frame removal preserves any cel whose held frames survive the removed range, and shifts key markers plus object ownership together. Batch frame/key commands apply to the selected timeline cells and create one undo entry.
 - Timeline `Ctrl+C` / `Ctrl+V` copies independent drawing cels with their geometry, paths, and strokes, then pastes them using the copied track/frame offsets. Layer rows can be dragged to reorder; their stable timeline IDs and object ownership remain aligned. Right-click also exposes layer color and per-drawing-layer onion skin, rendered as a non-editable warm previous-frame/cool next-frame preview in both Direct2D and GDI; changing a non-zero onion range enables it for the active layer.
 - Adobe Animate timeline shortcuts: Enter play/pause, comma/period previous/next frame, Shift+comma/period first/last playback frame, F5 insert frame, Shift+F5 remove frame, F6 copy/insert keyframe, Shift+F6 clear keyframe, and F7 insert blank keyframe.
+- The timeline cursor includes a three-decimal seconds readout derived from the active playback FPS and updates immediately with frame or FPS changes.
+- The mouse wheel scrolls tracks vertically by default; holding Shift routes it horizontally through frames without axis fallback at an edge.
 - Playback settings panel with FPS, loop playback, and frame range controls.
 - Bottom status bar showing render FPS, animation FPS, and zoom.
-- Playback processes fixed simulation steps in batches at 300 logical UPS. Stage redraw requests remain capped at 144 FPS, and render FPS reports completed stage frames rather than invalidation requests.
+- Playback processes fixed simulation steps in batches at 300 logical UPS. Stage redraw requests remain capped at 144 FPS, and one-second telemetry reports completed stage frames rather than invalidation requests; idle render and paused UPS rates display as `--` instead of extrapolating isolated work.
 - Drawing tools for pencil, brush, line, fill, select, pan, and a grouped shape tool with rectangle, ellipse, triangle, polygon, and star flyout choices.
 - SVG vector icon buttons for the floating tool palette and the Basic Drawing header snapping strip.
 - Global view navigation: middle mouse drags the 2D canvas, and Ctrl + middle mouse drag zooms the 2D canvas from any tool.
 - Drawing preview overlay while dragging shape, line, pencil, and brush tools.
 - Flash-style freehand drawing: Pencil creates an open stroke with the stroke swatch, while Brush and Pressure Brush create closed filled outlines with the fill swatch; Pencil, Brush, and Eraser retain independent pt sizes. Pressure Brush derives fluid width from mouse speed and press duration. Brush Tip exposes Soft Round, Traditional Brush, and imported 128x128 tips, plus size in document units, frequency, continuity, and Soft Round hardness.
-- Freehand input is sampled in screen space and simplified on pointer-up. Pencil commits one selectable open stroke per gesture; Brush and Pressure Brush expand the sampled centerline into closed Path fills and immediately merge them with intersecting or nearby fills on the same layer that have the same ARGB color, then leave the Stage selection clear. Nearby fill boundaries merge when their distance is under `10 vu`.
-- Flash-style tool shortcuts include V/H/N/Y/B/K for Select/Pan/Line/Pencil/Brush/Fill; bracket keys adjust Pencil and Brush width. While Brush or Pressure Brush is active, hold Shift to open recent-color swatches around the cursor and hover a swatch to set the brush fill color.
+- Freehand input is sampled in screen space and simplified on pointer-up. Pencil commits one selectable open stroke per gesture; Brush and Pressure Brush expand the sampled centerline into closed Path fills and immediately merge them with intersecting or nearby fills on the same layer that have the same ARGB color, then leave the Stage selection clear. Linear brush gradients follow path length on ordinary strokes and switch to a stable principal spatial axis on self-crossing strokes, avoiding conflicting colors at intersections. Intersecting shape-gradient brush strokes with identical stops and layer opacity preview and commit as one union whose center, boundary, and distance field are recalculated; different gradient materials retain normal overpaint behavior. Nearby solid-fill boundaries merge when their distance is under `10 vu`.
+- The title-bar menu opens persistent application settings with live English and Simplified Chinese interfaces. Tool shortcuts default to the Traditional Flash preset (V/Q/H/R/O/N/P/Y/B/K/S/I/G/E), with an optional number-key preset that follows the toolbar from 1 through 9; bracket keys adjust Pencil and Brush width. While Brush or Pressure Brush is active, hold Shift to open recent-color swatches around the cursor and hover a swatch to set the brush fill color.
 - Animated tool-name hints when hovering drawing tools.
-- Selection highlight with boundary handles for filled shapes and partial edge highlights for selected boundary-stroke segments.
+- Animated selection highlights pulse along line paths and fill boundaries, with boundary handles for filled shapes and partial edge highlights for selected boundary-stroke segments.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects, with `1 vu`-aligned fill and stroke part materialization for boxed regions.
 - Selected fills under the pointer take drag priority, so dragging an already selected fill moves it instead of starting a new selection.
-- Selected lines immediately expose start, end, and Bezier control handles, including topology-part selections; connected endpoints move together, and holding Ctrl temporarily snaps edited or newly drawn endpoints to nearby line endpoints.
+- Selected lines immediately expose start, end, and Bezier control handles, including topology-part selections; connected endpoints move together, holding Ctrl temporarily snaps edited or newly drawn endpoints to nearby line endpoints, and holding Shift while drawing with the Line tool constrains the preview and committed line to the configured angle step.
 - Basic edit shortcuts: Ctrl+Z undo, Ctrl+C copy selected objects, and Ctrl+V paste copied objects with a small stage offset.
 - Drawing element topology foundation: fills, free strokes, and filled-shape boundary strokes are separate selectable elements. Rectangle edges are individually selectable by default; crossing strokes and boundaries split each other at valid intersections, and sub-1vu stroke fragments are suppressed.
 - Topology parts are materialized into editable objects: split stroke parts become independent line objects, boundary-stroke parts become movable line segments, and a rectangle fill cut by a through-line becomes two movable path fills when its region is marquee-selected or moved.
@@ -121,7 +125,9 @@ or investigated later.
 
 Runtime logs are written to `logs/` in the project root when launched through the
 root EXE. Native app logs use `native-yyyyMMdd-HHmmss-pidN.log`; launcher startup
-events use `launcher.log`. Unhandled UI thread exceptions, domain crashes,
+events and captured `dotnet watch` build diagnostics use `launcher.log`, rotated once at 8 MB
+to `launcher.previous.log`. A development watch
+process that exits unexpectedly with a nonzero code is restarted up to three times. Unhandled UI thread exceptions, domain crashes,
 Direct2D fallback failures, application startup, and stress-scene generation
 events are recorded there.
 
@@ -129,7 +135,7 @@ events are recorded there.
 
 The manual stress scene avoids scanning every object every frame.
 
-- Stage rendering now prefers a Direct2D HWND render target through Vortice bindings.
+- Stage rendering uses a Direct2D hardware HWND render target through Vortice bindings, with immediate GPU presentation so pointer interaction does not block on vertical synchronization. Solid and gradient fill silhouettes use per-primitive subpixel antialiasing plus a subpixel material-colored edge reinforcement on the GPU, with equivalent high-quality geometry coverage in the GDI fallback.
 - The desktop shell remains WinForms; WPF is not used.
 - If Direct2D initialization fails on a machine, the stage falls back to the legacy GDI path instead of preventing startup.
 - Low zoom uses tile LOD summaries.
@@ -140,9 +146,9 @@ The manual stress scene avoids scanning every object every frame.
 - Direct2D uploads versioned LOD summaries as premultiplied bitmap batches, reducing a Fit Stage frame from thousands of rectangle commands to one bitmap submission.
 - The combined layer/timeline strip limits visible rows and uses lightweight custom painting to keep the workbench responsive.
 
-The current Direct2D renderer still shares the packed scene arrays and spatial
-index with the original GDI path. The next renderer-level step is moving large
-object batches into GPU-side geometry buffers and tile caches.
+The Direct2D renderer still prepares complex vector topology from the packed scene
+arrays on the CPU before GPU rasterization. The next renderer-level step is moving
+large object batches into persistent GPU-side geometry buffers and tile caches.
 
 ## Source Layout
 
@@ -152,6 +158,8 @@ native/
     Program.cs            Application entry point.
     AppLog.cs             Runtime logging and crash diagnostics.
     HotReloadModules.cs   Scoped Metadata Hot Reload module routing and refresh contracts.
+    HotReloadCoordinator.cs
+                          Coalesced UI dispatch, serialization, and recovery coordination.
     ToolMode.cs           Shared tool enum.
     Benchmark.cs          Stress-scene benchmark helper.
   Engine/
@@ -252,7 +260,7 @@ dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 
 This multi-file deployment uses the installed .NET 8 Desktop Runtime and avoids single-file extraction and compression work on startup. For a portable standalone distribution, use:
 
 ```powershell
-dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish-native
+dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish-native
 ```
 
 Use `--dev` when source watching and Metadata Hot Reload are required.

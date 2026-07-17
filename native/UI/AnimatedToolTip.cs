@@ -25,7 +25,7 @@ internal sealed class AnimatedToolTip : Control
         if (anchor.FindForm() is not { } form) return;
         if (Parent != form) Parent = form;
 
-        _message = message;
+        _message = UiLocalization.T(message);
         using var g = CreateGraphics();
         var textSize = TextRenderer.MeasureText(g, _message, Font, new Size(320, 32), TextFormatFlags.NoPadding);
         Size = new Size(Math.Max(92, textSize.Width + 24), 34);

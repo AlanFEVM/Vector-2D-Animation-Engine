@@ -48,6 +48,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             };
         };
         _animationTimer.Tick += (_, _) => TickOpeningAnimation();
+        UiLocalization.Watch(this);
     }
 
     protected override void OnOpening(CancelEventArgs e)

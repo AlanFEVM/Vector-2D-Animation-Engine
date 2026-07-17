@@ -13,15 +13,15 @@ Relevant code:
 - `native/App/SingleInstanceLease.cs`
 - `native/App/LauncherShutdownSignal.cs`
 
-The launcher uses `--no-restore`; restore the native project before first launch on a new checkout. Unknown updated root types route to `Shell`, so register new engine, rendering, timeline, workspace, or inspector types explicitly.
+The launcher uses `--no-restore`; restore the native project before first launch on a new checkout. Unknown updated root types route conservatively to all modules, but known engine, rendering, timeline, workspace, and inspector types should still be registered for scoped refreshes.
 
 ## Logs And Processes
 
-- Launcher sessions write `logs/launcher.log` and root `logs/native-*.log`.
+- Launcher sessions write `logs/launcher.log` and root `logs/native-*.log`; `launcher.log` includes captured `dotnet watch` output and rotates once at 8 MB.
 - Direct native/benchmark execution may write logs relative to the build output instead of the repository root.
 - A second native instance exits through the single-instance lease.
 - Force-killing the native app can leave the launcher/watch process running because no shutdown signal was sent.
-- For hot-reload compiler diagnostics, run `dotnet watch` in a foreground terminal; launcher logs do not capture all watch output.
+- For live hot-reload compiler diagnostics, inspect `launcher.log`; a foreground `dotnet watch` terminal remains useful when interactive console behavior is required.
 
 ## Rebuild Launcher
 

@@ -125,7 +125,7 @@ internal static class EditorRestartStore
         public float ReferenceTargetX { get; init; }
         public float ReferenceTargetY { get; init; }
         public float ReferenceTargetZ { get; init; }
-        public float WorldGridOpacity { get; init; }
+        public float WorldGridOpacity { get; init; } = 0.1f;
 
         public static RestartStageView From(StageViewState state) => new()
         {

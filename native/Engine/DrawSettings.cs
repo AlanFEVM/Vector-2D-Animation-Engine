@@ -72,6 +72,20 @@ internal sealed class DrawSettings
         return new PointF(SnapValue(point.X, GridSize), SnapValue(point.Y, GridSize));
     }
 
+    public PointF ResolvePointSnap(
+        PointF point,
+        PointF? objectCandidate = null,
+        bool temporarilySnapToObjects = false)
+    {
+        if (objectCandidate is { } candidate
+            && (temporarilySnapToObjects || SnapEnabled && SnapToObjects))
+        {
+            return candidate;
+        }
+
+        return VectorUnits.Quantize(SnapPoint(point));
+    }
+
     public SizeF ApplyAspectRatio(SizeF size)
     {
         if (!KeepAspectRatio) return size;
@@ -79,9 +93,9 @@ internal sealed class DrawSettings
         return new SizeF(MathF.CopySign(side, size.Width), MathF.CopySign(side, size.Height));
     }
 
-    public float SnapAngle(float radians)
+    public float SnapAngle(float radians, bool temporarilyEnabled = false)
     {
-        if (!SnapEnabled || !AngleSnapEnabled) return radians;
+        if (!temporarilyEnabled && (!SnapEnabled || !AngleSnapEnabled)) return radians;
         var degrees = radians * 57.29578f;
         return SnapValue(degrees, AngleSnapDegrees) * 0.017453292f;
     }

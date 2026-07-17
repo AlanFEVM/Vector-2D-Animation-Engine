@@ -71,7 +71,7 @@ internal sealed class StartupBannerForm : Form
         graphics.FillRectangle(accent, 32, 40, 8, 86);
         graphics.DrawString("V2", Theme.UiFont(24, FontStyle.Bold), text, 58, 42);
         graphics.DrawString("Vector 2D Animation Engine", Theme.UiFont(13, FontStyle.Bold), text, 60, 86);
-        graphics.DrawString("Starting workspace", Theme.UiFont(9), muted, 61, 116);
+        graphics.DrawString(UiLocalization.T("Starting workspace"), Theme.UiFont(9), muted, 61, 116);
 
         var lineY = 176;
         graphics.DrawLine(dimLine, 32, lineY, ClientSize.Width - 32, lineY);

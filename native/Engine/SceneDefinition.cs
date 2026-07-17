@@ -237,6 +237,21 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         return removed;
     }
 
+    internal void InsertInstanceStateFrames(string layerId, int frame, int count)
+    {
+        foreach (var instance in InstancesInLayer(layerId)) instance.InsertStateFrames(frame, count);
+    }
+
+    internal void RemoveInstanceStateFrames(string layerId, int frame, int count)
+    {
+        foreach (var instance in InstancesInLayer(layerId)) instance.RemoveStateFrames(frame, count);
+    }
+
+    internal void RemoveInstanceStateKeyframes(string layerId, int frame)
+    {
+        foreach (var instance in InstancesInLayer(layerId)) instance.RemoveStateKeyframe(frame);
+    }
+
     private void NormalizeLayers()
     {
         var validLayers = new HashSet<string>(StringComparer.Ordinal);

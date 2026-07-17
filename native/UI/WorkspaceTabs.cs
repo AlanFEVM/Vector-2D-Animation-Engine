@@ -40,7 +40,7 @@ internal sealed class WorkspaceTabs : UserControl
         SmallChange = 1,
         LargeChange = 10,
         TickFrequency = 10,
-        Value = 100,
+        Value = 10,
         AccessibleName = "World grid opacity"
     };
     private readonly Label _gridOpacityValue = new();
@@ -70,14 +70,14 @@ internal sealed class WorkspaceTabs : UserControl
         var gridOpacity = new TableLayoutPanel
         {
             Dock = DockStyle.Right,
-            Width = 228,
+            Width = 236,
             BackColor = Theme.Top,
             ColumnCount = 3,
             RowCount = 1,
             Padding = new Padding(0, 6, 10, 6),
             Margin = Padding.Empty
         };
-        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
         gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
         gridOpacity.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -103,7 +103,7 @@ internal sealed class WorkspaceTabs : UserControl
         _toolTip.SetToolTip(_gridOpacity, "World grid opacity");
         gridOpacity.Controls.Add(_gridOpacity, 1, 0);
 
-        _gridOpacityValue.Text = "100%";
+        _gridOpacityValue.Text = "10%";
         _gridOpacityValue.Dock = DockStyle.Fill;
         _gridOpacityValue.ForeColor = Theme.Muted;
         _gridOpacityValue.BackColor = Theme.Top;
@@ -147,7 +147,7 @@ internal sealed class WorkspaceTabs : UserControl
 
     public IReadOnlyCollection<WorkspaceView> Views => _buttons.Keys;
 
-    [DefaultValue(100)]
+    [DefaultValue(10)]
     public int WorldGridOpacity
     {
         get => _gridOpacity.Value;

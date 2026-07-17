@@ -7,12 +7,14 @@ internal sealed class AppHost : ApplicationContext
     private EditorRestartState? _restartState;
     private bool _exiting;
     private bool _processRestartRequested;
+    private readonly HotReloadCoordinator _hotReloadCoordinator;
 
     public static AppHost? Current { get; private set; }
 
     public AppHost(EditorRestartState? restartState = null)
     {
         Current = this;
+        _hotReloadCoordinator = new HotReloadCoordinator(() => _mainForm, ApplyHotReloadBatch);
         AppLog.Info("Creating application host");
         _startupBanner = new StartupBannerForm();
         _startupBanner.Show();
@@ -20,27 +22,18 @@ internal sealed class AppHost : ApplicationContext
         ShowMainForm(restartState);
     }
 
-    public static void ReloadModulesForHotReload(Type[]? updatedTypes)
+    public static void EnqueueHotReload(HotReloadPlan plan)
     {
         var host = Current;
-        if (host?._mainForm is null || host._mainForm.IsDisposed) return;
-
-        var plan = HotReloadModuleResolver.Resolve(updatedTypes);
-
-        var form = host._mainForm;
-        if (form.InvokeRequired)
-        {
-            form.BeginInvoke(() => host.ReloadModules(plan));
-            return;
-        }
-
-        host.ReloadModules(plan);
+        if (host is null || host._exiting) return;
+        host._hotReloadCoordinator.Enqueue(plan);
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            _hotReloadCoordinator.Dispose();
             CloseStartupBanner();
         }
         if (Current == this) Current = null;
@@ -86,17 +79,50 @@ internal sealed class AppHost : ApplicationContext
         form.Close();
     }
 
-    private void ReloadModules(HotReloadPlan plan)
+    private void ApplyHotReloadBatch(HotReloadBatch batch)
     {
-        if (_mainForm is null || _mainForm.IsDisposed) return;
-        AppLog.Info($"Applying module hot reload: {plan.Modules}; types: {plan.UpdatedTypes}");
-        if (plan.RequiresWorkbenchRebuild)
+        var form = _mainForm;
+        if (_exiting || form is null || form.IsDisposed) return;
+        var plan = batch.Plan;
+        var queuedMilliseconds = Math.Max(0, (DateTime.UtcNow - batch.QueuedUtc).TotalMilliseconds);
+        AppLog.Info($"Applying hot reload generation {batch.Generation} after {queuedMilliseconds:0} ms: {plan.Modules}; types: {plan.UpdatedTypes}");
+        form.SetHotReloadStatus(HotReloadUiState.Applying, batch.Generation);
+
+        var accepted = false;
+        try
         {
-            _mainForm.RebuildWorkbenchForHotReload(plan);
+            accepted = plan.RequiresWorkbenchRebuild
+                ? form.RebuildWorkbenchForHotReload(plan)
+                : form.ReloadModulesForHotReload(plan);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Hot reload generation {batch.Generation} failed before recovery could be scheduled", ex);
+        }
+        if (accepted)
+        {
+            if (!plan.RequiresWorkbenchRebuild) form.SetHotReloadStatus(HotReloadUiState.Applied, batch.Generation);
+            AppLog.Info($"Hot reload generation {batch.Generation} applied successfully.");
             return;
         }
 
-        _mainForm.ReloadModulesForHotReload(plan);
+        AppLog.Warn($"Hot reload generation {batch.Generation} requested recovery after a module refresh failure.");
+        form = _mainForm;
+        if (form is null || form.IsDisposed) return;
+        form.SetHotReloadStatus(HotReloadUiState.Recovering, batch.Generation);
+        var recoveryPlan = new HotReloadPlan(HotReloadModule.All, plan.UpdatedTypes);
+        try
+        {
+            if (form.RebuildWorkbenchForHotReload(recoveryPlan)) return;
+            if (form.RequestProcessRestartForHotReload()) return;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Hot reload generation {batch.Generation} recovery failed", ex);
+        }
+
+        form.SetHotReloadStatus(HotReloadUiState.Failed, batch.Generation);
+        AppLog.Error($"Hot reload generation {batch.Generation} could not recover through a workbench or process restart.");
     }
 
     private void MainFormClosed(object? sender, FormClosedEventArgs e)

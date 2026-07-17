@@ -12,12 +12,13 @@
 Keep Direct2D and GDI logically equivalent:
 
 1. background/reference grid
-2. nested or scene underlay
-3. editable scene
-4. drag preview scene
-5. selection outlines, selected topology parts, bounds, and handles
-6. drawing/freehand/fill previews and fill animation
-7. tool cursors and marquee
+2. onion-skin reference frames
+3. nested or scene underlay
+4. editable scene
+5. drag preview scene
+6. selection outlines, selected topology parts, bounds, and handles
+7. drawing/freehand/fill previews and fill animation
+8. tool cursors and marquee
 
 Within a scene, use `SceneRenderOrderBuffer`. Ordering is layer stack plus `ObjectOrder`, `ObjectSubOrder`, and stable index tie-break, with fills below strokes inside the same layer.
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace VectorAnimationEngine.Launcher;
@@ -6,6 +7,10 @@ namespace VectorAnimationEngine.Launcher;
 internal static class Program
 {
     private const string LauncherMutexName = "Local\\Vector2DAnimationEngine.Launcher.Watch";
+    private const int MaxUnexpectedWatchRestarts = 3;
+    private const long MaxLauncherLogBytes = 8L * 1024 * 1024;
+    private static readonly object LogSync = new();
+    private static long _launcherLogBytes = -1;
 
     private enum WatchExitReason
     {
@@ -81,7 +86,9 @@ internal static class Program
                 : $"run --project \"{projectPath}\" {runArguments}",
             WorkingDirectory = root,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         };
         startInfo.Environment["V2D_LOG_DIR"] = logDir;
         startInfo.Environment["V2D_DEV_HOT_RELOAD"] = sourceLaunch.ModuleHotReload ? "1" : "0";
@@ -95,16 +102,19 @@ internal static class Program
         try
         {
             Log(logDir, $"Launching native app. Module hot reload: {sourceLaunch.ModuleHotReload}. Initial native build skipped: {skipInitialBuild}. Command: {startInfo.FileName} {startInfo.Arguments}");
+            var unexpectedRestarts = 0;
             while (true)
             {
+                var startedUtc = DateTime.UtcNow;
                 using var watchProcess = Process.Start(startInfo);
                 if (watchProcess is null) throw new InvalidOperationException("The development watch process could not be started.");
+                AttachWatchLogging(watchProcess, logDir);
                 var reason = WaitForWatchProcessOrRequest(watchProcess, shutdownEvent, restartEvent);
                 if (reason == WatchExitReason.RestartEditor)
                 {
                     Log(logDir, "Native app requested a development editor-process restart; restarting the watch process tree.");
                     StopProcessTree(watchProcess, logDir);
-                    if (!watchProcess.HasExited) watchProcess.WaitForExit(5000);
+                    WaitForExitAndDrain(watchProcess, logDir);
                     continue;
                 }
 
@@ -114,9 +124,21 @@ internal static class Program
                     StopProcessTree(watchProcess, logDir);
                 }
 
-                if (!watchProcess.HasExited) watchProcess.WaitForExit(5000);
+                WaitForExitAndDrain(watchProcess, logDir);
                 var exitCode = watchProcess.HasExited ? watchProcess.ExitCode : -1;
                 Log(logDir, $"Native watch process exited with code {exitCode}.");
+                var ranFor = DateTime.UtcNow - startedUtc;
+                if (reason == WatchExitReason.Exited
+                    && exitCode != 0
+                    && unexpectedRestarts < MaxUnexpectedWatchRestarts)
+                {
+                    if (ranFor >= TimeSpan.FromSeconds(30)) unexpectedRestarts = 0;
+                    unexpectedRestarts++;
+                    var delayMilliseconds = Math.Min(2000, 250 * (1 << (unexpectedRestarts - 1)));
+                    Log(logDir, $"Restarting the failed watch process in {delayMilliseconds} ms ({unexpectedRestarts}/{MaxUnexpectedWatchRestarts}).");
+                    Thread.Sleep(delayMilliseconds);
+                    continue;
+                }
                 break;
             }
         }
@@ -142,7 +164,11 @@ internal static class Program
                 RedirectStandardError = true
             });
             if (process is null) return false;
-            process.WaitForExit(2500);
+            if (!process.WaitForExit(2500))
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return false;
+            }
             return process.ExitCode == 0;
         }
         catch
@@ -179,8 +205,17 @@ internal static class Program
             var rootDirectory = Directory.GetParent(nativeDirectory)?.FullName;
             if (!string.IsNullOrWhiteSpace(rootDirectory))
             {
-                var globalJson = Path.Combine(rootDirectory, "global.json");
-                if (File.Exists(globalJson)) latestInputTime = Max(latestInputTime, File.GetLastWriteTimeUtc(globalJson));
+                foreach (var rootBuildInput in new[]
+                {
+                    "global.json",
+                    "Directory.Build.props",
+                    "Directory.Build.targets",
+                    "NuGet.Config"
+                })
+                {
+                    var inputPath = Path.Combine(rootDirectory, rootBuildInput);
+                    if (File.Exists(inputPath)) latestInputTime = Max(latestInputTime, File.GetLastWriteTimeUtc(inputPath));
+                }
             }
 
             foreach (var file in Directory.EnumerateFiles(nativeDirectory, "*", SearchOption.AllDirectories))
@@ -262,25 +297,101 @@ internal static class Program
         }
     }
 
+    private static void WaitForExitAndDrain(Process process, string logDir)
+    {
+        if (!process.HasExited && !process.WaitForExit(5000))
+        {
+            Log(logDir, "Timed out while waiting for the development watch process to exit.");
+            return;
+        }
+
+        // The parameterless wait completes asynchronous stdout/stderr handlers.
+        process.WaitForExit();
+    }
+
+    private static void AttachWatchLogging(Process process, string logDir)
+    {
+        process.OutputDataReceived += (_, e) => LogWatchLine(logDir, "OUT", e.Data);
+        process.ErrorDataReceived += (_, e) => LogWatchLine(logDir, "ERR", e.Data);
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+    }
+
+    private static void LogWatchLine(string logDir, string stream, string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+        Log(logDir, $"[watch:{stream}] {message}");
+    }
+
     private static void ShowError(string title, string detail)
     {
+        var simplifiedChinese = UseSimplifiedChinese();
         MessageBox.Show(
-            $"{title}\n\n{detail}",
-            "Vector 2D Animation Engine Launcher",
+            $"{(simplifiedChinese ? TranslateLauncherError(title) : title)}\n\n{(simplifiedChinese ? TranslateLauncherError(detail) : detail)}",
+            simplifiedChinese ? "Vector 2D Animation Engine 启动器" : "Vector 2D Animation Engine Launcher",
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
     }
 
-    private static void Log(string logDir, string message)
+    private static bool UseSimplifiedChinese()
     {
         try
         {
-            var path = Path.Combine(logDir, "launcher.log");
-            File.AppendAllText(path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}{Environment.NewLine}");
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Vector2DAnimationEngine",
+                "settings.json");
+            if (!File.Exists(path)) return false;
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            if (!document.RootElement.TryGetProperty("Language", out var language)) return false;
+            return language.ValueKind switch
+            {
+                JsonValueKind.Number => language.TryGetInt32(out var value) && value == 1,
+                JsonValueKind.String => string.Equals(language.GetString(), "SimplifiedChinese", StringComparison.OrdinalIgnoreCase),
+                _ => false
+            };
         }
         catch
         {
-            // Launcher logging must not block startup or error reporting.
+            return false;
+        }
+    }
+
+    private static string TranslateLauncherError(string text)
+    {
+        return text switch
+        {
+            "Cannot find the precompiled runtime or development project." => "找不到预编译运行时或开发项目。",
+            ".NET SDK was not found in PATH." => "在 PATH 中找不到 .NET SDK。",
+            "Install .NET SDK 8+ or run the release build instead." => "请安装 .NET SDK 8 或更高版本，或改用发布版本。",
+            "Failed to launch the development app." => "无法启动开发版本。",
+            _ => text
+        };
+    }
+
+    private static void Log(string logDir, string message)
+    {
+        lock (LogSync)
+        {
+            try
+            {
+                var path = Path.Combine(logDir, "launcher.log");
+                var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}{Environment.NewLine}";
+                if (_launcherLogBytes < 0) _launcherLogBytes = File.Exists(path) ? new FileInfo(path).Length : 0;
+                var lineBytes = System.Text.Encoding.UTF8.GetByteCount(line);
+                if (_launcherLogBytes + lineBytes > MaxLauncherLogBytes)
+                {
+                    var previousPath = Path.Combine(logDir, "launcher.previous.log");
+                    if (File.Exists(path)) File.Move(path, previousPath, overwrite: true);
+                    _launcherLogBytes = 0;
+                }
+                File.AppendAllText(path, line);
+                _launcherLogBytes += lineBytes;
+            }
+            catch
+            {
+                // Launcher logging must not block startup or error reporting.
+            }
         }
     }
 }

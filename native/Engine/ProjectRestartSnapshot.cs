@@ -51,4 +51,9 @@ internal sealed class InstanceRestartSnapshot
     public float ScaleX { get; init; } = 1;
     public float ScaleY { get; init; } = 1;
     public float ScaleZ { get; init; } = 1;
+    public int PlaybackFps { get; init; } = 30;
+    public DrawingObjectPlaybackMode PlaybackMode { get; init; } = DrawingObjectPlaybackMode.PlayOnce;
+    public int HoldFrame { get; init; }
+    public InstancePositionKeyframe[] PositionKeyframes { get; init; } = [];
+    public InstanceStateKeyframe[] StateKeyframes { get; init; } = [];
 }

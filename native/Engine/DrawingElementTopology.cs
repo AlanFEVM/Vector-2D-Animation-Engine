@@ -46,6 +46,16 @@ internal sealed record FillBoundaryLineLink(
     int SegmentCount,
     bool Reversed);
 
+internal readonly record struct LineEndpointJunction(
+    int NeighborCount,
+    int OwnerObjectIndex,
+    int FirstNeighborObjectIndex,
+    bool FirstNeighborStartEndpoint,
+    bool AllSharp,
+    LineEndpointConnection[] Connections);
+
+internal readonly record struct LineEndpointConnection(int ObjectIndex, bool StartEndpoint);
+
 internal readonly record struct DrawingTopologySplit(float T, PointF Point);
 
 internal readonly record struct CurveSample(float T, PointF Point);

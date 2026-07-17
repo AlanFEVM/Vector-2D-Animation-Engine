@@ -127,7 +127,7 @@ internal sealed class VectorProject
                     Keyframes = track.Keyframes.ToArray()
                 }).ToArray()
             });
-            duplicate.SynchronizeInstanceTimelineTracks();
+            duplicate.SynchronizeTimelineTracks();
         }
 
         Changed?.Invoke(this, EventArgs.Empty);
@@ -271,6 +271,7 @@ internal sealed class VectorProject
         string containerId,
         string childId,
         PointF position,
+        string? sceneLayerId,
         out DrawingObjectInstanceDefinition? instance)
     {
         instance = null;
@@ -281,11 +282,59 @@ internal sealed class VectorProject
         instance = new DrawingObjectInstanceDefinition
         {
             DrawingObjectId = child.Id,
+            SceneLayerId = sceneLayerId ?? container.Scene.ResolveInstanceLayerId(null),
             Name = $"{child.Name} Instance {container.Instances.Count + 1:000}",
             X = position.X,
             Y = position.Y
         };
         container.AddInstance(this, instance);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryAddDrawingObjectInstance(
+        string containerId,
+        string childId,
+        PointF position,
+        out DrawingObjectInstanceDefinition? instance)
+    {
+        return TryAddDrawingObjectInstance(containerId, childId, position, sceneLayerId: null, out instance);
+    }
+
+    public bool CanMoveDrawingObjectInstancesInLayer(
+        string containerId,
+        IReadOnlyCollection<string> instanceIds,
+        int direction)
+    {
+        var container = FindDrawingObject(containerId);
+        return container is not null && container.CanMoveInstancesInLayer(instanceIds, direction);
+    }
+
+    public bool TryMoveDrawingObjectInstancesInLayer(
+        string containerId,
+        IReadOnlyCollection<string> instanceIds,
+        int direction)
+    {
+        var container = FindDrawingObject(containerId);
+        if (container is null || !container.MoveInstancesInLayer(instanceIds, direction)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryRemoveDrawingObjectInstance(
+        string containerId,
+        string instanceId,
+        out DrawingObjectInstanceDefinition? removed)
+    {
+        removed = null;
+        if (string.IsNullOrWhiteSpace(containerId) || string.IsNullOrWhiteSpace(instanceId)) return false;
+
+        var container = FindDrawingObject(containerId);
+        var instance = container?.Instances.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, instanceId, StringComparison.Ordinal));
+        if (container is null || instance is null || !container.RemoveInstance(instance)) return false;
+
+        removed = instance;
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -400,7 +449,7 @@ internal sealed class VectorProject
             foreach (var instance in sceneSnapshots[index].Instances)
             {
                 if (!TryCreateRestartInstance(instance, out var restored)) continue;
-                scene.AddInstance(project, new SceneObjectInstanceDefinition
+                var sceneInstance = new SceneObjectInstanceDefinition
                 {
                     Id = restored.Id,
                     DrawingObjectId = restored.DrawingObjectId,
@@ -417,15 +466,20 @@ internal sealed class VectorProject
                     SkewY = restored.SkewY,
                     ScaleX = restored.ScaleX,
                     ScaleY = restored.ScaleY,
-                    ScaleZ = restored.ScaleZ
-                });
+                    ScaleZ = restored.ScaleZ,
+                    PlaybackFps = restored.PlaybackFps,
+                    PlaybackMode = restored.PlaybackMode,
+                    HoldFrame = restored.HoldFrame
+                };
+                sceneInstance.RestoreStateKeyframes(restored.StateKeyframes);
+                scene.AddInstance(project, sceneInstance);
             }
         }
 
         for (var index = 0; index < drawingSnapshots.Length; index++)
         {
             project._drawingObjects[index].Scene.RestoreSnapshot(drawingSnapshots[index].Scene);
-            project._drawingObjects[index].SynchronizeInstanceTimelineTracks();
+            project._drawingObjects[index].SynchronizeTimelineTracks();
         }
 
         for (var index = 0; index < sceneSnapshots.Length; index++)
@@ -456,7 +510,11 @@ internal sealed class VectorProject
             SkewY = instance.SkewY,
             ScaleX = instance.ScaleX,
             ScaleY = instance.ScaleY,
-            ScaleZ = instance.ScaleZ
+            ScaleZ = instance.ScaleZ,
+            PlaybackFps = instance.PlaybackFps,
+            PlaybackMode = instance.PlaybackMode,
+            HoldFrame = instance.HoldFrame,
+            StateKeyframes = instance.StateKeyframes.ToArray()
         };
     }
 
@@ -481,8 +539,13 @@ internal sealed class VectorProject
             SkewY = snapshot.SkewY,
             ScaleX = snapshot.ScaleX,
             ScaleY = snapshot.ScaleY,
-            ScaleZ = snapshot.ScaleZ
+            ScaleZ = snapshot.ScaleZ,
+            PlaybackFps = snapshot.PlaybackFps,
+            PlaybackMode = snapshot.PlaybackMode,
+            HoldFrame = snapshot.HoldFrame
         };
+        if (snapshot.StateKeyframes.Length > 0) instance.RestoreStateKeyframes(snapshot.StateKeyframes);
+        else instance.RestorePositionKeyframes(snapshot.PositionKeyframes);
         return true;
     }
 
@@ -546,7 +609,7 @@ internal sealed class VectorProject
 
     private static DrawingObjectInstanceDefinition CloneDrawingObjectInstance(DrawingObjectInstanceDefinition source)
     {
-        return new DrawingObjectInstanceDefinition
+        var clone = new DrawingObjectInstanceDefinition
         {
             DrawingObjectId = source.DrawingObjectId,
             SceneLayerId = source.SceneLayerId,
@@ -562,8 +625,13 @@ internal sealed class VectorProject
             SkewY = source.SkewY,
             ScaleX = source.ScaleX,
             ScaleY = source.ScaleY,
-            ScaleZ = source.ScaleZ
+            ScaleZ = source.ScaleZ,
+            PlaybackFps = source.PlaybackFps,
+            PlaybackMode = source.PlaybackMode,
+            HoldFrame = source.HoldFrame
         };
+        clone.RestoreStateKeyframes(source.StateKeyframes);
+        return clone;
     }
 
     private SceneDefinition? FindScene(string id)

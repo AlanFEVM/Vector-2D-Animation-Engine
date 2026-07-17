@@ -50,6 +50,8 @@ internal sealed class VectorSceneSnapshot
     public float[] GradientEndX { get; init; } = [];
     public float[] GradientEndY { get; init; } = [];
     public Dictionary<int, GradientStop[]> GradientStops { get; init; } = new();
+    public Dictionary<int, PointF[]> GradientPathLocalPoints { get; init; } = new();
+    public Dictionary<int, PointF[][]> ShapeGradientMappingLocalContours { get; init; } = new();
     public AnimationTimelineSnapshot? Timeline { get; init; }
     public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
     public Dictionary<int, PointF[]> FreehandLocalPoints { get; init; } = new();
@@ -99,6 +101,16 @@ internal sealed class VectorSceneSnapshot
 
         bytes += 72L * GradientStops.Count;
         foreach (var stops in GradientStops.Values) bytes += ArrayBytes(stops.Length, 8);
+
+        bytes += 64L * GradientPathLocalPoints.Count;
+        foreach (var points in GradientPathLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);
+
+        bytes += 72L * ShapeGradientMappingLocalContours.Count;
+        foreach (var contours in ShapeGradientMappingLocalContours.Values)
+        {
+            bytes += ArrayBytes(contours.Length, IntPtr.Size);
+            foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 8);
+        }
 
         bytes += 72L * PathLocalContours.Count;
         foreach (var contours in PathLocalContours.Values)

@@ -17,6 +17,16 @@ internal readonly record struct HotReloadPlan(HotReloadModule Modules, string Up
 {
     public bool Includes(HotReloadModule module) => (Modules & module) != 0;
 
+    public HotReloadPlan Merge(HotReloadPlan other)
+    {
+        var names = UpdatedTypes
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Concat(other.UpdatedTypes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.Ordinal)
+            .Take(24);
+        return new HotReloadPlan(Modules | other.Modules, string.Join(", ", names));
+    }
+
     // Existing WinForms controls do not rerun their constructors after CLR metadata updates.
     // Recreate the workbench for modules that own a control tree or its layout.
     public bool RequiresWorkbenchRebuild => (Modules & (HotReloadModule.Shell
@@ -53,7 +63,10 @@ internal static class HotReloadModuleResolver
 
     private static HotReloadModule ModuleFor(string typeName)
     {
-        if (typeName is nameof(StageControl) or nameof(Direct2DStageRenderer) or nameof(SceneRenderOrderBuffer))
+        if (typeName is nameof(StageControl)
+            or nameof(Direct2DStageRenderer)
+            or nameof(SceneRenderOrderBuffer)
+            or nameof(WorldGridLayout))
         {
             return HotReloadModule.Rendering;
         }
@@ -84,6 +97,7 @@ internal static class HotReloadModuleResolver
             or nameof(GradientStopStrip)
             or nameof(BrushTipPanel)
             or nameof(DrawSettingsPanel)
+            or nameof(DrawingObjectInstancePanel)
             or nameof(DrawSettings)
             or nameof(ModernSlider)
             or nameof(ModernNumericUpDown)
@@ -92,7 +106,11 @@ internal static class HotReloadModuleResolver
             return HotReloadModule.Inspector;
         }
 
-        if (typeName is nameof(AnimatedContextMenuStrip))
+        if (typeName is nameof(AnimatedContextMenuStrip)
+            or nameof(SettingsDialog)
+            or nameof(UiLocalization)
+            or nameof(ApplicationSettingsStore)
+            or nameof(ToolShortcutMap))
         {
             return HotReloadModule.Shell;
         }
@@ -108,6 +126,8 @@ internal static class HotReloadModuleResolver
             or nameof(VectorUnits)
             or nameof(DrawingTopologyRules)
             or nameof(DrawingObjectDefinition)
+            or nameof(DrawingObjectInstanceDefinition)
+            or nameof(DrawingObjectPlaybackMode)
             or nameof(SceneDefinition)
             or nameof(SceneLayerDefinition)
             or nameof(SceneLayerSnapshot)
@@ -118,6 +138,18 @@ internal static class HotReloadModuleResolver
             return HotReloadModule.Engine;
         }
 
-        return HotReloadModule.Shell;
+        // Unknown roots are treated conservatively. A full workbench refresh is
+        // preferable to silently retaining stale controls or engine-derived state.
+        return HotReloadModule.All;
     }
+}
+
+internal readonly record struct HotReloadBatch(long Generation, HotReloadPlan Plan, DateTime QueuedUtc);
+
+internal enum HotReloadUiState
+{
+    Applying,
+    Applied,
+    Recovering,
+    Failed
 }

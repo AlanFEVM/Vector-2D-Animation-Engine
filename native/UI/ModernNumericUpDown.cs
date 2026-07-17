@@ -24,14 +24,15 @@ internal sealed class ModernNumericUpDown : UserControl
     private const int LogicalPixelsPerIncrement = 4;
     private const int LogicalStepperWidth = 18;
 
-    private readonly TextBox _editor = new()
+    private readonly NumericEditorTextBox _editor = new()
     {
         BorderStyle = BorderStyle.None,
         BackColor = Theme.Field,
         ForeColor = Theme.Text,
         Font = Theme.UiFont(),
         TextAlign = HorizontalAlignment.Left,
-        AccessibleRole = AccessibleRole.Text
+        AccessibleRole = AccessibleRole.Text,
+        Cursor = Cursors.SizeWE
     };
     private readonly NumericStepButton _increaseButton = new(1) { AccessibleName = "Increase value" };
     private readonly NumericStepButton _decreaseButton = new(-1) { AccessibleName = "Decrease value" };
@@ -73,9 +74,9 @@ internal sealed class ModernNumericUpDown : UserControl
         MinimumSize = new Size(0, Theme.ControlHeightCompact);
         AccessibleRole = AccessibleRole.SpinButton;
 
-        _editor.MouseDown += HandleEditorMouseDown;
-        _editor.MouseMove += HandleEditorMouseMove;
-        _editor.MouseUp += HandleEditorMouseUp;
+        _editor.PointerMouseDown += HandleEditorMouseDown;
+        _editor.PointerMouseMove += HandleEditorMouseMove;
+        _editor.PointerMouseUp += HandleEditorMouseUp;
         _editor.MouseCaptureChanged += HandleEditorCaptureChanged;
         _editor.MouseEnter += (_, _) => UpdateHoverState();
         _editor.MouseLeave += (_, _) => UpdateHoverState();
@@ -97,6 +98,7 @@ internal sealed class ModernNumericUpDown : UserControl
         Controls.Add(_editor);
         Controls.Add(_increaseButton);
         Controls.Add(_decreaseButton);
+        Cursor = Cursors.SizeWE;
         UpdateEditorAccessibility();
         UpdateEditorText();
     }
@@ -274,9 +276,9 @@ internal sealed class ModernNumericUpDown : UserControl
     {
         if (disposing)
         {
-            _editor.MouseDown -= HandleEditorMouseDown;
-            _editor.MouseMove -= HandleEditorMouseMove;
-            _editor.MouseUp -= HandleEditorMouseUp;
+            _editor.PointerMouseDown -= HandleEditorMouseDown;
+            _editor.PointerMouseMove -= HandleEditorMouseMove;
+            _editor.PointerMouseUp -= HandleEditorMouseUp;
             _editor.MouseCaptureChanged -= HandleEditorCaptureChanged;
             _editor.KeyDown -= HandleEditorKeyDown;
         }
@@ -304,6 +306,8 @@ internal sealed class ModernNumericUpDown : UserControl
     private void HandleEditorMouseDown(object? sender, MouseEventArgs e)
     {
         if (!Enabled || e.Button != MouseButtons.Left) return;
+        _editor.SelectionStart = _editor.TextLength;
+        _editor.SelectionLength = 0;
         _pointerPending = true;
         _pressScreenX = Control.MousePosition.X;
         _pressScreenY = Control.MousePosition.Y;
@@ -346,6 +350,7 @@ internal sealed class ModernNumericUpDown : UserControl
         else
         {
             _pointerPending = false;
+            _editor.SelectAll();
         }
     }
 
@@ -562,6 +567,9 @@ internal sealed class ModernNumericUpDown : UserControl
         if (ForeColor != foreground) ForeColor = foreground;
         if (_editor.BackColor != background) _editor.BackColor = background;
         if (_editor.ForeColor != foreground) _editor.ForeColor = foreground;
+        var cursor = Enabled ? Cursors.SizeWE : Cursors.Default;
+        if (Cursor != cursor) Cursor = cursor;
+        if (_editor.Cursor != cursor) _editor.Cursor = cursor;
         _increaseButton.Invalidate();
         _decreaseButton.Invalidate();
         Invalidate();
@@ -584,6 +592,52 @@ internal sealed class ModernNumericUpDown : UserControl
     {
         var dpi = IsHandleCreated ? DeviceDpi : 96;
         return Math.Max(1, (int)Math.Round(logicalPixels * dpi / 96f));
+    }
+
+    private sealed class NumericEditorTextBox : TextBox
+    {
+        private const int WmMouseMove = 0x0200;
+        private const int WmLeftButtonDown = 0x0201;
+        private const int WmLeftButtonUp = 0x0202;
+        private const int WmLeftButtonDoubleClick = 0x0203;
+
+        public event EventHandler<MouseEventArgs>? PointerMouseDown;
+        public event EventHandler<MouseEventArgs>? PointerMouseMove;
+        public event EventHandler<MouseEventArgs>? PointerMouseUp;
+
+        protected override void WndProc(ref Message message)
+        {
+            if (Enabled && message.Msg is WmLeftButtonDown or WmLeftButtonDoubleClick)
+            {
+                Focus();
+                Capture = true;
+                PointerMouseDown?.Invoke(this, MouseEvent(message, MouseButtons.Left));
+                return;
+            }
+
+            if (Enabled && message.Msg == WmMouseMove && Capture)
+            {
+                PointerMouseMove?.Invoke(this, MouseEvent(message, MouseButtons.Left));
+                return;
+            }
+
+            if (Enabled && message.Msg == WmLeftButtonUp && Capture)
+            {
+                PointerMouseUp?.Invoke(this, MouseEvent(message, MouseButtons.Left));
+                if (Capture) Capture = false;
+                return;
+            }
+
+            base.WndProc(ref message);
+        }
+
+        private static MouseEventArgs MouseEvent(Message message, MouseButtons button)
+        {
+            var packed = message.LParam.ToInt64();
+            var x = unchecked((short)(packed & 0xffff));
+            var y = unchecked((short)((packed >> 16) & 0xffff));
+            return new MouseEventArgs(button, 1, x, y, 0);
+        }
     }
 
     private sealed class NumericStepButton : Control
