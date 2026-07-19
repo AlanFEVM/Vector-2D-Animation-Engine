@@ -19,7 +19,9 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
     public string Name { get; set; } = "Drawing Object";
     public string Kind { get; set; } = "Symbol";
     public string Detail { get; set; } = "Reusable drawing object";
+    public string AssetFolderId { get; internal set; } = "";
     public bool CanDraw => true;
+    public PointF Anchor { get; private set; }
     public VectorScene Scene { get; } = new();
     public IReadOnlyList<DrawingObjectInstanceDefinition> Instances => _instanceView;
     public DateTime CreatedAt { get; init; } = DateTime.Now;
@@ -27,6 +29,11 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
     public IReadOnlyList<string> TimelineTargetIds => Scene.TimelineTargetIds;
 
     public int FrameCount => Scene.FrameCount;
+
+    internal void SetAnchor(PointF anchor)
+    {
+        Anchor = VectorUnits.Quantize(anchor);
+    }
 
     public void SynchronizeTimelineTracks()
     {
@@ -87,6 +94,35 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         if (!_instances.Remove(instance)) return false;
 
         SynchronizeTimelineTracks();
+        Scene.SynchronizeExternalLayerKeyframeContent();
+        return true;
+    }
+
+    internal DrawingObjectInstanceDefinition[] CreateInstanceSnapshot()
+    {
+        return _instances.Select(instance => instance.Clone()).ToArray();
+    }
+
+    internal void RestoreInstanceSnapshot(IEnumerable<DrawingObjectInstanceDefinition> instances)
+    {
+        ArgumentNullException.ThrowIfNull(instances);
+        _instances.Clear();
+        _instances.AddRange(instances.Select(instance => instance.Clone()));
+        SynchronizeTimelineTracks();
+        Scene.SynchronizeExternalLayerKeyframeContent();
+    }
+
+    internal bool RemoveLayers(VectorProject project, IEnumerable<string> layerIds)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(layerIds);
+        if (!project.OwnsDrawingObject(this)) throw new InvalidOperationException("The drawing object is not owned by this project.");
+
+        var removal = Scene.ResolveLayerRemovalIndices(layerIds);
+        if (removal.Length == 0 || removal.Length >= Scene.LayerCount) return false;
+        var removedIds = removal.Select(layer => Scene.LayerIds[layer]).ToHashSet(StringComparer.Ordinal);
+        _instances.RemoveAll(instance => removedIds.Contains(instance.SceneLayerId));
+        if (!Scene.RemoveLayers(removedIds)) return false;
         Scene.SynchronizeExternalLayerKeyframeContent();
         return true;
     }

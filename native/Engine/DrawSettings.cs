@@ -66,16 +66,20 @@ internal sealed class DrawSettings
         set => _brushFrequency = Math.Clamp(value, 1, 24);
     }
 
-    public PointF SnapPoint(PointF point)
+    public PointF SnapPoint(PointF point, float? gridStep = null)
     {
         if (!SnapEnabled || !SnapToGrid) return point;
-        return new PointF(SnapValue(point.X, GridSize), SnapValue(point.Y, GridSize));
+        var step = gridStep is { } adaptiveStep && float.IsFinite(adaptiveStep) && adaptiveStep > 0
+            ? adaptiveStep
+            : GridSize;
+        return new PointF(SnapValue(point.X, step), SnapValue(point.Y, step));
     }
 
     public PointF ResolvePointSnap(
         PointF point,
         PointF? objectCandidate = null,
-        bool temporarilySnapToObjects = false)
+        bool temporarilySnapToObjects = false,
+        float? gridStep = null)
     {
         if (objectCandidate is { } candidate
             && (temporarilySnapToObjects || SnapEnabled && SnapToObjects))
@@ -83,7 +87,7 @@ internal sealed class DrawSettings
             return candidate;
         }
 
-        return VectorUnits.Quantize(SnapPoint(point));
+        return VectorUnits.Quantize(SnapPoint(point, gridStep));
     }
 
     public SizeF ApplyAspectRatio(SizeF size)

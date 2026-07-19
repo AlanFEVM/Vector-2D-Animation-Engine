@@ -150,7 +150,7 @@ internal static class Theme
         list.DrawItem += DrawListBoxItem;
     }
 
-    public static void StyleTreeView(TreeView tree)
+    public static void StyleTreeView(TreeView tree, bool useCustomExpandButtons = false)
     {
         tree.BackColor = Panel;
         tree.ForeColor = Text;
@@ -160,13 +160,13 @@ internal static class Theme
         tree.FullRowSelect = true;
         tree.ShowLines = false;
         tree.ShowRootLines = false;
-        tree.ShowPlusMinus = true;
+        tree.ShowPlusMinus = !useCustomExpandButtons;
         tree.ItemHeight = 28;
         tree.DrawMode = TreeViewDrawMode.OwnerDrawAll;
         tree.HotTracking = true;
         StyleNativeScrollBars(tree);
         if (StyledTreeViews.TryGetValue(tree, out _)) return;
-        var state = new TreeViewInteractionState(tree);
+        var state = new TreeViewInteractionState(tree, useCustomExpandButtons);
         StyledTreeViews.Add(tree, state);
         tree.DrawNode += DrawTreeNode;
     }
@@ -361,21 +361,63 @@ internal static class Theme
             e.Graphics.FillRectangle(accent, 0, row.Top, 3, row.Height);
         }
 
+        var customExpandButtons = state?.UseCustomExpandButtons == true;
+        var indent = Math.Max(16, tree.Indent);
+        var contentLeft = customExpandButtons
+            ? Math.Max(e.Bounds.Left, 6 + e.Node.Level * indent)
+            : Math.Max(e.Bounds.Left, 8 + e.Node.Level * Math.Max(12, tree.Indent));
         if (e.Node.Nodes.Count > 0)
         {
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            var centerX = Math.Max(8, e.Bounds.Left - 10);
-            var centerY = e.Bounds.Top + e.Bounds.Height / 2f;
-            PointF[] points = e.Node.IsExpanded
-                ? [new(centerX - 4, centerY - 2), new(centerX + 4, centerY - 2), new(centerX, centerY + 3)]
-                : [new(centerX - 2, centerY - 4), new(centerX - 2, centerY + 4), new(centerX + 3, centerY)];
-            using var glyph = new SolidBrush(selected ? AccentLabel : Muted);
-            e.Graphics.FillPolygon(glyph, points);
+            if (customExpandButtons)
+            {
+                var buttonBounds = TreeExpandGlyphBounds(tree, e.Node);
+                var expandHovered = state?.HoverExpandNode == e.Node;
+                var expandPressed = state?.PressedExpandNode == e.Node;
+                var buttonColor = expandPressed
+                    ? AccentPressedSurface
+                    : expandHovered
+                        ? AccentHoverSurface
+                        : selected
+                            ? AccentPressedSurface
+                            : PanelStrong;
+                var borderColor = expandHovered || selected ? Accent : Border;
+                using (var button = new SolidBrush(buttonColor))
+                using (var border = new Pen(borderColor))
+                {
+                    e.Graphics.FillRectangle(button, buttonBounds);
+                    e.Graphics.DrawRectangle(border, buttonBounds.X, buttonBounds.Y, buttonBounds.Width - 1, buttonBounds.Height - 1);
+                }
+
+                var centerX = buttonBounds.Left + buttonBounds.Width / 2f;
+                var centerY = buttonBounds.Top + buttonBounds.Height / 2f;
+                PointF[] chevron = e.Node.IsExpanded
+                    ? [new(centerX - 4, centerY - 2), new(centerX, centerY + 2), new(centerX + 4, centerY - 2)]
+                    : [new(centerX - 2, centerY - 4), new(centerX + 2, centerY), new(centerX - 2, centerY + 4)];
+                using var glyph = new Pen(selected || expandHovered ? AccentLabel : Muted, 1.6f)
+                {
+                    StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                    EndCap = System.Drawing.Drawing2D.LineCap.Round,
+                    LineJoin = System.Drawing.Drawing2D.LineJoin.Round
+                };
+                e.Graphics.DrawLines(glyph, chevron);
+                contentLeft = Math.Max(contentLeft, buttonBounds.Right + 6);
+            }
+            else
+            {
+                var centerX = Math.Max(8, contentLeft - 10);
+                var centerY = e.Bounds.Top + e.Bounds.Height / 2f;
+                PointF[] points = e.Node.IsExpanded
+                    ? [new(centerX - 4, centerY - 2), new(centerX + 4, centerY - 2), new(centerX, centerY + 3)]
+                    : [new(centerX - 2, centerY - 4), new(centerX - 2, centerY + 4), new(centerX + 3, centerY)];
+                using var glyph = new SolidBrush(selected ? AccentLabel : Muted);
+                e.Graphics.FillPolygon(glyph, points);
+            }
         }
 
         var color = e.Node.ForeColor.IsEmpty ? tree.ForeColor : e.Node.ForeColor;
         if (!tree.Enabled) color = DisabledText;
-        var bounds = new Rectangle(e.Bounds.Left, e.Bounds.Top, Math.Max(0, tree.ClientSize.Width - e.Bounds.Left - 6), e.Bounds.Height);
+        var bounds = new Rectangle(contentLeft, e.Bounds.Top, Math.Max(0, tree.ClientSize.Width - contentLeft - 6), e.Bounds.Height);
         TextRenderer.DrawText(
             e.Graphics,
             UiLocalization.T(e.Node.Text),
@@ -388,6 +430,31 @@ internal static class Theme
             var focusBounds = new Rectangle(4, row.Top + 1, Math.Max(0, row.Width - 8), Math.Max(0, row.Height - 2));
             ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, AccentLabel, background.Color);
         }
+    }
+
+    internal static bool IsTreeExpandGlyphHit(TreeView tree, TreeNode node, Point location)
+    {
+        return node.Nodes.Count > 0 && TreeExpandGlyphBounds(tree, node).Contains(location);
+    }
+
+    private static Rectangle TreeExpandGlyphBounds(TreeView tree, TreeNode node)
+    {
+        const int buttonSize = 16;
+        var indent = Math.Max(16, tree.Indent);
+        var x = 4 + node.Level * indent;
+        var y = node.Bounds.Top + Math.Max(0, (node.Bounds.Height - buttonSize) / 2);
+        return new Rectangle(x, y, buttonSize, buttonSize);
+    }
+
+    private static TreeNode? TreeNodeAtRow(TreeView tree, int y)
+    {
+        for (var node = tree.TopNode; node is not null; node = node.NextVisibleNode)
+        {
+            if (node.Bounds.Top > y) return null;
+            if (y >= node.Bounds.Top && y < node.Bounds.Bottom) return node;
+        }
+
+        return null;
     }
 
     private static void DrawListViewHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
@@ -510,22 +577,51 @@ internal static class Theme
     {
         private readonly TreeView _tree;
 
-        public TreeViewInteractionState(TreeView tree)
+        public TreeViewInteractionState(TreeView tree, bool useCustomExpandButtons)
         {
             _tree = tree;
-            tree.MouseMove += (_, e) => SetHover(tree.GetNodeAt(e.Location));
-            tree.MouseLeave += (_, _) => SetHover(null);
+            UseCustomExpandButtons = useCustomExpandButtons;
+            tree.MouseMove += (_, e) => SetHover(TreeNodeAtRow(tree, e.Y), e.Location);
+            tree.MouseLeave += (_, _) => SetHover(null, Point.Empty);
+            tree.MouseDown += (_, e) =>
+            {
+                if (!UseCustomExpandButtons || e.Button != MouseButtons.Left || e.Clicks != 1) return;
+                var node = TreeNodeAtRow(tree, e.Y);
+                if (node is null || !IsTreeExpandGlyphHit(tree, node, e.Location)) return;
+                PressedExpandNode = node;
+                tree.Invalidate(new Rectangle(0, node.Bounds.Top, tree.ClientSize.Width, node.Bounds.Height));
+                if (node.IsExpanded) node.Collapse(ignoreChildren: true);
+                else node.Expand();
+            };
+            tree.MouseUp += (_, _) => ClearPressedNode();
+            tree.MouseCaptureChanged += (_, _) => ClearPressedNode();
         }
 
         public TreeNode? HoverNode { get; private set; }
+        public TreeNode? HoverExpandNode { get; private set; }
+        public TreeNode? PressedExpandNode { get; private set; }
+        public bool UseCustomExpandButtons { get; }
 
-        private void SetHover(TreeNode? node)
+        private void SetHover(TreeNode? node, Point location)
         {
-            if (HoverNode == node) return;
+            var expandNode = UseCustomExpandButtons
+                && node is not null
+                && IsTreeExpandGlyphHit(_tree, node, location)
+                    ? node
+                    : null;
+            if (HoverNode == node && HoverExpandNode == expandNode) return;
             var previous = HoverNode;
             HoverNode = node;
+            HoverExpandNode = expandNode;
             if (previous is not null) _tree.Invalidate(new Rectangle(0, previous.Bounds.Top, _tree.ClientSize.Width, previous.Bounds.Height));
             if (HoverNode is not null) _tree.Invalidate(new Rectangle(0, HoverNode.Bounds.Top, _tree.ClientSize.Width, HoverNode.Bounds.Height));
+        }
+
+        private void ClearPressedNode()
+        {
+            var previous = PressedExpandNode;
+            PressedExpandNode = null;
+            if (previous is not null) _tree.Invalidate(new Rectangle(0, previous.Bounds.Top, _tree.ClientSize.Width, previous.Bounds.Height));
         }
     }
 

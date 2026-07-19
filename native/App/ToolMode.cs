@@ -12,6 +12,7 @@ internal enum ToolMode
     Star,
     Line,
     Pen,
+    SimplePen,
     Pencil,
     Brush,
     PressureBrush,

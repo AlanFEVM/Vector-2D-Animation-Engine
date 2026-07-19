@@ -19,9 +19,12 @@ try {
     [Windows.Forms.Application]::DoEvents()
 
     $scene = $mainType.GetField("_scene", $flags).GetValue($main)
+    $stage = $mainType.GetField("_stage", $flags).GetValue($main)
     $settings = $mainType.GetField("_drawSettings", $flags).GetValue($main)
     $scene.CreateEmpty(1, 24)
-    $requestedEndpoint = [Drawing.PointF]::new(91, 109)
+    $adaptiveStep = [single]$stage.GetType().GetProperty("AdaptiveGridSnapStep", $flags).GetValue($stage)
+    $pointer = [Drawing.PointF]::new($adaptiveStep * 1.494, $adaptiveStep * 0.506)
+    $requestedEndpoint = [Drawing.PointF]::new($pointer.X - 1, $pointer.Y + 1)
     $line = $scene.AddLineSegment(
         0,
         [Drawing.PointF]::new(-80, -40),
@@ -40,8 +43,7 @@ try {
     $settings.SnapEnabled = $true
     $settings.SnapToGrid = $true
     $settings.SnapToObjects = $true
-    $settings.GridSize = [single]100
-    $pointer = [Drawing.PointF]::new(94, 106)
+    $settings.GridSize = [single]128
     $resolve = $mainType.GetMethod("ResolveDrawingLineEndpoint", $flags)
     $objectResult = [Drawing.PointF]$resolve.Invoke($main, @($pointer))
 
@@ -51,13 +53,14 @@ try {
         [Math]::Abs($objectResult.Y - $objectEndpoint.Y) -gt 0.001) {
         throw "Object snapping was overridden by the grid: result=$objectResult expected=$objectEndpoint"
     }
-    if ([Math]::Abs($gridResult.X - 100) -gt 0.001 -or
-        [Math]::Abs($gridResult.Y - 100) -gt 0.001) {
-        throw "Grid fallback did not resolve to the configured grid: $gridResult"
+    if ([Math]::Abs($gridResult.X - $adaptiveStep) -gt 0.001 -or
+        [Math]::Abs($gridResult.Y - $adaptiveStep) -gt 0.001) {
+        throw "Grid fallback did not resolve to the current visible grid: result=$gridResult step=$adaptiveStep"
     }
 
     "object_snap_result=$($objectResult.X),$($objectResult.Y)"
     "grid_fallback_result=$($gridResult.X),$($gridResult.Y)"
+    "adaptive_grid_step=$($adaptiveStep)vu"
     "snap_priority=object-before-grid"
 }
 finally {

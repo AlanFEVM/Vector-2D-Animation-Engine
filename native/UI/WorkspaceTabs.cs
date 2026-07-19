@@ -33,6 +33,15 @@ internal sealed class WorkspaceTabs : UserControl
     private readonly Dictionary<WorkspaceView, Button> _buttons = new();
     private readonly ToolTip _toolTip = new();
     private readonly System.Windows.Forms.Timer _indicatorTimer = new() { Interval = 16 };
+    private readonly SvgIconButton _gridTypeButton = new(SvgIconKind.Grid)
+    {
+        AccessibleName = "Grid type",
+        ShowsToolGroupIndicator = true
+    };
+    private readonly AnimatedContextMenuStrip _gridTypeMenu = new();
+    private readonly ToolStripMenuItem _cartesianGridItem = new("Cartesian Grid");
+    private readonly ToolStripMenuItem _goldenSpiralGridItem = new("Golden Spiral");
+    private readonly ToolStripMenuItem _polarGridItem = new("Polar Grid");
     private readonly ModernSlider _gridOpacity = new()
     {
         Minimum = 0,
@@ -46,6 +55,7 @@ internal sealed class WorkspaceTabs : UserControl
     private readonly Label _gridOpacityValue = new();
     private WorkspaceView _selectedView = WorkspaceView.BasicDrawing;
     private WorkspaceTabPlacement _placement = WorkspaceTabPlacement.Top;
+    private WorldGridType _worldGridType;
     private float _indicatorPosition;
     private float _indicatorExtent;
     private float _indicatorTargetPosition;
@@ -70,14 +80,15 @@ internal sealed class WorkspaceTabs : UserControl
         var gridOpacity = new TableLayoutPanel
         {
             Dock = DockStyle.Right,
-            Width = 236,
+            Width = 280,
             BackColor = Theme.Top,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
             Padding = new Padding(0, 6, 10, 6),
             Margin = Padding.Empty
         };
         gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
         gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
         gridOpacity.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -93,6 +104,21 @@ internal sealed class WorkspaceTabs : UserControl
         };
         gridOpacity.Controls.Add(gridLabel, 0, 0);
 
+        Theme.StyleButton(_gridTypeButton);
+        _gridTypeButton.Dock = DockStyle.Fill;
+        _gridTypeButton.Margin = new Padding(1, 0, 3, 0);
+        _gridTypeButton.Click += (_, _) =>
+        {
+            RefreshGridTypePresentation();
+            _gridTypeMenu.Show(_gridTypeButton, new Point(0, _gridTypeButton.Height + 2));
+        };
+        _toolTip.SetToolTip(_gridTypeButton, "Grid type");
+        _cartesianGridItem.Click += (_, _) => WorldGridType = VectorAnimationEngine.WorldGridType.Cartesian;
+        _goldenSpiralGridItem.Click += (_, _) => WorldGridType = VectorAnimationEngine.WorldGridType.GoldenSpiral;
+        _polarGridItem.Click += (_, _) => WorldGridType = VectorAnimationEngine.WorldGridType.Polar;
+        _gridTypeMenu.Items.AddRange(new ToolStripItem[] { _cartesianGridItem, _polarGridItem, _goldenSpiralGridItem });
+        gridOpacity.Controls.Add(_gridTypeButton, 1, 0);
+
         _gridOpacity.Dock = DockStyle.Fill;
         _gridOpacity.Margin = Padding.Empty;
         _gridOpacity.ValueChanged += (_, _) =>
@@ -101,7 +127,7 @@ internal sealed class WorkspaceTabs : UserControl
             WorldGridOpacityChanged?.Invoke(this, EventArgs.Empty);
         };
         _toolTip.SetToolTip(_gridOpacity, "World grid opacity");
-        gridOpacity.Controls.Add(_gridOpacity, 1, 0);
+        gridOpacity.Controls.Add(_gridOpacity, 2, 0);
 
         _gridOpacityValue.Text = "10%";
         _gridOpacityValue.Dock = DockStyle.Fill;
@@ -109,7 +135,7 @@ internal sealed class WorkspaceTabs : UserControl
         _gridOpacityValue.BackColor = Theme.Top;
         _gridOpacityValue.Font = Theme.UiFont(8.5f);
         _gridOpacityValue.TextAlign = ContentAlignment.MiddleRight;
-        gridOpacity.Controls.Add(_gridOpacityValue, 2, 0);
+        gridOpacity.Controls.Add(_gridOpacityValue, 3, 0);
         Controls.Add(gridOpacity);
 
         AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Shape drawing and direct object editing");
@@ -117,12 +143,14 @@ internal sealed class WorkspaceTabs : UserControl
         AddWorkspaceButton(WorkspaceView.Animation, "Animation", "Timeline, playback and keyframe workflow");
 
         _indicatorTimer.Tick += (_, _) => TickIndicator();
+        RefreshGridTypePresentation();
         ApplyPlacement();
         RefreshButtons();
     }
 
     public event EventHandler<WorkspaceViewChangedEventArgs>? SelectedViewChanged;
     public event EventHandler? WorldGridOpacityChanged;
+    public event EventHandler? WorldGridTypeChanged;
 
     [DefaultValue(WorkspaceView.BasicDrawing)]
     public WorkspaceView SelectedView
@@ -154,6 +182,25 @@ internal sealed class WorkspaceTabs : UserControl
         set => _gridOpacity.Value = Math.Clamp(value, _gridOpacity.Minimum, _gridOpacity.Maximum);
     }
 
+    [DefaultValue(VectorAnimationEngine.WorldGridType.Cartesian)]
+    public WorldGridType WorldGridType
+    {
+        get => _worldGridType;
+        set
+        {
+            var next = Enum.IsDefined(value) ? value : VectorAnimationEngine.WorldGridType.Cartesian;
+            if (_worldGridType == next)
+            {
+                RefreshGridTypePresentation();
+                return;
+            }
+
+            _worldGridType = next;
+            RefreshGridTypePresentation();
+            WorldGridTypeChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
     public void SelectView(WorkspaceView view) => SelectView(view, raiseEvent: true);
 
     protected override void OnResize(EventArgs e)
@@ -168,6 +215,7 @@ internal sealed class WorkspaceTabs : UserControl
         if (disposing)
         {
             _indicatorTimer.Dispose();
+            _gridTypeMenu.Dispose();
             _toolTip.Dispose();
         }
         base.Dispose(disposing);
@@ -284,6 +332,20 @@ internal sealed class WorkspaceTabs : UserControl
         }
 
         UpdateIndicator(animate: _indicatorInitialized);
+    }
+
+    private void RefreshGridTypePresentation()
+    {
+        _cartesianGridItem.Checked = _worldGridType == VectorAnimationEngine.WorldGridType.Cartesian;
+        _goldenSpiralGridItem.Checked = _worldGridType == VectorAnimationEngine.WorldGridType.GoldenSpiral;
+        _polarGridItem.Checked = _worldGridType == VectorAnimationEngine.WorldGridType.Polar;
+        _gridTypeButton.Icon = _worldGridType switch
+        {
+            VectorAnimationEngine.WorldGridType.GoldenSpiral => SvgIconKind.GoldenSpiral,
+            VectorAnimationEngine.WorldGridType.Polar => SvgIconKind.PolarGrid,
+            _ => SvgIconKind.Grid
+        };
+        _gridTypeButton.Invalidate();
     }
 
     private void UpdateIndicator(bool animate)

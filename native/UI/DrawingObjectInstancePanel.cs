@@ -17,6 +17,11 @@ internal sealed class DrawingObjectPlaybackSettingsChangedEventArgs : EventArgs
     public int HoldFrame { get; }
 }
 
+internal sealed class DrawingObjectAnchorChangedEventArgs(PointF anchor) : EventArgs
+{
+    public PointF Anchor { get; } = anchor;
+}
+
 internal sealed class DrawingObjectInstancePanel : Panel
 {
     private sealed record PlaybackModeItem(DrawingObjectPlaybackMode Mode, string Label)
@@ -44,6 +49,22 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Value = 0,
         AccessibleName = "Drawing object hold frame"
     };
+    private readonly ModernNumericUpDown _anchorX = new()
+    {
+        Minimum = -5_000_000,
+        Maximum = 5_000_000,
+        Increment = 10,
+        Suffix = "vu",
+        AccessibleName = "Drawing object anchor X"
+    };
+    private readonly ModernNumericUpDown _anchorY = new()
+    {
+        Minimum = -5_000_000,
+        Maximum = 5_000_000,
+        Increment = 10,
+        Suffix = "vu",
+        AccessibleName = "Drawing object anchor Y"
+    };
     private readonly Label _holdFrameLabel;
     private readonly SvgIconButton _restoreSize = new(SvgIconKind.RestoreSize)
     {
@@ -60,8 +81,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = new Padding(12, 8, 12, 10);
-        Height = 180;
-        MinimumSize = new Size(248, 180);
+        Height = 248;
+        MinimumSize = new Size(248, 248);
 
         Controls.Add(new Label
         {
@@ -80,7 +101,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
         AddFieldLabel("Playback FPS", 42);
         AddFieldLabel("Mode", 76);
         _holdFrameLabel = AddFieldLabel("Hold Frame", 110);
-        AddFieldLabel("Original Size", 144);
+        AddFieldLabel("Anchor X", 144);
+        AddFieldLabel("Anchor Y", 178);
+        AddFieldLabel("Original Size", 212);
 
         _playbackMode.Items.AddRange([
             new PlaybackModeItem(DrawingObjectPlaybackMode.PlayOnce, "Play Once"),
@@ -90,6 +113,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
         _playbackMode.SelectedIndex = 0;
         Theme.StyleNumeric(_fps);
         Theme.StyleNumeric(_holdFrame);
+        Theme.StyleNumeric(_anchorX);
+        Theme.StyleNumeric(_anchorY);
         Theme.StyleComboBox(_playbackMode);
         Theme.StyleButton(_restoreSize);
         Theme.StyleToolTip(_toolTip);
@@ -98,6 +123,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Controls.Add(_fps);
         Controls.Add(_playbackMode);
         Controls.Add(_holdFrame);
+        Controls.Add(_anchorX);
+        Controls.Add(_anchorY);
         Controls.Add(_restoreSize);
         HookEvents();
         LayoutFields();
@@ -105,16 +132,31 @@ internal sealed class DrawingObjectInstancePanel : Panel
     }
 
     public event EventHandler<DrawingObjectPlaybackSettingsChangedEventArgs>? PlaybackSettingsChanged;
+    public event EventHandler<DrawingObjectAnchorChangedEventArgs>? AnchorChanged;
     public event EventHandler? RestoreOriginalSizeRequested;
 
-    public void SetInstance(DrawingObjectInstanceDefinition instance, int sourceFrameCount)
+    public void SetInstance(
+        DrawingObjectInstanceDefinition instance,
+        int sourceFrameCount,
+        PointF sourceAnchor,
+        bool canEditAnchor = true)
     {
         ArgumentNullException.ThrowIfNull(instance);
         var state = instance.EvaluateState(0);
-        SetInstance(state, sourceFrameCount, Math.Abs(state.ScaleX - 1f) > 0.0001f || Math.Abs(state.ScaleY - 1f) > 0.0001f);
+        SetInstance(
+            state,
+            sourceFrameCount,
+            Math.Abs(state.ScaleX - 1f) > 0.0001f || Math.Abs(state.ScaleY - 1f) > 0.0001f,
+            sourceAnchor,
+            canEditAnchor);
     }
 
-    public void SetInstance(InstanceFrameState state, int sourceFrameCount, bool canRestoreSize)
+    public void SetInstance(
+        InstanceFrameState state,
+        int sourceFrameCount,
+        bool canRestoreSize,
+        PointF sourceAnchor,
+        bool canEditAnchor)
     {
         _updating = true;
         try
@@ -123,6 +165,10 @@ internal sealed class DrawingObjectInstancePanel : Panel
             _playbackMode.SelectedIndex = ModeIndex(state.PlaybackMode);
             _holdFrame.Maximum = Math.Max(0, sourceFrameCount - 1);
             _holdFrame.Value = Math.Min(state.HoldFrame, (int)_holdFrame.Maximum);
+            _anchorX.Value = (decimal)sourceAnchor.X;
+            _anchorY.Value = (decimal)sourceAnchor.Y;
+            _anchorX.Enabled = canEditAnchor;
+            _anchorY.Enabled = canEditAnchor;
             _restoreSize.Enabled = canRestoreSize;
             UpdateModeState();
         }
@@ -153,7 +199,17 @@ internal sealed class DrawingObjectInstancePanel : Panel
             UpdateModeState();
             RaisePlaybackSettingsChanged();
         };
+        _anchorX.ValueChanged += (_, _) => RaiseAnchorChanged();
+        _anchorY.ValueChanged += (_, _) => RaiseAnchorChanged();
         _restoreSize.Click += (_, _) => RestoreOriginalSizeRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void RaiseAnchorChanged()
+    {
+        if (_updating) return;
+        AnchorChanged?.Invoke(
+            this,
+            new DrawingObjectAnchorChangedEventArgs(new PointF((float)_anchorX.Value, (float)_anchorY.Value)));
     }
 
     private void RaisePlaybackSettingsChanged()
@@ -198,9 +254,11 @@ internal sealed class DrawingObjectInstancePanel : Panel
         _fps.SetBounds(valueLeft, 40, valueWidth, Theme.ControlHeightCompact);
         _playbackMode.SetBounds(valueLeft, 74, valueWidth, Theme.ControlHeightCompact);
         _holdFrame.SetBounds(valueLeft, 108, valueWidth, Theme.ControlHeightCompact);
+        _anchorX.SetBounds(valueLeft, 142, valueWidth, Theme.ControlHeightCompact);
+        _anchorY.SetBounds(valueLeft, 176, valueWidth, Theme.ControlHeightCompact);
         _restoreSize.SetBounds(
             ClientSize.Width - Padding.Right - Theme.ControlHeightCompact,
-            142,
+            210,
             Theme.ControlHeightCompact,
             Theme.ControlHeightCompact);
     }

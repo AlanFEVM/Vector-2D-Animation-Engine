@@ -26,7 +26,61 @@ internal sealed class AppHost : ApplicationContext
     {
         var host = Current;
         if (host is null || host._exiting) return;
+        if (plan.RequiresProcessRestart
+            && (host._mainForm is null
+                || host._mainForm.IsDisposed
+                || !host._mainForm.IsHandleCreated)
+            && host.TryRequestDetachedEditorProcessRestart())
+        {
+            return;
+        }
         host._hotReloadCoordinator.Enqueue(plan);
+    }
+
+    private bool TryRequestDetachedEditorProcessRestart()
+    {
+        var form = Application.OpenForms
+            .OfType<MainForm>()
+            .FirstOrDefault(candidate => !candidate.IsDisposed && candidate.IsHandleCreated);
+        if (form is null)
+        {
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            form = Control.FromHandle(process.MainWindowHandle) as MainForm;
+        }
+        if (form is null) return false;
+
+        void SaveAndRestart()
+        {
+            try
+            {
+                var state = form.CaptureEditorRestartStateForRecovery();
+                if (!EditorRestartStore.TrySave(state)
+                    || !LauncherShutdownSignal.RequestEditorRestart())
+                {
+                    AppLog.Error("Unable to restart the detached editor after a failed in-process hot reload.");
+                    return;
+                }
+
+                _exiting = true;
+                AppLog.Info("Requested a state-preserving process restart for the detached editor window.");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Unable to capture the detached editor before a process restart", ex);
+            }
+        }
+
+        try
+        {
+            if (form.InvokeRequired) form.BeginInvoke(SaveAndRestart);
+            else SaveAndRestart();
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            AppLog.Error("Unable to dispatch detached-editor hot-reload recovery", ex);
+            return false;
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -91,7 +145,9 @@ internal sealed class AppHost : ApplicationContext
         var accepted = false;
         try
         {
-            accepted = plan.RequiresWorkbenchRebuild
+            accepted = plan.RequiresProcessRestart
+                ? form.RequestProcessRestartForHotReload()
+                : plan.RequiresWorkbenchRebuild
                 ? form.RebuildWorkbenchForHotReload(plan)
                 : form.ReloadModulesForHotReload(plan);
         }
@@ -101,8 +157,13 @@ internal sealed class AppHost : ApplicationContext
         }
         if (accepted)
         {
-            if (!plan.RequiresWorkbenchRebuild) form.SetHotReloadStatus(HotReloadUiState.Applied, batch.Generation);
-            AppLog.Info($"Hot reload generation {batch.Generation} applied successfully.");
+            if (!plan.RequiresProcessRestart && !plan.RequiresWorkbenchRebuild)
+            {
+                form.SetHotReloadStatus(HotReloadUiState.Applied, batch.Generation);
+            }
+            AppLog.Info(plan.RequiresProcessRestart
+                ? $"Hot reload generation {batch.Generation} requested a state-preserving process restart."
+                : $"Hot reload generation {batch.Generation} applied successfully.");
             return;
         }
 
@@ -142,9 +203,30 @@ internal sealed class AppHost : ApplicationContext
 
         if (_restartState is { } restartState)
         {
-            _restartState = null;
             _mainForm = null;
-            ShowMainForm(restartState);
+            try
+            {
+                ShowMainForm(restartState);
+                _restartState = null;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("The in-process editor restart failed; escalating to a state-preserving process restart", ex);
+                if (EditorRestartStore.TrySave(restartState)
+                    && LauncherShutdownSignal.RequestEditorRestart())
+                {
+                    _restartState = null;
+                    _exiting = true;
+                    CloseStartupBanner();
+                    ExitThread();
+                    return;
+                }
+
+                _restartState = null;
+                _exiting = true;
+                CloseStartupBanner();
+                ExitThread();
+            }
             return;
         }
 

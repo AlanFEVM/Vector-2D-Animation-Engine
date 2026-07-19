@@ -10,6 +10,7 @@ internal static class FreehandStrokeProcessor
 {
     private const double BrushCoordinateScale = 1000d;
     private const double BrushArcToleranceUnits = 0.5d;
+    private const float VariableWidthCornerAlignment = 0.85f;
 
     public static PointF[] Process(IReadOnlyList<PointF> samples, int smoothing, float simplifyTolerance)
     {
@@ -341,7 +342,7 @@ internal static class FreehandStrokeProcessor
                 ? 1f
                 : (dx * nextDx + dy * nextDy) / (distance * nextLength);
             var preservePressure = diameterChange > Math.Max(VectorUnits.StrokePointsToUnits(0.2f), current.Diameter * 0.08f);
-            var preserveCorner = directionAlignment < 0.985f;
+            var preserveCorner = directionAlignment < VariableWidthCornerAlignment;
             if (distance < spacing && !preservePressure && !preserveCorner) continue;
             result.Add(current);
         }
@@ -405,7 +406,7 @@ internal static class FreehandStrokeProcessor
             if (incomingLength <= 0.0001f || outgoingLength <= 0.0001f) continue;
 
             var alignment = (incomingX * outgoingX + incomingY * outgoingY) / (incomingLength * outgoingLength);
-            if (alignment > 0.985f) continue;
+            if (alignment > VariableWidthCornerAlignment) continue;
 
             var circle = CreateRoundContour(current, Radius(profile[i], radiusScale), joinSegments);
             var path = new Path64(circle.Length);

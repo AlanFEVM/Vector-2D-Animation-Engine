@@ -60,7 +60,12 @@ internal readonly record struct DrawingTopologySplit(float T, PointF Point);
 
 internal readonly record struct CurveSample(float T, PointF Point);
 
-internal readonly record struct CurveSegmentPart(int PartIndex, PointF Start, PointF Control, PointF End);
+internal readonly record struct CurveSegmentPart(
+    int PartIndex,
+    PointF Start,
+    PointF Control1,
+    PointF Control2,
+    PointF End);
 
 internal readonly record struct DrawingUnitCell(int Layer, int X, int Y)
 {

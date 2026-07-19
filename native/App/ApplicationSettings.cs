@@ -8,10 +8,19 @@ internal enum ToolShortcutPreset
     NumberKeys
 }
 
+internal enum TimelineFrameHeightPreset
+{
+    Low,
+    Medium,
+    High
+}
+
 internal sealed record ApplicationSettings
 {
     public ToolShortcutPreset ToolShortcutPreset { get; init; } = ToolShortcutPreset.TraditionalFlash;
     public UiLanguage Language { get; init; } = UiLanguage.English;
+    public int TimelineFrameWidth { get; init; } = 14;
+    public TimelineFrameHeightPreset TimelineFrameHeight { get; init; } = TimelineFrameHeightPreset.Medium;
 }
 
 internal static class ApplicationSettingsStore
@@ -34,13 +43,14 @@ internal static class ApplicationSettingsStore
             var settings = JsonSerializer.Deserialize<ApplicationSettings>(File.ReadAllText(SettingsPath));
             if (settings is null
                 || !Enum.IsDefined(settings.ToolShortcutPreset)
-                || !Enum.IsDefined(settings.Language))
+                || !Enum.IsDefined(settings.Language)
+                || !Enum.IsDefined(settings.TimelineFrameHeight))
             {
                 AppLog.Warn("Application settings contained an unsupported tool shortcut preset; using defaults.");
                 return new ApplicationSettings();
             }
 
-            return settings;
+            return settings with { TimelineFrameWidth = Math.Clamp(settings.TimelineFrameWidth, 8, 32) };
         }
         catch (Exception ex)
         {

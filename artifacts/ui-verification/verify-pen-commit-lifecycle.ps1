@@ -31,7 +31,7 @@ try {
     $scene = $mainType.GetField("_scene", $flags).GetValue($main)
     $stage = $mainType.GetField("_stage", $flags).GetValue($main)
     $scene.CreateEmpty(1, 24)
-    $mainType.GetMethod("ActivateTool", $flags).Invoke($main, @([Enum]::Parse($toolType, "Pen")))
+    $mainType.GetMethod("ActivateTool", $flags).Invoke($main, @([Enum]::Parse($toolType, "SimplePen")))
 
     $draggingField = $mainType.GetField("_penSegmentDragging", $flags)
     $startField = $mainType.GetField("_penStartWorld", $flags)
@@ -44,7 +44,7 @@ try {
     Invoke-PenDown $doubleStart
     Invoke-PenDown $doubleEnd
     if (-not $draggingField.GetValue($main)) {
-        throw "The short double-click fixture did not create a pending Pen segment."
+        throw "The short double-click fixture did not create a pending Simple Pen segment."
     }
     $mainType.GetMethod("StageMouseDoubleClick", $flags).Invoke(
         $main,
@@ -56,7 +56,7 @@ try {
         $null -ne $startField.GetValue($main) -or
         $null -ne $endField.GetValue($main) -or
         $draggingField.GetValue($main)) {
-        throw "A valid Pen segment recognized as a double-click was dropped or committed more than once."
+        throw "A valid Simple Pen segment recognized as a double-click was dropped or committed more than once."
     }
 
     $captureStart = [Drawing.Point]::new(420, 260)
@@ -83,14 +83,14 @@ try {
         $main,
         @($stage, (Pen-MouseEvent ([Windows.Forms.MouseButtons]::Left) 1 $curveControl)))
     if ($scene.ObjectCount -ne 3 -or $draggingField.GetValue($main)) {
-        throw "A normal Pen curve drag did not commit exactly one segment."
+        throw "A normal Simple Pen curve drag did not commit exactly one segment."
     }
     $lastObject = $scene.ObjectCount - 1
     $storedControl = [Drawing.PointF]::new($scene.CurveControlX[$lastObject], $scene.CurveControlY[$lastObject])
     $expectedControl = $stage.ScreenToWorld($curveControl)
     if ([Math]::Abs($storedControl.X - $expectedControl.X) -gt 1 -or
         [Math]::Abs($storedControl.Y - $expectedControl.Y) -gt 1) {
-        throw "Pen MouseUp did not preserve the final control-point position: actual=$storedControl expected=$expectedControl"
+        throw "Simple Pen MouseUp did not preserve the final control-point position: actual=$storedControl expected=$expectedControl"
     }
 
     $cancelStart = [Drawing.Point]::new(360, 420)

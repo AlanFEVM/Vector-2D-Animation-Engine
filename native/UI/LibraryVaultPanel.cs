@@ -14,16 +14,38 @@ internal sealed class VaultItem
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+internal sealed class ProjectAssetFolderRequestedEventArgs(string folderId) : EventArgs
+{
+    public string FolderId { get; } = folderId;
+}
+
+internal sealed class ProjectAssetFolderCreateRequestedEventArgs(string parentFolderId) : EventArgs
+{
+    public string ParentFolderId { get; } = parentFolderId;
+}
+
+internal sealed class ProjectAssetMoveRequestedEventArgs(string assetId, string targetFolderId) : EventArgs
+{
+    public string AssetId { get; } = assetId;
+    public string TargetFolderId { get; } = targetFolderId;
+}
+
+internal sealed record ProjectAssetFolderDragData(string ProjectId, string FolderId);
+
 internal sealed class LibraryVaultPanel : UserControl
 {
     private readonly ListView _library = new();
-    private readonly ListView _projectObjects = new();
+    private readonly TreeView _projectObjects = new();
     private readonly ListView _vault = new();
     private readonly AnimatedContextMenuStrip _projectObjectMenu = new();
     private readonly Panel _contentHost = new();
     private readonly Label _vaultSummary = new();
     private readonly List<VaultItem> _vaultItems = [];
     private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 220 };
+    private readonly SvgIconButton _newFolderButton = new(SvgIconKind.FolderPlus)
+    {
+        AccessibleName = "New Folder"
+    };
     private Button? _openButton;
     private VectorProject? _project;
     private VectorScene? _scene;
@@ -32,14 +54,20 @@ internal sealed class LibraryVaultPanel : UserControl
     private VaultPreviewForm? _preview;
     private ListView? _hoverList;
     private int _hoverIndex = -1;
+    private TreeNode? _hoverProjectNode;
     private bool _syncingSelection;
     private bool _projectRowsDirty = true;
     private ProjectRowsFingerprint _projectRowsFingerprint;
     private string _activeDrawingObjectId = "";
+    private string _selectedAssetFolderId = "";
     private VaultSource _activeSource = VaultSource.Project;
 
-    private sealed record VaultRow(VaultItem Item, DrawingObjectDefinition? DrawingObject, bool IsProjectObject);
-    private readonly record struct ProjectRowsFingerprint(int Count, int Hash);
+    private sealed record VaultRow(
+        VaultItem Item,
+        DrawingObjectDefinition? DrawingObject,
+        bool IsProjectObject,
+        ProjectAssetFolder? Folder = null);
+    private readonly record struct ProjectRowsFingerprint(int ObjectCount, int FolderCount, int Hash);
 
     private enum VaultSource
     {
@@ -52,6 +80,11 @@ internal sealed class LibraryVaultPanel : UserControl
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectRenameRequested;
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDuplicateRequested;
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDeleteRequested;
+    public event EventHandler<ProjectAssetFolderCreateRequestedEventArgs>? AssetFolderCreateRequested;
+    public event EventHandler<ProjectAssetFolderRequestedEventArgs>? AssetFolderRenameRequested;
+    public event EventHandler<ProjectAssetFolderRequestedEventArgs>? AssetFolderDuplicateRequested;
+    public event EventHandler<ProjectAssetMoveRequestedEventArgs>? DrawingObjectMoveRequested;
+    public event EventHandler<ProjectAssetMoveRequestedEventArgs>? AssetFolderMoveRequested;
 
     public LibraryVaultPanel()
     {
@@ -83,6 +116,7 @@ internal sealed class LibraryVaultPanel : UserControl
             _project = project;
             _project.Changed += ProjectChanged;
             _activeDrawingObjectId = "";
+            _selectedAssetFolderId = "";
             _projectRowsDirty = true;
         }
 
@@ -95,9 +129,16 @@ internal sealed class LibraryVaultPanel : UserControl
         var next = drawingObjectId ?? "";
         if (string.Equals(_activeDrawingObjectId, next, StringComparison.Ordinal)) return;
         _activeDrawingObjectId = next;
+        _selectedAssetFolderId = "";
         HidePreview(clearContent: true);
         SynchronizeProjectObjectSelection();
         UpdateActionButtons();
+    }
+
+    public void SelectAssetFolder(string? folderId)
+    {
+        _selectedAssetFolderId = folderId ?? "";
+        SynchronizeProjectObjectSelection();
     }
 
     public void RefreshProjectObjects()
@@ -168,12 +209,13 @@ internal sealed class LibraryVaultPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 3,
+            ColumnCount = 4,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
         header.Controls.Add(new Label
         {
@@ -192,6 +234,12 @@ internal sealed class LibraryVaultPanel : UserControl
         _vaultSummary.TextAlign = ContentAlignment.MiddleCenter;
         _vaultSummary.AutoEllipsis = true;
         header.Controls.Add(_vaultSummary, 1, 0);
+        Theme.StyleButton(_newFolderButton);
+        _newFolderButton.Dock = DockStyle.Fill;
+        _newFolderButton.Margin = new Padding(1, 3, 1, 3);
+        _newFolderButton.Click += (_, _) => RequestNewAssetFolder();
+        header.Controls.Add(_newFolderButton, 2, 0);
+
         _openButton = new Button
         {
             Text = "Open",
@@ -201,7 +249,7 @@ internal sealed class LibraryVaultPanel : UserControl
         };
         Theme.StyleButton(_openButton);
         _openButton.Click += (_, _) => OpenSelectedVaultItem();
-        header.Controls.Add(_openButton, 2, 0);
+        header.Controls.Add(_openButton, 3, 0);
         layout.Controls.Add(header, 0, 0);
 
         _contentHost.Dock = DockStyle.Fill;
@@ -215,12 +263,7 @@ internal sealed class LibraryVaultPanel : UserControl
 
     private void ConfigureContentLists()
     {
-        ConfigureList(_projectObjects);
-        _projectObjects.HeaderStyle = ColumnHeaderStyle.None;
-        _projectObjects.Columns.Add("Drawing Object", 128);
-        _projectObjects.Columns.Add("Content", 86);
-        ConfigureResponsiveColumns(_projectObjects, 128);
-        ConfigureVaultList(_projectObjects);
+        ConfigureProjectTree();
         ConfigureProjectObjectMenu();
 
         _projectObjects.Dock = DockStyle.Fill;
@@ -237,7 +280,7 @@ internal sealed class LibraryVaultPanel : UserControl
         _library.Visible = source == VaultSource.Library;
         _projectObjects.Visible = source == VaultSource.Project;
         _vault.Visible = source == VaultSource.Stored;
-        var activeList = source switch
+        Control activeList = source switch
         {
             VaultSource.Library => _library,
             VaultSource.Project => _projectObjects,
@@ -285,39 +328,101 @@ internal sealed class LibraryVaultPanel : UserControl
 
     private void ConfigureProjectObjectMenu()
     {
+        var newFolder = new ToolStripMenuItem("New Folder");
+        newFolder.Click += (_, _) => RequestNewAssetFolder();
         var rename = new ToolStripMenuItem("Rename");
-        rename.Click += (_, _) => RaiseProjectObjectAssetRequest(DrawingObjectRenameRequested);
+        rename.Click += (_, _) => RaiseSelectedProjectRenameRequest();
         var duplicate = new ToolStripMenuItem("Duplicate");
-        duplicate.Click += (_, _) => RaiseProjectObjectAssetRequest(DrawingObjectDuplicateRequested);
+        duplicate.Click += (_, _) => RaiseSelectedProjectDuplicateRequest();
         var delete = new ToolStripMenuItem("Delete");
         delete.Click += (_, _) => RaiseProjectObjectAssetRequest(DrawingObjectDeleteRequested);
-        _projectObjectMenu.Items.AddRange(new ToolStripItem[] { rename, duplicate, new ToolStripSeparator(), delete });
+        _projectObjectMenu.Items.AddRange(new ToolStripItem[]
+        {
+            newFolder,
+            new ToolStripSeparator(),
+            rename,
+            duplicate,
+            new ToolStripSeparator(),
+            delete
+        });
         _projectObjectMenu.Opening += (_, e) =>
         {
-            var selected = SelectedProjectDrawingObject();
-            if (selected is null)
-            {
-                e.Cancel = true;
-                return;
-            }
-
-            delete.Enabled = (_project?.DrawingObjects.Count ?? 0) > 1;
+            var selected = SelectedProjectRow();
+            rename.Enabled = selected is { DrawingObject: not null } or { Folder: not null };
+            duplicate.Enabled = rename.Enabled;
+            delete.Visible = selected?.DrawingObject is not null;
+            delete.Enabled = delete.Visible && (_project?.DrawingObjects.Count ?? 0) > 1;
         };
         _projectObjects.ContextMenuStrip = _projectObjectMenu;
         _projectObjects.MouseDown += (_, e) =>
         {
             if (e.Button != MouseButtons.Right) return;
-            var item = _projectObjects.GetItemAt(e.X, e.Y);
-            if (item is not null) item.Selected = true;
+            _projectObjects.SelectedNode = _projectObjects.GetNodeAt(e.Location);
         };
+    }
+
+    private void ConfigureProjectTree()
+    {
+        Theme.StyleTreeView(_projectObjects, useCustomExpandButtons: true);
+        _projectObjects.AllowDrop = true;
+        _projectObjects.Dock = DockStyle.Fill;
+        _projectObjects.Margin = Padding.Empty;
+        _projectObjects.AfterSelect += (_, _) => ProjectTreeSelectionChanged();
+        _projectObjects.NodeMouseDoubleClick += (_, e) =>
+        {
+            if (e.Node.Tag is VaultRow { Folder: not null })
+            {
+                if (Theme.IsTreeExpandGlyphHit(_projectObjects, e.Node, e.Location)) return;
+                if (e.Node.IsExpanded) e.Node.Collapse(ignoreChildren: true);
+                else e.Node.Expand();
+                return;
+            }
+            OpenSelectedVaultItem();
+        };
+        _projectObjects.ItemDrag += (_, e) => BeginProjectItemDrag(e.Item as TreeNode);
+        _projectObjects.DragEnter += (_, e) => e.Effect = ResolveProjectTreeDropEffect(e.Data);
+        _projectObjects.DragOver += (_, e) => e.Effect = ResolveProjectTreeDropEffect(e.Data);
+        _projectObjects.DragDrop += (_, e) => CompleteProjectTreeDrop(e);
+        _projectObjects.MouseMove += (_, e) => UpdateProjectHoverTarget(e.Location);
+        _projectObjects.MouseLeave += (_, _) => HidePreview();
+        _projectObjects.MouseWheel += (_, _) => HidePreview();
+        _projectObjects.KeyDown += (_, _) => HidePreview();
     }
 
     private DrawingObjectDefinition? SelectedProjectDrawingObject()
     {
-        return _projectObjects.SelectedItems.Count > 0
-            && _projectObjects.SelectedItems[0].Tag is VaultRow { IsProjectObject: true } row
-            ? row.DrawingObject
-            : null;
+        return SelectedProjectRow()?.DrawingObject;
+    }
+
+    private VaultRow? SelectedProjectRow() => _projectObjects.SelectedNode?.Tag as VaultRow;
+
+    private void RaiseSelectedProjectRenameRequest()
+    {
+        var row = SelectedProjectRow();
+        if (row?.Folder is not null)
+        {
+            AssetFolderRenameRequested?.Invoke(this, new ProjectAssetFolderRequestedEventArgs(row.Folder.Id));
+            return;
+        }
+        RaiseProjectObjectAssetRequest(DrawingObjectRenameRequested);
+    }
+
+    private void RaiseSelectedProjectDuplicateRequest()
+    {
+        var row = SelectedProjectRow();
+        if (row?.Folder is not null)
+        {
+            AssetFolderDuplicateRequested?.Invoke(this, new ProjectAssetFolderRequestedEventArgs(row.Folder.Id));
+            return;
+        }
+        RaiseProjectObjectAssetRequest(DrawingObjectDuplicateRequested);
+    }
+
+    private void RequestNewAssetFolder()
+    {
+        var row = SelectedProjectRow();
+        var parentFolderId = row?.Folder?.Id ?? row?.DrawingObject?.AssetFolderId ?? "";
+        AssetFolderCreateRequested?.Invoke(this, new ProjectAssetFolderCreateRequestedEventArgs(parentFolderId));
     }
 
     private void RaiseProjectObjectAssetRequest(EventHandler<DrawingObjectAssetRequestedEventArgs>? requested)
@@ -359,6 +464,76 @@ internal sealed class LibraryVaultPanel : UserControl
         list.DoDragDrop(data, DragDropEffects.Copy);
     }
 
+    private void BeginProjectItemDrag(TreeNode? node)
+    {
+        if (node?.Tag is not VaultRow row || _project is null) return;
+        HidePreview();
+        var data = new DataObject();
+        if (row.Folder is not null)
+        {
+            data.SetData(
+                typeof(ProjectAssetFolderDragData),
+                new ProjectAssetFolderDragData(_project.Id, row.Folder.Id));
+            _projectObjects.DoDragDrop(data, DragDropEffects.Move);
+            return;
+        }
+        if (row.DrawingObject is null) return;
+
+        data.SetData(typeof(VaultItem), row.Item);
+        data.SetData(
+            typeof(DrawingObjectDragData),
+            new DrawingObjectDragData(_project.Id, row.DrawingObject.Id));
+        _projectObjects.DoDragDrop(data, DragDropEffects.Copy | DragDropEffects.Move);
+    }
+
+    private DragDropEffects ResolveProjectTreeDropEffect(IDataObject? data)
+    {
+        if (_project is null || data is null) return DragDropEffects.None;
+        if (data.GetData(typeof(ProjectAssetFolderDragData)) is ProjectAssetFolderDragData folder
+            && string.Equals(folder.ProjectId, _project.Id, StringComparison.Ordinal))
+        {
+            return DragDropEffects.Move;
+        }
+        if (data.GetData(typeof(DrawingObjectDragData)) is DrawingObjectDragData drawingObject
+            && string.Equals(drawingObject.ProjectId, _project.Id, StringComparison.Ordinal))
+        {
+            return DragDropEffects.Move;
+        }
+        return DragDropEffects.None;
+    }
+
+    private void CompleteProjectTreeDrop(DragEventArgs e)
+    {
+        if (_project is null) return;
+        var targetFolderId = ProjectTreeDropFolderId(new Point(e.X, e.Y));
+        if (e.Data?.GetData(typeof(ProjectAssetFolderDragData)) is ProjectAssetFolderDragData folder
+            && string.Equals(folder.ProjectId, _project.Id, StringComparison.Ordinal))
+        {
+            AssetFolderMoveRequested?.Invoke(
+                this,
+                new ProjectAssetMoveRequestedEventArgs(folder.FolderId, targetFolderId));
+            return;
+        }
+        if (e.Data?.GetData(typeof(DrawingObjectDragData)) is DrawingObjectDragData drawingObject
+            && string.Equals(drawingObject.ProjectId, _project.Id, StringComparison.Ordinal))
+        {
+            DrawingObjectMoveRequested?.Invoke(
+                this,
+                new ProjectAssetMoveRequestedEventArgs(drawingObject.DrawingObjectId, targetFolderId));
+        }
+    }
+
+    private string ProjectTreeDropFolderId(Point screenPoint)
+    {
+        var node = _projectObjects.GetNodeAt(_projectObjects.PointToClient(screenPoint));
+        return node?.Tag switch
+        {
+            VaultRow { Folder: { } folder } => folder.Id,
+            VaultRow { DrawingObject: { } drawingObject } => drawingObject.AssetFolderId,
+            _ => ""
+        };
+    }
+
     private void AddLibraryPreset(string name, string kind, string detail)
     {
         var item = new ListViewItem(name);
@@ -383,8 +558,7 @@ internal sealed class LibraryVaultPanel : UserControl
 
     private void StoreSelectedProjectObject()
     {
-        if (_projectObjects.SelectedItems.Count == 0) return;
-        if (_projectObjects.SelectedItems[0].Tag is not VaultRow { IsProjectObject: true } row) return;
+        if (SelectedProjectRow() is not VaultRow { IsProjectObject: true } row) return;
         AddVaultItem(CopyVaultItem(row.Item));
         ActivateSource(VaultSource.Stored, refresh: false);
     }
@@ -422,7 +596,7 @@ internal sealed class LibraryVaultPanel : UserControl
         var selected = _selectedObjectProvider();
         if (selected < 0 || selected >= _scene.ObjectCount)
         {
-            MessageBox.Show(UiLocalization.T("Select an object on the stage first."), UiLocalization.T("Vault"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ModernMessageDialog.Show(this, UiLocalization.T("Select an object on the stage first."), UiLocalization.T("Vault"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -504,7 +678,7 @@ internal sealed class LibraryVaultPanel : UserControl
         var item = row.Item;
         if (string.Equals(item.ReferenceKind, "DrawingObject", StringComparison.Ordinal))
         {
-            MessageBox.Show(UiLocalization.T("This drawing object is not available in the current project."), item.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ModernMessageDialog.Show(this, UiLocalization.T("This drawing object is not available in the current project."), item.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -518,7 +692,7 @@ internal sealed class LibraryVaultPanel : UserControl
             return;
         }
 
-        MessageBox.Show(UiLocalization.T(item.Payload.Length > 0 ? item.Payload : item.Detail), item.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        ModernMessageDialog.Show(this, UiLocalization.T(item.Payload.Length > 0 ? item.Payload : item.Detail), item.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void AddVaultItem(VaultItem item)
@@ -561,30 +735,26 @@ internal sealed class LibraryVaultPanel : UserControl
 
     private void RebuildProjectObjectRows(ProjectRowsFingerprint fingerprint)
     {
+        var expandedFolderIds = EnumerateProjectNodes()
+            .Where(node => node.IsExpanded && node.Tag is VaultRow { Folder: not null })
+            .Select(node => ((VaultRow)node.Tag!).Folder!.Id)
+            .ToHashSet(StringComparer.Ordinal);
         SuspendLayout();
         _projectObjects.BeginUpdate();
         try
         {
             _syncingSelection = true;
-            _projectObjects.Items.Clear();
+            _projectObjects.Nodes.Clear();
             if (_project is not null)
             {
-                var rows = new ListViewItem[_project.DrawingObjects.Count];
-                for (var index = 0; index < rows.Length; index++)
-                {
-                    var drawingObject = _project.DrawingObjects[index];
-                    var item = drawingObject.ToVaultItem();
-                    item.Detail = DrawingObjectDetail(drawingObject);
-                    var row = new ListViewItem(drawingObject.Name);
-                    row.SubItems.Add($"{drawingObject.Scene.ObjectCount} obj / {drawingObject.Instances.Count} inst");
-                    row.Tag = new VaultRow(item, drawingObject, IsProjectObject: true);
-                    rows[index] = row;
-                }
-
-                if (rows.Length > 0) _projectObjects.Items.AddRange(rows);
+                AddProjectFolderBranches("", _projectObjects.Nodes, expandedFolderIds);
+                AddProjectDrawingObjectNodes("", _projectObjects.Nodes);
             }
 
-            if (_projectObjects.Items.Count == 0) AddEmptyRow(_projectObjects, "No drawing objects", "Empty project");
+            if (_projectObjects.Nodes.Count == 0)
+            {
+                _projectObjects.Nodes.Add(new TreeNode("No drawing objects") { ForeColor = Theme.Muted });
+            }
             SynchronizeProjectObjectSelection();
             _projectRowsFingerprint = fingerprint;
             _projectRowsDirty = false;
@@ -593,8 +763,48 @@ internal sealed class LibraryVaultPanel : UserControl
         {
             _syncingSelection = false;
             _projectObjects.EndUpdate();
-            ResizeResponsiveColumns(_projectObjects, 128);
             ResumeLayout(performLayout: false);
+        }
+    }
+
+    private void AddProjectFolderBranches(
+        string parentFolderId,
+        TreeNodeCollection nodes,
+        ISet<string> expandedFolderIds)
+    {
+        if (_project is null) return;
+        foreach (var folder in _project.AssetFolders.Where(candidate =>
+                     string.Equals(candidate.ParentFolderId, parentFolderId, StringComparison.Ordinal)))
+        {
+            var row = new VaultRow(
+                new VaultItem { Kind = "Folder", Name = folder.Name, Detail = "Project asset folder" },
+                DrawingObject: null,
+                IsProjectObject: false,
+                Folder: folder);
+            var node = new TreeNode($"{folder.Name}/")
+            {
+                Tag = row,
+                ForeColor = Theme.AccentLabel
+            };
+            nodes.Add(node);
+            AddProjectFolderBranches(folder.Id, node.Nodes, expandedFolderIds);
+            AddProjectDrawingObjectNodes(folder.Id, node.Nodes);
+            if (expandedFolderIds.Contains(folder.Id)) node.Expand();
+        }
+    }
+
+    private void AddProjectDrawingObjectNodes(string folderId, TreeNodeCollection nodes)
+    {
+        if (_project is null) return;
+        foreach (var drawingObject in _project.DrawingObjects.Where(candidate =>
+                     string.Equals(candidate.AssetFolderId, folderId, StringComparison.Ordinal)))
+        {
+            var item = drawingObject.ToVaultItem();
+            item.Detail = DrawingObjectDetail(drawingObject);
+            nodes.Add(new TreeNode(drawingObject.Name)
+            {
+                Tag = new VaultRow(item, drawingObject, IsProjectObject: true)
+            });
         }
     }
 
@@ -611,28 +821,69 @@ internal sealed class LibraryVaultPanel : UserControl
             hash.Add(drawingObject.Scene.ObjectCount);
             hash.Add(drawingObject.Scene.LayerCount);
             hash.Add(drawingObject.Instances.Count);
+            hash.Add(drawingObject.AssetFolderId, StringComparer.Ordinal);
         }
 
-        return new ProjectRowsFingerprint(_project.DrawingObjects.Count, hash.ToHashCode());
+        foreach (var folder in _project.AssetFolders)
+        {
+            hash.Add(folder.Id, StringComparer.Ordinal);
+            hash.Add(folder.Name, StringComparer.Ordinal);
+            hash.Add(folder.ParentFolderId, StringComparer.Ordinal);
+        }
+
+        return new ProjectRowsFingerprint(
+            _project.DrawingObjects.Count,
+            _project.AssetFolders.Count,
+            hash.ToHashCode());
     }
 
     private void SynchronizeProjectObjectSelection()
     {
-        if (_projectObjects.Items.Count == 0) return;
+        if (_projectObjects.Nodes.Count == 0) return;
         var previousSync = _syncingSelection;
         _syncingSelection = true;
         try
         {
-            foreach (ListViewItem row in _projectObjects.Items)
+            TreeNode? selectedNode = null;
+            foreach (var node in EnumerateProjectNodes())
             {
-                var selected = row.Tag is VaultRow { DrawingObject: { } drawingObject }
-                    && string.Equals(drawingObject.Id, _activeDrawingObjectId, StringComparison.Ordinal);
-                if (row.Selected != selected) row.Selected = selected;
+                if (_selectedAssetFolderId.Length > 0
+                    && node.Tag is VaultRow { Folder: { } folder }
+                    && string.Equals(folder.Id, _selectedAssetFolderId, StringComparison.Ordinal))
+                {
+                    selectedNode = node;
+                    break;
+                }
+                if (_selectedAssetFolderId.Length == 0
+                    && node.Tag is VaultRow { DrawingObject: { } drawingObject }
+                    && string.Equals(drawingObject.Id, _activeDrawingObjectId, StringComparison.Ordinal))
+                {
+                    selectedNode = node;
+                }
             }
+            _projectObjects.SelectedNode = selectedNode;
+            selectedNode?.EnsureVisible();
         }
         finally
         {
             _syncingSelection = previousSync;
+        }
+    }
+
+    private IEnumerable<TreeNode> EnumerateProjectNodes()
+    {
+        foreach (TreeNode root in _projectObjects.Nodes)
+        {
+            foreach (var node in EnumerateProjectNodes(root)) yield return node;
+        }
+    }
+
+    private static IEnumerable<TreeNode> EnumerateProjectNodes(TreeNode node)
+    {
+        yield return node;
+        foreach (TreeNode child in node.Nodes)
+        {
+            foreach (var descendant in EnumerateProjectNodes(child)) yield return descendant;
         }
     }
 
@@ -673,8 +924,12 @@ internal sealed class LibraryVaultPanel : UserControl
         _syncingSelection = true;
         try
         {
-            var other = ReferenceEquals(source, _projectObjects) ? _vault : _projectObjects;
-            if (source.SelectedItems.Count > 0) other.SelectedItems.Clear();
+            if (source.SelectedItems.Count > 0)
+            {
+                _projectObjects.SelectedNode = null;
+                var other = ReferenceEquals(source, _vault) ? _library : _vault;
+                other.SelectedItems.Clear();
+            }
         }
         finally
         {
@@ -684,11 +939,19 @@ internal sealed class LibraryVaultPanel : UserControl
         UpdateActionButtons();
     }
 
+    private void ProjectTreeSelectionChanged()
+    {
+        if (_syncingSelection) return;
+        var row = SelectedProjectRow();
+        _selectedAssetFolderId = row?.Folder?.Id ?? "";
+        UpdateActionButtons();
+    }
+
     private VaultRow? SelectedVaultRow()
     {
         return _activeSource switch
         {
-            VaultSource.Project when _projectObjects.SelectedItems.Count > 0 && _projectObjects.SelectedItems[0].Tag is VaultRow projectRow => projectRow,
+            VaultSource.Project => SelectedProjectRow(),
             VaultSource.Stored when _vault.SelectedItems.Count > 0 && _vault.SelectedItems[0].Tag is VaultRow vaultRow => vaultRow,
             _ => null
         };
@@ -697,7 +960,7 @@ internal sealed class LibraryVaultPanel : UserControl
     private void UpdateActionButtons()
     {
         var row = SelectedVaultRow();
-        var projectSelected = row is { IsProjectObject: true };
+        var projectSelected = row is { DrawingObject: not null, IsProjectObject: true };
         SetActionState(_openButton, visible: true, enabled: projectSelected);
     }
 
@@ -725,9 +988,39 @@ internal sealed class LibraryVaultPanel : UserControl
         _hoverTimer.Start();
     }
 
+    private void UpdateProjectHoverTarget(Point location)
+    {
+        var node = _projectObjects.GetNodeAt(location);
+        if (ReferenceEquals(_hoverProjectNode, node)) return;
+
+        _hoverTimer.Stop();
+        _hoverList = null;
+        _hoverIndex = -1;
+        _hoverProjectNode = node?.Tag is VaultRow { DrawingObject: not null } ? node : null;
+        if (_hoverProjectNode is null)
+        {
+            HidePreview();
+            return;
+        }
+        _hoverTimer.Start();
+    }
+
     private void ShowPendingPreview()
     {
         _hoverTimer.Stop();
+        if (_hoverProjectNode is { TreeView: not null } projectNode
+            && projectNode.Tag is VaultRow { DrawingObject: { } drawingObject }
+            && ReferenceEquals(_projectObjects.GetNodeAt(_projectObjects.PointToClient(Cursor.Position)), projectNode)
+            && _project is not null)
+        {
+            _preview ??= new VaultPreviewForm();
+            var projectFrame = Math.Max(0, _frameProvider?.Invoke() ?? drawingObject.Scene.EditFrame);
+            _preview.ShowDrawingObject(drawingObject, _project, projectFrame);
+            var projectTopLeft = _projectObjects.PointToScreen(projectNode.Bounds.Location);
+            _preview.ShowAt(FindForm(), new Rectangle(projectTopLeft, projectNode.Bounds.Size));
+            return;
+        }
+
         var list = _hoverList;
         var index = _hoverIndex;
         if (list is null || list.IsDisposed || index < 0 || index >= list.Items.Count) return;
@@ -756,6 +1049,7 @@ internal sealed class LibraryVaultPanel : UserControl
         _hoverTimer.Stop();
         _hoverList = null;
         _hoverIndex = -1;
+        _hoverProjectNode = null;
         if (_preview is null) return;
         _preview.Hide();
         if (clearContent) _preview.ClearContent();
@@ -1044,55 +1338,41 @@ internal sealed class LibraryVaultPanel : UserControl
         }
     }
 
-    private sealed class PromptDialog : Form
+    private sealed class PromptDialog : ModernDialogForm
     {
         private readonly TextBox _input = new();
         private string _value = "";
 
         private PromptDialog(string title, string label)
+            : base(title, new Size(440, 224))
         {
-            Text = title;
-            Width = 420;
-            Height = 180;
-            MinimizeBox = false;
-            MaximizeBox = false;
-            ShowIcon = false;
-            StartPosition = FormStartPosition.CenterParent;
-            BackColor = Theme.Panel;
-            Font = Theme.UiFont();
-
-            Controls.Add(new Label
+            DialogContent.Controls.Add(new Label
             {
                 Text = label,
-                Left = 16,
-                Top = 14,
-                Width = 360,
-                Height = 24,
+                Dock = DockStyle.Top,
+                Height = 28,
                 ForeColor = Theme.Text,
                 BackColor = Theme.Panel,
-                Font = Theme.UiFont(9.5f, FontStyle.Bold)
+                Font = Theme.UiFont(9.5f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
             });
 
-            _input.Left = 16;
-            _input.Top = 44;
-            _input.Width = 370;
-            _input.Height = 28;
+            _input.Dock = DockStyle.Top;
+            _input.Height = 30;
             Theme.StyleTextBox(_input);
-            Controls.Add(_input);
+            DialogContent.Controls.Add(_input);
+            _input.BringToFront();
 
-            var ok = new Button { Text = "OK", Left = 226, Top = 88, Width = 76, Height = 30 };
-            Theme.StyleButton(ok);
-            ok.Click += (_, _) =>
-            {
-                _value = _input.Text.Trim();
-                DialogResult = _value.Length == 0 ? DialogResult.None : DialogResult.OK;
-            };
-            Controls.Add(ok);
-
-            var cancel = new Button { Text = "Cancel", Left = 310, Top = 88, Width = 76, Height = 30 };
-            Theme.StyleButton(cancel);
-            cancel.Click += (_, _) => DialogResult = DialogResult.Cancel;
-            Controls.Add(cancel);
+            var ok = AddDialogAction(
+                "OK",
+                DialogResult.OK,
+                DialogActionStyle.Primary,
+                () =>
+                {
+                    _value = _input.Text.Trim();
+                    return _value.Length > 0;
+                });
+            var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
 
             AcceptButton = ok;
             CancelButton = cancel;

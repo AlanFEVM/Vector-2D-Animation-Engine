@@ -157,7 +157,7 @@ internal sealed class SceneEditorPanel : UserControl
             RowCount = 7,
             Padding = new Padding(0, 8, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var i = 0; i < 7; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         root.Controls.Add(content, 0, 1);
@@ -168,7 +168,8 @@ internal sealed class SceneEditorPanel : UserControl
         AddRow(content, "Camera", _cameraProjection, 3);
         AddRow(content, "Edit object", _activeObject, 4);
         AddRow(content, "Stage", _stageSize, 5);
-        AddRow(content, "Contents", _sceneStats, 6);
+        content.Controls.Add(_sceneStats, 0, 6);
+        content.SetColumnSpan(_sceneStats, 2);
 
         var managers = new TableLayoutPanel
         {
@@ -296,7 +297,11 @@ internal sealed class SceneEditorPanel : UserControl
 
         SetInfoText(_stageSize, _scene is null ? "-" : $"{_scene.StageWidth:0} x {_scene.StageHeight:0} vu");
         var instanceCount = sceneDefinition?.Instances.Count ?? 0;
-        SetInfoText(_sceneStats, _scene is null ? "-" : $"{_scene.LayerCount} layers, {CompactFormat.Number(_scene.ObjectCount)} objects, {instanceCount} scene instances");
+        SetInfoText(
+            _sceneStats,
+            _scene is null
+                ? "-"
+                : $"Contents: {_scene.LayerCount} layers · {CompactFormat.Number(_scene.ObjectCount)} objects · {instanceCount} instances");
     }
 
     private static void SetInfoText(Label label, string text)

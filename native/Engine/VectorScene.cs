@@ -111,6 +111,8 @@ internal sealed class VectorScene : ITimelineContext
     public float[] Stroke { get; private set; } = [];
     public float[] CurveControlX { get; private set; } = [];
     public float[] CurveControlY { get; private set; } = [];
+    public float[] CurveControl2X { get; private set; } = [];
+    public float[] CurveControl2Y { get; private set; } = [];
     public LineEndpointStyle[] LineEndpointStyles { get; private set; } = [];
     public LineEndpointStyle[] LineEndEndpointStyles { get; private set; } = [];
     public ShapeKind[] ShapeKind { get; private set; } = [];
@@ -138,7 +140,8 @@ internal sealed class VectorScene : ITimelineContext
         PointF[] Points,
         PointF[][] Contours,
         PointF Start,
-        PointF Control,
+        PointF Control1,
+        PointF Control2,
         PointF End,
         float Stroke,
         Color FillColor,
@@ -233,7 +236,8 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyle StartEndpointStyle,
         LineEndpointStyle EndEndpointStyle,
         PointF Start,
-        PointF Control,
+        PointF Control1,
+        PointF Control2,
         PointF End,
         PointF[] Points,
         PointF[][] Contours)
@@ -346,6 +350,8 @@ internal sealed class VectorScene : ITimelineContext
         Stroke = [];
         CurveControlX = [];
         CurveControlY = [];
+        CurveControl2X = [];
+        CurveControl2Y = [];
         LineEndpointStyles = [];
         LineEndEndpointStyles = [];
         ShapeKind = [];
@@ -423,6 +429,8 @@ internal sealed class VectorScene : ITimelineContext
         Stroke = GC.AllocateUninitializedArray<float>(ObjectCount);
         CurveControlX = GC.AllocateUninitializedArray<float>(ObjectCount);
         CurveControlY = GC.AllocateUninitializedArray<float>(ObjectCount);
+        CurveControl2X = GC.AllocateUninitializedArray<float>(ObjectCount);
+        CurveControl2Y = GC.AllocateUninitializedArray<float>(ObjectCount);
         LineEndpointStyles = new LineEndpointStyle[ObjectCount];
         LineEndEndpointStyles = new LineEndpointStyle[ObjectCount];
         ShapeKind = GC.AllocateUninitializedArray<ShapeKind>(ObjectCount);
@@ -485,8 +493,25 @@ internal sealed class VectorScene : ITimelineContext
                     Height[i] = Math.Max(VectorUnits.FromPixels(3), Stroke[i] + VectorUnits.FromPixels(2));
                 }
 
-                CurveControlX[i] = X[i];
-                CurveControlY[i] = Y[i];
+                if (ShapeKind[i] == VectorAnimationEngine.ShapeKind.Line)
+                {
+                    var halfWidth = Width[i] * 0.5f;
+                    var curveStart = LocalToWorld(i, -halfWidth, 0);
+                    var curveEnd = LocalToWorld(i, halfWidth, 0);
+                    var control1 = Lerp(curveStart, curveEnd, 1f / 3f);
+                    var control2 = Lerp(curveStart, curveEnd, 2f / 3f);
+                    CurveControlX[i] = VectorUnits.Quantize(control1.X);
+                    CurveControlY[i] = VectorUnits.Quantize(control1.Y);
+                    CurveControl2X[i] = VectorUnits.Quantize(control2.X);
+                    CurveControl2Y[i] = VectorUnits.Quantize(control2.Y);
+                }
+                else
+                {
+                    CurveControlX[i] = X[i];
+                    CurveControlY[i] = Y[i];
+                    CurveControl2X[i] = X[i];
+                    CurveControl2Y[i] = Y[i];
+                }
                 AtomCount[i] = (uint)Math.Max(3, Math.Floor(avgAtoms * (0.18 + rng.NextDouble() * rng.NextDouble() * 2.35)));
                 Argb[i] = color.ToArgb();
                 StrokeArgb[i] = defaultStrokeArgb;
@@ -593,7 +618,8 @@ internal sealed class VectorScene : ITimelineContext
         PointF curveControl,
         LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle endEndpointStyle = LineEndpointStyle.Round,
-        int shapeVertexCount = 0)
+        int shapeVertexCount = 0,
+        PointF? curveControl2 = null)
     {
         var targetLayer = ResolveObjectLayer(layer);
         var keyframeFrame = _deferredAppendKeyframes is { } deferred
@@ -621,8 +647,20 @@ internal sealed class VectorScene : ITimelineContext
         Stroke[index] = Math.Max(0, stroke);
         ShapeKind[index] = shapeKind;
         ShapeVertexCounts[index] = NormalizeShapeVertexCount(shapeKind, shapeVertexCount);
-        CurveControlX[index] = VectorUnits.Quantize(curveControl.X);
-        CurveControlY[index] = VectorUnits.Quantize(curveControl.Y);
+        var firstControl = curveControl;
+        var secondControl = curveControl2 ?? curveControl;
+        if (shapeKind == VectorAnimationEngine.ShapeKind.Line && curveControl2 is null)
+        {
+            var halfWidth = Width[index] * 0.5f;
+            var start = LocalToWorld(index, -halfWidth, 0);
+            var end = LocalToWorld(index, halfWidth, 0);
+            firstControl = Lerp(start, curveControl, 2f / 3f);
+            secondControl = Lerp(end, curveControl, 2f / 3f);
+        }
+        CurveControlX[index] = VectorUnits.Quantize(firstControl.X);
+        CurveControlY[index] = VectorUnits.Quantize(firstControl.Y);
+        CurveControl2X[index] = VectorUnits.Quantize(secondControl.X);
+        CurveControl2Y[index] = VectorUnits.Quantize(secondControl.Y);
         LineEndpointStyles[index] = NormalizeLineEndpointStyle(startEndpointStyle);
         LineEndEndpointStyles[index] = NormalizeLineEndpointStyle(endEndpointStyle);
         AtomCount[index] = Math.Max(3, atoms);
@@ -673,6 +711,8 @@ internal sealed class VectorScene : ITimelineContext
                 Stroke[index] = Math.Max(0, item.Stroke);
                 CurveControlX[index] = VectorUnits.Quantize(item.CurveControl.X);
                 CurveControlY[index] = VectorUnits.Quantize(item.CurveControl.Y);
+                CurveControl2X[index] = VectorUnits.Quantize(item.CurveControl2.X);
+                CurveControl2Y[index] = VectorUnits.Quantize(item.CurveControl2.Y);
                 LineEndpointStyles[index] = NormalizeLineEndpointStyle(item.StartEndpointStyle);
                 LineEndEndpointStyles[index] = NormalizeLineEndpointStyle(item.EndEndpointStyle);
                 ShapeKind[index] = item.Shape;
@@ -728,10 +768,11 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle? endEndpointStyle = null)
     {
-        return AddCurveSegment(
+        return AddCubicCurveSegment(
             layer,
             start,
-            Midpoint(start, end),
+            Lerp(start, end, 1f / 3f),
+            Lerp(start, end, 2f / 3f),
             end,
             stroke,
             color,
@@ -753,10 +794,40 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle? endEndpointStyle = null)
     {
-        var index = AppendCurveSegment(
+        var control1 = Lerp(start, control, 2f / 3f);
+        var control2 = Lerp(end, control, 2f / 3f);
+        return AddCubicCurveSegment(
             layer,
             start,
-            control,
+            control1,
+            control2,
+            end,
+            stroke,
+            color,
+            strokeColor,
+            atoms,
+            startEndpointStyle,
+            endEndpointStyle);
+    }
+
+    public int AddCubicCurveSegment(
+        int layer,
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        float stroke,
+        Color color,
+        Color strokeColor,
+        uint atoms,
+        LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
+        LineEndpointStyle? endEndpointStyle = null)
+    {
+        var index = AppendCubicCurveSegment(
+            layer,
+            start,
+            control1,
+            control2,
             end,
             stroke,
             color,
@@ -945,6 +1016,8 @@ internal sealed class VectorScene : ITimelineContext
         Y[objectIndex] = VectorUnits.Quantize(Y[objectIndex] + dy);
         CurveControlX[objectIndex] = VectorUnits.Quantize(CurveControlX[objectIndex] + dx);
         CurveControlY[objectIndex] = VectorUnits.Quantize(CurveControlY[objectIndex] + dy);
+        CurveControl2X[objectIndex] = VectorUnits.Quantize(CurveControl2X[objectIndex] + dx);
+        CurveControl2Y[objectIndex] = VectorUnits.Quantize(CurveControl2Y[objectIndex] + dy);
         if (!HasGradient(objectIndex)) return;
         GradientStartX[objectIndex] = VectorUnits.Quantize(GradientStartX[objectIndex] + dx);
         GradientStartY[objectIndex] = VectorUnits.Quantize(GradientStartY[objectIndex] + dy);
@@ -1201,7 +1274,7 @@ internal sealed class VectorScene : ITimelineContext
             var curve = LineCurve(objectIndex);
             if (kind == GradientKind.Radial)
             {
-                defaultStart = QuadraticPoint(curve.Start, curve.Control, curve.End, 0.5f);
+                defaultStart = CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, 0.5f);
                 defaultEnd = curve.End;
             }
             else
@@ -1396,7 +1469,12 @@ internal sealed class VectorScene : ITimelineContext
         if (shape == VectorAnimationEngine.ShapeKind.Line)
         {
             var curve = LineCurve(objectIndex);
-            SetLineCurve(objectIndex, transform(curve.Start), transform(curve.Control), transform(curve.End));
+            SetLineCurve(
+                objectIndex,
+                transform(curve.Start),
+                transform(curve.Control1),
+                transform(curve.Control2),
+                transform(curve.End));
             if (hasGradient) SetLinearGradientEndpoints(objectIndex, transform(gradientStart), transform(gradientEnd));
             return;
         }
@@ -1448,6 +1526,9 @@ internal sealed class VectorScene : ITimelineContext
         var transformedControl = transform(new PointF(CurveControlX[objectIndex], CurveControlY[objectIndex]));
         CurveControlX[objectIndex] = VectorUnits.Quantize(transformedControl.X);
         CurveControlY[objectIndex] = VectorUnits.Quantize(transformedControl.Y);
+        var transformedControl2 = transform(new PointF(CurveControl2X[objectIndex], CurveControl2Y[objectIndex]));
+        CurveControl2X[objectIndex] = VectorUnits.Quantize(transformedControl2.X);
+        CurveControl2Y[objectIndex] = VectorUnits.Quantize(transformedControl2.Y);
         if (hasGradient) SetLinearGradientEndpoints(objectIndex, transform(gradientStart), transform(gradientEnd));
     }
 
@@ -1478,7 +1559,7 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
-    private void SetLineCurve(int objectIndex, PointF start, PointF control, PointF end)
+    private void SetLineCurve(int objectIndex, PointF start, PointF control1, PointF control2, PointF end)
     {
         var center = Midpoint(start, end);
         X[objectIndex] = VectorUnits.Quantize(center.X);
@@ -1486,8 +1567,10 @@ internal sealed class VectorScene : ITimelineContext
         Width[objectIndex] = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, VectorUnits.Quantize(Distance(start, end)));
         Height[objectIndex] = Math.Max(VectorUnits.FromPixels(3), Height[objectIndex]);
         Angle[objectIndex] = MathF.Atan2(end.Y - start.Y, end.X - start.X);
-        CurveControlX[objectIndex] = VectorUnits.Quantize(control.X);
-        CurveControlY[objectIndex] = VectorUnits.Quantize(control.Y);
+        CurveControlX[objectIndex] = VectorUnits.Quantize(control1.X);
+        CurveControlY[objectIndex] = VectorUnits.Quantize(control1.Y);
+        CurveControl2X[objectIndex] = VectorUnits.Quantize(control2.X);
+        CurveControl2Y[objectIndex] = VectorUnits.Quantize(control2.Y);
     }
 
     private void SetPathContours(int objectIndex, PointF[][] contours)
@@ -1551,6 +1634,33 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle? endEndpointStyle = null)
     {
+        return AppendCubicCurveSegment(
+            layer,
+            start,
+            Lerp(start, control, 2f / 3f),
+            Lerp(end, control, 2f / 3f),
+            end,
+            stroke,
+            color,
+            strokeColor,
+            atoms,
+            startEndpointStyle,
+            endEndpointStyle);
+    }
+
+    internal int AppendCubicCurveSegment(
+        int layer,
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        float stroke,
+        Color color,
+        Color strokeColor,
+        uint atoms,
+        LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
+        LineEndpointStyle? endEndpointStyle = null)
+    {
         var center = Midpoint(start, end);
         var width = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, Distance(start, end));
         var height = Math.Max(VectorUnits.FromPixels(3), stroke + VectorUnits.FromPixels(2));
@@ -1564,14 +1674,16 @@ internal sealed class VectorScene : ITimelineContext
             strokeColor.ToArgb(),
             atoms,
             VectorAnimationEngine.ShapeKind.Line,
-            control,
+            control1,
             startEndpointStyle,
-            endEndpointStyle ?? startEndpointStyle);
+            endEndpointStyle ?? startEndpointStyle,
+            curveControl2: control2);
         var margin = Math.Max(stroke * 0.5f, 1);
         var curveExtent = Math.Max(
             Math.Max(Math.Abs(start.X - X[index]), Math.Abs(end.X - X[index])),
             Math.Max(Math.Abs(start.Y - Y[index]), Math.Abs(end.Y - Y[index])));
-        curveExtent = Math.Max(curveExtent, Math.Max(Math.Abs(control.X - X[index]), Math.Abs(control.Y - Y[index]))) + margin;
+        curveExtent = Math.Max(curveExtent, Math.Max(Math.Abs(control1.X - X[index]), Math.Abs(control1.Y - Y[index])));
+        curveExtent = Math.Max(curveExtent, Math.Max(Math.Abs(control2.X - X[index]), Math.Abs(control2.Y - Y[index]))) + margin;
         MaxHalfExtent = Math.Max(MaxHalfExtent, curveExtent);
         return index;
     }
@@ -1794,12 +1906,41 @@ internal sealed class VectorScene : ITimelineContext
 
     private void CompleteIncrementalObjectAppends(IReadOnlyList<int> objectIndices)
     {
+        if (objectIndices.Count == 0) return;
+        var firstIndex = objectIndices[0];
+        var contiguousTail = firstIndex >= 0 && firstIndex + objectIndices.Count == ObjectCount;
+        for (var index = 1; contiguousTail && index < objectIndices.Count; index++)
+        {
+            contiguousTail = objectIndices[index] == firstIndex + index;
+        }
+        if (!contiguousTail)
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            return;
+        }
+
+        CompleteIncrementalObjectAppends(firstIndex, objectIndices.Count);
+    }
+
+    private void CompleteIncrementalObjectAppends(int firstIndex, int count)
+    {
+        if (count <= 0) return;
+        if (!TryAppendObjectRangeToSpatialIndex(firstIndex, count))
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            return;
+        }
+
         var geometryRevision = GeometryRevision;
         var summaryRevision = SummaryRevision;
-        foreach (var objectIndex in objectIndices)
+        for (var objectIndex = firstIndex; objectIndex < firstIndex + count; objectIndex++)
         {
-            AppendObjectToSpatialIndex(objectIndex);
-            AddObjectToSummariesIncremental(objectIndex, Color.FromArgb(Argb[objectIndex]));
+            var summaryArgb = ShapeKind[objectIndex] is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform
+                ? StrokeArgb[objectIndex]
+                : Argb[objectIndex];
+            AddObjectToSummariesIncremental(objectIndex, Color.FromArgb(summaryArgb));
         }
 
         GeometryRevision = geometryRevision + 1;
@@ -1996,7 +2137,8 @@ internal sealed class VectorScene : ITimelineContext
                 strokeColor,
                 0,
                 curve.Start,
-                curve.Control,
+                curve.Control1,
+                curve.Control2,
                 curve.End,
                 GetLineEndpointStyle(source, startEndpoint: true),
                 GetLineEndpointStyle(source, startEndpoint: false)));
@@ -2539,6 +2681,8 @@ internal sealed class VectorScene : ITimelineContext
             Stroke = Stroke[..ObjectCount],
             CurveControlX = CurveControlX[..ObjectCount],
             CurveControlY = CurveControlY[..ObjectCount],
+            CurveControl2X = CurveControl2X[..ObjectCount],
+            CurveControl2Y = CurveControl2Y[..ObjectCount],
             LineEndpointStyles = LineEndpointStyles[..ObjectCount],
             LineEndEndpointStyles = LineEndEndpointStyles[..ObjectCount],
             ShapeKind = ShapeKind[..ObjectCount],
@@ -2609,6 +2753,12 @@ internal sealed class VectorScene : ITimelineContext
         Stroke = snapshot.Stroke.ToArray();
         CurveControlX = snapshot.CurveControlX.ToArray();
         CurveControlY = snapshot.CurveControlY.ToArray();
+        CurveControl2X = snapshot.CurveControl2X.Length == ObjectCount
+            ? snapshot.CurveControl2X.ToArray()
+            : new float[ObjectCount];
+        CurveControl2Y = snapshot.CurveControl2Y.Length == ObjectCount
+            ? snapshot.CurveControl2Y.ToArray()
+            : new float[ObjectCount];
         LineEndpointStyles = snapshot.LineEndpointStyles.Length == ObjectCount
             ? snapshot.LineEndpointStyles.Select(NormalizeLineEndpointStyle).ToArray()
             : Enumerable.Repeat(LineEndpointStyle.Round, ObjectCount).ToArray();
@@ -2616,6 +2766,29 @@ internal sealed class VectorScene : ITimelineContext
             ? snapshot.LineEndEndpointStyles.Select(NormalizeLineEndpointStyle).ToArray()
             : LineEndpointStyles.ToArray();
         ShapeKind = snapshot.ShapeKind.ToArray();
+        if (snapshot.CurveControl2X.Length != ObjectCount || snapshot.CurveControl2Y.Length != ObjectCount)
+        {
+            for (var index = 0; index < ObjectCount; index++)
+            {
+                if (ShapeKind[index] != VectorAnimationEngine.ShapeKind.Line)
+                {
+                    CurveControl2X[index] = CurveControlX[index];
+                    CurveControl2Y[index] = CurveControlY[index];
+                    continue;
+                }
+
+                var halfWidth = Width[index] * 0.5f;
+                var start = LocalToWorld(index, -halfWidth, 0);
+                var end = LocalToWorld(index, halfWidth, 0);
+                var quadratic = new PointF(CurveControlX[index], CurveControlY[index]);
+                var control1 = Lerp(start, quadratic, 2f / 3f);
+                var control2 = Lerp(end, quadratic, 2f / 3f);
+                CurveControlX[index] = VectorUnits.Quantize(control1.X);
+                CurveControlY[index] = VectorUnits.Quantize(control1.Y);
+                CurveControl2X[index] = VectorUnits.Quantize(control2.X);
+                CurveControl2Y[index] = VectorUnits.Quantize(control2.Y);
+            }
+        }
         ShapeVertexCounts = snapshot.ShapeVertexCounts.Length == ObjectCount
             ? snapshot.ShapeVertexCounts
                 .Select((value, index) => NormalizeShapeVertexCount(ShapeKind[index], value))
@@ -3300,6 +3473,97 @@ internal sealed class VectorScene : ITimelineContext
         return result;
     }
 
+    public int[] ResolveLayerRemovalIndices(IEnumerable<string> layerIds)
+    {
+        ArgumentNullException.ThrowIfNull(layerIds);
+        var requestedIds = layerIds
+            .Where(layerId => !string.IsNullOrWhiteSpace(layerId))
+            .ToHashSet(StringComparer.Ordinal);
+        if (requestedIds.Count == 0) return [];
+
+        var removal = new HashSet<int>();
+        for (var layer = 0; layer < LayerCount; layer++)
+        {
+            if (!requestedIds.Contains(LayerIds[layer])) continue;
+            removal.UnionWith(GetLayerMoveSet(layer));
+        }
+
+        return removal.OrderBy(layer => layer).ToArray();
+    }
+
+    public bool RemoveLayers(IEnumerable<string> layerIds)
+    {
+        var removal = ResolveLayerRemovalIndices(layerIds);
+        if (removal.Length == 0 || removal.Length >= LayerCount) return false;
+
+        var removedLayers = removal.ToHashSet();
+        var removedLayerIds = removal.Select(layer => LayerIds[layer]).ToHashSet(StringComparer.Ordinal);
+        RemoveObjects(Enumerable.Range(0, ObjectCount).Where(index => removedLayers.Contains(ObjectLayer[index])));
+
+        var destinationBySource = new int[LayerCount];
+        Array.Fill(destinationBySource, -1);
+        var destination = 0;
+        for (var source = 0; source < LayerCount; source++)
+        {
+            if (removedLayers.Contains(source)) continue;
+            destinationBySource[source] = destination++;
+        }
+
+        var oldActiveLayer = Math.Clamp(ActiveLayer, 0, LayerCount - 1);
+        LayerIds = RemoveLayerValues(LayerIds, removedLayers);
+        LayerNames = RemoveLayerValues(LayerNames, removedLayers);
+        LayerKinds = RemoveLayerValues(LayerKinds, removedLayers);
+        LayerParentIds = RemoveLayerValues(LayerParentIds, removedLayers)
+            .Select(parentId => removedLayerIds.Contains(parentId) ? string.Empty : parentId)
+            .ToArray();
+        LayerMaskIds = RemoveLayerValues(LayerMaskIds, removedLayers)
+            .Select(maskId => removedLayerIds.Contains(maskId) ? string.Empty : maskId)
+            .ToArray();
+        LayerLocked = RemoveLayerValues(LayerLocked, removedLayers);
+        LayerVisible = RemoveLayerValues(LayerVisible, removedLayers);
+        LayerOpacity = RemoveLayerValues(LayerOpacity, removedLayers);
+        LayerColorArgb = RemoveLayerValues(LayerColorArgb, removedLayers);
+        LayerOnionSkin = RemoveLayerValues(LayerOnionSkin, removedLayers);
+        LayerStart = RemoveLayerValues(LayerStart, removedLayers);
+        LayerEnd = RemoveLayerValues(LayerEnd, removedLayers);
+        LayerCount = destination;
+
+        for (var objectIndex = 0; objectIndex < ObjectCount; objectIndex++)
+        {
+            ObjectLayer[objectIndex] = (ushort)destinationBySource[ObjectLayer[objectIndex]];
+        }
+
+        if (destinationBySource[oldActiveLayer] >= 0)
+        {
+            ActiveLayer = destinationBySource[oldActiveLayer];
+        }
+        else
+        {
+            var nearestSource = Enumerable.Range(0, destinationBySource.Length)
+                .Where(source => destinationBySource[source] >= 0)
+                .MinBy(source => Math.Abs(source - oldActiveLayer));
+            ActiveLayer = destinationBySource[nearestSource];
+        }
+
+        using (Timeline.BeginBatchUpdate()) SynchronizeTimelineTracks();
+        InvalidateQueryActiveKeyframes();
+        RebuildGeometryIndex();
+        RebuildSummaries();
+        return true;
+    }
+
+    private static T[] RemoveLayerValues<T>(IReadOnlyList<T> source, IReadOnlySet<int> removedLayers)
+    {
+        var result = new T[source.Count - removedLayers.Count];
+        var destination = 0;
+        for (var sourceIndex = 0; sourceIndex < source.Count; sourceIndex++)
+        {
+            if (removedLayers.Contains(sourceIndex)) continue;
+            result[destination++] = source[sourceIndex];
+        }
+        return result;
+    }
+
     private int[] GetLinkedLayerIndices(int layer)
     {
         var related = new List<int> { layer };
@@ -3772,6 +4036,7 @@ internal sealed class VectorScene : ITimelineContext
         if (sourceObjects.Count == 0) return;
 
         var sourceCount = ObjectCount;
+        var firstClone = ObjectCount;
         EnsureObjectCapacity(ObjectCount + sourceObjects.Count);
         foreach (var source in sourceObjects)
         {
@@ -3782,8 +4047,7 @@ internal sealed class VectorScene : ITimelineContext
             VirtualAtomCount += AtomCount[destination];
         }
 
-        RebuildGeometryIndex();
-        RebuildSummaries();
+        CompleteIncrementalObjectAppends(firstClone, ObjectCount - firstClone);
     }
 
     private void CloneObjectsFrom(
@@ -3937,6 +4201,50 @@ internal sealed class VectorScene : ITimelineContext
         return hit.IsValid ? hit.Key.ObjectIndex : -1;
     }
 
+    public bool HasSelectableObjectAt(PointF world, int frame, float toleranceWorld = 6)
+    {
+        GetHitTestRange(world, toleranceWorld, out var minX, out var maxX, out var minY, out var maxY);
+        var candidates = CollectHitCandidates(minX, maxX, minY, maxY, frame, sort: false);
+        foreach (var objectIndex in candidates)
+        {
+            if (!IsObjectSelectable(objectIndex, frame)) continue;
+            var bounds = GetObjectWorldBounds(objectIndex);
+            bounds.Inflate(toleranceWorld, toleranceWorld);
+            if (!bounds.Contains(world)) continue;
+
+            var shape = ShapeKind[objectIndex];
+            var hitRadius = Math.Max(Stroke[objectIndex] * 0.5f, 1) + toleranceWorld;
+            if (IsTopologyStrokeShape(shape))
+            {
+                if (HasStroke(objectIndex) && CurveSamplesHit(world, StrokeSamples(objectIndex), hitRadius))
+                {
+                    return true;
+                }
+                continue;
+            }
+
+            if (HasStroke(objectIndex)
+                && ShapeBoundaryContours(objectIndex).Any(contour => DistanceToPolyline(world, contour) <= hitRadius))
+            {
+                return true;
+            }
+            if (HasFill(objectIndex) && FillContainsPoint(objectIndex, world)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool CurveSamplesHit(PointF world, IReadOnlyList<CurveSample> samples, float hitRadius)
+    {
+        if (samples.Count == 0) return false;
+        if (samples.Count == 1) return Distance(world, samples[0].Point) <= hitRadius;
+        for (var index = 0; index < samples.Count - 1; index++)
+        {
+            if (DistanceToSegment(world, samples[index].Point, samples[index + 1].Point) <= hitRadius) return true;
+        }
+        return false;
+    }
+
     public DrawingElementHit HitTestElement(PointF world, int frame, float toleranceWorld = 6)
     {
         GetHitTestRange(world, toleranceWorld, out var minX, out var maxX, out var minY, out var maxY);
@@ -4050,6 +4358,7 @@ internal sealed class VectorScene : ITimelineContext
                 hit.StartT,
                 hit.EndT,
                 out var start,
+                out _,
                 out _,
                 out var end))
         {
@@ -4195,7 +4504,7 @@ internal sealed class VectorScene : ITimelineContext
             if (shape == VectorAnimationEngine.ShapeKind.Line)
             {
                 var curve = LineCurve(objectIndex);
-                foreach (var part in BuildCurveParts(curve.Start, curve.Control, curve.End, splits))
+                foreach (var part in BuildCurveParts(curve.Start, curve.Control1, curve.Control2, curve.End, splits))
                 {
                     result.Add(new ConnectedStrokePart(
                         new DrawingElementHit(
@@ -4461,9 +4770,9 @@ internal sealed class VectorScene : ITimelineContext
         if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Line)
         {
             var curve = LineCurve(objectIndex);
-            var segment = QuadraticSubcurve(curve.Start, curve.Control, curve.End, part.Hit.StartT, part.Hit.EndT);
+            var segment = CubicSubcurve(curve.Start, curve.Control1, curve.Control2, curve.End, part.Hit.StartT, part.Hit.EndT);
             var samples = new List<CurveSample>(12) { new(0, part.Start) };
-            AddAdaptiveQuadraticSamples(samples, segment.Start, segment.Control, segment.End, 0, 1, 0);
+            AddAdaptiveCubicSamples(samples, segment.Start, segment.Control1, segment.Control2, segment.End, 0, 1, 0);
             samples.Add(new CurveSample(1, part.End));
             return samples.Select(sample => sample.Point).ToArray();
         }
@@ -4699,6 +5008,35 @@ internal sealed class VectorScene : ITimelineContext
         int frame,
         out LineEndpointJunction junction)
     {
+        return TryGetLineEndpointJunction(
+            objectIndex,
+            startEndpoint,
+            frame,
+            stopWhenNonOwner: false,
+            out junction);
+    }
+
+    internal bool TryGetLineEndpointJunctionForRender(
+        int objectIndex,
+        bool startEndpoint,
+        int frame,
+        out LineEndpointJunction junction)
+    {
+        return TryGetLineEndpointJunction(
+            objectIndex,
+            startEndpoint,
+            frame,
+            stopWhenNonOwner: true,
+            out junction);
+    }
+
+    private bool TryGetLineEndpointJunction(
+        int objectIndex,
+        bool startEndpoint,
+        int frame,
+        bool stopWhenNonOwner,
+        out LineEndpointJunction junction)
+    {
         junction = default;
         if ((uint)objectIndex >= ObjectCount
             || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line
@@ -4739,6 +5077,19 @@ internal sealed class VectorScene : ITimelineContext
                 && Distance(candidateEnd, endpoint) <= tolerance;
             if (!connectedAtStart && !connectedAtEnd) continue;
 
+            var candidateSharp = GetLineEndpointStyle(candidate, connectedAtStart) == LineEndpointStyle.Sharp;
+            if (stopWhenNonOwner && candidate < objectIndex)
+            {
+                junction = new LineEndpointJunction(
+                    1,
+                    candidate,
+                    candidate,
+                    connectedAtStart,
+                    allSharp && candidateSharp,
+                    Array.Empty<LineEndpointConnection>());
+                return true;
+            }
+
             if (firstNeighborObjectIndex < 0)
             {
                 firstNeighborObjectIndex = candidate;
@@ -4749,7 +5100,7 @@ internal sealed class VectorScene : ITimelineContext
             connections ??= new List<LineEndpointConnection>(2);
             connections.Add(new LineEndpointConnection(candidate, connectedAtStart));
             ownerObjectIndex = Math.Min(ownerObjectIndex, candidate);
-            allSharp &= GetLineEndpointStyle(candidate, connectedAtStart) == LineEndpointStyle.Sharp;
+            allSharp &= candidateSharp;
         }
 
         if (neighborCount == 0) return false;
@@ -4768,16 +5119,24 @@ internal sealed class VectorScene : ITimelineContext
         float startT,
         float endT,
         out PointF start,
-        out PointF control,
+        out PointF control1,
+        out PointF control2,
         out PointF end)
     {
         start = PointF.Empty;
-        control = PointF.Empty;
+        control1 = PointF.Empty;
+        control2 = PointF.Empty;
         end = PointF.Empty;
         if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return false;
 
         var curve = LineCurve(objectIndex);
-        (start, control, end) = QuadraticSubcurve(curve.Start, curve.Control, curve.End, startT, endT);
+        (start, control1, control2, end) = CubicSubcurve(
+            curve.Start,
+            curve.Control1,
+            curve.Control2,
+            curve.End,
+            startT,
+            endT);
         return true;
     }
 
@@ -4807,7 +5166,7 @@ internal sealed class VectorScene : ITimelineContext
                 ? 0f
                 : Math.Clamp(((world.X - a.Point.X) * dx + (world.Y - a.Point.Y) * dy) / lengthSquared, 0f, 1f);
             var candidateParameter = a.T + (b.T - a.T) * segmentParameter;
-            var candidate = QuadraticPoint(curve.Start, curve.Control, curve.End, candidateParameter);
+            var candidate = CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, candidateParameter);
             var candidateDistance = Distance(world, candidate);
             if (candidateDistance >= distance) continue;
             parameter = candidateParameter;
@@ -4822,14 +5181,14 @@ internal sealed class VectorScene : ITimelineContext
         {
             var first = low + (high - low) / 3f;
             var second = high - (high - low) / 3f;
-            var firstPoint = QuadraticPoint(curve.Start, curve.Control, curve.End, first);
-            var secondPoint = QuadraticPoint(curve.Start, curve.Control, curve.End, second);
+            var firstPoint = CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, first);
+            var secondPoint = CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, second);
             if (Distance(world, firstPoint) <= Distance(world, secondPoint)) high = second;
             else low = first;
         }
 
         parameter = (low + high) * 0.5f;
-        point = QuadraticPoint(curve.Start, curve.Control, curve.End, parameter);
+        point = CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, parameter);
         distance = Distance(world, point);
         return true;
     }
@@ -4846,11 +5205,16 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         var curve = LineCurve(objectIndex);
-        var firstControl = Lerp(curve.Start, curve.Control, parameter);
-        var secondControl = Lerp(curve.Control, curve.End, parameter);
-        var anchor = VectorUnits.Quantize(Lerp(firstControl, secondControl, parameter));
-        firstControl = VectorUnits.Quantize(firstControl);
-        secondControl = VectorUnits.Quantize(secondControl);
+        var p01 = Lerp(curve.Start, curve.Control1, parameter);
+        var p12 = Lerp(curve.Control1, curve.Control2, parameter);
+        var p23 = Lerp(curve.Control2, curve.End, parameter);
+        var p012 = Lerp(p01, p12, parameter);
+        var p123 = Lerp(p12, p23, parameter);
+        var anchor = VectorUnits.Quantize(Lerp(p012, p123, parameter));
+        p01 = VectorUnits.Quantize(p01);
+        p012 = VectorUnits.Quantize(p012);
+        p123 = VectorUnits.Quantize(p123);
+        p23 = VectorUnits.Quantize(p23);
         if (Distance(curve.Start, anchor) < DrawingTopologyRules.MinStrokeSegmentUnits
             || Distance(anchor, curve.End) < DrawingTopologyRules.MinStrokeSegmentUnits)
         {
@@ -4876,17 +5240,18 @@ internal sealed class VectorScene : ITimelineContext
             secondAtoms = Math.Max(3u, sourceAtoms - firstAtoms);
         }
 
-        SetLineCurve(objectIndex, curve.Start, firstControl, anchor);
+        SetLineCurve(objectIndex, curve.Start, p01, p012, anchor);
         LineEndpointStyles[objectIndex] = startStyle;
         LineEndEndpointStyles[objectIndex] = LineEndpointStyle.Round;
         VirtualAtomCount -= AtomCount[objectIndex];
         AtomCount[objectIndex] = firstAtoms;
         VirtualAtomCount += firstAtoms;
 
-        var secondObject = AppendCurveSegment(
+        var secondObject = AppendCubicCurveSegment(
             layer,
             anchor,
-            secondControl,
+            p123,
+            p23,
             curve.End,
             stroke,
             fillColor,
@@ -4912,7 +5277,8 @@ internal sealed class VectorScene : ITimelineContext
         var halfW = Width[objectIndex] * 0.5f;
         var start = LocalToWorld(objectIndex, -halfW, 0);
         var end = LocalToWorld(objectIndex, halfW, 0);
-        return DistanceToSegment(new PointF(CurveControlX[objectIndex], CurveControlY[objectIndex]), start, end) <= DrawingTopologyRules.MinStrokeSegmentUnits;
+        return DistanceToSegment(new PointF(CurveControlX[objectIndex], CurveControlY[objectIndex]), start, end) <= DrawingTopologyRules.MinStrokeSegmentUnits
+            && DistanceToSegment(new PointF(CurveControl2X[objectIndex], CurveControl2Y[objectIndex]), start, end) <= DrawingTopologyRules.MinStrokeSegmentUnits;
     }
 
     public LineEndpointStyle GetLineEndpointStyle(int objectIndex, bool startEndpoint)
@@ -4944,7 +5310,34 @@ internal sealed class VectorScene : ITimelineContext
         return startChanged || endChanged;
     }
 
-    public void SetLineEndpoint(int objectIndex, bool startEndpoint, PointF endpoint, PointF oppositeEndpoint, PointF control, bool keepStraight)
+    public void SetLineEndpoint(
+        int objectIndex,
+        bool startEndpoint,
+        PointF endpoint,
+        PointF oppositeEndpoint,
+        PointF control,
+        bool keepStraight)
+    {
+        var start = startEndpoint ? endpoint : oppositeEndpoint;
+        var end = startEndpoint ? oppositeEndpoint : endpoint;
+        SetLineEndpoint(
+            objectIndex,
+            startEndpoint,
+            endpoint,
+            oppositeEndpoint,
+            Lerp(start, control, 2f / 3f),
+            Lerp(end, control, 2f / 3f),
+            keepStraight);
+    }
+
+    public void SetLineEndpoint(
+        int objectIndex,
+        bool startEndpoint,
+        PointF endpoint,
+        PointF oppositeEndpoint,
+        PointF control1,
+        PointF control2,
+        bool keepStraight)
     {
         if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return;
         var start = startEndpoint ? endpoint : oppositeEndpoint;
@@ -4955,9 +5348,32 @@ internal sealed class VectorScene : ITimelineContext
         Width[objectIndex] = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, Distance(start, end));
         Height[objectIndex] = Math.Max(VectorUnits.FromPixels(3), Height[objectIndex]);
         Angle[objectIndex] = MathF.Atan2(end.Y - start.Y, end.X - start.X);
-        var newControl = keepStraight ? Midpoint(start, end) : control;
-        CurveControlX[objectIndex] = newControl.X;
-        CurveControlY[objectIndex] = newControl.Y;
+        if (keepStraight)
+        {
+            control1 = Lerp(start, end, 1f / 3f);
+            control2 = Lerp(start, end, 2f / 3f);
+        }
+        CurveControlX[objectIndex] = VectorUnits.Quantize(control1.X);
+        CurveControlY[objectIndex] = VectorUnits.Quantize(control1.Y);
+        CurveControl2X[objectIndex] = VectorUnits.Quantize(control2.X);
+        CurveControl2Y[objectIndex] = VectorUnits.Quantize(control2.Y);
+    }
+
+    public bool TryGetLineCubic(
+        int objectIndex,
+        out PointF start,
+        out PointF control1,
+        out PointF control2,
+        out PointF end)
+    {
+        start = control1 = control2 = end = PointF.Empty;
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return false;
+        var curve = LineCurve(objectIndex);
+        start = curve.Start;
+        control1 = curve.Control1;
+        control2 = curve.Control2;
+        end = curve.End;
+        return true;
     }
 
     public DrawingElementHit DetachElementForMove(DrawingElementHit hit, int frame)
@@ -4998,6 +5414,7 @@ internal sealed class VectorScene : ITimelineContext
 
             var contours = ShapeBoundaryContours(fillObjectIndex);
             PointF[][]? originalContours = null;
+            var exactMatches = new List<(int ContourIndex, int SegmentIndex, bool Reversed)>();
             for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
             {
                 var contour = contours[contourIndex];
@@ -5007,6 +5424,47 @@ internal sealed class VectorScene : ITimelineContext
                     var reverse = !forward
                         && BoundarySequenceMatches(contour, segmentIndex, reverseLinePoints);
                     if (!forward && !reverse) continue;
+                    exactMatches.Add((contourIndex, segmentIndex, reverse));
+                }
+            }
+
+            if (exactMatches.Count > 0)
+            {
+                originalContours = CloneContours(contours);
+                foreach (var match in exactMatches)
+                {
+                    links.Add(new FillBoundaryLineLink(
+                        lineObjectIndex,
+                        fillObjectIndex,
+                        originalContours,
+                        match.ContourIndex,
+                        match.SegmentIndex,
+                        linePoints.Length - 1,
+                        match.Reversed));
+                }
+                continue;
+            }
+
+            var lineStart = linePoints[0];
+            var lineEnd = linePoints[^1];
+            if (Distance(lineStart, lineEnd) <= ConnectedStrokeEndpointToleranceUnits) continue;
+            for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+            {
+                var contour = contours[contourIndex];
+                for (var segmentIndex = 0; segmentIndex < contour.Length - 1; segmentIndex++)
+                {
+                    var forward = BoundaryEndpointsMatch(
+                        contour[segmentIndex],
+                        contour[segmentIndex + 1],
+                        lineStart,
+                        lineEnd);
+                    var reverse = !forward && BoundaryEndpointsMatch(
+                        contour[segmentIndex],
+                        contour[segmentIndex + 1],
+                        lineEnd,
+                        lineStart);
+                    if (!forward && !reverse) continue;
+
                     originalContours ??= CloneContours(contours);
                     links.Add(new FillBoundaryLineLink(
                         lineObjectIndex,
@@ -5014,7 +5472,7 @@ internal sealed class VectorScene : ITimelineContext
                         originalContours,
                         contourIndex,
                         segmentIndex,
-                        linePoints.Length - 1,
+                        SegmentCount: 1,
                         Reversed: reverse));
                 }
             }
@@ -5120,7 +5578,78 @@ internal sealed class VectorScene : ITimelineContext
         return changed;
     }
 
+    public MaterializeSelectedPartsResult MaterializeLineIntersections(
+        IReadOnlyCollection<int> seedObjects,
+        int frame)
+    {
+        var seeds = seedObjects
+            .Where(index => (uint)index < ObjectCount
+                && ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line
+                && HasStroke(index)
+                && IsObjectActive(index, frame))
+            .Distinct()
+            .ToArray();
+        if (seeds.Length == 0)
+        {
+            return new MaterializeSelectedPartsResult(
+                true,
+                false,
+                Array.Empty<MaterializedPartMapping>(),
+                Array.Empty<int>());
+        }
+
+        var impacted = new HashSet<int>();
+        foreach (var seed in seeds)
+        {
+            var lineCandidates = CollectTopologyCandidates(seed, frame)
+                .Where(candidate => candidate != seed
+                    && ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                    && HasStroke(candidate)
+                    && ObjectLayer[candidate] == ObjectLayer[seed])
+                .ToArray();
+            if (StrokeSplitParameters(seed, lineCandidates).Count > 2) impacted.Add(seed);
+            foreach (var candidate in lineCandidates)
+            {
+                if (StrokeSplitParameters(candidate, [seed]).Count > 2) impacted.Add(candidate);
+            }
+        }
+
+        var keys = new List<DrawingElementKey>();
+        foreach (var source in impacted.OrderBy(index => index))
+        {
+            var lineCandidates = CollectTopologyCandidates(source, frame)
+                .Where(candidate => candidate != source
+                    && ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                    && HasStroke(candidate))
+                .ToArray();
+            var splits = StrokeSplitParameters(source, lineCandidates);
+            for (var part = 0; part < splits.Count - 1; part++)
+            {
+                keys.Add(new DrawingElementKey(source, DrawingElementKind.Stroke, part));
+            }
+        }
+
+        if (keys.Count == 0)
+        {
+            return new MaterializeSelectedPartsResult(
+                true,
+                false,
+                Array.Empty<MaterializedPartMapping>(),
+                Array.Empty<int>());
+        }
+
+        return MaterializeSelectedParts(keys, frame, lineIntersectionsOnly: true);
+    }
+
     public MaterializeSelectedPartsResult MaterializeSelectedParts(IReadOnlyList<DrawingElementKey> selectedParts, int frame)
+    {
+        return MaterializeSelectedParts(selectedParts, frame, lineIntersectionsOnly: false);
+    }
+
+    private MaterializeSelectedPartsResult MaterializeSelectedParts(
+        IReadOnlyList<DrawingElementKey> selectedParts,
+        int frame,
+        bool lineIntersectionsOnly)
     {
         if (selectedParts.Count == 0 || selectedParts.Any(key => !key.IsValid))
         {
@@ -5145,6 +5674,12 @@ internal sealed class VectorScene : ITimelineContext
             var sourceKeys = group.ToArray();
             var shape = ShapeKind[source];
             var candidates = CollectTopologyCandidates(source, frame);
+            if (lineIntersectionsOnly)
+            {
+                candidates = candidates
+                    .Where(candidate => ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line && HasStroke(candidate))
+                    .ToList();
+            }
             var layer = ObjectLayer[source];
             var order = ObjectOrder[source];
             var stroke = Stroke[source];
@@ -5160,7 +5695,8 @@ internal sealed class VectorScene : ITimelineContext
                     return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
                 }
 
-                var splits = StrokeSplitParameters(source, candidates);
+                var topologySplits = StrokeSplits(source, candidates);
+                var splits = topologySplits.Select(split => split.T).ToList();
                 var selectedByPart = sourceKeys.ToDictionary(key => key.PartIndex);
                 if (selectedByPart.Keys.Any(part => part < 0 || part >= Math.Max(0, splits.Count - 1)))
                 {
@@ -5177,7 +5713,12 @@ internal sealed class VectorScene : ITimelineContext
                 if (shape == VectorAnimationEngine.ShapeKind.Line)
                 {
                     var curve = LineCurve(source);
-                    var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+                    var segments = BuildCurveParts(
+                        curve.Start,
+                        curve.Control1,
+                        curve.Control2,
+                        curve.End,
+                        topologySplits);
                     if (selectedByPart.Keys.Any(part => segments.All(segment => segment.PartIndex != part)))
                     {
                         return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
@@ -5198,10 +5739,14 @@ internal sealed class VectorScene : ITimelineContext
                             strokeColor,
                             atomsPerPart,
                             segment.Start,
-                            segment.Control,
+                            segment.Control1,
+                            segment.Control2,
                             segment.End,
                             segment.PartIndex == 0 ? GetLineEndpointStyle(source, startEndpoint: true) : LineEndpointStyle.Round,
-                            segment.PartIndex == segments[^1].PartIndex ? GetLineEndpointStyle(source, startEndpoint: false) : LineEndpointStyle.Round));
+                            segment.PartIndex == segments[^1].PartIndex ? GetLineEndpointStyle(source, startEndpoint: false) : LineEndpointStyle.Round) with
+                        {
+                            GradientPaint = gradientPaint
+                        });
                     }
                 }
                 else
@@ -5397,7 +5942,8 @@ internal sealed class VectorScene : ITimelineContext
         Color strokeColor,
         uint atoms,
         PointF start,
-        PointF control,
+        PointF control1,
+        PointF control2,
         PointF end,
         LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle endEndpointStyle = LineEndpointStyle.Round)
@@ -5415,7 +5961,8 @@ internal sealed class VectorScene : ITimelineContext
             startEndpointStyle,
             endEndpointStyle,
             start,
-            control,
+            control1,
+            control2,
             end,
             Array.Empty<PointF>(),
             Array.Empty<PointF[]>());
@@ -5444,6 +5991,7 @@ internal sealed class VectorScene : ITimelineContext
             atoms,
             LineEndpointStyle.Round,
             LineEndpointStyle.Round,
+            PointF.Empty,
             PointF.Empty,
             PointF.Empty,
             PointF.Empty,
@@ -5477,6 +6025,7 @@ internal sealed class VectorScene : ITimelineContext
             PointF.Empty,
             PointF.Empty,
             PointF.Empty,
+            PointF.Empty,
             points,
             Array.Empty<PointF[]>());
     }
@@ -5507,6 +6056,7 @@ internal sealed class VectorScene : ITimelineContext
             PointF.Empty,
             PointF.Empty,
             PointF.Empty,
+            PointF.Empty,
             Array.Empty<PointF>(),
             contours)
         {
@@ -5518,10 +6068,11 @@ internal sealed class VectorScene : ITimelineContext
     {
         var index = addition.Geometry switch
         {
-            MaterializedPartGeometry.Curve => AppendCurveSegment(
+            MaterializedPartGeometry.Curve => AppendCubicCurveSegment(
                 addition.Layer,
                 addition.Start,
-                addition.Control,
+                addition.Control1,
+                addition.Control2,
                 addition.End,
                 addition.Stroke,
                 addition.FillColor,
@@ -5553,6 +6104,17 @@ internal sealed class VectorScene : ITimelineContext
         };
         if (index >= 0)
         {
+            if (addition.Geometry == MaterializedPartGeometry.Curve)
+            {
+                SetLineEndpoint(
+                    index,
+                    startEndpoint: true,
+                    addition.Start,
+                    addition.End,
+                    addition.Control1,
+                    addition.Control2,
+                    keepStraight: false);
+            }
             ObjectOrder[index] = addition.Order;
             ObjectSubOrder[index] = addition.SubOrder;
             ApplyGradientPaint(index, addition.GradientPaint);
@@ -5715,10 +6277,11 @@ internal sealed class VectorScene : ITimelineContext
             int newIndex;
             if (addition.IsLine)
             {
-                newIndex = AddCurveSegment(
+                newIndex = AddCubicCurveSegment(
                     addition.Layer,
                     addition.Start,
-                    addition.Control,
+                    addition.Control1,
+                    addition.Control2,
                     addition.End,
                     addition.Stroke,
                     addition.FillColor,
@@ -5766,11 +6329,16 @@ internal sealed class VectorScene : ITimelineContext
             var splits = LineRectSplitParameters(source, bounds);
             if (splits.Count <= 2) continue;
 
-            var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+            var segments = BuildCurveParts(curve.Start, curve.Control1, curve.Control2, curve.End, splits);
             if (segments.Count <= 1) continue;
 
             var selected = segments
-                .Select(segment => QuadraticCurveInsideRectangle(segment.Start, segment.Control, segment.End, bounds))
+                .Select(segment => bounds.Contains(CubicPoint(
+                    segment.Start,
+                    segment.Control1,
+                    segment.Control2,
+                    segment.End,
+                    0.5f)))
                 .ToArray();
             if (!selected.Any(value => value)) continue;
 
@@ -5791,7 +6359,8 @@ internal sealed class VectorScene : ITimelineContext
                         Color.FromArgb(StrokeArgb[source]),
                         Math.Max(3u, AtomCount[source] / (uint)segments.Count),
                         segment.Start,
-                        segment.Control,
+                        segment.Control1,
+                        segment.Control2,
                         segment.End,
                         segment.PartIndex == 0 ? GetLineEndpointStyle(source, startEndpoint: true) : LineEndpointStyle.Round,
                         segment.PartIndex == segments[^1].PartIndex ? GetLineEndpointStyle(source, startEndpoint: false) : LineEndpointStyle.Round)
@@ -6013,7 +6582,8 @@ internal sealed class VectorScene : ITimelineContext
     internal int[] FindIntersectingMatchingShapeGradientFills(
         VectorScene additions,
         IReadOnlyList<int> additionIndices,
-        int frame)
+        int frame,
+        int maximumResults = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(additions);
         ArgumentNullException.ThrowIfNull(additionIndices);
@@ -6037,6 +6607,10 @@ internal sealed class VectorScene : ITimelineContext
                 if (candidatePaths.Count > 0 && ClipperPathsIntersect(candidatePaths, additionPaths))
                 {
                     matches.Add(candidate);
+                    if (matches.Count >= maximumResults)
+                    {
+                        return matches.OrderBy(index => ObjectOrder[index]).ThenBy(index => ObjectSubOrder[index]).ToArray();
+                    }
                 }
             }
         }
@@ -6319,6 +6893,49 @@ internal sealed class VectorScene : ITimelineContext
         {
             EditFrame = previousEditFrame;
         }
+    }
+
+    internal bool CanNormalizePaintInteractively(
+        IReadOnlyList<int> objectIndices,
+        int frame,
+        int maximumCandidates = 4,
+        uint maximumCombinedAtoms = 512,
+        int maximumSceneObjects = 512)
+    {
+        ArgumentNullException.ThrowIfNull(objectIndices);
+        if (ObjectCount > maximumSceneObjects) return false;
+        var additions = objectIndices
+            .Where(index => (uint)index < ObjectCount && HasFill(index))
+            .Distinct()
+            .ToArray();
+        if (additions.Length == 0) return false;
+
+        var additionSet = additions.ToHashSet();
+        var candidates = new HashSet<int>();
+        ulong combinedAtoms = 0;
+        foreach (var addition in additions)
+        {
+            combinedAtoms += Math.Max(3u, AtomCount[addition]);
+            if (combinedAtoms > maximumCombinedAtoms) return false;
+            var bounds = GetObjectWorldBounds(addition);
+            foreach (var candidate in QueryObjects(bounds, frame))
+            {
+                if (additionSet.Contains(candidate)
+                    || ObjectLayer[candidate] != ObjectLayer[addition]
+                    || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[addition]
+                    || !HasFill(candidate)
+                    || !candidates.Add(candidate))
+                {
+                    continue;
+                }
+
+                if (candidates.Count > maximumCandidates) return false;
+                combinedAtoms += Math.Max(3u, AtomCount[candidate]);
+                if (combinedAtoms > maximumCombinedAtoms) return false;
+            }
+        }
+
+        return true;
     }
 
     private bool TryBuildFillOverwritePlan(
@@ -6867,11 +7484,11 @@ internal sealed class VectorScene : ITimelineContext
                 additions);
         }
 
-        additions.Add(new MarqueePartAddition(false, layer, Array.Empty<PointF>(), outsideContours, PointF.Empty, PointF.Empty, PointF.Empty, 0, fillColor, strokeColor, atomsPerPart, LineEndpointStyle.Round, LineEndpointStyle.Round, false)
+        additions.Add(new MarqueePartAddition(false, layer, Array.Empty<PointF>(), outsideContours, PointF.Empty, PointF.Empty, PointF.Empty, PointF.Empty, 0, fillColor, strokeColor, atomsPerPart, LineEndpointStyle.Round, LineEndpointStyle.Round, false)
         {
             GradientPaint = gradientPaint
         });
-        additions.Add(new MarqueePartAddition(false, layer, Array.Empty<PointF>(), insideContours, PointF.Empty, PointF.Empty, PointF.Empty, 0, fillColor, strokeColor, atomsPerPart, LineEndpointStyle.Round, LineEndpointStyle.Round, true)
+        additions.Add(new MarqueePartAddition(false, layer, Array.Empty<PointF>(), insideContours, PointF.Empty, PointF.Empty, PointF.Empty, PointF.Empty, 0, fillColor, strokeColor, atomsPerPart, LineEndpointStyle.Round, LineEndpointStyle.Round, true)
         {
             GradientPaint = gradientPaint
         });
@@ -6902,7 +7519,8 @@ internal sealed class VectorScene : ITimelineContext
                     Array.Empty<PointF>(),
                     Array.Empty<PointF[]>(),
                     start,
-                    Midpoint(start, end),
+                    Lerp(start, end, 1f / 3f),
+                    Lerp(start, end, 2f / 3f),
                     end,
                     Stroke[index],
                     fillColor,
@@ -6962,7 +7580,7 @@ internal sealed class VectorScene : ITimelineContext
         var splits = LineRectSplitParameters(index, bounds);
         if (splits.Count <= 2) return;
 
-        var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+        var segments = BuildCurveParts(curve.Start, curve.Control1, curve.Control2, curve.End, splits);
         if (segments.Count <= 1) return;
 
         var layer = ObjectLayer[index];
@@ -6974,7 +7592,7 @@ internal sealed class VectorScene : ITimelineContext
 
         foreach (var segment in segments)
         {
-            var midpoint = QuadraticPoint(segment.Start, segment.Control, segment.End, 0.5f);
+            var midpoint = CubicPoint(segment.Start, segment.Control1, segment.Control2, segment.End, 0.5f);
             var selected = bounds.Contains(midpoint);
             if (selected) selectedCount++;
             additions.Add(new MarqueePartAddition(
@@ -6983,7 +7601,8 @@ internal sealed class VectorScene : ITimelineContext
                 Array.Empty<PointF>(),
                 Array.Empty<PointF[]>(),
                 segment.Start,
-                segment.Control,
+                segment.Control1,
+                segment.Control2,
                 segment.End,
                 Stroke[index],
                 fillColor,
@@ -7687,14 +8306,15 @@ internal sealed class VectorScene : ITimelineContext
         if (ShapeKind[source] == VectorAnimationEngine.ShapeKind.Line)
         {
             var curve = LineCurve(source);
-            var segments = BuildCurveParts(curve.Start, curve.Control, curve.End, splits);
+            var segments = BuildCurveParts(curve.Start, curve.Control1, curve.Control2, curve.End, splits);
             RemoveObjectAt(source);
             foreach (var segment in segments)
             {
-                var index = AddCurveSegment(
+                var index = AddCubicCurveSegment(
                     layer,
                     segment.Start,
-                    segment.Control,
+                    segment.Control1,
+                    segment.Control2,
                     segment.End,
                     stroke,
                     fillColor,
@@ -7855,7 +8475,12 @@ internal sealed class VectorScene : ITimelineContext
         return result;
     }
 
-    private List<CurveSegmentPart> BuildCurveParts(PointF start, PointF control, PointF end, IReadOnlyList<float> splits)
+    private List<CurveSegmentPart> BuildCurveParts(
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        IReadOnlyList<float> splits)
     {
         var result = new List<CurveSegmentPart>();
         for (var i = 0; i < splits.Count - 1; i++)
@@ -7863,15 +8488,60 @@ internal sealed class VectorScene : ITimelineContext
             var startT = splits[i];
             var endT = splits[i + 1];
             if (endT - startT <= 0.0001f) continue;
-            var segment = QuadraticSubcurve(start, control, end, startT, endT);
+            var segment = CubicSubcurve(start, control1, control2, end, startT, endT);
             if (Distance(segment.Start, segment.End) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
-            result.Add(new CurveSegmentPart(i, segment.Start, segment.Control, segment.End));
+            result.Add(new CurveSegmentPart(i, segment.Start, segment.Control1, segment.Control2, segment.End));
         }
 
         return result;
     }
 
-    private List<int> CollectHitCandidates(int minX, int maxX, int minY, int maxY, int frame)
+    private List<CurveSegmentPart> BuildCurveParts(
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        IReadOnlyList<DrawingTopologySplit> splits)
+    {
+        var result = new List<CurveSegmentPart>();
+        for (var i = 0; i < splits.Count - 1; i++)
+        {
+            var startSplit = splits[i];
+            var endSplit = splits[i + 1];
+            if (endSplit.T - startSplit.T <= 0.0001f) continue;
+
+            var segment = CubicSubcurve(
+                start,
+                control1,
+                control2,
+                end,
+                startSplit.T,
+                endSplit.T);
+            var startDelta = new PointF(
+                startSplit.Point.X - segment.Start.X,
+                startSplit.Point.Y - segment.Start.Y);
+            var endDelta = new PointF(
+                endSplit.Point.X - segment.End.X,
+                endSplit.Point.Y - segment.End.Y);
+            var adjustedControl1 = new PointF(
+                segment.Control1.X + startDelta.X,
+                segment.Control1.Y + startDelta.Y);
+            var adjustedControl2 = new PointF(
+                segment.Control2.X + endDelta.X,
+                segment.Control2.Y + endDelta.Y);
+            if (Distance(startSplit.Point, endSplit.Point) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
+            result.Add(new CurveSegmentPart(
+                i,
+                startSplit.Point,
+                adjustedControl1,
+                adjustedControl2,
+                endSplit.Point));
+        }
+
+        return result;
+    }
+
+    private List<int> CollectHitCandidates(int minX, int maxX, int minY, int maxY, int frame, bool sort = true)
     {
         var result = new List<int>(128);
         PopulateQueryActiveKeyframes(frame);
@@ -7898,7 +8568,7 @@ internal sealed class VectorScene : ITimelineContext
             }
         }
 
-        result.Sort();
+        if (sort) result.Sort();
         return result;
     }
 
@@ -7988,9 +8658,9 @@ internal sealed class VectorScene : ITimelineContext
                 if (shape == VectorAnimationEngine.ShapeKind.Line)
                 {
                     var curve = LineCurve(objectIndex);
-                    foreach (var part in BuildCurveParts(curve.Start, curve.Control, curve.End, splits))
+                    foreach (var part in BuildCurveParts(curve.Start, curve.Control1, curve.Control2, curve.End, splits))
                     {
-                        if (!QuadraticCurveInsideRectangle(part.Start, part.Control, part.End, bounds)) continue;
+                        if (!CubicCurveInsideRectangle(part.Start, part.Control1, part.Control2, part.End, bounds)) continue;
 
                         result.Add(new DrawingElementHit(
                             new DrawingElementKey(objectIndex, DrawingElementKind.Stroke, part.PartIndex),
@@ -8185,6 +8855,37 @@ internal sealed class VectorScene : ITimelineContext
         _spatialPendingObjectCount++;
         GeometryRevision++;
         if (_spatialPendingObjectCount >= SpatialIndexAppendRebuildThreshold) RebuildSpatialIndex();
+    }
+
+    private bool TryAppendObjectRangeToSpatialIndex(int firstIndex, int count)
+    {
+        var cellCount = IndexColumns * IndexRows;
+        if (count <= 0
+            || firstIndex < 0
+            || firstIndex + count != ObjectCount
+            || CellStart.Length != cellCount + 1
+            || firstIndex != _spatialBaseObjectCount + _spatialPendingObjectCount)
+        {
+            return false;
+        }
+
+        _spatialAppendCells ??= new Dictionary<int, List<int>>();
+        for (var objectIndex = firstIndex; objectIndex < firstIndex + count; objectIndex++)
+        {
+            MaxHalfExtent = Math.Max(MaxHalfExtent, ObjectHalfExtent(objectIndex));
+            var cell = CellForWorld(X[objectIndex], Y[objectIndex]);
+            if (cell < 0) continue;
+            if (!_spatialAppendCells.TryGetValue(cell, out var appended))
+            {
+                appended = new List<int>(4);
+                _spatialAppendCells.Add(cell, appended);
+            }
+            appended.Add(objectIndex);
+        }
+
+        _spatialPendingObjectCount += count;
+        if (_spatialPendingObjectCount >= SpatialIndexAppendRebuildThreshold) RebuildSpatialIndex();
+        return true;
     }
 
     private void RebuildSpatialIndex()
@@ -8470,23 +9171,91 @@ internal sealed class VectorScene : ITimelineContext
 
     private void AddObjectToSummariesIncremental(int objectIndex, Color color)
     {
-        AddObjectToSummaryRange(
-            objectIndex,
-            color,
-            TileColumns,
-            TileRows,
-            TileCount,
-            TileAtoms,
-            TileArgb);
-        AddObjectToSummaryRange(
-            objectIndex,
-            color,
-            OverviewColumns,
-            OverviewRows,
-            OverviewCount,
-            OverviewAtoms,
-            OverviewArgb);
+        if (IsFreehandShape(ShapeKind[objectIndex]))
+        {
+            AddObjectToSummaryRange(
+                objectIndex,
+                color,
+                TileColumns,
+                TileRows,
+                TileCount,
+                TileAtoms,
+                TileArgb,
+                44,
+                9);
+            AddObjectToSummaryRange(
+                objectIndex,
+                color,
+                OverviewColumns,
+                OverviewRows,
+                OverviewCount,
+                OverviewAtoms,
+                OverviewArgb,
+                58,
+                6);
+        }
+        else
+        {
+            AddObjectToSummaryCell(
+                objectIndex,
+                color,
+                TileColumns,
+                TileRows,
+                TileCount,
+                TileAtoms,
+                TileArgb,
+                44,
+                9);
+            AddObjectToSummaryCell(
+                objectIndex,
+                color,
+                OverviewColumns,
+                OverviewRows,
+                OverviewCount,
+                OverviewAtoms,
+                OverviewArgb,
+                58,
+                6);
+        }
         SummaryRevision++;
+    }
+
+    private void AddObjectToSummaryCell(
+        int objectIndex,
+        Color color,
+        int columns,
+        int rows,
+        int[] counts,
+        long[] atoms,
+        int[] colors,
+        int alphaBase,
+        int alphaStep)
+    {
+        var x = (int)Math.Clamp((X[objectIndex] + StageWidth * 0.5f) / StageWidth * columns, 0, columns - 1);
+        var y = (int)Math.Clamp((Y[objectIndex] + StageHeight * 0.5f) / StageHeight * rows, 0, rows - 1);
+        AddObjectToSummaryCell(objectIndex, color, y * columns + x, counts, atoms, colors, alphaBase, alphaStep);
+    }
+
+    private void AddObjectToSummaryCell(
+        int objectIndex,
+        Color color,
+        int cell,
+        int[] counts,
+        long[] atoms,
+        int[] colors,
+        int alphaBase,
+        int alphaStep)
+    {
+        var oldCount = counts[cell];
+        var oldColor = oldCount > 0 ? Color.FromArgb(colors[cell]) : Color.Empty;
+        var nextCount = oldCount + 1;
+        counts[cell] = nextCount;
+        atoms[cell] += AtomCount[objectIndex];
+        var red = (oldColor.R * oldCount + color.R) / nextCount;
+        var green = (oldColor.G * oldCount + color.G) / nextCount;
+        var blue = (oldColor.B * oldCount + color.B) / nextCount;
+        var alpha = Math.Clamp(alphaBase + nextCount * alphaStep, alphaBase + alphaStep, 230);
+        colors[cell] = Color.FromArgb(alpha, red, green, blue).ToArgb();
     }
 
     private void AddObjectToSummaryRange(
@@ -8496,7 +9265,9 @@ internal sealed class VectorScene : ITimelineContext
         int rows,
         int[] counts,
         long[] atoms,
-        int[] colors)
+        int[] colors,
+        int alphaBase,
+        int alphaStep)
     {
         var halfWidth = Width[objectIndex] * 0.5f;
         var halfHeight = Height[objectIndex] * 0.5f;
@@ -8512,16 +9283,7 @@ internal sealed class VectorScene : ITimelineContext
             for (var x = minX; x <= maxX; x++)
             {
                 var cell = y * columns + x;
-                var oldCount = counts[cell];
-                var oldColor = oldCount > 0 ? Color.FromArgb(colors[cell]) : Color.Empty;
-                var nextCount = oldCount + 1;
-                counts[cell] = nextCount;
-                atoms[cell] += AtomCount[objectIndex];
-                var red = (oldColor.R * oldCount + color.R) / nextCount;
-                var green = (oldColor.G * oldCount + color.G) / nextCount;
-                var blue = (oldColor.B * oldCount + color.B) / nextCount;
-                var alpha = Math.Clamp(44 + nextCount * 9, 48, 230);
-                colors[cell] = Color.FromArgb(alpha, red, green, blue).ToArgb();
+                AddObjectToSummaryCell(objectIndex, color, cell, counts, atoms, colors, alphaBase, alphaStep);
             }
         }
     }
@@ -8608,9 +9370,10 @@ internal sealed class VectorScene : ITimelineContext
             var halfW = Width[i] * 0.5f;
             var start = LocalToWorld(i, -halfW, 0);
             var end = LocalToWorld(i, halfW, 0);
-            var control = new PointF(CurveControlX[i], CurveControlY[i]);
+            var control1 = new PointF(CurveControlX[i], CurveControlY[i]);
+            var control2 = new PointF(CurveControl2X[i], CurveControl2Y[i]);
             var hitRadius = Math.Max(Height[i] * 0.5f, 1) + toleranceWorld;
-            return DistanceToQuadratic(world, start, control, end) <= hitRadius;
+            return DistanceToCubic(world, start, control1, control2, end) <= hitRadius;
         }
 
         if (IsFreehandShape(shape))
@@ -8787,9 +9550,14 @@ internal sealed class VectorScene : ITimelineContext
 
     private List<float> StrokeSplitParameters(int strokeIndex, IReadOnlyList<int> candidates)
     {
+        return StrokeSplits(strokeIndex, candidates).Select(split => split.T).ToList();
+    }
+
+    private List<DrawingTopologySplit> StrokeSplits(int strokeIndex, IReadOnlyList<int> candidates)
+    {
         var splits = new List<DrawingTopologySplit>();
         var source = StrokeSamples(strokeIndex);
-        if (source.Length == 0) return new List<float>();
+        if (source.Length == 0) return splits;
         splits.Add(new DrawingTopologySplit(0, source[0].Point));
         splits.Add(new DrawingTopologySplit(1, source[^1].Point));
         var sourceLayer = ObjectLayer[strokeIndex];
@@ -8805,12 +9573,13 @@ internal sealed class VectorScene : ITimelineContext
             {
                 foreach (var contour in ShapeBoundaryContours(other))
                 {
+                    if (CurveSamplesFollowBoundary(source, contour)) continue;
                     AddCurvePolylineIntersections(splits, source, contour, includeSourceEndpoints: false);
                 }
             }
         }
 
-        return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
+        return NormalizeStrokeSplits(splits);
     }
 
     private List<float> BoundarySplitParameters(int objectIndex, IReadOnlyList<int> candidates)
@@ -8826,6 +9595,10 @@ internal sealed class VectorScene : ITimelineContext
         {
             splits.Add(new DrawingTopologySplit(0, boundary[0]));
             splits.Add(new DrawingTopologySplit(1, boundary[^1]));
+        }
+        else if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Path)
+        {
+            AddPathBoundaryCornerSplits(splits, boundary);
         }
         else
         {
@@ -8843,7 +9616,9 @@ internal sealed class VectorScene : ITimelineContext
             if (!HasStroke(other)) continue;
             if (IsTopologyStrokeShape(shape))
             {
-                AddPolylineCurveIntersections(splits, boundary, StrokeSamples(other), includeSourceEndpoints: true);
+                var strokeSamples = StrokeSamples(other);
+                if (CurveSamplesFollowBoundary(strokeSamples, boundary)) continue;
+                AddPolylineCurveIntersections(splits, boundary, strokeSamples, includeSourceEndpoints: true);
             }
             else if (IsFillShape(shape))
             {
@@ -8855,6 +9630,61 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return NormalizeStrokeSplits(splits).Select(split => split.T).ToList();
+    }
+
+    private static bool CurveSamplesFollowBoundary(CurveSample[] samples, PointF[] boundary)
+    {
+        if (samples.Length < 2 || samples.Length > boundary.Length) return false;
+        for (var segmentIndex = 0; segmentIndex + samples.Length <= boundary.Length; segmentIndex++)
+        {
+            var forward = true;
+            var reverse = true;
+            for (var sampleIndex = 0; sampleIndex < samples.Length; sampleIndex++)
+            {
+                var forwardSample = VectorUnits.Quantize(samples[sampleIndex].Point);
+                var reverseSample = VectorUnits.Quantize(samples[^(sampleIndex + 1)].Point);
+                forward &= SameDrawingUnit(boundary[segmentIndex + sampleIndex], forwardSample);
+                reverse &= SameDrawingUnit(boundary[segmentIndex + sampleIndex], reverseSample);
+                if (!forward && !reverse) break;
+            }
+
+            if (forward || reverse) return true;
+        }
+
+        return false;
+    }
+
+    private static void AddPathBoundaryCornerSplits(List<DrawingTopologySplit> splits, PointF[] boundary)
+    {
+        if (boundary.Length == 0) return;
+        var segmentCount = Math.Max(1, boundary.Length - 1);
+        splits.Add(new DrawingTopologySplit(0, boundary[0]));
+        if (boundary.Length == 1) return;
+
+        const float hardCornerCosine = 0.8660254f; // 30 degrees.
+        for (var index = 1; index < boundary.Length - 1; index++)
+        {
+            var previous = boundary[index - 1];
+            var current = boundary[index];
+            var next = boundary[index + 1];
+            var incomingX = current.X - previous.X;
+            var incomingY = current.Y - previous.Y;
+            var outgoingX = next.X - current.X;
+            var outgoingY = next.Y - current.Y;
+            var incomingLength = MathF.Sqrt(incomingX * incomingX + incomingY * incomingY);
+            var outgoingLength = MathF.Sqrt(outgoingX * outgoingX + outgoingY * outgoingY);
+            if (incomingLength < DrawingTopologyRules.MinStrokeSegmentUnits
+                || outgoingLength < DrawingTopologyRules.MinStrokeSegmentUnits)
+            {
+                continue;
+            }
+
+            var cosine = (incomingX * outgoingX + incomingY * outgoingY) / (incomingLength * outgoingLength);
+            if (cosine > hardCornerCosine) continue;
+            splits.Add(new DrawingTopologySplit(index / (float)segmentCount, current));
+        }
+
+        splits.Add(new DrawingTopologySplit(1, boundary[^1]));
     }
 
     private List<BoundaryStrokePart> BuildBoundaryStrokeParts(int objectIndex, IReadOnlyList<int> candidates)
@@ -9003,9 +9833,21 @@ internal sealed class VectorScene : ITimelineContext
 
         // A terminating stroke can meet another stroke without producing a crossing.
         // Keep that contact as a topology node so the endpoint can be selected and edited.
-        if (TryEndpointContactParameter(sourceStart.Point, sourceEnd.Point, cutterStart, cutterEnd, out var contact))
+        if (TryEndpointContactParameter(
+                sourceStart.Point,
+                sourceEnd.Point,
+                cutterStart,
+                cutterEnd,
+                out var contact,
+                out var contactPoint))
         {
-            AddTopologySegmentIntersection(result, sourceStart, sourceEnd, contact, includeSourceEndpoints);
+            AddTopologySegmentIntersection(
+                result,
+                sourceStart,
+                sourceEnd,
+                contact,
+                includeSourceEndpoints,
+                contactPoint);
         }
     }
 
@@ -9014,14 +9856,29 @@ internal sealed class VectorScene : ITimelineContext
         PointF sourceEnd,
         PointF cutterStart,
         PointF cutterEnd,
-        out float parameter)
+        out float parameter,
+        out PointF contactPoint)
     {
         parameter = 0;
-        if (TryPointOnSegment(cutterStart, sourceStart, sourceEnd, out parameter)) return true;
-        if (TryPointOnSegment(cutterEnd, sourceStart, sourceEnd, out parameter)) return true;
-        if (TryPointOnSegment(sourceStart, cutterStart, cutterEnd, out _)) return true;
+        contactPoint = PointF.Empty;
+        if (TryPointOnSegment(cutterStart, sourceStart, sourceEnd, out parameter))
+        {
+            contactPoint = cutterStart;
+            return true;
+        }
+        if (TryPointOnSegment(cutterEnd, sourceStart, sourceEnd, out parameter))
+        {
+            contactPoint = cutterEnd;
+            return true;
+        }
+        if (TryPointOnSegment(sourceStart, cutterStart, cutterEnd, out _))
+        {
+            contactPoint = sourceStart;
+            return true;
+        }
         if (!TryPointOnSegment(sourceEnd, cutterStart, cutterEnd, out _)) return false;
         parameter = 1;
+        contactPoint = sourceEnd;
         return true;
     }
 
@@ -9031,7 +9888,8 @@ internal sealed class VectorScene : ITimelineContext
         var dx = end.X - start.X;
         var dy = end.Y - start.Y;
         var lengthSquared = dx * dx + dy * dy;
-        var tolerance = DrawingTopologyRules.UnitIntersectionTolerance;
+        // Curve evaluation can land between integer vector units while committed endpoints are quantized.
+        var tolerance = Math.Max(DrawingTopologyRules.UnitIntersectionTolerance, ConnectedStrokeEndpointToleranceUnits);
         if (lengthSquared <= tolerance * tolerance)
         {
             return Distance(point, start) <= tolerance;
@@ -9052,10 +9910,11 @@ internal sealed class VectorScene : ITimelineContext
         CurveSample sourceStart,
         CurveSample sourceEnd,
         float localT,
-        bool includeSourceEndpoints)
+        bool includeSourceEndpoints,
+        PointF? intersectionPoint = null)
     {
         var globalT = sourceStart.T + (sourceEnd.T - sourceStart.T) * localT;
-        var point = Lerp(sourceStart.Point, sourceEnd.Point, localT);
+        var point = intersectionPoint ?? Lerp(sourceStart.Point, sourceEnd.Point, localT);
         if (!includeSourceEndpoints
             && (sourceStart.T <= 0 && Distance(point, sourceStart.Point) <= DrawingTopologyRules.UnitIntersectionTolerance
                 || sourceEnd.T >= 1 && Distance(point, sourceEnd.Point) <= DrawingTopologyRules.UnitIntersectionTolerance))
@@ -9066,20 +9925,21 @@ internal sealed class VectorScene : ITimelineContext
         result.Add(new DrawingTopologySplit(globalT, point));
     }
 
-    private (PointF Start, PointF Control, PointF End) LineCurve(int i)
+    private (PointF Start, PointF Control1, PointF Control2, PointF End) LineCurve(int i)
     {
         var halfW = Width[i] * 0.5f;
         var start = LocalToWorld(i, -halfW, 0);
         var end = LocalToWorld(i, halfW, 0);
-        var control = new PointF(CurveControlX[i], CurveControlY[i]);
-        return (start, control, end);
+        var control1 = new PointF(CurveControlX[i], CurveControlY[i]);
+        var control2 = new PointF(CurveControl2X[i], CurveControl2Y[i]);
+        return (start, control1, control2, end);
     }
 
     private CurveSample[] CurveSamples(int i)
     {
-        var (start, control, end) = LineCurve(i);
+        var (start, control1, control2, end) = LineCurve(i);
         var samples = new List<CurveSample>(32) { new(0, start) };
-        AddAdaptiveQuadraticSamples(samples, start, control, end, 0, 1, 0);
+        AddAdaptiveCubicSamples(samples, start, control1, control2, end, 0, 1, 0);
         samples.Add(new CurveSample(1, end));
         return samples.ToArray();
     }
@@ -9100,22 +9960,34 @@ internal sealed class VectorScene : ITimelineContext
         return samples;
     }
 
-    private static void AddAdaptiveQuadraticSamples(List<CurveSample> samples, PointF start, PointF control, PointF end, float startT, float endT, int depth)
+    private static void AddAdaptiveCubicSamples(
+        List<CurveSample> samples,
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        float startT,
+        float endT,
+        int depth)
     {
         const int maxDepth = 9;
         const float flatnessUnits = 0.35f;
-        if (depth >= maxDepth || DistanceToSegment(control, start, end) <= flatnessUnits)
+        if (depth >= maxDepth
+            || Math.Max(DistanceToSegment(control1, start, end), DistanceToSegment(control2, start, end)) <= flatnessUnits)
         {
             return;
         }
 
-        var startControl = Midpoint(start, control);
-        var controlEnd = Midpoint(control, end);
-        var middle = Midpoint(startControl, controlEnd);
+        var p01 = Midpoint(start, control1);
+        var p12 = Midpoint(control1, control2);
+        var p23 = Midpoint(control2, end);
+        var p012 = Midpoint(p01, p12);
+        var p123 = Midpoint(p12, p23);
+        var middle = Midpoint(p012, p123);
         var middleT = (startT + endT) * 0.5f;
-        AddAdaptiveQuadraticSamples(samples, start, startControl, middle, startT, middleT, depth + 1);
+        AddAdaptiveCubicSamples(samples, start, p01, p012, middle, startT, middleT, depth + 1);
         samples.Add(new CurveSample(middleT, middle));
-        AddAdaptiveQuadraticSamples(samples, middle, controlEnd, end, middleT, endT, depth + 1);
+        AddAdaptiveCubicSamples(samples, middle, p123, p23, end, middleT, endT, depth + 1);
     }
 
     private PointF[] ShapeBoundary(int i)
@@ -9441,8 +10313,62 @@ internal sealed class VectorScene : ITimelineContext
         return true;
     }
 
+    private static bool BoundaryEndpointsMatch(
+        PointF boundaryStart,
+        PointF boundaryEnd,
+        PointF lineStart,
+        PointF lineEnd)
+    {
+        return Distance(boundaryStart, lineStart) <= ConnectedStrokeEndpointToleranceUnits
+            && Distance(boundaryEnd, lineEnd) <= ConnectedStrokeEndpointToleranceUnits;
+    }
+
     private List<float> LineRectSplitParameters(int lineIndex, RectangleF bounds)
     {
+        if (IsLineStraight(lineIndex)
+            && TryGetLineEndpoint(lineIndex, true, out var lineStart)
+            && TryGetLineEndpoint(lineIndex, false, out var lineEnd)
+            && TryClipSegmentToRectangle(lineStart, lineEnd, bounds, out var enter, out var exit))
+        {
+            var straightCurve = LineCurve(lineIndex);
+            var chordX = lineEnd.X - lineStart.X;
+            var chordY = lineEnd.Y - lineStart.Y;
+            var chordLengthSquared = chordX * chordX + chordY * chordY;
+            var straightSplits = new List<DrawingTopologySplit>
+            {
+                new(0, lineStart),
+                new(1, lineEnd)
+            };
+            AddStraightSplit(enter);
+            AddStraightSplit(exit);
+            return NormalizeStrokeSplits(straightSplits).Select(split => split.T).ToList();
+
+            void AddStraightSplit(float chordParameter)
+            {
+                if (chordParameter <= 0.0001f || chordParameter >= 0.9999f) return;
+                var intersection = Lerp(lineStart, lineEnd, chordParameter);
+                var low = 0f;
+                var high = 1f;
+                for (var iteration = 0; iteration < 24; iteration++)
+                {
+                    var middle = (low + high) * 0.5f;
+                    var point = CubicPoint(
+                        straightCurve.Start,
+                        straightCurve.Control1,
+                        straightCurve.Control2,
+                        straightCurve.End,
+                        middle);
+                    var projected = chordLengthSquared <= DrawingTopologyRules.UnitIntersectionTolerance
+                        ? middle
+                        : ((point.X - lineStart.X) * chordX + (point.Y - lineStart.Y) * chordY) / chordLengthSquared;
+                    if (projected < chordParameter) low = middle;
+                    else high = middle;
+                }
+                var parameter = (low + high) * 0.5f;
+                straightSplits.Add(new DrawingTopologySplit(parameter, intersection));
+            }
+        }
+
         var splits = new List<DrawingTopologySplit>();
         var samples = CurveSamples(lineIndex);
         splits.Add(new DrawingTopologySplit(0, samples[0].Point));
@@ -9713,8 +10639,9 @@ internal sealed class VectorScene : ITimelineContext
             var halfW = Width[i] * 0.5f;
             var start = LocalToWorld(i, -halfW, 0);
             var end = LocalToWorld(i, halfW, 0);
-            var control = new PointF(CurveControlX[i], CurveControlY[i]);
-            var bounds = QuadraticCurveBounds(start, control, end);
+            var control1 = new PointF(CurveControlX[i], CurveControlY[i]);
+            var control2 = new PointF(CurveControl2X[i], CurveControl2Y[i]);
+            var bounds = CubicCurveBounds(start, control1, control2, end);
             bounds.Inflate(margin, margin);
             return bounds;
         }
@@ -9785,7 +10712,7 @@ internal sealed class VectorScene : ITimelineContext
         return new PointF(X[i] + localX * cos - localY * sin, Y[i] + localX * sin + localY * cos);
     }
 
-    private static float DistanceToQuadratic(PointF point, PointF start, PointF control, PointF end)
+    private static float DistanceToCubic(PointF point, PointF start, PointF control1, PointF control2, PointF end)
     {
         var best = float.MaxValue;
         var previous = start;
@@ -9793,7 +10720,7 @@ internal sealed class VectorScene : ITimelineContext
         for (var s = 1; s <= segments; s++)
         {
             var t = s / (float)segments;
-            var current = QuadraticPoint(start, control, end, t);
+            var current = CubicPoint(start, control1, control2, end, t);
             best = Math.Min(best, DistanceToSegment(point, previous, current));
             previous = current;
         }
@@ -9801,71 +10728,114 @@ internal sealed class VectorScene : ITimelineContext
         return best;
     }
 
-    private static bool QuadraticCurveInsideRectangle(PointF start, PointF control, PointF end, RectangleF bounds)
+    private static bool CubicCurveInsideRectangle(PointF start, PointF control1, PointF control2, PointF end, RectangleF bounds)
     {
-        var curveBounds = QuadraticCurveBounds(start, control, end);
+        var curveBounds = CubicCurveBounds(start, control1, control2, end);
         return curveBounds.Left >= bounds.Left - DrawingTopologyRules.UnitIntersectionTolerance
             && curveBounds.Right <= bounds.Right + DrawingTopologyRules.UnitIntersectionTolerance
             && curveBounds.Top >= bounds.Top - DrawingTopologyRules.UnitIntersectionTolerance
             && curveBounds.Bottom <= bounds.Bottom + DrawingTopologyRules.UnitIntersectionTolerance;
     }
 
-    private static RectangleF QuadraticCurveBounds(PointF start, PointF control, PointF end)
+    private static RectangleF CubicCurveBounds(PointF start, PointF control1, PointF control2, PointF end)
     {
         var left = Math.Min(start.X, end.X);
         var right = Math.Max(start.X, end.X);
         var top = Math.Min(start.Y, end.Y);
         var bottom = Math.Max(start.Y, end.Y);
-        IncludeQuadraticExtremum(start.X, control.X, end.X, ref left, ref right);
-        IncludeQuadraticExtremum(start.Y, control.Y, end.Y, ref top, ref bottom);
+        IncludeCubicExtrema(start.X, control1.X, control2.X, end.X, ref left, ref right);
+        IncludeCubicExtrema(start.Y, control1.Y, control2.Y, end.Y, ref top, ref bottom);
         return RectangleF.FromLTRB(left, top, right, bottom);
     }
 
-    private static void IncludeQuadraticExtremum(float start, float control, float end, ref float minimum, ref float maximum)
+    private static void IncludeCubicExtrema(
+        float start,
+        float control1,
+        float control2,
+        float end,
+        ref float minimum,
+        ref float maximum)
     {
-        var denominator = start - 2 * control + end;
-        if (Math.Abs(denominator) <= 0.000001f) return;
-        var t = (start - control) / denominator;
+        var a = -start + 3 * control1 - 3 * control2 + end;
+        var b = 2 * (start - 2 * control1 + control2);
+        var c = control1 - start;
+        if (Math.Abs(a) <= 0.000001f)
+        {
+            if (Math.Abs(b) <= 0.000001f) return;
+            IncludeCubicExtremumAt(start, control1, control2, end, -c / b, ref minimum, ref maximum);
+            return;
+        }
+
+        var discriminant = b * b - 4 * a * c;
+        if (discriminant < 0) return;
+        var root = MathF.Sqrt(discriminant);
+        IncludeCubicExtremumAt(start, control1, control2, end, (-b + root) / (2 * a), ref minimum, ref maximum);
+        IncludeCubicExtremumAt(start, control1, control2, end, (-b - root) / (2 * a), ref minimum, ref maximum);
+    }
+
+    private static void IncludeCubicExtremumAt(
+        float start,
+        float control1,
+        float control2,
+        float end,
+        float t,
+        ref float minimum,
+        ref float maximum)
+    {
         if (t <= 0 || t >= 1) return;
-        var value = QuadraticCoordinate(start, control, end, t);
+        var value = CubicCoordinate(start, control1, control2, end, t);
         minimum = Math.Min(minimum, value);
         maximum = Math.Max(maximum, value);
     }
 
-    private static float QuadraticCoordinate(float start, float control, float end, float t)
+    private static float CubicCoordinate(float start, float control1, float control2, float end, float t)
     {
         var inv = 1 - t;
-        return inv * inv * start + 2 * inv * t * control + t * t * end;
+        return inv * inv * inv * start
+            + 3 * inv * inv * t * control1
+            + 3 * inv * t * t * control2
+            + t * t * t * end;
     }
 
-    private static PointF QuadraticPoint(PointF start, PointF control, PointF end, float t)
+    private static PointF CubicPoint(PointF start, PointF control1, PointF control2, PointF end, float t)
     {
         return new PointF(
-            QuadraticCoordinate(start.X, control.X, end.X, t),
-            QuadraticCoordinate(start.Y, control.Y, end.Y, t));
+            CubicCoordinate(start.X, control1.X, control2.X, end.X, t),
+            CubicCoordinate(start.Y, control1.Y, control2.Y, end.Y, t));
     }
 
-    private static (PointF Start, PointF Control, PointF End) QuadraticSubcurve(PointF start, PointF control, PointF end, float startT, float endT)
+    private static (PointF Start, PointF Control1, PointF Control2, PointF End) CubicSubcurve(
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        float startT,
+        float endT)
     {
         startT = Math.Clamp(startT, 0, 1);
         endT = Math.Clamp(endT, startT, 1);
-        var p0 = QuadraticPoint(start, control, end, startT);
-        var p2 = QuadraticPoint(start, control, end, endT);
-        if (endT - startT <= 0.0001f) return (p0, Midpoint(p0, p2), p2);
+        var p0 = CubicPoint(start, control1, control2, end, startT);
+        var p3 = CubicPoint(start, control1, control2, end, endT);
+        if (endT - startT <= 0.0001f) return (p0, p0, p3, p3);
 
-        var derivativeStart = QuadraticDerivative(start, control, end, startT);
-        var derivativeEnd = QuadraticDerivative(start, control, end, endT);
+        var derivativeStart = CubicDerivative(start, control1, control2, end, startT);
+        var derivativeEnd = CubicDerivative(start, control1, control2, end, endT);
         var duration = endT - startT;
-        var c0 = new PointF(p0.X + derivativeStart.X * duration * 0.5f, p0.Y + derivativeStart.Y * duration * 0.5f);
-        var c1 = new PointF(p2.X - derivativeEnd.X * duration * 0.5f, p2.Y - derivativeEnd.Y * duration * 0.5f);
-        return (p0, Midpoint(c0, c1), p2);
+        var c1 = new PointF(p0.X + derivativeStart.X * duration / 3f, p0.Y + derivativeStart.Y * duration / 3f);
+        var c2 = new PointF(p3.X - derivativeEnd.X * duration / 3f, p3.Y - derivativeEnd.Y * duration / 3f);
+        return (p0, c1, c2, p3);
     }
 
-    private static PointF QuadraticDerivative(PointF start, PointF control, PointF end, float t)
+    private static PointF CubicDerivative(PointF start, PointF control1, PointF control2, PointF end, float t)
     {
+        var inv = 1 - t;
         return new PointF(
-            2 * ((1 - t) * (control.X - start.X) + t * (end.X - control.X)),
-            2 * ((1 - t) * (control.Y - start.Y) + t * (end.Y - control.Y)));
+            3 * (inv * inv * (control1.X - start.X)
+                + 2 * inv * t * (control2.X - control1.X)
+                + t * t * (end.X - control2.X)),
+            3 * (inv * inv * (control1.Y - start.Y)
+                + 2 * inv * t * (control2.Y - control1.Y)
+                + t * t * (end.Y - control2.Y)));
     }
 
     private static float DistanceToSegment(PointF point, PointF start, PointF end)
@@ -9944,6 +10914,8 @@ internal sealed class VectorScene : ITimelineContext
         Stroke[to] = source.Stroke[from];
         CurveControlX[to] = source.CurveControlX[from];
         CurveControlY[to] = source.CurveControlY[from];
+        CurveControl2X[to] = source.CurveControl2X[from];
+        CurveControl2Y[to] = source.CurveControl2Y[from];
         LineEndpointStyles[to] = source.LineEndpointStyles[from];
         LineEndEndpointStyles[to] = source.LineEndEndpointStyles[from];
         ShapeKind[to] = source.ShapeKind[from];
@@ -10050,6 +11022,8 @@ internal sealed class VectorScene : ITimelineContext
         var strokeArray = Stroke;
         var curveControlX = CurveControlX;
         var curveControlY = CurveControlY;
+        var curveControl2X = CurveControl2X;
+        var curveControl2Y = CurveControl2Y;
         var lineEndpointStyles = LineEndpointStyles;
         var lineEndEndpointStyles = LineEndEndpointStyles;
         var shapeKind = ShapeKind;
@@ -10077,6 +11051,8 @@ internal sealed class VectorScene : ITimelineContext
         Array.Resize(ref strokeArray, ObjectCount);
         Array.Resize(ref curveControlX, ObjectCount);
         Array.Resize(ref curveControlY, ObjectCount);
+        Array.Resize(ref curveControl2X, ObjectCount);
+        Array.Resize(ref curveControl2Y, ObjectCount);
         Array.Resize(ref lineEndpointStyles, ObjectCount);
         Array.Resize(ref lineEndEndpointStyles, ObjectCount);
         Array.Resize(ref shapeKind, ObjectCount);
@@ -10104,6 +11080,8 @@ internal sealed class VectorScene : ITimelineContext
         Stroke = strokeArray;
         CurveControlX = curveControlX;
         CurveControlY = curveControlY;
+        CurveControl2X = curveControl2X;
+        CurveControl2Y = curveControl2Y;
         LineEndpointStyles = lineEndpointStyles;
         LineEndEndpointStyles = lineEndEndpointStyles;
         ShapeKind = shapeKind;
@@ -10137,6 +11115,8 @@ internal sealed class VectorScene : ITimelineContext
         var strokeArray = Stroke;
         var curveControlX = CurveControlX;
         var curveControlY = CurveControlY;
+        var curveControl2X = CurveControl2X;
+        var curveControl2Y = CurveControl2Y;
         var lineEndpointStyles = LineEndpointStyles;
         var lineEndEndpointStyles = LineEndEndpointStyles;
         var shapeKind = ShapeKind;
@@ -10164,6 +11144,8 @@ internal sealed class VectorScene : ITimelineContext
         Array.Resize(ref strokeArray, capacity);
         Array.Resize(ref curveControlX, capacity);
         Array.Resize(ref curveControlY, capacity);
+        Array.Resize(ref curveControl2X, capacity);
+        Array.Resize(ref curveControl2Y, capacity);
         Array.Resize(ref lineEndpointStyles, capacity);
         Array.Resize(ref lineEndEndpointStyles, capacity);
         Array.Resize(ref shapeKind, capacity);
@@ -10191,6 +11173,8 @@ internal sealed class VectorScene : ITimelineContext
         Stroke = strokeArray;
         CurveControlX = curveControlX;
         CurveControlY = curveControlY;
+        CurveControl2X = curveControl2X;
+        CurveControl2Y = curveControl2Y;
         LineEndpointStyles = lineEndpointStyles;
         LineEndEndpointStyles = lineEndEndpointStyles;
         ShapeKind = shapeKind;

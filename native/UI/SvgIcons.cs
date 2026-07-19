@@ -15,6 +15,7 @@ internal enum SvgIconKind
     Star,
     Line,
     Pen,
+    SimplePen,
     Pencil,
     Brush,
     PressureBrush,
@@ -27,12 +28,22 @@ internal enum SvgIconKind
     Vault,
     Snap,
     Grid,
+    GoldenSpiral,
     Objects,
     TightFit,
     Align,
     Angle,
     Ratio,
-    RestoreSize
+    RestoreSize,
+    PolarGrid,
+    PropertiesPanel,
+    TimelinePanel,
+    FolderPlus,
+    Close,
+    Info,
+    Warning,
+    Error,
+    Question
 }
 
 internal static class SvgIcons
@@ -97,6 +108,13 @@ internal static class SvgIcons
                 DrawPolygon(g, pen, [P(r, 12, 3), P(r, 19, 10), P(r, 13, 21), P(r, 5, 13)]);
                 g.DrawLine(thinPen, P(r, 9, 15), P(r, 15, 9));
                 g.FillEllipse(fill, Rect(r, 10.5f, 10.5f, 3, 3));
+                break;
+            case SvgIconKind.SimplePen:
+                g.DrawBezier(pen, P(r, 4, 18), P(r, 8, 5), P(r, 16, 19), P(r, 21, 7));
+                g.FillEllipse(fill, Rect(r, 2.5f, 16.5f, 4, 4));
+                g.DrawEllipse(thinPen, Rect(r, 2.5f, 16.5f, 4, 4));
+                g.FillEllipse(fill, Rect(r, 19, 5, 4, 4));
+                g.DrawEllipse(thinPen, Rect(r, 19, 5, 4, 4));
                 break;
             case SvgIconKind.Pencil:
                 g.DrawLine(pen, P(r, 5, 19), P(r, 17, 7));
@@ -178,6 +196,45 @@ internal static class SvgIcons
                 g.DrawLine(thinPen, P(r, 4, 10), P(r, 20, 10));
                 g.DrawEllipse(pen, Rect(r, 10, 12, 4, 4));
                 break;
+            case SvgIconKind.FolderPlus:
+                DrawPolygon(g, pen, [P(r, 3, 7), P(r, 9, 7), P(r, 11, 10), P(r, 21, 10), P(r, 21, 20), P(r, 3, 20)]);
+                g.DrawLine(thinPen, P(r, 15, 12), P(r, 15, 18));
+                g.DrawLine(thinPen, P(r, 12, 15), P(r, 18, 15));
+                break;
+            case SvgIconKind.Close:
+                g.DrawLine(pen, P(r, 5, 5), P(r, 19, 19));
+                g.DrawLine(pen, P(r, 19, 5), P(r, 5, 19));
+                break;
+            case SvgIconKind.Info:
+            {
+                g.DrawEllipse(pen, Rect(r, 3, 3, 18, 18));
+                using var dot = new SolidBrush(color);
+                g.FillEllipse(dot, Rect(r, 11, 6, 2, 2));
+                g.DrawLine(pen, P(r, 12, 11), P(r, 12, 18));
+                break;
+            }
+            case SvgIconKind.Warning:
+            {
+                DrawPolygon(g, pen, [P(r, 12, 2), P(r, 22, 21), P(r, 2, 21)]);
+                g.DrawLine(pen, P(r, 12, 8), P(r, 12, 14));
+                using var dot = new SolidBrush(color);
+                g.FillEllipse(dot, Rect(r, 11, 17, 2, 2));
+                break;
+            }
+            case SvgIconKind.Error:
+                g.DrawEllipse(pen, Rect(r, 3, 3, 18, 18));
+                g.DrawLine(pen, P(r, 8, 8), P(r, 16, 16));
+                g.DrawLine(pen, P(r, 16, 8), P(r, 8, 16));
+                break;
+            case SvgIconKind.Question:
+            {
+                g.DrawEllipse(pen, Rect(r, 3, 3, 18, 18));
+                g.DrawArc(pen, Rect(r, 8, 6, 8, 8), 195, 255);
+                g.DrawLine(pen, P(r, 12, 13), P(r, 12, 16));
+                using var dot = new SolidBrush(color);
+                g.FillEllipse(dot, Rect(r, 11, 18, 2, 2));
+                break;
+            }
             case SvgIconKind.Snap:
                 g.DrawLine(pen, P(r, 6, 6), P(r, 18, 18));
                 g.DrawLine(thinPen, P(r, 6, 18), P(r, 18, 6));
@@ -190,6 +247,51 @@ internal static class SvgIcons
                     g.DrawLine(thinPen, P(r, 3, i), P(r, 21, i));
                 }
                 DrawRectangle(g, pen, Rect(r, 3, 3, 18, 18));
+                break;
+            case SvgIconKind.GoldenSpiral:
+            {
+                DrawRectangle(g, thinPen, Rect(r, 3, 5, 18, 14));
+                var points = new PointF[36];
+                var center = P(r, 10, 13);
+                const float beta = 0.3063489f;
+                for (var index = 0; index < points.Length; index++)
+                {
+                    var amount = index / (float)(points.Length - 1);
+                    var theta = -MathF.Tau * 1.75f + MathF.Tau * 1.75f * amount;
+                    var radius = 8.5f * MathF.Exp(beta * theta);
+                    points[index] = new PointF(
+                        center.X + MathF.Cos(theta) * radius * r.Width / 24f,
+                        center.Y + MathF.Sin(theta) * radius * r.Height / 24f);
+                }
+                g.DrawLines(pen, points);
+                break;
+            }
+            case SvgIconKind.PolarGrid:
+                g.DrawEllipse(thinPen, Rect(r, 3, 3, 18, 18));
+                g.DrawEllipse(thinPen, Rect(r, 6, 6, 12, 12));
+                g.DrawEllipse(pen, Rect(r, 9, 9, 6, 6));
+                g.DrawLine(thinPen, P(r, 12, 2), P(r, 12, 22));
+                g.DrawLine(thinPen, P(r, 2, 12), P(r, 22, 12));
+                g.DrawLine(thinPen, P(r, 5, 5), P(r, 19, 19));
+                g.DrawLine(thinPen, P(r, 19, 5), P(r, 5, 19));
+                break;
+            case SvgIconKind.PropertiesPanel:
+                DrawRectangle(g, pen, Rect(r, 3, 4, 18, 16));
+                g.FillRectangle(fill, Rect(r, 14, 5, 6, 14));
+                g.DrawLine(thinPen, P(r, 14, 4), P(r, 14, 20));
+                g.DrawLine(thinPen, P(r, 6, 8), P(r, 11, 8));
+                g.DrawLine(thinPen, P(r, 6, 12), P(r, 11, 12));
+                g.DrawLine(thinPen, P(r, 6, 16), P(r, 10, 16));
+                break;
+            case SvgIconKind.TimelinePanel:
+                DrawRectangle(g, pen, Rect(r, 3, 4, 18, 16));
+                g.FillRectangle(fill, Rect(r, 4, 13, 16, 6));
+                g.DrawLine(thinPen, P(r, 3, 13), P(r, 21, 13));
+                g.DrawLine(thinPen, P(r, 8, 14), P(r, 8, 19));
+                g.DrawLine(thinPen, P(r, 13, 14), P(r, 13, 19));
+                g.DrawLine(thinPen, P(r, 17, 14), P(r, 17, 19));
+                g.DrawLine(pen, P(r, 10, 6), P(r, 10, 12));
+                g.FillEllipse(fill, Rect(r, 8, 5, 4, 4));
                 break;
             case SvgIconKind.Objects:
                 DrawRectangle(g, thinPen, Rect(r, 5, 5, 8, 8));

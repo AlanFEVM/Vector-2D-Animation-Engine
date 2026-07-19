@@ -5,8 +5,17 @@ namespace VectorAnimationEngine;
 internal sealed class ProjectRestartSnapshot
 {
     public string Name { get; init; } = "Untitled Project";
+    public ProjectAssetFolderRestartSnapshot[] AssetFolders { get; init; } = [];
     public DrawingObjectRestartSnapshot[] DrawingObjects { get; init; } = [];
     public SceneRestartSnapshot[] Scenes { get; init; } = [];
+}
+
+internal sealed class ProjectAssetFolderRestartSnapshot
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "Folder";
+    public string ParentFolderId { get; init; } = "";
+    public DateTime CreatedAt { get; init; } = DateTime.Now;
 }
 
 internal sealed class DrawingObjectRestartSnapshot
@@ -15,6 +24,9 @@ internal sealed class DrawingObjectRestartSnapshot
     public string Name { get; init; } = "Drawing Object";
     public string Kind { get; init; } = "Symbol";
     public string Detail { get; init; } = "Reusable drawing object";
+    public string AssetFolderId { get; init; } = "";
+    public float AnchorX { get; init; }
+    public float AnchorY { get; init; }
     public DateTime CreatedAt { get; init; } = DateTime.Now;
     public VectorSceneSnapshot Scene { get; init; } = new();
     public InstanceRestartSnapshot[] Instances { get; init; } = [];

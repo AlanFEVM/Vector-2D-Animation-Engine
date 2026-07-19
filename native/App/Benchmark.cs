@@ -491,8 +491,11 @@ internal static class Benchmark
         RunVectorSceneSnapshotMemoryEstimateRegression();
         RunVectorSceneCelOwnershipRegression();
         RunTimelineLayerWorkflowRegression();
+        RunTimelineLayerRemovalRegression();
+        RunTimelineKeyframePerformanceRegression();
         RunVectorSceneKeyframeBoundaryRegression();
         RunProjectDocumentStructureRegression();
+        RunProjectAssetFolderRegression();
         RunSceneInstanceTimelineRegression();
         RunSceneCompositionRegression();
         RunEditorRestartSnapshotRegression();
@@ -588,15 +591,97 @@ internal static class Benchmark
 
     private static void RunTimelineShortcutAdvanceRegression()
     {
+        var timeline = new AnimationTimeline();
+        timeline.SynchronizeTracks(["layer-a"], defaultDuration: 20);
+        var track = timeline.FindTrackByTargetId("layer-a")
+            ?? throw new InvalidOperationException("Timeline shortcut advance setup lost its track.");
+        timeline.InsertBlankKeyframe(track.Id, 8);
         var source = new TimelineFrameCell("layer-a", 12);
         var target = MainForm.AdvanceTimelineKeyframeShortcutCell(source);
         AssertTimeline(
             target.TrackId == source.TrackId && target.Frame == 13,
-            "F6/F7 did not advance the playhead cell before choosing the insertion frame.");
+            "Timeline keyframe insertion could not advance the playhead cell.");
         AssertTimeline(
             MainForm.AdvanceTimelineKeyframeShortcutCell(new TimelineFrameCell("layer-a", int.MaxValue - 1))
                 == new TimelineFrameCell("layer-a", int.MaxValue - 1),
             "F6/F7 shortcut frame advance overflowed at the maximum supported frame.");
+        AssertTimeline(
+            MainForm.TimelineKeyframeInsertionShouldAdvance(timeline, new TimelineFrameCell(track.Id, 0))
+            && !MainForm.TimelineKeyframeInsertionShouldAdvance(timeline, new TimelineFrameCell(track.Id, 4))
+            && MainForm.TimelineKeyframeInsertionShouldAdvance(timeline, new TimelineFrameCell(track.Id, 8))
+            && !MainForm.TimelineKeyframeInsertionShouldAdvance(timeline, new TimelineFrameCell(track.Id, 20))
+            && MainForm.TimelineCellIsBeyondTrackEnd(timeline, new TimelineFrameCell(track.Id, 20))
+            && !MainForm.TimelineKeyframeInsertionShouldAdvance(timeline, new TimelineFrameCell("missing", 0)),
+            "F6/F7 did not distinguish keyframes, held exposure, and space beyond the track end before moving the playhead.");
+        AssertTimeline(
+            MainForm.ResolveTimelineKeyframeInsertionCell(
+                timeline,
+                track.Id,
+                19,
+                new TimelineFrameCell(track.Id, 53)) == new TimelineFrameCell(track.Id, 53)
+            && MainForm.ResolveTimelineKeyframeInsertionCell(
+                timeline,
+                track.Id,
+                4,
+                new TimelineFrameCell(track.Id, 12)) == new TimelineFrameCell(track.Id, 4)
+            && MainForm.ResolveTimelineKeyframeInsertionCell(
+                timeline,
+                track.Id,
+                7,
+                new TimelineFrameCell("other-track", 53)) == new TimelineFrameCell(track.Id, 7),
+            "F6/F7 did not preserve an intentional active-layer selection beyond the track end or reject a stale selection.");
+
+        var independentTimeline = new AnimationTimeline();
+        independentTimeline.SynchronizeTracks(["edited", "selected", "untouched"], defaultDuration: 4);
+        var editedTrack = independentTimeline.FindTrackByTargetId("edited")
+            ?? throw new InvalidOperationException("Independent keyframe duration setup lost its edited track.");
+        var selectedTrack = independentTimeline.FindTrackByTargetId("selected")
+            ?? throw new InvalidOperationException("Independent keyframe duration setup lost its second selected track.");
+        var untouchedTrack = independentTimeline.FindTrackByTargetId("untouched")
+            ?? throw new InvalidOperationException("Independent keyframe duration setup lost its untouched track.");
+        MainForm.EnsureTimelineCellFramesExist(
+            independentTimeline,
+            [new TimelineFrameCell(editedTrack.Id, 8)]);
+        AssertTimeline(
+            editedTrack.Duration == 9
+            && selectedTrack.Duration == 4
+            && untouchedTrack.Duration == 4,
+            "Single-layer keyframe insertion forced unrelated timeline tracks to the same duration.");
+        MainForm.EnsureTimelineCellFramesExist(
+            independentTimeline,
+            [new TimelineFrameCell(editedTrack.Id, 10), new TimelineFrameCell(selectedTrack.Id, 6)],
+            trailingFrames: 1);
+        AssertTimeline(
+            editedTrack.Duration == 12
+            && selectedTrack.Duration == 8
+            && untouchedTrack.Duration == 4,
+            "Multi-layer keyframe insertion extended an unselected timeline track.");
+        var feedbackStyles = Enum.GetValues<TimelineCommand>()
+            .Select(TimelineStrip.ResolveCommandFeedbackStyle)
+            .ToArray();
+        AssertTimeline(
+            feedbackStyles.Select(style => style.Motion).Distinct().Count() == feedbackStyles.Length
+            && feedbackStyles.All(style => style.DurationMilliseconds is >= 180 and <= 500)
+            && feedbackStyles.All(style => style.Color.A == 255),
+            "Timeline commands did not retain distinct, bounded UI feedback motions.");
+        var addedLayerFeedback = TimelineStrip.ResolveLayerFeedbackStyle(TimelineLayerFeedbackKind.Add);
+        var removedLayerFeedback = TimelineStrip.ResolveLayerFeedbackStyle(TimelineLayerFeedbackKind.Remove);
+        AssertTimeline(
+            addedLayerFeedback.Color != removedLayerFeedback.Color
+            && addedLayerFeedback.DurationMilliseconds is >= 250 and <= 500
+            && removedLayerFeedback.DurationMilliseconds is >= 250 and <= 500,
+            "Timeline layer addition and removal did not retain distinct, bounded UI feedback styles.");
+
+        var blankRangePlans = MainForm.ResolveTimelineBlankKeyframeRangePlans([0, 1, 2, 5, 7, 8]);
+        AssertTimeline(
+            blankRangePlans.Count == 3
+            && blankRangePlans[0].ExtensionFrames.SequenceEqual([1])
+            && blankRangePlans[0].BlankFrame == 2
+            && blankRangePlans[1].ExtensionFrames.Length == 0
+            && blankRangePlans[1].BlankFrame == 5
+            && blankRangePlans[2].ExtensionFrames.SequenceEqual([7])
+            && blankRangePlans[2].BlankFrame == 8,
+            "Multi-frame F7 selection did not reserve only the final frame of each range for a blank keyframe.");
 
         var firstInstance = new DrawingObjectInstanceDefinition { Id = "instance-a" };
         var primaryInstance = new DrawingObjectInstanceDefinition { Id = "instance-b" };
@@ -662,6 +747,20 @@ internal static class Benchmark
             ?? throw new InvalidOperationException("Empty timeline cell setup failed.");
         emptyScene.Timeline.SetTrackDuration(emptyTrack.Id, 6);
         using var timelineStrip = new TimelineStrip(emptyScene) { Size = new Size(760, 192) };
+        timelineStrip.FrameWidth = 4;
+        AssertTimeline(timelineStrip.FrameWidth == 8, "Timeline frame width did not clamp to its compact minimum.");
+        timelineStrip.FrameWidth = 64;
+        AssertTimeline(timelineStrip.FrameWidth == 32, "Timeline frame width did not clamp to its readable maximum.");
+        timelineStrip.FrameWidth = 14;
+        timelineStrip.FrameHeightPreset = TimelineFrameHeightPreset.Low;
+        AssertTimeline(timelineStrip.FrameHeight == 16, "Low timeline frame height did not use the compact Adobe-style row metric.");
+        timelineStrip.FrameHeightPreset = TimelineFrameHeightPreset.High;
+        AssertTimeline(timelineStrip.FrameHeight == 28, "High timeline frame height did not use the expanded Adobe-style row metric.");
+        timelineStrip.FrameHeightPreset = TimelineFrameHeightPreset.Medium;
+        AssertTimeline(
+            timelineStrip.FrameHeight == 21
+            && TimelineStrip.RowHeightFor(TimelineFrameHeightPreset.Medium) == 21,
+            "Medium timeline frame height did not retain the default row metric.");
         const int emptyFrame = 8;
         timelineStrip.SelectSingleFrame(emptyTrack.Id, emptyFrame);
         AssertTimeline(
@@ -1107,6 +1206,162 @@ internal static class Benchmark
             && sceneDefinition.Layers[0].ColorArgb == Color.Coral.ToArgb()
             && sceneDefinition.Layers[0].Name == "Foreground",
             "Scene-layer color, rename, or reordering did not route through the project model.");
+    }
+
+    private static void RunTimelineLayerRemovalRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(layers: 4);
+        for (var layer = 0; layer < scene.LayerCount; layer++)
+        {
+            scene.AddObject(
+                layer,
+                new PointF(layer * 32, 0),
+                new SizeF(24, 24),
+                0,
+                0,
+                Color.Teal,
+                4,
+                ShapeKind.Rectangle);
+        }
+
+        var survivingLayerIds = new[] { scene.LayerIds[0], scene.LayerIds[2] };
+        var removedLayerIds = new[] { scene.LayerIds[1], scene.LayerIds[3] };
+        AssertTimeline(
+            scene.RemoveLayers(removedLayerIds)
+            && scene.LayerCount == 2
+            && scene.LayerIds.SequenceEqual(survivingLayerIds)
+            && scene.ObjectCount == 2
+            && scene.ObjectLayer.SequenceEqual(new ushort[] { 0, 1 })
+            && scene.Timeline.Tracks.Select(track => track.TargetId).SequenceEqual(survivingLayerIds),
+            "Batch drawing-layer deletion did not remove content or compact surviving layer ownership and tracks.");
+        AssertTimeline(
+            !scene.RemoveLayers(scene.LayerIds.ToArray()) && scene.LayerCount == 2,
+            "Drawing-layer deletion allowed the final layer set to be removed.");
+
+        var groupedScene = new VectorScene();
+        groupedScene.CreateEmpty(layers: 2);
+        var untouchedLayerId = groupedScene.LayerIds[1];
+        var folderLayer = groupedScene.AddFolderLayer("Delete Group");
+        var contentLayer = groupedScene.ActiveLayer;
+        var maskLayer = groupedScene.AddMaskLayer("Delete Mask");
+        var folderRemoval = groupedScene.ResolveLayerRemovalIndices([groupedScene.LayerIds[folderLayer]]);
+        AssertTimeline(
+            folderRemoval.Length == 3
+            && folderRemoval.Contains(contentLayer)
+            && folderRemoval.Contains(maskLayer)
+            && groupedScene.RemoveLayers([groupedScene.LayerIds[folderLayer]])
+            && groupedScene.LayerIds.SequenceEqual([untouchedLayerId]),
+            "Folder deletion did not expand through child and linked mask layers.");
+
+        var nestedProject = VectorProject.CreateEmpty();
+        var container = nestedProject.DrawingObjects[0];
+        var child = nestedProject.AddDrawingObject("Layer Removal Child");
+        var nestedLayer = container.Scene.AddLayer("Nested Layer");
+        var nestedLayerId = container.Scene.LayerIds[nestedLayer];
+        AssertTimeline(
+            nestedProject.TryAddDrawingObjectInstance(
+                container.Id,
+                child.Id,
+                PointF.Empty,
+                nestedLayerId,
+                out var nestedInstance)
+            && nestedInstance is not null,
+            "Drawing-layer deletion regression could not create its nested instance.");
+        var drawingSnapshot = container.Scene.CreateSnapshot();
+        var nestedSnapshot = container.CreateInstanceSnapshot();
+        AssertTimeline(
+            nestedProject.TryRemoveDrawingObjectLayers(container.Id, [nestedLayerId])
+            && container.Scene.LayerCount == 1
+            && container.Instances.Count == 0,
+            "Drawing-layer deletion left nested instances owned by a deleted layer.");
+        container.Scene.RestoreSnapshot(drawingSnapshot);
+        container.RestoreInstanceSnapshot(nestedSnapshot);
+        AssertTimeline(
+            container.Scene.LayerCount == 2
+            && container.Instances.Count == 1
+            && container.Instances[0].Id == nestedInstance!.Id
+            && container.Instances[0].SceneLayerId == nestedLayerId,
+            "Drawing-layer deletion snapshots did not restore nested instance ownership.");
+
+        var composition = nestedProject.Scenes[0];
+        DrawingObjectInstanceDefinition? sceneInstance = null;
+        AssertTimeline(
+            nestedProject.TryAddSceneLayer(composition.Id, out var compositionLayer)
+            && compositionLayer is not null
+            && nestedProject.TryAddSceneInstance(
+                composition.Id,
+                child.Id,
+                PointF.Empty,
+                0,
+                compositionLayer.Id,
+                out sceneInstance)
+            && sceneInstance is not null,
+            "Scene-layer deletion regression could not create its scene instance.");
+        var sceneLayerSnapshot = composition.CreateLayerSnapshot();
+        var sceneInstanceSnapshot = composition.CreateInstanceSnapshot();
+        AssertTimeline(
+            nestedProject.TryRemoveSceneLayers(composition.Id, [compositionLayer!.Id])
+            && composition.Layers.Count == 1
+            && composition.Instances.Count == 0,
+            "Scene-layer deletion left instances owned by a deleted layer.");
+        composition.RestoreLayerSnapshot(sceneLayerSnapshot);
+        composition.RestoreInstanceSnapshot(sceneInstanceSnapshot);
+        AssertTimeline(
+            composition.Layers.Count == 2
+            && composition.Instances.Count == 1
+            && composition.Instances[0].Id == sceneInstance!.Id
+            && composition.Instances[0].SceneLayerId == compositionLayer.Id,
+            "Scene-layer deletion snapshots did not restore instance ownership.");
+    }
+
+    private static void RunTimelineKeyframePerformanceRegression()
+    {
+        const int layerCount = 120;
+        const int objectCount = 30_000;
+        const double budgetMilliseconds = 45;
+        var scene = new VectorScene();
+        scene.Generate(layerCount, objectCount, objectCount * 120L);
+        var sourceObjectCount = Enumerable.Range(0, scene.ObjectCount)
+            .Count(index => scene.ObjectLayer[index] == 0);
+        var initialSnapshot = scene.CreateSnapshot();
+        var queryBounds = new RectangleF(
+            -scene.StageWidth * 0.5f,
+            -scene.StageHeight * 0.5f,
+            scene.StageWidth,
+            scene.StageHeight);
+        var visibleObjectCountBefore = scene.QueryObjects(queryBounds, 100).Length;
+        var geometryRevisionBefore = scene.GeometryRevision;
+
+        var watch = Stopwatch.StartNew();
+        var changed = scene.InsertTimelineKeyframe(0, 100);
+        watch.Stop();
+        var clonedObjectCount = Enumerable.Range(0, scene.ObjectCount)
+            .Count(index => scene.ObjectLayer[index] == 0 && scene.ObjectKeyframeFrame[index] == 100);
+        var visibleObjects = scene.QueryObjects(queryBounds, 100);
+        var rebuiltReference = new VectorScene();
+        rebuiltReference.RestoreSnapshot(initialSnapshot);
+        rebuiltReference.InsertTimelineKeyframe(0, 100);
+        rebuiltReference.CompleteDeferredBuild();
+        var budgetMet = watch.Elapsed.TotalMilliseconds <= budgetMilliseconds;
+
+        AssertTimeline(
+            changed
+            && sourceObjectCount == objectCount / layerCount
+            && clonedObjectCount == sourceObjectCount
+            && visibleObjects.Length == visibleObjectCountBefore
+            && scene.TileCount.SequenceEqual(rebuiltReference.TileCount)
+            && scene.TileAtoms.SequenceEqual(rebuiltReference.TileAtoms)
+            && scene.OverviewCount.SequenceEqual(rebuiltReference.OverviewCount)
+            && scene.OverviewAtoms.SequenceEqual(rebuiltReference.OverviewAtoms)
+            && scene.GeometryRevision <= geometryRevisionBefore + 2,
+            "Incremental keyframe cloning lost cel objects, spatial-query visibility, summaries, or bounded index revisions: "
+            + $"changed={changed}, source={sourceObjectCount}, cloned={clonedObjectCount}, visible={visibleObjects.Length}, "
+            + $"visibleBefore={visibleObjectCountBefore}, "
+            + $"geometry={geometryRevisionBefore}->{scene.GeometryRevision}.");
+        Console.WriteLine($"timeline_keyframe_model_ms={watch.Elapsed.TotalMilliseconds:0.000}");
+        Console.WriteLine($"timeline_keyframe_model_budget_ms={budgetMilliseconds:0.000}");
+        Console.WriteLine($"timeline_keyframe_model_budget_met={budgetMet.ToString().ToLowerInvariant()}");
     }
 
     private static void RunVectorSceneCelOwnershipRegression()
@@ -1850,6 +2105,67 @@ internal static class Benchmark
             "Regenerating drawing geometry did not migrate nested instances onto valid drawing layers.");
     }
 
+    private static void RunProjectAssetFolderRegression()
+    {
+        var project = new VectorProject();
+        var rootObject = project.DrawingObjects[0];
+        rootObject.Name = "Root Asset";
+        rootObject.Scene.AddObject(0, PointF.Empty, new SizeF(80, 60), 0, 0, Color.Coral, 6, ShapeKind.Rectangle);
+        var childObject = project.AddDrawingObject("Child Asset");
+        childObject.Scene.AddObject(0, PointF.Empty, new SizeF(40, 30), 0, 0, Color.Teal, 4, ShapeKind.Ellipse);
+        ProjectAssetFolder? rootFolder = null;
+        ProjectAssetFolder? childFolder = null;
+        AssertTimeline(
+            project.TryAddAssetFolder("Characters", "", out rootFolder)
+            && rootFolder is not null
+            && project.TryAddAssetFolder("Heads", rootFolder.Id, out childFolder)
+            && childFolder is not null
+            && project.TryMoveDrawingObjectToAssetFolder(rootObject.Id, rootFolder.Id)
+            && project.TryMoveDrawingObjectToAssetFolder(childObject.Id, childFolder.Id)
+            && project.TryAddDrawingObjectInstance(rootObject.Id, childObject.Id, PointF.Empty, out var nested)
+            && nested is not null,
+            "The project asset folder model could not create a nested source tree.");
+
+        var changeCount = 0;
+        project.Changed += (_, _) => changeCount++;
+        AssertTimeline(
+            project.TryDuplicateAssetFolder(rootFolder!.Id, out var duplicateRoot)
+            && duplicateRoot is not null
+            && changeCount == 1,
+            "Duplicating a project asset folder did not complete as one project mutation.");
+        var duplicateChild = project.AssetFolders.SingleOrDefault(folder =>
+            string.Equals(folder.ParentFolderId, duplicateRoot!.Id, StringComparison.Ordinal));
+        var duplicateRootObject = project.DrawingObjects.SingleOrDefault(item =>
+            string.Equals(item.AssetFolderId, duplicateRoot!.Id, StringComparison.Ordinal));
+        var duplicateChildObject = duplicateChild is null
+            ? null
+            : project.DrawingObjects.SingleOrDefault(item =>
+                string.Equals(item.AssetFolderId, duplicateChild.Id, StringComparison.Ordinal));
+        AssertTimeline(
+            duplicateRoot!.Name == "Characters Copy"
+            && duplicateChild is { Name: "Heads" }
+            && duplicateRootObject is not null
+            && duplicateChildObject is not null
+            && duplicateRootObject.Id != rootObject.Id
+            && duplicateChildObject.Id != childObject.Id
+            && duplicateRootObject.Scene.ObjectCount == rootObject.Scene.ObjectCount
+            && duplicateChildObject.Scene.ObjectCount == childObject.Scene.ObjectCount
+            && duplicateRootObject.Instances.Count == 1
+            && duplicateRootObject.Instances[0].DrawingObjectId == duplicateChildObject.Id
+            && rootObject.Instances[0].DrawingObjectId == childObject.Id,
+            "Folder duplication did not preserve its subtree or remap internal drawing-object references.");
+        AssertTimeline(
+            !project.TryMoveAssetFolder(rootFolder.Id, childFolder!.Id)
+            && project.TryRenameAssetFolder(duplicateRoot.Id, "Characters Variant")
+            && duplicateRoot.Name == "Characters Variant"
+            && project.TryMoveAssetFolder(childFolder.Id, "")
+            && string.IsNullOrEmpty(childFolder.ParentFolderId)
+            && project.TryMoveDrawingObjectToAssetFolder(rootObject.Id, "")
+            && string.IsNullOrEmpty(rootObject.AssetFolderId)
+            && project.AssetFolders is not ICollection<ProjectAssetFolder> { IsReadOnly: false },
+            "Project asset folder rename, root move, cycle rejection, or read-only ownership failed.");
+    }
+
     private static void RunSceneCompositionRegression()
     {
         var project = VectorProject.CreateEmpty();
@@ -2079,11 +2395,134 @@ internal static class Benchmark
             "Drawing-object marquee selection did not require and return fully enclosed nested instances.");
 
         RunDrawingObjectInstancePlaybackRegression();
+        RunDrawingObjectAnchorRegression();
         RunSparseLayerCompositionRegression();
         RunLayerEffectCompositionRegression();
         RunDegeneratePathCompositionRegression();
         RunChunkedCompositionRegression();
         RunSkewedSceneCompositionRegression();
+    }
+
+    private static void RunDrawingObjectAnchorRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var source = project.DrawingObjects[0];
+        source.Scene.CreateEmpty();
+        source.Scene.AddObject(
+            0,
+            new PointF(140, 60),
+            new SizeF(80, 40),
+            0,
+            0,
+            Color.Teal,
+            8,
+            ShapeKind.Rectangle);
+
+        var container = project.AddDrawingObject("Anchor container");
+        container.Scene.CreateEmpty(1, 8);
+        AssertTimeline(
+            project.TryAddDrawingObjectInstance(container.Id, source.Id, new PointF(80, 40), out var nested)
+            && nested is not null,
+            "Anchor regression could not create its nested instance.");
+        nested!.RotationZ = 22;
+        nested.SkewX = 8;
+        nested.ScaleX = 1.4f;
+        nested.ScaleY = 0.7f;
+        nested.SetStateAtFrame(6, nested.EvaluateState(0) with
+        {
+            X = 130,
+            Y = 75,
+            RotationZ = -18,
+            SkewY = 11,
+            ScaleX = 0.85f,
+            ScaleY = 1.25f
+        });
+
+        var scene = project.Scenes[0];
+        var sceneTrack = scene.Timeline.FindTrackByTargetId(scene.ActiveLayerId)
+            ?? throw new InvalidOperationException("Anchor regression lost its scene track.");
+        scene.Timeline.SetTrackDuration(sceneTrack.Id, 8);
+        DrawingObjectInstanceDefinition? direct = null;
+        DrawingObjectInstanceDefinition? containerInstance = null;
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, source.Id, new PointF(420, 180), 0, out direct)
+            && direct is not null
+            && project.TryAddSceneInstance(scene.Id, container.Id, new PointF(120, 240), 1, out containerInstance)
+            && containerInstance is not null,
+            "Anchor regression could not create its direct and container instances.");
+        direct!.RotationZ = 35;
+        direct.SkewX = 12;
+        direct.ScaleX = 1.6f;
+        direct.ScaleY = 0.75f;
+        direct.SetStateAtFrame(6, direct.EvaluateState(0) with
+        {
+            X = 500,
+            Y = 220,
+            RotationZ = -20,
+            SkewY = 9,
+            ScaleX = 0.8f,
+            ScaleY = 1.3f
+        });
+        containerInstance!.RotationZ = -12;
+        containerInstance.ScaleX = 1.15f;
+        containerInstance.ScaleY = 0.9f;
+
+        var directBaseBefore = direct.EvaluateState(0);
+        var directKeyBefore = direct.EvaluateState(6);
+        var nestedBaseBefore = nested.EvaluateState(0);
+        var nestedKeyBefore = nested.EvaluateState(6);
+        var beforeFrameZero = CapturePositions(0);
+        var beforeFrameSix = CapturePositions(6);
+        var anchor = new PointF(35, -20);
+        AssertTimeline(
+            project.TrySetDrawingObjectAnchor(source.Id, anchor),
+            "A valid drawing-object anchor change was rejected.");
+        var afterFrameZero = CapturePositions(0);
+        var afterFrameSix = CapturePositions(6);
+
+        AssertTimeline(
+            source.Anchor == anchor
+            && beforeFrameZero.Count == 2
+            && beforeFrameSix.Count == 2
+            && beforeFrameZero.All(item => afterFrameZero.TryGetValue(item.Key, out var position)
+                && PointsNear(position, item.Value))
+            && beforeFrameSix.All(item => afterFrameSix.TryGetValue(item.Key, out var position)
+                && PointsNear(position, item.Value))
+            && direct.EvaluateState(0).Position != directBaseBefore.Position
+            && direct.EvaluateState(6).Position != directKeyBefore.Position
+            && nested.EvaluateState(0).Position != nestedBaseBefore.Position
+            && nested.EvaluateState(6).Position != nestedKeyBefore.Position
+            && NearlyEqual(direct.EvaluateState(0).RotationZ, directBaseBefore.RotationZ)
+            && NearlyEqual(direct.EvaluateState(6).SkewY, directKeyBefore.SkewY)
+            && NearlyEqual(nested.EvaluateState(0).ScaleX, nestedBaseBefore.ScaleX)
+            && NearlyEqual(nested.EvaluateState(6).ScaleY, nestedKeyBefore.ScaleY),
+            "Changing a shared drawing-object anchor moved rendered instances or lost keyframed transform state.");
+
+        AssertTimeline(
+            project.TryDuplicateDrawingObject(source.Id, out var duplicate)
+            && duplicate is not null
+            && duplicate.Anchor == anchor
+            && !project.TrySetDrawingObjectAnchor(source.Id, new PointF(float.NaN, 0))
+            && source.Anchor == anchor,
+            "Drawing-object duplication or invalid-anchor rejection did not preserve the shared anchor.");
+
+        Dictionary<string, PointF> CapturePositions(int frame)
+        {
+            var destination = new VectorScene();
+            var composition = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, frame);
+            var positions = new Dictionary<string, PointF>(StringComparer.Ordinal);
+            for (var index = 0; index < destination.ObjectCount; index++)
+            {
+                if (!composition.TryGetOwner(index, out var owner)
+                    || owner.DrawingObjectId != source.Id)
+                {
+                    continue;
+                }
+
+                positions[owner.RootInstanceId] = new PointF(destination.X[index], destination.Y[index]);
+            }
+            return positions;
+        }
     }
 
     private static void RunEditorRestartSnapshotRegression()
@@ -2104,6 +2543,20 @@ internal static class Benchmark
             LineEndpointStyle.Round);
         var child = project.AddDrawingObject("Restart Child");
         child.Scene.AddObject(0, new PointF(24, 12), new SizeF(48, 36), 0, 0, Color.Teal, 6, ShapeKind.Rectangle);
+        if (!project.TryAddAssetFolder("Restart Assets", "", out var restartFolder)
+            || restartFolder is null
+            || !project.TryAddAssetFolder("Restart Children", restartFolder.Id, out var restartChildFolder)
+            || restartChildFolder is null
+            || !project.TryMoveDrawingObjectToAssetFolder(root.Id, restartFolder.Id)
+            || !project.TryMoveDrawingObjectToAssetFolder(child.Id, restartChildFolder.Id))
+        {
+            throw new InvalidOperationException("Editor restart snapshot regression could not create project asset folders.");
+        }
+        if (!project.TrySetDrawingObjectAnchor(root.Id, new PointF(18, -12))
+            || !project.TrySetDrawingObjectAnchor(child.Id, new PointF(-9, 7)))
+        {
+            throw new InvalidOperationException("Editor restart snapshot regression could not set drawing-object anchors.");
+        }
         if (!project.TryAddDrawingObjectInstance(root.Id, child.Id, new PointF(40, 20), out var nested)
             || nested is null
             || !project.TryAddSceneInstance(project.Scenes[0].Id, root.Id, new PointF(320, 180), 2, out var sceneInstance)
@@ -2141,9 +2594,15 @@ internal static class Benchmark
         var restoredScene = restored.Scenes.SingleOrDefault(item => item.Id == project.Scenes[0].Id);
         if (restored.Name != project.Name
             || restored.DrawingObjects.Count != 2
+            || restored.AssetFolders.Count != 2
             || restored.Scenes.Count != 1
             || restoredRoot is null
             || restoredChild is null
+            || restoredRoot.Anchor != root.Anchor
+            || restoredChild.Anchor != child.Anchor
+            || restoredRoot.AssetFolderId != restartFolder.Id
+            || restoredChild.AssetFolderId != restartChildFolder.Id
+            || restored.AssetFolders.Single(folder => folder.Id == restartChildFolder.Id).ParentFolderId != restartFolder.Id
             || restoredRoot.Instances.Count != 1
             || restoredRoot.Instances[0].Id != nested.Id
             || restoredRoot.Instances[0].DrawingObjectId != child.Id
@@ -2386,12 +2845,15 @@ internal static class Benchmark
         drawingObject.Scene.TryGetLineEndpoint(sourceLine, startEndpoint: false, out var sourceEnd);
         var reference = new VectorScene();
         reference.CreateEmpty(3);
-        var referenceLine = reference.AddCurveSegment(
+        var referenceLine = reference.AddCubicCurveSegment(
             1,
             VectorUnits.Quantize(sourceStart),
             VectorUnits.Quantize(new PointF(
                 drawingObject.Scene.CurveControlX[sourceLine],
                 drawingObject.Scene.CurveControlY[sourceLine])),
+            VectorUnits.Quantize(new PointF(
+                drawingObject.Scene.CurveControl2X[sourceLine],
+                drawingObject.Scene.CurveControl2Y[sourceLine])),
             VectorUnits.Quantize(sourceEnd),
             drawingObject.Scene.Stroke[sourceLine],
             Color.FromArgb(drawingObject.Scene.Argb[sourceLine]),
@@ -2413,7 +2875,9 @@ internal static class Benchmark
             && NearlyEqual(destination.Height[0], reference.Height[referenceLine])
             && NearlyEqual(destination.Angle[0], reference.Angle[referenceLine])
             && NearlyEqual(destination.CurveControlX[0], reference.CurveControlX[referenceLine])
-            && NearlyEqual(destination.CurveControlY[0], reference.CurveControlY[referenceLine]),
+            && NearlyEqual(destination.CurveControlY[0], reference.CurveControlY[referenceLine])
+            && NearlyEqual(destination.CurveControl2X[0], reference.CurveControl2X[referenceLine])
+            && NearlyEqual(destination.CurveControl2Y[0], reference.CurveControl2Y[referenceLine]),
             "Sparse-layer composition populated an empty layer or changed identity-transform line quantization.");
     }
 
@@ -2491,6 +2955,9 @@ internal static class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunTemporaryCanvasPanRegression();
+        RunImmediateMarqueeOverlayRegression();
+        RunWorkspacePanelAnimationRegression();
         RunWorldGridRegression();
         RunDenseOverlapLodRegression();
         RunLinkedFillBoundaryRegression();
@@ -2549,6 +3016,67 @@ internal static class Benchmark
             || !stage.ImmediateGpuPresentationEnabled)
         {
             throw new InvalidOperationException("The Stage did not activate the immediate Direct2D GPU hardware target.");
+        }
+
+        var polarViewState = stage.CaptureViewState();
+        double polarDirect2DCommandMilliseconds;
+        double polarDirect2DFrameMilliseconds;
+        double polarGdiFrameMilliseconds;
+        try
+        {
+            stage.WorldGridType = WorldGridType.Polar;
+            stage.SetVisibleWorldWidth(250);
+            stage.Pan(
+                -VectorUnits.ToPixels(5_000_000) * stage.Zoom,
+                -VectorUnits.ToPixels(3_000_000) * stage.Zoom);
+            for (var warmup = 0; warmup < 3; warmup++)
+            {
+                stage.Invalidate();
+                stage.Update();
+            }
+
+            const int polarRenderSamples = 12;
+            var polarCommandTotal = 0d;
+            var polarFrameWatch = Stopwatch.StartNew();
+            for (var sample = 0; sample < polarRenderSamples; sample++)
+            {
+                stage.Invalidate();
+                stage.Update();
+                polarCommandTotal += stage.LastDirect2DCommandMilliseconds;
+            }
+            polarFrameWatch.Stop();
+            polarDirect2DCommandMilliseconds = polarCommandTotal / polarRenderSamples;
+            polarDirect2DFrameMilliseconds = polarFrameWatch.Elapsed.TotalMilliseconds / polarRenderSamples;
+
+            using var polarGdiBitmap = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height);
+            using var polarGdiGraphics = Graphics.FromImage(polarGdiBitmap);
+            var drawPolarGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The GDI polar-grid fallback entry point could not be located.");
+            for (var warmup = 0; warmup < 2; warmup++) drawPolarGdi.Invoke(stage, [polarGdiGraphics]);
+            const int polarGdiSamples = 6;
+            var polarGdiWatch = Stopwatch.StartNew();
+            for (var sample = 0; sample < polarGdiSamples; sample++) drawPolarGdi.Invoke(stage, [polarGdiGraphics]);
+            polarGdiWatch.Stop();
+            polarGdiFrameMilliseconds = polarGdiWatch.Elapsed.TotalMilliseconds / polarGdiSamples;
+
+            if (!stage.LastFrameUsedDirect2D
+                || polarDirect2DCommandMilliseconds > RenderCollectBudgetMilliseconds
+                || polarDirect2DFrameMilliseconds > 1000d / 60d
+                || polarGdiFrameMilliseconds > 50d)
+            {
+                throw new InvalidOperationException(
+                    $"The zoomed distant polar grid exceeded its bounded render budget: " +
+                    $"direct2d={stage.LastFrameUsedDirect2D}, commands={polarDirect2DCommandMilliseconds:0.000}ms, " +
+                    $"frame={polarDirect2DFrameMilliseconds:0.000}ms, gdi={polarGdiFrameMilliseconds:0.000}ms.");
+            }
+        }
+        finally
+        {
+            stage.RestoreViewState(polarViewState);
+            stage.Invalidate();
+            stage.Update();
         }
 
         if (stage.LastStats.VisibleObjects != 4)
@@ -2739,6 +3267,10 @@ internal static class Benchmark
         Console.WriteLine("onion_skin_below_drawing_objects_gdi=ok");
         Console.WriteLine("gpu_hardware_target=ok");
         Console.WriteLine("gpu_immediate_present=ok");
+        Console.WriteLine($"polar_grid_zoomed_direct2d_command_ms={polarDirect2DCommandMilliseconds:0.000}");
+        Console.WriteLine($"polar_grid_zoomed_direct2d_frame_ms={polarDirect2DFrameMilliseconds:0.000}");
+        Console.WriteLine($"polar_grid_zoomed_gdi_frame_ms={polarGdiFrameMilliseconds:0.000}");
+        Console.WriteLine("polar_grid_zoomed_budget_met=true");
         Console.WriteLine($"visible_objects={layeredVisibleObjects}");
         Console.WriteLine($"mixed_lod_tiles={mixedLodTileDraws}");
         Console.WriteLine("freehand_cache_switch=ok");
@@ -2754,15 +3286,280 @@ internal static class Benchmark
         Console.WriteLine($"fit_stage_present_avg_ms={presentMilliseconds / renderSamples:0.000}");
     }
 
+    private static void RunTemporaryCanvasPanRegression()
+    {
+        AssertTimeline(
+            MainForm.CanStartTemporaryCanvasPan(
+                editorFocused: false,
+                stageFocused: false,
+                pointerOverStage: true,
+                pointerInteractionActive: false),
+            "Temporary canvas pan did not activate while the pointer was over the stage.");
+        AssertTimeline(
+            MainForm.CanStartTemporaryCanvasPan(
+                editorFocused: false,
+                stageFocused: true,
+                pointerOverStage: false,
+                pointerInteractionActive: false),
+            "Temporary canvas pan did not activate for a focused stage.");
+        AssertTimeline(
+            !MainForm.CanStartTemporaryCanvasPan(true, true, true, false)
+            && !MainForm.CanStartTemporaryCanvasPan(false, false, false, false)
+            && !MainForm.CanStartTemporaryCanvasPan(false, true, true, true),
+            "Temporary canvas pan captured space from an editor or active pointer interaction.");
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene)
+        {
+            Size = new Size(640, 480)
+        };
+        var originBefore = stage.WorldToScreen(0, 0);
+        stage.Pan(37, -19);
+        var originAfter = stage.WorldToScreen(0, 0);
+        AssertTimeline(
+            Math.Abs(originAfter.X - originBefore.X - 37) < 0.01f
+            && Math.Abs(originAfter.Y - originBefore.Y + 19) < 0.01f,
+            "Stage pan did not preserve the pointer drag delta in screen space.");
+    }
+
+    private static void RunImmediateMarqueeOverlayRegression()
+    {
+        AssertTimeline(
+            !StageControl.ShouldUseMarqueeLodPreview(4, 120, 40, 20, 0)
+            && StageControl.ShouldUseMarqueeLodPreview(9, 1, 0, 0, 0)
+            && StageControl.ShouldUseMarqueeLodPreview(2, 1_000, 600, 400, 0),
+            "Marquee fallback LOD did not distinguish light, slow, and dense Stage frames.");
+
+        var scene = new VectorScene();
+        scene.Generate(40, 2_400, 240_000);
+        using var form = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            ClientSize = new Size(640, 420)
+        };
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill };
+        form.Controls.Add(stage);
+        form.Show();
+        Application.DoEvents();
+        stage.SetVisibleWorldWidth(1_600);
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D || stage.LastStats.TileLod)
+        {
+            throw new InvalidOperationException("Marquee preview setup did not begin on the detailed Direct2D object path.");
+        }
+
+        var renderedFrames = 0;
+        EventHandler rendered = (_, _) => renderedFrames++;
+        stage.FrameRendered += rendered;
+        stage.Capture = true;
+        var overlayUpdatesBefore = stage.MarqueeOverlayUpdateCount;
+        var initialWatch = Stopwatch.StartNew();
+        stage.SetMarquee(new Point(40, 50), new Point(420, 300));
+        initialWatch.Stop();
+        var expectedTopLeft = stage.PointToScreen(new Point(40, 50));
+        var expectedBounds = new Rectangle(expectedTopLeft, new Size(380, 250));
+        if (!stage.MarqueeOverlayActive
+            || stage.MarqueeLodPreviewActive
+            || stage.MarqueeOverlayScreenBounds != expectedBounds
+            || stage.MarqueeOverlayUpdateCount != overlayUpdatesBefore + 1
+            || renderedFrames != 0)
+        {
+            throw new InvalidOperationException("The marquee did not enter the synchronous independent overlay path.");
+        }
+
+        const int samples = 24;
+        var updateWatch = Stopwatch.StartNew();
+        for (var sample = 0; sample < samples; sample++)
+        {
+            stage.SetMarquee(
+                new Point(40, 50),
+                new Point(420 + (sample + 1) * 3, 300 + (sample + 1) % 5));
+        }
+        updateWatch.Stop();
+        var averageUpdateMilliseconds = updateWatch.Elapsed.TotalMilliseconds / samples;
+        const double updateBudgetMilliseconds = 3;
+        if (renderedFrames != 0
+            || stage.MarqueeOverlayUpdateCount != overlayUpdatesBefore + samples + 1
+            || averageUpdateMilliseconds > updateBudgetMilliseconds)
+        {
+            throw new InvalidOperationException(
+                $"Marquee overlay updates were not immediate: frames={renderedFrames}, " +
+                $"averageMs={averageUpdateMilliseconds:0.000}, updates={stage.MarqueeOverlayUpdateCount - overlayUpdatesBefore}.");
+        }
+
+        stage.SetSelection([0], 0);
+        if (renderedFrames != 0)
+        {
+            throw new InvalidOperationException("A selection change forced a Stage frame while the immediate marquee overlay was active.");
+        }
+        stage.ClearMarquee();
+        stage.Update();
+        Application.DoEvents();
+        stage.FrameRendered -= rendered;
+        stage.Capture = false;
+        if (stage.MarqueeOverlayActive
+            || stage.MarqueeOverlayScreenBounds != Rectangle.Empty
+            || stage.MarqueeLodPreviewActive
+            || stage.LastStats.TileLod
+            || renderedFrames != 1)
+        {
+            throw new InvalidOperationException(
+                $"Completing a marquee did not remove its overlay and flush exactly one final Stage frame: frames={renderedFrames}.");
+        }
+
+        using var fallbackStage = new StageControl(scene) { Size = new Size(640, 420) };
+        fallbackStage.SetMarquee(new Point(40, 50), new Point(420, 300));
+        using (var gdiBitmap = new Bitmap(fallbackStage.ClientSize.Width, fallbackStage.ClientSize.Height))
+        using (var gdiGraphics = Graphics.FromImage(gdiBitmap))
+        {
+            var drawGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The GDI marquee fallback entry point could not be located.");
+            drawGdi.Invoke(fallbackStage, [gdiGraphics]);
+            if (fallbackStage.MarqueeOverlayActive
+                || !fallbackStage.MarqueeLodPreviewActive
+                || !fallbackStage.LastStats.TileLod)
+            {
+                throw new InvalidOperationException("An unavailable marquee overlay did not preserve the GDI fallback.");
+            }
+        }
+        fallbackStage.ClearMarquee();
+        form.Close();
+        Console.WriteLine("marquee_immediate_overlay=ok");
+        Console.WriteLine("marquee_overlay_stage_renders=0");
+        Console.WriteLine($"marquee_overlay_initial_ms={initialWatch.Elapsed.TotalMilliseconds:0.000}");
+        Console.WriteLine($"marquee_overlay_update_avg_ms={averageUpdateMilliseconds:0.000}");
+        Console.WriteLine($"marquee_overlay_update_budget_ms={updateBudgetMilliseconds:0.000}");
+        Console.WriteLine("marquee_overlay_update_budget_met=true");
+        Console.WriteLine("marquee_overlay_gdi_fallback=ok");
+    }
+
+    private static void RunWorkspacePanelAnimationRegression()
+    {
+        var start = MainForm.ResolveWorkspacePanelAnimationValue(324, 0, 0);
+        var quarter = MainForm.ResolveWorkspacePanelAnimationValue(324, 0, 0.25);
+        var midpoint = MainForm.ResolveWorkspacePanelAnimationValue(324, 0, 0.5);
+        var end = MainForm.ResolveWorkspacePanelAnimationValue(324, 0, 1);
+        var reversedMidpoint = MainForm.ResolveWorkspacePanelAnimationValue(midpoint, 324, 0.5);
+        AssertTimeline(
+            start == 324
+            && quarter < start
+            && midpoint < quarter
+            && midpoint > end
+            && end == 0
+            && reversedMidpoint > midpoint
+            && reversedMidpoint < 324,
+            "Workspace panel animation did not preserve bounded easing or mid-animation reversal.");
+    }
+
     private static void RunWorldGridRegression()
     {
         var emptyScene = new VectorScene();
         emptyScene.CreateEmpty();
         using var defaultStage = new StageControl(emptyScene);
         using var workspaceTabs = new WorkspaceTabs();
+        var defaultStageGridType = defaultStage.WorldGridType;
+        var defaultTabGridType = workspaceTabs.WorldGridType;
+        var gridTypeChanges = 0;
+        workspaceTabs.WorldGridTypeChanged += (_, _) => gridTypeChanges++;
+        workspaceTabs.WorldGridType = WorldGridType.GoldenSpiral;
+        defaultStage.WorldGridType = WorldGridType.GoldenSpiral;
+        using var restoredGridStage = new StageControl(emptyScene);
+        restoredGridStage.RestoreViewState(defaultStage.CaptureViewState());
+        const float goldenGridSnapStep = 1000;
+        var goldenViewport = new RectangleF(
+            -emptyScene.StageWidth * 0.5f,
+            -emptyScene.StageHeight * 0.5f,
+            emptyScene.StageWidth,
+            emptyScene.StageHeight);
+        var goldenGrid = GoldenSpiralGridLayout.Resolve(goldenViewport, goldenGridSnapStep, 1);
+        var distantGoldenViewport = new RectangleF(
+            goldenViewport.Left * 50,
+            goldenViewport.Top * 50,
+            goldenViewport.Width * 50,
+            goldenViewport.Height * 50);
+        var distantGoldenGrid = GoldenSpiralGridLayout.Resolve(
+            distantGoldenViewport,
+            goldenGridSnapStep * 10,
+            500);
+        var polarGrid = PolarGridLayout.Resolve(goldenViewport, goldenGridSnapStep);
+        var distantPolarViewport = new RectangleF(
+            1_000_000,
+            800_000,
+            goldenViewport.Width,
+            goldenViewport.Height);
+        var distantPolarGrid = PolarGridLayout.Resolve(distantPolarViewport, goldenGridSnapStep);
+        var zoomedDistantPolarViewport = new RectangleF(4_999_875, 2_999_918, 250, 164);
+        var zoomedDistantPolarGrid = PolarGridLayout.Resolve(
+            zoomedDistantPolarViewport,
+            WorldGridLayout.MinimumStepWorld);
+        Span<PolarGridArc> visiblePolarArcs = stackalloc PolarGridArc[PolarGridLayout.MaximumVisibleArcsPerCircle];
+        var visiblePolarArcCount = 0;
+        var maximumPolarArcSegments = 0;
+        foreach (var circle in zoomedDistantPolarGrid.Circles)
+        {
+            var arcCount = PolarGridLayout.ResolveVisibleArcs(
+                zoomedDistantPolarViewport,
+                circle.Radius,
+                visiblePolarArcs);
+            visiblePolarArcCount += arcCount;
+            for (var arcIndex = 0; arcIndex < arcCount; arcIndex++)
+            {
+                maximumPolarArcSegments = Math.Max(
+                    maximumPolarArcSegments,
+                    PolarGridLayout.ResolveArcSegmentCount(
+                        circle.Radius * 2.56f,
+                        visiblePolarArcs[arcIndex].SweepAngle));
+            }
+        }
+        var clippedPolarDiameterCount = zoomedDistantPolarGrid.DiameterSegments.Count(segment =>
+            PolarGridLayout.TryClipSegment(zoomedDistantPolarViewport, segment, out _));
+        workspaceTabs.WorldGridType = WorldGridType.Polar;
+        defaultStage.WorldGridType = WorldGridType.Polar;
+        using var restoredPolarStage = new StageControl(emptyScene);
+        restoredPolarStage.RestoreViewState(defaultStage.CaptureViewState());
+        var goldenCenter = new PointF(
+            goldenGrid.Bounds.Left + goldenGrid.Bounds.Width * (1f - 1f / GoldenSpiralGridLayout.GoldenRatio),
+            goldenGrid.Bounds.Top + goldenGrid.Bounds.Height / GoldenSpiralGridLayout.GoldenRatio);
+        var goldenStart = goldenGrid.SpiralPoints[0];
+        var outerRadius = RadiusFromCenter(goldenGrid.SpiralPoints[^1]);
+        var priorQuarterRadius = RadiusFromCenter(goldenGrid.SpiralPoints[^(16 + 1)]);
+        var distantOuterRadius = RadiusFromCenter(distantGoldenGrid.SpiralPoints[^1]);
+        var firstRenderedRadius = RadiusFromCenter(goldenGrid.SpiralPoints[1]);
+        float RadiusFromCenter(PointF point)
+        {
+            var dx = point.X - goldenCenter.X;
+            var dy = point.Y - goldenCenter.Y;
+            return MathF.Sqrt(dx * dx + dy * dy);
+        }
+        using var zoomGridStage = new StageControl(emptyScene) { Size = new Size(760, 520) };
+        var zoomPointA = goldenGrid.SpiralPoints[160];
+        var zoomPointB = goldenGrid.SpiralPoints[176];
+        zoomGridStage.SetVisibleWorldWidth(emptyScene.StageWidth);
+        var normalDistance = ScreenDistance(zoomPointA, zoomPointB);
+        zoomGridStage.SetVisibleWorldWidth(emptyScene.StageWidth * 0.5f);
+        var zoomedDistance = ScreenDistance(zoomPointA, zoomPointB);
+        float ScreenDistance(PointF first, PointF second)
+        {
+            var firstScreen = zoomGridStage.WorldToScreen(first.X, first.Y);
+            var secondScreen = zoomGridStage.WorldToScreen(second.X, second.Y);
+            var dx = firstScreen.X - secondScreen.X;
+            var dy = firstScreen.Y - secondScreen.Y;
+            return MathF.Sqrt(dx * dx + dy * dy);
+        }
         var closeScale = WorldGridLayout.Resolve(2.56f);
         var defaultScale = WorldGridLayout.Resolve(VectorUnits.PixelsPerUnit);
         var distantScale = WorldGridLayout.Resolve(VectorUnits.PixelsPerUnit * 0.02f);
+        var defaultSnapStep = defaultStage.AdaptiveGridSnapStep;
+        defaultStage.RestoreViewState(defaultStage.CaptureViewState() with { Zoom = 64f });
+        var closeSnapStep = defaultStage.AdaptiveGridSnapStep;
+        defaultStage.RestoreViewState(defaultStage.CaptureViewState() with { Zoom = 0.02f });
+        var distantSnapStep = defaultStage.AdaptiveGridSnapStep;
         var beforeTransition = new WorldGridScale(100, 5.9f);
         var afterTransition = new WorldGridScale(1000, 59f);
         var carriedMajor = WorldGridLayout.ResolveLineStyle(10, beforeTransition, 1);
@@ -2771,16 +3568,61 @@ internal static class Benchmark
         var majorLine = WorldGridLayout.ResolveLineStyle(10, defaultScale, 1);
         if (Math.Abs(defaultStage.WorldGridOpacity - 0.1f) > 0.0001f
             || workspaceTabs.WorldGridOpacity != 10
+            || defaultStageGridType != WorldGridType.Cartesian
+            || defaultTabGridType != WorldGridType.Cartesian
+            || workspaceTabs.WorldGridType != WorldGridType.Polar
+            || restoredGridStage.WorldGridType != WorldGridType.GoldenSpiral
+            || restoredPolarStage.WorldGridType != WorldGridType.Polar
+            || gridTypeChanges != 2
+            || polarGrid.Origin != PointF.Empty
+            || polarGrid.DiameterSegments.Length != PolarGridLayout.DiameterCount
+            || polarGrid.Circles.Length < 2
+            || Math.Abs(polarGrid.Circles[0].Radius - goldenGridSnapStep) > 0.001f
+            || Math.Abs(polarGrid.Circles[1].Radius - polarGrid.Circles[0].Radius - goldenGridSnapStep) > 0.001f
+            || distantPolarGrid.Circles.Length > 256
+            || distantPolarGrid.Circles.Length < 2
+            || distantPolarGrid.Circles[0].Radius < 1_000_000
+            || zoomedDistantPolarGrid.Circles.Length > PolarGridLayout.MaximumVisibleCircles
+            || visiblePolarArcCount <= 0
+            || visiblePolarArcCount > zoomedDistantPolarGrid.Circles.Length * PolarGridLayout.MaximumVisibleArcsPerCircle
+            || maximumPolarArcSegments <= 0
+            || maximumPolarArcSegments > PolarGridLayout.MaximumArcSegments
+            || clippedPolarDiameterCount > PolarGridLayout.DiameterCount
+            || goldenGrid.GuideSegments.Length != 8
+            || goldenGrid.SpiralPoints.Length < 300
+            || distantGoldenGrid.SpiralPoints.Length < 250
+            || Math.Abs(goldenGrid.Bounds.Width / goldenGrid.Bounds.Height - GoldenSpiralGridLayout.GoldenRatio) > 0.001f
+            || Math.Abs(goldenCenter.X) > 0.01f
+            || Math.Abs(goldenCenter.Y) > 0.01f
+            || Math.Abs(goldenStart.X) > 0.001f
+            || Math.Abs(goldenStart.Y) > 0.001f
+            || firstRenderedRadius > 1.001f
+            || goldenGrid.Bounds.Left > goldenViewport.Left
+            || goldenGrid.Bounds.Right < goldenViewport.Right
+            || goldenGrid.Bounds.Top > goldenViewport.Top
+            || goldenGrid.Bounds.Bottom < goldenViewport.Bottom
+            || distantGoldenGrid.Bounds.Left > distantGoldenViewport.Left
+            || distantGoldenGrid.Bounds.Right < distantGoldenViewport.Right
+            || distantGoldenGrid.Bounds.Top > distantGoldenViewport.Top
+            || distantGoldenGrid.Bounds.Bottom < distantGoldenViewport.Bottom
+            || Math.Abs(goldenGrid.Bounds.Right / goldenGridSnapStep
+                - MathF.Round(goldenGrid.Bounds.Right / goldenGridSnapStep)) > 0.001f
+            || distantOuterRadius <= outerRadius * 25
+            || Math.Abs(outerRadius / priorQuarterRadius - GoldenSpiralGridLayout.GoldenRatio) > 0.001f
+            || Math.Abs(zoomedDistance / normalDistance - 2f) > 0.001f
             || closeScale.StepWorld != 10
             || defaultScale.StepWorld != 1000
             || distantScale.StepWorld != 10000
+            || closeSnapStep != closeScale.StepWorld
+            || defaultSnapStep != defaultScale.StepWorld
+            || distantSnapStep != distantScale.StepWorld
             || Math.Abs(carriedMajor.Width - promotedMinor.Width) > 0.001f
             || carriedMajor.Color != promotedMinor.Color
             || majorLine.Width <= fineLine.Width
             || majorLine.Color.A <= fineLine.Color.A
             || WorldGridLayout.MinimumStepWorld != 10)
         {
-            throw new InvalidOperationException("The decimal world grid did not preserve its 10% default, 10-vu minimum, hierarchy, or smooth zoom transition.");
+            throw new InvalidOperationException("The world-grid modes did not preserve their defaults, shared world origin, bounded and clipped polar layout, unbounded golden-ratio layout, adaptive snapping scale, persistence, decimal hierarchy, or smooth zoom transition.");
         }
     }
 
@@ -3337,6 +4179,8 @@ internal static class Benchmark
         var edgeCurve = edgeScene.AddLineSegment(0, new PointF(-20, -100), new PointF(20, -100), strokeWidth, Color.Transparent, Color.White, 6);
         edgeScene.CurveControlX[edgeCurve] = 0;
         edgeScene.CurveControlY[edgeCurve] = 140;
+        edgeScene.CurveControl2X[edgeCurve] = 0;
+        edgeScene.CurveControl2Y[edgeCurve] = 140;
         var edgeRotated = edgeScene.AddObject(0, new PointF(12, 5), new SizeF(4, 20), MathF.PI / 4, 0, Color.Teal, Color.Transparent, 12, ShapeKind.Rectangle);
         var edgeOutlined = edgeScene.AddObject(0, new PointF(12, 5), new SizeF(4, 4), 0, 16, Color.Teal, Color.White, 12, ShapeKind.Rectangle);
         edgeScene.RebuildGeometryIndex();
@@ -3366,12 +4210,15 @@ internal static class Benchmark
         RunBrushBatchAppendRegression();
         RunLocalizedSpatialAlgorithmRegression();
         RunFillOverwriteRegression();
+        RunFastSelectionProbeRegression();
         RunCrossingFillTopologyRegression();
         RunTerminatingLineTopologyRegression();
         RunTerminatingStrokeContactRegression();
+        RunCommittedTerminatingCurveSplitRegression();
         RunCrossingLinesTopologyRegression();
         RunCollinearOverlapTopologyRegression();
         RunOutlinedBoundaryTopologyRegression();
+        RunSmoothPathBoundaryGroupingRegression();
         RunCrossLayerTopologyRegression();
         RunMultipleCutterFillTopologyRegression();
         RunCurvedCutterFillTopologyRegression();
@@ -3389,7 +4236,86 @@ internal static class Benchmark
         RunMarqueeOutlinedBoundarySelectionRegression();
         RunLineToFillConversionRegression();
         RunLineSegmentMergeRegression();
-        Console.WriteLine("drawing_topology_regressions=28");
+        Console.WriteLine("drawing_topology_regressions=31");
+    }
+
+    private static void RunFastSelectionProbeRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(200, 120),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        scene.AddLineSegment(
+            0,
+            new PointF(-160, 180),
+            new PointF(160, 180),
+            12,
+            Color.Transparent,
+            Color.White,
+            8);
+        if (!scene.HasSelectableObjectAt(PointF.Empty, 0, 4)
+            || !scene.HasSelectableObjectAt(new PointF(0, 180), 0, 4)
+            || scene.HasSelectableObjectAt(new PointF(400, 400), 0, 4))
+        {
+            throw new InvalidOperationException("The fast selection probe did not distinguish fills, strokes, and empty canvas space.");
+        }
+
+        const int denseLineCount = 4_000;
+        var denseScene = new VectorScene();
+        denseScene.CreateEmpty();
+        denseScene.BeginDeferredAppend(denseLineCount, [0]);
+        try
+        {
+            for (var index = 0; index < denseLineCount; index++)
+            {
+                var y = 100 + index % 3;
+                denseScene.AppendCubicCurveSegment(
+                    0,
+                    new PointF(-140, y),
+                    new PointF(-45, y),
+                    new PointF(45, y),
+                    new PointF(140, y),
+                    4,
+                    Color.Transparent,
+                    Color.White,
+                    6);
+            }
+        }
+        finally
+        {
+            denseScene.EndDeferredAppend();
+        }
+        denseScene.CompleteDeferredBuild();
+
+        const int samples = 64;
+        _ = denseScene.HasSelectableObjectAt(PointF.Empty, 0, 4);
+        var watch = Stopwatch.StartNew();
+        for (var sample = 0; sample < samples; sample++)
+        {
+            if (denseScene.HasSelectableObjectAt(PointF.Empty, 0, 4))
+            {
+                throw new InvalidOperationException("The fast selection probe reported a distant dense stroke as a hit.");
+            }
+        }
+        watch.Stop();
+        var averageMilliseconds = watch.Elapsed.TotalMilliseconds / samples;
+        const double budgetMilliseconds = 5;
+        if (averageMilliseconds > budgetMilliseconds)
+        {
+            throw new InvalidOperationException(
+                $"The fast blank-canvas selection probe exceeded its budget: averageMs={averageMilliseconds:0.000}.");
+        }
+        Console.WriteLine($"selection_probe_avg_ms={averageMilliseconds:0.000}");
+        Console.WriteLine($"selection_probe_budget_ms={budgetMilliseconds:0.000}");
+        Console.WriteLine("selection_probe_budget_met=true");
     }
 
     private static void RunIncrementalAppendRegression()
@@ -3532,7 +4458,11 @@ internal static class Benchmark
         }
 
         var watch = Stopwatch.StartNew();
+        var stageWatch = Stopwatch.StartNew();
         var snapshot = scene.CreateSnapshot();
+        stageWatch.Stop();
+        var snapshotMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
+        stageWatch.Restart();
         var committed = scene.AddSoftBrushStroke(
             0,
             commitPath,
@@ -3540,21 +4470,39 @@ internal static class Benchmark
             Color.Coral,
             brushShape,
             (uint)commitPath.Length);
+        stageWatch.Stop();
+        var geometryMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
+        stageWatch.Restart();
         foreach (var objectIndex in committed)
         {
             scene.SetGradientPaint(objectIndex, GradientKind.Linear, stops, commitPath[0], commitPath[^1]);
             scene.SetGradientPath(objectIndex, commitPath);
         }
-        var retained = scene.ApplyFillOverwriteToNewObjects(committed);
-        scene.MergeSameColorFillsAroundNewObjects(retained);
+        stageWatch.Stop();
+        var gradientMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
+        stageWatch.Restart();
+        var normalizeInteractively = scene.CanNormalizePaintInteractively(committed, 0);
+        var retained = normalizeInteractively ? scene.ApplyFillOverwriteToNewObjects(committed) : committed;
+        stageWatch.Stop();
+        var overwriteMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
+        stageWatch.Restart();
+        if (normalizeInteractively) scene.MergeSameColorFillsAroundNewObjects(retained);
+        stageWatch.Stop();
+        var mergeMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
         watch.Stop();
         GC.KeepAlive(snapshot);
 
-        const double budgetMilliseconds = 500;
+        const double budgetMilliseconds = 10;
         var budgetMet = committed.Length == 1
             && retained.Length == 1
+            && !normalizeInteractively
             && watch.Elapsed.TotalMilliseconds <= budgetMilliseconds;
         Console.WriteLine($"complex_brush_commit_ms={watch.Elapsed.TotalMilliseconds:0.00}");
+        Console.WriteLine($"complex_brush_snapshot_ms={snapshotMilliseconds:0.00}");
+        Console.WriteLine($"complex_brush_geometry_ms={geometryMilliseconds:0.00}");
+        Console.WriteLine($"complex_brush_gradient_ms={gradientMilliseconds:0.00}");
+        Console.WriteLine($"complex_brush_overwrite_ms={overwriteMilliseconds:0.00}");
+        Console.WriteLine($"complex_brush_merge_ms={mergeMilliseconds:0.00}");
         Console.WriteLine($"complex_brush_commit_budget_ms={budgetMilliseconds:0.00}");
         Console.WriteLine($"complex_brush_commit_budget_met={budgetMet.ToString().ToLowerInvariant()}");
         if (!budgetMet)
@@ -3582,25 +4530,35 @@ internal static class Benchmark
             brushShape,
             (uint)solidPath.Length);
         var shiftedSolidPath = solidPath.Select(point => new PointF(point.X, point.Y + 30)).ToArray();
+        var processedSolidPath = FreehandStrokeProcessor.Process(
+            shiftedSolidPath,
+            smoothing: 12,
+            simplifyTolerance: VectorUnits.FromPixels(0.9f));
         var solidWatch = Stopwatch.StartNew();
         var solidSnapshot = solidScene.CreateSnapshot();
         var secondSolid = solidScene.AddSoftBrushStroke(
             0,
-            shiftedSolidPath,
+            processedSolidPath,
             diameter,
             Color.Coral,
             brushShape,
-            (uint)shiftedSolidPath.Length);
-        var solidRetained = solidScene.ApplyFillOverwriteToNewObjects(secondSolid);
-        var solidMerged = solidScene.MergeSameColorFillsAroundNewObjects(solidRetained);
+            (uint)processedSolidPath.Length);
+        var solidNormalizeInteractively = solidScene.CanNormalizePaintInteractively(secondSolid, 0);
+        var solidRetained = solidNormalizeInteractively
+            ? solidScene.ApplyFillOverwriteToNewObjects(secondSolid)
+            : secondSolid;
+        var solidMerged = solidNormalizeInteractively
+            ? solidScene.MergeSameColorFillsAroundNewObjects(solidRetained)
+            : solidRetained;
         solidWatch.Stop();
         GC.KeepAlive(solidSnapshot);
 
-        const double solidBudgetMilliseconds = 250;
+        const double solidBudgetMilliseconds = 10;
         var solidBudgetMet = firstSolid.Length == 1
             && secondSolid.Length == 1
             && solidMerged.Length == 1
-            && solidScene.ObjectCount == 1
+            && !solidNormalizeInteractively
+            && solidScene.ObjectCount == 2
             && solidWatch.Elapsed.TotalMilliseconds <= solidBudgetMilliseconds;
         Console.WriteLine($"complex_solid_brush_commit_ms={solidWatch.Elapsed.TotalMilliseconds:0.00}");
         Console.WriteLine($"complex_solid_brush_commit_budget_ms={solidBudgetMilliseconds:0.00}");
@@ -3811,7 +4769,99 @@ internal static class Benchmark
             throw new InvalidOperationException("Free Transform skewed a closed fill boundary stroke without moving the linked fill contour.");
         }
 
+        AssertCurvedLineExpandsStraightFillBoundary(reverse: false);
+        AssertCurvedLineExpandsStraightFillBoundary(reverse: true);
+
         Console.WriteLine("fill_boundary_line_link_regression=ok");
+
+        static void AssertCurvedLineExpandsStraightFillBoundary(bool reverse)
+        {
+            var curvedScene = new VectorScene();
+            curvedScene.CreateEmpty(2);
+            var curvedFill = curvedScene.AddObject(
+                0,
+                PointF.Empty,
+                new SizeF(200, 100),
+                0,
+                0,
+                Color.Teal,
+                Color.Transparent,
+                12,
+                ShapeKind.Rectangle);
+            var otherLayerFill = curvedScene.AddObject(
+                1,
+                PointF.Empty,
+                new SizeF(200, 100),
+                0,
+                0,
+                Color.Coral,
+                Color.Transparent,
+                12,
+                ShapeKind.Rectangle);
+            var left = new PointF(-100, -50);
+            var right = new PointF(100, -50);
+            var curvedLine = curvedScene.AddCubicCurveSegment(
+                0,
+                reverse ? right : left,
+                reverse ? new PointF(60, -140) : new PointF(-60, -140),
+                reverse ? new PointF(-60, -140) : new PointF(60, -140),
+                reverse ? left : right,
+                VectorUnits.StrokePointsToUnits(2),
+                Color.Transparent,
+                Color.White,
+                12);
+            var expandedPoint = new PointF(0, -80);
+            var curvedLinks = curvedScene.CaptureFillBoundaryLineLinks(curvedLine, 0);
+            if (curvedLinks.Length != 1
+                || curvedLinks[0].FillObjectIndex != curvedFill
+                || curvedLinks[0].SegmentCount != 1
+                || curvedLinks[0].Reversed != reverse
+                || curvedScene.FillContainsPoint(curvedFill, expandedPoint)
+                || !curvedScene.UpdateFillBoundaryLineLinks(curvedLinks)
+                || !curvedScene.FillContainsPoint(curvedFill, expandedPoint)
+                || curvedScene.FillContainsPoint(otherLayerFill, expandedPoint)
+                || curvedScene.ShapeKind[otherLayerFill] != ShapeKind.Rectangle
+                || curvedScene.ObjectLayer[curvedFill] != 0
+                || curvedScene.ObjectKeyframeFrame[curvedFill] != 0)
+            {
+                throw new InvalidOperationException(
+                    $"A {(reverse ? "reversed " : string.Empty)}curved line did not expand its matching straight fill boundary.");
+            }
+
+            var updatedPoints = curvedScene.GetObjectBoundaryContours(curvedFill).SelectMany(contour => contour).ToArray();
+            if (new[]
+                {
+                    new PointF(-100, -50),
+                    new PointF(100, -50),
+                    new PointF(100, 50),
+                    new PointF(-100, 50)
+                }.Any(corner => !updatedPoints.Any(point => PointsNear(point, corner))))
+            {
+                throw new InvalidOperationException("Expanding a curved fill boundary lost an unchanged contour corner.");
+            }
+
+            var curveHit = curvedScene.HitTestElement(new PointF(0, -117.5f), 0, toleranceWorld: 2);
+            var selectedPath = MainForm.TraditionalPenPathElements(curvedScene, curveHit, 0);
+            if (!curveHit.IsValid
+                || curveHit.Key.ObjectIndex != curvedLine
+                || curveHit.Key.Kind != DrawingElementKind.Stroke
+                || curveHit.StartT > DrawingTopologyRules.UnitIntersectionTolerance
+                || curveHit.EndT < 1 - DrawingTopologyRules.UnitIntersectionTolerance
+                || selectedPath.Length != 1
+                || selectedPath[0].Key.ObjectIndex != curvedLine
+                || selectedPath[0].StartT > DrawingTopologyRules.UnitIntersectionTolerance
+                || selectedPath[0].EndT < 1 - DrawingTopologyRules.UnitIntersectionTolerance)
+            {
+                throw new InvalidOperationException(
+                    $"A linked curved line was split by its own expanded fill boundary: hit={curveHit}, path={selectedPath.Length}.");
+            }
+
+            var refreshedLinks = curvedScene.CaptureFillBoundaryLineLinks(curvedLine, 0);
+            if (refreshedLinks.Length != 1 || refreshedLinks[0].SegmentCount <= 1)
+            {
+                throw new InvalidOperationException("Exact curved-boundary matching did not take priority after the fill contour was expanded.");
+            }
+        }
     }
 
     private static void RunConnectedLineRecolorRegression()
@@ -3866,13 +4916,15 @@ internal static class Benchmark
 
         scene.TryGetLineEndpoint(line, startEndpoint: true, out var lineStart);
         scene.TryGetLineEndpoint(line, startEndpoint: false, out var lineEnd);
-        var lineControl = new PointF(scene.CurveControlX[line], scene.CurveControlY[line]);
+        var lineControl1 = new PointF(scene.CurveControlX[line], scene.CurveControlY[line]);
+        var lineControl2 = new PointF(scene.CurveControl2X[line], scene.CurveControl2Y[line]);
         var freehandValid = scene.TryGetFreehandWorldPoints(freehand, out var freehandPoints);
         var pathValid = scene.TryGetPathWorldContours(path, out var pathContours);
         var skewValid = scene.TryGetPathWorldContours(rectangle, out var skewContours);
         if (!PointsNear(lineStart, new PointF(30, -20))
             || !PointsNear(lineEnd, new PointF(130, -20))
-            || !PointsNear(lineControl, new PointF(70, 60))
+            || !PointsNear(lineControl1, new PointF(57, 33))
+            || !PointsNear(lineControl2, new PointF(90, 33))
             || !freehandValid
             || freehandPoints.Length != 2
             || !PointsNear(freehandPoints[0], new PointF(-50, -60))
@@ -3947,6 +4999,13 @@ internal static class Benchmark
         var objectCandidate = new PointF(91, 109);
         var objectPriorityPoint = drawSettings.ResolvePointSnap(pointer, objectCandidate);
         var gridFallbackPoint = drawSettings.ResolvePointSnap(pointer);
+        var adaptiveGridPoint = drawSettings.ResolvePointSnap(
+            new PointF(1494, 506),
+            gridStep: 1000);
+        var adaptiveObjectPriorityPoint = drawSettings.ResolvePointSnap(
+            new PointF(1494, 506),
+            objectCandidate,
+            gridStep: 1000);
         drawSettings.SnapToObjects = false;
         var disabledObjectPoint = drawSettings.ResolvePointSnap(pointer, objectCandidate);
         var temporaryObjectPoint = drawSettings.ResolvePointSnap(
@@ -3968,6 +5027,8 @@ internal static class Benchmark
             || Math.Abs(configuredSnappedAngle - shiftSnappedAngle) > 0.0001f
             || !PointsNear(objectPriorityPoint, objectCandidate)
             || !PointsNear(gridFallbackPoint, new PointF(100, 100))
+            || !PointsNear(adaptiveGridPoint, new PointF(1000, 1000))
+            || !PointsNear(adaptiveObjectPriorityPoint, objectCandidate)
             || !PointsNear(disabledObjectPoint, gridFallbackPoint)
             || !PointsNear(temporaryObjectPoint, objectCandidate)
             || !PointsNear(shifted.Start, PointF.Empty)
@@ -4021,7 +5082,7 @@ internal static class Benchmark
             splitSource,
             GradientKind.Linear,
             [new GradientStop(0, Color.Coral), new GradientStop(1, Color.Gold)]);
-        splitScene.TryGetLineBezierPart(splitSource, 0, 1, out var originalStart, out _, out var originalEnd);
+        splitScene.TryGetLineBezierPart(splitSource, 0, 1, out var originalStart, out _, out _, out var originalEnd);
         var originalOrder = splitScene.ObjectOrder[splitSource];
         var originalKeyframe = splitScene.ObjectKeyframeFrame[splitSource];
         var closestPointFound = splitScene.TryGetClosestPointOnLine(
@@ -4031,24 +5092,39 @@ internal static class Benchmark
             out var closestPoint,
             out var closestDistance);
         var split = splitScene.SplitLineAt(splitSource, closestParameter, out var splitResult);
-        splitScene.TryGetLineBezierPart(splitResult.FirstObjectIndex, 0, 1, out var firstStart, out var firstControl, out var firstEnd);
-        splitScene.TryGetLineBezierPart(splitResult.SecondObjectIndex, 0, 1, out var secondStart, out var secondControl, out var secondEnd);
+        splitScene.TryGetLineBezierPart(
+            splitResult.FirstObjectIndex,
+            0,
+            1,
+            out var firstStart,
+            out var firstControl1,
+            out var firstControl2,
+            out var firstEnd);
+        splitScene.TryGetLineBezierPart(
+            splitResult.SecondObjectIndex,
+            0,
+            1,
+            out var secondStart,
+            out var secondControl1,
+            out var secondControl2,
+            out var secondEnd);
         if (!closestPointFound
-            || closestDistance > 0.05f
+            || closestDistance > 0.5f
             || Math.Abs(closestParameter - 0.5f) > 0.01f
-            || !PointsNear(closestPoint, new PointF(50, 50))
             || !split
             || splitScene.ObjectCount != 2
             || Math.Abs(firstStart.X - originalStart.X) > 0.5f
             || Math.Abs(firstStart.Y - originalStart.Y) > 0.5f
-            || !PointsNear(firstControl, new PointF(25, 50))
+            || !PointsNear(firstControl1, new PointF(16, 33))
+            || !PointsNear(firstControl2, new PointF(33, 50))
             || Math.Abs(firstEnd.X - secondStart.X) > DrawingTopologyRules.MinStrokeSegmentUnits
             || Math.Abs(firstEnd.Y - secondStart.Y) > DrawingTopologyRules.MinStrokeSegmentUnits
             || Math.Abs(firstEnd.X - splitResult.Anchor.X) > 0.5f
             || Math.Abs(firstEnd.Y - splitResult.Anchor.Y) > 0.5f
             || Math.Abs(secondStart.X - splitResult.Anchor.X) > 0.5f
             || Math.Abs(secondStart.Y - splitResult.Anchor.Y) > 0.5f
-            || !PointsNear(secondControl, new PointF(75, 50))
+            || !PointsNear(secondControl1, new PointF(67, 50))
+            || !PointsNear(secondControl2, new PointF(83, 34))
             || Math.Abs(secondEnd.X - originalEnd.X) > 0.5f
             || Math.Abs(secondEnd.Y - originalEnd.Y) > 0.5f
             || splitScene.GetLineEndpointStyle(splitResult.FirstObjectIndex, startEndpoint: true) != LineEndpointStyle.Sharp
@@ -4064,11 +5140,95 @@ internal static class Benchmark
             || splitScene.ObjectKeyframeFrame[splitResult.SecondObjectIndex] != originalKeyframe
             || splitScene.AtomCount[splitResult.FirstObjectIndex] + splitScene.AtomCount[splitResult.SecondObjectIndex] != 12)
         {
-            throw new InvalidOperationException("Pen anchor insertion did not preserve continuous curve geometry, material, ownership, or order.");
+            throw new InvalidOperationException(
+                $"Pen anchor insertion did not preserve continuous curve geometry, material, ownership, or order: "
+                + $"closest={closestParameter:0.###}/{closestPoint}/{closestDistance:0.###}, "
+                + $"first={firstStart}/{firstControl1}/{firstControl2}/{firstEnd}, "
+                + $"second={secondStart}/{secondControl1}/{secondControl2}/{secondEnd}, "
+                + $"anchor={splitResult.Anchor}, objects={splitScene.ObjectCount}, "
+                + $"styles={splitScene.GetLineEndpointStyle(splitResult.FirstObjectIndex, true)}/{splitScene.GetLineEndpointStyle(splitResult.FirstObjectIndex, false)}"
+                + $"-{splitScene.GetLineEndpointStyle(splitResult.SecondObjectIndex, true)}/{splitScene.GetLineEndpointStyle(splitResult.SecondObjectIndex, false)}, "
+                + $"gradient={splitScene.HasGradient(splitResult.FirstObjectIndex)}/{splitScene.HasGradient(splitResult.SecondObjectIndex)}, "
+                + $"order={splitScene.ObjectOrder[splitResult.FirstObjectIndex]}/{splitScene.ObjectOrder[splitResult.SecondObjectIndex]}, "
+                + $"sub={splitScene.ObjectSubOrder[splitResult.FirstObjectIndex]}/{splitScene.ObjectSubOrder[splitResult.SecondObjectIndex]}, "
+                + $"key={splitScene.ObjectKeyframeFrame[splitResult.FirstObjectIndex]}/{splitScene.ObjectKeyframeFrame[splitResult.SecondObjectIndex]}, "
+                + $"atoms={splitScene.AtomCount[splitResult.FirstObjectIndex]}+{splitScene.AtomCount[splitResult.SecondObjectIndex]}.");
+        }
+
+        var isolatedPenLine = splitScene.AddLineSegment(
+            0,
+            new PointF(240, 0),
+            new PointF(320, 0),
+            8,
+            Color.Transparent,
+            Color.Coral,
+            6);
+        var penPathSeed = new DrawingElementHit(
+            new DrawingElementKey(splitResult.FirstObjectIndex, DrawingElementKind.Stroke, 0),
+            0,
+            0,
+            1);
+        var selectedPenPath = MainForm.TraditionalPenPathElements(splitScene, penPathSeed, 0);
+        if (selectedPenPath.Length != 2
+            || selectedPenPath.Any(hit => hit.Key.ObjectIndex == isolatedPenLine))
+        {
+            throw new InvalidOperationException("Traditional Pen one-click path selection did not include only the connected line segments.");
+        }
+
+        var straightPenSegment = MainForm.TraditionalPenCubicSegment(
+            new PointF(0, 0),
+            outgoingHandle: null,
+            incomingHandle: null,
+            new PointF(100, 0));
+        var tangentPenSegment = MainForm.TraditionalPenCubicSegment(
+            new PointF(0, 0),
+            new PointF(50, 0),
+            new PointF(100, 50),
+            new PointF(100, 100));
+        var inflectedPenSegment = MainForm.TraditionalPenCubicSegment(
+            new PointF(0, 0),
+            new PointF(40, 100),
+            new PointF(60, -100),
+            new PointF(100, 0));
+        var nearParallelPenSegment = MainForm.TraditionalPenCubicSegment(
+            new PointF(0, 0),
+            new PointF(100, 0),
+            new PointF(200, 0.01f),
+            new PointF(300, 0));
+        var perturbedParallelPenSegment = MainForm.TraditionalPenCubicSegment(
+            new PointF(0, 0),
+            new PointF(100, 0),
+            new PointF(200, 0.02f),
+            new PointF(300, 0));
+        if (Math.Abs(straightPenSegment.Control1.X - 100f / 3f) > 0.001f
+            || Math.Abs(straightPenSegment.Control2.X - 200f / 3f) > 0.001f
+            || Math.Abs(straightPenSegment.Control1.Y) > 0.001f
+            || Math.Abs(straightPenSegment.Control2.Y) > 0.001f
+            || !PointsNear(tangentPenSegment.Control1, new PointF(50, 0))
+            || !PointsNear(tangentPenSegment.Control2, new PointF(100, 50))
+            || inflectedPenSegment.Control1.Y <= 0
+            || inflectedPenSegment.Control2.Y >= 0
+            || Math.Abs(nearParallelPenSegment.Control2.X - perturbedParallelPenSegment.Control2.X) > 0.1f
+            || Math.Abs(nearParallelPenSegment.Control2.Y - perturbedParallelPenSegment.Control2.Y) > 0.1f
+            || !float.IsFinite(inflectedPenSegment.Control1.X)
+            || !float.IsFinite(inflectedPenSegment.Control1.Y)
+            || !float.IsFinite(inflectedPenSegment.Control2.X)
+            || !float.IsFinite(inflectedPenSegment.Control2.Y))
+        {
+            throw new InvalidOperationException("Traditional Pen cubic controls did not preserve straight, stable, or inflected curve behavior.");
         }
 
         using (var penGuideStage = new StageControl(splitScene))
         {
+            penGuideStage.SetSelection(
+                selectedPenPath.Select(hit => hit.Key.ObjectIndex),
+                selectedPenPath[0].Key.ObjectIndex);
+            penGuideStage.SetSelectedElements(selectedPenPath, selectedPenPath[0]);
+            penGuideStage.SetPenPathHandlesVisible(true);
+            if (!penGuideStage.PenPathHandlesVisible || penGuideStage.SelectedElements.Count != 2)
+            {
+                throw new InvalidOperationException("Traditional Pen connected-path handles were not exposed to the Stage renderers.");
+            }
             penGuideStage.SetPenAnchorGuides(splitResult.Anchor, vertical: true, horizontal: false, snapped: true, insertion: false);
             if (!penGuideStage.PenAnchorGuidesVisible
                 || !penGuideStage.PenAnchorGuideVertical
@@ -4082,6 +5242,22 @@ internal static class Benchmark
             {
                 throw new InvalidOperationException("Pen anchor guides were not cleared with the pen interaction.");
             }
+            penGuideStage.SetPenDirectionHandles(
+                splitResult.Anchor,
+                new PointF(splitResult.Anchor.X - 20, splitResult.Anchor.Y),
+                new PointF(splitResult.Anchor.X + 20, splitResult.Anchor.Y));
+            if (!penGuideStage.PenDirectionHandlesVisible
+                || penGuideStage.PenDirectionIncoming is null
+                || penGuideStage.PenDirectionOutgoing is null)
+            {
+                throw new InvalidOperationException("Traditional Pen direction handles were not exposed to the Stage renderers.");
+            }
+            penGuideStage.ClearPenDirectionHandles();
+            if (penGuideStage.PenDirectionHandlesVisible)
+            {
+                throw new InvalidOperationException("Traditional Pen direction handles were not cleared with the path session.");
+            }
+            penGuideStage.SetPenPathHandlesVisible(false);
         }
 
         var scene = new VectorScene();
@@ -4192,11 +5368,12 @@ internal static class Benchmark
         stage.SetSelectedElement(boundary);
         Point ToScreen(PointF point) => Point.Round(stage.WorldToScreen(point.X, point.Y));
         var exposesVirtualBezierHandles = boundary.Key.Kind == DrawingElementKind.BoundaryStroke
-            && stage.TryGetEditableBezierWorldPoints(boundary, out var start, out var control, out var end)
+            && stage.TryGetEditableBezierWorldPoints(boundary, out var start, out var control1, out var control2, out var end)
             && stage.HitTestLineElementHandle(ToScreen(start), boundary) == EditHandleKind.LineStart
             && stage.HitTestLineElementHandle(ToScreen(end), boundary) == EditHandleKind.LineEnd
-            && stage.HitTestLineElementHandle(ToScreen(control), boundary) == EditHandleKind.BezierControl
-            && stage.HitTestHandle(ToScreen(control), rectangle) == EditHandleKind.BezierControl;
+            && stage.HitTestLineElementHandle(ToScreen(control1), boundary) == EditHandleKind.BezierControl
+            && stage.HitTestLineElementHandle(ToScreen(control2), boundary) == EditHandleKind.BezierControl2
+            && stage.HitTestHandle(ToScreen(control1), rectangle) == EditHandleKind.BezierControl;
         if (!exposesVirtualBezierHandles)
         {
             throw new InvalidOperationException("A shape boundary did not expose editable endpoint and curve handles before materialization.");
@@ -4599,6 +5776,7 @@ internal static class Benchmark
             ToolMode.PressureBrush,
             ToolMode.InkBottle);
         var traditionalInkBottle = ToolShortcutMap.ResolveTraditionalFlashTool(Keys.S);
+        var traditionalPen = ToolShortcutMap.ResolveTraditionalFlashTool(Keys.P);
         var defaultSettings = new ApplicationSettings();
         using var localizedLabel = new Label { Text = "Settings" };
         using var localizedMenu = new AnimatedContextMenuStrip();
@@ -4613,19 +5791,27 @@ internal static class Benchmark
         var englishLocalizationRestored = localizedLabel.Text == "Settings" && localizedMenuItem.Text == "Rename";
         var toolCycleForward = MainForm.CycleToolGroupMember([ToolMode.Select, ToolMode.Transform], ToolMode.Select, reverse: false);
         var toolCycleBackward = MainForm.CycleToolGroupMember([ToolMode.Fill, ToolMode.InkBottle], ToolMode.Fill, reverse: true);
+        var lineToolCycle = MainForm.CycleToolGroupMember(
+            [ToolMode.Line, ToolMode.Pen, ToolMode.SimplePen, ToolMode.Pencil],
+            ToolMode.Pen,
+            reverse: false);
         if (selectionShortcut != ToolMode.Transform
             || fillShortcut != ToolMode.InkBottle
             || ToolShortcutMap.ResolveNumberKeyTool(Keys.D8, ToolMode.Select, ToolMode.Rectangle, ToolMode.Line, ToolMode.Brush, ToolMode.Fill) != ToolMode.Eyedropper
             || traditionalSelection != ToolMode.Select
             || traditionalInkBottle != ToolMode.InkBottle
+            || traditionalPen != ToolMode.Pen
             || defaultSettings.ToolShortcutPreset != ToolShortcutPreset.TraditionalFlash
             || defaultSettings.Language != UiLanguage.English
+            || defaultSettings.TimelineFrameWidth != 14
+            || defaultSettings.TimelineFrameHeight != TimelineFrameHeightPreset.Medium
             || !chineseLocalizationApplied
             || !englishLocalizationRestored
             || !ToolShortcutMap.IsVaultShortcut(ToolShortcutPreset.NumberKeys, Keys.D9)
             || ToolShortcutMap.IsVaultShortcut(ToolShortcutPreset.TraditionalFlash, Keys.D9)
             || toolCycleForward != ToolMode.Transform
-            || toolCycleBackward != ToolMode.InkBottle)
+            || toolCycleBackward != ToolMode.InkBottle
+            || lineToolCycle != ToolMode.SimplePen)
         {
             throw new InvalidOperationException("Tool shortcut presets, localization, or grouped Tab-cycle routing did not resolve correctly.");
         }
@@ -4673,6 +5859,62 @@ internal static class Benchmark
                 $"Direct2D fill/line gradient brushes were not reused or selectively refreshed: " +
                 $"stable={stableGradientCache}, edited={editedGradientCache}, " +
                 $"builds={stage.LastDirect2DGradientBrushCacheBuilds}, reuses={stage.LastDirect2DGradientBrushCacheReuses}.");
+        }
+
+        var lineCacheScene = new VectorScene();
+        lineCacheScene.CreateEmpty();
+        var cachedLineA = lineCacheScene.AddCubicCurveSegment(
+            0,
+            new PointF(-400, -100),
+            new PointF(-280, -260),
+            new PointF(-120, 160),
+            PointF.Empty,
+            16,
+            Color.Transparent,
+            Color.White,
+            6);
+        lineCacheScene.AddCubicCurveSegment(
+            0,
+            PointF.Empty,
+            new PointF(120, 160),
+            new PointF(280, -260),
+            new PointF(400, -100),
+            16,
+            Color.Transparent,
+            Color.White,
+            6);
+        lineCacheScene.AddCubicCurveSegment(
+            0,
+            PointF.Empty,
+            new PointF(-120, 160),
+            new PointF(120, 260),
+            new PointF(0, 400),
+            16,
+            Color.Transparent,
+            Color.White,
+            6);
+        stage.BindScene(lineCacheScene);
+        stage.SetVisibleWorldWidth(1_200);
+        stage.ClearGradientOverlay();
+        stage.Invalidate();
+        stage.Update();
+        var lineCacheFirstFrame = stage.LastFrameUsedDirect2D
+            && stage.LastDirect2DLineGeometryCacheBuilds == 3;
+        stage.Invalidate();
+        stage.Update();
+        var lineCacheStableFrame = stage.LastDirect2DLineGeometryCacheBuilds == 0
+            && stage.LastDirect2DLineGeometryCacheReuses >= 3;
+        lineCacheScene.CurveControlY[cachedLineA] += 40;
+        stage.Invalidate();
+        stage.Update();
+        var lineCacheEditedFrame = stage.LastDirect2DLineGeometryCacheBuilds == 1
+            && stage.LastDirect2DLineGeometryCacheReuses >= 2;
+        if (!lineCacheFirstFrame || !lineCacheStableFrame || !lineCacheEditedFrame)
+        {
+            throw new InvalidOperationException(
+                $"Direct2D line geometry caching did not reuse stable paths or selectively rebuild an edited line: "
+                + $"first={lineCacheFirstFrame}, stable={lineCacheStableFrame}, edited={lineCacheEditedFrame}, "
+                + $"builds={stage.LastDirect2DLineGeometryCacheBuilds}, reuses={stage.LastDirect2DLineGeometryCacheReuses}.");
         }
 
 
@@ -4890,6 +6132,7 @@ internal static class Benchmark
     {
         var rendering = HotReloadModuleResolver.Resolve([typeof(Direct2DStageRenderer)]);
         var worldGridRendering = HotReloadModuleResolver.Resolve([typeof(WorldGridLayout)]);
+        var polarGridRendering = HotReloadModuleResolver.Resolve([typeof(PolarGridLayout)]);
         var timeline = HotReloadModuleResolver.Resolve([typeof(TimelineStrip)]);
         var inspector = HotReloadModuleResolver.Resolve([typeof(MaterialEditorPanel)]);
         var instanceInspector = HotReloadModuleResolver.Resolve([typeof(DrawingObjectInstancePanel)]);
@@ -4898,11 +6141,18 @@ internal static class Benchmark
         var gradientPreset = HotReloadModuleResolver.Resolve([typeof(GradientPresetGrid)]);
         var paletteIcon = HotReloadModuleResolver.Resolve([typeof(SvgIconButton), typeof(SvgIcons)]);
         var paletteStore = HotReloadModuleResolver.Resolve([typeof(MaterialPaletteStore)]);
-        var settingsDialog = HotReloadModuleResolver.Resolve([typeof(SettingsDialog), typeof(ToolShortcutMap), typeof(UiLocalization)]);
+        var settingsDialog = HotReloadModuleResolver.Resolve([
+            typeof(SettingsDialog),
+            typeof(ModernDialogForm),
+            typeof(ModernMessageDialog),
+            typeof(ToolShortcutMap),
+            typeof(UiLocalization)]);
         var engine = HotReloadModuleResolver.Resolve([typeof(VectorScene), typeof(DrawingObjectPlaybackMode)]);
+        var projectAssetFolder = HotReloadModuleResolver.Resolve([typeof(ProjectAssetFolder)]);
         var unknown = HotReloadModuleResolver.Resolve([typeof(Benchmark)]);
         var merged = rendering.Merge(engine).Merge(rendering);
         HotReloadBatch? dispatchedBatch = null;
+        var unavailableTargetChecks = 0;
         using var dispatchForm = new Form
         {
             ShowInTaskbar = false,
@@ -4926,10 +6176,36 @@ internal static class Benchmark
             }
         }
         dispatchForm.Close();
+        using (var unavailableCoordinator = new HotReloadCoordinator(
+                   () =>
+                   {
+                       Interlocked.Increment(ref unavailableTargetChecks);
+                       return null;
+                   },
+                   _ => throw new InvalidOperationException("An unavailable hot-reload target unexpectedly dispatched."),
+                   coalesceMilliseconds: 2))
+        {
+            unavailableCoordinator.Enqueue(rendering);
+            var unavailableTimeout = Stopwatch.StartNew();
+            while (Volatile.Read(ref unavailableTargetChecks) < 16
+                && unavailableTimeout.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                Thread.Sleep(10);
+            }
+            var settledChecks = Volatile.Read(ref unavailableTargetChecks);
+            Thread.Sleep(80);
+            if (settledChecks != 16
+                || Volatile.Read(ref unavailableTargetChecks) != settledChecks)
+            {
+                throw new InvalidOperationException(
+                    $"An unavailable hot-reload target did not stop its bounded retry loop: checks={unavailableTargetChecks}.");
+            }
+        }
         var coordinatorMergedBatch = dispatchedBatch is { Generation: 2 } batch
             && batch.Plan.Modules == (HotReloadModule.Rendering | HotReloadModule.Engine);
         if (rendering.Modules != HotReloadModule.Rendering
             || worldGridRendering.Modules != HotReloadModule.Rendering
+            || polarGridRendering.Modules != HotReloadModule.Rendering
             || timeline.Modules != HotReloadModule.Timeline
             || inspector.Modules != HotReloadModule.Inspector
             || instanceInspector.Modules != HotReloadModule.Inspector
@@ -4940,25 +6216,37 @@ internal static class Benchmark
             || paletteStore.Modules != HotReloadModule.Inspector
             || settingsDialog.Modules != HotReloadModule.Shell
             || engine.Modules != HotReloadModule.Engine
+            || projectAssetFolder.Modules != HotReloadModule.Engine
             || unknown.Modules != HotReloadModule.All
             || merged.Modules != (HotReloadModule.Rendering | HotReloadModule.Engine)
             || merged.UpdatedTypes.Split(',', StringSplitOptions.RemoveEmptyEntries).Length != 3
             || !coordinatorMergedBatch
+            || !rendering.RequiresProcessRestart
+            || !timeline.RequiresProcessRestart
+            || !inspector.RequiresProcessRestart
+            || !instanceInspector.RequiresProcessRestart
+            || !engine.RequiresProcessRestart
+            || !projectAssetFolder.RequiresProcessRestart
+            || !unknown.RequiresProcessRestart
+            || worldGridRendering.RequiresProcessRestart
+            || polarGridRendering.RequiresProcessRestart
             || rendering.RequiresWorkbenchRebuild
             || worldGridRendering.RequiresWorkbenchRebuild
-            || !timeline.RequiresWorkbenchRebuild
-            || !inspector.RequiresWorkbenchRebuild
-            || !instanceInspector.RequiresWorkbenchRebuild
-            || !themedScroll.RequiresWorkbenchRebuild
-            || !harmonyWheel.RequiresWorkbenchRebuild
-            || !gradientPreset.RequiresWorkbenchRebuild
-            || !paletteIcon.RequiresWorkbenchRebuild
-            || !paletteStore.RequiresWorkbenchRebuild
-            || !settingsDialog.RequiresWorkbenchRebuild
-            || engine.RequiresWorkbenchRebuild)
+            || polarGridRendering.RequiresWorkbenchRebuild
+            || timeline.RequiresWorkbenchRebuild
+            || inspector.RequiresWorkbenchRebuild
+            || instanceInspector.RequiresWorkbenchRebuild
+            || themedScroll.RequiresWorkbenchRebuild
+            || harmonyWheel.RequiresWorkbenchRebuild
+            || gradientPreset.RequiresWorkbenchRebuild
+            || paletteIcon.RequiresWorkbenchRebuild
+            || paletteStore.RequiresWorkbenchRebuild
+            || settingsDialog.RequiresWorkbenchRebuild
+            || engine.RequiresWorkbenchRebuild
+            || projectAssetFolder.RequiresWorkbenchRebuild)
         {
             throw new InvalidOperationException(
-                $"Module hot reload routing was not scoped: rendering={rendering.Modules}/{rendering.RequiresWorkbenchRebuild}, worldGrid={worldGridRendering.Modules}/{worldGridRendering.RequiresWorkbenchRebuild}, timeline={timeline.Modules}/{timeline.RequiresWorkbenchRebuild}, inspector={inspector.Modules}/{inspector.RequiresWorkbenchRebuild}, instanceInspector={instanceInspector.Modules}/{instanceInspector.RequiresWorkbenchRebuild}, themedScroll={themedScroll.Modules}/{themedScroll.RequiresWorkbenchRebuild}, harmonyWheel={harmonyWheel.Modules}/{harmonyWheel.RequiresWorkbenchRebuild}, gradientPreset={gradientPreset.Modules}/{gradientPreset.RequiresWorkbenchRebuild}, paletteIcon={paletteIcon.Modules}/{paletteIcon.RequiresWorkbenchRebuild}, paletteStore={paletteStore.Modules}/{paletteStore.RequiresWorkbenchRebuild}, settingsDialog={settingsDialog.Modules}/{settingsDialog.RequiresWorkbenchRebuild}, engine={engine.Modules}/{engine.RequiresWorkbenchRebuild}, unknown={unknown.Modules}, merged={merged.Modules}/{merged.UpdatedTypes}, coordinator={dispatchedBatch}.");
+                $"Module hot reload routing was not scoped: rendering={rendering.Modules}/{rendering.RequiresWorkbenchRebuild}, worldGrid={worldGridRendering.Modules}/{worldGridRendering.RequiresWorkbenchRebuild}, polarGrid={polarGridRendering.Modules}/{polarGridRendering.RequiresWorkbenchRebuild}, timeline={timeline.Modules}/{timeline.RequiresWorkbenchRebuild}, inspector={inspector.Modules}/{inspector.RequiresWorkbenchRebuild}, instanceInspector={instanceInspector.Modules}/{instanceInspector.RequiresWorkbenchRebuild}, themedScroll={themedScroll.Modules}/{themedScroll.RequiresWorkbenchRebuild}, harmonyWheel={harmonyWheel.Modules}/{harmonyWheel.RequiresWorkbenchRebuild}, gradientPreset={gradientPreset.Modules}/{gradientPreset.RequiresWorkbenchRebuild}, paletteIcon={paletteIcon.Modules}/{paletteIcon.RequiresWorkbenchRebuild}, paletteStore={paletteStore.Modules}/{paletteStore.RequiresWorkbenchRebuild}, settingsDialog={settingsDialog.Modules}/{settingsDialog.RequiresWorkbenchRebuild}, engine={engine.Modules}/{engine.RequiresWorkbenchRebuild}, projectAssetFolder={projectAssetFolder.Modules}/{projectAssetFolder.RequiresWorkbenchRebuild}, unknown={unknown.Modules}, merged={merged.Modules}/{merged.UpdatedTypes}, coordinator={dispatchedBatch}.");
         }
 
         Console.WriteLine("module_reload_routing_regression=ok");
@@ -5703,11 +6991,16 @@ internal static class Benchmark
             frequency: 8,
             continuous: true);
         stopwatch.Stop();
+        const double pressureBrushCommitBudgetMilliseconds = 10;
+        var pressureBrushCommitBudgetMet = stopwatch.Elapsed.TotalMilliseconds <= pressureBrushCommitBudgetMilliseconds;
         if (softObjects.Length != 3
             || softObjects.Any(index => scene.ShapeKind[index] != ShapeKind.Path)
-            || !softObjects.All(index => scene.FillContainsPoint(index, samples[samples.Length / 2].Point)))
+            || !softObjects.All(index => scene.FillContainsPoint(index, samples[samples.Length / 2].Point))
+            || !pressureBrushCommitBudgetMet)
         {
-            throw new InvalidOperationException("Continuous pressure brush did not commit layered variable-width Path fills.");
+            throw new InvalidOperationException(
+                $"Continuous pressure brush exceeded its interaction budget or lost layered Path fills: "
+                + $"elapsed={stopwatch.Elapsed.TotalMilliseconds:0.00} ms.");
         }
 
         var traditional = new VectorScene();
@@ -5754,7 +7047,43 @@ internal static class Benchmark
             throw new InvalidOperationException("Pressure brush left an unfilled gap at a sharp corner.");
         }
 
+        var longPreviewSamples = new PressureBrushSample[16_384];
+        for (var index = 0; index < longPreviewSamples.Length; index++)
+        {
+            longPreviewSamples[index] = new PressureBrushSample(
+                new PointF(index * 2, MathF.Sin(index * 0.03f) * 80),
+                180 + index % 17 * 20,
+                index / 240f);
+        }
+        const int previewIterations = 64;
+        var previewWatch = Stopwatch.StartNew();
+        IReadOnlyList<PressureBrushSample> boundedPreview = [];
+        PressureBrushPoint[] previewProfile = [];
+        for (var iteration = 0; iteration < previewIterations; iteration++)
+        {
+            boundedPreview = MainForm.LimitDrawingPreview(longPreviewSamples, 256);
+            previewProfile = FreehandStrokeProcessor.CreatePressurePreview(boundedPreview, diameter, smoothing: 58);
+        }
+        previewWatch.Stop();
+        var pressurePreviewAverageMilliseconds = previewWatch.Elapsed.TotalMilliseconds / previewIterations;
+        if (boundedPreview.Count != 256
+            || previewProfile.Length != 256
+            || boundedPreview[0].Point != longPreviewSamples[0].Point
+            || boundedPreview[^1].Point != longPreviewSamples[^1].Point
+            || pressurePreviewAverageMilliseconds > pressureBrushCommitBudgetMilliseconds)
+        {
+            throw new InvalidOperationException(
+                $"Long pressure-brush preview exceeded its interaction budget or lost trajectory endpoints: "
+                + $"points={boundedPreview.Count}, profile={previewProfile.Length}, avg={pressurePreviewAverageMilliseconds:0.000} ms.");
+        }
+
         Console.WriteLine($"pressure_brush_commit_ms={stopwatch.Elapsed.TotalMilliseconds:0.00}");
+        Console.WriteLine($"pressure_brush_commit_budget_ms={pressureBrushCommitBudgetMilliseconds:0.00}");
+        Console.WriteLine($"pressure_brush_commit_budget_met={pressureBrushCommitBudgetMet.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"pressure_brush_preview_source_points={longPreviewSamples.Length}");
+        Console.WriteLine($"pressure_brush_preview_points={boundedPreview.Count}");
+        Console.WriteLine($"pressure_brush_preview_avg_ms={pressurePreviewAverageMilliseconds:0.000}");
+        Console.WriteLine($"pressure_brush_preview_budget_met={(pressurePreviewAverageMilliseconds <= pressureBrushCommitBudgetMilliseconds).ToString().ToLowerInvariant()}");
     }
 
     private static void RunBrushWorldScaleRegression()
@@ -6103,6 +7432,24 @@ internal static class Benchmark
         {
             throw new InvalidOperationException("Multi-line sharp junctions did not expose all connected endpoint directions.");
         }
+        if (!junctionScene.TryGetLineEndpointJunctionForRender(junctionThird, startEndpoint: true, 0, out var renderJunction)
+            || renderJunction.OwnerObjectIndex >= junctionThird
+            || renderJunction.Connections.Length != 0)
+        {
+            throw new InvalidOperationException("Non-owner sharp junction rendering did not stop after resolving an earlier owner.");
+        }
+
+        var wholeLineHit = new DrawingElementHit(
+            new DrawingElementKey(junctionFirst, DrawingElementKind.Stroke, 0),
+            0,
+            0,
+            1);
+        var splitLineHit = wholeLineHit with { StartT = 0.25f, EndT = 1 };
+        if (!MainForm.IsWholeLineEndpointEditHit(junctionScene, wholeLineHit)
+            || MainForm.IsWholeLineEndpointEditHit(junctionScene, splitLineHit))
+        {
+            throw new InvalidOperationException("Whole-line endpoint edits did not bypass only redundant topology materialization.");
+        }
 
         var junctionMiters = LineJoinGeometry.CreateJunctionMiters(
             PointF.Empty,
@@ -6228,8 +7575,10 @@ internal static class Benchmark
         // Keep sub-vu offsets that AddLineSegment normally quantizes so the transitive grouping path is exercised.
         nearToleranceChainScene.Y[nearMiddle] = nearToleranceOffset;
         nearToleranceChainScene.CurveControlY[nearMiddle] = nearToleranceOffset;
+        nearToleranceChainScene.CurveControl2Y[nearMiddle] = nearToleranceOffset;
         nearToleranceChainScene.Y[nearEnd] = nearToleranceOffset * 2;
         nearToleranceChainScene.CurveControlY[nearEnd] = nearToleranceOffset * 2;
+        nearToleranceChainScene.CurveControl2Y[nearEnd] = nearToleranceOffset * 2;
         if (nearToleranceChainScene.MergeCompatibleLineSegments(0).Changed || nearToleranceChainScene.ObjectCount != 3)
         {
             throw new InvalidOperationException("Line merge accumulated near-tolerance offsets through a transitive group.");
@@ -6408,6 +7757,82 @@ internal static class Benchmark
         }
     }
 
+    private static void RunCommittedTerminatingCurveSplitRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var start = new PointF(-200, 100);
+        var control1 = new PointF(-50, -200);
+        var control2 = new PointF(80, 200);
+        var end = new PointF(220, -80);
+        var through = scene.AddCubicCurveSegment(
+            0,
+            start,
+            control1,
+            control2,
+            end,
+            18,
+            Color.Transparent,
+            Color.CornflowerBlue,
+            12,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Sharp);
+        scene.SetLinearGradient(through, Color.CornflowerBlue, Color.Gold);
+        var exactContact = CubicPoint(start, control1, control2, end, 0.5f);
+        var quantizedContact = VectorUnits.Quantize(exactContact);
+        var terminating = scene.AddLineSegment(
+            0,
+            new PointF(-180, -120),
+            quantizedContact,
+            24,
+            Color.Transparent,
+            Color.White,
+            8);
+
+        var result = scene.MaterializeLineIntersections([terminating, through], 0);
+        var splitCurves = result.Parts
+            .Where(part => part.Source.ObjectIndex == through)
+            .Select(part => part.Result.ObjectIndex)
+            .Distinct()
+            .ToArray();
+        var contactEndpoints = Enumerable.Range(0, scene.ObjectCount)
+            .Sum(index =>
+            {
+                scene.TryGetLineEndpoint(index, startEndpoint: true, out var lineStart);
+                scene.TryGetLineEndpoint(index, startEndpoint: false, out var lineEnd);
+                return (PointsNear(lineStart, quantizedContact) ? 1 : 0)
+                    + (PointsNear(lineEnd, quantizedContact) ? 1 : 0);
+            });
+        var outerSharpEndpoints = splitCurves.Sum(index =>
+            (scene.GetLineEndpointStyle(index, startEndpoint: true) == LineEndpointStyle.Sharp ? 1 : 0)
+            + (scene.GetLineEndpointStyle(index, startEndpoint: false) == LineEndpointStyle.Sharp ? 1 : 0));
+        if (!result.Success
+            || !result.Changed
+            || scene.ObjectCount != 3
+            || splitCurves.Length != 2
+            || contactEndpoints != 3
+            || outerSharpEndpoints != 2
+            || splitCurves.Any(index => !scene.HasGradient(index)))
+        {
+            throw new InvalidOperationException(
+                $"A quantized line endpoint did not materialize its terminating cubic contact: " +
+                $"success={result.Success}, changed={result.Changed}, objects={scene.ObjectCount}, " +
+                $"splits={splitCurves.Length}, endpoints={contactEndpoints}, sharp={outerSharpEndpoints}.");
+        }
+
+        static PointF CubicPoint(PointF p0, PointF p1, PointF p2, PointF p3, float t)
+        {
+            var inverse = 1f - t;
+            var a = inverse * inverse * inverse;
+            var b = 3f * inverse * inverse * t;
+            var c = 3f * inverse * t * t;
+            var d = t * t * t;
+            return new PointF(
+                p0.X * a + p1.X * b + p2.X * c + p3.X * d,
+                p0.Y * a + p1.Y * b + p2.Y * c + p3.Y * d);
+        }
+    }
+
     private static void RunCrossingLinesTopologyRegression()
     {
         var scene = new VectorScene();
@@ -6520,6 +7945,55 @@ internal static class Benchmark
         AssertShapeCounts(fillScene, 9, lines: 7, paths: 2, rectangles: 0, "outlined fill detach");
         AssertSplitPaths(fillScene, detachedLower, new PointF(0, 80), new PointF(0, -80), "outlined fill detach");
         AssertLineSet(fillScene, OutlinedBoundaryLineSegments(), "outlined fill detach");
+    }
+
+    private static void RunSmoothPathBoundaryGroupingRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var contour = new List<PointF>
+        {
+            new(-240, -140),
+            new(160, -140)
+        };
+        var curveStart = contour[^1];
+        var control1 = new PointF(160, -40);
+        var control2 = new PointF(260, 40);
+        var curveEnd = new PointF(160, 140);
+        for (var sample = 1; sample <= 16; sample++)
+        {
+            var t = sample / 16f;
+            var inverse = 1 - t;
+            contour.Add(new PointF(
+                curveStart.X * inverse * inverse * inverse
+                    + 3 * control1.X * inverse * inverse * t
+                    + 3 * control2.X * inverse * t * t
+                    + curveEnd.X * t * t * t,
+                curveStart.Y * inverse * inverse * inverse
+                    + 3 * control1.Y * inverse * inverse * t
+                    + 3 * control2.Y * inverse * t * t
+                    + curveEnd.Y * t * t * t));
+        }
+        contour.Add(new PointF(-200, 140));
+        contour.Add(contour[0]);
+
+        var outlinedPath = scene.AddPathObjectContours(
+            0,
+            [contour.ToArray()],
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Teal,
+            Color.White,
+            32);
+        var boundaryParts = scene.GetBoundaryParts(outlinedPath, 0);
+        var smoothPart = boundaryParts.FirstOrDefault(part => part.Points.Length >= 12);
+        if (boundaryParts.Length != 4
+            || smoothPart.Points is null
+            || smoothPart.Points.Length < 12)
+        {
+            throw new InvalidOperationException(
+                $"A smooth outlined Path boundary was split at its sampling points: parts={boundaryParts.Length}, "
+                + $"longest={boundaryParts.Select(part => part.Points.Length).DefaultIfEmpty(0).Max()}.");
+        }
     }
 
     private static void RunCrossLayerTopologyRegression()
@@ -6906,6 +8380,7 @@ internal static class Benchmark
         var dx = recursiveScene.X[upperSibling] - recursiveScene.X[lowerSibling];
         recursiveScene.X[lowerSibling] += dx;
         recursiveScene.CurveControlX[lowerSibling] += dx;
+        recursiveScene.CurveControl2X[lowerSibling] += dx;
         recursiveScene.RebuildGeometryIndex();
         AddTopologyLine(recursiveScene, 0, new PointF(100, -160), new PointF(100, 160));
         var beforeRecursiveSplit = recursiveScene.HitTestElement(new PointF(50, 0), 0, 0);
@@ -7227,7 +8702,20 @@ internal static class Benchmark
             || materialized.SelectedObjects.Length != 1
             || !LineMatches(scene, materialized.SelectedObjects[0], new PointF(-50, 0), new PointF(50, 0)))
         {
-            throw new InvalidOperationException("Marquee line materialization did not isolate the selected interior segment.");
+            var selectedDescription = string.Join(
+                "; ",
+                materialized.SelectedObjects.Select(index =>
+                {
+                    scene.TryGetLineEndpoint(index, true, out var start);
+                    scene.TryGetLineEndpoint(index, false, out var end);
+                    return $"{index}:{start}->{end}";
+                }));
+            throw new InvalidOperationException(
+                $"Marquee line materialization did not isolate the selected interior segment: "
+                + $"changed={materialized.Changed}, selected={selectedDescription}, objects={scene.ObjectCount}, "
+                + $"candidates={scene.QueryObjects(bounds, 0).Length}, straight={scene.IsLineStraight(source)}, "
+                + $"controls={scene.CurveControlX[source]},{scene.CurveControlY[source]}"
+                + $"/{scene.CurveControl2X[source]},{scene.CurveControl2Y[source]}.");
         }
 
         AssertLineSet(

@@ -126,6 +126,7 @@ internal static class EditorRestartStore
         public float ReferenceTargetY { get; init; }
         public float ReferenceTargetZ { get; init; }
         public float WorldGridOpacity { get; init; } = 0.1f;
+        public WorldGridType WorldGridType { get; init; }
 
         public static RestartStageView From(StageViewState state) => new()
         {
@@ -139,7 +140,8 @@ internal static class EditorRestartStore
             ReferenceTargetX = state.ReferenceTargetX,
             ReferenceTargetY = state.ReferenceTargetY,
             ReferenceTargetZ = state.ReferenceTargetZ,
-            WorldGridOpacity = state.WorldGridOpacity
+            WorldGridOpacity = state.WorldGridOpacity,
+            WorldGridType = state.WorldGridType
         };
 
         public StageViewState ToStageViewState() => new(
@@ -153,7 +155,8 @@ internal static class EditorRestartStore
             ReferenceTargetX,
             ReferenceTargetY,
             ReferenceTargetZ,
-            WorldGridOpacity);
+            WorldGridOpacity,
+            WorldGridType);
     }
 
     private sealed class RestartWindowBounds

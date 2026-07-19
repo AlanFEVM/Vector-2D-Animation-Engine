@@ -1,6 +1,6 @@
 namespace VectorAnimationEngine;
 
-internal sealed class SettingsDialog : Form
+internal sealed class SettingsDialog : ModernDialogForm
 {
     private readonly Button _traditionalPreset = new() { Text = "Traditional Flash" };
     private readonly Button _numberPreset = new() { Text = "Number Keys" };
@@ -16,20 +16,12 @@ internal sealed class SettingsDialog : Form
     }
 
     public SettingsDialog(ToolShortcutPreset selectedPreset, UiLanguage selectedLanguage)
+        : base("Settings", new Size(560, 650))
     {
         _selectedPreset = selectedPreset;
         _selectedLanguage = selectedLanguage;
-        Text = "Settings";
-        ClientSize = new Size(520, 590);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        ShowIcon = false;
-        ShowInTaskbar = false;
-        StartPosition = FormStartPosition.CenterParent;
-        BackColor = Theme.Panel;
-        Font = Theme.UiFont();
         AccessibleName = "Application settings";
+        DialogContent.Padding = Padding.Empty;
 
         var content = new TableLayoutPanel
         {
@@ -37,7 +29,7 @@ internal sealed class SettingsDialog : Form
             BackColor = Theme.Panel,
             Padding = new Padding(18),
             ColumnCount = 1,
-            RowCount = 7
+            RowCount = 6
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
@@ -46,8 +38,7 @@ internal sealed class SettingsDialog : Form
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-        Controls.Add(content);
+        DialogContent.Controls.Add(content);
 
         var languageHeading = new Label
         {
@@ -142,24 +133,8 @@ internal sealed class SettingsDialog : Form
         shortcutTable.Controls.Add(_shortcutList, 0, 1);
         content.Controls.Add(shortcutTable, 0, 5);
 
-        var commands = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false,
-            Padding = new Padding(0, 12, 0, 0),
-            Margin = Padding.Empty
-        };
-        var save = new Button { Text = "Save", Width = 84, Height = 30, Margin = Padding.Empty };
-        var cancel = new Button { Text = "Cancel", Width = 84, Height = 30, Margin = new Padding(0, 0, 8, 0) };
-        Theme.StyleActiveButton(save);
-        Theme.StyleButton(cancel);
-        save.Click += (_, _) => DialogResult = DialogResult.OK;
-        cancel.Click += (_, _) => DialogResult = DialogResult.Cancel;
-        commands.Controls.Add(save);
-        commands.Controls.Add(cancel);
-        content.Controls.Add(commands, 0, 6);
+        var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary);
+        var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
         AcceptButton = save;
         CancelButton = cancel;
 

@@ -206,6 +206,47 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         return true;
     }
 
+    internal DrawingObjectInstanceDefinition[] CreateInstanceSnapshot()
+    {
+        return _instances.Select(instance => instance.Clone()).ToArray();
+    }
+
+    internal void RestoreInstanceSnapshot(IEnumerable<DrawingObjectInstanceDefinition> instances)
+    {
+        ArgumentNullException.ThrowIfNull(instances);
+        _instances.Clear();
+        _instances.AddRange(instances.Select(instance => instance.Clone()));
+        SynchronizeTimelineTracks();
+    }
+
+    internal bool RemoveLayers(VectorProject project, IEnumerable<string> layerIds)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(layerIds);
+        if (!project.OwnsScene(this)) throw new InvalidOperationException("The scene is not owned by this project.");
+
+        NormalizeLayers();
+        var removedIds = layerIds
+            .Where(layerId => FindLayer(layerId) is not null)
+            .ToHashSet(StringComparer.Ordinal);
+        if (removedIds.Count == 0 || removedIds.Count >= _layers.Count) return false;
+
+        var oldLayers = _layers.ToArray();
+        var oldActiveIndex = Array.FindIndex(oldLayers, layer => string.Equals(layer.Id, ActiveLayerId, StringComparison.Ordinal));
+        _instances.RemoveAll(instance => removedIds.Contains(instance.SceneLayerId));
+        _layers.RemoveAll(layer => removedIds.Contains(layer.Id));
+        if (FindLayer(ActiveLayerId) is null)
+        {
+            var nearest = oldLayers
+                .Select((layer, index) => (layer, index))
+                .Where(item => !removedIds.Contains(item.layer.Id))
+                .MinBy(item => Math.Abs(item.index - Math.Max(0, oldActiveIndex)));
+            ActiveLayerId = nearest.layer.Id;
+        }
+        SynchronizeTimelineTracks();
+        return true;
+    }
+
     internal void AddInstance(VectorProject project, DrawingObjectInstanceDefinition instance)
     {
         ArgumentNullException.ThrowIfNull(project);

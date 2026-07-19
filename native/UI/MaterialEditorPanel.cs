@@ -148,8 +148,6 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly Button _colorEditorToggle = new() { Text = "Color" };
     private readonly ModernNumericUpDown _strokeWidth = new() { Suffix = "pt" };
     private readonly Label _strokeWidthLabel = CreateFieldLabel("Width pt");
-    private readonly ModernSlider _opacity = new();
-    private readonly Label _opacityValue = new();
     private readonly Panel _lineEndpointStylePanel = new();
     private readonly Button _startSharpEndpointStyle = new() { Text = "Sharp" };
     private readonly Button _startRoundEndpointStyle = new() { Text = "Round" };
@@ -180,6 +178,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private ColorMode _colorMode = ColorMode.Rgb;
     private Color _fill = Color.FromArgb(79, 179, 162);
     private Color _stroke = Color.FromArgb(238, 242, 241);
+    private float _opacity = 1f;
     private GradientStop[] _gradientStops =
     [
         new GradientStop(0, Color.FromArgb(79, 179, 162)),
@@ -252,7 +251,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
     public float Opacity
     {
-        get => _opacity.Value / 100f;
+        get => _opacity;
         set => SetUniformAlpha(value);
     }
 
@@ -386,11 +385,11 @@ internal sealed class MaterialEditorPanel : UserControl
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 158));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         Controls.Add(content);
         _content = content;
@@ -411,6 +410,7 @@ internal sealed class MaterialEditorPanel : UserControl
         BuildColorEditorToggle(content);
         BuildModeRow(content);
         BuildColorEditor(content);
+        BuildPersistentHex(content);
         BuildPalettePopup();
         BuildLineEndpointStyle(content);
         ConfigureChannelMode();
@@ -464,18 +464,17 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 6,
+            ColumnCount = 4,
             RowCount = 1,
             Margin = Padding.Empty
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
-        for (var i = 0; i < 4; i++) row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        for (var i = 0; i < 3; i++) row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3f));
 
         row.Controls.Add(CreateFieldLabel("Mode"), 0, 0);
         AddModeButton(row, ColorMode.Rgb, "RGB", 1);
         AddModeButton(row, ColorMode.Hsv, "HSV", 2);
         AddModeButton(row, ColorMode.Hsl, "HSL", 3);
-        AddModeButton(row, ColorMode.Hex, "Hex", 4);
         content.Controls.Add(row, 0, 5);
     }
 
@@ -486,7 +485,7 @@ internal sealed class MaterialEditorPanel : UserControl
             Text = text,
             Dock = DockStyle.Fill,
             Height = Theme.ControlHeightCompact,
-            Margin = new Padding(column == 1 ? 0 : 1, 3, column == 4 ? 0 : 1, 3)
+            Margin = new Padding(column == 1 ? 0 : 1, 3, column == 3 ? 0 : 1, 3)
         };
         Theme.StyleButton(button);
         button.Click += (_, _) => SetColorMode(mode);
@@ -606,14 +605,17 @@ internal sealed class MaterialEditorPanel : UserControl
 
         for (var i = 0; i < 4; i++) ConfigureChannelRow(channels, i);
 
+    }
+
+    private void BuildPersistentHex(TableLayoutPanel content)
+    {
         _hexPanel.Dock = DockStyle.Fill;
         _hexPanel.BackColor = Theme.Panel;
-        _hexPanel.Visible = false;
-        componentHost.Controls.Add(_hexPanel);
+        _hexPanel.Visible = true;
+        content.Controls.Add(_hexPanel, 0, 7);
         var hexRow = new TableLayoutPanel
         {
-            Dock = DockStyle.Top,
-            Height = 38,
+            Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
             RowCount = 1,
@@ -918,13 +920,12 @@ internal sealed class MaterialEditorPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 2,
+            RowCount = 1,
             Margin = Padding.Empty
         };
         _materialSettings = settings;
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         content.Controls.Add(settings, 0, 3);
 
@@ -941,40 +942,22 @@ internal sealed class MaterialEditorPanel : UserControl
         _strokeWidth.InteractionCompleted += (_, _) => CompleteGradientContinuousEdit(recordGradient: false);
         _strokeWidth.InteractionCanceled += (_, _) => CancelGradientContinuousEdit();
         settings.Controls.Add(_strokeWidth, 1, 0);
+        _strokeWidthLabel.TextChanged += (_, _) => UpdateMaterialLabelColumnWidth();
+        UpdateMaterialLabelColumnWidth();
+    }
 
-        settings.Controls.Add(CreateFieldLabel("All alpha"), 0, 1);
-        _opacity.Minimum = 0;
-        _opacity.Maximum = 100;
-        _opacity.TickFrequency = 10;
-        _opacity.Dock = DockStyle.Fill;
-        _opacity.Margin = new Padding(0, 3, 0, 0);
-        _opacity.ValueChanged += (_, _) =>
-        {
-            _opacityValue.Text = $"{_opacity.Value}%";
-            if (!_updating) SetUniformAlpha(_opacity.Value / 100f);
-        };
-        _opacity.InteractionStarted += (_, _) => BeginGradientContinuousEdit();
-        _opacity.InteractionCompleted += (_, _) => CompleteGradientContinuousEdit(recordGradient: true);
-        _opacity.InteractionCanceled += (_, _) => CancelGradientContinuousEdit();
-
-        var opacityRow = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 2,
-            RowCount = 1,
-            Margin = Padding.Empty
-        };
-        opacityRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        opacityRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
-        opacityRow.Controls.Add(_opacity, 0, 0);
-        _opacityValue.Dock = DockStyle.Fill;
-        _opacityValue.ForeColor = Theme.Muted;
-        _opacityValue.BackColor = Theme.Panel;
-        _opacityValue.TextAlign = ContentAlignment.MiddleCenter;
-        _opacityValue.Font = Theme.UiFont();
-        opacityRow.Controls.Add(_opacityValue, 1, 0);
-        settings.Controls.Add(opacityRow, 1, 1);
+    private void UpdateMaterialLabelColumnWidth()
+    {
+        var settings = _materialSettings;
+        if (settings is null || settings.ColumnStyles.Count == 0) return;
+        var measuredWidth = TextRenderer.MeasureText(
+                _strokeWidthLabel.Text,
+                _strokeWidthLabel.Font,
+                Size.Empty,
+                TextFormatFlags.NoPadding).Width
+            + _strokeWidthLabel.Margin.Horizontal;
+        settings.ColumnStyles[0].Width = Math.Clamp(measuredWidth + 6, 78, 112);
+        settings.PerformLayout();
     }
 
     private void BuildGradientSettings(TableLayoutPanel content)
@@ -988,7 +971,7 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 5,
+            ColumnCount = 6,
             RowCount = 4,
             Margin = Padding.Empty
         };
@@ -1005,6 +988,7 @@ internal sealed class MaterialEditorPanel : UserControl
         void UpdateGradientModeLabels()
         {
             var compact = grid.ClientSize.Width < 270;
+            _solidFillMode.Text = compact ? "Sol" : "Solid";
             _linearGradientMode.Text = compact ? "Lin" : "Linear";
             _radialGradientMode.Text = compact ? "Rad" : "Radial";
             _shapeRadialGradientMode.Text = compact ? "Shp" : "Shape";
@@ -1200,7 +1184,7 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             _content.RowStyles[5].Height = expanded ? 36 : 0;
             _content.RowStyles[6].Height = expanded ? 236 : 0;
-            _content.RowStyles[7].Height = 0;
+            _content.RowStyles[7].Height = 38;
             _colorEditorToggle.Text = expanded ? "Color -" : "Color +";
             if (expanded) Theme.StyleActiveButton(_colorEditorToggle);
             else Theme.StyleButton(_colorEditorToggle);
@@ -1462,8 +1446,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _fill = fill;
         _stroke = stroke;
         _strokeWidth.Value = (decimal)Math.Clamp(strokeWidth, (float)_strokeWidth.Minimum, (float)_strokeWidth.Maximum);
-        _opacity.Value = (int)Math.Clamp(MathF.Round(opacity * 100f), _opacity.Minimum, _opacity.Maximum);
-        _opacityValue.Text = $"{_opacity.Value}%";
+        _opacity = Math.Clamp(opacity, 0f, 1f);
         UpdateTargetPresentation();
         if (refreshComponents) UpdateEditorFromColor();
         else UpdateColorSelectionIndicators();
@@ -1484,8 +1467,7 @@ internal sealed class MaterialEditorPanel : UserControl
             _gradientStops = _gradientStops
                 .Select(stop => new GradientStop(stop.Position, Color.FromArgb(alpha, Color.FromArgb(stop.Argb)).ToArgb()))
                 .ToArray();
-            _opacity.Value = (int)Math.Clamp(MathF.Round(opacity * 100f), _opacity.Minimum, _opacity.Maximum);
-            _opacityValue.Text = $"{_opacity.Value}%";
+            _opacity = Math.Clamp(opacity, 0f, 1f);
             UpdateTargetPresentation();
             if (!_handlingColorChange && _colorInteractionDepth == 0) UpdateEditorFromColor();
             _updating = false;
@@ -1558,10 +1540,8 @@ internal sealed class MaterialEditorPanel : UserControl
 
         _colorMode = mode;
         RefreshModeButtons();
-        _channelsPanel.Visible = mode != ColorMode.Hex;
-        _hexPanel.Visible = mode == ColorMode.Hex;
-        if (_hexPanel.Visible) _hexPanel.BringToFront();
-        else _channelsPanel.BringToFront();
+        _channelsPanel.Visible = true;
+        _channelsPanel.BringToFront();
         ConfigureChannelMode();
         UpdateEditorFromColor();
     }
@@ -1737,6 +1717,7 @@ internal sealed class MaterialEditorPanel : UserControl
         }
         else if (_editingFill) _fill = color;
         else _stroke = color;
+        _opacity = color.A / 255f;
         _hexText.Text = ToHex(color);
         SetHexInvalid(false);
         UpdateTargetPresentation();
@@ -1923,7 +1904,7 @@ internal sealed class MaterialEditorPanel : UserControl
         if (_materialSettings is null || _content is null) return;
 
         var showStrokeSettings = !_editingFill;
-        var materialRowHeight = showStrokeSettings ? 78f : 38f;
+        var materialRowHeight = showStrokeSettings ? 38f : 0f;
         var widthRowHeight = showStrokeSettings ? 38f : 0f;
         var changed = _strokeWidthLabel.Visible != showStrokeSettings
             || _strokeWidth.Visible != showStrokeSettings
@@ -2164,8 +2145,7 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         Rgb,
         Hsv,
-        Hsl,
-        Hex
+        Hsl
     }
 
     private enum GradientColorTarget

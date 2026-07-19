@@ -14,7 +14,14 @@ internal readonly record struct StageViewState(
     float ReferenceTargetX,
     float ReferenceTargetY,
     float ReferenceTargetZ,
-    float WorldGridOpacity);
+    float WorldGridOpacity,
+    WorldGridType WorldGridType);
+
+internal readonly record struct CubicDrawingPreviewSegment(
+    PointF Start,
+    PointF Control1,
+    PointF Control2,
+    PointF End);
 
 internal sealed class StageControl : Control
 {
@@ -29,6 +36,8 @@ internal sealed class StageControl : Control
     private const float FillEdgeCoverageWidthPixels = 0.8f;
     private const double FillAnimationDurationMilliseconds = 420;
     private const double SelectionHighlightCycleMilliseconds = 1_100;
+    private const double MarqueePreviewFrameBudgetMilliseconds = 8;
+    private const int MarqueePreviewObjectThreshold = 2_000;
     private readonly Dictionary<int, SolidBrush> _brushCache = new(512);
     private readonly Pen _gridPen = new(Color.FromArgb(150, 58, 64, 69));
     private readonly Pen _strokePen = new(Color.FromArgb(210, 10, 12, 14));
@@ -52,6 +61,7 @@ internal sealed class StageControl : Control
     private readonly System.Windows.Forms.Timer _selectionHighlightTimer = new() { Interval = 40 };
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
+    private readonly MarqueeOverlayWindow _marqueeOverlay;
     private int _selectedObject = -1;
     private int[] _selectedObjects = Array.Empty<int>();
     private DrawingElementHit[] _selectedElements = Array.Empty<DrawingElementHit>();
@@ -59,6 +69,7 @@ internal sealed class StageControl : Control
     private RectangleF _transformBounds = RectangleF.Empty;
     private PointF _transformFocus;
     private RectangleF _drawingObjectSelectionBounds = RectangleF.Empty;
+    private PointF _drawingObjectAnchor;
     private readonly Dictionary<int, SelectedFillOwnerCacheEntry> _selectedFillCache = new();
     private readonly Dictionary<(int ObjectIndex, DrawingElementKind Kind), SelectedPolylineOwnerCacheEntry> _selectedPolylineCache = new();
     private float? _pendingVisibleWorldWidth;
@@ -70,6 +81,7 @@ internal sealed class StageControl : Control
     private float _referenceTargetY;
     private float _referenceTargetZ;
     private float _worldGridOpacity = 0.1f;
+    private WorldGridType _worldGridType;
     private PointF[][] _fillPreviewContours = Array.Empty<PointF[]>();
     private Color _fillPreviewColor = Color.White;
     private PointF[][] _fillAnimationContours = Array.Empty<PointF[]>();
@@ -96,6 +108,8 @@ internal sealed class StageControl : Control
     private bool _paintFailureLogged;
     private bool _disposingResources;
     private int _scenePassSequence;
+    private double _lastFrameRenderMilliseconds;
+    private bool _marqueeSceneInvalidationPending;
 
     private readonly record struct SelectedFillOwnerCacheEntry(int Frame, long Revision, float X, float Y, DrawingFillPartGeometry[] Parts);
 
@@ -127,6 +141,26 @@ internal sealed class StageControl : Control
             Invalidate();
         }
     }
+    public WorldGridType WorldGridType
+    {
+        get => _worldGridType;
+        set
+        {
+            var next = Enum.IsDefined(value) ? value : VectorAnimationEngine.WorldGridType.Cartesian;
+            if (_worldGridType == next) return;
+            _worldGridType = next;
+            Invalidate();
+        }
+    }
+    internal WorldGridScale CurrentWorldGridScale => WorldGridLayout.Resolve(WorldLengthToScreen(1));
+    public float AdaptiveGridSnapStep => CurrentWorldGridScale.StepWorld;
+    internal GoldenSpiralGridGeometry ResolveGoldenSpiralGrid() => GoldenSpiralGridLayout.Resolve(
+        VisibleWorldBounds(),
+        AdaptiveGridSnapStep,
+        ScreenLengthToWorld(0.5f));
+    internal PolarGridGeometry ResolvePolarGrid() => PolarGridLayout.Resolve(
+        VisibleWorldBounds(),
+        AdaptiveGridSnapStep);
     public int Frame { get; set; }
     public int SelectedObject
     {
@@ -146,6 +180,7 @@ internal sealed class StageControl : Control
     public IReadOnlyList<int> SelectedObjects => _selectedObjects;
     public IReadOnlyList<DrawingElementHit> SelectedElements => _selectedElements;
     public DrawingElementHit SelectedElement { get; private set; } = DrawingElementHit.None;
+    public bool PenPathHandlesVisible { get; private set; }
     public DrawingElementHit HoveredLineElement => _hoveredLineElement;
     public bool TransformMode { get; private set; }
     public bool TransformBoundsVisible { get; private set; }
@@ -153,14 +188,22 @@ internal sealed class StageControl : Control
     public PointF TransformFocus => _transformFocus;
     public bool DrawingObjectSelectionVisible { get; private set; }
     public RectangleF DrawingObjectSelectionBounds => _drawingObjectSelectionBounds;
+    public bool DrawingObjectAnchorVisible { get; private set; }
+    public PointF DrawingObjectAnchor => _drawingObjectAnchor;
     public bool MarqueeVisible { get; private set; }
     public Point MarqueeStart { get; private set; }
     public Point MarqueeEnd { get; private set; }
+    internal bool MarqueeLodPreviewActive { get; private set; }
+    internal bool MarqueeOverlayActive { get; private set; }
+    internal Rectangle MarqueeOverlayScreenBounds => _marqueeOverlay.ScreenBounds;
+    internal long MarqueeOverlayUpdateCount => _marqueeOverlay.UpdateCount;
     public bool DrawingPreviewVisible { get; private set; }
     public PointF DrawingPreviewStart { get; private set; }
     public PointF DrawingPreviewEnd { get; private set; }
     public PointF DrawingPreviewControl { get; private set; }
     public bool DrawingPreviewHasCurve { get; private set; }
+    public IReadOnlyList<CubicDrawingPreviewSegment> DrawingPreviewCurveSegments { get; private set; } = Array.Empty<CubicDrawingPreviewSegment>();
+    public PointF DrawingPreviewControl2 { get; private set; }
     public ShapeKind DrawingPreviewShape { get; private set; } = ShapeKind.Rectangle;
     public int DrawingPreviewShapeVertexCount { get; private set; }
     public Color DrawingPreviewColor { get; private set; } = Color.White;
@@ -171,6 +214,10 @@ internal sealed class StageControl : Control
     public bool PenAnchorGuideHorizontal { get; private set; }
     public bool PenAnchorGuideSnapped { get; private set; }
     public bool PenAnchorGuideInsertion { get; private set; }
+    public bool PenDirectionHandlesVisible { get; private set; }
+    public PointF PenDirectionAnchor { get; private set; }
+    public PointF? PenDirectionIncoming { get; private set; }
+    public PointF? PenDirectionOutgoing { get; private set; }
     public bool FreehandPreviewVisible { get; private set; }
     public IReadOnlyList<PointF> FreehandPreviewPoints { get; private set; } = Array.Empty<PointF>();
     public IReadOnlyList<float> FreehandPreviewDiameters { get; private set; } = Array.Empty<float>();
@@ -232,8 +279,11 @@ internal sealed class StageControl : Control
     internal int LastDirect2DShapeGradientMaskGeometryCacheReuses => _direct2DRenderer.LastShapeGradientMaskGeometryCacheReuses;
     internal int LastDirect2DPathGradientBrushCacheBuilds => _direct2DRenderer.LastPathGradientBrushCacheBuilds;
     internal int LastDirect2DPathGradientBrushCacheReuses => _direct2DRenderer.LastPathGradientBrushCacheReuses;
+    internal int LastDirect2DLineGeometryCacheBuilds => _direct2DRenderer.LastLineGeometryCacheBuilds;
+    internal int LastDirect2DLineGeometryCacheReuses => _direct2DRenderer.LastLineGeometryCacheReuses;
     internal bool SelectionHighlightAnimating => _selectionHighlightTimer.Enabled;
     internal float SelectionHighlightPulse => 0.5f + 0.5f * MathF.Sin(_selectionHighlightPhase * MathF.Tau);
+    internal double LastFrameRenderMilliseconds => _lastFrameRenderMilliseconds;
     public event EventHandler? FrameRendered;
 
     internal bool HasCachedDirect2DFreehandGeometry(VectorScene scene)
@@ -255,6 +305,7 @@ internal sealed class StageControl : Control
     public StageControl(VectorScene scene)
     {
         Scene = scene;
+        _marqueeOverlay = new MarqueeOverlayWindow(this);
         DoubleBuffered = false;
         SetStyle(
             ControlStyles.AllPaintingInWmPaint
@@ -413,7 +464,8 @@ internal sealed class StageControl : Control
             _referenceTargetX,
             _referenceTargetY,
             _referenceTargetZ,
-            WorldGridOpacity);
+            WorldGridOpacity,
+            WorldGridType);
     }
 
     internal void RestoreViewState(StageViewState state)
@@ -430,6 +482,7 @@ internal sealed class StageControl : Control
         _referenceTargetY = Math.Clamp(state.ReferenceTargetY, -5_000_000, 5_000_000);
         _referenceTargetZ = Math.Clamp(state.ReferenceTargetZ, -5_000_000, 5_000_000);
         WorldGridOpacity = state.WorldGridOpacity;
+        WorldGridType = state.WorldGridType;
         Invalidate();
     }
 
@@ -583,21 +636,30 @@ internal sealed class StageControl : Control
         TransformBoundsVisible = visible;
         _transformBounds = visible ? bounds : RectangleF.Empty;
         _transformFocus = nextFocus;
-        Invalidate();
+        InvalidateSelectionState();
     }
 
-    public void SetDrawingObjectSelectionOverlay(RectangleF bounds)
+    public void SetDrawingObjectSelectionOverlay(RectangleF bounds, PointF? anchor = null)
     {
         var visible = bounds.Width > 0.001f && bounds.Height > 0.001f;
+        var anchorVisible = visible
+            && anchor is { } point
+            && float.IsFinite(point.X)
+            && float.IsFinite(point.Y);
+        var nextAnchor = anchorVisible ? anchor!.Value : PointF.Empty;
         if (DrawingObjectSelectionVisible == visible
-            && _drawingObjectSelectionBounds == (visible ? bounds : RectangleF.Empty))
+            && _drawingObjectSelectionBounds == (visible ? bounds : RectangleF.Empty)
+            && DrawingObjectAnchorVisible == anchorVisible
+            && _drawingObjectAnchor == nextAnchor)
         {
             return;
         }
 
         DrawingObjectSelectionVisible = visible;
         _drawingObjectSelectionBounds = visible ? bounds : RectangleF.Empty;
-        Invalidate();
+        DrawingObjectAnchorVisible = anchorVisible;
+        _drawingObjectAnchor = nextAnchor;
+        InvalidateSelectionState();
     }
 
     public TransformHandleKind HitTestTransformHandle(Point screen)
@@ -626,6 +688,7 @@ internal sealed class StageControl : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        var frameStarted = Stopwatch.GetTimestamp();
         var rendered = false;
         try
         {
@@ -665,7 +728,18 @@ internal sealed class StageControl : Control
             LastFrameUsedDirect2D = false;
         }
 
-        if (rendered) FrameRendered?.Invoke(this, EventArgs.Empty);
+        if (rendered)
+        {
+            _lastFrameRenderMilliseconds = Stopwatch.GetElapsedTime(frameStarted).TotalMilliseconds;
+            if (MarqueeVisible
+                && !MarqueeOverlayActive
+                && !MarqueeLodPreviewActive
+                && _lastFrameRenderMilliseconds > MarqueePreviewFrameBudgetMilliseconds)
+            {
+                MarqueeLodPreviewActive = true;
+            }
+            FrameRendered?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void DrawBufferedGdi(Graphics target)
@@ -748,10 +822,11 @@ internal sealed class StageControl : Control
         }
         LastStats = RenderStats.Combine(RenderStats.Combine(onionSkinStats, underlayStats), editableStats);
         if (editableStats.TileLod) DrawLodDetailObjects(g);
-        DrawActiveMaskOutline(g);
+        if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
         DrawSelection(g);
         DrawPenAnchorGuides(g);
         DrawDrawingPreview(g);
+        DrawPenDirectionHandles(g);
         DrawFreehandPreview(g);
         DrawFillPreview(g);
         DrawFillAnimation(g);
@@ -769,6 +844,12 @@ internal sealed class StageControl : Control
         try
         {
             var pixelZoom = EffectivePixelZoom();
+            if (MarqueeLodPreviewActive && Scene.ObjectCount > 0)
+            {
+                return pixelZoom < 0.08f
+                    ? DrawOverviewTiles(graphics)
+                    : DrawTiles(graphics);
+            }
             if (Scene.HasLayerEffects || pixelZoom >= 0.18f) return DrawObjects(graphics, objectDrawLimit);
             if (Scene.ObjectCount >= 5000)
             {
@@ -833,22 +914,27 @@ internal sealed class StageControl : Control
         base.OnResize(e);
         _direct2DRenderer.Resize(ClientSize);
         if (_pendingVisibleWorldWidth is { } visibleWorldWidth) SetVisibleWorldWidth(visibleWorldWidth);
+        if (MarqueeVisible && MarqueeOverlayActive) UpdateMarqueeOverlay();
     }
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        _marqueeOverlay.Prepare();
         UpdateSelectionHighlightAnimation();
     }
 
     protected override void OnVisibleChanged(EventArgs e)
     {
         base.OnVisibleChanged(e);
+        if (Visible) _marqueeOverlay.Prepare();
+        else _marqueeOverlay.Hide();
         UpdateSelectionHighlightAnimation();
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        _marqueeOverlay.Hide();
         if (!_disposingResources) _selectionHighlightTimer.Stop();
         try
         {
@@ -869,6 +955,7 @@ internal sealed class StageControl : Control
             _fillAnimationTimer.Dispose();
             _selectionHighlightTimer.Dispose();
             _direct2DRenderer.Dispose();
+            _marqueeOverlay.Dispose();
             foreach (var item in _brushCache.Values) item.Dispose();
             _brushCache.Clear();
             _gridPen.Dispose();
@@ -907,6 +994,8 @@ internal sealed class StageControl : Control
         DrawingPreviewEnd = end;
         DrawingPreviewControl = new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
         DrawingPreviewHasCurve = false;
+        DrawingPreviewControl2 = DrawingPreviewControl;
+        DrawingPreviewCurveSegments = Array.Empty<CubicDrawingPreviewSegment>();
         DrawingPreviewShape = shape;
         DrawingPreviewShapeVertexCount = shapeVertexCount;
         DrawingPreviewColor = color;
@@ -916,11 +1005,55 @@ internal sealed class StageControl : Control
 
     public void SetCurveDrawingPreview(PointF start, PointF control, PointF end, Color color, float stroke)
     {
+        SetCubicCurveDrawingPreview(
+            start,
+            Lerp(start, control, 2f / 3f),
+            Lerp(end, control, 2f / 3f),
+            end,
+            color,
+            stroke);
+    }
+
+    public void SetCubicCurveDrawingPreview(
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        Color color,
+        float stroke)
+    {
         DrawingPreviewVisible = true;
         DrawingPreviewStart = start;
-        DrawingPreviewControl = control;
+        DrawingPreviewControl = control1;
+        DrawingPreviewControl2 = control2;
         DrawingPreviewEnd = end;
         DrawingPreviewHasCurve = true;
+        DrawingPreviewCurveSegments = [new CubicDrawingPreviewSegment(start, control1, control2, end)];
+        DrawingPreviewShape = ShapeKind.Line;
+        DrawingPreviewShapeVertexCount = 0;
+        DrawingPreviewColor = color;
+        DrawingPreviewStroke = stroke;
+        Invalidate();
+    }
+
+    public void SetCurveDrawingPreview(
+        IReadOnlyList<CubicDrawingPreviewSegment> segments,
+        Color color,
+        float stroke)
+    {
+        if (segments.Count == 0)
+        {
+            ClearDrawingPreview();
+            return;
+        }
+
+        DrawingPreviewVisible = true;
+        DrawingPreviewStart = segments[0].Start;
+        DrawingPreviewControl = segments[0].Control1;
+        DrawingPreviewControl2 = segments[0].Control2;
+        DrawingPreviewEnd = segments[^1].End;
+        DrawingPreviewHasCurve = true;
+        DrawingPreviewCurveSegments = segments.ToArray();
         DrawingPreviewShape = ShapeKind.Line;
         DrawingPreviewShapeVertexCount = 0;
         DrawingPreviewColor = color;
@@ -933,6 +1066,7 @@ internal sealed class StageControl : Control
         if (!DrawingPreviewVisible) return;
         DrawingPreviewVisible = false;
         DrawingPreviewHasCurve = false;
+        DrawingPreviewCurveSegments = Array.Empty<CubicDrawingPreviewSegment>();
         Invalidate();
     }
 
@@ -971,6 +1105,35 @@ internal sealed class StageControl : Control
         PenAnchorGuideHorizontal = false;
         PenAnchorGuideSnapped = false;
         PenAnchorGuideInsertion = false;
+        Invalidate();
+    }
+
+    public void SetPenDirectionHandles(PointF anchor, PointF? incoming, PointF? outgoing)
+    {
+        anchor = VectorUnits.Quantize(anchor);
+        incoming = incoming is { } inPoint ? VectorUnits.Quantize(inPoint) : null;
+        outgoing = outgoing is { } outPoint ? VectorUnits.Quantize(outPoint) : null;
+        if (PenDirectionHandlesVisible
+            && PenDirectionAnchor == anchor
+            && PenDirectionIncoming == incoming
+            && PenDirectionOutgoing == outgoing)
+        {
+            return;
+        }
+
+        PenDirectionHandlesVisible = incoming is not null || outgoing is not null;
+        PenDirectionAnchor = anchor;
+        PenDirectionIncoming = incoming;
+        PenDirectionOutgoing = outgoing;
+        Invalidate();
+    }
+
+    public void ClearPenDirectionHandles()
+    {
+        if (!PenDirectionHandlesVisible) return;
+        PenDirectionHandlesVisible = false;
+        PenDirectionIncoming = null;
+        PenDirectionOutgoing = null;
         Invalidate();
     }
 
@@ -1174,14 +1337,14 @@ internal sealed class StageControl : Control
         _gradientOverlayStartColor = startColor;
         _gradientOverlayEndColor = endColor;
         _gradientOverlayStops = stopsForOverlay;
-        Invalidate();
+        InvalidateSelectionState();
     }
 
     public void ClearGradientOverlay()
     {
         if (!_gradientOverlayVisible) return;
         _gradientOverlayVisible = false;
-        Invalidate();
+        InvalidateSelectionState();
     }
 
     public GradientOverlayHit HitTestGradientOverlay(Point screen)
@@ -1310,7 +1473,7 @@ internal sealed class StageControl : Control
         _selectedElements = Array.Empty<DrawingElementHit>();
         InvalidateSelectedFillCache();
         UpdateSelectionHighlightAnimation();
-        Invalidate();
+        InvalidateSelectionState();
     }
 
     public void SetSelectedElement(DrawingElementHit hit)
@@ -1333,7 +1496,14 @@ internal sealed class StageControl : Control
             : _selectedElements.Length > 0 ? _selectedElements[^1] : DrawingElementHit.None;
         InvalidateSelectedFillCache();
         UpdateSelectionHighlightAnimation();
-        Invalidate();
+        InvalidateSelectionState();
+    }
+
+    public void SetPenPathHandlesVisible(bool visible)
+    {
+        if (PenPathHandlesVisible == visible) return;
+        PenPathHandlesVisible = visible;
+        InvalidateSelectionState();
     }
 
     public void SetHoveredLineElement(DrawingElementHit hit)
@@ -1349,10 +1519,13 @@ internal sealed class StageControl : Control
     internal IReadOnlyList<int> GetLodDetailObjectIndices()
     {
         List<int>? detail = null;
+        HashSet<int>? seen = null;
 
         void Add(int objectIndex)
         {
-            if ((uint)objectIndex >= Scene.ObjectCount || detail?.Contains(objectIndex) == true) return;
+            if ((uint)objectIndex >= Scene.ObjectCount || detail?.Count >= MaxSelectionOutlines) return;
+            seen ??= new HashSet<int>();
+            if (!seen.Add(objectIndex)) return;
             (detail ??= new List<int>(4)).Add(objectIndex);
         }
 
@@ -1379,12 +1552,12 @@ internal sealed class StageControl : Control
 
     internal bool IsValidEditableBezierHit(DrawingElementHit hit)
     {
-        return TryGetEditableBezierWorldPoints(hit, out _, out _, out _);
+        return TryGetEditableBezierWorldPoints(hit, out _, out _, out _, out _);
     }
 
     private EditHandleKind HitTestLineBezierHandle(Point screen, DrawingElementHit hit)
     {
-        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control, out var end))
+        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control1, out var control2, out var end))
         {
             return EditHandleKind.None;
         }
@@ -1392,25 +1565,28 @@ internal sealed class StageControl : Control
         if (Distance(screen, WorldToScreen(start)) <= EndpointHandleHitRadiusPixels) return EditHandleKind.LineStart;
         if (Distance(screen, WorldToScreen(end)) <= EndpointHandleHitRadiusPixels) return EditHandleKind.LineEnd;
         var controlReach = Math.Max(
-            Distance(WorldToScreen(start), WorldToScreen(control)),
-            Distance(WorldToScreen(end), WorldToScreen(control)));
+            Distance(WorldToScreen(start), WorldToScreen(control1)),
+            Distance(WorldToScreen(end), WorldToScreen(control2)));
         var controlHitRadius = Math.Clamp(
             ControlHandleHitRadiusPixels + MathF.Sqrt(controlReach) * 0.35f,
             ControlHandleHitRadiusPixels,
             MaxControlHandleHitRadiusPixels);
-        return Distance(screen, WorldToScreen(control)) <= controlHitRadius
-            ? EditHandleKind.BezierControl
+        if (Distance(screen, WorldToScreen(control1)) <= controlHitRadius) return EditHandleKind.BezierControl;
+        return Distance(screen, WorldToScreen(control2)) <= controlHitRadius
+            ? EditHandleKind.BezierControl2
             : EditHandleKind.None;
     }
 
     internal bool TryGetEditableBezierWorldPoints(
         DrawingElementHit hit,
         out PointF start,
-        out PointF control,
+        out PointF control1,
+        out PointF control2,
         out PointF end)
     {
         start = PointF.Empty;
-        control = PointF.Empty;
+        control1 = PointF.Empty;
+        control2 = PointF.Empty;
         end = PointF.Empty;
         if (!hit.IsValid
             || (uint)hit.Key.ObjectIndex >= Scene.ObjectCount
@@ -1422,7 +1598,14 @@ internal sealed class StageControl : Control
         if (hit.Key.Kind == DrawingElementKind.Stroke
             && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
         {
-            return TryGetLineBezierWorldPoints(hit.Key.ObjectIndex, hit.StartT, hit.EndT, out start, out control, out end);
+            return TryGetLineBezierWorldPoints(
+                hit.Key.ObjectIndex,
+                hit.StartT,
+                hit.EndT,
+                out start,
+                out control1,
+                out control2,
+                out end);
         }
 
         if (hit.Key.Kind != DrawingElementKind.BoundaryStroke) return false;
@@ -1430,7 +1613,8 @@ internal sealed class StageControl : Control
         if (points.Length != 2) return false;
         start = points[0];
         end = points[1];
-        control = new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
+        control1 = Lerp(start, end, 1f / 3f);
+        control2 = Lerp(start, end, 2f / 3f);
         return true;
     }
 
@@ -1541,17 +1725,67 @@ internal sealed class StageControl : Control
 
     public void SetMarquee(Point start, Point end)
     {
+        if (MarqueeVisible && MarqueeStart == start && MarqueeEnd == end) return;
         MarqueeVisible = true;
         MarqueeStart = start;
         MarqueeEnd = end;
+        MarqueeOverlayActive = _marqueeOverlay.TryShow(start, end);
+        if (MarqueeOverlayActive)
+        {
+            MarqueeLodPreviewActive = false;
+            return;
+        }
+
+        MarqueeLodPreviewActive = ShouldUseMarqueeLodPreview(
+            _lastFrameRenderMilliseconds,
+            Scene.ObjectCount,
+            UnderlayScene?.ObjectCount ?? 0,
+            OnionSkinScene?.ObjectCount ?? 0,
+            DragPreviewScene?.ObjectCount ?? 0);
         Invalidate();
     }
 
     public void ClearMarquee()
     {
         if (!MarqueeVisible) return;
+        var usedOverlay = MarqueeOverlayActive;
+        var pendingSceneInvalidation = _marqueeSceneInvalidationPending;
+        _marqueeOverlay.Hide();
         MarqueeVisible = false;
+        MarqueeOverlayActive = false;
+        MarqueeLodPreviewActive = false;
+        _marqueeSceneInvalidationPending = false;
+        if (!usedOverlay || pendingSceneInvalidation) Invalidate();
+    }
+
+    private void UpdateMarqueeOverlay()
+    {
+        MarqueeOverlayActive = _marqueeOverlay.TryShow(MarqueeStart, MarqueeEnd);
+    }
+
+    private void InvalidateSelectionState()
+    {
+        if (MarqueeVisible && MarqueeOverlayActive)
+        {
+            _marqueeSceneInvalidationPending = true;
+            return;
+        }
         Invalidate();
+    }
+
+    internal static bool ShouldUseMarqueeLodPreview(
+        double lastFrameMilliseconds,
+        int editableObjectCount,
+        int underlayObjectCount,
+        int onionSkinObjectCount,
+        int dragPreviewObjectCount)
+    {
+        var totalObjects = (long)Math.Max(0, editableObjectCount)
+            + Math.Max(0, underlayObjectCount)
+            + Math.Max(0, onionSkinObjectCount)
+            + Math.Max(0, dragPreviewObjectCount);
+        return lastFrameMilliseconds > MarqueePreviewFrameBudgetMilliseconds
+            || totalObjects >= MarqueePreviewObjectThreshold;
     }
 
     private RenderStats DrawOverviewTiles(Graphics g)
@@ -2279,8 +2513,18 @@ internal sealed class StageControl : Control
             Draw3DReferenceGrid(g);
             return;
         }
+        if (_worldGridType == VectorAnimationEngine.WorldGridType.GoldenSpiral)
+        {
+            DrawGoldenSpiralGrid(g);
+            return;
+        }
+        if (_worldGridType == VectorAnimationEngine.WorldGridType.Polar)
+        {
+            DrawPolarGrid(g);
+            return;
+        }
 
-        var scale = WorldGridLayout.Resolve(WorldLengthToScreen(1));
+        var scale = CurrentWorldGridScale;
         var bounds = VisibleWorldBounds();
         var origin = WorldToScreen(0, 0);
         DrawWorldGridLines(g, scale, bounds.Left, bounds.Right, vertical: true);
@@ -2308,6 +2552,119 @@ internal sealed class StageControl : Control
             g.DrawEllipse(_gridPen, origin.X - 4.5f, origin.Y - 4.5f, 9, 9);
             g.SmoothingMode = previousSmoothing;
         }
+    }
+
+    private void DrawGoldenSpiralGrid(Graphics graphics)
+    {
+        var geometry = ResolveGoldenSpiralGrid();
+        if (geometry.SpiralPoints.Length < 2) return;
+
+        var previousSmoothing = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var guidePen = new Pen(Color.FromArgb(GridAlpha(82), 118, 128, 134), 1f);
+        using var spiralPen = new Pen(Color.FromArgb(GridAlpha(205), 232, 194, 86), 1.6f)
+        {
+            LineJoin = LineJoin.Round,
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+        foreach (var segment in geometry.GuideSegments)
+        {
+            graphics.DrawLine(
+                guidePen,
+                WorldToScreen(segment.Start.X, segment.Start.Y),
+                WorldToScreen(segment.End.X, segment.End.Y));
+        }
+        var spiral = new PointF[geometry.SpiralPoints.Length];
+        for (var index = 0; index < spiral.Length; index++)
+        {
+            var point = geometry.SpiralPoints[index];
+            spiral[index] = WorldToScreen(point.X, point.Y);
+        }
+        graphics.DrawLines(spiralPen, spiral);
+        graphics.SmoothingMode = previousSmoothing;
+    }
+
+    private void DrawPolarGrid(Graphics graphics)
+    {
+        var geometry = ResolvePolarGrid();
+        if (geometry.Circles.Length == 0) return;
+
+        var previousSmoothing = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var origin = WorldToScreen(geometry.Origin.X, geometry.Origin.Y);
+        var scale = CurrentWorldGridScale;
+        var visibleBounds = VisibleWorldBounds();
+        var arcOverscan = ScreenLengthToWorld(2f);
+        visibleBounds.Inflate(arcOverscan, arcOverscan);
+        var maximumFastEllipseRadius = Math.Max(Width, Height) * 2f;
+        Span<PolarGridArc> visibleArcs = stackalloc PolarGridArc[PolarGridLayout.MaximumVisibleArcsPerCircle];
+        foreach (var circle in geometry.Circles)
+        {
+            var style = WorldGridLayout.ResolveLineStyle(circle.Index, scale, _worldGridOpacity);
+            if (style.Color.A == 0) continue;
+            var radius = WorldLengthToScreen(circle.Radius);
+            _gridPen.Color = style.Color;
+            _gridPen.Width = style.Width;
+            if (radius <= maximumFastEllipseRadius)
+            {
+                graphics.DrawEllipse(_gridPen, origin.X - radius, origin.Y - radius, radius * 2, radius * 2);
+                continue;
+            }
+
+            var arcCount = PolarGridLayout.ResolveVisibleArcs(visibleBounds, circle.Radius, visibleArcs);
+            if (arcCount == 0) continue;
+            using var path = new GraphicsPath();
+            for (var arcIndex = 0; arcIndex < arcCount; arcIndex++)
+            {
+                var arc = visibleArcs[arcIndex];
+                var segmentCount = PolarGridLayout.ResolveArcSegmentCount(radius, arc.SweepAngle);
+                var previous = PolarArcScreenPoint(origin, radius, arc.StartAngle);
+                path.StartFigure();
+                for (var segmentIndex = 1; segmentIndex <= segmentCount; segmentIndex++)
+                {
+                    var angle = arc.StartAngle + arc.SweepAngle * segmentIndex / segmentCount;
+                    var current = PolarArcScreenPoint(origin, radius, angle);
+                    path.AddLine(previous, current);
+                    previous = current;
+                }
+            }
+            graphics.DrawPath(_gridPen, path);
+        }
+
+        for (var index = 0; index < geometry.DiameterSegments.Length; index++)
+        {
+            if (!PolarGridLayout.TryClipSegment(visibleBounds, geometry.DiameterSegments[index], out var segment)) continue;
+            _gridPen.Color = index switch
+            {
+                0 => Color.FromArgb(GridAlpha(205), 214, 82, 82),
+                PolarGridLayout.DiameterCount / 2 => Color.FromArgb(GridAlpha(205), 82, 190, 122),
+                _ => Color.FromArgb(GridAlpha(index % 3 == 0 ? 112 : 72), 92, 104, 112)
+            };
+            _gridPen.Width = index is 0 or PolarGridLayout.DiameterCount / 2
+                ? 1.6f
+                : index % 3 == 0 ? 1.15f : 0.8f;
+            graphics.DrawLine(
+                _gridPen,
+                WorldToScreen(segment.Start.X, segment.Start.Y),
+                WorldToScreen(segment.End.X, segment.End.Y));
+        }
+
+        if (origin.X >= 0 && origin.X <= Width && origin.Y >= 0 && origin.Y <= Height)
+        {
+            graphics.FillEllipse(BrushFor(Color.FromArgb(GridAlpha(230), 224, 232, 234).ToArgb()), origin.X - 3, origin.Y - 3, 6, 6);
+            _gridPen.Color = Color.FromArgb(GridAlpha(235), 22, 26, 29);
+            _gridPen.Width = 1.2f;
+            graphics.DrawEllipse(_gridPen, origin.X - 4.5f, origin.Y - 4.5f, 9, 9);
+        }
+        graphics.SmoothingMode = previousSmoothing;
+    }
+
+    private static PointF PolarArcScreenPoint(PointF origin, float radius, float angle)
+    {
+        return new PointF(
+            (float)(origin.X + Math.Cos(angle) * radius),
+            (float)(origin.Y + Math.Sin(angle) * radius));
     }
 
     private void DrawWorldGridLines(
@@ -2524,7 +2881,21 @@ internal sealed class StageControl : Control
                 && Scene.IsObjectActive(SelectedElement.Key.ObjectIndex, Frame))
             {
                 DrawElementSelectionOutline(g, SelectedElement, primary: true);
-                if (IsValidEditableBezierHit(SelectedElement))
+                if (PenPathHandlesVisible && !TransformMode)
+                {
+                    foreach (var objectIndex in _selectedElements
+                                 .Where(hit => hit.Key.Kind == DrawingElementKind.Stroke
+                                     && (uint)hit.Key.ObjectIndex < Scene.ObjectCount
+                                     && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+                                     && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
+                                 .Select(hit => hit.Key.ObjectIndex)
+                                 .Distinct()
+                                 .Take(MaxSelectionOutlines))
+                    {
+                        DrawBezierHandles(g, objectIndex);
+                    }
+                }
+                else if (IsValidEditableBezierHit(SelectedElement))
                 {
                     if (!TransformMode) DrawBezierHandles(g, SelectedElement);
                 }
@@ -2706,14 +3077,32 @@ internal sealed class StageControl : Control
             var b = WorldToScreen(end);
             if (DrawingPreviewHasCurve)
             {
-                var control = WorldToScreen(DrawingPreviewControl);
-                using var path = BuildQuadraticPath(a, control, b);
-                g.DrawLine(_previewGuidePen, a, control);
-                g.DrawLine(_previewGuidePen, control, b);
-                g.DrawPath(stroke, path);
+                var segments = DrawingPreviewCurveSegments.Count > 0
+                    ? DrawingPreviewCurveSegments
+                    : [new CubicDrawingPreviewSegment(start, DrawingPreviewControl, DrawingPreviewControl2, end)];
+                foreach (var segment in segments)
+                {
+                    var segmentStart = WorldToScreen(segment.Start);
+                    var segmentControl1 = WorldToScreen(segment.Control1);
+                    var segmentControl2 = WorldToScreen(segment.Control2);
+                    var segmentEnd = WorldToScreen(segment.End);
+                    using var path = BuildCubicPath(segmentStart, segmentControl1, segmentControl2, segmentEnd);
+                    g.DrawPath(stroke, path);
+                }
+                var control1 = WorldToScreen(DrawingPreviewControl);
+                var control2 = WorldToScreen(DrawingPreviewControl2);
+                if (segments.Count == 1)
+                {
+                    g.DrawLine(_previewGuidePen, a, control1);
+                    g.DrawLine(_previewGuidePen, b, control2);
+                }
                 DrawHandle(g, a, _handleBrush, 7);
                 DrawHandle(g, b, _handleBrush, 7);
-                DrawHandle(g, control, _bezierHandleBrush, 9);
+                if (segments.Count == 1)
+                {
+                    DrawHandle(g, control1, _bezierHandleBrush, 9);
+                    DrawHandle(g, control2, _bezierHandleBrush, 9);
+                }
                 g.SmoothingMode = oldMode;
                 return;
             }
@@ -2737,6 +3126,31 @@ internal sealed class StageControl : Control
         using var boundsPen = new Pen(Color.FromArgb(180, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
         g.DrawRectangle(boundsPen, center.X - w * 0.5f, center.Y - h * 0.5f, w, h);
         g.SmoothingMode = oldMode;
+    }
+
+    private void DrawPenDirectionHandles(Graphics graphics)
+    {
+        if (!PenDirectionHandlesVisible) return;
+        var anchor = WorldToScreen(PenDirectionAnchor);
+        var oldMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var guide = new Pen(Color.FromArgb(220, 112, 204, 255), 1f);
+        using var pointFill = new SolidBrush(Color.FromArgb(245, 18, 48, 55));
+        using var pointBorder = new Pen(Color.FromArgb(250, 146, 224, 255), 1.4f);
+        DrawDirectionPoint(PenDirectionIncoming);
+        DrawDirectionPoint(PenDirectionOutgoing);
+        graphics.FillRectangle(pointFill, anchor.X - 3.5f, anchor.Y - 3.5f, 7, 7);
+        graphics.DrawRectangle(pointBorder, anchor.X - 3.5f, anchor.Y - 3.5f, 7, 7);
+        graphics.SmoothingMode = oldMode;
+
+        void DrawDirectionPoint(PointF? world)
+        {
+            if (world is not { } point) return;
+            var screen = WorldToScreen(point);
+            graphics.DrawLine(guide, anchor, screen);
+            graphics.FillEllipse(pointFill, screen.X - 3.5f, screen.Y - 3.5f, 7, 7);
+            graphics.DrawEllipse(pointBorder, screen.X - 3.5f, screen.Y - 3.5f, 7, 7);
+        }
     }
 
     private void DrawFreehandPreview(Graphics g)
@@ -3062,7 +3476,7 @@ internal sealed class StageControl : Control
 
     private void DrawMarquee(Graphics g)
     {
-        if (!MarqueeVisible) return;
+        if (!MarqueeVisible || MarqueeOverlayActive) return;
         var rect = Rectangle.FromLTRB(
             Math.Min(MarqueeStart.X, MarqueeEnd.X),
             Math.Min(MarqueeStart.Y, MarqueeEnd.Y),
@@ -3107,8 +3521,7 @@ internal sealed class StageControl : Control
 
     private void DrawBezierLine(Graphics g, int i, Brush brush, float screenStroke)
     {
-        var (start, control, end) = GetBezierScreenPoints(i);
-        using var path = BuildQuadraticPath(start, control, end);
+        var (start, control1, control2, end) = GetBezierScreenPoints(i);
         var startStyle = Scene.GetLineEndpointStyle(i, startEndpoint: true);
         var endStyle = Scene.GetLineEndpointStyle(i, startEndpoint: false);
         using var linePen = new Pen(brush, screenStroke)
@@ -3121,7 +3534,12 @@ internal sealed class StageControl : Control
 
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.DrawPath(linePen, path);
+        if (Scene.IsLineStraight(i)) g.DrawLine(linePen, start, end);
+        else
+        {
+            using var path = BuildCubicPath(start, control1, control2, end);
+            g.DrawPath(linePen, path);
+        }
         DrawEndpointJoin(g, i, startEndpoint: true, screenStroke, brush);
         DrawEndpointJoin(g, i, startEndpoint: false, screenStroke, brush);
         g.SmoothingMode = oldMode;
@@ -3141,7 +3559,7 @@ internal sealed class StageControl : Control
 
     private void DrawRadialGradientBezierLine(Graphics g, VectorScene scene, int objectIndex, float screenStroke)
     {
-        var (start, control, end) = GetBezierScreenPoints(objectIndex);
+        var (start, control1, control2, end) = GetBezierScreenPoints(objectIndex);
         var center = WorldToScreen(scene.GetGradientStart(objectIndex));
         var radiusPoint = WorldToScreen(scene.GetGradientEnd(objectIndex));
         var radius = Math.Max(0.5f, Distance(center, radiusPoint));
@@ -3155,9 +3573,9 @@ internal sealed class StageControl : Control
         {
             var startT = segment / (float)segments;
             var endT = (segment + 1) / (float)segments;
-            var a = QuadraticPoint(start, control, end, startT);
-            var b = QuadraticPoint(start, control, end, endT);
-            var midpoint = QuadraticPoint(start, control, end, (startT + endT) * 0.5f);
+            var a = CubicPoint(start, control1, control2, end, startT);
+            var b = CubicPoint(start, control1, control2, end, endT);
+            var midpoint = CubicPoint(start, control1, control2, end, (startT + endT) * 0.5f);
             var position = Math.Clamp(Distance(midpoint, center) / radius, 0f, 1f);
             using var pen = new Pen(GradientColorAt(stops, position), screenStroke)
             {
@@ -3208,7 +3626,7 @@ internal sealed class StageControl : Control
         joint = PointF.Empty;
         miters = Array.Empty<LineMiterJoin>();
         if (Scene.GetLineEndpointStyle(objectIndex, startEndpoint) != LineEndpointStyle.Sharp
-            || !Scene.TryGetLineEndpointJunction(objectIndex, startEndpoint, Frame, out var junction)
+            || !Scene.TryGetLineEndpointJunctionForRender(objectIndex, startEndpoint, Frame, out var junction)
             || !junction.AllSharp
             || objectIndex != junction.OwnerObjectIndex)
         {
@@ -3242,10 +3660,12 @@ internal sealed class StageControl : Control
         path.AddPolygon([joint, miter.InnerFirstOffset, miter.InnerMiter, miter.InnerSecondOffset]);
     }
 
-    private static PointF EndpointInteriorPoint((PointF Start, PointF Control, PointF End) curve, bool startEndpoint)
+    private static PointF EndpointInteriorPoint(
+        (PointF Start, PointF Control1, PointF Control2, PointF End) curve,
+        bool startEndpoint)
     {
         var endpoint = startEndpoint ? curve.Start : curve.End;
-        var control = curve.Control;
+        var control = startEndpoint ? curve.Control1 : curve.Control2;
         var controlDistanceSquared = (control.X - endpoint.X) * (control.X - endpoint.X)
             + (control.Y - endpoint.Y) * (control.Y - endpoint.Y);
         if (controlDistanceSquared > 0.01f) return control;
@@ -3254,27 +3674,27 @@ internal sealed class StageControl : Control
 
     private void DrawBezierGuides(Graphics g, int i)
     {
-        var (start, control, end) = GetBezierScreenPoints(i);
-        using var path = BuildQuadraticPath(start, control, end);
+        var (start, control1, control2, end) = GetBezierScreenPoints(i);
+        using var path = BuildCubicPath(start, control1, control2, end);
         DrawSelectionPath(
             g,
             path,
             primary: true,
             Scene.GetLineEndpointStyle(i, startEndpoint: true),
             Scene.GetLineEndpointStyle(i, startEndpoint: false));
-        DrawBezierHandles(g, start, control, end);
+        DrawBezierHandles(g, start, control1, control2, end);
     }
 
     private void DrawBezierHandles(Graphics g, int i)
     {
-        var (start, control, end) = GetBezierScreenPoints(i);
-        DrawBezierHandles(g, start, control, end);
+        var (start, control1, control2, end) = GetBezierScreenPoints(i);
+        DrawBezierHandles(g, start, control1, control2, end);
     }
 
     private void DrawBezierHandles(Graphics g, DrawingElementHit hit)
     {
-        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control, out var end)) return;
-        DrawBezierHandles(g, WorldToScreen(start), WorldToScreen(control), WorldToScreen(end));
+        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control1, out var control2, out var end)) return;
+        DrawBezierHandles(g, WorldToScreen(start), WorldToScreen(control1), WorldToScreen(control2), WorldToScreen(end));
     }
 
     private void DrawHoveredLineControls(Graphics g)
@@ -3287,27 +3707,30 @@ internal sealed class StageControl : Control
             return;
         }
 
-        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control, out var end)) return;
+        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control1, out var control2, out var end)) return;
         var startScreen = WorldToScreen(start);
-        var controlScreen = WorldToScreen(control);
+        var control1Screen = WorldToScreen(control1);
+        var control2Screen = WorldToScreen(control2);
         var endScreen = WorldToScreen(end);
         using var guide = new Pen(Color.FromArgb(120, 112, 204, 255), 1);
         using var endpoint = new SolidBrush(Color.FromArgb(210, 255, 240, 168));
         using var controlBrush = new SolidBrush(Color.FromArgb(210, 112, 204, 255));
-        g.DrawLine(guide, startScreen, controlScreen);
-        g.DrawLine(guide, controlScreen, endScreen);
+        g.DrawLine(guide, startScreen, control1Screen);
+        g.DrawLine(guide, endScreen, control2Screen);
         DrawHandle(g, startScreen, endpoint, 7);
         DrawHandle(g, endScreen, endpoint, 7);
-        DrawHandle(g, controlScreen, controlBrush, 9);
+        DrawHandle(g, control1Screen, controlBrush, 9);
+        DrawHandle(g, control2Screen, controlBrush, 9);
     }
 
-    private void DrawBezierHandles(Graphics g, PointF start, PointF control, PointF end)
+    private void DrawBezierHandles(Graphics g, PointF start, PointF control1, PointF control2, PointF end)
     {
-        g.DrawLine(_guidePen, start, control);
-        g.DrawLine(_guidePen, control, end);
+        g.DrawLine(_guidePen, start, control1);
+        g.DrawLine(_guidePen, end, control2);
         DrawHandle(g, start, _handleBrush, 8);
         DrawHandle(g, end, _handleBrush, 8);
-        DrawHandle(g, control, _bezierHandleBrush, 10);
+        DrawHandle(g, control1, _bezierHandleBrush, 10);
+        DrawHandle(g, control2, _bezierHandleBrush, 10);
     }
 
     private void DrawTransformOverlay(Graphics g)
@@ -3356,6 +3779,14 @@ internal sealed class StageControl : Control
         g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
         g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
         g.DrawRectangle(_drawingObjectSelectionPen, rect.X, rect.Y, rect.Width, rect.Height);
+        if (DrawingObjectAnchorVisible)
+        {
+            var anchor = WorldToScreen(_drawingObjectAnchor);
+            g.FillEllipse(_handleBrush, anchor.X - 4, anchor.Y - 4, 8, 8);
+            g.DrawEllipse(_handleBorderPen, anchor.X - 4, anchor.Y - 4, 8, 8);
+            g.DrawLine(_drawingObjectSelectionPen, anchor.X - 9, anchor.Y, anchor.X + 9, anchor.Y);
+            g.DrawLine(_drawingObjectSelectionPen, anchor.X, anchor.Y - 9, anchor.X, anchor.Y + 9);
+        }
     }
 
     private RectangleF TransformScreenBounds()
@@ -3419,8 +3850,8 @@ internal sealed class StageControl : Control
 
     private void DrawBezierGuides(Graphics g, int i, float startT, float endT, bool primary)
     {
-        var (start, control, end) = GetBezierScreenPoints(i);
-        using var partialPath = BuildQuadraticSamplePath(start, control, end, startT, endT);
+        var (start, control1, control2, end) = GetBezierScreenPoints(i);
+        using var partialPath = BuildCubicSamplePath(start, control1, control2, end, startT, endT);
         DrawSelectionPath(
             g,
             partialPath,
@@ -3435,16 +3866,16 @@ internal sealed class StageControl : Control
 
     private void DrawBezierSelectionContext(Graphics g, int i)
     {
-        var (start, control, end) = GetBezierScreenPoints(i);
-        using var fullPath = BuildQuadraticPath(start, control, end);
+        var (start, control1, control2, end) = GetBezierScreenPoints(i);
+        using var fullPath = BuildCubicPath(start, control1, control2, end);
         using var mutedPen = new Pen(Color.FromArgb(80, _selectionPen.Color), 1.2f);
         g.DrawPath(mutedPen, fullPath);
     }
 
     private void DrawBezierOutline(Graphics g, int i, bool primary)
     {
-        var (start, control, end) = GetBezierScreenPoints(i);
-        using var path = BuildQuadraticPath(start, control, end);
+        var (start, control1, control2, end) = GetBezierScreenPoints(i);
+        using var path = BuildCubicPath(start, control1, control2, end);
         DrawSelectionPath(
             g,
             path,
@@ -3561,26 +3992,28 @@ internal sealed class StageControl : Control
         g.DrawRectangle(_handleBorderPen, rect.X, rect.Y, rect.Width, rect.Height);
     }
 
-    private (PointF Start, PointF Control, PointF End) GetBezierScreenPoints(int i)
+    private (PointF Start, PointF Control1, PointF Control2, PointF End) GetBezierScreenPoints(int i)
     {
         var halfW = Scene.Width[i] * 0.5f;
         var start = WorldToScreen(LocalToWorld(i, new PointF(-halfW, 0)));
         var end = WorldToScreen(LocalToWorld(i, new PointF(halfW, 0)));
-        var control = WorldToScreen(Scene.CurveControlX[i], Scene.CurveControlY[i]);
-        return (start, control, end);
+        var control1 = WorldToScreen(Scene.CurveControlX[i], Scene.CurveControlY[i]);
+        var control2 = WorldToScreen(Scene.CurveControl2X[i], Scene.CurveControl2Y[i]);
+        return (start, control1, control2, end);
     }
 
-    private (PointF Start, PointF Control, PointF End) GetBezierScreenPoints(DrawingElementHit hit)
+    private (PointF Start, PointF Control1, PointF Control2, PointF End) GetBezierScreenPoints(DrawingElementHit hit)
     {
         if (TryGetLineBezierWorldPoints(
                 hit.Key.ObjectIndex,
                 hit.StartT,
                 hit.EndT,
                 out var start,
-                out var control,
+                out var control1,
+                out var control2,
                 out var end))
         {
-            return (WorldToScreen(start), WorldToScreen(control), WorldToScreen(end));
+            return (WorldToScreen(start), WorldToScreen(control1), WorldToScreen(control2), WorldToScreen(end));
         }
 
         return GetBezierScreenPoints(hit.Key.ObjectIndex);
@@ -3591,45 +4024,48 @@ internal sealed class StageControl : Control
         float startT,
         float endT,
         out PointF start,
-        out PointF control,
+        out PointF control1,
+        out PointF control2,
         out PointF end)
     {
         start = PointF.Empty;
-        control = PointF.Empty;
+        control1 = PointF.Empty;
+        control2 = PointF.Empty;
         end = PointF.Empty;
-        if ((uint)objectIndex >= Scene.ObjectCount
-            || Scene.ShapeKind[objectIndex] != ShapeKind.Line
-            || !Scene.TryGetLineEndpoint(objectIndex, startEndpoint: true, out var fullStart)
-            || !Scene.TryGetLineEndpoint(objectIndex, startEndpoint: false, out var fullEnd))
-        {
-            return false;
-        }
-
-        var fullControl = new PointF(Scene.CurveControlX[objectIndex], Scene.CurveControlY[objectIndex]);
-        (start, control, end) = QuadraticSubcurve(fullStart, fullControl, fullEnd, startT, endT);
-        return true;
+        return Scene.TryGetLineBezierPart(
+            objectIndex,
+            startT,
+            endT,
+            out start,
+            out control1,
+            out control2,
+            out end);
     }
 
-    private static GraphicsPath BuildQuadraticPath(PointF start, PointF control, PointF end)
+    private static GraphicsPath BuildCubicPath(PointF start, PointF control1, PointF control2, PointF end)
     {
-        var c1 = new PointF(start.X + (control.X - start.X) * 2f / 3f, start.Y + (control.Y - start.Y) * 2f / 3f);
-        var c2 = new PointF(end.X + (control.X - end.X) * 2f / 3f, end.Y + (control.Y - end.Y) * 2f / 3f);
         var path = new GraphicsPath();
-        path.AddBezier(start, c1, c2, end);
+        path.AddBezier(start, control1, control2, end);
         return path;
     }
 
-    private static GraphicsPath BuildQuadraticSamplePath(PointF start, PointF control, PointF end, float startT, float endT)
+    private static GraphicsPath BuildCubicSamplePath(
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        float startT,
+        float endT)
     {
         startT = Math.Clamp(startT, 0, 1);
         endT = Math.Clamp(endT, startT, 1);
         var path = new GraphicsPath();
-        var previous = QuadraticPoint(start, control, end, startT);
+        var previous = CubicPoint(start, control1, control2, end, startT);
         const int samples = 20;
         for (var i = 1; i <= samples; i++)
         {
             var t = startT + (endT - startT) * i / samples;
-            var current = QuadraticPoint(start, control, end, t);
+            var current = CubicPoint(start, control1, control2, end, t);
             path.AddLine(previous, current);
             previous = current;
         }
@@ -3667,34 +4103,18 @@ internal sealed class StageControl : Control
         return Lerp(points[index], points[index + 1], scaled - index);
     }
 
-    private static PointF QuadraticPoint(PointF start, PointF control, PointF end, float t)
+    private static PointF CubicPoint(PointF start, PointF control1, PointF control2, PointF end, float t)
     {
         var inv = 1 - t;
         return new PointF(
-            inv * inv * start.X + 2 * inv * t * control.X + t * t * end.X,
-            inv * inv * start.Y + 2 * inv * t * control.Y + t * t * end.Y);
-    }
-
-    private static (PointF Start, PointF Control, PointF End) QuadraticSubcurve(
-        PointF start,
-        PointF control,
-        PointF end,
-        float startT,
-        float endT)
-    {
-        startT = Math.Clamp(startT, 0, 1);
-        endT = Math.Clamp(endT, startT, 1);
-        var subStart = QuadraticPoint(start, control, end, startT);
-        if (endT - startT <= 0.000001f) return (subStart, subStart, subStart);
-
-        var startToControl = Lerp(start, control, startT);
-        var controlToEnd = Lerp(control, end, startT);
-        var span = endT - startT;
-        var subControl = new PointF(
-            subStart.X + (controlToEnd.X - startToControl.X) * span,
-            subStart.Y + (controlToEnd.Y - startToControl.Y) * span);
-        var subEnd = QuadraticPoint(start, control, end, endT);
-        return (subStart, subControl, subEnd);
+            inv * inv * inv * start.X
+                + 3 * inv * inv * t * control1.X
+                + 3 * inv * t * t * control2.X
+                + t * t * t * end.X,
+            inv * inv * inv * start.Y
+                + 3 * inv * inv * t * control1.Y
+                + 3 * inv * t * t * control2.Y
+                + t * t * t * end.Y);
     }
 
     private PointF LocalToWorld(int i, PointF local)

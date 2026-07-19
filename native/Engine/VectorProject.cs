@@ -28,13 +28,16 @@ internal sealed class VectorProject
 {
     private readonly List<SceneDefinition> _scenes = [];
     private readonly List<DrawingObjectDefinition> _drawingObjects = [];
+    private readonly List<ProjectAssetFolder> _assetFolders = [];
     private readonly IReadOnlyList<SceneDefinition> _sceneView;
     private readonly IReadOnlyList<DrawingObjectDefinition> _drawingObjectView;
+    private readonly IReadOnlyList<ProjectAssetFolder> _assetFolderView;
 
     public VectorProject()
     {
         _sceneView = _scenes.AsReadOnly();
         _drawingObjectView = _drawingObjects.AsReadOnly();
+        _assetFolderView = _assetFolders.AsReadOnly();
         AddScene("Scene 001");
         AddDrawingObject("Drawing Object 001");
     }
@@ -43,6 +46,7 @@ internal sealed class VectorProject
     public string Name { get; set; } = "Untitled Project";
     public IReadOnlyList<SceneDefinition> Scenes => _sceneView;
     public IReadOnlyList<DrawingObjectDefinition> DrawingObjects => _drawingObjectView;
+    public IReadOnlyList<ProjectAssetFolder> AssetFolders => _assetFolderView;
     public event EventHandler? Changed;
 
     public SceneDefinition AddScene(string? name = null)
@@ -90,27 +94,197 @@ internal sealed class VectorProject
         return true;
     }
 
+    public bool TrySetDrawingObjectAnchor(string drawingObjectId, PointF anchor)
+    {
+        var drawingObject = FindDrawingObject(drawingObjectId);
+        if (drawingObject is null || !float.IsFinite(anchor.X) || !float.IsFinite(anchor.Y)) return false;
+
+        var normalized = new PointF(
+            Math.Clamp(VectorUnits.Quantize(anchor.X), -5_000_000, 5_000_000),
+            Math.Clamp(VectorUnits.Quantize(anchor.Y), -5_000_000, 5_000_000));
+        var previous = drawingObject.Anchor;
+        if (previous == normalized) return true;
+
+        var sourceDelta = new PointF(normalized.X - previous.X, normalized.Y - previous.Y);
+        var usages = _scenes
+            .SelectMany(scene => scene.Instances)
+            .Concat(_drawingObjects.SelectMany(item => item.Instances))
+            .Where(instance => string.Equals(instance.DrawingObjectId, drawingObjectId, StringComparison.Ordinal))
+            .ToArray();
+        var compensation = new InstanceAnchorCompensation[usages.Length];
+        for (var index = 0; index < usages.Length; index++)
+        {
+            if (!usages[index].TryPlanAnchorCompensation(sourceDelta, out compensation[index])) return false;
+        }
+
+        for (var index = 0; index < usages.Length; index++)
+        {
+            usages[index].ApplyAnchorCompensation(compensation[index]);
+        }
+        drawingObject.SetAnchor(normalized);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public bool TryDuplicateDrawingObject(string drawingObjectId, out DrawingObjectDefinition? duplicate)
     {
         duplicate = null;
         var source = FindDrawingObject(drawingObjectId);
         if (source is null) return false;
 
-        var sceneSnapshot = source.Scene.CreateSnapshot();
-        var sourceTimeline = source.Timeline.CreateSnapshot();
-        duplicate = new DrawingObjectDefinition
+        duplicate = DuplicateDrawingObjectCore(source, source.AssetFolderId);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryAddAssetFolder(string? name, string? parentFolderId, out ProjectAssetFolder? folder)
+    {
+        folder = null;
+        var parentId = NormalizeAssetFolderId(parentFolderId);
+        if (parentId.Length > 0 && FindAssetFolder(parentId) is null) return false;
+
+        var normalizedName = string.IsNullOrWhiteSpace(name) ? "Folder" : name.Trim();
+        folder = new ProjectAssetFolder
         {
+            Name = normalizedName,
+            ParentFolderId = parentId
+        };
+        _assetFolders.Add(folder);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryRenameAssetFolder(string folderId, string? name)
+    {
+        var folder = FindAssetFolder(folderId);
+        var normalizedName = name?.Trim();
+        if (folder is null || string.IsNullOrWhiteSpace(normalizedName)) return false;
+        if (string.Equals(folder.Name, normalizedName, StringComparison.Ordinal)) return true;
+
+        folder.Name = normalizedName;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryMoveDrawingObjectToAssetFolder(string drawingObjectId, string? folderId)
+    {
+        var drawingObject = FindDrawingObject(drawingObjectId);
+        var targetFolderId = NormalizeAssetFolderId(folderId);
+        if (drawingObject is null || targetFolderId.Length > 0 && FindAssetFolder(targetFolderId) is null) return false;
+        if (string.Equals(drawingObject.AssetFolderId, targetFolderId, StringComparison.Ordinal)) return true;
+
+        drawingObject.AssetFolderId = targetFolderId;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryMoveAssetFolder(string folderId, string? parentFolderId)
+    {
+        var folder = FindAssetFolder(folderId);
+        var targetParentId = NormalizeAssetFolderId(parentFolderId);
+        if (folder is null
+            || targetParentId.Length > 0 && FindAssetFolder(targetParentId) is null
+            || string.Equals(folder.Id, targetParentId, StringComparison.Ordinal)
+            || IsAssetFolderDescendant(targetParentId, folder.Id))
+        {
+            return false;
+        }
+        if (string.Equals(folder.ParentFolderId, targetParentId, StringComparison.Ordinal)) return true;
+
+        folder.ParentFolderId = targetParentId;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryDuplicateAssetFolder(string folderId, out ProjectAssetFolder? duplicateRoot)
+    {
+        duplicateRoot = null;
+        var sourceRoot = FindAssetFolder(folderId);
+        if (sourceRoot is null) return false;
+
+        var sourceFolders = AssetFolderSubtree(sourceRoot.Id);
+        var folderIdMap = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var sourceFolder in sourceFolders)
+        {
+            var copy = new ProjectAssetFolder
+            {
+                Name = ReferenceEquals(sourceFolder, sourceRoot)
+                    ? NextAssetFolderCopyName(sourceFolder.Name, sourceFolder.ParentFolderId)
+                    : sourceFolder.Name,
+                ParentFolderId = folderIdMap.GetValueOrDefault(sourceFolder.ParentFolderId, sourceFolder.ParentFolderId)
+            };
+            _assetFolders.Add(copy);
+            folderIdMap[sourceFolder.Id] = copy.Id;
+            if (ReferenceEquals(sourceFolder, sourceRoot)) duplicateRoot = copy;
+        }
+
+        var sourceFolderIds = folderIdMap.Keys.ToHashSet(StringComparer.Ordinal);
+        var sourceObjects = _drawingObjects
+            .Where(item => sourceFolderIds.Contains(item.AssetFolderId))
+            .ToArray();
+        var drawingObjectIdMap = sourceObjects.ToDictionary(
+            source => source.Id,
+            _ => Guid.NewGuid().ToString("N"),
+            StringComparer.Ordinal);
+        var copies = new DrawingObjectDefinition[sourceObjects.Length];
+        for (var index = 0; index < sourceObjects.Length; index++)
+        {
+            var source = sourceObjects[index];
+            copies[index] = CreateDrawingObjectDuplicateShell(
+                source,
+                folderIdMap[source.AssetFolderId],
+                drawingObjectIdMap[source.Id]);
+        }
+        for (var index = 0; index < sourceObjects.Length; index++)
+        {
+            PopulateDrawingObjectDuplicate(sourceObjects[index], copies[index], drawingObjectIdMap);
+        }
+
+        Changed?.Invoke(this, EventArgs.Empty);
+        return duplicateRoot is not null;
+    }
+
+    private DrawingObjectDefinition DuplicateDrawingObjectCore(
+        DrawingObjectDefinition source,
+        string assetFolderId,
+        string? duplicateId = null,
+        IReadOnlyDictionary<string, string>? drawingObjectIdMap = null)
+    {
+        var duplicate = CreateDrawingObjectDuplicateShell(source, assetFolderId, duplicateId);
+        PopulateDrawingObjectDuplicate(source, duplicate, drawingObjectIdMap);
+        return duplicate;
+    }
+
+    private DrawingObjectDefinition CreateDrawingObjectDuplicateShell(
+        DrawingObjectDefinition source,
+        string assetFolderId,
+        string? duplicateId = null)
+    {
+        var sceneSnapshot = source.Scene.CreateSnapshot();
+        var duplicate = new DrawingObjectDefinition
+        {
+            Id = duplicateId ?? Guid.NewGuid().ToString("N"),
             Name = NextDrawingObjectCopyName(source.Name),
             Kind = source.Kind,
-            Detail = source.Detail
+            Detail = source.Detail,
+            AssetFolderId = assetFolderId
         };
+        duplicate.SetAnchor(source.Anchor);
         duplicate.Scene.RestoreSnapshot(sceneSnapshot);
         _drawingObjects.Add(duplicate);
+        return duplicate;
+    }
 
+    private void PopulateDrawingObjectDuplicate(
+        DrawingObjectDefinition source,
+        DrawingObjectDefinition duplicate,
+        IReadOnlyDictionary<string, string>? drawingObjectIdMap)
+    {
+        var sourceTimeline = source.Timeline.CreateSnapshot();
         var instanceIdMap = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var sourceInstance in source.Instances)
         {
-            var copy = CloneDrawingObjectInstance(sourceInstance);
+            var copy = CloneDrawingObjectInstance(sourceInstance, drawingObjectIdMap);
             duplicate.AddInstance(this, copy);
             instanceIdMap[sourceInstance.Id] = copy.Id;
         }
@@ -129,9 +303,6 @@ internal sealed class VectorProject
             });
             duplicate.SynchronizeTimelineTracks();
         }
-
-        Changed?.Invoke(this, EventArgs.Empty);
-        return true;
     }
 
     public bool TryRemoveDrawingObject(string drawingObjectId, out DrawingObjectDefinition? removed)
@@ -235,6 +406,14 @@ internal sealed class VectorProject
         return true;
     }
 
+    public bool TryRemoveSceneLayers(string sceneId, IEnumerable<string> layerIds)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.RemoveLayers(this, layerIds)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public bool TrySetSceneLayerColor(string sceneId, string layerId, Color color)
     {
         var scene = FindScene(sceneId);
@@ -321,6 +500,14 @@ internal sealed class VectorProject
         return true;
     }
 
+    public bool TryRemoveDrawingObjectLayers(string drawingObjectId, IEnumerable<string> layerIds)
+    {
+        var drawingObject = FindDrawingObject(drawingObjectId);
+        if (drawingObject is null || !drawingObject.RemoveLayers(this, layerIds)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public bool TryRemoveDrawingObjectInstance(
         string containerId,
         string instanceId,
@@ -346,6 +533,15 @@ internal sealed class VectorProject
         return new ProjectRestartSnapshot
         {
             Name = Name,
+            AssetFolders = _assetFolders
+                .Select(folder => new ProjectAssetFolderRestartSnapshot
+                {
+                    Id = folder.Id,
+                    Name = folder.Name,
+                    ParentFolderId = folder.ParentFolderId,
+                    CreatedAt = folder.CreatedAt
+                })
+                .ToArray(),
             DrawingObjects = _drawingObjects
                 .Select(drawingObject => new DrawingObjectRestartSnapshot
                 {
@@ -353,6 +549,9 @@ internal sealed class VectorProject
                     Name = drawingObject.Name,
                     Kind = drawingObject.Kind,
                     Detail = drawingObject.Detail,
+                    AssetFolderId = drawingObject.AssetFolderId,
+                    AnchorX = drawingObject.Anchor.X,
+                    AnchorY = drawingObject.Anchor.Y,
                     CreatedAt = drawingObject.CreatedAt,
                     Scene = drawingObject.Scene.CreateSnapshot(),
                     Instances = drawingObject.Instances.Select(CreateInstanceRestartSnapshot).ToArray()
@@ -386,7 +585,10 @@ internal sealed class VectorProject
         var project = new VectorProject();
         project._drawingObjects.Clear();
         project._scenes.Clear();
+        project._assetFolders.Clear();
         project.Name = string.IsNullOrWhiteSpace(snapshot.Name) ? "Untitled Project" : snapshot.Name;
+
+        project.RestoreAssetFolders(snapshot.AssetFolders ?? []);
 
         var drawingSnapshots = snapshot.DrawingObjects
             .Where(item => IsValidRestartId(item.Id))
@@ -405,14 +607,22 @@ internal sealed class VectorProject
 
         foreach (var item in drawingSnapshots)
         {
-            project._drawingObjects.Add(new DrawingObjectDefinition
+            var drawingObject = new DrawingObjectDefinition
             {
                 Id = item.Id,
                 Name = item.Name,
                 Kind = item.Kind,
                 Detail = item.Detail,
+                AssetFolderId = project.FindAssetFolder(item.AssetFolderId) is null ? "" : item.AssetFolderId,
                 CreatedAt = item.CreatedAt
-            });
+            };
+            if (float.IsFinite(item.AnchorX) && float.IsFinite(item.AnchorY))
+            {
+                drawingObject.SetAnchor(new PointF(
+                    Math.Clamp(item.AnchorX, -5_000_000, 5_000_000),
+                    Math.Clamp(item.AnchorY, -5_000_000, 5_000_000)));
+            }
+            project._drawingObjects.Add(drawingObject);
         }
 
         foreach (var item in sceneSnapshots)
@@ -594,6 +804,90 @@ internal sealed class VectorProject
         return result;
     }
 
+    private ProjectAssetFolder? FindAssetFolder(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        return _assetFolders.SingleOrDefault(folder => string.Equals(folder.Id, id, StringComparison.Ordinal));
+    }
+
+    private ProjectAssetFolder[] AssetFolderSubtree(string rootId)
+    {
+        var result = new List<ProjectAssetFolder>();
+        var pending = new Queue<string>();
+        pending.Enqueue(rootId);
+        while (pending.Count > 0)
+        {
+            var parentId = pending.Dequeue();
+            var folder = FindAssetFolder(parentId);
+            if (folder is null) continue;
+            result.Add(folder);
+            foreach (var child in _assetFolders.Where(item =>
+                         string.Equals(item.ParentFolderId, parentId, StringComparison.Ordinal)))
+            {
+                pending.Enqueue(child.Id);
+            }
+        }
+        return result.ToArray();
+    }
+
+    private bool IsAssetFolderDescendant(string candidateId, string ancestorId)
+    {
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var current = FindAssetFolder(candidateId);
+        while (current is not null && visited.Add(current.Id))
+        {
+            if (string.Equals(current.Id, ancestorId, StringComparison.Ordinal)) return true;
+            current = FindAssetFolder(current.ParentFolderId);
+        }
+        return false;
+    }
+
+    private string NextAssetFolderCopyName(string sourceName, string parentFolderId)
+    {
+        var baseName = string.IsNullOrWhiteSpace(sourceName) ? "Folder" : sourceName.Trim();
+        var candidate = $"{baseName} Copy";
+        var suffix = 2;
+        while (_assetFolders.Any(item =>
+                   string.Equals(item.ParentFolderId, parentFolderId, StringComparison.Ordinal)
+                   && string.Equals(item.Name, candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            candidate = $"{baseName} Copy {suffix++}";
+        }
+        return candidate;
+    }
+
+    private void RestoreAssetFolders(IEnumerable<ProjectAssetFolderRestartSnapshot> snapshots)
+    {
+        var source = snapshots
+            .Where(item => IsValidRestartId(item.Id))
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+        foreach (var item in source)
+        {
+            _assetFolders.Add(new ProjectAssetFolder
+            {
+                Id = item.Id,
+                Name = string.IsNullOrWhiteSpace(item.Name) ? "Folder" : item.Name.Trim(),
+                CreatedAt = item.CreatedAt
+            });
+        }
+        foreach (var item in source)
+        {
+            var folder = FindAssetFolder(item.Id)!;
+            var parentId = NormalizeAssetFolderId(item.ParentFolderId);
+            if (parentId.Length > 0
+                && FindAssetFolder(parentId) is not null
+                && !string.Equals(folder.Id, parentId, StringComparison.Ordinal)
+                && !IsAssetFolderDescendant(parentId, folder.Id))
+            {
+                folder.ParentFolderId = parentId;
+            }
+        }
+    }
+
+    private static string NormalizeAssetFolderId(string? folderId) => folderId?.Trim() ?? "";
+
     private string NextDrawingObjectCopyName(string sourceName)
     {
         var baseName = string.IsNullOrWhiteSpace(sourceName) ? "Drawing Object" : sourceName.Trim();
@@ -607,11 +901,14 @@ internal sealed class VectorProject
         return candidate;
     }
 
-    private static DrawingObjectInstanceDefinition CloneDrawingObjectInstance(DrawingObjectInstanceDefinition source)
+    private static DrawingObjectInstanceDefinition CloneDrawingObjectInstance(
+        DrawingObjectInstanceDefinition source,
+        IReadOnlyDictionary<string, string>? drawingObjectIdMap = null)
     {
         var clone = new DrawingObjectInstanceDefinition
         {
-            DrawingObjectId = source.DrawingObjectId,
+            DrawingObjectId = drawingObjectIdMap?.GetValueOrDefault(source.DrawingObjectId, source.DrawingObjectId)
+                ?? source.DrawingObjectId,
             SceneLayerId = source.SceneLayerId,
             Name = source.Name,
             Visible = source.Visible,

@@ -27,9 +27,16 @@ internal readonly record struct HotReloadPlan(HotReloadModule Modules, string Up
         return new HotReloadPlan(Modules | other.Modules, string.Join(", ", names));
     }
 
+    public bool RequiresProcessRestart => Modules == HotReloadModule.All
+        || (Modules & (HotReloadModule.Shell
+            | HotReloadModule.Inspector
+            | HotReloadModule.Workspace
+            | HotReloadModule.Timeline)) != 0
+        || HotReloadModuleResolver.RequiresProcessRestart(UpdatedTypes);
+
     // Existing WinForms controls do not rerun their constructors after CLR metadata updates.
     // Recreate the workbench for modules that own a control tree or its layout.
-    public bool RequiresWorkbenchRebuild => (Modules & (HotReloadModule.Shell
+    public bool RequiresWorkbenchRebuild => !RequiresProcessRestart && (Modules & (HotReloadModule.Shell
         | HotReloadModule.Inspector
         | HotReloadModule.Workspace
         | HotReloadModule.Timeline)) != 0;
@@ -37,6 +44,33 @@ internal readonly record struct HotReloadPlan(HotReloadModule Modules, string Up
 
 internal static class HotReloadModuleResolver
 {
+    private static readonly HashSet<string> ProcessRestartTypes = new(StringComparer.Ordinal)
+    {
+        nameof(MainForm),
+        nameof(StageControl),
+        nameof(Direct2DStageRenderer),
+        nameof(TimelineStrip),
+        nameof(DrawingObjectInstancePanel),
+        nameof(MaterialEditorPanel),
+        nameof(SceneEditorPanel),
+        nameof(LibraryVaultPanel),
+        nameof(HierarchyPanel),
+        nameof(WorkspaceTabs),
+        nameof(VectorScene),
+        nameof(VectorSceneSnapshot),
+        nameof(VectorProject),
+        nameof(ProjectAssetFolder),
+        nameof(DrawingObjectDefinition),
+        nameof(DrawingObjectInstanceDefinition),
+        nameof(SceneObjectInstanceDefinition),
+        nameof(SceneDefinition),
+        nameof(SceneLayerDefinition),
+        nameof(SceneLayerSnapshot),
+        nameof(SceneLayerSnapshotItem),
+        nameof(DrawingObjectPlaybackMode),
+        nameof(LineEndpointStyle)
+    };
+
     public static HotReloadPlan Resolve(Type[]? updatedTypes)
     {
         if (updatedTypes is not { Length: > 0 }) return new HotReloadPlan(HotReloadModule.All, "unknown");
@@ -61,12 +95,26 @@ internal static class HotReloadModuleResolver
         return type.Name;
     }
 
+    internal static bool RequiresProcessRestart(string updatedTypes)
+    {
+        if (string.IsNullOrWhiteSpace(updatedTypes)
+            || string.Equals(updatedTypes, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return updatedTypes
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(ProcessRestartTypes.Contains);
+    }
+
     private static HotReloadModule ModuleFor(string typeName)
     {
         if (typeName is nameof(StageControl)
             or nameof(Direct2DStageRenderer)
             or nameof(SceneRenderOrderBuffer)
-            or nameof(WorldGridLayout))
+            or nameof(WorldGridLayout)
+            or nameof(PolarGridLayout))
         {
             return HotReloadModule.Rendering;
         }
@@ -107,6 +155,8 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(AnimatedContextMenuStrip)
+            or nameof(ModernDialogForm)
+            or nameof(ModernMessageDialog)
             or nameof(SettingsDialog)
             or nameof(UiLocalization)
             or nameof(ApplicationSettingsStore)
@@ -117,6 +167,7 @@ internal static class HotReloadModuleResolver
 
         if (typeName is nameof(VectorScene)
             or nameof(VectorProject)
+            or nameof(ProjectAssetFolder)
             or nameof(VectorSceneSnapshot)
             or nameof(LineEndpointStyle)
             or nameof(LineJoinGeometry)

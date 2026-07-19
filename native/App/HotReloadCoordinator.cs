@@ -5,6 +5,7 @@ internal sealed class HotReloadCoordinator : IDisposable
     private const int CoalesceMilliseconds = 120;
     private const int FollowUpMilliseconds = 30;
     private const int DispatchLeaseMilliseconds = 2_000;
+    private const int MaxUnavailableDispatches = 16;
     private readonly object _sync = new();
     private readonly Func<Control?> _uiTarget;
     private readonly Action<HotReloadBatch> _apply;
@@ -18,6 +19,7 @@ internal sealed class HotReloadCoordinator : IDisposable
     private bool _applyStarted;
     private DateTime _dispatchPostedUtc;
     private HotReloadBatch? _inFlightBatch;
+    private int _unavailableDispatches;
     private bool _disposed;
 
     public HotReloadCoordinator(
@@ -104,9 +106,11 @@ internal sealed class HotReloadCoordinator : IDisposable
         var target = _uiTarget();
         if (target is null || target.IsDisposed || !target.IsHandleCreated)
         {
-            Requeue(batch, "The UI target was unavailable while dispatching a hot reload.");
+            Requeue(batch, "The UI target was unavailable while dispatching a hot reload.", targetUnavailable: true);
             return;
         }
+
+        lock (_sync) _unavailableDispatches = 0;
 
         try
         {
@@ -114,7 +118,7 @@ internal sealed class HotReloadCoordinator : IDisposable
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
         {
-            Requeue(batch, "The UI target changed while dispatching a hot reload.", ex);
+            Requeue(batch, "The UI target changed while dispatching a hot reload.", ex, targetUnavailable: true);
         }
     }
 
@@ -150,21 +154,40 @@ internal sealed class HotReloadCoordinator : IDisposable
         }
     }
 
-    private void Requeue(HotReloadBatch batch, string message, Exception? exception = null)
+    private void Requeue(
+        HotReloadBatch batch,
+        string message,
+        Exception? exception = null,
+        bool targetUnavailable = false)
     {
+        var abandoned = false;
         lock (_sync)
         {
             if (_disposed) return;
-            _pendingPlan = _pendingPlan is { } pending ? batch.Plan.Merge(pending) : batch.Plan;
-            _pendingSinceUtc = batch.QueuedUtc;
-            _latestGeneration = Math.Max(_latestGeneration, batch.Generation);
+            if (targetUnavailable && ++_unavailableDispatches >= MaxUnavailableDispatches)
+            {
+                _pendingPlan = null;
+                _timer.Change(Timeout.Infinite, Timeout.Infinite);
+                abandoned = true;
+            }
+            else
+            {
+                _pendingPlan = _pendingPlan is { } pending ? batch.Plan.Merge(pending) : batch.Plan;
+                _pendingSinceUtc = batch.QueuedUtc;
+                _latestGeneration = Math.Max(_latestGeneration, batch.Generation);
+                _timer.Change(_coalesceMilliseconds, Timeout.Infinite);
+            }
             _dispatchPending = false;
             _applyStarted = false;
             _inFlightBatch = null;
             _dispatchSequence++;
-            _timer.Change(_coalesceMilliseconds, Timeout.Infinite);
         }
 
+        if (abandoned)
+        {
+            AppLog.Error($"{message} The batch was abandoned after {MaxUnavailableDispatches} attempts; restart the editor process.", exception);
+            return;
+        }
         if (exception is null) AppLog.Warn(message);
         else AppLog.Error(message, exception);
     }

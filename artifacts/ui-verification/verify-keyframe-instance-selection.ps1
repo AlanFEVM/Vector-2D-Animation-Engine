@@ -82,10 +82,39 @@ try {
         throw "F6 did not preserve the selected drawing-object instance on the next keyframe."
     }
 
+    $timelineStrip = $mainType.GetField("_timeline", $flags).GetValue($main)
+    $timelineContext = $timelineStrip.GetType().GetProperty("Context", $flags).GetValue($timelineStrip)
+    $timelineModel = $timelineContext.GetType().GetProperty("Timeline", $flags).GetValue($timelineContext)
+    $mainType.GetMethod(
+        "EnsureTimelineFrameExists",
+        [Reflection.BindingFlags] "Static,NonPublic").Invoke($null, @($timelineModel, [int]3))
+    $mainType.GetMethod("ApplyBoundTimelineDuration", $flags).Invoke($main, @([int]1))
+    $timelineStrip.RefreshTimeline()
+    $mainType.GetMethod("SetFrame", $flags).Invoke($main, @([int]3, $true))
+    $setSelection.Invoke($main, @($instance, $false))
+    $heldFrameChanged = $mainType.GetMethod("ExecuteTimelineEdit", $flags).Invoke(
+        $main,
+        [object[]] @($insertKeyframe, $null))
+    $feedbackCommand = $timelineStrip.GetType().GetField("_commandFeedback", $flags).GetValue($timelineStrip)
+    Pump-Ui 250
+
+    $heldFrame = $mainType.GetField("_frame", $flags).GetValue($main)
+    $stateKeyframes = $instanceType.GetProperty("StateKeyframes").GetValue($instance)
+    $hasFrameThreeState = @($stateKeyframes | Where-Object { $_.Frame -eq 3 }).Count -eq 1
+    if (-not $heldFrameChanged -or
+        $heldFrame -ne 3 -or
+        -not $hasFrameThreeState -or
+        [string]$feedbackCommand -ne "InsertKeyframes") {
+        throw "F6 held-frame insertion failed: changed=$heldFrameChanged frame=$heldFrame stateKey=$hasFrameThreeState states=$(@($stateKeyframes | ForEach-Object Frame) -join ',')."
+    }
+
     "keyframe_instance_selection_preserved=True"
     "keyframe_instance_primary_id_preserved=True"
-    "keyframe_instance_target_frame=$frame"
+    "keyframe_instance_key_target_frame=$frame"
+    "keyframe_instance_held_target_frame=$heldFrame"
     "keyframe_instance_state_key_created=$hasFrameOneState"
+    "keyframe_instance_held_state_key_created=$hasFrameThreeState"
+    "keyframe_instance_feedback=$feedbackCommand"
 }
 finally {
     if (-not $main.IsDisposed) { $main.Close() }

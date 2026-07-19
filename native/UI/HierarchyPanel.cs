@@ -32,6 +32,9 @@ internal sealed class HierarchyPanel : UserControl
     private readonly Label _summary = new();
     private readonly TreeView _tree = new();
     private VectorScene? _scene;
+    private TreeNode? _sceneNode;
+    private TreeNode? _layersRoot;
+    private TreeNode? _objectsRoot;
 
     public HierarchyPanel()
     {
@@ -83,7 +86,57 @@ internal sealed class HierarchyPanel : UserControl
         RebuildPlaceholder();
     }
 
-    public void RefreshScene() => Rebuild();
+    public void RefreshScene()
+    {
+        if (_scene is null
+            || _sceneNode is null
+            || _layersRoot is null
+            || _objectsRoot is null
+            || _tree.Nodes.Count != 1
+            || !ReferenceEquals(_tree.Nodes[0], _sceneNode)
+            || _sceneNode.Nodes.Count != 2
+            || !ReferenceEquals(_sceneNode.Nodes[0], _layersRoot)
+            || !ReferenceEquals(_sceneNode.Nodes[1], _objectsRoot))
+        {
+            Rebuild();
+            return;
+        }
+
+        _tree.BeginUpdate();
+        try
+        {
+            RefreshBranch(
+                _layersRoot,
+                _scene.LayerCount,
+                MaxLayerNodes,
+                index =>
+                {
+                    var visibility = _scene.LayerVisible[index] ? "Visible" : "Hidden";
+                    return $"{_scene.LayerNames[index]} - {visibility}, {_scene.LayerOpacity[index]:P0}";
+                },
+                HierarchyNodeKind.Layer,
+                "layers");
+            RefreshBranch(
+                _objectsRoot,
+                _scene.ObjectCount,
+                MaxObjectNodes,
+                index =>
+                {
+                    var layer = _scene.ObjectLayer.Length > index ? _scene.ObjectLayer[index] : 0;
+                    return $"Object {index:000000} - Layer {layer}";
+                },
+                HierarchyNodeKind.Object,
+                "objects",
+                index => _scene.ObjectLayer.Length > index ? _scene.ObjectLayer[index] : 0);
+            SetTextIfChanged(_layersRoot, $"Layers ({_scene.LayerCount})");
+            SetTextIfChanged(_objectsRoot, $"Objects ({_scene.ObjectCount})");
+            SetTextIfChanged(_summary, $"{_scene.LayerCount} layers, {_scene.ObjectCount} objects");
+        }
+        finally
+        {
+            _tree.EndUpdate();
+        }
+    }
 
     public void SelectLayer(int layerIndex)
     {
@@ -133,7 +186,7 @@ internal sealed class HierarchyPanel : UserControl
         for (var i = 0; i < objectLimit; i++)
         {
             var layer = _scene.ObjectLayer.Length > i ? _scene.ObjectLayer[i] : 0;
-            objectsRoot.Nodes.Add(TaggedNode($"Object {i:000000} - Layer {layer}", HierarchyNodeKind.Object, i));
+            objectsRoot.Nodes.Add(TaggedNode($"Object {i:000000} - Layer {layer}", HierarchyNodeKind.Object, i, layer));
         }
 
         if (_scene.ObjectCount > objectLimit)
@@ -147,6 +200,9 @@ internal sealed class HierarchyPanel : UserControl
         sceneNode.Expand();
         layersRoot.Expand();
         objectsRoot.Expand();
+        _sceneNode = sceneNode;
+        _layersRoot = layersRoot;
+        _objectsRoot = objectsRoot;
         _tree.EndUpdate();
 
         _summary.Text = $"{_scene.LayerCount} layers, {_scene.ObjectCount} objects";
@@ -154,6 +210,9 @@ internal sealed class HierarchyPanel : UserControl
 
     private void RebuildPlaceholder()
     {
+        _sceneNode = null;
+        _layersRoot = null;
+        _objectsRoot = null;
         _tree.BeginUpdate();
         _tree.Nodes.Clear();
         var sceneNode = TaggedNode("Scene", HierarchyNodeKind.Scene, -1);
@@ -167,6 +226,65 @@ internal sealed class HierarchyPanel : UserControl
         sceneNode.ExpandAll();
         _tree.EndUpdate();
         _summary.Text = "Scene, layers and objects";
+    }
+
+    private static void RefreshBranch(
+        TreeNode root,
+        int totalCount,
+        int limit,
+        Func<int, string> textAt,
+        HierarchyNodeKind kind,
+        string overflowLabel,
+        Func<int, int>? detailAt = null)
+    {
+        var visibleCount = Math.Min(totalCount, limit);
+        while (root.Nodes.Count > 0 && root.Nodes[root.Nodes.Count - 1].Tag is not HierarchyNodeTag)
+        {
+            root.Nodes.RemoveAt(root.Nodes.Count - 1);
+        }
+
+        while (root.Nodes.Count > visibleCount)
+        {
+            root.Nodes.RemoveAt(root.Nodes.Count - 1);
+        }
+
+        for (var index = 0; index < root.Nodes.Count; index++)
+        {
+            var node = root.Nodes[index];
+            var detail = detailAt?.Invoke(index) ?? -1;
+            if (node.Tag is not HierarchyNodeTag tag
+                || tag.Kind != kind
+                || tag.Index != index
+                || tag.Detail != detail)
+            {
+                SetTextIfChanged(node, textAt(index));
+                node.Tag = new HierarchyNodeTag(kind, index, detail);
+            }
+            else if (detailAt is null)
+            {
+                SetTextIfChanged(node, textAt(index));
+            }
+        }
+
+        for (var index = root.Nodes.Count; index < visibleCount; index++)
+        {
+            root.Nodes.Add(TaggedNode(textAt(index), kind, index, detailAt?.Invoke(index) ?? -1));
+        }
+
+        if (totalCount > visibleCount)
+        {
+            root.Nodes.Add(PlainNode($"+ {totalCount - visibleCount} more {overflowLabel}"));
+        }
+    }
+
+    private static void SetTextIfChanged(TreeNode node, string text)
+    {
+        if (!string.Equals(node.Text, text, StringComparison.Ordinal)) node.Text = text;
+    }
+
+    private static void SetTextIfChanged(Label label, string text)
+    {
+        if (!string.Equals(label.Text, text, StringComparison.Ordinal)) label.Text = text;
     }
 
     private void RaiseSelection(TreeNode? node)
@@ -199,12 +317,12 @@ internal sealed class HierarchyPanel : UserControl
         return null;
     }
 
-    private static TreeNode TaggedNode(string text, HierarchyNodeKind kind, int index)
+    private static TreeNode TaggedNode(string text, HierarchyNodeKind kind, int index, int detail = -1)
     {
-        return new TreeNode(text) { Tag = new HierarchyNodeTag(kind, index) };
+        return new TreeNode(text) { Tag = new HierarchyNodeTag(kind, index, detail) };
     }
 
     private static TreeNode PlainNode(string text) => new(text) { ForeColor = Theme.Muted };
 
-    private readonly record struct HierarchyNodeTag(HierarchyNodeKind Kind, int Index);
+    private readonly record struct HierarchyNodeTag(HierarchyNodeKind Kind, int Index, int Detail);
 }

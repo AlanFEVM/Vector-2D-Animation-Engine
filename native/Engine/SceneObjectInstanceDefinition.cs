@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace VectorAnimationEngine;
 
 internal readonly record struct InstancePositionKeyframe(int Frame, float X, float Y);
@@ -30,6 +32,10 @@ internal readonly record struct InstanceFrameState(
 }
 
 internal readonly record struct InstanceStateKeyframe(int Frame, InstanceFrameState State);
+
+internal readonly record struct InstanceAnchorCompensation(
+    InstanceFrameState BaseState,
+    InstanceStateKeyframe[] StateKeyframes);
 
 internal class DrawingObjectInstanceDefinition
 {
@@ -79,6 +85,34 @@ internal class DrawingObjectInstanceDefinition
     public IReadOnlyList<InstancePositionKeyframe> PositionKeyframes => _stateKeyframes
         .Select(keyframe => new InstancePositionKeyframe(keyframe.Frame, keyframe.State.X, keyframe.State.Y))
         .ToArray();
+
+    internal DrawingObjectInstanceDefinition Clone()
+    {
+        var clone = new DrawingObjectInstanceDefinition
+        {
+            Id = Id,
+            DrawingObjectId = DrawingObjectId,
+            SceneLayerId = SceneLayerId,
+            Name = Name,
+            Visible = Visible,
+            X = X,
+            Y = Y,
+            Z = Z,
+            RotationX = RotationX,
+            RotationY = RotationY,
+            RotationZ = RotationZ,
+            SkewX = SkewX,
+            SkewY = SkewY,
+            ScaleX = ScaleX,
+            ScaleY = ScaleY,
+            ScaleZ = ScaleZ,
+            PlaybackFps = PlaybackFps,
+            PlaybackMode = PlaybackMode,
+            HoldFrame = HoldFrame
+        };
+        clone.RestoreStateKeyframes(StateKeyframes);
+        return clone;
+    }
 
     internal int ResolvePlaybackFrame(int parentFrame, int parentFps, int sourceFrameCount)
     {
@@ -232,6 +266,37 @@ internal class DrawingObjectInstanceDefinition
         }
     }
 
+    internal bool TryPlanAnchorCompensation(PointF sourceDelta, out InstanceAnchorCompensation compensation)
+    {
+        compensation = default;
+        if (!TryCompensateState(BaseState(), sourceDelta, out var baseState)) return false;
+
+        var keyframes = new InstanceStateKeyframe[_stateKeyframes.Count];
+        for (var index = 0; index < _stateKeyframes.Count; index++)
+        {
+            var keyframe = _stateKeyframes[index];
+            if (!TryCompensateState(keyframe.State, sourceDelta, out var state)) return false;
+            keyframes[index] = keyframe with { State = state };
+        }
+
+        compensation = new InstanceAnchorCompensation(baseState, keyframes);
+        return true;
+    }
+
+    internal void ApplyAnchorCompensation(InstanceAnchorCompensation compensation)
+    {
+        ApplyBaseState(compensation.BaseState);
+        _stateKeyframes.Clear();
+        _stateKeyframes.AddRange(compensation.StateKeyframes);
+    }
+
+    internal static Matrix3x2 CreateLinearTransform(InstanceFrameState state)
+    {
+        return Matrix3x2.CreateScale(state.ScaleX, state.ScaleY)
+            * Matrix3x2.CreateSkew(state.SkewX * MathF.PI / 180f, state.SkewY * MathF.PI / 180f)
+            * Matrix3x2.CreateRotation(state.RotationZ * MathF.PI / 180f);
+    }
+
     private InstanceFrameState BaseState()
     {
         return new InstanceFrameState(
@@ -296,6 +361,20 @@ internal class DrawingObjectInstanceDefinition
             HoldFrame = Math.Max(0, state.HoldFrame)
         };
         return true;
+    }
+
+    private static bool TryCompensateState(
+        InstanceFrameState state,
+        PointF sourceDelta,
+        out InstanceFrameState compensated)
+    {
+        var offset = Vector2.Transform(
+            new Vector2(sourceDelta.X, sourceDelta.Y),
+            CreateLinearTransform(state));
+        var x = state.X + offset.X;
+        var y = state.Y + offset.Y;
+        compensated = state with { X = x, Y = y };
+        return float.IsFinite(x) && float.IsFinite(y);
     }
 
     private int LowerBoundStateKeyframe(int frame)

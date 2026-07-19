@@ -34,6 +34,8 @@ internal sealed class VectorSceneSnapshot
     public float[] Stroke { get; init; } = [];
     public float[] CurveControlX { get; init; } = [];
     public float[] CurveControlY { get; init; } = [];
+    public float[] CurveControl2X { get; init; } = [];
+    public float[] CurveControl2Y { get; init; } = [];
     public LineEndpointStyle[] LineEndpointStyles { get; init; } = [];
     public LineEndpointStyle[] LineEndEndpointStyles { get; init; } = [];
     public ShapeKind[] ShapeKind { get; init; } = [];
@@ -83,6 +85,8 @@ internal sealed class VectorSceneSnapshot
         bytes += ArrayBytes(Stroke.Length, 4);
         bytes += ArrayBytes(CurveControlX.Length, 4);
         bytes += ArrayBytes(CurveControlY.Length, 4);
+        bytes += ArrayBytes(CurveControl2X.Length, 4);
+        bytes += ArrayBytes(CurveControl2Y.Length, 4);
         bytes += ArrayBytes(LineEndpointStyles.Length, 4);
         bytes += ArrayBytes(LineEndEndpointStyles.Length, 4);
         bytes += ArrayBytes(ShapeKind.Length, 4);

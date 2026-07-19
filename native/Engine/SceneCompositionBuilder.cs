@@ -131,6 +131,7 @@ internal static class SceneCompositionBuilder
         public PointF[] GradientPath { get; init; } = [];
         public PointF[][] ShapeGradientMappingContours { get; init; } = [];
         public int ShapeVertexCount { get; init; }
+        public PointF Control2 { get; init; }
     }
 
     public static SceneCompositionResult Build(
@@ -172,7 +173,7 @@ internal static class SceneCompositionBuilder
                 CollectDrawingObjectLayers(
                     drawingObject,
                     instance,
-                    InstanceMatrix(instance, localFrame),
+                    InstanceMatrix(drawingObject, instance, localFrame),
                     localFrame,
                     parentFps,
                     definitionsById,
@@ -322,7 +323,7 @@ internal static class SceneCompositionBuilder
                 CollectDrawingObjectLayers(
                     child,
                     instance,
-                    InstanceMatrix(instance, localFrame),
+                    InstanceMatrix(child, instance, localFrame),
                     localFrame,
                     parentFps,
                     definitionsById,
@@ -367,7 +368,7 @@ internal static class SceneCompositionBuilder
         CollectDrawingObjectLayers(
             drawingObject,
             previewInstance,
-            InstanceMatrix(previewInstance, localFrame),
+            InstanceMatrix(drawingObject, previewInstance, localFrame),
             localFrame,
             parentFps,
             definitionsById,
@@ -432,7 +433,7 @@ internal static class SceneCompositionBuilder
                     CollectDrawingObjectLayers(
                         child,
                         childInstance,
-                        InstanceMatrix(childInstance, localFrame) * transform,
+                        InstanceMatrix(child, childInstance, localFrame) * transform,
                         localFrame,
                         state.PlaybackFps,
                         definitionsById,
@@ -792,9 +793,11 @@ internal static class SceneCompositionBuilder
             && source.TryGetLineEndpoint(sourceObject, startEndpoint: true, out var start)
             && source.TryGetLineEndpoint(sourceObject, startEndpoint: false, out var end))
         {
-            var control = new PointF(source.CurveControlX[sourceObject], source.CurveControlY[sourceObject]);
+            var control1 = new PointF(source.CurveControlX[sourceObject], source.CurveControlY[sourceObject]);
+            var control2 = new PointF(source.CurveControl2X[sourceObject], source.CurveControl2Y[sourceObject]);
             var transformedStart = TransformPoint(start, transform, identityTransform);
-            var transformedControl = TransformPoint(control, transform, identityTransform);
+            var transformedControl1 = TransformPoint(control1, transform, identityTransform);
+            var transformedControl2 = TransformPoint(control2, transform, identityTransform);
             var transformedEnd = TransformPoint(end, transform, identityTransform);
             var dx = transformedEnd.X - transformedStart.X;
             var dy = transformedEnd.Y - transformedStart.Y;
@@ -814,12 +817,15 @@ internal static class SceneCompositionBuilder
                 strokeArgb,
                 atoms,
                 transformedStart,
-                transformedControl,
+                transformedControl1,
                 transformedEnd,
                 [],
                 [],
                 source.GetLineEndpointStyle(sourceObject, startEndpoint: true),
-                source.GetLineEndpointStyle(sourceObject, startEndpoint: false)), source, sourceObject, transform, identityTransform);
+                source.GetLineEndpointStyle(sourceObject, startEndpoint: false))
+            {
+                Control2 = transformedControl2
+            }, source, sourceObject, transform, identityTransform);
         }
 
         if (!identityTransform && HasShear(transform))
@@ -920,6 +926,7 @@ internal static class SceneCompositionBuilder
             item.Atoms,
             item.Shape,
             item.Kind == PreparedCompositionKind.Curve ? item.Control : item.Center,
+            item.Kind == PreparedCompositionKind.Curve ? item.Control2 : item.Center,
             item.StartEndpointStyle,
             item.EndEndpointStyle,
             item.LinearGradientEnabled,
@@ -962,7 +969,8 @@ internal static class SceneCompositionBuilder
                 item.Control,
                 item.StartEndpointStyle,
                 item.EndEndpointStyle,
-                item.ShapeVertexCount),
+                item.ShapeVertexCount,
+                curveControl2: item.Control2),
             _ => destination.AppendPackedObject(
                 item.DestinationLayer,
                 item.Center,
@@ -976,7 +984,8 @@ internal static class SceneCompositionBuilder
                 item.Center,
                 item.StartEndpointStyle,
                 item.EndEndpointStyle,
-                item.ShapeVertexCount)
+                item.ShapeVertexCount,
+                curveControl2: item.Center)
         };
         if (item.LinearGradientEnabled)
         {
@@ -1025,12 +1034,14 @@ internal static class SceneCompositionBuilder
         };
     }
 
-    private static Matrix3x2 InstanceMatrix(DrawingObjectInstanceDefinition instance, int frame)
+    private static Matrix3x2 InstanceMatrix(
+        DrawingObjectDefinition drawingObject,
+        DrawingObjectInstanceDefinition instance,
+        int frame)
     {
         var state = instance.EvaluateState(frame);
-        return Matrix3x2.CreateScale(state.ScaleX, state.ScaleY)
-            * Matrix3x2.CreateSkew(state.SkewX * MathF.PI / 180f, state.SkewY * MathF.PI / 180f)
-            * Matrix3x2.CreateRotation(state.RotationZ * MathF.PI / 180f)
+        return Matrix3x2.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y)
+            * DrawingObjectInstanceDefinition.CreateLinearTransform(state)
             * Matrix3x2.CreateTranslation(state.X, state.Y);
     }
 

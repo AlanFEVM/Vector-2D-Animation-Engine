@@ -9,5 +9,6 @@ internal enum EditHandleKind
     BoundsBottomLeft,
     LineStart,
     LineEnd,
-    BezierControl
+    BezierControl,
+    BezierControl2
 }

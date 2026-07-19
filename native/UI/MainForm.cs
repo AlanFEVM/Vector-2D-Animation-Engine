@@ -49,6 +49,8 @@ internal readonly record struct PenAnchorSnapResult(
 
 internal readonly record struct LineEndpointSnapCandidate(int ObjectIndex, PointF Point);
 
+internal readonly record struct TimelineBlankKeyframeRangePlan(int[] ExtensionFrames, int BlankFrame);
+
 internal sealed class MainForm : Form
 {
     private const int ResizeGripSize = 7;
@@ -71,17 +73,23 @@ internal sealed class MainForm : Form
     private const double MaxFrameSeconds = 0.1;
     private const int IdleTimerIntervalMs = 250;
     private const int PlaybackTimerIntervalMs = 8;
-    private const double FillBoundaryPreviewIntervalMilliseconds = 33;
     private const float EndpointConnectionToleranceUnits = 1.25f;
     private const int MaxUndoSnapshots = 32;
     private const long MaxUndoSnapshotBytes = 128L * 1024 * 1024;
     private const float PasteOffsetUnits = 96f;
     private const int MaxFreehandSamples = 16_384;
     private const float FreehandSampleSpacingPixels = 1.25f;
+    private const int MaxFreehandPreviewPoints = 256;
+    private const int MaxStampBrushPreviewPoints = 96;
+    private const int MaxInteractiveLineMergeCandidates = 64;
+    private const int MaxInteractiveLineMergeSceneObjects = 512;
     private const double ShapeGradientPreviewIntervalMilliseconds = 33;
     private const int VaultDrawerExpandedWidth = 306;
     private const int VaultDrawerMaximumPixelsPerTick = 64;
     private const double VaultDrawerAnimationMilliseconds = 160;
+    private const int InspectorPanelExpandedWidth = 324;
+    private const int TimelinePanelDefaultHeight = 192;
+    private const double WorkspacePanelAnimationMilliseconds = 180;
 
     private VectorProject _project = VectorProject.CreateEmpty();
     private ApplicationSettings _applicationSettings = ApplicationSettingsStore.Load();
@@ -112,7 +120,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
     private bool? _lastDrawingToolsBlocked;
     private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
-    private readonly ToolMode[] _lineTools = [ToolMode.Line, ToolMode.Pen, ToolMode.Pencil];
+    private readonly ToolMode[] _lineTools = [ToolMode.Line, ToolMode.Pen, ToolMode.SimplePen, ToolMode.Pencil];
     private readonly ToolMode[] _brushTools = [ToolMode.Brush, ToolMode.PressureBrush];
     private readonly ToolPairGroup _selectionToolGroup = new([ToolMode.Select, ToolMode.Transform]);
     private readonly ToolPairGroup _paintToolGroup = new([ToolMode.Fill, ToolMode.InkBottle]);
@@ -123,6 +131,7 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _lineFlyoutHideTimer = new();
     private readonly System.Windows.Forms.Timer _brushFlyoutHideTimer = new();
     private readonly System.Windows.Forms.Timer _vaultDrawerTimer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _workspacePanelAnimationTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _lineDragPreviewTimer = new() { Interval = 16 };
     private DateTime _shapeFlyoutHideAtUtc;
     private DateTime _lineFlyoutHideAtUtc;
@@ -137,6 +146,7 @@ internal sealed class MainForm : Form
     private readonly FlowLayoutPanel _drawingObjectTabs = new();
     private readonly DrawSnappingStrip _drawSnappingStrip;
     private readonly TimelineStrip _timeline;
+    private readonly Size _timelinePanelMinimumSize;
     private TimelineFrameClipboard? _timelineClipboard;
     private readonly StatusStrip _statusBar = new();
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS --");
@@ -144,6 +154,8 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
     private readonly ToolStripStatusLabel _devReloadStatus = StatusLabel("Module Reload On");
     private WindowChromeButton? _maximizeButton;
+    private SvgIconButton? _propertiesPanelButton;
+    private SvgIconButton? _timelinePanelButton;
     private readonly PlaybackSettingsPanel _playbackSettings = new();
     private readonly DrawSettingsPanel _drawSettingsPanel;
     private readonly BrushTipPanel _brushTipPanel = new();
@@ -206,11 +218,12 @@ internal sealed class MainForm : Form
     private PointF _dragPreviewPosition;
     private readonly Dictionary<int, PointF> _selectedMoveStarts = new();
     private readonly Dictionary<int, PointF> _selectedCurveStarts = new();
+    private readonly Dictionary<int, PointF> _selectedCurve2Starts = new();
     private readonly Dictionary<int, (PointF Start, PointF End)> _selectedGradientStarts = new();
     private readonly List<LineEndpointEditStart> _lineEndpointEditStarts = new();
     private readonly List<FillBoundaryLineLink> _fillBoundaryLineLinks = new();
     private readonly Dictionary<(int X, int Y), List<LineEndpointSnapCandidate>> _lineEndpointSnapBuckets = new();
-    private readonly Stack<VectorSceneSnapshot> _undoStack = new();
+    private readonly Stack<DrawingUndoEntry> _undoStack = new();
     private readonly Stack<SceneTimelineUndoEntry> _sceneTimelineUndoStack = new();
     private OnionSkinRangeEditSession? _onionSkinRangeEditSession;
     private readonly List<ClipboardObject> _clipboardObjects = new();
@@ -231,6 +244,7 @@ internal sealed class MainForm : Form
     private PointF? _startWorld;
     private PointF? _selectedStart;
     private PointF? _curveControlStart;
+    private PointF? _curveControl2Start;
     private PointF? _resizeStartCenter;
     private SizeF? _resizeStartSize;
     private float _resizeStartAngle;
@@ -258,7 +272,11 @@ internal sealed class MainForm : Form
     private bool _viewOrbiting;
     private bool _viewReferencePanning;
     private bool _viewReferenceZooming;
+    private bool _spacePanKeyDown;
+    private bool _spacePanHeld;
+    private bool _spacePanPointerActive;
     private bool _marqueeSelecting;
+    private bool _marqueeSelectionCancellationPending;
     private bool _detachedSelectionForMove;
     private bool _pointerHitWasAlreadySelected;
     private bool _selectionWasEmptyOnPointerDown;
@@ -274,11 +292,27 @@ internal sealed class MainForm : Form
     private PointF? _penControlWorld;
     private Point? _penEndpointScreen;
     private bool _penSegmentDragging;
+    private PointF? _traditionalPenFirstAnchor;
+    private PointF? _traditionalPenCurrentAnchor;
+    private PointF? _traditionalPenOutgoingHandle;
+    private PointF? _traditionalPenPendingAnchor;
+    private PointF? _traditionalPenIncomingHandle;
+    private PointF? _traditionalPenPendingOutgoingHandle;
+    private PointF? _traditionalPenLockedIncomingHandle;
+    private Point? _traditionalPenPointerDownScreen;
+    private bool _traditionalPenPointerDown;
+    private bool _traditionalPenClosing;
+    private bool _traditionalPenAnchorEditing;
+    private bool _traditionalPenAnchorEditTracksCurrent;
+    private int _traditionalPenAnchorEditObject = -1;
+    private bool _traditionalPenAnchorEditStartEndpoint;
+    private PointF _traditionalPenAnchorEditOriginalCurrent;
+    private PointF? _traditionalPenAnchorEditOriginalOutgoing;
+    private int _traditionalPenSegmentCount;
     private PointF? _pendingLineDragWorld;
     private RectangleF _lineEndpointSnapCacheBounds;
     private float _lineEndpointSnapBucketSize;
     private int _lineEndpointSnapCacheLayer = -1;
-    private long _fillBoundaryPreviewUpdatedAt;
     private bool _linkedFillBoundaryPreviewDirty;
     private VectorScene? _penAnchorCacheScene;
     private long _penAnchorCacheGeometryRevision = -1;
@@ -301,6 +335,15 @@ internal sealed class MainForm : Form
     private int _vaultDrawerAnimationToWidth;
     private long _vaultDrawerAnimationStartedTimestamp;
     private double _vaultDrawerAnimationDurationMilliseconds = VaultDrawerAnimationMilliseconds;
+    private bool _inspectorPanelOpen = true;
+    private bool _timelinePanelOpen = true;
+    private int _timelinePanelExpandedHeight = TimelinePanelDefaultHeight;
+    private int _inspectorPanelAnimationFromWidth = InspectorPanelExpandedWidth;
+    private int _inspectorPanelAnimationToWidth = InspectorPanelExpandedWidth;
+    private int _timelinePanelAnimationFromHeight = TimelinePanelDefaultHeight;
+    private int _timelinePanelAnimationToHeight = TimelinePanelDefaultHeight;
+    private long _workspacePanelAnimationStartedTimestamp;
+    private double _workspacePanelAnimationDurationMilliseconds = WorkspacePanelAnimationMilliseconds;
     private Color _freehandColor = Color.White;
     private float _freehandStrokeUnits;
     private float _standardStrokeWidthPoints = 2;
@@ -317,14 +360,27 @@ internal sealed class MainForm : Form
     private readonly EditorRestartState? _restartState;
     private bool _restartRequested;
 
-    private readonly record struct LineEndpointEditStart(int ObjectIndex, bool StartEndpoint, PointF OriginalEndpoint, PointF OppositeEndpoint, PointF Control, bool KeepStraight);
+    private readonly record struct LineEndpointEditStart(
+        int ObjectIndex,
+        bool StartEndpoint,
+        PointF OriginalEndpoint,
+        PointF OppositeEndpoint,
+        PointF Control1,
+        PointF Control2,
+        bool KeepStraight);
 
     private readonly record struct DrawingStackKey(long Order, double SubOrder);
+
+    private sealed record DrawingUndoEntry(
+        VectorSceneSnapshot Snapshot,
+        DrawingObjectDefinition? DrawingObject = null,
+        DrawingObjectInstanceDefinition[]? InstanceSnapshot = null);
 
     private sealed record SceneTimelineUndoEntry(
         SceneDefinition Scene,
         AnimationTimelineSnapshot Snapshot,
-        SceneLayerSnapshot? LayerSnapshot = null);
+        SceneLayerSnapshot? LayerSnapshot = null,
+        DrawingObjectInstanceDefinition[]? InstanceSnapshot = null);
 
     private sealed class OnionSkinRangeEditSession
     {
@@ -359,6 +415,7 @@ internal sealed class MainForm : Form
         ShapeKind Shape,
         int ShapeVertexCount,
         PointF CurveControl,
+        PointF CurveControl2,
         PointF[][]? PathWorldContours,
         LineEndpointStyle StartEndpointStyle,
         LineEndpointStyle EndEndpointStyle);
@@ -396,8 +453,11 @@ internal sealed class MainForm : Form
         _stage = new StageControl(_scene) { Dock = DockStyle.Fill };
         _stage.AllowDrop = true;
         BuildStageContextMenu();
-        _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = 192 };
+        _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = TimelinePanelDefaultHeight };
+        _timelinePanelMinimumSize = _timeline.MinimumSize;
         _timeline.PlaybackFps = _playbackSettings.Fps;
+        _timeline.FrameWidth = _applicationSettings.TimelineFrameWidth;
+        _timeline.FrameHeightPreset = _applicationSettings.TimelineFrameHeight;
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
         _brushTipPanel.SetBrushShape(_brushShape);
         _brushTipPanel.SetBrushStrokeSettings(
@@ -415,6 +475,7 @@ internal sealed class MainForm : Form
         _selectionToolGroup.HideTimer.Tick += (_, _) => UpdateToolPairFlyoutVisibility(_selectionToolGroup);
         _paintToolGroup.HideTimer.Tick += (_, _) => UpdateToolPairFlyoutVisibility(_paintToolGroup);
         _vaultDrawerTimer.Tick += (_, _) => TickVaultDrawer();
+        _workspacePanelAnimationTimer.Tick += (_, _) => TickWorkspacePanelAnimation();
         _lineDragPreviewTimer.Tick += (_, _) => TickLineDragPreview();
         BuildUi();
         HookEvents();
@@ -542,9 +603,31 @@ internal sealed class MainForm : Form
         var mark = new Label { Text = "V2", Left = 58, Top = 12, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
         RegisterWindowDrag(mark);
         top.Controls.Add(mark);
-        var title = Theme.Label("Vector 2D Animation Engine", 102, 16, 260, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
+        var title = Theme.Label("Vector 2D Animation Engine", 102, 16, 190, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
         RegisterWindowDrag(title);
         top.Controls.Add(title);
+        _propertiesPanelButton = new SvgIconButton(SvgIconKind.PropertiesPanel)
+        {
+            Left = 300,
+            Top = 11,
+            AccessibleName = "Properties panel"
+        };
+        Theme.StyleActiveButton(_propertiesPanelButton);
+        _propertiesPanelButton.Click += (_, _) => ToggleInspectorPanel();
+        _propertiesPanelButton.MouseEnter += (_, _) => _toolTip.ShowFor(_propertiesPanelButton, "Properties (F1)");
+        _propertiesPanelButton.MouseLeave += (_, _) => _toolTip.HideTip();
+        top.Controls.Add(_propertiesPanelButton);
+        _timelinePanelButton = new SvgIconButton(SvgIconKind.TimelinePanel)
+        {
+            Left = 342,
+            Top = 11,
+            AccessibleName = "Timeline panel"
+        };
+        Theme.StyleActiveButton(_timelinePanelButton);
+        _timelinePanelButton.Click += (_, _) => ToggleTimelinePanel();
+        _timelinePanelButton.MouseEnter += (_, _) => _toolTip.ShowFor(_timelinePanelButton, "Timeline (F2)");
+        _timelinePanelButton.MouseLeave += (_, _) => _toolTip.HideTip();
+        top.Controls.Add(_timelinePanelButton);
         var restart = CreateWindowButton(WindowChromeButtonKind.Restart, "Restart editor");
         restart.Click += (_, _) => RequestEditorRestart();
         restart.MouseEnter += (_, _) => _toolTip.ShowFor(restart, RestartEditorToolTip());
@@ -620,7 +703,7 @@ internal sealed class MainForm : Form
         body.Controls.Add(vaultDrawer);
 
         _inspectorHost.Dock = DockStyle.Right;
-        _inspectorHost.Width = 324;
+        _inspectorHost.Width = InspectorPanelExpandedWidth;
         _inspectorHost.BackColor = Theme.Panel;
         _inspectorHost.Padding = new Padding(14, 16, 14, 12);
         // The active inspector page owns scrolling. A second auto-scroll host resets the child page during refresh.
@@ -714,6 +797,16 @@ internal sealed class MainForm : Form
         _workspaceTabs.BringToFront();
 
         Controls.Add(_timeline);
+        _timeline.Resize += (_, _) =>
+        {
+            if (_timelinePanelOpen
+                && !_workspacePanelAnimationTimer.Enabled
+                && _timeline.Visible
+                && _timeline.Height > 0)
+            {
+                _timelinePanelExpandedHeight = _timeline.Height;
+            }
+        };
         BuildStatusBar();
         Controls.Add(_statusBar);
     }
@@ -739,7 +832,7 @@ internal sealed class MainForm : Form
         };
         if (!ApplicationSettingsStore.TrySave(settings))
         {
-            MessageBox.Show(
+            ModernMessageDialog.Show(
                 this,
                 UiLocalization.T("The settings could not be saved. See the latest log file for details."),
                 UiLocalization.T("Settings"),
@@ -751,6 +844,28 @@ internal sealed class MainForm : Form
         _applicationSettings = settings;
         UiLocalization.SetLanguage(settings.Language);
         AppLog.Info($"Tool shortcut preset changed to {_applicationSettings.ToolShortcutPreset}.");
+    }
+
+    private void PersistTimelineFrameWidth()
+    {
+        var width = _timeline.FrameWidth;
+        if (_applicationSettings.TimelineFrameWidth == width) return;
+        _applicationSettings = _applicationSettings with { TimelineFrameWidth = width };
+        if (!ApplicationSettingsStore.TrySave(_applicationSettings))
+        {
+            AppLog.Warn("The timeline frame width could not be saved; the current session will keep the selected width.");
+        }
+    }
+
+    private void PersistTimelineFrameHeight()
+    {
+        var preset = _timeline.FrameHeightPreset;
+        if (_applicationSettings.TimelineFrameHeight == preset) return;
+        _applicationSettings = _applicationSettings with { TimelineFrameHeight = preset };
+        if (!ApplicationSettingsStore.TrySave(_applicationSettings))
+        {
+            AppLog.Warn("The timeline frame height could not be saved; the current session will keep the selected height.");
+        }
     }
 
     private static WindowChromeButton CreateWindowButton(WindowChromeButtonKind kind, string name)
@@ -778,6 +893,124 @@ internal sealed class MainForm : Form
         maximize.Top = buttonTop;
         minimize.Top = buttonTop;
         restart.Top = buttonTop;
+    }
+
+    private void ToggleInspectorPanel()
+    {
+        _inspectorPanelOpen = !_inspectorPanelOpen;
+        BeginWorkspacePanelAnimation();
+    }
+
+    private void ToggleTimelinePanel()
+    {
+        if (_timelinePanelOpen
+            && !_workspacePanelAnimationTimer.Enabled
+            && _timeline.Visible
+            && _timeline.Height > 0)
+        {
+            _timelinePanelExpandedHeight = _timeline.Height;
+        }
+        _timelinePanelOpen = !_timelinePanelOpen;
+        BeginWorkspacePanelAnimation();
+    }
+
+    private void BeginWorkspacePanelAnimation()
+    {
+        if (_inspectorPanelOpen) _inspectorHost.Visible = true;
+        if (_timelinePanelOpen) _timeline.Visible = true;
+        _inspectorPanelAnimationFromWidth = _inspectorHost.Width;
+        _inspectorPanelAnimationToWidth = _inspectorPanelOpen ? InspectorPanelExpandedWidth : 0;
+        _timelinePanelAnimationFromHeight = _timeline.Height;
+        _timelinePanelAnimationToHeight = _timelinePanelOpen
+            ? Math.Max(_timelinePanelMinimumSize.Height, _timelinePanelExpandedHeight)
+            : 0;
+        if (_timelinePanelAnimationFromHeight != _timelinePanelAnimationToHeight)
+        {
+            _timeline.MinimumSize = new Size(_timelinePanelMinimumSize.Width, 0);
+        }
+        _workspacePanelAnimationStartedTimestamp = Stopwatch.GetTimestamp();
+        var inspectorDistance = Math.Abs(
+            _inspectorPanelAnimationToWidth - _inspectorPanelAnimationFromWidth)
+            / (double)InspectorPanelExpandedWidth;
+        var timelineDistance = Math.Abs(
+            _timelinePanelAnimationToHeight - _timelinePanelAnimationFromHeight)
+            / (double)Math.Max(1, _timelinePanelExpandedHeight);
+        var distance = Math.Max(inspectorDistance, timelineDistance);
+        _workspacePanelAnimationDurationMilliseconds = Math.Max(
+            60,
+            WorkspacePanelAnimationMilliseconds * distance);
+        UpdateWorkspacePanelButtonStyles();
+        if (distance <= 0.0001)
+        {
+            CompleteWorkspacePanelAnimation();
+            return;
+        }
+
+        _workspacePanelAnimationTimer.Start();
+    }
+
+    private void TickWorkspacePanelAnimation()
+    {
+        var elapsed = Stopwatch.GetElapsedTime(_workspacePanelAnimationStartedTimestamp).TotalMilliseconds;
+        var progress = Math.Clamp(elapsed / _workspacePanelAnimationDurationMilliseconds, 0, 1);
+        var inspectorWidth = ResolveWorkspacePanelAnimationValue(
+            _inspectorPanelAnimationFromWidth,
+            _inspectorPanelAnimationToWidth,
+            progress);
+        var timelineHeight = ResolveWorkspacePanelAnimationValue(
+            _timelinePanelAnimationFromHeight,
+            _timelinePanelAnimationToHeight,
+            progress);
+        var body = _inspectorHost.Parent;
+        SuspendLayout();
+        body?.SuspendLayout();
+        try
+        {
+            if (_inspectorHost.Width != inspectorWidth) _inspectorHost.Width = inspectorWidth;
+            if (_timeline.Height != timelineHeight) _timeline.Height = timelineHeight;
+        }
+        finally
+        {
+            body?.ResumeLayout(performLayout: true);
+            ResumeLayout(performLayout: true);
+        }
+
+        if (progress >= 1) CompleteWorkspacePanelAnimation();
+    }
+
+    internal static int ResolveWorkspacePanelAnimationValue(int from, int to, double progress)
+    {
+        progress = Math.Clamp(progress, 0, 1);
+        var eased = 1 - Math.Pow(1 - progress, 3);
+        return (int)Math.Round(from + (to - from) * eased);
+    }
+
+    private void CompleteWorkspacePanelAnimation()
+    {
+        _workspacePanelAnimationTimer.Stop();
+        _inspectorHost.Width = _inspectorPanelOpen ? InspectorPanelExpandedWidth : 0;
+        _timeline.Height = _timelinePanelOpen
+            ? Math.Max(_timelinePanelMinimumSize.Height, _timelinePanelExpandedHeight)
+            : 0;
+        if (_timelinePanelOpen) _timeline.MinimumSize = _timelinePanelMinimumSize;
+        _inspectorHost.Visible = _inspectorPanelOpen;
+        _timeline.Visible = _timelinePanelOpen;
+        UpdateWorkspacePanelButtonStyles();
+        _stage.Invalidate();
+    }
+
+    private void UpdateWorkspacePanelButtonStyles()
+    {
+        if (_propertiesPanelButton is not null)
+        {
+            if (_inspectorPanelOpen) Theme.StyleActiveButton(_propertiesPanelButton);
+            else Theme.StyleButton(_propertiesPanelButton);
+        }
+        if (_timelinePanelButton is not null)
+        {
+            if (_timelinePanelOpen) Theme.StyleActiveButton(_timelinePanelButton);
+            else Theme.StyleButton(_timelinePanelButton);
+        }
     }
 
     private void ToggleVaultDrawer()
@@ -937,11 +1170,14 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            PersistTimelineFrameWidth();
+            PersistTimelineFrameHeight();
             _shapeFlyoutHideTimer.Dispose();
             _lineFlyoutHideTimer.Dispose();
             _selectionToolGroup.HideTimer.Dispose();
             _paintToolGroup.HideTimer.Dispose();
             _vaultDrawerTimer.Dispose();
+            _workspacePanelAnimationTimer.Dispose();
             _lineDragPreviewTimer.Dispose();
             _timer.Dispose();
             _stageContextMenu.Dispose();
@@ -1065,7 +1301,7 @@ internal sealed class MainForm : Form
         BuildInspector(_objectInspector);
         _materialEditor.Dock = DockStyle.Top;
         _drawingObjectInstancePanel.Dock = DockStyle.Top;
-        _drawingObjectInstancePanel.Height = 180;
+        _drawingObjectInstancePanel.Height = 248;
         _drawingObjectInstancePanel.Visible = false;
         _brushTipPanel.Dock = DockStyle.Top;
         _brushTipPanel.Height = _brushTipPanel.PreferredHeight;
@@ -1343,6 +1579,63 @@ internal sealed class MainForm : Form
         AppLog.Info($"Duplicated drawing object: {duplicate.Name}");
     }
 
+    private void CreateProjectAssetFolder(string parentFolderId)
+    {
+        if (!DrawingObjectNameDialog.TryAsk(
+                this,
+                "New Folder",
+                "Folder name",
+                "Folder",
+                out var name)
+            || !_project.TryAddAssetFolder(name, parentFolderId, out var folder)
+            || folder is null)
+        {
+            return;
+        }
+
+        _libraryVaultPanel.SelectAssetFolder(folder.Id);
+        AppLog.Info($"Created project asset folder: {folder.Name}");
+    }
+
+    private void RenameProjectAssetFolder(string folderId)
+    {
+        var folder = _project.AssetFolders.FirstOrDefault(item =>
+            string.Equals(item.Id, folderId, StringComparison.Ordinal));
+        if (folder is null
+            || !DrawingObjectNameDialog.TryAsk(
+                this,
+                "Rename Folder",
+                "Folder name",
+                folder.Name,
+                out var name)
+            || !_project.TryRenameAssetFolder(folder.Id, name))
+        {
+            return;
+        }
+
+        _libraryVaultPanel.SelectAssetFolder(folder.Id);
+        AppLog.Info($"Renamed project asset folder: {folder.Name}");
+    }
+
+    private void DuplicateProjectAssetFolder(string folderId)
+    {
+        if (!_project.TryDuplicateAssetFolder(folderId, out var duplicate) || duplicate is null) return;
+
+        _libraryVaultPanel.SelectAssetFolder(duplicate.Id);
+        AppLog.Info($"Duplicated project asset folder: {duplicate.Name}");
+    }
+
+    private void MoveProjectAssetFolder(string folderId, string targetFolderId)
+    {
+        if (!_project.TryMoveAssetFolder(folderId, targetFolderId)) return;
+        _libraryVaultPanel.SelectAssetFolder(folderId);
+    }
+
+    private void MoveDrawingObjectToAssetFolder(string drawingObjectId, string targetFolderId)
+    {
+        _project.TryMoveDrawingObjectToAssetFolder(drawingObjectId, targetFolderId);
+    }
+
     private void DeleteDrawingObject(string drawingObjectId)
     {
         var index = -1;
@@ -1356,7 +1649,7 @@ internal sealed class MainForm : Form
         if (index < 0) return;
         if (_drawingObjects.Count <= 1)
         {
-            MessageBox.Show(
+            ModernMessageDialog.Show(
                 this,
                 UiLocalization.T("A project must retain at least one drawing object."),
                 UiLocalization.T("Delete Drawing Object"),
@@ -1376,7 +1669,7 @@ internal sealed class MainForm : Form
         var deletePrompt = UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese
             ? $"删除绘制对象“{drawingObject.Name}”？{referenceNotice}"
             : $"Delete drawing object \"{drawingObject.Name}\"?{referenceNotice}";
-        if (MessageBox.Show(
+        if (ModernMessageDialog.Show(
                 this,
                 deletePrompt,
                 UiLocalization.T("Delete Drawing Object"),
@@ -1422,6 +1715,7 @@ internal sealed class MainForm : Form
 
     private void BindActiveDrawingObjectScene(bool resetView)
     {
+        CancelTraditionalPenPath();
         CancelPenCurve();
         var drawingObject = ActiveDrawingObject();
         if (drawingObject is null)
@@ -1460,6 +1754,7 @@ internal sealed class MainForm : Form
 
     private void BindSceneEditStage(bool resetView)
     {
+        CancelTraditionalPenPath();
         CancelPenCurve();
         if (!ReferenceEquals(_scene, _sceneEditStage)) ResetUndoHistory();
         _scene = _sceneEditStage;
@@ -2138,11 +2433,14 @@ internal sealed class MainForm : Form
     private void ActivateTool(ToolMode tool)
     {
         if (DrawingToolsBlocked() && IsBasicDrawingOnlyTool(tool)) return;
+        if (_marqueeSelecting || _marqueeSelectionCancellationPending) FinishLostPointerCapture();
+        CancelTemporaryCanvasPan();
         CancelGradientPointer(restore: true);
         HideBrushColorPalette();
         _tool = tool;
         _stage.ClearDrawingPreview();
-        if (tool != ToolMode.Pen) CancelPenCurve();
+        if (tool != ToolMode.SimplePen) CancelPenCurve();
+        if (tool != ToolMode.Pen) CancelTraditionalPenPath();
         CancelFreehandStroke();
         if (!IsShapeTool(tool)) HideShapeToolFlyout();
         if (!IsLineTool(tool)) HideLineToolFlyout();
@@ -2169,6 +2467,7 @@ internal sealed class MainForm : Form
         _brushTipPanel.Visible = IsBrushTool(_tool) || _tool == ToolMode.Eraser;
         UpdateTransformOverlay();
         UpdateGradientOverlay();
+        UpdateTraditionalPenPathHandleOverlay();
         _stage.Focus();
         RefreshInteractionCursorAtPointer();
     }
@@ -2185,7 +2484,7 @@ internal sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (!BrushShape.TryLoad(dialog.FileName, out var brushShape, out var error) || brushShape is null)
         {
-            MessageBox.Show(this, UiLocalization.T(error), UiLocalization.T("Brush Tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ModernMessageDialog.Show(this, UiLocalization.T(error), UiLocalization.T("Brush Tip"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
@@ -2289,6 +2588,7 @@ internal sealed class MainForm : Form
 
     private void ApplyToolCursor()
     {
+        if (ApplyTemporaryCanvasPanCursor()) return;
         if (IsBrushTool(_tool) || _tool == ToolMode.Eraser)
         {
             _stage.ClearFillToolCursor();
@@ -2334,6 +2634,7 @@ internal sealed class MainForm : Form
 
     private void UpdateInteractionCursor(Point screen)
     {
+        if (ApplyTemporaryCanvasPanCursor()) return;
         if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming)
         {
             _stage.ClearBrushTipCursor();
@@ -2566,7 +2867,7 @@ internal sealed class MainForm : Form
         {
             EditHandleKind.BoundsTopLeft or EditHandleKind.BoundsBottomRight => Cursors.SizeNWSE,
             EditHandleKind.BoundsTopRight or EditHandleKind.BoundsBottomLeft => Cursors.SizeNESW,
-            EditHandleKind.LineStart or EditHandleKind.LineEnd or EditHandleKind.BezierControl => Cursors.Cross,
+            EditHandleKind.LineStart or EditHandleKind.LineEnd or EditHandleKind.BezierControl or EditHandleKind.BezierControl2 => Cursors.Cross,
             _ => Cursors.Default
         };
     }
@@ -2575,6 +2876,7 @@ internal sealed class MainForm : Form
     {
         _workspaceTabs.SelectedViewChanged += (_, e) => ShowWorkspace(e.SelectedView);
         _workspaceTabs.WorldGridOpacityChanged += (_, _) => _stage.WorldGridOpacity = _workspaceTabs.WorldGridOpacity / 100f;
+        _workspaceTabs.WorldGridTypeChanged += (_, _) => _stage.WorldGridType = _workspaceTabs.WorldGridType;
         _brushTipPanel.ImportRequested += (_, _) => ImportBrushTip();
         _brushTipPanel.SoftRoundRequested += (_, _) => RestoreDefaultBrushTip();
         _brushTipPanel.TraditionalBrushRequested += (_, _) => SelectTraditionalBrushTip();
@@ -2610,8 +2912,11 @@ internal sealed class MainForm : Form
         _timeline.AddFolderLayerRequested += (_, _) => AddTimelineFolderLayer();
         _timeline.AddMaskLayerRequested += (_, _) => AddTimelineMaskLayer();
         _timeline.PlaybackFpsChanged += (_, _) => _playbackSettings.Fps = _timeline.PlaybackFps;
+        _timeline.FrameWidthCommitted += (_, _) => PersistTimelineFrameWidth();
+        _timeline.FrameHeightCommitted += (_, _) => PersistTimelineFrameHeight();
         _timeline.CommandRequested += (_, e) => HandleTimelineCommand(e.Command, e.Cells);
         _timeline.LayerMoveRequested += (_, e) => MoveTimelineLayer(e.TrackId, e.TargetTrackId, e.Placement);
+        _timeline.RemoveLayersRequested += (_, _) => RemoveTimelineLayers();
         _timeline.LayerRenameRequested += (_, _) => RenameTimelineLayer();
         _timeline.LayerColorRequested += (_, _) => ChooseTimelineLayerColor();
         _timeline.LayerLockRequested += (_, _) => ToggleTimelineLayerLock();
@@ -2633,6 +2938,11 @@ internal sealed class MainForm : Form
         _libraryVaultPanel.DrawingObjectRenameRequested += (_, e) => RenameDrawingObject(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectDuplicateRequested += (_, e) => DuplicateDrawingObject(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectDeleteRequested += (_, e) => DeleteDrawingObject(e.DrawingObjectId);
+        _libraryVaultPanel.AssetFolderCreateRequested += (_, e) => CreateProjectAssetFolder(e.ParentFolderId);
+        _libraryVaultPanel.AssetFolderRenameRequested += (_, e) => RenameProjectAssetFolder(e.FolderId);
+        _libraryVaultPanel.AssetFolderDuplicateRequested += (_, e) => DuplicateProjectAssetFolder(e.FolderId);
+        _libraryVaultPanel.AssetFolderMoveRequested += (_, e) => MoveProjectAssetFolder(e.AssetId, e.TargetFolderId);
+        _libraryVaultPanel.DrawingObjectMoveRequested += (_, e) => MoveDrawingObjectToAssetFolder(e.AssetId, e.TargetFolderId);
         _sceneEditorPanel.SceneSettingsChanged += (_, e) => UpdateSceneSettings(e);
         _playbackSettings.FpsChanged += (_, _) =>
         {
@@ -2664,6 +2974,8 @@ internal sealed class MainForm : Form
         _materialEditor.GradientChanged += (_, e) => ApplyGradientToSelection(e);
         _drawingObjectInstancePanel.PlaybackSettingsChanged += (_, e) =>
             ApplyDrawingObjectPlaybackSettings(e);
+        _drawingObjectInstancePanel.AnchorChanged += (_, e) =>
+            ApplySelectedDrawingObjectAnchor(e.Anchor);
         _drawingObjectInstancePanel.RestoreOriginalSizeRequested += (_, _) =>
             RestoreSelectedDrawingObjectOriginalSize();
         _materialEditor.MaterialChanged += (_, e) =>
@@ -2853,6 +3165,7 @@ internal sealed class MainForm : Form
         {
             HideBrushColorPalette();
             FinishLostPointerCapture();
+            CancelTemporaryCanvasPan();
         };
     }
 
@@ -2928,6 +3241,7 @@ internal sealed class MainForm : Form
         ResetEditHistory();
         BuildDrawingObjectTabs();
         _workspaceTabs.WorldGridOpacity = (int)Math.Clamp(MathF.Round(state.StageView.WorldGridOpacity * 100), 0, 100);
+        _workspaceTabs.WorldGridType = state.StageView.WorldGridType;
         if (_workspaceTabs.SelectedView == state.Workspace) ShowWorkspace(state.Workspace);
         else _workspaceTabs.SelectedView = state.Workspace;
         var selected = state.SelectedObjects
@@ -2988,6 +3302,8 @@ internal sealed class MainForm : Form
         WindowBounds = WindowState == FormWindowState.Maximized ? RestoreBounds : Bounds,
         WindowState = WindowState
     };
+
+    internal EditorRestartState CaptureEditorRestartStateForRecovery() => CaptureEditorRestartState();
 
     private static string RestartEditorToolTip() => IsModuleHotReloadEnabled()
         ? "Restart the editor process, apply pending code changes, and preserve the current project"
@@ -3200,6 +3516,7 @@ internal sealed class MainForm : Form
         if (frameChanged)
         {
             HideBrushColorPalette();
+            CancelTraditionalPenPath();
             CancelPenCurve();
             FinishPointerInteractionForFrameChange();
         }
@@ -3231,6 +3548,16 @@ internal sealed class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == Keys.F1)
+        {
+            ToggleInspectorPanel();
+            return true;
+        }
+        if (keyData == Keys.F2)
+        {
+            ToggleTimelinePanel();
+            return true;
+        }
         var focusedEditor = ContainsFocusedEditor(this);
         var interactiveControlFocused = ContainsFocusedInteractiveControl(this);
         var commandButtonFocused = ContainsFocusedButton(this);
@@ -3238,6 +3565,12 @@ internal sealed class MainForm : Form
             && !focusedEditor
             && (!interactiveControlFocused || commandButtonFocused);
         var stageDeleteEnabled = _materialEditSession is null && !ContainsFocusedTextEditor(this);
+        if (keyData == Keys.Space && TryHoldTemporaryCanvasPan()) return true;
+        if (keyData == Keys.Escape && (_spacePanHeld || _spacePanPointerActive))
+        {
+            CancelTemporaryCanvasPan();
+            return true;
+        }
         if (canvasShortcutsEnabled && IsTimelineEditShortcut(keyData) && HandleTimelineShortcut(keyData)) return true;
         if (canvasShortcutsEnabled)
         {
@@ -3254,6 +3587,7 @@ internal sealed class MainForm : Form
                 FinishPointerInteraction();
                 return true;
             }
+            if (keyData == Keys.Escape && CancelTraditionalPenPath()) return true;
             if (keyData == Keys.Escape && CancelPenCurve()) return true;
             if (!(commandButtonFocused && keyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
             if (TryActivateConfiguredToolShortcut(keyData)) return true;
@@ -3276,9 +3610,16 @@ internal sealed class MainForm : Form
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (e.KeyCode == Keys.Space)
+        {
+            if (!TryHoldTemporaryCanvasPan()) return;
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
         if (e.KeyCode is Keys.ControlKey or Keys.LControlKey or Keys.RControlKey)
         {
-            if (!RefreshPenModifierPreview()) return;
+            if (!RefreshPenModifierPreview() && !RefreshTraditionalPenModifierPreview()) return;
             e.Handled = true;
             e.SuppressKeyPress = true;
             return;
@@ -3298,9 +3639,18 @@ internal sealed class MainForm : Form
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
+        if (e.KeyCode == Keys.Space)
+        {
+            var wasHeld = _spacePanHeld;
+            _spacePanKeyDown = false;
+            ReleaseTemporaryCanvasPan();
+            if (!wasHeld) return;
+            e.Handled = true;
+            return;
+        }
         if (e.KeyCode is Keys.ControlKey or Keys.LControlKey or Keys.RControlKey)
         {
-            if (!RefreshPenModifierPreview()) return;
+            if (!RefreshPenModifierPreview() && !RefreshTraditionalPenModifierPreview()) return;
             e.Handled = true;
             return;
         }
@@ -3324,7 +3674,7 @@ internal sealed class MainForm : Form
 
     private bool RefreshPenModifierPreview()
     {
-        if (_tool != ToolMode.Pen
+        if (_tool != ToolMode.SimplePen
             || _penSegmentDragging
             || IsSceneCompositionContext()
             || !_stage.IsHandleCreated)
@@ -3334,6 +3684,23 @@ internal sealed class MainForm : Form
         var pointer = _stage.PointToClient(Cursor.Position);
         if (!_stage.ClientRectangle.Contains(pointer)) return false;
         UpdatePenHover(pointer);
+        return true;
+    }
+
+    private bool RefreshTraditionalPenModifierPreview()
+    {
+        if (_tool != ToolMode.Pen
+            || _traditionalPenPointerDown
+            || _traditionalPenAnchorEditing
+            || IsSceneCompositionContext()
+            || !_stage.IsHandleCreated)
+        {
+            return false;
+        }
+
+        var pointer = _stage.PointToClient(Cursor.Position);
+        if (!_stage.ClientRectangle.Contains(pointer)) return false;
+        UpdateTraditionalPenHover(pointer);
         return true;
     }
 
@@ -3442,6 +3809,17 @@ internal sealed class MainForm : Form
             .Where(cell => timeline.FindTrack(cell.TrackId) is not null)
             .Distinct()
             .ToArray();
+        if (selectedCells is null
+            && edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe
+            && cells.Length <= 1
+            && !string.IsNullOrWhiteSpace(_timeline.ActiveTrackId))
+        {
+            cells = [ResolveTimelineKeyframeInsertionCell(
+                timeline,
+                _timeline.ActiveTrackId,
+                _frame,
+                cells.FirstOrDefault())];
+        }
         if (cells.Length == 0 && !string.IsNullOrWhiteSpace(_timeline.ActiveTrackId))
         {
             cells = [new TimelineFrameCell(_timeline.ActiveTrackId, _frame)];
@@ -3454,8 +3832,12 @@ internal sealed class MainForm : Form
         var preservedPrimaryInstanceId = edit == TimelineEditKind.InsertKeyframe
             ? _selectedSceneInstanceId
             : "";
-        var advanceSingleKeyframeInsertion = cells.Length == 1
+        var singleKeyframeInsertion = cells.Length == 1
             && edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe;
+        var singleKeyframeInsertionBeyondTrackEnd = singleKeyframeInsertion
+            && TimelineCellIsBeyondTrackEnd(timeline, cells[0]);
+        var advanceSingleKeyframeInsertion = singleKeyframeInsertion
+            && TimelineKeyframeInsertionShouldAdvance(timeline, cells[0]);
         if (advanceSingleKeyframeInsertion)
         {
             var advancedCell = AdvanceTimelineKeyframeShortcutCell(cells[0]);
@@ -3475,9 +3857,9 @@ internal sealed class MainForm : Form
         var changed = false;
         var refreshCurrentComposition = edit != TimelineEditKind.InsertFrame;
 
-        if (advanceSingleKeyframeInsertion)
+        if (singleKeyframeInsertion)
         {
-            EnsureTimelineFrameExists(timeline, cells[0].Frame);
+            EnsureTimelineCellFramesExist(timeline, cells);
             ApplyBoundTimelineDuration(previousLastFrame);
             _timeline.SelectSingleFrame(cells[0].TrackId, cells[0].Frame);
         }
@@ -3514,6 +3896,34 @@ internal sealed class MainForm : Form
                     continue;
                 }
 
+                if (edit == TimelineEditKind.InsertBlankKeyframe)
+                {
+                    foreach (var plan in ResolveTimelineBlankKeyframeRangePlans(group.Select(cell => cell.Frame)))
+                    {
+                        foreach (var frame in plan.ExtensionFrames)
+                        {
+                            changed |= ApplyTimelineCellEdit(
+                                TimelineEditKind.ClearKeyframe,
+                                context,
+                                timeline,
+                                track,
+                                drawingScene,
+                                layer,
+                                frame);
+                        }
+
+                        changed |= ApplyTimelineCellEdit(
+                            TimelineEditKind.InsertBlankKeyframe,
+                            context,
+                            timeline,
+                            track,
+                            drawingScene,
+                            layer,
+                            plan.BlankFrame);
+                    }
+                    continue;
+                }
+
                 foreach (var frame in group.Select(cell => cell.Frame).Distinct().OrderBy(frame => frame))
                 {
                     changed |= ApplyTimelineCellEdit(edit, context, timeline, track, drawingScene, layer, frame);
@@ -3528,6 +3938,7 @@ internal sealed class MainForm : Form
                 RestoreTimelineInstanceSelection(preservedInstanceSelectionIds, preservedPrimaryInstanceId);
                 UpdateInspector();
             }
+            if (advanceSingleKeyframeInsertion) PlayTimelineEditFeedback(edit, cells);
             return advanceSingleKeyframeInsertion;
         }
         if (vectorSnapshot is not null) PushUndoSnapshot(vectorSnapshot);
@@ -3536,7 +3947,10 @@ internal sealed class MainForm : Form
         if (!advanceSingleKeyframeInsertion
             && edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe)
         {
-            EnsureTimelineFrameExists(timeline, cells.Max(cell => cell.Frame) + 1);
+            EnsureTimelineCellFramesExist(
+                timeline,
+                cells,
+                trailingFrames: singleKeyframeInsertionBeyondTrackEnd ? 0 : 1);
         }
 
         CompleteTimelineMutation(
@@ -3546,7 +3960,22 @@ internal sealed class MainForm : Form
             refreshCurrentComposition,
             preservedInstanceSelectionIds,
             preservedPrimaryInstanceId);
+        PlayTimelineEditFeedback(edit, cells);
         return true;
+    }
+
+    private void PlayTimelineEditFeedback(TimelineEditKind edit, IReadOnlyList<TimelineFrameCell> cells)
+    {
+        var command = edit switch
+        {
+            TimelineEditKind.InsertFrame => TimelineCommand.InsertFrames,
+            TimelineEditKind.RemoveFrame => TimelineCommand.DeleteFrames,
+            TimelineEditKind.InsertKeyframe => TimelineCommand.InsertKeyframes,
+            TimelineEditKind.InsertBlankKeyframe => TimelineCommand.InsertBlankKeyframes,
+            TimelineEditKind.ClearKeyframe => TimelineCommand.ClearKeyframes,
+            _ => (TimelineCommand?)null
+        };
+        if (command is { } value) _timeline.PlayCommandFeedback(value, cells);
     }
 
     internal static TimelineFrameCell AdvanceTimelineKeyframeShortcutCell(TimelineFrameCell cell)
@@ -3556,9 +3985,51 @@ internal sealed class MainForm : Form
             : cell with { Frame = cell.Frame + 1 };
     }
 
+    internal static bool TimelineKeyframeInsertionShouldAdvance(
+        AnimationTimeline timeline,
+        TimelineFrameCell cell)
+    {
+        var track = timeline.FindTrack(cell.TrackId);
+        return track is not null
+            && cell.Frame >= 0
+            && cell.Frame < track.Duration
+            && track.EvaluateExposure(cell.Frame).IsKeyframe;
+    }
+
+    internal static bool TimelineCellIsBeyondTrackEnd(AnimationTimeline timeline, TimelineFrameCell cell)
+    {
+        var track = timeline.FindTrack(cell.TrackId);
+        return track is not null && cell.Frame >= track.Duration;
+    }
+
+    internal static TimelineFrameCell ResolveTimelineKeyframeInsertionCell(
+        AnimationTimeline timeline,
+        string activeTrackId,
+        int playheadFrame,
+        TimelineFrameCell selectedCell = default)
+    {
+        var playheadCell = new TimelineFrameCell(activeTrackId, Math.Max(0, playheadFrame));
+        return string.Equals(selectedCell.TrackId, activeTrackId, StringComparison.Ordinal)
+            && TimelineCellIsBeyondTrackEnd(timeline, selectedCell)
+                ? selectedCell
+                : playheadCell;
+    }
+
     internal static bool TimelineInsertRequiresCompositionRefresh(int currentFrame, int insertionFrame)
     {
         return Math.Max(0, insertionFrame) < Math.Max(0, currentFrame);
+    }
+
+    internal static IReadOnlyList<TimelineBlankKeyframeRangePlan> ResolveTimelineBlankKeyframeRangePlans(
+        IEnumerable<int> frames)
+    {
+        return TimelineFrameRanges(frames)
+            .Select(range => new TimelineBlankKeyframeRangePlan(
+                Enumerable.Range(range.Frame, Math.Max(0, range.Count - 1))
+                    .Where(frame => frame > 0)
+                    .ToArray(),
+                range.Frame + range.Count - 1))
+            .ToArray();
     }
 
     private static bool ApplyTimelineRangeEdit(
@@ -3822,6 +4293,7 @@ internal sealed class MainForm : Form
                         : new Dictionary<string, InstanceFrameState>(StringComparer.Ordinal));
             }).ToArray()
         };
+        _timeline.PlayCommandFeedback(TimelineCommand.CopyFrames, cells);
         return true;
     }
 
@@ -3853,6 +4325,7 @@ internal sealed class MainForm : Form
         var sceneDefinition = context as SceneDefinition;
         var sceneSnapshot = sceneDefinition is null ? null : timeline.CreateSnapshot();
         var changed = false;
+        var pastedCells = new List<TimelineFrameCell>();
 
         using (timeline.BeginBatchUpdate())
         {
@@ -3862,6 +4335,7 @@ internal sealed class MainForm : Form
                 var destinationFrame = Math.Max(0, anchorFrame + source.FrameOffset);
                 if (destinationTrackIndex < 0 || destinationTrackIndex >= timeline.Tracks.Count) continue;
                 var track = timeline.Tracks[destinationTrackIndex];
+                pastedCells.Add(new TimelineFrameCell(track.Id, destinationFrame));
                 var destinationLayer = drawingScene is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
                 if (drawingScene is not null
                     && destinationLayer >= 0
@@ -3904,6 +4378,7 @@ internal sealed class MainForm : Form
         if (vectorSnapshot is not null) PushUndoSnapshot(vectorSnapshot);
         if (sceneDefinition is not null && sceneSnapshot is not null) PushSceneTimelineUndo(sceneDefinition, sceneSnapshot);
         CompleteTimelineMutation(context, drawingScene, previousLastFrame);
+        _timeline.PlayCommandFeedback(TimelineCommand.PasteFrames, pastedCells);
         return true;
     }
 
@@ -4069,6 +4544,96 @@ internal sealed class MainForm : Form
         if (selected.Count > 0) return selected;
         var active = _timeline.Context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "");
         return active is null ? [] : [active.TargetId];
+    }
+
+    private void RemoveTimelineLayers()
+    {
+        var context = _timeline.Context;
+        var targetIds = SelectedTimelineLayerTargetIds();
+        if (targetIds.Count == 0) return;
+
+        var drawingScene = context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            _ => null
+        };
+        if (drawingScene is not null)
+        {
+            var removal = drawingScene.ResolveLayerRemovalIndices(targetIds);
+            if (!ConfirmTimelineLayerRemoval(removal.Length, drawingScene.LayerCount)) return;
+
+            var sceneSnapshot = drawingScene.CreateSnapshot();
+            DrawingObjectInstanceDefinition[]? instanceSnapshot = null;
+            bool changed;
+            if (context is DrawingObjectDefinition drawingObject)
+            {
+                instanceSnapshot = drawingObject.CreateInstanceSnapshot();
+                changed = _project.TryRemoveDrawingObjectLayers(drawingObject.Id, targetIds);
+            }
+            else
+            {
+                changed = drawingScene.RemoveLayers(targetIds);
+            }
+            if (!changed) return;
+
+            PushUndoSnapshot(sceneSnapshot, context as DrawingObjectDefinition, instanceSnapshot);
+            ClearSelection();
+            _timeline.RefreshTimeline();
+            _timeline.SelectModelActiveTrack();
+            RebuildDrawingObjectUnderlay();
+            _hierarchyPanel.RefreshScene();
+            UpdateInspector();
+            _stage.Invalidate();
+            return;
+        }
+
+        if (context is not SceneDefinition sceneDefinition) return;
+        var sceneRemovalCount = targetIds
+            .Distinct(StringComparer.Ordinal)
+            .Count(targetId => sceneDefinition.FindLayer(targetId) is not null);
+        if (!ConfirmTimelineLayerRemoval(sceneRemovalCount, sceneDefinition.Layers.Count)) return;
+
+        var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
+        var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
+        var sceneInstanceSnapshot = sceneDefinition.CreateInstanceSnapshot();
+        if (!_project.TryRemoveSceneLayers(sceneDefinition.Id, targetIds)) return;
+
+        PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot, sceneInstanceSnapshot);
+        ClearSelection();
+        _timeline.RefreshTimeline();
+        _timeline.SelectModelActiveTrack();
+        RebuildSceneComposition();
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
+    private bool ConfirmTimelineLayerRemoval(int removalCount, int layerCount)
+    {
+        if (removalCount <= 0) return false;
+        if (removalCount >= layerCount)
+        {
+            ModernMessageDialog.Show(
+                this,
+                UiLocalization.T("At least one layer must remain."),
+                UiLocalization.T("Delete Layers"),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return false;
+        }
+        if (removalCount == 1) return true;
+
+        var prompt = string.Format(
+            UiLocalization.T("Delete {0} layers and all of their contents?"),
+            removalCount);
+        return ModernMessageDialog.Show(
+            this,
+            prompt,
+            UiLocalization.T("Delete Layers"),
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2) == DialogResult.Yes;
     }
 
     private void ChooseTimelineLayerColor()
@@ -4317,6 +4882,29 @@ internal sealed class MainForm : Form
         foreach (var track in timeline.Tracks)
         {
             if (track.Duration <= frame) timeline.SetTrackDuration(track.Id, frame + 1);
+        }
+    }
+
+    internal static void EnsureTimelineCellFramesExist(
+        AnimationTimeline timeline,
+        IEnumerable<TimelineFrameCell> cells,
+        int trailingFrames = 0)
+    {
+        ArgumentNullException.ThrowIfNull(timeline);
+        ArgumentNullException.ThrowIfNull(cells);
+        trailingFrames = Math.Max(0, trailingFrames);
+        using var batchUpdate = timeline.BeginBatchUpdate();
+        foreach (var group in cells
+                     .Where(cell => cell.Frame >= 0)
+                     .GroupBy(cell => cell.TrackId, StringComparer.Ordinal))
+        {
+            var track = timeline.FindTrack(group.Key);
+            if (track is null) continue;
+            var lastFrame = group.Max(cell => cell.Frame);
+            var requiredDuration = lastFrame >= int.MaxValue - trailingFrames
+                ? int.MaxValue
+                : lastFrame + trailingFrames + 1;
+            if (track.Duration < requiredDuration) timeline.SetTrackDuration(track.Id, requiredDuration);
         }
     }
 
@@ -4632,7 +5220,7 @@ internal sealed class MainForm : Form
 
         if (session.UndoPushed
             && _undoStack.TryPeek(out var undo)
-            && ReferenceEquals(undo, session.Snapshot))
+            && ReferenceEquals(undo.Snapshot, session.Snapshot))
         {
             _undoStack.Pop();
         }
@@ -4708,16 +5296,19 @@ internal sealed class MainForm : Form
         PushUndoSnapshot(_scene.CreateSnapshot());
     }
 
-    private void PushUndoSnapshot(VectorSceneSnapshot snapshot)
+    private void PushUndoSnapshot(
+        VectorSceneSnapshot snapshot,
+        DrawingObjectDefinition? drawingObject = null,
+        DrawingObjectInstanceDefinition[]? instanceSnapshot = null)
     {
         _marqueeMaterializationSession = null;
-        _undoStack.Push(snapshot);
+        _undoStack.Push(new DrawingUndoEntry(snapshot, drawingObject, instanceSnapshot));
         var snapshots = _undoStack.ToArray();
         var retainedCount = 0;
         long retainedBytes = 0;
         foreach (var item in snapshots)
         {
-            var itemBytes = item.EstimateMemoryBytes();
+            var itemBytes = item.Snapshot.EstimateMemoryBytes();
             if (retainedCount > 0
                 && (retainedCount >= MaxUndoSnapshots || retainedBytes + itemBytes > MaxUndoSnapshotBytes))
             {
@@ -4736,9 +5327,10 @@ internal sealed class MainForm : Form
     private void PushSceneTimelineUndo(
         SceneDefinition scene,
         AnimationTimelineSnapshot snapshot,
-        SceneLayerSnapshot? layerSnapshot = null)
+        SceneLayerSnapshot? layerSnapshot = null,
+        DrawingObjectInstanceDefinition[]? instanceSnapshot = null)
     {
-        _sceneTimelineUndoStack.Push(new SceneTimelineUndoEntry(scene, snapshot, layerSnapshot));
+        _sceneTimelineUndoStack.Push(new SceneTimelineUndoEntry(scene, snapshot, layerSnapshot, instanceSnapshot));
         while (_sceneTimelineUndoStack.Count > MaxUndoSnapshots)
         {
             var snapshots = _sceneTimelineUndoStack.Take(MaxUndoSnapshots).Reverse().ToArray();
@@ -4765,6 +5357,7 @@ internal sealed class MainForm : Form
             var previousLastFrame = Math.Max(0, activeScene.FrameCount - 1);
             _sceneTimelineUndoStack.Pop();
             if (timelineUndo.LayerSnapshot is not null) activeScene.RestoreLayerSnapshot(timelineUndo.LayerSnapshot);
+            if (timelineUndo.InstanceSnapshot is not null) activeScene.RestoreInstanceSnapshot(timelineUndo.InstanceSnapshot);
             activeScene.Timeline.RestoreSnapshot(timelineUndo.Snapshot);
             activeScene.SynchronizeTimelineTracks();
             _timeline.RefreshTimeline();
@@ -4778,10 +5371,16 @@ internal sealed class MainForm : Form
         if (IsSceneCompositionContext()) return false;
         if (_undoStack.Count == 0) return false;
         var previousDrawingLastFrame = Math.Max(0, _scene.FrameCount - 1);
-        _scene.RestoreSnapshot(_undoStack.Pop());
+        var drawingUndo = _undoStack.Pop();
+        _scene.RestoreSnapshot(drawingUndo.Snapshot);
+        if (drawingUndo.DrawingObject is not null && drawingUndo.InstanceSnapshot is not null)
+        {
+            drawingUndo.DrawingObject.RestoreInstanceSnapshot(drawingUndo.InstanceSnapshot);
+        }
         _scene.EditFrame = _frame;
         ClearSelection();
         _geometryDirty = false;
+        CancelTraditionalPenPath();
         CancelPenCurve();
         CancelFreehandStroke();
         _stage.ClearDrawingPreview();
@@ -4867,6 +5466,7 @@ internal sealed class MainForm : Form
                     _scene.ShapeKind[index],
                     _scene.GetShapeVertexCount(index),
                     new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]),
+                    new PointF(_scene.CurveControl2X[index], _scene.CurveControl2Y[index]),
                     pathContours,
                     _scene.GetLineEndpointStyle(index, startEndpoint: true),
                     _scene.GetLineEndpointStyle(index, startEndpoint: false)));
@@ -4933,6 +5533,8 @@ internal sealed class MainForm : Form
                 {
                     _scene.CurveControlX[index] = item.CurveControl.X + offset.X;
                     _scene.CurveControlY[index] = item.CurveControl.Y + offset.Y;
+                    _scene.CurveControl2X[index] = item.CurveControl2.X + offset.X;
+                    _scene.CurveControl2Y[index] = item.CurveControl2.Y + offset.Y;
                     _scene.SetLineEndpointStyle(index, startEndpoint: true, item.StartEndpointStyle);
                     _scene.SetLineEndpointStyle(index, startEndpoint: false, item.EndEndpointStyle);
                 }
@@ -5173,6 +5775,8 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_spacePanHeld && e.Button == MouseButtons.Left && BeginTemporaryCanvasPanPointer(e.Location)) return;
+
         if (IsScene3DView() && MouseButtonDown(e, MouseButtons.Right) && IsAltPressed())
         {
             BeginGlobalViewDrag(e, referencePan: true);
@@ -5194,6 +5798,23 @@ internal sealed class MainForm : Form
         if (TryBeginNestedDrawingObjectPointer(e)) return;
 
         if (_tool == ToolMode.Pen)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                if (IsControlPressed() && TryBeginTraditionalPenAnchorEdit(e.Location)) return;
+                if (_traditionalPenCurrentAnchor is null)
+                {
+                    if (TryBeginTraditionalPenSelectedHandleEdit(e.Location)) return;
+                    if (TrySelectTraditionalPenPath(e.Location)) return;
+                    if (HasTraditionalPenPathSelection()) ClearSelection();
+                }
+                BeginTraditionalPenPoint(e.Location);
+            }
+            else if (e.Button == MouseButtons.Right && !CancelTraditionalPenPath()) ShowStageContextMenu(e.Location);
+            return;
+        }
+
+        if (_tool == ToolMode.SimplePen)
         {
             if (e.Button == MouseButtons.Left)
             {
@@ -5287,6 +5908,14 @@ internal sealed class MainForm : Form
             }
 
             if (_startWorld is not { } startWorld) return;
+            if (!_scene.HasSelectableObjectAt(startWorld, _frame, SelectionToleranceWorld()))
+            {
+                if (e.Button == MouseButtons.Left) BeginBlankMarqueeSelection(e.Location);
+                UpdateInspector();
+                if (!_stage.MarqueeOverlayActive) _stage.Invalidate();
+                UpdateInteractionCursor(e.Location);
+                return;
+            }
             var hit = _scene.HitTestElement(startWorld, _frame, SelectionToleranceWorld());
             if (hit.IsValid && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame))
             {
@@ -5324,12 +5953,11 @@ internal sealed class MainForm : Form
             }
             else
             {
-                if (!_additiveSelection) CancelStageSelection();
-                if (e.Button == MouseButtons.Left) BeginMarqueeFromPendingSelection(e.Location);
+                if (e.Button == MouseButtons.Left) BeginBlankMarqueeSelection(e.Location);
             }
 
             UpdateInspector();
-            _stage.Invalidate();
+            if (!_stage.MarqueeOverlayActive) _stage.Invalidate();
             UpdateInteractionCursor(e.Location);
         }
         else if (_tool == ToolMode.Fill)
@@ -5362,13 +5990,9 @@ internal sealed class MainForm : Form
                 _scene.Argb[hitObject] = color.ToArgb();
                 _scene.DisableLinearGradient(hitObject);
                 var animationContours = _scene.GetFillPartContours(materialized, _frame);
-                var overwritten = _scene.ApplyFillOverwriteToNewObjects([hitObject], _frame);
+                var overwritten = NormalizeNewPaintObjects([hitObject]);
                 if (overwritten.Length > 0) hitObject = overwritten[0];
-                var beforeMergeCount = _scene.ObjectCount;
-                var merged = _scene.MergeSameColorFillsAround(hitObject, frame: _frame);
-                if (_scene.ObjectCount != beforeMergeCount || merged != hitObject) SetSelection(merged);
-                else SetSelection(hitObject);
-                MergeCompatibleLinesAfterDrawingOperation();
+                SetSelection(hitObject);
                 PushUndoSnapshot(snapshot);
                 _hierarchyPanel.RefreshScene();
                 UpdateInspector();
@@ -5382,9 +6006,8 @@ internal sealed class MainForm : Form
                 var snapshot = _scene.CreateSnapshot();
                 if (!_scene.TryCreateFillFromClosedStrokeRegion(fillWorld, _frame, color, out var created, out var animationContours)) return;
 
-                var overwritten = _scene.ApplyFillOverwriteToNewObjects([created], _frame);
+                var overwritten = NormalizeNewPaintObjects([created]);
                 if (overwritten.Length > 0) created = overwritten[0];
-                created = _scene.MergeSameColorFillsAround(created, frame: _frame);
 
                 SetSelection(created);
                 PushUndoSnapshot(snapshot);
@@ -5563,7 +6186,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var snapped = VectorUnits.Quantize(_drawSettings.SnapPoint(world));
+        var snapped = VectorUnits.Quantize(SnapDrawingPoint(world));
         var start = _scene.GetGradientStart(_selectedObject);
         var end = _scene.GetGradientEnd(_selectedObject);
         if (_gradientHandle == GradientHandleKind.Stop)
@@ -5655,6 +6278,14 @@ internal sealed class MainForm : Form
     {
         if (_tool == ToolMode.Pen)
         {
+            if (_traditionalPenPointerDown) FinishTraditionalPenPoint(e.Location);
+            FinishTraditionalPenPointerDrag();
+            CancelTraditionalPenPath();
+            return;
+        }
+
+        if (_tool == ToolMode.SimplePen)
+        {
             if (_penSegmentDragging) CommitPenSegment();
             FinishPenSegmentPointerDrag();
             CancelPenCurve();
@@ -5720,6 +6351,12 @@ internal sealed class MainForm : Form
         {
             if (_tool == ToolMode.Pen)
             {
+                UpdateTraditionalPenHover(e.Location);
+                return;
+            }
+
+            if (_tool == ToolMode.SimplePen)
+            {
                 UpdatePenHover(e.Location);
                 return;
             }
@@ -5763,7 +6400,19 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Pen && _penSegmentDragging && e.Button == MouseButtons.Left)
+        if (_tool == ToolMode.Pen && _traditionalPenAnchorEditing && e.Button == MouseButtons.Left)
+        {
+            if (PointerDragExceeded(e.Location)) QueueMoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
+            return;
+        }
+
+        if (_tool == ToolMode.Pen && _traditionalPenPointerDown && e.Button == MouseButtons.Left)
+        {
+            UpdateTraditionalPenHandles(e.Location);
+            return;
+        }
+
+        if (_tool == ToolMode.SimplePen && _penSegmentDragging && e.Button == MouseButtons.Left)
         {
             UpdatePenControl(e.Location);
             return;
@@ -5852,7 +6501,7 @@ internal sealed class MainForm : Form
         {
             if (PointerDragExceeded(e.Location))
             {
-                BeginMarqueeFromPendingSelection(e.Location);
+                BeginBlankMarqueeSelection(e.Location);
             }
         }
         else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
@@ -6568,7 +7217,8 @@ internal sealed class MainForm : Form
         CapturePointerUndoSnapshot();
         if (_activeHandle != EditHandleKind.None)
         {
-            if (!EnsureSelectedElementDetachedForMove()) return;
+            var editsWholePenLine = _tool == ToolMode.Pen && _traditionalPenAnchorEditing;
+            if (!editsWholePenLine && !EnsureSelectedElementDetachedForMove()) return;
             CaptureFillBoundaryLineLinks();
             ApplyHandleDrag(world);
             if (synchronizeLinkedFills) SynchronizeLinkedFillBoundaries();
@@ -6592,6 +7242,11 @@ internal sealed class MainForm : Form
                         _scene.CurveControlX[index] = VectorUnits.Quantize(curveStart.X + dxWorld);
                         _scene.CurveControlY[index] = VectorUnits.Quantize(curveStart.Y + dyWorld);
                     }
+                    if (_selectedCurve2Starts.TryGetValue(index, out var curve2Start))
+                    {
+                        _scene.CurveControl2X[index] = VectorUnits.Quantize(curve2Start.X + dxWorld);
+                        _scene.CurveControl2Y[index] = VectorUnits.Quantize(curve2Start.Y + dyWorld);
+                    }
                     TranslateGradientFromEditStart(index, dxWorld, dyWorld);
                 }
             }
@@ -6603,6 +7258,11 @@ internal sealed class MainForm : Form
                 {
                     _scene.CurveControlX[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.X + dxWorld);
                     _scene.CurveControlY[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.Y + dyWorld);
+                }
+                if (_curveControl2Start is not null)
+                {
+                    _scene.CurveControl2X[_selectedObject] = VectorUnits.Quantize(_curveControl2Start.Value.X + dxWorld);
+                    _scene.CurveControl2Y[_selectedObject] = VectorUnits.Quantize(_curveControl2Start.Value.Y + dyWorld);
                 }
                 TranslateGradientFromEditStart(_selectedObject, dxWorld, dyWorld);
             }
@@ -6658,6 +7318,12 @@ internal sealed class MainForm : Form
         if (_detachedSelectionForMove) return _selectedElements.Count == 0;
         _detachedSelectionForMove = true;
         if (_selectedElements.Count == 0) return true;
+        if (_activeHandle is EditHandleKind.LineStart or EditHandleKind.LineEnd
+            && _selectedElements.All(hit => IsWholeLineEndpointEditHit(_scene, hit)))
+        {
+            SetSelection(_selectedObject);
+            return true;
+        }
 
         var primaryElement = _selectedElement;
         var endpoint = PointF.Empty;
@@ -6714,6 +7380,16 @@ internal sealed class MainForm : Form
         return true;
     }
 
+    internal static bool IsWholeLineEndpointEditHit(VectorScene scene, DrawingElementHit hit)
+    {
+        return hit.IsValid
+            && hit.Key.Kind == DrawingElementKind.Stroke
+            && (uint)hit.Key.ObjectIndex < scene.ObjectCount
+            && scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+            && hit.StartT <= DrawingTopologyRules.UnitIntersectionTolerance
+            && hit.EndT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance;
+    }
+
     private void CaptureFillBoundaryLineLinks()
     {
         if (_fillBoundaryLineLinks.Count > 0) return;
@@ -6749,16 +7425,6 @@ internal sealed class MainForm : Form
     private void SynchronizeLinkedFillBoundariesForPreview()
     {
         if (_fillBoundaryLineLinks.Count == 0 || !_linkedFillBoundaryPreviewDirty) return;
-        var now = Stopwatch.GetTimestamp();
-        if (_fillBoundaryPreviewUpdatedAt == 0)
-        {
-            _fillBoundaryPreviewUpdatedAt = now;
-            return;
-        }
-
-        var elapsedMilliseconds = (now - _fillBoundaryPreviewUpdatedAt) * 1000.0 / Stopwatch.Frequency;
-        if (elapsedMilliseconds < FillBoundaryPreviewIntervalMilliseconds) return;
-        _fillBoundaryPreviewUpdatedAt = now;
         SynchronizeLinkedFillBoundaries();
     }
 
@@ -6799,14 +7465,32 @@ internal sealed class MainForm : Form
         _pendingClickSelection = DrawingElementHit.None;
         _selectedStart = null;
         _curveControlStart = null;
+        _curveControl2Start = null;
         _resizeStartCenter = null;
         _resizeStartSize = null;
         _activeHandle = EditHandleKind.None;
         _selectedMoveStarts.Clear();
         _selectedCurveStarts.Clear();
+        _selectedCurve2Starts.Clear();
         _selectedGradientStarts.Clear();
         _lineEndpointEditStarts.Clear();
         _stage.SetMarquee(_marqueeStart.Value, current);
+    }
+
+    private void BeginBlankMarqueeSelection(Point current)
+    {
+        BeginMarqueeFromPendingSelection(current);
+        if (_additiveSelection) return;
+
+        _marqueeSelectionCancellationPending = true;
+        ClearSelection();
+    }
+
+    private void FinalizePendingMarqueeSelectionCancellation()
+    {
+        if (!_marqueeSelectionCancellationPending) return;
+        _marqueeSelectionCancellationPending = false;
+        CancelStageSelection();
     }
 
     private void StageMouseUp(object? sender, MouseEventArgs e)
@@ -6814,6 +7498,12 @@ internal sealed class MainForm : Form
         if (_brushColorPaletteActive)
         {
             UpdateBrushColorPaletteHover(e.Location);
+            return;
+        }
+
+        if (_spacePanPointerActive)
+        {
+            EndTemporaryCanvasPanPointer();
             return;
         }
 
@@ -6833,7 +7523,22 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_tool == ToolMode.Pen && _traditionalPenAnchorEditing)
+        {
+            CompleteTraditionalPenAnchorEdit();
+            UpdateTraditionalPenHover(e.Location);
+            return;
+        }
+
         if (_tool == ToolMode.Pen)
+        {
+            if (_traditionalPenPointerDown) FinishTraditionalPenPoint(e.Location);
+            FinishTraditionalPenPointerDrag();
+            if (_traditionalPenCurrentAnchor is not null) UpdateTraditionalPenHover(e.Location);
+            return;
+        }
+
+        if (_tool == ToolMode.SimplePen)
         {
             if (_penSegmentDragging)
             {
@@ -6878,6 +7583,12 @@ internal sealed class MainForm : Form
 
     private void FinishLostPointerCapture()
     {
+        FinalizePendingMarqueeSelectionCancellation();
+        if (_spacePanPointerActive)
+        {
+            EndTemporaryCanvasPanPointer();
+            return;
+        }
         if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming)
         {
             EndGlobalViewDrag();
@@ -6885,6 +7596,22 @@ internal sealed class MainForm : Form
         }
 
         FlushLineDragPreview();
+
+        if (_traditionalPenAnchorEditing)
+        {
+            CompleteTraditionalPenAnchorEdit();
+            return;
+        }
+
+        if (_traditionalPenPointerDown)
+        {
+            var pointer = _stage.PointToClient(Cursor.Position);
+            FinishTraditionalPenPoint(pointer);
+            FinishTraditionalPenPointerDrag();
+            _stage.ClearPenAnchorGuides();
+            if (_traditionalPenCurrentAnchor is not null) UpdateTraditionalPenHover(pointer);
+            return;
+        }
 
         if (_penSegmentDragging)
         {
@@ -6906,7 +7633,13 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (_lastMouse is null && !_freehandDrawing && !_marqueeSelecting) return;
+        if (_lastMouse is null
+            && !_freehandDrawing
+            && !_marqueeSelecting
+            && !_marqueeSelectionCancellationPending)
+        {
+            return;
+        }
         if (_gradientEditSnapshot is not null) CancelGradientPointer(restore: true);
         CancelFreehandStroke();
         _marqueeSelecting = false;
@@ -6919,9 +7652,11 @@ internal sealed class MainForm : Form
 
     private void FinishPointerInteractionForFrameChange()
     {
+        CancelTemporaryCanvasPan();
         if (_lastMouse is not null
             || _freehandDrawing
             || _marqueeSelecting
+            || _marqueeSelectionCancellationPending
             || _viewPanning
             || _viewZooming
             || _viewOrbiting
@@ -6932,6 +7667,7 @@ internal sealed class MainForm : Form
         }
 
         _pendingClickSelection = DrawingElementHit.None;
+        CancelTraditionalPenPath();
         CancelPenCurve();
         _forceMarqueeOnPointerDown = false;
         _additiveSelection = false;
@@ -6945,14 +7681,17 @@ internal sealed class MainForm : Form
 
     private void FinishPointerInteraction()
     {
+        FinalizePendingMarqueeSelectionCancellation();
         ResetLineDragPreview();
         _lastMouse = null;
         _startScreen = null;
         _startWorld = null;
         _selectedStart = null;
         _curveControlStart = null;
+        _curveControl2Start = null;
         _selectedMoveStarts.Clear();
         _selectedCurveStarts.Clear();
+        _selectedCurve2Starts.Clear();
         _lineEndpointEditStarts.Clear();
         _fillBoundaryLineLinks.Clear();
         _detachedSelectionForMove = false;
@@ -7113,7 +7852,6 @@ internal sealed class MainForm : Form
     {
         _lineDragPreviewTimer.Stop();
         _pendingLineDragWorld = null;
-        _fillBoundaryPreviewUpdatedAt = 0;
         _linkedFillBoundaryPreviewDirty = false;
         _lineEndpointSnapBuckets.Clear();
         _lineEndpointSnapCacheBounds = RectangleF.Empty;
@@ -7181,7 +7919,8 @@ internal sealed class MainForm : Form
                 out var nestedInstance)
             || nestedInstance is null)
         {
-            MessageBox.Show(
+            ModernMessageDialog.Show(
+                this,
                 UiLocalization.T("A drawing object cannot contain itself or create a recursive containment cycle."),
                 UiLocalization.T("Drawing Object"),
                 MessageBoxButtons.OK,
@@ -7315,6 +8054,109 @@ internal sealed class MainForm : Form
         return true;
     }
 
+    private bool FinalizeNewLineDrawingOperation(int newObject)
+    {
+        if ((uint)newObject >= _scene.ObjectCount || _scene.ShapeKind[newObject] != ShapeKind.Line) return false;
+        var localBounds = _scene.GetObjectWorldBounds(newObject);
+        var layer = _scene.ObjectLayer[newObject];
+        var keyframeFrame = _scene.ObjectKeyframeFrame[newObject];
+        var changed = MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope([newObject]));
+
+        localBounds.Inflate(6, 6);
+        var candidates = _scene.QueryObjects(localBounds, _frame)
+            .Where(index => _scene.ShapeKind[index] == ShapeKind.Line
+                && _scene.ObjectLayer[index] == layer
+                && _scene.ObjectKeyframeFrame[index] == keyframeFrame)
+            .Distinct()
+            .ToArray();
+        if (candidates.Length < 2) return changed;
+
+        var selectedBefore = _selectedObjects
+            .Where(index => (uint)index < _scene.ObjectCount)
+            .Distinct()
+            .ToArray();
+        var primaryBefore = (uint)_selectedObject < _scene.ObjectCount ? _selectedObject : -1;
+        var materialized = _scene.MaterializeLineIntersections(candidates, _frame);
+        if (!materialized.Success || !materialized.Changed) return changed;
+
+        IEnumerable<int> Remap(int source)
+        {
+            var splitResults = materialized.Parts
+                .Where(part => part.Source.ObjectIndex == source)
+                .Select(part => part.Result.ObjectIndex)
+                .Distinct()
+                .ToArray();
+            if (splitResults.Length > 0) return splitResults;
+            if ((uint)source < materialized.OldToNewObjectIndex.Length
+                && materialized.OldToNewObjectIndex[source] >= 0)
+            {
+                return [materialized.OldToNewObjectIndex[source]];
+            }
+            return [];
+        }
+
+        if (selectedBefore.Length > 0)
+        {
+            var remapped = selectedBefore
+                .Where(index => index != primaryBefore)
+                .SelectMany(Remap)
+                .Concat(primaryBefore >= 0 ? Remap(primaryBefore) : [])
+                .Distinct()
+                .ToArray();
+            SetSelection(remapped);
+        }
+        return true;
+    }
+
+    private int[] NormalizeNewPaintObjects(IReadOnlyList<int> objectIndices)
+    {
+        var retained = objectIndices
+            .Where(index => (uint)index < _scene.ObjectCount && IsFillShape(_scene.ShapeKind[index]))
+            .Distinct()
+            .ToArray();
+        if (retained.Length == 0
+            || !_scene.CanNormalizePaintInteractively(retained, _frame))
+        {
+            return retained;
+        }
+
+        retained = _scene.ApplyFillOverwriteToNewObjects(retained, _frame);
+        return _scene.MergeSameColorFillsAroundNewObjects(retained, connectNearby: true, frame: _frame);
+    }
+
+    private int[] LocalLineMergeScope(IReadOnlyCollection<int> seedObjects)
+    {
+        var seeds = seedObjects
+            .Where(index => (uint)index < _scene.ObjectCount
+                && _scene.ShapeKind[index] == ShapeKind.Line
+                && _scene.IsObjectActive(index, _frame))
+            .Distinct()
+            .ToArray();
+        if (seeds.Length == 0) return [];
+        if (_scene.ObjectCount > MaxInteractiveLineMergeSceneObjects) return seeds;
+
+        var candidates = new HashSet<int>(seeds);
+        foreach (var seed in seeds)
+        {
+            var bounds = _scene.GetObjectWorldBounds(seed);
+            bounds.Inflate(6, 6);
+            foreach (var candidate in _scene.QueryObjects(bounds, _frame))
+            {
+                if (_scene.ShapeKind[candidate] != ShapeKind.Line
+                    || _scene.ObjectLayer[candidate] != _scene.ObjectLayer[seed]
+                    || _scene.ObjectKeyframeFrame[candidate] != _scene.ObjectKeyframeFrame[seed])
+                {
+                    continue;
+                }
+
+                candidates.Add(candidate);
+                if (candidates.Count > MaxInteractiveLineMergeCandidates) return seeds;
+            }
+        }
+
+        return candidates.OrderBy(index => index).ToArray();
+    }
+
     private bool MergeCompatibleLinesAfterMaterialChange()
     {
         if (_materialEditSession is not null)
@@ -7349,6 +8191,7 @@ internal sealed class MainForm : Form
 
     private void CompleteMarqueeSelection(Point endScreen)
     {
+        FinalizePendingMarqueeSelectionCancellation();
         var startScreen = _marqueeStart ?? endScreen;
         var dx = endScreen.X - startScreen.X;
         var dy = endScreen.Y - startScreen.Y;
@@ -7484,6 +8327,7 @@ internal sealed class MainForm : Form
         _startWorld = null;
         _selectedStart = null;
         _curveControlStart = null;
+        _curveControl2Start = null;
         _resizeStartCenter = null;
         _resizeStartSize = null;
         _activeHandle = EditHandleKind.None;
@@ -7496,6 +8340,7 @@ internal sealed class MainForm : Form
         _viewOrbiting = is3DView && !_viewReferencePanning && !_viewReferenceZooming;
         _viewZooming = !is3DView && IsControlPressed();
         _viewPanning = !is3DView && !_viewZooming;
+        CancelTraditionalPenPath();
         CancelPenCurve();
         CancelFreehandStroke();
         _stage.ClearMarquee();
@@ -7512,6 +8357,100 @@ internal sealed class MainForm : Form
         _viewReferenceZooming = false;
         _stage.Capture = false;
         RefreshInteractionCursorAtPointer();
+    }
+
+    private bool TryHoldTemporaryCanvasPan()
+    {
+        if (_spacePanKeyDown) return _spacePanHeld;
+        _spacePanKeyDown = true;
+        var pointer = _stage.PointToClient(Cursor.Position);
+        var pointerOverStage = _stage.ClientRectangle.Contains(pointer);
+        var pointerInteractionActive = _lastMouse is not null
+            || _freehandDrawing
+            || _marqueeSelecting
+            || _traditionalPenPointerDown
+            || _penSegmentDragging
+            || _gradientEditSnapshot is not null
+            || _viewPanning
+            || _viewZooming
+            || _viewOrbiting
+            || _viewReferencePanning
+            || _viewReferenceZooming;
+        if (!CanStartTemporaryCanvasPan(
+                ContainsFocusedEditor(this),
+                _stage.ContainsFocus,
+                pointerOverStage,
+                pointerInteractionActive)
+            || _materialEditSession is not null)
+        {
+            return false;
+        }
+
+        _spacePanHeld = true;
+        HideBrushColorPalette();
+        ApplyTemporaryCanvasPanCursor();
+        return true;
+    }
+
+    internal static bool CanStartTemporaryCanvasPan(
+        bool editorFocused,
+        bool stageFocused,
+        bool pointerOverStage,
+        bool pointerInteractionActive)
+    {
+        return !editorFocused
+            && !pointerInteractionActive
+            && (stageFocused || pointerOverStage);
+    }
+
+    private bool BeginTemporaryCanvasPanPointer(Point location)
+    {
+        if (!_spacePanHeld || _spacePanPointerActive) return false;
+        _spacePanPointerActive = true;
+        _stage.Capture = true;
+        _lastMouse = location;
+        _viewReferencePanning = IsScene3DView();
+        _viewPanning = !_viewReferencePanning;
+        _stage.ClearBrushTipCursor();
+        _stage.ClearFillToolCursor();
+        ClearFillHoverPreview();
+        _stage.Cursor = Cursors.SizeAll;
+        return true;
+    }
+
+    private void EndTemporaryCanvasPanPointer()
+    {
+        if (!_spacePanPointerActive) return;
+        _spacePanPointerActive = false;
+        _lastMouse = null;
+        _viewPanning = false;
+        _viewReferencePanning = false;
+        if (_stage.Capture) _stage.Capture = false;
+        RefreshInteractionCursorAtPointer();
+    }
+
+    private void ReleaseTemporaryCanvasPan()
+    {
+        if (!_spacePanHeld && !_spacePanPointerActive) return;
+        _spacePanHeld = false;
+        EndTemporaryCanvasPanPointer();
+        RefreshInteractionCursorAtPointer();
+    }
+
+    private void CancelTemporaryCanvasPan()
+    {
+        _spacePanKeyDown = false;
+        ReleaseTemporaryCanvasPan();
+    }
+
+    private bool ApplyTemporaryCanvasPanCursor()
+    {
+        if (!_spacePanHeld && !_spacePanPointerActive) return false;
+        _stage.ClearBrushTipCursor();
+        _stage.ClearFillToolCursor();
+        ClearFillHoverPreview();
+        _stage.Cursor = _spacePanPointerActive ? Cursors.SizeAll : Cursors.Hand;
+        return true;
     }
 
     private DrawingObjectInstanceDefinition? SelectedSceneInstance()
@@ -7747,7 +8686,9 @@ internal sealed class MainForm : Form
             return;
         }
 
-        _stage.SetDrawingObjectSelectionOverlay(bounds);
+        _stage.SetDrawingObjectSelectionOverlay(
+            bounds,
+            SelectedSceneInstance()?.EvaluatePosition(_frame));
     }
 
     private void SetSelection(int objectIndex)
@@ -7868,8 +8809,14 @@ internal sealed class MainForm : Form
     {
         _stage.SetSelection(_selectedObjects, _selectedObject);
         _stage.SetSelectedElements(_selectedElements, _selectedElement);
+        UpdateTraditionalPenPathHandleOverlay();
         UpdateTransformOverlay();
         UpdateGradientOverlay();
+    }
+
+    private void UpdateTraditionalPenPathHandleOverlay()
+    {
+        _stage.SetPenPathHandlesVisible(HasTraditionalPenPathSelection());
     }
 
     private void UpdateTransformOverlay()
@@ -7915,7 +8862,7 @@ internal sealed class MainForm : Form
         _marqueeMaterializationSession = null;
         if (session is null || !ReferenceEquals(session.Scene, _scene)) return false;
 
-        if (_undoStack.TryPeek(out var undo) && ReferenceEquals(undo, session.Snapshot)) _undoStack.Pop();
+        if (_undoStack.TryPeek(out var undo) && ReferenceEquals(undo.Snapshot, session.Snapshot)) _undoStack.Pop();
         _scene.RestoreSnapshot(session.Snapshot);
         _scene.EditFrame = _frame;
         _geometryDirty = false;
@@ -8176,6 +9123,11 @@ internal sealed class MainForm : Form
         }
     }
 
+    private PointF SnapDrawingPoint(PointF point)
+    {
+        return _drawSettings.SnapPoint(point, _stage.AdaptiveGridSnapStep);
+    }
+
     private void UpdateDrawingPreview(PointF start, PointF end, ToolMode tool)
     {
         var shape = ToolShapeKind(tool) ?? _drawSettings.ShapeKind;
@@ -8186,8 +9138,8 @@ internal sealed class MainForm : Form
         }
         else
         {
-            start = VectorUnits.Quantize(_drawSettings.SnapPoint(start));
-            end = VectorUnits.Quantize(_drawSettings.SnapPoint(end));
+            start = VectorUnits.Quantize(SnapDrawingPoint(start));
+            end = VectorUnits.Quantize(SnapDrawingPoint(end));
             (start, end) = ResolveShapeDragBounds(
                 start,
                 end,
@@ -8235,6 +9187,581 @@ internal sealed class MainForm : Form
         };
     }
 
+    private void BeginTraditionalPenPoint(Point screen)
+    {
+        _stage.SetPenPathHandlesVisible(false);
+        var world = _stage.ScreenToWorld(screen);
+        var resolution = ResolvePenAnchorPoint(world);
+        if (_traditionalPenCurrentAnchor is not { } current)
+        {
+            _traditionalPenFirstAnchor = resolution.Point;
+            _traditionalPenCurrentAnchor = resolution.Point;
+            _traditionalPenOutgoingHandle = null;
+            BeginTraditionalPenPointerDrag(screen);
+            UpdatePenAnchorGuides(resolution);
+            UpdateTraditionalPenDrawingPreview(world);
+            return;
+        }
+
+        if (IsAltPressed()
+            && Distance(current, resolution.Point) <= Math.Max(
+                DrawingTopologyRules.MinStrokeSegmentUnits,
+                _stage.ScreenLengthToWorld(9)))
+        {
+            _traditionalPenOutgoingHandle = null;
+            UpdateTraditionalPenDrawingPreview(world);
+            return;
+        }
+
+        _traditionalPenClosing = _traditionalPenSegmentCount > 0
+            && _traditionalPenFirstAnchor is { } first
+            && Distance(world, first) <= Math.Max(
+                DrawingTopologyRules.MinStrokeSegmentUnits,
+                _stage.ScreenLengthToWorld(10));
+        if (_traditionalPenClosing && _traditionalPenFirstAnchor is { } firstAnchor)
+        {
+            resolution = new PenAnchorSnapResult(firstAnchor, true, false, false);
+        }
+        else
+        {
+            resolution = ApplyPenAngleSnap(current, resolution);
+            if (IsShiftPressed() && !resolution.ObjectSnapped && !resolution.AlignX && !resolution.AlignY)
+            {
+                resolution = resolution with
+                {
+                    Point = ApplyDrawingLineAngleSnap(current, resolution.Point, temporarilySnapAngle: true)
+                };
+            }
+        }
+
+        if (Distance(current, resolution.Point) < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            _traditionalPenClosing = false;
+            return;
+        }
+
+        _traditionalPenPendingAnchor = resolution.Point;
+        _traditionalPenIncomingHandle = null;
+        _traditionalPenPendingOutgoingHandle = null;
+        _traditionalPenLockedIncomingHandle = null;
+        BeginTraditionalPenPointerDrag(screen);
+        UpdatePenAnchorGuides(resolution);
+        UpdateTraditionalPenDrawingPreview(world);
+    }
+
+    private void BeginTraditionalPenPointerDrag(Point screen)
+    {
+        _traditionalPenPointerDown = true;
+        _traditionalPenPointerDownScreen = screen;
+        _stage.Capture = true;
+        _lastMouse = screen;
+        _startScreen = screen;
+        _startWorld = _stage.ScreenToWorld(screen);
+    }
+
+    private void UpdateTraditionalPenHandles(Point screen)
+    {
+        if (!_traditionalPenPointerDown
+            || _traditionalPenPointerDownScreen is not { } pointerDown
+            || Math.Abs(screen.X - pointerDown.X) + Math.Abs(screen.Y - pointerDown.Y) <= 3)
+        {
+            return;
+        }
+
+        var anchor = _traditionalPenPendingAnchor ?? _traditionalPenCurrentAnchor;
+        if (anchor is not { } handleAnchor) return;
+        var pointer = VectorUnits.Quantize(SnapDrawingPoint(_stage.ScreenToWorld(screen)));
+        if (IsShiftPressed())
+        {
+            pointer = ApplyDrawingLineAngleSnap(handleAnchor, pointer, temporarilySnapAngle: true);
+        }
+
+        if (_traditionalPenPendingAnchor is null)
+        {
+            _traditionalPenOutgoingHandle = pointer;
+            UpdateTraditionalPenDrawingPreview(pointer);
+            return;
+        }
+
+        var mirrored = VectorUnits.Quantize(new PointF(
+            handleAnchor.X * 2 - pointer.X,
+            handleAnchor.Y * 2 - pointer.Y));
+        if (IsAltPressed())
+        {
+            _traditionalPenLockedIncomingHandle ??= mirrored;
+            _traditionalPenIncomingHandle = _traditionalPenLockedIncomingHandle;
+            _traditionalPenPendingOutgoingHandle = pointer;
+        }
+        else
+        {
+            _traditionalPenLockedIncomingHandle = null;
+            _traditionalPenIncomingHandle = mirrored;
+            _traditionalPenPendingOutgoingHandle = pointer;
+        }
+
+        UpdateTraditionalPenDrawingPreview(pointer);
+    }
+
+    private void FinishTraditionalPenPoint(Point screen)
+    {
+        if (!_traditionalPenPointerDown) return;
+        UpdateTraditionalPenHandles(screen);
+        if (_traditionalPenPendingAnchor is not null) CommitTraditionalPenSegment();
+    }
+
+    private bool CommitTraditionalPenSegment()
+    {
+        if (_traditionalPenCurrentAnchor is not { } start
+            || _traditionalPenPendingAnchor is not { } end
+            || Distance(start, end) < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            return false;
+        }
+
+        var segment = TraditionalPenCubicSegment(
+            start,
+            _traditionalPenOutgoingHandle,
+            _traditionalPenIncomingHandle,
+            end);
+        CaptureUndoSnapshot();
+        var newObject = _scene.AddCubicCurveSegment(
+            _scene.ActiveLayer,
+            segment.Start,
+            segment.Control1,
+            segment.Control2,
+            segment.End,
+            ActiveStrokeUnits(),
+            ActiveColor(),
+            ActiveStrokeColor(),
+            6);
+        ClearSelection();
+        FinalizeNewLineDrawingOperation(newObject);
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _traditionalPenSegmentCount++;
+        _traditionalPenCurrentAnchor = end;
+        _traditionalPenOutgoingHandle = _traditionalPenPendingOutgoingHandle;
+        _traditionalPenPendingAnchor = null;
+        _traditionalPenIncomingHandle = null;
+        _traditionalPenPendingOutgoingHandle = null;
+        _traditionalPenLockedIncomingHandle = null;
+        _penAnchorCacheGeometryRevision = -1;
+        _stage.Invalidate();
+
+        if (_traditionalPenClosing) CancelTraditionalPenPath();
+        return true;
+    }
+
+    internal static CubicDrawingPreviewSegment TraditionalPenCubicSegment(
+        PointF start,
+        PointF? outgoingHandle,
+        PointF? incomingHandle,
+        PointF end)
+    {
+        if (outgoingHandle is null && incomingHandle is null)
+        {
+            return new CubicDrawingPreviewSegment(
+                start,
+                Lerp(start, end, 1f / 3f),
+                Lerp(start, end, 2f / 3f),
+                end);
+        }
+
+        return new CubicDrawingPreviewSegment(
+            start,
+            outgoingHandle ?? start,
+            incomingHandle ?? end,
+            end);
+    }
+
+    private static PointF Midpoint(PointF first, PointF second) => new(
+        (first.X + second.X) * 0.5f,
+        (first.Y + second.Y) * 0.5f);
+
+    private static PointF Lerp(PointF first, PointF second, float amount) => new(
+        first.X + (second.X - first.X) * amount,
+        first.Y + (second.Y - first.Y) * amount);
+
+    private void UpdateTraditionalPenDrawingPreview(PointF world)
+    {
+        if (_traditionalPenCurrentAnchor is not { } start)
+        {
+            _stage.ClearDrawingPreview();
+            _stage.ClearPenDirectionHandles();
+            UpdatePenAnchorGuides(ResolvePenAnchorPoint(world));
+            return;
+        }
+
+        if (_traditionalPenPendingAnchor is { } handleAnchor)
+        {
+            _stage.SetPenDirectionHandles(
+                handleAnchor,
+                _traditionalPenIncomingHandle,
+                _traditionalPenPendingOutgoingHandle);
+        }
+        else
+        {
+            _stage.SetPenDirectionHandles(start, incoming: null, _traditionalPenOutgoingHandle);
+        }
+
+        var end = _traditionalPenPendingAnchor;
+        PenAnchorSnapResult resolution = default;
+        if (end is null)
+        {
+            resolution = ResolvePenAnchorPoint(world);
+            if (_traditionalPenSegmentCount > 0
+                && _traditionalPenFirstAnchor is { } first
+                && Distance(world, first) <= Math.Max(
+                    DrawingTopologyRules.MinStrokeSegmentUnits,
+                    _stage.ScreenLengthToWorld(10)))
+            {
+                resolution = new PenAnchorSnapResult(first, true, false, false);
+            }
+            else
+            {
+                resolution = ApplyPenAngleSnap(start, resolution);
+            }
+            end = resolution.Point;
+            UpdatePenAnchorGuides(resolution);
+        }
+
+        if (Distance(start, end.Value) < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            _stage.ClearDrawingPreview();
+            return;
+        }
+
+        var segment = TraditionalPenCubicSegment(
+            start,
+            _traditionalPenOutgoingHandle,
+            _traditionalPenIncomingHandle,
+            end.Value);
+        var curved = _traditionalPenOutgoingHandle is not null || _traditionalPenIncomingHandle is not null;
+        if (curved)
+        {
+            _stage.SetCubicCurveDrawingPreview(
+                segment.Start,
+                segment.Control1,
+                segment.Control2,
+                segment.End,
+                ActiveStrokeColor(),
+                ActiveStrokeUnits());
+        }
+        else
+        {
+            _stage.SetDrawingPreview(start, end.Value, ShapeKind.Line, ActiveStrokeColor(), ActiveStrokeUnits());
+        }
+    }
+
+    private void UpdateTraditionalPenHover(Point screen)
+    {
+        var world = _stage.ScreenToWorld(screen);
+        var selectedOnly = !IsControlPressed();
+        if ((!selectedOnly || HasTraditionalPenPathSelection())
+            && TryFindTraditionalPenAnchor(world, selectedOnly, out _, out _, out var anchor))
+        {
+            _stage.ClearDrawingPreview();
+            _stage.SetPenAnchorGuides(anchor, vertical: false, horizontal: false, snapped: true, insertion: false);
+            return;
+        }
+
+        UpdateTraditionalPenDrawingPreview(world);
+    }
+
+    private bool TrySelectTraditionalPenPath(Point screen)
+    {
+        var hit = _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld());
+        var path = TraditionalPenPathElements(_scene, hit, _frame);
+        if (path.Length == 0) return false;
+
+        var primary = path.FirstOrDefault(candidate => candidate.Key == hit.Key);
+        SetSelection(path, primary.IsValid ? primary : path[0]);
+        _stage.ClearDrawingPreview();
+        _stage.ClearPenAnchorGuides();
+        _stage.ClearPenDirectionHandles();
+        UpdateInspector();
+        _stage.Invalidate();
+        return true;
+    }
+
+    internal static DrawingElementHit[] TraditionalPenPathElements(
+        VectorScene scene,
+        DrawingElementHit seed,
+        int frame)
+    {
+        if (!seed.IsValid
+            || seed.Key.Kind != DrawingElementKind.Stroke
+            || (uint)seed.Key.ObjectIndex >= scene.ObjectCount
+            || scene.ShapeKind[seed.Key.ObjectIndex] != ShapeKind.Line)
+        {
+            return [];
+        }
+
+        return scene.GetConnectedStrokeElements(seed, frame)
+            .Where(hit => hit.Key.Kind == DrawingElementKind.Stroke
+                && (uint)hit.Key.ObjectIndex < scene.ObjectCount
+                && scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+                && scene.IsObjectSelectable(hit.Key.ObjectIndex, frame))
+            .GroupBy(hit => hit.Key)
+            .Select(group => group.First())
+            .ToArray();
+    }
+
+    private bool HasTraditionalPenPathSelection()
+    {
+        return _tool == ToolMode.Pen
+            && _traditionalPenCurrentAnchor is null
+            && _selectedElements.Any(hit => hit.Key.Kind == DrawingElementKind.Stroke
+                && (uint)hit.Key.ObjectIndex < _scene.ObjectCount
+                && _scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line);
+    }
+
+    private bool TryBeginTraditionalPenAnchorEdit(Point screen)
+    {
+        return TryBeginTraditionalPenAnchorEdit(screen, selectedOnly: false);
+    }
+
+    private bool TryBeginTraditionalPenSelectedHandleEdit(Point screen)
+    {
+        return HasTraditionalPenPathSelection()
+            && TryBeginTraditionalPenAnchorEdit(screen, selectedOnly: true);
+    }
+
+    private bool TryBeginTraditionalPenAnchorEdit(Point screen, bool selectedOnly)
+    {
+        var world = _stage.ScreenToWorld(screen);
+        if (!TryFindTraditionalPenAnchor(world, selectedOnly, out var objectIndex, out var startEndpoint, out _))
+        {
+            if (TryFindTraditionalPenControl(screen, selectedOnly, out objectIndex, out var controlHandle))
+            {
+                BeginTraditionalPenGeometryEdit(screen, world, objectIndex, controlHandle);
+                return true;
+            }
+
+            return !selectedOnly && TrySelectTraditionalPenPath(screen);
+        }
+
+        BeginTraditionalPenGeometryEdit(
+            screen,
+            world,
+            objectIndex,
+            startEndpoint ? EditHandleKind.LineStart : EditHandleKind.LineEnd);
+        return true;
+    }
+
+    private void BeginTraditionalPenGeometryEdit(
+        Point screen,
+        PointF world,
+        int objectIndex,
+        EditHandleKind handle)
+    {
+        var selectedHit = _selectedElements.FirstOrDefault(hit => hit.Key.ObjectIndex == objectIndex);
+        if (selectedHit.IsValid)
+        {
+            SetSelection(_selectedElements.ToArray(), selectedHit);
+        }
+        else
+        {
+            SetSelection(objectIndex);
+        }
+        _activeHandle = handle;
+        _traditionalPenAnchorEditing = true;
+        _traditionalPenAnchorEditObject = objectIndex;
+        _traditionalPenAnchorEditStartEndpoint = handle == EditHandleKind.LineStart;
+        _traditionalPenAnchorEditTracksCurrent = handle is EditHandleKind.LineStart or EditHandleKind.LineEnd
+            && _traditionalPenCurrentAnchor is { } current
+            && _scene.TryGetLineEndpoint(objectIndex, handle == EditHandleKind.LineStart, out var editAnchor)
+            && Distance(current, editAnchor) <= EndpointConnectionToleranceUnits;
+        if (_traditionalPenAnchorEditTracksCurrent)
+        {
+            _traditionalPenAnchorEditOriginalCurrent = _traditionalPenCurrentAnchor!.Value;
+            _traditionalPenAnchorEditOriginalOutgoing = _traditionalPenOutgoingHandle;
+        }
+        _stage.Capture = true;
+        _lastMouse = screen;
+        _startScreen = screen;
+        _startWorld = world;
+        CaptureEditStart(objectIndex);
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
+    private bool TryFindTraditionalPenControl(
+        Point screen,
+        bool selectedOnly,
+        out int objectIndex,
+        out EditHandleKind handle)
+    {
+        objectIndex = -1;
+        handle = EditHandleKind.None;
+        var bestDistance = 12f;
+        for (var index = 0; index < _scene.ObjectCount; index++)
+        {
+            if (_scene.ShapeKind[index] != ShapeKind.Line
+                || _scene.ObjectLayer[index] != _scene.ActiveLayer
+                || !_scene.IsObjectActive(index, _frame)
+                || selectedOnly && !_selectedObjects.Contains(index))
+            {
+                continue;
+            }
+
+            var control1 = _stage.WorldToScreen(_scene.CurveControlX[index], _scene.CurveControlY[index]);
+            var dx1 = control1.X - screen.X;
+            var dy1 = control1.Y - screen.Y;
+            var distance1 = MathF.Sqrt(dx1 * dx1 + dy1 * dy1);
+            if (distance1 < bestDistance)
+            {
+                bestDistance = distance1;
+                objectIndex = index;
+                handle = EditHandleKind.BezierControl;
+            }
+
+            var control2 = _stage.WorldToScreen(_scene.CurveControl2X[index], _scene.CurveControl2Y[index]);
+            var dx2 = control2.X - screen.X;
+            var dy2 = control2.Y - screen.Y;
+            var distance2 = MathF.Sqrt(dx2 * dx2 + dy2 * dy2);
+            if (distance2 < bestDistance)
+            {
+                bestDistance = distance2;
+                objectIndex = index;
+                handle = EditHandleKind.BezierControl2;
+            }
+        }
+
+        return objectIndex >= 0;
+    }
+
+    private bool TryFindTraditionalPenAnchor(
+        PointF world,
+        bool selectedOnly,
+        out int objectIndex,
+        out bool startEndpoint,
+        out PointF anchor)
+    {
+        objectIndex = -1;
+        startEndpoint = false;
+        anchor = PointF.Empty;
+        var tolerance = Math.Max(DrawingTopologyRules.MinStrokeSegmentUnits, _stage.ScreenLengthToWorld(10));
+        var bestDistance = tolerance;
+        for (var index = 0; index < _scene.ObjectCount; index++)
+        {
+            if (_scene.ShapeKind[index] != ShapeKind.Line
+                || _scene.ObjectLayer[index] != _scene.ActiveLayer
+                || !_scene.IsObjectActive(index, _frame)
+                || selectedOnly && !_selectedObjects.Contains(index))
+            {
+                continue;
+            }
+
+            if (_scene.TryGetLineEndpoint(index, startEndpoint: true, out var startCandidate))
+            {
+                var distance = Distance(world, startCandidate);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    objectIndex = index;
+                    startEndpoint = true;
+                    anchor = startCandidate;
+                }
+            }
+
+            if (_scene.TryGetLineEndpoint(index, startEndpoint: false, out var endCandidate))
+            {
+                var distance = Distance(world, endCandidate);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    objectIndex = index;
+                    startEndpoint = false;
+                    anchor = endCandidate;
+                }
+            }
+        }
+
+        return objectIndex >= 0;
+    }
+
+    private void CompleteTraditionalPenAnchorEdit()
+    {
+        FlushLineDragPreview();
+        if (_traditionalPenAnchorEditTracksCurrent
+            && (uint)_traditionalPenAnchorEditObject < _scene.ObjectCount
+            && _scene.TryGetLineEndpoint(
+                _traditionalPenAnchorEditObject,
+                _traditionalPenAnchorEditStartEndpoint,
+                out var movedAnchor))
+        {
+            var dx = movedAnchor.X - _traditionalPenAnchorEditOriginalCurrent.X;
+            var dy = movedAnchor.Y - _traditionalPenAnchorEditOriginalCurrent.Y;
+            _traditionalPenCurrentAnchor = movedAnchor;
+            if (_traditionalPenFirstAnchor is { } first
+                && Distance(first, _traditionalPenAnchorEditOriginalCurrent) <= EndpointConnectionToleranceUnits)
+            {
+                _traditionalPenFirstAnchor = movedAnchor;
+            }
+            if (_traditionalPenAnchorEditOriginalOutgoing is { } outgoing)
+            {
+                _traditionalPenOutgoingHandle = VectorUnits.Quantize(new PointF(outgoing.X + dx, outgoing.Y + dy));
+            }
+        }
+
+        _traditionalPenAnchorEditing = false;
+        _traditionalPenAnchorEditTracksCurrent = false;
+        _traditionalPenAnchorEditObject = -1;
+        _traditionalPenAnchorEditOriginalOutgoing = null;
+        _penAnchorCacheGeometryRevision = -1;
+        FinishPointerInteraction();
+    }
+
+    private void FinishTraditionalPenPointerDrag()
+    {
+        _traditionalPenPointerDown = false;
+        _traditionalPenPointerDownScreen = null;
+        _traditionalPenClosing = false;
+        _lastMouse = null;
+        _startScreen = null;
+        _startWorld = null;
+        _stage.Capture = false;
+    }
+
+    private bool CancelTraditionalPenPath()
+    {
+        var hadPath = _traditionalPenCurrentAnchor is not null
+            || _traditionalPenPendingAnchor is not null
+            || _traditionalPenAnchorEditing;
+        var hadPointer = _traditionalPenPointerDown;
+        var hadAnchorEdit = _traditionalPenAnchorEditing;
+        _traditionalPenFirstAnchor = null;
+        _traditionalPenCurrentAnchor = null;
+        _traditionalPenOutgoingHandle = null;
+        _traditionalPenPendingAnchor = null;
+        _traditionalPenIncomingHandle = null;
+        _traditionalPenPendingOutgoingHandle = null;
+        _traditionalPenLockedIncomingHandle = null;
+        _traditionalPenPointerDownScreen = null;
+        _traditionalPenPointerDown = false;
+        _traditionalPenClosing = false;
+        _traditionalPenAnchorEditing = false;
+        _traditionalPenAnchorEditTracksCurrent = false;
+        _traditionalPenAnchorEditObject = -1;
+        _traditionalPenAnchorEditOriginalOutgoing = null;
+        _traditionalPenSegmentCount = 0;
+        _stage.ClearDrawingPreview();
+        _stage.ClearPenAnchorGuides();
+        _stage.ClearPenDirectionHandles();
+        if (hadAnchorEdit)
+        {
+            FlushLineDragPreview();
+            FinishPointerInteraction();
+        }
+        else if (hadPointer)
+        {
+            FinishTraditionalPenPointerDrag();
+        }
+        UpdateTraditionalPenPathHandleOverlay();
+        return hadPath;
+    }
+
     private void BeginPenSegment(Point screen)
     {
         var world = _stage.ScreenToWorld(screen);
@@ -8264,7 +9791,7 @@ internal sealed class MainForm : Form
     {
         if (_penEndpointScreen is not { } anchor) return;
         if (Math.Abs(screen.X - anchor.X) + Math.Abs(screen.Y - anchor.Y) <= 3) return;
-        _penControlWorld = VectorUnits.Quantize(_drawSettings.SnapPoint(_stage.ScreenToWorld(screen)));
+        _penControlWorld = VectorUnits.Quantize(SnapDrawingPoint(_stage.ScreenToWorld(screen)));
         UpdatePenDrawingPreview(_penControlWorld.Value);
     }
 
@@ -8284,7 +9811,7 @@ internal sealed class MainForm : Form
             ActiveStrokeColor(),
             6);
         SetSelection(newObject);
-        MergeCompatibleLinesAfterDrawingOperation();
+        FinalizeNewLineDrawingOperation(newObject);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _penStartWorld = end;
@@ -8411,7 +9938,7 @@ internal sealed class MainForm : Form
     {
         var objectSnapping = EndpointSnappingRequested();
         var alignment = _drawSettings.SnapEnabled && _drawSettings.AlignmentEnabled;
-        var gridPoint = VectorUnits.Quantize(_drawSettings.SnapPoint(world));
+        var gridPoint = VectorUnits.Quantize(SnapDrawingPoint(world));
         if (!objectSnapping && !alignment) return new PenAnchorSnapResult(gridPoint, false, false, false);
         return ResolvePenAnchorSnap(
             world,
@@ -8614,27 +10141,56 @@ internal sealed class MainForm : Form
         var tipShape = _freehandBrushStroke || _freehandPressureBrush || _freehandErasing
             ? _brushShape
             : null;
+        var previewLimit = tipShape is { IsTraditionalBrush: true, IsRadiallySymmetric: false }
+            ? MaxStampBrushPreviewPoints
+            : MaxFreehandPreviewPoints;
         if (_freehandPressureBrush)
         {
+            var previewSamples = LimitDrawingPreview(_pressureBrushSamples, previewLimit);
             var profile = FreehandStrokeProcessor.CreatePressurePreview(
-                _pressureBrushSamples,
+                previewSamples,
                 _freehandStrokeUnits,
                 _drawSettings.PressureBrushSmoothing);
-            if (TryUpdateShapeGradientBrushPreview(profile.Select(sample => sample.Point).ToArray())) return;
+            var pressurePreviewPoints = new PointF[profile.Length];
+            var previewDiameters = new float[profile.Length];
+            for (var index = 0; index < profile.Length; index++)
+            {
+                pressurePreviewPoints[index] = profile[index].Point;
+                previewDiameters[index] = profile[index].Diameter;
+            }
+            if (TryUpdateShapeGradientBrushPreview(pressurePreviewPoints, previewSamples)) return;
             _stage.SetFreehandPreview(
-                profile.Select(sample => sample.Point).ToArray(),
+                pressurePreviewPoints,
                 _freehandColor,
                 _freehandStrokeUnits,
-                profile.Select(sample => sample.Diameter).ToArray(),
+                previewDiameters,
                 tipShape);
             return;
         }
 
-        if (TryUpdateShapeGradientBrushPreview(_freehandSamples)) return;
-        _stage.SetFreehandPreview(_freehandSamples, _freehandColor, _freehandStrokeUnits, brushShape: tipShape);
+        var boundedPreviewPoints = LimitDrawingPreview(_freehandSamples, previewLimit);
+        if (TryUpdateShapeGradientBrushPreview(boundedPreviewPoints)) return;
+        _stage.SetFreehandPreview(boundedPreviewPoints, _freehandColor, _freehandStrokeUnits, brushShape: tipShape);
     }
 
-    private bool TryUpdateShapeGradientBrushPreview(IReadOnlyList<PointF> gradientPath)
+    internal static IReadOnlyList<T> LimitDrawingPreview<T>(IReadOnlyList<T> source, int maximumCount)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        maximumCount = Math.Max(2, maximumCount);
+        if (source.Count <= maximumCount) return source;
+
+        var result = new T[maximumCount];
+        var scale = (source.Count - 1d) / (maximumCount - 1d);
+        for (var index = 0; index < maximumCount; index++)
+        {
+            result[index] = source[(int)Math.Round(index * scale)];
+        }
+        return result;
+    }
+
+    private bool TryUpdateShapeGradientBrushPreview(
+        IReadOnlyList<PointF> gradientPath,
+        IReadOnlyList<PressureBrushSample>? pressureSamples = null)
     {
         if ((!_freehandBrushStroke && !_freehandPressureBrush)
             || _freehandErasing
@@ -8658,7 +10214,7 @@ internal sealed class MainForm : Form
         var previewObjects = _freehandPressureBrush
             ? _shapeGradientBrushPreviewStage.AddPressureBrushStroke(
                 _scene.ActiveLayer,
-                _pressureBrushSamples,
+                pressureSamples ?? _pressureBrushSamples,
                 _freehandStrokeUnits,
                 _freehandColor,
                 _brushShape,
@@ -8691,8 +10247,9 @@ internal sealed class MainForm : Form
         var matchingSources = _scene.FindIntersectingMatchingShapeGradientFills(
             _shapeGradientBrushPreviewStage,
             previewObjects,
-            _frame);
-        if (matchingSources.Length == 0)
+            _frame,
+            maximumResults: 3);
+        if (matchingSources.Length == 0 || matchingSources.Length > 2)
         {
             ClearShapeGradientBrushPreview();
             return false;
@@ -8772,8 +10329,7 @@ internal sealed class MainForm : Form
                     gradientPath,
                     _pressureBrushSamples[0].Point,
                     _pressureBrushSamples[^1].Point);
-                var overwritten = _scene.ApplyFillOverwriteToNewObjects(objects, _frame);
-                _scene.MergeSameColorFillsAroundNewObjects(overwritten, connectNearby: true, frame: _frame);
+                NormalizeNewPaintObjects(objects);
                 _materialEditor.RecordRecentFillColor(_freehandColor);
                 ClearSelection();
                 _hierarchyPanel.RefreshScene();
@@ -8820,8 +10376,7 @@ internal sealed class MainForm : Form
             if (objects.Length > 0)
             {
                 ApplyFillGradientToBrushObjects(objects, points, points[0], points[^1]);
-                var overwritten = _scene.ApplyFillOverwriteToNewObjects(objects, _frame);
-                _scene.MergeSameColorFillsAroundNewObjects(overwritten, connectNearby: true, frame: _frame);
+                NormalizeNewPaintObjects(objects);
                 _materialEditor.RecordRecentFillColor(_freehandColor);
                 ClearSelection();
                 _hierarchyPanel.RefreshScene();
@@ -8840,7 +10395,7 @@ internal sealed class MainForm : Form
             if (newObject >= 0)
             {
                 SetSelection(newObject);
-                MergeCompatibleLinesAfterDrawingOperation();
+                MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope([newObject]));
                 _hierarchyPanel.RefreshScene();
                 UpdateInspector();
             }
@@ -8933,7 +10488,6 @@ internal sealed class MainForm : Form
 
         ClearSelection();
         _stage.ClearHoveredLineElement();
-        MergeCompatibleLinesAfterDrawingOperation();
         PushUndoSnapshot(snapshot);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
@@ -8960,17 +10514,20 @@ internal sealed class MainForm : Form
     {
         _selectedStart = new PointF(_scene.X[objectIndex], _scene.Y[objectIndex]);
         _curveControlStart = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
+        _curveControl2Start = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]);
         _resizeStartCenter = _selectedStart;
         _resizeStartSize = new SizeF(_scene.Width[objectIndex], _scene.Height[objectIndex]);
         _resizeStartAngle = _scene.Angle[objectIndex];
         _selectedMoveStarts.Clear();
         _selectedCurveStarts.Clear();
+        _selectedCurve2Starts.Clear();
         _lineEndpointEditStarts.Clear();
         foreach (var index in _selectedObjects)
         {
             if ((uint)index >= _scene.ObjectCount) continue;
             _selectedMoveStarts[index] = new PointF(_scene.X[index], _scene.Y[index]);
             _selectedCurveStarts[index] = new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]);
+            _selectedCurve2Starts[index] = new PointF(_scene.CurveControl2X[index], _scene.CurveControl2Y[index]);
             if (_scene.HasGradient(index))
             {
                 _selectedGradientStarts[index] = (_scene.GetGradientStart(index), _scene.GetGradientEnd(index));
@@ -8981,6 +10538,7 @@ internal sealed class MainForm : Form
         {
             _selectedMoveStarts[objectIndex] = _selectedStart.Value;
             _selectedCurveStarts[objectIndex] = _curveControlStart.Value;
+            _selectedCurve2Starts[objectIndex] = _curveControl2Start.Value;
             if (_scene.HasGradient(objectIndex))
             {
                 _selectedGradientStarts[objectIndex] = (_scene.GetGradientStart(objectIndex), _scene.GetGradientEnd(objectIndex));
@@ -8995,9 +10553,17 @@ internal sealed class MainForm : Form
         if (_selectedObject < 0 || _resizeStartCenter is null || _resizeStartSize is null) return;
         if (_activeHandle == EditHandleKind.BezierControl)
         {
-            var snapped = VectorUnits.Quantize(_drawSettings.SnapPoint(world));
+            var snapped = VectorUnits.Quantize(SnapDrawingPoint(world));
             _scene.CurveControlX[_selectedObject] = snapped.X;
             _scene.CurveControlY[_selectedObject] = snapped.Y;
+            return;
+        }
+
+        if (_activeHandle == EditHandleKind.BezierControl2)
+        {
+            var snapped = VectorUnits.Quantize(SnapDrawingPoint(world));
+            _scene.CurveControl2X[_selectedObject] = snapped.X;
+            _scene.CurveControl2Y[_selectedObject] = snapped.Y;
             return;
         }
 
@@ -9139,8 +10705,16 @@ internal sealed class MainForm : Form
         if (!_scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var endpoint)) return;
         if (Distance(endpoint, anchor) > EndpointConnectionToleranceUnits) return;
         if (!_scene.TryGetLineEndpoint(objectIndex, !startEndpoint, out var opposite)) return;
-        var control = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
-        _lineEndpointEditStarts.Add(new LineEndpointEditStart(objectIndex, startEndpoint, endpoint, opposite, control, _scene.IsLineStraight(objectIndex)));
+        var control1 = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
+        var control2 = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]);
+        _lineEndpointEditStarts.Add(new LineEndpointEditStart(
+            objectIndex,
+            startEndpoint,
+            endpoint,
+            opposite,
+            control1,
+            control2,
+            _scene.IsLineStraight(objectIndex)));
     }
 
     private void ApplyLineEndpointDrag(PointF world)
@@ -9153,7 +10727,22 @@ internal sealed class MainForm : Form
 
         foreach (var edit in _lineEndpointEditStarts)
         {
-            _scene.SetLineEndpoint(edit.ObjectIndex, edit.StartEndpoint, snapped, edit.OppositeEndpoint, edit.Control, edit.KeepStraight);
+            var dx = snapped.X - edit.OriginalEndpoint.X;
+            var dy = snapped.Y - edit.OriginalEndpoint.Y;
+            var control1 = edit.StartEndpoint
+                ? new PointF(edit.Control1.X + dx, edit.Control1.Y + dy)
+                : edit.Control1;
+            var control2 = edit.StartEndpoint
+                ? edit.Control2
+                : new PointF(edit.Control2.X + dx, edit.Control2.Y + dy);
+            _scene.SetLineEndpoint(
+                edit.ObjectIndex,
+                edit.StartEndpoint,
+                snapped,
+                edit.OppositeEndpoint,
+                control1,
+                control2,
+                edit.KeepStraight);
         }
     }
 
@@ -9187,7 +10776,11 @@ internal sealed class MainForm : Form
         }
 
         return (
-            _drawSettings.ResolvePointSnap(world, objectCandidate, temporarilySnapToObjects),
+            _drawSettings.ResolvePointSnap(
+                world,
+                objectCandidate,
+                temporarilySnapToObjects,
+                _stage.AdaptiveGridSnapStep),
             objectCandidate.HasValue);
     }
 
@@ -9337,8 +10930,8 @@ internal sealed class MainForm : Form
         }
         else
         {
-            start = VectorUnits.Quantize(_drawSettings.SnapPoint(start));
-            end = VectorUnits.Quantize(_drawSettings.SnapPoint(end));
+            start = VectorUnits.Quantize(SnapDrawingPoint(start));
+            end = VectorUnits.Quantize(SnapDrawingPoint(end));
             (start, end) = ResolveShapeDragBounds(
                 start,
                 end,
@@ -9366,13 +10959,12 @@ internal sealed class MainForm : Form
         }
         if (newObject >= 0 && tool != ToolMode.Line)
         {
-            var overwritten = _scene.ApplyFillOverwriteToNewObjects([newObject], _frame);
+            var overwritten = NormalizeNewPaintObjects([newObject]);
             if (overwritten.Length > 0) newObject = overwritten[0];
-            if (!_scene.HasGradient(newObject)) newObject = _scene.MergeSameColorFillsAround(newObject, frame: _frame);
         }
 
         SetSelection(newObject);
-        MergeCompatibleLinesAfterDrawingOperation();
+        if (tool == ToolMode.Line) FinalizeNewLineDrawingOperation(newObject);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
@@ -9424,6 +11016,20 @@ internal sealed class MainForm : Form
         UpdateInspector();
     }
 
+    private void ApplySelectedDrawingObjectAnchor(PointF anchor)
+    {
+        var selected = SelectedSceneInstance();
+        if (selected is null
+            || !_project.TrySetDrawingObjectAnchor(selected.DrawingObjectId, anchor))
+        {
+            UpdateInspector();
+            return;
+        }
+
+        RebuildEditableInstanceComposition();
+        UpdateInspector();
+    }
+
     internal static bool RestoreDrawingObjectOriginalSize(DrawingObjectInstanceDefinition instance, int frame = 0)
     {
         ArgumentNullException.ThrowIfNull(instance);
@@ -9441,6 +11047,11 @@ internal sealed class MainForm : Form
     {
         var basicInspectorScrollY = CaptureInspectorScrollPosition(_basicInspectorPage);
         var sceneInspectorScrollY = CaptureInspectorScrollPosition(_sceneEditPage);
+        var drawingObjectPanelWasVisible = _drawingObjectInstancePanel.Visible;
+        var drawingObjectPanelParent = _drawingObjectInstancePanel.Parent;
+        var materialEditorHeight = _materialEditor.Height;
+        var materialEditorWasVisible = _materialEditor.Visible;
+        var materialEditorParent = _materialEditor.Parent;
         _basicInspectorPage.SuspendContentLayout();
         _sceneEditPage.SuspendContentLayout();
         try
@@ -9463,7 +11074,10 @@ internal sealed class MainForm : Form
                     var state = instance.EvaluateState(_frame);
                     return Math.Abs(state.ScaleX - 1f) > 0.0001f
                         || Math.Abs(state.ScaleY - 1f) > 0.0001f;
-                }));
+                }),
+                drawingObject?.Anchor ?? PointF.Empty,
+                drawingObject is not null && selectedSceneInstances.All(instance =>
+                    string.Equals(instance.DrawingObjectId, drawingObject.Id, StringComparison.Ordinal)));
             _drawingObjectInstancePanel.Visible = true;
             var drawingLayer = Array.IndexOf(_scene.LayerIds, sceneInstance.SceneLayerId);
             var layerName = IsSceneCompositionContext()
@@ -9576,10 +11190,27 @@ internal sealed class MainForm : Form
         }
         finally
         {
-            _sceneEditPage.ResumeContentLayout(performLayout: true);
-            _basicInspectorPage.ResumeContentLayout(performLayout: true);
-            RestoreInspectorScrollPosition(_basicInspectorPage, basicInspectorScrollY);
-            RestoreInspectorScrollPosition(_sceneEditPage, sceneInspectorScrollY);
+            var drawingObjectLayoutChanged = drawingObjectPanelWasVisible != _drawingObjectInstancePanel.Visible;
+            var materialEditorLayoutChanged = materialEditorHeight != _materialEditor.Height
+                || materialEditorWasVisible != _materialEditor.Visible;
+            var basicLayoutChanged = (drawingObjectLayoutChanged
+                    && ReferenceEquals(drawingObjectPanelParent, _basicInspectorPage.Content))
+                || (materialEditorLayoutChanged
+                    && ReferenceEquals(materialEditorParent, _basicInspectorPage.Content));
+            var sceneLayoutChanged = (drawingObjectLayoutChanged
+                    && ReferenceEquals(drawingObjectPanelParent, _sceneEditPage.Content))
+                || (materialEditorLayoutChanged
+                    && ReferenceEquals(materialEditorParent, _sceneEditPage.Content));
+            _sceneEditPage.ResumeContentLayout(performLayout: sceneLayoutChanged);
+            _basicInspectorPage.ResumeContentLayout(performLayout: basicLayoutChanged);
+            if (basicLayoutChanged)
+            {
+                RestoreInspectorScrollPosition(_basicInspectorPage, basicInspectorScrollY);
+            }
+            if (sceneLayoutChanged)
+            {
+                RestoreInspectorScrollPosition(_sceneEditPage, sceneInspectorScrollY);
+            }
         }
     }
 
@@ -10181,9 +11812,12 @@ internal sealed class MainForm : Form
 
     private void ShowWorkspace(WorkspaceView view)
     {
+        if (_marqueeSelecting || _marqueeSelectionCancellationPending) FinishLostPointerCapture();
+        CancelTemporaryCanvasPan();
         if (view != WorkspaceView.BasicDrawing) HideBrushColorPalette();
         var basicDrawing = view == WorkspaceView.BasicDrawing;
         var sceneEdit = view == WorkspaceView.SceneEditor;
+        PlaceDrawingObjectInstancePanel(sceneEdit);
         _workspaceHeader.Height = basicDrawing ? 84 : 44;
         _drawingObjectRow.Visible = basicDrawing;
         _basicInspectorPage.Visible = basicDrawing;
@@ -10202,6 +11836,7 @@ internal sealed class MainForm : Form
         if (sceneEdit && IsBasicDrawingOnlyTool(_tool))
         {
             _tool = ToolMode.Select;
+            CancelTraditionalPenPath();
             CancelPenCurve();
             CancelFreehandStroke();
             _stage.ClearDrawingPreview();
@@ -10213,9 +11848,20 @@ internal sealed class MainForm : Form
         ApplyToolCursor();
     }
 
+    private void PlaceDrawingObjectInstancePanel(bool sceneEdit)
+    {
+        var target = sceneEdit ? _sceneEditPage.Content : _basicInspectorPage.Content;
+        if (!ReferenceEquals(_drawingObjectInstancePanel.Parent, target))
+        {
+            target.Controls.Add(_drawingObjectInstancePanel);
+        }
+        _drawingObjectInstancePanel.BringToFront();
+        if (!sceneEdit) _materialEditor.BringToFront();
+    }
+
     private static bool IsDrawingTool(ToolMode tool)
     {
-        return tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star or ToolMode.Line or ToolMode.Pen or ToolMode.Pencil or ToolMode.Brush or ToolMode.PressureBrush;
+        return tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star or ToolMode.Line or ToolMode.Pen or ToolMode.SimplePen or ToolMode.Pencil or ToolMode.Brush or ToolMode.PressureBrush;
     }
 
     private static bool IsBasicDrawingOnlyTool(ToolMode tool)
@@ -10225,7 +11871,7 @@ internal sealed class MainForm : Form
 
     private static bool IsStandardStrokeTool(ToolMode tool)
     {
-        return tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star or ToolMode.Line or ToolMode.Pen;
+        return tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star or ToolMode.Line or ToolMode.Pen or ToolMode.SimplePen;
     }
 
     private static bool IsFreehandTool(ToolMode tool)
@@ -10257,10 +11903,10 @@ internal sealed class MainForm : Form
 
     private static bool IsLineTool(ToolMode tool)
     {
-        return tool is ToolMode.Line or ToolMode.Pen or ToolMode.Pencil;
+        return tool is ToolMode.Line or ToolMode.Pen or ToolMode.SimplePen or ToolMode.Pencil;
     }
 
-    private static bool UsesStrokeGradient(ToolMode tool) => tool is ToolMode.Line or ToolMode.Pen;
+    private static bool UsesStrokeGradient(ToolMode tool) => tool is ToolMode.Line or ToolMode.Pen or ToolMode.SimplePen;
 
     private static ShapeKind? ToolShapeKind(ToolMode tool)
     {
@@ -10286,6 +11932,7 @@ internal sealed class MainForm : Form
             ToolMode.Star => SvgIconKind.Star,
             ToolMode.Line => SvgIconKind.Line,
             ToolMode.Pen => SvgIconKind.Pen,
+            ToolMode.SimplePen => SvgIconKind.SimplePen,
             ToolMode.Pencil => SvgIconKind.Pencil,
             ToolMode.Brush => SvgIconKind.Brush,
             ToolMode.PressureBrush => SvgIconKind.PressureBrush,
@@ -10318,6 +11965,7 @@ internal sealed class MainForm : Form
         return tool switch
         {
             ToolMode.Pen => "Pen Tool",
+            ToolMode.SimplePen => "Simple Pen Tool",
             ToolMode.Pencil => "Pencil Tool",
             _ => "Line Tool"
         };
@@ -10481,59 +12129,40 @@ internal sealed class MainForm : Form
         }
     }
 
-    private sealed class DrawingObjectNameDialog : Form
+    private sealed class DrawingObjectNameDialog : ModernDialogForm
     {
         private readonly TextBox _input = new();
 
         private DrawingObjectNameDialog(string title, string label, string initialValue)
+            : base(title, new Size(440, 224))
         {
-            Text = title;
-            ClientSize = new Size(400, 146);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
-            MinimizeBox = false;
-            ShowIcon = false;
-            ShowInTaskbar = false;
-            StartPosition = FormStartPosition.CenterParent;
-            BackColor = Theme.Panel;
-            Font = Theme.UiFont();
-
             var prompt = new Label
             {
                 Text = label,
-                Left = 16,
-                Top = 14,
-                Width = 368,
-                Height = 24,
+                Dock = DockStyle.Top,
+                Height = 28,
                 ForeColor = Theme.Text,
                 BackColor = Theme.Panel,
                 Font = Theme.UiFont(9.5f, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            Controls.Add(prompt);
+            DialogContent.Controls.Add(prompt);
 
-            _input.Left = 16;
-            _input.Top = 44;
-            _input.Width = 368;
-            _input.Height = 28;
+            _input.Dock = DockStyle.Top;
+            _input.Height = 30;
+            _input.Margin = new Padding(0, 8, 0, 0);
             _input.Text = initialValue;
             _input.SelectAll();
             Theme.StyleTextBox(_input);
-            Controls.Add(_input);
+            DialogContent.Controls.Add(_input);
+            _input.BringToFront();
 
-            var cancel = new Button { Text = "Cancel", Left = 308, Top = 92, Width = 76, Height = 30 };
-            Theme.StyleButton(cancel);
-            cancel.Click += (_, _) => DialogResult = DialogResult.Cancel;
-            Controls.Add(cancel);
-
-            var save = new Button { Text = "Rename", Left = 224, Top = 92, Width = 76, Height = 30 };
-            Theme.StyleButton(save);
-            save.Click += (_, _) =>
-            {
-                if (string.IsNullOrWhiteSpace(_input.Text)) return;
-                DialogResult = DialogResult.OK;
-            };
-            Controls.Add(save);
+            var save = AddDialogAction(
+                "Rename",
+                DialogResult.OK,
+                DialogActionStyle.Primary,
+                () => !string.IsNullOrWhiteSpace(_input.Text));
+            var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
 
             AcceptButton = save;
             CancelButton = cancel;

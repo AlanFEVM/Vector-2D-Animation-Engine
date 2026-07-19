@@ -16,6 +16,30 @@ internal enum TimelineCommand
     ClearKeyframes
 }
 
+internal enum TimelineFeedbackMotion : byte
+{
+    Outline,
+    Sweep,
+    Expand,
+    Contract,
+    Pulse,
+    Ring,
+    Fade
+}
+
+internal readonly record struct TimelineFeedbackStyle(
+    TimelineFeedbackMotion Motion,
+    Color Color,
+    int DurationMilliseconds);
+
+internal enum TimelineLayerFeedbackKind : byte
+{
+    Add,
+    Remove
+}
+
+internal readonly record struct TimelineLayerFeedbackStyle(Color Color, int DurationMilliseconds);
+
 internal sealed class TimelineCommandRequestedEventArgs(
     TimelineCommand command,
     IReadOnlyList<TimelineFrameCell> cells) : EventArgs
@@ -57,12 +81,26 @@ internal enum TimelineOnionSkinRangeHandle : byte
 
 internal sealed class TimelineStrip : Control
 {
+    private readonly record struct TimelineLayerVisualSnapshot(
+        string TrackId,
+        int VisiblePosition,
+        string Name,
+        Color Color);
+
+    private readonly record struct TimelineLayerFeedbackTarget(
+        TimelineLayerFeedbackKind Kind,
+        TimelineLayerVisualSnapshot Snapshot);
+
     private const int PreferredGutterWidth = 232;
     private const int MinimumGutterWidth = 148;
     private int HeaderHeight => ScaleTimelineMetric(34);
     private const int RulerHeight = 28;
     private const int RowHeight = 21;
+    private const int LowRowHeight = 16;
+    private const int HighRowHeight = 28;
     private const int FrameCellWidth = 14;
+    internal const int MinimumFrameCellWidth = 8;
+    internal const int MaximumFrameCellWidth = 32;
     private const int HorizontalScrollHeight = 16;
     private const int HorizontalScrollArrowWidth = 15;
     private const int VerticalScrollWidth = 7;
@@ -93,6 +131,9 @@ internal sealed class TimelineStrip : Control
     private int _startFrame;
     private int _endFrame;
     private int _knownFrameCount;
+    private int _frameCellWidth = FrameCellWidth;
+    private int _rowHeight = RowHeight;
+    private TimelineFrameHeightPreset _frameHeightPreset = TimelineFrameHeightPreset.Medium;
     private int _firstVisibleFrame;
     private int _firstVisibleTrack;
     private int _hoverFrame = -1;
@@ -105,6 +146,21 @@ internal sealed class TimelineStrip : Control
     private int? _pendingHeightResize;
     private bool _heightResizeLayoutDirty;
     private readonly System.Windows.Forms.Timer _heightResizeTimer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _frameWidthCommitTimer = new() { Interval = 300 };
+    private readonly System.Windows.Forms.Timer _commandFeedbackTimer = new() { Interval = 16 };
+    private TimelineCommand? _commandFeedback;
+    private TimelineFrameCell[] _commandFeedbackCells = [];
+    private long _commandFeedbackStartedMilliseconds;
+    private readonly System.Windows.Forms.Timer _layerFeedbackTimer = new() { Interval = 16 };
+    private TimelineLayerFeedbackTarget[] _layerFeedbackTargets = [];
+    private TimelineLayerVisualSnapshot[] _knownLayerVisuals = [];
+    private string[] _knownTrackStructureIds = [];
+    private readonly List<int> _visibleTrackIndicesCache = [];
+    private int[] _visibleTrackPositionsCache = [];
+    private int[] _trackLayerIndicesCache = [];
+    private readonly Dictionary<string, int> _trackIndicesByIdCache = new(StringComparer.Ordinal);
+    private bool _timelineStructureCacheDirty = true;
+    private long _layerFeedbackStartedMilliseconds;
     private bool _isPlaying;
     private readonly HashSet<TimelineFrameCell> _selectedFrameCells = [];
     private readonly HashSet<string> _selectedLayerTrackIds = new(StringComparer.Ordinal);
@@ -128,6 +184,7 @@ internal sealed class TimelineStrip : Control
     private readonly ToolStripMenuItem _toggleFolderMenuItem;
     private readonly ToolStripMenuItem _moveLayerUpMenuItem;
     private readonly ToolStripMenuItem _moveLayerDownMenuItem;
+    private readonly ToolStripMenuItem _removeLayersMenuItem;
     private readonly ToolStripMenuItem _renameLayerMenuItem;
     private readonly ToolStripMenuItem _layerColorMenuItem;
     private readonly ToolStripMenuItem _lockLayerMenuItem;
@@ -135,6 +192,11 @@ internal sealed class TimelineStrip : Control
     private readonly ToolStripMenuItem _hideSelectedLayersMenuItem;
     private readonly Label _playbackFpsLabel = CreateHeaderLabel("FPS", "Animation frame rate");
     private readonly ModernNumericUpDown _playbackFps = CreatePlaybackFpsInput();
+    private readonly Label _frameWidthLabel = CreateHeaderLabel("Frame width", "Timeline frame width");
+    private readonly ModernSlider _frameWidthSlider = CreateFrameWidthSlider();
+    private readonly ModernNumericUpDown _frameWidthInput = CreateFrameWidthInput();
+    private readonly Label _frameHeightLabel = CreateHeaderLabel("Frame height", "Timeline frame height");
+    private readonly ComboBox _frameHeightInput = CreateFrameHeightInput();
     private readonly ModernToggleSwitch _onionSkinToggle = new()
     {
         AutoSize = false,
@@ -148,6 +210,9 @@ internal sealed class TimelineStrip : Control
     private readonly ModernNumericUpDown _onionNextFrames = CreateOnionSkinRangeInput("Next onion skin frames");
     private bool _updatingOnionSkinControls;
     private bool _updatingPlaybackFps;
+    private bool _updatingFrameWidthControls;
+    private bool _updatingFrameHeightControl;
+    private bool _frameWidthCommitPending;
     private HeaderLayoutKey? _headerLayoutKey;
 
     public event EventHandler? CurrentFrameChanged;
@@ -157,9 +222,12 @@ internal sealed class TimelineStrip : Control
     public event EventHandler? AddFolderLayerRequested;
     public event EventHandler? AddMaskLayerRequested;
     public event EventHandler? PlaybackFpsChanged;
+    public event EventHandler? FrameWidthCommitted;
+    public event EventHandler? FrameHeightCommitted;
     public event EventHandler? FrameSelectionChanged;
     public event EventHandler<TimelineCommandRequestedEventArgs>? CommandRequested;
     public event EventHandler<TimelineLayerMoveRequestedEventArgs>? LayerMoveRequested;
+    public event EventHandler? RemoveLayersRequested;
     public event EventHandler? LayerRenameRequested;
     public event EventHandler? LayerColorRequested;
     public event EventHandler? LayerLockRequested;
@@ -202,9 +270,10 @@ internal sealed class TimelineStrip : Control
         _toggleFolderMenuItem = new ToolStripMenuItem("Collapse Folder", null, (_, _) => ToggleActiveTrackGroupCollapsed());
         _moveLayerUpMenuItem = new ToolStripMenuItem("Move Layer Up", null, (_, _) => RequestLayerMove(-1));
         _moveLayerDownMenuItem = new ToolStripMenuItem("Move Layer Down", null, (_, _) => RequestLayerMove(1));
+        _removeLayersMenuItem = new ToolStripMenuItem("Delete Layer", null, (_, _) => RemoveLayersRequested?.Invoke(this, EventArgs.Empty));
         _renameLayerMenuItem = new ToolStripMenuItem("Rename Layer...", null, (_, _) => LayerRenameRequested?.Invoke(this, EventArgs.Empty))
         {
-            ShortcutKeys = Keys.F2
+            ShortcutKeys = Keys.Shift | Keys.F2
         };
         _layerColorMenuItem = new ToolStripMenuItem("Layer Color...", null, (_, _) => LayerColorRequested?.Invoke(this, EventArgs.Empty));
         _lockLayerMenuItem = new ToolStripMenuItem("Lock Layer", null, (_, _) => LayerLockRequested?.Invoke(this, EventArgs.Empty));
@@ -219,6 +288,8 @@ internal sealed class TimelineStrip : Control
             new ToolStripSeparator(),
             _moveLayerUpMenuItem,
             _moveLayerDownMenuItem,
+            new ToolStripSeparator(),
+            _removeLayersMenuItem,
             new ToolStripSeparator(),
             _showSelectedLayersMenuItem,
             _hideSelectedLayersMenuItem,
@@ -241,6 +312,9 @@ internal sealed class TimelineStrip : Control
         _layerContextMenu.Opening += HandleLayerContextMenuOpening;
         _frameContextMenu.Opening += HandleFrameContextMenuOpening;
         _heightResizeTimer.Tick += (_, _) => TickHeightResize();
+        _frameWidthCommitTimer.Tick += (_, _) => CommitFrameWidthChange();
+        _commandFeedbackTimer.Tick += (_, _) => TickCommandFeedback();
+        _layerFeedbackTimer.Tick += (_, _) => TickLayerFeedback();
         _onionSkinToggle.CheckedChanged += (_, _) =>
         {
             if (!_updatingOnionSkinControls) LayerOnionSkinRequested?.Invoke(this, EventArgs.Empty);
@@ -258,9 +332,36 @@ internal sealed class TimelineStrip : Control
             Invalidate();
             if (!_updatingPlaybackFps) PlaybackFpsChanged?.Invoke(this, EventArgs.Empty);
         };
+        _frameWidthSlider.ValueChanged += (_, _) =>
+        {
+            if (_updatingFrameWidthControls) return;
+            SetFrameCellWidth(_frameWidthSlider.Value);
+            ScheduleFrameWidthCommit();
+        };
+        _frameWidthInput.ValueChanged += (_, _) =>
+        {
+            if (_updatingFrameWidthControls) return;
+            SetFrameCellWidth((int)_frameWidthInput.Value);
+            ScheduleFrameWidthCommit();
+        };
+        _frameWidthSlider.InteractionCompleted += (_, _) => CommitFrameWidthChange();
+        _frameWidthInput.InteractionCompleted += (_, _) => CommitFrameWidthChange();
+        _frameWidthLabel.TextChanged += (_, _) => RefreshHeaderLayoutAfterTextChange();
+        _frameHeightLabel.TextChanged += (_, _) => RefreshHeaderLayoutAfterTextChange();
+        _frameHeightInput.SelectedIndexChanged += (_, _) =>
+        {
+            if (_updatingFrameHeightControl || _frameHeightInput.SelectedIndex < 0) return;
+            FrameHeightPreset = (TimelineFrameHeightPreset)_frameHeightInput.SelectedIndex;
+            FrameHeightCommitted?.Invoke(this, EventArgs.Empty);
+        };
         Controls.AddRange([
             _playbackFpsLabel,
             _playbackFps,
+            _frameWidthLabel,
+            _frameWidthSlider,
+            _frameWidthInput,
+            _frameHeightLabel,
+            _frameHeightInput,
             _onionSkinToggle,
             _onionPreviousLabel,
             _onionPreviousFrames,
@@ -268,6 +369,14 @@ internal sealed class TimelineStrip : Control
             _onionNextFrames
         ]);
         BindContext(context);
+    }
+
+    private void RefreshHeaderLayoutAfterTextChange()
+    {
+        _headerLayoutKey = null;
+        if (_timeline is null) return;
+        LayoutHeaderControls(CreateLayout(), IsOnionSkinControlsAvailable());
+        Invalidate();
     }
 
     public ITimelineContext Context => _context;
@@ -289,6 +398,108 @@ internal sealed class TimelineStrip : Control
                 _updatingPlaybackFps = false;
             }
         }
+    }
+
+    public int FrameWidth
+    {
+        get => _frameCellWidth;
+        set => SetFrameCellWidth(value);
+    }
+
+    public TimelineFrameHeightPreset FrameHeightPreset
+    {
+        get => _frameHeightPreset;
+        set => SetFrameHeightPreset(value);
+    }
+
+    public int FrameHeight => _rowHeight;
+
+    private void SetFrameHeightPreset(TimelineFrameHeightPreset value)
+    {
+        var next = Enum.IsDefined(value) ? value : TimelineFrameHeightPreset.Medium;
+        _updatingFrameHeightControl = true;
+        try
+        {
+            var index = (int)next;
+            if (_frameHeightInput.SelectedIndex != index) _frameHeightInput.SelectedIndex = index;
+        }
+        finally
+        {
+            _updatingFrameHeightControl = false;
+        }
+
+        if (_frameHeightPreset == next) return;
+        var previousLayout = CreateLayout();
+        var activeTrackPosition = VisibleTrackPosition(GetActiveTrackIndex());
+        var activeTrackCenter = activeTrackPosition < 0
+            ? previousLayout.RowTop + _rowHeight * 0.5f
+            : previousLayout.RowTop
+                + (activeTrackPosition - _firstVisibleTrack) * _rowHeight
+                + _rowHeight * 0.5f;
+        _frameHeightPreset = next;
+        _rowHeight = RowHeightFor(next);
+        var nextLayout = CreateLayout();
+        if (activeTrackPosition >= 0)
+        {
+            var desiredRow = (int)MathF.Round(
+                (activeTrackCenter - nextLayout.RowTop - _rowHeight * 0.5f) / _rowHeight);
+            SetFirstVisibleTrack(activeTrackPosition - desiredRow, invalidate: false);
+        }
+        EnsureActiveTrackVisible();
+        Invalidate();
+    }
+
+    internal static int RowHeightFor(TimelineFrameHeightPreset preset)
+    {
+        return preset switch
+        {
+            TimelineFrameHeightPreset.Low => LowRowHeight,
+            TimelineFrameHeightPreset.High => HighRowHeight,
+            _ => RowHeight
+        };
+    }
+
+    private void SetFrameCellWidth(int value)
+    {
+        var next = Math.Clamp(value, MinimumFrameCellWidth, MaximumFrameCellWidth);
+        _updatingFrameWidthControls = true;
+        try
+        {
+            if (_frameWidthSlider.Value != next) _frameWidthSlider.Value = next;
+            if ((int)_frameWidthInput.Value != next) _frameWidthInput.Value = next;
+        }
+        finally
+        {
+            _updatingFrameWidthControls = false;
+        }
+
+        if (_frameCellWidth == next) return;
+        var previousLayout = CreateLayout();
+        var playheadCenter = previousLayout.TrackLeft
+            + (_currentFrame - _firstVisibleFrame) * _frameCellWidth
+            + _frameCellWidth * 0.5f;
+        _frameCellWidth = next;
+        var nextLayout = CreateLayout();
+        var playheadColumn = (int)MathF.Round(
+            (playheadCenter - nextLayout.TrackLeft - _frameCellWidth * 0.5f) / _frameCellWidth);
+        SetFirstVisibleFrame(_currentFrame - playheadColumn, invalidate: false);
+        EnsureCurrentFrameVisibleCore();
+        Invalidate();
+    }
+
+    private void ScheduleFrameWidthCommit()
+    {
+        _frameWidthCommitPending = true;
+        _frameWidthCommitTimer.Stop();
+        _frameWidthCommitTimer.Start();
+    }
+
+    private void CommitFrameWidthChange()
+    {
+        _frameWidthCommitTimer.Stop();
+        if (!_frameWidthCommitPending) return;
+        _frameWidthCommitPending = false;
+        FrameWidthCommitted?.Invoke(this, EventArgs.Empty);
     }
 
     public string? ActiveTrackId
@@ -395,6 +606,8 @@ internal sealed class TimelineStrip : Control
     public void BindContext(ITimelineContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+        CancelCommandFeedback();
+        CancelLayerFeedback();
 
         if (_timeline is not null) _timeline.Changed -= HandleTimelineChanged;
 
@@ -414,12 +627,15 @@ internal sealed class TimelineStrip : Control
         _firstVisibleTrack = 0;
         _collapsedFolderLayerIds.Clear();
         _collapsedMaskLayerIds.Clear();
+        InvalidateTimelineStructureCache();
         _activeTrackId = TrackCount > 0 ? _timeline.Tracks[Math.Max(0, GetModelActiveTrackIndex())].Id : null;
         _selectedFrameCells.Clear();
         _selectedLayerTrackIds.Clear();
         _selectionAnchor = null;
         _layerSelectionAnchorTrackId = _activeTrackId;
         if (!string.IsNullOrWhiteSpace(_activeTrackId)) _selectedLayerTrackIds.Add(_activeTrackId);
+        _knownLayerVisuals = CaptureLayerVisualSnapshots();
+        CaptureKnownTrackStructure();
         RefreshOnionSkinControls();
         EnsureActiveTrackVisible();
         EnsureCurrentFrameVisible();
@@ -437,8 +653,11 @@ internal sealed class TimelineStrip : Control
             _timeline.Changed += HandleTimelineChanged;
         }
 
+        InvalidateTimelineStructureCache();
         PruneCollapsedLayerGroupIds();
         PruneLayerSelection();
+        DetectLayerCollectionFeedback();
+        CaptureKnownTrackStructure();
         UpdateFrameBoundsForTimelineChange();
         RefreshOnionSkinControls();
         EnsureActiveTrackVisible();
@@ -502,6 +721,7 @@ internal sealed class TimelineStrip : Control
             ? -1
             : FindLayerIndex(drawingScene, _timeline.Tracks[activeTrack].TargetId);
         var available = drawingScene is not null && layer >= 0;
+        var enabled = available && drawingScene!.LayerOnionSkin[layer];
 
         _updatingOnionSkinControls = true;
         try
@@ -509,15 +729,15 @@ internal sealed class TimelineStrip : Control
             if (_onionSkinToggle.Enabled != available) _onionSkinToggle.Enabled = available;
             if (available)
             {
-                var enabled = drawingScene!.LayerOnionSkin[layer];
+                var activeScene = drawingScene!;
                 if (_onionSkinToggle.Checked != enabled) _onionSkinToggle.Checked = enabled;
-                if (_onionPreviousFrames.Value != drawingScene.OnionSkinPreviousFrames)
+                if (_onionPreviousFrames.Value != activeScene.OnionSkinPreviousFrames)
                 {
-                    _onionPreviousFrames.Value = drawingScene.OnionSkinPreviousFrames;
+                    _onionPreviousFrames.Value = activeScene.OnionSkinPreviousFrames;
                 }
-                if (_onionNextFrames.Value != drawingScene.OnionSkinNextFrames)
+                if (_onionNextFrames.Value != activeScene.OnionSkinNextFrames)
                 {
-                    _onionNextFrames.Value = drawingScene.OnionSkinNextFrames;
+                    _onionNextFrames.Value = activeScene.OnionSkinNextFrames;
                 }
             }
         }
@@ -526,7 +746,25 @@ internal sealed class TimelineStrip : Control
             _updatingOnionSkinControls = false;
         }
 
+        if (!enabled) ResetOnionSkinRangeHandleInteraction();
         LayoutHeaderControls(CreateLayout(), available);
+    }
+
+    private void ResetOnionSkinRangeHandleInteraction()
+    {
+        var wasDragging = _draggingOnionSkinRangeHandle != TimelineOnionSkinRangeHandle.None;
+        var wasHovered = _hoveredOnionSkinRangeHandle != TimelineOnionSkinRangeHandle.None;
+        if (!wasDragging && !wasHovered) return;
+
+        _draggingOnionSkinRangeHandle = TimelineOnionSkinRangeHandle.None;
+        _hoveredOnionSkinRangeHandle = TimelineOnionSkinRangeHandle.None;
+        Cursor = Cursors.Default;
+        if (wasDragging)
+        {
+            OnionSkinRangeInteractionCanceled?.Invoke(this, EventArgs.Empty);
+            if (Capture) Capture = false;
+        }
+        Invalidate();
     }
 
     public void EnsureCurrentFrameVisible()
@@ -559,6 +797,12 @@ internal sealed class TimelineStrip : Control
             if (_timeline is not null) _timeline.Changed -= HandleTimelineChanged;
             _heightResizeTimer.Stop();
             _heightResizeTimer.Dispose();
+            _frameWidthCommitTimer.Stop();
+            _frameWidthCommitTimer.Dispose();
+            _commandFeedbackTimer.Stop();
+            _commandFeedbackTimer.Dispose();
+            _layerFeedbackTimer.Stop();
+            _layerFeedbackTimer.Dispose();
             _layerContextMenu.Dispose();
             _frameContextMenu.Dispose();
         }
@@ -582,6 +826,8 @@ internal sealed class TimelineStrip : Control
         DrawShell(graphics, layout);
         DrawRuler(graphics, layout, e.ClipRectangle);
         DrawTrackRows(graphics, layout, e.ClipRectangle);
+        DrawLayerFeedback(graphics, layout);
+        DrawCommandFeedback(graphics, layout);
         DrawPlayhead(graphics, layout);
         DrawHorizontalScroll(graphics, layout);
         DrawVerticalScroll(graphics, layout);
@@ -647,7 +893,7 @@ internal sealed class TimelineStrip : Control
                     if (IsTrackLayer(trackIndex)) LayerLockRequested?.Invoke(this, EventArgs.Empty);
                 }
                 else if (IsTrackCollapsible(trackIndex)
-                    && LayerGroupDisclosureBounds(trackIndex, layout.RowTop + (VisibleTrackPosition(trackIndex) - _firstVisibleTrack) * RowHeight).Contains(e.Location))
+                    && LayerGroupDisclosureBounds(trackIndex, layout.RowTop + (VisibleTrackPosition(trackIndex) - _firstVisibleTrack) * _rowHeight).Contains(e.Location))
                 {
                     SetActiveTrack(trackIndex);
                     ToggleTrackGroupCollapsed(trackIndex);
@@ -807,7 +1053,7 @@ internal sealed class TimelineStrip : Control
             e.SuppressKeyPress = true;
             return;
         }
-        if (e.KeyCode == Keys.F2 && GetActiveTrackIndex() >= 0 && SelectedLayerCount <= 1)
+        if (e.Shift && e.KeyCode == Keys.F2 && GetActiveTrackIndex() >= 0 && SelectedLayerCount <= 1)
         {
             LayerRenameRequested?.Invoke(this, EventArgs.Empty);
             e.Handled = true;
@@ -967,10 +1213,20 @@ internal sealed class TimelineStrip : Control
         DrawHeaderButton(graphics, addLayerBounds, "+");
 
         var fpsControlsBounds = PlaybackFpsControlsBounds(layout);
-        var onionControlsBounds = OnionSkinControlsBounds(layout, fpsControlsBounds);
+        var frameWidthControlsBounds = FrameWidthControlsBounds(layout, fpsControlsBounds);
+        var frameHeightControlsBounds = FrameHeightControlsBounds(
+            layout,
+            frameWidthControlsBounds.IsEmpty ? fpsControlsBounds : frameWidthControlsBounds);
+        var onionControlsBounds = OnionSkinControlsBounds(
+            layout,
+            frameHeightControlsBounds.IsEmpty
+                ? frameWidthControlsBounds.IsEmpty ? fpsControlsBounds : frameWidthControlsBounds
+                : frameHeightControlsBounds);
         var firstControlsLeft = new[]
         {
             fpsControlsBounds.IsEmpty ? layout.TrackRight : fpsControlsBounds.Left,
+            frameWidthControlsBounds.IsEmpty ? layout.TrackRight : frameWidthControlsBounds.Left,
+            frameHeightControlsBounds.IsEmpty ? layout.TrackRight : frameHeightControlsBounds.Left,
             onionControlsBounds.IsEmpty ? layout.TrackRight : onionControlsBounds.Left
         }.Min();
         var summaryRight = firstControlsLeft - 8;
@@ -1060,8 +1316,8 @@ internal sealed class TimelineStrip : Control
         for (var column = firstColumn; column < lastColumnExclusive; column++)
         {
             var frame = _firstVisibleFrame + column;
-            var x = layout.TrackLeft + column * FrameCellWidth;
-            var bounds = new Rectangle(x, HeaderHeight, FrameCellWidth, RulerHeight);
+            var x = layout.TrackLeft + column * _frameCellWidth;
+            var bounds = new Rectangle(x, HeaderHeight, _frameCellWidth, RulerHeight);
             if (!graphics.IsVisible(bounds)) continue;
             var inTimelineRange = frame <= EndFrame;
             var inSelectableRange = frame <= MaximumSelectableFrame(layout);
@@ -1076,7 +1332,7 @@ internal sealed class TimelineStrip : Control
                 graphics,
                 frame.ToString(),
                 rulerFont,
-                new Rectangle(x + 2, HeaderHeight + 1, FrameCellWidth * 2 - 2, RulerHeight - 4),
+                new Rectangle(x + 2, HeaderHeight + 1, _frameCellWidth * 2 - 2, RulerHeight - 4),
                 inTimelineRange && frame == CurrentFrame ? Color.White : inTimelineRange ? Theme.Muted : Color.FromArgb(118, Theme.Muted),
                 TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding);
         }
@@ -1088,7 +1344,7 @@ internal sealed class TimelineStrip : Control
 
     private void DrawOnionSkinRangeHandles(Graphics graphics, TimelineLayout layout)
     {
-        if (!TryGetOnionSkinRange(out var previousFrames, out var nextFrames, out var enabled)) return;
+        if (!TryGetOnionSkinRange(out var previousFrames, out var nextFrames, out var enabled) || !enabled) return;
 
         var previousFrame = Math.Max(StartFrame, CurrentFrame - previousFrames);
         var nextFrame = Math.Min(EndFrame, CurrentFrame + nextFrames);
@@ -1097,9 +1353,8 @@ internal sealed class TimelineStrip : Control
         var nextX = FrameCenterX(nextFrame, layout);
         if (float.IsNaN(currentX)) return;
 
-        var opacity = enabled ? 232 : 116;
-        var previousColor = Color.FromArgb(opacity, 224, 134, 126);
-        var nextColor = Color.FromArgb(opacity, 111, 195, 218);
+        var previousColor = Color.FromArgb(232, 224, 134, 126);
+        var nextColor = Color.FromArgb(232, 111, 195, 218);
         var handleY = HeaderHeight + RulerHeight - ScaleTimelineMetric(7);
         using var previousPen = new Pen(previousColor, ScaleTimelineMetric(1));
         using var nextPen = new Pen(nextColor, ScaleTimelineMetric(1));
@@ -1157,7 +1412,8 @@ internal sealed class TimelineStrip : Control
     private void UpdateOnionSkinRangeDrag(int x, TimelineLayout layout)
     {
         if (_draggingOnionSkinRangeHandle == TimelineOnionSkinRangeHandle.None
-            || !TryGetOnionSkinRange(out var previousFrames, out var nextFrames, out _))
+            || !TryGetOnionSkinRange(out var previousFrames, out var nextFrames, out var enabled)
+            || !enabled)
         {
             return;
         }
@@ -1184,7 +1440,12 @@ internal sealed class TimelineStrip : Control
 
     private TimelineOnionSkinRangeHandle HitTestOnionSkinRangeHandle(Point location, TimelineLayout layout)
     {
-        if (!layout.RulerBounds.Contains(location) || !TryGetOnionSkinRange(out _, out _, out _)) return TimelineOnionSkinRangeHandle.None;
+        if (!layout.RulerBounds.Contains(location)
+            || !TryGetOnionSkinRange(out _, out _, out var enabled)
+            || !enabled)
+        {
+            return TimelineOnionSkinRangeHandle.None;
+        }
         var previous = OnionSkinRangeHandleBounds(TimelineOnionSkinRangeHandle.Previous, layout);
         var next = OnionSkinRangeHandleBounds(TimelineOnionSkinRangeHandle.Next, layout);
         if (previous.Contains(location) && next.Contains(location))
@@ -1200,7 +1461,10 @@ internal sealed class TimelineStrip : Control
 
     private Rectangle OnionSkinRangeHandleBounds(TimelineOnionSkinRangeHandle handle, TimelineLayout layout)
     {
-        if (!TryGetOnionSkinRange(out var previousFrames, out var nextFrames, out _)) return Rectangle.Empty;
+        if (!TryGetOnionSkinRange(out var previousFrames, out var nextFrames, out var enabled) || !enabled)
+        {
+            return Rectangle.Empty;
+        }
         var frame = handle switch
         {
             TimelineOnionSkinRangeHandle.Previous => Math.Max(StartFrame, CurrentFrame - previousFrames),
@@ -1238,7 +1502,7 @@ internal sealed class TimelineStrip : Control
     private float FrameCenterX(int frame, TimelineLayout layout)
     {
         if (frame < _firstVisibleFrame || frame >= _firstVisibleFrame + VisibleFrameDrawCount(layout)) return float.NaN;
-        var center = layout.TrackLeft + (frame - _firstVisibleFrame) * FrameCellWidth + FrameCellWidth * 0.5f;
+        var center = layout.TrackLeft + (frame - _firstVisibleFrame) * _frameCellWidth + _frameCellWidth * 0.5f;
         return center < layout.TrackLeft || center >= layout.TrackRight ? float.NaN : center;
     }
 
@@ -1287,45 +1551,45 @@ internal sealed class TimelineStrip : Control
 
         var graphicsState = graphics.Save();
         graphics.SetClip(Rectangle.FromLTRB(0, layout.RowTop, layout.TrackRight, layout.RowBottom), CombineMode.Intersect);
-        var firstPaintRow = Math.Clamp((clipBounds.Top - layout.RowTop) / RowHeight, 0, rowCount);
+        var firstPaintRow = Math.Clamp((clipBounds.Top - layout.RowTop) / _rowHeight, 0, rowCount);
         var lastPaintRowExclusive = Math.Clamp(
-            (int)Math.Ceiling((clipBounds.Bottom - layout.RowTop) / (double)RowHeight),
+            (int)Math.Ceiling((clipBounds.Bottom - layout.RowTop) / (double)_rowHeight),
             firstPaintRow,
             rowCount);
         for (var visibleRow = firstPaintRow; visibleRow < lastPaintRowExclusive; visibleRow++)
         {
             var trackIndex = visibleTracks[_firstVisibleTrack + visibleRow];
             var track = _timeline.Tracks[trackIndex];
-            var y = layout.RowTop + visibleRow * RowHeight;
-            var rowBounds = new Rectangle(0, y, layout.TrackRight, RowHeight);
+            var y = layout.RowTop + visibleRow * _rowHeight;
+            var rowBounds = new Rectangle(0, y, layout.TrackRight, _rowHeight);
             if (!graphics.IsVisible(rowBounds)) continue;
             var active = trackIndex == activeTrack;
             var selectedLayer = IsTrackSelected(trackIndex);
             graphics.FillRectangle(active ? activeRowBrush : visibleRow % 2 == 0 ? rowBrush : alternateRowBrush, rowBounds);
             if (selectedLayer && !active)
             {
-                graphics.FillRectangle(selectedLayerRowBrush, 3, y + 1, Math.Max(0, layout.TrackLeft - 3), RowHeight - 2);
+                graphics.FillRectangle(selectedLayerRowBrush, 3, y + 1, Math.Max(0, layout.TrackLeft - 3), _rowHeight - 2);
             }
-            if (active) graphics.FillRectangle(activeEdgeBrush, 0, y, 3, RowHeight);
+            if (active) graphics.FillRectangle(activeEdgeBrush, 0, y, 3, _rowHeight);
 
             var visible = IsTrackVisible(trackIndex);
             var locked = IsTrackLocked(trackIndex);
-            DrawVisibilityIcon(graphics, visible, 14, y + RowHeight / 2f, visible ? eyePen : hiddenEyePen);
-            DrawLockIcon(graphics, locked, VisibilityColumnWidth + LockColumnWidth / 2, y + RowHeight / 2, lockPen, unlockedLockPen);
+            DrawVisibilityIcon(graphics, visible, 14, y + _rowHeight / 2f, visible ? eyePen : hiddenEyePen);
+            DrawLockIcon(graphics, locked, VisibilityColumnWidth + LockColumnWidth / 2, y + _rowHeight / 2, lockPen, unlockedLockPen);
             using (var layerColorBrush = new SolidBrush(GetTrackColor(trackIndex)))
             {
-                graphics.FillRectangle(layerColorBrush, LayerControlsWidth + 3, y + 5, 4, RowHeight - 10);
+                graphics.FillRectangle(layerColorBrush, LayerControlsWidth + 3, y + 5, 4, Math.Max(3, _rowHeight - 10));
             }
             var layerDepth = GetTrackDisplayDepth(trackIndex);
             var labelLeft = GetTrackLabelLeft(trackIndex);
             DrawLayerHierarchyGuide(graphics, layerDepth, y, labelLeft);
             if (IsTrackCollapsible(trackIndex)) DrawLayerGroupDisclosure(graphics, LayerGroupDisclosureBounds(trackIndex, y), IsTrackCollapsed(trackIndex));
-            DrawLayerKindGlyph(graphics, GetTrackLayerKind(trackIndex), labelLeft, y + RowHeight / 2);
+            DrawLayerKindGlyph(graphics, GetTrackLayerKind(trackIndex), labelLeft, y + _rowHeight / 2);
             TextRenderer.DrawText(
                 graphics,
                 UiLocalization.T(GetTrackName(trackIndex)),
                 Font,
-                new Rectangle(labelLeft + 15, y, Math.Max(16, layout.TrackLeft - labelLeft - VerticalScrollWidth - 20), RowHeight),
+                new Rectangle(labelLeft + 15, y, Math.Max(16, layout.TrackLeft - labelLeft - VerticalScrollWidth - 20), _rowHeight),
                 !visible || locked ? Theme.Muted : active ? Theme.Text : Theme.Muted,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
@@ -1334,12 +1598,12 @@ internal sealed class TimelineStrip : Control
                 if (_layerDropPlacement is TimelineLayerDropPlacement.Inside or TimelineLayerDropPlacement.Mask)
                 {
                     var inset = Math.Min(layout.TrackLeft - 10, LayerControlsWidth + 17 + GetTrackDisplayDepth(trackIndex) * 12);
-                    graphics.FillRectangle(layerDropFill, inset, y + 2, Math.Max(8, layout.TrackRight - inset - 3), RowHeight - 4);
-                    graphics.DrawRectangle(layerDropPen, inset, y + 2, Math.Max(7, layout.TrackRight - inset - 4), RowHeight - 5);
+                    graphics.FillRectangle(layerDropFill, inset, y + 2, Math.Max(8, layout.TrackRight - inset - 3), _rowHeight - 4);
+                    graphics.DrawRectangle(layerDropPen, inset, y + 2, Math.Max(7, layout.TrackRight - inset - 4), _rowHeight - 5);
                 }
                 else
                 {
-                    var dropY = _layerDropPlacement == TimelineLayerDropPlacement.Before ? y : y + RowHeight;
+                    var dropY = _layerDropPlacement == TimelineLayerDropPlacement.Before ? y : y + _rowHeight;
                     graphics.DrawLine(layerDropPen, 3, dropY, layout.TrackRight - 1, dropY);
                 }
             }
@@ -1397,16 +1661,18 @@ internal sealed class TimelineStrip : Control
         Rectangle clipBounds)
     {
         var state = graphics.Save();
-        graphics.SetClip(new Rectangle(layout.TrackLeft, y, layout.TrackRight - layout.TrackLeft, RowHeight), CombineMode.Intersect);
+        graphics.SetClip(new Rectangle(layout.TrackLeft, y, layout.TrackRight - layout.TrackLeft, _rowHeight), CombineMode.Intersect);
         var (firstColumn, lastColumnExclusive) = VisibleFramePaintRange(layout, clipBounds);
+        var maximumSelectableFrame = MaximumSelectableFrame(layout);
+        var exposure = TimelineExposure.None(_firstVisibleFrame + firstColumn);
+        var exposureEndFrame = _firstVisibleFrame + firstColumn - 1;
         for (var column = firstColumn; column < lastColumnExclusive; column++)
         {
             var frame = _firstVisibleFrame + column;
-            var x = layout.TrackLeft + column * FrameCellWidth;
-            var cellBounds = new Rectangle(x, y, FrameCellWidth, RowHeight);
-            if (!graphics.IsVisible(cellBounds)) continue;
+            var x = layout.TrackLeft + column * _frameCellWidth;
+            var cellBounds = new Rectangle(x, y, _frameCellWidth, _rowHeight);
             var inTimelineRange = frame <= EndFrame;
-            var inSelectableRange = frame <= MaximumSelectableFrame(layout);
+            var inSelectableRange = frame <= maximumSelectableFrame;
             var selected = false;
             if (inSelectableRange)
             {
@@ -1420,10 +1686,17 @@ internal sealed class TimelineStrip : Control
 
                 if (inTimelineRange)
                 {
-                    var exposure = track.EvaluateExposure(frame);
+                    if (frame > exposureEndFrame)
+                    {
+                        exposure = track.EvaluateExposure(frame);
+                        exposureEndFrame = exposure.SourceKind is null
+                            ? track.Duration <= frame ? EndFrame : frame
+                            : exposure.EndFrame;
+                    }
                     if (exposure.SourceKind is { } sourceKind)
                     {
-                        var exposureBounds = new Rectangle(x + 1, y + 2, FrameCellWidth, RowHeight - 4);
+                        var isKeyframe = exposure.SourceKeyframeFrame == frame;
+                        var exposureBounds = new Rectangle(x + 1, y + 2, _frameCellWidth, _rowHeight - 4);
                         var exposureBrush = sourceKind == TimelineKeyframeKind.Populated
                             ? populatedExposureBrush
                             : blankExposureBrush;
@@ -1431,40 +1704,40 @@ internal sealed class TimelineStrip : Control
                             ? populatedLinePen
                             : blankLinePen;
                         graphics.FillRectangle(exposureBrush, exposureBounds);
-                        var continuationStart = exposure.IsKeyframe
-                            ? x + FrameCellWidth / 2f + 3.5f
+                        var continuationStart = isKeyframe
+                            ? x + _frameCellWidth / 2f + 3.5f
                             : x + 1;
                         graphics.DrawLine(
                             exposurePen,
                             continuationStart,
-                            y + RowHeight / 2f,
-                            x + FrameCellWidth,
-                            y + RowHeight / 2f);
+                            y + _rowHeight / 2f,
+                            x + _frameCellWidth,
+                            y + _rowHeight / 2f);
                         if (frame == exposure.EndFrame)
                         {
                             graphics.DrawLine(
                                 exposurePen,
-                                x + FrameCellWidth - 2,
+                                x + _frameCellWidth - 2,
                                 y + 4,
-                                x + FrameCellWidth - 2,
-                                y + RowHeight - 4);
+                                x + _frameCellWidth - 2,
+                                y + _rowHeight - 4);
                         }
 
-                        if (exposure.IsKeyframe)
+                        if (isKeyframe)
                         {
-                            DrawKeyframeMarker(graphics, sourceKind, x + FrameCellWidth / 2f, y + RowHeight / 2f);
+                            DrawKeyframeMarker(graphics, sourceKind, x + _frameCellWidth / 2f, y + _rowHeight / 2f);
                         }
                     }
                 }
             }
 
-            graphics.DrawLine(inSelectableRange && frame % 5 == 0 ? majorGridPen : gridPen, x, y, x, y + RowHeight);
-            graphics.DrawLine(gridPen, x, y + RowHeight - 1, x + FrameCellWidth, y + RowHeight - 1);
+            graphics.DrawLine(inSelectableRange && frame % 5 == 0 ? majorGridPen : gridPen, x, y, x, y + _rowHeight);
+            graphics.DrawLine(gridPen, x, y + _rowHeight - 1, x + _frameCellWidth, y + _rowHeight - 1);
             if (inSelectableRange && !visible) graphics.FillRectangle(hiddenBrush, cellBounds);
 
             if (!selected && active && frame == CurrentFrame)
             {
-                graphics.DrawRectangle(currentCellPen, x + 1, y + 1, FrameCellWidth - 3, RowHeight - 3);
+                graphics.DrawRectangle(currentCellPen, x + 1, y + 1, _frameCellWidth - 3, _rowHeight - 3);
             }
         }
 
@@ -1503,10 +1776,10 @@ internal sealed class TimelineStrip : Control
         foreach (var block in CoalesceFrameSelectionCells(selectedCells))
         {
             var bounds = new Rectangle(
-                layout.TrackLeft + block.X * FrameCellWidth + 1,
-                layout.RowTop + block.Y * RowHeight + 1,
-                Math.Max(1, block.Width * FrameCellWidth - 2),
-                Math.Max(1, block.Height * RowHeight - 2));
+                layout.TrackLeft + block.X * _frameCellWidth + 1,
+                layout.RowTop + block.Y * _rowHeight + 1,
+                Math.Max(1, block.Width * _frameCellWidth - 2),
+                Math.Max(1, block.Height * _rowHeight - 2));
             graphics.FillRectangle(selectionBrush, bounds);
             graphics.DrawRectangle(selectionPen, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
         }
@@ -1576,13 +1849,460 @@ internal sealed class TimelineStrip : Control
         }
     }
 
+    internal void PlayCommandFeedback(TimelineCommand command, IEnumerable<TimelineFrameCell> cells)
+    {
+        var targets = cells
+            .Where(cell => cell.Frame >= 0 && TrackIndexForId(cell.TrackId) >= 0)
+            .Distinct()
+            .Take(8192)
+            .ToArray();
+        if (targets.Length == 0) return;
+
+        CancelCommandFeedback();
+        _commandFeedback = command;
+        _commandFeedbackCells = targets;
+        _commandFeedbackStartedMilliseconds = Environment.TickCount64;
+        _commandFeedbackTimer.Start();
+        InvalidateCommandFeedbackBounds();
+    }
+
+    internal static TimelineFeedbackStyle ResolveCommandFeedbackStyle(TimelineCommand command)
+    {
+        return command switch
+        {
+            TimelineCommand.CopyFrames => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Outline,
+                Color.FromArgb(112, 190, 236),
+                240),
+            TimelineCommand.PasteFrames => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Sweep,
+                Color.FromArgb(79, 179, 162),
+                320),
+            TimelineCommand.InsertFrames => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Expand,
+                Color.FromArgb(94, 205, 190),
+                300),
+            TimelineCommand.DeleteFrames => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Contract,
+                Color.FromArgb(232, 104, 104),
+                280),
+            TimelineCommand.InsertKeyframes => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Pulse,
+                Color.FromArgb(112, 204, 255),
+                360),
+            TimelineCommand.InsertBlankKeyframes => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Ring,
+                Color.FromArgb(232, 184, 92),
+                420),
+            TimelineCommand.ClearKeyframes => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Fade,
+                Color.FromArgb(196, 207, 211),
+                300),
+            _ => new TimelineFeedbackStyle(TimelineFeedbackMotion.Outline, Theme.Accent, 260)
+        };
+    }
+
+    private void TickCommandFeedback()
+    {
+        if (_commandFeedback is not { } command)
+        {
+            _commandFeedbackTimer.Stop();
+            return;
+        }
+
+        var style = ResolveCommandFeedbackStyle(command);
+        if (Environment.TickCount64 - _commandFeedbackStartedMilliseconds >= style.DurationMilliseconds)
+        {
+            CancelCommandFeedback();
+            return;
+        }
+
+        InvalidateCommandFeedbackBounds();
+    }
+
+    private void CancelCommandFeedback()
+    {
+        var dirtyBounds = CommandFeedbackBounds();
+        _commandFeedbackTimer.Stop();
+        _commandFeedback = null;
+        _commandFeedbackCells = [];
+        if (!dirtyBounds.IsEmpty && IsHandleCreated) Invalidate(dirtyBounds);
+    }
+
+    private void DrawCommandFeedback(Graphics graphics, TimelineLayout layout)
+    {
+        if (_commandFeedback is not { } command || _commandFeedbackCells.Length == 0) return;
+        var style = ResolveCommandFeedbackStyle(command);
+        var elapsed = Environment.TickCount64 - _commandFeedbackStartedMilliseconds;
+        var progress = Math.Clamp(elapsed / (float)style.DurationMilliseconds, 0, 1);
+        var eased = 1f - MathF.Pow(1f - progress, 3f);
+        var fade = MathF.Pow(1f - progress, 1.35f);
+        var pulse = MathF.Sin(progress * MathF.PI);
+        var state = graphics.Save();
+        graphics.SetClip(layout.GridBounds, CombineMode.Intersect);
+
+        foreach (var cell in _commandFeedbackCells)
+        {
+            var bounds = CommandFeedbackCellBounds(layout, cell);
+            if (bounds.IsEmpty || !graphics.IsVisible(bounds)) continue;
+            DrawCommandFeedbackCell(graphics, bounds, style, eased, fade, pulse);
+        }
+
+        graphics.Restore(state);
+    }
+
+    private static void DrawCommandFeedbackCell(
+        Graphics graphics,
+        RectangleF bounds,
+        TimelineFeedbackStyle style,
+        float eased,
+        float fade,
+        float pulse)
+    {
+        var centerX = bounds.Left + bounds.Width * 0.5f;
+        var centerY = bounds.Top + bounds.Height * 0.5f;
+        switch (style.Motion)
+        {
+            case TimelineFeedbackMotion.Outline:
+            {
+                var inset = 1f + eased * 2f;
+                using var pen = new Pen(WithOpacity(style.Color, fade), 1.4f) { DashStyle = DashStyle.Dash };
+                graphics.DrawRectangle(pen, RectangleF.Inflate(bounds, -inset, -inset));
+                break;
+            }
+            case TimelineFeedbackMotion.Sweep:
+            {
+                var width = Math.Max(1f, bounds.Width * eased);
+                var sweep = new RectangleF(bounds.Left, bounds.Top + 1, width, Math.Max(1, bounds.Height - 2));
+                using var fill = new SolidBrush(WithOpacity(style.Color, fade * 0.42f));
+                using var edge = new Pen(WithOpacity(style.Color, fade), 1.4f);
+                graphics.FillRectangle(fill, sweep);
+                graphics.DrawLine(edge, sweep.Right, sweep.Top, sweep.Right, sweep.Bottom);
+                break;
+            }
+            case TimelineFeedbackMotion.Expand:
+            {
+                var width = Math.Max(1f, bounds.Width * (0.12f + eased * 0.88f));
+                var expanded = new RectangleF(centerX - width * 0.5f, bounds.Top + 2, width, Math.Max(1, bounds.Height - 4));
+                using var fill = new SolidBrush(WithOpacity(style.Color, fade * 0.36f));
+                using var edge = new Pen(WithOpacity(style.Color, fade), 1.2f);
+                graphics.FillRectangle(fill, expanded);
+                graphics.DrawRectangle(edge, expanded);
+                break;
+            }
+            case TimelineFeedbackMotion.Contract:
+            {
+                var width = Math.Max(1f, bounds.Width * (1f - eased * 0.88f));
+                var contracted = new RectangleF(centerX - width * 0.5f, bounds.Top + 2, width, Math.Max(1, bounds.Height - 4));
+                using var fill = new SolidBrush(WithOpacity(style.Color, fade * 0.44f));
+                using var edge = new Pen(WithOpacity(style.Color, fade), 1.2f);
+                graphics.FillRectangle(fill, contracted);
+                graphics.DrawRectangle(edge, contracted);
+                break;
+            }
+            case TimelineFeedbackMotion.Pulse:
+            {
+                var radius = 3.25f + pulse * Math.Min(6f, bounds.Height * 0.32f);
+                var circle = new RectangleF(centerX - radius, centerY - radius, radius * 2, radius * 2);
+                using var fill = new SolidBrush(WithOpacity(style.Color, fade * 0.32f));
+                using var ring = new Pen(WithOpacity(style.Color, fade), 1.6f);
+                graphics.FillEllipse(fill, circle);
+                graphics.DrawEllipse(ring, circle);
+                break;
+            }
+            case TimelineFeedbackMotion.Ring:
+            {
+                var radius = 3.25f + eased * Math.Min(8f, bounds.Height * 0.42f);
+                using var ring = new Pen(WithOpacity(style.Color, fade), 1.6f);
+                graphics.DrawEllipse(ring, centerX - radius, centerY - radius, radius * 2, radius * 2);
+                break;
+            }
+            case TimelineFeedbackMotion.Fade:
+            {
+                var radius = 3.6f * (1f - eased * 0.32f);
+                using var ghost = new Pen(WithOpacity(style.Color, fade), 1.3f);
+                graphics.DrawEllipse(ghost, centerX - radius, centerY - radius, radius * 2, radius * 2);
+                graphics.DrawLine(ghost, centerX - radius, centerY - radius, centerX + radius, centerY + radius);
+                break;
+            }
+        }
+    }
+
+    private RectangleF CommandFeedbackCellBounds(TimelineLayout layout, TimelineFrameCell cell)
+    {
+        var trackIndex = TrackIndexForId(cell.TrackId);
+        var visiblePosition = VisibleTrackPosition(trackIndex);
+        var visibleRow = visiblePosition - _firstVisibleTrack;
+        var column = cell.Frame - _firstVisibleFrame;
+        if (trackIndex < 0
+            || visibleRow < 0
+            || visibleRow >= VisibleTrackCapacity(layout)
+            || column < 0
+            || column >= VisibleFrameDrawCount(layout))
+        {
+            return RectangleF.Empty;
+        }
+
+        return new RectangleF(
+            layout.TrackLeft + column * _frameCellWidth,
+            layout.RowTop + visibleRow * _rowHeight,
+            _frameCellWidth,
+            _rowHeight);
+    }
+
+    private Rectangle CommandFeedbackBounds()
+    {
+        if (_commandFeedbackCells.Length == 0 || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+        {
+            return Rectangle.Empty;
+        }
+
+        var layout = CreateLayout();
+        var result = Rectangle.Empty;
+        foreach (var cell in _commandFeedbackCells)
+        {
+            var cellBounds = Rectangle.Ceiling(CommandFeedbackCellBounds(layout, cell));
+            if (cellBounds.IsEmpty) continue;
+            result = result.IsEmpty ? cellBounds : Rectangle.Union(result, cellBounds);
+        }
+
+        if (result.IsEmpty) return result;
+        result.Inflate(10, 10);
+        return Rectangle.Intersect(result, layout.GridBounds);
+    }
+
+    private void InvalidateCommandFeedbackBounds()
+    {
+        var bounds = CommandFeedbackBounds();
+        if (!bounds.IsEmpty) Invalidate(bounds);
+    }
+
+    private static Color WithOpacity(Color color, float opacity)
+    {
+        return Color.FromArgb((int)MathF.Round(255 * Math.Clamp(opacity, 0, 1)), color.R, color.G, color.B);
+    }
+
+    internal static TimelineLayerFeedbackStyle ResolveLayerFeedbackStyle(TimelineLayerFeedbackKind kind)
+    {
+        return kind switch
+        {
+            TimelineLayerFeedbackKind.Add => new TimelineLayerFeedbackStyle(Color.FromArgb(79, 179, 162), 360),
+            TimelineLayerFeedbackKind.Remove => new TimelineLayerFeedbackStyle(Color.FromArgb(232, 104, 104), 320),
+            _ => new TimelineLayerFeedbackStyle(Theme.Accent, 320)
+        };
+    }
+
+    private TimelineLayerVisualSnapshot[] CaptureLayerVisualSnapshots()
+    {
+        if (_timeline is null) return [];
+        var result = new List<TimelineLayerVisualSnapshot>();
+        for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++)
+        {
+            if (!IsTrackLayer(trackIndex)) continue;
+            var visiblePosition = VisibleTrackPosition(trackIndex);
+            if (visiblePosition < 0) continue;
+            result.Add(new TimelineLayerVisualSnapshot(
+                _timeline.Tracks[trackIndex].Id,
+                visiblePosition,
+                GetTrackName(trackIndex),
+                GetTrackColor(trackIndex)));
+        }
+
+        return result.ToArray();
+    }
+
+    private void DetectLayerCollectionFeedback()
+    {
+        var current = CaptureLayerVisualSnapshots();
+        if (_knownLayerVisuals.Length == 0)
+        {
+            _knownLayerVisuals = current;
+            return;
+        }
+
+        var previousIds = _knownLayerVisuals
+            .Select(item => item.TrackId)
+            .ToHashSet(StringComparer.Ordinal);
+        var currentIds = current
+            .Select(item => item.TrackId)
+            .ToHashSet(StringComparer.Ordinal);
+        var targets = current
+            .Where(item => !previousIds.Contains(item.TrackId))
+            .Select(item => new TimelineLayerFeedbackTarget(TimelineLayerFeedbackKind.Add, item))
+            .Concat(_knownLayerVisuals
+                .Where(item => !currentIds.Contains(item.TrackId))
+                .Select(item => new TimelineLayerFeedbackTarget(TimelineLayerFeedbackKind.Remove, item)))
+            .ToArray();
+        _knownLayerVisuals = current;
+        if (targets.Length > 0) StartLayerFeedback(targets);
+    }
+
+    private void StartLayerFeedback(TimelineLayerFeedbackTarget[] targets)
+    {
+        if (targets.Length == 0) return;
+        CancelLayerFeedback();
+        _layerFeedbackTargets = targets;
+        _layerFeedbackStartedMilliseconds = Environment.TickCount64;
+        _layerFeedbackTimer.Start();
+        InvalidateLayerFeedbackBounds();
+    }
+
+    private void TickLayerFeedback()
+    {
+        if (_layerFeedbackTargets.Length == 0)
+        {
+            _layerFeedbackTimer.Stop();
+            return;
+        }
+
+        var duration = _layerFeedbackTargets.Max(target => ResolveLayerFeedbackStyle(target.Kind).DurationMilliseconds);
+        if (Environment.TickCount64 - _layerFeedbackStartedMilliseconds >= duration)
+        {
+            CancelLayerFeedback();
+            return;
+        }
+
+        InvalidateLayerFeedbackBounds();
+    }
+
+    private void CancelLayerFeedback()
+    {
+        var dirtyBounds = LayerFeedbackBounds();
+        _layerFeedbackTimer.Stop();
+        _layerFeedbackTargets = [];
+        if (!dirtyBounds.IsEmpty && IsHandleCreated) Invalidate(dirtyBounds);
+    }
+
+    private void DrawLayerFeedback(Graphics graphics, TimelineLayout layout)
+    {
+        if (_layerFeedbackTargets.Length == 0) return;
+        var elapsed = Environment.TickCount64 - _layerFeedbackStartedMilliseconds;
+        var state = graphics.Save();
+        graphics.SetClip(Rectangle.FromLTRB(0, layout.RowTop, layout.TrackRight, layout.RowBottom), CombineMode.Intersect);
+        foreach (var target in _layerFeedbackTargets)
+        {
+            var bounds = LayerFeedbackTargetBounds(layout, target);
+            if (bounds.IsEmpty || !graphics.IsVisible(bounds)) continue;
+            var style = ResolveLayerFeedbackStyle(target.Kind);
+            var progress = Math.Clamp(elapsed / (float)style.DurationMilliseconds, 0, 1);
+            var eased = progress * progress * (3f - 2f * progress);
+            var fade = MathF.Pow(1f - progress, 1.25f);
+            if (target.Kind == TimelineLayerFeedbackKind.Add)
+            {
+                DrawLayerAddedFeedback(graphics, bounds, style, eased, fade);
+            }
+            else
+            {
+                DrawLayerRemovedFeedback(graphics, bounds, layout.TrackLeft, target.Snapshot, style, eased, fade);
+            }
+        }
+        graphics.Restore(state);
+    }
+
+    private void DrawLayerAddedFeedback(
+        Graphics graphics,
+        RectangleF bounds,
+        TimelineLayerFeedbackStyle style,
+        float eased,
+        float fade)
+    {
+        var revealHeight = Math.Max(1f, bounds.Height * eased);
+        var hiddenHeight = Math.Max(0, (bounds.Height - revealHeight) * 0.5f);
+        using var cover = new SolidBrush(Color.FromArgb(29, 32, 35));
+        if (hiddenHeight > 0.1f)
+        {
+            graphics.FillRectangle(cover, bounds.Left, bounds.Top, bounds.Width, hiddenHeight);
+            graphics.FillRectangle(cover, bounds.Left, bounds.Bottom - hiddenHeight, bounds.Width, hiddenHeight);
+        }
+
+        var reveal = new RectangleF(bounds.Left, bounds.Top + hiddenHeight, bounds.Width, revealHeight);
+        using var highlight = new SolidBrush(WithOpacity(style.Color, fade * 0.18f));
+        using var edge = new Pen(WithOpacity(style.Color, fade), 1.4f);
+        using var accent = new SolidBrush(WithOpacity(style.Color, fade));
+        graphics.FillRectangle(highlight, reveal);
+        graphics.DrawLine(edge, reveal.Left, reveal.Top, reveal.Right, reveal.Top);
+        graphics.DrawLine(edge, reveal.Left, reveal.Bottom, reveal.Right, reveal.Bottom);
+        graphics.FillRectangle(accent, bounds.Left, reveal.Top, 3, reveal.Height);
+    }
+
+    private void DrawLayerRemovedFeedback(
+        Graphics graphics,
+        RectangleF bounds,
+        int trackLeft,
+        TimelineLayerVisualSnapshot snapshot,
+        TimelineLayerFeedbackStyle style,
+        float eased,
+        float fade)
+    {
+        var ghostHeight = Math.Max(2f, bounds.Height * (1f - eased * 0.88f));
+        var ghost = new RectangleF(bounds.Left, bounds.Top + (bounds.Height - ghostHeight) * 0.5f, bounds.Width, ghostHeight);
+        using var background = new SolidBrush(WithOpacity(Color.FromArgb(38, 42, 46), fade * 0.92f));
+        using var edge = new Pen(WithOpacity(style.Color, fade), 1.4f);
+        using var layerColor = new SolidBrush(WithOpacity(snapshot.Color, fade));
+        graphics.FillRectangle(background, ghost);
+        graphics.DrawLine(edge, ghost.Left, ghost.Top, ghost.Right, ghost.Top);
+        graphics.DrawLine(edge, ghost.Left, ghost.Bottom, ghost.Right, ghost.Bottom);
+        graphics.FillRectangle(layerColor, LayerControlsWidth + 3, ghost.Top + 2, 4, Math.Max(1, ghost.Height - 4));
+        if (ghost.Height >= 9)
+        {
+            var textColor = Theme.Mix(Color.FromArgb(38, 42, 46), Theme.Text, fade);
+            TextRenderer.DrawText(
+                graphics,
+                snapshot.Name,
+                Font,
+                Rectangle.Round(new RectangleF(
+                    LayerControlsWidth + 22,
+                    ghost.Top,
+                    Math.Max(16, trackLeft - LayerControlsWidth - 28),
+                    ghost.Height)),
+                textColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+    }
+
+    private RectangleF LayerFeedbackTargetBounds(TimelineLayout layout, TimelineLayerFeedbackTarget target)
+    {
+        var visiblePosition = target.Kind == TimelineLayerFeedbackKind.Add
+            ? VisibleTrackPosition(TrackIndexForId(target.Snapshot.TrackId))
+            : target.Snapshot.VisiblePosition;
+        var visibleRow = visiblePosition - _firstVisibleTrack;
+        if (visibleRow < 0 || visibleRow >= VisibleTrackCapacity(layout)) return RectangleF.Empty;
+        return new RectangleF(0, layout.RowTop + visibleRow * _rowHeight, layout.TrackRight, _rowHeight);
+    }
+
+    private Rectangle LayerFeedbackBounds()
+    {
+        if (_layerFeedbackTargets.Length == 0 || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+        {
+            return Rectangle.Empty;
+        }
+
+        var layout = CreateLayout();
+        var result = Rectangle.Empty;
+        foreach (var target in _layerFeedbackTargets)
+        {
+            var bounds = Rectangle.Ceiling(LayerFeedbackTargetBounds(layout, target));
+            if (bounds.IsEmpty) continue;
+            result = result.IsEmpty ? bounds : Rectangle.Union(result, bounds);
+        }
+        return result.IsEmpty
+            ? result
+            : Rectangle.Intersect(result, Rectangle.FromLTRB(0, layout.RowTop, layout.TrackRight, layout.RowBottom));
+    }
+
+    private void InvalidateLayerFeedbackBounds()
+    {
+        var bounds = LayerFeedbackBounds();
+        if (!bounds.IsEmpty) Invalidate(bounds);
+    }
+
     private void DrawPlayhead(Graphics graphics, TimelineLayout layout)
     {
         if (CurrentFrame < _firstVisibleFrame) return;
         var column = CurrentFrame - _firstVisibleFrame;
         if (column >= VisibleFrameDrawCount(layout)) return;
 
-        var centerX = layout.TrackLeft + column * FrameCellWidth + FrameCellWidth / 2f;
+        var centerX = layout.TrackLeft + column * _frameCellWidth + _frameCellWidth / 2f;
         if (centerX < layout.TrackLeft || centerX >= layout.TrackRight) return;
 
         var pulse = _isPlaying ? 0.55f : 0f;
@@ -1836,6 +2556,8 @@ internal sealed class TimelineStrip : Control
         _toggleFolderMenuItem.Text = IsTrackCollapsed(activeTrack) ? $"Expand {layerGroupName}" : $"Collapse {layerGroupName}";
         _moveLayerUpMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection && activeVisiblePosition > 0;
         _moveLayerDownMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection && activeVisiblePosition >= 0 && activeVisiblePosition < visibleTrackCount - 1;
+        _removeLayersMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
+        _removeLayersMenuItem.Text = selectedLayerCount > 1 ? "Delete Selected Layers" : "Delete Layer";
         _showSelectedLayersMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
         _hideSelectedLayersMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
         _renameLayerMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection;
@@ -1909,9 +2631,9 @@ internal sealed class TimelineStrip : Control
         var sourceTrack = string.IsNullOrWhiteSpace(_draggedLayerTrackId) ? -1 : TrackIndexForId(_draggedLayerTrackId);
         var sourceKind = GetTrackLayerKind(sourceTrack);
         var targetKind = GetTrackLayerKind(trackIndex);
-        var rowTop = layout.RowTop + (VisibleTrackPosition(trackIndex) - _firstVisibleTrack) * RowHeight;
+        var rowTop = layout.RowTop + (VisibleTrackPosition(trackIndex) - _firstVisibleTrack) * _rowHeight;
         var localY = y - rowTop;
-        var withinCenter = localY >= RowHeight / 4 && localY < RowHeight * 3 / 4;
+        var withinCenter = localY >= _rowHeight / 4 && localY < _rowHeight * 3 / 4;
         if (withinCenter
             && ((sourceKind == DrawingLayerKind.Mask && targetKind == DrawingLayerKind.Drawing)
                 || (sourceKind == DrawingLayerKind.Drawing && targetKind == DrawingLayerKind.Mask)))
@@ -1919,12 +2641,12 @@ internal sealed class TimelineStrip : Control
             return TimelineLayerDropPlacement.Mask;
         }
 
-        if (GetTrackLayerKind(trackIndex) != DrawingLayerKind.Folder) return localY < RowHeight / 2
+        if (GetTrackLayerKind(trackIndex) != DrawingLayerKind.Folder) return localY < _rowHeight / 2
             ? TimelineLayerDropPlacement.Before
             : TimelineLayerDropPlacement.After;
 
-        if (localY >= RowHeight / 4 && localY < RowHeight * 3 / 4) return TimelineLayerDropPlacement.Inside;
-        return localY < RowHeight / 2 ? TimelineLayerDropPlacement.Before : TimelineLayerDropPlacement.After;
+        if (localY >= _rowHeight / 4 && localY < _rowHeight * 3 / 4) return TimelineLayerDropPlacement.Inside;
+        return localY < _rowHeight / 2 ? TimelineLayerDropPlacement.Before : TimelineLayerDropPlacement.After;
     }
 
     private void BeginFrameSelection(int trackIndex, int frame, Keys modifiers)
@@ -2017,12 +2739,9 @@ internal sealed class TimelineStrip : Control
 
     private int TrackIndexForId(string trackId)
     {
-        for (var index = 0; index < TrackCount; index++)
-        {
-            if (string.Equals(_timeline.Tracks[index].Id, trackId, StringComparison.Ordinal)) return index;
-        }
-
-        return -1;
+        if (string.IsNullOrWhiteSpace(trackId)) return -1;
+        EnsureTimelineStructureCache();
+        return _trackIndicesByIdCache.GetValueOrDefault(trackId, -1);
     }
 
     private void NotifyFrameSelectionChanged()
@@ -2278,8 +2997,8 @@ internal sealed class TimelineStrip : Control
     private int GetTrackLayerIndex(int trackIndex)
     {
         if (trackIndex < 0 || trackIndex >= TrackCount) return -1;
-        var drawingScene = DrawingScene();
-        return drawingScene is null ? -1 : FindLayerIndex(drawingScene, _timeline.Tracks[trackIndex].TargetId);
+        EnsureTimelineStructureCache();
+        return trackIndex < _trackLayerIndicesCache.Length ? _trackLayerIndicesCache[trackIndex] : -1;
     }
 
     private DrawingLayerKind GetTrackLayerKind(int trackIndex)
@@ -2310,55 +3029,98 @@ internal sealed class TimelineStrip : Control
 
     private List<int> VisibleTrackIndices()
     {
-        var result = new List<int>(TrackCount);
+        EnsureTimelineStructureCache();
+        return _visibleTrackIndicesCache;
+    }
+
+    private void EnsureTimelineStructureCache()
+    {
+        if (!_timelineStructureCacheDirty) return;
+        _timelineStructureCacheDirty = false;
+        _visibleTrackIndicesCache.Clear();
+        _trackIndicesByIdCache.Clear();
+        _visibleTrackPositionsCache = new int[TrackCount];
+        _trackLayerIndicesCache = new int[TrackCount];
+        Array.Fill(_visibleTrackPositionsCache, -1);
+        Array.Fill(_trackLayerIndicesCache, -1);
+
+        for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++)
+        {
+            _trackIndicesByIdCache.TryAdd(_timeline.Tracks[trackIndex].Id, trackIndex);
+        }
+
         var drawingScene = DrawingScene();
         if (drawingScene is null)
         {
-            for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++) result.Add(trackIndex);
-            return result;
+            for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++) _visibleTrackIndicesCache.Add(trackIndex);
+            UpdateVisibleTrackPositions();
+            return;
         }
 
-        var trackIndexByLayerId = new Dictionary<string, int>(TrackCount, StringComparer.Ordinal);
+        var layerIndexById = new Dictionary<string, int>(drawingScene.LayerCount, StringComparer.Ordinal);
+        var trackIndexByLayer = new int[drawingScene.LayerCount];
+        Array.Fill(trackIndexByLayer, -1);
+        for (var layer = 0; layer < drawingScene.LayerCount; layer++)
+        {
+            layerIndexById.TryAdd(drawingScene.LayerIds[layer], layer);
+        }
         for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++)
         {
             var targetId = _timeline.Tracks[trackIndex].TargetId;
-            if (!trackIndexByLayerId.ContainsKey(targetId)) trackIndexByLayerId.Add(targetId, trackIndex);
+            if (!layerIndexById.TryGetValue(targetId, out var layer)) continue;
+            _trackLayerIndicesCache[trackIndex] = layer;
+            if (trackIndexByLayer[layer] < 0) trackIndexByLayer[layer] = trackIndex;
         }
 
+        var displayedTracks = new bool[TrackCount];
         foreach (var layer in drawingScene.GetLayerDisplayOrder())
         {
-            if (!trackIndexByLayerId.TryGetValue(drawingScene.LayerIds[layer], out var trackIndex)
-                || IsLayerHiddenByCollapsedGroup(drawingScene, layer))
+            var trackIndex = trackIndexByLayer[layer];
+            if (trackIndex < 0 || IsLayerHiddenByCollapsedGroup(drawingScene, layer))
             {
                 continue;
             }
 
-            result.Add(trackIndex);
+            _visibleTrackIndicesCache.Add(trackIndex);
+            displayedTracks[trackIndex] = true;
         }
 
-        var displayedTracks = result.ToHashSet();
         for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++)
         {
-            if (displayedTracks.Contains(trackIndex)) continue;
-            var layer = GetTrackLayerIndex(trackIndex);
+            if (displayedTracks[trackIndex]) continue;
+            var layer = _trackLayerIndicesCache[trackIndex];
             if (layer >= 0 && IsLayerHiddenByCollapsedGroup(drawingScene, layer)) continue;
-            result.Add(trackIndex);
+            _visibleTrackIndicesCache.Add(trackIndex);
         }
-        return result;
+        UpdateVisibleTrackPositions();
+    }
+
+    private void UpdateVisibleTrackPositions()
+    {
+        for (var position = 0; position < _visibleTrackIndicesCache.Count; position++)
+        {
+            _visibleTrackPositionsCache[_visibleTrackIndicesCache[position]] = position;
+        }
+    }
+
+    private void InvalidateTimelineStructureCache()
+    {
+        _timelineStructureCacheDirty = true;
     }
 
     private int VisibleTrackCount() => VisibleTrackIndices().Count;
 
     private int VisibleTrackPosition(int trackIndex)
     {
-        return trackIndex < 0 ? -1 : VisibleTrackIndices().IndexOf(trackIndex);
+        if (trackIndex < 0) return -1;
+        EnsureTimelineStructureCache();
+        return trackIndex < _visibleTrackPositionsCache.Length ? _visibleTrackPositionsCache[trackIndex] : -1;
     }
 
     private bool IsLayerHiddenByCollapsedGroup(VectorScene drawingScene, int layer)
     {
         var parent = drawingScene.GetLayerParentIndex(layer);
-        var visited = new HashSet<int>();
-        while (parent >= 0 && visited.Add(parent))
+        for (var depth = 0; parent >= 0 && depth < drawingScene.LayerCount; depth++)
         {
             if (_collapsedFolderLayerIds.Contains(drawingScene.LayerIds[parent])) return true;
             parent = drawingScene.GetLayerParentIndex(parent);
@@ -2415,6 +3177,7 @@ internal sealed class TimelineStrip : Control
             changed |= _collapsedMaskLayerIds.Remove(drawingScene.LayerIds[maskLayer]);
         }
 
+        if (changed) InvalidateTimelineStructureCache();
         return changed;
     }
 
@@ -2446,15 +3209,21 @@ internal sealed class TimelineStrip : Control
         if (!collapsedLayerIds.Remove(layerId))
         {
             collapsedLayerIds.Add(layerId);
+            InvalidateTimelineStructureCache();
             var activeTrack = GetActiveTrackIndex();
             var activeLayer = GetTrackLayerIndex(activeTrack);
             if (activeLayer >= 0 && IsLayerHiddenByCollapsedGroup(drawingScene, activeLayer)) SetActiveTrack(trackIndex);
+        }
+        else
+        {
+            InvalidateTimelineStructureCache();
         }
 
         RemoveCollapsedFrameSelection();
         PruneLayerSelection();
         SetFirstVisibleTrack(_firstVisibleTrack, invalidate: false);
         EnsureActiveTrackVisible();
+        _knownLayerVisuals = CaptureLayerVisualSnapshots();
         Invalidate();
     }
 
@@ -2463,23 +3232,26 @@ internal sealed class TimelineStrip : Control
         var drawingScene = DrawingScene();
         if (drawingScene is null)
         {
+            var changed = _collapsedFolderLayerIds.Count > 0 || _collapsedMaskLayerIds.Count > 0;
             _collapsedFolderLayerIds.Clear();
             _collapsedMaskLayerIds.Clear();
+            if (changed) InvalidateTimelineStructureCache();
             return;
         }
 
-        _collapsedFolderLayerIds.RemoveWhere(id =>
+        var removed = _collapsedFolderLayerIds.RemoveWhere(id =>
         {
             var layer = Array.IndexOf(drawingScene.LayerIds, id);
             return layer < 0 || drawingScene.GetLayerKind(layer) != DrawingLayerKind.Folder;
         });
-        _collapsedMaskLayerIds.RemoveWhere(id =>
+        removed += _collapsedMaskLayerIds.RemoveWhere(id =>
         {
             var layer = Array.IndexOf(drawingScene.LayerIds, id);
             return layer < 0
                 || drawingScene.GetLayerKind(layer) != DrawingLayerKind.Mask
                 || drawingScene.GetMaskContentLayerIndex(layer) < 0;
         });
+        if (removed > 0) InvalidateTimelineStructureCache();
         RemoveCollapsedFrameSelection();
         PruneLayerSelection();
     }
@@ -2494,7 +3266,7 @@ internal sealed class TimelineStrip : Control
     private Rectangle LayerGroupDisclosureBounds(int trackIndex, int rowTop)
     {
         var labelLeft = GetTrackLabelLeft(trackIndex);
-        return new Rectangle(labelLeft - 13, rowTop + (RowHeight - 14) / 2, 12, 14);
+        return new Rectangle(labelLeft - 13, rowTop + (_rowHeight - 14) / 2, 12, 14);
     }
 
     private static void DrawLayerGroupDisclosure(Graphics graphics, Rectangle bounds, bool collapsed)
@@ -2529,13 +3301,13 @@ internal sealed class TimelineStrip : Control
             && drawingScene.IsLayerEffectivelyLocked(layer);
     }
 
-    private static void DrawLayerHierarchyGuide(Graphics graphics, int depth, int y, int labelLeft)
+    private void DrawLayerHierarchyGuide(Graphics graphics, int depth, int y, int labelLeft)
     {
         if (depth <= 0) return;
         using var guide = new Pen(Color.FromArgb(92, 104, 121, 126), 1f);
         var x = labelLeft - 6;
-        graphics.DrawLine(guide, x, y, x, y + RowHeight / 2);
-        graphics.DrawLine(guide, x, y + RowHeight / 2, x + 5, y + RowHeight / 2);
+        graphics.DrawLine(guide, x, y, x, y + _rowHeight / 2);
+        graphics.DrawLine(guide, x, y + _rowHeight / 2, x + 5, y + _rowHeight / 2);
     }
 
     private static void DrawLockIcon(Graphics graphics, bool locked, int centerX, int centerY, Pen lockedPen, Pen unlockedPen)
@@ -2757,11 +3529,39 @@ internal sealed class TimelineStrip : Control
 
     private void HandleTimelineChanged(object? sender, EventArgs e)
     {
+        if (TimelineTrackStructureChanged())
+        {
+            InvalidateTimelineStructureCache();
+            PruneCollapsedLayerGroupIds();
+            DetectLayerCollectionFeedback();
+            CaptureKnownTrackStructure();
+        }
         UpdateFrameBoundsForTimelineChange();
         RefreshOnionSkinControls();
         EnsureActiveTrackVisible();
         EnsureCurrentFrameVisible();
         Invalidate();
+    }
+
+    private bool TimelineTrackStructureChanged()
+    {
+        if (_knownTrackStructureIds.Length != TrackCount) return true;
+        for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++)
+        {
+            if (!string.Equals(
+                    _knownTrackStructureIds[trackIndex],
+                    _timeline.Tracks[trackIndex].Id,
+                    StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void CaptureKnownTrackStructure()
+    {
+        _knownTrackStructureIds = _timeline.Tracks.Select(track => track.Id).ToArray();
     }
 
     private void UpdateFrameBoundsForTimelineChange()
@@ -2834,7 +3634,7 @@ internal sealed class TimelineStrip : Control
     {
         trackIndex = -1;
         if (point.Y < layout.RowTop || point.Y >= layout.RowBottom) return false;
-        var visibleRow = (point.Y - layout.RowTop) / RowHeight;
+        var visibleRow = (point.Y - layout.RowTop) / _rowHeight;
         var visibleTracks = VisibleTrackIndices();
         var visiblePosition = _firstVisibleTrack + visibleRow;
         if (visiblePosition < 0 || visiblePosition >= visibleTracks.Count) return false;
@@ -2844,19 +3644,19 @@ internal sealed class TimelineStrip : Control
 
     private int FrameFromX(int x, TimelineLayout layout)
     {
-        var column = (Math.Clamp(x, layout.TrackLeft, Math.Max(layout.TrackLeft, layout.TrackRight - 1)) - layout.TrackLeft) / FrameCellWidth;
+        var column = (Math.Clamp(x, layout.TrackLeft, Math.Max(layout.TrackLeft, layout.TrackRight - 1)) - layout.TrackLeft) / _frameCellWidth;
         var frame = Math.Min((long)_firstVisibleFrame + column, MaximumSelectableFrame(layout));
         return Math.Max(StartFrame, (int)frame);
     }
 
     private int VisibleFrameCapacity(TimelineLayout layout)
     {
-        return Math.Max(1, (layout.TrackRight - layout.TrackLeft) / FrameCellWidth);
+        return Math.Max(1, (layout.TrackRight - layout.TrackLeft) / _frameCellWidth);
     }
 
     private int VisibleFrameDrawCount(TimelineLayout layout)
     {
-        return Math.Max(1, (int)Math.Ceiling((layout.TrackRight - layout.TrackLeft) / (double)FrameCellWidth));
+        return Math.Max(1, (int)Math.Ceiling((layout.TrackRight - layout.TrackLeft) / (double)_frameCellWidth));
     }
 
     private (int FirstColumn, int LastColumnExclusive) VisibleFramePaintRange(
@@ -2870,10 +3670,10 @@ internal sealed class TimelineStrip : Control
             return (0, 0);
         }
 
-        var first = Math.Clamp((clipBounds.Left - layout.TrackLeft) / FrameCellWidth, 0, columnCount);
+        var first = Math.Clamp((clipBounds.Left - layout.TrackLeft) / _frameCellWidth, 0, columnCount);
         if (includeLeadingColumn && first > 0) first--;
         var last = Math.Clamp(
-            (int)Math.Ceiling((clipBounds.Right - layout.TrackLeft) / (double)FrameCellWidth),
+            (int)Math.Ceiling((clipBounds.Right - layout.TrackLeft) / (double)_frameCellWidth),
             first,
             columnCount);
         return (first, last);
@@ -2892,8 +3692,8 @@ internal sealed class TimelineStrip : Control
     {
         var column = frame - _firstVisibleFrame;
         if (column < 0 || column >= VisibleFrameDrawCount(layout)) return;
-        var left = layout.TrackLeft + column * FrameCellWidth;
-        Invalidate(new Rectangle(left, layout.RowTop, FrameCellWidth + 1, Math.Max(0, layout.RowBottom - layout.RowTop)));
+        var left = layout.TrackLeft + column * _frameCellWidth;
+        Invalidate(new Rectangle(left, layout.RowTop, _frameCellWidth + 1, Math.Max(0, layout.RowBottom - layout.RowTop)));
     }
 
     private void InvalidateTrackRow(TimelineLayout layout, int trackIndex)
@@ -2901,8 +3701,8 @@ internal sealed class TimelineStrip : Control
         var visiblePosition = VisibleTrackPosition(trackIndex);
         var visibleRow = visiblePosition - _firstVisibleTrack;
         if (visibleRow < 0 || visibleRow >= VisibleTrackCapacity(layout)) return;
-        var top = layout.RowTop + visibleRow * RowHeight;
-        Invalidate(new Rectangle(0, top, layout.TrackRight, Math.Min(RowHeight, layout.RowBottom - top)));
+        var top = layout.RowTop + visibleRow * _rowHeight;
+        Invalidate(new Rectangle(0, top, layout.TrackRight, Math.Min(_rowHeight, layout.RowBottom - top)));
     }
 
     private int MaximumSelectableFrame(TimelineLayout layout)
@@ -2917,12 +3717,12 @@ internal sealed class TimelineStrip : Control
 
     private int VisibleTrackCapacity(TimelineLayout layout)
     {
-        return Math.Max(1, (layout.RowBottom - layout.RowTop) / RowHeight);
+        return Math.Max(1, (layout.RowBottom - layout.RowTop) / _rowHeight);
     }
 
     private TimelineLayout CreateLayout()
     {
-        var trackLeft = Math.Min(PreferredGutterWidth, Math.Max(MinimumGutterWidth, Width - FrameCellWidth * 5));
+        var trackLeft = Math.Min(PreferredGutterWidth, Math.Max(MinimumGutterWidth, Width - _frameCellWidth * 5));
         var trackRight = Math.Max(trackLeft + 1, Width - 1);
         var rowTop = HeaderHeight + RulerHeight;
         var scrollTop = Math.Max(rowTop, Height - HorizontalScrollHeight);
@@ -3065,6 +3865,54 @@ internal sealed class TimelineStrip : Control
         return input;
     }
 
+    private static ModernSlider CreateFrameWidthSlider()
+    {
+        return new ModernSlider
+        {
+            Minimum = MinimumFrameCellWidth,
+            Maximum = MaximumFrameCellWidth,
+            SmallChange = 1,
+            LargeChange = 4,
+            TickFrequency = 4,
+            Value = FrameCellWidth,
+            Height = Theme.ControlHeightCompact,
+            AccessibleName = "Timeline frame width"
+        };
+    }
+
+    private static ModernNumericUpDown CreateFrameWidthInput()
+    {
+        var input = new ModernNumericUpDown
+        {
+            Minimum = MinimumFrameCellWidth,
+            Maximum = MaximumFrameCellWidth,
+            DecimalPlaces = 0,
+            Increment = 1,
+            Value = FrameCellWidth,
+            Suffix = " px",
+            Height = Theme.ControlHeightCompact,
+            AccessibleName = "Timeline frame width in pixels"
+        };
+        Theme.StyleNumeric(input);
+        return input;
+    }
+
+    private static ComboBox CreateFrameHeightInput()
+    {
+        var input = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            IntegralHeight = false,
+            MaxDropDownItems = 3,
+            Height = Theme.ControlHeightCompact,
+            AccessibleName = "Timeline frame height preset"
+        };
+        input.Items.AddRange(["Low", "Medium", "High"]);
+        input.SelectedIndex = (int)TimelineFrameHeightPreset.Medium;
+        Theme.StyleComboBox(input);
+        return input;
+    }
+
     private void LayoutHeaderControls(TimelineLayout layout, bool onionSkinAvailable)
     {
         var layoutKey = new HeaderLayoutKey(
@@ -3072,6 +3920,8 @@ internal sealed class TimelineStrip : Control
             IsHandleCreated ? DeviceDpi : 96,
             onionSkinAvailable,
             _playbackFpsLabel.Text,
+            _frameWidthLabel.Text,
+            _frameHeightLabel.Text,
             _onionSkinToggle.Text,
             _onionPreviousLabel.Text,
             _onionNextLabel.Text);
@@ -3089,7 +3939,48 @@ internal sealed class TimelineStrip : Control
             SetControlBounds(_playbackFps, new Rectangle(fpsBounds.Left + labelWidth, fpsBounds.Top, PlaybackFpsNumericWidth(), fpsBounds.Height));
         }
 
-        LayoutOnionSkinControls(layout, onionSkinAvailable, fpsBounds);
+        var frameWidthBounds = FrameWidthControlsBounds(layout, fpsBounds);
+        var showFrameWidth = !frameWidthBounds.IsEmpty;
+        SetControlVisible(_frameWidthLabel, showFrameWidth);
+        SetControlVisible(_frameWidthSlider, showFrameWidth);
+        SetControlVisible(_frameWidthInput, showFrameWidth);
+        if (showFrameWidth)
+        {
+            var left = frameWidthBounds.Left;
+            var labelWidth = FrameWidthLabelWidth();
+            var sliderWidth = FrameWidthSliderWidth();
+            var gap = ScaleTimelineMetric(4);
+            SetControlBounds(_frameWidthLabel, new Rectangle(left, frameWidthBounds.Top, labelWidth, frameWidthBounds.Height));
+            left += labelWidth;
+            SetControlBounds(_frameWidthSlider, new Rectangle(left, frameWidthBounds.Top, sliderWidth, frameWidthBounds.Height));
+            left += sliderWidth + gap;
+            SetControlBounds(_frameWidthInput, new Rectangle(left, frameWidthBounds.Top, FrameWidthNumericWidth(), frameWidthBounds.Height));
+        }
+
+        var frameHeightAnchor = showFrameWidth ? frameWidthBounds : fpsBounds;
+        var frameHeightBounds = FrameHeightControlsBounds(layout, frameHeightAnchor);
+        var showFrameHeight = !frameHeightBounds.IsEmpty;
+        SetControlVisible(_frameHeightLabel, showFrameHeight);
+        SetControlVisible(_frameHeightInput, showFrameHeight);
+        if (showFrameHeight)
+        {
+            var labelWidth = FrameHeightLabelWidth();
+            SetControlBounds(
+                _frameHeightLabel,
+                new Rectangle(frameHeightBounds.Left, frameHeightBounds.Top, labelWidth, frameHeightBounds.Height));
+            SetControlBounds(
+                _frameHeightInput,
+                new Rectangle(
+                    frameHeightBounds.Left + labelWidth,
+                    frameHeightBounds.Top,
+                    FrameHeightInputWidth(),
+                    frameHeightBounds.Height));
+        }
+
+        LayoutOnionSkinControls(
+            layout,
+            onionSkinAvailable,
+            showFrameHeight ? frameHeightBounds : frameHeightAnchor);
     }
 
     private Rectangle PlaybackFpsControlsBounds(TimelineLayout layout)
@@ -3116,6 +4007,32 @@ internal sealed class TimelineStrip : Control
             right - controlsWidth - ScaleTimelineMetric(8),
             layout.TrackLeft + ScaleTimelineMetric(200));
         return new Rectangle(left, ScaleTimelineMetric(2), controlsWidth, Math.Max(Theme.ControlHeightCompact, HeaderHeight - ScaleTimelineMetric(4)));
+    }
+
+    private Rectangle FrameWidthControlsBounds(TimelineLayout layout, Rectangle fpsBounds)
+    {
+        var controlsWidth = FrameWidthControlsWidth();
+        var right = fpsBounds.IsEmpty ? layout.TrackRight - ScaleTimelineMetric(8) : fpsBounds.Left - ScaleTimelineMetric(8);
+        if (right - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112)) return Rectangle.Empty;
+        return new Rectangle(
+            right - controlsWidth,
+            ScaleTimelineMetric(2),
+            controlsWidth,
+            Math.Max(Theme.ControlHeightCompact, HeaderHeight - ScaleTimelineMetric(4)));
+    }
+
+    private Rectangle FrameHeightControlsBounds(TimelineLayout layout, Rectangle rightControlsBounds)
+    {
+        var controlsWidth = FrameHeightControlsWidth();
+        var right = rightControlsBounds.IsEmpty
+            ? layout.TrackRight - ScaleTimelineMetric(8)
+            : rightControlsBounds.Left - ScaleTimelineMetric(8);
+        if (right - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112)) return Rectangle.Empty;
+        return new Rectangle(
+            right - controlsWidth,
+            ScaleTimelineMetric(2),
+            controlsWidth,
+            Math.Max(Theme.ControlHeightCompact, HeaderHeight - ScaleTimelineMetric(4)));
     }
 
     private void LayoutOnionSkinControls(TimelineLayout layout, bool available, Rectangle fpsBounds)
@@ -3179,6 +4096,45 @@ internal sealed class TimelineStrip : Control
     {
         return PlaybackFpsLabelWidth() + PlaybackFpsNumericWidth() + ScaleTimelineMetric(4);
     }
+
+    private int FrameWidthControlsWidth()
+    {
+        return FrameWidthLabelWidth()
+            + FrameWidthSliderWidth()
+            + FrameWidthNumericWidth()
+            + ScaleTimelineMetric(4);
+    }
+
+    private int FrameHeightControlsWidth()
+    {
+        return FrameHeightLabelWidth() + FrameHeightInputWidth();
+    }
+
+    private int FrameHeightLabelWidth()
+    {
+        return TextRenderer.MeasureText(
+                _frameHeightLabel.Text,
+                _frameHeightLabel.Font,
+                Size.Empty,
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width
+            + ScaleTimelineMetric(8);
+    }
+
+    private int FrameHeightInputWidth() => ScaleTimelineMetric(72);
+
+    private int FrameWidthLabelWidth()
+    {
+        return TextRenderer.MeasureText(
+                _frameWidthLabel.Text,
+                _frameWidthLabel.Font,
+                Size.Empty,
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width
+            + ScaleTimelineMetric(8);
+    }
+
+    private int FrameWidthSliderWidth() => ScaleTimelineMetric(84);
+
+    private int FrameWidthNumericWidth() => ScaleTimelineMetric(52);
 
     private int PlaybackFpsLabelWidth()
     {
@@ -3274,6 +4230,8 @@ internal sealed class TimelineStrip : Control
         int Dpi,
         bool OnionSkinAvailable,
         string PlaybackFpsLabel,
+        string FrameWidthLabel,
+        string FrameHeightLabel,
         string OnionSkinLabel,
         string PreviousLabel,
         string NextLabel);

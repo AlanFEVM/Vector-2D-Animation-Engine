@@ -1,7 +1,8 @@
 param(
     [int]$PointerSamples = 2000,
     [int]$EndpointSamples = 240,
-    [int]$NearbyLines = 1000
+    [int]$NearbyLines = 1000,
+    [int]$ConnectedLines = 16
 )
 
 $ErrorActionPreference = "Stop"
@@ -92,6 +93,7 @@ try {
 
     $mainType.GetMethod("FinishPointerInteraction", $flags).Invoke($main, @())
     $scene.CreateEmpty(1, 24)
+    $stage.SetVisibleWorldWidth([single]2600)
     $center = $stage.ScreenToWorld([Drawing.Point]::new([int]($stage.ClientSize.Width / 2), [int]($stage.ClientSize.Height / 2)))
     $endpointLine = $scene.AddLineSegment(
         0,
@@ -169,6 +171,137 @@ try {
     "endpoint_drag_snap_buckets=$($snapBuckets.Count)"
     "endpoint_drag_avg_ms=$($endpointAverageMilliseconds.ToString('0.000', [Globalization.CultureInfo]::InvariantCulture))"
     "endpoint_drag_budget_met=True"
+
+    $mainType.GetMethod("FinishPointerInteraction", $flags).Invoke($main, @())
+    $scene.CreateEmpty(1, 24)
+    $primaryLine = $scene.AddLineSegment(
+        0,
+        [Drawing.PointF]::new($center.X - 500, $center.Y),
+        $center,
+        [single]16,
+        [Drawing.Color]::Transparent,
+        [Drawing.Color]::White,
+        [uint32]4)
+    for ($index = 1; $index -lt $ConnectedLines; $index++) {
+        $angle = -[Math]::PI / 2 + [Math]::PI * ($index - 1) / [Math]::Max(1, $ConnectedLines - 2)
+        $outer = [Drawing.PointF]::new(
+            $center.X + [Math]::Cos($angle) * 500,
+            $center.Y + [Math]::Sin($angle) * 500)
+        $scene.AddLineSegment(
+            0,
+            $outer,
+            $center,
+            [single]16,
+            [Drawing.Color]::Transparent,
+            [Drawing.Color]::White,
+            [uint32]4) | Out-Null
+    }
+    for ($index = 0; $index -lt $NearbyLines; $index++) {
+        $column = $index % 40
+        $row = [Math]::Floor($index / 40)
+        $x = $center.X - 1000 + $column * 45
+        $y = $center.Y + 300 + $row * 45
+        $scene.AddLineSegment(
+            0,
+            [Drawing.PointF]::new($x, $y),
+            [Drawing.PointF]::new($x + 50, $y + 30),
+            [single]12,
+            [Drawing.Color]::Transparent,
+            [Drawing.Color]::Silver,
+            [uint32]4) | Out-Null
+    }
+    $scene.GetType().GetMethod("CompleteDeferredBuild", $flags).Invoke($scene, @())
+
+    $primaryHit = $scene.HitTestElement(
+        [Drawing.PointF]::new($center.X - 250, $center.Y),
+        0,
+        [single]20)
+    if (-not $primaryHit.IsValid -or $primaryHit.Key.ObjectIndex -ne $primaryLine) {
+        throw "The connected endpoint fixture could not hit its primary line."
+    }
+
+    $drawingElementHitType = $assembly.GetType("VectorAnimationEngine.DrawingElementHit", $true)
+    $mainType.GetMethod("SetSelection", $flags, $null, [Type[]] @($drawingElementHitType), $null).Invoke($main, @($primaryHit))
+    $mainType.GetField("_activeHandle", $flags).SetValue($main, [Enum]::Parse($editHandleType, "LineEnd"))
+    $mainType.GetField("_startWorld", $flags).SetValue($main, [Nullable[Drawing.PointF]]$center)
+
+    $captureWatch = [Diagnostics.Stopwatch]::StartNew()
+    $mainType.GetMethod("CaptureEditStart", $flags).Invoke($main, @($primaryLine))
+    $captureWatch.Stop()
+    $connectedEdits = $mainType.GetField("_lineEndpointEditStarts", $flags).GetValue($main).Count
+    if ($connectedEdits -ne $ConnectedLines) {
+        throw "The connected endpoint fixture captured $connectedEdits of $ConnectedLines line endpoints."
+    }
+
+    $firstConnectedDragWatch = [Diagnostics.Stopwatch]::StartNew()
+    $queue.Invoke($main, @([Drawing.PointF]::new($center.X + 100, $center.Y + 75)))
+    $firstConnectedDragWatch.Stop()
+    $connectedContinuousWatch = [Diagnostics.Stopwatch]::StartNew()
+    for ($index = 1; $index -le 60; $index++) {
+        $queue.Invoke($main, @([Drawing.PointF]::new($center.X + 100 + $index, $center.Y + 75 + $index)))
+        $tickPreview.Invoke($main, @())
+    }
+    $connectedContinuousWatch.Stop()
+    $flush.Invoke($main, @())
+
+    $expectedConnectedEndpoint = [Drawing.PointF]::new($center.X + 160, $center.Y + 135)
+    for ($index = 0; $index -lt $ConnectedLines; $index++) {
+        $connectedEndpointArguments = [object[]] @($index, $false, [Drawing.PointF]::Empty)
+        if (-not $scene.GetType().GetMethod("TryGetLineEndpoint").Invoke($scene, $connectedEndpointArguments)) {
+            throw "The connected endpoint result could not read line $index."
+        }
+        $connectedEndpoint = [Drawing.PointF]$connectedEndpointArguments[2]
+        if ([Math]::Abs($connectedEndpoint.X - $expectedConnectedEndpoint.X) -gt 0.001 -or
+            [Math]::Abs($connectedEndpoint.Y - $expectedConnectedEndpoint.Y) -gt 0.001) {
+            throw "Connected line $index did not follow the shared endpoint drag."
+        }
+    }
+
+    if ($firstConnectedDragWatch.Elapsed.TotalMilliseconds -gt 8) {
+        throw "Connected endpoint first drag exceeded its 8 ms update budget: $($firstConnectedDragWatch.Elapsed.TotalMilliseconds.ToString('0.000')) ms."
+    }
+    $connectedContinuousAverageMilliseconds = $connectedContinuousWatch.Elapsed.TotalMilliseconds / 60
+    if ($connectedContinuousAverageMilliseconds -gt 4) {
+        throw "Connected endpoint continuous drag exceeded its 4 ms update budget: $($connectedContinuousAverageMilliseconds.ToString('0.000')) ms."
+    }
+
+    $endpointStyleType = $assembly.GetType("VectorAnimationEngine.LineEndpointStyle", $true)
+    $sharpEndpointStyle = [Enum]::Parse($endpointStyleType, "Sharp")
+    for ($index = 0; $index -lt $ConnectedLines; $index++) {
+        $scene.SetLineEndpointStyle($index, $false, $sharpEndpointStyle) | Out-Null
+    }
+    $connectedPaintWatch = [Diagnostics.Stopwatch]::StartNew()
+    for ($index = 1; $index -le 60; $index++) {
+        $queue.Invoke($main, @([Drawing.PointF]::new($center.X + 160 + $index, $center.Y + 135 + $index)))
+        $tickPreview.Invoke($main, @())
+        $stage.Refresh()
+    }
+    $connectedPaintWatch.Stop()
+    $connectedPaintAverageMilliseconds = $connectedPaintWatch.Elapsed.TotalMilliseconds / 60
+    $lineGeometryCacheBuilds = $stage.GetType().GetProperty("LastDirect2DLineGeometryCacheBuilds", $flags).GetValue($stage)
+    $lineGeometryCacheReuses = $stage.GetType().GetProperty("LastDirect2DLineGeometryCacheReuses", $flags).GetValue($stage)
+    if (-not $stage.LastFrameUsedDirect2D) {
+        throw "The connected endpoint paint benchmark did not use Direct2D."
+    }
+    if ($connectedPaintAverageMilliseconds -gt 10) {
+        throw "Connected endpoint painted frames exceeded their 10 ms budget: $($connectedPaintAverageMilliseconds.ToString('0.000')) ms."
+    }
+    if ($lineGeometryCacheBuilds -ne 0) {
+        throw "Straight connected lines unexpectedly rebuilt $lineGeometryCacheBuilds Direct2D path geometries."
+    }
+
+    "connected_endpoint_lines=$ConnectedLines"
+    "connected_endpoint_static_render_lines=$NearbyLines"
+    "connected_endpoint_capture_ms=$($captureWatch.Elapsed.TotalMilliseconds.ToString('0.000', [Globalization.CultureInfo]::InvariantCulture))"
+    "connected_endpoint_first_drag_ms=$($firstConnectedDragWatch.Elapsed.TotalMilliseconds.ToString('0.000', [Globalization.CultureInfo]::InvariantCulture))"
+    "connected_endpoint_continuous_avg_ms=$($connectedContinuousAverageMilliseconds.ToString('0.000', [Globalization.CultureInfo]::InvariantCulture))"
+    "connected_endpoint_painted_frame_avg_ms=$($connectedPaintAverageMilliseconds.ToString('0.000', [Globalization.CultureInfo]::InvariantCulture))"
+    "connected_endpoint_painted_direct2d=$($stage.LastFrameUsedDirect2D)"
+    "connected_endpoint_line_geometry_builds=$lineGeometryCacheBuilds"
+    "connected_endpoint_line_geometry_reuses=$lineGeometryCacheReuses"
+    "connected_endpoint_painted_frame_budget_met=True"
+    "connected_endpoint_first_drag_budget_met=True"
+    "connected_endpoint_continuous_drag_budget_met=True"
 }
 finally {
     if ($null -ne $stage) { $stage.remove_Invalidated($invalidatedHandler) }

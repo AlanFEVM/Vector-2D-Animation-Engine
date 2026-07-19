@@ -45,10 +45,19 @@ internal static class Program
         {
             ApplicationConfiguration.Initialize();
             UiLocalization.SetLanguage(ApplicationSettingsStore.Load().Language);
+            var inputFocusDismissalFilter = new InputFocusDismissalFilter();
+            Application.AddMessageFilter(inputFocusDismissalFilter);
             using (instanceLease)
             {
-                EditorRestartStore.TryConsume(out var restartState);
-                Application.Run(new AppHost(restartState));
+                try
+                {
+                    EditorRestartStore.TryConsume(out var restartState);
+                    Application.Run(new AppHost(restartState));
+                }
+                finally
+                {
+                    Application.RemoveMessageFilter(inputFocusDismissalFilter);
+                }
             }
             AppLog.Info("Application exited normally");
             AppLog.Flush();
@@ -57,7 +66,8 @@ internal static class Program
         {
             AppLog.Error("Fatal application exception", ex);
             AppLog.Flush();
-            MessageBox.Show(
+            ModernMessageDialog.Show(
+                null,
                 UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese
                     ? $"应用程序已崩溃。详细信息请查看最新日志文件：\n\n{AppLog.LogPath}"
                     : $"The application crashed. See the latest log file for details:\n\n{AppLog.LogPath}",

@@ -11,6 +11,7 @@ internal readonly record struct PackedSceneObject(
     uint Atoms,
     ShapeKind Shape,
     PointF CurveControl,
+    PointF CurveControl2,
     LineEndpointStyle StartEndpointStyle = LineEndpointStyle.Round,
     LineEndpointStyle EndEndpointStyle = LineEndpointStyle.Round,
     bool LinearGradientEnabled = false,
