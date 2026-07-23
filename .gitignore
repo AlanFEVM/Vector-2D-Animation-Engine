@@ -7,6 +7,12 @@ obj/
 # Publish outputs
 publish-*/
 publish/
+/artifacts/
+/runtime/
+/.Runtime/
+/.V2DEngine/
+/VectorAnimationEngine.exe
+/TestSave/
 
 # IDE and user-local files
 .vs/

@@ -2,8 +2,7 @@
 param(
     [string]$Version,
     [string]$RuntimeVersion,
-    [switch]$FullPackage,
-    [switch]$PatchOnly
+    [switch]$FullPackage
 )
 
 $ErrorActionPreference = "Stop"
@@ -97,10 +96,6 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 if ($Version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
     throw "Invalid release version: $Version"
 }
-if ($FullPackage -and $PatchOnly) {
-    throw "-FullPackage and the legacy -PatchOnly switch cannot be used together."
-}
-
 $buildFullPackage = [bool]$FullPackage
 
 $dotnetPath = $null
@@ -133,28 +128,29 @@ if ($buildFullPackage) {
 }
 
 $patchName = "VectorAnimationEngine-$Version-patch-$rid"
-$patchRoot = Join-Path $artifactRoot $patchName
+$stagingRoot = Join-Path ([IO.Path]::GetTempPath()) ("v2d-publish-" + [Guid]::NewGuid().ToString("N"))
+$patchRoot = Join-Path $stagingRoot $patchName
 $patchAppDirectory = Join-Path $patchRoot ".V2DEngine"
 $patchZip = Join-Path $artifactRoot "$patchName.zip"
 $patchChecksumPath = Join-Path $artifactRoot "$patchName.sha256"
 $packageName = "VectorAnimationEngine-$Version-split-$rid"
-$packageRoot = Join-Path $artifactRoot $packageName
+$packageRoot = Join-Path $stagingRoot $packageName
 $packageZip = Join-Path $artifactRoot "$packageName.zip"
 $checksumPath = Join-Path $artifactRoot "$packageName.sha256"
 
-Assert-NewPath $patchRoot
 Assert-NewPath $patchZip
 Assert-NewPath $patchChecksumPath
 if ($buildFullPackage) {
-    Assert-NewPath $packageRoot
     Assert-NewPath $packageZip
     Assert-NewPath $checksumPath
 }
 
+New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $patchAppDirectory -Force | Out-Null
-Push-Location $repoRoot
+$locationPushed = $false
 try {
-    Invoke-DotnetChecked @("restore", $nativeProject, "-r", $rid)
+    Push-Location $repoRoot
+    $locationPushed = $true
     Invoke-DotnetChecked @(
         "publish", $nativeProject,
         "-c", "Release",
@@ -164,7 +160,6 @@ try {
         "-p:UseAppHost=false",
         "-p:DebugType=None",
         "-p:DebugSymbols=false",
-        "--no-restore",
         "-o", $patchAppDirectory)
 
     $releaseMetadata = [ordered]@{
@@ -188,13 +183,11 @@ try {
         New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
         $launcherPath = Join-Path $packageRoot "VectorAnimationEngine.exe"
         $launcherPublishDirectory = Join-Path $repoRoot "distribution-launcher\bin\package-publish"
-        Invoke-DotnetChecked @("restore", $distributionLauncherProject)
         Invoke-DotnetChecked @(
             "publish", $distributionLauncherProject,
             "-c", "Release",
             "-p:DebugType=None",
             "-p:DebugSymbols=false",
-            "--no-restore",
             "-o", $launcherPublishDirectory)
         Copy-Item -LiteralPath (Join-Path $launcherPublishDirectory "VectorAnimationEngine.exe") -Destination $launcherPath
         if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
@@ -231,34 +224,23 @@ try {
             ".V2DEngine",
             "VectorAnimationEngine.exe")
 
-        $hashTargets = @(
-            Join-Path $packageRoot "VectorAnimationEngine.exe"
-            Join-Path $packageRoot ".Runtime\dotnet.exe"
-            Join-Path $packageRoot ".V2DEngine\VectorAnimationEngine.dll"
-            $patchZip
-            $packageZip
-        )
-        $hashLines = foreach ($target in $hashTargets) {
-            $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
-            $relative = $target.Substring($artifactRoot.TrimEnd('\').Length + 1).Replace('\', '/')
-            "$hash *$relative"
-        }
-        Write-Utf8NoBom -Path $checksumPath -Content (($hashLines -join [Environment]::NewLine) + [Environment]::NewLine)
+        $packageHash = (Get-FileHash -LiteralPath $packageZip -Algorithm SHA256).Hash
+        Write-Utf8NoBom -Path $checksumPath -Content ("$packageHash *$packageName.zip" + [Environment]::NewLine)
     }
 }
 finally {
-    Pop-Location
+    if ($locationPushed) { Pop-Location }
+    if (Test-Path -LiteralPath $stagingRoot) {
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+    }
 }
 
 [pscustomobject]@{
     Version = $Version
     RuntimeVersion = if ($buildFullPackage) { $RuntimeVersion } else { $null }
     Mode = if ($buildFullPackage) { "FullWithPatch" } else { "Patch" }
-    PatchOnly = -not $buildFullPackage
-    PatchDirectory = $patchRoot
     PatchArchive = $patchZip
     PatchChecksumManifest = $patchChecksumPath
-    FullPackageDirectory = if ($buildFullPackage) { $packageRoot } else { $null }
     FullPackageArchive = if ($buildFullPackage) { $packageZip } else { $null }
     FullPackageChecksumManifest = if ($buildFullPackage) { $checksumPath } else { $null }
 } | ConvertTo-Json -Compress

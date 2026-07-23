@@ -4,15 +4,11 @@
 
 ## 启动软件
 
-在项目根目录双击：
+在正式分离包的安装目录双击：
 
 ```text
 VectorAnimationEngine.exe
 ```
-
-当前根目录 EXE 是轻量入口程序。它优先启动 `runtime\\win-x64` 中依赖框架的 ReadyToRun 预编译桌面应用；该路径不需要系统安装 .NET SDK，也避免了启动时 JIT 编译与源码构建的开销，但需要 .NET 8 Desktop Runtime。
-
-当预编译运行时缺失，或其时间戳落后于 `native/` 源码、项目配置或 `global.json` 时，启动器会自动回退到源码工程。源码路径需要系统 `PATH` 中与 `global.json` 兼容的稳定 .NET 8 SDK；仅安装更高主版本 SDK 并不满足该约束。若 Debug 输出仍是最新的，会跳过初次编译直接启动。使用预编译运行时不需要 SDK；根目录入口本身仍需要 .NET Desktop Runtime 8。
 
 软件默认打开空项目，不会自动生成压测场景。
 
@@ -31,27 +27,25 @@ VectorAnimationEngine.exe
 
 后续矢量布尔、路径编辑、吸附、对齐、材质和导出逻辑都需要遵守这个单位体系。
 
-## 开发自动重启
+## 源码开发
 
-双击根目录 `VectorAnimationEngine.exe` 会优先启动 ReadyToRun 预编译运行时。预编译运行时的状态栏显示 `Module Reload Off`，适合日常快速启动。开发时可使用以下命令强制进入非交互模式的 `dotnet watch` Metadata Hot Reload：
-
-```powershell
-.\VectorAnimationEngine.exe --dev
-```
-
-开发模式下，修改 `native/` 下的 C# 代码并保存后，同一轮保存产生的多个类型更新会先合并为一个串行热更批次。渲染和引擎方法更新会在当前窗口内应用；Shell、时间轴、检查器和 Vault 的更新会自动重建工作台窗口，以重新执行控件构造和布局代码。两种路径都会保留当前项目、活动工作区、帧位置、选择上下文、舞台视图和窗口状态。模块刷新失败时会依次尝试完整工作台重建和保留项目的编辑器进程重启。
-
-底部状态栏显示 `Module Reload On` 时表示当前处于开发模块热重载模式；应用、完成、恢复或失败状态会带有本次热更代际编号。无法由 .NET 在运行时应用且未产生元数据回调的结构性编辑不会自动杀掉软件；保存后点击右上角重启图标，启动器会重新启动编辑器进程并应用修改后的代码，同时恢复当前项目、活动工作区、帧位置、舞台视图和窗口状态。需要在不监听文件变化的情况下单次启动时，可以使用：
+源码仓库不跟踪编译后的根 EXE 或预编译运行目录。安装 `global.json` 指定的 .NET 8 SDK 后，使用唯一的开发入口：
 
 ```powershell
-.\VectorAnimationEngine.exe --no-hot-reload
+dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj
 ```
 
-通过根目录开发启动器运行时，右上角窗口控制区的重启图标会保存一次性项目快照并请求启动器重启 `dotnet watch` 子进程。启动器会向下一次 native 启动传递一个短期一次性令牌；只有令牌匹配且未过期时，新编辑器实例才会恢复当前 `Project`、活动工作区、帧位置、舞台视图和窗口状态。普通启动、错误令牌或过期令牌都会清理待恢复快照而不加载旧工程。这也会加载无法由 Metadata Hot Reload 直接应用的修改。使用 `--no-hot-reload` 或直接运行 native 时，图标会降级为窗口内重启，仍会保留当前项目内容。
+开发启动器默认启用非交互 `dotnet watch` 和 Metadata Hot Reload。修改 `native/` 后，渲染与引擎方法会在当前窗口应用；Shell、时间轴、检查器和 Vault 更新会重建工作台并保留项目、帧、选择和视图。无法直接热更的结构性修改可通过右上角重启按钮应用。
+
+不需要文件监听时使用：
+
+```powershell
+dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj -- --no-hot-reload
+```
 
 ## 日志和崩溃定位
 
-通过根目录 `VectorAnimationEngine.exe` 启动时，软件会在项目根目录写入运行日志：
+正式包和源码开发启动器都会在各自根目录写入运行日志：
 
 ```text
 logs/
@@ -59,10 +53,10 @@ logs/
 
 常见文件：
 
-- `launcher.log`：根目录 EXE 的启动记录，以及隐藏 `dotnet watch` 进程的编译输出和异常重试记录。日志达到 `8 MB` 后会轮换为 `launcher.previous.log`；watch 进程非零异常退出时最多自动重启三次。
+- `launcher.log`：仅源码开发启动器生成，记录 `dotnet watch` 编译输出和异常重试。日志达到 `8 MB` 后会轮换为 `launcher.previous.log`；watch 进程非零异常退出时最多自动重启三次。
 - `native-yyyyMMdd-HHmmss-pidN.log`：桌面应用本体的运行日志。
 
-如果直接运行 `native/` 工程或 native 输出目录下的 EXE，且没有设置 `V2D_LOG_DIR` 环境变量，native 日志会写入该 EXE 基目录下的 `logs/`。日志会记录启动环境、热重载窗口重建、压测场景生成、Direct2D 渲染失败回退、UI 线程未处理异常和进程级未处理异常。通过根目录启动器运行时，软件崩溃后优先查看项目根目录 `logs/` 中最新的 `native-*.log`。
+如果直接运行 `native/` 工程或 native 输出目录下的 EXE，且没有设置 `V2D_LOG_DIR` 环境变量，native 日志会写入该 EXE 基目录下的 `logs/`。日志会记录启动环境、热重载窗口重建、压测场景生成、Direct2D 渲染失败回退、UI 线程未处理异常和进程级未处理异常。软件崩溃后优先查看对应根目录 `logs/` 中最新的 `native-*.log`。
 
 ## 主界面区域
 

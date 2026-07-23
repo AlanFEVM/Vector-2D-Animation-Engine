@@ -4,47 +4,22 @@ Native Windows desktop prototype for a large-scale 2D vector animation engine.
 
 ## Run
 
-Double-click:
+Source development requires the stable .NET 8 SDK selected by `global.json`. Start the development launcher with:
 
-```text
-VectorAnimationEngine.exe
+```powershell
+dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj
 ```
 
-The root EXE is a lightweight launcher. It prefers the framework-dependent ReadyToRun runtime
-under `runtime\\win-x64`, avoiding both startup JIT work and a source build. If that runtime
-is absent or older than the native source inputs, the launcher falls back to the source project.
-Launch with `VectorAnimationEngine.exe --dev` to force non-interactive `dotnet watch` with
-Metadata Hot Reload; current Debug output skips the redundant initial build in that mode.
-The precompiled runtime and lightweight root launcher require the .NET 8 Desktop Runtime, but
-do not require an SDK.
-Changed engine and rendering method bodies apply in-process. Shell, inspector,
-workspace, and timeline updates automatically rebuild the workbench window from
-the updated code while preserving the open project, selection context, frame, and view.
-You only need to rebuild the launcher when the launcher itself changes.
-
-The repository selects the stable .NET 8 SDK line through `global.json` and refuses
-preview SDKs. If no compatible .NET 8 SDK is installed, install one or use a
-published standalone native build instead.
+The launcher restores the first build when needed, then starts non-interactive `dotnet watch` with Metadata Hot Reload. Changed engine and rendering method bodies apply in-process; shell, inspector, workspace, and timeline changes rebuild the workbench while preserving the open project, selection, frame, and view. Use the editor's restart button for unsupported structural edits.
 
 ```powershell
 winget install --id Microsoft.DotNet.SDK.8 --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-dotnet restore native\VectorAnimationEngine.Native.csproj
 ```
 
-This means the root `VectorAnimationEngine.exe` is intentionally small. It is the
-stable entry point for fast iteration, not the final distributable package.
+Use `dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj -- --no-hot-reload` for a single source run without file watching. Formal Windows packages are produced separately by the split-package script described below.
 
 The app opens with an empty project and one visible layer. The stress scene is not
 generated on startup; use `Run Stress Scene` when you explicitly want to benchmark.
-
-The hot-reload coordinator coalesces each save burst, applies one serialized module plan,
-releases Direct2D resources only for rendering edits, refreshes bound controls only for UI
-edits, and rebuilds composition caches only for engine edits. Failed module refreshes fall
-back to a preserved-state workbench rebuild and then a preserved-state process restart.
-Unsupported structural runtime edits that are rejected before a metadata callback still
-require the editor's upper-right restart button. Launch with
-`VectorAnimationEngine.exe --no-hot-reload` when you need a plain `dotnet run`
-session without file watching.
 
 ## Current Target Workload
 
@@ -134,8 +109,8 @@ validation owner runs builds and regression suites after integration.
 
 ## Runtime Logs
 
-Runtime logs are written to `logs/` in the project root when launched through the
-root EXE. Native app logs use `native-yyyyMMdd-HHmmss-pidN.log`; launcher startup
+Runtime logs are written to `logs/` in the repository root when launched through the
+development launcher. Native app logs use `native-yyyyMMdd-HHmmss-pidN.log`; launcher startup
 events and captured `dotnet watch` build diagnostics use `launcher.log`, rotated once at 8 MB
 to `launcher.previous.log`. A development watch
 process that exits unexpectedly with a nonzero code is restarted up to three times. Unhandled UI thread exceptions, domain crashes,
@@ -164,114 +139,30 @@ large object batches into persistent GPU-side geometry buffers and tile caches.
 ## Source Layout
 
 ```text
-native/
-  App/
-    Program.cs            Application entry point.
-    AppLog.cs             Runtime logging and crash diagnostics.
-    HotReloadModules.cs   Scoped Metadata Hot Reload module routing and refresh contracts.
-    HotReloadCoordinator.cs
-                          Coalesced UI dispatch, serialization, and recovery coordination.
-    ToolMode.cs           Shared tool enum.
-    Benchmark.cs          Stress-scene benchmark helper.
-  Engine/
-    AnimationTimeline.cs Timeline tracks, held exposure evaluation, frame commands, target-ID synchronization, and snapshots.
-    SceneCompositionBuilder.cs
-                          Current-frame scene instance composition preview builder.
-    VectorScene.cs        Packed scene arrays, stress generator, spatial index.
-    VectorSceneSnapshot.cs
-                          Undo snapshot data for scene-level edit history, including compound path contours and timeline state.
-    DrawingElementTopology.cs
-                          Fill/stroke element identity and topology hit contracts.
-    DrawingObjectDefinition.cs
-                          Flash-style reusable drawing object metadata plus isolated drawing storage.
-    SceneDefinition.cs    Lightweight scene composition metadata.
-    SceneObjectInstanceDefinition.cs
-                          Scene-level drawing object instance transforms.
-    VectorProject.cs      Project root, scene dimension, and camera projection model.
-    VectorUnits.cs        Vector unit, pixel, and stroke point conversion rules.
-    RenderStats.cs        Renderer telemetry contract.
-    CompactFormat.cs      Human-readable metric formatting.
-    DrawSettings.cs       Snap, align, grid and shape drawing settings.
-    FreehandStrokeProcessor.cs
-                          Screen-space freehand smoothing and path simplification.
-    ShapeKind.cs          Basic shape kind enum.
-  Rendering/
-    StageControl.cs       Stage viewport renderer and camera.
-    Direct2DStageRenderer.cs
-                          Direct2D HWND renderer with GDI fallback support.
-  UI/
-    MainForm.cs           Desktop workbench shell and interaction logic.
-    LibraryVaultPanel.cs  Live project-object library, hover previews, and persistent Vault items.
-    SceneEditorPanel.cs   Scene mode, scene list, drawing object manager.
-    TimelineStrip.cs      Timeline renderer.
-    Theme.cs              Shared desktop colors and control styling.
-    SvgIcons.cs           Code-native SVG primitive icon set.
-    SvgIconButton.cs      SVG icon button and toggle controls.
-    PlaybackSettingsPanel.cs
-    DrawSettingsPanel.cs
-    WorkspaceTabs.cs
-    HierarchyPanel.cs
-    MaterialEditorPanel.cs
-    ColorPickerControls.cs Gradient color channels, editable stop rail, target swatches, and palette grid controls.
-launcher/
-  Program.cs              Lightweight root EXE launcher for development.
+native/App/              Application host, diagnostics, hot reload, and regressions.
+native/Engine/           Project model, timeline, vector geometry, and persistence.
+native/Rendering/        Stage control plus Direct2D/GDI rendering.
+native/UI/               WinForms workbench and reusable controls.
+launcher/                Source development and hot-reload coordinator.
+distribution-launcher/   Stable split-package bootstrap.
+scripts/                 Release packaging entry points.
+.agents/                 Repository-specific Agent and validation workflows.
 ```
 
-## Build For Development
+## Development And Validation
 
 ```powershell
-dotnet build native\VectorAnimationEngine.Native.csproj -c Release
+dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Build
 ```
 
-Run the full 1000-layer / 100000-object stress build, parallel render collection,
-spatial-index validation, and scene-composition benchmark with:
+Use the same validation entry for focused regressions; it serializes builds and benchmarks through the repository validation lock:
 
 ```powershell
-dotnet native\bin\Release\net8.0-windows\VectorAnimationEngine.dll --bench
-```
-
-The benchmark checks the CPU visible-object collection phase against the 144 FPS
-frame budget and prints per-collection capacity plus composition phase timings.
-
-Run the freehand sampling, commit, hit-test, and snapshot regression benchmark with:
-
-```powershell
-dotnet native\bin\Release\net8.0-windows\VectorAnimationEngine.dll --bench-freehand
-```
-
-Run the timeline exposure, Adobe-style frame command, independent cel ownership,
-snapshot, track synchronization, and scene-instance track regression with:
-
-```powershell
-dotnet native\bin\Release\net8.0-windows\VectorAnimationEngine.dll --bench-timeline
-```
-
-Run the Direct2D editable-scene plus nested-underlay renderer regression with:
-
-```powershell
-dotnet native\bin\Release\net8.0-windows\VectorAnimationEngine.dll --bench-render
-```
-
-## Build Launcher Entry
-
-```powershell
-dotnet publish launcher\VectorAnimationEngine.Launcher.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish-launcher
-Move-Item publish-launcher\VectorAnimationEngine.exe .\VectorAnimationEngine.exe -Force
-Remove-Item publish-launcher -Recurse -Force
-```
-
-## Publish Precompiled Runtime
-
-Build the compact framework-dependent ReadyToRun runtime used by the root launcher:
-
-```powershell
-dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained false -p:PublishReadyToRun=true -p:DebugType=None -p:DebugSymbols=false --no-restore -o runtime\win-x64
-```
-
-This multi-file deployment uses the installed .NET 8 Desktop Runtime and avoids single-file extraction and compression work on startup. For a portable standalone distribution, use:
-
-```powershell
-dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish-native
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Timeline
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Freehand
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Render
+.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Stress -EnforcePerformanceBudget
 ```
 
 The standard release command now creates only the replaceable application patch:
@@ -280,9 +171,7 @@ The standard release command now creates only the replaceable application patch:
 scripts\publish-split-package.ps1
 ```
 
-This is the default for every normal release. It publishes `.V2DEngine`, validates that the ZIP
-contains no runtime or launcher files, and writes a matching `.sha256` file. The legacy
-`-PatchOnly` switch is still accepted but is no longer necessary.
+This is the default for every normal release. It publishes `.V2DEngine`, validates that the ZIP contains no runtime or launcher files, and writes a matching `.sha256` file. Expanded package trees are temporary and are removed after archive validation.
 
 Generate a new full baseline only when the target framework, private runtime, root launcher, or
 package layout changes:
@@ -295,7 +184,7 @@ Full-package generation uses the repository's pinned .NET 8 SDK to compile a sma
 bootstrap executable that is independent of the private `.Runtime` directory. Normal patch
 releases never rebuild or copy the bootstrap executable or private runtime.
 
-The full archive contains a native bootstrap EXE plus two isolated directories:
+The full archive contains a Windows bootstrap EXE plus two isolated directories:
 
 ```text
 VectorAnimationEngine.exe
@@ -310,13 +199,3 @@ not merge individual files, because a newer version may remove dependencies. Kee
 the root launcher unless the target framework, runtime family, or package layout changes. The
 bootstrap reports `没有运行环境` when the private runtime is absent or incomplete, and
 `软件主体代码缺失` when the `.V2DEngine` application payload is absent or incomplete.
-
-Use `--dev` when source watching and Metadata Hot Reload are required.
-
-## Next Engineering Steps
-
-- Move rendering from GDI to Direct2D/D3D.
-- Add tile cache invalidation for edits instead of full spatial-index rebuilds.
-- Add command-log undo/redo.
-- Add binary scene serialization.
-- Add true vector path tessellation for fills and strokes.

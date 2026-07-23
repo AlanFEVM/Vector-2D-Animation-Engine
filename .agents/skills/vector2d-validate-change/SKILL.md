@@ -1,6 +1,6 @@
 ---
 name: vector2d-validate-change
-description: Select and run Vector 2D Animation Engine build, regression benchmark, performance-budget, visual/manual, launcher, hot-reload, diagnostics, and release validation. Use after changes under native or launcher, before declaring a feature or fix complete, when choosing the minimum relevant benchmark suite, or when diagnosing startup, reload, crash, Direct2D, packaging, or root EXE behavior.
+description: Select and run Vector 2D Animation Engine build, regression benchmark, performance-budget, visual/manual, launcher, hot-reload, diagnostics, and release validation. Use after changes under native or launcher, before declaring a feature or fix complete, when choosing the minimum relevant benchmark suite, or when diagnosing startup, reload, crash, Direct2D, or packaging behavior.
 ---
 
 # Vector2D Change Validation
@@ -14,7 +14,7 @@ Use the smallest suite that covers the changed contract, then broaden when the b
 3. In multi-Agent work, nominate one validation owner. Other Agents submit suggested suites or run `-Plan`; only the owner runs builds and benchmarks, serially.
 4. The validation owner runs `scripts/invoke-validation.ps1`; benchmarks are sequential because performance and graphics suites interfere with each other.
 5. For user-visible UI, also use `$vector2d-winforms-ui` or `$vector2d-stage-workflow` visual verification and manually exercise the changed interaction.
-6. Read [launcher-release.md](references/launcher-release.md) for root launcher, hot reload, logs, standalone publishing, or root EXE replacement.
+6. Read [launcher-release.md](references/launcher-release.md) for development launch, hot reload, logs, or split-package publishing.
 7. Update `docs/USER_GUIDE.md` for user-facing feature or interaction changes. Keep `README.md` commands/features accurate.
 8. Report the exact failed suite and first meaningful exception/output; note when a shared prerequisite regression prevented the named suite from reaching its target checks.
 
@@ -50,5 +50,5 @@ Non-plan runs take a repository-specific Windows cross-process mutex. The defaul
 - Performance budget booleans are printed output; the native process may still exit zero. Use `-EnforcePerformanceBudget` when budgets are acceptance criteria.
 - A benchmark can execute shared regressions before its named target. Read the exception and call chain rather than assuming `--bench-render` reached Direct2D.
 - `-Plan` is read-only: it resolves `Suites`, `Builds`, and `Benchmarks` as JSON without taking the validation mutex, restoring, building, or running a benchmark.
-- Do not overwrite the tracked root `VectorAnimationEngine.exe` unless the task explicitly requires rebuilding the launcher or installing a standalone package.
+- Keep generated launchers, runtimes, packages, and validation artifacts out of the tracked source tree.
 - Do not commit unrelated dirty-worktree files. Stage only files belonging to the completed request.

@@ -2,7 +2,13 @@
 
 ## Development Launcher
 
-The tracked root `VectorAnimationEngine.exe` is normally a small launcher. It starts the native project with `dotnet watch` and module-scoped Metadata Hot Reload. `--no-hot-reload` uses a plain `dotnet run` session.
+Start the source launcher with:
+
+```powershell
+dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj
+```
+
+It locates the repository root, starts the native project with `dotnet watch`, and enables module-scoped Metadata Hot Reload. Pass `-- --no-hot-reload` to use a plain `dotnet run` session.
 
 Relevant code:
 
@@ -13,7 +19,7 @@ Relevant code:
 - `native/App/SingleInstanceLease.cs`
 - `native/App/LauncherShutdownSignal.cs`
 
-The launcher uses `--no-restore`; restore the native project before first launch on a new checkout. Unknown updated root types route conservatively to all modules, but known engine, rendering, timeline, workspace, and inspector types should still be registered for scoped refreshes.
+The launcher lets the first native build restore dependencies automatically. Unknown updated root types route conservatively to all modules, but known engine, rendering, timeline, workspace, and inspector types should still be registered for scoped refreshes.
 
 ## Logs And Processes
 
@@ -22,17 +28,6 @@ The launcher uses `--no-restore`; restore the native project before first launch
 - A second native instance exits through the single-instance lease.
 - Force-killing the native app can leave the launcher/watch process running because no shutdown signal was sent.
 - For live hot-reload compiler diagnostics, inspect `launcher.log`; a foreground `dotnet watch` terminal remains useful when interactive console behavior is required.
-
-## Rebuild Launcher
-
-```powershell
-dotnet publish launcher\VectorAnimationEngine.Launcher.csproj -c Release -r win-x64 `
-  --self-contained false -p:PublishSingleFile=true -o publish-launcher
-Move-Item publish-launcher\VectorAnimationEngine.exe .\VectorAnimationEngine.exe -Force
-Remove-Item publish-launcher -Recurse -Force
-```
-
-Stop launcher/native processes first. Verify the published file exists before replacing the tracked root EXE.
 
 ## Publish Releases
 
@@ -44,7 +39,7 @@ scripts\publish-split-package.ps1
 scripts\publish-split-package.ps1 -FullPackage
 ```
 
-Normal releases replace the complete `.V2DEngine` directory and preserve the installed root launcher and `.Runtime`. Use full-package mode only when those stable components or the layout must change. The legacy `-PatchOnly` switch remains accepted, but patch mode is the default.
+Normal releases replace the complete `.V2DEngine` directory and preserve the installed root launcher and `.Runtime`. Use full-package mode only when those stable components or the layout must change. Publishing retains only ZIP and SHA-256 outputs; expanded package trees are temporary.
 
 Before distribution:
 

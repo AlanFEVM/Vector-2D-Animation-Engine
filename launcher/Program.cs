@@ -23,13 +23,12 @@ internal static class Program
         RestartEditor
     }
 
-    private readonly record struct SourceLaunchOptions(bool ForceSourceLaunch, bool ModuleHotReload)
+    private readonly record struct LaunchOptions(bool ModuleHotReload)
     {
-        public static SourceLaunchOptions Parse(IReadOnlyList<string> args)
+        public static LaunchOptions Parse(IReadOnlyList<string> args)
         {
             var noHotReload = args.Any(arg => arg.Equals("--no-hot-reload", StringComparison.OrdinalIgnoreCase));
-            var developmentMode = args.Any(arg => arg.Equals("--dev", StringComparison.OrdinalIgnoreCase));
-            return new SourceLaunchOptions(developmentMode || noHotReload, ModuleHotReload: !noHotReload);
+            return new LaunchOptions(ModuleHotReload: !noHotReload);
         }
     }
 
@@ -41,31 +40,18 @@ internal static class Program
         using var launcherMutex = new Mutex(initiallyOwned: true, LauncherMutexName, out var createdNew);
         if (!createdNew) return;
 
-        var root = AppContext.BaseDirectory;
+        var root = ResolveRepositoryRoot();
         var logDir = Path.Combine(root, "logs");
         Directory.CreateDirectory(logDir);
-        Log(logDir, "Launcher starting");
+        Log(logDir, $"Launcher starting. Repository root: {root}");
         var projectPath = Path.Combine(root, "native", "VectorAnimationEngine.Native.csproj");
-        var precompiledRuntimePath = Path.Combine(root, "runtime", "win-x64", "VectorAnimationEngine.exe");
-        var sourceLaunch = SourceLaunchOptions.Parse(args);
-        if (!sourceLaunch.ForceSourceLaunch
-            && File.Exists(precompiledRuntimePath)
-            && (!File.Exists(projectPath) || IsNativeOutputCurrent(projectPath, Path.GetDirectoryName(precompiledRuntimePath)!)))
-        {
-            StartPrecompiledRuntime(precompiledRuntimePath, logDir);
-            return;
-        }
+        var launchOptions = LaunchOptions.Parse(args);
 
         if (!File.Exists(projectPath))
         {
             Log(logDir, $"Cannot find project: {projectPath}");
-            ShowError("Cannot find the precompiled runtime or development project.", projectPath);
+            ShowError("Cannot find the development project.", projectPath);
             return;
-        }
-
-        if (!sourceLaunch.ForceSourceLaunch && File.Exists(precompiledRuntimePath))
-        {
-            Log(logDir, "Precompiled runtime is older than native source inputs; falling back to the development project.");
         }
 
         if (!TryFindDotnet(out var dotnet))
@@ -79,13 +65,13 @@ internal static class Program
         var shutdownEventName = $"Local\\Vector2DAnimationEngine.LauncherShutdown.{Environment.ProcessId}.{Guid.NewGuid():N}";
         var restartEventName = $"Local\\Vector2DAnimationEngine.LauncherRestart.{Environment.ProcessId}.{Guid.NewGuid():N}";
         var nativeLauncherArguments = $" -- --launcher-shutdown-event={shutdownEventName} --launcher-restart-event={restartEventName}";
-        var runArguments = $"-c Debug --no-restore{(skipInitialBuild ? " --no-build" : string.Empty)}{nativeLauncherArguments}";
+        var runArguments = $"-c Debug{(skipInitialBuild ? " --no-build" : string.Empty)}{nativeLauncherArguments}";
         using var shutdownEvent = new EventWaitHandle(false, EventResetMode.ManualReset, shutdownEventName);
         using var restartEvent = new EventWaitHandle(false, EventResetMode.AutoReset, restartEventName);
         var startInfo = new ProcessStartInfo
         {
             FileName = dotnet,
-            Arguments = sourceLaunch.ModuleHotReload
+            Arguments = launchOptions.ModuleHotReload
                 ? $"watch --non-interactive --project \"{projectPath}\" run {runArguments}"
                 : $"run --project \"{projectPath}\" {runArguments}",
             WorkingDirectory = root,
@@ -95,7 +81,7 @@ internal static class Program
             RedirectStandardError = true
         };
         startInfo.Environment["V2D_LOG_DIR"] = logDir;
-        startInfo.Environment["V2D_DEV_HOT_RELOAD"] = sourceLaunch.ModuleHotReload ? "1" : "0";
+        startInfo.Environment["V2D_DEV_HOT_RELOAD"] = launchOptions.ModuleHotReload ? "1" : "0";
         startInfo.Environment["V2D_LAUNCHER_SHUTDOWN_EVENT"] = shutdownEventName;
         startInfo.Environment["V2D_LAUNCHER_RESTART_EVENT"] = restartEventName;
         // Unsupported CLR edits remain opt-in through the preserved-state restart command.
@@ -105,7 +91,7 @@ internal static class Program
 
         try
         {
-            Log(logDir, $"Launching native app. Module hot reload: {sourceLaunch.ModuleHotReload}. Initial native build skipped: {skipInitialBuild}.");
+            Log(logDir, $"Launching native app. Module hot reload: {launchOptions.ModuleHotReload}. Initial native build skipped: {skipInitialBuild}.");
             var unexpectedRestarts = 0;
             string? pendingRestartToken = null;
             while (true)
@@ -114,7 +100,7 @@ internal static class Program
                 var launchToken = pendingRestartToken;
                 pendingRestartToken = null;
                 var tokenArgument = launchToken is null ? "" : $" {RestartTokenArgumentPrefix}{launchToken}";
-                startInfo.Arguments = sourceLaunch.ModuleHotReload
+                startInfo.Arguments = launchOptions.ModuleHotReload
                     ? $"watch --non-interactive --project \"{projectPath}\" run {runArguments}{tokenArgument}"
                     : $"run --project \"{projectPath}\" {runArguments}{tokenArgument}";
                 using var watchProcess = Process.Start(startInfo);
@@ -249,6 +235,24 @@ internal static class Program
         public DateTimeOffset ExpiresUtc { get; init; }
     }
 
+    private static string ResolveRepositoryRoot()
+    {
+        foreach (var startPath in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
+        {
+            var directory = new DirectoryInfo(startPath);
+            while (directory is not null)
+            {
+                if (File.Exists(Path.Combine(directory.FullName, "native", "VectorAnimationEngine.Native.csproj")))
+                {
+                    return directory.FullName;
+                }
+                directory = directory.Parent;
+            }
+        }
+
+        return Environment.CurrentDirectory;
+    }
+
     private static bool TryFindDotnet(out string dotnet)
     {
         dotnet = "dotnet";
@@ -339,22 +343,6 @@ internal static class Program
             // Falling back to a normal build is safer than launching stale output.
             return false;
         }
-    }
-
-    private static void StartPrecompiledRuntime(string runtimePath, string logDir)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = runtimePath,
-            WorkingDirectory = Path.GetDirectoryName(runtimePath)!,
-            UseShellExecute = false
-        };
-        startInfo.Environment["V2D_LOG_DIR"] = logDir;
-        startInfo.Environment["V2D_DEV_HOT_RELOAD"] = "0";
-        var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("The precompiled native runtime could not be started.");
-        Log(logDir, $"Started precompiled ReadyToRun runtime. PID: {process.Id}. Path: {runtimePath}");
-        process.Dispose();
     }
 
     private static bool IsNativeBuildInput(string path)
@@ -461,7 +449,7 @@ internal static class Program
     {
         return text switch
         {
-            "Cannot find the precompiled runtime or development project." => "找不到预编译运行时或开发项目。",
+            "Cannot find the development project." => "找不到开发项目。",
             ".NET SDK was not found in PATH." => "在 PATH 中找不到 .NET SDK。",
             "Install .NET SDK 8+ or run the release build instead." => "请安装 .NET SDK 8 或更高版本，或改用发布版本。",
             "Failed to launch the development app." => "无法启动开发版本。",
