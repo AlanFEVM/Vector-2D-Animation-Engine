@@ -40,13 +40,16 @@ internal sealed class ModernNumericUpDown : UserControl
     private bool _pointerPending;
     private bool _endingInteraction;
     private bool _stepperInteracting;
+    private bool _scrubCursorHidden;
     private int _pressScreenX;
     private int _pressScreenY;
     private int _lastScreenX;
     private int _pixelRemainder;
+    private int _wheelDelta;
     private decimal _interactionStartValue;
     private decimal _stepperStartValue;
     private decimal _rawScrubValue;
+    private decimal _scrubIncrement = 1;
     private decimal _minimum;
     private decimal _maximum = 100;
     private decimal _increment = 1;
@@ -78,6 +81,7 @@ internal sealed class ModernNumericUpDown : UserControl
         _editor.PointerMouseMove += HandleEditorMouseMove;
         _editor.PointerMouseUp += HandleEditorMouseUp;
         _editor.MouseCaptureChanged += HandleEditorCaptureChanged;
+        _editor.MouseWheel += HandleChildMouseWheel;
         _editor.MouseEnter += (_, _) => UpdateHoverState();
         _editor.MouseLeave += (_, _) => UpdateHoverState();
         _editor.GotFocus += (_, _) => RetargetVisual();
@@ -91,9 +95,11 @@ internal sealed class ModernNumericUpDown : UserControl
         _increaseButton.PressStarted += (_, _) => BeginStepperInteraction();
         _increaseButton.StepRequested += (_, _) => StepValue(1);
         _increaseButton.PressEnded += (_, _) => EndStepperInteraction(canceled: false);
+        _increaseButton.MouseWheel += HandleChildMouseWheel;
         _decreaseButton.PressStarted += (_, _) => BeginStepperInteraction();
         _decreaseButton.StepRequested += (_, _) => StepValue(-1);
         _decreaseButton.PressEnded += (_, _) => EndStepperInteraction(canceled: false);
+        _decreaseButton.MouseWheel += HandleChildMouseWheel;
 
         Controls.Add(_editor);
         Controls.Add(_increaseButton);
@@ -138,6 +144,9 @@ internal sealed class ModernNumericUpDown : UserControl
         get => _increment;
         set => _increment = Math.Max(0.0000000000000000000000000001m, value);
     }
+
+    [DefaultValue(false)]
+    public bool WheelAdjustsHoveredDigit { get; set; }
 
     public int DecimalPlaces
     {
@@ -241,10 +250,7 @@ internal sealed class ModernNumericUpDown : UserControl
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
-        if (!ContainsFocus) return;
-        BeginStepperInteraction();
-        StepValue(e.Delta > 0 ? 1 : -1);
-        EndStepperInteraction(canceled: false);
+        if (!TryAdjustFromMouseWheel(e, incrementOverride: null)) base.OnMouseWheel(e);
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -276,11 +282,15 @@ internal sealed class ModernNumericUpDown : UserControl
     {
         if (disposing)
         {
+            RestoreScrubCursor();
             _editor.PointerMouseDown -= HandleEditorMouseDown;
             _editor.PointerMouseMove -= HandleEditorMouseMove;
             _editor.PointerMouseUp -= HandleEditorMouseUp;
             _editor.MouseCaptureChanged -= HandleEditorCaptureChanged;
+            _editor.MouseWheel -= HandleChildMouseWheel;
             _editor.KeyDown -= HandleEditorKeyDown;
+            _increaseButton.MouseWheel -= HandleChildMouseWheel;
+            _decreaseButton.MouseWheel -= HandleChildMouseWheel;
         }
 
         base.Dispose(disposing);
@@ -306,6 +316,12 @@ internal sealed class ModernNumericUpDown : UserControl
     private void HandleEditorMouseDown(object? sender, MouseEventArgs e)
     {
         if (!Enabled || e.Button != MouseButtons.Left) return;
+        var characterIndex = HitTestEditorCharacter(e.Location);
+        _scrubIncrement = ResolveWheelPlaceValue(
+            _editor.Text,
+            characterIndex,
+            CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator,
+            Increment);
         _editor.SelectionStart = _editor.TextLength;
         _editor.SelectionLength = 0;
         _pointerPending = true;
@@ -333,7 +349,7 @@ internal sealed class ModernNumericUpDown : UserControl
             var dy = pointer.Y - _pressScreenY;
             var deadZone = ScaleLogicalPixels(LogicalDeadZonePixels);
             if (Math.Abs(dx) < deadZone || Math.Abs(dx) < Math.Abs(dy)) return;
-            BeginInteraction(pointer.X);
+            BeginInteraction();
         }
 
         if (IsScrubbing) ApplyPointerMovement(pointer.X);
@@ -388,7 +404,93 @@ internal sealed class ModernNumericUpDown : UserControl
         e.SuppressKeyPress = true;
     }
 
-    private void BeginInteraction(int screenX)
+    private void HandleChildMouseWheel(object? sender, MouseEventArgs e)
+    {
+        decimal? incrementOverride = null;
+        if (WheelAdjustsHoveredDigit && ReferenceEquals(sender, _editor))
+        {
+            var characterIndex = HitTestEditorCharacter(e.Location);
+            incrementOverride = ResolveWheelPlaceValue(
+                _editor.Text,
+                characterIndex,
+                CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator,
+                Increment);
+        }
+
+        TryAdjustFromMouseWheel(e, incrementOverride);
+    }
+
+    private bool TryAdjustFromMouseWheel(MouseEventArgs e, decimal? incrementOverride)
+    {
+        if (e is HandledMouseEventArgs { Handled: true }) return true;
+        if (!Enabled || e.Delta == 0 || IsScrubbing || _stepperInteracting) return false;
+
+        _wheelDelta += e.Delta;
+        var wheelStep = Math.Max(1, SystemInformation.MouseWheelScrollDelta);
+        var increments = _wheelDelta / wheelStep;
+        _wheelDelta %= wheelStep;
+        if (increments != 0)
+        {
+            BeginStepperInteraction();
+            StepValue(increments, incrementOverride);
+            EndStepperInteraction(canceled: false);
+        }
+
+        if (e is HandledMouseEventArgs handled) handled.Handled = true;
+        return true;
+    }
+
+    internal static decimal ResolveWheelPlaceValue(
+        string formattedText,
+        int characterIndex,
+        string decimalSeparator,
+        decimal fallbackIncrement)
+    {
+        var fallback = Math.Max(0.0000000000000000000000000001m, fallbackIncrement);
+        if (string.IsNullOrEmpty(formattedText)
+            || characterIndex < 0
+            || characterIndex >= formattedText.Length
+            || !char.IsDigit(formattedText[characterIndex]))
+        {
+            return fallback;
+        }
+
+        var separatorIndex = string.IsNullOrEmpty(decimalSeparator)
+            ? -1
+            : formattedText.IndexOf(decimalSeparator, StringComparison.CurrentCulture);
+        var exponent = 0;
+        if (separatorIndex < 0 || characterIndex < separatorIndex)
+        {
+            var integerEnd = separatorIndex < 0 ? formattedText.Length : separatorIndex;
+            for (var index = characterIndex + 1; index < integerEnd; index++)
+            {
+                if (char.IsDigit(formattedText[index])) exponent++;
+            }
+        }
+        else
+        {
+            var fractionStart = separatorIndex + decimalSeparator.Length;
+            for (var index = fractionStart; index <= characterIndex; index++)
+            {
+                if (char.IsDigit(formattedText[index])) exponent--;
+            }
+        }
+
+        var placeValue = 1m;
+        while (exponent > 0)
+        {
+            placeValue *= 10m;
+            exponent--;
+        }
+        while (exponent < 0)
+        {
+            placeValue /= 10m;
+            exponent++;
+        }
+        return placeValue;
+    }
+
+    private void BeginInteraction()
     {
         if (IsScrubbing || _stepperInteracting) return;
         CommitEditorText();
@@ -400,50 +502,69 @@ internal sealed class ModernNumericUpDown : UserControl
         _pixelRemainder = 0;
         IsScrubbing = true;
         _editor.Capture = true;
+        HideScrubCursor();
         RetargetVisual();
         InteractionStarted?.Invoke(this, new NumericInteractionEventArgs(Value, Value, changed: false));
-        ApplyPointerMovement(screenX);
     }
 
     private void ApplyPointerMovement(int screenX)
     {
         if (!IsScrubbing) return;
         var pixelDelta = screenX - _lastScreenX;
-        _lastScreenX = screenX;
-        if (pixelDelta == 0) return;
-
-        _pixelRemainder += pixelDelta;
-        var wholeIncrements = _pixelRemainder / ScaleLogicalPixels(LogicalPixelsPerIncrement);
-        if (wholeIncrements == 0) return;
-        _pixelRemainder -= wholeIncrements * ScaleLogicalPixels(LogicalPixelsPerIncrement);
-        try
+        if (pixelDelta != 0)
         {
-            _rawScrubValue += wholeIncrements * EffectiveIncrement();
-        }
-        catch (OverflowException)
-        {
-            _rawScrubValue = wholeIncrements > 0 ? Maximum : Minimum;
+            _pixelRemainder += pixelDelta;
+            var wholeIncrements = _pixelRemainder / ScaleLogicalPixels(LogicalPixelsPerIncrement);
+            if (wholeIncrements != 0)
+            {
+                _pixelRemainder -= wholeIncrements * ScaleLogicalPixels(LogicalPixelsPerIncrement);
+                try
+                {
+                    _rawScrubValue += wholeIncrements * EffectiveIncrement(_scrubIncrement);
+                }
+                catch (OverflowException)
+                {
+                    _rawScrubValue = wholeIncrements > 0 ? Maximum : Minimum;
+                }
+
+                var next = QuantizeAndClamp(_rawScrubValue);
+                if (next != Value)
+                {
+                    Value = next;
+                    _interactionChanged = true;
+                }
+            }
         }
 
-        var next = QuantizeAndClamp(_rawScrubValue);
-        if (next == Value) return;
-        Value = next;
-        _interactionChanged = true;
+        RecenterScrubCursor();
     }
 
     private void EndInteraction(bool canceled, bool releaseCapture = true)
     {
-        if (!IsScrubbing) return;
+        if (!IsScrubbing)
+        {
+            RestoreScrubCursor();
+            return;
+        }
         _endingInteraction = true;
         var initialValue = _interactionStartValue;
         var changed = _interactionChanged;
-        if (canceled && Value != initialValue) Value = initialValue;
-        var finalValue = Value;
         IsScrubbing = false;
         _pointerPending = false;
         _pixelRemainder = 0;
-        if (releaseCapture && _editor.Capture) _editor.Capture = false;
-        _endingInteraction = false;
+        try
+        {
+            if (releaseCapture && _editor.Capture) _editor.Capture = false;
+            RestoreScrubCursor();
+            if (canceled && Value != initialValue) Value = initialValue;
+        }
+        finally
+        {
+            _endingInteraction = false;
+            RestoreScrubCursor();
+        }
+
+        var finalValue = Value;
         RetargetVisual();
 
         var args = new NumericInteractionEventArgs(initialValue, finalValue, canceled ? changed : finalValue != initialValue);
@@ -462,18 +583,18 @@ internal sealed class ModernNumericUpDown : UserControl
         InteractionStarted?.Invoke(this, new NumericInteractionEventArgs(Value, Value, changed: false));
     }
 
-    private void StepValue(int direction)
+    private void StepValue(int increments, decimal? incrementOverride = null)
     {
         if (!_stepperInteracting) BeginStepperInteraction();
-        if (direction == 0) return;
+        if (increments == 0) return;
         decimal next;
         try
         {
-            next = Value + EffectiveIncrement() * Math.Sign(direction);
+            next = Value + (incrementOverride ?? EffectiveIncrement()) * increments;
         }
         catch (OverflowException)
         {
-            next = direction > 0 ? Maximum : Minimum;
+            next = increments > 0 ? Maximum : Minimum;
         }
 
         next = QuantizeAndClamp(next);
@@ -526,13 +647,63 @@ internal sealed class ModernNumericUpDown : UserControl
         }
     }
 
-    private decimal EffectiveIncrement()
+    private decimal EffectiveIncrement(decimal? baseIncrement = null)
     {
         var modifiers = ModifierKeys;
         var shift = (modifiers & Keys.Shift) != 0;
         var control = (modifiers & Keys.Control) != 0;
         var multiplier = shift && control ? 0.01m : shift ? 0.1m : control ? 10m : 1m;
-        return Increment * multiplier;
+        return (baseIncrement ?? Increment) * multiplier;
+    }
+
+    private int HitTestEditorCharacter(Point location)
+    {
+        if (_editor.TextLength == 0) return -1;
+        var characterIndex = _editor.GetCharIndexFromPosition(location);
+        if (characterIndex < 0 || characterIndex >= _editor.TextLength) return -1;
+
+        var characterStart = _editor.GetPositionFromCharIndex(characterIndex).X;
+        var characterEnd = _editor.GetPositionFromCharIndex(characterIndex + 1).X;
+        if (characterEnd <= characterStart)
+        {
+            characterEnd = characterStart + TextRenderer.MeasureText(
+                _editor.Text[characterIndex].ToString(),
+                _editor.Font,
+                Size.Empty,
+                TextFormatFlags.NoPadding).Width;
+        }
+
+        return location.X >= characterStart && location.X < characterEnd ? characterIndex : -1;
+    }
+
+    private void HideScrubCursor()
+    {
+        if (_scrubCursorHidden) return;
+        Cursor.Hide();
+        _scrubCursorHidden = true;
+    }
+
+    private void RecenterScrubCursor()
+    {
+        if (!IsScrubbing) return;
+        var anchor = new Point(_pressScreenX, _pressScreenY);
+        if (Cursor.Position != anchor) Cursor.Position = anchor;
+        _lastScreenX = _pressScreenX;
+    }
+
+    private void RestoreScrubCursor()
+    {
+        if (!_scrubCursorHidden) return;
+        try
+        {
+            var anchor = new Point(_pressScreenX, _pressScreenY);
+            if (Cursor.Position != anchor) Cursor.Position = anchor;
+        }
+        finally
+        {
+            Cursor.Show();
+            _scrubCursorHidden = false;
+        }
     }
 
     private decimal QuantizeAndClamp(decimal value)

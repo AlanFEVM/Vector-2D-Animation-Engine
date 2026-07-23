@@ -4,7 +4,12 @@ namespace VectorAnimationEngine;
 // not a durable project-file contract.
 internal sealed class ProjectRestartSnapshot
 {
+    public string Id { get; init; } = "";
     public string Name { get; init; } = "Untitled Project";
+    public decimal PlaybackFps { get; init; } = 30m;
+    public bool LoopPlayback { get; init; } = true;
+    public int PlaybackStartFrame { get; init; }
+    public int PlaybackEndFrame { get; init; } = 239;
     public ProjectAssetFolderRestartSnapshot[] AssetFolders { get; init; } = [];
     public DrawingObjectRestartSnapshot[] DrawingObjects { get; init; } = [];
     public SceneRestartSnapshot[] Scenes { get; init; } = [];
@@ -63,7 +68,7 @@ internal sealed class InstanceRestartSnapshot
     public float ScaleX { get; init; } = 1;
     public float ScaleY { get; init; } = 1;
     public float ScaleZ { get; init; } = 1;
-    public int PlaybackFps { get; init; } = 30;
+    public decimal PlaybackFps { get; init; } = 30m;
     public DrawingObjectPlaybackMode PlaybackMode { get; init; } = DrawingObjectPlaybackMode.PlayOnce;
     public int HoldFrame { get; init; }
     public InstancePositionKeyframe[] PositionKeyframes { get; init; } = [];

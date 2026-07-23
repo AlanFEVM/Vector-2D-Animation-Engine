@@ -15,12 +15,21 @@ internal sealed class ColorSwatchEventArgs : EventArgs
 
 internal sealed class ColorComponentSlider : Control
 {
+    internal const int InteractionRefreshIntervalMilliseconds = 8;
+    private const float SurfaceBumpHeight = 3f;
+    private const float SurfaceBumpHalfWidth = 14f;
+    private readonly System.Windows.Forms.Timer _interactionRefreshTimer = new()
+    {
+        Interval = InteractionRefreshIntervalMilliseconds
+    };
     private int _minimum;
     private int _maximum = 255;
     private int _value;
     private int _interactionStartValue;
+    private float _pointerSurfaceX;
     private bool _interacting;
     private bool _hovered;
+    private bool _pointerSurfaceActive;
 
     public ColorComponentSlider()
     {
@@ -37,6 +46,7 @@ internal sealed class ColorComponentSlider : Control
         TabStop = true;
         MinimumSize = new Size(70, Theme.ControlHeightCompact);
         AccessibleRole = AccessibleRole.Slider;
+        _interactionRefreshTimer.Tick += (_, _) => TickInteractionRefresh();
     }
 
     [DefaultValue(0)]
@@ -90,6 +100,16 @@ internal sealed class ColorComponentSlider : Control
 
     public void RefreshGradient() => Invalidate();
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _interactionRefreshTimer.Stop();
+            _interactionRefreshTimer.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -98,18 +118,22 @@ internal sealed class ColorComponentSlider : Control
         var rail = RailBounds();
         if (rail.Width <= 0 || rail.Height <= 0) return;
 
-        DrawGradient(e.Graphics, rail);
+        using var surface = CreateSurfacePath(rail);
+        DrawGradient(e.Graphics, rail, surface);
         using (var border = new Pen(_hovered || Focused ? Theme.BorderHover : Theme.Border))
         {
-            e.Graphics.DrawRectangle(border, rail.X, rail.Y, rail.Width - 1, rail.Height - 1);
+            e.Graphics.DrawPath(border, surface);
         }
 
         var ratio = _maximum <= _minimum ? 0f : (_value - _minimum) / (float)(_maximum - _minimum);
         var thumbX = rail.Left + ratio * Math.Max(0, rail.Width - 1);
+        var thumbSurfaceOffset = _pointerSurfaceActive
+            ? ResolvePointerSurfaceOffset(thumbX, _pointerSurfaceX)
+            : 0f;
         using var shadow = new Pen(Color.FromArgb(210, Color.Black), 3f);
         using var thumb = new Pen(Color.White, 1f);
-        e.Graphics.DrawLine(shadow, thumbX, rail.Top - 2, thumbX, rail.Bottom + 2);
-        e.Graphics.DrawLine(thumb, thumbX, rail.Top - 2, thumbX, rail.Bottom + 2);
+        e.Graphics.DrawLine(shadow, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
+        e.Graphics.DrawLine(thumb, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
 
         if (Focused && ShowFocusCues)
         {
@@ -122,6 +146,7 @@ internal sealed class ColorComponentSlider : Control
     {
         base.OnMouseEnter(e);
         _hovered = true;
+        UpdateHoverSurface(PointToClient(System.Windows.Forms.Cursor.Position));
         Invalidate();
     }
 
@@ -129,6 +154,7 @@ internal sealed class ColorComponentSlider : Control
     {
         base.OnMouseLeave(e);
         _hovered = false;
+        if (!_interacting) SetPointerSurface(_pointerSurfaceX, active: false);
         Invalidate();
     }
 
@@ -139,25 +165,37 @@ internal sealed class ColorComponentSlider : Control
         Focus();
         BeginInteraction();
         Capture = true;
-        SetValueFromPoint(e.X);
+        UpdateInteractionFromPointer(e.Location);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (_interacting && Capture) SetValueFromPoint(e.X);
+        if (_interacting && Capture)
+        {
+            UpdateInteractionFromPointer(e.Location);
+            return;
+        }
+
+        UpdateHoverSurface(e.Location);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Left && _interacting) CompleteInteraction();
+        if (e.Button != MouseButtons.Left || !_interacting) return;
+        CompleteInteraction();
+        UpdateHoverSurface(e.Location);
     }
 
     protected override void OnMouseCaptureChanged(EventArgs e)
     {
         base.OnMouseCaptureChanged(e);
-        if (!Capture && _interacting) CompleteInteraction();
+        if (!Capture && _interacting)
+        {
+            CompleteInteraction();
+            UpdateHoverSurface(PointToClient(System.Windows.Forms.Cursor.Position));
+        }
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
@@ -223,29 +261,74 @@ internal sealed class ColorComponentSlider : Control
     protected override void OnEnabledChanged(EventArgs e)
     {
         if (!Enabled && _interacting) CancelInteraction();
+        if (!Enabled) SetPointerSurface(_pointerSurfaceX, active: false);
         Cursor = Enabled ? Cursors.Hand : Cursors.Default;
         base.OnEnabledChanged(e);
         Invalidate();
     }
 
-    private void DrawGradient(Graphics graphics, Rectangle rail)
+    private void DrawGradient(Graphics graphics, Rectangle rail, GraphicsPath surface)
     {
         var colorAt = GradientColor;
         if (colorAt is null)
         {
             using var fallback = new SolidBrush(Theme.Accent);
-            graphics.FillRectangle(fallback, rail);
+            graphics.FillPath(fallback, surface);
             return;
         }
 
-        DrawCheckerboard(graphics, rail);
+        var state = graphics.Save();
+        graphics.SetClip(surface, CombineMode.Intersect);
+        var surfaceBounds = Rectangle.FromLTRB(
+            rail.Left,
+            rail.Top - (int)MathF.Ceiling(SurfaceBumpHeight),
+            rail.Right,
+            rail.Bottom + (int)MathF.Ceiling(SurfaceBumpHeight));
+        DrawCheckerboard(graphics, surfaceBounds);
         var width = Math.Max(1, rail.Width);
         for (var x = 0; x < width; x++)
         {
             var amount = width <= 1 ? 0f : x / (float)(width - 1);
             using var pen = new Pen(colorAt(amount));
-            graphics.DrawLine(pen, rail.Left + x, rail.Top, rail.Left + x, rail.Bottom - 1);
+            graphics.DrawLine(pen, rail.Left + x, surfaceBounds.Top, rail.Left + x, surfaceBounds.Bottom - 1);
         }
+        graphics.Restore(state);
+    }
+
+    private GraphicsPath CreateSurfacePath(Rectangle rail)
+    {
+        var width = Math.Max(1, rail.Width);
+        var points = new PointF[width * 2];
+        var bottom = rail.Bottom - 1;
+        for (var index = 0; index < width; index++)
+        {
+            var x = rail.Left + index;
+            var offset = _pointerSurfaceActive
+                ? ResolvePointerSurfaceOffset(x, _pointerSurfaceX)
+                : 0f;
+            points[index] = new PointF(x, rail.Top - offset);
+            points[width * 2 - 1 - index] = new PointF(x, bottom + offset);
+        }
+
+        var path = new GraphicsPath();
+        if (width == 1)
+        {
+            path.AddRectangle(new RectangleF(rail.Left, rail.Top, 1f, Math.Max(1, rail.Height)));
+        }
+        else
+        {
+            path.AddPolygon(points);
+        }
+        return path;
+    }
+
+    internal static float ResolvePointerSurfaceOffset(float x, float pointerX)
+    {
+        var distance = Math.Abs(x - pointerX);
+        if (distance >= SurfaceBumpHalfWidth) return 0f;
+        var phase = distance / SurfaceBumpHalfWidth * MathF.PI / 2f;
+        var influence = MathF.Cos(phase);
+        return SurfaceBumpHeight * influence * influence;
     }
 
     private static void DrawCheckerboard(Graphics graphics, Rectangle bounds)
@@ -287,6 +370,55 @@ internal sealed class ColorComponentSlider : Control
         Value = _minimum + (int)Math.Round((_maximum - _minimum) * ratio, MidpointRounding.AwayFromZero);
     }
 
+    private void TickInteractionRefresh()
+    {
+        if (!_interacting || !Capture)
+        {
+            _interactionRefreshTimer.Stop();
+            return;
+        }
+
+        UpdateInteractionFromPointer(PointToClient(System.Windows.Forms.Cursor.Position));
+    }
+
+    private void UpdateInteractionFromPointer(Point location)
+    {
+        var rail = RailBounds();
+        var pointerX = rail.Width > 0
+            ? Math.Clamp(location.X, rail.Left, rail.Right - 1)
+            : location.X;
+        SetPointerSurface(pointerX, active: true);
+        SetValueFromPoint(location.X);
+    }
+
+    private void UpdateHoverSurface(Point location)
+    {
+        if (!Enabled || !ClientRectangle.Contains(location))
+        {
+            SetPointerSurface(_pointerSurfaceX, active: false);
+            return;
+        }
+
+        var rail = RailBounds();
+        var pointerX = rail.Width > 0
+            ? Math.Clamp(location.X, rail.Left, rail.Right - 1)
+            : location.X;
+        SetPointerSurface(pointerX, active: true);
+    }
+
+    private void SetPointerSurface(float pointerX, bool active)
+    {
+        if (_pointerSurfaceActive == active
+            && (!active || Math.Abs(_pointerSurfaceX - pointerX) < 0.05f))
+        {
+            return;
+        }
+
+        _pointerSurfaceX = pointerX;
+        _pointerSurfaceActive = active;
+        Invalidate();
+    }
+
     private bool TryGetKeyboardValue(Keys key, out int value)
     {
         var small = (ModifierKeys & Keys.Control) != 0 ? 10 : 1;
@@ -316,6 +448,7 @@ internal sealed class ColorComponentSlider : Control
         if (_interacting) return;
         _interacting = true;
         _interactionStartValue = _value;
+        _interactionRefreshTimer.Start();
         InteractionStarted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -323,7 +456,9 @@ internal sealed class ColorComponentSlider : Control
     {
         if (!_interacting) return;
         _interacting = false;
+        _interactionRefreshTimer.Stop();
         if (Capture) Capture = false;
+        UpdateHoverSurface(PointToClient(System.Windows.Forms.Cursor.Position));
         InteractionCompleted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -331,7 +466,9 @@ internal sealed class ColorComponentSlider : Control
     {
         if (!_interacting) return;
         _interacting = false;
+        _interactionRefreshTimer.Stop();
         if (Capture) Capture = false;
+        UpdateHoverSurface(PointToClient(System.Windows.Forms.Cursor.Position));
         Value = _interactionStartValue;
         InteractionCanceled?.Invoke(this, EventArgs.Empty);
     }
@@ -610,14 +747,26 @@ internal enum ColorHarmonyMode
 /// </summary>
 internal sealed class HarmonyColorWheel : Control
 {
+    internal const int InteractionRefreshIntervalMilliseconds = 8;
     private const float RingThickness = 18f;
+    private const float RingHitPadding = 10f;
+    private const float MinimumDragDirectionRadius = 4f;
+    private const float SurfaceBumpHeight = 3f;
+    private const float SurfaceBumpHalfWidth = 18f;
+    private const int SurfaceShaderSegments = 24;
     private Bitmap? _wheelBitmap;
     private int _wheelDiameter;
+    private readonly System.Windows.Forms.Timer _interactionRefreshTimer = new()
+    {
+        Interval = InteractionRefreshIntervalMilliseconds
+    };
     private Color _color = Color.FromArgb(79, 179, 162);
     private float _hue = 171f;
+    private float _pointerSurfaceHue;
     private Color _interactionStartColor;
     private bool _interacting;
     private bool _hovered;
+    private bool _pointerSurfaceActive;
     private ColorHarmonyMode _harmonyMode;
 
     public HarmonyColorWheel()
@@ -635,6 +784,7 @@ internal sealed class HarmonyColorWheel : Control
         MinimumSize = new Size(88, 88);
         AccessibleRole = AccessibleRole.Graphic;
         AccessibleName = "Color harmony wheel";
+        _interactionRefreshTimer.Tick += (_, _) => TickInteractionRefresh();
         UpdateAccessibility();
     }
 
@@ -675,7 +825,12 @@ internal sealed class HarmonyColorWheel : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _wheelBitmap?.Dispose();
+        if (disposing)
+        {
+            _interactionRefreshTimer.Stop();
+            _interactionRefreshTimer.Dispose();
+            _wheelBitmap?.Dispose();
+        }
         base.Dispose(disposing);
     }
 
@@ -689,6 +844,7 @@ internal sealed class HarmonyColorWheel : Control
 
         EnsureWheelBitmap(bounds.Width);
         if (_wheelBitmap is not null) e.Graphics.DrawImageUnscaled(_wheelBitmap, bounds.Location);
+        DrawPointerSurfaceShader(e.Graphics, bounds);
 
         var center = Center(bounds);
         var innerRadius = Math.Max(1f, bounds.Width / 2f - RingThickness);
@@ -720,10 +876,12 @@ internal sealed class HarmonyColorWheel : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (!Enabled || e.Button != MouseButtons.Left || !TryGetHueFromPoint(e.Location, out var hue)) return;
+        if (!Enabled || e.Button != MouseButtons.Left || !TryGetHueFromPoint(e.Location, requireHotZone: true, out var hue)) return;
         Focus();
         BeginInteraction();
         Capture = true;
+        Cursor = Cursors.Cross;
+        SetPointerSurface(hue, active: true);
         SetHue(hue);
     }
 
@@ -731,6 +889,7 @@ internal sealed class HarmonyColorWheel : Control
     {
         base.OnMouseEnter(e);
         _hovered = true;
+        UpdatePointerCursor(PointToClient(System.Windows.Forms.Cursor.Position));
         Invalidate();
     }
 
@@ -738,25 +897,42 @@ internal sealed class HarmonyColorWheel : Control
     {
         base.OnMouseLeave(e);
         _hovered = false;
+        if (!_interacting)
+        {
+            Cursor = Enabled ? Cursors.Cross : Cursors.Default;
+            SetPointerSurface(_pointerSurfaceHue, active: false);
+        }
         Invalidate();
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (_interacting && Capture && TryGetHueFromPoint(e.Location, out var hue)) SetHue(hue);
+        if (_interacting && Capture)
+        {
+            UpdateInteractionFromPointer(e.Location);
+            return;
+        }
+
+        UpdatePointerCursor(e.Location);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Left) CompleteInteraction();
+        if (e.Button != MouseButtons.Left) return;
+        CompleteInteraction();
+        UpdatePointerCursor(e.Location);
     }
 
     protected override void OnMouseCaptureChanged(EventArgs e)
     {
         base.OnMouseCaptureChanged(e);
-        if (!Capture && _interacting) CompleteInteraction();
+        if (!Capture && _interacting)
+        {
+            CompleteInteraction();
+            UpdatePointerCursor(PointToClient(System.Windows.Forms.Cursor.Position));
+        }
     }
 
     protected override bool IsInputKey(Keys keyData)
@@ -826,6 +1002,7 @@ internal sealed class HarmonyColorWheel : Control
     protected override void OnEnabledChanged(EventArgs e)
     {
         if (!Enabled && _interacting) CancelInteraction();
+        if (!Enabled) SetPointerSurface(_pointerSurfaceHue, active: false);
         Cursor = Enabled ? Cursors.Cross : Cursors.Default;
         base.OnEnabledChanged(e);
         Invalidate();
@@ -888,6 +1065,52 @@ internal sealed class HarmonyColorWheel : Control
         }
     }
 
+    private void DrawPointerSurfaceShader(Graphics graphics, Rectangle bounds)
+    {
+        if (!_pointerSurfaceActive || bounds.Width < 8) return;
+
+        var center = Center(bounds);
+        var baseRadius = bounds.Width / 2f - 0.5f;
+        var innerRadius = Math.Max(1f, baseRadius - 2.5f);
+        var outerPoints = new PointF[SurfaceShaderSegments + 1];
+        for (var index = 0; index < SurfaceShaderSegments; index++)
+        {
+            var hue0 = _pointerSurfaceHue - SurfaceBumpHalfWidth
+                + SurfaceBumpHalfWidth * 2f * index / SurfaceShaderSegments;
+            var hue1 = _pointerSurfaceHue - SurfaceBumpHalfWidth
+                + SurfaceBumpHalfWidth * 2f * (index + 1) / SurfaceShaderSegments;
+            var outer0 = PointOnHueRadius(center, hue0, ResolvePointerSurfaceRadius(baseRadius, hue0, _pointerSurfaceHue));
+            var outer1 = PointOnHueRadius(center, hue1, ResolvePointerSurfaceRadius(baseRadius, hue1, _pointerSurfaceHue));
+            var inner0 = PointOnHueRadius(center, hue0, innerRadius);
+            var inner1 = PointOnHueRadius(center, hue1, innerRadius);
+            outerPoints[index] = outer0;
+
+            using var fill = new SolidBrush(ColorFromHsv((hue0 + hue1) * 0.5f, 1f, 1f, 255));
+            graphics.FillPolygon(fill, [inner0, outer0, outer1, inner1]);
+            if (index == SurfaceShaderSegments - 1) outerPoints[^1] = outer1;
+        }
+
+        using var highlight = new Pen(Color.FromArgb(150, Color.White), 1.15f);
+        graphics.DrawLines(highlight, outerPoints);
+    }
+
+    private static PointF PointOnHueRadius(PointF center, float hue, float radius)
+    {
+        var radians = (hue - 90f) * MathF.PI / 180f;
+        return new PointF(
+            center.X + MathF.Cos(radians) * radius,
+            center.Y + MathF.Sin(radians) * radius);
+    }
+
+    internal static float ResolvePointerSurfaceRadius(float baseRadius, float hue, float pointerHue)
+    {
+        var distance = CircularHueDistance(hue, pointerHue);
+        if (distance >= SurfaceBumpHalfWidth) return baseRadius;
+        var phase = distance / SurfaceBumpHalfWidth * MathF.PI / 2f;
+        var influence = MathF.Cos(phase);
+        return baseRadius + SurfaceBumpHeight * influence * influence;
+    }
+
     private void DrawHarmonyMarker(Graphics graphics, Rectangle bounds, Color color, float hue, bool primary)
     {
         var center = Center(bounds);
@@ -906,22 +1129,96 @@ internal sealed class HarmonyColorWheel : Control
         graphics.DrawEllipse(inner, marker);
     }
 
-    private bool TryGetHueFromPoint(Point point, out float hue)
+    private bool TryGetHueFromPoint(Point point, bool requireHotZone, out float hue)
     {
-        var bounds = WheelBounds();
+        return TryResolvePointerHue(point, WheelBounds(), requireHotZone, out hue);
+    }
+
+    internal static bool TryResolvePointerHue(
+        Point point,
+        Rectangle bounds,
+        bool requireHotZone,
+        out float hue)
+    {
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            hue = 0f;
+            return false;
+        }
+
         var center = Center(bounds);
         var dx = point.X - center.X;
         var dy = point.Y - center.Y;
         var radius = MathF.Sqrt(dx * dx + dy * dy);
+        if (radius < MinimumDragDirectionRadius)
+        {
+            hue = 0f;
+            return false;
+        }
+
         var outerRadius = bounds.Width / 2f;
-        var innerRadius = Math.Max(0f, outerRadius - RingThickness - 4f);
-        if (radius < innerRadius || radius > outerRadius + 3f)
+        var innerRadius = Math.Max(
+            MinimumDragDirectionRadius,
+            outerRadius - RingThickness - RingHitPadding);
+        if (requireHotZone && (radius < innerRadius || radius > outerRadius + RingHitPadding))
         {
             hue = 0f;
             return false;
         }
         hue = NormalizeHue(MathF.Atan2(dy, dx) * 180f / MathF.PI + 90f);
         return true;
+    }
+
+    private void UpdatePointerCursor(Point location)
+    {
+        if (!Enabled)
+        {
+            Cursor = Cursors.Default;
+            return;
+        }
+
+        if (TryGetHueFromPoint(location, requireHotZone: true, out var hue))
+        {
+            Cursor = Cursors.Hand;
+            SetPointerSurface(hue, active: true);
+        }
+        else
+        {
+            Cursor = Cursors.Cross;
+            SetPointerSurface(_pointerSurfaceHue, active: false);
+        }
+    }
+
+    private void TickInteractionRefresh()
+    {
+        if (!_interacting || !Capture)
+        {
+            _interactionRefreshTimer.Stop();
+            return;
+        }
+
+        UpdateInteractionFromPointer(PointToClient(System.Windows.Forms.Cursor.Position));
+    }
+
+    private void UpdateInteractionFromPointer(Point location)
+    {
+        if (!TryGetHueFromPoint(location, requireHotZone: false, out var hue)) return;
+        SetPointerSurface(hue, active: true);
+        SetHue(hue);
+    }
+
+    private void SetPointerSurface(float hue, bool active)
+    {
+        hue = NormalizeHue(hue);
+        if (_pointerSurfaceActive == active
+            && (!active || CircularHueDistance(_pointerSurfaceHue, hue) < 0.05f))
+        {
+            return;
+        }
+
+        _pointerSurfaceActive = active;
+        _pointerSurfaceHue = hue;
+        Invalidate();
     }
 
     private void SetHue(float hue)
@@ -950,6 +1247,7 @@ internal sealed class HarmonyColorWheel : Control
         if (_interacting) return;
         _interacting = true;
         _interactionStartColor = _color;
+        _interactionRefreshTimer.Start();
         InteractionStarted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -957,6 +1255,7 @@ internal sealed class HarmonyColorWheel : Control
     {
         if (!_interacting) return;
         _interacting = false;
+        _interactionRefreshTimer.Stop();
         if (Capture) Capture = false;
         InteractionCompleted?.Invoke(this, EventArgs.Empty);
     }
@@ -965,6 +1264,7 @@ internal sealed class HarmonyColorWheel : Control
     {
         if (!_interacting) return;
         _interacting = false;
+        _interactionRefreshTimer.Stop();
         if (Capture) Capture = false;
         SetColor(_interactionStartColor);
         ColorChanged?.Invoke(this, EventArgs.Empty);
@@ -980,6 +1280,12 @@ internal sealed class HarmonyColorWheel : Control
     {
         hue %= 360f;
         return hue < 0f ? hue + 360f : hue;
+    }
+
+    private static float CircularHueDistance(float first, float second)
+    {
+        var distance = Math.Abs(NormalizeHue(first) - NormalizeHue(second));
+        return Math.Min(distance, 360f - distance);
     }
 
     private static void RgbToHsv(Color color, out float hue, out float saturation, out float value)

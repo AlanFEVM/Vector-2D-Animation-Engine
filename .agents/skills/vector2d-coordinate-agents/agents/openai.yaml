@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Agent Coordination"
+  short_description: "Coordinate safe parallel work across Vector2D domains"
+  default_prompt: "Use $vector2d-coordinate-agents to split and coordinate a multi-agent repository change."

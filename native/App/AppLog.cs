@@ -18,7 +18,7 @@ internal static class AppLog
             if (_initialized) return;
 
             var logDir = Environment.GetEnvironmentVariable("V2D_LOG_DIR");
-            if (string.IsNullOrWhiteSpace(logDir)) logDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            if (string.IsNullOrWhiteSpace(logDir)) logDir = DefaultLogDirectory();
             Directory.CreateDirectory(logDir);
             PruneOldLogs(logDir);
 
@@ -87,5 +87,15 @@ internal static class AppLog
         {
             // Logging must never prevent the application from starting.
         }
+    }
+
+    private static string DefaultLogDirectory()
+    {
+        var baseDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var baseName = Path.GetFileName(baseDirectory);
+        var logRoot = string.Equals(baseName, ".V2DEngine", StringComparison.OrdinalIgnoreCase)
+            ? Directory.GetParent(baseDirectory)?.FullName ?? baseDirectory
+            : baseDirectory;
+        return Path.Combine(logRoot, "logs");
     }
 }

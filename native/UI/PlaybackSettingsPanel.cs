@@ -7,6 +7,9 @@ internal sealed class PlaybackSettingsPanel : Panel
         Minimum = 1,
         Maximum = 120,
         Value = 30,
+        DecimalPlaces = 3,
+        Increment = 0.001m,
+        WheelAdjustsHoveredDigit = true,
         Suffix = "fps",
         Width = 88,
         Height = 28
@@ -59,13 +62,13 @@ internal sealed class PlaybackSettingsPanel : Panel
         HookEvents();
     }
 
-    public int Fps
+    public decimal Fps
     {
-        get => (int)_fps.Value;
+        get => _fps.Value;
         set
         {
-            var next = Math.Clamp(value, (int)_fps.Minimum, (int)_fps.Maximum);
-            if ((int)_fps.Value == next) return;
+            var next = Math.Clamp(value, _fps.Minimum, _fps.Maximum);
+            if (_fps.Value == next) return;
             _fps.Value = next;
         }
     }

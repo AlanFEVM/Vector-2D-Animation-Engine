@@ -133,6 +133,7 @@ internal sealed class VectorScene : ITimelineContext
     private readonly Dictionary<int, PointF[][]> _shapeGradientMappingLocalContours = new();
     private readonly Dictionary<int, PointF[][]> _pathLocalContours = new();
     private readonly Dictionary<int, PointF[]> _freehandLocalPoints = new();
+    private readonly Dictionary<int, string> _importedSvgSources = new();
 
     private readonly record struct MarqueePartAddition(
         bool IsLine,
@@ -372,6 +373,7 @@ internal sealed class VectorScene : ITimelineContext
         _shapeGradientMappingLocalContours.Clear();
         _pathLocalContours.Clear();
         _freehandLocalPoints.Clear();
+        _importedSvgSources.Clear();
         InitializeTimelineFromLayerExposure(frameCount);
         ClearSummaries();
         RebuildSpatialIndex();
@@ -451,6 +453,7 @@ internal sealed class VectorScene : ITimelineContext
         _shapeGradientMappingLocalContours.Clear();
         _pathLocalContours.Clear();
         _freehandLocalPoints.Clear();
+        _importedSvgSources.Clear();
 
         var avgAtoms = (double)VirtualAtomCount / ObjectCount;
         var columns = (int)Math.Ceiling(Math.Sqrt(ObjectCount * 1.7));
@@ -578,6 +581,180 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
+    public int AddImportedSvgObject(int layer, PointF center, SizeF size, string source)
+    {
+        return AddImportedSvgObject(layer, center, size, angle: 0, source: source);
+    }
+
+    public int AddImportedSvgObject(int layer, PointF center, SizeF size, float angle, string source)
+    {
+        var index = AppendImportedSvgObject(layer, center, size, angle, source);
+        AppendObjectToSpatialIndex(index);
+        AddObjectToSummariesIncremental(index, Color.FromArgb(128, 128, 128));
+        return index;
+    }
+
+    public bool TryGetImportedSvgSource(int objectIndex, out string source)
+    {
+        if ((uint)objectIndex < ObjectCount
+            && ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.ImportedSvg
+            && _importedSvgSources.TryGetValue(objectIndex, out source!)
+            && !string.IsNullOrWhiteSpace(source))
+        {
+            return true;
+        }
+
+        source = string.Empty;
+        return false;
+    }
+
+    internal (int[] ProducedObjects, ImportedSvgBreakApproximation Approximations) BreakApartImportedSvgObjects(
+        IEnumerable<int> objectIndices)
+    {
+        ArgumentNullException.ThrowIfNull(objectIndices);
+        var targets = objectIndices
+            .Where(index => (uint)index < ObjectCount && ShapeKind[index] == VectorAnimationEngine.ShapeKind.ImportedSvg)
+            .Distinct()
+            .OrderBy(index => ObjectOrder[index])
+            .ThenBy(index => ObjectSubOrder[index])
+            .ToArray();
+        if (targets.Length == 0) return ([], ImportedSvgBreakApproximation.None);
+
+        var snapshot = CreateSnapshot();
+        var previousEditFrame = EditFrame;
+        var producedKeys = new List<(long Order, double SubOrder)>();
+        var approximations = ImportedSvgBreakApproximation.None;
+        try
+        {
+            foreach (var sourceObject in targets)
+            {
+                if (!TryGetImportedSvgSource(sourceObject, out var source))
+                {
+                    throw new InvalidDataException("The imported SVG object is missing its source payload.");
+                }
+
+                var extracted = ImportedSvgBreakApart.Extract(source);
+                approximations |= extracted.Approximations;
+                var layer = ObjectLayer[sourceObject];
+                var keyframe = ObjectKeyframeFrame[sourceObject];
+                var order = ObjectOrder[sourceObject];
+                var subOrder = ObjectSubOrder[sourceObject];
+                var occupiedSubOrders = Enumerable.Range(0, ObjectCount)
+                    .Where(index => index != sourceObject && ObjectOrder[index] == order)
+                    .Select(index => ObjectSubOrder[index])
+                    .ToHashSet();
+                var center = new PointF(X[sourceObject], Y[sourceObject]);
+                var size = new SizeF(Width[sourceObject], Height[sourceObject]);
+                var angle = Angle[sourceObject];
+                var scaleX = size.Width / extracted.IntrinsicSize.Width;
+                var scaleY = size.Height / extracted.IntrinsicSize.Height;
+                var strokeScale = MathF.Sqrt(Math.Abs(scaleX * scaleY));
+                var cos = MathF.Cos(angle);
+                var sin = MathF.Sin(angle);
+                EditFrame = keyframe;
+
+                foreach (var part in extracted.Parts.OrderBy(part => part.Order))
+                {
+                    int created;
+                    switch (part)
+                    {
+                        case ImportedSvgBreakFill fill:
+                            var contours = fill.Contours
+                                .Select(contour => contour.Select(ToWorld).ToArray())
+                                .ToArray();
+                            created = AppendPathObjectContours(
+                                layer,
+                                contours,
+                                0,
+                                fill.Paint.Color,
+                                Color.Transparent,
+                                (uint)Math.Max(3, contours.Sum(contour => contour.Length)));
+                            break;
+                        case ImportedSvgBreakStroke stroke:
+                            var points = stroke.Points.Select(ToWorld).ToArray();
+                            created = points.Length == 2 && !stroke.Closed
+                                ? AddLineSegment(
+                                    layer,
+                                    points[0],
+                                    points[1],
+                                    stroke.Width * strokeScale,
+                                    Color.Transparent,
+                                    stroke.Paint.Color,
+                                    (uint)Math.Max(3, points.Length),
+                                    stroke.StartEndpointStyle,
+                                    stroke.EndEndpointStyle)
+                                : AppendFreehandStroke(
+                                    layer,
+                                    points,
+                                    stroke.Width * strokeScale,
+                                    stroke.Paint.Color,
+                                    (uint)Math.Max(3, points.Length));
+                            break;
+                        default:
+                            throw new InvalidDataException("The SVG break-apart result contains an unknown geometry part.");
+                    }
+
+                    if (created < 0) throw new InvalidDataException("The SVG break-apart result contains invalid geometry.");
+                    do
+                    {
+                        subOrder = Math.BitIncrement(subOrder);
+                    }
+                    while (!occupiedSubOrders.Add(subOrder));
+                    ObjectKeyframeFrame[created] = keyframe;
+                    ObjectOrder[created] = order;
+                    ObjectSubOrder[created] = subOrder;
+                    producedKeys.Add((order, subOrder));
+                }
+
+                PointF ToWorld(PointF point)
+                {
+                    var localX = point.X * scaleX - size.Width * 0.5f;
+                    var localY = point.Y * scaleY - size.Height * 0.5f;
+                    return VectorUnits.Quantize(new PointF(
+                        center.X + localX * cos - localY * sin,
+                        center.Y + localX * sin + localY * cos));
+                }
+            }
+
+            RemoveObjects(targets);
+            var produced = producedKeys
+                .Select(key => FindObjectByStackKey(key.Order, key.SubOrder))
+                .Where(index => index >= 0)
+                .ToArray();
+            if (produced.Length != producedKeys.Count)
+            {
+                throw new InvalidOperationException("SVG break-apart lost replacement object identity.");
+            }
+            return (produced, approximations);
+        }
+        catch
+        {
+            RestoreSnapshot(snapshot);
+            throw;
+        }
+        finally
+        {
+            EditFrame = previousEditFrame;
+        }
+    }
+
+    internal int AppendImportedSvgObject(int layer, PointF center, SizeF size, float angle, string source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
+        return AppendPackedObject(
+            layer: layer,
+            center: center,
+            size: size,
+            angle: angle,
+            stroke: 0,
+            colorArgb: Color.FromArgb(128, 128, 128).ToArgb(),
+            strokeColorArgb: Color.Transparent.ToArgb(),
+            atoms: 3,
+            shapeKind: VectorAnimationEngine.ShapeKind.ImportedSvg,
+            curveControl: center,
+            importedSvgSource: source);
+    }
+
     internal int AppendObject(
         int layer,
         PointF center,
@@ -619,8 +796,18 @@ internal sealed class VectorScene : ITimelineContext
         LineEndpointStyle startEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle endEndpointStyle = LineEndpointStyle.Round,
         int shapeVertexCount = 0,
-        PointF? curveControl2 = null)
+        PointF? curveControl2 = null,
+        string? importedSvgSource = null)
     {
+        if (shapeKind == VectorAnimationEngine.ShapeKind.ImportedSvg)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(importedSvgSource);
+        }
+        else if (importedSvgSource is not null)
+        {
+            throw new ArgumentException("Only imported SVG objects can carry SVG source payload.", nameof(importedSvgSource));
+        }
+
         var targetLayer = ResolveObjectLayer(layer);
         var keyframeFrame = _deferredAppendKeyframes is { } deferred
             ? deferred[targetLayer]
@@ -674,6 +861,7 @@ internal sealed class VectorScene : ITimelineContext
         GradientStartY[index] = Y[index];
         GradientEndX[index] = X[index] + Width[index] * 0.5f;
         GradientEndY[index] = Y[index];
+        if (importedSvgSource is not null) _importedSvgSources[index] = importedSvgSource;
         MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[index], Height[index]) * 0.5f);
         return index;
     }
@@ -682,6 +870,10 @@ internal sealed class VectorScene : ITimelineContext
     {
         ArgumentNullException.ThrowIfNull(objects);
         if (objects.Length == 0) return ObjectCount;
+        if (objects.Any(item => item.Shape == VectorAnimationEngine.ShapeKind.ImportedSvg))
+        {
+            throw new InvalidOperationException("Imported SVG objects cannot be appended through a packed batch.");
+        }
         var deferredKeyframes = _deferredAppendKeyframes
             ?? throw new InvalidOperationException("Packed batches require an active deferred append.");
         var firstObject = ObjectCount;
@@ -1429,6 +1621,96 @@ internal sealed class VectorScene : ITimelineContext
         RebuildSummaries();
     }
 
+    internal int[] AppendFlattenedSceneToLayer(VectorScene source, int destinationLayer, int frame)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if ((uint)destinationLayer >= LayerCount
+            || GetLayerKind(destinationLayer) != DrawingLayerKind.Drawing
+            || IsLayerEffectivelyLocked(destinationLayer))
+        {
+            throw new InvalidOperationException("Break Apart requires an unlocked drawing layer.");
+        }
+        if (source.HasLayerEffects)
+        {
+            throw new InvalidDataException("Break Apart cannot flatten drawing objects that use folders or masks.");
+        }
+
+        var sourceObjects = Enumerable.Range(0, source.ObjectCount)
+            .Where(index => source.IsObjectActive(index, 0)
+                && source.IsLayerEffectivelyVisible(source.ObjectLayer[index]))
+            .OrderByDescending(index => source.ObjectLayer[index])
+            .ThenBy(index => source.ObjectOrder[index])
+            .ThenBy(index => source.ObjectSubOrder[index])
+            .ToArray();
+        if (sourceObjects.Length == 0) throw new InvalidDataException("Break Apart produced no visible geometry.");
+        if (sourceObjects.Any(index => source.ShapeKind[index] == VectorAnimationEngine.ShapeKind.ImportedSvg))
+        {
+            throw new InvalidOperationException("Break Apart cannot materialize opaque SVG objects.");
+        }
+
+        var snapshot = CreateSnapshot();
+        var previousEditFrame = EditFrame;
+        try
+        {
+            EditFrame = Math.Max(0, frame);
+            var keyframe = EnsureWritableKeyframe(destinationLayer, EditFrame);
+            var existingOrders = Enumerable.Range(0, ObjectCount)
+                .Where(index => ObjectLayer[index] == destinationLayer && ObjectKeyframeFrame[index] == keyframe)
+                .Select(index => ObjectOrder[index])
+                .ToArray();
+            var hasExistingObjects = existingOrders.Length > 0;
+            var firstOrder = hasExistingObjects
+                ? checked(existingOrders.Min() - sourceObjects.Length)
+                : _nextObjectOrder + 1;
+
+            EnsureObjectCapacity(checked(ObjectCount + sourceObjects.Length));
+            var produced = new int[sourceObjects.Length];
+            for (var offset = 0; offset < sourceObjects.Length; offset++)
+            {
+                var sourceObject = sourceObjects[offset];
+                var destinationObject = ObjectCount++;
+                CopyObjectDataFrom(source, sourceObject, destinationObject);
+                ObjectLayer[destinationObject] = (ushort)destinationLayer;
+                ObjectKeyframeFrame[destinationObject] = keyframe;
+                ObjectOrder[destinationObject] = firstOrder + offset;
+                ObjectSubOrder[destinationObject] = 0;
+                ApplyObjectOpacity(destinationObject, source.LayerOpacity[source.ObjectLayer[sourceObject]]);
+                VirtualAtomCount += AtomCount[destinationObject];
+                produced[offset] = destinationObject;
+            }
+            if (!hasExistingObjects) _nextObjectOrder += sourceObjects.Length;
+
+            SynchronizeAllKeyframeContentKinds();
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            return produced;
+        }
+        catch
+        {
+            RestoreSnapshot(snapshot);
+            throw;
+        }
+        finally
+        {
+            EditFrame = previousEditFrame;
+        }
+    }
+
+    private void ApplyObjectOpacity(int objectIndex, float opacity)
+    {
+        var factor = Math.Clamp(opacity, 0, 1);
+        Argb[objectIndex] = ApplyOpacity(Argb[objectIndex], factor);
+        StrokeArgb[objectIndex] = ApplyOpacity(StrokeArgb[objectIndex], factor);
+        GradientStartArgb[objectIndex] = ApplyOpacity(GradientStartArgb[objectIndex], factor);
+        GradientEndArgb[objectIndex] = ApplyOpacity(GradientEndArgb[objectIndex], factor);
+        if (_gradientStops.TryGetValue(objectIndex, out var stops))
+        {
+            _gradientStops[objectIndex] = stops
+                .Select(stop => new GradientStop(stop.Position, ApplyOpacity(stop.Argb, factor)))
+                .ToArray();
+        }
+    }
+
     private void ApplyOnionSkinAppearance(int objectIndex, float opacity, int tintArgb)
     {
         var factor = Math.Clamp(opacity, 0, 1);
@@ -1963,7 +2245,8 @@ internal sealed class VectorScene : ITimelineContext
         bool eraseLines,
         bool eraseFills,
         int frequency = 8,
-        bool continuous = true)
+        bool continuous = true,
+        bool materializeAutoKeyframes = false)
     {
         if ((!eraseLines && !eraseFills) || worldPoints.Count == 0) return false;
 
@@ -1988,6 +2271,34 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         if (plans.Count == 0) return false;
+
+        if (materializeAutoKeyframes)
+        {
+            var planLayers = plans
+                .Select(plan => (int)ObjectLayer[plan.Source])
+                .Distinct()
+                .ToArray();
+            var materializedLayers = new HashSet<int>();
+            using (Timeline.BeginBatchUpdate())
+            {
+                foreach (var layer in planLayers)
+                {
+                    if (MaterializeAutoKeyframeInPlace(layer, frame)) materializedLayers.Add(layer);
+                }
+            }
+
+            if (materializedLayers.Count > 0)
+            {
+                for (var index = 0; index < plans.Count; index++)
+                {
+                    var plan = plans[index];
+                    if (materializedLayers.Contains(ObjectLayer[plan.Source]))
+                    {
+                        plans[index] = plan with { KeyframeFrame = frame };
+                    }
+                }
+            }
+        }
 
         RemoveObjects(plans.Select(plan => plan.Source));
         foreach (var plan in plans)
@@ -2505,6 +2816,7 @@ internal sealed class VectorScene : ITimelineContext
         ResizeObjectArrays();
         RemovePathDataOutsideObjectCount();
         RemoveFreehandDataOutsideObjectCount();
+        RemoveImportedSvgDataOutsideObjectCount();
         RemoveGradientDataOutsideObjectCount();
         RebuildGeometryIndex();
         RebuildSummaries();
@@ -2547,6 +2859,7 @@ internal sealed class VectorScene : ITimelineContext
         ResizeObjectArrays();
         RemovePathDataOutsideObjectCount();
         RemoveFreehandDataOutsideObjectCount();
+        RemoveImportedSvgDataOutsideObjectCount();
         RemoveGradientDataOutsideObjectCount();
         RebuildGeometryIndex();
         RebuildSummaries();
@@ -2705,12 +3018,14 @@ internal sealed class VectorScene : ITimelineContext
                 item => CloneContours(item.Value)),
             Timeline = Timeline.CreateSnapshot(),
             PathLocalContours = _pathLocalContours.ToDictionary(item => item.Key, item => CloneContours(item.Value)),
-            FreehandLocalPoints = _freehandLocalPoints.ToDictionary(item => item.Key, item => item.Value.ToArray())
+            FreehandLocalPoints = _freehandLocalPoints.ToDictionary(item => item.Key, item => item.Value.ToArray()),
+            ImportedSvgSources = _importedSvgSources.ToDictionary(item => item.Key, item => item.Value)
         };
     }
 
     public void RestoreSnapshot(VectorSceneSnapshot snapshot)
     {
+        ValidateImportedSvgSnapshotPayload(snapshot);
         InvalidateQueryActiveKeyframes();
         LayerCount = snapshot.LayerCount;
         ObjectCount = snapshot.ObjectCount;
@@ -2870,6 +3185,12 @@ internal sealed class VectorScene : ITimelineContext
             _freehandLocalPoints[item.Key] = item.Value.ToArray();
         }
 
+        _importedSvgSources.Clear();
+        foreach (var item in snapshot.ImportedSvgSources)
+        {
+            _importedSvgSources[item.Key] = item.Value;
+        }
+
         if (snapshot.Timeline is null)
         {
             InitializeTimelineFromLayerExposure();
@@ -2883,6 +3204,35 @@ internal sealed class VectorScene : ITimelineContext
 
         RebuildGeometryIndex();
         RebuildSummaries();
+    }
+
+    private static void ValidateImportedSvgSnapshotPayload(VectorSceneSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.ImportedSvgSources is null)
+        {
+            throw new InvalidOperationException("The scene snapshot is missing imported SVG source metadata.");
+        }
+
+        foreach (var item in snapshot.ImportedSvgSources)
+        {
+            if ((uint)item.Key >= snapshot.ObjectCount
+                || item.Key >= snapshot.ShapeKind.Length
+                || snapshot.ShapeKind[item.Key] != VectorAnimationEngine.ShapeKind.ImportedSvg
+                || string.IsNullOrWhiteSpace(item.Value))
+            {
+                throw new InvalidOperationException("The scene snapshot contains invalid imported SVG payload.");
+            }
+        }
+
+        for (var index = 0; index < Math.Min(snapshot.ObjectCount, snapshot.ShapeKind.Length); index++)
+        {
+            if (snapshot.ShapeKind[index] == VectorAnimationEngine.ShapeKind.ImportedSvg
+                && !snapshot.ImportedSvgSources.ContainsKey(index))
+            {
+                throw new InvalidOperationException("The scene snapshot is missing imported SVG payload.");
+            }
+        }
     }
 
     public bool IsLayerActive(int layer, int frame)
@@ -3969,6 +4319,41 @@ internal sealed class VectorScene : ITimelineContext
         return true;
     }
 
+    public bool MaterializeAutoKeyframeInPlace(int layer, int frame)
+    {
+        using var batchUpdate = Timeline.BeginBatchUpdate();
+        var track = TimelineTrackForLayer(layer);
+        if (track is null || frame < 0 || frame == int.MaxValue) return false;
+
+        var current = frame < track.Duration
+            ? track.EvaluateExposure(frame)
+            : track.EvaluateExposure(track.Duration - 1);
+        if (frame < track.Duration && current.IsKeyframe) return false;
+
+        var sourceObjects = current.HasContent
+            ? Enumerable.Range(0, ObjectCount)
+                .Where(index => ObjectLayer[index] == layer && ObjectKeyframeFrame[index] == current.SourceKeyframeFrame)
+                .ToArray()
+            : [];
+        var carriesExternalContent = current.HasContent
+            && HasExternalLayerKeyframeContent(layer, current.SourceKeyframeFrame);
+
+        if (frame >= track.Duration) Timeline.SetTrackDuration(track.Id, frame + 1);
+        var inserted = sourceObjects.Length > 0 || carriesExternalContent
+            ? Timeline.InsertKeyframe(track.Id, frame)
+            : Timeline.InsertBlankKeyframe(track.Id, frame);
+        if (!inserted) return false;
+
+        if (sourceObjects.Length > 0)
+        {
+            CloneObjectsIntoKeyframe(sourceObjects, current.SourceKeyframeFrame);
+            foreach (var source in sourceObjects) ObjectKeyframeFrame[source] = frame;
+        }
+
+        RefreshLegacyExposureBounds(layer);
+        return true;
+    }
+
     public bool InsertTimelineBlankKeyframe(int layer, int frame)
     {
         var track = TimelineTrackForLayer(layer);
@@ -4213,6 +4598,11 @@ internal sealed class VectorScene : ITimelineContext
             if (!bounds.Contains(world)) continue;
 
             var shape = ShapeKind[objectIndex];
+            if (shape == VectorAnimationEngine.ShapeKind.ImportedSvg
+                && HitObject(world, objectIndex, toleranceWorld))
+            {
+                return true;
+            }
             var hitRadius = Math.Max(Stroke[objectIndex] * 0.5f, 1) + toleranceWorld;
             if (IsTopologyStrokeShape(shape))
             {
@@ -6218,6 +6608,7 @@ internal sealed class VectorScene : ITimelineContext
         ResizeObjectArrays();
         RemovePathDataOutsideObjectCount();
         RemoveFreehandDataOutsideObjectCount();
+        RemoveImportedSvgDataOutsideObjectCount();
         RemoveGradientDataOutsideObjectCount();
         return oldToNew;
     }
@@ -8650,6 +9041,18 @@ internal sealed class VectorScene : ITimelineContext
         foreach (var objectIndex in QueryDrawingObjects(bounds, frame, limit))
         {
             var shape = ShapeKind[objectIndex];
+            if (shape == VectorAnimationEngine.ShapeKind.ImportedSvg)
+            {
+                if (IsObjectGeometryInsideBounds(objectIndex, bounds))
+                {
+                    result.Add(new DrawingElementHit(
+                        new DrawingElementKey(objectIndex, DrawingElementKind.Fill, 0),
+                        0,
+                        0,
+                        1));
+                }
+                continue;
+            }
             var candidates = CollectTopologyCandidates(objectIndex, frame);
             if (IsTopologyStrokeShape(shape))
             {
@@ -8732,6 +9135,24 @@ internal sealed class VectorScene : ITimelineContext
     private bool ObjectGeometryIntersectsBounds(int objectIndex, RectangleF bounds)
     {
         var shape = ShapeKind[objectIndex];
+        if (shape == VectorAnimationEngine.ShapeKind.ImportedSvg)
+        {
+            var boundary = ShapeBoundary(objectIndex);
+            if (boundary.Any(point => PointInRectangle(point, bounds))
+                || PolylineIntersectsRectangle(boundary, bounds))
+            {
+                return true;
+            }
+
+            var importedBoundsCorners = new[]
+            {
+                new PointF(bounds.Left, bounds.Top),
+                new PointF(bounds.Right, bounds.Top),
+                new PointF(bounds.Right, bounds.Bottom),
+                new PointF(bounds.Left, bounds.Bottom)
+            };
+            return importedBoundsCorners.Any(point => HitObject(point, objectIndex, toleranceWorld: 0));
+        }
         if (IsTopologyStrokeShape(shape))
         {
             if (!HasStroke(objectIndex)) return false;
@@ -9413,6 +9834,12 @@ internal sealed class VectorScene : ITimelineContext
     private DrawingElementHit HitElement(PointF world, int i, IReadOnlyList<int> hitCandidates, int frame, float toleranceWorld)
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (shape == VectorAnimationEngine.ShapeKind.ImportedSvg)
+        {
+            return HitObject(world, i, toleranceWorld)
+                ? new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, 0), 0, 0, 1)
+                : DrawingElementHit.None;
+        }
         if (IsTopologyStrokeShape(shape))
         {
             if (!HasStroke(i)) return DrawingElementHit.None;
@@ -10882,6 +11309,7 @@ internal sealed class VectorScene : ITimelineContext
     private bool HasStroke(int objectIndex)
     {
         return (uint)objectIndex < ObjectCount
+            && ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.ImportedSvg
             && Stroke[objectIndex] > 0
             && Color.FromArgb(StrokeArgb[objectIndex]).A > 0;
     }
@@ -10890,7 +11318,8 @@ internal sealed class VectorScene : ITimelineContext
     {
         return shape is not VectorAnimationEngine.ShapeKind.Line
             and not VectorAnimationEngine.ShapeKind.Freeform
-            and not VectorAnimationEngine.ShapeKind.BrushStroke;
+            and not VectorAnimationEngine.ShapeKind.BrushStroke
+            and not VectorAnimationEngine.ShapeKind.ImportedSvg;
     }
 
     private static bool SupportsGradient(ShapeKind shape) => IsFillShape(shape) || shape == VectorAnimationEngine.ShapeKind.Line;
@@ -10972,6 +11401,15 @@ internal sealed class VectorScene : ITimelineContext
         {
             _freehandLocalPoints.Remove(to);
         }
+
+        if (source._importedSvgSources.TryGetValue(from, out var importedSvgSource))
+        {
+            _importedSvgSources[to] = importedSvgSource;
+        }
+        else
+        {
+            _importedSvgSources.Remove(to);
+        }
     }
 
     private void RemovePathDataOutsideObjectCount()
@@ -10987,6 +11425,14 @@ internal sealed class VectorScene : ITimelineContext
         foreach (var index in _freehandLocalPoints.Keys.Where(index => index >= ObjectCount).ToArray())
         {
             _freehandLocalPoints.Remove(index);
+        }
+    }
+
+    private void RemoveImportedSvgDataOutsideObjectCount()
+    {
+        foreach (var index in _importedSvgSources.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _importedSvgSources.Remove(index);
         }
     }
 

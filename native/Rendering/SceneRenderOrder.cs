@@ -14,12 +14,23 @@ internal static class SceneRenderOrder
 
     public static bool HasFill(ShapeKind shape)
     {
+        if (shape == ShapeKind.ImportedSvg) return true;
         return shape is not ShapeKind.Line and not ShapeKind.Freeform;
     }
 
     public static bool HasStroke(ShapeKind shape, float stroke)
     {
+        if (shape == ShapeKind.ImportedSvg) return false;
         return stroke > 0 && shape != ShapeKind.BrushStroke;
+    }
+
+    public static bool RequiresObjectRenderer(VectorScene scene)
+    {
+        for (var index = 0; index < scene.ObjectCount; index++)
+        {
+            if (scene.ShapeKind[index] == ShapeKind.ImportedSvg) return true;
+        }
+        return false;
     }
 
     public static bool ShouldUseDenseObjectLod(

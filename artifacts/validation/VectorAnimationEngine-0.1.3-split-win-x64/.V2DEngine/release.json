@@ -1,0 +1,10 @@
+{
+    "layoutVersion":  1,
+    "product":  "Vector 2D Animation Engine",
+    "version":  "0.1.3",
+    "rid":  "win-x64",
+    "targetFramework":  "net8.0-windows",
+    "compatibleRuntime":  "8.0.x",
+    "readyToRun":  false,
+    "packageType":  "application-patch"
+}

@@ -9,6 +9,10 @@ internal static class Program
     private const string LauncherMutexName = "Local\\Vector2DAnimationEngine.Launcher.Watch";
     private const int MaxUnexpectedWatchRestarts = 3;
     private const long MaxLauncherLogBytes = 8L * 1024 * 1024;
+    private const int RestartTokenSidecarVersion = 1;
+    private const long MaxRestartTokenSidecarBytes = 512;
+    private static readonly TimeSpan RestartTokenLifetime = TimeSpan.FromMinutes(5);
+    private const string RestartTokenArgumentPrefix = "--editor-restart-token=";
     private static readonly object LogSync = new();
     private static long _launcherLogBytes = -1;
 
@@ -101,17 +105,25 @@ internal static class Program
 
         try
         {
-            Log(logDir, $"Launching native app. Module hot reload: {sourceLaunch.ModuleHotReload}. Initial native build skipped: {skipInitialBuild}. Command: {startInfo.FileName} {startInfo.Arguments}");
+            Log(logDir, $"Launching native app. Module hot reload: {sourceLaunch.ModuleHotReload}. Initial native build skipped: {skipInitialBuild}.");
             var unexpectedRestarts = 0;
+            string? pendingRestartToken = null;
             while (true)
             {
                 var startedUtc = DateTime.UtcNow;
+                var launchToken = pendingRestartToken;
+                pendingRestartToken = null;
+                var tokenArgument = launchToken is null ? "" : $" {RestartTokenArgumentPrefix}{launchToken}";
+                startInfo.Arguments = sourceLaunch.ModuleHotReload
+                    ? $"watch --non-interactive --project \"{projectPath}\" run {runArguments}{tokenArgument}"
+                    : $"run --project \"{projectPath}\" {runArguments}{tokenArgument}";
                 using var watchProcess = Process.Start(startInfo);
                 if (watchProcess is null) throw new InvalidOperationException("The development watch process could not be started.");
                 AttachWatchLogging(watchProcess, logDir);
                 var reason = WaitForWatchProcessOrRequest(watchProcess, shutdownEvent, restartEvent);
                 if (reason == WatchExitReason.RestartEditor)
                 {
+                    pendingRestartToken = TryConsumeEditorRestartToken(logDir);
                     Log(logDir, "Native app requested a development editor-process restart; restarting the watch process tree.");
                     StopProcessTree(watchProcess, logDir);
                     WaitForExitAndDrain(watchProcess, logDir);
@@ -147,6 +159,94 @@ internal static class Program
             Log(logDir, $"Launch failed: {ex}");
             ShowError("Failed to launch the development app.", ex.Message);
         }
+    }
+
+    private static string? TryConsumeEditorRestartToken(string logDir)
+    {
+        var tokenPath = Path.Combine(
+            Path.GetTempPath(),
+            "Vector2DAnimationEngine",
+            "editor-restart-token.json");
+        try
+        {
+            if (!File.Exists(tokenPath))
+            {
+                Log(logDir, "The editor restart request did not include a token sidecar; restarting without state recovery.");
+                return null;
+            }
+            RejectRestartTokenReparsePoint(Path.GetDirectoryName(tokenPath)!);
+            RejectRestartTokenReparsePoint(tokenPath);
+            if (new FileInfo(tokenPath).Length > MaxRestartTokenSidecarBytes)
+            {
+                throw new InvalidDataException("The editor restart token sidecar exceeds its supported size.");
+            }
+
+            var sidecar = JsonSerializer.Deserialize<EditorRestartTokenFile>(File.ReadAllText(tokenPath));
+            var nowUtc = DateTimeOffset.UtcNow;
+            if (sidecar is null
+                || sidecar.Version != RestartTokenSidecarVersion
+                || !IsCanonicalRestartToken(sidecar.Token)
+                || sidecar.ExpiresUtc.Offset != TimeSpan.Zero
+                || sidecar.ExpiresUtc <= nowUtc
+                || sidecar.ExpiresUtc > nowUtc.Add(RestartTokenLifetime))
+            {
+                throw new InvalidDataException("The editor restart token sidecar is invalid or expired.");
+            }
+
+            Log(logDir, "Accepted a one-shot editor restart token for the next native process.");
+            return sidecar.Token;
+        }
+        catch (Exception ex)
+        {
+            Log(logDir, $"Unable to accept the editor restart token; restarting without state recovery: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            DeleteRestartTokenSidecar(tokenPath, logDir);
+        }
+    }
+
+    private static bool IsCanonicalRestartToken(string? value)
+    {
+        return Guid.TryParseExact(value, "N", out var token)
+            && string.Equals(token.ToString("N"), value, StringComparison.Ordinal);
+    }
+
+    private static void RejectRestartTokenReparsePoint(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidDataException("The editor restart token sidecar cannot be a filesystem reparse point.");
+        }
+    }
+
+    private static void DeleteRestartTokenSidecar(string tokenPath, string logDir)
+    {
+        foreach (var path in new[] { tokenPath, tokenPath + ".tmp" })
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+                {
+                    RejectRestartTokenReparsePoint(directory);
+                }
+                if (File.Exists(path)) RejectRestartTokenReparsePoint(path);
+                File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                Log(logDir, $"Unable to delete the one-shot editor restart token sidecar: {ex.Message}");
+            }
+        }
+    }
+
+    private sealed class EditorRestartTokenFile
+    {
+        public int Version { get; init; }
+        public string Token { get; init; } = "";
+        public DateTimeOffset ExpiresUtc { get; init; }
     }
 
     private static bool TryFindDotnet(out string dotnet)

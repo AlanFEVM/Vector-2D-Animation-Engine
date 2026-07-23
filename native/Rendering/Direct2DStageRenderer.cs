@@ -29,6 +29,8 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private const int MaxShapeGradientMaskGeometryCacheEntries = 1_024;
     private const int MaxPathGradientBrushCacheEntries = 64;
     private const int MaxPathGradientBrushCount = 4_096;
+    private const int MaxImportedSvgBitmapCacheEntries = 96;
+    private const long MaxImportedSvgBitmapCacheBytes = 256L * 1024 * 1024;
     private const float FillEdgeCoverageWidthPixels = 0.8f;
     private readonly Dictionary<int, ID2D1SolidColorBrush> _brushCache = new(512);
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedFreehandGeometry> _freehandGeometryCache = new();
@@ -42,6 +44,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private readonly List<CachedPathGradientBrushes> _transientPathGradientBrushes = [];
     private readonly Dictionary<VectorScene, int> _freehandSceneObjectCounts = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LodBitmapKey, CachedLodBitmap> _lodBitmapCache = new();
+    private readonly Dictionary<ImportedSvgRasterKey, CachedImportedSvgBitmap> _importedSvgBitmapCache = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private ID2D1Factory? _factory;
     private ID2D1HwndRenderTarget? _target;
@@ -58,6 +61,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private VectorScene? _cachedDragPreviewScene;
     private int _freehandGeometryCachePointCount;
     private int _pathGradientBrushCount;
+    private long _importedSvgBitmapCacheBytes;
     private float _selectionHighlightPulse = 0.5f;
     private bool _hardwareTargetLogged;
 
@@ -272,6 +276,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private readonly record struct LodBitmapKey(VectorScene Scene, bool Overview);
 
     private sealed record CachedLodBitmap(long SummaryRevision, ID2D1Bitmap Bitmap) : IDisposable
+    {
+        public void Dispose() => Bitmap.Dispose();
+    }
+
+    private sealed record CachedImportedSvgBitmap(long PixelBytes, ID2D1Bitmap Bitmap) : IDisposable
     {
         public void Dispose() => Bitmap.Dispose();
     }
@@ -576,6 +585,10 @@ internal sealed class Direct2DStageRenderer : IDisposable
     private RenderStats DrawScene(StageControl stage, int objectDrawLimit)
     {
         var pixelZoom = EffectivePixelZoom(stage.Zoom);
+        if (SceneRenderOrder.RequiresObjectRenderer(stage.Scene))
+        {
+            return DrawObjects(stage, int.MaxValue);
+        }
         if (stage.MarqueeLodPreviewActive && stage.Scene.ObjectCount > 0)
         {
             return pixelZoom < 0.08f
@@ -611,7 +624,11 @@ internal sealed class Direct2DStageRenderer : IDisposable
 
     private static bool UsesObjectRenderer(VectorScene scene, float zoom)
     {
-        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || scene.HasLayerEffects || EffectivePixelZoom(zoom) >= 0.18f);
+        return scene.ObjectCount > 0
+            && (SceneRenderOrder.RequiresObjectRenderer(scene)
+                || scene.ObjectCount < 5000
+                || scene.HasLayerEffects
+                || EffectivePixelZoom(zoom) >= 0.18f);
     }
 
     private static float EffectivePixelZoom(float zoom) => zoom * VectorUnits.PixelsPerUnit;
@@ -918,6 +935,24 @@ internal sealed class Direct2DStageRenderer : IDisposable
         var w = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Width[i]));
         var h = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Height[i]));
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
+
+        if (shape == ShapeKind.ImportedSvg)
+        {
+            if (pass == SceneRenderPass.Fill
+                && scene.TryGetImportedSvgSource(i, out var source)
+                && !string.IsNullOrWhiteSpace(source))
+            {
+                DrawImportedSvg(
+                    source,
+                    screen,
+                    w,
+                    h,
+                    scene.Angle[i],
+                    GdiColor.FromArgb(scene.Argb[i]).A / 255f);
+            }
+            return;
+        }
+
         var shapeVertexCount = scene.GetShapeVertexCount(i);
         var brush = BrushFor(scene.Argb[i]);
         var strokeBrush = BrushFor(scene.StrokeArgb.Length > i ? scene.StrokeArgb[i] : GdiColor.FromArgb(238, 242, 241).ToArgb());
@@ -960,6 +995,76 @@ internal sealed class Direct2DStageRenderer : IDisposable
         {
             _target.Transform = old;
         }
+    }
+
+    private void DrawImportedSvg(
+        string source,
+        GdiPointF screenCenter,
+        float screenWidth,
+        float screenHeight,
+        float angleRadians,
+        float opacity)
+    {
+        var raster = ImportedSvgRasterizer.Rasterize(source, screenWidth, screenHeight);
+        var bitmap = ImportedSvgBitmap(raster);
+        var destination = Rect(
+            screenCenter.X - screenWidth * 0.5f,
+            screenCenter.Y - screenHeight * 0.5f,
+            screenWidth,
+            screenHeight);
+        var sourceRectangle = Rect(0, 0, raster.PixelWidth, raster.PixelHeight);
+        var old = _target!.Transform;
+        try
+        {
+            _target.Transform = Matrix3x2.CreateRotation(
+                angleRadians,
+                new Vector2(screenCenter.X, screenCenter.Y));
+            _target.DrawBitmap(
+                bitmap,
+                destination,
+                Math.Clamp(opacity, 0f, 1f),
+                BitmapInterpolationMode.Linear,
+                sourceRectangle);
+        }
+        finally
+        {
+            _target.Transform = old;
+        }
+    }
+
+    private ID2D1Bitmap ImportedSvgBitmap(ImportedSvgRaster raster)
+    {
+        if (_target is null) throw new InvalidOperationException("Direct2D render target is not ready.");
+        if (_importedSvgBitmapCache.TryGetValue(raster.Key, out var cached)) return cached.Bitmap;
+        var pixelBytes = raster.Pixels.LongLength;
+        if (_importedSvgBitmapCache.Count >= MaxImportedSvgBitmapCacheEntries
+            || _importedSvgBitmapCacheBytes > MaxImportedSvgBitmapCacheBytes - pixelBytes)
+        {
+            ClearImportedSvgBitmapCache();
+        }
+
+        var pixelsHandle = GCHandle.Alloc(raster.Pixels, GCHandleType.Pinned);
+        ID2D1Bitmap bitmap;
+        try
+        {
+            var properties = new BitmapProperties(
+                new PixelFormat(Format.B8G8R8A8_UNorm, DCommonAlphaMode.Premultiplied),
+                96,
+                96);
+            bitmap = _target.CreateBitmap(
+                new SizeI(raster.PixelWidth, raster.PixelHeight),
+                pixelsHandle.AddrOfPinnedObject(),
+                (uint)raster.Stride,
+                properties);
+        }
+        finally
+        {
+            pixelsHandle.Free();
+        }
+
+        _importedSvgBitmapCache[raster.Key] = new CachedImportedSvgBitmap(pixelBytes, bitmap);
+        _importedSvgBitmapCacheBytes += pixelBytes;
+        return bitmap;
     }
 
     private void DrawPathObject(StageControl stage, GdiPointF[][] worldContours, ID2D1SolidColorBrush brush, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke, SceneRenderPass pass)
@@ -1707,13 +1812,14 @@ internal sealed class Direct2DStageRenderer : IDisposable
         if (IsFreehandShape(shape))
         {
             var freehandVectors = GetBoundaryVectors(stage, i);
+            var highlightKind = StageControl.SelectionHighlightForShape(shape);
             if (freehandVectors.Length == 1)
             {
-                DrawSelectionDot(freehandVectors[0], primary);
+                DrawSelectionDot(freehandVectors[0], primary, highlightKind);
             }
             else if (freehandVectors.Length > 1)
             {
-                DrawSelectionPolyline(freehandVectors, primary);
+                DrawSelectionPolyline(freehandVectors, primary, highlightKind);
             }
 
             return;
@@ -1724,14 +1830,14 @@ internal sealed class Direct2DStageRenderer : IDisposable
             foreach (var contour in contours)
             {
                 var vectors = contour.Select(point => WorldToVector(stage, point)).ToArray();
-                if (vectors.Length >= 3) DrawSelectionPolyline(CloseSelectionPolyline(vectors), primary);
+                if (vectors.Length >= 3) DrawSelectionPolyline(CloseSelectionPolyline(vectors), primary, SelectionHighlightKind.Fill);
             }
         }
         else
         {
             var points = GetBoundaryVectors(stage, i);
             if (points.Length < 2) return;
-            DrawSelectionPolyline(points, primary);
+            DrawSelectionPolyline(points, primary, StageControl.SelectionHighlightForShape(shape));
         }
 
         if (!primary || shape == ShapeKind.Path || stage.TransformMode) return;
@@ -1753,8 +1859,8 @@ internal sealed class Direct2DStageRenderer : IDisposable
             var points = stage.GetSelectedStrokePartPoints(hit)
                 .Select(point => WorldToVector(stage, point))
                 .ToArray();
-            if (points.Length == 1) DrawSelectionDot(points[0], primary);
-            else if (points.Length > 1) DrawSelectionPolyline(points, primary);
+            if (points.Length == 1) DrawSelectionDot(points[0], primary, SelectionHighlightKind.Stroke);
+            else if (points.Length > 1) DrawSelectionPolyline(points, primary, SelectionHighlightKind.Stroke);
             return;
         }
 
@@ -1763,7 +1869,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
             foreach (var contour in stage.GetSelectedFillPartContours(hit))
             {
                 var points = contour.Select(point => WorldToVector(stage, point)).ToArray();
-                if (points.Length >= 3) DrawSelectionPolyline(CloseSelectionPolyline(points), primary);
+                if (points.Length >= 3) DrawSelectionPolyline(CloseSelectionPolyline(points), primary, SelectionHighlightKind.Fill);
             }
 
             return;
@@ -1774,7 +1880,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
             var points = stage.GetSelectedBoundaryPartPoints(hit)
                 .Select(point => WorldToVector(stage, point))
                 .ToArray();
-            if (points.Length > 1) DrawSelectionPolyline(points, primary);
+            if (points.Length > 1) DrawSelectionPolyline(points, primary, SelectionHighlightKind.Stroke);
         }
     }
 
@@ -2670,15 +2776,16 @@ internal sealed class Direct2DStageRenderer : IDisposable
         ID2D1PathGeometry path,
         bool primary,
         LineEndpointStyle startStyle = LineEndpointStyle.Round,
-        LineEndpointStyle endStyle = LineEndpointStyle.Round)
+        LineEndpointStyle endStyle = LineEndpointStyle.Round,
+        SelectionHighlightKind highlightKind = SelectionHighlightKind.Stroke)
     {
         var strokeStyle = LineStrokeStyle(
             LineCapForEndpoint(startStyle),
             LineCapForEndpoint(endStyle),
             startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp);
-        _target!.DrawGeometry(path, BrushFor(SelectionOuterGlowColor(primary).ToArgb()), SelectionOuterGlowWidth(primary), strokeStyle);
-        _target.DrawGeometry(path, BrushFor(SelectionGlowColor(primary).ToArgb()), SelectionGlowWidth(primary), strokeStyle);
-        _target.DrawGeometry(path, BrushFor(SelectionLineColor(primary).ToArgb()), SelectionLineWidth(primary), strokeStyle);
+        _target!.DrawGeometry(path, BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()), SelectionOuterGlowWidth(highlightKind, primary), strokeStyle);
+        _target.DrawGeometry(path, BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()), SelectionGlowWidth(highlightKind, primary), strokeStyle);
+        _target.DrawGeometry(path, BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()), SelectionLineWidth(highlightKind, primary), strokeStyle);
     }
 
     private void DrawSelectionLine(
@@ -2692,16 +2799,16 @@ internal sealed class Direct2DStageRenderer : IDisposable
             LineCapForEndpoint(startStyle),
             LineCapForEndpoint(endStyle),
             startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp);
-        _target!.DrawLine(start, end, BrushFor(SelectionOuterGlowColor(primary).ToArgb()), SelectionOuterGlowWidth(primary), strokeStyle);
-        _target.DrawLine(start, end, BrushFor(SelectionGlowColor(primary).ToArgb()), SelectionGlowWidth(primary), strokeStyle);
-        _target.DrawLine(start, end, BrushFor(SelectionLineColor(primary).ToArgb()), SelectionLineWidth(primary), strokeStyle);
+        _target!.DrawLine(start, end, BrushFor(SelectionOuterGlowColor(SelectionHighlightKind.Stroke, primary).ToArgb()), SelectionOuterGlowWidth(SelectionHighlightKind.Stroke, primary), strokeStyle);
+        _target.DrawLine(start, end, BrushFor(SelectionGlowColor(SelectionHighlightKind.Stroke, primary).ToArgb()), SelectionGlowWidth(SelectionHighlightKind.Stroke, primary), strokeStyle);
+        _target.DrawLine(start, end, BrushFor(SelectionLineColor(SelectionHighlightKind.Stroke, primary).ToArgb()), SelectionLineWidth(SelectionHighlightKind.Stroke, primary), strokeStyle);
     }
 
-    private void DrawSelectionPolyline(Vector2[] points, bool primary)
+    private void DrawSelectionPolyline(Vector2[] points, bool primary, SelectionHighlightKind highlightKind)
     {
         if (points.Length < 2) return;
         using var path = BuildSelectionPolylinePath(points);
-        DrawSelectionGeometry(path, primary);
+        DrawSelectionGeometry(path, primary, highlightKind: highlightKind);
     }
 
     private ID2D1PathGeometry BuildSelectionPolylinePath(Vector2[] points)
@@ -2727,40 +2834,34 @@ internal sealed class Direct2DStageRenderer : IDisposable
         return result;
     }
 
-    private void DrawSelectionDot(Vector2 point, bool primary)
+    private void DrawSelectionDot(Vector2 point, bool primary, SelectionHighlightKind highlightKind)
     {
         var pulseScale = 0.92f + 0.16f * _selectionHighlightPulse;
         var outer = (primary ? 12f : 8f) * pulseScale;
         var glow = (primary ? 7f : 5f) * pulseScale;
         var line = (primary ? 2.5f : 1.5f) * pulseScale;
-        _target!.FillEllipse(new Ellipse(point, outer * 0.5f, outer * 0.5f), BrushFor(SelectionOuterGlowColor(primary).ToArgb()));
-        _target.FillEllipse(new Ellipse(point, glow * 0.5f, glow * 0.5f), BrushFor(SelectionGlowColor(primary).ToArgb()));
-        _target.FillEllipse(new Ellipse(point, line * 0.5f, line * 0.5f), BrushFor(SelectionLineColor(primary).ToArgb()));
+        _target!.FillEllipse(new Ellipse(point, outer * 0.5f, outer * 0.5f), BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()));
+        _target.FillEllipse(new Ellipse(point, glow * 0.5f, glow * 0.5f), BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()));
+        _target.FillEllipse(new Ellipse(point, line * 0.5f, line * 0.5f), BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()));
     }
 
-    private GdiColor SelectionOuterGlowColor(bool primary) => primary
-        ? GdiColor.FromArgb(72 + (int)MathF.Round(52 * _selectionHighlightPulse), 80, 210, 255)
-        : GdiColor.FromArgb(50 + (int)MathF.Round(35 * _selectionHighlightPulse), 80, 210, 255);
+    private GdiColor SelectionOuterGlowColor(SelectionHighlightKind highlightKind, bool primary) =>
+        StageControl.SelectionOuterGlowColor(highlightKind, primary, _selectionHighlightPulse);
 
-    private GdiColor SelectionGlowColor(bool primary) => primary
-        ? GdiColor.FromArgb(150 + (int)MathF.Round(65 * _selectionHighlightPulse), 32, 172, 255)
-        : GdiColor.FromArgb(105 + (int)MathF.Round(50 * _selectionHighlightPulse), 32, 172, 255);
+    private GdiColor SelectionGlowColor(SelectionHighlightKind highlightKind, bool primary) =>
+        StageControl.SelectionGlowColor(highlightKind, primary, _selectionHighlightPulse);
 
-    private static GdiColor SelectionLineColor(bool primary) => primary
-        ? GdiColor.FromArgb(255, 255, 235, 120)
-        : GdiColor.FromArgb(235, 112, 220, 255);
+    private static GdiColor SelectionLineColor(SelectionHighlightKind highlightKind, bool primary) =>
+        StageControl.SelectionLineColor(highlightKind, primary);
 
-    private float SelectionOuterGlowWidth(bool primary) => primary
-        ? 10.5f + 3f * _selectionHighlightPulse
-        : 7f + 2f * _selectionHighlightPulse;
+    private float SelectionOuterGlowWidth(SelectionHighlightKind highlightKind, bool primary) =>
+        StageControl.SelectionOuterGlowWidth(highlightKind, primary, _selectionHighlightPulse);
 
-    private float SelectionGlowWidth(bool primary) => primary
-        ? 5.8f + 2.4f * _selectionHighlightPulse
-        : 4.2f + 1.6f * _selectionHighlightPulse;
+    private float SelectionGlowWidth(SelectionHighlightKind highlightKind, bool primary) =>
+        StageControl.SelectionGlowWidth(highlightKind, primary, _selectionHighlightPulse);
 
-    private float SelectionLineWidth(bool primary) => primary
-        ? 2.2f + 0.7f * _selectionHighlightPulse
-        : 1.35f + 0.45f * _selectionHighlightPulse;
+    private float SelectionLineWidth(SelectionHighlightKind highlightKind, bool primary) =>
+        StageControl.SelectionLineWidth(highlightKind, primary, _selectionHighlightPulse);
 
     private ID2D1PathGeometry BuildPolylineSamplePath(Vector2[] points, float startT, float endT)
     {
@@ -2890,6 +2991,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         ClearPathGradientBrushCache();
         ClearTransientPathGradientBrushes();
         ClearLodBitmapCache();
+        ClearImportedSvgBitmapCache();
         _shapeGradientMaskLayer?.Dispose();
         _shapeGradientMaskLayer = null;
         _target?.Dispose();
@@ -3727,6 +3829,13 @@ internal sealed class Direct2DStageRenderer : IDisposable
     {
         foreach (var cached in _lodBitmapCache.Values) cached.Dispose();
         _lodBitmapCache.Clear();
+    }
+
+    private void ClearImportedSvgBitmapCache()
+    {
+        foreach (var cached in _importedSvgBitmapCache.Values) cached.Dispose();
+        _importedSvgBitmapCache.Clear();
+        _importedSvgBitmapCacheBytes = 0;
     }
 
     private ID2D1PathGeometry FreehandGeometry(VectorScene scene, int objectIndex, GdiPointF[] localPoints)

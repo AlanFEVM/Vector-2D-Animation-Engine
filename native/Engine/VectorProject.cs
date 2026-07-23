@@ -32,6 +32,10 @@ internal sealed class VectorProject
     private readonly IReadOnlyList<SceneDefinition> _sceneView;
     private readonly IReadOnlyList<DrawingObjectDefinition> _drawingObjectView;
     private readonly IReadOnlyList<ProjectAssetFolder> _assetFolderView;
+    private decimal _playbackFps = 30m;
+    private bool _loopPlayback = true;
+    private int _playbackStartFrame;
+    private int _playbackEndFrame = 239;
 
     public VectorProject()
     {
@@ -44,10 +48,56 @@ internal sealed class VectorProject
 
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Untitled Project";
+    public decimal PlaybackFps => _playbackFps;
+    public bool LoopPlayback => _loopPlayback;
+    public int PlaybackStartFrame => _playbackStartFrame;
+    public int PlaybackEndFrame => _playbackEndFrame;
     public IReadOnlyList<SceneDefinition> Scenes => _sceneView;
     public IReadOnlyList<DrawingObjectDefinition> DrawingObjects => _drawingObjectView;
     public IReadOnlyList<ProjectAssetFolder> AssetFolders => _assetFolderView;
     public event EventHandler? Changed;
+
+    public bool TrySetPlaybackSettings(
+        decimal playbackFps,
+        bool loopPlayback,
+        int playbackStartFrame,
+        int playbackEndFrame)
+    {
+        var normalized = NormalizePlaybackSettings(
+            playbackFps,
+            loopPlayback,
+            playbackStartFrame,
+            playbackEndFrame);
+        if (_playbackFps == normalized.PlaybackFps
+            && _loopPlayback == normalized.LoopPlayback
+            && _playbackStartFrame == normalized.PlaybackStartFrame
+            && _playbackEndFrame == normalized.PlaybackEndFrame)
+        {
+            return false;
+        }
+
+        ApplyPlaybackSettings(normalized);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TrySetPlaybackFps(decimal playbackFps) => TrySetPlaybackSettings(
+        playbackFps,
+        LoopPlayback,
+        PlaybackStartFrame,
+        PlaybackEndFrame);
+
+    public bool TrySetLoopPlayback(bool loopPlayback) => TrySetPlaybackSettings(
+        PlaybackFps,
+        loopPlayback,
+        PlaybackStartFrame,
+        PlaybackEndFrame);
+
+    public bool TrySetPlaybackRange(int playbackStartFrame, int playbackEndFrame) => TrySetPlaybackSettings(
+        PlaybackFps,
+        LoopPlayback,
+        playbackStartFrame,
+        playbackEndFrame);
 
     public SceneDefinition AddScene(string? name = null)
     {
@@ -532,7 +582,12 @@ internal sealed class VectorProject
     {
         return new ProjectRestartSnapshot
         {
+            Id = Id,
             Name = Name,
+            PlaybackFps = PlaybackFps,
+            LoopPlayback = LoopPlayback,
+            PlaybackStartFrame = PlaybackStartFrame,
+            PlaybackEndFrame = PlaybackEndFrame,
             AssetFolders = _assetFolders
                 .Select(folder => new ProjectAssetFolderRestartSnapshot
                 {
@@ -582,11 +637,19 @@ internal sealed class VectorProject
             throw new InvalidOperationException("The editor restart snapshot has no project roots.");
         }
 
-        var project = new VectorProject();
+        var project = new VectorProject
+        {
+            Id = IsValidRestartId(snapshot.Id) ? snapshot.Id : Guid.NewGuid().ToString("N")
+        };
         project._drawingObjects.Clear();
         project._scenes.Clear();
         project._assetFolders.Clear();
         project.Name = string.IsNullOrWhiteSpace(snapshot.Name) ? "Untitled Project" : snapshot.Name;
+        project.ApplyPlaybackSettings(NormalizePlaybackSettings(
+            snapshot.PlaybackFps,
+            snapshot.LoopPlayback,
+            snapshot.PlaybackStartFrame,
+            snapshot.PlaybackEndFrame));
 
         project.RestoreAssetFolders(snapshot.AssetFolders ?? []);
 
@@ -625,6 +688,11 @@ internal sealed class VectorProject
             project._drawingObjects.Add(drawingObject);
         }
 
+        for (var index = 0; index < drawingSnapshots.Length; index++)
+        {
+            project._drawingObjects[index].Scene.RestoreSnapshot(drawingSnapshots[index].Scene);
+        }
+
         foreach (var item in sceneSnapshots)
         {
             project._scenes.Add(new SceneDefinition
@@ -648,7 +716,10 @@ internal sealed class VectorProject
             var drawingObject = project._drawingObjects[index];
             foreach (var instance in drawingSnapshots[index].Instances)
             {
-                if (!TryCreateRestartInstance(instance, out var restored)) continue;
+                if (!TryCreateRestartInstance(instance, out var restored))
+                {
+                    throw new InvalidOperationException("The editor restart snapshot contains an invalid drawing-object instance.");
+                }
                 drawingObject.AddInstance(project, restored);
             }
         }
@@ -658,7 +729,10 @@ internal sealed class VectorProject
             var scene = project._scenes[index];
             foreach (var instance in sceneSnapshots[index].Instances)
             {
-                if (!TryCreateRestartInstance(instance, out var restored)) continue;
+                if (!TryCreateRestartInstance(instance, out var restored))
+                {
+                    throw new InvalidOperationException("The editor restart snapshot contains an invalid scene instance.");
+                }
                 var sceneInstance = new SceneObjectInstanceDefinition
                 {
                     Id = restored.Id,
@@ -688,7 +762,11 @@ internal sealed class VectorProject
 
         for (var index = 0; index < drawingSnapshots.Length; index++)
         {
-            project._drawingObjects[index].Scene.RestoreSnapshot(drawingSnapshots[index].Scene);
+            var timeline = drawingSnapshots[index].Scene.Timeline;
+            if (timeline is not null)
+            {
+                project._drawingObjects[index].Timeline.RestoreSnapshot(timeline);
+            }
             project._drawingObjects[index].SynchronizeTimelineTracks();
         }
 
@@ -775,6 +853,34 @@ internal sealed class VectorProject
     }
 
     private static bool IsValidRestartId(string? id) => !string.IsNullOrWhiteSpace(id);
+
+    private void ApplyPlaybackSettings(ProjectPlaybackSettings settings)
+    {
+        _playbackFps = settings.PlaybackFps;
+        _loopPlayback = settings.LoopPlayback;
+        _playbackStartFrame = settings.PlaybackStartFrame;
+        _playbackEndFrame = settings.PlaybackEndFrame;
+    }
+
+    private static ProjectPlaybackSettings NormalizePlaybackSettings(
+        decimal playbackFps,
+        bool loopPlayback,
+        int playbackStartFrame,
+        int playbackEndFrame)
+    {
+        var normalizedStartFrame = Math.Max(0, playbackStartFrame);
+        return new ProjectPlaybackSettings(
+            Math.Clamp(playbackFps, 1m, 120m),
+            loopPlayback,
+            normalizedStartFrame,
+            Math.Max(normalizedStartFrame, playbackEndFrame));
+    }
+
+    private readonly record struct ProjectPlaybackSettings(
+        decimal PlaybackFps,
+        bool LoopPlayback,
+        int PlaybackStartFrame,
+        int PlaybackEndFrame);
 
     private bool DependsOn(string sourceId, string targetId, ISet<string> visited)
     {

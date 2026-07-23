@@ -3,7 +3,7 @@ namespace VectorAnimationEngine;
 internal sealed class DrawingObjectPlaybackSettingsChangedEventArgs : EventArgs
 {
     public DrawingObjectPlaybackSettingsChangedEventArgs(
-        int playbackFps,
+        decimal playbackFps,
         DrawingObjectPlaybackMode playbackMode,
         int holdFrame)
     {
@@ -12,7 +12,7 @@ internal sealed class DrawingObjectPlaybackSettingsChangedEventArgs : EventArgs
         HoldFrame = holdFrame;
     }
 
-    public int PlaybackFps { get; }
+    public decimal PlaybackFps { get; }
     public DrawingObjectPlaybackMode PlaybackMode { get; }
     public int HoldFrame { get; }
 }
@@ -34,6 +34,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Minimum = 1,
         Maximum = 120,
         Value = 30,
+        DecimalPlaces = 3,
+        Increment = 0.001m,
+        WheelAdjustsHoveredDigit = true,
         Suffix = "fps",
         AccessibleName = "Drawing object playback FPS"
     };
@@ -218,7 +221,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         PlaybackSettingsChanged?.Invoke(
             this,
             new DrawingObjectPlaybackSettingsChangedEventArgs(
-                (int)_fps.Value,
+                _fps.Value,
                 SelectedMode(),
                 (int)_holdFrame.Value));
     }

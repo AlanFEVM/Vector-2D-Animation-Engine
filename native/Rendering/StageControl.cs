@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 
 namespace VectorAnimationEngine;
 
@@ -22,6 +23,12 @@ internal readonly record struct CubicDrawingPreviewSegment(
     PointF Control1,
     PointF Control2,
     PointF End);
+
+internal enum SelectionHighlightKind
+{
+    Fill,
+    Stroke
+}
 
 internal sealed class StageControl : Control
 {
@@ -294,6 +301,7 @@ internal sealed class StageControl : Control
     internal void ReloadRenderingModuleForHotReload()
     {
         _direct2DRenderer.ReloadRuntimeResources();
+        ImportedSvgRasterizer.ClearCache();
         foreach (var brush in _brushCache.Values) brush.Dispose();
         _brushCache.Clear();
         _paintFailureLogged = false;
@@ -844,6 +852,10 @@ internal sealed class StageControl : Control
         try
         {
             var pixelZoom = EffectivePixelZoom();
+            if (SceneRenderOrder.RequiresObjectRenderer(Scene))
+            {
+                return DrawObjects(graphics, int.MaxValue);
+            }
             if (MarqueeLodPreviewActive && Scene.ObjectCount > 0)
             {
                 return pixelZoom < 0.08f
@@ -898,7 +910,11 @@ internal sealed class StageControl : Control
 
     private bool UsesObjectRenderer(VectorScene scene)
     {
-        return scene.ObjectCount > 0 && (scene.ObjectCount < 5000 || scene.HasLayerEffects || EffectivePixelZoom() >= 0.18f);
+        return scene.ObjectCount > 0
+            && (SceneRenderOrder.RequiresObjectRenderer(scene)
+                || scene.ObjectCount < 5000
+                || scene.HasLayerEffects
+                || EffectivePixelZoom() >= 0.18f);
     }
 
     private float EffectivePixelZoom() => Zoom * VectorUnits.PixelsPerUnit;
@@ -955,6 +971,7 @@ internal sealed class StageControl : Control
             _fillAnimationTimer.Dispose();
             _selectionHighlightTimer.Dispose();
             _direct2DRenderer.Dispose();
+            ImportedSvgRasterizer.ClearCache();
             _marqueeOverlay.Dispose();
             foreach (var item in _brushCache.Values) item.Dispose();
             _brushCache.Clear();
@@ -1999,6 +2016,17 @@ internal sealed class StageControl : Control
         var strokeColor = StrokeColorFor(i);
         var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[i]));
 
+        if (shape == ShapeKind.ImportedSvg)
+        {
+            if (pass == SceneRenderPass.Fill
+                && scene.TryGetImportedSvgSource(i, out var source)
+                && !string.IsNullOrWhiteSpace(source))
+            {
+                DrawImportedSvg(g, source, screen, w, h, scene.Angle[i], Color.FromArgb(scene.Argb[i]).A / 255f);
+            }
+            return;
+        }
+
         if (pass == SceneRenderPass.Fill && shape != ShapeKind.Line && scene.HasGradient(i))
         {
             if (scene.GetGradientKind(i) == GradientKind.Linear && scene.HasGradientPath(i))
@@ -2058,6 +2086,55 @@ internal sealed class StageControl : Control
         {
             using var pen = StrokePen(strokeColor, screenStroke);
             g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+        }
+    }
+
+    private static void DrawImportedSvg(
+        Graphics graphics,
+        string source,
+        PointF screenCenter,
+        float screenWidth,
+        float screenHeight,
+        float angleRadians,
+        float opacity)
+    {
+        var raster = ImportedSvgRasterizer.Rasterize(source, screenWidth, screenHeight);
+        var state = graphics.Save();
+        try
+        {
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.TranslateTransform(screenCenter.X, screenCenter.Y);
+            graphics.RotateTransform(angleRadians * 57.29578f);
+            var destination = new RectangleF(
+                -screenWidth * 0.5f,
+                -screenHeight * 0.5f,
+                screenWidth,
+                screenHeight);
+            if (opacity >= 0.999f)
+            {
+                graphics.DrawImage(raster.Bitmap, destination);
+                return;
+            }
+
+            using var attributes = new ImageAttributes();
+            var colorMatrix = new ColorMatrix { Matrix33 = Math.Clamp(opacity, 0f, 1f) };
+            attributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+            var destinationPoints = new[]
+            {
+                new PointF(destination.Left, destination.Top),
+                new PointF(destination.Right, destination.Top),
+                new PointF(destination.Left, destination.Bottom)
+            };
+            graphics.DrawImage(
+                raster.Bitmap,
+                destinationPoints,
+                new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
+                GraphicsUnit.Pixel,
+                attributes);
+        }
+        finally
+        {
+            graphics.Restore(state);
         }
     }
 
@@ -2845,7 +2922,6 @@ internal sealed class StageControl : Control
         }
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        PrepareSelectionHighlightPens();
 
         if (_selectedElements.Length > 0)
         {
@@ -2942,13 +3018,14 @@ internal sealed class StageControl : Control
         else if (IsFreehandShape(shape))
         {
             var points = GetBoundaryScreenPolyline(i);
+            var highlightKind = SelectionHighlightForShape(shape);
             if (points.Length == 1)
             {
-                DrawSelectionDot(g, points[0], primary);
+                DrawSelectionDot(g, points[0], primary, highlightKind);
             }
             else if (points.Length > 1)
             {
-                DrawSelectionPolyline(g, points, primary);
+                DrawSelectionPolyline(g, points, primary, highlightKind);
             }
         }
         else
@@ -2958,12 +3035,12 @@ internal sealed class StageControl : Control
                 foreach (var contour in contours)
                 {
                     var points = contour.Select(WorldToScreen).ToArray();
-                    if (points.Length >= 3) DrawSelectionPolygon(g, points, primary);
+                    if (points.Length >= 3) DrawSelectionPolygon(g, points, primary, SelectionHighlightKind.Fill);
                 }
             }
             else
             {
-                DrawBoundaryOutline(g, i, primary);
+                DrawBoundaryOutline(g, i, primary, SelectionHighlightForShape(shape));
             }
 
             if (primary && shape != ShapeKind.Path && !TransformMode) DrawBoundaryHandles(g, i);
@@ -2983,8 +3060,8 @@ internal sealed class StageControl : Control
             }
 
             var points = GetSelectedStrokePartPoints(hit).Select(WorldToScreen).ToArray();
-            if (points.Length == 1) DrawSelectionDot(g, points[0], primary);
-            else if (points.Length > 1) DrawSelectionPolyline(g, points, primary);
+            if (points.Length == 1) DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Stroke);
+            else if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
             return;
         }
 
@@ -2993,7 +3070,7 @@ internal sealed class StageControl : Control
             foreach (var contour in GetSelectedFillPartContours(hit))
             {
                 var points = contour.Select(WorldToScreen).ToArray();
-                if (points.Length >= 3) DrawSelectionPolygon(g, points, primary);
+                if (points.Length >= 3) DrawSelectionPolygon(g, points, primary, SelectionHighlightKind.Fill);
             }
 
             return;
@@ -3002,7 +3079,7 @@ internal sealed class StageControl : Control
         if (hit.Key.Kind == DrawingElementKind.BoundaryStroke)
         {
             var points = GetSelectedBoundaryPartPoints(hit).Select(WorldToScreen).ToArray();
-            if (points.Length > 1) DrawSelectionPolyline(g, points, primary);
+            if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
         }
     }
 
@@ -3679,7 +3756,8 @@ internal sealed class StageControl : Control
         DrawSelectionPath(
             g,
             path,
-            primary: true,
+            true,
+            SelectionHighlightKind.Stroke,
             Scene.GetLineEndpointStyle(i, startEndpoint: true),
             Scene.GetLineEndpointStyle(i, startEndpoint: false));
         DrawBezierHandles(g, start, control1, control2, end);
@@ -3856,6 +3934,7 @@ internal sealed class StageControl : Control
             g,
             partialPath,
             primary,
+            SelectionHighlightKind.Stroke,
             startT <= DrawingTopologyRules.UnitIntersectionTolerance
                 ? Scene.GetLineEndpointStyle(i, startEndpoint: true)
                 : LineEndpointStyle.Round,
@@ -3868,7 +3947,7 @@ internal sealed class StageControl : Control
     {
         var (start, control1, control2, end) = GetBezierScreenPoints(i);
         using var fullPath = BuildCubicPath(start, control1, control2, end);
-        using var mutedPen = new Pen(Color.FromArgb(80, _selectionPen.Color), 1.2f);
+        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightKind.Stroke, primary: false)), 1.2f);
         g.DrawPath(mutedPen, fullPath);
     }
 
@@ -3880,15 +3959,16 @@ internal sealed class StageControl : Control
             g,
             path,
             primary,
+            SelectionHighlightKind.Stroke,
             Scene.GetLineEndpointStyle(i, startEndpoint: true),
             Scene.GetLineEndpointStyle(i, startEndpoint: false));
     }
 
-    private void DrawBoundaryOutline(Graphics g, int i, bool primary)
+    private void DrawBoundaryOutline(Graphics g, int i, bool primary, SelectionHighlightKind highlightKind)
     {
         var points = GetBoundaryScreenPolyline(i);
         if (points.Length < 2) return;
-        DrawSelectionPolygon(g, points, primary);
+        DrawSelectionPolygon(g, points, primary, highlightKind);
     }
 
     private void DrawBoundaryPartialOutline(Graphics g, int i, float startT, float endT)
@@ -3898,18 +3978,20 @@ internal sealed class StageControl : Control
 
         using var fullPath = BuildPolylineSamplePath(points, 0, 1);
         using var partialPath = BuildPolylineSamplePath(points, startT, endT);
-        using var mutedPen = new Pen(Color.FromArgb(80, _selectionPen.Color), 1.2f);
+        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightKind.Stroke, primary: false)), 1.2f);
         g.DrawPath(mutedPen, fullPath);
-        DrawSelectionPath(g, partialPath, primary: true);
+        DrawSelectionPath(g, partialPath, true, SelectionHighlightKind.Stroke);
     }
 
     private void DrawSelectionPath(
         Graphics g,
         GraphicsPath path,
         bool primary,
+        SelectionHighlightKind highlightKind,
         LineEndpointStyle startStyle = LineEndpointStyle.Round,
         LineEndpointStyle endStyle = LineEndpointStyle.Round)
     {
+        PrepareSelectionHighlightPens(highlightKind);
         var outer = primary ? _selectionOuterGlowPen : _multiSelectionOuterGlowPen;
         var glow = primary ? _selectionGlowPen : _multiSelectionGlowPen;
         var line = primary ? _selectionPen : _multiSelectionPen;
@@ -3930,41 +4012,113 @@ internal sealed class StageControl : Control
         }
     }
 
-    private void PrepareSelectionHighlightPens()
+    internal static SelectionHighlightKind SelectionHighlightForShape(ShapeKind shape)
     {
-        var pulse = SelectionHighlightPulse;
-        _selectionOuterGlowPen.Color = Color.FromArgb(72 + (int)MathF.Round(52 * pulse), 80, 210, 255);
-        _selectionOuterGlowPen.Width = 10.5f + 3f * pulse;
-        _selectionGlowPen.Color = Color.FromArgb(150 + (int)MathF.Round(65 * pulse), 32, 172, 255);
-        _selectionGlowPen.Width = 5.8f + 2.4f * pulse;
-        _selectionPen.Width = 2.2f + 0.7f * pulse;
-
-        _multiSelectionOuterGlowPen.Color = Color.FromArgb(50 + (int)MathF.Round(35 * pulse), 80, 210, 255);
-        _multiSelectionOuterGlowPen.Width = 7f + 2f * pulse;
-        _multiSelectionGlowPen.Color = Color.FromArgb(105 + (int)MathF.Round(50 * pulse), 32, 172, 255);
-        _multiSelectionGlowPen.Width = 4.2f + 1.6f * pulse;
-        _multiSelectionPen.Width = 1.35f + 0.45f * pulse;
+        return shape is ShapeKind.Line or ShapeKind.Freeform
+            ? SelectionHighlightKind.Stroke
+            : SelectionHighlightKind.Fill;
     }
 
-    private void DrawSelectionPolygon(Graphics g, PointF[] points, bool primary)
+    internal static Color SelectionLineColor(SelectionHighlightKind highlightKind, bool primary)
+    {
+        return (highlightKind, primary) switch
+        {
+            (SelectionHighlightKind.Fill, true) => Color.FromArgb(255, 104, 244, 214),
+            (SelectionHighlightKind.Fill, false) => Color.FromArgb(235, 112, 220, 255),
+            (SelectionHighlightKind.Stroke, true) => Color.FromArgb(255, 255, 214, 92),
+            _ => Color.FromArgb(235, 255, 171, 72)
+        };
+    }
+
+    internal static Color SelectionGlowColor(SelectionHighlightKind highlightKind, bool primary, float pulse)
+    {
+        pulse = Math.Clamp(pulse, 0, 1);
+        if (highlightKind == SelectionHighlightKind.Fill)
+        {
+            return primary
+                ? Color.FromArgb(140 + (int)MathF.Round(55 * pulse), 32, 190, 224)
+                : Color.FromArgb(100 + (int)MathF.Round(45 * pulse), 32, 172, 220);
+        }
+
+        return primary
+            ? Color.FromArgb(145 + (int)MathF.Round(65 * pulse), 255, 145, 44)
+            : Color.FromArgb(100 + (int)MathF.Round(50 * pulse), 255, 126, 40);
+    }
+
+    internal static Color SelectionOuterGlowColor(SelectionHighlightKind highlightKind, bool primary, float pulse)
+    {
+        pulse = Math.Clamp(pulse, 0, 1);
+        if (highlightKind == SelectionHighlightKind.Fill)
+        {
+            return primary
+                ? Color.FromArgb(55 + (int)MathF.Round(40 * pulse), 20, 150, 180)
+                : Color.FromArgb(38 + (int)MathF.Round(30 * pulse), 20, 140, 175);
+        }
+
+        return primary
+            ? Color.FromArgb(65 + (int)MathF.Round(50 * pulse), 255, 86, 30)
+            : Color.FromArgb(45 + (int)MathF.Round(35 * pulse), 240, 78, 28);
+    }
+
+    internal static float SelectionOuterGlowWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
+    {
+        return highlightKind == SelectionHighlightKind.Fill
+            ? primary ? 7.5f + 2f * pulse : 5.5f + 1.5f * pulse
+            : primary ? 10.5f + 3f * pulse : 7f + 2f * pulse;
+    }
+
+    internal static float SelectionGlowWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
+    {
+        return highlightKind == SelectionHighlightKind.Fill
+            ? primary ? 4.2f + 1.4f * pulse : 3.2f + 1f * pulse
+            : primary ? 5.8f + 2.4f * pulse : 4.2f + 1.6f * pulse;
+    }
+
+    internal static float SelectionLineWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
+    {
+        return highlightKind == SelectionHighlightKind.Fill
+            ? primary ? 1.7f + 0.45f * pulse : 1.15f + 0.35f * pulse
+            : primary ? 2.2f + 0.7f * pulse : 1.35f + 0.45f * pulse;
+    }
+
+    private void PrepareSelectionHighlightPens(SelectionHighlightKind highlightKind)
+    {
+        var pulse = SelectionHighlightPulse;
+        _selectionOuterGlowPen.Color = SelectionOuterGlowColor(highlightKind, primary: true, pulse);
+        _selectionOuterGlowPen.Width = SelectionOuterGlowWidth(highlightKind, primary: true, pulse);
+        _selectionGlowPen.Color = SelectionGlowColor(highlightKind, primary: true, pulse);
+        _selectionGlowPen.Width = SelectionGlowWidth(highlightKind, primary: true, pulse);
+        _selectionPen.Color = SelectionLineColor(highlightKind, primary: true);
+        _selectionPen.Width = SelectionLineWidth(highlightKind, primary: true, pulse);
+
+        _multiSelectionOuterGlowPen.Color = SelectionOuterGlowColor(highlightKind, primary: false, pulse);
+        _multiSelectionOuterGlowPen.Width = SelectionOuterGlowWidth(highlightKind, primary: false, pulse);
+        _multiSelectionGlowPen.Color = SelectionGlowColor(highlightKind, primary: false, pulse);
+        _multiSelectionGlowPen.Width = SelectionGlowWidth(highlightKind, primary: false, pulse);
+        _multiSelectionPen.Color = SelectionLineColor(highlightKind, primary: false);
+        _multiSelectionPen.Width = SelectionLineWidth(highlightKind, primary: false, pulse);
+    }
+
+    private void DrawSelectionPolygon(Graphics g, PointF[] points, bool primary, SelectionHighlightKind highlightKind)
     {
         if (points.Length < 3) return;
         using var path = new GraphicsPath();
         path.AddLines(points);
         path.CloseFigure();
-        DrawSelectionPath(g, path, primary);
+        DrawSelectionPath(g, path, primary, highlightKind);
     }
 
-    private void DrawSelectionPolyline(Graphics g, PointF[] points, bool primary)
+    private void DrawSelectionPolyline(Graphics g, PointF[] points, bool primary, SelectionHighlightKind highlightKind)
     {
         if (points.Length < 2) return;
         using var path = new GraphicsPath();
         path.AddLines(points);
-        DrawSelectionPath(g, path, primary);
+        DrawSelectionPath(g, path, primary, highlightKind);
     }
 
-    private void DrawSelectionDot(Graphics g, PointF point, bool primary)
+    private void DrawSelectionDot(Graphics g, PointF point, bool primary, SelectionHighlightKind highlightKind)
     {
+        PrepareSelectionHighlightPens(highlightKind);
         var pulseScale = 0.92f + 0.16f * SelectionHighlightPulse;
         var outer = (primary ? 12f : 8f) * pulseScale;
         var glow = (primary ? 7f : 5f) * pulseScale;

@@ -24,7 +24,7 @@ internal readonly record struct InstanceFrameState(
     float ScaleX,
     float ScaleY,
     float ScaleZ,
-    int PlaybackFps,
+    decimal PlaybackFps,
     DrawingObjectPlaybackMode PlaybackMode,
     int HoldFrame)
 {
@@ -41,7 +41,7 @@ internal class DrawingObjectInstanceDefinition
 {
     private readonly List<InstanceStateKeyframe> _stateKeyframes = [];
     private readonly IReadOnlyList<InstanceStateKeyframe> _stateKeyframeView;
-    private int _playbackFps = 30;
+    private decimal _playbackFps = 30m;
     private int _holdFrame;
     private DrawingObjectPlaybackMode _playbackMode = DrawingObjectPlaybackMode.PlayOnce;
 
@@ -66,10 +66,10 @@ internal class DrawingObjectInstanceDefinition
     public float ScaleX { get; set; } = 1;
     public float ScaleY { get; set; } = 1;
     public float ScaleZ { get; set; } = 1;
-    public int PlaybackFps
+    public decimal PlaybackFps
     {
         get => _playbackFps;
-        set => _playbackFps = Math.Clamp(value, 1, 120);
+        set => _playbackFps = Math.Clamp(value, 1m, 120m);
     }
     public DrawingObjectPlaybackMode PlaybackMode
     {
@@ -114,14 +114,14 @@ internal class DrawingObjectInstanceDefinition
         return clone;
     }
 
-    internal int ResolvePlaybackFrame(int parentFrame, int parentFps, int sourceFrameCount)
+    internal int ResolvePlaybackFrame(int parentFrame, decimal parentFps, int sourceFrameCount)
     {
         return ResolvePlaybackFrame(parentFrame, parentFps, sourceFrameCount, EvaluateState(parentFrame));
     }
 
     internal static int ResolvePlaybackFrame(
         int parentFrame,
-        int parentFps,
+        decimal parentFps,
         int sourceFrameCount,
         InstanceFrameState state)
     {
@@ -131,9 +131,10 @@ internal class DrawingObjectInstanceDefinition
             return Math.Min(state.HoldFrame, frameCount - 1);
         }
 
+        var playbackFps = Math.Clamp(state.PlaybackFps, 1m, 120m);
         var scaledFrame = (int)Math.Min(
             int.MaxValue,
-            Math.Max(0L, parentFrame) * state.PlaybackFps / Math.Max(1, parentFps));
+            Math.Floor(Math.Max(0, parentFrame) * playbackFps / Math.Max(1m, parentFps)));
         return state.PlaybackMode == DrawingObjectPlaybackMode.Loop
             ? scaledFrame % frameCount
             : Math.Min(scaledFrame, frameCount - 1);
@@ -356,7 +357,7 @@ internal class DrawingObjectInstanceDefinition
 
         normalized = state with
         {
-            PlaybackFps = Math.Clamp(state.PlaybackFps, 1, 120),
+            PlaybackFps = Math.Clamp(state.PlaybackFps, 1m, 120m),
             PlaybackMode = Enum.IsDefined(state.PlaybackMode) ? state.PlaybackMode : DrawingObjectPlaybackMode.PlayOnce,
             HoldFrame = Math.Max(0, state.HoldFrame)
         };

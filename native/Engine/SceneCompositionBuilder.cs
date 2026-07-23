@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Numerics;
+using System.Text;
 
 namespace VectorAnimationEngine;
 
@@ -81,6 +83,7 @@ internal static class SceneCompositionBuilder
         int SourceFrame,
         string Name,
         Matrix3x2 Transform,
+        float InheritedOpacity,
         SceneCompositionObjectOwner Owner);
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
@@ -99,7 +102,8 @@ internal static class SceneCompositionBuilder
         Primitive,
         Path,
         Freehand,
-        Curve
+        Curve,
+        ImportedSvg
     }
 
     private readonly record struct PreparedCompositionObject(
@@ -132,6 +136,7 @@ internal static class SceneCompositionBuilder
         public PointF[][] ShapeGradientMappingContours { get; init; } = [];
         public int ShapeVertexCount { get; init; }
         public PointF Control2 { get; init; }
+        public string ImportedSvgSource { get; init; } = "";
     }
 
     public static SceneCompositionResult Build(
@@ -139,7 +144,7 @@ internal static class SceneCompositionBuilder
         SceneDefinition? sceneDefinition,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
-        int parentFps = 30)
+        decimal parentFps = 30m)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -192,7 +197,7 @@ internal static class SceneCompositionBuilder
         DrawingObjectDefinition? drawingObject,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
-        int parentFps = 30)
+        decimal parentFps = 30m)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -205,12 +210,97 @@ internal static class SceneCompositionBuilder
         return BuildDrawingObjectChildrenCore(destination, drawingObject, drawingObjects, frame, parentFps, hostLayerFilter: null);
     }
 
+    public static SceneCompositionResult BuildDrawingObjectInstanceForBreakApart(
+        VectorScene destination,
+        DrawingObjectDefinition? container,
+        DrawingObjectInstanceDefinition? instance,
+        IReadOnlyList<DrawingObjectDefinition> drawingObjects,
+        int frame,
+        decimal parentFps = 30m)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(drawingObjects);
+        if (container is null || instance is null)
+        {
+            destination.CreateEmpty();
+            return SceneCompositionResult.Empty;
+        }
+
+        var localFrame = Math.Clamp(frame, 0, Math.Max(0, container.FrameCount - 1));
+        var definitionsById = DefinitionsById(drawingObjects);
+        if (!IsDrawingObjectInstanceActive(container, instance, localFrame)
+            || !definitionsById.TryGetValue(instance.DrawingObjectId, out var child))
+        {
+            destination.CreateEmpty();
+            return SceneCompositionResult.Empty;
+        }
+
+        var layers = new List<CompositionLayer>();
+        CollectDrawingObjectLayers(
+            child,
+            instance,
+            InstanceMatrix(child, instance, localFrame),
+            localFrame,
+            parentFps,
+            definitionsById,
+            layers,
+            new HashSet<string>(StringComparer.Ordinal) { container.Id },
+            instance.Name,
+            instance.Id,
+            inheritedOpacity: 1f,
+            synchronize: false);
+        if (layers.Any(layer => layer.Source.HasLayerEffects))
+        {
+            throw new InvalidDataException("Break Apart cannot flatten drawing objects that use folders or masks.");
+        }
+
+        var vectorizedSources = new Dictionary<SourceFrameKey, VectorScene>();
+        var materializedLayers = new CompositionLayer[layers.Count];
+        for (var index = 0; index < layers.Count; index++)
+        {
+            var layer = layers[index];
+            var key = new SourceFrameKey(layer.Source, layer.SourceFrame);
+            if (!vectorizedSources.TryGetValue(key, out var vectorized))
+            {
+                var activeObjects = BuildActiveObjectsByLayer(layer.Source, layer.SourceFrame);
+                var importedObjects = Enumerable.Range(0, layer.Source.LayerCount)
+                    .Where(layerIndex => layer.Source.IsLayerEffectivelyVisible(layerIndex))
+                    .SelectMany(layerIndex => activeObjects[layerIndex])
+                    .Where(objectIndex => layer.Source.ShapeKind[objectIndex] == ShapeKind.ImportedSvg)
+                    .ToArray();
+                if (importedObjects.Length == 0)
+                {
+                    vectorized = layer.Source;
+                }
+                else
+                {
+                    vectorized = new VectorScene();
+                    vectorized.RestoreSnapshot(layer.Source.CreateSnapshot());
+                    vectorized.EditFrame = layer.SourceFrame;
+                    vectorized.BreakApartImportedSvgObjects(importedObjects);
+                }
+                vectorizedSources.Add(key, vectorized);
+            }
+
+            materializedLayers[index] = new CompositionLayer(
+                vectorized,
+                layer.SourceLayer,
+                layer.SourceFrame,
+                layer.Name,
+                layer.Transform,
+                layer.InheritedOpacity,
+                layer.Owner);
+        }
+
+        return BuildLayers(destination, materializedLayers, Math.Max(AnimationTimeline.DefaultDuration, container.FrameCount));
+    }
+
     public static void BuildDrawingObjectOnionSkin(
         VectorScene destination,
         DrawingObjectDefinition? drawingObject,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
-        int parentFps = 30)
+        decimal parentFps = 30m)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -294,7 +384,7 @@ internal static class SceneCompositionBuilder
         DrawingObjectDefinition? drawingObject,
         IReadOnlyList<DrawingObjectDefinition> drawingObjects,
         int frame,
-        int parentFps,
+        decimal parentFps,
         int? hostLayerFilter,
         IReadOnlyDictionary<string, DrawingObjectDefinition>? definitionsById = null)
     {
@@ -344,7 +434,7 @@ internal static class SceneCompositionBuilder
         PointF position,
         int frame,
         float opacity = 0.48f,
-        int parentFps = 30)
+        decimal parentFps = 30m)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(drawingObjects);
@@ -394,19 +484,24 @@ internal static class SceneCompositionBuilder
         DrawingObjectInstanceDefinition instance,
         Matrix3x2 transform,
         int parentFrame,
-        int parentFps,
+        decimal parentFps,
         IReadOnlyDictionary<string, DrawingObjectDefinition> definitionsById,
         ICollection<CompositionLayer> layers,
         ISet<string> ancestry,
         string path,
-        string rootInstanceId)
+        string rootInstanceId,
+        float inheritedOpacity = 1f,
+        bool synchronize = true)
     {
         if (!ancestry.Add(drawingObject.Id)) return;
         try
         {
             var source = drawingObject.Scene;
-            source.SynchronizeTimelineTracks();
-            drawingObject.SynchronizeTimelineTracks();
+            if (synchronize)
+            {
+                source.SynchronizeTimelineTracks();
+                drawingObject.SynchronizeTimelineTracks();
+            }
             var state = instance.EvaluateState(parentFrame);
             var localFrame = DrawingObjectInstanceDefinition.ResolvePlaybackFrame(
                 parentFrame,
@@ -421,6 +516,7 @@ internal static class SceneCompositionBuilder
                     localFrame,
                     $"{path} / {source.LayerNames[sourceLayer]}",
                     transform,
+                    inheritedOpacity,
                     new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId)));
                 foreach (var childInstance in drawingObject.InstancesInLayer(source.LayerIds[sourceLayer]))
                 {
@@ -440,7 +536,9 @@ internal static class SceneCompositionBuilder
                         layers,
                         ancestry,
                         $"{path} / {childInstance.Name}",
-                        rootInstanceId);
+                        rootInstanceId,
+                        inheritedOpacity * EffectiveLayerOpacity(source, sourceLayer),
+                        synchronize);
                 }
             }
         }
@@ -448,6 +546,20 @@ internal static class SceneCompositionBuilder
         {
             ancestry.Remove(drawingObject.Id);
         }
+    }
+
+    private static float EffectiveLayerOpacity(VectorScene scene, int layer)
+    {
+        var opacity = 1f;
+        var current = layer;
+        var visited = new HashSet<int>();
+        while ((uint)current < scene.LayerCount && visited.Add(current))
+        {
+            opacity *= Math.Clamp(scene.LayerOpacity[current], 0f, 1f);
+            current = scene.GetLayerParentIndex(current);
+            if (current < 0) break;
+        }
+        return opacity;
     }
 
     private static bool IsDrawingObjectInstanceActive(
@@ -501,7 +613,10 @@ internal static class SceneCompositionBuilder
             destination.LayerKinds[destinationLayer] = layer.Source.GetLayerKind(layer.SourceLayer);
             destination.LayerLocked[destinationLayer] = layer.Source.LayerLocked[layer.SourceLayer];
             destination.LayerVisible[destinationLayer] = layer.Source.LayerVisible[layer.SourceLayer];
-            destination.LayerOpacity[destinationLayer] = layer.Source.LayerOpacity[layer.SourceLayer];
+            destination.LayerOpacity[destinationLayer] = Math.Clamp(
+                layer.Source.LayerOpacity[layer.SourceLayer] * layer.InheritedOpacity,
+                0f,
+                1f);
             destination.LayerColorArgb[destinationLayer] = layer.Source.LayerColorArgb[layer.SourceLayer];
             var groupKey = new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId);
             if (!destinationLayerBySource.TryGetValue(groupKey, out var map))
@@ -628,7 +743,7 @@ internal static class SceneCompositionBuilder
             var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
             foreach (var sourceObject in sourceObjects)
             {
-                if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path or ShapeKind.Freeform) return false;
+                if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path or ShapeKind.Freeform or ShapeKind.ImportedSvg) return false;
             }
         }
 
@@ -735,6 +850,51 @@ internal static class SceneCompositionBuilder
         var fillArgb = source.Argb[sourceObject];
         var strokeArgb = source.StrokeArgb[sourceObject];
         var atoms = source.AtomCount[sourceObject];
+
+        if (shape == ShapeKind.ImportedSvg)
+        {
+            if (!source.TryGetImportedSvgSource(sourceObject, out var importedSvgSource))
+            {
+                throw new InvalidOperationException("Imported SVG composition source is missing its payload.");
+            }
+
+            var importedCenter = new PointF(source.X[sourceObject], source.Y[sourceObject]);
+            var importedSize = new SizeF(source.Width[sourceObject], source.Height[sourceObject]);
+            var importedAngle = source.Angle[sourceObject];
+            if (!identityTransform)
+            {
+                var wrapped = WrapImportedSvgTransform(
+                    importedSvgSource,
+                    importedCenter,
+                    importedSize,
+                    importedAngle,
+                    transform);
+                importedSvgSource = wrapped.Source;
+                importedCenter = wrapped.Center;
+                importedSize = wrapped.Size;
+                importedAngle = 0;
+            }
+
+            return new PreparedCompositionObject(
+                PreparedCompositionKind.ImportedSvg,
+                destinationLayer,
+                shape,
+                importedCenter,
+                importedSize,
+                importedAngle,
+                0,
+                fillArgb,
+                strokeArgb,
+                atoms,
+                PointF.Empty,
+                PointF.Empty,
+                PointF.Empty,
+                [],
+                [])
+            {
+                ImportedSvgSource = importedSvgSource
+            };
+        }
 
         if (shape == ShapeKind.Path && source.TryGetPathWorldContours(sourceObject, out var contours))
         {
@@ -907,12 +1067,63 @@ internal static class SceneCompositionBuilder
             []), source, sourceObject, transform, identityTransform);
     }
 
+    private static (string Source, PointF Center, SizeF Size) WrapImportedSvgTransform(
+        string source,
+        PointF center,
+        SizeF size,
+        float angle,
+        Matrix3x2 parentTransform)
+    {
+        var width = Math.Max(1, size.Width);
+        var height = Math.Max(1, size.Height);
+        var localToWorld = Matrix3x2.CreateTranslation(-width * 0.5f, -height * 0.5f)
+            * Matrix3x2.CreateRotation(angle)
+            * Matrix3x2.CreateTranslation(center.X, center.Y)
+            * parentTransform;
+        var corners = new[]
+        {
+            Vector2.Transform(Vector2.Zero, localToWorld),
+            Vector2.Transform(new Vector2(width, 0), localToWorld),
+            Vector2.Transform(new Vector2(width, height), localToWorld),
+            Vector2.Transform(new Vector2(0, height), localToWorld)
+        };
+        var left = corners.Min(point => point.X);
+        var top = corners.Min(point => point.Y);
+        var right = corners.Max(point => point.X);
+        var bottom = corners.Max(point => point.Y);
+        var outputWidth = Math.Max(1, right - left);
+        var outputHeight = Math.Max(1, bottom - top);
+        localToWorld.M31 -= left;
+        localToWorld.M32 -= top;
+
+        var invariant = CultureInfo.InvariantCulture;
+        var matrix = string.Join(" ", new[]
+        {
+            localToWorld.M11.ToString("R", invariant),
+            localToWorld.M12.ToString("R", invariant),
+            localToWorld.M21.ToString("R", invariant),
+            localToWorld.M22.ToString("R", invariant),
+            localToWorld.M31.ToString("R", invariant),
+            localToWorld.M32.ToString("R", invariant)
+        });
+        var encodedSource = Convert.ToBase64String(Encoding.UTF8.GetBytes(source));
+        var wrappedSource = FormattableString.Invariant($"""
+            <svg xmlns="http://www.w3.org/2000/svg" width="{outputWidth:R}" height="{outputHeight:R}" viewBox="0 0 {outputWidth:R} {outputHeight:R}">
+              <image width="{width:R}" height="{height:R}" preserveAspectRatio="none" transform="matrix({matrix})" href="data:image/svg+xml;base64,{encodedSource}"/>
+            </svg>
+            """);
+        return (
+            wrappedSource,
+            VectorUnits.Quantize(new PointF(left + outputWidth * 0.5f, top + outputHeight * 0.5f)),
+            VectorUnits.Quantize(new SizeF(outputWidth, outputHeight)));
+    }
+
     private static PackedSceneObject PreparePackedObject(CompositionWorkItem workItem)
     {
         var item = PrepareObject(workItem);
-        if (item.Kind is PreparedCompositionKind.Path or PreparedCompositionKind.Freehand)
+        if (item.Kind is PreparedCompositionKind.Path or PreparedCompositionKind.Freehand or PreparedCompositionKind.ImportedSvg)
         {
-            throw new InvalidOperationException("Path and freehand geometry cannot be written through the packed batch path.");
+            throw new InvalidOperationException("Sparse geometry cannot be written through the packed batch path.");
         }
 
         return new PackedSceneObject(
@@ -943,6 +1154,12 @@ internal static class SceneCompositionBuilder
     {
         var index = item.Kind switch
         {
+            PreparedCompositionKind.ImportedSvg => destination.AppendImportedSvgObject(
+                item.DestinationLayer,
+                item.Center,
+                item.Size,
+                item.Angle,
+                item.ImportedSvgSource),
             PreparedCompositionKind.Path => destination.AppendPathObjectContours(
                 item.DestinationLayer,
                 item.Contours,

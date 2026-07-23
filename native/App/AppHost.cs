@@ -57,6 +57,7 @@ internal sealed class AppHost : ApplicationContext
                 if (!EditorRestartStore.TrySave(state)
                     || !LauncherShutdownSignal.RequestEditorRestart())
                 {
+                    EditorRestartStore.DeletePending();
                     AppLog.Error("Unable to restart the detached editor after a failed in-process hot reload.");
                     return;
                 }
@@ -222,6 +223,7 @@ internal sealed class AppHost : ApplicationContext
                     return;
                 }
 
+                EditorRestartStore.DeletePending();
                 _restartState = null;
                 _exiting = true;
                 CloseStartupBanner();

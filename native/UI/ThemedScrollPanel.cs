@@ -213,6 +213,7 @@ internal sealed class ThemedScrollPanel : UserControl
 
     private void ContentMouseWheel(object? sender, MouseEventArgs e)
     {
+        if (e is HandledMouseEventArgs { Handled: true }) return;
         if (sender is TextBoxBase or ComboBox or NumericUpDown or ListBox or ListView or TreeView) return;
         if (MaximumScroll <= 0 || e.Delta == 0) return;
 

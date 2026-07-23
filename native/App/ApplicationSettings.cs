@@ -21,6 +21,7 @@ internal sealed record ApplicationSettings
     public UiLanguage Language { get; init; } = UiLanguage.English;
     public int TimelineFrameWidth { get; init; } = 14;
     public TimelineFrameHeightPreset TimelineFrameHeight { get; init; } = TimelineFrameHeightPreset.Medium;
+    public bool TimelineAutoKeyframeEnabled { get; init; } = false;
 }
 
 internal static class ApplicationSettingsStore

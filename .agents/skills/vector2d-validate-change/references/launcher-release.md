@@ -34,22 +34,25 @@ Remove-Item publish-launcher -Recurse -Force
 
 Stop launcher/native processes first. Verify the published file exists before replacing the tracked root EXE.
 
-## Publish Standalone
+## Publish Releases
 
 ```powershell
-dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 `
-  --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true `
-  -p:EnableCompressionInSingleFile=true -o publish-native
+# Normal release: patch ZIP plus SHA-256 only
+scripts\publish-split-package.ps1
+
+# New runtime/launcher/layout baseline: full package plus patch
+scripts\publish-split-package.ps1 -FullPackage
 ```
 
-Prefer keeping the artifact in `publish-native` until verification completes. Installing it as the root EXE replaces the development launcher; rebuild the launcher to restore normal development behavior.
+Normal releases replace the complete `.V2DEngine` directory and preserve the installed root launcher and `.Runtime`. Use full-package mode only when those stable components or the layout must change. The legacy `-PatchOnly` switch remains accepted, but patch mode is the default.
 
 Before distribution:
 
 - run all affected regression suites
-- launch the standalone EXE on Windows x64
+- validate that patch ZIP roots contain only `.V2DEngine`
+- for a full baseline, launch the packaged root EXE on Windows x64
 - verify startup, Direct2D/GDI fallback, logs, and shutdown
 - record file size and SHA256
-- confirm whether the root binary should be committed
+- verify that patch mode did not emit a root launcher, `.Runtime`, or full-package archive
 
-There is currently no signing, installer, versioned archive, or multi-runtime release pipeline.
+There is currently no signing, installer, or external release-upload integration.

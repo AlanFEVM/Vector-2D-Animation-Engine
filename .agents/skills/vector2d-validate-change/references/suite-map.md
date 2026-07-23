@@ -16,6 +16,12 @@
 
 The script automatically performs one native Release build before benchmark suites unless `-NoBuild` is set.
 
+## Multi-Agent Coordination
+
+Assign one validation owner for a shared worktree. Each implementation Agent reports its suggested suites to that owner and may use `invoke-validation.ps1 -Plan` to inspect the resolved `Suites`, `Builds`, and `Benchmarks`; it must not start a competing build or benchmark. The owner combines the suggestions and executes the resulting suites serially.
+
+Non-plan invocations are guarded by a repository-specific Windows cross-process mutex. Lock contention fails immediately by default; `-LockTimeoutSeconds` allows a bounded wait when the validation owner deliberately queues work. `-Suite All` resolves to native `Build`, `Launcher`, and every benchmark suite.
+
 ## Native Entry Points
 
 | Script suite | Native argument | Main coverage |

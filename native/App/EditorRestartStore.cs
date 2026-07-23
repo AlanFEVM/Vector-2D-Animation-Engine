@@ -1,10 +1,16 @@
+using System.Text;
 using System.Text.Json;
 
 namespace VectorAnimationEngine;
 
 internal static class EditorRestartStore
 {
-    private const int FormatVersion = 1;
+    private const int FormatVersion = 2;
+    private const int TokenSidecarVersion = 1;
+    private const long MaxStateBytes = 512L * 1024 * 1024;
+    private const long MaxTokenSidecarBytes = 512;
+    private static readonly TimeSpan RestartLifetime = TimeSpan.FromMinutes(5);
+    internal const string TokenArgumentPrefix = "--editor-restart-token=";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         IncludeFields = true,
@@ -16,6 +22,11 @@ internal static class EditorRestartStore
         "Vector2DAnimationEngine",
         "editor-restart-state.json");
 
+    private static string TokenSidecarPath => Path.Combine(
+        Path.GetTempPath(),
+        "Vector2DAnimationEngine",
+        "editor-restart-token.json");
+
     public static bool TrySave(EditorRestartState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -23,10 +34,23 @@ internal static class EditorRestartStore
         {
             var directory = Path.GetDirectoryName(StatePath)!;
             Directory.CreateDirectory(directory);
+            RejectReparsePoint(directory);
+            DeletePending();
+            if (File.Exists(StatePath) || File.Exists(TokenSidecarPath))
+            {
+                throw new IOException("A previous editor restart handoff could not be removed.");
+            }
+
+            var token = Guid.NewGuid().ToString("N");
+            var expiresUtc = DateTimeOffset.UtcNow.Add(RestartLifetime);
             var file = new EditorRestartFile
             {
                 Version = FormatVersion,
+                Token = token,
+                ExpiresUtc = expiresUtc,
                 Project = state.Project.CreateRestartSnapshot(),
+                ProjectManifestPath = state.ProjectManifestPath,
+                ProjectDirty = state.ProjectDirty,
                 ActiveSceneIndex = state.ActiveSceneIndex,
                 ActiveDrawingObjectIndex = state.ActiveDrawingObjectIndex,
                 Workspace = state.Workspace,
@@ -36,32 +60,49 @@ internal static class EditorRestartStore
                 Window = RestartWindowBounds.From(state.WindowBounds),
                 WindowState = state.WindowState
             };
-            var temporaryPath = $"{StatePath}.{Environment.ProcessId}.tmp";
-            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(file, JsonOptions));
-            File.Move(temporaryPath, StatePath, overwrite: true);
+            WriteJsonAtomically(StatePath, file, MaxStateBytes);
+            WriteJsonAtomically(TokenSidecarPath, new EditorRestartTokenFile
+            {
+                Version = TokenSidecarVersion,
+                Token = token,
+                ExpiresUtc = expiresUtc
+            }, MaxTokenSidecarBytes);
             AppLog.Info("Saved the editor restart state for a development-process restart");
             return true;
         }
         catch (Exception ex)
         {
+            DeletePending();
             AppLog.Error("Unable to save the editor restart state", ex);
             return false;
         }
     }
 
-    public static bool TryConsume(out EditorRestartState? state)
+    public static bool TryConsume(string? requestedToken, out EditorRestartState? state)
     {
         state = null;
-        if (!File.Exists(StatePath)) return false;
 
         try
         {
+            if (!IsCanonicalToken(requestedToken) || !File.Exists(StatePath)) return false;
+            RejectReparsePoint(StatePath);
+            ValidateMaximumFileSize(StatePath, MaxStateBytes);
             var file = JsonSerializer.Deserialize<EditorRestartFile>(File.ReadAllText(StatePath), JsonOptions);
-            if (file is null || file.Version != FormatVersion || file.Project is null) return false;
+            var nowUtc = DateTimeOffset.UtcNow;
+            if (file is null
+                || file.Version != FormatVersion
+                || file.Project is null
+                || !string.Equals(file.Token, requestedToken, StringComparison.Ordinal)
+                || !IsValidExpiry(file.ExpiresUtc, nowUtc))
+            {
+                return false;
+            }
 
             state = new EditorRestartState
             {
                 Project = VectorProject.RestoreRestartSnapshot(file.Project),
+                ProjectManifestPath = file.ProjectManifestPath ?? "",
+                ProjectDirty = file.ProjectDirty,
                 ActiveSceneIndex = file.ActiveSceneIndex,
                 ActiveDrawingObjectIndex = file.ActiveDrawingObjectIndex,
                 Workspace = file.Workspace,
@@ -81,14 +122,60 @@ internal static class EditorRestartStore
         }
         finally
         {
+            DeletePending();
+        }
+    }
+
+    public static void DeletePending()
+    {
+        foreach (var path in new[]
+                 {
+                     StatePath,
+                     StatePath + ".tmp",
+                     TokenSidecarPath,
+                     TokenSidecarPath + ".tmp"
+                 })
+        {
             try
             {
-                File.Delete(StatePath);
+                RejectReparsePoint(path);
+                File.Delete(path);
             }
-            catch
+            catch (Exception ex)
             {
-                // The state is one-shot. A later process can safely overwrite a stale file.
+                AppLog.Error($"Unable to delete the pending editor restart handoff '{Path.GetFileName(path)}'", ex);
             }
+        }
+    }
+
+    internal static string? GetRequestedToken(IReadOnlyList<string> arguments)
+    {
+        return arguments
+            .LastOrDefault(argument => argument.StartsWith(TokenArgumentPrefix, StringComparison.Ordinal))?
+            .Substring(TokenArgumentPrefix.Length);
+    }
+
+    internal static (string StatePath, string TokenSidecarPath) GetPendingPathsForRegression()
+        => (StatePath, TokenSidecarPath);
+
+    internal static bool TryGetPendingTokenForRegression(out string token)
+    {
+        token = "";
+        try
+        {
+            if (!File.Exists(TokenSidecarPath)) return false;
+            RejectReparsePoint(TokenSidecarPath);
+            ValidateMaximumFileSize(TokenSidecarPath, MaxTokenSidecarBytes);
+            var sidecar = JsonSerializer.Deserialize<EditorRestartTokenFile>(
+                File.ReadAllText(TokenSidecarPath),
+                JsonOptions);
+            if (sidecar is null || !IsCanonicalToken(sidecar.Token)) return false;
+            token = sidecar.Token;
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -102,7 +189,11 @@ internal static class EditorRestartStore
     private sealed class EditorRestartFile
     {
         public int Version { get; init; }
+        public string Token { get; init; } = "";
+        public DateTimeOffset ExpiresUtc { get; init; }
         public ProjectRestartSnapshot? Project { get; init; }
+        public string? ProjectManifestPath { get; init; }
+        public bool ProjectDirty { get; init; }
         public int ActiveSceneIndex { get; init; }
         public int ActiveDrawingObjectIndex { get; init; }
         public WorkspaceView Workspace { get; init; }
@@ -111,6 +202,68 @@ internal static class EditorRestartStore
         public RestartStageView StageView { get; init; } = new();
         public RestartWindowBounds Window { get; init; } = new();
         public FormWindowState WindowState { get; init; }
+    }
+
+    private sealed class EditorRestartTokenFile
+    {
+        public int Version { get; init; }
+        public string Token { get; init; } = "";
+        public DateTimeOffset ExpiresUtc { get; init; }
+    }
+
+    private static bool IsCanonicalToken(string? value)
+    {
+        return Guid.TryParseExact(value, "N", out var token)
+            && string.Equals(token.ToString("N"), value, StringComparison.Ordinal);
+    }
+
+    private static bool IsValidExpiry(DateTimeOffset expiresUtc, DateTimeOffset nowUtc)
+    {
+        return expiresUtc.Offset == TimeSpan.Zero
+            && expiresUtc > nowUtc
+            && expiresUtc <= nowUtc.Add(RestartLifetime);
+    }
+
+    private static void WriteJsonAtomically<T>(string path, T value, long maximumBytes)
+    {
+        var temporaryPath = path + ".tmp";
+        RejectReparsePoint(path);
+        RejectReparsePoint(temporaryPath);
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value, JsonOptions));
+        if (bytes.LongLength > maximumBytes)
+        {
+            throw new InvalidDataException("The editor restart handoff exceeds its supported size.");
+        }
+
+        using (var stream = new FileStream(
+                   temporaryPath,
+                   FileMode.Create,
+                   FileAccess.Write,
+                   FileShare.None,
+                   bufferSize: 4096,
+                   FileOptions.WriteThrough))
+        {
+            stream.Write(bytes);
+            stream.Flush(flushToDisk: true);
+        }
+        File.Move(temporaryPath, path, overwrite: true);
+    }
+
+    private static void ValidateMaximumFileSize(string path, long maximumBytes)
+    {
+        if (new FileInfo(path).Length > maximumBytes)
+        {
+            throw new InvalidDataException("The editor restart handoff exceeds its supported size.");
+        }
+    }
+
+    private static void RejectReparsePoint(string path)
+    {
+        if (!File.Exists(path) && !Directory.Exists(path)) return;
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidDataException("Editor restart handoff paths cannot use filesystem reparse points.");
+        }
     }
 
     private sealed class RestartStageView

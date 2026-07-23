@@ -5,6 +5,13 @@ namespace VectorAnimationEngine;
 
 internal readonly record struct TimelineFrameCell(string TrackId, int Frame);
 
+internal sealed record TimelineSelectionSnapshot(
+    TimelineFrameCell[] FrameCells,
+    TimelineFrameCell? FrameAnchor,
+    string? ActiveTrackId,
+    string[] SelectedLayerTrackIds,
+    string? LayerAnchorTrackId);
+
 internal enum TimelineCommand
 {
     CopyFrames,
@@ -146,6 +153,8 @@ internal sealed class TimelineStrip : Control
     private int? _pendingHeightResize;
     private bool _heightResizeLayoutDirty;
     private readonly System.Windows.Forms.Timer _heightResizeTimer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _frameSelectionAutoScrollTimer = new() { Interval = 80 };
+    private Point _frameSelectionPointer;
     private readonly System.Windows.Forms.Timer _frameWidthCommitTimer = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer _commandFeedbackTimer = new() { Interval = 16 };
     private TimelineCommand? _commandFeedback;
@@ -190,13 +199,18 @@ internal sealed class TimelineStrip : Control
     private readonly ToolStripMenuItem _lockLayerMenuItem;
     private readonly ToolStripMenuItem _showSelectedLayersMenuItem;
     private readonly ToolStripMenuItem _hideSelectedLayersMenuItem;
-    private readonly Label _playbackFpsLabel = CreateHeaderLabel("FPS", "Animation frame rate");
-    private readonly ModernNumericUpDown _playbackFps = CreatePlaybackFpsInput();
     private readonly Label _frameWidthLabel = CreateHeaderLabel("Frame width", "Timeline frame width");
     private readonly ModernSlider _frameWidthSlider = CreateFrameWidthSlider();
     private readonly ModernNumericUpDown _frameWidthInput = CreateFrameWidthInput();
     private readonly Label _frameHeightLabel = CreateHeaderLabel("Frame height", "Timeline frame height");
     private readonly ComboBox _frameHeightInput = CreateFrameHeightInput();
+    private readonly ModernToggleSwitch _autoKeyframeToggle = new()
+    {
+        AutoSize = false,
+        Text = "Auto Key",
+        AccessibleName = "Automatically insert a keyframe before canvas edits",
+        Height = Theme.ControlHeightCompact
+    };
     private readonly ModernToggleSwitch _onionSkinToggle = new()
     {
         AutoSize = false,
@@ -209,10 +223,10 @@ internal sealed class TimelineStrip : Control
     private readonly Label _onionNextLabel = CreateOnionSkinRangeLabel("Next");
     private readonly ModernNumericUpDown _onionNextFrames = CreateOnionSkinRangeInput("Next onion skin frames");
     private bool _updatingOnionSkinControls;
-    private bool _updatingPlaybackFps;
     private bool _updatingFrameWidthControls;
     private bool _updatingFrameHeightControl;
     private bool _frameWidthCommitPending;
+    private decimal _playbackFps = 30m;
     private HeaderLayoutKey? _headerLayoutKey;
 
     public event EventHandler? CurrentFrameChanged;
@@ -221,9 +235,9 @@ internal sealed class TimelineStrip : Control
     public event EventHandler? AddLayerRequested;
     public event EventHandler? AddFolderLayerRequested;
     public event EventHandler? AddMaskLayerRequested;
-    public event EventHandler? PlaybackFpsChanged;
     public event EventHandler? FrameWidthCommitted;
     public event EventHandler? FrameHeightCommitted;
+    public event EventHandler? AutoKeyframeChanged;
     public event EventHandler? FrameSelectionChanged;
     public event EventHandler<TimelineCommandRequestedEventArgs>? CommandRequested;
     public event EventHandler<TimelineLayerMoveRequestedEventArgs>? LayerMoveRequested;
@@ -312,9 +326,11 @@ internal sealed class TimelineStrip : Control
         _layerContextMenu.Opening += HandleLayerContextMenuOpening;
         _frameContextMenu.Opening += HandleFrameContextMenuOpening;
         _heightResizeTimer.Tick += (_, _) => TickHeightResize();
+        _frameSelectionAutoScrollTimer.Tick += (_, _) => TickFrameSelectionAutoScroll();
         _frameWidthCommitTimer.Tick += (_, _) => CommitFrameWidthChange();
         _commandFeedbackTimer.Tick += (_, _) => TickCommandFeedback();
         _layerFeedbackTimer.Tick += (_, _) => TickLayerFeedback();
+        _autoKeyframeToggle.CheckedChanged += (_, _) => AutoKeyframeChanged?.Invoke(this, EventArgs.Empty);
         _onionSkinToggle.CheckedChanged += (_, _) =>
         {
             if (!_updatingOnionSkinControls) LayerOnionSkinRequested?.Invoke(this, EventArgs.Empty);
@@ -327,11 +343,6 @@ internal sealed class TimelineStrip : Control
         _onionNextFrames.InteractionCompleted += (_, _) => OnionSkinRangeInteractionCompleted?.Invoke(this, EventArgs.Empty);
         _onionPreviousFrames.InteractionCanceled += (_, _) => OnionSkinRangeInteractionCanceled?.Invoke(this, EventArgs.Empty);
         _onionNextFrames.InteractionCanceled += (_, _) => OnionSkinRangeInteractionCanceled?.Invoke(this, EventArgs.Empty);
-        _playbackFps.ValueChanged += (_, _) =>
-        {
-            Invalidate();
-            if (!_updatingPlaybackFps) PlaybackFpsChanged?.Invoke(this, EventArgs.Empty);
-        };
         _frameWidthSlider.ValueChanged += (_, _) =>
         {
             if (_updatingFrameWidthControls) return;
@@ -348,6 +359,7 @@ internal sealed class TimelineStrip : Control
         _frameWidthInput.InteractionCompleted += (_, _) => CommitFrameWidthChange();
         _frameWidthLabel.TextChanged += (_, _) => RefreshHeaderLayoutAfterTextChange();
         _frameHeightLabel.TextChanged += (_, _) => RefreshHeaderLayoutAfterTextChange();
+        _autoKeyframeToggle.TextChanged += (_, _) => RefreshHeaderLayoutAfterTextChange();
         _frameHeightInput.SelectedIndexChanged += (_, _) =>
         {
             if (_updatingFrameHeightControl || _frameHeightInput.SelectedIndex < 0) return;
@@ -355,13 +367,12 @@ internal sealed class TimelineStrip : Control
             FrameHeightCommitted?.Invoke(this, EventArgs.Empty);
         };
         Controls.AddRange([
-            _playbackFpsLabel,
-            _playbackFps,
             _frameWidthLabel,
             _frameWidthSlider,
             _frameWidthInput,
             _frameHeightLabel,
             _frameHeightInput,
+            _autoKeyframeToggle,
             _onionSkinToggle,
             _onionPreviousLabel,
             _onionPreviousFrames,
@@ -381,22 +392,24 @@ internal sealed class TimelineStrip : Control
 
     public ITimelineContext Context => _context;
 
-    public int PlaybackFps
+    public bool AutoKeyframeEnabled
     {
-        get => (int)_playbackFps.Value;
+        get => _autoKeyframeToggle.Checked;
         set
         {
-            var next = Math.Clamp(value, (int)_playbackFps.Minimum, (int)_playbackFps.Maximum);
-            if ((int)_playbackFps.Value == next) return;
-            _updatingPlaybackFps = true;
-            try
-            {
-                _playbackFps.Value = next;
-            }
-            finally
-            {
-                _updatingPlaybackFps = false;
-            }
+            if (_autoKeyframeToggle.Checked != value) _autoKeyframeToggle.Checked = value;
+        }
+    }
+
+    public decimal PlaybackFps
+    {
+        get => _playbackFps;
+        set
+        {
+            var next = Math.Clamp(value, 1m, 120m);
+            if (_playbackFps == next) return;
+            _playbackFps = next;
+            Invalidate();
         }
     }
 
@@ -520,6 +533,45 @@ internal sealed class TimelineStrip : Control
     public IReadOnlyList<TimelineFrameCell> SelectedFrameCells => SelectedCells();
 
     public bool HasFrameSelection => _selectedFrameCells.Count > 0;
+
+    internal TimelineSelectionSnapshot CaptureSelectionSnapshot()
+    {
+        return new TimelineSelectionSnapshot(
+            _selectedFrameCells.ToArray(),
+            _selectionAnchor,
+            _activeTrackId,
+            _selectedLayerTrackIds.ToArray(),
+            _layerSelectionAnchorTrackId);
+    }
+
+    internal void RestoreSelectionSnapshot(TimelineSelectionSnapshot snapshot)
+    {
+        var activeTrack = TrackIndexForId(snapshot.ActiveTrackId ?? "");
+        if (activeTrack >= 0) SetActiveTrack(activeTrack);
+
+        _selectedLayerTrackIds.Clear();
+        foreach (var trackId in snapshot.SelectedLayerTrackIds)
+        {
+            var trackIndex = TrackIndexForId(trackId);
+            if (trackIndex >= 0 && IsTrackLayer(trackIndex)) _selectedLayerTrackIds.Add(trackId);
+        }
+        _layerSelectionAnchorTrackId = snapshot.LayerAnchorTrackId is { } layerAnchor
+            && _selectedLayerTrackIds.Contains(layerAnchor)
+                ? layerAnchor
+                : null;
+
+        var cells = snapshot.FrameCells
+            .Where(cell => TrackIndexForId(cell.TrackId) >= 0 && cell.Frame >= StartFrame)
+            .ToArray();
+        var anchor = snapshot.FrameAnchor is { } frameAnchor
+            && TrackIndexForId(frameAnchor.TrackId) >= 0
+            && frameAnchor.Frame >= StartFrame
+                ? frameAnchor
+                : (TimelineFrameCell?)null;
+        SetFrameSelection(cells, anchor);
+        EnsureActiveTrackVisible();
+        EnsureCurrentFrameVisible();
+    }
 
     public IReadOnlyList<string> SelectedLayerTargetIds => SelectedLayerTrackIndices()
         .Select(trackIndex => _timeline.Tracks[trackIndex].TargetId)
@@ -797,6 +849,8 @@ internal sealed class TimelineStrip : Control
             if (_timeline is not null) _timeline.Changed -= HandleTimelineChanged;
             _heightResizeTimer.Stop();
             _heightResizeTimer.Dispose();
+            _frameSelectionAutoScrollTimer.Stop();
+            _frameSelectionAutoScrollTimer.Dispose();
             _frameWidthCommitTimer.Stop();
             _frameWidthCommitTimer.Dispose();
             _commandFeedbackTimer.Stop();
@@ -840,7 +894,7 @@ internal sealed class TimelineStrip : Control
         if (_draggingHeightResize)
         {
             _heightResizeLayoutDirty = true;
-            Invalidate();
+            RefreshTimelineForHeightResize();
             return;
         }
         RefreshOnionSkinControls();
@@ -916,6 +970,7 @@ internal sealed class TimelineStrip : Control
             SelectLayerTrack(trackIndex, Keys.None);
             BeginFrameSelection(trackIndex, FrameFromX(e.X, layout), ModifierKeys);
             _draggingFrameSelection = true;
+            _frameSelectionPointer = e.Location;
             Capture = true;
             return;
         }
@@ -960,13 +1015,20 @@ internal sealed class TimelineStrip : Control
             UpdateHeightResize();
             return;
         }
+
+        var layout = CreateLayout();
+        if (_draggingFrameSelection)
+        {
+            HandleFrameSelectionPointerMove(e.Location, layout);
+            return;
+        }
+
         if (HeightResizeHandleBounds().Contains(e.Location))
         {
             Cursor = Cursors.SizeNS;
             return;
         }
 
-        var layout = CreateLayout();
         UpdateHover(e.Location, layout);
 
         if (_draggingHorizontalScroll)
@@ -995,15 +1057,6 @@ internal sealed class TimelineStrip : Control
                 _layerDropTrack = trackIndex;
                 _layerDropPlacement = LayerDropPlacementFor(trackIndex, e.Y, layout);
                 Invalidate();
-            }
-            return;
-        }
-
-        if (_draggingFrameSelection)
-        {
-            if (TryGetTrackIndex(e.Location, layout, out var trackIndex) && e.X >= layout.TrackLeft)
-            {
-                UpdateFrameSelection(trackIndex, FrameFromX(e.X, layout));
             }
             return;
         }
@@ -1150,6 +1203,12 @@ internal sealed class TimelineStrip : Control
         Invalidate();
     }
 
+    internal void RefreshTimelineForHeightResize()
+    {
+        if (_timeline is null) return;
+        RefreshTimeline();
+    }
+
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
@@ -1212,26 +1271,27 @@ internal sealed class TimelineStrip : Control
         DrawHeaderButton(graphics, allBounds, UiLocalization.T("All"));
         DrawHeaderButton(graphics, addLayerBounds, "+");
 
-        var fpsControlsBounds = PlaybackFpsControlsBounds(layout);
-        var frameWidthControlsBounds = FrameWidthControlsBounds(layout, fpsControlsBounds);
+        var frameWidthControlsBounds = FrameWidthControlsBounds(layout, Rectangle.Empty);
         var frameHeightControlsBounds = FrameHeightControlsBounds(
             layout,
-            frameWidthControlsBounds.IsEmpty ? fpsControlsBounds : frameWidthControlsBounds);
+            frameWidthControlsBounds);
         var onionControlsBounds = OnionSkinControlsBounds(
             layout,
             frameHeightControlsBounds.IsEmpty
-                ? frameWidthControlsBounds.IsEmpty ? fpsControlsBounds : frameWidthControlsBounds
+                ? frameWidthControlsBounds
                 : frameHeightControlsBounds);
+        var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
         var firstControlsLeft = new[]
         {
-            fpsControlsBounds.IsEmpty ? layout.TrackRight : fpsControlsBounds.Left,
             frameWidthControlsBounds.IsEmpty ? layout.TrackRight : frameWidthControlsBounds.Left,
             frameHeightControlsBounds.IsEmpty ? layout.TrackRight : frameHeightControlsBounds.Left,
             onionControlsBounds.IsEmpty ? layout.TrackRight : onionControlsBounds.Left
         }.Min();
         var summaryRight = firstControlsLeft - 8;
         var name = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
-        var summaryLeft = layout.TrackLeft + 8;
+        var summaryLeft = autoKeyframeBounds.IsEmpty
+            ? layout.TrackLeft + ScaleTimelineMetric(8)
+            : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
         var summaryWidth = Math.Max(0, summaryRight - summaryLeft);
         var timeText = FormatCursorTimeSeconds(CurrentFrame, PlaybackFps);
         var timeWidth = TextRenderer.MeasureText(
@@ -1267,12 +1327,12 @@ internal sealed class TimelineStrip : Control
         }
     }
 
-    internal static double CursorTimeSeconds(int frame, int playbackFps)
+    internal static double CursorTimeSeconds(int frame, decimal playbackFps)
     {
-        return Math.Max(0, frame) / (double)Math.Max(1, playbackFps);
+        return Math.Max(0, frame) / (double)Math.Max(1m, playbackFps);
     }
 
-    internal static string FormatCursorTimeSeconds(int frame, int playbackFps)
+    internal static string FormatCursorTimeSeconds(int frame, decimal playbackFps)
     {
         return CursorTimeSeconds(frame, playbackFps).ToString("0.000", CultureInfo.InvariantCulture) + " s";
     }
@@ -2472,9 +2532,7 @@ internal sealed class TimelineStrip : Control
             if (_heightResizeLayoutDirty)
             {
                 _heightResizeLayoutDirty = false;
-                RefreshOnionSkinControls();
-                EnsureCurrentFrameVisible();
-                EnsureActiveTrackVisible();
+                RefreshTimelineForHeightResize();
             }
         }
 
@@ -2486,6 +2544,7 @@ internal sealed class TimelineStrip : Control
 
         _draggingPlayhead = false;
         _draggingFrameSelection = false;
+        _frameSelectionAutoScrollTimer.Stop();
         _draggingLayer = false;
         _draggingHorizontalScroll = false;
         _draggingVerticalScroll = false;
@@ -2675,6 +2734,102 @@ internal sealed class TimelineStrip : Control
     {
         if (_selectionAnchor is not { } anchor || trackIndex < 0 || trackIndex >= TrackCount) return;
         SelectFrameRange(anchor, new TimelineFrameCell(_timeline.Tracks[trackIndex].Id, frame));
+    }
+
+    private void HandleFrameSelectionPointerMove(Point location, TimelineLayout layout)
+    {
+        _frameSelectionPointer = location;
+        if (ResolveFrameSelectionVerticalScrollDelta(location.Y, layout.GridBounds) == 0)
+        {
+            _frameSelectionAutoScrollTimer.Stop();
+        }
+        else if (!_frameSelectionAutoScrollTimer.Enabled)
+        {
+            _frameSelectionAutoScrollTimer.Start();
+        }
+
+        UpdateFrameSelectionFromPointer(location, layout);
+    }
+
+    private void TickFrameSelectionAutoScroll()
+    {
+        if (!_draggingFrameSelection || !AutoScrollFrameSelection(_frameSelectionPointer))
+        {
+            _frameSelectionAutoScrollTimer.Stop();
+        }
+    }
+
+    internal bool AutoScrollFrameSelection(Point location)
+    {
+        var layout = CreateLayout();
+        var delta = ResolveFrameSelectionVerticalScrollDelta(location.Y, layout.GridBounds);
+        if (delta == 0) return false;
+
+        var previousFirstVisibleTrack = _firstVisibleTrack;
+        SetFirstVisibleTrack(_firstVisibleTrack + delta, invalidate: false);
+        if (_firstVisibleTrack == previousFirstVisibleTrack) return false;
+
+        UpdateFrameSelectionFromPointer(location, layout);
+        return true;
+    }
+
+    internal static int ResolveFrameSelectionVerticalScrollDelta(int pointerY, Rectangle gridBounds)
+    {
+        if (gridBounds.Height <= 0) return 0;
+        if (pointerY < gridBounds.Top) return -1;
+        return pointerY >= gridBounds.Bottom ? 1 : 0;
+    }
+
+    internal void UpdateFrameSelectionFromPointer(Point location)
+    {
+        UpdateFrameSelectionFromPointer(location, CreateLayout());
+    }
+
+    private void UpdateFrameSelectionFromPointer(Point location, TimelineLayout layout)
+    {
+        var visibleTracks = VisibleTrackIndices();
+        if (visibleTracks.Count == 0) return;
+
+        var firstVisiblePosition = Math.Clamp(_firstVisibleTrack, 0, visibleTracks.Count - 1);
+        var visibleTrackCount = Math.Min(
+            VisibleTrackCapacity(layout),
+            visibleTracks.Count - firstVisiblePosition);
+        var (trackOffset, frameColumn) = ResolveFrameSelectionDragOffset(
+            location,
+            layout.GridBounds,
+            _rowHeight,
+            _frameCellWidth,
+            visibleTrackCount);
+        if (trackOffset < 0 || frameColumn < 0) return;
+
+        var trackIndex = visibleTracks[firstVisiblePosition + trackOffset];
+        var frame = (int)Math.Min(
+            MaximumSelectableFrame(layout),
+            (long)_firstVisibleFrame + frameColumn);
+        UpdateFrameSelection(trackIndex, Math.Max(StartFrame, frame));
+    }
+
+    internal static (int TrackOffset, int FrameColumn) ResolveFrameSelectionDragOffset(
+        Point location,
+        Rectangle gridBounds,
+        int rowHeight,
+        int frameCellWidth,
+        int visibleTrackCount)
+    {
+        if (gridBounds.Width <= 0
+            || gridBounds.Height <= 0
+            || rowHeight <= 0
+            || frameCellWidth <= 0
+            || visibleTrackCount <= 0)
+        {
+            return (-1, -1);
+        }
+
+        var x = Math.Clamp(location.X, gridBounds.Left, gridBounds.Right - 1);
+        var y = Math.Clamp(location.Y, gridBounds.Top, gridBounds.Bottom - 1);
+        var trackOffset = Math.Min((y - gridBounds.Top) / rowHeight, visibleTrackCount - 1);
+        var frameColumn = (x - gridBounds.Left) / frameCellWidth;
+        return (trackOffset, frameColumn);
     }
 
     private void SelectFrameRange(TimelineFrameCell anchor, TimelineFrameCell end)
@@ -3849,22 +4004,6 @@ internal sealed class TimelineStrip : Control
         return input;
     }
 
-    private static ModernNumericUpDown CreatePlaybackFpsInput()
-    {
-        var input = new ModernNumericUpDown
-        {
-            Minimum = 1,
-            Maximum = 120,
-            DecimalPlaces = 0,
-            Increment = 1,
-            Value = 30,
-            Height = Theme.ControlHeightCompact,
-            AccessibleName = "Animation frame rate in frames per second"
-        };
-        Theme.StyleNumeric(input);
-        return input;
-    }
-
     private static ModernSlider CreateFrameWidthSlider()
     {
         return new ModernSlider
@@ -3919,27 +4058,17 @@ internal sealed class TimelineStrip : Control
             ClientSize,
             IsHandleCreated ? DeviceDpi : 96,
             onionSkinAvailable,
-            _playbackFpsLabel.Text,
+            IsAutoKeyframeAvailable(),
             _frameWidthLabel.Text,
             _frameHeightLabel.Text,
+            _autoKeyframeToggle.Text,
             _onionSkinToggle.Text,
             _onionPreviousLabel.Text,
             _onionNextLabel.Text);
         if (_headerLayoutKey == layoutKey) return;
         _headerLayoutKey = layoutKey;
 
-        var fpsBounds = PlaybackFpsControlsBounds(layout);
-        var showFps = !fpsBounds.IsEmpty;
-        SetControlVisible(_playbackFpsLabel, showFps);
-        SetControlVisible(_playbackFps, showFps);
-        if (showFps)
-        {
-            var labelWidth = PlaybackFpsLabelWidth();
-            SetControlBounds(_playbackFpsLabel, new Rectangle(fpsBounds.Left, fpsBounds.Top, labelWidth, fpsBounds.Height));
-            SetControlBounds(_playbackFps, new Rectangle(fpsBounds.Left + labelWidth, fpsBounds.Top, PlaybackFpsNumericWidth(), fpsBounds.Height));
-        }
-
-        var frameWidthBounds = FrameWidthControlsBounds(layout, fpsBounds);
+        var frameWidthBounds = FrameWidthControlsBounds(layout, Rectangle.Empty);
         var showFrameWidth = !frameWidthBounds.IsEmpty;
         SetControlVisible(_frameWidthLabel, showFrameWidth);
         SetControlVisible(_frameWidthSlider, showFrameWidth);
@@ -3957,7 +4086,7 @@ internal sealed class TimelineStrip : Control
             SetControlBounds(_frameWidthInput, new Rectangle(left, frameWidthBounds.Top, FrameWidthNumericWidth(), frameWidthBounds.Height));
         }
 
-        var frameHeightAnchor = showFrameWidth ? frameWidthBounds : fpsBounds;
+        var frameHeightAnchor = showFrameWidth ? frameWidthBounds : Rectangle.Empty;
         var frameHeightBounds = FrameHeightControlsBounds(layout, frameHeightAnchor);
         var showFrameHeight = !frameHeightBounds.IsEmpty;
         SetControlVisible(_frameHeightLabel, showFrameHeight);
@@ -3977,27 +4106,15 @@ internal sealed class TimelineStrip : Control
                     frameHeightBounds.Height));
         }
 
-        LayoutOnionSkinControls(
-            layout,
-            onionSkinAvailable,
-            showFrameHeight ? frameHeightBounds : frameHeightAnchor);
+        var onionSkinAnchor = showFrameHeight ? frameHeightBounds : frameHeightAnchor;
+        LayoutOnionSkinControls(layout, onionSkinAvailable, onionSkinAnchor);
+        LayoutAutoKeyframeControl(layout);
     }
 
-    private Rectangle PlaybackFpsControlsBounds(TimelineLayout layout)
-    {
-        var controlsWidth = PlaybackFpsControlsWidth();
-        if (layout.TrackRight - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112)) return Rectangle.Empty;
-        return new Rectangle(
-            layout.TrackRight - controlsWidth - ScaleTimelineMetric(8),
-            ScaleTimelineMetric(2),
-            controlsWidth,
-            Math.Max(Theme.ControlHeightCompact, HeaderHeight - ScaleTimelineMetric(4)));
-    }
-
-    private Rectangle OnionSkinControlsBounds(TimelineLayout layout, Rectangle fpsBounds)
+    private Rectangle OnionSkinControlsBounds(TimelineLayout layout, Rectangle rightControlsBounds)
     {
         var controlsWidth = OnionSkinControlsWidth();
-        var right = fpsBounds.IsEmpty ? layout.TrackRight : fpsBounds.Left - ScaleTimelineMetric(8);
+        var right = rightControlsBounds.IsEmpty ? layout.TrackRight : rightControlsBounds.Left - ScaleTimelineMetric(8);
         if (!IsOnionSkinControlsAvailable() || right - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112))
         {
             return Rectangle.Empty;
@@ -4009,10 +4126,27 @@ internal sealed class TimelineStrip : Control
         return new Rectangle(left, ScaleTimelineMetric(2), controlsWidth, Math.Max(Theme.ControlHeightCompact, HeaderHeight - ScaleTimelineMetric(4)));
     }
 
-    private Rectangle FrameWidthControlsBounds(TimelineLayout layout, Rectangle fpsBounds)
+    private Rectangle AutoKeyframeControlsBounds(TimelineLayout layout)
+    {
+        if (!IsAutoKeyframeAvailable()) return Rectangle.Empty;
+        var controlsWidth = AutoKeyframeToggleWidth();
+        var idealLeft = layout.TrackLeft + ScaleTimelineMetric(8);
+        var maximumLeft = Math.Max(
+            layout.TrackLeft,
+            layout.TrackRight - controlsWidth - ScaleTimelineMetric(2));
+        return new Rectangle(
+            Math.Min(idealLeft, maximumLeft),
+            ScaleTimelineMetric(2),
+            controlsWidth,
+            Math.Max(Theme.ControlHeightCompact, HeaderHeight - ScaleTimelineMetric(4)));
+    }
+
+    private Rectangle FrameWidthControlsBounds(TimelineLayout layout, Rectangle rightControlsBounds)
     {
         var controlsWidth = FrameWidthControlsWidth();
-        var right = fpsBounds.IsEmpty ? layout.TrackRight - ScaleTimelineMetric(8) : fpsBounds.Left - ScaleTimelineMetric(8);
+        var right = rightControlsBounds.IsEmpty
+            ? layout.TrackRight - ScaleTimelineMetric(8)
+            : rightControlsBounds.Left - ScaleTimelineMetric(8);
         if (right - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112)) return Rectangle.Empty;
         return new Rectangle(
             right - controlsWidth,
@@ -4035,9 +4169,9 @@ internal sealed class TimelineStrip : Control
             Math.Max(Theme.ControlHeightCompact, HeaderHeight - ScaleTimelineMetric(4)));
     }
 
-    private void LayoutOnionSkinControls(TimelineLayout layout, bool available, Rectangle fpsBounds)
+    private void LayoutOnionSkinControls(TimelineLayout layout, bool available, Rectangle rightControlsBounds)
     {
-        var bounds = available ? OnionSkinControlsBounds(layout, fpsBounds) : Rectangle.Empty;
+        var bounds = available ? OnionSkinControlsBounds(layout, rightControlsBounds) : Rectangle.Empty;
         var visible = !bounds.IsEmpty;
         SetControlVisible(_onionSkinToggle, visible);
         SetControlVisible(_onionPreviousLabel, visible);
@@ -4062,6 +4196,17 @@ internal sealed class TimelineStrip : Control
         left += nextLabelWidth;
         SetControlBounds(_onionNextFrames, new Rectangle(left, bounds.Top, numericWidth, bounds.Height));
     }
+
+    private void LayoutAutoKeyframeControl(TimelineLayout layout)
+    {
+        var available = IsAutoKeyframeAvailable();
+        if (_autoKeyframeToggle.Enabled != available) _autoKeyframeToggle.Enabled = available;
+        var bounds = available ? AutoKeyframeControlsBounds(layout) : Rectangle.Empty;
+        SetControlVisible(_autoKeyframeToggle, !bounds.IsEmpty);
+        if (!bounds.IsEmpty) SetControlBounds(_autoKeyframeToggle, bounds);
+    }
+
+    private bool IsAutoKeyframeAvailable() => DrawingScene() is not null;
 
     private static void SetControlVisible(Control control, bool visible)
     {
@@ -4092,9 +4237,11 @@ internal sealed class TimelineStrip : Control
             + gap * 2;
     }
 
-    private int PlaybackFpsControlsWidth()
+    private int AutoKeyframeToggleWidth()
     {
-        return PlaybackFpsLabelWidth() + PlaybackFpsNumericWidth() + ScaleTimelineMetric(4);
+        return Math.Max(
+            ScaleTimelineMetric(96),
+            _autoKeyframeToggle.GetPreferredSize(Size.Empty).Width + ScaleTimelineMetric(2));
     }
 
     private int FrameWidthControlsWidth()
@@ -4135,18 +4282,6 @@ internal sealed class TimelineStrip : Control
     private int FrameWidthSliderWidth() => ScaleTimelineMetric(84);
 
     private int FrameWidthNumericWidth() => ScaleTimelineMetric(52);
-
-    private int PlaybackFpsLabelWidth()
-    {
-        return TextRenderer.MeasureText(
-                _playbackFpsLabel.Text,
-                _playbackFpsLabel.Font,
-                Size.Empty,
-                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width
-            + ScaleTimelineMetric(8);
-    }
-
-    private int PlaybackFpsNumericWidth() => ScaleTimelineMetric(48);
 
     private int OnionSkinToggleWidth()
     {
@@ -4229,9 +4364,10 @@ internal sealed class TimelineStrip : Control
         Size ClientSize,
         int Dpi,
         bool OnionSkinAvailable,
-        string PlaybackFpsLabel,
+        bool AutoKeyframeAvailable,
         string FrameWidthLabel,
         string FrameHeightLabel,
+        string AutoKeyframeLabel,
         string OnionSkinLabel,
         string PreviousLabel,
         string NextLabel);

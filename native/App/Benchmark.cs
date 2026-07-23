@@ -446,9 +446,23 @@ internal static class Benchmark
         if (Math.Abs(TimelineStrip.CursorTimeSeconds(13, 30) - 13d / 30d) > 0.000001
             || TimelineStrip.FormatCursorTimeSeconds(13, 30) != "0.433 s"
             || TimelineStrip.FormatCursorTimeSeconds(0, 24) != "0.000 s"
-            || TimelineStrip.FormatCursorTimeSeconds(120, 60) != "2.000 s")
+            || TimelineStrip.FormatCursorTimeSeconds(120, 60) != "2.000 s"
+            || Math.Abs(TimelineStrip.CursorTimeSeconds(23976, 23.976m) - 1000d) > 0.000001
+            || TimelineStrip.FormatCursorTimeSeconds(24, 23.976m) != "1.001 s"
+            || Math.Abs(MainForm.PlaybackFrameStepSeconds(23.976m) - 1d / 23.976d) > 0.000000001)
         {
             throw new InvalidOperationException("Timeline cursor time did not follow the active playback FPS in seconds.");
+        }
+
+        if (ModernNumericUpDown.ResolveWheelPlaceValue("23.976", 0, ".", 0.001m) != 10m
+            || ModernNumericUpDown.ResolveWheelPlaceValue("23.976", 1, ".", 0.001m) != 1m
+            || ModernNumericUpDown.ResolveWheelPlaceValue("23.976", 3, ".", 0.001m) != 0.1m
+            || ModernNumericUpDown.ResolveWheelPlaceValue("23.976", 4, ".", 0.001m) != 0.01m
+            || ModernNumericUpDown.ResolveWheelPlaceValue("23.976", 5, ".", 0.001m) != 0.001m
+            || ModernNumericUpDown.ResolveWheelPlaceValue("-23,976", 2, ",", 0.001m) != 1m
+            || ModernNumericUpDown.ResolveWheelPlaceValue("23.976", 2, ".", 0.001m) != 0.001m)
+        {
+            throw new InvalidOperationException("Numeric mouse-wheel digit targeting did not resolve decimal place values correctly.");
         }
 
         var selectionBlocks = TimelineStrip.CoalesceFrameSelectionCells(
@@ -484,12 +498,14 @@ internal static class Benchmark
         RunFixedStepBatchRegression();
         RunTimelineExposureRegression();
         RunTimelineShortcutAdvanceRegression();
+        RunTimelineUndoPlayheadRegression();
         RunTimelineFrameCommandRegression();
         RunTimelineTrackSynchronizationRegression();
         RunTimelineSnapshotRegression();
         RunVectorSceneTimelineSnapshotRegression();
         RunVectorSceneSnapshotMemoryEstimateRegression();
         RunVectorSceneCelOwnershipRegression();
+        RunAutoKeyframeMaterializationRegression();
         RunTimelineLayerWorkflowRegression();
         RunTimelineLayerRemovalRegression();
         RunTimelineKeyframePerformanceRegression();
@@ -499,6 +515,7 @@ internal static class Benchmark
         RunSceneInstanceTimelineRegression();
         RunSceneCompositionRegression();
         RunEditorRestartSnapshotRegression();
+        RunProjectVaultPersistenceRegression();
         Console.WriteLine("timeline_regression=ok");
     }
 
@@ -695,6 +712,71 @@ internal static class Benchmark
             "F6 did not restore the selected drawing-object instances by stable ID after advancing the frame.");
     }
 
+    private static void RunTimelineUndoPlayheadRegression()
+    {
+        const System.Reflection.BindingFlags privateInstance =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var shortcut = typeof(MainForm).GetMethod("HandleTimelineShortcut", privateInstance)
+            ?? throw new InvalidOperationException("Timeline undo regression could not find the shortcut handler.");
+        var undo = typeof(MainForm).GetMethod("UndoLastEdit", privateInstance)
+            ?? throw new InvalidOperationException("Timeline undo regression could not find the undo handler.");
+        var frameField = typeof(MainForm).GetField("_frame", privateInstance)
+            ?? throw new InvalidOperationException("Timeline undo regression could not inspect the playhead.");
+        var timelineField = typeof(MainForm).GetField("_timeline", privateInstance)
+            ?? throw new InvalidOperationException("Timeline undo regression could not inspect the timeline.");
+
+        using var form = new MainForm();
+        var timelineStrip = timelineField.GetValue(form) as TimelineStrip
+            ?? throw new InvalidOperationException("Timeline undo regression did not find the timeline control.");
+        var trackId = timelineStrip.Context.Timeline.Tracks[0].Id;
+        timelineStrip.SelectSingleFrame(trackId, 0);
+        var initialFrame = (int)(frameField.GetValue(form) ?? -1);
+        var initialSelection = timelineStrip.SelectedFrameCells.ToArray();
+        var initialKeyframeCount = timelineStrip.Context.Timeline.Tracks[0].Keyframes.Count;
+        var inserted = shortcut.Invoke(form, new object[] { Keys.F6 }) is true;
+        var insertedFrame = (int)(frameField.GetValue(form) ?? -1);
+        var insertedSelection = timelineStrip.SelectedFrameCells.ToArray();
+        var insertedKeyframeCount = timelineStrip.Context.Timeline.Tracks[0].Keyframes.Count;
+        var undone = undo.Invoke(form, null) is true;
+        var restoredFrame = (int)(frameField.GetValue(form) ?? -1);
+        var restoredSelection = timelineStrip.SelectedFrameCells.ToArray();
+        var restoredKeyframeCount = timelineStrip.Context.Timeline.Tracks[0].Keyframes.Count;
+
+        AssertTimeline(
+            inserted
+            && insertedFrame == initialFrame + 1
+            && insertedSelection.SequenceEqual([new TimelineFrameCell(trackId, initialFrame + 1)])
+            && insertedKeyframeCount == initialKeyframeCount + 1,
+            "F6 undo regression did not insert a keyframe and advance the playhead selection.");
+        AssertTimeline(
+            undone
+            && restoredFrame == initialFrame
+            && restoredSelection.SequenceEqual(initialSelection)
+            && restoredKeyframeCount == initialKeyframeCount,
+            "Undoing F6 did not restore the inserted keyframe, playhead, and frame selection.");
+
+        var blankInserted = shortcut.Invoke(form, new object[] { Keys.F7 }) is true;
+        var blankInsertedFrame = (int)(frameField.GetValue(form) ?? -1);
+        var blankInsertedSelection = timelineStrip.SelectedFrameCells.ToArray();
+        var blankInsertedKeyframeCount = timelineStrip.Context.Timeline.Tracks[0].Keyframes.Count;
+        var blankUndone = undo.Invoke(form, null) is true;
+        var blankRestoredFrame = (int)(frameField.GetValue(form) ?? -1);
+        var blankRestoredSelection = timelineStrip.SelectedFrameCells.ToArray();
+        var blankRestoredKeyframeCount = timelineStrip.Context.Timeline.Tracks[0].Keyframes.Count;
+        AssertTimeline(
+            blankInserted
+            && blankInsertedFrame == initialFrame + 1
+            && blankInsertedSelection.SequenceEqual([new TimelineFrameCell(trackId, initialFrame + 1)])
+            && blankInsertedKeyframeCount == initialKeyframeCount + 1,
+            "F7 undo regression did not insert a blank keyframe and advance the playhead selection.");
+        AssertTimeline(
+            blankUndone
+            && blankRestoredFrame == initialFrame
+            && blankRestoredSelection.SequenceEqual(initialSelection)
+            && blankRestoredKeyframeCount == initialKeyframeCount,
+            "Undoing F7 did not restore the blank keyframe, playhead, and frame selection.");
+    }
+
     private static void RunTimelineFrameCommandRegression()
     {
         AssertTimeline(
@@ -702,6 +784,16 @@ internal static class Benchmark
             && !MainForm.TimelineInsertRequiresCompositionRefresh(12, 18)
             && MainForm.TimelineInsertRequiresCompositionRefresh(12, 6),
             "F5 composition refresh routing did not preserve the unchanged current-frame fast path.");
+
+        var cursorTimeline = new AnimationTimeline();
+        cursorTimeline.SynchronizeTracks(["cursor-layer"], defaultDuration: 25);
+        var cursorTrack = cursorTimeline.FindTrackByTargetId("cursor-layer")
+            ?? throw new InvalidOperationException("F5 playhead regression setup lost its track.");
+        var cursorCell = new TimelineFrameCell(cursorTrack.Id, 0);
+        AssertTimeline(cursorTimeline.InsertFrame(cursorTrack.Id, cursorCell.Frame), "F5 playhead regression did not insert its frame.");
+        AssertTimeline(
+            MainForm.ResolveTimelineInsertPlayheadFrame(cursorTimeline, [cursorCell], 0) == 25,
+            "F5 did not move the playhead to the newly extended exposure end.");
 
         var timeline = new AnimationTimeline();
         timeline.SynchronizeTracks(["layer-a"], defaultDuration: 10);
@@ -761,6 +853,27 @@ internal static class Benchmark
             timelineStrip.FrameHeight == 21
             && TimelineStrip.RowHeightFor(TimelineFrameHeightPreset.Medium) == 21,
             "Medium timeline frame height did not retain the default row metric.");
+        var dragGrid = new Rectangle(10, 20, 100, 60);
+        AssertTimeline(
+            TimelineStrip.ResolveFrameSelectionDragOffset(
+                new Point(-200, -200),
+                dragGrid,
+                rowHeight: 20,
+                frameCellWidth: 10,
+                visibleTrackCount: 3) == (0, 0)
+            && TimelineStrip.ResolveFrameSelectionDragOffset(
+                new Point(1000, 1000),
+                dragGrid,
+                rowHeight: 20,
+                frameCellWidth: 10,
+                visibleTrackCount: 3) == (2, 9)
+            && TimelineStrip.ResolveFrameSelectionDragOffset(
+                new Point(35, 45),
+                dragGrid,
+                rowHeight: 20,
+                frameCellWidth: 10,
+                visibleTrackCount: 3) == (1, 2),
+            "Timeline frame marquee drag did not clamp pointers outside the frame grid to an updateable endpoint.");
         const int emptyFrame = 8;
         timelineStrip.SelectSingleFrame(emptyTrack.Id, emptyFrame);
         AssertTimeline(
@@ -793,6 +906,59 @@ internal static class Benchmark
             && layeredTimelineStrip.SelectedLayerTargetIds.SequenceEqual([targetTrack.TargetId])
             && layeredTimelineStrip.SelectedFrameCells.SequenceEqual([new TimelineFrameCell(targetTrack.Id, 9)]),
             "Selecting a frame left the previous layer highlighted beside the newly active layer.");
+        layeredTimelineStrip.UpdateFrameSelectionFromPointer(new Point(-200, -200));
+        AssertTimeline(
+            layeredTimelineStrip.SelectedFrameCells.Contains(new TimelineFrameCell(layeredScene.Timeline.Tracks[0].Id, 0))
+            && layeredTimelineStrip.SelectedFrameCells.Contains(new TimelineFrameCell(targetTrack.Id, 9)),
+            "Dragging outside the timeline's upper-left corner did not extend the frame selection to the nearest grid cell.");
+        layeredTimelineStrip.UpdateFrameSelectionFromPointer(new Point(2000, 2000));
+        AssertTimeline(
+            layeredTimelineStrip.SelectedFrameCells.Any(cell =>
+                cell.TrackId == layeredScene.Timeline.Tracks[^1].Id
+                && cell.Frame > 9)
+            && layeredTimelineStrip.SelectedFrameCells.Contains(new TimelineFrameCell(targetTrack.Id, 9)),
+            "Dragging outside the timeline's lower-right corner did not extend the frame selection to the nearest grid cell.");
+
+        var scrollScene = new VectorScene();
+        scrollScene.CreateEmpty(12, 20);
+        using var scrollTimelineStrip = new TimelineStrip(scrollScene) { Size = new Size(760, 192) };
+        var scrollAnchor = scrollScene.Timeline.Tracks[0];
+        scrollTimelineStrip.SelectSingleFrame(scrollAnchor.Id, 4);
+        AssertTimeline(
+            TimelineStrip.ResolveFrameSelectionVerticalScrollDelta(-100, dragGrid) == -1
+            && TimelineStrip.ResolveFrameSelectionVerticalScrollDelta(45, dragGrid) == 0
+            && TimelineStrip.ResolveFrameSelectionVerticalScrollDelta(1000, dragGrid) == 1,
+            "Timeline frame marquee vertical auto-scroll did not preserve its viewport-edge activation zones.");
+        for (var index = 0; index < 12; index++)
+        {
+            scrollTimelineStrip.AutoScrollFrameSelection(new Point(290, 1000));
+        }
+        AssertTimeline(
+            scrollTimelineStrip.SelectedFrameCells.Any(cell =>
+                cell.TrackId == scrollScene.Timeline.Tracks[^1].Id
+                && cell.Frame == 4),
+            "Timeline frame marquee auto-scroll did not extend the selection through layers below the viewport.");
+        for (var index = 0; index < 12; index++)
+        {
+            scrollTimelineStrip.AutoScrollFrameSelection(new Point(290, -1000));
+        }
+        AssertTimeline(
+            scrollTimelineStrip.SelectedFrameCells.SequenceEqual([new TimelineFrameCell(scrollAnchor.Id, 4)]),
+            "Timeline frame marquee auto-scroll did not return the selection endpoint to the first layer.");
+
+        var resizeScene = new VectorScene();
+        resizeScene.CreateEmpty(3, 20);
+        using var resizeTimelineStrip = new TimelineStrip(resizeScene) { Size = new Size(760, 192) };
+        resizeScene.Timeline.Clear();
+        resizeTimelineStrip.RefreshTimelineForHeightResize();
+        var latestResizeTrack = resizeScene.Timeline.FindTrackByTargetId(resizeScene.LayerIds[^1]);
+        if (latestResizeTrack is not null) resizeTimelineStrip.SelectSingleFrame(latestResizeTrack.Id, 6);
+        AssertTimeline(
+            resizeScene.Timeline.Tracks.Select(track => track.TargetId).SequenceEqual(resizeScene.LayerIds)
+            && latestResizeTrack is not null
+            && resizeTimelineStrip.ActiveTrackId == latestResizeTrack.Id
+            && resizeTimelineStrip.SelectedFrameCells.SequenceEqual([new TimelineFrameCell(latestResizeTrack.Id, 6)]),
+            "Refreshing during a timeline height resize did not restore the latest layer tracks and selection state.");
     }
 
     private static void RunTimelineTrackSynchronizationRegression()
@@ -1474,6 +1640,90 @@ internal static class Benchmark
             && scene.IsObjectActive(0, 0)
             && scene.IsObjectActive(1, 17),
             "Vector scene snapshot restore did not recover independent cel ownership.");
+    }
+
+    private static void RunAutoKeyframeMaterializationRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.EditFrame = 0;
+        var editedObject = scene.AddObject(
+            0,
+            new PointF(24, 36),
+            new SizeF(80, 48),
+            0,
+            0,
+            Color.Teal,
+            6,
+            ShapeKind.Rectangle);
+        var originalX = scene.X[editedObject];
+        var originalOrder = scene.ObjectOrder[editedObject];
+        var track = scene.Timeline.FindTrackByTargetId(scene.LayerIds[0])
+            ?? throw new InvalidOperationException("Auto-key regression lost its drawing track.");
+        var trackId = track.Id;
+        var undoSnapshot = scene.CreateSnapshot();
+
+        AssertTimeline(
+            scene.MaterializeAutoKeyframeInPlace(0, 8)
+            && scene.ObjectCount == 2
+            && scene.ObjectKeyframeFrame[editedObject] == 8
+            && scene.ObjectKeyframeFrame[1] == 0
+            && scene.ObjectOrder[editedObject] == originalOrder
+            && scene.ObjectOrder[1] == originalOrder
+            && track.EvaluateExposure(8) is
+            {
+                IsKeyframe: true,
+                HasContent: true,
+                SourceKeyframeFrame: 8
+            },
+            "Auto Key did not preserve the live object index while isolating the held source cel at the playhead.");
+
+        scene.X[editedObject] = originalX + 200;
+        scene.RebuildGeometryIndex();
+        AssertTimeline(
+            NearlyEqual(scene.X[1], originalX)
+            && NearlyEqual(scene.X[editedObject], originalX + 200)
+            && !scene.MaterializeAutoKeyframeInPlace(0, 8)
+            && scene.ObjectCount == 2
+            && scene.Timeline.FindTrack(trackId) is not null,
+            "Auto Key changed the historical cel, duplicated an existing playhead key, or replaced stable track identity.");
+
+        scene.RestoreSnapshot(undoSnapshot);
+        track = scene.Timeline.FindTrack(trackId)
+            ?? throw new InvalidOperationException("Auto-key snapshot restore replaced stable track identity.");
+        AssertTimeline(
+            scene.ObjectCount == 1
+            && scene.ObjectKeyframeFrame[editedObject] == 0
+            && NearlyEqual(scene.X[editedObject], originalX)
+            && !track.EvaluateExposure(8).IsKeyframe,
+            "One snapshot restore did not remove both the auto-generated cel and its canvas edit.");
+
+        var blankScene = new VectorScene();
+        blankScene.CreateEmpty();
+        AssertTimeline(
+            blankScene.MaterializeAutoKeyframeInPlace(0, 7),
+            "Auto Key did not place an explicit blank key at the playhead before drawing on a blank hold.");
+        var blankTrack = blankScene.Timeline.FindTrackByTargetId(blankScene.LayerIds[0])
+            ?? throw new InvalidOperationException("Blank auto-key regression lost its drawing track.");
+        blankScene.EditFrame = 7;
+        var drawnObject = blankScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(24, 24),
+            0,
+            0,
+            Color.Coral,
+            6,
+            ShapeKind.Ellipse);
+        AssertTimeline(
+            blankScene.ObjectKeyframeFrame[drawnObject] == 7
+            && blankTrack.EvaluateExposure(7) is
+            {
+                IsKeyframe: true,
+                HasContent: true,
+                SourceKeyframeFrame: 7
+            },
+            "Drawing after Auto Key wrote into the held blank source instead of the playhead cel.");
     }
 
     private static void RunVectorSceneKeyframeBoundaryRegression()
@@ -2529,6 +2779,14 @@ internal static class Benchmark
     {
         var project = VectorProject.CreateEmpty();
         project.Name = "Restart Snapshot";
+        AssertTimeline(
+            project.TrySetPlaybackSettings(30m, loopPlayback: true, playbackStartFrame: 100, playbackEndFrame: 200)
+            && project.TrySetPlaybackFps(29.97m)
+            && project.TrySetLoopPlayback(false)
+            && project.PlaybackStartFrame == 100
+            && project.PlaybackEndFrame == 200
+            && project.TrySetPlaybackRange(2, 18),
+            "Project playback setting updates overwrote an unrelated saved setting.");
         var root = project.DrawingObjects[0];
         root.Scene.CreateEmpty();
         var rootLine = root.Scene.AddLineSegment(
@@ -2593,6 +2851,11 @@ internal static class Benchmark
         var restoredChild = restored.DrawingObjects.SingleOrDefault(item => item.Id == child.Id);
         var restoredScene = restored.Scenes.SingleOrDefault(item => item.Id == project.Scenes[0].Id);
         if (restored.Name != project.Name
+            || restored.Id != project.Id
+            || restored.PlaybackFps != 29.97m
+            || restored.LoopPlayback
+            || restored.PlaybackStartFrame != 2
+            || restored.PlaybackEndFrame != 18
             || restored.DrawingObjects.Count != 2
             || restored.AssetFolders.Count != 2
             || restored.Scenes.Count != 1
@@ -2620,7 +2883,463 @@ internal static class Benchmark
             throw new InvalidOperationException("Editor restart snapshot did not preserve project geometry, instance ownership, or timeline state.");
         }
 
+        var editorState = new EditorRestartState
+        {
+            Project = project,
+            ProjectManifestPath = @"C:\Projects\Restart Snapshot.v2dProject",
+            ProjectDirty = true,
+            ActiveSceneIndex = 0,
+            ActiveDrawingObjectIndex = 0,
+            Workspace = WorkspaceView.BasicDrawing,
+            Frame = 5,
+            SelectedObjects = [rootLine],
+            StageView = new StageViewState(
+                12,
+                -8,
+                1.25f,
+                0.2f,
+                -0.1f,
+                2400,
+                0.9f,
+                3,
+                4,
+                5,
+                0.2f,
+                WorldGridType.Cartesian),
+            WindowBounds = new Rectangle(40, 60, 1280, 800),
+            WindowState = FormWindowState.Normal
+        };
+        EditorRestartStore.DeletePending();
+        try
+        {
+            var pendingPaths = EditorRestartStore.GetPendingPathsForRegression();
+            AssertTimeline(
+                EditorRestartStore.TrySave(editorState)
+                && File.Exists(pendingPaths.StatePath)
+                && File.Exists(pendingPaths.TokenSidecarPath)
+                && !EditorRestartStore.TryConsume(requestedToken: null, out _)
+                && !File.Exists(pendingPaths.StatePath)
+                && !File.Exists(pendingPaths.TokenSidecarPath),
+                "A normal startup did not reject and remove an unrequested editor restart state.");
+
+            AssertTimeline(
+                EditorRestartStore.TrySave(editorState)
+                && EditorRestartStore.TryGetPendingTokenForRegression(out var rejectedToken)
+                && !EditorRestartStore.TryConsume(Guid.NewGuid().ToString("N"), out _)
+                && !File.Exists(pendingPaths.StatePath)
+                && !File.Exists(pendingPaths.TokenSidecarPath)
+                && rejectedToken.Length == 32,
+                "An incorrect editor restart token did not reject and remove the pending state.");
+
+            AssertTimeline(
+                EditorRestartStore.TrySave(editorState)
+                && EditorRestartStore.TryGetPendingTokenForRegression(out var restartToken)
+                && EditorRestartStore.GetRequestedToken(
+                    ["--unrelated", EditorRestartStore.TokenArgumentPrefix + restartToken]) == restartToken
+                && EditorRestartStore.TryConsume(restartToken, out var consumedState)
+                && consumedState is not null
+                && consumedState.Project.Id == project.Id
+                && consumedState.Project.PlaybackFps == project.PlaybackFps
+                && consumedState.ProjectManifestPath == editorState.ProjectManifestPath
+                && consumedState.ProjectDirty
+                && consumedState.Frame == editorState.Frame
+                && !File.Exists(pendingPaths.StatePath)
+                && !File.Exists(pendingPaths.TokenSidecarPath)
+                && !EditorRestartStore.TryConsume(restartToken, out _),
+                "The editor restart token did not authorize exactly one state restoration.");
+        }
+        finally
+        {
+            EditorRestartStore.DeletePending();
+        }
+
         Console.WriteLine("editor_restart_snapshot_regression=ok");
+    }
+
+    private static void RunProjectVaultPersistenceRegression()
+    {
+        var temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            "Vector2DAnimationEngine",
+            $"project-vault-regression-{Guid.NewGuid():N}");
+        var manifestPath = Path.Combine(temporaryRoot, "Library.v2dProject");
+        Directory.CreateDirectory(temporaryRoot);
+        try
+        {
+            var project = VectorProject.CreateEmpty();
+            project.Name = "Library & 资产";
+            var playbackChangeCount = 0;
+            project.Changed += (_, _) => playbackChangeCount++;
+            AssertTimeline(
+                project.TrySetPlaybackSettings(23.976m, loopPlayback: false, playbackStartFrame: 3, playbackEndFrame: 9)
+                && project.PlaybackFps == 23.976m
+                && !project.LoopPlayback
+                && project.PlaybackStartFrame == 3
+                && project.PlaybackEndFrame == 9
+                && playbackChangeCount == 1
+                && !project.TrySetPlaybackSettings(23.976m, loopPlayback: false, playbackStartFrame: 3, playbackEndFrame: 9)
+                && playbackChangeCount == 1,
+                "Project playback settings did not normalize or raise one change notification.");
+            var root = project.DrawingObjects[0];
+            root.Scene.CreateEmpty(2, 12);
+            root.Scene.ActiveLayer = 0;
+            var nestedLayerId = root.Scene.LayerIds[1];
+            var line = root.Scene.AddLineSegment(
+                0,
+                new PointF(-120, -30),
+                new PointF(180, 90),
+                VectorUnits.StrokePointsToUnits(2.5f),
+                Color.Transparent,
+                Color.FromArgb(210, 24, 170, 220),
+                18,
+                LineEndpointStyle.Round,
+                LineEndpointStyle.Sharp);
+            var path = root.Scene.AddPathObject(
+                1,
+                [new PointF(-40, -30), new PointF(70, -20), new PointF(55, 80), new PointF(-65, 60)],
+                0,
+                Color.Teal,
+                Color.Coral,
+                12);
+            root.Scene.SetLinearGradient(
+                path,
+                Color.FromArgb(180, Color.Gold),
+                Color.FromArgb(220, Color.RoyalBlue),
+                new PointF(-65, -30),
+                new PointF(70, 80));
+            root.Scene.SetGradientStops(path, [
+                new GradientStop(0, Color.FromArgb(180, Color.Gold)),
+                new GradientStop(0.45f, Color.FromArgb(210, Color.Coral)),
+                new GradientStop(1, Color.FromArgb(220, Color.RoyalBlue))]);
+            const string importedSvgSource = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+                  <defs><linearGradient id="g"><stop stop-color="#ff3355"/><stop offset="1" stop-color="#2277ee" stop-opacity=".55"/></linearGradient></defs>
+                  <rect width="120" height="80" rx="12" fill="url(#g)"/>
+                </svg>
+                """;
+            var importedSvg = root.Scene.AddImportedSvgObject(
+                1,
+                new PointF(160, 40),
+                new SizeF(3000, 2000),
+                0.25f,
+                importedSvgSource);
+            AssertTimeline(
+                root.Scene.InsertTimelineBlankKeyframe(0, 4),
+                "Project Vault regression could not create a blank drawing cel.");
+
+            var child = project.AddDrawingObject("Nested <Child>");
+            child.Scene.AddObject(0, new PointF(24, 18), new SizeF(90, 60), 0.2f, 0, Color.LimeGreen, 8, ShapeKind.Ellipse);
+            DrawingObjectInstanceDefinition? nested = null;
+            DrawingObjectInstanceDefinition? sceneInstance = null;
+            AssertTimeline(
+                project.TryAddAssetFolder("Characters", "", out var folder)
+                && folder is not null
+                && project.TryMoveDrawingObjectToAssetFolder(child.Id, folder.Id)
+                && project.TryAddDrawingObjectInstance(
+                    root.Id,
+                    child.Id,
+                    new PointF(48, 36),
+                    nestedLayerId,
+                    out nested)
+                && nested is not null
+                && project.TryAddSceneInstance(project.Scenes[0].Id, root.Id, new PointF(320, 180), 2, out sceneInstance)
+                && sceneInstance is not null,
+                "Project Vault regression could not create its asset graph.");
+            nested!.SetStateAtFrame(6, nested.EvaluateState(6) with
+            {
+                X = 140,
+                RotationZ = 32,
+                PlaybackFps = 23.976m,
+                PlaybackMode = DrawingObjectPlaybackMode.Loop
+            });
+            sceneInstance!.SetStateAtFrame(7, sceneInstance.EvaluateState(7) with
+            {
+                Y = 260,
+                ScaleX = 1.4f,
+                PlaybackFps = 24m,
+                PlaybackMode = DrawingObjectPlaybackMode.HoldFrame,
+                HoldFrame = 3
+            });
+
+            var drawingTrackId = root.Scene.Timeline.Tracks[0].Id;
+            var savedManifest = ProjectVaultStore.Save(project, manifestPath);
+            var svgPath = Path.Combine(temporaryRoot, ".Vault", $"{root.Id}.svg");
+            var drawingTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Drawings", $"{root.Id}.json");
+            var sceneTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Scenes", $"{project.Scenes[0].Id}.json");
+            var svg = File.ReadAllText(svgPath);
+            AssertTimeline(
+                savedManifest == Path.GetFullPath(manifestPath)
+                && File.Exists(manifestPath)
+                && File.Exists(svgPath)
+                && File.Exists(drawingTimelinePath)
+                && File.Exists(sceneTimelinePath)
+                && svg.Contains("http://www.w3.org/2000/svg", StringComparison.Ordinal)
+                && svg.Contains("v2d-metadata", StringComparison.Ordinal)
+                && svg.Contains("<path", StringComparison.Ordinal)
+                && svg.Contains("<image", StringComparison.Ordinal)
+                && svg.Contains("data:image/svg+xml;base64,", StringComparison.Ordinal),
+                "Project Vault did not write the manifest, SVG assets, timeline library, or standard SVG preview.");
+
+            var restored = ProjectVaultStore.Load(manifestPath);
+            var restoredRoot = restored.DrawingObjects.Single(item => item.Id == root.Id);
+            var restoredChild = restored.DrawingObjects.Single(item => item.Id == child.Id);
+            var restoredScene = restored.Scenes.Single(item => item.Id == project.Scenes[0].Id);
+            var restoredRootSnapshot = restoredRoot.Scene.CreateSnapshot();
+            AssertTimeline(
+                restored.Id == project.Id
+                && restored.Name == project.Name
+                && restored.PlaybackFps == 23.976m
+                && !restored.LoopPlayback
+                && restored.PlaybackStartFrame == 3
+                && restored.PlaybackEndFrame == 9
+                && restoredRoot.Scene.ObjectCount == root.Scene.ObjectCount
+                && restoredRoot.Scene.ShapeKind[line] == ShapeKind.Line
+                && restoredRoot.Scene.GetLineEndpointStyle(line, startEndpoint: true) == LineEndpointStyle.Round
+                && restoredRoot.Scene.GetLineEndpointStyle(line, startEndpoint: false) == LineEndpointStyle.Sharp
+                && restoredRoot.Scene.ShapeKind[importedSvg] == ShapeKind.ImportedSvg
+                && restoredRoot.Scene.TryGetImportedSvgSource(importedSvg, out var restoredImportedSvgSource)
+                && restoredImportedSvgSource == importedSvgSource
+                && restoredRootSnapshot.GradientStops.TryGetValue(path, out var restoredStops)
+                && restoredStops.Length == 3
+                && restoredRoot.Scene.Timeline.Tracks[0].Id == drawingTrackId
+                && restoredRoot.Scene.Timeline.Tracks[0].Keyframes.Any(key =>
+                    key.Frame == 4 && key.Kind == TimelineKeyframeKind.Blank)
+                && restoredRoot.Instances.Single().SceneLayerId == nestedLayerId
+                && restoredRoot.Instances.Single().EvaluateState(6).PlaybackFps == 23.976m
+                && restoredChild.AssetFolderId == folder!.Id
+                && restoredScene.Instances.Single().EvaluateState(7).HoldFrame == 3,
+                "Project Vault load did not restore project identity, SVG geometry, layers, frames, or animated instances.");
+
+            var unrelatedPath = Path.Combine(temporaryRoot, "notes.txt");
+            File.WriteAllText(unrelatedPath, "preserve me");
+            var stalePath = Path.Combine(temporaryRoot, ".Vault", "stale.svg");
+            File.WriteAllText(stalePath, "stale");
+            ProjectVaultStore.Save(project, manifestPath);
+            AssertTimeline(
+                File.Exists(unrelatedPath) && !File.Exists(stalePath),
+                "Project Vault overwrite removed an unrelated root file or retained a stale managed asset.");
+
+            File.AppendAllText(svgPath, "<!-- tampered -->");
+            var checksumRejected = false;
+            try
+            {
+                _ = ProjectVaultStore.Load(manifestPath);
+            }
+            catch (InvalidDataException)
+            {
+                checksumRejected = true;
+            }
+            AssertTimeline(checksumRejected, "Project Vault accepted a drawing SVG whose checksum no longer matched the manifest.");
+
+            ProjectVaultStore.Save(project, manifestPath);
+            var secondManifestRejected = false;
+            try
+            {
+                _ = ProjectVaultStore.Save(project, Path.Combine(temporaryRoot, "Second.v2dProject"));
+            }
+            catch (InvalidOperationException)
+            {
+                secondManifestRejected = true;
+            }
+            AssertTimeline(secondManifestRejected, "One asset-library folder accepted two project manifests that share managed directories.");
+
+            var unmanagedRoot = Path.Combine(temporaryRoot, "unmanaged-target");
+            var unmanagedVault = Path.Combine(unmanagedRoot, ".Vault");
+            var unmanagedTimeline = Path.Combine(unmanagedRoot, ".TimeLine");
+            Directory.CreateDirectory(unmanagedVault);
+            Directory.CreateDirectory(unmanagedTimeline);
+            var unmanagedVaultSentinel = Path.Combine(unmanagedVault, "keep.bin");
+            var unmanagedTimelineSentinel = Path.Combine(unmanagedTimeline, "keep.json");
+            File.WriteAllBytes(unmanagedVaultSentinel, [1, 2, 3, 4]);
+            File.WriteAllText(unmanagedTimelineSentinel, "preserve me");
+            var unmanagedTargetRejected = false;
+            try
+            {
+                _ = ProjectVaultStore.Save(project, Path.Combine(unmanagedRoot, "Library.v2dProject"));
+            }
+            catch (InvalidOperationException)
+            {
+                unmanagedTargetRejected = true;
+            }
+            AssertTimeline(
+                unmanagedTargetRejected
+                && File.ReadAllBytes(unmanagedVaultSentinel).SequenceEqual(new byte[] { 1, 2, 3, 4 })
+                && File.ReadAllText(unmanagedTimelineSentinel) == "preserve me",
+                "Project Vault replaced unmanaged .Vault or .TimeLine data during a first save.");
+
+            var foreignRoot = Path.Combine(temporaryRoot, "foreign-project");
+            var foreignManifest = Path.Combine(foreignRoot, "Library.v2dProject");
+            var foreignProject = VectorProject.CreateEmpty();
+            ProjectVaultStore.Save(foreignProject, foreignManifest);
+            var foreignProjectRejected = false;
+            try
+            {
+                _ = ProjectVaultStore.Save(project, foreignManifest);
+            }
+            catch (InvalidOperationException)
+            {
+                foreignProjectRejected = true;
+            }
+            var preservedForeignProject = ProjectVaultStore.Load(foreignManifest);
+            AssertTimeline(
+                foreignProjectRejected && preservedForeignProject.Id == foreignProject.Id,
+                "Project Vault overwrote a same-name manifest that belongs to a different project.");
+
+            var recoveryRoot = Path.Combine(temporaryRoot, "interrupted-save");
+            var recoveryManifest = Path.Combine(recoveryRoot, "Recovery.v2dProject");
+            var recoveryProject = VectorProject.CreateEmpty();
+            recoveryProject.Name = "Before interruption";
+            ProjectVaultStore.Save(recoveryProject, recoveryManifest);
+
+            var preparedOperationId = Guid.NewGuid().ToString("N");
+            var preparedPaths = ProjectVaultStore.GetSaveRecoveryPathsForRegression(
+                recoveryManifest,
+                preparedOperationId);
+            Directory.CreateDirectory(preparedPaths.BackupRoot);
+            Directory.Move(
+                Path.Combine(recoveryRoot, ".Vault"),
+                Path.Combine(preparedPaths.BackupRoot, ".Vault"));
+            Directory.Move(
+                Path.Combine(recoveryRoot, ".TimeLine"),
+                Path.Combine(preparedPaths.BackupRoot, ".TimeLine"));
+            File.Move(
+                recoveryManifest,
+                Path.Combine(preparedPaths.BackupRoot, Path.GetFileName(recoveryManifest)));
+            Directory.CreateDirectory(preparedPaths.StagingRoot);
+            Directory.CreateDirectory(Path.Combine(recoveryRoot, ".Vault"));
+            File.WriteAllText(Path.Combine(recoveryRoot, ".Vault", "partial.svg"), "partial");
+            ProjectVaultStore.WriteSaveJournalForRegression(
+                recoveryManifest,
+                preparedOperationId,
+                recoveryProject.Id,
+                hadManagedProject: true,
+                installed: false);
+
+            var rolledBackProject = ProjectVaultStore.Load(recoveryManifest);
+            AssertTimeline(
+                rolledBackProject.Id == recoveryProject.Id
+                && rolledBackProject.Name == recoveryProject.Name
+                && File.Exists(recoveryManifest)
+                && Directory.Exists(Path.Combine(recoveryRoot, ".Vault"))
+                && Directory.Exists(Path.Combine(recoveryRoot, ".TimeLine"))
+                && !File.Exists(Path.Combine(recoveryRoot, ".Vault", "partial.svg"))
+                && !Directory.Exists(preparedPaths.StagingRoot)
+                && !Directory.Exists(preparedPaths.BackupRoot)
+                && !File.Exists(preparedPaths.JournalPath),
+                "Prepared project-save recovery did not restore the previous complete managed file set.");
+
+            var damagedOperationId = Guid.NewGuid().ToString("N");
+            var damagedPaths = ProjectVaultStore.GetSaveRecoveryPathsForRegression(
+                recoveryManifest,
+                damagedOperationId);
+            Directory.CreateDirectory(damagedPaths.BackupRoot);
+            Directory.Move(
+                Path.Combine(recoveryRoot, ".Vault"),
+                Path.Combine(damagedPaths.BackupRoot, ".Vault"));
+            Directory.Move(
+                Path.Combine(recoveryRoot, ".TimeLine"),
+                Path.Combine(damagedPaths.BackupRoot, ".TimeLine"));
+            File.Move(
+                recoveryManifest,
+                Path.Combine(damagedPaths.BackupRoot, Path.GetFileName(recoveryManifest)));
+
+            rolledBackProject.Name = "After interruption";
+            ProjectVaultStore.Save(rolledBackProject, recoveryManifest);
+            var damagedSvgPath = Directory.GetFiles(Path.Combine(recoveryRoot, ".Vault"), "*.svg").Single();
+            File.AppendAllText(damagedSvgPath, "<!-- incomplete installed file -->");
+            ProjectVaultStore.WriteSaveJournalForRegression(
+                recoveryManifest,
+                damagedOperationId,
+                recoveryProject.Id,
+                hadManagedProject: true,
+                installed: true);
+
+            var recoveredDamagedInstall = ProjectVaultStore.Load(recoveryManifest);
+            AssertTimeline(
+                recoveredDamagedInstall.Id == recoveryProject.Id
+                && recoveredDamagedInstall.Name == recoveryProject.Name
+                && !File.ReadAllText(
+                    Directory.GetFiles(Path.Combine(recoveryRoot, ".Vault"), "*.svg").Single())
+                    .Contains("incomplete installed file", StringComparison.Ordinal)
+                && !Directory.Exists(damagedPaths.StagingRoot)
+                && !Directory.Exists(damagedPaths.BackupRoot)
+                && !File.Exists(damagedPaths.JournalPath),
+                "Installed project-save recovery deleted the valid backup instead of rolling back damaged files.");
+
+            var missingTargetOperationId = Guid.NewGuid().ToString("N");
+            var missingTargetPaths = ProjectVaultStore.GetSaveRecoveryPathsForRegression(
+                recoveryManifest,
+                missingTargetOperationId);
+            Directory.CreateDirectory(missingTargetPaths.BackupRoot);
+            Directory.Move(
+                Path.Combine(recoveryRoot, ".Vault"),
+                Path.Combine(missingTargetPaths.BackupRoot, ".Vault"));
+            Directory.Move(
+                Path.Combine(recoveryRoot, ".TimeLine"),
+                Path.Combine(missingTargetPaths.BackupRoot, ".TimeLine"));
+            File.Move(
+                recoveryManifest,
+                Path.Combine(missingTargetPaths.BackupRoot, Path.GetFileName(recoveryManifest)));
+
+            recoveredDamagedInstall.Name = "Installed with missing target";
+            ProjectVaultStore.Save(recoveredDamagedInstall, recoveryManifest);
+            Directory.Delete(Path.Combine(recoveryRoot, ".TimeLine"), recursive: true);
+            ProjectVaultStore.WriteSaveJournalForRegression(
+                recoveryManifest,
+                missingTargetOperationId,
+                recoveryProject.Id,
+                hadManagedProject: true,
+                installed: true);
+
+            var recoveredMissingTarget = ProjectVaultStore.Load(recoveryManifest);
+            AssertTimeline(
+                recoveredMissingTarget.Id == recoveryProject.Id
+                && recoveredMissingTarget.Name == recoveryProject.Name
+                && Directory.Exists(Path.Combine(recoveryRoot, ".Vault"))
+                && Directory.Exists(Path.Combine(recoveryRoot, ".TimeLine"))
+                && File.Exists(recoveryManifest)
+                && !Directory.Exists(missingTargetPaths.StagingRoot)
+                && !Directory.Exists(missingTargetPaths.BackupRoot)
+                && !File.Exists(missingTargetPaths.JournalPath),
+                "Installed project-save recovery did not restore a valid backup when a target was missing.");
+
+            var installedOperationId = Guid.NewGuid().ToString("N");
+            var installedPaths = ProjectVaultStore.GetSaveRecoveryPathsForRegression(
+                recoveryManifest,
+                installedOperationId);
+            Directory.CreateDirectory(installedPaths.StagingRoot);
+            Directory.CreateDirectory(installedPaths.BackupRoot);
+            File.WriteAllText(Path.Combine(installedPaths.StagingRoot, "stale.tmp"), "stale");
+            File.WriteAllText(Path.Combine(installedPaths.BackupRoot, "stale.tmp"), "stale");
+            ProjectVaultStore.WriteSaveJournalForRegression(
+                recoveryManifest,
+                installedOperationId,
+                recoveryProject.Id,
+                hadManagedProject: true,
+                installed: true);
+
+            var installedProject = ProjectVaultStore.Load(recoveryManifest);
+            AssertTimeline(
+                installedProject.Id == recoveryProject.Id
+                && installedProject.Name == recoveryProject.Name
+                && !Directory.Exists(installedPaths.StagingRoot)
+                && !Directory.Exists(installedPaths.BackupRoot)
+                && !File.Exists(installedPaths.JournalPath),
+                "Installed project-save recovery did not preserve the complete new file set and clean recovery files.");
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(temporaryRoot)) Directory.Delete(temporaryRoot, recursive: true);
+            }
+            catch
+            {
+                // A later regression run uses a unique directory.
+            }
+        }
+
+        Console.WriteLine("project_vault_persistence_regression=ok");
     }
 
     private static void RunDrawingObjectInstancePlaybackRegression()
@@ -2677,6 +3396,12 @@ internal static class Benchmark
             && result.TryGetOwner(1, out var directOwner)
             && directOwner.RootInstanceId == direct.Id,
             "Composition did not evaluate two instances of one source at independent held frames.");
+
+        direct.PlaybackMode = DrawingObjectPlaybackMode.PlayOnce;
+        direct.PlaybackFps = 24m;
+        AssertTimeline(
+            direct.ResolvePlaybackFrame(999, 23.976m, 2000) == 1000,
+            "Fractional parent FPS was truncated while resolving an instance playback frame.");
 
         direct.PlaybackMode = DrawingObjectPlaybackMode.Loop;
         direct.PlaybackFps = 15;
@@ -2955,6 +3680,9 @@ internal static class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunImportedSvgRasterizerRegression();
+        RunImportedSvgBreakApartRegression();
+        RunSelectionHighlightStyleRegression();
         RunTemporaryCanvasPanRegression();
         RunImmediateMarqueeOverlayRegression();
         RunWorkspacePanelAnimationRegression();
@@ -3284,6 +4012,372 @@ internal static class Benchmark
         Console.WriteLine($"fit_stage_command_budget_met={commandBudgetMet.ToString().ToLowerInvariant()}");
         Console.WriteLine($"fit_stage_command_capacity_fps={1000.0 / averageCommandMilliseconds:0.0}");
         Console.WriteLine($"fit_stage_present_avg_ms={presentMilliseconds / renderSamples:0.000}");
+    }
+
+    private static void RunSelectionHighlightStyleRegression()
+    {
+        const float pulse = 0.5f;
+        var fillLine = StageControl.SelectionLineColor(SelectionHighlightKind.Fill, primary: true);
+        var strokeLine = StageControl.SelectionLineColor(SelectionHighlightKind.Stroke, primary: true);
+        var fillGlow = StageControl.SelectionGlowColor(SelectionHighlightKind.Fill, primary: true, pulse);
+        var strokeGlow = StageControl.SelectionGlowColor(SelectionHighlightKind.Stroke, primary: true, pulse);
+        var fillWidth = StageControl.SelectionLineWidth(SelectionHighlightKind.Fill, primary: true, pulse);
+        var strokeWidth = StageControl.SelectionLineWidth(SelectionHighlightKind.Stroke, primary: true, pulse);
+        AssertTimeline(
+            StageControl.SelectionHighlightForShape(ShapeKind.Rectangle) == SelectionHighlightKind.Fill
+            && StageControl.SelectionHighlightForShape(ShapeKind.Path) == SelectionHighlightKind.Fill
+            && StageControl.SelectionHighlightForShape(ShapeKind.BrushStroke) == SelectionHighlightKind.Fill
+            && StageControl.SelectionHighlightForShape(ShapeKind.Line) == SelectionHighlightKind.Stroke
+            && StageControl.SelectionHighlightForShape(ShapeKind.Freeform) == SelectionHighlightKind.Stroke
+            && fillLine.ToArgb() != strokeLine.ToArgb()
+            && fillGlow.B > fillGlow.R
+            && strokeGlow.R > strokeGlow.B
+            && strokeWidth > fillWidth
+            && StageControl.SelectionOuterGlowWidth(SelectionHighlightKind.Fill, primary: true, pulse: 1)
+                > StageControl.SelectionOuterGlowWidth(SelectionHighlightKind.Fill, primary: true, pulse: 0)
+            && StageControl.SelectionOuterGlowWidth(SelectionHighlightKind.Stroke, primary: true, pulse: 1)
+                > StageControl.SelectionOuterGlowWidth(SelectionHighlightKind.Stroke, primary: true, pulse: 0),
+            "Fill and stroke selection highlights did not retain distinct cool/thin and warm/strong styles.");
+        Console.WriteLine("selection_highlight_style_regression=ok");
+    }
+
+    private static void RunImportedSvgRasterizerRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+              <defs><linearGradient id="g"><stop stop-color="#ff3355"/><stop offset="1" stop-color="#2277ee" stop-opacity=".45"/></linearGradient></defs>
+              <rect x="4" y="4" width="112" height="72" rx="10" fill="url(#g)"/>
+            </svg>
+            """;
+        var temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            "Vector2DAnimationEngine",
+            $"imported-svg-regression-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        try
+        {
+            var validPath = Path.Combine(temporaryRoot, "valid.svg");
+            File.WriteAllText(validPath, source);
+            var droppedSvg = new DataObject(DataFormats.FileDrop, new[] { validPath });
+            var droppedMultiple = new DataObject(DataFormats.FileDrop, new[] { validPath, validPath });
+            var droppedNonSvg = new DataObject(DataFormats.FileDrop, new[] { Path.Combine(temporaryRoot, "valid.png") });
+            AssertTimeline(
+                MainForm.TryResolveDroppedSvgFile(droppedSvg, out var droppedPath)
+                && droppedPath == validPath
+                && !MainForm.TryResolveDroppedSvgFile(droppedMultiple, out _)
+                && !MainForm.TryResolveDroppedSvgFile(droppedNonSvg, out _),
+                "Stage file-drop routing did not accept exactly one SVG file.");
+            var loaded = ImportedSvgRasterizer.Load(validPath);
+            var raster = ImportedSvgRasterizer.Rasterize(loaded.Source, 240, 160);
+            foreach (var requestedSize in new[]
+                     {
+                         new SizeF(15, 10),
+                         new SizeF(60, 40),
+                         new SizeF(300, 200),
+                         new SizeF(12_000, 8_000)
+                     })
+            {
+                var zoomRaster = ImportedSvgRasterizer.Rasterize(
+                    loaded.Source,
+                    requestedSize.Width,
+                    requestedSize.Height);
+                var aspectCrossError = Math.Abs(
+                    zoomRaster.PixelWidth * (double)requestedSize.Height
+                    - zoomRaster.PixelHeight * (double)requestedSize.Width);
+                AssertTimeline(
+                    aspectCrossError <= Math.Max(requestedSize.Width, requestedSize.Height)
+                    && zoomRaster.PixelWidth <= ImportedSvgRasterizer.MaxRasterDimension
+                    && zoomRaster.PixelHeight <= ImportedSvgRasterizer.MaxRasterDimension
+                    && (long)zoomRaster.PixelWidth * zoomRaster.PixelHeight <= ImportedSvgRasterizer.MaxRasterPixels,
+                    $"Imported SVG raster quantization changed the target aspect ratio at {requestedSize.Width}x{requestedSize.Height}: " +
+                    $"{zoomRaster.PixelWidth}x{zoomRaster.PixelHeight}.");
+            }
+            var visiblePixels = 0;
+            var visibleLeft = raster.PixelWidth;
+            var visibleTop = raster.PixelHeight;
+            var visibleRight = -1;
+            var visibleBottom = -1;
+            for (var y = 0; y < raster.PixelHeight; y++)
+            {
+                for (var x = 0; x < raster.PixelWidth; x++)
+                {
+                    var alphaOffset = y * raster.Stride + x * 4 + 3;
+                    if (raster.Pixels[alphaOffset] == 0) continue;
+                    visiblePixels++;
+                    visibleLeft = Math.Min(visibleLeft, x);
+                    visibleTop = Math.Min(visibleTop, y);
+                    visibleRight = Math.Max(visibleRight, x);
+                    visibleBottom = Math.Max(visibleBottom, y);
+                }
+            }
+            var visibleWidth = Math.Max(0, visibleRight - visibleLeft + 1);
+            var visibleHeight = Math.Max(0, visibleBottom - visibleTop + 1);
+
+            var scene = new VectorScene();
+            scene.CreateEmpty();
+            scene.AddObject(0, PointF.Empty, new SizeF(20, 20), 0, 0, Color.Black, 3, ShapeKind.Rectangle);
+            var imported = scene.AddImportedSvgObject(0, new PointF(30, 40), new SizeF(120, 80), 0.2f, loaded.Source);
+            var snapshot = scene.CreateSnapshot();
+            AssertTimeline(
+                imported == 1
+                && scene.ObjectCount == 2
+                && scene.ShapeKind[imported] == ShapeKind.ImportedSvg
+                && scene.TryGetImportedSvgSource(imported, out var addedSource)
+                && addedSource == loaded.Source
+                && visiblePixels > 0
+                && visibleWidth >= raster.PixelWidth * 0.85f
+                && visibleHeight >= raster.PixelHeight * 0.85f,
+                $"Imported SVG load did not create one opaque object or a target-sized visible raster: " +
+                $"raster={raster.PixelWidth}x{raster.PixelHeight}, visible={visibleWidth}x{visibleHeight}.");
+
+            scene.RemoveObjectAt(0);
+            AssertTimeline(
+                scene.ObjectCount == 1
+                && scene.ShapeKind[0] == ShapeKind.ImportedSvg
+                && scene.TryGetImportedSvgSource(0, out var remappedSource)
+                && remappedSource == loaded.Source,
+                "Imported SVG payload did not follow object-index compaction.");
+            scene.RestoreSnapshot(snapshot);
+            AssertTimeline(
+                scene.TryGetImportedSvgSource(imported, out var restoredSource)
+                && restoredSource == loaded.Source,
+                "Imported SVG payload did not survive snapshot restore.");
+
+            var project = VectorProject.CreateEmpty();
+            var drawingObject = project.DrawingObjects[0];
+            drawingObject.Scene.CreateEmpty();
+            drawingObject.Scene.AddImportedSvgObject(
+                0,
+                new PointF(20, -10),
+                new SizeF(120, 80),
+                0.2f,
+                loaded.Source);
+            AssertTimeline(
+                project.TryAddSceneInstance(project.Scenes[0].Id, drawingObject.Id, PointF.Empty, 0, out var instance)
+                && instance is not null,
+                "Imported SVG composition setup rejected a valid instance.");
+            var instanceState = instance!.EvaluateState(0);
+            instance.SetStateAtFrame(0, instanceState with
+            {
+                ScaleX = -1.2f,
+                ScaleY = 0.8f,
+                SkewX = 24
+            });
+            var compositionScene = new VectorScene();
+            var composition = SceneCompositionBuilder.Build(
+                compositionScene,
+                project.Scenes[0],
+                project.DrawingObjects,
+                0);
+            var composedImported = Enumerable.Range(0, compositionScene.ObjectCount)
+                .Single(index => compositionScene.ShapeKind[index] == ShapeKind.ImportedSvg);
+            AssertTimeline(
+                composition.ObjectOwners.Count == 1
+                && compositionScene.TryGetImportedSvgSource(composedImported, out var composedSource)
+                && composedSource != loaded.Source
+                && composedSource.Contains("matrix(", StringComparison.Ordinal)
+                && ImportedSvgRasterizer.Rasterize(composedSource, 240, 160).Pixels
+                    .Where((_, offset) => offset % 4 == 3)
+                    .Any(alpha => alpha > 0),
+                "Imported SVG composition did not preserve a reflected skew transform as visible content.");
+
+            var dtdPath = Path.Combine(temporaryRoot, "dtd.svg");
+            File.WriteAllText(
+                dtdPath,
+                "<!DOCTYPE svg [<!ENTITY xxe SYSTEM 'file:///does-not-exist'>]><svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><text>&xxe;</text></svg>");
+            var dtdRejected = false;
+            try
+            {
+                _ = ImportedSvgRasterizer.Load(dtdPath);
+            }
+            catch (InvalidDataException)
+            {
+                dtdRejected = true;
+            }
+
+            var malformedPath = Path.Combine(temporaryRoot, "malformed.svg");
+            File.WriteAllText(malformedPath, "<svg xmlns='http://www.w3.org/2000/svg'><path>");
+            var malformedRejected = false;
+            try
+            {
+                _ = ImportedSvgRasterizer.Load(malformedPath);
+            }
+            catch (InvalidDataException)
+            {
+                malformedRejected = true;
+            }
+
+            AssertTimeline(
+                dtdRejected && malformedRejected,
+                "Imported SVG validation accepted DTD or malformed XML content.");
+            Console.WriteLine("imported_svg_file_drop_regression=ok");
+            Console.WriteLine("imported_svg_zoom_alignment_regression=ok");
+            Console.WriteLine("imported_svg_target_size_regression=ok");
+            Console.WriteLine("imported_svg_rasterizer_regression=ok");
+        }
+        finally
+        {
+            ImportedSvgRasterizer.ClearCache();
+            if (Directory.Exists(temporaryRoot)) Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    private static void RunImportedSvgBreakApartRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+              <path fill="#d93654" fill-rule="evenodd" d="M5 5 H115 V75 H5 Z M35 25 H85 V55 H35 Z"/>
+              <path d="M10 65 C35 10 85 10 110 65" fill="none" stroke="#2474c6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            """;
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var imported = scene.AddImportedSvgObject(0, new PointF(80, 40), new SizeF(240, 160), 0.2f, source);
+        var original = scene.CreateSnapshot();
+        var result = scene.BreakApartImportedSvgObjects([imported]);
+        if (result.ProducedObjects.Length != 2)
+        {
+            throw new InvalidOperationException(
+                $"SVG Break Apart produced unexpected parts: {string.Join(',', result.ProducedObjects.Select(index => scene.ShapeKind[index]))}.");
+        }
+        var fill = result.ProducedObjects.Single(index => scene.ShapeKind[index] == ShapeKind.Path);
+        var stroke = result.ProducedObjects.Single(index => scene.ShapeKind[index] == ShapeKind.Freeform);
+        AssertTimeline(
+            result.ProducedObjects.Length == 2
+            && result.Approximations == ImportedSvgBreakApproximation.None
+            && !Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ShapeKind[index] == ShapeKind.ImportedSvg)
+            && scene.TryGetPathWorldContours(fill, out var contours)
+            && contours.Length == 2
+            && scene.TryGetFreehandWorldPoints(stroke, out var points)
+            && points.Length > 3
+            && scene.Argb[fill] == Color.FromArgb(unchecked((int)0xffd93654)).ToArgb()
+            && scene.StrokeArgb[stroke] == Color.FromArgb(unchecked((int)0xff2474c6)).ToArgb()
+            && Math.Abs(scene.Stroke[stroke] - 8) <= 0.05f,
+            "SVG Break Apart did not produce editable compound fill and stroke geometry.");
+
+        scene.RestoreSnapshot(original);
+        AssertTimeline(
+            scene.ObjectCount == 1
+            && scene.ShapeKind[0] == ShapeKind.ImportedSvg
+            && scene.TryGetImportedSvgSource(0, out var restoredSource)
+            && restoredSource == source,
+            "Undo snapshot did not restore an opaque imported SVG after Break Apart.");
+
+        const string rootGradientSource = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="60" viewBox="0 0 100 60">
+              <linearGradient id="paint" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stop-color="#ff0000"/>
+                <stop offset="100%" stop-color="#0000ff"/>
+              </linearGradient>
+              <rect x="0" y="0" width="100" height="60" fill="url(#paint)" fill-rule="evenodd"/>
+            </svg>
+            """;
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(100, 60), rootGradientSource);
+        var gradientResult = scene.BreakApartImportedSvgObjects([0]);
+        AssertTimeline(
+            gradientResult.ProducedObjects.Length == 1
+            && gradientResult.Approximations == ImportedSvgBreakApproximation.GradientRepresentativeColor
+            && scene.ShapeKind[gradientResult.ProducedObjects[0]] == ShapeKind.Path
+            && scene.Argb[gradientResult.ProducedObjects[0]] == Color.FromArgb(255, 128, 0, 128).ToArgb(),
+            "SVG Break Apart did not accept a root-level gradient definition or preserve its representative color.");
+
+        const string unsupported = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+              <image width="10" height="10" href="data:image/png;base64,iVBORw0KGgo="/>
+            </svg>
+            """;
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(10, 10), unsupported);
+        var rejected = false;
+        try
+        {
+            scene.BreakApartImportedSvgObjects([0]);
+        }
+        catch (InvalidDataException)
+        {
+            rejected = true;
+        }
+        AssertTimeline(
+            rejected
+            && scene.ObjectCount == 1
+            && scene.ShapeKind[0] == ShapeKind.ImportedSvg
+            && scene.TryGetImportedSvgSource(0, out var rejectedSource)
+            && rejectedSource == unsupported,
+            "Unsupported SVG content was not rejected atomically by Break Apart.");
+
+        var project = VectorProject.CreateEmpty();
+        var svgAsset = project.DrawingObjects[0];
+        svgAsset.Scene.CreateEmpty();
+        svgAsset.Scene.LayerOpacity[0] = 0.5f;
+        svgAsset.Scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(120, 80), source);
+        var nestedContainer = project.AddDrawingObject("Nested opacity host");
+        nestedContainer.Scene.CreateEmpty();
+        nestedContainer.Scene.LayerOpacity[0] = 0.5f;
+        AssertTimeline(
+            project.TryAddDrawingObjectInstance(nestedContainer.Id, svgAsset.Id, PointF.Empty, out _),
+            "Break Apart regression could not create its nested opacity source.");
+        var container = project.AddDrawingObject("Break Apart host");
+        container.Scene.CreateEmpty();
+        AssertTimeline(
+            project.TryAddDrawingObjectInstance(container.Id, nestedContainer.Id, new PointF(300, 180), out var instance)
+            && instance is not null,
+            "Break Apart regression could not create a nested SVG instance.");
+        instance!.ScaleX = 1.5f;
+        instance.ScaleY = 0.75f;
+        instance.RotationZ = 18;
+
+        var flattened = new VectorScene();
+        SceneCompositionBuilder.BuildDrawingObjectInstanceForBreakApart(
+            flattened,
+            container,
+            instance,
+            project.DrawingObjects,
+            0);
+        var existing = container.Scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(20, 20),
+            0,
+            0,
+            Color.Black,
+            3,
+            ShapeKind.Rectangle);
+        var materialized = container.Scene.AppendFlattenedSceneToLayer(flattened, 0, 0);
+        AssertTimeline(
+            flattened.ObjectCount == 2
+            && !Enumerable.Range(0, flattened.ObjectCount).Any(index => flattened.ShapeKind[index] == ShapeKind.ImportedSvg)
+            && materialized.Length == 2
+            && materialized.All(index => container.Scene.ObjectLayer[index] == 0)
+            && materialized.All(index => container.Scene.ObjectOrder[index] < container.Scene.ObjectOrder[existing])
+            && materialized.Any(index => ((container.Scene.Argb[index] >>> 24) & 0xff) is >= 62 and <= 64)
+            && materialized.Select(container.Scene.GetObjectWorldBounds).Aggregate(RectangleF.Union).Contains(300, 180),
+            "Nested-instance Break Apart did not preserve transform, opacity, host layer, or underlay stack placement.");
+
+        var frameSafetySceneSnapshot = container.Scene.CreateSnapshot();
+        var frameSafetyInstanceSnapshot = container.CreateInstanceSnapshot();
+        var objectCountBeforeFrameSafety = container.Scene.ObjectCount;
+        var hostTrack = container.Scene.Timeline.FindTrackByTargetId(container.Scene.LayerIds[0])
+            ?? throw new InvalidOperationException("Break Apart frame-safety regression lost its host track.");
+        container.Scene.Timeline.SetTrackDuration(hostTrack.Id, 8);
+        AssertTimeline(
+            container.Scene.MaterializeAutoKeyframeInPlace(0, 5),
+            "Break Apart did not materialize an isolated current-frame host cel.");
+        var currentFrameObjects = container.Scene.AppendFlattenedSceneToLayer(flattened, 0, 5);
+        AssertTimeline(
+            instance.SetStateAtFrame(5, instance.EvaluateState(5) with { Visible = false })
+            && instance.EvaluateState(4).Visible
+            && !instance.EvaluateState(5).Visible
+            && currentFrameObjects.All(index => container.Scene.ObjectKeyframeFrame[index] == 5),
+            "Current-frame Break Apart changed an earlier instance frame or wrote into its held source cel.");
+        container.RestoreInstanceSnapshot(frameSafetyInstanceSnapshot);
+        container.Scene.RestoreSnapshot(frameSafetySceneSnapshot);
+        AssertTimeline(
+            container.Instances.Single().EvaluateState(5).Visible
+            && container.Scene.ObjectCount == objectCountBeforeFrameSafety,
+            "Break Apart undo snapshots did not restore instance visibility and current-frame geometry atomically.");
+        Console.WriteLine("imported_svg_break_apart_regression=ok");
+        Console.WriteLine("nested_instance_break_apart_regression=ok");
     }
 
     private static void RunTemporaryCanvasPanRegression()
@@ -4233,10 +5327,11 @@ internal static class Benchmark
         RunMarqueeElementQueryRegression();
         RunMarqueeLineMaterializationRegression();
         RunMarqueeFillMaterializationRegression();
+        RunMovedFillIsolationRegression();
         RunMarqueeOutlinedBoundarySelectionRegression();
         RunLineToFillConversionRegression();
         RunLineSegmentMergeRegression();
-        Console.WriteLine("drawing_topology_regressions=31");
+        Console.WriteLine("drawing_topology_regressions=32");
     }
 
     private static void RunFastSelectionProbeRegression()
@@ -6269,6 +7364,45 @@ internal static class Benchmark
             || tetradic.Length != 4)
         {
             throw new InvalidOperationException("Color harmony rules did not generate the expected complementary, analogous, triadic, split-complementary, and tetradic palettes.");
+        }
+
+        var wheelBounds = new Rectangle(4, 4, 88, 88);
+        var center = new Point(48, 48);
+        if (!HarmonyColorWheel.TryResolvePointerHue(new Point(48, 5), wheelBounds, requireHotZone: true, out var topHue)
+            || !HarmonyColorWheel.TryResolvePointerHue(new Point(66, 48), wheelBounds, requireHotZone: true, out _)
+            || !HarmonyColorWheel.TryResolvePointerHue(new Point(95, 48), wheelBounds, requireHotZone: true, out _)
+            || HarmonyColorWheel.TryResolvePointerHue(center, wheelBounds, requireHotZone: true, out _)
+            || HarmonyColorWheel.TryResolvePointerHue(new Point(140, 48), wheelBounds, requireHotZone: true, out _)
+            || !HarmonyColorWheel.TryResolvePointerHue(new Point(140, 48), wheelBounds, requireHotZone: false, out var capturedHue)
+            || Math.Abs(topHue) > 2f
+            || Math.Abs(capturedHue - 90f) > 2f)
+        {
+            throw new InvalidOperationException("Color harmony wheel pointer hot zones or captured drag hue resolution were invalid.");
+        }
+
+        const float wheelRadius = 44f;
+        var peakRadius = HarmonyColorWheel.ResolvePointerSurfaceRadius(wheelRadius, 30f, 30f);
+        var shoulderRadius = HarmonyColorWheel.ResolvePointerSurfaceRadius(wheelRadius, 42f, 30f);
+        var edgeRadius = HarmonyColorWheel.ResolvePointerSurfaceRadius(wheelRadius, 48f, 30f);
+        var wrappedRadius = HarmonyColorWheel.ResolvePointerSurfaceRadius(wheelRadius, 359f, 1f);
+        if (HarmonyColorWheel.InteractionRefreshIntervalMilliseconds > 8
+            || Math.Abs(peakRadius - 47f) > 0.001f
+            || shoulderRadius <= wheelRadius || shoulderRadius >= peakRadius
+            || Math.Abs(edgeRadius - wheelRadius) > 0.001f
+            || wrappedRadius <= shoulderRadius)
+        {
+            throw new InvalidOperationException("Color harmony wheel pointer surface shader did not peak, decay, or wrap hue angles correctly.");
+        }
+
+        var sliderPeak = ColorComponentSlider.ResolvePointerSurfaceOffset(48f, 48f);
+        var sliderShoulder = ColorComponentSlider.ResolvePointerSurfaceOffset(55f, 48f);
+        var sliderEdge = ColorComponentSlider.ResolvePointerSurfaceOffset(62f, 48f);
+        if (ColorComponentSlider.InteractionRefreshIntervalMilliseconds > 8
+            || Math.Abs(sliderPeak - 3f) > 0.001f
+            || sliderShoulder <= 0f || sliderShoulder >= sliderPeak
+            || Math.Abs(sliderEdge) > 0.001f)
+        {
+            throw new InvalidOperationException("Color component slider pointer surface did not peak, decay, or refresh at interactive frequency.");
         }
 
         Console.WriteLine("color_harmony_regression=ok");
@@ -8558,6 +9692,65 @@ internal static class Benchmark
 
     private static void RunOutlinedFillMergeRegression()
     {
+        var nearbyScene = new VectorScene();
+        nearbyScene.CreateEmpty();
+        nearbyScene.AddObject(
+            0,
+            new PointF(-54, 0),
+            new SizeF(100, 80),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var nearbySecond = nearbyScene.AddObject(
+            0,
+            new PointF(54, 0),
+            new SizeF(100, 80),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var nearbyMerged = nearbyScene.MergeSameColorFillsAround(nearbySecond, connectNearby: true, frame: 0);
+        if (nearbyScene.ObjectCount != 1
+            || (uint)nearbyMerged >= nearbyScene.ObjectCount
+            || !nearbyScene.FillContainsPoint(nearbyMerged, new PointF(-54, 0))
+            || !nearbyScene.FillContainsPoint(nearbyMerged, new PointF(54, 0)))
+        {
+            throw new InvalidOperationException("Same-color shape fills separated by 8 vu did not merge under the documented 10 vu rule.");
+        }
+
+        var translatedScene = new VectorScene();
+        translatedScene.CreateEmpty();
+        translatedScene.AddObject(
+            0,
+            new PointF(-54, 0),
+            new SizeF(100, 80),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var translatedSecond = translatedScene.AddObject(
+            0,
+            new PointF(54, 0),
+            new SizeF(100, 80),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        translatedScene.MergeSameColorFillsAround(translatedSecond, connectNearby: false, frame: 0);
+        if (translatedScene.ObjectCount != 2)
+        {
+            throw new InvalidOperationException("The translated-fill exception merged shapes that were separated by 8 vu.");
+        }
+
         var scene = new VectorScene();
         scene.CreateEmpty();
         var outlined = AddTopologyFill(scene, 0, VectorUnits.StrokePointsToUnits(2));
@@ -8793,6 +9986,128 @@ internal static class Benchmark
         {
             throw new InvalidOperationException("Marquee fill materialization discarded the gradient material of an extracted fill.");
         }
+    }
+
+    private static void RunMovedFillIsolationRegression()
+    {
+        var mergeScene = new VectorScene();
+        mergeScene.CreateEmpty();
+        mergeScene.AddObject(
+            0,
+            new PointF(-54, 0),
+            new SizeF(100, 80),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var movingFill = mergeScene.AddObject(
+            0,
+            new PointF(154, 0),
+            new SizeF(100, 80),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        mergeScene.TranslateObjectsForPreview([movingFill], -100, 0);
+        mergeScene.CompleteDeferredBuild();
+        movingFill = mergeScene.ApplyFillOverwriteToNewObjects([movingFill], 0).SingleOrDefault(-1);
+        movingFill = mergeScene.MergeSameColorFillsAround(movingFill, connectNearby: true, frame: 0);
+        if (mergeScene.ObjectCount != 1
+            || (uint)movingFill >= mergeScene.ObjectCount
+            || !mergeScene.FillContainsPoint(movingFill, new PointF(-54, 0))
+            || !mergeScene.FillContainsPoint(movingFill, new PointF(54, 0)))
+        {
+            throw new InvalidOperationException("Moving a same-color fill to within 8 vu of another fill did not merge them.");
+        }
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(240, 160),
+            0,
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Teal,
+            Color.White,
+            12,
+            ShapeKind.Rectangle);
+        var materialized = scene.MaterializeMarqueeFillParts(new RectangleF(40, -30, 120, 60), 0);
+        var movedObjects = materialized.SelectedObjects.ToHashSet();
+        var moved = movedObjects.SingleOrDefault(
+            index => (uint)index < scene.ObjectCount && scene.ShapeKind[index] == ShapeKind.Path,
+            -1);
+        var movedBoundaryLines = movedObjects
+            .Where(index => (uint)index < scene.ObjectCount && scene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        if (!materialized.Changed
+            || (uint)moved >= scene.ObjectCount
+            || movedBoundaryLines.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"Moved fill isolation regression could not materialize an outlined rectangle selection: moved={moved}, boundaries={movedBoundaryLines.Length}.");
+        }
+
+        var boundaryLinks = movedBoundaryLines
+            .SelectMany(index => scene.CaptureFillBoundaryLineLinks(index, 0))
+            .ToArray();
+        var retainedLinks = MainForm.ExcludeTranslatedFillBoundaryLinks(boundaryLinks, movedObjects);
+        if (!boundaryLinks.Any(link => link.FillObjectIndex == moved)
+            || retainedLinks.Any(link => link.FillObjectIndex == moved))
+        {
+            throw new InvalidOperationException("A marquee-selected fill retained a boundary link that would reapply its translation as a contour edit.");
+        }
+
+        var movedBoundsBefore = scene.GetObjectWorldBounds(moved);
+        var unfilteredSnapshot = scene.CreateSnapshot();
+        scene.TranslateObjectsForPreview(materialized.SelectedObjects, 100, 0);
+        scene.UpdateFillBoundaryLineLinks(boundaryLinks, rebuildGeometryIndex: false);
+        scene.CompleteDeferredBuild();
+        var unfilteredBounds = scene.GetObjectWorldBounds(moved);
+        scene.RestoreSnapshot(unfilteredSnapshot);
+        scene.EditFrame = 0;
+        if (unfilteredBounds.Width <= movedBoundsBefore.Width + DrawingTopologyRules.UnitIntersectionTolerance)
+        {
+            var movedLinkSummary = string.Join(
+                ",",
+                boundaryLinks
+                    .Select(link => $"line={link.LineObjectIndex}/fill={link.FillObjectIndex}/segment={link.SegmentIndex}+{link.SegmentCount}/reverse={link.Reversed}"));
+            throw new InvalidOperationException(
+                $"Moved fill isolation regression did not reproduce the unfiltered boundary-link extension: before={movedBoundsBefore}, after={unfilteredBounds}, links={movedLinkSummary}.");
+        }
+
+        scene.TranslateObjectsForPreview(materialized.SelectedObjects, 100, 0);
+        scene.UpdateFillBoundaryLineLinks(retainedLinks, rebuildGeometryIndex: false);
+        scene.CompleteDeferredBuild();
+        moved = scene.ApplyFillOverwriteToNewObjects([moved], 0).SingleOrDefault(-1);
+        moved = scene.MergeSameColorFillsAround(moved, connectNearby: true, frame: 0);
+
+        var outside = Enumerable.Range(0, scene.ObjectCount).SingleOrDefault(
+            index => index != moved && scene.ShapeKind[index] == ShapeKind.Path,
+            -1);
+        var movedBounds = (uint)moved < scene.ObjectCount
+            ? scene.GetObjectWorldBounds(moved)
+            : RectangleF.Empty;
+        if ((uint)moved >= scene.ObjectCount
+            || (uint)outside >= scene.ObjectCount
+            || Math.Abs(movedBounds.Left - (movedBoundsBefore.Left + 100)) > DrawingTopologyRules.UnitIntersectionTolerance
+            || Math.Abs(movedBounds.Top - movedBoundsBefore.Top) > DrawingTopologyRules.UnitIntersectionTolerance
+            || Math.Abs(movedBounds.Width - movedBoundsBefore.Width) > DrawingTopologyRules.UnitIntersectionTolerance
+            || Math.Abs(movedBounds.Height - movedBoundsBefore.Height) > DrawingTopologyRules.UnitIntersectionTolerance
+            || !scene.FillContainsPoint(moved, new PointF(160, 0))
+            || scene.FillContainsPoint(moved, new PointF(60, 0))
+            || scene.FillContainsPoint(outside, new PointF(60, 0))
+            || !scene.FillContainsPoint(outside, new PointF(-60, 0)))
+        {
+            throw new InvalidOperationException(
+                $"A translated outlined marquee fill extended back into its source region: objects={scene.ObjectCount}, moved={moved}, outside={outside}, bounds={movedBounds}.");
+        }
+
+        Console.WriteLine("moved_fill_isolation_regression=ok");
     }
 
     private static void RunMarqueeOutlinedBoundarySelectionRegression()

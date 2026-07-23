@@ -10,5 +10,6 @@ internal enum ShapeKind : byte
     Star = 5,
     Path = 6,
     Freeform = 7,
-    BrushStroke = 8
+    BrushStroke = 8,
+    ImportedSvg = 9
 }

@@ -57,6 +57,7 @@ internal sealed class VectorSceneSnapshot
     public AnimationTimelineSnapshot? Timeline { get; init; }
     public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
     public Dictionary<int, PointF[]> FreehandLocalPoints { get; init; } = new();
+    public Dictionary<int, string> ImportedSvgSources { get; init; } = new();
 
     internal long EstimateMemoryBytes()
     {
@@ -125,6 +126,9 @@ internal sealed class VectorSceneSnapshot
 
         bytes += 64L * FreehandLocalPoints.Count;
         foreach (var points in FreehandLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);
+
+        bytes += 72L * ImportedSvgSources.Count;
+        foreach (var source in ImportedSvgSources.Values) bytes += StringBytes(source);
 
         if (Timeline is { } timeline)
         {

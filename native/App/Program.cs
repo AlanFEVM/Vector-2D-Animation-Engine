@@ -51,7 +51,8 @@ internal static class Program
             {
                 try
                 {
-                    EditorRestartStore.TryConsume(out var restartState);
+                    var restartToken = EditorRestartStore.GetRequestedToken(args);
+                    EditorRestartStore.TryConsume(restartToken, out var restartState);
                     Application.Run(new AppHost(restartState));
                 }
                 finally

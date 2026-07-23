@@ -26,6 +26,11 @@ The repository selects the stable .NET 8 SDK line through `global.json` and refu
 preview SDKs. If no compatible .NET 8 SDK is installed, install one or use a
 published standalone native build instead.
 
+```powershell
+winget install --id Microsoft.DotNet.SDK.8 --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+dotnet restore native\VectorAnimationEngine.Native.csproj
+```
+
 This means the root `VectorAnimationEngine.exe` is intentionally small. It is the
 stable entry point for fast iteration, not the final distributable package.
 
@@ -56,23 +61,25 @@ session without file watching.
 - Workspace tabs: `Basic Drawing`, `Scene Edit`, and `Animation`.
 - Custom borderless desktop window shell with draggable title area, resizable edges, and in-app minimize/maximize/close controls.
 - Basic Drawing is the drawing-object edit mode: the header shows one active drawing object at a time plus `+ Object`, and drawing/material tools focus on that object.
-- Scene Edit is the non-drawable assembly mode: scenes store drawing-object instances rather than standalone geometry. Drawing objects may recursively instance other drawing objects, with project-level self/cycle rejection, accumulated 2D transforms, per-instance FPS plus play-once/loop/held-frame playback, current-frame exposure evaluation, source provenance retained for double-click editor navigation, green instance bounds for 2D select/move/free-transform editing, and an inspector action that restores X/Y scale without changing other transform state.
+- Scene Edit is the non-drawable assembly mode: scenes store drawing-object instances rather than standalone geometry. Drawing objects may recursively instance other drawing objects, with project-level self/cycle rejection, accumulated 2D transforms, fractional per-instance FPS plus play-once/loop/held-frame playback, current-frame exposure evaluation, source provenance retained for double-click editor navigation, green instance bounds for 2D select/move/free-transform editing, and an inspector action that restores X/Y scale without changing other transform state.
 - Drawing-object timelines contain only stable drawing-layer tracks. Each layer can own multiple nested drawing-object instances, and its exposure controls both local cel geometry and those instances without generating synthetic instance rows. Scene timelines likewise target stable scene-layer IDs, with multiple instances allowed per layer.
 - 3D scenes use Blender-style viewport navigation: middle mouse orbits, Shift + middle mouse pans, Ctrl + middle mouse dollies, mouse wheel dollies, Ctrl + wheel changes the view zoom scale, Numpad 1/3/7 switches front/right/top views, Numpad 5 toggles perspective/orthographic, and Home resets the reference view.
 - 2D stages use an origin-aware decimal world grid at 10% default opacity: the minimum cell is 10 vu, every tenth line becomes a major line, and line opacity/weight transitions continuously as zoom changes.
 - New projects start with one empty drawing object. All shape and line drawing is stored inside the active drawing object.
+- `Import SVG...` in Basic Drawing, or dragging one `.svg` file from File Explorer onto the stage, imports a validated SVG as exactly one opaque drawing object. A dropped SVG is placed at the pointer. The object can be selected, transformed, copied, layered, deleted, undone, and saved with the project. Stage right-click `Break Apart` converts supported SVG paths and shapes into editable compound Path fills and Freeform strokes; the same command freezes selected nested drawing-object instances at the current frame into ordinary local geometry, including vectorizing SVG content, as one undoable transaction.
+- Directory-backed project persistence stores software/project metadata and project playback settings in one `.v2dProject` manifest, reversible SVG drawing assets under `.Vault`, and drawing/scene layer and frame data under `.TimeLine`; Save/Open validate stable IDs, paths, references, timelines, aggregate limits, and SHA-256 checksums before replacing the live project, while refusing unmanaged target folders or manifests owned by another project. A durable save journal rolls an interrupted replacement back or finishes cleanup before the next Save/Open operation.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
 - Default project view shows a 4000 vector-unit wide work range; `Fit Stage` still frames the full stage.
 - Adobe Animate-style combined layer/timeline strip with fixed-width frame cells, `+` layer insertion, layer/instance track selection, visibility toggles, Solo/All controls, ruler, red playhead, low-contrast held exposure spans, populated/blank keyframe dots, horizontal/vertical scrolling, rectangular multi-frame selection, and themed right-click commands.
 - Timeline tracks use ordered populated/blank keyframes. Empty drawing layers start with a hollow blank key; marker fill follows actual cel content, so deleting the last object turns the key hollow and F6 on empty exposure stays blank. In Scene Edit, tracks belong to scene layers, and each scene layer can contain multiple drawing-object instances.
-- Drawing-object keyframes own independent cels. F6 clones the currently held layer content into a new cel, later edits or deletion stay isolated from the source cel, F7 creates a blank cel, and drawing on a blank exposure promotes it to a populated keyframe automatically. F6/F7 extend the timeline when needed; a single-frame command advances the playhead, while a multi-frame command keeps the selection in place.
+- Drawing-object keyframes own independent cels. F6 clones the currently held layer content into a new cel, later edits or deletion stay isolated from the source cel, F7 creates a blank cel, and drawing on a blank exposure promotes it to a populated keyframe automatically. F6/F7 extend the timeline when needed; a single-frame command advances the playhead, while a multi-frame command keeps the selection in place. Undoing an inserted keyframe restores the timeline content, playhead, frame selection, selection anchor, and active track from before the command.
 - Drawing inside a held blank exposure populates that exposure's source key rather than silently creating a key at the playhead; use F6 or F7 first when content must begin on a new frame.
-- F5 extends the selected exposure while shifting later keys right. A scrollable future-frame grid remains selectable beyond the current timeline end, and inserting there extends the target track through the chosen cell. Frame removal preserves any cel whose held frames survive the removed range, and shifts key markers plus object ownership together. Batch frame/key commands apply to the selected timeline cells and create one undo entry.
+- F5 extends the selected exposure, shifts later keys right, and moves the playhead to the newly added exposure end. A scrollable future-frame grid remains selectable beyond the current timeline end, and inserting there extends the target track through the chosen cell. Frame removal preserves any cel whose held frames survive the removed range, and shifts key markers plus object ownership together. Batch frame/key commands apply to the selected timeline cells and create one undo entry.
 - Timeline `Ctrl+C` / `Ctrl+V` copies independent drawing cels with their geometry, paths, and strokes, then pastes them using the copied track/frame offsets. Layer rows can be dragged to reorder; their stable timeline IDs and object ownership remain aligned. Right-click also exposes layer color and per-drawing-layer onion skin, rendered as a non-editable warm previous-frame/cool next-frame preview in both Direct2D and GDI; changing a non-zero onion range enables it for the active layer.
 - Adobe Animate timeline shortcuts: Enter play/pause, comma/period previous/next frame, Shift+comma/period first/last playback frame, F5 insert frame, Shift+F5 remove frame, F6 copy/insert keyframe, Shift+F6 clear keyframe, and F7 insert blank keyframe.
-- The timeline cursor includes a three-decimal seconds readout derived from the active playback FPS and updates immediately with frame or FPS changes.
+- The title bar exposes animation FPS with three-decimal precision and digit-targeted mouse-wheel adjustment; the timeline cursor keeps a three-decimal seconds readout derived from that active FPS.
 - The mouse wheel scrolls tracks vertically by default; holding Shift routes it horizontally through frames without axis fallback at an edge.
-- Playback settings panel with FPS, loop playback, and frame range controls.
+- Playback settings panel with synchronized fractional FPS, loop playback, and frame range controls; all four values are saved with the project and restored within the active timeline's valid range.
 - Bottom status bar showing render FPS, animation FPS, and zoom.
 - Playback processes fixed simulation steps in batches at 300 logical UPS. Stage redraw requests remain capped at 144 FPS, and one-second telemetry reports completed stage frames rather than invalidation requests; idle render and paused UPS rates display as `--` instead of extrapolating isolated work.
 - Drawing tools for pencil, brush, line, fill, select, pan, and a grouped shape tool with rectangle, ellipse, triangle, polygon, and star flyout choices.
@@ -83,7 +90,7 @@ session without file watching.
 - Freehand input is sampled in screen space and simplified on pointer-up. Pencil commits one selectable open stroke per gesture; Brush and Pressure Brush expand the sampled centerline into closed Path fills and immediately merge them with intersecting or nearby fills on the same layer that have the same ARGB color, then leave the Stage selection clear. Linear brush gradients follow path length on ordinary strokes and switch to a stable principal spatial axis on self-crossing strokes, avoiding conflicting colors at intersections. Intersecting shape-gradient brush strokes with identical stops and layer opacity preview and commit as one union whose center, boundary, and distance field are recalculated; different gradient materials retain normal overpaint behavior. Nearby solid-fill boundaries merge when their distance is under `10 vu`.
 - The title-bar menu opens persistent application settings with live English and Simplified Chinese interfaces. Tool shortcuts default to the Traditional Flash preset (V/Q/H/R/O/N/P/Y/B/K/S/I/G/E), with an optional number-key preset that follows the toolbar from 1 through 9; bracket keys adjust Pencil and Brush width. While Brush or Pressure Brush is active, hold Shift to open recent-color swatches around the cursor and hover a swatch to set the brush fill color.
 - Animated tool-name hints when hovering drawing tools.
-- Animated selection highlights pulse along line paths and fill boundaries, with boundary handles for filled shapes and partial edge highlights for selected boundary-stroke segments.
+- Animated selection highlights use distinct visual semantics: fills pulse with a slimmer cool cyan/mint boundary, while line and boundary-stroke segments use a stronger warm amber/orange path highlight. Filled shapes retain boundary handles and selected boundary-stroke segments retain partial edge highlights.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects, with `1 vu`-aligned fill and stroke part materialization for boxed regions.
 - Selected fills under the pointer take drag priority, so dragging an already selected fill moves it instead of starting a new selection.
 - Selected lines immediately expose start, end, and Bezier control handles, including topology-part selections; connected endpoints move together, holding Ctrl temporarily snaps edited or newly drawn endpoints to nearby line endpoints, and holding Shift while drawing with the Line tool constrains the preview and committed line to the configured angle step.
@@ -120,6 +127,10 @@ update the user guide in the same change.
 This project is expected to keep a local git history. Each completed feature or
 bug fix should be committed with a concise message so changes can be rolled back
 or investigated later.
+
+Agent-assisted changes follow [AGENTS.md](AGENTS.md). Multi-Agent tasks use the
+project coordination skill for explicit file ownership and handoff, while one
+validation owner runs builds and regression suites after integration.
 
 ## Runtime Logs
 
@@ -262,6 +273,41 @@ This multi-file deployment uses the installed .NET 8 Desktop Runtime and avoids 
 ```powershell
 dotnet publish native\VectorAnimationEngine.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish-native
 ```
+
+The standard release command now creates only the replaceable application patch:
+
+```powershell
+scripts\publish-split-package.ps1
+```
+
+This is the default for every normal release. It publishes `.V2DEngine`, validates that the ZIP
+contains no runtime or launcher files, and writes a matching `.sha256` file. The legacy
+`-PatchOnly` switch is still accepted but is no longer necessary.
+
+Generate a new full baseline only when the target framework, private runtime, root launcher, or
+package layout changes:
+
+```powershell
+scripts\publish-split-package.ps1 -FullPackage
+```
+
+Full-package generation requires a stable .NET 9 SDK alongside the repository's pinned .NET 8
+SDK so the package can use the newer app-relative native host. Normal patch releases use only the
+.NET 8 application toolchain and never rebuild or copy the private runtime.
+
+The full archive contains a native bootstrap EXE plus two isolated directories:
+
+```text
+VectorAnimationEngine.exe
+.Runtime\        Private .NET 8 Windows Desktop runtime
+.V2DEngine\      Engine assemblies, dependencies, and release metadata
+```
+
+`-FullPackage` also creates the same patch archive containing only `.V2DEngine`. For every later
+version, run the standard command and upload only the patch ZIP (plus its checksum when desired).
+Close the application and replace the complete `.V2DEngine` directory when applying a patch; do
+not merge individual files, because a newer version may remove dependencies. Keep `.Runtime` and
+the root launcher unless the target framework, runtime family, or package layout changes.
 
 Use `--dev` when source watching and Metadata Hot Reload are required.
 

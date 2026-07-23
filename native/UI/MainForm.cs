@@ -6,6 +6,8 @@ namespace VectorAnimationEngine;
 internal sealed class EditorRestartState
 {
     public required VectorProject Project { get; init; }
+    public string ProjectManifestPath { get; init; } = "";
+    public bool ProjectDirty { get; init; }
     public required int ActiveSceneIndex { get; init; }
     public required int ActiveDrawingObjectIndex { get; init; }
     public required WorkspaceView Workspace { get; init; }
@@ -92,6 +94,8 @@ internal sealed class MainForm : Form
     private const double WorkspacePanelAnimationMilliseconds = 180;
 
     private VectorProject _project = VectorProject.CreateEmpty();
+    private string _projectManifestPath = "";
+    private bool _projectDirty;
     private ApplicationSettings _applicationSettings = ApplicationSettingsStore.Load();
     private VectorScene _scene;
     private readonly VectorScene _sceneEditStage = new();
@@ -154,9 +158,25 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
     private readonly ToolStripStatusLabel _devReloadStatus = StatusLabel("Module Reload On");
     private WindowChromeButton? _maximizeButton;
+    private Label? _projectTitleLabel;
     private SvgIconButton? _propertiesPanelButton;
     private SvgIconButton? _timelinePanelButton;
     private readonly PlaybackSettingsPanel _playbackSettings = new();
+    private readonly ModernNumericUpDown _topPlaybackFps = new()
+    {
+        Minimum = 1,
+        Maximum = 120,
+        Value = 30,
+        DecimalPlaces = 3,
+        Increment = 0.001m,
+        WheelAdjustsHoveredDigit = true,
+        Suffix = "fps",
+        Width = 88,
+        Height = Theme.ControlHeightCompact,
+        AccessibleName = "Animation frame rate in frames per second"
+    };
+    private bool _updatingTopPlaybackFps;
+    private bool _syncingProjectPlaybackSettings;
     private readonly DrawSettingsPanel _drawSettingsPanel;
     private readonly BrushTipPanel _brushTipPanel = new();
     private readonly MaterialEditorPanel _materialEditor = new();
@@ -167,6 +187,7 @@ internal sealed class MainForm : Form
     private readonly AnimatedContextMenuStrip _stageContextMenu = new();
     private readonly AnimatedContextMenuStrip _mainMenu = new();
     private readonly ToolStripMenuItem _deleteNestedInstanceMenuItem = new("Delete");
+    private readonly ToolStripMenuItem _breakApartMenuItem = new("Break Apart");
     private readonly ToolStripSeparator _deleteNestedInstanceMenuSeparator = new();
     private readonly ToolStripMenuItem _flipHorizontalMenuItem = new("Flip Horizontal");
     private readonly ToolStripMenuItem _flipVerticalMenuItem = new("Flip Vertical");
@@ -256,6 +277,7 @@ internal sealed class MainForm : Form
     private GradientHandleKind _gradientHandle = GradientHandleKind.None;
     private int _gradientStopIndex = -1;
     private VectorSceneSnapshot? _gradientEditSnapshot;
+    private bool _gradientEditChanged;
     private PointF _transformLastPointer;
     private float _transformLastAngle;
     private bool _geometryDirty;
@@ -357,6 +379,8 @@ internal sealed class MainForm : Form
     private Point _stageContextMenuLocation;
     private int _stageContextMenuLineObject = -1;
     private string _stageContextMenuNestedInstanceId = "";
+    private int[] _stageContextMenuBreakApartObjects = [];
+    private string[] _stageContextMenuBreakApartInstances = [];
     private readonly EditorRestartState? _restartState;
     private bool _restartRequested;
 
@@ -374,13 +398,17 @@ internal sealed class MainForm : Form
     private sealed record DrawingUndoEntry(
         VectorSceneSnapshot Snapshot,
         DrawingObjectDefinition? DrawingObject = null,
-        DrawingObjectInstanceDefinition[]? InstanceSnapshot = null);
+        DrawingObjectInstanceDefinition[]? InstanceSnapshot = null,
+        int? PlayheadFrame = null,
+        TimelineSelectionSnapshot? TimelineSelection = null);
 
     private sealed record SceneTimelineUndoEntry(
         SceneDefinition Scene,
         AnimationTimelineSnapshot Snapshot,
         SceneLayerSnapshot? LayerSnapshot = null,
-        DrawingObjectInstanceDefinition[]? InstanceSnapshot = null);
+        DrawingObjectInstanceDefinition[]? InstanceSnapshot = null,
+        int? PlayheadFrame = null,
+        TimelineSelectionSnapshot? TimelineSelection = null);
 
     private sealed class OnionSkinRangeEditSession
     {
@@ -396,6 +424,8 @@ internal sealed class MainForm : Form
         public required int[] SelectedObjects { get; init; }
         public required DrawingElementHit[] SelectedElements { get; init; }
         public required DrawingElementHit PrimaryElement { get; init; }
+        public bool AutoKeyframeChanged { get; set; }
+        public bool AutoKeyframePreparationAttempted { get; set; }
         public bool UndoPushed { get; set; }
         public bool HierarchyDirty { get; set; }
         public bool InspectorDirty { get; set; }
@@ -418,7 +448,8 @@ internal sealed class MainForm : Form
         PointF CurveControl2,
         PointF[][]? PathWorldContours,
         LineEndpointStyle StartEndpointStyle,
-        LineEndpointStyle EndEndpointStyle);
+        LineEndpointStyle EndEndpointStyle,
+        string? ImportedSvgSource);
 
     private sealed record ClipboardDrawingObjectInstance(
         string DrawingObjectId,
@@ -456,8 +487,10 @@ internal sealed class MainForm : Form
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = TimelinePanelDefaultHeight };
         _timelinePanelMinimumSize = _timeline.MinimumSize;
         _timeline.PlaybackFps = _playbackSettings.Fps;
+        _topPlaybackFps.Value = _playbackSettings.Fps;
         _timeline.FrameWidth = _applicationSettings.TimelineFrameWidth;
         _timeline.FrameHeightPreset = _applicationSettings.TimelineFrameHeight;
+        _timeline.AutoKeyframeEnabled = _applicationSettings.TimelineAutoKeyframeEnabled;
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
         _brushTipPanel.SetBrushShape(_brushShape);
         _brushTipPanel.SetBrushStrokeSettings(
@@ -501,6 +534,7 @@ internal sealed class MainForm : Form
     private void BuildStageContextMenu()
     {
         _stageContextMenu.Items.Add(_deleteNestedInstanceMenuItem);
+        _stageContextMenu.Items.Add(_breakApartMenuItem);
         _stageContextMenu.Items.Add(_deleteNestedInstanceMenuSeparator);
         _stageContextMenu.Items.Add(_flipHorizontalMenuItem);
         _stageContextMenu.Items.Add(_flipVerticalMenuItem);
@@ -513,6 +547,7 @@ internal sealed class MainForm : Form
         _stageContextMenu.Items.Add(_mergeAndSimplifyLinesMenuItem);
         _deleteNestedInstanceMenuItem.Click += (_, _) =>
             DeleteNestedDrawingObjectInstance(_stageContextMenuNestedInstanceId);
+        _breakApartMenuItem.Click += (_, _) => BreakApartStageSelection();
         _flipHorizontalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: true);
         _flipVerticalMenuItem.Click += (_, _) => FlipSelectedDrawingObjects(horizontal: false);
         _bringForwardMenuItem.Click += (_, _) => MoveSelectedDrawingObjectsInStack(1);
@@ -523,17 +558,23 @@ internal sealed class MainForm : Form
         {
             _stageContextMenuLineObject = -1;
             _stageContextMenuNestedInstanceId = "";
+            _stageContextMenuBreakApartObjects = [];
+            _stageContextMenuBreakApartInstances = [];
             if (TryGetStageContextNestedInstance(_stageContextMenuLocation, out var nestedInstance))
             {
                 _stageContextMenuNestedInstanceId = nestedInstance.Id;
-                SetSceneInstanceSelection(nestedInstance);
-                UpdateInspector();
+                if (!_selectedSceneInstanceIds.Contains(nestedInstance.Id))
+                {
+                    SetSceneInstanceSelection(nestedInstance);
+                    UpdateInspector();
+                }
             }
 
             var canDeleteNestedInstance = !string.IsNullOrWhiteSpace(_stageContextMenuNestedInstanceId);
             if (!canDeleteNestedInstance
                 && TryGetStageContextDrawingElement(_stageContextMenuLocation, out var contextElement)
-                && !_selectedElements.Any(hit => hit.Key == contextElement.Key))
+                && !_selectedElements.Any(hit => hit.Key == contextElement.Key)
+                && !_selectedObjects.Contains(contextElement.Key.ObjectIndex))
             {
                 SetSelection(contextElement);
                 UpdateInspector();
@@ -541,6 +582,26 @@ internal sealed class MainForm : Form
 
             var drawingTargets = SelectedActiveDrawingObjectIndices();
             var selectedInstances = SelectedSceneInstances();
+            var breakApartWorkspace = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing;
+            var hasBreakApartTarget = selectedInstances.Count > 0 || drawingTargets.Length > 0;
+            var canBreakInstances = breakApartWorkspace
+                && !DrawingToolsBlocked()
+                && selectedInstances.Count > 0
+                && selectedInstances.All(CanBreakApartInstance);
+            var canBreakSvg = breakApartWorkspace
+                && !DrawingToolsBlocked()
+                && selectedInstances.Count == 0
+                && _selectedElements.Count == 0
+                && drawingTargets.Length > 0
+                && drawingTargets.All(index => IsImportedSvgObject(index) && CanBreakApartObject(index));
+            if (canBreakInstances)
+            {
+                _stageContextMenuBreakApartInstances = selectedInstances.Select(instance => instance.Id).ToArray();
+            }
+            else if (canBreakSvg)
+            {
+                _stageContextMenuBreakApartObjects = drawingTargets;
+            }
             var commandTargetCount = canDeleteNestedInstance ? selectedInstances.Count : drawingTargets.Length;
             var canBringForward = canDeleteNestedInstance
                 ? CanMoveSelectedNestedDrawingObjectsInStack(1)
@@ -549,7 +610,9 @@ internal sealed class MainForm : Form
                 ? CanMoveSelectedNestedDrawingObjectsInStack(-1)
                 : _scene.CanMoveObjectsInLayerStack(drawingTargets, -1, _frame);
             _deleteNestedInstanceMenuItem.Visible = canDeleteNestedInstance;
-            _deleteNestedInstanceMenuSeparator.Visible = canDeleteNestedInstance;
+            _breakApartMenuItem.Visible = breakApartWorkspace && hasBreakApartTarget;
+            _breakApartMenuItem.Enabled = canBreakInstances || canBreakSvg;
+            _deleteNestedInstanceMenuSeparator.Visible = canDeleteNestedInstance || _breakApartMenuItem.Visible;
             _flipHorizontalMenuItem.Visible = true;
             _flipVerticalMenuItem.Visible = true;
             _transformActionsMenuSeparator.Visible = true;
@@ -559,8 +622,10 @@ internal sealed class MainForm : Form
             _convertLineToFillMenuItem.Visible = !canDeleteNestedInstance;
             _lineActionsMenuSeparator.Visible = !canDeleteNestedInstance;
             _mergeAndSimplifyLinesMenuItem.Visible = !canDeleteNestedInstance;
-            _flipHorizontalMenuItem.Enabled = commandTargetCount > 0;
-            _flipVerticalMenuItem.Enabled = commandTargetCount > 0;
+            var containsImportedSvg = !canDeleteNestedInstance
+                && drawingTargets.Any(IsImportedSvgObject);
+            _flipHorizontalMenuItem.Enabled = commandTargetCount > 0 && !containsImportedSvg;
+            _flipVerticalMenuItem.Enabled = commandTargetCount > 0 && !containsImportedSvg;
             _bringForwardMenuItem.Enabled = canBringForward;
             _sendBackwardMenuItem.Enabled = canSendBackward;
             _mergeAndSimplifyLinesMenuItem.Enabled = !DrawingToolsBlocked()
@@ -603,9 +668,10 @@ internal sealed class MainForm : Form
         var mark = new Label { Text = "V2", Left = 58, Top = 12, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
         RegisterWindowDrag(mark);
         top.Controls.Add(mark);
-        var title = Theme.Label("Vector 2D Animation Engine", 102, 16, 190, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
-        RegisterWindowDrag(title);
-        top.Controls.Add(title);
+        _projectTitleLabel = Theme.Label("Untitled Project", 102, 16, 190, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
+        _projectTitleLabel.AutoEllipsis = true;
+        RegisterWindowDrag(_projectTitleLabel);
+        top.Controls.Add(_projectTitleLabel);
         _propertiesPanelButton = new SvgIconButton(SvgIconKind.PropertiesPanel)
         {
             Left = 300,
@@ -628,6 +694,20 @@ internal sealed class MainForm : Form
         _timelinePanelButton.MouseEnter += (_, _) => _toolTip.ShowFor(_timelinePanelButton, "Timeline (F2)");
         _timelinePanelButton.MouseLeave += (_, _) => _toolTip.HideTip();
         top.Controls.Add(_timelinePanelButton);
+        var playbackFpsLabel = new Label
+        {
+            Text = "FPS",
+            Width = 34,
+            Height = Theme.ControlHeightCompact,
+            ForeColor = Theme.Muted,
+            BackColor = Color.Transparent,
+            Font = Theme.UiFont(),
+            TextAlign = ContentAlignment.MiddleRight,
+            AccessibleName = "Animation frame rate"
+        };
+        Theme.StyleNumeric(_topPlaybackFps);
+        top.Controls.Add(playbackFpsLabel);
+        top.Controls.Add(_topPlaybackFps);
         var restart = CreateWindowButton(WindowChromeButtonKind.Restart, "Restart editor");
         restart.Click += (_, _) => RequestEditorRestart();
         restart.MouseEnter += (_, _) => _toolTip.ShowFor(restart, RestartEditorToolTip());
@@ -642,9 +722,14 @@ internal sealed class MainForm : Form
         top.Controls.Add(minimize);
         top.Controls.Add(_maximizeButton);
         top.Controls.Add(close);
-        top.Resize += (_, _) => PositionWindowChromeButtons(top, restart, minimize, _maximizeButton, close);
+        top.Resize += (_, _) =>
+        {
+            PositionWindowChromeButtons(top, restart, minimize, _maximizeButton, close);
+            PositionTopPlaybackFpsControls(top, restart, playbackFpsLabel, _topPlaybackFps);
+        };
         Resize += (_, _) => UpdateWindowChromeState();
         PositionWindowChromeButtons(top, restart, minimize, _maximizeButton, close);
+        PositionTopPlaybackFpsControls(top, restart, playbackFpsLabel, _topPlaybackFps);
         UpdateWindowChromeState();
 
         var body = new Panel { Dock = DockStyle.Fill, BackColor = Theme.App };
@@ -813,9 +898,117 @@ internal sealed class MainForm : Form
 
     private void BuildMainMenu()
     {
+        var newProject = new ToolStripMenuItem("New Project") { ShortcutKeys = Keys.Control | Keys.N };
+        newProject.Click += (_, _) => CreateNewProjectFromCommand();
+        var openProject = new ToolStripMenuItem("Open Project...") { ShortcutKeys = Keys.Control | Keys.O };
+        openProject.Click += (_, _) => OpenProjectFromDialog();
+        var importSvg = new ToolStripMenuItem("Import SVG...");
+        importSvg.Click += (_, _) => ImportSvgFromDialog();
+        var saveProject = new ToolStripMenuItem("Save Project") { ShortcutKeys = Keys.Control | Keys.S };
+        saveProject.Click += (_, _) => SaveProject();
+        var saveProjectAs = new ToolStripMenuItem("Save Project As...") { ShortcutKeys = Keys.Control | Keys.Shift | Keys.S };
+        saveProjectAs.Click += (_, _) => SaveProjectAs();
         var settings = new ToolStripMenuItem("Settings...");
         settings.Click += (_, _) => ShowSettings();
-        _mainMenu.Items.Add(settings);
+        _mainMenu.Items.AddRange(new ToolStripItem[]
+        {
+            newProject,
+            openProject,
+            importSvg,
+            new ToolStripSeparator(),
+            saveProject,
+            saveProjectAs,
+            new ToolStripSeparator(),
+            settings
+        });
+        _mainMenu.Opening += (_, _) => importSvg.Enabled = CanImportSvg();
+    }
+
+    private bool CanImportSvg()
+    {
+        var layer = _scene.ActiveLayer;
+        return _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
+            && !DrawingToolsBlocked()
+            && ActiveDrawingObject() is not null
+            && (uint)layer < _scene.LayerCount
+            && _scene.GetLayerKind(layer) == DrawingLayerKind.Drawing;
+    }
+
+    private void ImportSvgFromDialog()
+    {
+        if (!CanImportSvg()) return;
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = UiLocalization.T("Import SVG"),
+            Filter = $"{UiLocalization.T("SVG files")} (*.svg)|*.svg|{UiLocalization.T("All files")} (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        ImportSvgFile(dialog.FileName, center: null);
+    }
+
+    private void ImportSvgFile(string fileName, PointF? center)
+    {
+        if (!CanImportSvg()) return;
+        Cursor = Cursors.WaitCursor;
+        VectorSceneSnapshot? snapshot = null;
+        try
+        {
+            // Fully parse and validate before auto-keyframing or otherwise mutating the scene.
+            var imported = ImportedSvgRasterizer.Load(fileName);
+            var validationScale = Math.Min(
+                1f,
+                512f / Math.Max(imported.IntrinsicSize.Width, imported.IntrinsicSize.Height));
+            _ = ImportedSvgRasterizer.Rasterize(
+                imported.Source,
+                Math.Max(1, imported.IntrinsicSize.Width * validationScale),
+                Math.Max(1, imported.IntrinsicSize.Height * validationScale));
+            if (!CanImportSvg()) return;
+
+            var viewport = _stage.VisibleWorldBounds();
+            var placement = center ?? new PointF(
+                viewport.Left + viewport.Width * 0.5f,
+                viewport.Top + viewport.Height * 0.5f);
+            var size = ImportedSvgInitialSize(imported.IntrinsicSize, viewport);
+            snapshot = CreateCanvasMutationSnapshot(affectedLayers: [_scene.ActiveLayer]);
+            var objectIndex = _scene.AddImportedSvgObject(_scene.ActiveLayer, placement, size, imported.Source);
+            PushUndoSnapshot(snapshot);
+            SetSelection(objectIndex);
+            _hierarchyPanel.RefreshScene();
+            UpdateInspector();
+            _stage.Invalidate();
+            AppLog.Info($"Imported SVG as one opaque drawing object: {fileName}");
+        }
+        catch (Exception exception)
+        {
+            if (snapshot is not null) RestoreCanvasMutationSnapshot(snapshot);
+            AppLog.Error($"Unable to import SVG: {fileName}", exception);
+            ModernMessageDialog.Show(
+                this,
+                $"{UiLocalization.T("The SVG could not be imported.")}\r\n\r\n{exception.Message}",
+                UiLocalization.T("SVG Import"),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
+    private static SizeF ImportedSvgInitialSize(SizeF intrinsicSize, RectangleF viewport)
+    {
+        var naturalWidth = (double)intrinsicSize.Width * VectorUnits.UnitsPerPixel;
+        var naturalHeight = (double)intrinsicSize.Height * VectorUnits.UnitsPerPixel;
+        var maximumWidth = Math.Max(1d, viewport.Width * 0.7d);
+        var maximumHeight = Math.Max(1d, viewport.Height * 0.7d);
+        var scale = Math.Min(1d, Math.Min(maximumWidth / naturalWidth, maximumHeight / naturalHeight));
+        return new SizeF(
+            Math.Max(1f, (float)Math.Min(maximumWidth, naturalWidth * scale)),
+            Math.Max(1f, (float)Math.Min(maximumHeight, naturalHeight * scale)));
     }
 
     private void ShowSettings()
@@ -868,6 +1061,17 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void PersistTimelineAutoKeyframe()
+    {
+        var enabled = _timeline.AutoKeyframeEnabled;
+        if (_applicationSettings.TimelineAutoKeyframeEnabled == enabled) return;
+        _applicationSettings = _applicationSettings with { TimelineAutoKeyframeEnabled = enabled };
+        if (!ApplicationSettingsStore.TrySave(_applicationSettings))
+        {
+            AppLog.Warn("The timeline auto-keyframe setting could not be saved; the current session will keep the selected value.");
+        }
+    }
+
     private static WindowChromeButton CreateWindowButton(WindowChromeButtonKind kind, string name)
     {
         return new WindowChromeButton(kind)
@@ -893,6 +1097,19 @@ internal sealed class MainForm : Form
         maximize.Top = buttonTop;
         minimize.Top = buttonTop;
         restart.Top = buttonTop;
+    }
+
+    private static void PositionTopPlaybackFpsControls(
+        Control top,
+        Control restart,
+        Control label,
+        Control input)
+    {
+        var controlTop = Math.Max(0, (top.ClientSize.Height - input.Height) / 2);
+        input.Left = restart.Left - input.Width - 14;
+        input.Top = controlTop;
+        label.Left = input.Left - label.Width - 4;
+        label.Top = controlTop;
     }
 
     private void ToggleInspectorPanel()
@@ -1164,6 +1381,17 @@ internal sealed class MainForm : Form
     {
         base.OnHandleCreated(e);
         ApplyMaximizedBounds();
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (!_restartRequested && e.CloseReason == CloseReason.UserClosing && !TryContinueAfterUnsavedChanges())
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        base.OnFormClosing(e);
     }
 
     protected override void Dispose(bool disposing)
@@ -1505,12 +1733,19 @@ internal sealed class MainForm : Form
     {
         if (e.SceneIndex < 0 || e.SceneIndex >= _scenes.Count) return;
         var scene = _scenes[e.SceneIndex];
+        var depth = e.Dimension == SceneDimension.TwoD && e.Projection == CameraProjection.Perspective
+            ? Math.Max(scene.Camera.Depth, 1000)
+            : scene.Camera.Depth;
+        if (scene.Dimension == e.Dimension
+            && scene.Camera.Projection == e.Projection
+            && scene.Camera.Depth.Equals(depth))
+        {
+            return;
+        }
         scene.Dimension = e.Dimension;
         scene.Camera.Projection = e.Projection;
-        if (scene.Dimension == SceneDimension.TwoD && scene.Camera.Projection == CameraProjection.Perspective)
-        {
-            scene.Camera.Depth = Math.Max(scene.Camera.Depth, 1000);
-        }
+        scene.Camera.Depth = depth;
+        MarkProjectDirty();
 
         _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
         if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor) _stage.ConfigureReferenceView(scene);
@@ -1738,7 +1973,7 @@ internal sealed class MainForm : Form
         _timeline.BindContext(drawingObject);
         _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
         _libraryVaultPanel.SetActiveDrawingObject(drawingObject.Id);
-        _playbackSettings.SetFrameRange(0, _scene.FrameCount - 1);
+        ApplyProjectPlaybackSettingsToCurrentContext();
         SyncTimelineFrameRange();
         SetFrame(Math.Clamp(_frame, 0, _scene.FrameCount - 1));
         ClearSelection();
@@ -1771,7 +2006,7 @@ internal sealed class MainForm : Form
         else _timeline.BindScene(_scene);
         _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
         _libraryVaultPanel.SetActiveDrawingObject(ActiveDrawingObject()?.Id);
-        _playbackSettings.SetFrameRange(0, Math.Max(0, (sceneDefinition?.FrameCount ?? _scene.FrameCount) - 1));
+        ApplyProjectPlaybackSettingsToCurrentContext();
         SyncTimelineFrameRange();
         SetFrame(Math.Clamp(_frame, 0, _playbackSettings.EndFrame));
         ClearSelection();
@@ -2896,12 +3131,14 @@ internal sealed class MainForm : Form
         };
         _timeline.ActiveLayerChanged += (_, _) =>
         {
+            MarkProjectDirty();
             if (_lastDrawingToolsBlocked != DrawingToolsBlocked()) RefreshToolButtons();
             UpdateInspectorForTimelineLayerChange();
             _stage.Invalidate();
         };
         _timeline.LayerVisibilityChanged += (_, _) =>
         {
+            MarkProjectDirty();
             if (IsSceneCompositionContext()) RebuildSceneComposition();
             else RebuildDrawingObjectUnderlay();
             ClearInactiveSelection();
@@ -2911,9 +3148,9 @@ internal sealed class MainForm : Form
         _timeline.AddLayerRequested += (_, _) => AddTimelineLayer();
         _timeline.AddFolderLayerRequested += (_, _) => AddTimelineFolderLayer();
         _timeline.AddMaskLayerRequested += (_, _) => AddTimelineMaskLayer();
-        _timeline.PlaybackFpsChanged += (_, _) => _playbackSettings.Fps = _timeline.PlaybackFps;
         _timeline.FrameWidthCommitted += (_, _) => PersistTimelineFrameWidth();
         _timeline.FrameHeightCommitted += (_, _) => PersistTimelineFrameHeight();
+        _timeline.AutoKeyframeChanged += (_, _) => PersistTimelineAutoKeyframe();
         _timeline.CommandRequested += (_, e) => HandleTimelineCommand(e.Command, e.Cells);
         _timeline.LayerMoveRequested += (_, e) => MoveTimelineLayer(e.TrackId, e.TargetTrackId, e.Placement);
         _timeline.RemoveLayersRequested += (_, _) => RemoveTimelineLayers();
@@ -2944,13 +3181,20 @@ internal sealed class MainForm : Form
         _libraryVaultPanel.AssetFolderMoveRequested += (_, e) => MoveProjectAssetFolder(e.AssetId, e.TargetFolderId);
         _libraryVaultPanel.DrawingObjectMoveRequested += (_, e) => MoveDrawingObjectToAssetFolder(e.AssetId, e.TargetFolderId);
         _sceneEditorPanel.SceneSettingsChanged += (_, e) => UpdateSceneSettings(e);
+        _topPlaybackFps.ValueChanged += (_, _) =>
+        {
+            if (!_updatingTopPlaybackFps) _playbackSettings.Fps = _topPlaybackFps.Value;
+        };
         _playbackSettings.FpsChanged += (_, _) =>
         {
             _playbackAccumulator = 0;
+            SyncTopPlaybackFps();
             _timeline.PlaybackFps = _playbackSettings.Fps;
             RebuildEditableInstanceComposition();
             UpdateStatusBar();
+            PersistProjectPlaybackFps();
         };
+        _playbackSettings.LoopPlaybackChanged += (_, _) => PersistProjectLoopPlayback();
         _playbackSettings.FrameRangeChanged += (_, _) =>
         {
             var timelineLastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
@@ -2966,6 +3210,7 @@ internal sealed class MainForm : Form
             _timeline.EndFrame = _playbackSettings.EndFrame;
             SyncTimelineFrameRange();
             SetFrame(_frame);
+            PersistProjectPlaybackRange();
         };
         _materialEditor.ContinuousEditStarted += (_, _) => BeginMaterialContinuousEdit();
         _materialEditor.ContinuousEditCompleted += (_, _) => CompleteMaterialContinuousEdit();
@@ -3018,8 +3263,7 @@ internal sealed class MainForm : Form
                     var materialized = _scene.MaterializeSelectedParts(new[] { selectedElement.Key }, _frame);
                     if (!materialized.Success || materialized.Parts.Length != 1)
                     {
-                        _scene.RestoreSnapshot(snapshot);
-                        SyncSelectionToStage();
+                        RestoreCanvasMutationSnapshot(snapshot);
                         return;
                     }
 
@@ -3210,7 +3454,7 @@ internal sealed class MainForm : Form
     private void CreateNewProject()
     {
         AppLog.Info("Creating new empty project");
-        _project = VectorProject.CreateEmpty();
+        AssignProjectDocument(VectorProject.CreateEmpty(), "", dirty: false);
         _libraryVaultPanel.BindProject(_project, () => _frame);
         _sceneEditStage.CreateEmpty();
         _drawingObjectUnderlayStage.CreateEmpty();
@@ -3222,13 +3466,200 @@ internal sealed class MainForm : Form
         ResetEditHistory();
         BuildDrawingObjectTabs();
         BindActiveDrawingObjectScene(resetView: true);
+        SetProjectDirty(false);
         AppLog.Info("New empty project created with one empty drawing object");
+    }
+
+    private void CreateNewProjectFromCommand()
+    {
+        if (!TryContinueAfterUnsavedChanges()) return;
+        StopPlayback();
+        FinishPointerInteractionForFrameChange();
+        CreateNewProject();
+    }
+
+    private void OpenProjectFromDialog()
+    {
+        if (!TryContinueAfterUnsavedChanges()) return;
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = UiLocalization.T("Open Project"),
+            Filter = $"{UiLocalization.T("Vector 2D Project")} (*{ProjectVaultStore.ProjectExtension})|*{ProjectVaultStore.ProjectExtension}|{UiLocalization.T("All files")} (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (!string.IsNullOrWhiteSpace(_projectManifestPath))
+        {
+            dialog.InitialDirectory = Path.GetDirectoryName(_projectManifestPath) ?? "";
+        }
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        Cursor = Cursors.WaitCursor;
+        try
+        {
+            var project = ProjectVaultStore.Load(dialog.FileName);
+            StopPlayback();
+            FinishPointerInteractionForFrameChange();
+            LoadProjectDocument(project, Path.GetFullPath(dialog.FileName));
+            AppLog.Info($"Opened project asset library: {dialog.FileName}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Unable to open project: {dialog.FileName}", ex);
+            ShowProjectFileError("The project could not be opened.", ex);
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
+    private bool SaveProject()
+    {
+        return string.IsNullOrWhiteSpace(_projectManifestPath)
+            ? SaveProjectAs()
+            : SaveProjectTo(_projectManifestPath);
+    }
+
+    private bool SaveProjectAs()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = UiLocalization.T("Choose or create a folder for the project asset library."),
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = true,
+            SelectedPath = !string.IsNullOrWhiteSpace(_projectManifestPath)
+                ? Path.GetDirectoryName(_projectManifestPath) ?? ""
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath)) return false;
+
+        var currentDirectory = string.IsNullOrWhiteSpace(_projectManifestPath)
+            ? ""
+            : Path.GetDirectoryName(_projectManifestPath) ?? "";
+        var fileName = string.Equals(
+                Path.GetFullPath(dialog.SelectedPath),
+                Path.GetFullPath(string.IsNullOrWhiteSpace(currentDirectory) ? dialog.SelectedPath : currentDirectory),
+                StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(_projectManifestPath)
+                ? Path.GetFileName(_projectManifestPath)
+                : SafeProjectFileName(_project.Name) + ProjectVaultStore.ProjectExtension;
+        return SaveProjectTo(Path.Combine(dialog.SelectedPath, fileName));
+    }
+
+    private bool SaveProjectTo(string manifestPath)
+    {
+        Cursor = Cursors.WaitCursor;
+        try
+        {
+            FinishPointerInteractionForFrameChange();
+            _projectManifestPath = ProjectVaultStore.Save(_project, manifestPath);
+            SetProjectDirty(false);
+            AppLog.Info($"Saved project asset library: {_projectManifestPath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Unable to save project: {manifestPath}", ex);
+            ShowProjectFileError("The project could not be saved.", ex);
+            return false;
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
+    private void LoadProjectDocument(VectorProject project, string manifestPath)
+    {
+        AssignProjectDocument(project, manifestPath, dirty: false);
+        _libraryVaultPanel.BindProject(_project, () => _frame);
+        _sceneEditStage.CreateEmpty();
+        _drawingObjectUnderlayStage.CreateEmpty();
+        _sceneCompositionResult = SceneCompositionResult.Empty;
+        _drawingObjectUnderlayResult = SceneCompositionResult.Empty;
+        _activeSceneIndex = 0;
+        _activeDrawingObjectIndex = 0;
+        _frame = 0;
+        _scene = _drawingObjects[0].Scene;
+        ResetEditHistory();
+        BuildDrawingObjectTabs();
+        BindActiveDrawingObjectScene(resetView: true);
+        ClearSelection();
+        UpdateInspector();
+        UpdateStatusBar();
+        SetProjectDirty(false);
+    }
+
+    private void AssignProjectDocument(VectorProject project, string manifestPath, bool dirty)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        _project.Changed -= ProjectChanged;
+        _project = project;
+        _project.Changed += ProjectChanged;
+        _projectManifestPath = manifestPath;
+        _projectDirty = dirty;
+        UpdateProjectTitle();
+    }
+
+    private void ProjectChanged(object? sender, EventArgs e) => MarkProjectDirty();
+
+    private void MarkProjectDirty() => SetProjectDirty(true);
+
+    private void SetProjectDirty(bool dirty)
+    {
+        if (_projectDirty == dirty) return;
+        _projectDirty = dirty;
+        UpdateProjectTitle();
+    }
+
+    private void UpdateProjectTitle()
+    {
+        var name = string.IsNullOrWhiteSpace(_project.Name) ? UiLocalization.T("Untitled Project") : _project.Name;
+        var dirtySuffix = _projectDirty ? " *" : "";
+        Text = $"{name}{dirtySuffix} - Vector 2D Animation Engine";
+        if (_projectTitleLabel is not null) _projectTitleLabel.Text = name + dirtySuffix;
+    }
+
+    private bool TryContinueAfterUnsavedChanges()
+    {
+        if (!_projectDirty) return true;
+        var result = ModernMessageDialog.Show(
+            this,
+            UiLocalization.T("Save changes to the current project before continuing?"),
+            UiLocalization.T("Unsaved Project"),
+            MessageBoxButtons.YesNoCancel,
+            MessageBoxIcon.Question);
+        return result switch
+        {
+            DialogResult.Yes => SaveProject(),
+            DialogResult.No => true,
+            _ => false
+        };
+    }
+
+    private void ShowProjectFileError(string message, Exception error)
+    {
+        ModernMessageDialog.Show(
+            this,
+            $"{UiLocalization.T(message)}\r\n\r\n{error.Message}",
+            UiLocalization.T("Project"),
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error);
+    }
+
+    private static string SafeProjectFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var normalized = new string(name.Trim().Select(character => invalid.Contains(character) ? '_' : character).ToArray()).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? "Untitled Project" : normalized;
     }
 
     private void RestoreRestartState(EditorRestartState state)
     {
         AppLog.Info("Restoring editor restart session");
-        _project = state.Project;
+        AssignProjectDocument(state.Project, state.ProjectManifestPath, state.ProjectDirty);
         _libraryVaultPanel.BindProject(_project, () => _frame);
         _sceneEditStage.CreateEmpty();
         _drawingObjectUnderlayStage.CreateEmpty();
@@ -3249,6 +3680,7 @@ internal sealed class MainForm : Form
             .ToArray();
         if (selected.Length > 0) SetSelection(selected);
         else ClearSelection();
+        SetProjectDirty(state.ProjectDirty);
     }
 
     private void RestoreRestartPresentation(EditorRestartState state)
@@ -3273,14 +3705,17 @@ internal sealed class MainForm : Form
         HideToolFlyouts();
         var state = CaptureEditorRestartState();
 
-        if (IsModuleHotReloadEnabled()
-            && EditorRestartStore.TrySave(state)
-            && LauncherShutdownSignal.RequestEditorRestart())
+        if (IsModuleHotReloadEnabled())
         {
-            _restartRequested = true;
-            AppLog.Info("Editor process restart requested; preserving the current project for the new process");
-            ProcessRestartRequested?.Invoke(this, EventArgs.Empty);
-            return;
+            var stateSaved = EditorRestartStore.TrySave(state);
+            if (stateSaved && LauncherShutdownSignal.RequestEditorRestart())
+            {
+                _restartRequested = true;
+                AppLog.Info("Editor process restart requested; preserving the current project for the new process");
+                ProcessRestartRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+            EditorRestartStore.DeletePending();
         }
 
         var handler = RestartRequested;
@@ -3293,6 +3728,8 @@ internal sealed class MainForm : Form
     private EditorRestartState CaptureEditorRestartState() => new()
     {
         Project = _project,
+        ProjectManifestPath = _projectManifestPath,
+        ProjectDirty = _projectDirty,
         ActiveSceneIndex = _activeSceneIndex,
         ActiveDrawingObjectIndex = _activeDrawingObjectIndex,
         Workspace = _workspaceTabs.SelectedView,
@@ -3392,7 +3829,7 @@ internal sealed class MainForm : Form
     {
         if (!_playing || updateCount <= 0) return 0;
 
-        var frameStep = 1.0 / Math.Max(1, _playbackSettings.Fps);
+        var frameStep = PlaybackFrameStepSeconds(_playbackSettings.Fps);
         var start = _playbackSettings.StartFrame;
         var end = _playbackSettings.EndFrame;
         var nextFrame = Math.Clamp(_frame, start, end);
@@ -3422,6 +3859,11 @@ internal sealed class MainForm : Form
         if (nextFrame != _frame) SetFrame(nextFrame, invalidate: false);
         if (stopAtEnd) StopPlayback();
         return processedUpdates;
+    }
+
+    internal static double PlaybackFrameStepSeconds(decimal playbackFps)
+    {
+        return 1.0 / (double)Math.Max(1m, playbackFps);
     }
 
     private void TogglePlayback()
@@ -3492,8 +3934,27 @@ internal sealed class MainForm : Form
             _hasRenderRateSample ? $"Render FPS {_renderFps:0}" : "Render FPS --");
         SetToolStripText(
             _animationFpsStatus,
-            $"UPS {(_hasUpdateRateSample ? $"{_updatesPerSecond:0}" : "--")}/{TargetUps:0}  Animation FPS {_playbackSettings.Fps}");
+            $"UPS {(_hasUpdateRateSample ? $"{_updatesPerSecond:0}" : "--")}/{TargetUps:0}  Animation FPS {FormatPlaybackFps(_playbackSettings.Fps)}");
         SetToolStripText(_zoomStatus, $"Zoom {_stage.Zoom * 100:0}%");
+    }
+
+    private static string FormatPlaybackFps(decimal playbackFps)
+    {
+        return playbackFps.ToString("0.###", System.Globalization.CultureInfo.CurrentCulture);
+    }
+
+    private void SyncTopPlaybackFps()
+    {
+        if (_topPlaybackFps.Value == _playbackSettings.Fps) return;
+        _updatingTopPlaybackFps = true;
+        try
+        {
+            _topPlaybackFps.Value = _playbackSettings.Fps;
+        }
+        finally
+        {
+            _updatingTopPlaybackFps = false;
+        }
     }
 
     private static void SetLabelText(Label label, string text)
@@ -3556,6 +4017,26 @@ internal sealed class MainForm : Form
         if (keyData == Keys.F2)
         {
             ToggleTimelinePanel();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.N))
+        {
+            CreateNewProjectFromCommand();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.O))
+        {
+            OpenProjectFromDialog();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.S))
+        {
+            SaveProject();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.Shift | Keys.S))
+        {
+            SaveProjectAs();
             return true;
         }
         var focusedEditor = ContainsFocusedEditor(this);
@@ -3785,7 +4266,9 @@ internal sealed class MainForm : Form
                 SetFrame(_playbackSettings.EndFrame);
                 return true;
             case Keys.F5:
-                return ExecuteTimelineEdit(TimelineEditKind.InsertFrame);
+                return ExecuteTimelineEdit(
+                    TimelineEditKind.InsertFrame,
+                    movePlayheadToInsertedFrame: true);
             case Keys.Shift | Keys.F5:
                 return ExecuteTimelineEdit(TimelineEditKind.RemoveFrame);
             case Keys.F6:
@@ -3799,11 +4282,18 @@ internal sealed class MainForm : Form
         }
     }
 
-    private bool ExecuteTimelineEdit(TimelineEditKind edit, IReadOnlyList<TimelineFrameCell>? selectedCells = null)
+    private bool ExecuteTimelineEdit(
+        TimelineEditKind edit,
+        IReadOnlyList<TimelineFrameCell>? selectedCells = null,
+        bool movePlayheadToInsertedFrame = false)
     {
         var context = _timeline.Context;
         context.SynchronizeTimelineTracks();
         var previousLastFrame = Math.Max(0, context.FrameCount - 1);
+        var previousPlayheadFrame = _frame;
+        var previousTimelineSelection = edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe
+            ? _timeline.CaptureSelectionSnapshot()
+            : null;
         var timeline = context.Timeline;
         var cells = (selectedCells ?? _timeline.SelectedFrameCells)
             .Where(cell => timeline.FindTrack(cell.TrackId) is not null)
@@ -3941,8 +4431,24 @@ internal sealed class MainForm : Form
             if (advanceSingleKeyframeInsertion) PlayTimelineEditFeedback(edit, cells);
             return advanceSingleKeyframeInsertion;
         }
-        if (vectorSnapshot is not null) PushUndoSnapshot(vectorSnapshot);
-        if (sceneDefinition is not null && sceneSnapshot is not null) PushSceneTimelineUndo(sceneDefinition, sceneSnapshot);
+        var undoPlayheadFrame = edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe
+            ? previousPlayheadFrame
+            : (int?)null;
+        if (vectorSnapshot is not null)
+        {
+            PushUndoSnapshot(
+                vectorSnapshot,
+                playheadFrame: undoPlayheadFrame,
+                timelineSelection: previousTimelineSelection);
+        }
+        if (sceneDefinition is not null && sceneSnapshot is not null)
+        {
+            PushSceneTimelineUndo(
+                sceneDefinition,
+                sceneSnapshot,
+                playheadFrame: undoPlayheadFrame,
+                timelineSelection: previousTimelineSelection);
+        }
 
         if (!advanceSingleKeyframeInsertion
             && edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe)
@@ -3953,6 +4459,10 @@ internal sealed class MainForm : Form
                 trailingFrames: singleKeyframeInsertionBeyondTrackEnd ? 0 : 1);
         }
 
+        var insertedFrameDestination = movePlayheadToInsertedFrame && edit == TimelineEditKind.InsertFrame
+            ? ResolveTimelineInsertPlayheadFrame(timeline, cells, _frame)
+            : _frame;
+
         CompleteTimelineMutation(
             context,
             drawingScene,
@@ -3960,6 +4470,10 @@ internal sealed class MainForm : Form
             refreshCurrentComposition,
             preservedInstanceSelectionIds,
             preservedPrimaryInstanceId);
+        if (movePlayheadToInsertedFrame && edit == TimelineEditKind.InsertFrame)
+        {
+            SetFrame(insertedFrameDestination);
+        }
         PlayTimelineEditFeedback(edit, cells);
         return true;
     }
@@ -4018,6 +4532,34 @@ internal sealed class MainForm : Form
     internal static bool TimelineInsertRequiresCompositionRefresh(int currentFrame, int insertionFrame)
     {
         return Math.Max(0, insertionFrame) < Math.Max(0, currentFrame);
+    }
+
+    internal static int ResolveTimelineInsertPlayheadFrame(
+        AnimationTimeline timeline,
+        IEnumerable<TimelineFrameCell> cells,
+        int fallbackFrame)
+    {
+        var destination = Math.Max(0, fallbackFrame);
+        var found = false;
+        foreach (var group in cells
+                     .Where(cell => cell.Frame >= 0)
+                     .GroupBy(cell => cell.TrackId, StringComparer.Ordinal))
+        {
+            var track = timeline.FindTrack(group.Key);
+            if (track is null) continue;
+            foreach (var range in TimelineFrameRanges(group.Select(cell => cell.Frame)))
+            {
+                var insertedEnd = range.Frame + range.Count - 1;
+                var exposure = track.EvaluateExposure(range.Frame);
+                var candidate = exposure.SourceKind is null
+                    ? insertedEnd
+                    : Math.Max(insertedEnd, exposure.EndFrame);
+                destination = found ? Math.Max(destination, candidate) : candidate;
+                found = true;
+            }
+        }
+
+        return found ? destination : Math.Max(0, fallbackFrame);
     }
 
     internal static IReadOnlyList<TimelineBlankKeyframeRangePlan> ResolveTimelineBlankKeyframeRangePlans(
@@ -5071,6 +5613,7 @@ internal sealed class MainForm : Form
         scene.Camera.Projection = scene.Camera.Projection == CameraProjection.Perspective
             ? CameraProjection.Orthographic
             : CameraProjection.Perspective;
+        MarkProjectDirty();
         _stage.ConfigureReferenceView(scene);
         _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects, _activeDrawingObjectIndex);
         UpdateStatusBar();
@@ -5159,17 +5702,70 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void ApplyProjectPlaybackSettingsToCurrentContext()
+    {
+        var timelineLastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
+        var endFrame = Math.Clamp(_project.PlaybackEndFrame, 0, timelineLastFrame);
+        var startFrame = Math.Clamp(_project.PlaybackStartFrame, 0, endFrame);
+
+        _syncingProjectPlaybackSettings = true;
+        try
+        {
+            _playbackSettings.Fps = _project.PlaybackFps;
+            _playbackSettings.LoopPlayback = _project.LoopPlayback;
+            _playbackSettings.SetFrameRange(startFrame, endFrame);
+        }
+        finally
+        {
+            _syncingProjectPlaybackSettings = false;
+        }
+    }
+
+    private void PersistProjectPlaybackFps()
+    {
+        if (_syncingProjectPlaybackSettings) return;
+        _project.TrySetPlaybackFps(_playbackSettings.Fps);
+    }
+
+    private void PersistProjectLoopPlayback()
+    {
+        if (_syncingProjectPlaybackSettings) return;
+        _project.TrySetLoopPlayback(_playbackSettings.LoopPlayback);
+    }
+
+    private void PersistProjectPlaybackRange()
+    {
+        if (_syncingProjectPlaybackSettings) return;
+        _project.TrySetPlaybackRange(_playbackSettings.StartFrame, _playbackSettings.EndFrame);
+    }
+
     private void ApplyBoundTimelineDuration(int previousLastFrame = -1)
     {
         var lastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
-        var followTimelineEnd = previousLastFrame >= 0 && _playbackSettings.EndFrame >= previousLastFrame;
+        var followTimelineEnd = previousLastFrame >= 0 && _project.PlaybackEndFrame == previousLastFrame;
         var endFrame = followTimelineEnd
             ? lastFrame
-            : Math.Clamp(_playbackSettings.EndFrame, 0, lastFrame);
-        var startFrame = Math.Clamp(_playbackSettings.StartFrame, 0, endFrame);
+            : Math.Clamp(_project.PlaybackEndFrame, 0, lastFrame);
+        var startFrame = Math.Clamp(_project.PlaybackStartFrame, 0, endFrame);
         if (startFrame != _playbackSettings.StartFrame || endFrame != _playbackSettings.EndFrame)
         {
-            _playbackSettings.SetFrameRange(startFrame, endFrame);
+            if (followTimelineEnd)
+            {
+                _playbackSettings.SetFrameRange(startFrame, endFrame);
+            }
+            else
+            {
+                var wasSyncingProjectPlaybackSettings = _syncingProjectPlaybackSettings;
+                _syncingProjectPlaybackSettings = true;
+                try
+                {
+                    _playbackSettings.SetFrameRange(startFrame, endFrame);
+                }
+                finally
+                {
+                    _syncingProjectPlaybackSettings = wasSyncingProjectPlaybackSettings;
+                }
+            }
         }
         else
         {
@@ -5201,6 +5797,11 @@ internal sealed class MainForm : Form
         _fillMergePendingAfterMaterialEdit = false;
         _lineMergePendingAfterMaterialEdit = false;
         _materialEditSession = null;
+        if (session is { AutoKeyframeChanged: true, UndoPushed: false })
+        {
+            RestoreCanvasMutationSnapshot(session.Snapshot);
+            return;
+        }
         var hierarchyChanged = session?.HierarchyDirty == true;
         var inspectorChanged = session?.InspectorDirty == true;
         if (mergeFills) hierarchyChanged |= MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
@@ -5261,9 +5862,19 @@ internal sealed class MainForm : Form
     private VectorSceneSnapshot CreateMaterialUndoSnapshot()
     {
         var session = _materialEditSession;
-        return session is not null && ReferenceEquals(session.Scene, _scene)
-            ? session.Snapshot
-            : _scene.CreateSnapshot();
+        if (session is not null && ReferenceEquals(session.Scene, _scene))
+        {
+            if (!session.AutoKeyframePreparationAttempted)
+            {
+                session.AutoKeyframePreparationAttempted = true;
+                session.AutoKeyframeChanged = MaterializeAutomaticKeyframesForCanvasEdit();
+            }
+            return session.Snapshot;
+        }
+
+        var snapshot = _scene.CreateSnapshot();
+        MaterializeAutomaticKeyframesForCanvasEdit();
+        return snapshot;
     }
 
     private void RefreshHierarchyAfterMaterialChange(bool hierarchyChanged)
@@ -5291,18 +5902,120 @@ internal sealed class MainForm : Form
         UpdateInspector();
     }
 
-    private void CaptureUndoSnapshot()
+    private void CaptureUndoSnapshot(
+        IEnumerable<int>? affectedObjects = null,
+        IEnumerable<int>? affectedLayers = null)
     {
-        PushUndoSnapshot(_scene.CreateSnapshot());
+        var snapshot = _scene.CreateSnapshot();
+        PushUndoSnapshot(snapshot);
+        MaterializeAutomaticKeyframesForCanvasEdit(affectedObjects, affectedLayers);
+    }
+
+    private VectorSceneSnapshot CreateCanvasMutationSnapshot(
+        IEnumerable<int>? affectedObjects = null,
+        IEnumerable<int>? affectedLayers = null)
+    {
+        var snapshot = _scene.CreateSnapshot();
+        MaterializeAutomaticKeyframesForCanvasEdit(affectedObjects, affectedLayers);
+        return snapshot;
+    }
+
+    private bool MaterializeAutomaticKeyframesForCanvasEdit(
+        IEnumerable<int>? affectedObjects = null,
+        IEnumerable<int>? affectedLayers = null)
+    {
+        if (!AutomaticKeyframesEnabledForCurrentScene()) return false;
+        var previousLastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
+        var layers = ResolveAutomaticKeyframeLayers(affectedObjects, affectedLayers);
+        if (layers.Count == 0) return false;
+
+        var changed = false;
+        using (_scene.Timeline.BeginBatchUpdate())
+        {
+            foreach (var layer in layers)
+            {
+                changed |= _scene.MaterializeAutoKeyframeInPlace(layer, _frame);
+            }
+        }
+        if (!changed) return false;
+
+        RefreshAutomaticKeyframePresentation(previousLastFrame);
+        return true;
+    }
+
+    private bool AutomaticKeyframesEnabledForCurrentScene()
+    {
+        if (!_timeline.AutoKeyframeEnabled || IsSceneCompositionContext()) return false;
+        var drawingScene = _timeline.Context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            _ => null
+        };
+        return ReferenceEquals(drawingScene, _scene);
+    }
+
+    private IReadOnlyList<int> ResolveAutomaticKeyframeLayers(
+        IEnumerable<int>? affectedObjects,
+        IEnumerable<int>? affectedLayers)
+    {
+        var layers = new HashSet<int>();
+        if (affectedLayers is not null)
+        {
+            foreach (var layer in affectedLayers)
+            {
+                if ((uint)layer < _scene.LayerCount) layers.Add(layer);
+            }
+        }
+
+        var objects = affectedObjects?.ToArray()
+            ?? _selectedObjects
+                .Concat(_selectedElements.Select(hit => hit.Key.ObjectIndex))
+                .Append(_selectedObject)
+                .ToArray();
+        foreach (var objectIndex in objects)
+        {
+            if ((uint)objectIndex < _scene.ObjectCount) layers.Add(_scene.ObjectLayer[objectIndex]);
+        }
+        return layers.OrderBy(layer => layer).ToArray();
+    }
+
+    private void RefreshAutomaticKeyframePresentation(int previousLastFrame)
+    {
+        _timeline.RefreshTimeline();
+        if (_timeline.Context.FrameCount - 1 != previousLastFrame) ApplyBoundTimelineDuration(previousLastFrame);
+        _hierarchyPanel.RefreshScene();
+        RebuildDrawingObjectUnderlay();
+        _stage.Invalidate();
+    }
+
+    private void RestoreCanvasMutationSnapshot(VectorSceneSnapshot snapshot)
+    {
+        _scene.RestoreSnapshot(snapshot);
+        _scene.EditFrame = _frame;
+        _timeline.RefreshTimeline();
+        _hierarchyPanel.RefreshScene();
+        RebuildDrawingObjectUnderlay();
+        SyncSelectionToStage();
+        UpdateInspector();
+        _stage.Invalidate();
     }
 
     private void PushUndoSnapshot(
         VectorSceneSnapshot snapshot,
         DrawingObjectDefinition? drawingObject = null,
-        DrawingObjectInstanceDefinition[]? instanceSnapshot = null)
+        DrawingObjectInstanceDefinition[]? instanceSnapshot = null,
+        int? playheadFrame = null,
+        TimelineSelectionSnapshot? timelineSelection = null)
     {
+        MarkProjectDirty();
         _marqueeMaterializationSession = null;
-        _undoStack.Push(new DrawingUndoEntry(snapshot, drawingObject, instanceSnapshot));
+        _undoStack.Push(new DrawingUndoEntry(
+            snapshot,
+            drawingObject,
+            instanceSnapshot,
+            playheadFrame,
+            timelineSelection));
         var snapshots = _undoStack.ToArray();
         var retainedCount = 0;
         long retainedBytes = 0;
@@ -5328,9 +6041,18 @@ internal sealed class MainForm : Form
         SceneDefinition scene,
         AnimationTimelineSnapshot snapshot,
         SceneLayerSnapshot? layerSnapshot = null,
-        DrawingObjectInstanceDefinition[]? instanceSnapshot = null)
+        DrawingObjectInstanceDefinition[]? instanceSnapshot = null,
+        int? playheadFrame = null,
+        TimelineSelectionSnapshot? timelineSelection = null)
     {
-        _sceneTimelineUndoStack.Push(new SceneTimelineUndoEntry(scene, snapshot, layerSnapshot, instanceSnapshot));
+        MarkProjectDirty();
+        _sceneTimelineUndoStack.Push(new SceneTimelineUndoEntry(
+            scene,
+            snapshot,
+            layerSnapshot,
+            instanceSnapshot,
+            playheadFrame,
+            timelineSelection));
         while (_sceneTimelineUndoStack.Count > MaxUndoSnapshots)
         {
             var snapshots = _sceneTimelineUndoStack.Take(MaxUndoSnapshots).Reverse().ToArray();
@@ -5362,9 +6084,15 @@ internal sealed class MainForm : Form
             activeScene.SynchronizeTimelineTracks();
             _timeline.RefreshTimeline();
             ApplyBoundTimelineDuration(previousLastFrame);
-            RebuildSceneComposition();
+            if (timelineUndo.PlayheadFrame is { } scenePlayheadFrame) SetFrame(scenePlayheadFrame);
+            else RebuildSceneComposition();
             ClearSelection();
+            if (timelineUndo.TimelineSelection is { } sceneTimelineSelection)
+            {
+                _timeline.RestoreSelectionSnapshot(sceneTimelineSelection);
+            }
             UpdateInspector();
+            MarkProjectDirty();
             return true;
         }
 
@@ -5372,11 +6100,11 @@ internal sealed class MainForm : Form
         if (_undoStack.Count == 0) return false;
         var previousDrawingLastFrame = Math.Max(0, _scene.FrameCount - 1);
         var drawingUndo = _undoStack.Pop();
-        _scene.RestoreSnapshot(drawingUndo.Snapshot);
         if (drawingUndo.DrawingObject is not null && drawingUndo.InstanceSnapshot is not null)
         {
             drawingUndo.DrawingObject.RestoreInstanceSnapshot(drawingUndo.InstanceSnapshot);
         }
+        _scene.RestoreSnapshot(drawingUndo.Snapshot);
         _scene.EditFrame = _frame;
         ClearSelection();
         _geometryDirty = false;
@@ -5388,9 +6116,15 @@ internal sealed class MainForm : Form
         _hierarchyPanel.RefreshScene();
         _timeline.RefreshTimeline();
         ApplyBoundTimelineDuration(previousDrawingLastFrame);
-        RebuildDrawingObjectUnderlay();
+        if (drawingUndo.PlayheadFrame is { } drawingPlayheadFrame) SetFrame(drawingPlayheadFrame);
+        else RebuildDrawingObjectUnderlay();
+        if (drawingUndo.TimelineSelection is { } drawingTimelineSelection)
+        {
+            _timeline.RestoreSelectionSnapshot(drawingTimelineSelection);
+        }
         UpdateInspector();
         _stage.Invalidate();
+        MarkProjectDirty();
         return true;
     }
 
@@ -5469,7 +6203,8 @@ internal sealed class MainForm : Form
                     new PointF(_scene.CurveControl2X[index], _scene.CurveControl2Y[index]),
                     pathContours,
                     _scene.GetLineEndpointStyle(index, startEndpoint: true),
-                    _scene.GetLineEndpointStyle(index, startEndpoint: false)));
+                    _scene.GetLineEndpointStyle(index, startEndpoint: false),
+                    _scene.TryGetImportedSvgSource(index, out var importedSvgSource) ? importedSvgSource : null));
             }
 
             return _clipboardObjects.Count > 0;
@@ -5493,14 +6228,21 @@ internal sealed class MainForm : Form
             return PasteCopiedDrawingObjectInstances();
         }
         if (_clipboardObjects.Count == 0) return false;
-        CaptureUndoSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot(
+            affectedLayers: _clipboardObjects.Select(item =>
+                Math.Clamp(item.Layer, 0, Math.Max(0, _scene.LayerCount - 1))));
         var pasted = new List<int>(_clipboardObjects.Count);
         foreach (var item in _clipboardObjects)
         {
             var offset = new PointF(PasteOffsetUnits, PasteOffsetUnits);
             var layer = Math.Clamp(item.Layer, 0, Math.Max(0, _scene.LayerCount - 1));
             int index;
-            if (item.Shape == ShapeKind.Path && item.PathWorldContours is { Length: > 0 } pathContours)
+            if (item.Shape == ShapeKind.ImportedSvg && !string.IsNullOrWhiteSpace(item.ImportedSvgSource))
+            {
+                var center = new PointF(item.Center.X + offset.X, item.Center.Y + offset.Y);
+                index = _scene.AddImportedSvgObject(layer, center, item.Size, item.Angle, item.ImportedSvgSource);
+            }
+            else if (item.Shape == ShapeKind.Path && item.PathWorldContours is { Length: > 0 } pathContours)
             {
                 var shifted = pathContours
                     .Select(contour => contour.Select(point => new PointF(point.X + offset.X, point.Y + offset.Y)).ToArray())
@@ -5543,9 +6285,14 @@ internal sealed class MainForm : Form
             if (index >= 0) pasted.Add(index);
         }
 
-        if (pasted.Count == 0) return false;
+        if (pasted.Count == 0)
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return false;
+        }
+        PushUndoSnapshot(snapshot);
         SetSelection(pasted);
-        MergeSelectedFillsAfterGeometryEdit();
+        MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
         MergeCompatibleLinesAfterDrawingOperation();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
@@ -5601,19 +6348,18 @@ internal sealed class MainForm : Form
         {
             return FlipSelectedNestedDrawingObjects(horizontal);
         }
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot();
         if (!TryPrepareSelectedDrawingObjectsForCommand(snapshot, out var targets)
+            || targets.Any(IsImportedSvgObject)
             || !_scene.FlipObjects(targets, horizontal))
         {
-            _scene.RestoreSnapshot(snapshot);
-            _scene.EditFrame = _frame;
-            SyncSelectionToStage();
+            RestoreCanvasMutationSnapshot(snapshot);
             return false;
         }
 
         SetSelection(targets);
         ApplySelectedFillOverwriteAfterGeometryEdit();
-        MergeSelectedFillsAfterGeometryEdit();
+        MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
         MergeCompatibleLinesAfterDrawingOperation();
         PushUndoSnapshot(snapshot);
         _hierarchyPanel.RefreshScene();
@@ -5678,13 +6424,11 @@ internal sealed class MainForm : Form
         {
             return MoveSelectedNestedDrawingObjectsInStack(direction);
         }
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot();
         if (!TryPrepareSelectedDrawingObjectsForCommand(snapshot, out var targets)
             || !_scene.MoveObjectsInLayerStack(targets, direction, _frame))
         {
-            _scene.RestoreSnapshot(snapshot);
-            _scene.EditFrame = _frame;
-            SyncSelectionToStage();
+            RestoreCanvasMutationSnapshot(snapshot);
             return false;
         }
 
@@ -5976,13 +6720,13 @@ internal sealed class MainForm : Form
             {
                 var color = ActiveColor();
                 if (_scene.Argb[hit.Key.ObjectIndex] == color.ToArgb()) return;
-                var snapshot = _scene.CreateSnapshot();
+                var snapshot = CreateCanvasMutationSnapshot([hit.Key.ObjectIndex]);
                 var materialized = hit.Key.Kind == DrawingElementKind.Fill
                     ? _scene.DetachElementForMove(hit, _frame)
                     : hit;
                 if (!materialized.IsValid)
                 {
-                    _scene.RestoreSnapshot(snapshot);
+                    RestoreCanvasMutationSnapshot(snapshot);
                     return;
                 }
 
@@ -6003,8 +6747,12 @@ internal sealed class MainForm : Form
             else
             {
                 var color = ActiveColor();
-                var snapshot = _scene.CreateSnapshot();
-                if (!_scene.TryCreateFillFromClosedStrokeRegion(fillWorld, _frame, color, out var created, out var animationContours)) return;
+                var snapshot = CreateCanvasMutationSnapshot(affectedLayers: [_scene.ActiveLayer]);
+                if (!_scene.TryCreateFillFromClosedStrokeRegion(fillWorld, _frame, color, out var created, out var animationContours))
+                {
+                    RestoreCanvasMutationSnapshot(snapshot);
+                    return;
+                }
 
                 var overwritten = NormalizeNewPaintObjects([created]);
                 if (overwritten.Length > 0) created = overwritten[0];
@@ -6035,6 +6783,7 @@ internal sealed class MainForm : Form
         if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount) return;
 
         var objectIndex = hit.Key.ObjectIndex;
+        if (IsImportedSvgObject(objectIndex)) return;
         var strokeTarget = hit.Key.Kind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke;
         var color = Color.FromArgb(strokeTarget ? _scene.StrokeArgb[objectIndex] : _scene.Argb[objectIndex]);
         var samplesGradient = _scene.HasGradient(objectIndex)
@@ -6078,7 +6827,7 @@ internal sealed class MainForm : Form
         var changed = targets.Any(index => _scene.StrokeArgb[index] != color || _scene.HasGradient(index));
         if (!changed) return true;
 
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot(targets);
         foreach (var objectIndex in targets)
         {
             _scene.StrokeArgb[objectIndex] = color;
@@ -6111,7 +6860,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
         _scene.Stroke[objectIndex] = stroke;
         _scene.StrokeArgb[objectIndex] = strokeColor;
         _scene.RebuildGeometryIndex();
@@ -6135,7 +6884,8 @@ internal sealed class MainForm : Form
             && _selectedObject >= 0
             && _scene.HasGradient(_selectedObject))
         {
-            _gradientEditSnapshot = _scene.CreateSnapshot();
+            _gradientEditChanged = false;
+            _gradientEditSnapshot = CreateCanvasMutationSnapshot([_selectedObject]);
             _gradientHandle = overlayHit.Kind;
             _gradientStopIndex = overlayHit.StopIndex;
             UpdateInteractionCursor(e.Location);
@@ -6152,7 +6902,8 @@ internal sealed class MainForm : Form
         }
 
         var objectIndex = hit.Key.ObjectIndex;
-        _gradientEditSnapshot = _scene.CreateSnapshot();
+        _gradientEditChanged = false;
+        _gradientEditSnapshot = CreateCanvasMutationSnapshot([objectIndex]);
         if (!_scene.HasGradient(objectIndex))
         {
             var kind = _materialEditor.GradientKind == GradientKind.Solid
@@ -6166,6 +6917,7 @@ internal sealed class MainForm : Form
             {
                 _scene.SetGradientPaint(objectIndex, kind, _materialEditor.GradientStops, world, world);
             }
+            _gradientEditChanged = true;
         }
 
         SetSelection(objectIndex);
@@ -6199,8 +6951,10 @@ internal sealed class MainForm : Form
             if (axisLengthSquared < 0.0001f) return;
             var projected = ((snapped.X - start.X) * axisX + (snapped.Y - start.Y) * axisY) / axisLengthSquared;
             var position = Math.Clamp(projected, stops[_gradientStopIndex - 1].Position + 0.01f, stops[_gradientStopIndex + 1].Position - 0.01f);
+            if (Math.Abs(position - stops[_gradientStopIndex].Position) <= 0.0001f) return;
             stops[_gradientStopIndex] = new GradientStop(position, stops[_gradientStopIndex].Argb);
             _scene.SetGradientStops(_selectedObject, stops);
+            _gradientEditChanged = true;
         }
         else
         {
@@ -6222,8 +6976,11 @@ internal sealed class MainForm : Form
                 }
             }
             else end = snapped;
+            if (start == _scene.GetGradientStart(_selectedObject)
+                && end == _scene.GetGradientEnd(_selectedObject)) return;
             _scene.ClearGradientPath(_selectedObject);
             _scene.SetLinearGradientEndpoints(_selectedObject, start, end);
+            _gradientEditChanged = true;
         }
         UpdateGradientOverlay();
         _stage.Invalidate();
@@ -6231,8 +6988,13 @@ internal sealed class MainForm : Form
 
     private void CompleteGradientPointer()
     {
-        if (_gradientEditSnapshot is { } snapshot) PushUndoSnapshot(snapshot);
+        if (_gradientEditSnapshot is { } snapshot)
+        {
+            if (_gradientEditChanged) PushUndoSnapshot(snapshot);
+            else RestoreCanvasMutationSnapshot(snapshot);
+        }
         _gradientEditSnapshot = null;
+        _gradientEditChanged = false;
         _gradientHandle = GradientHandleKind.None;
         _gradientStopIndex = -1;
         UpdateGradientOverlay();
@@ -6244,12 +7006,11 @@ internal sealed class MainForm : Form
     {
         if (restore && _gradientEditSnapshot is { } snapshot)
         {
-            _scene.RestoreSnapshot(snapshot);
-            SyncSelectionToStage();
-            UpdateInspector();
+            RestoreCanvasMutationSnapshot(snapshot);
         }
 
         _gradientEditSnapshot = null;
+        _gradientEditChanged = false;
         _gradientHandle = GradientHandleKind.None;
         _gradientStopIndex = -1;
         UpdateGradientOverlay();
@@ -6323,6 +7084,17 @@ internal sealed class MainForm : Form
         }
 
         if (_tool != ToolMode.Select) return;
+        if (hit.IsValid && IsImportedSvgObject(hit.Key.ObjectIndex))
+        {
+            _pendingClickSelection = DrawingElementHit.None;
+            _marqueeSelecting = false;
+            _marqueeStart = null;
+            _stage.ClearMarquee();
+            SetSelection(hit.Key.ObjectIndex);
+            UpdateInspector();
+            _stage.Invalidate();
+            return;
+        }
         if (!hit.IsValid || hit.Key.Kind is not (DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke)) return;
 
         var connected = _scene.GetConnectedStrokeElements(hit, _frame);
@@ -6939,13 +7711,12 @@ internal sealed class MainForm : Form
             return;
         }
 
-        CapturePointerUndoSnapshot();
-
         if (_activeTransformHandle == TransformHandleKind.Move)
         {
             var dx = world.X - _transformLastPointer.X;
             var dy = world.Y - _transformLastPointer.Y;
             if (Math.Abs(dx) <= 0.0001f && Math.Abs(dy) <= 0.0001f) return;
+            CapturePointerUndoSnapshot();
             _scene.TransformObjects(
                 _selectedObjects,
                 point => new PointF(point.X + dx, point.Y + dy),
@@ -6957,6 +7728,7 @@ internal sealed class MainForm : Form
             var angle = TransformPointerAngle(world, _transformPivot);
             var delta = NormalizeAngle(angle - _transformLastAngle);
             if (Math.Abs(delta) <= 0.0001f) return;
+            CapturePointerUndoSnapshot();
             var cos = MathF.Cos(delta);
             var sin = MathF.Sin(delta);
             var pivot = _transformPivot;
@@ -6970,8 +7742,10 @@ internal sealed class MainForm : Form
         }
         else if (IsSkewHandle(_activeTransformHandle))
         {
+            if (_selectedObjects.Any(IsImportedSvgObject)) return;
             var factor = SkewFactor(_activeTransformHandle, _transformCurrentBounds, _transformLastPointer, world);
             if (Math.Abs(factor) <= 0.0001f) return;
+            CapturePointerUndoSnapshot();
             if (IsHorizontalSkewHandle(_activeTransformHandle))
             {
                 var anchorY = _activeTransformHandle == TransformHandleKind.SkewTop
@@ -7000,6 +7774,7 @@ internal sealed class MainForm : Form
             var scaleX = nextBounds.Width / Math.Max(0.001f, _transformCurrentBounds.Width);
             var scaleY = nextBounds.Height / Math.Max(0.001f, _transformCurrentBounds.Height);
             if (Math.Abs(scaleX - 1) <= 0.0001f && Math.Abs(scaleY - 1) <= 0.0001f) return;
+            CapturePointerUndoSnapshot();
             var pivot = _transformPivot;
             _scene.TransformObjects(
                 _selectedObjects,
@@ -7356,7 +8131,10 @@ internal sealed class MainForm : Form
         var materialized = _scene.MaterializeSelectedParts(selectedKeys.ToArray(), _frame);
         if (!materialized.Success || materialized.Parts.Length == 0)
         {
-            if (_undoCapturedForPointerEdit && _undoStack.Count > 0) _undoStack.Pop();
+            if (_undoCapturedForPointerEdit && _undoStack.TryPop(out var undo))
+            {
+                RestoreCanvasMutationSnapshot(undo.Snapshot);
+            }
             _undoCapturedForPointerEdit = false;
             return false;
         }
@@ -7394,6 +8172,9 @@ internal sealed class MainForm : Form
     {
         if (_fillBoundaryLineLinks.Count > 0) return;
 
+        var translatedObjects = _activeHandle == EditHandleKind.None
+            ? _selectedMoveStarts.Keys.ToHashSet()
+            : null;
         var editedLines = _selectedMoveStarts.Keys
             .Concat(_lineEndpointEditStarts.Select(edit => edit.ObjectIndex))
             .Append(_selectedObject)
@@ -7402,8 +8183,20 @@ internal sealed class MainForm : Form
             .Distinct();
         foreach (var lineObjectIndex in editedLines)
         {
-            _fillBoundaryLineLinks.AddRange(_scene.CaptureFillBoundaryLineLinks(lineObjectIndex, _frame));
+            var links = _scene.CaptureFillBoundaryLineLinks(lineObjectIndex, _frame);
+            _fillBoundaryLineLinks.AddRange(translatedObjects is null
+                ? links
+                : ExcludeTranslatedFillBoundaryLinks(links, translatedObjects));
         }
+    }
+
+    internal static FillBoundaryLineLink[] ExcludeTranslatedFillBoundaryLinks(
+        IReadOnlyList<FillBoundaryLineLink> links,
+        IReadOnlySet<int> translatedObjects)
+    {
+        return links
+            .Where(link => !translatedObjects.Contains(link.FillObjectIndex))
+            .ToArray();
     }
 
     private void SynchronizeLinkedFillBoundaries()
@@ -7723,13 +8516,12 @@ internal sealed class MainForm : Form
         {
             _scene.CompleteDeferredBuild();
             var fillsOverwritten = ApplySelectedFillOverwriteAfterGeometryEdit();
-            var fillsChanged = MergeSelectedFillsAfterGeometryEdit();
+            var fillsChanged = MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
             var linesChanged = MergeCompatibleLinesAfterDrawingOperation();
             if (fillsOverwritten || fillsChanged || linesChanged) _hierarchyPanel.RefreshScene();
             _geometryDirty = false;
             UpdateInspector();
         }
-
         UpdateTransformOverlay();
         _stage.Capture = false;
         RefreshInteractionCursorAtPointer();
@@ -7737,6 +8529,13 @@ internal sealed class MainForm : Form
 
     private void StageDragEnter(object? sender, DragEventArgs e)
     {
+        if (TryResolveDroppedSvgFile(e.Data, out _))
+        {
+            ClearDrawingObjectDragPreview();
+            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
+            return;
+        }
+
         if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject))
         {
             ClearDrawingObjectDragPreview();
@@ -7752,6 +8551,13 @@ internal sealed class MainForm : Form
 
     private void StageDragOver(object? sender, DragEventArgs e)
     {
+        if (TryResolveDroppedSvgFile(e.Data, out _))
+        {
+            ClearDrawingObjectDragPreview();
+            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
+            return;
+        }
+
         if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject) || !CanPlaceDroppedDrawingObject(drawingObject))
         {
             ClearDrawingObjectDragPreview();
@@ -7876,6 +8682,13 @@ internal sealed class MainForm : Form
 
     private void StageDragDrop(object? sender, DragEventArgs e)
     {
+        if (TryResolveDroppedSvgFile(e.Data, out var svgFile))
+        {
+            ClearDrawingObjectDragPreview();
+            ImportSvgFile(svgFile, DragEventWorldPosition(e));
+            return;
+        }
+
         if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject))
         {
             ClearDrawingObjectDragPreview();
@@ -7938,6 +8751,22 @@ internal sealed class MainForm : Form
         AppLog.Info($"Placed nested drawing object: {drawingObject.Name} -> {container.Name} / {targetLayerName}");
     }
 
+    internal static bool TryResolveDroppedSvgFile(IDataObject? data, out string fileName)
+    {
+        fileName = "";
+        if (data?.GetDataPresent(DataFormats.FileDrop) != true
+            || data.GetData(DataFormats.FileDrop) is not string[] files
+            || files.Length != 1
+            || string.IsNullOrWhiteSpace(files[0])
+            || !string.Equals(Path.GetExtension(files[0]), ".svg", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        fileName = files[0];
+        return true;
+    }
+
     private bool TryResolveDroppedDrawingObject(IDataObject? data, out DrawingObjectDefinition drawingObject)
     {
         drawingObject = null!;
@@ -7965,7 +8794,7 @@ internal sealed class MainForm : Form
         return drawingObject is not null;
     }
 
-    private bool MergeSelectedFillsAfterGeometryEdit(bool connectNearby = false)
+    private bool MergeSelectedFillsAfterGeometryEdit(bool connectNearby)
     {
         var selected = _selectedObjects.Where(index => (uint)index < _scene.ObjectCount).Distinct().ToArray();
         if (selected.Length == 0) return false;
@@ -8189,6 +9018,21 @@ internal sealed class MainForm : Form
         return -1;
     }
 
+    private int FindActiveObjectByStackKey(DrawingStackKey key)
+    {
+        for (var index = 0; index < _scene.ObjectCount; index++)
+        {
+            if (_scene.ObjectOrder[index] == key.Order
+                && _scene.ObjectSubOrder[index].Equals(key.SubOrder)
+                && _scene.IsObjectActive(index, _frame))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
     private void CompleteMarqueeSelection(Point endScreen)
     {
         FinalizePendingMarqueeSelectionCancellation();
@@ -8286,14 +9130,14 @@ internal sealed class MainForm : Form
         var targets = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
         if (targets.Length == 0 && _selectedObject >= 0 && _selectedObject < _scene.ObjectCount) targets = new[] { _selectedObject };
         if (targets.Length == 0) return false;
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot(targets);
 
         if (_selectedElements.Count > 0)
         {
             var materialized = _scene.MaterializeSelectedParts(_selectedElements.Select(hit => hit.Key).ToArray(), _frame);
             if (!materialized.Success)
             {
-                _scene.RestoreSnapshot(snapshot);
+                RestoreCanvasMutationSnapshot(snapshot);
                 return false;
             }
 
@@ -8302,7 +9146,7 @@ internal sealed class MainForm : Form
 
         if (_scene.RemoveObjects(targets) <= 0)
         {
-            _scene.RestoreSnapshot(snapshot);
+            RestoreCanvasMutationSnapshot(snapshot);
             return false;
         }
 
@@ -8715,6 +9559,12 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (IsImportedSvgObject(hit.Key.ObjectIndex))
+        {
+            SetSelection(hit.Key.ObjectIndex);
+            return;
+        }
+
         _selectedObjects.Clear();
         _selectedElements.Clear();
         _selectedObject = hit.Key.ObjectIndex;
@@ -8727,6 +9577,14 @@ internal sealed class MainForm : Form
     private void AddToSelection(DrawingElementHit hit)
     {
         if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount) return;
+        if (IsImportedSvgObject(hit.Key.ObjectIndex))
+        {
+            var importedObjects = _selectedObjects.ToList();
+            if (!importedObjects.Remove(hit.Key.ObjectIndex)) importedObjects.Add(hit.Key.ObjectIndex);
+            if (importedObjects.Count == 0) ClearSelection();
+            else SetSelection(importedObjects);
+            return;
+        }
         if (_selectedElements.Count > 0)
         {
             var elements = _selectedElements.ToList();
@@ -8794,15 +9652,27 @@ internal sealed class MainForm : Form
                 continue;
             }
 
-            _selectedElements.Add(hit);
             if (seenObjects.Add(hit.Key.ObjectIndex)) _selectedObjects.Add(hit.Key.ObjectIndex);
+            if (!IsImportedSvgObject(hit.Key.ObjectIndex)) _selectedElements.Add(hit);
         }
 
-        _selectedElement = primary.IsValid && _selectedElements.Any(hit => hit.Key == primary.Key)
+        _selectedElement = primary.IsValid
+            && !IsImportedSvgObject(primary.Key.ObjectIndex)
+            && _selectedElements.Any(hit => hit.Key == primary.Key)
             ? _selectedElements.First(hit => hit.Key == primary.Key)
             : _selectedElements.Count > 0 ? _selectedElements[^1] : DrawingElementHit.None;
-        _selectedObject = _selectedElement.IsValid ? _selectedElement.Key.ObjectIndex : -1;
+        _selectedObject = primary.IsValid && _selectedObjects.Contains(primary.Key.ObjectIndex)
+            ? primary.Key.ObjectIndex
+            : _selectedElement.IsValid
+                ? _selectedElement.Key.ObjectIndex
+                : _selectedObjects.Count > 0 ? _selectedObjects[^1] : -1;
         SyncSelectionToStage();
+    }
+
+    private bool IsImportedSvgObject(int objectIndex)
+    {
+        return (uint)objectIndex < _scene.ObjectCount
+            && _scene.ShapeKind[objectIndex] == ShapeKind.ImportedSvg;
     }
 
     private void SyncSelectionToStage()
@@ -8868,6 +9738,223 @@ internal sealed class MainForm : Form
         _geometryDirty = false;
         _stage.ClearHoveredLineElement();
         return true;
+    }
+
+    private bool CanBreakApartObject(int objectIndex)
+    {
+        if ((uint)objectIndex >= _scene.ObjectCount
+            || _scene.ShapeKind[objectIndex] != ShapeKind.ImportedSvg
+            || !_scene.IsObjectActive(objectIndex, _frame))
+        {
+            return false;
+        }
+
+        var layer = _scene.ObjectLayer[objectIndex];
+        return _scene.GetLayerKind(layer) == DrawingLayerKind.Drawing
+            && !_scene.IsLayerEffectivelyLocked(layer);
+    }
+
+    private bool CanBreakApartInstance(DrawingObjectInstanceDefinition instance)
+    {
+        var container = ActiveDrawingObject();
+        if (container is null || !container.Instances.Any(candidate => candidate.Id == instance.Id)) return false;
+        var layer = Array.IndexOf(container.Scene.LayerIds, instance.SceneLayerId);
+        return layer >= 0
+            && container.Scene.GetLayerKind(layer) == DrawingLayerKind.Drawing
+            && !container.Scene.IsLayerEffectivelyLocked(layer)
+            && CanFlattenDrawingObject(instance.DrawingObjectId, new HashSet<string>(StringComparer.Ordinal));
+    }
+
+    private bool CanFlattenDrawingObject(string drawingObjectId, ISet<string> visited)
+    {
+        if (!visited.Add(drawingObjectId)) return false;
+        try
+        {
+            var drawingObject = _drawingObjects.FirstOrDefault(item => item.Id == drawingObjectId);
+            return drawingObject is not null
+                && !drawingObject.Scene.HasLayerEffects
+                && drawingObject.Instances.All(instance => CanFlattenDrawingObject(instance.DrawingObjectId, visited));
+        }
+        finally
+        {
+            visited.Remove(drawingObjectId);
+        }
+    }
+
+    private void BreakApartStageSelection()
+    {
+        if (_workspaceTabs.SelectedView != WorkspaceView.BasicDrawing
+            || DrawingToolsBlocked()
+            || IsSceneCompositionContext())
+        {
+            return;
+        }
+        FinishPointerInteractionForFrameChange();
+        if (_stageContextMenuBreakApartInstances.Length > 0) BreakApartNestedInstances();
+        else if (_stageContextMenuBreakApartObjects.Length > 0) BreakApartImportedSvgObjects();
+    }
+
+    private void BreakApartImportedSvgObjects()
+    {
+        var targets = _stageContextMenuBreakApartObjects
+            .Where(CanBreakApartObject)
+            .Distinct()
+            .ToArray();
+        if (targets.Length != _stageContextMenuBreakApartObjects.Length || targets.Length == 0) return;
+
+        var targetKeys = targets
+            .Select(index => new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index]))
+            .ToArray();
+        var layers = targets.Select(index => (int)_scene.ObjectLayer[index]).Distinct().ToArray();
+        var wasProjectDirty = _projectDirty;
+        var snapshot = CreateCanvasMutationSnapshot(targets, layers);
+        (int[] ProducedObjects, ImportedSvgBreakApproximation Approximations) result;
+        try
+        {
+            var materializedTargets = targetKeys
+                .Select(FindActiveObjectByStackKey)
+                .Where(index => CanBreakApartObject(index))
+                .ToArray();
+            if (materializedTargets.Length != targets.Length)
+            {
+                throw new InvalidOperationException("The selected SVG objects changed before Break Apart could run.");
+            }
+
+            result = _scene.BreakApartImportedSvgObjects(materializedTargets);
+        }
+        catch (Exception exception)
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            SetProjectDirty(wasProjectDirty);
+            ShowBreakApartError(exception);
+            return;
+        }
+
+        PushUndoSnapshot(snapshot);
+        SetSelection(result.ProducedObjects);
+        RefreshBreakApartPresentation();
+        if (result.Approximations != ImportedSvgBreakApproximation.None)
+        {
+            AppLog.Info($"Break Apart SVG approximations: {result.Approximations}");
+        }
+    }
+
+    private void BreakApartNestedInstances()
+    {
+        var container = ActiveDrawingObject();
+        if (container is null) return;
+        var requestedIds = _stageContextMenuBreakApartInstances.ToHashSet(StringComparer.Ordinal);
+        var instances = container.Instances
+            .Where(instance => requestedIds.Contains(instance.Id))
+            .ToArray();
+        if (instances.Length != requestedIds.Count || instances.Length == 0 || instances.Any(instance => !CanBreakApartInstance(instance)))
+        {
+            return;
+        }
+
+        var prepared = new List<(DrawingObjectInstanceDefinition Instance, int HostLayer, VectorScene Scene)>(instances.Length);
+        try
+        {
+            foreach (var instance in instances)
+            {
+                var hostLayer = Array.IndexOf(container.Scene.LayerIds, instance.SceneLayerId);
+                var flattened = new VectorScene();
+                SceneCompositionBuilder.BuildDrawingObjectInstanceForBreakApart(
+                    flattened,
+                    container,
+                    instance,
+                    _drawingObjects,
+                    _frame,
+                    _playbackSettings.Fps);
+                if (flattened.ObjectCount == 0) throw new InvalidDataException("The selected instance has no visible geometry at the current frame.");
+                prepared.Add((instance, hostLayer, flattened));
+            }
+        }
+        catch (Exception exception)
+        {
+            ShowBreakApartError(exception);
+            return;
+        }
+
+        var instanceSnapshot = container.CreateInstanceSnapshot();
+        var wasProjectDirty = _projectDirty;
+        var hostLayers = prepared.Select(item => item.HostLayer).Distinct().ToArray();
+        var sceneSnapshot = CreateCanvasMutationSnapshot(affectedLayers: hostLayers);
+        int[] produced;
+        try
+        {
+            using (_scene.Timeline.BeginBatchUpdate())
+            {
+                foreach (var hostLayer in hostLayers) _scene.MaterializeAutoKeyframeInPlace(hostLayer, _frame);
+            }
+
+            var producedObjects = new List<int>();
+            foreach (var item in prepared)
+            {
+                producedObjects.AddRange(_scene.AppendFlattenedSceneToLayer(item.Scene, item.HostLayer, _frame));
+            }
+            foreach (var item in prepared)
+            {
+                var hasFutureVisibleState = item.Instance.StateKeyframes.Any(keyframe =>
+                    keyframe.Frame > 0 && keyframe.State.Visible);
+                if (_frame == 0 && !hasFutureVisibleState)
+                {
+                    if (!_project.TryRemoveDrawingObjectInstance(container.Id, item.Instance.Id, out _))
+                    {
+                        throw new InvalidOperationException("A selected drawing object instance could not be removed.");
+                    }
+                }
+                else if (!item.Instance.SetStateAtFrame(
+                             _frame,
+                             item.Instance.EvaluateState(_frame) with { Visible = false }))
+                {
+                    throw new InvalidOperationException("A selected drawing object instance could not be hidden at the current frame.");
+                }
+            }
+            produced = producedObjects.ToArray();
+        }
+        catch (Exception exception)
+        {
+            container.RestoreInstanceSnapshot(instanceSnapshot);
+            _scene.RestoreSnapshot(sceneSnapshot);
+            _scene.EditFrame = _frame;
+            SetProjectDirty(wasProjectDirty);
+            var restored = container.Instances.Where(instance => requestedIds.Contains(instance.Id)).ToArray();
+            if (restored.Length > 0) SetSceneInstanceSelection(restored, restored[^1]);
+            RefreshBreakApartPresentation();
+            ShowBreakApartError(exception);
+            return;
+        }
+
+        PushUndoSnapshot(sceneSnapshot, container, instanceSnapshot);
+        SetSelection(produced);
+        RefreshBreakApartPresentation();
+        AppLog.Info($"Broke apart {prepared.Count} nested drawing object instance(s) into {produced.Length} local object(s)");
+    }
+
+    private void RefreshBreakApartPresentation()
+    {
+        _timeline.RefreshTimeline();
+        _hierarchyPanel.RefreshScene();
+        RefreshDrawingObjectAssetPresentation();
+        _stage.ClearHoveredLineElement();
+        UpdateInspector();
+        UpdateStatusBar();
+        _stage.Invalidate();
+    }
+
+    private void ShowBreakApartError(Exception exception)
+    {
+        AppLog.Error($"Break Apart failed: {exception}");
+        var message = UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese
+            ? $"无法拆散所选对象。\r\n\r\n{exception.Message}"
+            : $"The selected objects could not be broken apart.\r\n\r\n{exception.Message}";
+        ModernMessageDialog.Show(
+            this,
+            message,
+            UiLocalization.T("Break Apart"),
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
     }
 
     private bool DeleteNestedDrawingObjectInstance(string instanceId)
@@ -8977,7 +10064,7 @@ internal sealed class MainForm : Form
             : new[] { _stageContextMenuLineObject };
         if (targets.Length == 0) return;
 
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot(targets);
         var fillIndices = new List<int>(targets.Length);
         foreach (var target in targets)
         {
@@ -8987,7 +10074,7 @@ internal sealed class MainForm : Form
                 continue;
             }
 
-            _scene.RestoreSnapshot(snapshot);
+            RestoreCanvasMutationSnapshot(snapshot);
             return;
         }
 
@@ -9047,8 +10134,12 @@ internal sealed class MainForm : Form
         if (targets.Count < 2) return;
         if (lineWasHit) SetSelection(targets);
 
-        var snapshot = _scene.CreateSnapshot();
-        if (!MergeCompatibleLinesAfterDrawingOperation(targets)) return;
+        var snapshot = CreateCanvasMutationSnapshot(targets);
+        if (!MergeCompatibleLinesAfterDrawingOperation(targets))
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return;
+        }
 
         PushUndoSnapshot(snapshot);
         _hierarchyPanel.RefreshScene();
@@ -9323,7 +10414,7 @@ internal sealed class MainForm : Form
             _traditionalPenOutgoingHandle,
             _traditionalPenIncomingHandle,
             end);
-        CaptureUndoSnapshot();
+        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
         var newObject = _scene.AddCubicCurveSegment(
             _scene.ActiveLayer,
             segment.Start,
@@ -9800,7 +10891,7 @@ internal sealed class MainForm : Form
         if (_penStartWorld is not { } start || _penEndWorld is not { } end) return false;
         if (Distance(start, end) < DrawingTopologyRules.MinStrokeSegmentUnits) return false;
         var control = _penControlWorld ?? new PointF((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
-        CaptureUndoSnapshot();
+        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
         var newObject = _scene.AddCurveSegment(
             _scene.ActiveLayer,
             start,
@@ -9894,8 +10985,12 @@ internal sealed class MainForm : Form
         var world = _stage.ScreenToWorld(screen);
         if (!TryGetPenAnchorInsertion(world, out var objectIndex, out var parameter, out _)) return false;
 
-        var undoSnapshot = _scene.CreateSnapshot();
-        if (!_scene.SplitLineAt(objectIndex, parameter, out var split)) return false;
+        var undoSnapshot = CreateCanvasMutationSnapshot([objectIndex]);
+        if (!_scene.SplitLineAt(objectIndex, parameter, out var split))
+        {
+            RestoreCanvasMutationSnapshot(undoSnapshot);
+            return false;
+        }
         PushUndoSnapshot(undoSnapshot);
         _penAnchorCacheGeometryRevision = -1;
         SetSelection([split.FirstObjectIndex, split.SecondObjectIndex]);
@@ -10308,7 +11403,7 @@ internal sealed class MainForm : Form
         if (_freehandPressureBrush)
         {
             UpdatePressureBrushHoldTime(Stopwatch.GetTimestamp());
-            var snapshot = _scene.CreateSnapshot();
+            var snapshot = CreateCanvasMutationSnapshot(affectedLayers: [_scene.ActiveLayer]);
             var objects = _scene.AddPressureBrushStroke(
                 _scene.ActiveLayer,
                 _pressureBrushSamples,
@@ -10334,6 +11429,10 @@ internal sealed class MainForm : Form
                 ClearSelection();
                 _hierarchyPanel.RefreshScene();
                 UpdateInspector();
+            }
+            else
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
             }
 
             CancelFreehandStroke();
@@ -10361,7 +11460,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        CaptureUndoSnapshot();
+        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
         if (_freehandBrushStroke)
         {
             var objects = _scene.AddSoftBrushStroke(
@@ -10476,6 +11575,8 @@ internal sealed class MainForm : Form
     {
         if (points.Count == 0) return;
         var snapshot = _scene.CreateSnapshot();
+        var autoKeyframe = AutomaticKeyframesEnabledForCurrentScene();
+        var previousLastFrame = Math.Max(0, _timeline.Context.FrameCount - 1);
         if (!_scene.EraseWithBrushStroke(
                 _frame,
                 points,
@@ -10484,11 +11585,13 @@ internal sealed class MainForm : Form
                 _drawSettings.EraseLines,
                 _drawSettings.EraseFills,
                 _drawSettings.BrushFrequency,
-                _drawSettings.BrushContinuous)) return;
+                _drawSettings.BrushContinuous,
+                materializeAutoKeyframes: autoKeyframe)) return;
 
         ClearSelection();
         _stage.ClearHoveredLineElement();
         PushUndoSnapshot(snapshot);
+        if (autoKeyframe) RefreshAutomaticKeyframePresentation(previousLastFrame);
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
     }
@@ -10912,7 +12015,7 @@ internal sealed class MainForm : Form
     private void AddDrawnObject(PointF start, PointF end, ToolMode tool)
     {
         if (DrawingToolsBlocked()) return;
-        CaptureUndoSnapshot();
+        CaptureUndoSnapshot(affectedLayers: [_scene.ActiveLayer]);
         var shape = ToolShapeKind(tool) ?? _drawSettings.ShapeKind;
         int newObject;
         if (tool == ToolMode.Line)
@@ -11061,6 +12164,7 @@ internal sealed class MainForm : Form
         UpdateLineEndpointStyleControl();
         var selectedSceneInstances = SelectedSceneInstances();
         _drawingObjectInstancePanel.Visible = false;
+        _materialEditor.Visible = true;
         if (SelectedSceneInstance() is { } sceneInstance)
         {
             var sceneInstanceState = sceneInstance.EvaluateState(_frame);
@@ -11094,6 +12198,7 @@ internal sealed class MainForm : Form
         }
 
         var validSelection = _selectedObjects.Where(index => index >= 0 && index < _scene.ObjectCount).ToArray();
+        _materialEditor.Visible = !validSelection.Any(IsImportedSvgObject);
         if (_selectedElements.Count > 1)
         {
             var kinds = _selectedElements.Select(hit => hit.Key.Kind).Distinct().ToArray();
@@ -11289,14 +12394,18 @@ internal sealed class MainForm : Form
         var targets = EndpointStyleTargets(SelectedLineEndpointStyleTargets(), startEndpoint);
         if (targets.Length == 0) return;
 
-        var snapshot = _scene.CreateSnapshot();
+        var snapshot = CreateCanvasMutationSnapshot(targets.Select(target => target.ObjectIndex));
         var changed = false;
         foreach (var target in targets)
         {
             changed |= _scene.SetLineEndpointStyle(target.ObjectIndex, target.StartEndpoint, endpointStyle);
         }
 
-        if (!changed) return;
+        if (!changed)
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return;
+        }
         var hierarchyChanged = MergeCompatibleLinesAfterDrawingOperation();
         PushUndoSnapshot(snapshot);
         RefreshHierarchyAfterMaterialChange(hierarchyChanged);
@@ -11395,7 +12504,11 @@ internal sealed class MainForm : Form
             changed = true;
         }
 
-        if (!changed) return;
+        if (!changed)
+        {
+            if (_materialEditSession is null) RestoreCanvasMutationSnapshot(snapshot);
+            return;
+        }
         PushMaterialUndoSnapshot(snapshot);
         UpdateGradientOverlay();
         RefreshInspectorAfterMaterialChange();
@@ -11415,8 +12528,7 @@ internal sealed class MainForm : Form
         var materialized = _scene.MaterializeSelectedParts(affected.ToArray(), _frame);
         if (!materialized.Success)
         {
-            _scene.RestoreSnapshot(snapshot);
-            SyncSelectionToStage();
+            RestoreCanvasMutationSnapshot(snapshot);
             return;
         }
 
@@ -11498,7 +12610,11 @@ internal sealed class MainForm : Form
             geometryChanged |= objectGeometryChanged;
         }
 
-        if (!changed) return;
+        if (!changed)
+        {
+            if (_materialEditSession is null) RestoreCanvasMutationSnapshot(snapshot);
+            return;
+        }
         if (geometryChanged) _scene.RebuildGeometryIndex();
         var hierarchyChanged = false;
         var changedFill = material.ApplyAll || material.FillChanged || material.OpacityChanged;
@@ -11518,6 +12634,7 @@ internal sealed class MainForm : Form
     {
         geometryChanged = false;
         var shape = _scene.ShapeKind[objectIndex];
+        if (shape == ShapeKind.ImportedSvg) return false;
         var fillCapable = IsFillShape(shape) || shape == ShapeKind.BrushStroke;
         var changed = false;
 
@@ -11583,6 +12700,7 @@ internal sealed class MainForm : Form
     private bool WholeObjectMaterialWouldChange(int objectIndex, MaterialChangedEventArgs material, float requestedStrokeUnits)
     {
         var shape = _scene.ShapeKind[objectIndex];
+        if (shape == ShapeKind.ImportedSvg) return false;
         var fillCapable = IsFillShape(shape) || shape == ShapeKind.BrushStroke;
         if (fillCapable
             && (material.ApplyAll || material.FillChanged || material.OpacityChanged)
@@ -11891,7 +13009,10 @@ internal sealed class MainForm : Form
 
     private static bool IsFillShape(ShapeKind shape)
     {
-        return shape is not ShapeKind.Line and not ShapeKind.Freeform and not ShapeKind.BrushStroke;
+        return shape is not ShapeKind.Line
+            and not ShapeKind.Freeform
+            and not ShapeKind.BrushStroke
+            and not ShapeKind.ImportedSvg;
     }
 
     private static bool SupportsGradient(ShapeKind shape) => IsFillShape(shape) || shape == ShapeKind.Line;
