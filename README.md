@@ -291,9 +291,9 @@ package layout changes:
 scripts\publish-split-package.ps1 -FullPackage
 ```
 
-Full-package generation requires a stable .NET 9 SDK alongside the repository's pinned .NET 8
-SDK so the package can use the newer app-relative native host. Normal patch releases use only the
-.NET 8 application toolchain and never rebuild or copy the private runtime.
+Full-package generation uses the repository's pinned .NET 8 SDK to compile a small Windows
+bootstrap executable that is independent of the private `.Runtime` directory. Normal patch
+releases never rebuild or copy the bootstrap executable or private runtime.
 
 The full archive contains a native bootstrap EXE plus two isolated directories:
 
@@ -307,7 +307,9 @@ VectorAnimationEngine.exe
 version, run the standard command and upload only the patch ZIP (plus its checksum when desired).
 Close the application and replace the complete `.V2DEngine` directory when applying a patch; do
 not merge individual files, because a newer version may remove dependencies. Keep `.Runtime` and
-the root launcher unless the target framework, runtime family, or package layout changes.
+the root launcher unless the target framework, runtime family, or package layout changes. The
+bootstrap reports `没有运行环境` when the private runtime is absent or incomplete, and
+`软件主体代码缺失` when the `.V2DEngine` application payload is absent or incomplete.
 
 Use `--dev` when source watching and Metadata Hot Reload are required.
 

@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $artifactRoot = Join-Path $repoRoot "artifacts\validation"
 $nativeProject = Join-Path $repoRoot "native\VectorAnimationEngine.Native.csproj"
+$distributionLauncherProject = Join-Path $repoRoot "distribution-launcher\VectorAnimationEngine.DistributionLauncher.csproj"
 $propsPath = Join-Path $repoRoot "Directory.Build.props"
 $rid = "win-x64"
 
@@ -87,56 +88,6 @@ function Assert-ArchiveRoots {
     if ($unexpected.Count -gt 0 -or $missing.Count -gt 0) {
         throw "Archive root validation failed for $ArchivePath. Expected: $($ExpectedRoots -join ', '); actual: $($roots -join ', ')"
     }
-}
-
-function New-SplitAppHost {
-    param(
-        [Parameter(Mandatory = $true)][string]$DotnetRoot,
-        [Parameter(Mandatory = $true)][string]$Destination
-    )
-
-    $sdkDirectory = Get-ChildItem -LiteralPath (Join-Path $DotnetRoot "sdk") -Directory |
-        Where-Object { $_.Name -match '^9\.0\.\d+$' } |
-        Sort-Object { [version]$_.Name } -Descending |
-        Select-Object -First 1
-    if ($null -eq $sdkDirectory) {
-        throw "A stable .NET 9 SDK is required to generate the app-relative split-package host."
-    }
-
-    $hostModelPath = Join-Path $sdkDirectory.FullName "Sdks\Microsoft.NET.Sdk\tools\net472\Microsoft.NET.HostModel.dll"
-    if (-not (Test-Path -LiteralPath $hostModelPath -PathType Leaf)) {
-        throw "The .NET 9 SDK HostModel is missing: $hostModelPath"
-    }
-    $hostPackDirectory = Get-ChildItem -LiteralPath (Join-Path $DotnetRoot "packs\Microsoft.NETCore.App.Host.win-x64") -Directory |
-        Where-Object { $_.Name -match '^9\.0\.\d+$' } |
-        Sort-Object { [version]$_.Name } -Descending |
-        Select-Object -First 1
-    if ($null -eq $hostPackDirectory) {
-        throw "The .NET 9 win-x64 apphost pack is not installed."
-    }
-    [string]$appHostSource = Join-Path ([string]$hostPackDirectory.FullName) "runtimes\win-x64\native\apphost.exe"
-    if (-not (Test-Path -LiteralPath $appHostSource -PathType Leaf)) {
-        throw "The .NET 9 win-x64 apphost template is missing: $appHostSource"
-    }
-
-    Add-Type -Path $hostModelPath
-    $options = New-Object "Microsoft.NET.HostModel.AppHost.HostWriter+DotNetSearchOptions"
-    $options.Location = [Microsoft.NET.HostModel.AppHost.HostWriter+DotNetSearchOptions+SearchLocation]::AppRelative
-    $options.AppRelativeDotNet = "..\.Runtime"
-    $createMethod = [Microsoft.NET.HostModel.AppHost.HostWriter].GetMethods() |
-        Where-Object { $_.Name -eq "CreateAppHost" -and $_.GetParameters().Count -eq 8 }
-    [string]$destinationPath = $Destination
-    [string]$appBinaryPath = ".V2DEngine\VectorAnimationEngine.dll"
-    [object[]]$createArguments = @(
-        $appHostSource,
-        $destinationPath,
-        $appBinaryPath,
-        $true,
-        $null,
-        $false,
-        $false,
-        $options.PSObject.BaseObject)
-    $createMethod.Invoke($null, $createArguments) | Out-Null
 }
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -236,13 +187,18 @@ try {
     if ($buildFullPackage) {
         New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
         $launcherPath = Join-Path $packageRoot "VectorAnimationEngine.exe"
-        $appHostArguments = @{
-            DotnetRoot = $dotnetRoot
-            Destination = $launcherPath
-        }
-        New-SplitAppHost @appHostArguments
+        $launcherPublishDirectory = Join-Path $repoRoot "distribution-launcher\bin\package-publish"
+        Invoke-DotnetChecked @("restore", $distributionLauncherProject)
+        Invoke-DotnetChecked @(
+            "publish", $distributionLauncherProject,
+            "-c", "Release",
+            "-p:DebugType=None",
+            "-p:DebugSymbols=false",
+            "--no-restore",
+            "-o", $launcherPublishDirectory)
+        Copy-Item -LiteralPath (Join-Path $launcherPublishDirectory "VectorAnimationEngine.exe") -Destination $launcherPath
         if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
-            throw "The app-relative distribution launcher was not generated: $launcherPath"
+            throw "The distribution launcher was not generated: $launcherPath"
         }
         $unexpectedRootFiles = @(Get-ChildItem -LiteralPath $packageRoot -File |
             Where-Object { $_.Name -ne "VectorAnimationEngine.exe" })
@@ -263,6 +219,11 @@ try {
         Copy-DirectoryExact -Source $hostFxrSource -Destination (Join-Path $runtimeDirectory "host\fxr\$RuntimeVersion")
         Copy-DirectoryExact -Source $coreRuntimeSource -Destination (Join-Path $runtimeDirectory "shared\Microsoft.NETCore.App\$RuntimeVersion")
         Copy-DirectoryExact -Source $desktopRuntimeSource -Destination (Join-Path $runtimeDirectory "shared\Microsoft.WindowsDesktop.App\$RuntimeVersion")
+
+        $layoutValidation = Start-Process -FilePath $launcherPath -ArgumentList "--validate-package-layout" -Wait -PassThru
+        if ($layoutValidation.ExitCode -ne 0) {
+            throw "The distribution launcher rejected the generated package layout with exit code $($layoutValidation.ExitCode)."
+        }
 
         Compress-Archive -LiteralPath $packageRoot -DestinationPath $packageZip -CompressionLevel Optimal
         Assert-ArchiveRoots -ArchivePath $packageZip -ContainerName $packageName -ExpectedRoots @(
