@@ -18,6 +18,7 @@ internal class ModernDialogForm : Form
     private readonly Panel _header = new();
     private readonly Label _titleLabel = new();
     private readonly SvgIconButton _closeButton = new(SvgIconKind.Close);
+    private readonly Dictionary<Button, DialogActionStyle> _dialogActionStyles = [];
     private bool _shown;
     private bool _closing;
     private bool _allowClose;
@@ -155,6 +156,7 @@ internal class ModernDialogForm : Form
             Margin = new Padding(8, 0, 0, 0),
             DialogResult = DialogResult.None
         };
+        _dialogActionStyles[button] = style;
         StyleDialogAction(button, style);
         button.Click += (_, _) =>
         {
@@ -163,6 +165,13 @@ internal class ModernDialogForm : Form
         };
         DialogActions.Controls.Add(button);
         return button;
+    }
+
+    internal bool RefreshDialogActionTheme(Button button)
+    {
+        if (!_dialogActionStyles.TryGetValue(button, out var style)) return false;
+        StyleDialogAction(button, style);
+        return true;
     }
 
     protected void RequestDialogResult(DialogResult result)
@@ -290,13 +299,13 @@ internal class ModernDialogForm : Form
 
         Theme.StyleButton(button);
         if (style != DialogActionStyle.Danger) return;
-        button.ForeColor = Color.FromArgb(255, 226, 226);
+        button.ForeColor = Theme.DangerText;
         button.FlatAppearance.BorderColor = Theme.Danger;
         UiMotion.ConfigureButton(
             button,
-            Color.FromArgb(72, 42, 44),
-            Color.FromArgb(98, 48, 51),
-            Color.FromArgb(58, 34, 36),
+            Theme.DangerSurface,
+            Theme.DangerHoverSurface,
+            Theme.DangerPressedSurface,
             active: false);
     }
 

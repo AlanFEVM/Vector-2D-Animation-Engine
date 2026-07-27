@@ -10,7 +10,7 @@
 | Freehand, topology, hit testing, fill/line merging, marquee materialization, render order | `Freehand` |
 | Stress generation, spatial index, parallel batching, composition batching/performance | `Stress` |
 | `StageControl`, Direct2D, LOD, underlay, renderer caches, hot-reload routing | `Render` |
-| `launcher/` only | `Launcher` |
+| `launcher/`, `distribution-launcher/`, runtime bootstrap, single-EXE packaging | `Launcher` |
 | User-visible panel/control layout | `Build` plus UI screenshot/manual check |
 | User-visible Stage visual or interaction | relevant functional suite plus real-HWND/manual check |
 
@@ -31,6 +31,8 @@ Non-plan invocations are guarded by a repository-specific Windows cross-process 
 | `Freehand` | `--bench-freehand` | freehand sampling/commit, render order, topology/materialization/merging |
 | `Stress` | `--bench` | deterministic stress build, spatial index, render collection, parallel order, composition performance |
 | `Render` | `--bench-render` | shared geometry/brush checks, hot-reload routing, Direct2D underlay, LOD and cache behavior |
+
+`Launcher` builds the source hot-reload launcher, publishes a disposable single-EXE release, enforces the 5 MiB/one-file contract, and runs the bootstrap's embedded-payload, metadata, URL, hash-shape, and archive-path safety self-tests.
 
 Run suites sequentially. `Stress` and `Render` measurements are not clean while the GUI, launcher, debugger, or other benchmarks are consuming CPU/GPU.
 

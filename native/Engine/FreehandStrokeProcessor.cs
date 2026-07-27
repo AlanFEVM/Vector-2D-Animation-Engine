@@ -2,7 +2,11 @@ using Clipper2Lib;
 
 namespace VectorAnimationEngine;
 
-internal readonly record struct PressureBrushSample(PointF Point, float SpeedPixelsPerSecond, float HeldSeconds);
+internal readonly record struct PressureBrushSample(
+    PointF Point,
+    float SpeedPixelsPerSecond,
+    float HeldSeconds,
+    float TabletPressure = float.NaN);
 
 internal readonly record struct PressureBrushPoint(PointF Point, float Diameter);
 
@@ -47,7 +51,7 @@ internal static class FreehandStrokeProcessor
         var processedDistances = CumulativeDistances(processed);
         var sourceLength = Math.Max(0.0001f, sourceDistances[^1]);
         var processedLength = Math.Max(0.0001f, processedDistances[^1]);
-        var minimumDiameter = VectorUnits.StrokePointsToUnits(0.5f);
+        var minimumDiameter = VectorUnits.MinimumStrokeUnits;
         baseDiameter = Math.Max(minimumDiameter, baseDiameter);
 
         var result = new PressureBrushPoint[processed.Length];
@@ -68,13 +72,14 @@ internal static class FreehandStrokeProcessor
                 : Math.Clamp((targetDistance - startDistance) / (endDistance - startDistance), 0f, 1f);
             var speed = start.SpeedPixelsPerSecond + (end.SpeedPixelsPerSecond - start.SpeedPixelsPerSecond) * t;
             var held = start.HeldSeconds + (end.HeldSeconds - start.HeldSeconds) * t;
-            var targetDiameter = PressureDiameter(baseDiameter, speed, held, minimumDiameter);
-            var onsetTime = 1f - MathF.Exp(-Math.Max(0, held) / 0.18f);
-            var onsetTravelRange = Math.Max(minimumDiameter * 2f, baseDiameter * 0.75f);
-            var onsetTravel = 1f - MathF.Exp(-Math.Max(0, targetDistance) / onsetTravelRange);
-            var onset = Math.Max(onsetTime, onsetTravel);
-            var initialDiameter = minimumDiameter * 0.6f;
-            targetDiameter = initialDiameter + (targetDiameter - initialDiameter) * onset;
+            var tabletPressure = InterpolateTabletPressure(start.TabletPressure, end.TabletPressure, t);
+            var targetDiameter = PressureDiameter(
+                baseDiameter,
+                speed,
+                held,
+                tabletPressure,
+                targetDistance,
+                minimumDiameter);
             var diameter = i == 0
                 ? targetDiameter
                 : previousDiameter + (targetDiameter - previousDiameter) * 0.42f;
@@ -93,7 +98,7 @@ internal static class FreehandStrokeProcessor
         var cleaned = RemoveDuplicatePressureSamples(samples);
         if (cleaned.Count == 0) return Array.Empty<PressureBrushPoint>();
 
-        var minimumDiameter = VectorUnits.StrokePointsToUnits(0.5f);
+        var minimumDiameter = VectorUnits.MinimumStrokeUnits;
         baseDiameter = Math.Max(minimumDiameter, baseDiameter);
         var result = new PressureBrushPoint[cleaned.Count];
         var previousDiameter = 0f;
@@ -102,13 +107,13 @@ internal static class FreehandStrokeProcessor
         {
             var sample = cleaned[i];
             if (i > 0) travelled += MathF.Sqrt(DistanceSquared(cleaned[i - 1].Point, sample.Point));
-            var targetDiameter = PressureDiameter(baseDiameter, sample.SpeedPixelsPerSecond, sample.HeldSeconds, minimumDiameter);
-            var onsetTime = 1f - MathF.Exp(-Math.Max(0, sample.HeldSeconds) / 0.18f);
-            var onsetTravelRange = Math.Max(minimumDiameter * 2f, baseDiameter * 0.75f);
-            var onsetTravel = 1f - MathF.Exp(-Math.Max(0, travelled) / onsetTravelRange);
-            var onset = Math.Max(onsetTime, onsetTravel);
-            var initialDiameter = minimumDiameter * 0.6f;
-            targetDiameter = initialDiameter + (targetDiameter - initialDiameter) * onset;
+            var targetDiameter = PressureDiameter(
+                baseDiameter,
+                sample.SpeedPixelsPerSecond,
+                sample.HeldSeconds,
+                sample.TabletPressure,
+                travelled,
+                minimumDiameter);
             var diameter = i == 0
                 ? targetDiameter
                 : previousDiameter + (targetDiameter - previousDiameter) * 0.42f;
@@ -117,6 +122,64 @@ internal static class FreehandStrokeProcessor
         }
 
         return SmoothPressureProfile(result, smoothing);
+    }
+
+    internal static void UpdatePressurePreviewProfile(
+        IReadOnlyList<PressureBrushSample> samples,
+        float baseDiameter,
+        List<PressureBrushPoint> profile,
+        List<float> travelledDistances)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        ArgumentNullException.ThrowIfNull(profile);
+        ArgumentNullException.ThrowIfNull(travelledDistances);
+        if (profile.Count != travelledDistances.Count || profile.Count > samples.Count)
+        {
+            profile.Clear();
+            travelledDistances.Clear();
+        }
+        if (samples.Count == 0)
+        {
+            profile.Clear();
+            travelledDistances.Clear();
+            return;
+        }
+
+        if (profile.Count > 0)
+        {
+            profile.RemoveAt(profile.Count - 1);
+            travelledDistances.RemoveAt(travelledDistances.Count - 1);
+        }
+
+        var minimumDiameter = VectorUnits.MinimumStrokeUnits;
+        baseDiameter = Math.Max(minimumDiameter, baseDiameter);
+        for (var index = profile.Count; index < samples.Count; index++)
+        {
+            var sample = samples[index] with
+            {
+                Point = VectorUnits.Quantize(samples[index].Point),
+                SpeedPixelsPerSecond = Math.Clamp(samples[index].SpeedPixelsPerSecond, 0, 5000),
+                HeldSeconds = Math.Max(0, samples[index].HeldSeconds),
+                TabletPressure = NormalizeTabletPressure(samples[index].TabletPressure)
+            };
+            var travelled = index == 0
+                ? 0
+                : travelledDistances[^1] + MathF.Sqrt(DistanceSquared(
+                    VectorUnits.Quantize(samples[index - 1].Point),
+                    sample.Point));
+            var targetDiameter = PressureDiameter(
+                baseDiameter,
+                sample.SpeedPixelsPerSecond,
+                sample.HeldSeconds,
+                sample.TabletPressure,
+                travelled,
+                minimumDiameter);
+            var diameter = profile.Count == 0
+                ? targetDiameter
+                : profile[^1].Diameter + (targetDiameter - profile[^1].Diameter) * 0.42f;
+            profile.Add(new PressureBrushPoint(sample.Point, VectorUnits.Quantize(diameter)));
+            travelledDistances.Add(travelled);
+        }
     }
 
     public static PointF[][] CreateVariableWidthBrushOutlines(
@@ -205,7 +268,7 @@ internal static class FreehandStrokeProcessor
             path = Clipper.StripDuplicates(path, false);
             if (path.Count == 0) return Array.Empty<PointF[]>();
 
-            var radius = Math.Max(VectorUnits.StrokePointsToUnits(0.5f), width) * 0.5d;
+            var radius = Math.Max(VectorUnits.MinimumStrokeUnits, width) * 0.5d;
             var solution = new Paths64();
             var offset = new ClipperOffset(
                 2d,
@@ -266,7 +329,7 @@ internal static class FreehandStrokeProcessor
         return result;
     }
 
-    private static PressureBrushPoint[] SmoothPressureProfile(IReadOnlyList<PressureBrushPoint> source, int smoothing)
+    internal static PressureBrushPoint[] SmoothPressureProfile(IReadOnlyList<PressureBrushPoint> source, int smoothing)
     {
         if (source.Count <= 2) return source.ToArray();
 
@@ -332,7 +395,7 @@ internal static class FreehandStrokeProcessor
             var dy = current.Point.Y - previous.Point.Y;
             var distance = MathF.Sqrt(dx * dx + dy * dy);
             var spacing = Math.Max(
-                VectorUnits.StrokePointsToUnits(0.5f),
+                VectorUnits.MinimumStrokeUnits,
                 Math.Min(previous.Diameter, current.Diameter) * 0.65f);
             var diameterChange = MathF.Abs(current.Diameter - previous.Diameter);
             var nextDx = next.Point.X - current.Point.X;
@@ -353,7 +416,7 @@ internal static class FreehandStrokeProcessor
 
     private static float Radius(PressureBrushPoint point, float radiusScale)
     {
-        return Math.Max(VectorUnits.StrokePointsToUnits(0.5f) * 0.3f, point.Diameter * 0.5f * radiusScale);
+        return Math.Max(VectorUnits.MinimumStrokeUnits * 0.3f, point.Diameter * 0.5f * radiusScale);
     }
 
     private static PointF[] CreateRoundContour(PointF center, float radius, int segments)
@@ -503,7 +566,8 @@ internal static class FreehandStrokeProcessor
             {
                 Point = VectorUnits.Quantize(sourceSample.Point),
                 SpeedPixelsPerSecond = Math.Clamp(sourceSample.SpeedPixelsPerSecond, 0, 5000),
-                HeldSeconds = Math.Max(0, sourceSample.HeldSeconds)
+                HeldSeconds = Math.Max(0, sourceSample.HeldSeconds),
+                TabletPressure = NormalizeTabletPressure(sourceSample.TabletPressure)
             };
             if (result.Count > 0 && result[^1].Point == sample.Point)
             {
@@ -524,12 +588,53 @@ internal static class FreehandStrokeProcessor
         return distances;
     }
 
-    private static float PressureDiameter(float baseDiameter, float speedPixelsPerSecond, float heldSeconds, float minimumDiameter)
+    private static float PressureDiameter(
+        float baseDiameter,
+        float speedPixelsPerSecond,
+        float heldSeconds,
+        float tabletPressure,
+        float travelledDistance,
+        float minimumDiameter)
     {
+        if (float.IsFinite(tabletPressure))
+        {
+            var normalizedPressure = Math.Clamp(tabletPressure, 0f, 1f);
+            return Math.Clamp(
+                baseDiameter * normalizedPressure,
+                minimumDiameter * 0.6f,
+                baseDiameter * 1.2f);
+        }
+
         var normalizedSpeed = Math.Clamp(speedPixelsPerSecond / 1800f, 0f, 1f);
         var speedPressure = 0.38f + 0.62f * MathF.Pow(1f - normalizedSpeed, 0.65f);
         var holdPressure = 0.55f + 0.45f * (1f - MathF.Exp(-heldSeconds / 0.15f));
-        return Math.Clamp(baseDiameter * speedPressure * holdPressure, minimumDiameter * 0.6f, baseDiameter * 1.2f);
+        var targetDiameter = Math.Clamp(
+            baseDiameter * speedPressure * holdPressure,
+            minimumDiameter * 0.6f,
+            baseDiameter * 1.2f);
+        var onsetTime = 1f - MathF.Exp(-Math.Max(0, heldSeconds) / 0.18f);
+        var onsetTravelRange = Math.Max(minimumDiameter * 2f, baseDiameter * 0.75f);
+        var onsetTravel = 1f - MathF.Exp(-Math.Max(0, travelledDistance) / onsetTravelRange);
+        var onset = Math.Max(onsetTime, onsetTravel);
+        var initialDiameter = minimumDiameter * 0.6f;
+        return initialDiameter + (targetDiameter - initialDiameter) * onset;
+    }
+
+    private static float NormalizeTabletPressure(float tabletPressure)
+    {
+        return float.IsFinite(tabletPressure)
+            ? Math.Clamp(tabletPressure, 0f, 1f)
+            : float.NaN;
+    }
+
+    private static float InterpolateTabletPressure(float start, float end, float amount)
+    {
+        if (float.IsFinite(start) && float.IsFinite(end))
+        {
+            return start + (end - start) * amount;
+        }
+
+        return amount < 0.5f ? start : end;
     }
 
     private static float DistanceToSegmentSquared(PointF point, PointF start, PointF end)

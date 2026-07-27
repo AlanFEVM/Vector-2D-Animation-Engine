@@ -232,6 +232,7 @@ internal static class DrawingObjectSvgCodec
             ShapeKind.Path => CreateCompoundPath(snapshot, index),
             ShapeKind.Freeform or ShapeKind.BrushStroke => CreateFreehandPath(snapshot, index),
             ShapeKind.ImportedSvg => CreateImportedSvgImage(snapshot, index),
+            ShapeKind.Text => CreateTextPath(snapshot, index),
             _ => null
         };
         if (element is null) return null;
@@ -301,17 +302,79 @@ internal static class DrawingObjectSvgCodec
 
     private static XElement? CreateCompoundPath(VectorSceneSnapshot snapshot, int index)
     {
+        if (snapshot.PathBezierLocalContours.TryGetValue(index, out var bezierContours)
+            && bezierContours.Length > 0)
+        {
+            return CreateCompoundBezierPath(snapshot, index, bezierContours);
+        }
         if (!snapshot.PathLocalContours.TryGetValue(index, out var contours) || contours.Length == 0) return null;
+        var worldContours = contours
+            .Select(contour => contour
+                .Select(point => LocalToWorld(snapshot, index, point.X, point.Y))
+                .ToArray())
+            .ToArray();
+        return CreateCompoundPath(worldContours);
+    }
+
+    private static XElement? CreateCompoundBezierPath(
+        VectorSceneSnapshot snapshot,
+        int index,
+        IReadOnlyList<PathBezierNode[]> contours)
+    {
+        var data = new StringBuilder();
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            var first = contour[0];
+            data.Append("M ").Append(Point(LocalToWorld(snapshot, index, first.Anchor.X, first.Anchor.Y)));
+            for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
+            {
+                var current = contour[segmentIndex];
+                var next = contour[(segmentIndex + 1) % contour.Length];
+                data.Append(" C ")
+                    .Append(Point(LocalToWorld(snapshot, index, current.OutgoingControl.X, current.OutgoingControl.Y)))
+                    .Append(' ')
+                    .Append(Point(LocalToWorld(snapshot, index, next.IncomingControl.X, next.IncomingControl.Y)))
+                    .Append(' ')
+                    .Append(Point(LocalToWorld(snapshot, index, next.Anchor.X, next.Anchor.Y)));
+            }
+            data.Append(" Z ");
+        }
+
+        return data.Length == 0
+            ? null
+            : new XElement(
+                SvgNamespace + "path",
+                new XAttribute("d", data.ToString().TrimEnd()),
+                new XAttribute("fill-rule", "evenodd"));
+    }
+
+    private static XElement? CreateTextPath(VectorSceneSnapshot snapshot, int index)
+    {
+        if (!snapshot.TextObjects.TryGetValue(index, out var data)
+            || !TextGeometry.TryCreateWorldContours(
+                data,
+                new PointF(snapshot.X[index], snapshot.Y[index]),
+                new SizeF(snapshot.Width[index], snapshot.Height[index]),
+                snapshot.Angle[index],
+                out var contours))
+        {
+            return null;
+        }
+
+        return CreateCompoundPath(contours);
+    }
+
+    private static XElement? CreateCompoundPath(IReadOnlyList<PointF[]> contours)
+    {
         var data = new StringBuilder();
         foreach (var contour in contours)
         {
             if (contour.Length == 0) continue;
-            var first = LocalToWorld(snapshot, index, contour[0].X, contour[0].Y);
-            data.Append("M ").Append(Point(first));
+            data.Append("M ").Append(Point(contour[0]));
             for (var pointIndex = 1; pointIndex < contour.Length; pointIndex++)
             {
-                var point = LocalToWorld(snapshot, index, contour[pointIndex].X, contour[pointIndex].Y);
-                data.Append(" L ").Append(Point(point));
+                data.Append(" L ").Append(Point(contour[pointIndex]));
             }
             data.Append(" Z ");
         }
@@ -441,7 +504,8 @@ internal static class DrawingObjectSvgCodec
 
     private static bool HasPreviewGradient(VectorSceneSnapshot snapshot, int index)
     {
-        return snapshot.LinearGradientEnabled[index]
+        return snapshot.ShapeKind[index] != ShapeKind.Text
+            && snapshot.LinearGradientEnabled[index]
             && snapshot.GradientKinds[index] is GradientKind.Linear or GradientKind.Radial or GradientKind.ShapeRadial;
     }
 
@@ -532,12 +596,15 @@ internal static class DrawingObjectSvgCodec
         ValidatePointDictionary(snapshot.GradientPathLocalPoints, snapshot.ObjectCount, nameof(snapshot.GradientPathLocalPoints));
         ValidateContourDictionary(snapshot.ShapeGradientMappingLocalContours, snapshot.ObjectCount, nameof(snapshot.ShapeGradientMappingLocalContours));
         ValidateContourDictionary(snapshot.PathLocalContours, snapshot.ObjectCount, nameof(snapshot.PathLocalContours));
+        ValidatePathBezierContours(snapshot);
         ValidatePointDictionary(snapshot.FreehandLocalPoints, snapshot.ObjectCount, nameof(snapshot.FreehandLocalPoints));
         ValidateImportedSvgSources(snapshot);
+        ValidateTextObjects(snapshot);
         var pointCount = CountPoints(snapshot.GradientPathLocalPoints)
             + CountPoints(snapshot.FreehandLocalPoints)
             + CountPoints(snapshot.ShapeGradientMappingLocalContours)
-            + CountPoints(snapshot.PathLocalContours);
+            + CountPoints(snapshot.PathLocalContours)
+            + CountPoints(snapshot.PathBezierLocalContours) * 3;
         if (pointCount > MaxPointsPerAsset)
         {
             throw new InvalidDataException("The drawing-object asset exceeds the supported point count.");
@@ -580,6 +647,44 @@ internal static class DrawingObjectSvgCodec
         }
     }
 
+    private static void ValidateTextObjects(VectorSceneSnapshot snapshot)
+    {
+        if (snapshot.TextObjects is null)
+        {
+            throw new InvalidDataException("Editable text metadata is missing.");
+        }
+
+        foreach (var (index, data) in snapshot.TextObjects)
+        {
+            if ((uint)index >= snapshot.ObjectCount
+                || snapshot.ShapeKind[index] != ShapeKind.Text
+                || !TextGeometry.IsValidStoredData(data)
+                || snapshot.Width[index] <= 0
+                || snapshot.Height[index] <= 0
+                || snapshot.Stroke[index] != 0
+                || snapshot.LinearGradientEnabled[index]
+                || snapshot.GradientKinds[index] != GradientKind.Solid
+                || snapshot.GradientStops.ContainsKey(index)
+                || snapshot.GradientPathLocalPoints.ContainsKey(index)
+                || snapshot.ShapeGradientMappingLocalContours.ContainsKey(index)
+                || snapshot.PathLocalContours.ContainsKey(index)
+                || snapshot.PathBezierLocalContours.ContainsKey(index)
+                || snapshot.FreehandLocalPoints.ContainsKey(index))
+            {
+                throw new InvalidDataException("Editable text metadata is invalid.");
+            }
+        }
+
+        for (var index = 0; index < snapshot.ObjectCount; index++)
+        {
+            if (snapshot.ShapeKind[index] == ShapeKind.Text
+                && !snapshot.TextObjects.ContainsKey(index))
+            {
+                throw new InvalidDataException($"Text object {index} has no editable payload.");
+            }
+        }
+    }
+
     private static void ValidateObjectArrays(VectorSceneSnapshot snapshot)
     {
         var count = snapshot.ObjectCount;
@@ -604,6 +709,7 @@ internal static class DrawingObjectSvgCodec
         ValidateArray(snapshot.AtomCount, count, nameof(snapshot.AtomCount));
         ValidateArray(snapshot.Argb, count, nameof(snapshot.Argb));
         ValidateArray(snapshot.StrokeArgb, count, nameof(snapshot.StrokeArgb));
+        ValidateOptionalArray(snapshot.FillAutoMergeProtected, count, nameof(snapshot.FillAutoMergeProtected));
         ValidateArray(snapshot.LinearGradientEnabled, count, nameof(snapshot.LinearGradientEnabled));
         ValidateArray(snapshot.GradientKinds, count, nameof(snapshot.GradientKinds));
         ValidateArray(snapshot.GradientStartArgb, count, nameof(snapshot.GradientStartArgb));
@@ -660,6 +766,35 @@ internal static class DrawingObjectSvgCodec
         }
     }
 
+    private static void ValidatePathBezierContours(VectorSceneSnapshot snapshot)
+    {
+        if (snapshot.PathBezierLocalContours is null)
+        {
+            throw new InvalidDataException("Path Bezier metadata is missing.");
+        }
+
+        foreach (var (index, contours) in snapshot.PathBezierLocalContours)
+        {
+            if ((uint)index >= snapshot.ObjectCount
+                || snapshot.ShapeKind[index] != ShapeKind.Path
+                || !snapshot.PathLocalContours.ContainsKey(index)
+                || contours is null
+                || contours.Length == 0
+                || contours.Any(contour => contour is null
+                    || contour.Length < 3
+                    || contour.Any(node => !Finite(
+                        node.Anchor.X,
+                        node.Anchor.Y,
+                        node.IncomingControl.X,
+                        node.IncomingControl.Y,
+                        node.OutgoingControl.X,
+                        node.OutgoingControl.Y))))
+            {
+                throw new InvalidDataException("Path Bezier metadata is invalid.");
+            }
+        }
+    }
+
     private static void ValidateTimeline(AnimationTimelineSnapshot? timeline)
     {
         if (timeline is null) return;
@@ -700,9 +835,20 @@ internal static class DrawingObjectSvgCodec
     private static long CountPoints(IReadOnlyDictionary<int, PointF[][]> values) =>
         values.Values.Sum(contours => contours.Sum(points => (long)points.Length));
 
+    private static long CountPoints(IReadOnlyDictionary<int, PathBezierNode[][]> values) =>
+        values.Values.Sum(contours => contours.Sum(nodes => (long)nodes.Length));
+
     private static void ValidateArray<T>(T[]? values, int expectedLength, string name)
     {
         if (values is null || values.Length != expectedLength)
+        {
+            throw new InvalidDataException($"{name} metadata has an invalid length.");
+        }
+    }
+
+    private static void ValidateOptionalArray<T>(T[]? values, int expectedLength, string name)
+    {
+        if (values is null || values.Length != 0 && values.Length != expectedLength)
         {
             throw new InvalidDataException($"{name} metadata has an invalid length.");
         }

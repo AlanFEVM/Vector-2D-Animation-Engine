@@ -68,6 +68,8 @@ internal sealed class InstanceRestartSnapshot
     public float ScaleX { get; init; } = 1;
     public float ScaleY { get; init; } = 1;
     public float ScaleZ { get; init; } = 1;
+    public float Alpha { get; init; } = 1;
+    public int TintArgb { get; init; } = unchecked((int)0xffffffff);
     public decimal PlaybackFps { get; init; } = 30m;
     public DrawingObjectPlaybackMode PlaybackMode { get; init; } = DrawingObjectPlaybackMode.PlayOnce;
     public int HoldFrame { get; init; }

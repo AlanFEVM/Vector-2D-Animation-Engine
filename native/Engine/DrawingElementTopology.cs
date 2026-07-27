@@ -41,9 +41,16 @@ internal sealed record FillBoundaryLineLink(
     int LineObjectIndex,
     int FillObjectIndex,
     PointF[][] OriginalContours,
+    PathBezierNode[][] OriginalBezierContours,
     int ContourIndex,
     int SegmentIndex,
     int SegmentCount,
+    int BezierSegmentIndex,
+    int BezierSegmentCount,
+    bool Reversed);
+
+internal readonly record struct FillBoundaryStrokeLink(
+    int LineObjectIndex,
     bool Reversed);
 
 internal readonly record struct LineEndpointJunction(

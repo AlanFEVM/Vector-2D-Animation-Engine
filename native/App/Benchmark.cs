@@ -504,6 +504,7 @@ internal static class Benchmark
         RunTimelineSnapshotRegression();
         RunVectorSceneTimelineSnapshotRegression();
         RunVectorSceneSnapshotMemoryEstimateRegression();
+        RunEditableTextObjectRegression();
         RunVectorSceneCelOwnershipRegression();
         RunAutoKeyframeMaterializationRegression();
         RunTimelineLayerWorkflowRegression();
@@ -513,6 +514,7 @@ internal static class Benchmark
         RunProjectDocumentStructureRegression();
         RunProjectAssetFolderRegression();
         RunSceneInstanceTimelineRegression();
+        RunLayeredInstanceIndexRegression();
         RunSceneCompositionRegression();
         RunEditorRestartSnapshotRegression();
         RunProjectVaultPersistenceRegression();
@@ -1124,6 +1126,496 @@ internal static class Benchmark
         AssertTimeline(
             estimate > baseline + 16_000,
             "Vector scene snapshot memory estimation did not include geometry, gradients, and freehand point buffers.");
+    }
+
+    private static void RunEditableTextObjectRegression()
+    {
+        static TextObjectData CreateTextData(
+            string content,
+            TextFontStyle style = TextFontStyle.Regular,
+            TextHorizontalAlignment alignment = TextHorizontalAlignment.Left,
+            string familyName = TextGeometry.FallbackFontFamilyName)
+        {
+            return TextGeometry.NormalizeForAuthoring(new TextObjectData(
+                content,
+                familyName,
+                36,
+                style,
+                alignment,
+                new SizeF(9_000, 5_000)));
+        }
+
+        static RectangleF BoundsOf(IReadOnlyList<PointF[]> contours)
+        {
+            var points = contours.SelectMany(contour => contour).ToArray();
+            if (points.Length == 0) return RectangleF.Empty;
+            var left = points.Min(point => point.X);
+            var top = points.Min(point => point.Y);
+            return RectangleF.FromLTRB(
+                left,
+                top,
+                points.Max(point => point.X),
+                points.Max(point => point.Y));
+        }
+
+        var alignmentBounds = new Dictionary<TextHorizontalAlignment, RectangleF>();
+        foreach (var alignment in Enum.GetValues<TextHorizontalAlignment>())
+        {
+            var data = CreateTextData("Align", alignment: alignment);
+            AssertTimeline(
+                TextGeometry.TryCreateWorldContours(data, PointF.Empty, data.LayoutSize, 0, out var contours)
+                && contours.Length > 0,
+                $"Text geometry did not create {alignment} aligned outlines.");
+            alignmentBounds[alignment] = BoundsOf(contours);
+        }
+        AssertTimeline(
+            alignmentBounds[TextHorizontalAlignment.Left].Left
+                < alignmentBounds[TextHorizontalAlignment.Center].Left
+            && alignmentBounds[TextHorizontalAlignment.Center].Left
+                < alignmentBounds[TextHorizontalAlignment.Right].Left,
+            "Text alignment did not move glyph outlines across the fixed layout width.");
+
+        foreach (var style in Enum.GetValues<TextFontStyle>())
+        {
+            var data = CreateTextData("Vector \u6587\u672c\n\u7b2c\u4e8c\u884c", style);
+            AssertTimeline(
+                TextGeometry.TryCreateWorldContours(data, new PointF(120, -80), data.LayoutSize, 0.2f, out var contours)
+                && contours.Length > 0
+                && contours.All(contour => contour.Length >= 3),
+                $"Multiline CJK text did not create valid {style} outline contours.");
+        }
+
+        var cachedTextData = CreateTextData(
+            "Cached vector text \u6587\u672c",
+            TextFontStyle.Bold,
+            TextHorizontalAlignment.Center);
+        var cacheBuildsBefore = TextGeometry.CanonicalContourBuildCount;
+        AssertTimeline(
+            TextGeometry.TryCreateWorldContours(
+                cachedTextData,
+                new PointF(240, -160),
+                cachedTextData.LayoutSize,
+                0.15f,
+                out var firstCachedContours)
+            && firstCachedContours.Length > 0,
+            "Text canonical contour cache regression could not create its initial geometry.");
+        var expectedFirstPoint = firstCachedContours[0][0];
+        firstCachedContours[0][0] = new PointF(123_456, -654_321);
+
+        const int warmTextGeometrySamples = 32;
+        var warmAllocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        var warmTextGeometryWatch = Stopwatch.StartNew();
+        PointF[][] warmCachedContours = [];
+        for (var sample = 0; sample < warmTextGeometrySamples; sample++)
+        {
+            if (!TextGeometry.TryCreateWorldContours(
+                    cachedTextData,
+                    new PointF(240, -160),
+                    cachedTextData.LayoutSize,
+                    0.15f,
+                    out warmCachedContours))
+            {
+                throw new InvalidOperationException("Warm text geometry cache lookup failed.");
+            }
+        }
+        warmTextGeometryWatch.Stop();
+        var warmAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - warmAllocatedBefore;
+        var warmAverageMilliseconds = warmTextGeometryWatch.Elapsed.TotalMilliseconds / warmTextGeometrySamples;
+        var cacheBuildsAfterWarm = TextGeometry.CanonicalContourBuildCount;
+        var editedCachedTextData = cachedTextData with { Content = cachedTextData.Content + " edited" };
+        AssertTimeline(
+            TextGeometry.TryCreateWorldContours(
+                editedCachedTextData,
+                PointF.Empty,
+                editedCachedTextData.LayoutSize,
+                0,
+                out var editedCachedContours)
+            && editedCachedContours.Length > 0
+            && cacheBuildsAfterWarm == cacheBuildsBefore + 1
+            && TextGeometry.CanonicalContourBuildCount == cacheBuildsBefore + 2
+            && warmCachedContours.Length > 0
+            && warmCachedContours[0][0] == expectedFirstPoint
+            && !ReferenceEquals(firstCachedContours, warmCachedContours)
+            && !ReferenceEquals(firstCachedContours[0], warmCachedContours[0]),
+            "Text canonical contours were rebuilt on a warm lookup, reused mutable world arrays, or ignored an edited payload.");
+        var warmTextGeometryBudgetMet = warmAverageMilliseconds <= RenderCollectBudgetMilliseconds;
+        Console.WriteLine($"text_geometry_warm_avg_ms={warmAverageMilliseconds:0.000}");
+        Console.WriteLine($"text_geometry_warm_allocated_bytes={warmAllocatedBytes}");
+        Console.WriteLine($"text_geometry_warm_canonical_rebuilds={cacheBuildsAfterWarm - cacheBuildsBefore - 1}");
+        Console.WriteLine($"text_geometry_warm_budget_ms={RenderCollectBudgetMilliseconds:0.000}");
+        Console.WriteLine($"text_geometry_warm_budget_met={warmTextGeometryBudgetMet.ToString().ToLowerInvariant()}");
+
+        var missingFontData = CreateTextData(
+            "Fallback",
+            familyName: "V2D Missing Font Family 9E737EA7");
+        AssertTimeline(
+            TextGeometry.TryCreateWorldContours(
+                missingFontData,
+                PointF.Empty,
+                missingFontData.LayoutSize,
+                0,
+                out var fallbackContours)
+            && fallbackContours.Length > 0,
+            "A missing text font did not fall back to an installed family.");
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var leading = scene.AddObject(
+            0,
+            new PointF(-12_000, 0),
+            new SizeF(400, 400),
+            0,
+            0,
+            Color.Teal,
+            3,
+            ShapeKind.Rectangle);
+        var firstText = scene.AddTextObject(0, PointF.Empty, CreateTextData("First"), Color.Coral);
+        scene.AddObject(
+            0,
+            new PointF(12_000, 0),
+            new SizeF(400, 400),
+            0,
+            0,
+            Color.Gold,
+            3,
+            ShapeKind.Ellipse);
+        var secondText = scene.AddTextObject(
+            0,
+            new PointF(0, 5_000),
+            CreateTextData("Second", TextFontStyle.Bold, TextHorizontalAlignment.Right),
+            Color.RoyalBlue);
+        var hasStoredFirst = scene.TryGetTextObjectData(firstText, out var storedFirst);
+        var hasStoredSecond = scene.TryGetTextObjectData(secondText, out var storedSecond);
+        AssertTimeline(
+            hasStoredFirst && hasStoredSecond,
+            "Editable text payloads were not stored with their objects.");
+        var snapshot = scene.CreateSnapshot();
+        AssertTimeline(
+            snapshot.TextObjects.Count == 2
+            && snapshot.TextObjects[firstText] == storedFirst
+            && snapshot.TextObjects[secondText] == storedSecond,
+            "Vector scene snapshots did not capture editable text payloads.");
+
+        AssertTimeline(
+            scene.UpdateTextObjectData(firstText, storedFirst with { Content = "First edited" })
+            && scene.RemoveObjectAt(leading)
+            && scene.TryGetTextObjectData(0, out var swappedSecond)
+            && swappedSecond == storedSecond
+            && scene.TryGetTextObjectData(1, out var retainedFirst)
+            && retainedFirst.Content == "First edited",
+            "Sparse editable text payloads were not remapped after swap removal.");
+        scene.RestoreSnapshot(snapshot);
+        AssertTimeline(
+            scene.UpdateTextObjectData(firstText, storedFirst with { Content = "First edited" })
+            && scene.RemoveObjects([leading]) == 1
+            && scene.TryGetTextObjectData(0, out var remappedFirst)
+            && remappedFirst.Content == "First edited"
+            && scene.TryGetTextObjectData(2, out var remappedSecond)
+            && remappedSecond == storedSecond,
+            "Sparse editable text payloads were not remapped after stable compaction.");
+        scene.RestoreSnapshot(snapshot);
+        AssertTimeline(
+            scene.TryGetTextObjectData(firstText, out var restoredFirst)
+            && restoredFirst == storedFirst
+            && scene.TryGetTextObjectData(secondText, out var restoredSecond)
+            && restoredSecond == storedSecond,
+            "Snapshot restore did not recover editable text payloads and sparse indices.");
+
+        var celScene = new VectorScene();
+        celScene.CreateEmpty();
+        var originalText = celScene.AddTextObject(0, PointF.Empty, CreateTextData("Frame 0"), Color.White);
+        AssertTimeline(celScene.InsertTimelineKeyframe(0, 10), "Text regression could not clone its held cel.");
+        var clonedText = Enumerable.Range(0, celScene.ObjectCount)
+            .Single(index => celScene.ObjectKeyframeFrame[index] == 10);
+        AssertTimeline(
+            celScene.TryGetTextObjectData(clonedText, out var clonedData)
+            && celScene.UpdateTextObjectData(clonedText, clonedData with { Content = "Frame 10" })
+            && celScene.TryGetTextObjectData(originalText, out var originalData)
+            && originalData.Content == "Frame 0"
+            && celScene.TryGetTextObjectData(clonedText, out var editedClone)
+            && editedClone.Content == "Frame 10",
+            "Editing an F6 text clone changed the source cel payload.");
+
+        var duplicateProject = VectorProject.CreateEmpty();
+        var duplicateSource = duplicateProject.DrawingObjects[0];
+        duplicateSource.Scene.CreateEmpty();
+        duplicateSource.Scene.AddTextObject(0, PointF.Empty, CreateTextData("Source"), Color.LimeGreen);
+        AssertTimeline(
+            duplicateProject.TryDuplicateDrawingObject(duplicateSource.Id, out var duplicate)
+            && duplicate is not null
+            && duplicate.Scene.TryGetTextObjectData(0, out var duplicateData)
+            && duplicate.Scene.UpdateTextObjectData(0, duplicateData with { Content = "Duplicate" })
+            && duplicateSource.Scene.TryGetTextObjectData(0, out var unchangedSource)
+            && unchangedSource.Content == "Source",
+            "Duplicated drawing objects did not isolate editable text payloads.");
+
+        var selectionScene = new VectorScene();
+        selectionScene.CreateEmpty();
+        var selectedText = selectionScene.AddTextObject(
+            0,
+            new PointF(500, -300),
+            CreateTextData("Select me", TextFontStyle.Italic, TextHorizontalAlignment.Center),
+            Color.White);
+        var selectionBounds = selectionScene.GetObjectWorldBounds(selectedText);
+        selectionBounds.Inflate(20, 20);
+        var marqueeMaterialization = selectionScene.MaterializeMarqueeSelectionParts(selectionBounds, 0);
+        var marqueeElements = selectionScene.QueryDrawingElementsInsideBounds(selectionBounds, 0);
+        var partialSelectionBounds = RectangleF.FromLTRB(
+            selectionBounds.Left + selectionBounds.Width * 0.5f,
+            selectionBounds.Top,
+            selectionBounds.Right,
+            selectionBounds.Bottom);
+        var partialMarqueeMaterialization = selectionScene.MaterializeMarqueeSelectionParts(partialSelectionBounds, 0);
+        var partialMarqueeElements = selectionScene.QueryDrawingElementsInsideBounds(partialSelectionBounds, 0);
+        AssertTimeline(
+            selectionScene.HitTest(new PointF(500, -300), 0) == selectedText
+            && selectionScene.QueryDrawingObjects(selectionBounds, 0).SequenceEqual([selectedText])
+            && selectionScene.IsObjectGeometryInsideBounds(selectedText, selectionBounds)
+            && marqueeMaterialization.Success
+            && !marqueeMaterialization.Changed
+            && marqueeElements.Length == 1
+            && marqueeElements[0].Key.ObjectIndex == selectedText
+            && marqueeElements[0].Key.Kind == DrawingElementKind.Fill,
+            "Editable text did not participate in whole-object hit testing and marquee selection.");
+        AssertTimeline(
+            selectionScene.QueryDrawingObjects(partialSelectionBounds, 0).SequenceEqual([selectedText])
+            && !selectionScene.IsObjectGeometryInsideBounds(selectedText, partialSelectionBounds)
+            && partialMarqueeMaterialization.Success
+            && !partialMarqueeMaterialization.Changed
+            && partialMarqueeMaterialization.SelectedObjects.Length == 0
+            && partialMarqueeElements.Length == 0
+            && selectionScene.ObjectCount == 1
+            && selectionScene.ShapeKind[selectedText] == ShapeKind.Text
+            && selectionScene.TryGetTextObjectData(selectedText, out var partialSelectionText)
+            && partialSelectionText.Content == "Select me",
+            "A partially overlapping marquee split or partially selected an editable text object.");
+
+        var resizeData = CreateTextData(
+            "Resize this editable text area across several wrapped words and CJK \u6587\u672c",
+            TextFontStyle.Bold,
+            TextHorizontalAlignment.Left);
+        var resizeCenter = new PointF(1_400, -900);
+        var resizeDisplaySize = new SizeF(
+            resizeData.LayoutSize.Width * 1.25f,
+            resizeData.LayoutSize.Height * 0.8f);
+        const float resizeAngle = 0.37f;
+        PointF ResizeLocalToWorld(PointF center, PointF local)
+        {
+            var cosine = MathF.Cos(resizeAngle);
+            var sine = MathF.Sin(resizeAngle);
+            return new PointF(
+                center.X + local.X * cosine - local.Y * sine,
+                center.Y + local.X * sine + local.Y * cosine);
+        }
+
+        var narrowedDisplayWidth = resizeDisplaySize.Width * 0.52f;
+        var narrowedPointer = ResizeLocalToWorld(
+            resizeCenter,
+            new PointF(-resizeDisplaySize.Width * 0.5f + narrowedDisplayWidth, 0));
+        var narrowed = TextGeometry.ResizeLayoutWidth(
+            resizeData,
+            resizeCenter,
+            resizeDisplaySize,
+            resizeAngle,
+            resizeLeftEdge: false,
+            pointerWorld: narrowedPointer,
+            minimumDisplayWidth: 100);
+        var fixedTopLeft = ResizeLocalToWorld(
+            resizeCenter,
+            new PointF(-resizeDisplaySize.Width * 0.5f, -resizeDisplaySize.Height * 0.5f));
+        var narrowedTopLeft = ResizeLocalToWorld(
+            narrowed.Center,
+            new PointF(-narrowed.DisplaySize.Width * 0.5f, -narrowed.DisplaySize.Height * 0.5f));
+        AssertTimeline(
+            Math.Abs(narrowed.Data.LayoutSize.Width - narrowedDisplayWidth / 1.25f) < 0.1f
+            && Math.Abs(narrowed.DisplaySize.Width / narrowed.Data.LayoutSize.Width - 1.25f) < 0.001f
+            && Math.Abs(narrowed.DisplaySize.Height / narrowed.Data.LayoutSize.Height - 0.8f) < 0.001f
+            && PointsNear(fixedTopLeft, narrowedTopLeft)
+            && narrowed.Data.LayoutSize.Height >= resizeData.LayoutSize.Height,
+            "Right-edge text area resizing changed text scale, moved its fixed top-left corner, or failed to reflow content.");
+
+        var widenedDisplayWidth = resizeDisplaySize.Width * 1.4f;
+        var widenedPointer = ResizeLocalToWorld(
+            resizeCenter,
+            new PointF(resizeDisplaySize.Width * 0.5f - widenedDisplayWidth, 0));
+        var widened = TextGeometry.ResizeLayoutWidth(
+            resizeData,
+            resizeCenter,
+            resizeDisplaySize,
+            resizeAngle,
+            resizeLeftEdge: true,
+            pointerWorld: widenedPointer,
+            minimumDisplayWidth: 100);
+        var fixedTopRight = ResizeLocalToWorld(
+            resizeCenter,
+            new PointF(resizeDisplaySize.Width * 0.5f, -resizeDisplaySize.Height * 0.5f));
+        var widenedTopRight = ResizeLocalToWorld(
+            widened.Center,
+            new PointF(widened.DisplaySize.Width * 0.5f, -widened.DisplaySize.Height * 0.5f));
+        AssertTimeline(
+            PointsNear(fixedTopRight, widenedTopRight),
+            "Left-edge text area resizing moved its fixed top-right corner.");
+
+        var resizeScene = new VectorScene();
+        resizeScene.CreateEmpty();
+        var resizeText = resizeScene.AddTextObject(0, resizeCenter, resizeData, Color.MediumSeaGreen);
+        resizeScene.Width[resizeText] = resizeDisplaySize.Width;
+        resizeScene.Height[resizeText] = resizeDisplaySize.Height;
+        resizeScene.Angle[resizeText] = resizeAngle;
+        resizeScene.CompleteDeferredBuild();
+        var resizeSnapshot = resizeScene.CreateSnapshot();
+        AssertTimeline(
+            resizeScene.UpdateTextObjectData(resizeText, narrowed.Data),
+            "Text area resize regression could not apply the reflowed text payload.");
+        resizeScene.X[resizeText] = narrowed.Center.X;
+        resizeScene.Y[resizeText] = narrowed.Center.Y;
+        resizeScene.Width[resizeText] = narrowed.DisplaySize.Width;
+        resizeScene.Height[resizeText] = narrowed.DisplaySize.Height;
+        resizeScene.CompleteDeferredBuild();
+        AssertTimeline(
+            resizeScene.TryGetTextObjectData(resizeText, out var resizedStoredData)
+            && resizedStoredData == narrowed.Data
+            && Math.Abs(resizeScene.Width[resizeText] - narrowed.DisplaySize.Width) < 0.1f,
+            "Text area resize did not preserve its editable payload and display width.");
+        resizeScene.RestoreSnapshot(resizeSnapshot);
+
+        using (var textAreaStage = new StageControl(resizeScene) { Size = new Size(640, 420) })
+        {
+            textAreaStage.SetSelection([resizeText], resizeText);
+            var rightHandle = textAreaStage.GetTextAreaHandleWorldPoint(resizeText, EditHandleKind.TextAreaRight);
+            var rightHandleScreen = Point.Round(textAreaStage.WorldToScreen(rightHandle.X, rightHandle.Y));
+            AssertTimeline(
+                textAreaStage.TextAreaOverlayVisible(resizeText)
+                && textAreaStage.TextAreaResizeHandlesVisible(resizeText)
+                && textAreaStage.HitTestHandle(rightHandleScreen, resizeText) == EditHandleKind.TextAreaRight,
+                "A selected text object did not expose its green text-area resize handles.");
+            textAreaStage.SetEditingTextObject(resizeText);
+            AssertTimeline(
+                !textAreaStage.TextAreaOverlayVisible(resizeText)
+                && textAreaStage.HitTestHandle(rightHandleScreen, resizeText) == EditHandleKind.None,
+                "Text area handles remained active while the in-place text editor was open.");
+            textAreaStage.ClearEditingTextObject();
+        }
+
+        var compositionProject = VectorProject.CreateEmpty();
+        var compositionSource = compositionProject.DrawingObjects[0];
+        compositionSource.Scene.CreateEmpty();
+        compositionSource.Scene.AddTextObject(
+            0,
+            PointF.Empty,
+            CreateTextData("Composed", TextFontStyle.BoldItalic, TextHorizontalAlignment.Center),
+            Color.CornflowerBlue);
+        var compositionScene = compositionProject.Scenes[0];
+        AssertTimeline(
+            compositionProject.TryAddSceneInstance(
+                compositionScene.Id,
+                compositionSource.Id,
+                new PointF(600, 400),
+                0,
+                out var textInstance)
+            && textInstance is not null,
+            "Text composition regression could not create its source instance.");
+        textInstance!.RotationZ = 25;
+        textInstance.ScaleX = 1.4f;
+        textInstance.ScaleY = 0.8f;
+        var compositionDestination = new VectorScene();
+        SceneCompositionBuilder.Build(
+            compositionDestination,
+            compositionScene,
+            compositionProject.DrawingObjects,
+            0);
+        AssertTimeline(
+            compositionDestination.ObjectCount == 1
+            && compositionDestination.ShapeKind[0] == ShapeKind.Text
+            && compositionDestination.TryGetTextObjectData(0, out var composedData)
+            && composedData.Content == "Composed",
+            "Orthogonal composition did not preserve editable text and its payload.");
+
+        textInstance.SkewX = 20;
+        SceneCompositionBuilder.Build(
+            compositionDestination,
+            compositionScene,
+            compositionProject.DrawingObjects,
+            0);
+        AssertTimeline(
+            compositionDestination.ObjectCount == 1
+            && compositionDestination.ShapeKind[0] == ShapeKind.Path
+            && compositionDestination.TryGetPathWorldContours(0, out var skewedContours)
+            && skewedContours.Length > 0
+            && !compositionDestination.TryGetTextObjectData(0, out _),
+            "Skewed composition did not materialize text as outline path geometry.");
+
+        textInstance.SkewX = 0;
+        textInstance.ScaleX = -1;
+        SceneCompositionBuilder.Build(
+            compositionDestination,
+            compositionScene,
+            compositionProject.DrawingObjects,
+            0);
+        AssertTimeline(
+            compositionDestination.ObjectCount == 1
+            && compositionDestination.ShapeKind[0] == ShapeKind.Path
+            && compositionDestination.TryGetPathWorldContours(0, out var reflectedContours)
+            && reflectedContours.Length > 0,
+            "Reflected composition did not materialize text as outline path geometry.");
+
+        var breakApartScene = new VectorScene();
+        breakApartScene.CreateEmpty();
+        breakApartScene.AddObject(
+            0,
+            new PointF(-10_000, 0),
+            new SizeF(300, 300),
+            0,
+            0,
+            Color.Teal,
+            3,
+            ShapeKind.Rectangle);
+        var breakApartText = breakApartScene.AddTextObject(
+            0,
+            PointF.Empty,
+            CreateTextData("Break \u62c6\u6563", TextFontStyle.Bold),
+            Color.FromArgb(210, Color.Coral));
+        var breakApartSnapshot = breakApartScene.CreateSnapshot();
+        var expectedOrder = breakApartScene.ObjectOrder[breakApartText];
+        var brokenObjects = breakApartScene.BreakApartTextObjects([breakApartText]);
+        AssertTimeline(
+            brokenObjects.Length == 1
+            && breakApartScene.ObjectCount == 2
+            && breakApartScene.ShapeKind[brokenObjects[0]] == ShapeKind.Path
+            && breakApartScene.ObjectOrder[brokenObjects[0]] == expectedOrder
+            && breakApartScene.Argb[brokenObjects[0]] == Color.FromArgb(210, Color.Coral).ToArgb()
+            && breakApartScene.TryGetPathWorldContours(brokenObjects[0], out var brokenContours)
+            && brokenContours.Length > 0
+            && !breakApartScene.TryGetTextObjectData(brokenObjects[0], out _),
+            "Break Apart did not replace editable text with one compound path while preserving material and order.");
+        breakApartScene.RestoreSnapshot(breakApartSnapshot);
+        AssertTimeline(
+            breakApartScene.ShapeKind[breakApartText] == ShapeKind.Text
+            && breakApartScene.TryGetTextObjectData(breakApartText, out var restoredBreakApart)
+            && restoredBreakApart.Content == "Break \u62c6\u6563",
+            "Undo snapshot did not restore editable text after Break Apart.");
+
+        var temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            "Vector2DAnimationEngine",
+            $"text-svg-regression-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        try
+        {
+            const string drawingObjectId = "text-regression";
+            var svgPath = Path.Combine(temporaryRoot, "Text.svg");
+            DrawingObjectSvgCodec.Write(svgPath, drawingObjectId, breakApartSnapshot);
+            var restoredSvg = DrawingObjectSvgCodec.Read(svgPath, drawingObjectId);
+            AssertTimeline(
+                restoredSvg.TextObjects.TryGetValue(breakApartText, out var restoredSvgText)
+                && restoredSvgText.Content == "Break \u62c6\u6563"
+                && File.ReadAllText(svgPath).Contains("fill-rule=\"evenodd\"", StringComparison.Ordinal),
+                "Drawing-object SVG persistence did not preserve editable text metadata and outline preview.");
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
     }
 
     private static void RunTimelineLayerWorkflowRegression()
@@ -2416,8 +2908,119 @@ internal static class Benchmark
             "Project asset folder rename, root move, cycle rejection, or read-only ownership failed.");
     }
 
+    private static void RunLayeredInstanceIndexRegression()
+    {
+        const int layerCount = 16;
+        const int instancesPerLayer = 16;
+        const int queryIterations = 256;
+        const double lookupBudgetMilliseconds = 25;
+
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var container = project.DrawingObjects[0];
+        var child = project.AddDrawingObject("Indexed child");
+        for (var layer = scene.Layers.Count; layer < layerCount; layer++)
+        {
+            AssertTimeline(
+                project.TryAddSceneLayer(scene.Id, out _),
+                "Layered instance index regression could not add a scene layer.");
+        }
+        container.Scene.CreateEmpty(layerCount);
+        container.SynchronizeTimelineTracks();
+
+        for (var index = 0; index < layerCount * instancesPerLayer; index++)
+        {
+            var sceneLayerId = scene.Layers[index % layerCount].Id;
+            var drawingLayerId = container.Scene.LayerIds[index % layerCount];
+            AssertTimeline(
+                project.TryAddSceneInstance(
+                    scene.Id,
+                    child.Id,
+                    new PointF(index, -index),
+                    index,
+                    sceneLayerId,
+                    out _)
+                && project.TryAddDrawingObjectInstance(
+                    container.Id,
+                    child.Id,
+                    new PointF(-index, index),
+                    drawingLayerId,
+                    out _),
+                "Layered instance index regression could not populate its scene and drawing layers.");
+        }
+
+        var sceneLayerIds = scene.Layers.Select(layer => layer.Id).ToArray();
+        var drawingLayerIds = container.Scene.LayerIds.ToArray();
+        foreach (var layerId in sceneLayerIds) _ = scene.InstancesInLayer(layerId).Count;
+        foreach (var layerId in drawingLayerIds) _ = container.InstancesInLayer(layerId).Count;
+        var cachedSceneLayer = scene.InstancesInLayer(sceneLayerIds[0]);
+        var cachedDrawingLayer = container.InstancesInLayer(drawingLayerIds[0]);
+
+        var queryWatch = new Stopwatch();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        queryWatch.Start();
+        var queriedInstances = 0;
+        for (var iteration = 0; iteration < queryIterations; iteration++)
+        {
+            foreach (var layerId in sceneLayerIds) queriedInstances += scene.InstancesInLayer(layerId).Count;
+            foreach (var layerId in drawingLayerIds) queriedInstances += container.InstancesInLayer(layerId).Count;
+        }
+        queryWatch.Stop();
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        var lookupBudgetMet = queryWatch.Elapsed.TotalMilliseconds <= lookupBudgetMilliseconds
+            && allocatedBytes <= 4096;
+        AssertTimeline(
+            queriedInstances == queryIterations * layerCount * instancesPerLayer * 2
+            && ReferenceEquals(cachedSceneLayer, scene.InstancesInLayer(sceneLayerIds[0]))
+            && ReferenceEquals(cachedDrawingLayer, container.InstancesInLayer(drawingLayerIds[0]))
+            && lookupBudgetMet,
+            "Warm layered instance lookup changed membership, rebuilt cached views, or allocated per query: "
+            + $"elapsed={queryWatch.Elapsed.TotalMilliseconds:0.000} ms, allocated={allocatedBytes} bytes.");
+
+        var sceneSnapshot = scene.CreateInstanceSnapshot();
+        var removedSceneInstance = cachedSceneLayer[0];
+        AssertTimeline(
+            scene.RemoveInstance(removedSceneInstance)
+            && scene.InstancesInLayer(sceneLayerIds[0]).Count == instancesPerLayer - 1
+            && cachedSceneLayer.Count == instancesPerLayer,
+            "Removing a scene instance did not invalidate the layered index or preserve its prior read-only view.");
+        scene.RestoreInstanceSnapshot(sceneSnapshot);
+        AssertTimeline(
+            scene.InstancesInLayer(sceneLayerIds[0]).Count == instancesPerLayer,
+            "Restoring scene instances did not rebuild the layered index.");
+
+        var drawingSnapshot = container.CreateInstanceSnapshot();
+        var firstDrawingId = cachedDrawingLayer[0].Id;
+        var secondDrawingId = cachedDrawingLayer[1].Id;
+        AssertTimeline(
+            project.TryMoveDrawingObjectInstancesInLayer(container.Id, [firstDrawingId], 1),
+            "Layered instance index regression could not reorder nested instances.");
+        var reorderedDrawingLayer = container.InstancesInLayer(drawingLayerIds[0]);
+        AssertTimeline(
+            !ReferenceEquals(cachedDrawingLayer, reorderedDrawingLayer)
+            && reorderedDrawingLayer[0].Id == secondDrawingId
+            && reorderedDrawingLayer[1].Id == firstDrawingId
+            && cachedDrawingLayer[0].Id == firstDrawingId,
+            "Reordering nested instances did not invalidate the layered index or preserve stack order.");
+        AssertTimeline(
+            project.TryRemoveDrawingObjectInstance(container.Id, secondDrawingId, out _)
+            && container.InstancesInLayer(drawingLayerIds[0]).Count == instancesPerLayer - 1,
+            "Removing a nested instance did not invalidate the layered index.");
+        container.RestoreInstanceSnapshot(drawingSnapshot);
+        AssertTimeline(
+            container.InstancesInLayer(drawingLayerIds[0]).Count == instancesPerLayer
+            && container.InstancesInLayer(drawingLayerIds[0])[0].Id == firstDrawingId,
+            "Restoring nested instances did not recover layered membership and order.");
+
+        Console.WriteLine($"layered_instance_lookup_ms={queryWatch.Elapsed.TotalMilliseconds:0.000}");
+        Console.WriteLine($"layered_instance_lookup_allocated_bytes={allocatedBytes}");
+        Console.WriteLine($"layered_instance_lookup_budget_ms={lookupBudgetMilliseconds:0.000}");
+        Console.WriteLine($"layered_instance_lookup_budget_met={lookupBudgetMet.ToString().ToLowerInvariant()}");
+    }
+
     private static void RunSceneCompositionRegression()
     {
+        RunFillEdgeBezierCompositionRegression();
         var project = VectorProject.CreateEmpty();
         var drawingObject = project.DrawingObjects[0];
         drawingObject.Name = "Composition source";
@@ -2523,6 +3126,33 @@ internal static class Benchmark
             && nestedOwner.DrawingObjectId == childDrawingObject.Id
             && nestedOwner.RootInstanceId == instance.Id,
             "Scene composition did not preserve drawing-object provenance for editor navigation.");
+
+        var sourceGradientStops = drawingObject.Scene.GetGradientStops(sourceGradientObject);
+        var rootTint = Color.FromArgb(255, 128, 255, 128).ToArgb();
+        var nestedTint = Color.FromArgb(255, 255, 128, 255).ToArgb();
+        instance.Alpha = 0.5f;
+        instance.TintArgb = rootTint;
+        nestedInstance!.Alpha = 0.5f;
+        nestedInstance.TintArgb = nestedTint;
+        SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 0);
+        var tintedStops = destination.GetGradientStops(0);
+        AssertTimeline(
+            destination.ObjectCount == 2
+            && destination.Argb[0] == ApplyInstanceAppearanceForRegression(Color.Teal.ToArgb(), 0.5f, rootTint)
+            && destination.Argb[1] == ApplyInstanceAppearanceForRegression(
+                Color.Coral.ToArgb(),
+                0.25f,
+                Color.FromArgb(255, 128, 128, 128).ToArgb())
+            && tintedStops.Length == sourceGradientStops.Length
+            && tintedStops.Select(stop => stop.Argb).SequenceEqual(sourceGradientStops.Select(stop =>
+                ApplyInstanceAppearanceForRegression(stop.Argb, 0.5f, rootTint)))
+            && drawingObject.Scene.Argb[sourceGradientObject] == Color.Teal.ToArgb()
+            && drawingObject.Scene.GetGradientStops(sourceGradientObject).SequenceEqual(sourceGradientStops),
+            "Nested instance Alpha or multiply tint did not compose independently across fills and gradient stops.");
+        instance.Alpha = 1f;
+        instance.TintArgb = Color.White.ToArgb();
+        nestedInstance.Alpha = 1f;
+        nestedInstance.TintArgb = Color.White.ToArgb();
 
         var childPreview = new VectorScene();
         var childPreviewResult = SceneCompositionBuilder.BuildDrawingObjectChildren(
@@ -2828,6 +3458,8 @@ internal static class Benchmark
             Y = 70,
             RotationZ = 35,
             ScaleX = 1.75f,
+            Alpha = 0.65f,
+            TintArgb = Color.FromArgb(255, 180, 220, 96).ToArgb(),
             PlaybackFps = 18,
             PlaybackMode = DrawingObjectPlaybackMode.Loop,
             HoldFrame = 4
@@ -2838,6 +3470,8 @@ internal static class Benchmark
             Y = 240,
             SkewY = 16,
             ScaleY = 0.8f,
+            Alpha = 0.4f,
+            TintArgb = Color.FromArgb(255, 96, 160, 240).ToArgb(),
             PlaybackFps = 24,
             PlaybackMode = DrawingObjectPlaybackMode.HoldFrame,
             HoldFrame = 6
@@ -3011,6 +3645,19 @@ internal static class Benchmark
                 new GradientStop(0, Color.FromArgb(180, Color.Gold)),
                 new GradientStop(0.45f, Color.FromArgb(210, Color.Coral)),
                 new GradientStop(1, Color.FromArgb(220, Color.RoyalBlue))]);
+            var pathBezierPrepared = root.Scene.TryConvertFillToBezierPath(path)
+                && root.Scene.TryGetPathBezierSegment(path, 0, out var pathSegment)
+                && root.Scene.SetPathBezierSegment(
+                    path,
+                    pathSegment.PartIndex,
+                    pathSegment.Start,
+                    new PointF(pathSegment.Control1.X, pathSegment.Control1.Y - 70),
+                    new PointF(pathSegment.Control2.X, pathSegment.Control2.Y - 110),
+                    pathSegment.End);
+            var hasSavedPathBezier = root.Scene.TryGetPathBezierSegment(path, 0, out var savedPathBezier);
+            AssertTimeline(
+                pathBezierPrepared && hasSavedPathBezier,
+                "Project Vault regression could not prepare exact fill-edge Bezier geometry.");
             const string importedSvgSource = """
                 <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
                   <defs><linearGradient id="g"><stop stop-color="#ff3355"/><stop offset="1" stop-color="#2277ee" stop-opacity=".55"/></linearGradient></defs>
@@ -3023,6 +3670,17 @@ internal static class Benchmark
                 new SizeF(3000, 2000),
                 0.25f,
                 importedSvgSource);
+            var text = root.Scene.AddTextObject(
+                1,
+                new PointF(-320, 180),
+                new TextObjectData(
+                    "Vault \u6587\u672c\nEditable",
+                    TextGeometry.FallbackFontFamilyName,
+                    28,
+                    TextFontStyle.BoldItalic,
+                    TextHorizontalAlignment.Right,
+                    new SizeF(4_000, 2_000)),
+                Color.FromArgb(220, Color.MediumPurple));
             AssertTimeline(
                 root.Scene.InsertTimelineBlankKeyframe(0, 4),
                 "Project Vault regression could not create a blank drawing cel.");
@@ -3045,10 +3703,16 @@ internal static class Benchmark
                 && project.TryAddSceneInstance(project.Scenes[0].Id, root.Id, new PointF(320, 180), 2, out sceneInstance)
                 && sceneInstance is not null,
                 "Project Vault regression could not create its asset graph.");
+            nested!.Alpha = 0.75f;
+            nested.TintArgb = Color.FromArgb(255, 220, 180, 120).ToArgb();
+            sceneInstance!.Alpha = 0.6f;
+            sceneInstance.TintArgb = Color.FromArgb(255, 120, 200, 240).ToArgb();
             nested!.SetStateAtFrame(6, nested.EvaluateState(6) with
             {
                 X = 140,
                 RotationZ = 32,
+                Alpha = 0.35f,
+                TintArgb = Color.FromArgb(255, 96, 220, 160).ToArgb(),
                 PlaybackFps = 23.976m,
                 PlaybackMode = DrawingObjectPlaybackMode.Loop
             });
@@ -3056,6 +3720,8 @@ internal static class Benchmark
             {
                 Y = 260,
                 ScaleX = 1.4f,
+                Alpha = 0.45f,
+                TintArgb = Color.FromArgb(255, 180, 96, 240).ToArgb(),
                 PlaybackFps = 24m,
                 PlaybackMode = DrawingObjectPlaybackMode.HoldFrame,
                 HoldFrame = 3
@@ -3099,14 +3765,30 @@ internal static class Benchmark
                 && restoredRoot.Scene.ShapeKind[importedSvg] == ShapeKind.ImportedSvg
                 && restoredRoot.Scene.TryGetImportedSvgSource(importedSvg, out var restoredImportedSvgSource)
                 && restoredImportedSvgSource == importedSvgSource
+                && restoredRoot.Scene.ShapeKind[text] == ShapeKind.Text
+                && restoredRoot.Scene.TryGetTextObjectData(text, out var restoredText)
+                && restoredText.Content == "Vault \u6587\u672c\nEditable"
+                && restoredText.FontStyle == TextFontStyle.BoldItalic
+                && restoredText.Alignment == TextHorizontalAlignment.Right
                 && restoredRootSnapshot.GradientStops.TryGetValue(path, out var restoredStops)
                 && restoredStops.Length == 3
+                && restoredRoot.Scene.TryGetPathBezierSegment(path, 0, out var restoredPathBezier)
+                && PointsNear(restoredPathBezier.Control1, savedPathBezier.Control1)
+                && PointsNear(restoredPathBezier.Control2, savedPathBezier.Control2)
                 && restoredRoot.Scene.Timeline.Tracks[0].Id == drawingTrackId
                 && restoredRoot.Scene.Timeline.Tracks[0].Keyframes.Any(key =>
                     key.Frame == 4 && key.Kind == TimelineKeyframeKind.Blank)
                 && restoredRoot.Instances.Single().SceneLayerId == nestedLayerId
+                && NearlyEqual(restoredRoot.Instances.Single().EvaluateState(0).Alpha, 0.75f)
+                && restoredRoot.Instances.Single().EvaluateState(0).TintArgb == Color.FromArgb(255, 220, 180, 120).ToArgb()
+                && NearlyEqual(restoredRoot.Instances.Single().EvaluateState(6).Alpha, 0.35f)
+                && restoredRoot.Instances.Single().EvaluateState(6).TintArgb == Color.FromArgb(255, 96, 220, 160).ToArgb()
                 && restoredRoot.Instances.Single().EvaluateState(6).PlaybackFps == 23.976m
                 && restoredChild.AssetFolderId == folder!.Id
+                && NearlyEqual(restoredScene.Instances.Single().EvaluateState(0).Alpha, 0.6f)
+                && restoredScene.Instances.Single().EvaluateState(0).TintArgb == Color.FromArgb(255, 120, 200, 240).ToArgb()
+                && NearlyEqual(restoredScene.Instances.Single().EvaluateState(7).Alpha, 0.45f)
+                && restoredScene.Instances.Single().EvaluateState(7).TintArgb == Color.FromArgb(255, 180, 96, 240).ToArgb()
                 && restoredScene.Instances.Single().EvaluateState(7).HoldFrame == 3,
                 "Project Vault load did not restore project identity, SVG geometry, layers, frames, or animated instances.");
 
@@ -3382,6 +4064,18 @@ internal static class Benchmark
             "Instance playback regression could not create its scene instances.");
         direct!.PlaybackMode = DrawingObjectPlaybackMode.HoldFrame;
         direct.HoldFrame = 0;
+        var defaultAppearanceState = direct.EvaluateState(0);
+        var legacyStateNode = System.Text.Json.JsonSerializer.SerializeToNode(defaultAppearanceState)!.AsObject();
+        legacyStateNode.Remove(nameof(InstanceFrameState.Alpha));
+        legacyStateNode.Remove(nameof(InstanceFrameState.TintArgb));
+        var legacyAppearanceState = System.Text.Json.JsonSerializer.Deserialize<InstanceFrameState>(
+            legacyStateNode.ToJsonString());
+        AssertTimeline(
+            NearlyEqual(defaultAppearanceState.Alpha, 1f)
+            && defaultAppearanceState.TintArgb == Color.White.ToArgb()
+            && NearlyEqual(legacyAppearanceState.Alpha, 1f)
+            && legacyAppearanceState.TintArgb == Color.White.ToArgb(),
+            "Instance appearance defaults or legacy state migration did not preserve the original rendering.");
 
         var destination = new VectorScene();
         var result = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 10, parentFps: 30);
@@ -3430,6 +4124,8 @@ internal static class Benchmark
             ScaleY = 0.4f,
             RotationZ = 25f,
             SkewX = 12f,
+            Alpha = 0.5f,
+            TintArgb = Color.FromArgb(255, 128, 200, 64).ToArgb(),
             PlaybackFps = 15,
             PlaybackMode = DrawingObjectPlaybackMode.Loop,
             HoldFrame = 1
@@ -3443,7 +4139,11 @@ internal static class Benchmark
             && previousFrameState.PlaybackMode == DrawingObjectPlaybackMode.PlayOnce
             && previousFrameObjectCount == 1
             && destination.ObjectCount == 2
-            && destination.Argb.Take(destination.ObjectCount).All(argb => argb == Color.CornflowerBlue.ToArgb())
+            && destination.Argb[0] == Color.CornflowerBlue.ToArgb()
+            && destination.Argb[1] == ApplyInstanceAppearanceForRegression(
+                Color.CornflowerBlue.ToArgb(),
+                0.5f,
+                Color.FromArgb(255, 128, 200, 64).ToArgb())
             && direct.EvaluateState(10).PlaybackFps == 15
             && direct.EvaluateState(10).PlaybackMode == DrawingObjectPlaybackMode.Loop
             && direct.EvaluateState(10).HoldFrame == 1
@@ -3452,10 +4152,13 @@ internal static class Benchmark
             && NearlyEqual(direct.EvaluateState(10).ScaleY, 1)
             && NearlyEqual(direct.EvaluateState(10).RotationZ, 25)
             && NearlyEqual(direct.EvaluateState(10).SkewX, 12)
+            && NearlyEqual(direct.EvaluateState(10).Alpha, 0.5f)
+            && direct.EvaluateState(10).TintArgb == Color.FromArgb(255, 128, 200, 64).ToArgb()
             && direct.EvaluateState(10).PlaybackFps == 15
             && direct.EvaluateState(10).PlaybackMode == DrawingObjectPlaybackMode.Loop
             && direct.EvaluateState(10).HoldFrame == 1
             && direct.EvaluateState(9) == previousFrameState
+            && !MainForm.CanRestoreDrawingObjectOriginalSize(direct.EvaluateState(10))
             && !MainForm.RestoreDrawingObjectOriginalSize(direct, 10),
             "Playback controls or restoring original size changed another keyframe or unrelated instance state.");
     }
@@ -3611,6 +4314,43 @@ internal static class Benchmark
         var project = VectorProject.CreateEmpty();
         var drawingObject = project.DrawingObjects[0];
         drawingObject.Scene.Generate(8, 8192, 8_192_000);
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, drawingObject.Id, PointF.Empty, 0, out var instance)
+            && instance is not null,
+            "Chunked composition setup rejected a valid drawing-object instance.");
+        var sceneTrack = scene.Timeline.FindTrackByTargetId(scene.Layers[0].Id)
+            ?? throw new InvalidOperationException("Chunked composition regression lost its scene-layer track.");
+        scene.Timeline.SetTrackDuration(sceneTrack.Id, 21);
+        instance!.Alpha = 0.5f;
+        instance.TintArgb = Color.FromArgb(255, 128, 192, 224).ToArgb();
+        var sourceArgb = drawingObject.Scene.Argb.Take(drawingObject.Scene.ObjectCount).ToArray();
+        var sourceFirstObject = Enumerable.Range(0, drawingObject.Scene.ObjectCount)
+            .OrderBy(index => drawingObject.Scene.ObjectLayer[index])
+            .ThenBy(index => drawingObject.Scene.ObjectOrder[index])
+            .ThenBy(index => drawingObject.Scene.ObjectSubOrder[index])
+            .ThenBy(index => index)
+            .First();
+        var destination = new VectorScene();
+        var packedResult = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 20);
+        var evaluatedAppearance = instance.EvaluateState(20);
+        var expectedFirstArgb = ApplyInstanceAppearanceForRegression(
+            sourceArgb[sourceFirstObject],
+            evaluatedAppearance.Alpha,
+            evaluatedAppearance.TintArgb);
+        var sourceUnchanged = drawingObject.Scene.Argb
+            .Take(drawingObject.Scene.ObjectCount)
+            .SequenceEqual(sourceArgb);
+        AssertTimeline(
+            destination.ObjectCount == drawingObject.Scene.ObjectCount
+            && packedResult.ObjectOwners.Count == destination.ObjectCount
+            && destination.Argb[0] == expectedFirstArgb
+            && sourceUnchanged,
+            "Packed instance composition did not apply Alpha and multiply tint without mutating its source: "
+            + $"objects={destination.ObjectCount}/{drawingObject.Scene.ObjectCount}, owners={packedResult.ObjectOwners.Count}, "
+            + $"source={sourceFirstObject}, actual=0x{(destination.ObjectCount > 0 ? destination.Argb[0] : 0):X8}, expected=0x{expectedFirstArgb:X8}, "
+            + $"alpha={evaluatedAppearance.Alpha:R}, tint=0x{evaluatedAppearance.TintArgb:X8}, sourceUnchanged={sourceUnchanged}.");
+
         drawingObject.Scene.EditFrame = 20;
         drawingObject.Scene.AddPathObject(
             0,
@@ -3619,15 +4359,6 @@ internal static class Benchmark
             Color.Coral,
             Color.Transparent,
             12);
-        var scene = project.Scenes[0];
-        AssertTimeline(
-            project.TryAddSceneInstance(scene.Id, drawingObject.Id, PointF.Empty, 0, out _),
-            "Chunked composition setup rejected a valid drawing-object instance.");
-        var sceneTrack = scene.Timeline.FindTrackByTargetId(scene.Layers[0].Id)
-            ?? throw new InvalidOperationException("Chunked composition regression lost its scene-layer track.");
-        scene.Timeline.SetTrackDuration(sceneTrack.Id, 21);
-
-        var destination = new VectorScene();
         var result = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 20);
         var destinationPaths = Enumerable.Range(0, destination.ObjectCount)
             .Where(index => destination.ShapeKind[index] == ShapeKind.Path)
@@ -3673,6 +4404,72 @@ internal static class Benchmark
             "A path discarded by a degenerate transform left a populated composition keyframe.");
     }
 
+    private static void RunFillEdgeBezierCompositionRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var drawingObject = project.DrawingObjects[0];
+        drawingObject.Scene.CreateEmpty();
+        var fill = drawingObject.Scene.AddPathObject(
+            0,
+            [
+                new PointF(-120, -80),
+                new PointF(140, -60),
+                new PointF(160, 100),
+                new PointF(-100, 120)
+            ],
+            0,
+            Color.Coral,
+            Color.Transparent,
+            8);
+        var prepared = drawingObject.Scene.TryConvertFillToBezierPath(fill)
+            && drawingObject.Scene.TryGetPathBezierSegment(fill, 0, out var segment)
+            && drawingObject.Scene.SetPathBezierSegment(
+                fill,
+                segment.PartIndex,
+                segment.Start,
+                new PointF(segment.Control1.X, segment.Control1.Y - 90),
+                new PointF(segment.Control2.X, segment.Control2.Y - 140),
+                segment.End);
+        var hasSourceContours = drawingObject.Scene.TryGetPathBezierWorldContours(fill, out var sourceContours);
+        AssertTimeline(
+            prepared && hasSourceContours,
+            "Fill-edge Bezier composition setup did not retain exact source curves.");
+
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, drawingObject.Id, new PointF(400, 300), 0, out var instance)
+            && instance is not null,
+            "Fill-edge Bezier composition setup rejected a valid instance.");
+        instance!.RotationZ = 90;
+
+        var destination = new VectorScene();
+        var result = SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 0);
+        var hasDestinationContours = destination.TryGetPathBezierWorldContours(0, out var destinationContours);
+        AssertTimeline(
+            destination.ObjectCount == 1
+            && result.TryGetOwner(0, out var owner)
+            && owner.DrawingObjectId == drawingObject.Id
+            && hasDestinationContours
+            && destinationContours.Length == sourceContours.Length
+            && destinationContours[0].Length == sourceContours[0].Length,
+            "Scene composition flattened or dropped exact fill-edge Bezier geometry.");
+
+        static PointF RotateTranslate90(PointF point) => new(400 - point.Y, 300 + point.X);
+        for (var contourIndex = 0; contourIndex < sourceContours.Length; contourIndex++)
+        {
+            for (var nodeIndex = 0; nodeIndex < sourceContours[contourIndex].Length; nodeIndex++)
+            {
+                var source = sourceContours[contourIndex][nodeIndex];
+                var composed = destinationContours[contourIndex][nodeIndex];
+                AssertTimeline(
+                    PointsNear(composed.Anchor, RotateTranslate90(source.Anchor))
+                    && PointsNear(composed.IncomingControl, RotateTranslate90(source.IncomingControl))
+                    && PointsNear(composed.OutgoingControl, RotateTranslate90(source.OutgoingControl)),
+                    "Scene composition did not apply the instance transform equally to fill-edge anchors and controls.");
+            }
+        }
+    }
+
     private static void AssertTimeline(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
@@ -3685,6 +4482,7 @@ internal static class Benchmark
         RunSelectionHighlightStyleRegression();
         RunTemporaryCanvasPanRegression();
         RunImmediateMarqueeOverlayRegression();
+        RunMarqueeToolPolicyRegression();
         RunWorkspacePanelAnimationRegression();
         RunWorldGridRegression();
         RunDenseOverlapLodRegression();
@@ -3707,6 +4505,17 @@ internal static class Benchmark
         editable.CreateEmpty();
         var editableObject = editable.AddObject(0, new PointF(120, 80), new SizeF(180, 120), 0, 0, Color.Teal, 12, ShapeKind.Rectangle);
         editable.SetLinearGradient(editableObject, Color.Teal, Color.Coral);
+        var editableText = editable.AddTextObject(
+            0,
+            new PointF(1_000, -800),
+            new TextObjectData(
+                "T",
+                TextGeometry.FallbackFontFamilyName,
+                24,
+                TextFontStyle.Bold,
+                TextHorizontalAlignment.Center,
+                new SizeF(800, 1_000)),
+            Color.White);
         var underlay = new VectorScene();
         underlay.CreateEmpty();
         underlay.AddFreehandStroke(
@@ -3807,7 +4616,7 @@ internal static class Benchmark
             stage.Update();
         }
 
-        if (stage.LastStats.VisibleObjects != 4)
+        if (stage.LastStats.VisibleObjects != 5)
         {
             throw new InvalidOperationException("The Direct2D scene passes did not include the onion skin, underlay, and editable scene.");
         }
@@ -3864,6 +4673,147 @@ internal static class Benchmark
             throw new InvalidOperationException("Selecting a fill did not start its bounded highlight animation.");
         }
 
+        var fillEdgeViewState = stage.CaptureViewState();
+        stage.SetVisibleWorldWidth(800);
+        var fillEdgeOverlaySegments = editable.GetEditableFillBezierSegmentParts(editableObject)
+            .Select(part => new FillEdgeBezierOverlaySegment(
+                part.PartIndex,
+                part.Start,
+                part.Control1,
+                part.Control2,
+                part.End))
+            .ToArray();
+        stage.SetFillEdgeBezierOverlay(editableObject, fillEdgeOverlaySegments, fillEdgeOverlaySegments[0].PartIndex);
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D
+            || !stage.FillEdgeBezierOverlayVisible
+            || stage.SelectionHighlightAnimating)
+        {
+            throw new InvalidOperationException("The real-HWND Direct2D Stage did not render the non-glowing fill-edge Bezier overlay.");
+        }
+
+        using (var fillEdgeBitmap = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height))
+        using (var fillEdgeGraphics = Graphics.FromImage(fillEdgeBitmap))
+        {
+            var drawGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The GDI fill-edge Bezier overlay entry point could not be located.");
+            drawGdi.Invoke(stage, [fillEdgeGraphics]);
+            var limePixels = 0;
+            for (var y = 0; y < fillEdgeBitmap.Height; y++)
+            {
+                for (var x = 0; x < fillEdgeBitmap.Width; x++)
+                {
+                    var pixel = fillEdgeBitmap.GetPixel(x, y);
+                    if (pixel.R <= 20 && pixel.G >= 235 && pixel.B <= 20) limePixels++;
+                }
+            }
+
+            if (limePixels < 20)
+            {
+                throw new InvalidOperationException("The GDI fallback did not draw a crisp lime fill-edge Bezier overlay.");
+            }
+
+            var inactiveAnchor = fillEdgeOverlaySegments[2].Start;
+            var inactiveAnchorScreen = Point.Round(stage.WorldToScreen(inactiveAnchor.X, inactiveAnchor.Y));
+            var inactiveAnchorHasDarkCore = false;
+            var inactiveAnchorHasLimeBorder = false;
+            for (var y = Math.Max(0, inactiveAnchorScreen.Y - 1);
+                 y <= Math.Min(fillEdgeBitmap.Height - 1, inactiveAnchorScreen.Y + 1);
+                 y++)
+            {
+                for (var x = Math.Max(0, inactiveAnchorScreen.X - 1);
+                     x <= Math.Min(fillEdgeBitmap.Width - 1, inactiveAnchorScreen.X + 1);
+                     x++)
+                {
+                    var pixel = fillEdgeBitmap.GetPixel(x, y);
+                    if (Math.Abs(pixel.R - stage.BackColor.R) <= 20
+                        && Math.Abs(pixel.G - stage.BackColor.G) <= 20
+                        && Math.Abs(pixel.B - stage.BackColor.B) <= 20)
+                    {
+                        inactiveAnchorHasDarkCore = true;
+                        break;
+                    }
+                }
+                if (inactiveAnchorHasDarkCore) break;
+            }
+
+            for (var y = Math.Max(0, inactiveAnchorScreen.Y - 5);
+                 y <= Math.Min(fillEdgeBitmap.Height - 1, inactiveAnchorScreen.Y + 5);
+                 y++)
+            {
+                for (var x = Math.Max(0, inactiveAnchorScreen.X - 5);
+                     x <= Math.Min(fillEdgeBitmap.Width - 1, inactiveAnchorScreen.X + 5);
+                     x++)
+                {
+                    var pixel = fillEdgeBitmap.GetPixel(x, y);
+                    if (pixel.G >= 160
+                        && pixel.G >= pixel.R + 80
+                        && pixel.G >= pixel.B + 80)
+                    {
+                        inactiveAnchorHasLimeBorder = true;
+                        break;
+                    }
+                }
+                if (inactiveAnchorHasLimeBorder) break;
+            }
+
+            if (!inactiveAnchorHasDarkCore || !inactiveAnchorHasLimeBorder)
+            {
+                throw new InvalidOperationException("The GDI fill-edge overlay did not draw an inactive segment anchor handle.");
+            }
+        }
+        stage.ClearFillEdgeBezierOverlay();
+        stage.RestoreViewState(fillEdgeViewState);
+
+        stage.SetSelection([editableText], editableText);
+        var textAreaRightWorld = stage.GetTextAreaHandleWorldPoint(editableText, EditHandleKind.TextAreaRight);
+        var textAreaRightScreen = Point.Round(stage.WorldToScreen(textAreaRightWorld.X, textAreaRightWorld.Y));
+        if (!stage.TextAreaOverlayVisible(editableText)
+            || !stage.TextAreaResizeHandlesVisible(editableText)
+            || stage.HitTestHandle(textAreaRightScreen, editableText) != EditHandleKind.TextAreaRight)
+        {
+            throw new InvalidOperationException("The renderer Stage did not expose the selected text area's resize overlay.");
+        }
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D)
+        {
+            throw new InvalidOperationException("Direct2D did not render the selected text-area overlay.");
+        }
+
+        using (var textAreaBitmap = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height))
+        using (var textAreaGraphics = Graphics.FromImage(textAreaBitmap))
+        {
+            var drawGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The GDI text-area overlay entry point could not be located.");
+            drawGdi.Invoke(stage, [textAreaGraphics]);
+            var foundGreenHandlePixel = false;
+            for (var y = Math.Max(0, textAreaRightScreen.Y - 4); y <= Math.Min(textAreaBitmap.Height - 1, textAreaRightScreen.Y + 4); y++)
+            {
+                for (var x = Math.Max(0, textAreaRightScreen.X - 4); x <= Math.Min(textAreaBitmap.Width - 1, textAreaRightScreen.X + 4); x++)
+                {
+                    var pixel = textAreaBitmap.GetPixel(x, y);
+                    if (pixel.G >= 140 && pixel.B >= 120 && pixel.R <= 130)
+                    {
+                        foundGreenHandlePixel = true;
+                        break;
+                    }
+                }
+                if (foundGreenHandlePixel) break;
+            }
+            if (!foundGreenHandlePixel)
+            {
+                throw new InvalidOperationException("The GDI fallback did not draw the green text-area resize handle.");
+            }
+        }
+
         var selectedLine = editable.AddLineSegment(
             0,
             new PointF(-120, -60),
@@ -3916,8 +4866,8 @@ internal static class Benchmark
         if (!stage.LastFrameUsedDirect2D
             || !stage.LastStats.TileLod
             || stage.LastStats.TileDraws <= 0
-            || stage.LastStats.VisibleObjects != 1
-            || stage.LastStats.DrawnObjects != 1)
+            || stage.LastStats.VisibleObjects != 2
+            || stage.LastStats.DrawnObjects != 2)
         {
             throw new InvalidOperationException("Mixed object and tile LOD rendering produced inconsistent statistics.");
         }
@@ -3952,6 +4902,25 @@ internal static class Benchmark
             || stage.LastDirect2DLodBitmapSubmissions != 1)
         {
             throw new InvalidOperationException("Fit Stage did not submit the stress scene as one cached LOD bitmap.");
+        }
+
+        var fillEdgeDragSummaryRevision = stressScene.SummaryRevision;
+        stage.SetFillEdgeBezierPointerEditing(true);
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D
+            || stage.LastStats.TileLod
+            || stage.LastDirect2DLodBitmapSubmissions != 0
+            || stressScene.SummaryRevision != fillEdgeDragSummaryRevision)
+        {
+            throw new InvalidOperationException("Active fill-edge dragging reused a stale LOD summary instead of current object geometry.");
+        }
+        stage.SetFillEdgeBezierPointerEditing(false);
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D || !stage.LastStats.TileLod)
+        {
+            throw new InvalidOperationException("The Stage did not restore normal LOD rendering after fill-edge dragging ended.");
         }
 
         const int renderSamples = 24;
@@ -4039,6 +5008,26 @@ internal static class Benchmark
                 > StageControl.SelectionOuterGlowWidth(SelectionHighlightKind.Stroke, primary: true, pulse: 0),
             "Fill and stroke selection highlights did not retain distinct cool/thin and warm/strong styles.");
         Console.WriteLine("selection_highlight_style_regression=ok");
+    }
+
+    private static void RunMarqueeToolPolicyRegression()
+    {
+        var supportedTools = Enum.GetValues<ToolMode>()
+            .Where(MainForm.SupportsMarqueeSelection)
+            .ToHashSet();
+        AssertTimeline(
+            supportedTools.SetEquals([ToolMode.Select, ToolMode.Transform])
+            && MainForm.ShouldShowFillEdgeBezierOverlay(ToolMode.Select, 1, hasWholeFillSelection: true)
+            && !MainForm.ShouldShowFillEdgeBezierOverlay(ToolMode.Select, 2, hasWholeFillSelection: true)
+            && !MainForm.ShouldShowFillEdgeBezierOverlay(ToolMode.Select, 1, hasWholeFillSelection: false)
+            && !MainForm.ShouldShowFillEdgeBezierOverlay(ToolMode.Transform, 1, hasWholeFillSelection: true)
+            && !ShortcutProfiles.Commands.Any(command =>
+                string.Equals(command.Id, "tool.fill-edge-bezier", StringComparison.Ordinal))
+            && MainForm.ShouldBeginTransformMarquee(TransformHandleKind.None, hasSelectableTarget: false)
+            && !MainForm.ShouldBeginTransformMarquee(TransformHandleKind.None, hasSelectableTarget: true)
+            && !MainForm.ShouldBeginTransformMarquee(TransformHandleKind.Move, hasSelectableTarget: false)
+            && !MainForm.ShouldBeginTransformMarquee(TransformHandleKind.TopLeft, hasSelectableTarget: false),
+            "Selection tools did not preserve marquee priority or the integrated fill-edge Bezier policy.");
     }
 
     private static void RunImportedSvgRasterizerRegression()
@@ -4172,14 +5161,73 @@ internal static class Benchmark
             var composedImported = Enumerable.Range(0, compositionScene.ObjectCount)
                 .Single(index => compositionScene.ShapeKind[index] == ShapeKind.ImportedSvg);
             AssertTimeline(
+                compositionScene.TryGetImportedSvgSource(composedImported, out var composedSource),
+                "Imported SVG composition lost its transformed payload.");
+            var transformedRaster = ImportedSvgRasterizer.Rasterize(composedSource, 240, 160);
+            AssertTimeline(
                 composition.ObjectOwners.Count == 1
-                && compositionScene.TryGetImportedSvgSource(composedImported, out var composedSource)
                 && composedSource != loaded.Source
                 && composedSource.Contains("matrix(", StringComparison.Ordinal)
-                && ImportedSvgRasterizer.Rasterize(composedSource, 240, 160).Pixels
+                && transformedRaster.Pixels
                     .Where((_, offset) => offset % 4 == 3)
                     .Any(alpha => alpha > 0),
                 "Imported SVG composition did not preserve a reflected skew transform as visible content.");
+
+            var tint = Color.FromArgb(255, 128, 192, 224);
+            instance.SetStateAtFrame(0, instance.EvaluateState(0) with
+            {
+                Alpha = 0.5f,
+                TintArgb = tint.ToArgb()
+            });
+            var appearanceScene = new VectorScene();
+            SceneCompositionBuilder.Build(
+                appearanceScene,
+                project.Scenes[0],
+                project.DrawingObjects,
+                0);
+            var appearanceImported = Enumerable.Range(0, appearanceScene.ObjectCount)
+                .Single(index => appearanceScene.ShapeKind[index] == ShapeKind.ImportedSvg);
+            AssertTimeline(
+                appearanceScene.TryGetImportedSvgSource(appearanceImported, out var appearanceSource),
+                "Imported SVG appearance composition lost its wrapped payload.");
+            var appearanceRaster = ImportedSvgRasterizer.Rasterize(appearanceSource, 240, 160);
+            var comparisonPixel = -1;
+            for (var pixel = 0; pixel < transformedRaster.PixelWidth * transformedRaster.PixelHeight; pixel++)
+            {
+                if (transformedRaster.Pixels[pixel * 4 + 3] < 240) continue;
+                comparisonPixel = pixel;
+                break;
+            }
+
+            var appearanceMatches = comparisonPixel >= 0
+                && appearanceRaster.PixelWidth == transformedRaster.PixelWidth
+                && appearanceRaster.PixelHeight == transformedRaster.PixelHeight;
+            var actualAppearance = new byte[4];
+            var expectedAppearance = new int[4];
+            if (appearanceMatches)
+            {
+                var offset = comparisonPixel * 4;
+                for (var channel = 0; channel < 4; channel++) actualAppearance[channel] = appearanceRaster.Pixels[offset + channel];
+                expectedAppearance[0] = (transformedRaster.Pixels[offset] * tint.B + 127) / 255;
+                expectedAppearance[1] = (transformedRaster.Pixels[offset + 1] * tint.G + 127) / 255;
+                expectedAppearance[2] = (transformedRaster.Pixels[offset + 2] * tint.R + 127) / 255;
+                expectedAppearance[3] = transformedRaster.Pixels[offset + 3];
+                appearanceMatches = Math.Abs(actualAppearance[3] - expectedAppearance[3]) <= 2
+                    && Math.Abs(actualAppearance[0] - expectedAppearance[0]) <= 3
+                    && Math.Abs(actualAppearance[1] - expectedAppearance[1]) <= 3
+                    && Math.Abs(actualAppearance[2] - expectedAppearance[2]) <= 3;
+            }
+            var expectedObjectArgb = ApplyInstanceAppearanceForRegression(
+                Color.FromArgb(128, 128, 128).ToArgb(),
+                0.5f,
+                tint.ToArgb());
+            AssertTimeline(
+                appearanceMatches
+                && appearanceScene.Argb[appearanceImported] == expectedObjectArgb,
+                "Imported SVG composition did not apply instance Alpha and multiply tint to its rendered appearance: "
+                + $"pixel={comparisonPixel}, actualBGRA=[{string.Join(',', actualAppearance)}], "
+                + $"expectedBGRA=[{string.Join(',', expectedAppearance)}], "
+                + $"object=0x{appearanceScene.Argb[appearanceImported]:X8}, expectedObject=0x{expectedObjectArgb:X8}.");
 
             var dtdPath = Path.Combine(temporaryRoot, "dtd.svg");
             File.WriteAllText(
@@ -4252,6 +5300,7 @@ internal static class Benchmark
             && points.Length > 3
             && scene.Argb[fill] == Color.FromArgb(unchecked((int)0xffd93654)).ToArgb()
             && scene.StrokeArgb[stroke] == Color.FromArgb(unchecked((int)0xff2474c6)).ToArgb()
+            && scene.FillAutoMergeProtected[fill]
             && Math.Abs(scene.Stroke[stroke] - 8) <= 0.05f,
             "SVG Break Apart did not produce editable compound fill and stroke geometry.");
 
@@ -4264,47 +5313,135 @@ internal static class Benchmark
             "Undo snapshot did not restore an opaque imported SVG after Break Apart.");
 
         const string rootGradientSource = """
-            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="60" viewBox="0 0 100 60">
-              <linearGradient id="paint" x1="0" y1="0" x2="1" y2="0">
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+              <linearGradient id="paint" gradientUnits="userSpaceOnUse" x1="10" y1="50" x2="90" y2="50">
                 <stop offset="0%" stop-color="#ff0000"/>
                 <stop offset="100%" stop-color="#0000ff"/>
               </linearGradient>
-              <rect x="0" y="0" width="100" height="60" fill="url(#paint)" fill-rule="evenodd"/>
+              <circle cx="50" cy="50" r="38" fill="none" stroke="url(#paint)" stroke-width="12"/>
             </svg>
             """;
         scene.CreateEmpty();
-        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(100, 60), rootGradientSource);
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(100, 100), rootGradientSource);
         var gradientResult = scene.BreakApartImportedSvgObjects([0]);
+        var gradientColors = gradientResult.ProducedObjects
+            .Select(index => Color.FromArgb(scene.Argb[index]))
+            .Where(color => color.A > 0)
+            .Distinct()
+            .ToArray();
         AssertTimeline(
-            gradientResult.ProducedObjects.Length == 1
-            && gradientResult.Approximations == ImportedSvgBreakApproximation.GradientRepresentativeColor
-            && scene.ShapeKind[gradientResult.ProducedObjects[0]] == ShapeKind.Path
-            && scene.Argb[gradientResult.ProducedObjects[0]] == Color.FromArgb(255, 128, 0, 128).ToArgb(),
-            "SVG Break Apart did not accept a root-level gradient definition or preserve its representative color.");
+            gradientResult.ProducedObjects.Length >= 8
+            && gradientResult.Approximations == ImportedSvgBreakApproximation.RasterizedContent
+            && gradientResult.ProducedObjects.All(index => scene.ShapeKind[index] == ShapeKind.Path)
+            && gradientResult.ProducedObjects.All(index => scene.FillAutoMergeProtected[index])
+            && gradientColors.Length >= 8
+            && gradientColors.Any(color => color.R >= 204 && color.B <= 68)
+            && gradientColors.Any(color => color.B >= 204 && color.R <= 68),
+            "SVG Break Apart collapsed a gradient stroke to a representative solid color.");
 
-        const string unsupported = """
-            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
-              <image width="10" height="10" href="data:image/png;base64,iVBORw0KGgo="/>
+        const string adjacentFillSource = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="40" viewBox="0 0 100 40">
+              <rect x="0" y="0" width="50" height="40" fill="#d93654"/>
+              <rect x="50" y="0" width="50" height="40" fill="#d93654"/>
             </svg>
             """;
         scene.CreateEmpty();
-        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(10, 10), unsupported);
-        var rejected = false;
-        try
-        {
-            scene.BreakApartImportedSvgObjects([0]);
-        }
-        catch (InvalidDataException)
-        {
-            rejected = true;
-        }
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(100, 40), adjacentFillSource);
+        var adjacentResult = scene.BreakApartImportedSvgObjects([0]);
+        var adjacentFills = adjacentResult.ProducedObjects
+            .Where(index => scene.ShapeKind[index] == ShapeKind.Path)
+            .ToArray();
+        var protectedMergeCount = scene.ObjectCount;
+        var protectedMerge = scene.MergeSameColorFillsAround(adjacentFills[0], connectNearby: true, frame: 0);
+        var ordinaryFill = scene.AddPathObjectContours(
+            0,
+            [
+                [
+                    new PointF(50, -20),
+                    new PointF(70, -20),
+                    new PointF(70, 20),
+                    new PointF(50, 20)
+                ]
+            ],
+            0,
+            Color.FromArgb(unchecked((int)0xffd93654)),
+            Color.Transparent,
+            4);
+        var reverseMergeCount = scene.ObjectCount;
+        var reverseMerge = scene.MergeSameColorFillsAround(ordinaryFill, connectNearby: true, frame: 0);
+        var protectedSnapshot = scene.CreateSnapshot();
+        scene.RestoreSnapshot(protectedSnapshot);
         AssertTimeline(
-            rejected
-            && scene.ObjectCount == 1
-            && scene.ShapeKind[0] == ShapeKind.ImportedSvg
-            && scene.TryGetImportedSvgSource(0, out var rejectedSource)
-            && rejectedSource == unsupported,
-            "Unsupported SVG content was not rejected atomically by Break Apart.");
+            adjacentFills.Length == 2
+            && adjacentFills.All(index => scene.FillAutoMergeProtected[index])
+            && protectedMerge == adjacentFills[0]
+            && protectedMergeCount == adjacentFills.Length
+            && reverseMerge == ordinaryFill
+            && scene.ObjectCount == reverseMergeCount
+            && protectedSnapshot.FillAutoMergeProtected.Length == protectedSnapshot.ObjectCount
+            && adjacentFills.All(index => protectedSnapshot.FillAutoMergeProtected[index]),
+            "SVG Break Apart fills were unexpectedly merged during later geometry or material normalization.");
+
+        const string textSource = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="120" height="48" viewBox="0 0 120 48">
+              <text x="6" y="36" font-family="Arial" font-size="32" fill="#3a7bd5">SVG</text>
+            </svg>
+            """;
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(120, 48), textSource);
+        var textResult = scene.BreakApartImportedSvgObjects([0]);
+        AssertTimeline(
+            textResult.ProducedObjects.Length > 0
+            && !textResult.Approximations.HasFlag(ImportedSvgBreakApproximation.RasterizedContent)
+            && textResult.ProducedObjects.All(index => scene.ShapeKind[index] == ShapeKind.Path)
+            && textResult.ProducedObjects.All(index => scene.TryGetPathWorldContours(index, out var glyphs) && glyphs.Length > 0),
+            "SVG Break Apart did not preserve text as editable vector glyph outlines.");
+
+        var embeddedImage = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("""
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+              <rect width="24" height="24" rx="5" fill="#f05a47"/>
+              <circle cx="12" cy="12" r="6" fill="#ffd166"/>
+            </svg>
+            """));
+        var complexSource = $"""
+            <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+              <defs>
+                <path id="tile" d="M0 0 H28 V28 H0 Z"/>
+                <clipPath id="crop"><ellipse cx="60" cy="40" rx="54" ry="34"/></clipPath>
+              </defs>
+              <g clip-path="url(#crop)">
+                <use href="#tile" x="8" y="8" fill="#4e79a7"/>
+                <path d="M8 64 C36 8 84 8 112 64" fill="none" stroke="#59a14f" stroke-width="6" stroke-dasharray="9 5"/>
+                <image x="72" y="18" width="36" height="36" href="data:image/svg+xml;base64,{embeddedImage}"/>
+              </g>
+            </svg>
+            """;
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(240, 160), complexSource);
+        var fallbackResult = scene.BreakApartImportedSvgObjects([0]);
+        AssertTimeline(
+            fallbackResult.ProducedObjects.Length > 0
+            && fallbackResult.Approximations.HasFlag(ImportedSvgBreakApproximation.RasterizedContent)
+            && !Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ShapeKind[index] == ShapeKind.ImportedSvg)
+            && fallbackResult.ProducedObjects.All(index => scene.ShapeKind[index] == ShapeKind.Path)
+            && fallbackResult.ProducedObjects.Any(index => Color.FromArgb(scene.Argb[index]).A > 0)
+            && fallbackResult.ProducedObjects.All(index => scene.TryGetPathWorldContours(index, out var regions) && regions.Length > 0),
+            "Complex SVG content did not fall back to editable raster-traced compound paths.");
+
+        const string transparentSource = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">
+              <rect width="40" height="20" fill="none"/>
+            </svg>
+            """;
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(40, 20), transparentSource);
+        var transparentResult = scene.BreakApartImportedSvgObjects([0]);
+        AssertTimeline(
+            transparentResult.ProducedObjects.Length == 1
+            && transparentResult.Approximations.HasFlag(ImportedSvgBreakApproximation.RasterizedContent)
+            && scene.ShapeKind[transparentResult.ProducedObjects[0]] == ShapeKind.Path
+            && Color.FromArgb(scene.Argb[transparentResult.ProducedObjects[0]]).A == 0,
+            "A valid transparent SVG could not complete Break Apart.");
 
         var project = VectorProject.CreateEmpty();
         var svgAsset = project.DrawingObjects[0];
@@ -4347,9 +5484,15 @@ internal static class Benchmark
         AssertTimeline(
             flattened.ObjectCount == 2
             && !Enumerable.Range(0, flattened.ObjectCount).Any(index => flattened.ShapeKind[index] == ShapeKind.ImportedSvg)
+            && Enumerable.Range(0, flattened.ObjectCount)
+                .Where(index => flattened.ShapeKind[index] == ShapeKind.Path)
+                .All(index => flattened.FillAutoMergeProtected[index])
             && materialized.Length == 2
             && materialized.All(index => container.Scene.ObjectLayer[index] == 0)
             && materialized.All(index => container.Scene.ObjectOrder[index] < container.Scene.ObjectOrder[existing])
+            && materialized
+                .Where(index => container.Scene.ShapeKind[index] == ShapeKind.Path)
+                .All(index => container.Scene.FillAutoMergeProtected[index])
             && materialized.Any(index => ((container.Scene.Argb[index] >>> 24) & 0xff) is >= 62 and <= 64)
             && materialized.Select(container.Scene.GetObjectWorldBounds).Aggregate(RectangleF.Union).Contains(300, 180),
             "Nested-instance Break Apart did not preserve transform, opacity, host layer, or underlay stack placement.");
@@ -5032,6 +6175,7 @@ internal static class Benchmark
         RunRenderOrderRegression();
         RunDrawingTopologyRegression();
         RunTraditionalBrushContourRegression();
+        RunBrushGradientRegression();
         RunComplexBrushCommitPerformanceRegression();
 
         const int strokeCount = 512;
@@ -5214,6 +6358,17 @@ internal static class Benchmark
         var topFill = scene.AddObject(0, PointF.Empty, new SizeF(200, 120), 0, 0, Color.Teal, Color.Transparent, 12, ShapeKind.Rectangle);
         var bottomFill = scene.AddObject(1, PointF.Empty, new SizeF(200, 120), 0, 0, Color.Teal, Color.Transparent, 12, ShapeKind.Rectangle);
         var topOutlinedFill = scene.AddObject(0, PointF.Empty, new SizeF(160, 90), 0, strokeWidth, Color.Teal, Color.White, 12, ShapeKind.Rectangle);
+        var topText = scene.AddTextObject(
+            0,
+            PointF.Empty,
+            new TextObjectData(
+                "T",
+                TextGeometry.FallbackFontFamilyName,
+                12,
+                TextFontStyle.Regular,
+                TextHorizontalAlignment.Center,
+                new SizeF(300, 600)),
+            Color.Gold);
 
         var renderOrder = new SceneRenderOrderBuffer();
         renderOrder.Collect(scene, new RectangleF(-500, -500, 1000, 1000), 0);
@@ -5223,8 +6378,16 @@ internal static class Benchmark
             int.MaxValue,
             index => commands.Add($"F{index}"),
             index => commands.Add($"S{index}"));
-        var expected = new[] { $"F{bottomFill}", $"S{bottomLine}", $"F{topFill}", $"F{topOutlinedFill}", $"S{topLine}", $"S{topOutlinedFill}" };
-        if (drawn != scene.ObjectCount || !commands.SequenceEqual(expected))
+        var expected = new[]
+        {
+            $"F{bottomFill}", $"S{bottomLine}",
+            $"F{topFill}", $"F{topOutlinedFill}", $"F{topText}", $"S{topLine}", $"S{topOutlinedFill}"
+        };
+        if (drawn != scene.ObjectCount
+            || !commands.SequenceEqual(expected)
+            || !SceneRenderOrder.RequiresObjectRenderer(scene)
+            || !SceneRenderOrder.HasFill(ShapeKind.Text)
+            || SceneRenderOrder.HasStroke(ShapeKind.Text, strokeWidth))
         {
             throw new InvalidOperationException($"Render priority order is invalid: {string.Join(',', commands)}.");
         }
@@ -5826,7 +6989,15 @@ internal static class Benchmark
                     && MathF.Abs(point.Y - shearedStart.Y) <= DrawingTopologyRules.UnitIntersectionTolerance);
         if (!shearKeepsFillLinked)
         {
-            throw new InvalidOperationException("Free Transform skewed a fill boundary line without moving the linked fill contour.");
+            var closestBoundaryDistance = scene.GetObjectBoundaryContours(fillObjectIndex)
+                .SelectMany(contour => contour)
+                .Select(point => MathF.Sqrt(
+                    (point.X - shearedStart.X) * (point.X - shearedStart.X)
+                    + (point.Y - shearedStart.Y) * (point.Y - shearedStart.Y)))
+                .DefaultIfEmpty(float.MaxValue)
+                .Min();
+            throw new InvalidOperationException(
+                $"Free Transform skewed a fill boundary line without moving the linked fill contour: links={shearLinks.Length}, lineStart={shearedStart}, closestBoundary={closestBoundaryDistance:0.###}.");
         }
 
         var closedBoundaryScene = new VectorScene();
@@ -5864,10 +7035,99 @@ internal static class Benchmark
             throw new InvalidOperationException("Free Transform skewed a closed fill boundary stroke without moving the linked fill contour.");
         }
 
+        AssertMovingStraightBoundaryEndpointPreservesAdjacentFillEdge(startEndpoint: true);
+        AssertMovingStraightBoundaryEndpointPreservesAdjacentFillEdge(startEndpoint: false);
         AssertCurvedLineExpandsStraightFillBoundary(reverse: false);
         AssertCurvedLineExpandsStraightFillBoundary(reverse: true);
 
         Console.WriteLine("fill_boundary_line_link_regression=ok");
+
+        static void AssertMovingStraightBoundaryEndpointPreservesAdjacentFillEdge(bool startEndpoint)
+        {
+            var linkedScene = new VectorScene();
+            linkedScene.CreateEmpty();
+            var linkedFill = linkedScene.AddObject(
+                0,
+                PointF.Empty,
+                new SizeF(200, 100),
+                0,
+                VectorUnits.StrokePointsToUnits(2),
+                Color.Teal,
+                Color.White,
+                12,
+                ShapeKind.Rectangle);
+            var boundaryHit = linkedScene.HitTestElement(new PointF(0, 50), 0, toleranceWorld: 2);
+            var detachedBoundary = linkedScene.DetachElementForMove(boundaryHit, 0);
+            var boundaryLinks = detachedBoundary.IsValid
+                ? linkedScene.CaptureFillBoundaryLineLinks(detachedBoundary.Key.ObjectIndex, 0)
+                : Array.Empty<FillBoundaryLineLink>();
+            if (boundaryLinks.Length != 1
+                || boundaryLinks[0].FillObjectIndex != linkedFill
+                || !linkedScene.TryGetLineCubic(
+                    detachedBoundary.Key.ObjectIndex,
+                    out var lineStart,
+                    out var lineControl1,
+                    out var lineControl2,
+                    out var lineEnd))
+            {
+                throw new InvalidOperationException("A straight detached boundary could not establish its linked fill regression setup.");
+            }
+
+            var originalEndpoint = startEndpoint ? lineStart : lineEnd;
+            var oppositeEndpoint = startEndpoint ? lineEnd : lineStart;
+            var movedEndpoint = VectorUnits.Quantize(new PointF(
+                originalEndpoint.X + (startEndpoint ? -70 : 85),
+                originalEndpoint.Y - 65));
+            linkedScene.SetLineEndpoint(
+                detachedBoundary.Key.ObjectIndex,
+                startEndpoint,
+                movedEndpoint,
+                oppositeEndpoint,
+                lineControl1,
+                lineControl2,
+                keepStraight: true);
+            if (!linkedScene.UpdateFillBoundaryLineLinks(boundaryLinks))
+            {
+                throw new InvalidOperationException("Moving a straight detached boundary endpoint did not update its linked fill.");
+            }
+
+            var linkedPartIndex = boundaryLinks[0].BezierSegmentIndex;
+            var fillParts = linkedScene.GetPathBezierSegmentParts(linkedFill);
+            var activeParts = fillParts.Where(part => part.PartIndex == linkedPartIndex).ToArray();
+            var adjacentParts = fillParts
+                .Where(part => part.PartIndex != linkedPartIndex
+                    && (PointsNear(part.Start, movedEndpoint) || PointsNear(part.End, movedEndpoint)))
+                .ToArray();
+            if (activeParts.Length != 1
+                || adjacentParts.Length != 1
+                || !VectorScene.IsStraightBezierSegment(
+                    activeParts[0].Start,
+                    activeParts[0].Control1,
+                    activeParts[0].Control2,
+                    activeParts[0].End)
+                || !VectorScene.IsStraightBezierSegment(
+                    adjacentParts[0].Start,
+                    adjacentParts[0].Control1,
+                    adjacentParts[0].Control2,
+                    adjacentParts[0].End))
+            {
+                throw new InvalidOperationException(
+                    $"Moving a straight detached boundary {(startEndpoint ? "start" : "end")} bent the linked fill's adjacent edge.");
+            }
+
+            var adjacent = adjacentParts[0];
+            var expectedControl1 = VectorUnits.Quantize(new PointF(
+                adjacent.Start.X + (adjacent.End.X - adjacent.Start.X) / 3f,
+                adjacent.Start.Y + (adjacent.End.Y - adjacent.Start.Y) / 3f));
+            var expectedControl2 = VectorUnits.Quantize(new PointF(
+                adjacent.Start.X + (adjacent.End.X - adjacent.Start.X) * 2f / 3f,
+                adjacent.Start.Y + (adjacent.End.Y - adjacent.Start.Y) * 2f / 3f));
+            if (!PointsNear(adjacent.Control1, expectedControl1)
+                || !PointsNear(adjacent.Control2, expectedControl2))
+            {
+                throw new InvalidOperationException("The linked fill's straight adjacent edge did not receive linear cubic controls.");
+            }
+        }
 
         static void AssertCurvedLineExpandsStraightFillBoundary(bool reverse)
         {
@@ -5923,6 +7183,21 @@ internal static class Benchmark
                     $"A {(reverse ? "reversed " : string.Empty)}curved line did not expand its matching straight fill boundary.");
             }
 
+            var preservedFillEdges = curvedScene.GetPathBezierSegmentParts(curvedFill)
+                .Where(part => PointsNear(part.Start, left)
+                    && PointsNear(part.End, right)
+                    && PointsNear(part.Control1, new PointF(-60, -140))
+                    && PointsNear(part.Control2, new PointF(60, -140)))
+                .ToArray();
+            if (!curvedScene.TryGetPathBezierWorldContours(curvedFill, out var exactFillContours)
+                || exactFillContours.Length != 1
+                || exactFillContours[0].Length != 4
+                || preservedFillEdges.Length != 1)
+            {
+                throw new InvalidOperationException(
+                    "Updating a linked fill boundary flattened its cubic edge into sampled line segments.");
+            }
+
             var updatedPoints = curvedScene.GetObjectBoundaryContours(curvedFill).SelectMany(contour => contour).ToArray();
             if (new[]
                 {
@@ -5952,9 +7227,74 @@ internal static class Benchmark
             }
 
             var refreshedLinks = curvedScene.CaptureFillBoundaryLineLinks(curvedLine, 0);
-            if (refreshedLinks.Length != 1 || refreshedLinks[0].SegmentCount <= 1)
+            if (refreshedLinks.Length != 1
+                || refreshedLinks[0].SegmentCount <= 1
+                || refreshedLinks[0].BezierSegmentCount != 1)
             {
                 throw new InvalidOperationException("Exact curved-boundary matching did not take priority after the fill contour was expanded.");
+            }
+
+
+            var fillEdge = preservedFillEdges[0];
+            var strokeLinks = curvedScene.CaptureFillBoundaryStrokeLinks(
+                curvedFill,
+                fillEdge.PartIndex,
+                0);
+            var updatedControl1 = new PointF(-85, -175);
+            var updatedControl2 = new PointF(75, -105);
+            var objectCountBeforeFillEdit = curvedScene.ObjectCount;
+            if (strokeLinks.Length != 1
+                || strokeLinks[0].LineObjectIndex != curvedLine
+                || strokeLinks[0].Reversed != reverse
+                || !curvedScene.SetPathBezierSegment(
+                    curvedFill,
+                    fillEdge.PartIndex,
+                    fillEdge.Start,
+                    updatedControl1,
+                    updatedControl2,
+                    fillEdge.End,
+                    rebuildGeometryIndex: false)
+                || !curvedScene.UpdateFillBoundaryStrokeLinks(
+                    strokeLinks,
+                    fillEdge.Start,
+                    updatedControl1,
+                    updatedControl2,
+                    fillEdge.End,
+                    rebuildGeometryIndex: false))
+            {
+                throw new InvalidOperationException(
+                    "Editing a fill boundary did not update its coincident cubic line.");
+            }
+            curvedScene.CompleteDeferredBuild();
+
+            var expectedLineStart = reverse ? fillEdge.End : fillEdge.Start;
+            var expectedLineControl1 = reverse ? updatedControl2 : updatedControl1;
+            var expectedLineControl2 = reverse ? updatedControl1 : updatedControl2;
+            var expectedLineEnd = reverse ? fillEdge.Start : fillEdge.End;
+            var updatedFillEdges = curvedScene.GetPathBezierSegmentParts(curvedFill);
+            var updatedEdge = updatedFillEdges.Single(part => part.PartIndex == fillEdge.PartIndex);
+            var updatedProbe = updatedEdge.Samples[updatedEdge.Samples.Length / 2];
+            var updatedHit = curvedScene.HitTestElement(updatedProbe, 0, toleranceWorld: 2);
+            if (curvedScene.ObjectCount != objectCountBeforeFillEdit
+                || curvedScene.ShapeKind[curvedLine] != ShapeKind.Line
+                || updatedFillEdges.Length != 4
+                || !curvedScene.TryGetLineCubic(
+                    curvedLine,
+                    out var actualLineStart,
+                    out var actualLineControl1,
+                    out var actualLineControl2,
+                    out var actualLineEnd)
+                || !PointsNear(actualLineStart, expectedLineStart)
+                || !PointsNear(actualLineControl1, expectedLineControl1)
+                || !PointsNear(actualLineControl2, expectedLineControl2)
+                || !PointsNear(actualLineEnd, expectedLineEnd)
+                || updatedHit.Key.ObjectIndex != curvedLine
+                || updatedHit.Key.Kind != DrawingElementKind.Stroke
+                || updatedHit.StartT > DrawingTopologyRules.UnitIntersectionTolerance
+                || updatedHit.EndT < 1 - DrawingTopologyRules.UnitIntersectionTolerance)
+            {
+                throw new InvalidOperationException(
+                    $"A fill-boundary edit flattened or split its linked {(reverse ? "reversed " : string.Empty)}cubic line: hit={updatedHit}, objects={curvedScene.ObjectCount}.");
             }
         }
     }
@@ -6000,6 +7340,20 @@ internal static class Benchmark
 
     private static void RunTransformGeometryRegression()
     {
+        var overlayFrame = new TransformOverlayFrame(
+            new PointF(20, 30),
+            new PointF(80, 60),
+            new PointF(-30, 40));
+        if (!overlayFrame.IsValid
+            || !PointsNear(overlayFrame.TopRight, new PointF(100, 90))
+            || !PointsNear(overlayFrame.BottomLeft, new PointF(-10, 70))
+            || !PointsNear(overlayFrame.BottomRight, new PointF(70, 130))
+            || !PointsNear(overlayFrame.Center, new PointF(45, 80))
+            || overlayFrame.Bounds != RectangleF.FromLTRB(-10, 30, 100, 130))
+        {
+            throw new InvalidOperationException("The oriented Free Transform overlay frame lost its rotated or skewed geometry.");
+        }
+
         var scene = new VectorScene();
         scene.CreateEmpty();
         var line = scene.AddCurveSegment(0, new PointF(0, 0), new PointF(40, 80), new PointF(100, 0), 6, Color.Transparent, Color.Coral, 6);
@@ -6032,6 +7386,85 @@ internal static class Benchmark
             || !PointsNear(skewContours[0][0], new PointF(-80, -30)))
         {
             throw new InvalidOperationException("Free transform did not preserve line, freehand, path, and skew geometry.");
+        }
+
+        var irregularScene = new VectorScene();
+        irregularScene.CreateEmpty();
+        var irregularFill = irregularScene.AddPathObjectContours(
+            0,
+            [
+                [
+                    new PointF(-170, -55),
+                    new PointF(-115, -140),
+                    new PointF(-35, -105),
+                    new PointF(20, -165),
+                    new PointF(95, -90),
+                    new PointF(165, -45),
+                    new PointF(125, 35),
+                    new PointF(175, 105),
+                    new PointF(55, 135),
+                    new PointF(-15, 95),
+                    new PointF(-105, 155),
+                    new PointF(-145, 45),
+                    new PointF(-170, -55)
+                ]
+            ],
+            0,
+            Color.MediumSeaGreen,
+            Color.Transparent,
+            24);
+        var irregularSnapshot = irregularScene.CreateSnapshot();
+        var rotationSession = irregularScene.BeginTransformSession([irregularFill]);
+        const float finalRotation = 0.73f;
+        for (var step = 1; step <= 180; step++)
+        {
+            var angle = finalRotation * step / 180f;
+            var cos = MathF.Cos(angle);
+            var sin = MathF.Sin(angle);
+            irregularScene.ApplyTransformSession(
+                rotationSession,
+                point => new PointF(point.X * cos - point.Y * sin, point.X * sin + point.Y * cos),
+                convertPrimitivesToPaths: false,
+                rebuildGeometryIndex: false);
+        }
+
+        irregularScene.TryGetPathWorldContours(irregularFill, out var previewRotationContours);
+        irregularScene.RestoreSnapshot(irregularSnapshot);
+        var finalCos = MathF.Cos(finalRotation);
+        var finalSin = MathF.Sin(finalRotation);
+        irregularScene.TransformObjects(
+            [irregularFill],
+            point => new PointF(
+                point.X * finalCos - point.Y * finalSin,
+                point.X * finalSin + point.Y * finalCos));
+        irregularScene.TryGetPathWorldContours(irregularFill, out var directRotationContours);
+        if (!ContoursNear(previewRotationContours, directRotationContours))
+        {
+            throw new InvalidOperationException("Repeated Free Transform rotation previews distorted an irregular fill edge.");
+        }
+
+        irregularScene.RestoreSnapshot(irregularSnapshot);
+        var skewSession = irregularScene.BeginTransformSession([irregularFill]);
+        const float finalSkew = 0.47f;
+        for (var step = 1; step <= 180; step++)
+        {
+            var factor = finalSkew * step / 180f;
+            irregularScene.ApplyTransformSession(
+                skewSession,
+                point => new PointF(point.X + point.Y * factor, point.Y),
+                convertPrimitivesToPaths: true,
+                rebuildGeometryIndex: false);
+        }
+
+        irregularScene.TryGetPathWorldContours(irregularFill, out var previewSkewContours);
+        irregularScene.RestoreSnapshot(irregularSnapshot);
+        irregularScene.ShearObjects(
+            [irregularFill],
+            point => new PointF(point.X + point.Y * finalSkew, point.Y));
+        irregularScene.TryGetPathWorldContours(irregularFill, out var directSkewContours);
+        if (!ContoursNear(previewSkewContours, directSkewContours))
+        {
+            throw new InvalidOperationException("Repeated Free Transform skew previews distorted an irregular fill edge.");
         }
 
         var deferredScene = new VectorScene();
@@ -6387,9 +7820,16 @@ internal static class Benchmark
             || polygonBoundary.Length != 8
             || starBoundary.Length != 17
             || restored.GetShapeVertexCount(polygon) != 7
-            || restored.GetShapeVertexCount(star) != 8)
+            || restored.GetShapeVertexCount(star) != 8
+            || !ShapeSettingsPanel.SupportsShape(ShapeKind.Polygon)
+            || !ShapeSettingsPanel.SupportsShape(ShapeKind.Star)
+            || ShapeSettingsPanel.SupportsShape(ShapeKind.Rectangle)
+            || !MainForm.ShouldShowShapeSettings(WorkspaceView.BasicDrawing, ToolMode.Polygon)
+            || !MainForm.ShouldShowShapeSettings(WorkspaceView.BasicDrawing, ToolMode.Star)
+            || MainForm.ShouldShowShapeSettings(WorkspaceView.BasicDrawing, ToolMode.Rectangle)
+            || MainForm.ShouldShowShapeSettings(WorkspaceView.SceneEditor, ToolMode.Polygon))
         {
-            throw new InvalidOperationException("Polygon sides or star points were not retained by the shape model.");
+            throw new InvalidOperationException("Polygon sides or star points were not retained or exposed in their drawing-tool context.");
         }
 
         var flipScene = new VectorScene();
@@ -6445,6 +7885,10 @@ internal static class Benchmark
 
     private static void RunBoundaryBezierHandleRegression()
     {
+        static PointF Mix(PointF first, PointF second, float amount) => new(
+            first.X + (second.X - first.X) * amount,
+            first.Y + (second.Y - first.Y) * amount);
+
         var scene = new VectorScene();
         scene.CreateEmpty();
         var rectangle = scene.AddObject(
@@ -6462,8 +7906,12 @@ internal static class Benchmark
         stage.SetSelection([rectangle], rectangle);
         stage.SetSelectedElement(boundary);
         Point ToScreen(PointF point) => Point.Round(stage.WorldToScreen(point.X, point.Y));
+        var start = PointF.Empty;
+        var control1 = PointF.Empty;
+        var control2 = PointF.Empty;
+        var end = PointF.Empty;
         var exposesVirtualBezierHandles = boundary.Key.Kind == DrawingElementKind.BoundaryStroke
-            && stage.TryGetEditableBezierWorldPoints(boundary, out var start, out var control1, out var control2, out var end)
+            && stage.TryGetEditableBezierWorldPoints(boundary, out start, out control1, out control2, out end)
             && stage.HitTestLineElementHandle(ToScreen(start), boundary) == EditHandleKind.LineStart
             && stage.HitTestLineElementHandle(ToScreen(end), boundary) == EditHandleKind.LineEnd
             && stage.HitTestLineElementHandle(ToScreen(control1), boundary) == EditHandleKind.BezierControl
@@ -6472,6 +7920,644 @@ internal static class Benchmark
         if (!exposesVirtualBezierHandles)
         {
             throw new InvalidOperationException("A shape boundary did not expose editable endpoint and curve handles before materialization.");
+        }
+
+        var rectangleSnapshot = scene.CreateSnapshot();
+        var adjustedStart = VectorUnits.Quantize(new PointF(start.X + 420, start.Y + 260));
+        var straightEndpointAdjustment = MainForm.AdjustFillEdgeBezierHandle(
+            start,
+            control1,
+            control2,
+            end,
+            EditHandleKind.LineStart,
+            adjustedStart);
+        var expectedStraightControl1 = new PointF(
+            adjustedStart.X + (end.X - adjustedStart.X) / 3f,
+            adjustedStart.Y + (end.Y - adjustedStart.Y) / 3f);
+        var expectedStraightControl2 = new PointF(
+            adjustedStart.X + (end.X - adjustedStart.X) * 2f / 3f,
+            adjustedStart.Y + (end.Y - adjustedStart.Y) * 2f / 3f);
+        var adjustedStartApplied = scene.TryConvertFillToBezierPath(rectangle)
+            && scene.SetPathBezierSegment(
+                rectangle,
+                boundary.Key.PartIndex,
+                straightEndpointAdjustment.Start,
+                straightEndpointAdjustment.Control1,
+                straightEndpointAdjustment.Control2,
+                straightEndpointAdjustment.End,
+                preserveStraightAdjacentSegments: true);
+        var hasStoredStraightAdjustment = scene.TryGetPathBezierSegment(
+            rectangle,
+            boundary.Key.PartIndex,
+            out var storedStraightAdjustment);
+        var previousStraightParts = scene.GetPathBezierSegmentParts(rectangle)
+            .Where(part => part.PartIndex != boundary.Key.PartIndex
+                && PointsNear(part.End, adjustedStart))
+            .ToArray();
+        var previousStraightPart = previousStraightParts.FirstOrDefault();
+        var expectedPreviousControl1 = new PointF(
+            previousStraightPart.Start.X + (adjustedStart.X - previousStraightPart.Start.X) / 3f,
+            previousStraightPart.Start.Y + (adjustedStart.Y - previousStraightPart.Start.Y) / 3f);
+        var expectedPreviousControl2 = new PointF(
+            previousStraightPart.Start.X + (adjustedStart.X - previousStraightPart.Start.X) * 2f / 3f,
+            previousStraightPart.Start.Y + (adjustedStart.Y - previousStraightPart.Start.Y) * 2f / 3f);
+        if (!adjustedStartApplied
+            || !hasStoredStraightAdjustment
+            || !PointsNear(storedStraightAdjustment.Start, adjustedStart)
+            || !PointsNear(storedStraightAdjustment.Control1, VectorUnits.Quantize(expectedStraightControl1))
+            || !PointsNear(storedStraightAdjustment.Control2, VectorUnits.Quantize(expectedStraightControl2))
+            || !PointsNear(storedStraightAdjustment.End, end)
+            || previousStraightParts.Length != 1
+            || !PointsNear(previousStraightPart.Control1, VectorUnits.Quantize(expectedPreviousControl1))
+            || !PointsNear(previousStraightPart.Control2, VectorUnits.Quantize(expectedPreviousControl2)))
+        {
+            throw new InvalidOperationException(
+                "Moving a straight fill-boundary endpoint bent the active or preceding edge away from its new chord.");
+        }
+
+        scene.RestoreSnapshot(rectangleSnapshot);
+        var adjustedEnd = VectorUnits.Quantize(new PointF(end.X - 240, end.Y + 180));
+        var straightEndAdjustment = MainForm.AdjustFillEdgeBezierHandle(
+            start,
+            control1,
+            control2,
+            end,
+            EditHandleKind.LineEnd,
+            adjustedEnd);
+        var expectedEndControl1 = new PointF(
+            start.X + (adjustedEnd.X - start.X) / 3f,
+            start.Y + (adjustedEnd.Y - start.Y) / 3f);
+        var expectedEndControl2 = new PointF(
+            start.X + (adjustedEnd.X - start.X) * 2f / 3f,
+            start.Y + (adjustedEnd.Y - start.Y) * 2f / 3f);
+        var adjustedEndApplied = scene.TryConvertFillToBezierPath(rectangle)
+            && scene.SetPathBezierSegment(
+                rectangle,
+                boundary.Key.PartIndex,
+                straightEndAdjustment.Start,
+                straightEndAdjustment.Control1,
+                straightEndAdjustment.Control2,
+                straightEndAdjustment.End,
+                preserveStraightAdjacentSegments: true);
+        var hasStoredEndAdjustment = scene.TryGetPathBezierSegment(
+            rectangle,
+            boundary.Key.PartIndex,
+            out var storedEndAdjustment);
+        var followingStraightParts = scene.GetPathBezierSegmentParts(rectangle)
+            .Where(part => part.PartIndex != boundary.Key.PartIndex
+                && PointsNear(part.Start, adjustedEnd))
+            .ToArray();
+        var followingStraightPart = followingStraightParts.FirstOrDefault();
+        var expectedFollowingControl1 = new PointF(
+            adjustedEnd.X + (followingStraightPart.End.X - adjustedEnd.X) / 3f,
+            adjustedEnd.Y + (followingStraightPart.End.Y - adjustedEnd.Y) / 3f);
+        var expectedFollowingControl2 = new PointF(
+            adjustedEnd.X + (followingStraightPart.End.X - adjustedEnd.X) * 2f / 3f,
+            adjustedEnd.Y + (followingStraightPart.End.Y - adjustedEnd.Y) * 2f / 3f);
+        if (!adjustedEndApplied
+            || !hasStoredEndAdjustment
+            || !PointsNear(straightEndAdjustment.Start, start)
+            || !PointsNear(straightEndAdjustment.Control1, expectedEndControl1)
+            || !PointsNear(straightEndAdjustment.Control2, expectedEndControl2)
+            || !PointsNear(straightEndAdjustment.End, adjustedEnd)
+            || !PointsNear(storedEndAdjustment.Control1, VectorUnits.Quantize(expectedEndControl1))
+            || !PointsNear(storedEndAdjustment.Control2, VectorUnits.Quantize(expectedEndControl2))
+            || followingStraightParts.Length != 1
+            || !PointsNear(followingStraightPart.Control1, VectorUnits.Quantize(expectedFollowingControl1))
+            || !PointsNear(followingStraightPart.Control2, VectorUnits.Quantize(expectedFollowingControl2)))
+        {
+            throw new InvalidOperationException(
+                "Moving the opposite straight fill-boundary endpoint bent the active or following edge.");
+        }
+
+        var curvedControl1 = new PointF(control1.X, control1.Y - 360);
+        var curvedControl2 = new PointF(control2.X, control2.Y + 240);
+        var curvedEndpointAdjustment = MainForm.AdjustFillEdgeBezierHandle(
+            start,
+            curvedControl1,
+            curvedControl2,
+            end,
+            EditHandleKind.LineEnd,
+            new PointF(end.X + 180, end.Y + 120));
+        if (!PointsNear(curvedEndpointAdjustment.Control1, curvedControl1)
+            || !PointsNear(curvedEndpointAdjustment.Control2, curvedControl2))
+        {
+            throw new InvalidOperationException(
+                "Moving a curved fill-boundary endpoint incorrectly flattened its existing controls.");
+        }
+
+        scene.RestoreSnapshot(rectangleSnapshot);
+        if (!scene.TryConvertFillToBezierPath(rectangle)
+            || !scene.TryGetPathBezierSegment(rectangle, boundary.Key.PartIndex, out var insertionSource))
+        {
+            throw new InvalidOperationException("Fill-edge anchor insertion regression could not prepare a straight cubic.");
+        }
+
+        const float straightInsertionParameter = 0.4f;
+        var expectedStraightAnchor = VectorUnits.Quantize(Mix(
+            insertionSource.Start,
+            insertionSource.End,
+            straightInsertionParameter));
+        var rectangleOrder = scene.ObjectOrder[rectangle];
+        var rectangleArgb = scene.Argb[rectangle];
+        var rectangleAtoms = scene.AtomCount[rectangle];
+        if (!scene.TryInsertPathBezierAnchor(
+                rectangle,
+                insertionSource.PartIndex,
+                straightInsertionParameter,
+                out var insertedStraightPartIndex,
+                out var insertedStraightAnchor)
+            || scene.ObjectCount != 1
+            || scene.GetPathBezierSegmentParts(rectangle).Length != 5
+            || !PointsNear(insertedStraightAnchor, expectedStraightAnchor)
+            || !scene.TryGetPathBezierSegment(rectangle, insertionSource.PartIndex, out var firstStraightSplit)
+            || !scene.TryGetPathBezierSegment(rectangle, insertedStraightPartIndex, out var secondStraightSplit)
+            || !VectorScene.IsStraightBezierSegment(
+                firstStraightSplit.Start,
+                firstStraightSplit.Control1,
+                firstStraightSplit.Control2,
+                firstStraightSplit.End)
+            || !VectorScene.IsStraightBezierSegment(
+                secondStraightSplit.Start,
+                secondStraightSplit.Control1,
+                secondStraightSplit.Control2,
+                secondStraightSplit.End)
+            || !scene.TryDeletePathBezierAnchor(
+                rectangle,
+                insertedStraightPartIndex,
+                startEndpoint: true,
+                out var restoredStraightPartIndex)
+            || scene.GetPathBezierSegmentParts(rectangle).Length != 4
+            || !scene.TryGetPathBezierSegment(rectangle, restoredStraightPartIndex, out var restoredStraightPart)
+            || !PointsNear(restoredStraightPart.Start, insertionSource.Start)
+            || !PointsNear(restoredStraightPart.End, insertionSource.End)
+            || !VectorScene.IsStraightBezierSegment(
+                restoredStraightPart.Start,
+                restoredStraightPart.Control1,
+                restoredStraightPart.Control2,
+                restoredStraightPart.End)
+            || scene.ObjectOrder[rectangle] != rectangleOrder
+            || scene.Argb[rectangle] != rectangleArgb
+            || scene.AtomCount[rectangle] != rectangleAtoms)
+        {
+            throw new InvalidOperationException(
+                "Adding and deleting a straight fill-edge anchor changed its line geometry or object metadata.");
+        }
+
+        scene.RestoreSnapshot(rectangleSnapshot);
+        if (!scene.TryConvertFillToBezierPath(rectangle)
+            || !scene.TryGetPathBezierSegment(rectangle, boundary.Key.PartIndex, out var cornerPrevious))
+        {
+            throw new InvalidOperationException("Fill-edge anchor deletion regression could not prepare a rectangle corner.");
+        }
+
+        var cornerFollowing = scene.GetPathBezierSegmentParts(rectangle)
+            .Single(part => part.PartIndex != cornerPrevious.PartIndex
+                && PointsNear(part.Start, cornerPrevious.End));
+        if (!scene.TryDeletePathBezierAnchor(
+                rectangle,
+                cornerPrevious.PartIndex,
+                startEndpoint: false,
+                out var mergedCornerPartIndex)
+            || !scene.TryGetPathBezierWorldContours(rectangle, out var triangleContours)
+            || triangleContours.Length != 1
+            || triangleContours[0].Length != 3
+            || !scene.TryGetPathBezierSegment(rectangle, mergedCornerPartIndex, out var mergedCorner)
+            || !PointsNear(mergedCorner.Start, cornerPrevious.Start)
+            || !PointsNear(mergedCorner.End, cornerFollowing.End)
+            || !VectorScene.IsStraightBezierSegment(
+                mergedCorner.Start,
+                mergedCorner.Control1,
+                mergedCorner.Control2,
+                mergedCorner.End)
+            || scene.TryDeletePathBezierAnchor(
+                rectangle,
+                mergedCornerPartIndex,
+                startEndpoint: false,
+                out _))
+        {
+            throw new InvalidOperationException(
+                "Deleting a straight fill corner did not create one straight replacement edge or enforce the three-anchor minimum.");
+        }
+
+        var fillScene = new VectorScene();
+        fillScene.CreateEmpty();
+        var fill = fillScene.AddPathObject(
+            0,
+            [
+                new PointF(-240, -100),
+                new PointF(40, -180),
+                new PointF(260, -40),
+                new PointF(180, 190),
+                new PointF(-180, 170)
+            ],
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12);
+        var originalSnapshot = fillScene.CreateSnapshot();
+        var originalCount = fillScene.ObjectCount;
+        var originalOrder = fillScene.ObjectOrder[fill];
+        var originalArgb = fillScene.Argb[fill];
+        var originalParts = fillScene.GetEditableFillBezierSegmentParts(fill);
+        var wholeFillHit = new DrawingElementHit(
+            new DrawingElementKey(fill, DrawingElementKind.Fill, 0),
+            0,
+            0,
+            1);
+        if (originalParts.Length != 5
+            || !MainForm.IsWholeFillElementSelection(fillScene, 0, fill, [wholeFillHit])
+            || MainForm.IsWholeFillElementSelection(fillScene, 0, fill, [DrawingElementHit.None])
+            || fillScene.TryGetPathBezierWorldContours(fill, out _)
+            || !fillScene.TryConvertFillToBezierPath(fill)
+            || fillScene.ObjectCount != originalCount
+            || fillScene.ObjectOrder[fill] != originalOrder
+            || fillScene.Argb[fill] != originalArgb
+            || fillScene.Stroke[fill] != 0
+            || !fillScene.TryGetPathBezierSegment(fill, 0, out var topSegment))
+        {
+            throw new InvalidOperationException("A no-stroke irregular fill did not convert in place to editable cubic edges.");
+        }
+
+        var midpoint = new PointF(
+            (topSegment.Start.X + topSegment.End.X) * 0.5f,
+            (topSegment.Start.Y + topSegment.End.Y) * 0.5f);
+        var outwardX = midpoint.X - fillScene.X[fill];
+        var outwardY = midpoint.Y - fillScene.Y[fill];
+        var outwardLength = MathF.Max(0.001f, MathF.Sqrt(outwardX * outwardX + outwardY * outwardY));
+        var bulge = new PointF(outwardX / outwardLength * 320, outwardY / outwardLength * 320);
+        var fillControl1 = new PointF(topSegment.Control1.X + bulge.X, topSegment.Control1.Y + bulge.Y);
+        var fillControl2 = new PointF(topSegment.Control2.X + bulge.X, topSegment.Control2.Y + bulge.Y);
+        if (!fillScene.SetPathBezierSegment(
+                fill,
+                topSegment.PartIndex,
+                topSegment.Start,
+                fillControl1,
+                fillControl2,
+                topSegment.End)
+            || !fillScene.TryGetPathBezierSegment(fill, topSegment.PartIndex, out var editedSegment)
+            || !PointsNear(editedSegment.Control1, VectorUnits.Quantize(fillControl1))
+            || !PointsNear(editedSegment.Control2, VectorUnits.Quantize(fillControl2)))
+        {
+            throw new InvalidOperationException("Editing an irregular fill edge did not preserve its independent cubic controls.");
+        }
+
+        var curvedInsertionSnapshot = fillScene.CreateSnapshot();
+        const float curvedQueryParameter = 0.37f;
+        var queryP01 = Mix(editedSegment.Start, editedSegment.Control1, curvedQueryParameter);
+        var queryP12 = Mix(editedSegment.Control1, editedSegment.Control2, curvedQueryParameter);
+        var queryP23 = Mix(editedSegment.Control2, editedSegment.End, curvedQueryParameter);
+        var curvedQueryPoint = Mix(
+            Mix(queryP01, queryP12, curvedQueryParameter),
+            Mix(queryP12, queryP23, curvedQueryParameter),
+            curvedQueryParameter);
+        if (!fillScene.TryGetClosestPointOnPathBezierSegment(
+                fill,
+                editedSegment.PartIndex,
+                curvedQueryPoint,
+                out var curvedInsertionParameter,
+                out _,
+                out var curvedInsertionDistance)
+            || Math.Abs(curvedInsertionParameter - curvedQueryParameter) > 0.01f
+            || curvedInsertionDistance > 1.5f)
+        {
+            throw new InvalidOperationException("Fill-edge click positioning did not recover the nearest cubic parameter.");
+        }
+
+        var p01 = VectorUnits.Quantize(Mix(editedSegment.Start, editedSegment.Control1, curvedInsertionParameter));
+        var p12 = VectorUnits.Quantize(Mix(editedSegment.Control1, editedSegment.Control2, curvedInsertionParameter));
+        var p23 = VectorUnits.Quantize(Mix(editedSegment.Control2, editedSegment.End, curvedInsertionParameter));
+        var p012 = VectorUnits.Quantize(Mix(p01, p12, curvedInsertionParameter));
+        var p123 = VectorUnits.Quantize(Mix(p12, p23, curvedInsertionParameter));
+        var expectedCurvedAnchor = VectorUnits.Quantize(Mix(p012, p123, curvedInsertionParameter));
+        if (!fillScene.TryInsertPathBezierAnchor(
+                fill,
+                editedSegment.PartIndex,
+                curvedInsertionParameter,
+                out var insertedCurvedPartIndex,
+                out var insertedCurvedAnchor)
+            || !fillScene.TryGetPathBezierSegment(fill, editedSegment.PartIndex, out var firstCurvedSplit)
+            || !fillScene.TryGetPathBezierSegment(fill, insertedCurvedPartIndex, out var secondCurvedSplit)
+            || fillScene.GetPathBezierSegmentParts(fill).Length != 6
+            || !PointsNear(insertedCurvedAnchor, expectedCurvedAnchor)
+            || !PointsNear(firstCurvedSplit.Start, editedSegment.Start)
+            || !PointsNear(firstCurvedSplit.Control1, p01)
+            || !PointsNear(firstCurvedSplit.Control2, p012)
+            || !PointsNear(firstCurvedSplit.End, expectedCurvedAnchor)
+            || !PointsNear(secondCurvedSplit.Start, expectedCurvedAnchor)
+            || !PointsNear(secondCurvedSplit.Control1, p123)
+            || !PointsNear(secondCurvedSplit.Control2, p23)
+            || !PointsNear(secondCurvedSplit.End, editedSegment.End))
+        {
+            throw new InvalidOperationException("Adding a fill-edge anchor did not preserve the exact cubic subdivision.");
+        }
+        fillScene.RestoreSnapshot(curvedInsertionSnapshot);
+
+        var curvedSnapshot = fillScene.CreateSnapshot();
+        fillScene.SetPathBezierSegment(
+            fill,
+            topSegment.PartIndex,
+            topSegment.Start,
+            new PointF(fillControl1.X + 100, fillControl1.Y),
+            fillControl2,
+            topSegment.End);
+        fillScene.RestoreSnapshot(curvedSnapshot);
+        if (!fillScene.TryGetPathBezierSegment(fill, topSegment.PartIndex, out var restoredSegment)
+            || !PointsNear(restoredSegment.Control1, editedSegment.Control1)
+            || !PointsNear(restoredSegment.Control2, editedSegment.Control2))
+        {
+            throw new InvalidOperationException("Snapshot restore lost exact fill-edge cubic controls.");
+        }
+
+        using var fillStage = new StageControl(fillScene) { Size = new Size(640, 420) };
+        fillStage.SetVisibleWorldWidth(800);
+        var overlaySegments = fillScene.GetEditableFillBezierSegmentParts(fill)
+            .Select(part => new FillEdgeBezierOverlaySegment(
+                part.PartIndex,
+                part.Start,
+                part.Control1,
+                part.Control2,
+                part.End))
+            .ToArray();
+        fillStage.SetSelection([fill], fill);
+        fillStage.SetFillEdgeBezierOverlay(fill, overlaySegments, restoredSegment.PartIndex);
+        var controlHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(restoredSegment.Control1.X, restoredSegment.Control1.Y)));
+        var startHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(restoredSegment.Start.X, restoredSegment.Start.Y)));
+        var endHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(restoredSegment.End.X, restoredSegment.End.Y)));
+        var curveP01 = Mix(restoredSegment.Start, restoredSegment.Control1, 0.5f);
+        var curveP12 = Mix(restoredSegment.Control1, restoredSegment.Control2, 0.5f);
+        var curveP23 = Mix(restoredSegment.Control2, restoredSegment.End, 0.5f);
+        var curveMidpoint = Mix(Mix(curveP01, curveP12, 0.5f), Mix(curveP12, curveP23, 0.5f), 0.5f);
+        var curveHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(curveMidpoint.X, curveMidpoint.Y)));
+        var inactiveSegment = overlaySegments.First(segment =>
+            segment.PartIndex != restoredSegment.PartIndex
+            && !PointsNear(segment.Start, restoredSegment.Start)
+            && !PointsNear(segment.Start, restoredSegment.End));
+        var inactiveAnchorHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(inactiveSegment.Start.X, inactiveSegment.Start.Y)));
+        var inactiveControlHit = fillStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(fillStage.WorldToScreen(inactiveSegment.Control1.X, inactiveSegment.Control1.Y)));
+        if (!fillStage.FillEdgeBezierOverlayVisible
+            || fillStage.FillEdgeBezierOverlayTargetObject != fill
+            || fillStage.FillEdgeBezierOverlayActivePartIndex != restoredSegment.PartIndex
+            || controlHit.PartIndex != restoredSegment.PartIndex
+            || controlHit.Handle != EditHandleKind.BezierControl
+            || startHit.Handle != EditHandleKind.LineStart
+            || endHit.Handle != EditHandleKind.LineEnd
+            || curveHit.PartIndex != restoredSegment.PartIndex
+            || curveHit.Handle != EditHandleKind.None
+            || !inactiveAnchorHit.IsValid
+            || inactiveAnchorHit.Handle is not (EditHandleKind.LineStart or EditHandleKind.LineEnd)
+            || inactiveControlHit.PartIndex != inactiveSegment.PartIndex
+            || inactiveControlHit.Handle != EditHandleKind.BezierControl
+            || !MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Left, controlPressed: true, curveHit)
+            || MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Left, controlPressed: false, curveHit)
+            || MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Right, controlPressed: true, curveHit)
+            || MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Left, controlPressed: true, controlHit)
+            || MainForm.IsFillEdgeBezierAnchorInsertionGesture(MouseButtons.Left, controlPressed: true, startHit)
+            || !MainForm.IsFillEdgeBezierAnchorDeletionGesture(MouseButtons.Right, controlPressed: true, startHit)
+            || !MainForm.IsFillEdgeBezierAnchorDeletionGesture(MouseButtons.Right, controlPressed: true, endHit)
+            || MainForm.IsFillEdgeBezierAnchorDeletionGesture(MouseButtons.Right, controlPressed: false, startHit)
+            || MainForm.IsFillEdgeBezierAnchorDeletionGesture(MouseButtons.Left, controlPressed: true, startHit)
+            || MainForm.IsFillEdgeBezierAnchorDeletionGesture(MouseButtons.Right, controlPressed: true, curveHit)
+            || MainForm.IsFillEdgeBezierAnchorDeletionGesture(MouseButtons.Right, controlPressed: true, controlHit)
+            || fillStage.SelectionHighlightAnimating)
+        {
+            throw new InvalidOperationException(
+                $"The fill-edge cubic overlay or Ctrl anchor gestures were inconsistent: active={restoredSegment.PartIndex}, curve={curveHit}, control={controlHit}, start={startHit}, end={endHit}, inactive={inactiveSegment.PartIndex}, anchor={inactiveAnchorHit}, inactiveControl={inactiveControlHit}.");
+        }
+        fillStage.ClearFillEdgeBezierOverlay();
+        if (fillStage.FillEdgeBezierOverlayVisible)
+        {
+            throw new InvalidOperationException("The fill-edge cubic overlay did not clear its editing state.");
+        }
+
+        var coverageScene = new VectorScene();
+        coverageScene.CreateEmpty();
+        var coverageFill = coverageScene.AddPathObject(
+            0,
+            [
+                new PointF(-220, -120),
+                new PointF(220, -120),
+                new PointF(220, 120),
+                new PointF(-220, 120)
+            ],
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12);
+        var coverageParts = coverageScene.GetEditableFillBezierSegmentParts(coverageFill);
+        foreach (var part in coverageParts.Take(2))
+        {
+            coverageScene.AddCubicCurveSegment(
+                0,
+                part.Start,
+                part.Control1,
+                part.Control2,
+                part.End,
+                VectorUnits.StrokePointsToUnits(3),
+                Color.Transparent,
+                Color.White,
+                6);
+        }
+
+        var exposedParts = coverageScene.GetExposedFillBezierSegmentParts(coverageFill, 0);
+        using var coverageStage = new StageControl(coverageScene) { Size = new Size(640, 420) };
+        coverageStage.SetVisibleWorldWidth(800);
+        coverageStage.SetSelection([coverageFill], coverageFill);
+        coverageStage.SetFillEdgeBezierOverlay(
+            coverageFill,
+            exposedParts.Select(part => new FillEdgeBezierOverlaySegment(
+                part.PartIndex,
+                part.Start,
+                part.Control1,
+                part.Control2,
+                part.End)).ToArray(),
+            exposedParts.FirstOrDefault().PartIndex);
+        var coveredControlHit = coverageStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(coverageStage.WorldToScreen(
+                coverageParts[0].Control1.X,
+                coverageParts[0].Control1.Y)));
+        var exposedControlHit = coverageStage.HitTestFillEdgeBezierOverlay(
+            Point.Round(coverageStage.WorldToScreen(
+                exposedParts[0].Control1.X,
+                exposedParts[0].Control1.Y)));
+        if (coverageParts.Length != 4
+            || exposedParts.Length != 2
+            || exposedParts.Any(part => part.PartIndex is 0 or 1)
+            || coveredControlHit.IsValid
+            || exposedControlHit.PartIndex != exposedParts[0].PartIndex
+            || exposedControlHit.Handle != EditHandleKind.BezierControl)
+        {
+            throw new InvalidOperationException(
+                $"A partially outlined fill did not expose only its open edges: total={coverageParts.Length}, exposed={string.Join(',', exposedParts.Select(part => part.PartIndex))}, coveredHit={coveredControlHit}, exposedHit={exposedControlHit}.");
+        }
+
+        coverageScene.AddFreehandStroke(
+            0,
+            [
+                coverageParts[0].Start,
+                coverageParts[0].End,
+                coverageParts[1].End,
+                coverageParts[2].End,
+                coverageParts[3].End
+            ],
+            VectorUnits.StrokePointsToUnits(3),
+            Color.White,
+            brushStroke: false,
+            12);
+        var fullyCoveredParts = coverageScene.GetExposedFillBezierSegmentParts(coverageFill, 0);
+        coverageStage.SetFillEdgeBezierOverlay(
+            coverageFill,
+            fullyCoveredParts.Select(part => new FillEdgeBezierOverlaySegment(
+                part.PartIndex,
+                part.Start,
+                part.Control1,
+                part.Control2,
+                part.End)).ToArray());
+        if (fullyCoveredParts.Length != 0 || coverageStage.FillEdgeBezierOverlayVisible)
+        {
+            throw new InvalidOperationException("A fill enclosed by a coincident closed stroke retained fill-edge controls.");
+        }
+
+        fillScene.RestoreSnapshot(originalSnapshot);
+        if (fillScene.ObjectCount != originalCount
+            || fillScene.ShapeKind[fill] != ShapeKind.Path
+            || fillScene.TryGetPathBezierWorldContours(fill, out _))
+        {
+            throw new InvalidOperationException("Restoring a pre-conversion fill snapshot retained stale cubic payload.");
+        }
+
+        var outlinedScene = new VectorScene();
+        outlinedScene.CreateEmpty();
+        var outlinedFill = outlinedScene.AddPathObject(
+            0,
+            [
+                new PointF(-260, -120),
+                new PointF(20, -210),
+                new PointF(280, -60),
+                new PointF(190, 210),
+                new PointF(-210, 170)
+            ],
+            VectorUnits.StrokePointsToUnits(3),
+            Color.Coral,
+            Color.White,
+            18);
+        outlinedScene.SetLinearGradient(outlinedFill, Color.Coral, Color.RoyalBlue);
+        outlinedScene.FillAutoMergeProtected[outlinedFill] = true;
+        if (!outlinedScene.TryConvertFillToBezierPath(outlinedFill)
+            || !outlinedScene.TryGetPathBezierSegment(outlinedFill, 1, out var outlinedSegment)
+            || !outlinedScene.SetPathBezierSegment(
+                outlinedFill,
+                outlinedSegment.PartIndex,
+                outlinedSegment.Start,
+                new PointF(outlinedSegment.Control1.X + 90, outlinedSegment.Control1.Y - 140),
+                new PointF(outlinedSegment.Control2.X - 70, outlinedSegment.Control2.Y + 110),
+                outlinedSegment.End)
+            || !outlinedScene.TryGetPathBezierSegment(outlinedFill, outlinedSegment.PartIndex, out var editedOutlinedSegment)
+            || !outlinedScene.TryGetPathBezierWorldContours(outlinedFill, out var exactBeforeMaterialization))
+        {
+            throw new InvalidOperationException("The outlined fill could not be prepared with exact cubic geometry.");
+        }
+
+        var boundaryProbe = editedOutlinedSegment.Samples[editedOutlinedSegment.Samples.Length / 2];
+        var curvedBoundary = outlinedScene.HitTestElement(boundaryProbe, 0, toleranceWorld: 2);
+        var curvedBoundaryPoints = outlinedScene.GetBoundaryPartPoints(curvedBoundary, 0);
+        if (curvedBoundary.Key.Kind != DrawingElementKind.BoundaryStroke
+            || curvedBoundaryPoints.Length <= 2
+            || !outlinedScene.TryGetExactFillBezierSegmentForBoundary(curvedBoundary, 0, out var resolvedBoundarySegment)
+            || resolvedBoundarySegment.PartIndex != editedOutlinedSegment.PartIndex
+            || !MainForm.TryGetSelectedFillBoundaryBezierPart(
+                outlinedScene,
+                0,
+                outlinedFill,
+                [curvedBoundary],
+                out var selectedBoundaryPartIndex)
+            || selectedBoundaryPartIndex != editedOutlinedSegment.PartIndex
+            || !MainForm.ShouldShowFillEdgeBezierOverlay(
+                ToolMode.Select,
+                1,
+                hasWholeFillSelection: selectedBoundaryPartIndex >= 0))
+        {
+            throw new InvalidOperationException("A selected curved fill boundary did not resolve back to its exact editable cubic segment.");
+        }
+
+        using (var outlinedStage = new StageControl(outlinedScene) { Size = new Size(640, 420) })
+        {
+            outlinedStage.SetSelection([outlinedFill], outlinedFill);
+            outlinedStage.SetSelectedElement(curvedBoundary);
+            outlinedStage.SetFillEdgeBezierOverlay(
+                outlinedFill,
+                outlinedScene.GetEditableFillBezierSegmentParts(outlinedFill)
+                    .Select(part => new FillEdgeBezierOverlaySegment(
+                        part.PartIndex,
+                        part.Start,
+                        part.Control1,
+                        part.Control2,
+                        part.End))
+                    .ToArray(),
+                selectedBoundaryPartIndex);
+            var boundaryControlHit = outlinedStage.HitTestFillEdgeBezierOverlay(
+                Point.Round(outlinedStage.WorldToScreen(
+                    editedOutlinedSegment.Control1.X,
+                    editedOutlinedSegment.Control1.Y)));
+            if (boundaryControlHit.PartIndex != editedOutlinedSegment.PartIndex
+                || boundaryControlHit.Handle != EditHandleKind.BezierControl
+                || !outlinedStage.SuppressFillEdgeBezierSelectionOutline(outlinedFill))
+            {
+                throw new InvalidOperationException("A selected curved outline did not expose its exact fill-edge control handles.");
+            }
+        }
+
+        var outlinedOrder = outlinedScene.ObjectOrder[outlinedFill];
+        var outlinedSubOrder = outlinedScene.ObjectSubOrder[outlinedFill];
+        var outlinedObjectCount = outlinedScene.ObjectCount;
+        var outlinedFillKey = new DrawingElementKey(outlinedFill, DrawingElementKind.Fill, 0);
+        var outlinedResult = outlinedScene.MaterializeSelectedParts([outlinedFillKey], 0);
+        var retainedFill = outlinedResult.Success
+            ? outlinedResult.Parts.Single(part => part.Source == outlinedFillKey).Result.ObjectIndex
+            : -1;
+        if (!outlinedResult.Success
+            || !outlinedResult.Changed
+            || retainedFill != outlinedResult.OldToNewObjectIndex[outlinedFill]
+            || retainedFill < 0
+            || outlinedScene.ObjectCount <= outlinedObjectCount
+            || outlinedScene.Stroke[retainedFill] != 0
+            || outlinedScene.ObjectOrder[retainedFill] != outlinedOrder
+            || !outlinedScene.ObjectSubOrder[retainedFill].Equals(outlinedSubOrder)
+            || !outlinedScene.HasGradient(retainedFill)
+            || !outlinedScene.FillAutoMergeProtected[retainedFill]
+            || !outlinedScene.TryGetPathBezierWorldContours(retainedFill, out var exactAfterMaterialization)
+            || exactAfterMaterialization.Length != exactBeforeMaterialization.Length
+            || exactAfterMaterialization.Where((contour, index) =>
+                    !contour.SequenceEqual(exactBeforeMaterialization[index]))
+                .Any())
+        {
+            throw new InvalidOperationException("Separating an outlined fill flattened or replaced its exact cubic contour.");
+        }
+
+        static PointF SkewRotate(PointF point) => new(
+            -0.35f * point.X - point.Y + 45,
+            point.X - 0.2f * point.Y - 30);
+        outlinedScene.TransformObjects([retainedFill], SkewRotate);
+        if (!outlinedScene.TryGetPathBezierWorldContours(retainedFill, out var exactAfterTransform)
+            || exactAfterTransform.Length != exactAfterMaterialization.Length
+            || exactAfterTransform.Where((contour, contourIndex) =>
+                    contour.Length != exactAfterMaterialization[contourIndex].Length
+                    || contour.Where((node, nodeIndex) =>
+                    {
+                        var before = exactAfterMaterialization[contourIndex][nodeIndex];
+                        return !PointsNear(node.Anchor, VectorUnits.Quantize(SkewRotate(before.Anchor)))
+                            || !PointsNear(node.IncomingControl, VectorUnits.Quantize(SkewRotate(before.IncomingControl)))
+                            || !PointsNear(node.OutgoingControl, VectorUnits.Quantize(SkewRotate(before.OutgoingControl)));
+                    }).Any())
+                .Any())
+        {
+            throw new InvalidOperationException("A skewed and rotated detached fill changed its exact cubic node topology.");
         }
     }
 
@@ -6872,6 +8958,7 @@ internal static class Benchmark
             ToolMode.InkBottle);
         var traditionalInkBottle = ToolShortcutMap.ResolveTraditionalFlashTool(Keys.S);
         var traditionalPen = ToolShortcutMap.ResolveTraditionalFlashTool(Keys.P);
+        var traditionalText = ToolShortcutMap.ResolveTraditionalFlashTool(Keys.T);
         var defaultSettings = new ApplicationSettings();
         using var localizedLabel = new Label { Text = "Settings" };
         using var localizedMenu = new AnimatedContextMenuStrip();
@@ -6884,6 +8971,366 @@ internal static class Benchmark
             && UiLocalization.T("Selected: 2 objects") == "已选择：2 个对象";
         UiLocalization.SetLanguage(UiLanguage.English);
         var englishLocalizationRestored = localizedLabel.Text == "Settings" && localizedMenuItem.Text == "Rename";
+        var legacySettings = System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>("{}");
+        var normalizedHues = ApplicationSettingsStore.Normalize(new ApplicationSettings
+        {
+            ColorTheme = (ApplicationColorTheme)999,
+            ThemeHueDegrees = -1,
+            ThemeSaturationPercent = -1,
+            ThemeBrightnessPercent = 999,
+            AccentHueDegrees = 360,
+            AccentSaturationPercent = 999,
+            AccentBrightnessPercent = -1
+        });
+        var serializedHues = new ApplicationSettings
+        {
+            ColorTheme = ApplicationColorTheme.White,
+            ThemeHueDegrees = 27,
+            ThemeSaturationPercent = 84,
+            ThemeBrightnessPercent = 112,
+            AccentHueDegrees = 314,
+            AccentSaturationPercent = 136,
+            AccentBrightnessPercent = 92
+        };
+        var roundTripHues = System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>(
+            System.Text.Json.JsonSerializer.Serialize(serializedHues));
+        var defaultPalette = Theme.PaletteForHues(
+            ApplicationSettings.DefaultThemeHueDegrees,
+            ApplicationSettings.DefaultAccentHueDegrees);
+        var themeShiftedPalette = Theme.PaletteForHues(
+            ApplicationSettings.DefaultThemeHueDegrees + 120,
+            ApplicationSettings.DefaultAccentHueDegrees);
+        var accentShiftedPalette = Theme.PaletteForHues(
+            ApplicationSettings.DefaultThemeHueDegrees,
+            ApplicationSettings.DefaultAccentHueDegrees + 120);
+        var whitePalette = Theme.PaletteFor(
+            ApplicationColorTheme.White,
+            ApplicationSettings.DefaultThemeHueDegrees,
+            ApplicationSettings.DefaultAccentHueDegrees);
+        var whiteShiftedPalette = Theme.PaletteFor(
+            ApplicationColorTheme.White,
+            ApplicationSettings.DefaultThemeHueDegrees + 120,
+            ApplicationSettings.DefaultAccentHueDegrees);
+        var themeAdjustedPalette = Theme.PaletteForAdjustments(
+            ApplicationColorTheme.Dark,
+            ApplicationSettings.DefaultThemeHueDegrees,
+            0,
+            150,
+            ApplicationSettings.DefaultAccentHueDegrees,
+            ApplicationSettings.DefaultAccentSaturationPercent,
+            ApplicationSettings.DefaultAccentBrightnessPercent);
+        var accentAdjustedPalette = Theme.PaletteForAdjustments(
+            ApplicationColorTheme.Dark,
+            ApplicationSettings.DefaultThemeHueDegrees,
+            ApplicationSettings.DefaultThemeSaturationPercent,
+            ApplicationSettings.DefaultThemeBrightnessPercent,
+            ApplicationSettings.DefaultAccentHueDegrees,
+            0,
+            50);
+        if (legacySettings is null
+            || legacySettings.ColorTheme != ApplicationColorTheme.Dark
+            || legacySettings.ThemeHueDegrees != ApplicationSettings.DefaultThemeHueDegrees
+            || legacySettings.ThemeSaturationPercent != ApplicationSettings.DefaultThemeSaturationPercent
+            || legacySettings.ThemeBrightnessPercent != ApplicationSettings.DefaultThemeBrightnessPercent
+            || legacySettings.AccentHueDegrees != ApplicationSettings.DefaultAccentHueDegrees
+            || legacySettings.AccentSaturationPercent != ApplicationSettings.DefaultAccentSaturationPercent
+            || legacySettings.AccentBrightnessPercent != ApplicationSettings.DefaultAccentBrightnessPercent
+            || normalizedHues.ColorTheme != ApplicationColorTheme.Dark
+            || normalizedHues.ThemeHueDegrees != 359
+            || normalizedHues.ThemeSaturationPercent != ApplicationSettings.MinimumSaturationPercent
+            || normalizedHues.ThemeBrightnessPercent != ApplicationSettings.MaximumBrightnessPercent
+            || normalizedHues.AccentHueDegrees != 0
+            || normalizedHues.AccentSaturationPercent != ApplicationSettings.MaximumSaturationPercent
+            || normalizedHues.AccentBrightnessPercent != ApplicationSettings.MinimumBrightnessPercent
+            || roundTripHues is null
+            || roundTripHues.ColorTheme != ApplicationColorTheme.White
+            || roundTripHues.ThemeHueDegrees != serializedHues.ThemeHueDegrees
+            || roundTripHues.ThemeSaturationPercent != serializedHues.ThemeSaturationPercent
+            || roundTripHues.ThemeBrightnessPercent != serializedHues.ThemeBrightnessPercent
+            || roundTripHues.AccentHueDegrees != serializedHues.AccentHueDegrees
+            || roundTripHues.AccentSaturationPercent != serializedHues.AccentSaturationPercent
+            || roundTripHues.AccentBrightnessPercent != serializedHues.AccentBrightnessPercent
+            || defaultPalette.App != Color.FromArgb(18, 20, 22)
+            || defaultPalette.Accent != Color.FromArgb(79, 179, 162)
+            || themeShiftedPalette.Panel == defaultPalette.Panel
+            || themeShiftedPalette.Accent != defaultPalette.Accent
+            || accentShiftedPalette.Panel != defaultPalette.Panel
+            || accentShiftedPalette.Accent == defaultPalette.Accent
+            || themeShiftedPalette.Warning != defaultPalette.Warning
+            || accentShiftedPalette.Danger != defaultPalette.Danger
+            || whitePalette.App != Color.FromArgb(242, 244, 245)
+            || whitePalette.Text != Color.FromArgb(31, 39, 43)
+            || whitePalette.App.GetBrightness() <= whitePalette.Text.GetBrightness()
+            || whitePalette.Accent == defaultPalette.Accent
+            || whiteShiftedPalette.Panel == whitePalette.Panel
+            || whiteShiftedPalette.Accent != whitePalette.Accent
+            || themeAdjustedPalette.Panel.GetSaturation() > 0.001f
+            || themeAdjustedPalette.Panel.GetBrightness() <= defaultPalette.Panel.GetBrightness()
+            || themeAdjustedPalette.Accent != defaultPalette.Accent
+            || accentAdjustedPalette.Panel != defaultPalette.Panel
+            || accentAdjustedPalette.Accent.GetSaturation() > 0.001f
+            || accentAdjustedPalette.Accent.GetBrightness() >= defaultPalette.Accent.GetBrightness())
+        {
+            throw new InvalidOperationException("Application theme settings were not compatible, normalized, or independently applied.");
+        }
+
+        using (var themePreviewDialog = new SettingsDialog(
+            ShortcutProfiles.TraditionalFlashProfileId,
+            [],
+            UiLanguage.English,
+            ApplicationColorTheme.Dark,
+            ApplicationSettings.DefaultThemeHueDegrees,
+            ApplicationSettings.DefaultThemeSaturationPercent,
+            ApplicationSettings.DefaultThemeBrightnessPercent,
+            ApplicationSettings.DefaultAccentHueDegrees,
+            ApplicationSettings.DefaultAccentSaturationPercent,
+            ApplicationSettings.DefaultAccentBrightnessPercent))
+        {
+            var previewEvents = 0;
+            themePreviewDialog.ThemePreviewChanged += (_, _) => previewEvents++;
+            var adjustmentSliders = new Dictionary<string, ColorComponentSlider>(StringComparer.Ordinal);
+            var pendingControls = new Stack<Control>();
+            pendingControls.Push(themePreviewDialog);
+            while (pendingControls.Count > 0)
+            {
+                var control = pendingControls.Pop();
+                if (control is ColorComponentSlider slider
+                    && !string.IsNullOrWhiteSpace(slider.AccessibleName))
+                {
+                    adjustmentSliders[slider.AccessibleName] = slider;
+                }
+                foreach (Control child in control.Controls) pendingControls.Push(child);
+            }
+
+            string[] requiredAdjustmentSliders =
+            [
+                "Application theme color hue in degrees",
+                "Application theme color saturation in percent",
+                "Application theme color brightness in percent",
+                "Application highlight color hue in degrees",
+                "Application highlight color saturation in percent",
+                "Application highlight color brightness in percent"
+            ];
+            if (requiredAdjustmentSliders.Any(name => !adjustmentSliders.ContainsKey(name)))
+            {
+                throw new InvalidOperationException("The application theme H/S/B sliders were not all available for live preview.");
+            }
+
+            adjustmentSliders[requiredAdjustmentSliders[0]].Value = ApplicationSettings.DefaultThemeHueDegrees + 1;
+            adjustmentSliders[requiredAdjustmentSliders[1]].Value = 120;
+            adjustmentSliders[requiredAdjustmentSliders[2]].Value = 110;
+            adjustmentSliders[requiredAdjustmentSliders[3]].Value = ApplicationSettings.DefaultAccentHueDegrees + 2;
+            adjustmentSliders[requiredAdjustmentSliders[4]].Value = 130;
+            adjustmentSliders[requiredAdjustmentSliders[5]].Value = 90;
+            if (previewEvents != requiredAdjustmentSliders.Length
+                || themePreviewDialog.SelectedThemeHueDegrees != ApplicationSettings.DefaultThemeHueDegrees + 1
+                || themePreviewDialog.SelectedThemeSaturationPercent != 120
+                || themePreviewDialog.SelectedThemeBrightnessPercent != 110
+                || themePreviewDialog.SelectedAccentHueDegrees != ApplicationSettings.DefaultAccentHueDegrees + 2
+                || themePreviewDialog.SelectedAccentSaturationPercent != 130
+                || themePreviewDialog.SelectedAccentBrightnessPercent != 90)
+            {
+                throw new InvalidOperationException("Application theme H/S/B changes did not emit independent live-preview updates.");
+            }
+        }
+
+        var originalTheme = (
+            Theme.ColorTheme,
+            Theme.ThemeHueDegrees,
+            Theme.ThemeSaturationPercent,
+            Theme.ThemeBrightnessPercent,
+            Theme.AccentHueDegrees,
+            Theme.AccentSaturationPercent,
+            Theme.AccentBrightnessPercent);
+        var themeRefreshApplied = false;
+        try
+        {
+            Theme.ConfigureColorAdjustments(
+                ApplicationColorTheme.Dark,
+                ApplicationSettings.DefaultThemeHueDegrees,
+                ApplicationSettings.DefaultThemeSaturationPercent,
+                ApplicationSettings.DefaultThemeBrightnessPercent,
+                ApplicationSettings.DefaultAccentHueDegrees,
+                ApplicationSettings.DefaultAccentSaturationPercent,
+                ApplicationSettings.DefaultAccentBrightnessPercent);
+            var previousPalette = Theme.CurrentPalette;
+            using var previewSurface = new Panel { BackColor = previousPalette.Panel };
+            var previewLabel = new Label
+            {
+                BackColor = previousPalette.Panel,
+                ForeColor = previousPalette.Muted
+            };
+            var previewInput = new TextBox
+            {
+                BackColor = previousPalette.Field,
+                ForeColor = previousPalette.Text
+            };
+            var previewButton = new Button();
+            Theme.StyleActiveButton(previewButton);
+            var workspaceColor = previousPalette.Stage;
+            var previewStage = new StageControl(scene) { BackColor = workspaceColor };
+            previewSurface.Controls.Add(previewLabel);
+            previewSurface.Controls.Add(previewInput);
+            previewSurface.Controls.Add(previewButton);
+            previewSurface.Controls.Add(previewStage);
+
+            Theme.ConfigureColorAdjustments(
+                ApplicationColorTheme.White,
+                ApplicationSettings.DefaultThemeHueDegrees + 120,
+                125,
+                110,
+                ApplicationSettings.DefaultAccentHueDegrees + 60,
+                135,
+                90);
+            var nextPalette = Theme.CurrentPalette;
+            Theme.RefreshControlTree(previewSurface, previousPalette);
+            themeRefreshApplied = previewSurface.BackColor == nextPalette.Panel
+                && previewLabel.BackColor == nextPalette.Panel
+                && previewLabel.ForeColor == nextPalette.Muted
+                && previewInput.BackColor == nextPalette.Field
+                && previewInput.ForeColor == nextPalette.Text
+                && previewButton.ForeColor == nextPalette.AccentLabel
+                && UiMotion.IsActive(previewButton)
+                && previewStage.BackColor == workspaceColor;
+        }
+        finally
+        {
+            Theme.ConfigureColorAdjustments(
+                originalTheme.ColorTheme,
+                originalTheme.ThemeHueDegrees,
+                originalTheme.ThemeSaturationPercent,
+                originalTheme.ThemeBrightnessPercent,
+                originalTheme.AccentHueDegrees,
+                originalTheme.AccentSaturationPercent,
+                originalTheme.AccentBrightnessPercent);
+        }
+        if (!themeRefreshApplied)
+        {
+            throw new InvalidOperationException("Live application theme refresh did not recolor existing controls or preserve the workspace color.");
+        }
+
+        var migratedNumberSettings = ApplicationSettingsStore.Normalize(new ApplicationSettings
+        {
+            ToolShortcutPreset = ToolShortcutPreset.NumberKeys
+        });
+        var numberProfile = ShortcutProfiles.GetBuiltInProfile(ToolShortcutPreset.NumberKeys);
+        var numberCustomProfile = ShortcutProfiles.CreateCustomProfile("Number Editing", numberProfile);
+        var nestedNumberCustomProfile = ShortcutProfiles.CreateCustomProfile(
+            "Number Editing Copy",
+            numberCustomProfile,
+            [numberCustomProfile]);
+        var customProfile = ShortcutProfiles.CreateCustomProfile(
+            "Animation Tools",
+            ShortcutProfiles.GetBuiltInProfile(ToolShortcutPreset.TraditionalFlash));
+        var customGestureCreated = ShortcutProfiles.TryCreateGesture(
+            Keys.Control | Keys.Alt | Keys.D3,
+            out var customGesture);
+        var customBindingSet = ShortcutProfiles.TrySetBinding(
+            customProfile,
+            ShortcutCommandIds.ToolTriangle,
+            [customGesture],
+            replaceConflicts: false,
+            out var triangleProfile,
+            out _,
+            out _);
+        var conflictRejected = !ShortcutProfiles.TrySetBinding(
+            triangleProfile,
+            ShortcutCommandIds.ToolPolygon,
+            [customGesture],
+            replaceConflicts: false,
+            out _,
+            out var conflictCommandId,
+            out _);
+        var conflictReplaced = ShortcutProfiles.TrySetBinding(
+            triangleProfile,
+            ShortcutCommandIds.ToolPolygon,
+            [customGesture],
+            replaceConflicts: true,
+            out var polygonProfile,
+            out _,
+            out _);
+        ShortcutProfiles.TryCreateGesture(Keys.Control | Keys.S, out var reservedGesture);
+        var reservedRejected = !ShortcutProfiles.TrySetBinding(
+            triangleProfile,
+            ShortcutCommandIds.ToolStar,
+            [reservedGesture],
+            replaceConflicts: false,
+            out _,
+            out _,
+            out _);
+        var builtInRejected = !ShortcutProfiles.TrySetBinding(
+            numberProfile,
+            ShortcutCommandIds.ToolStar,
+            [customGesture],
+            replaceConflicts: false,
+            out _,
+            out _,
+            out _);
+        var customSettings = new ApplicationSettings
+        {
+            ActiveShortcutProfileId = polygonProfile.Id,
+            CustomShortcutProfiles = [polygonProfile]
+        };
+        var roundTripShortcutSettings = ApplicationSettingsStore.Normalize(
+            System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>(
+                System.Text.Json.JsonSerializer.Serialize(customSettings))!);
+        if (migratedNumberSettings.ActiveShortcutProfileId != ShortcutProfiles.NumberKeysProfileId
+            || ApplicationSettingsStore.Normalize(new ApplicationSettings
+            {
+                ActiveShortcutProfileId = ShortcutProfiles.NumberKeysProfileId.ToUpperInvariant()
+            }).ActiveShortcutProfileId != ShortcutProfiles.NumberKeysProfileId
+            || ShortcutProfiles.LegacyPresetForProfile(
+                nestedNumberCustomProfile.Id,
+                [numberCustomProfile, nestedNumberCustomProfile]) != ToolShortcutPreset.NumberKeys
+            || !customGestureCreated
+            || !customBindingSet
+            || !conflictRejected
+            || conflictCommandId != ShortcutCommandIds.ToolTriangle
+            || !conflictReplaced
+            || !reservedRejected
+            || !ShortcutProfiles.IsReservedGesture(Keys.Alt | Keys.F4)
+            || !builtInRejected
+            || ToolShortcutMap.ResolveTool(
+                triangleProfile,
+                Keys.Control | Keys.Alt | Keys.D3,
+                ToolMode.Select,
+                ToolMode.Rectangle,
+                ToolMode.Line,
+                ToolMode.Brush,
+                ToolMode.Fill) != ToolMode.Triangle
+            || ToolShortcutMap.ResolveTool(
+                polygonProfile,
+                Keys.Control | Keys.Alt | Keys.D3,
+                ToolMode.Select,
+                ToolMode.Rectangle,
+                ToolMode.Line,
+                ToolMode.Brush,
+                ToolMode.Fill) != ToolMode.Polygon
+            || ToolShortcutMap.ResolveTool(
+                numberProfile,
+                Keys.D1,
+                ToolMode.Transform,
+                ToolMode.Rectangle,
+                ToolMode.Line,
+                ToolMode.Brush,
+                ToolMode.Fill) != ToolMode.Transform
+            || ToolShortcutMap.ResolveTool(
+                numberProfile,
+                Keys.NumPad1,
+                ToolMode.Transform,
+                ToolMode.Rectangle,
+                ToolMode.Line,
+                ToolMode.Brush,
+                ToolMode.Fill) != ToolMode.Transform
+            || roundTripShortcutSettings.ActiveShortcutProfileId != polygonProfile.Id
+            || roundTripShortcutSettings.CustomShortcutProfiles.Length != 1
+            || ToolShortcutMap.ResolveCommandId(
+                roundTripShortcutSettings.CustomShortcutProfiles[0],
+                Keys.Control | Keys.Alt | Keys.D3) != ShortcutCommandIds.ToolPolygon)
+        {
+            throw new InvalidOperationException("Custom shortcut profiles did not migrate, clone, resolve, reject conflicts, or round-trip correctly.");
+        }
+
         var toolCycleForward = MainForm.CycleToolGroupMember([ToolMode.Select, ToolMode.Transform], ToolMode.Select, reverse: false);
         var toolCycleBackward = MainForm.CycleToolGroupMember([ToolMode.Fill, ToolMode.InkBottle], ToolMode.Fill, reverse: true);
         var lineToolCycle = MainForm.CycleToolGroupMember(
@@ -6896,10 +9343,19 @@ internal static class Benchmark
             || traditionalSelection != ToolMode.Select
             || traditionalInkBottle != ToolMode.InkBottle
             || traditionalPen != ToolMode.Pen
+            || traditionalText != ToolMode.Text
             || defaultSettings.ToolShortcutPreset != ToolShortcutPreset.TraditionalFlash
             || defaultSettings.Language != UiLanguage.English
+            || defaultSettings.ColorTheme != ApplicationColorTheme.Dark
+            || defaultSettings.ThemeHueDegrees != ApplicationSettings.DefaultThemeHueDegrees
+            || defaultSettings.ThemeSaturationPercent != ApplicationSettings.DefaultThemeSaturationPercent
+            || defaultSettings.ThemeBrightnessPercent != ApplicationSettings.DefaultThemeBrightnessPercent
+            || defaultSettings.AccentHueDegrees != ApplicationSettings.DefaultAccentHueDegrees
+            || defaultSettings.AccentSaturationPercent != ApplicationSettings.DefaultAccentSaturationPercent
+            || defaultSettings.AccentBrightnessPercent != ApplicationSettings.DefaultAccentBrightnessPercent
             || defaultSettings.TimelineFrameWidth != 14
             || defaultSettings.TimelineFrameHeight != TimelineFrameHeightPreset.Medium
+            || defaultSettings.WorkspaceColorArgb != ApplicationSettings.DefaultWorkspaceColorArgb
             || !chineseLocalizationApplied
             || !englishLocalizationRestored
             || !ToolShortcutMap.IsVaultShortcut(ToolShortcutPreset.NumberKeys, Keys.D9)
@@ -7238,8 +9694,13 @@ internal static class Benchmark
         var paletteStore = HotReloadModuleResolver.Resolve([typeof(MaterialPaletteStore)]);
         var settingsDialog = HotReloadModuleResolver.Resolve([
             typeof(SettingsDialog),
+            typeof(ShortcutProfileEditorPanel),
             typeof(ModernDialogForm),
             typeof(ModernMessageDialog),
+            typeof(Theme),
+            typeof(ApplicationColorTheme),
+            typeof(ShortcutProfiles),
+            typeof(ShortcutProfileRecord),
             typeof(ToolShortcutMap),
             typeof(UiLocalization)]);
         var engine = HotReloadModuleResolver.Resolve([typeof(VectorScene), typeof(DrawingObjectPlaybackMode)]);
@@ -7730,6 +10191,179 @@ internal static class Benchmark
                 $"objects={matchingShapeScene.ObjectCount}, center={mergedShapeCenter}.");
         }
 
+        var budgetShapeScene = new VectorScene();
+        budgetShapeScene.CreateEmpty();
+        var softShapeBrush = BrushShape.CreateSoftRound();
+        var budgetFirstShapeBrush = budgetShapeScene.AddSoftBrushStroke(
+            0,
+            firstShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            color,
+            softShapeBrush,
+            1_024);
+        ApplyShapeBrushGradient(budgetShapeScene, budgetFirstShapeBrush, color, stops);
+        var budgetFirstRetained = budgetShapeScene.NormalizePaintForInteractiveCommit(
+            budgetFirstShapeBrush,
+            connectNearby: true,
+            frame: 0);
+        var budgetSecondShapeBrush = budgetShapeScene.AddSoftBrushStroke(
+            0,
+            secondShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            color,
+            softShapeBrush,
+            1_024);
+        ApplyShapeBrushGradient(budgetShapeScene, budgetSecondShapeBrush, color, stops);
+        var rejectedByGeneralInteractiveBudget = !budgetShapeScene.CanNormalizePaintInteractively(
+            budgetSecondShapeBrush,
+            0);
+        var budgetMergedShapeBrush = budgetShapeScene.NormalizePaintForInteractiveCommit(
+            budgetSecondShapeBrush,
+            connectNearby: true,
+            frame: 0);
+        var budgetMergedLayerStates = budgetMergedShapeBrush.Select(index =>
+        {
+            var hasMapping = budgetShapeScene.TryGetShapeGradientMappingWorldContours(index, out var mapping);
+            return (
+                Index: index,
+                Kind: budgetShapeScene.GetGradientKind(index),
+                ContainsFirst: budgetShapeScene.FillContainsPoint(index, firstShapePath[1]),
+                ContainsSecond: budgetShapeScene.FillContainsPoint(index, secondShapePath[1]),
+                MappingPoints: hasMapping ? mapping.SelectMany(contour => contour).Count() : 0);
+        }).ToArray();
+        var budgetMergedLayersValid = budgetMergedLayerStates.All(state =>
+            state.Kind == GradientKind.ShapeRadial
+            && state.ContainsFirst
+            && state.ContainsSecond
+            && state.MappingPoints >= 3);
+        if (budgetFirstShapeBrush.Length != 3
+            || budgetFirstRetained.Length != 3
+            || budgetSecondShapeBrush.Length != 3
+            || !rejectedByGeneralInteractiveBudget
+            || budgetMergedShapeBrush.Length != 3
+            || budgetShapeScene.ObjectCount != 3
+            || !budgetMergedLayersValid)
+        {
+            throw new InvalidOperationException(
+                "Matching shape-gradient brush fills stopped participating in union after exceeding the general interactive normalization budget: "
+                + $"first={budgetFirstShapeBrush.Length}/{budgetFirstRetained.Length}, "
+                + $"second={budgetSecondShapeBrush.Length}, rejected={rejectedByGeneralInteractiveBudget}, "
+                + $"merged={budgetMergedShapeBrush.Length}, objects={budgetShapeScene.ObjectCount}, "
+                + $"layersValid={budgetMergedLayersValid}, states=[{string.Join(';', budgetMergedLayerStates)}].");
+        }
+
+        var hiddenFillScene = new VectorScene();
+        hiddenFillScene.CreateEmpty();
+        var hiddenFirstColor = Color.FromArgb(color.A, 24, 96, 180);
+        var hiddenSecondColor = Color.FromArgb(color.A, 210, 72, 36);
+        var hiddenFirst = hiddenFillScene.AddSoftBrushStroke(
+            0,
+            firstShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            hiddenFirstColor,
+            BrushShape.CreateTraditionalBrush(),
+            24);
+        ApplyShapeBrushGradient(hiddenFillScene, hiddenFirst, hiddenFirstColor, stops);
+
+        var hiddenPreviewScene = new VectorScene();
+        hiddenPreviewScene.CreateEmpty();
+        var hiddenPreview = hiddenPreviewScene.AddSoftBrushStroke(
+            0,
+            secondShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            hiddenSecondColor,
+            BrushShape.CreateTraditionalBrush(),
+            24);
+        ApplyShapeBrushGradient(hiddenPreviewScene, hiddenPreview, hiddenSecondColor, stops);
+        var hiddenPreviewMatches = hiddenFillScene.FindIntersectingMatchingShapeGradientFills(
+            hiddenPreviewScene,
+            hiddenPreview,
+            0);
+
+        var hiddenSecond = hiddenFillScene.AddSoftBrushStroke(
+            0,
+            secondShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            hiddenSecondColor,
+            BrushShape.CreateTraditionalBrush(),
+            24);
+        ApplyShapeBrushGradient(hiddenFillScene, hiddenSecond, hiddenSecondColor, stops);
+        var hiddenMerged = hiddenFillScene.NormalizePaintForInteractiveCommit(hiddenSecond, frame: 0);
+        if (hiddenPreviewMatches.Length != 1
+            || hiddenMerged.Length != 1
+            || hiddenFillScene.ObjectCount != 1
+            || !hiddenFillScene.GetGradientStops(hiddenMerged[0]).SequenceEqual(stops)
+            || !hiddenFillScene.FillContainsPoint(hiddenMerged[0], firstShapePath[1])
+            || !hiddenFillScene.FillContainsPoint(hiddenMerged[0], secondShapePath[1]))
+        {
+            throw new InvalidOperationException(
+                "Matching shape-gradient brushes depended on hidden fallback fill RGB: "
+                + $"preview={hiddenPreviewMatches.Length}, merged={hiddenMerged.Length}, objects={hiddenFillScene.ObjectCount}.");
+        }
+
+        var alphaScene = new VectorScene();
+        alphaScene.CreateEmpty();
+        var alphaFirstColor = Color.FromArgb(220, 24, 96, 180);
+        var alphaSecondColor = Color.FromArgb(160, 210, 72, 36);
+        var alphaFirst = alphaScene.AddSoftBrushStroke(
+            0,
+            firstShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            alphaFirstColor,
+            BrushShape.CreateTraditionalBrush(),
+            24);
+        ApplyShapeBrushGradient(alphaScene, alphaFirst, alphaFirstColor, stops);
+        var alphaPreviewScene = new VectorScene();
+        alphaPreviewScene.CreateEmpty();
+        var alphaPreview = alphaPreviewScene.AddSoftBrushStroke(
+            0,
+            secondShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            alphaSecondColor,
+            BrushShape.CreateTraditionalBrush(),
+            24);
+        ApplyShapeBrushGradient(alphaPreviewScene, alphaPreview, alphaSecondColor, stops);
+        var alphaMatches = alphaScene.FindIntersectingMatchingShapeGradientFills(
+            alphaPreviewScene,
+            alphaPreview,
+            0);
+        if (alphaMatches.Length != 0)
+        {
+            throw new InvalidOperationException("Shape-gradient brushes with different layer alpha incorrectly matched.");
+        }
+
+        var crossLayerShapeScene = new VectorScene();
+        crossLayerShapeScene.CreateEmpty(2);
+        var crossLayerFirst = crossLayerShapeScene.AddSoftBrushStroke(
+            0,
+            firstShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            color,
+            BrushShape.CreateTraditionalBrush(),
+            24);
+        ApplyShapeBrushGradient(crossLayerShapeScene, crossLayerFirst, color, stops);
+        var crossLayerSecond = crossLayerShapeScene.AddSoftBrushStroke(
+            1,
+            secondShapePath,
+            VectorUnits.StrokePointsToUnits(16),
+            color,
+            BrushShape.CreateTraditionalBrush(),
+            24);
+        ApplyShapeBrushGradient(crossLayerShapeScene, crossLayerSecond, color, stops);
+        crossLayerShapeScene.ObjectOrder[crossLayerSecond[0]] = crossLayerShapeScene.ObjectOrder[crossLayerFirst[0]];
+        crossLayerShapeScene.ObjectSubOrder[crossLayerSecond[0]] = crossLayerShapeScene.ObjectSubOrder[crossLayerFirst[0]];
+        var crossLayerRetained = crossLayerShapeScene.NormalizePaintForInteractiveCommit(crossLayerSecond, frame: 0);
+        var crossLayerValid = crossLayerShapeScene.ObjectCount == 2
+            && crossLayerRetained.Length == 1
+            && crossLayerShapeScene.ObjectLayer[crossLayerRetained[0]] == 1
+            && crossLayerShapeScene.ObjectLayer[crossLayerFirst[0]] == 0;
+        if (!crossLayerValid)
+        {
+            throw new InvalidOperationException(
+                "Matching shape-gradient brushes crossed a layer or resolved a colliding stack key incorrectly: "
+                + $"retained={crossLayerRetained.Length}, objects={crossLayerShapeScene.ObjectCount}.");
+        }
+
         var mismatchedShapeScene = new VectorScene();
         mismatchedShapeScene.CreateEmpty();
         var mismatchedFirst = mismatchedShapeScene.AddSoftBrushStroke(
@@ -7837,6 +10471,8 @@ internal static class Benchmark
         {
             throw new InvalidOperationException("Pressure brush did not retain the active gradient material.");
         }
+
+        Console.WriteLine("brush_gradient_regression=ok");
 
         static void ApplyBrushGradient(
             VectorScene scene,
@@ -8087,16 +10723,164 @@ internal static class Benchmark
         var onsetDiameter = VectorUnits.StrokePointsToUnits(18);
         var onsetPreview = FreehandStrokeProcessor.CreatePressurePreview(onsetSamples, onsetDiameter);
         var onsetCommit = FreehandStrokeProcessor.ProcessPressure(onsetSamples, onsetDiameter, smoothing: 0, simplifyTolerance: 0.25f);
-        var minimumDiameter = VectorUnits.StrokePointsToUnits(0.5f);
+        var minimumDiameter = VectorUnits.MinimumStrokeUnits;
+        var quantizedMinimumOnset = VectorUnits.Quantize(minimumDiameter * 0.6f);
         if (onsetPreview.Length != onsetSamples.Length
-            || onsetPreview[0].Diameter > minimumDiameter * 0.7f
+            || onsetPreview[0].Diameter != quantizedMinimumOnset
             || onsetPreview[1].Diameter <= onsetPreview[0].Diameter
             || onsetPreview[^1].Diameter <= onsetPreview[1].Diameter * 2f
             || onsetCommit.Length < 2
-            || onsetCommit[0].Diameter > minimumDiameter * 0.7f
+            || onsetCommit[0].Diameter != quantizedMinimumOnset
             || onsetCommit[^1].Diameter <= onsetCommit[0].Diameter * 8f)
         {
             throw new InvalidOperationException("Pressure brush onset did not diffuse from a minimal initial deposit.");
+        }
+
+        var tabletBaseDiameter = VectorUnits.StrokePointsToUnits(20);
+        var tabletMinimumVisibleDiameter = minimumDiameter * 0.6f;
+        var tabletMappingCases = new[]
+        {
+            (Pressure: -0.5f, ExpectedPressure: 0f),
+            (Pressure: 0f, ExpectedPressure: 0f),
+            (Pressure: 0.5f, ExpectedPressure: 0.5f),
+            (Pressure: 1f, ExpectedPressure: 1f),
+            (Pressure: 1.5f, ExpectedPressure: 1f)
+        };
+        foreach (var mapping in tabletMappingCases)
+        {
+            var tabletSample = new PressureBrushSample(PointF.Empty, 5000, 0, mapping.Pressure);
+            var tabletPreview = FreehandStrokeProcessor.CreatePressurePreview([tabletSample], tabletBaseDiameter);
+            var tabletProcess = FreehandStrokeProcessor.ProcessPressure(
+                [tabletSample],
+                tabletBaseDiameter,
+                smoothing: 0,
+                simplifyTolerance: 0.25f);
+            var incrementalTabletProfile = new List<PressureBrushPoint>();
+            var incrementalTabletDistances = new List<float>();
+            FreehandStrokeProcessor.UpdatePressurePreviewProfile(
+                [tabletSample],
+                tabletBaseDiameter,
+                incrementalTabletProfile,
+                incrementalTabletDistances);
+            var expectedDiameter = VectorUnits.Quantize(Math.Clamp(
+                tabletBaseDiameter * mapping.ExpectedPressure,
+                tabletMinimumVisibleDiameter,
+                tabletBaseDiameter * 1.2f));
+            if (tabletPreview.Length != 1
+                || tabletProcess.Length != 1
+                || incrementalTabletProfile.Count != 1
+                || tabletPreview[0].Diameter != expectedDiameter
+                || tabletProcess[0].Diameter != expectedDiameter
+                || incrementalTabletProfile[0].Diameter != expectedDiameter)
+            {
+                throw new InvalidOperationException(
+                    "Tablet pressure did not map and clamp consistently across pressure-brush profiles: "
+                    + $"pressure={mapping.Pressure}, expected={expectedDiameter}, "
+                    + $"preview={tabletPreview.FirstOrDefault().Diameter}, "
+                    + $"process={tabletProcess.FirstOrDefault().Diameter}, "
+                    + $"incremental={incrementalTabletProfile.FirstOrDefault().Diameter}.");
+            }
+        }
+
+        var tabletPrecedenceDiameters = new[]
+        {
+            new PressureBrushSample(PointF.Empty, 0, 12, 0.5f),
+            new PressureBrushSample(PointF.Empty, 5000, 0, 0.5f)
+        }.Select(sample => FreehandStrokeProcessor.CreatePressurePreview([sample], tabletBaseDiameter)[0].Diameter)
+            .ToArray();
+        if (tabletPrecedenceDiameters[0] != tabletPrecedenceDiameters[1]
+            || tabletPrecedenceDiameters[0] != VectorUnits.Quantize(tabletBaseDiameter * 0.5f))
+        {
+            throw new InvalidOperationException("Tablet pressure did not take precedence over speed and hold simulation.");
+        }
+
+        const float legacySpeed = 720f;
+        const float legacyHeldSeconds = 0.42f;
+        var implicitLegacySample = new PressureBrushSample(PointF.Empty, legacySpeed, legacyHeldSeconds);
+        var explicitLegacySample = implicitLegacySample with { TabletPressure = float.NaN };
+        var implicitLegacyPreview = FreehandStrokeProcessor.CreatePressurePreview(
+            [implicitLegacySample],
+            tabletBaseDiameter);
+        var explicitLegacyPreview = FreehandStrokeProcessor.CreatePressurePreview(
+            [explicitLegacySample],
+            tabletBaseDiameter);
+        var implicitLegacyProcess = FreehandStrokeProcessor.ProcessPressure(
+            [implicitLegacySample],
+            tabletBaseDiameter,
+            smoothing: 0,
+            simplifyTolerance: 0.25f);
+        var legacyNormalizedSpeed = Math.Clamp(legacySpeed / 1800f, 0f, 1f);
+        var legacySpeedPressure = 0.38f + 0.62f * MathF.Pow(1f - legacyNormalizedSpeed, 0.65f);
+        var legacyHoldPressure = 0.55f + 0.45f * (1f - MathF.Exp(-legacyHeldSeconds / 0.15f));
+        var legacyTargetDiameter = Math.Clamp(
+            tabletBaseDiameter * legacySpeedPressure * legacyHoldPressure,
+            tabletMinimumVisibleDiameter,
+            tabletBaseDiameter * 1.2f);
+        var legacyOnset = 1f - MathF.Exp(-legacyHeldSeconds / 0.18f);
+        var expectedLegacyDiameter = VectorUnits.Quantize(
+            tabletMinimumVisibleDiameter
+                + (legacyTargetDiameter - tabletMinimumVisibleDiameter) * legacyOnset);
+        if (!float.IsNaN(implicitLegacySample.TabletPressure)
+            || implicitLegacyPreview.Length != 1
+            || explicitLegacyPreview.Length != 1
+            || implicitLegacyProcess.Length != 1
+            || implicitLegacyPreview[0].Diameter != expectedLegacyDiameter
+            || explicitLegacyPreview[0].Diameter != expectedLegacyDiameter
+            || implicitLegacyProcess[0].Diameter != expectedLegacyDiameter)
+        {
+            throw new InvalidOperationException("NaN tablet pressure did not preserve the legacy speed and hold fallback.");
+        }
+
+        var tabletProfileSamples = new[]
+        {
+            new PressureBrushSample(new PointF(0, 0), 5000, 0, 0.2f),
+            new PressureBrushSample(new PointF(100, 80), 0, 8, 0.8f),
+            new PressureBrushSample(new PointF(200, -80), 5000, 0, 0.35f),
+            new PressureBrushSample(new PointF(300, 80), 0, 8, 1f),
+            new PressureBrushSample(new PointF(400, 0), 5000, 0, 0.5f)
+        };
+        var tabletPreviewProfile = FreehandStrokeProcessor.CreatePressurePreview(
+            tabletProfileSamples,
+            tabletBaseDiameter,
+            smoothing: 0);
+        var tabletProcessProfile = FreehandStrokeProcessor.ProcessPressure(
+            tabletProfileSamples,
+            tabletBaseDiameter,
+            smoothing: 0,
+            simplifyTolerance: 0.25f);
+        var incrementalTabletPreview = new List<PressureBrushPoint>();
+        var incrementalTabletTravel = new List<float>();
+        FreehandStrokeProcessor.UpdatePressurePreviewProfile(
+            tabletProfileSamples,
+            tabletBaseDiameter,
+            incrementalTabletPreview,
+            incrementalTabletTravel);
+        var smoothedTabletPreview = FreehandStrokeProcessor.CreatePressurePreview(
+            tabletProfileSamples,
+            tabletBaseDiameter,
+            smoothing: 70);
+        var smoothedIncrementalTabletPreview = FreehandStrokeProcessor.SmoothPressureProfile(
+            incrementalTabletPreview,
+            smoothing: 70);
+        var previewProcessMismatch = tabletPreviewProfile.Length != tabletProcessProfile.Length
+            || tabletPreviewProfile.Zip(tabletProcessProfile).Any(pair =>
+                pair.First.Point != pair.Second.Point
+                || MathF.Abs(pair.First.Diameter - pair.Second.Diameter) > 1);
+        var previewIncrementalMismatch = tabletPreviewProfile.Length != incrementalTabletPreview.Count
+            || tabletPreviewProfile.Zip(incrementalTabletPreview).Any(pair =>
+                pair.First.Point != pair.Second.Point
+                || MathF.Abs(pair.First.Diameter - pair.Second.Diameter) > 2);
+        var smoothedPreviewMismatch = smoothedTabletPreview.Length != smoothedIncrementalTabletPreview.Length
+            || smoothedTabletPreview.Zip(smoothedIncrementalTabletPreview).Any(pair =>
+                pair.First.Point != pair.Second.Point
+                || MathF.Abs(pair.First.Diameter - pair.Second.Diameter) > 2);
+        if (previewProcessMismatch
+            || previewIncrementalMismatch
+            || smoothedPreviewMismatch
+            || tabletPreviewProfile[1].Diameter >= VectorUnits.Quantize(tabletBaseDiameter * 0.8f))
+        {
+            throw new InvalidOperationException(
+                "Tablet pressure diverged between preview, incremental preview, and processed profiles or bypassed smoothing.");
         }
 
         var samples = new PressureBrushSample[513];
@@ -8110,6 +10894,45 @@ internal static class Benchmark
         }
 
         var diameter = VectorUnits.StrokePointsToUnits(18);
+        var incrementalPressureSamples = new List<PressureBrushSample>();
+        var incrementalPressureProfile = new List<PressureBrushPoint>();
+        var incrementalPressureDistances = new List<float>();
+        for (var start = 0; start < samples.Length; start += 37)
+        {
+            incrementalPressureSamples.AddRange(samples.Skip(start).Take(Math.Min(37, samples.Length - start)));
+            FreehandStrokeProcessor.UpdatePressurePreviewProfile(
+                incrementalPressureSamples,
+                diameter,
+                incrementalPressureProfile,
+                incrementalPressureDistances);
+        }
+        var completePressureProfile = FreehandStrokeProcessor.CreatePressurePreview(samples, diameter, smoothing: 0);
+        var maximumIncrementalDiameterError = incrementalPressureProfile
+            .Zip(completePressureProfile)
+            .Max(pair => MathF.Abs(pair.First.Diameter - pair.Second.Diameter));
+        incrementalPressureSamples[^1] = incrementalPressureSamples[^1] with
+        {
+            HeldSeconds = incrementalPressureSamples[^1].HeldSeconds + 0.5f
+        };
+        FreehandStrokeProcessor.UpdatePressurePreviewProfile(
+            incrementalPressureSamples,
+            diameter,
+            incrementalPressureProfile,
+            incrementalPressureDistances);
+        var heldPressureProfile = FreehandStrokeProcessor.CreatePressurePreview(
+            incrementalPressureSamples,
+            diameter,
+            smoothing: 0);
+        if (incrementalPressureProfile.Count != completePressureProfile.Length
+            || incrementalPressureDistances.Count != incrementalPressureProfile.Count
+            || maximumIncrementalDiameterError > 2
+            || MathF.Abs(incrementalPressureProfile[^1].Diameter - heldPressureProfile[^1].Diameter) > 2)
+        {
+            throw new InvalidOperationException(
+                "Incremental pressure preview diverged from the complete pressure profile: "
+                + $"points={incrementalPressureProfile.Count}, diameter_error={maximumIncrementalDiameterError:0.00}.");
+        }
+
         var scene = new VectorScene();
         scene.CreateEmpty();
         var stopwatch = Stopwatch.StartNew();
@@ -8211,6 +11034,88 @@ internal static class Benchmark
                 + $"points={boundedPreview.Count}, profile={previewProfile.Length}, avg={pressurePreviewAverageMilliseconds:0.000} ms.");
         }
 
+        var longTrajectory = new PointF[32_768];
+        for (var index = 0; index < longTrajectory.Length; index++)
+        {
+            longTrajectory[index] = new PointF(
+                index * 2,
+                MathF.Sin(index * 0.011f) * 160 + MathF.Sin(index * 0.037f) * 35);
+        }
+        var processedLongTrajectory = FreehandStrokeProcessor.Process(longTrajectory, smoothing: 30, simplifyTolerance: 1);
+        var trajectoryStart = processedLongTrajectory[0];
+        var trajectoryEnd = processedLongTrajectory[^1];
+        var trajectoryDx = trajectoryEnd.X - trajectoryStart.X;
+        var trajectoryDy = trajectoryEnd.Y - trajectoryStart.Y;
+        var trajectoryLength = Math.Max(0.0001f, MathF.Sqrt(trajectoryDx * trajectoryDx + trajectoryDy * trajectoryDy));
+        var maximumCurveDistance = processedLongTrajectory.Max(point => MathF.Abs(
+            trajectoryDy * point.X - trajectoryDx * point.Y
+            + trajectoryEnd.X * trajectoryStart.Y - trajectoryEnd.Y * trajectoryStart.X) / trajectoryLength);
+        if (processedLongTrajectory.Length < 64 || maximumCurveDistance < 120)
+        {
+            throw new InvalidOperationException(
+                "Long brush processing collapsed a curved trajectory into a straight line: "
+                + $"source={longTrajectory.Length}, processed={processedLongTrajectory.Length}, curve={maximumCurveDistance:0.00}.");
+        }
+
+        var incrementalPreviewPath = new PointF[769];
+        for (var index = 0; index < incrementalPreviewPath.Length; index++)
+        {
+            incrementalPreviewPath[index] = new PointF(
+                index * 12,
+                MathF.Sin(index * 0.075f) * 150 + MathF.Sin(index * 0.19f) * 28);
+        }
+        var incrementalPreviewScene = new VectorScene();
+        incrementalPreviewScene.CreateEmpty();
+        var incrementalBrush = BrushShape.CreateSoftRound();
+        var stableCoverage = new List<PointF>();
+        var processedPreviewSamples = 0;
+        while (processedPreviewSamples < incrementalPreviewPath.Length)
+        {
+            var nextSample = Math.Min(incrementalPreviewPath.Length, processedPreviewSamples + 32);
+            var segmentStart = processedPreviewSamples == 0 ? 0 : processedPreviewSamples - 1;
+            var additions = incrementalPreviewScene.AddSoftBrushStroke(
+                0,
+                incrementalPreviewPath[segmentStart..nextSample],
+                diameter,
+                Color.Teal,
+                incrementalBrush,
+                (uint)Math.Max(3, nextSample - segmentStart),
+                frequency: 8,
+                continuous: true);
+            incrementalPreviewScene.MergeSameColorFillsAroundNewObjects(additions, connectNearby: false, frame: 0);
+            processedPreviewSamples = nextSample;
+
+            bool PreviewContains(PointF point) => Enumerable.Range(0, incrementalPreviewScene.ObjectCount)
+                .Any(objectIndex => incrementalPreviewScene.FillContainsPoint(objectIndex, point));
+
+            if (stableCoverage.Count == 0)
+            {
+                var bounds = incrementalPreviewScene.GetObjectWorldBounds(0);
+                var gridStep = Math.Max(8, diameter / 6);
+                for (var y = bounds.Top + gridStep * 0.5f; y < bounds.Bottom; y += gridStep)
+                {
+                    for (var x = bounds.Left + gridStep * 0.5f; x < bounds.Right; x += gridStep)
+                    {
+                        var probe = new PointF(x, y);
+                        if (PreviewContains(probe)) stableCoverage.Add(probe);
+                    }
+                }
+            }
+            else if (stableCoverage.Any(point => !PreviewContains(point)))
+            {
+                throw new InvalidOperationException("Incremental brush preview changed an already covered area.");
+            }
+        }
+
+        if (stableCoverage.Count < 12
+            || incrementalPreviewScene.ObjectCount != incrementalBrush.Layers.Count
+            || incrementalPreviewPath.Where((_, index) => index % 48 == 0)
+                .Any(point => !Enumerable.Range(0, incrementalPreviewScene.ObjectCount)
+                    .Any(objectIndex => incrementalPreviewScene.FillContainsPoint(objectIndex, point))))
+        {
+            throw new InvalidOperationException("Incremental brush preview did not preserve and extend its accumulated area.");
+        }
+
         Console.WriteLine($"pressure_brush_commit_ms={stopwatch.Elapsed.TotalMilliseconds:0.00}");
         Console.WriteLine($"pressure_brush_commit_budget_ms={pressureBrushCommitBudgetMilliseconds:0.00}");
         Console.WriteLine($"pressure_brush_commit_budget_met={pressureBrushCommitBudgetMet.ToString().ToLowerInvariant()}");
@@ -8228,11 +11133,15 @@ internal static class Benchmark
         stage.SetVisibleWorldWidth(VectorUnits.DefaultVisibleWorldWidth);
         var diameter = VectorUnits.StrokePointsToUnits(18);
         var initialScreenDiameter = stage.WorldLengthToScreen(diameter);
+        stage.SetBrushTipCursor(new Point(stage.Width / 2, stage.Height / 2), BrushShape.CreateSoftRound(), diameter, eraser: false);
+        var initialCursorRadius = stage.BrushTipCursorRadiusPixels;
         stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 2);
         var zoomedScreenDiameter = stage.WorldLengthToScreen(diameter);
+        var zoomedCursorRadius = stage.BrushTipCursorRadiusPixels;
         var restoredWorldDiameter = stage.ScreenLengthToWorld(zoomedScreenDiameter);
         if (Math.Abs(zoomedScreenDiameter - initialScreenDiameter * 2) > 0.001f
-            || Math.Abs(restoredWorldDiameter - diameter) > 0.001f)
+            || Math.Abs(restoredWorldDiameter - diameter) > 0.001f
+            || Math.Abs(zoomedCursorRadius - initialCursorRadius * 2) > 0.001f)
         {
             throw new InvalidOperationException("Brush size did not retain its world-unit diameter across stage zoom changes.");
         }
@@ -8246,6 +11155,63 @@ internal static class Benchmark
         var diameter = VectorUnits.StrokePointsToUnits(24);
         var center = new[] { PointF.Empty };
 
+        static bool LineTouchesPoint(VectorScene scene, PointF point)
+        {
+            for (var index = 0; index < scene.ObjectCount; index++)
+            {
+                if (scene.ShapeKind[index] != ShapeKind.Line
+                    || !scene.TryGetClosestPointOnLine(index, point, out _, out _, out var distance))
+                {
+                    continue;
+                }
+
+                if (distance <= scene.Stroke[index] * 0.5f + DrawingTopologyRules.UnitIntersectionTolerance) return true;
+            }
+
+            return false;
+        }
+
+        static PointF EvaluateCubic(PointF start, PointF control1, PointF control2, PointF end, float amount)
+        {
+            var inverse = 1f - amount;
+            var inverseSquared = inverse * inverse;
+            var amountSquared = amount * amount;
+            return new PointF(
+                inverseSquared * inverse * start.X
+                    + 3f * inverseSquared * amount * control1.X
+                    + 3f * inverse * amountSquared * control2.X
+                    + amountSquared * amount * end.X,
+                inverseSquared * inverse * start.Y
+                    + 3f * inverseSquared * amount * control1.Y
+                    + 3f * inverse * amountSquared * control2.Y
+                    + amountSquared * amount * end.Y);
+        }
+
+        static VectorScene CreateTargetOptionScene(float stroke)
+        {
+            var scene = new VectorScene();
+            scene.CreateEmpty();
+            scene.AddObject(
+                0,
+                PointF.Empty,
+                new SizeF(600, 400),
+                0,
+                0,
+                Color.Coral,
+                Color.Transparent,
+                12,
+                ShapeKind.Rectangle);
+            scene.AddLineSegment(
+                0,
+                new PointF(-300, 0),
+                new PointF(300, 0),
+                stroke,
+                Color.Transparent,
+                Color.Aqua,
+                12);
+            return scene;
+        }
+
         var fillScene = new VectorScene();
         fillScene.CreateEmpty();
         fillScene.AddObject(0, PointF.Empty, new SizeF(400, 240), 0, 0, Color.Coral, Color.Transparent, 12, ShapeKind.Rectangle);
@@ -8255,21 +11221,464 @@ internal static class Benchmark
             throw new InvalidOperationException("Brush eraser did not punch a local hole through a fill.");
         }
 
-        var lineScene = new VectorScene();
-        lineScene.CreateEmpty();
-        lineScene.AddLineSegment(0, new PointF(-240, 0), new PointF(240, 0), VectorUnits.StrokePointsToUnits(10), Color.Transparent, Color.Aqua, 12);
-        if (!lineScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: true, eraseFills: false)
-            || !Enumerable.Range(0, lineScene.ObjectCount).Any(lineScene.IsBrushEraserStrokePath)
-            || Enumerable.Range(0, lineScene.ObjectCount).Any(index => lineScene.IsBrushEraserStrokePath(index) && lineScene.FillContainsPoint(index, PointF.Empty)))
+        var shapeGradientScene = new VectorScene();
+        shapeGradientScene.CreateEmpty();
+        var shapeGradient = shapeGradientScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(400, 240),
+            0,
+            0,
+            Color.Coral,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var shapeGradientStops = new[]
         {
-            throw new InvalidOperationException("Brush eraser did not remove only the contacted portion of a line.");
+            new GradientStop(0, Color.Gold),
+            new GradientStop(0.5f, Color.Coral),
+            new GradientStop(1, Color.RoyalBlue)
+        };
+        var originalShapeMapping = shapeGradientScene.GetObjectBoundaryContours(shapeGradient);
+        shapeGradientScene.SetGradientPaint(
+            shapeGradient,
+            GradientKind.ShapeRadial,
+            shapeGradientStops,
+            PointF.Empty,
+            new PointF(200, 0));
+        shapeGradientScene.SetShapeGradientMapping(shapeGradient, originalShapeMapping);
+        var erasedShapeGradient = shapeGradientScene.EraseWithBrushStroke(
+            0,
+            center,
+            diameter,
+            shape,
+            eraseLines: false,
+            eraseFills: true);
+        var shapeGradientFragments = Enumerable.Range(0, shapeGradientScene.ObjectCount)
+            .Where(index => shapeGradientScene.HasGradient(index)
+                && shapeGradientScene.GetGradientKind(index) == GradientKind.ShapeRadial)
+            .ToArray();
+        var shapeGradientStopsPreserved = shapeGradientFragments.All(index =>
+            shapeGradientScene.GetGradientStops(index).SequenceEqual(shapeGradientStops));
+        var shapeGradientCentersMoved = shapeGradientFragments.All(index =>
+            shapeGradientScene.GetGradientStart(index) != PointF.Empty);
+        var shapeGradientCentersInside = shapeGradientFragments.All(index =>
+            shapeGradientScene.FillContainsPoint(index, shapeGradientScene.GetGradientStart(index)));
+        var originalShapeMappingPoints = originalShapeMapping
+            .SelectMany(contour => contour)
+            .ToHashSet();
+        var shapeGradientMappingsUpdated = shapeGradientFragments.All(index =>
+        {
+            if (!shapeGradientScene.TryGetShapeGradientMappingWorldContours(index, out var mapping)) return false;
+            var mappingPoints = mapping.SelectMany(contour => contour).ToHashSet();
+            var boundaryPoints = shapeGradientScene.GetObjectBoundaryContours(index)
+                .SelectMany(contour => contour)
+                .ToHashSet();
+            return mappingPoints.SetEquals(boundaryPoints)
+                && !mappingPoints.SetEquals(originalShapeMappingPoints);
+        });
+        var updatedShapeGradients = shapeGradientFragments.Length > 0
+            && shapeGradientStopsPreserved
+            && shapeGradientCentersMoved
+            && shapeGradientCentersInside
+            && shapeGradientMappingsUpdated;
+        if (!erasedShapeGradient || !updatedShapeGradients)
+        {
+            throw new InvalidOperationException(
+                $"Erasing a shape-gradient fill did not recalculate each remaining gradient: erased={erasedShapeGradient}, "
+                + $"fragments={shapeGradientFragments.Length}, stops={shapeGradientStopsPreserved}, moved={shapeGradientCentersMoved}, "
+                + $"inside={shapeGradientCentersInside}, mappings={shapeGradientMappingsUpdated}.");
         }
 
-        var secondContact = new[] { new PointF(-120, 0) };
-        if (!lineScene.EraseWithBrushStroke(0, secondContact, diameter, shape, eraseLines: true, eraseFills: false)
-            || Enumerable.Range(0, lineScene.ObjectCount).Any(index => lineScene.IsBrushEraserStrokePath(index) && lineScene.FillContainsPoint(index, secondContact[0])))
+        var lineScene = new VectorScene();
+        lineScene.CreateEmpty(2);
+        var lineStroke = VectorUnits.StrokePointsToUnits(10);
+        var lineStops = new[]
         {
-            throw new InvalidOperationException("A previously erased line could not be erased again as a line.");
+            new GradientStop(0, Color.Aqua),
+            new GradientStop(0.5f, Color.Gold),
+            new GradientStop(1, Color.Coral)
+        };
+        var lineGradientStart = new PointF(-240, 0);
+        var lineGradientEnd = new PointF(240, 0);
+        var lineSource = lineScene.AddCubicCurveSegment(
+            1,
+            new PointF(-240, 0),
+            new PointF(-160, -180),
+            new PointF(160, 180),
+            new PointF(240, 0),
+            lineStroke,
+            Color.Transparent,
+            Color.Aqua,
+            17,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Sharp);
+        lineScene.SetGradientPaint(
+            lineSource,
+            GradientKind.Linear,
+            lineStops,
+            lineGradientStart,
+            lineGradientEnd);
+        var lineOrder = lineScene.ObjectOrder[lineSource];
+        var lineKeyframe = lineScene.ObjectKeyframeFrame[lineSource];
+        if (!lineScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: true, eraseFills: false))
+        {
+            throw new InvalidOperationException("Brush eraser did not remove the contacted portion of a curved line.");
+        }
+
+        var lineFragments = Enumerable.Range(0, lineScene.ObjectCount)
+            .Where(index => lineScene.ShapeKind[index] == ShapeKind.Line)
+            .OrderBy(index => lineScene.ObjectSubOrder[index])
+            .ToArray();
+        var lineTopologyPreserved = lineFragments.Length == 2
+            && lineFragments.Length == lineScene.ObjectCount
+            && !LineTouchesPoint(lineScene, PointF.Empty)
+            && lineFragments.All(index => lineScene.ObjectLayer[index] == 1
+                && lineScene.Stroke[index] == lineStroke
+                && lineScene.StrokeArgb[index] == Color.Aqua.ToArgb()
+                && lineScene.ObjectOrder[index] == lineOrder
+                && lineScene.ObjectKeyframeFrame[index] == lineKeyframe
+                && lineScene.HasGradient(index)
+                && lineScene.GetGradientKind(index) == GradientKind.Linear
+                && lineScene.GetGradientStops(index).SequenceEqual(lineStops)
+                && lineScene.GetGradientStart(index) == lineGradientStart
+                && lineScene.GetGradientEnd(index) == lineGradientEnd)
+            && lineScene.GetLineEndpointStyle(lineFragments[0], startEndpoint: true) == LineEndpointStyle.Sharp
+            && lineScene.GetLineEndpointStyle(lineFragments[0], startEndpoint: false) == LineEndpointStyle.Round
+            && lineScene.GetLineEndpointStyle(lineFragments[1], startEndpoint: true) == LineEndpointStyle.Round
+            && lineScene.GetLineEndpointStyle(lineFragments[1], startEndpoint: false) == LineEndpointStyle.Sharp
+            && lineScene.ObjectSubOrder[lineFragments[1]] > lineScene.ObjectSubOrder[lineFragments[0]]
+            && lineFragments.Sum(index => (long)lineScene.AtomCount[index]) == 17;
+        if (!lineTopologyPreserved)
+        {
+            throw new InvalidOperationException(
+                "Brush eraser converted or lost curved-line topology, material, endpoints, ownership, order, or atoms.");
+        }
+
+        lineScene.TryGetLineBezierPart(
+            lineFragments[0],
+            0,
+            1,
+            out var firstFragmentStart,
+            out var firstFragmentControl1,
+            out var firstFragmentControl2,
+            out var firstFragmentEnd);
+        var secondContactPoint = EvaluateCubic(
+            firstFragmentStart,
+            firstFragmentControl1,
+            firstFragmentControl2,
+            firstFragmentEnd,
+            0.5f);
+        var secondContact = new[] { secondContactPoint };
+        if (!lineScene.EraseWithBrushStroke(0, secondContact, diameter, shape, eraseLines: true, eraseFills: false)
+            || Enumerable.Range(0, lineScene.ObjectCount).Any(index => lineScene.ShapeKind[index] != ShapeKind.Line)
+            || LineTouchesPoint(lineScene, secondContactPoint))
+        {
+            throw new InvalidOperationException("A previously erased line could not be erased again while remaining a line.");
+        }
+
+        var freeformScene = new VectorScene();
+        freeformScene.CreateEmpty();
+        var freeformStroke = VectorUnits.StrokePointsToUnits(4);
+        freeformScene.AddFreehandStroke(
+            0,
+            [
+                new PointF(-420, -80),
+                new PointF(-260, 70),
+                new PointF(-120, -60),
+                PointF.Empty,
+                new PointF(120, 60),
+                new PointF(260, -70),
+                new PointF(420, 80)
+            ],
+            freeformStroke,
+            Color.MediumPurple,
+            brushStroke: false,
+            23);
+        if (!freeformScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: true, eraseFills: false)
+            || freeformScene.ObjectCount != 2
+            || Enumerable.Range(0, freeformScene.ObjectCount).Any(index =>
+                freeformScene.ShapeKind[index] != ShapeKind.Freeform
+                || freeformScene.Stroke[index] != freeformStroke
+                || freeformScene.StrokeArgb[index] != Color.MediumPurple.ToArgb())
+            || freeformScene.HitTestElement(PointF.Empty, 0, toleranceWorld: 0.1f).IsValid)
+        {
+            throw new InvalidOperationException("Brush eraser converted or lost editable freeform stroke topology.");
+        }
+
+        var outlinedRectangleScene = new VectorScene();
+        outlinedRectangleScene.CreateEmpty(3);
+        if (!outlinedRectangleScene.InsertTimelineBlankKeyframe(2, 9))
+        {
+            throw new InvalidOperationException("Brush eraser regression could not create an outlined-shape keyframe.");
+        }
+
+        outlinedRectangleScene.EditFrame = 9;
+        var boundaryStroke = VectorUnits.StrokePointsToUnits(6);
+        var boundaryEraserDiameter = VectorUnits.StrokePointsToUnits(4);
+        var boundarySource = outlinedRectangleScene.AddObject(
+            2,
+            PointF.Empty,
+            new SizeF(600, 400),
+            0,
+            boundaryStroke,
+            Color.Coral,
+            Color.Teal,
+            60,
+            ShapeKind.Rectangle);
+        outlinedRectangleScene.ObjectSubOrder[boundarySource] = 0.375;
+        var boundaryOrder = outlinedRectangleScene.ObjectOrder[boundarySource];
+        var boundaryContact = new PointF(0, -200);
+        if (!outlinedRectangleScene.EraseWithBrushStroke(
+                9,
+                [boundaryContact],
+                boundaryEraserDiameter,
+                shape,
+                eraseLines: true,
+                eraseFills: false))
+        {
+            throw new InvalidOperationException("Brush eraser did not remove the contacted outlined-rectangle boundary.");
+        }
+
+        var rectangleFill = Enumerable.Range(0, outlinedRectangleScene.ObjectCount)
+            .SingleOrDefault(index => outlinedRectangleScene.HasFill(index));
+        var rectangleLines = Enumerable.Range(0, outlinedRectangleScene.ObjectCount)
+            .Where(index => outlinedRectangleScene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        var rectangleRoundEndpoints = rectangleLines.Sum(index =>
+            (outlinedRectangleScene.GetLineEndpointStyle(index, startEndpoint: true) == LineEndpointStyle.Round ? 1 : 0)
+            + (outlinedRectangleScene.GetLineEndpointStyle(index, startEndpoint: false) == LineEndpointStyle.Round ? 1 : 0));
+        var rectangleBoundaryPreserved = rectangleFill >= 0
+            && outlinedRectangleScene.ObjectCount == 6
+            && rectangleLines.Length == 5
+            && outlinedRectangleScene.FillContainsPoint(rectangleFill, PointF.Empty)
+            && outlinedRectangleScene.Argb[rectangleFill] == Color.Coral.ToArgb()
+            && outlinedRectangleScene.Stroke[rectangleFill] == 0
+            && outlinedRectangleScene.ObjectLayer[rectangleFill] == 2
+            && outlinedRectangleScene.ObjectKeyframeFrame[rectangleFill] == 9
+            && outlinedRectangleScene.ObjectOrder[rectangleFill] == boundaryOrder
+            && outlinedRectangleScene.ObjectSubOrder[rectangleFill] == 0.375
+            && rectangleLines.All(index => outlinedRectangleScene.ObjectLayer[index] == 2
+                && outlinedRectangleScene.ObjectKeyframeFrame[index] == 9
+                && outlinedRectangleScene.ObjectOrder[index] == boundaryOrder
+                && outlinedRectangleScene.ObjectSubOrder[index] > outlinedRectangleScene.ObjectSubOrder[rectangleFill]
+                && outlinedRectangleScene.Stroke[index] == boundaryStroke
+                && outlinedRectangleScene.StrokeArgb[index] == Color.Teal.ToArgb())
+            && rectangleRoundEndpoints == 2
+            && !LineTouchesPoint(outlinedRectangleScene, boundaryContact)
+            && LineTouchesPoint(outlinedRectangleScene, new PointF(0, 200))
+            && !Enumerable.Range(0, outlinedRectangleScene.ObjectCount).Any(index =>
+                outlinedRectangleScene.HasFill(index)
+                && outlinedRectangleScene.Argb[index] == Color.Teal.ToArgb())
+            && Enumerable.Range(0, outlinedRectangleScene.ObjectCount)
+                .Sum(index => (long)outlinedRectangleScene.AtomCount[index]) == 60;
+        if (!rectangleBoundaryPreserved)
+        {
+            throw new InvalidOperationException(
+                "Brush eraser converted an outlined-rectangle boundary to fill or lost its fill, style, cel, order, endpoints, or atoms.");
+        }
+
+        var secondBoundaryContact = new PointF(0, 200);
+        if (!outlinedRectangleScene.EraseWithBrushStroke(
+                9,
+                [secondBoundaryContact],
+                boundaryEraserDiameter,
+                shape,
+                eraseLines: true,
+                eraseFills: false)
+            || Enumerable.Range(0, outlinedRectangleScene.ObjectCount).Any(index =>
+                !outlinedRectangleScene.HasFill(index)
+                && outlinedRectangleScene.ShapeKind[index] != ShapeKind.Line)
+            || LineTouchesPoint(outlinedRectangleScene, secondBoundaryContact))
+        {
+            throw new InvalidOperationException(
+                "A materialized outlined-shape boundary could not be erased again while remaining editable lines.");
+        }
+
+        var outlinedEllipseScene = new VectorScene();
+        outlinedEllipseScene.CreateEmpty(2);
+        var ellipseStroke = VectorUnits.StrokePointsToUnits(5);
+        var ellipseSource = outlinedEllipseScene.AddObject(
+            1,
+            PointF.Empty,
+            new SizeF(640, 360),
+            0,
+            ellipseStroke,
+            Color.Gold,
+            Color.RoyalBlue,
+            72,
+            ShapeKind.Ellipse);
+        outlinedEllipseScene.ObjectSubOrder[ellipseSource] = 0.625;
+        var ellipseOrder = outlinedEllipseScene.ObjectOrder[ellipseSource];
+        var ellipseParts = outlinedEllipseScene.GetEditableFillBezierSegmentParts(ellipseSource);
+        var ellipseContact = EvaluateCubic(
+            ellipseParts[0].Start,
+            ellipseParts[0].Control1,
+            ellipseParts[0].Control2,
+            ellipseParts[0].End,
+            0.5f);
+        if (!outlinedEllipseScene.EraseWithBrushStroke(
+                0,
+                [ellipseContact],
+                boundaryEraserDiameter,
+                shape,
+                eraseLines: true,
+                eraseFills: false))
+        {
+            throw new InvalidOperationException("Brush eraser did not remove the contacted curved boundary.");
+        }
+
+        var ellipseFill = Enumerable.Range(0, outlinedEllipseScene.ObjectCount)
+            .SingleOrDefault(index => outlinedEllipseScene.HasFill(index));
+        var ellipseLines = Enumerable.Range(0, outlinedEllipseScene.ObjectCount)
+            .Where(index => outlinedEllipseScene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        var ellipseBoundaryPreserved = ellipseFill >= 0
+            && outlinedEllipseScene.ObjectCount == 6
+            && ellipseLines.Length == 5
+            && outlinedEllipseScene.FillContainsPoint(ellipseFill, PointF.Empty)
+            && outlinedEllipseScene.TryGetPathBezierWorldContours(ellipseFill, out var ellipseContours)
+            && ellipseContours.Length == 1
+            && ellipseContours[0].Length == 4
+            && ellipseLines.Any(index => !outlinedEllipseScene.IsLineStraight(index))
+            && ellipseLines.All(index => outlinedEllipseScene.ObjectLayer[index] == 1
+                && outlinedEllipseScene.ObjectKeyframeFrame[index] == 0
+                && outlinedEllipseScene.ObjectOrder[index] == ellipseOrder
+                && outlinedEllipseScene.ObjectSubOrder[index] > outlinedEllipseScene.ObjectSubOrder[ellipseFill]
+                && outlinedEllipseScene.Stroke[index] == ellipseStroke
+                && outlinedEllipseScene.StrokeArgb[index] == Color.RoyalBlue.ToArgb())
+            && !LineTouchesPoint(outlinedEllipseScene, ellipseContact)
+            && !Enumerable.Range(0, outlinedEllipseScene.ObjectCount).Any(index =>
+                outlinedEllipseScene.HasFill(index)
+                && outlinedEllipseScene.Argb[index] == Color.RoyalBlue.ToArgb())
+            && Enumerable.Range(0, outlinedEllipseScene.ObjectCount)
+                .Sum(index => (long)outlinedEllipseScene.AtomCount[index]) == 72;
+        if (!ellipseBoundaryPreserved)
+        {
+            throw new InvalidOperationException(
+                "Brush eraser flattened or converted an outlined ellipse boundary, or lost its exact fill and metadata.");
+        }
+
+        var targetStroke = VectorUnits.StrokePointsToUnits(8);
+        var neitherScene = CreateTargetOptionScene(targetStroke);
+        if (neitherScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: false, eraseFills: false)
+            || neitherScene.ObjectCount != 2
+            || !neitherScene.FillContainsPoint(0, PointF.Empty)
+            || !LineTouchesPoint(neitherScene, PointF.Empty))
+        {
+            throw new InvalidOperationException("Disabling both eraser targets modified the scene.");
+        }
+
+        var fillOnlyScene = CreateTargetOptionScene(targetStroke);
+        if (!fillOnlyScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: false, eraseFills: true)
+            || Enumerable.Range(0, fillOnlyScene.ObjectCount).Any(index => fillOnlyScene.FillContainsPoint(index, PointF.Empty))
+            || !LineTouchesPoint(fillOnlyScene, PointF.Empty))
+        {
+            throw new InvalidOperationException("Fill-only erasing did not preserve the contacted stroke.");
+        }
+
+        var strokeOnlyScene = CreateTargetOptionScene(targetStroke);
+        if (!strokeOnlyScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: true, eraseFills: false)
+            || !Enumerable.Range(0, strokeOnlyScene.ObjectCount).Any(index => strokeOnlyScene.FillContainsPoint(index, PointF.Empty))
+            || LineTouchesPoint(strokeOnlyScene, PointF.Empty)
+            || Enumerable.Range(0, strokeOnlyScene.ObjectCount).Any(index =>
+                strokeOnlyScene.Stroke[index] > 0 && strokeOnlyScene.ShapeKind[index] is not ShapeKind.Line))
+        {
+            throw new InvalidOperationException("Stroke-only erasing did not preserve the contacted fill or editable line type.");
+        }
+
+        var bothScene = CreateTargetOptionScene(targetStroke);
+        if (!bothScene.EraseWithBrushStroke(0, center, diameter, shape, eraseLines: true, eraseFills: true)
+            || Enumerable.Range(0, bothScene.ObjectCount).Any(index => bothScene.FillContainsPoint(index, PointF.Empty))
+            || LineTouchesPoint(bothScene, PointF.Empty))
+        {
+            throw new InvalidOperationException("Combined stroke-and-fill erasing did not erase both selected targets.");
+        }
+
+        if (VectorUnits.MinimumStrokePoints != 0.1f
+            || VectorUnits.MinimumStrokeUnits != VectorUnits.StrokePointsToUnits(0.1f))
+        {
+            throw new InvalidOperationException("The shared minimum stroke width is not 0.1 pt.");
+        }
+
+        using (var material = new MaterialEditorPanel())
+        using (var brushTip = new BrushTipPanel())
+        {
+            var materialWidth = typeof(MaterialEditorPanel).GetField(
+                "_strokeWidth",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(material)
+                as ModernNumericUpDown;
+            var brushSize = typeof(BrushTipPanel).GetField(
+                "_size",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(brushTip)
+                as ModernNumericUpDown;
+            material.StrokeWidth = 0;
+            brushTip.SetBrushStrokeSettings(8, continuous: true, sizePoints: 0, pressureSmoothing: 70);
+            if (materialWidth is null
+                || brushSize is null
+                || materialWidth.Minimum != 0.1m
+                || materialWidth.Increment != 0.1m
+                || brushSize.Minimum != 0.1m
+                || brushSize.Increment != 0.1m
+                || material.StrokeWidth != 0.1f
+                || brushTip.SizePoints != 0.1f)
+            {
+                throw new InvalidOperationException("Stroke-width controls did not clamp or step at 0.1 pt.");
+            }
+        }
+
+        var minimumScene = new VectorScene();
+        minimumScene.CreateEmpty();
+        var minimumFreeform = minimumScene.AddFreehandStroke(
+            0,
+            [new PointF(-20, 0), new PointF(20, 0)],
+            0,
+            Color.White,
+            brushStroke: false,
+            4);
+        using (var previewStage = new StageControl(minimumScene))
+        {
+            previewStage.SetFreehandPreview([PointF.Empty], Color.White, 0);
+            if (minimumFreeform < 0
+                || minimumScene.Stroke[minimumFreeform] != VectorUnits.MinimumStrokeUnits
+                || previewStage.FreehandPreviewStroke != VectorUnits.MinimumStrokeUnits)
+            {
+                throw new InvalidOperationException("Freeform storage or preview did not preserve the 0.1 pt minimum stroke.");
+            }
+        }
+
+        var minimumEraserScene = new VectorScene();
+        minimumEraserScene.CreateEmpty();
+        minimumEraserScene.AddLineSegment(
+            0,
+            new PointF(-20, 0),
+            new PointF(20, 0),
+            VectorUnits.MinimumStrokeUnits,
+            Color.Transparent,
+            Color.White,
+            6);
+        var minimumErased = minimumEraserScene.EraseWithBrushStroke(
+            0,
+            center,
+            VectorUnits.MinimumStrokeUnits,
+            shape,
+            eraseLines: true,
+            eraseFills: false);
+        var minimumFragmentsValid = Enumerable.Range(0, minimumEraserScene.ObjectCount).All(index =>
+            minimumEraserScene.ShapeKind[index] == ShapeKind.Line
+            && minimumEraserScene.Stroke[index] == VectorUnits.MinimumStrokeUnits);
+        var minimumCenterTouched = LineTouchesPoint(minimumEraserScene, PointF.Empty);
+        if (!minimumErased
+            || minimumEraserScene.ObjectCount != 2
+            || !minimumFragmentsValid
+            || minimumCenterTouched)
+        {
+            var minimumFragments = string.Join(",", Enumerable.Range(0, minimumEraserScene.ObjectCount)
+                .Select(index => $"{minimumEraserScene.ShapeKind[index]}:{minimumEraserScene.Stroke[index]:0.###}"));
+            throw new InvalidOperationException(
+                "The 0.1 pt eraser path was discontinuous or converted thin line fragments: "
+                + $"erased={minimumErased}, count={minimumEraserScene.ObjectCount}, fragments={minimumFragments}, "
+                + $"centerTouched={minimumCenterTouched}.");
         }
 
         Console.WriteLine("brush_eraser_regression=ok");
@@ -9986,6 +13395,164 @@ internal static class Benchmark
         {
             throw new InvalidOperationException("Marquee fill materialization discarded the gradient material of an extracted fill.");
         }
+
+        var curvedScene = new VectorScene();
+        curvedScene.CreateEmpty();
+        var curvedFill = curvedScene.AddPathObject(
+            0,
+            [
+                new PointF(-200, -80),
+                new PointF(200, -80),
+                new PointF(200, 160),
+                new PointF(-200, 160)
+            ],
+            0,
+            Color.MediumAquamarine,
+            Color.Transparent,
+            12);
+        if (!curvedScene.TryConvertFillToBezierPath(curvedFill)
+            || !curvedScene.TryGetPathBezierSegment(curvedFill, 0, out var curvedTop)
+            || !curvedScene.SetPathBezierSegment(
+                curvedFill,
+                curvedTop.PartIndex,
+                curvedTop.Start,
+                new PointF(-80, -190),
+                new PointF(80, -40),
+                curvedTop.End))
+        {
+            throw new InvalidOperationException("The curved marquee Fill regression could not prepare an exact cubic edge.");
+        }
+
+        var curvedMarqueeBounds = new RectangleF(-70, -220, 140, 260);
+        var curvedMaterialization = curvedScene.MaterializeMarqueeFillParts(curvedMarqueeBounds, 0);
+        var selectedCurveFill = curvedMaterialization.SelectedObjects.SingleOrDefault(-1);
+        var outsideCurveFill = Enumerable.Range(0, curvedScene.ObjectCount)
+            .FirstOrDefault(index => index != selectedCurveFill, -1);
+        var selectedCurveParts = (uint)selectedCurveFill < curvedScene.ObjectCount
+            ? curvedScene.GetEditableFillBezierSegmentParts(selectedCurveFill)
+            : [];
+        var activeCurvePart = selectedCurveParts.FirstOrDefault();
+        var activeLinearControl1 = new PointF(
+            activeCurvePart.Start.X + (activeCurvePart.End.X - activeCurvePart.Start.X) / 3f,
+            activeCurvePart.Start.Y + (activeCurvePart.End.Y - activeCurvePart.Start.Y) / 3f);
+        var activeLinearControl2 = new PointF(
+            activeCurvePart.Start.X + (activeCurvePart.End.X - activeCurvePart.Start.X) * 2f / 3f,
+            activeCurvePart.Start.Y + (activeCurvePart.End.Y - activeCurvePart.Start.Y) * 2f / 3f);
+        var activeCurveDeviation = selectedCurveParts.Length == 0
+            ? 0
+            : Math.Max(
+                Math.Abs(activeCurvePart.Control1.X - activeLinearControl1.X)
+                    + Math.Abs(activeCurvePart.Control1.Y - activeLinearControl1.Y),
+                Math.Abs(activeCurvePart.Control2.X - activeLinearControl2.X)
+                    + Math.Abs(activeCurvePart.Control2.Y - activeLinearControl2.Y));
+        if (!curvedMaterialization.Changed
+            || curvedMaterialization.SelectedObjects.Length != 1
+            || curvedScene.ObjectCount != 2
+            || (uint)selectedCurveFill >= curvedScene.ObjectCount
+            || (uint)outsideCurveFill >= curvedScene.ObjectCount
+            || !curvedScene.TryGetPathBezierWorldContours(selectedCurveFill, out _)
+            || !curvedScene.TryGetPathBezierWorldContours(outsideCurveFill, out _)
+            || selectedCurveParts.Length != 4
+            || activeCurveDeviation <= 1
+            || activeCurvePart.Start.X < curvedMarqueeBounds.Left - 2
+            || activeCurvePart.End.X > curvedMarqueeBounds.Right + 2)
+        {
+            throw new InvalidOperationException(
+                "Marquee Fill materialization flattened or failed to prioritize the selected cubic subcurve.");
+        }
+
+        var adjustedControl = new PointF(activeCurvePart.Control1.X, activeCurvePart.Control1.Y - 24);
+        if (!curvedScene.SetPathBezierSegment(
+                selectedCurveFill,
+                activeCurvePart.PartIndex,
+                activeCurvePart.Start,
+                adjustedControl,
+                activeCurvePart.Control2,
+                activeCurvePart.End)
+            || !curvedScene.TryGetPathBezierSegment(selectedCurveFill, activeCurvePart.PartIndex, out var adjustedCurvePart)
+            || !PointsNear(adjustedCurvePart.Control1, VectorUnits.Quantize(adjustedControl)))
+        {
+            throw new InvalidOperationException("A marquee-selected cubic Fill subcurve was not directly editable.");
+        }
+
+        using (var curvedStage = new StageControl(curvedScene) { Size = new Size(640, 420) })
+        {
+            var overlayParts = curvedScene.GetEditableFillBezierSegmentParts(selectedCurveFill);
+            curvedStage.RestoreViewState(curvedStage.CaptureViewState() with { Zoom = 32f });
+            curvedStage.SetSelection([selectedCurveFill], selectedCurveFill);
+            curvedStage.SetFillEdgeBezierOverlay(
+                selectedCurveFill,
+                overlayParts.Select(part => new FillEdgeBezierOverlaySegment(
+                    part.PartIndex,
+                    part.Start,
+                    part.Control1,
+                    part.Control2,
+                    part.End)).ToArray(),
+                overlayParts[0].PartIndex);
+            var firstControlHit = curvedStage.HitTestFillEdgeBezierOverlay(
+                Point.Round(curvedStage.WorldToScreen(overlayParts[0].Control1.X, overlayParts[0].Control1.Y)));
+            var secondControlHit = curvedStage.HitTestFillEdgeBezierOverlay(
+                Point.Round(curvedStage.WorldToScreen(overlayParts[0].Control2.X, overlayParts[0].Control2.Y)));
+            if (firstControlHit.Handle != EditHandleKind.BezierControl
+                || secondControlHit.Handle != EditHandleKind.BezierControl2)
+            {
+                throw new InvalidOperationException("A marquee-selected cubic Fill subcurve did not expose two distinct Stage controls.");
+            }
+        }
+
+        var outlinedCurveScene = new VectorScene();
+        outlinedCurveScene.CreateEmpty();
+        var outlinedCurveFill = outlinedCurveScene.AddPathObject(
+            0,
+            [
+                new PointF(-200, -80),
+                new PointF(200, -80),
+                new PointF(200, 160),
+                new PointF(-200, 160)
+            ],
+            VectorUnits.StrokePointsToUnits(2),
+            Color.MediumAquamarine,
+            Color.White,
+            12);
+        if (!outlinedCurveScene.TryConvertFillToBezierPath(outlinedCurveFill)
+            || !outlinedCurveScene.TryGetPathBezierSegment(outlinedCurveFill, 0, out var outlinedTop)
+            || !outlinedCurveScene.SetPathBezierSegment(
+                outlinedCurveFill,
+                outlinedTop.PartIndex,
+                outlinedTop.Start,
+                new PointF(-80, -190),
+                new PointF(80, -40),
+                outlinedTop.End))
+        {
+            throw new InvalidOperationException("The outlined marquee regression could not prepare an exact cubic edge.");
+        }
+
+        var outlinedMaterialization = outlinedCurveScene.MaterializeMarqueeSelectionParts(curvedMarqueeBounds, 0);
+        var selectedOutlineCurves = outlinedMaterialization.SelectedObjects
+            .Where(index => (uint)index < outlinedCurveScene.ObjectCount
+                && outlinedCurveScene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        var retainedFreehandOutlines = Enumerable.Range(0, outlinedCurveScene.ObjectCount)
+            .Any(index => outlinedCurveScene.ShapeKind[index] == ShapeKind.Freeform
+                && outlinedCurveScene.Stroke[index] > 0);
+        var selectedOutlineIsCurved = selectedOutlineCurves.Any(index =>
+            outlinedCurveScene.TryGetLineBezierPart(
+                index,
+                0,
+                1,
+                out var start,
+                out var control1,
+                out var control2,
+                out var end)
+            && (Math.Abs(control1.Y - (start.Y + (end.Y - start.Y) / 3f)) > 1
+                || Math.Abs(control2.Y - (start.Y + (end.Y - start.Y) * 2f / 3f)) > 1));
+        if (!outlinedMaterialization.Changed
+            || selectedOutlineCurves.Length == 0
+            || retainedFreehandOutlines
+            || !selectedOutlineIsCurved)
+        {
+            throw new InvalidOperationException("Marquee materialization flattened an outlined Path cubic subcurve.");
+        }
     }
 
     private static void RunMovedFillIsolationRegression()
@@ -10133,6 +13700,172 @@ internal static class Benchmark
             || !selectedLines.Any(index => LineMatches(scene, index, new PointF(-40, 80), new PointF(40, 80))))
         {
             throw new InvalidOperationException("Marquee fill materialization did not split and select the enclosed outlined boundary segments.");
+        }
+
+        var outlinedSelection = selectedLines.Append(selectedFill).ToArray();
+        if (!MainForm.ShouldMoveMarqueeStrokeIndependently(outlinedSelection, selectedFill, selectedLines)
+            || !MainForm.ShouldMoveMarqueeStrokeIndependently(selectedLines, selectedLines[0], selectedLines)
+            || MainForm.ShouldMoveMarqueeStrokeIndependently([selectedFill], selectedFill, selectedLines))
+        {
+            throw new InvalidOperationException("Marquee-selected boundary strokes were not isolated from linked fill deformation during drag.");
+        }
+
+        var ellipseScene = new VectorScene();
+        ellipseScene.CreateEmpty();
+        var untouched = ellipseScene.AddLineSegment(
+            0,
+            new PointF(-120, 1_000),
+            new PointF(120, 1_000),
+            stroke,
+            Color.Transparent,
+            Color.White,
+            6);
+        var ellipse = ellipseScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(2_000, 1_200),
+            0,
+            stroke,
+            Color.Teal,
+            Color.White,
+            48,
+            ShapeKind.Ellipse);
+        var crossingLine = ellipseScene.AddLineSegment(
+            0,
+            new PointF(-1_200, 0),
+            new PointF(1_200, 0),
+            stroke,
+            Color.Transparent,
+            Color.Gold,
+            12);
+        var ellipseBoundary = ellipseScene.GetShapeBoundary(ellipse);
+        var cardinalParts = ellipseScene.GetBoundaryParts(ellipse, 0)
+            .OrderBy(part => part.PartIndex)
+            .ToArray();
+        var expectedCardinalEndpoints = new[]
+        {
+            (new PointF(0, -600), new PointF(1_000, 0)),
+            (new PointF(1_000, 0), new PointF(0, 600)),
+            (new PointF(0, 600), new PointF(-1_000, 0)),
+            (new PointF(-1_000, 0), new PointF(0, -600))
+        };
+        var hasCardinalCubicParts = cardinalParts.Length == expectedCardinalEndpoints.Length
+            && cardinalParts.Zip(expectedCardinalEndpoints).All(pair =>
+                pair.First.Points.Length > 2
+                && PointsNear(pair.First.Points[0], pair.Second.Item1)
+                && PointsNear(pair.First.Points[^1], pair.Second.Item2));
+        if (ellipseBoundary.Length <= 65
+            || ellipseBoundary[0] != ellipseBoundary[^1]
+            || !PointsNear(ellipseBoundary[0], new PointF(0, -600))
+            || !hasCardinalCubicParts)
+        {
+            throw new InvalidOperationException("Ellipse topology did not use four closed top/right/bottom/left cubic boundary segments.");
+        }
+
+        var combined = ellipseScene.MaterializeMarqueeSelectionParts(new RectangleF(-200, -700, 400, 1_400), 0);
+        var remappedUntouched = (uint)untouched < combined.OldToNewObjectIndex.Length
+            ? combined.OldToNewObjectIndex[untouched]
+            : -1;
+        var ellipseStrokes = Enumerable.Range(0, ellipseScene.ObjectCount)
+            .Where(index => index != remappedUntouched
+                && ellipseScene.ShapeKind[index] == ShapeKind.Line
+                && ellipseScene.Stroke[index] > 0
+                && ellipseScene.StrokeArgb[index] == Color.White.ToArgb())
+            .ToArray();
+        var flattenedEllipseStrokes = Enumerable.Range(0, ellipseScene.ObjectCount)
+            .Where(index => ellipseScene.ShapeKind[index] == ShapeKind.Freeform
+                && ellipseScene.Stroke[index] > 0
+                && ellipseScene.StrokeArgb[index] == Color.White.ToArgb())
+            .ToArray();
+        var selectedEllipseStrokes = combined.SelectedObjects
+            .Where(index => ellipseStrokes.Contains(index))
+            .ToArray();
+        var ellipseCurves = ellipseStrokes
+            .Select(index => ellipseScene.TryGetLineBezierPart(
+                index,
+                0,
+                1,
+                out var start,
+                out var control1,
+                out var control2,
+                out var end)
+                ? (Valid: true, Start: start, Control1: control1, Control2: control2, End: end)
+                : default)
+            .ToArray();
+        var ellipsePoints = ellipseCurves
+            .Where(curve => curve.Valid)
+            .SelectMany(curve => Enumerable.Range(0, 17).Select(sample => EvaluateCubic(
+                curve.Start,
+                curve.Control1,
+                curve.Control2,
+                curve.End,
+                sample / 16f)))
+            .ToArray();
+        var maximumEllipseEquationError = ellipsePoints.Length == 0
+            ? float.PositiveInfinity
+            : ellipsePoints.Max(point => Math.Abs(
+                point.X * point.X / (1_000f * 1_000f)
+                + point.Y * point.Y / (600f * 600f)
+                - 1));
+        var selectedCurvesRemainEditable = selectedEllipseStrokes.All(index =>
+            ellipseScene.TryGetLineBezierPart(index, 0, 1, out var start, out var control1, out var control2, out var end)
+            && (DistanceFromChord(control1, start, end) > 0.1f
+                || DistanceFromChord(control2, start, end) > 0.1f));
+        var selectedEllipseFill = combined.SelectedObjects.Any(index =>
+            (uint)index < ellipseScene.ObjectCount
+            && ellipseScene.ShapeKind[index] == ShapeKind.Path
+            && ellipseScene.FillContainsPoint(index, PointF.Empty));
+        var orderedMarqueeSelection = MainForm.OrderMarqueeSelectionForCurveEditing(
+            ellipseScene,
+            combined.SelectedObjects,
+            combined.SelectedObjects);
+        var exposesCurveAdjustmentTools = orderedMarqueeSelection.Length > 0
+            && selectedEllipseStrokes.Contains(orderedMarqueeSelection[^1]);
+        if (!combined.Success
+            || !combined.Changed
+            || (uint)untouched >= combined.OldToNewObjectIndex.Length
+            || combined.OldToNewObjectIndex[untouched] < 0
+            || combined.OldToNewObjectIndex[ellipse] != -1
+            || combined.OldToNewObjectIndex[crossingLine] != -1
+            || ellipseStrokes.Length < 8
+            || flattenedEllipseStrokes.Length != 0
+            || selectedEllipseStrokes.Length != 4
+            || ellipseCurves.Any(curve => !curve.Valid)
+            || !selectedCurvesRemainEditable
+            || !selectedEllipseFill
+            || !exposesCurveAdjustmentTools
+            || maximumEllipseEquationError > 0.005f)
+        {
+            throw new InvalidOperationException(
+                $"Combined marquee materialization lost cubic ellipse geometry or fill boundaries: "
+                + $"success={combined.Success}, changed={combined.Changed}, strokes={ellipseStrokes.Length}, "
+                + $"flattened={flattenedEllipseStrokes.Length}, selected={selectedEllipseStrokes.Length}, "
+                + $"editable={selectedCurvesRemainEditable}, fill={selectedEllipseFill}, "
+                + $"handles={exposesCurveAdjustmentTools}, error={maximumEllipseEquationError:0.######}.");
+        }
+
+        static PointF EvaluateCubic(PointF start, PointF control1, PointF control2, PointF end, float t)
+        {
+            var inverse = 1 - t;
+            return new PointF(
+                inverse * inverse * inverse * start.X
+                    + 3 * inverse * inverse * t * control1.X
+                    + 3 * inverse * t * t * control2.X
+                    + t * t * t * end.X,
+                inverse * inverse * inverse * start.Y
+                    + 3 * inverse * inverse * t * control1.Y
+                    + 3 * inverse * t * t * control2.Y
+                    + t * t * t * end.Y);
+        }
+
+        static float DistanceFromChord(PointF point, PointF start, PointF end)
+        {
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var length = MathF.Sqrt(dx * dx + dy * dy);
+            return length <= 0.0001f
+                ? 0
+                : Math.Abs((point.X - start.X) * dy - (point.Y - start.Y) * dx) / length;
         }
     }
 
@@ -10295,11 +14028,38 @@ internal static class Benchmark
         };
     }
 
+    private static int ApplyInstanceAppearanceForRegression(int argb, float alpha, int tintArgb)
+    {
+        static int Multiply(int first, int second) => (first * second + 127) / 255;
+        var resultAlpha = (int)Math.Clamp(((argb >>> 24) & 0xff) * alpha, 0f, 255f);
+        return (resultAlpha << 24)
+            | (Multiply((argb >>> 16) & 0xff, (tintArgb >>> 16) & 0xff) << 16)
+            | (Multiply((argb >>> 8) & 0xff, (tintArgb >>> 8) & 0xff) << 8)
+            | Multiply(argb & 0xff, tintArgb & 0xff);
+    }
+
     private static bool NearlyEqual(float actual, float expected) => Math.Abs(actual - expected) <= 0.001f;
 
     private static bool PointsNear(PointF actual, PointF expected)
     {
         return Math.Abs(actual.X - expected.X) <= 0.1f && Math.Abs(actual.Y - expected.Y) <= 0.1f;
+    }
+
+    private static bool ContoursNear(IReadOnlyList<PointF[]> actual, IReadOnlyList<PointF[]> expected)
+    {
+        if (actual.Count != expected.Count) return false;
+        for (var contourIndex = 0; contourIndex < actual.Count; contourIndex++)
+        {
+            var actualContour = actual[contourIndex];
+            var expectedContour = expected[contourIndex];
+            if (actualContour.Length != expectedContour.Length) return false;
+            for (var pointIndex = 0; pointIndex < actualContour.Length; pointIndex++)
+            {
+                if (!PointsNear(actualContour[pointIndex], expectedContour[pointIndex])) return false;
+            }
+        }
+
+        return true;
     }
 
     private static void AssertBrushCoversCenterline(VectorScene scene, int objectIndex, IReadOnlyList<PointF> centerline)

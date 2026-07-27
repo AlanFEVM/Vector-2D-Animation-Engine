@@ -162,6 +162,7 @@ internal sealed class MaterialEditorPanel : UserControl
         Padding = new Padding(4)
     };
     private TableLayoutPanel? _content;
+    private TableLayoutPanel? _targetRow;
     private TableLayoutPanel? _materialSettings;
     private bool _updating;
     private bool _updatingComponents;
@@ -195,6 +196,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private LineEndpointStyle _endEndpointStyle = LineEndpointStyle.Round;
     private bool _lineEndpointStyleVisible;
     private bool _gradientSettingsExpanded = true;
+    private bool _textObjectMode;
     private GradientPreset? _selectedSavedGradientPreset;
 
     public MaterialEditorPanel()
@@ -329,6 +331,32 @@ internal sealed class MaterialEditorPanel : UserControl
         ApplyMaterial(fill, stroke, strokeWidth, opacity, raiseEvent: false);
     }
 
+    public void SetTextObjectMode(bool enabled)
+    {
+        if (_textObjectMode == enabled || _content is null || _targetRow is null || _materialSettings is null) return;
+        _textObjectMode = enabled;
+        if (enabled) SetGradientPreviewTarget(strokeTarget: false);
+
+        _content.SuspendLayout();
+        _targetRow.SuspendLayout();
+        try
+        {
+            _strokeTarget.Visible = !enabled;
+            _targetRow.SetColumnSpan(_fillTarget, enabled ? 2 : 1);
+            _gradientPanel.Visible = !enabled;
+            _materialSettings.Visible = !enabled;
+            _content.RowStyles[2].Height = enabled ? 0 : _gradientSettingsExpanded ? 158 : 30;
+            _content.RowStyles[3].Height = enabled ? 0 : 38;
+        }
+        finally
+        {
+            _targetRow.ResumeLayout(performLayout: true);
+            _content.ResumeLayout(performLayout: true);
+        }
+
+        UpdatePanelHeight();
+    }
+
     public void SetGradient(bool enabled, Color start, Color end)
     {
         SetGradient(enabled ? GradientKind.Linear : GradientKind.Solid,
@@ -433,6 +461,7 @@ internal sealed class MaterialEditorPanel : UserControl
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        _targetRow = row;
 
         _fillTarget.Dock = DockStyle.Fill;
         _fillTarget.Margin = new Padding(0, 3, 4, 3);
@@ -930,10 +959,10 @@ internal sealed class MaterialEditorPanel : UserControl
         content.Controls.Add(settings, 0, 3);
 
         settings.Controls.Add(_strokeWidthLabel, 0, 0);
-        _strokeWidth.Minimum = 0;
+        _strokeWidth.Minimum = 0.1m;
         _strokeWidth.Maximum = 32;
         _strokeWidth.DecimalPlaces = 1;
-        _strokeWidth.Increment = 0.5m;
+        _strokeWidth.Increment = 0.1m;
         _strokeWidth.Dock = DockStyle.Fill;
         _strokeWidth.Margin = new Padding(0, 4, 0, 4);
         Theme.StyleNumeric(_strokeWidth);
@@ -1288,7 +1317,7 @@ internal sealed class MaterialEditorPanel : UserControl
                 if (grid.GetRow(control) > 0) control.Visible = expanded;
             }
 
-            _content.RowStyles[2].Height = expanded ? 158 : 30;
+            _content.RowStyles[2].Height = _textObjectMode ? 0 : expanded ? 158 : 30;
         }
         finally
         {

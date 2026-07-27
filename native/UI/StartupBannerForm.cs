@@ -13,7 +13,7 @@ internal sealed class StartupBannerForm : Form
     {
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoSize = false;
-        BackColor = Color.FromArgb(15, 18, 21);
+        BackColor = Theme.IsLight ? Theme.App : Color.FromArgb(15, 18, 21);
         ClientSize = new Size(520, 228);
         DoubleBuffered = true;
         FormBorderStyle = FormBorderStyle.None;
@@ -59,7 +59,7 @@ internal sealed class StartupBannerForm : Form
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.Clear(BackColor);
 
-        using var border = new Pen(Color.FromArgb(74, 91, 106, 110));
+        using var border = new Pen(Theme.IsLight ? Theme.BorderHover : Color.FromArgb(74, 91, 106, 110));
         graphics.DrawRectangle(border, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
 
         using var accent = new SolidBrush(Theme.Accent);

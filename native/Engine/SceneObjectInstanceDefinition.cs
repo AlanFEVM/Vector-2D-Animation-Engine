@@ -28,7 +28,33 @@ internal readonly record struct InstanceFrameState(
     DrawingObjectPlaybackMode PlaybackMode,
     int HoldFrame)
 {
+    private readonly bool _hasStoredAlpha;
+    private readonly float _storedAlpha;
+    private readonly bool _hasStoredTintArgb;
+    private readonly int _storedTintArgb;
+
     public PointF Position => new(X, Y);
+
+    // Zero-initialized structs come from project files written before appearance fields existed.
+    public float Alpha
+    {
+        get => _hasStoredAlpha ? _storedAlpha : 1f;
+        init
+        {
+            _storedAlpha = value;
+            _hasStoredAlpha = true;
+        }
+    }
+
+    public int TintArgb
+    {
+        get => _hasStoredTintArgb ? _storedTintArgb | unchecked((int)0xff000000) : unchecked((int)0xffffffff);
+        init
+        {
+            _storedTintArgb = value | unchecked((int)0xff000000);
+            _hasStoredTintArgb = true;
+        }
+    }
 }
 
 internal readonly record struct InstanceStateKeyframe(int Frame, InstanceFrameState State);
@@ -44,6 +70,8 @@ internal class DrawingObjectInstanceDefinition
     private decimal _playbackFps = 30m;
     private int _holdFrame;
     private DrawingObjectPlaybackMode _playbackMode = DrawingObjectPlaybackMode.PlayOnce;
+    private float _alpha = 1f;
+    private int _tintArgb = unchecked((int)0xffffffff);
 
     public DrawingObjectInstanceDefinition()
     {
@@ -66,6 +94,16 @@ internal class DrawingObjectInstanceDefinition
     public float ScaleX { get; set; } = 1;
     public float ScaleY { get; set; } = 1;
     public float ScaleZ { get; set; } = 1;
+    public float Alpha
+    {
+        get => _alpha;
+        set => _alpha = float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : 1f;
+    }
+    public int TintArgb
+    {
+        get => _tintArgb;
+        set => _tintArgb = value | unchecked((int)0xff000000);
+    }
     public decimal PlaybackFps
     {
         get => _playbackFps;
@@ -106,6 +144,8 @@ internal class DrawingObjectInstanceDefinition
             ScaleX = ScaleX,
             ScaleY = ScaleY,
             ScaleZ = ScaleZ,
+            Alpha = Alpha,
+            TintArgb = TintArgb,
             PlaybackFps = PlaybackFps,
             PlaybackMode = PlaybackMode,
             HoldFrame = HoldFrame
@@ -315,7 +355,11 @@ internal class DrawingObjectInstanceDefinition
             ScaleZ,
             PlaybackFps,
             PlaybackMode,
-            HoldFrame);
+            HoldFrame)
+        {
+            Alpha = Alpha,
+            TintArgb = TintArgb
+        };
     }
 
     private void ApplyBaseState(InstanceFrameState state)
@@ -332,6 +376,8 @@ internal class DrawingObjectInstanceDefinition
         ScaleX = state.ScaleX;
         ScaleY = state.ScaleY;
         ScaleZ = state.ScaleZ;
+        Alpha = state.Alpha;
+        TintArgb = state.TintArgb;
         PlaybackFps = state.PlaybackFps;
         PlaybackMode = state.PlaybackMode;
         HoldFrame = state.HoldFrame;
@@ -350,13 +396,16 @@ internal class DrawingObjectInstanceDefinition
             || !float.IsFinite(state.SkewY)
             || !float.IsFinite(state.ScaleX)
             || !float.IsFinite(state.ScaleY)
-            || !float.IsFinite(state.ScaleZ))
+            || !float.IsFinite(state.ScaleZ)
+            || !float.IsFinite(state.Alpha))
         {
             return false;
         }
 
         normalized = state with
         {
+            Alpha = Math.Clamp(state.Alpha, 0f, 1f),
+            TintArgb = state.TintArgb | unchecked((int)0xff000000),
             PlaybackFps = Math.Clamp(state.PlaybackFps, 1m, 120m),
             PlaybackMode = Enum.IsDefined(state.PlaybackMode) ? state.PlaybackMode : DrawingObjectPlaybackMode.PlayOnce,
             HoldFrame = Math.Max(0, state.HoldFrame)

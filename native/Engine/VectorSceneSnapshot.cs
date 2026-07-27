@@ -43,6 +43,7 @@ internal sealed class VectorSceneSnapshot
     public uint[] AtomCount { get; init; } = [];
     public int[] Argb { get; init; } = [];
     public int[] StrokeArgb { get; init; } = [];
+    public bool[] FillAutoMergeProtected { get; init; } = [];
     public bool[] LinearGradientEnabled { get; init; } = [];
     public GradientKind[] GradientKinds { get; init; } = [];
     public int[] GradientStartArgb { get; init; } = [];
@@ -56,8 +57,10 @@ internal sealed class VectorSceneSnapshot
     public Dictionary<int, PointF[][]> ShapeGradientMappingLocalContours { get; init; } = new();
     public AnimationTimelineSnapshot? Timeline { get; init; }
     public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
+    public Dictionary<int, PathBezierNode[][]> PathBezierLocalContours { get; init; } = new();
     public Dictionary<int, PointF[]> FreehandLocalPoints { get; init; } = new();
     public Dictionary<int, string> ImportedSvgSources { get; init; } = new();
+    public Dictionary<int, TextObjectData> TextObjects { get; init; } = new();
 
     internal long EstimateMemoryBytes()
     {
@@ -95,6 +98,7 @@ internal sealed class VectorSceneSnapshot
         bytes += ArrayBytes(AtomCount.Length, 4);
         bytes += ArrayBytes(Argb.Length, 4);
         bytes += ArrayBytes(StrokeArgb.Length, 4);
+        bytes += ArrayBytes(FillAutoMergeProtected.Length, 1);
         bytes += ArrayBytes(LinearGradientEnabled.Length, 1);
         bytes += ArrayBytes(GradientKinds.Length, 4);
         bytes += ArrayBytes(GradientStartArgb.Length, 4);
@@ -124,11 +128,24 @@ internal sealed class VectorSceneSnapshot
             foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 8);
         }
 
+        bytes += 72L * PathBezierLocalContours.Count;
+        foreach (var contours in PathBezierLocalContours.Values)
+        {
+            bytes += ArrayBytes(contours.Length, IntPtr.Size);
+            foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 24);
+        }
+
         bytes += 64L * FreehandLocalPoints.Count;
         foreach (var points in FreehandLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);
 
         bytes += 72L * ImportedSvgSources.Count;
         foreach (var source in ImportedSvgSources.Values) bytes += StringBytes(source);
+
+        bytes += 88L * TextObjects.Count;
+        foreach (var text in TextObjects.Values)
+        {
+            bytes += StringBytes(text.Content) + StringBytes(text.FontFamilyName);
+        }
 
         if (Timeline is { } timeline)
         {

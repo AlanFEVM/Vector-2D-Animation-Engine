@@ -32,9 +32,11 @@ Read [work-packages.md](.agents/skills/vector2d-coordinate-agents/references/wor
 
 ## Release Packaging
 
-- Use `scripts\publish-split-package.ps1` for normal releases. Its default mode must produce only the replaceable `.V2DEngine` patch ZIP and checksum; do not rebuild or upload `.Runtime` or the root launcher.
-- Use `scripts\publish-split-package.ps1 -FullPackage` only when the target framework, private runtime, root launcher, or package layout changes. Full mode also produces the matching patch artifact.
-- Treat the complete `.V2DEngine` directory as the patch boundary. Never publish a merge-style subset of individual application files.
+- The repository-root `VectorAnimationEngine.exe` is exclusively the local development launcher. Generate it with `scripts\publish-development-launcher.ps1`; it must start source `dotnet watch` with module hot reload by default.
+- Never copy, rename, or synchronize a formal release EXE onto the repository-root `VectorAnimationEngine.exe`. Formal release output belongs only in `artifacts\release` or an explicitly requested empty release directory.
+- Use `scripts\publish-single-exe.ps1` for every release. It must produce exactly one replaceable EXE smaller than 5 MiB; do not publish ZIPs, checksum sidecars, expanded `.V2DEngine`, or `.Runtime`.
+- The EXE embeds the complete compressed `.V2DEngine` payload. Replacing the EXE is the update boundary; the bootstrap atomically refreshes the external `.V2DEngine` directory on next launch.
+- Keep `.Runtime` external and persistent. The bootstrap must acquire the compatible Microsoft .NET 8 Core and Windows Desktop x64 runtimes when the local runtime is absent or invalid.
 
 ## Completion
 

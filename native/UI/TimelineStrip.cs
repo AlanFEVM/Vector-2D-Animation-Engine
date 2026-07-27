@@ -1242,9 +1242,9 @@ internal sealed class TimelineStrip : Control
     private void DrawShell(Graphics graphics, TimelineLayout layout)
     {
         using var headerBrush = new SolidBrush(Theme.Panel);
-        using var gutterBrush = new SolidBrush(Color.FromArgb(28, 31, 34));
-        using var borderPen = new Pen(Color.FromArgb(82, 91, 96));
-        using var softPen = new Pen(Color.FromArgb(48, 54, 58));
+        using var gutterBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(28, 31, 34), Theme.PanelStrong));
+        using var borderPen = new Pen(ThemeNeutral(Color.FromArgb(82, 91, 96), Theme.BorderHover));
+        using var softPen = new Pen(ThemeNeutral(Color.FromArgb(48, 54, 58), Theme.Border));
         using var titleFont = Theme.UiFont(10, FontStyle.Bold);
 
         graphics.FillRectangle(headerBrush, layout.HeaderBounds);
@@ -1322,7 +1322,7 @@ internal sealed class TimelineStrip : Control
                 timeText,
                 Font,
                 Rectangle.FromLTRB(timeLeft, 1, summaryRight, HeaderHeight - 1),
-                Color.FromArgb(224, 133, 190, 218),
+                ThemeNeutral(Color.FromArgb(224, 133, 190, 218), Theme.AccentLabel),
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
     }
@@ -1342,7 +1342,9 @@ internal sealed class TimelineStrip : Control
         var y = Math.Max(2, HeightResizeHandleHeight / 2);
         var width = Math.Min(66, Math.Max(28, Width / 8));
         var left = Math.Max(0, (Width - width) / 2);
-        var color = _draggingHeightResize ? Theme.Accent : Color.FromArgb(194, 174, 212, 215);
+        var color = _draggingHeightResize
+            ? Theme.Accent
+            : ThemeNeutral(Color.FromArgb(194, 174, 212, 215), Theme.Muted);
         using var line = new Pen(color, 1.2f);
         graphics.DrawLine(line, left, y, left + width, y);
         for (var x = left + 4; x < left + width - 2; x += 6)
@@ -1353,12 +1355,14 @@ internal sealed class TimelineStrip : Control
 
     private void DrawRuler(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
-        using var rulerBrush = new SolidBrush(Color.FromArgb(23, 26, 29));
-        using var majorBrush = new SolidBrush(Color.FromArgb(32, 37, 40));
-        using var selectedBrush = new SolidBrush(Color.FromArgb(150, 177, 68, 65));
+        using var rulerBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(23, 26, 29), Theme.Top));
+        using var majorBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(32, 37, 40), Theme.PanelStrong));
+        using var selectedBrush = new SolidBrush(ThemeNeutral(
+            Color.FromArgb(150, 177, 68, 65),
+            Theme.Mix(Theme.Top, Theme.Danger, 0.22f)));
         using var hoverBrush = new SolidBrush(Color.FromArgb(34, Theme.Accent));
-        using var gridPen = new Pen(Color.FromArgb(64, 72, 77));
-        using var minorPen = new Pen(Color.FromArgb(48, 55, 59));
+        using var gridPen = new Pen(ThemeNeutral(Color.FromArgb(64, 72, 77), Theme.BorderHover));
+        using var minorPen = new Pen(ThemeNeutral(Color.FromArgb(48, 55, 59), Theme.Border));
         using var rulerFont = Theme.UiFont(7.5f);
 
         graphics.FillRectangle(rulerBrush, layout.RulerBounds);
@@ -1393,7 +1397,11 @@ internal sealed class TimelineStrip : Control
                 frame.ToString(),
                 rulerFont,
                 new Rectangle(x + 2, HeaderHeight + 1, _frameCellWidth * 2 - 2, RulerHeight - 4),
-                inTimelineRange && frame == CurrentFrame ? Color.White : inTimelineRange ? Theme.Muted : Color.FromArgb(118, Theme.Muted),
+                inTimelineRange && frame == CurrentFrame
+                    ? ThemeNeutral(Color.White, Theme.Danger)
+                    : inTimelineRange
+                        ? Theme.Muted
+                        : Color.FromArgb(118, Theme.Muted),
                 TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding);
         }
 
@@ -1568,29 +1576,35 @@ internal sealed class TimelineStrip : Control
 
     private void DrawTrackRows(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
-        using var rowBrush = new SolidBrush(Color.FromArgb(29, 32, 35));
-        using var alternateRowBrush = new SolidBrush(Color.FromArgb(32, 35, 38));
-        using var activeRowBrush = new SolidBrush(Color.FromArgb(40, 46, 51));
-        using var selectedLayerRowBrush = new SolidBrush(Color.FromArgb(38, 92, 139, 174));
+        using var rowBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(29, 32, 35), Theme.Panel));
+        using var alternateRowBrush = new SolidBrush(ThemeNeutral(
+            Color.FromArgb(32, 35, 38),
+            Theme.Mix(Theme.Panel, Theme.PanelStrong, 0.38f)));
+        using var activeRowBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(40, 46, 51), Theme.AccentSurface));
+        using var selectedLayerRowBrush = new SolidBrush(ThemeNeutral(
+            Color.FromArgb(38, 92, 139, 174),
+            Color.FromArgb(34, Theme.Accent)));
         using var activeEdgeBrush = new SolidBrush(Theme.Accent);
         using var populatedExposureBrush = new SolidBrush(Color.FromArgb(62, 78, 126, 154));
         using var blankExposureBrush = new SolidBrush(Color.FromArgb(42, 105, 116, 122));
         using var populatedLinePen = new Pen(Color.FromArgb(184, 128, 174, 202), 1f);
         using var blankLinePen = new Pen(Color.FromArgb(150, 139, 151, 157), 1f);
-        using var gridPen = new Pen(Color.FromArgb(44, 50, 54));
-        using var majorGridPen = new Pen(Color.FromArgb(65, 73, 79));
+        using var gridPen = new Pen(ThemeNeutral(Color.FromArgb(44, 50, 54), Theme.Border));
+        using var majorGridPen = new Pen(ThemeNeutral(Color.FromArgb(65, 73, 79), Theme.BorderHover));
         using var currentCellPen = new Pen(Color.FromArgb(176, 242, 94, 91), 1.2f);
         using var selectionPen = new Pen(Color.FromArgb(238, 105, 181, 230), 1.6f);
-        using var hiddenBrush = new SolidBrush(Color.FromArgb(126, 12, 14, 16));
+        using var hiddenBrush = new SolidBrush(ThemeNeutral(
+            Color.FromArgb(126, 12, 14, 16),
+            Color.FromArgb(36, Color.Black)));
         using var currentColumnBrush = new SolidBrush(Color.FromArgb(24, 240, 94, 91));
         using var hoverCellBrush = new SolidBrush(Color.FromArgb(30, 104, 181, 230));
         using var selectionBrush = new SolidBrush(Color.FromArgb(54, 68, 151, 207));
         using var layerDropFill = new SolidBrush(Color.FromArgb(52, Theme.Accent));
         using var layerDropPen = new Pen(Theme.Accent, 2f);
-        using var eyePen = new Pen(Color.FromArgb(214, 224, 224, 224), 1.35f);
-        using var hiddenEyePen = new Pen(Color.FromArgb(130, 144, 148, 148), 1.2f);
-        using var lockPen = new Pen(Color.FromArgb(212, 224, 224, 224), 1.25f);
-        using var unlockedLockPen = new Pen(Color.FromArgb(126, 144, 148, 148), 1.2f);
+        using var eyePen = new Pen(ThemeNeutral(Color.FromArgb(214, 224, 224, 224), Theme.Text), 1.35f);
+        using var hiddenEyePen = new Pen(ThemeNeutral(Color.FromArgb(130, 144, 148, 148), Theme.Muted), 1.2f);
+        using var lockPen = new Pen(ThemeNeutral(Color.FromArgb(212, 224, 224, 224), Theme.Text), 1.25f);
+        using var unlockedLockPen = new Pen(ThemeNeutral(Color.FromArgb(126, 144, 148, 148), Theme.Muted), 1.2f);
 
         var visibleTracks = VisibleTrackIndices();
         var visibleRows = VisibleTrackCapacity(layout);
@@ -1894,16 +1908,16 @@ internal sealed class TimelineStrip : Control
     {
         const float radius = 3.25f;
         var bounds = new RectangleF(centerX - radius, centerY - radius, radius * 2, radius * 2);
-        using var outlinePen = new Pen(Color.FromArgb(232, 220, 228, 231), 1.1f);
+        using var outlinePen = new Pen(ThemeNeutral(Color.FromArgb(232, 220, 228, 231), Theme.Text), 1.1f);
         if (kind == TimelineKeyframeKind.Populated)
         {
-            using var fillBrush = new SolidBrush(Color.FromArgb(240, 220, 228, 231));
+            using var fillBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(240, 220, 228, 231), Theme.Text));
             graphics.FillEllipse(fillBrush, bounds);
             graphics.DrawEllipse(outlinePen, bounds);
         }
         else
         {
-            using var fillBrush = new SolidBrush(Color.FromArgb(31, 35, 38));
+            using var fillBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(31, 35, 38), Theme.Panel));
             graphics.FillEllipse(fillBrush, bounds);
             graphics.DrawEllipse(outlinePen, bounds);
         }
@@ -2142,6 +2156,11 @@ internal sealed class TimelineStrip : Control
         return Color.FromArgb((int)MathF.Round(255 * Math.Clamp(opacity, 0, 1)), color.R, color.G, color.B);
     }
 
+    private static Color ThemeNeutral(Color darkColor, Color lightColor)
+    {
+        return Theme.IsLight ? lightColor : darkColor;
+    }
+
     internal static TimelineLayerFeedbackStyle ResolveLayerFeedbackStyle(TimelineLayerFeedbackKind kind)
     {
         return kind switch
@@ -2268,7 +2287,7 @@ internal sealed class TimelineStrip : Control
     {
         var revealHeight = Math.Max(1f, bounds.Height * eased);
         var hiddenHeight = Math.Max(0, (bounds.Height - revealHeight) * 0.5f);
-        using var cover = new SolidBrush(Color.FromArgb(29, 32, 35));
+        using var cover = new SolidBrush(ThemeNeutral(Color.FromArgb(29, 32, 35), Theme.Panel));
         if (hiddenHeight > 0.1f)
         {
             graphics.FillRectangle(cover, bounds.Left, bounds.Top, bounds.Width, hiddenHeight);
@@ -2296,7 +2315,8 @@ internal sealed class TimelineStrip : Control
     {
         var ghostHeight = Math.Max(2f, bounds.Height * (1f - eased * 0.88f));
         var ghost = new RectangleF(bounds.Left, bounds.Top + (bounds.Height - ghostHeight) * 0.5f, bounds.Width, ghostHeight);
-        using var background = new SolidBrush(WithOpacity(Color.FromArgb(38, 42, 46), fade * 0.92f));
+        var feedbackBackground = ThemeNeutral(Color.FromArgb(38, 42, 46), Theme.PanelStrong);
+        using var background = new SolidBrush(WithOpacity(feedbackBackground, fade * 0.92f));
         using var edge = new Pen(WithOpacity(style.Color, fade), 1.4f);
         using var layerColor = new SolidBrush(WithOpacity(snapshot.Color, fade));
         graphics.FillRectangle(background, ghost);
@@ -2305,7 +2325,7 @@ internal sealed class TimelineStrip : Control
         graphics.FillRectangle(layerColor, LayerControlsWidth + 3, ghost.Top + 2, 4, Math.Max(1, ghost.Height - 4));
         if (ghost.Height >= 9)
         {
-            var textColor = Theme.Mix(Color.FromArgb(38, 42, 46), Theme.Text, fade);
+            var textColor = Theme.Mix(feedbackBackground, Theme.Text, fade);
             TextRenderer.DrawText(
                 graphics,
                 snapshot.Name,
@@ -2386,11 +2406,11 @@ internal sealed class TimelineStrip : Control
     private void DrawHorizontalScroll(Graphics graphics, TimelineLayout layout)
     {
         var scroll = GetHorizontalScrollGeometry(layout);
-        using var backgroundBrush = new SolidBrush(Color.FromArgb(20, 23, 25));
-        using var buttonBrush = new SolidBrush(Color.FromArgb(35, 40, 43));
-        using var thumbBrush = new SolidBrush(Color.FromArgb(75, 85, 90));
-        using var borderPen = new Pen(Color.FromArgb(55, 63, 68));
-        using var arrowBrush = new SolidBrush(Color.FromArgb(190, 202, 202));
+        using var backgroundBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(20, 23, 25), Theme.Top));
+        using var buttonBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(35, 40, 43), Theme.PanelStrong));
+        using var thumbBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(75, 85, 90), Theme.BorderHover));
+        using var borderPen = new Pen(ThemeNeutral(Color.FromArgb(55, 63, 68), Theme.Border));
+        using var arrowBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(190, 202, 202), Theme.Muted));
 
         graphics.FillRectangle(backgroundBrush, scroll.Bounds);
         graphics.FillRectangle(buttonBrush, scroll.DecreaseButton);
@@ -2406,8 +2426,8 @@ internal sealed class TimelineStrip : Control
     {
         var scroll = GetVerticalScrollGeometry(layout);
         if (scroll.MaxValue <= 0 || scroll.Bounds.Height <= 0) return;
-        using var backgroundBrush = new SolidBrush(Color.FromArgb(19, 22, 24));
-        using var thumbBrush = new SolidBrush(Color.FromArgb(75, 85, 90));
+        using var backgroundBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(19, 22, 24), Theme.Top));
+        using var thumbBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(75, 85, 90), Theme.BorderHover));
         graphics.FillRectangle(backgroundBrush, scroll.Bounds);
         graphics.FillRectangle(thumbBrush, scroll.Thumb);
     }
@@ -3459,7 +3479,7 @@ internal sealed class TimelineStrip : Control
     private void DrawLayerHierarchyGuide(Graphics graphics, int depth, int y, int labelLeft)
     {
         if (depth <= 0) return;
-        using var guide = new Pen(Color.FromArgb(92, 104, 121, 126), 1f);
+        using var guide = new Pen(ThemeNeutral(Color.FromArgb(92, 104, 121, 126), Theme.Muted), 1f);
         var x = labelLeft - 6;
         graphics.DrawLine(guide, x, y, x, y + _rowHeight / 2);
         graphics.DrawLine(guide, x, y + _rowHeight / 2, x + 5, y + _rowHeight / 2);
@@ -3474,7 +3494,7 @@ internal sealed class TimelineStrip : Control
         graphics.DrawRectangle(pen, body);
         if (locked)
         {
-            using var fill = new SolidBrush(Color.FromArgb(202, 224, 224, 224));
+            using var fill = new SolidBrush(ThemeNeutral(Color.FromArgb(202, 224, 224, 224), Theme.Text));
             graphics.FillEllipse(fill, centerX - 1, centerY + 1, 2, 2);
         }
     }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 
 namespace VectorAnimationEngine;
 
@@ -18,11 +19,111 @@ internal readonly record struct StageViewState(
     float WorldGridOpacity,
     WorldGridType WorldGridType);
 
+internal readonly record struct TransformOverlayFrame(PointF Origin, PointF AxisX, PointF AxisY)
+{
+    public PointF TopLeft => Origin;
+    public PointF TopRight => Add(Origin, AxisX);
+    public PointF BottomLeft => Add(Origin, AxisY);
+    public PointF BottomRight => Add(TopRight, AxisY);
+    public PointF Center => new(
+        Origin.X + (AxisX.X + AxisY.X) * 0.5f,
+        Origin.Y + (AxisX.Y + AxisY.Y) * 0.5f);
+
+    public RectangleF Bounds
+    {
+        get
+        {
+            var topRight = TopRight;
+            var bottomRight = BottomRight;
+            var bottomLeft = BottomLeft;
+            var left = Math.Min(Math.Min(Origin.X, topRight.X), Math.Min(bottomRight.X, bottomLeft.X));
+            var top = Math.Min(Math.Min(Origin.Y, topRight.Y), Math.Min(bottomRight.Y, bottomLeft.Y));
+            var right = Math.Max(Math.Max(Origin.X, topRight.X), Math.Max(bottomRight.X, bottomLeft.X));
+            var bottom = Math.Max(Math.Max(Origin.Y, topRight.Y), Math.Max(bottomRight.Y, bottomLeft.Y));
+            return RectangleF.FromLTRB(left, top, right, bottom);
+        }
+    }
+
+    public bool IsValid
+    {
+        get
+        {
+            if (!IsFinite(Origin) || !IsFinite(AxisX) || !IsFinite(AxisY)) return false;
+            var lengthXSquared = AxisX.X * AxisX.X + AxisX.Y * AxisX.Y;
+            var lengthYSquared = AxisY.X * AxisY.X + AxisY.Y * AxisY.Y;
+            var determinant = AxisX.X * AxisY.Y - AxisX.Y * AxisY.X;
+            return lengthXSquared > 0.000001f
+                && lengthYSquared > 0.000001f
+                && Math.Abs(determinant) > 0.000001f;
+        }
+    }
+
+    public static TransformOverlayFrame FromBounds(RectangleF bounds) => new(
+        new PointF(bounds.Left, bounds.Top),
+        new PointF(bounds.Width, 0),
+        new PointF(0, bounds.Height));
+
+    private static PointF Add(PointF left, PointF right) => new(left.X + right.X, left.Y + right.Y);
+    private static bool IsFinite(PointF point) => float.IsFinite(point.X) && float.IsFinite(point.Y);
+}
+
+internal readonly record struct TransformOverlayHandleGeometry(
+    TransformHandleKind Kind,
+    PointF Point,
+    PointF Anchor);
+
+internal readonly record struct TransformOverlayScreenGeometry(
+    PointF TopLeft,
+    PointF TopRight,
+    PointF BottomRight,
+    PointF BottomLeft,
+    TransformOverlayHandleGeometry[] ResizeHandles,
+    TransformOverlayHandleGeometry[] RotationHandles,
+    TransformOverlayHandleGeometry[] SkewHandles)
+{
+    public bool Contains(PointF point)
+    {
+        var hasPositive = false;
+        var hasNegative = false;
+        CheckEdge(TopLeft, TopRight, point, ref hasPositive, ref hasNegative);
+        CheckEdge(TopRight, BottomRight, point, ref hasPositive, ref hasNegative);
+        CheckEdge(BottomRight, BottomLeft, point, ref hasPositive, ref hasNegative);
+        CheckEdge(BottomLeft, TopLeft, point, ref hasPositive, ref hasNegative);
+        return !(hasPositive && hasNegative);
+    }
+
+    private static void CheckEdge(
+        PointF start,
+        PointF end,
+        PointF point,
+        ref bool hasPositive,
+        ref bool hasNegative)
+    {
+        var cross = (end.X - start.X) * (point.Y - start.Y)
+            - (end.Y - start.Y) * (point.X - start.X);
+        if (cross > 0.01f) hasPositive = true;
+        else if (cross < -0.01f) hasNegative = true;
+    }
+}
+
 internal readonly record struct CubicDrawingPreviewSegment(
     PointF Start,
     PointF Control1,
     PointF Control2,
     PointF End);
+
+internal readonly record struct FillEdgeBezierOverlaySegment(
+    int PartIndex,
+    PointF Start,
+    PointF Control1,
+    PointF Control2,
+    PointF End);
+
+internal readonly record struct FillEdgeBezierOverlayHit(int PartIndex, EditHandleKind Handle)
+{
+    public bool IsValid => PartIndex >= 0;
+    public static FillEdgeBezierOverlayHit None => new(-1, EditHandleKind.None);
+}
 
 internal enum SelectionHighlightKind
 {
@@ -32,10 +133,18 @@ internal enum SelectionHighlightKind
 
 internal sealed class StageControl : Control
 {
+    private const int WmPointerUpdate = 0x0245;
+    private const int WmPointerDown = 0x0246;
+    private const int WmPointerUp = 0x0247;
+    private const int WmPointerCaptureChanged = 0x024C;
+    private const int MaxPenHistoryEntries = 512;
     private const int MaxSelectionOutlines = 512;
     private const float EndpointHandleHitRadiusPixels = 14;
     private const float ControlHandleHitRadiusPixels = 16;
     private const float MaxControlHandleHitRadiusPixels = 32;
+    private const float FillEdgeBezierCurveHitRadiusPixels = 6;
+    private const float FillEdgeBezierAnchorHitRadiusPixels = 9;
+    private const float FillEdgeBezierControlHitRadiusPixels = 10;
     private const int BrushColorPaletteSwatchSize = 30;
     private const int BrushColorPaletteRadiusPixels = 58;
     private const int MaxBrushColorPaletteColors = 8;
@@ -63,16 +172,22 @@ internal sealed class StageControl : Control
     private readonly SolidBrush _marqueeBrush = new(Color.FromArgb(34, 112, 204, 255));
     private readonly SolidBrush _handleBrush = new(Color.FromArgb(255, 255, 240, 168));
     private readonly SolidBrush _bezierHandleBrush = new(Color.FromArgb(255, 112, 204, 255));
+    private readonly Pen _textAreaGlowPen = new(Color.FromArgb(80, 79, 179, 162), 4f);
+    private readonly Pen _textAreaPen = new(Color.FromArgb(255, 79, 179, 162), 1.6f);
+    private readonly SolidBrush _textAreaHandleBrush = new(Color.FromArgb(255, 79, 179, 162));
     private readonly Pen _handleBorderPen = new(Color.FromArgb(255, 16, 18, 22), 1);
     private readonly System.Windows.Forms.Timer _fillAnimationTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _selectionHighlightTimer = new() { Interval = 40 };
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private readonly MarqueeOverlayWindow _marqueeOverlay;
+    private readonly HashSet<uint> _handledPenPointers = [];
+    private PointerPenInfo[] _penHistoryBuffer = new PointerPenInfo[32];
     private int _selectedObject = -1;
     private int[] _selectedObjects = Array.Empty<int>();
     private DrawingElementHit[] _selectedElements = Array.Empty<DrawingElementHit>();
     private DrawingElementHit _hoveredLineElement = DrawingElementHit.None;
+    private TransformOverlayFrame _transformFrame;
     private RectangleF _transformBounds = RectangleF.Empty;
     private PointF _transformFocus;
     private RectangleF _drawingObjectSelectionBounds = RectangleF.Empty;
@@ -109,6 +224,10 @@ internal sealed class StageControl : Control
     private Color _gradientOverlayEndColor = Color.White;
     private GradientKind _gradientOverlayKind;
     private GradientStop[] _gradientOverlayStops = [new GradientStop(0, Color.White), new GradientStop(1, Color.White)];
+    private FillEdgeBezierOverlaySegment[] _fillEdgeBezierOverlaySegments = [];
+    private int _fillEdgeBezierOverlayTargetObject = -1;
+    private int _fillEdgeBezierOverlayActivePartIndex = -1;
+    private long _fillEdgeBezierOverlayRevision;
     private Point _brushColorPaletteCenter;
     private Color[] _brushColorPaletteColors = [];
     private int _brushColorPaletteHoveredIndex = -1;
@@ -122,12 +241,46 @@ internal sealed class StageControl : Control
 
     private readonly record struct SelectedPolylineOwnerCacheEntry(int Frame, long Revision, float X, float Y, DrawingPolylinePartGeometry[] Parts);
 
+    internal enum PenPointerEventKind
+    {
+        Down,
+        Update,
+        Up,
+        CaptureLost
+    }
+
+    internal readonly record struct PenPointerSample(
+        Point Location,
+        float Pressure,
+        bool IsInContact,
+        bool IsPrimary,
+        bool IsEraser,
+        bool HasBarrelButton,
+        uint TimestampMilliseconds);
+
+    internal sealed class PenPointerEventArgs : EventArgs
+    {
+        public PenPointerEventArgs(uint pointerId, PenPointerEventKind kind, IReadOnlyList<PenPointerSample> samples)
+        {
+            PointerId = pointerId;
+            Kind = kind;
+            Samples = samples;
+        }
+
+        public uint PointerId { get; }
+        public PenPointerEventKind Kind { get; }
+        public IReadOnlyList<PenPointerSample> Samples { get; }
+        public bool Handled { get; set; }
+    }
+
     public VectorScene Scene { get; internal set; }
     public VectorScene? UnderlayScene { get; private set; }
     public VectorScene? OnionSkinScene { get; private set; }
     public VectorScene? DragPreviewScene { get; private set; }
     private VectorScene? _dragPreviewSourceScene;
     private HashSet<int> _dragPreviewHiddenObjects = [];
+    private VectorScene? _editingTextScene;
+    private int _editingTextObject = -1;
     public SceneDimension ReferenceDimension { get; private set; } = SceneDimension.TwoD;
     public CameraProjection ReferenceProjection { get; private set; } = CameraProjection.Orthographic;
     public float ReferenceYaw => _referenceYaw;
@@ -191,12 +344,15 @@ internal sealed class StageControl : Control
     public DrawingElementHit HoveredLineElement => _hoveredLineElement;
     public bool TransformMode { get; private set; }
     public bool TransformBoundsVisible { get; private set; }
+    public TransformOverlayFrame TransformFrame => _transformFrame;
     public RectangleF TransformBounds => _transformBounds;
     public PointF TransformFocus => _transformFocus;
     public bool DrawingObjectSelectionVisible { get; private set; }
     public RectangleF DrawingObjectSelectionBounds => _drawingObjectSelectionBounds;
     public bool DrawingObjectAnchorVisible { get; private set; }
     public PointF DrawingObjectAnchor => _drawingObjectAnchor;
+    internal static Color TextAreaBorderColor => Color.FromArgb(255, 79, 179, 162);
+    internal static Color TextAreaGlowColor => Color.FromArgb(80, 79, 179, 162);
     public bool MarqueeVisible { get; private set; }
     public Point MarqueeStart { get; private set; }
     public Point MarqueeEnd { get; private set; }
@@ -234,6 +390,7 @@ internal sealed class StageControl : Control
     public bool BrushTipCursorVisible { get; private set; }
     public Point BrushTipCursorScreen { get; private set; }
     public float BrushTipCursorRadiusPixels { get; private set; }
+    private float BrushTipCursorDiameterWorld { get; set; }
     public bool BrushTipCursorIsEraser { get; private set; }
     public BrushShape? BrushTipCursorShape { get; private set; }
     public bool FillPreviewVisible => _fillPreviewContours.Length > 0;
@@ -249,6 +406,13 @@ internal sealed class StageControl : Control
     public Color GradientOverlayEndColor => _gradientOverlayEndColor;
     public GradientKind GradientOverlayKind => _gradientOverlayKind;
     public IReadOnlyList<GradientStop> GradientOverlayStops => _gradientOverlayStops;
+    public bool FillEdgeBezierOverlayVisible => _fillEdgeBezierOverlayTargetObject >= 0
+        && _fillEdgeBezierOverlaySegments.Length > 0;
+    public int FillEdgeBezierOverlayTargetObject => _fillEdgeBezierOverlayTargetObject;
+    public int FillEdgeBezierOverlayActivePartIndex => _fillEdgeBezierOverlayActivePartIndex;
+    public IReadOnlyList<FillEdgeBezierOverlaySegment> FillEdgeBezierOverlaySegments => _fillEdgeBezierOverlaySegments;
+    public bool FillEdgeBezierPointerEditing { get; private set; }
+    internal long FillEdgeBezierOverlayRevision => _fillEdgeBezierOverlayRevision;
     public bool BrushColorPaletteVisible => _brushColorPaletteColors.Length > 0;
     public Point BrushColorPaletteCenter => _brushColorPaletteCenter;
     public IReadOnlyList<Color> BrushColorPaletteColors => _brushColorPaletteColors;
@@ -292,6 +456,8 @@ internal sealed class StageControl : Control
     internal float SelectionHighlightPulse => 0.5f + 0.5f * MathF.Sin(_selectionHighlightPhase * MathF.Tau);
     internal double LastFrameRenderMilliseconds => _lastFrameRenderMilliseconds;
     public event EventHandler? FrameRendered;
+    public event EventHandler? ViewChanged;
+    internal event EventHandler<PenPointerEventArgs>? PenPointerInput;
 
     internal bool HasCachedDirect2DFreehandGeometry(VectorScene scene)
     {
@@ -300,6 +466,7 @@ internal sealed class StageControl : Control
 
     internal void ReloadRenderingModuleForHotReload()
     {
+        ResetFillEdgeBezierOverlay(invalidate: false);
         _direct2DRenderer.ReloadRuntimeResources();
         ImportedSvgRasterizer.ClearCache();
         foreach (var brush in _brushCache.Values) brush.Dispose();
@@ -332,12 +499,16 @@ internal sealed class StageControl : Control
 
     public void BindScene(VectorScene scene)
     {
+        ResetFillEdgeBezierOverlay(invalidate: false);
+        FillEdgeBezierPointerEditing = false;
         Scene = scene;
         UnderlayScene = null;
         OnionSkinScene = null;
         DragPreviewScene = null;
         _dragPreviewSourceScene = null;
         _dragPreviewHiddenObjects.Clear();
+        _editingTextScene = null;
+        _editingTextObject = -1;
         SelectedElement = DrawingElementHit.None;
         _selectedElements = Array.Empty<DrawingElementHit>();
         InvalidateSelectedFillCache();
@@ -352,6 +523,7 @@ internal sealed class StageControl : Control
         ClearBrushColorPalette();
         _direct2DRenderer.Resize(ClientSize);
         Invalidate();
+        RaiseViewChanged();
     }
 
     public void BindUnderlayScene(VectorScene? scene)
@@ -382,6 +554,37 @@ internal sealed class StageControl : Control
     internal bool IsHiddenByDragPreview(VectorScene scene, int objectIndex)
     {
         return ReferenceEquals(scene, _dragPreviewSourceScene) && _dragPreviewHiddenObjects.Contains(objectIndex);
+    }
+
+    internal bool IsObjectHiddenForRendering(VectorScene scene, int objectIndex)
+    {
+        return IsHiddenByDragPreview(scene, objectIndex)
+            || (ReferenceEquals(scene, _editingTextScene) && objectIndex == _editingTextObject);
+    }
+
+    public void SetEditingTextObject(int objectIndex)
+    {
+        if ((uint)objectIndex >= Scene.ObjectCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(objectIndex));
+        }
+        if (Scene.ShapeKind[objectIndex] != ShapeKind.Text)
+        {
+            throw new ArgumentException("The editing object must be a text object.", nameof(objectIndex));
+        }
+        if (ReferenceEquals(_editingTextScene, Scene) && _editingTextObject == objectIndex) return;
+
+        _editingTextScene = Scene;
+        _editingTextObject = objectIndex;
+        Invalidate();
+    }
+
+    public void ClearEditingTextObject()
+    {
+        if (_editingTextScene is null && _editingTextObject < 0) return;
+        _editingTextScene = null;
+        _editingTextObject = -1;
+        Invalidate();
     }
 
     public void ConfigureReferenceView(SceneDefinition? scene)
@@ -491,7 +694,9 @@ internal sealed class StageControl : Control
         _referenceTargetZ = Math.Clamp(state.ReferenceTargetZ, -5_000_000, 5_000_000);
         WorldGridOpacity = state.WorldGridOpacity;
         WorldGridType = state.WorldGridType;
+        RefreshBrushTipCursorScale();
         Invalidate();
+        RaiseViewChanged();
     }
 
     private static float NormalizeRadians(float value)
@@ -508,12 +713,16 @@ internal sealed class StageControl : Control
         CameraX = 0;
         CameraY = 0;
         Zoom = (float)Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(Scene.StageWidth), Height / VectorUnits.ToPixels(Scene.StageHeight)) * 0.9, 0.02, 64);
+        RefreshBrushTipCursorScale();
         Invalidate();
+        RaiseViewChanged();
     }
 
     public void ResetDefaultView() => SetVisibleWorldWidth(VectorUnits.DefaultVisibleWorldWidth);
 
-    public void SetVisibleWorldWidth(float vectorUnits)
+    public void SetVisibleWorldWidth(float vectorUnits) => SetVisibleWorldWidthCore(vectorUnits, raiseViewChanged: true);
+
+    private void SetVisibleWorldWidthCore(float vectorUnits, bool raiseViewChanged)
     {
         vectorUnits = Math.Clamp(vectorUnits, 1, Scene.StageWidth);
         if (Width <= 0 || Height <= 0)
@@ -526,7 +735,9 @@ internal sealed class StageControl : Control
         CameraX = 0;
         CameraY = 0;
         Zoom = (float)Math.Clamp(Width / Math.Max(1, VectorUnits.ToPixels(vectorUnits)), 0.02, 64);
+        RefreshBrushTipCursorScale();
         Invalidate();
+        if (raiseViewChanged) RaiseViewChanged();
     }
 
     public PointF ScreenToWorld(Point screen)
@@ -548,6 +759,7 @@ internal sealed class StageControl : Control
         CameraX -= VectorUnits.FromPixels(dx / Zoom);
         CameraY -= VectorUnits.FromPixels(dy / Zoom);
         Invalidate();
+        RaiseViewChanged();
     }
 
     public void ZoomAt(Point screen, float factor)
@@ -557,7 +769,9 @@ internal sealed class StageControl : Control
         var after = ScreenToWorld(screen);
         CameraX += before.X - after.X;
         CameraY += before.Y - after.Y;
+        RefreshBrushTipCursorScale();
         Invalidate();
+        RaiseViewChanged();
     }
 
     public float WorldLengthToScreen(float vectorUnits) => Math.Abs(VectorUnits.ToPixels(vectorUnits)) * Zoom;
@@ -589,6 +803,19 @@ internal sealed class StageControl : Control
             return EditHandleKind.None;
         }
 
+        if (shape == ShapeKind.Text)
+        {
+            if (!TextAreaResizeHandlesVisible(objectIndex)) return EditHandleKind.None;
+            foreach (var handle in TextAreaResizeHandles())
+            {
+                if (Distance(screen, WorldToScreen(GetTextAreaHandleWorldPoint(objectIndex, handle))) <= 12)
+                {
+                    return handle;
+                }
+            }
+
+            return EditHandleKind.None;
+        }
         if (IsFreehandShape(shape) || shape == ShapeKind.Path) return EditHandleKind.None;
         if (shape == ShapeKind.Line)
         {
@@ -626,15 +853,76 @@ internal sealed class StageControl : Control
         return LocalToWorld(objectIndex, local);
     }
 
+    internal PointF GetTextAreaHandleWorldPoint(int objectIndex, EditHandleKind handle)
+    {
+        if ((uint)objectIndex >= Scene.ObjectCount || Scene.ShapeKind[objectIndex] != ShapeKind.Text)
+        {
+            return PointF.Empty;
+        }
+
+        var halfWidth = Scene.Width[objectIndex] * 0.5f;
+        var local = handle switch
+        {
+            EditHandleKind.TextAreaLeft => new PointF(-halfWidth, 0),
+            EditHandleKind.TextAreaRight => new PointF(halfWidth, 0),
+            _ => PointF.Empty
+        };
+        return LocalToWorld(objectIndex, local);
+    }
+
+    internal PointF[] GetTextAreaWorldCorners(int objectIndex)
+    {
+        if ((uint)objectIndex >= Scene.ObjectCount || Scene.ShapeKind[objectIndex] != ShapeKind.Text)
+        {
+            return [];
+        }
+
+        var halfWidth = Scene.Width[objectIndex] * 0.5f;
+        var halfHeight = Scene.Height[objectIndex] * 0.5f;
+        return
+        [
+            LocalToWorld(objectIndex, new PointF(-halfWidth, -halfHeight)),
+            LocalToWorld(objectIndex, new PointF(halfWidth, -halfHeight)),
+            LocalToWorld(objectIndex, new PointF(halfWidth, halfHeight)),
+            LocalToWorld(objectIndex, new PointF(-halfWidth, halfHeight))
+        ];
+    }
+
+    internal bool TextAreaOverlayVisible(int objectIndex)
+    {
+        return !TransformMode
+            && (uint)objectIndex < Scene.ObjectCount
+            && Scene.ShapeKind[objectIndex] == ShapeKind.Text
+            && !(ReferenceEquals(_editingTextScene, Scene) && _editingTextObject == objectIndex);
+    }
+
+    internal bool TextAreaResizeHandlesVisible(int objectIndex)
+    {
+        return TextAreaOverlayVisible(objectIndex)
+            && _selectedElements.Length == 0
+            && _selectedObjects.Length == 1
+            && _selectedObject == objectIndex;
+    }
+
     public void SetTransformOverlay(bool transformMode, RectangleF bounds, PointF? focus = null)
     {
-        var visible = transformMode && bounds.Width > 0.001f && bounds.Height > 0.001f;
+        var frame = bounds.Width > 0.001f && bounds.Height > 0.001f
+            ? TransformOverlayFrame.FromBounds(bounds)
+            : default;
+        SetTransformOverlay(transformMode, frame, focus);
+    }
+
+    public void SetTransformOverlay(bool transformMode, TransformOverlayFrame frame, PointF? focus = null)
+    {
+        var visible = transformMode && frame.IsValid;
+        var nextFrame = visible ? frame : default;
+        var nextBounds = visible ? frame.Bounds : RectangleF.Empty;
         var nextFocus = visible
-            ? focus ?? new PointF(bounds.Left + bounds.Width * 0.5f, bounds.Top + bounds.Height * 0.5f)
+            ? focus ?? frame.Center
             : PointF.Empty;
         if (TransformMode == transformMode
             && TransformBoundsVisible == visible
-            && _transformBounds == bounds
+            && _transformFrame == nextFrame
             && _transformFocus == nextFocus)
         {
             return;
@@ -642,7 +930,8 @@ internal sealed class StageControl : Control
 
         TransformMode = transformMode;
         TransformBoundsVisible = visible;
-        _transformBounds = visible ? bounds : RectangleF.Empty;
+        _transformFrame = nextFrame;
+        _transformBounds = nextBounds;
         _transformFocus = nextFocus;
         InvalidateSelectionState();
     }
@@ -673,26 +962,277 @@ internal sealed class StageControl : Control
     public TransformHandleKind HitTestTransformHandle(Point screen)
     {
         if (!TransformBoundsVisible) return TransformHandleKind.None;
-        var rect = TransformScreenBounds();
         if (Distance(screen, WorldToScreen(_transformFocus)) <= 10) return TransformHandleKind.Focus;
-        var points = TransformHandlePoints(rect);
-        foreach (var (kind, point) in points)
+        var geometry = GetTransformOverlayScreenGeometry();
+        foreach (var (kind, point, _) in geometry.ResizeHandles)
         {
             if (Distance(screen, point) <= 10) return kind;
         }
 
-        foreach (var (kind, point, _) in CornerRotationHandlePoints(rect))
+        foreach (var (kind, point, _) in geometry.RotationHandles)
         {
             if (Distance(screen, point) <= 11) return kind;
         }
 
-        foreach (var (kind, point, _) in EdgeSkewHandlePoints(rect))
+        foreach (var (kind, point, _) in geometry.SkewHandles)
         {
             if (Distance(screen, point) <= 10) return kind;
         }
 
-        return rect.Contains(screen) ? TransformHandleKind.Move : TransformHandleKind.None;
+        return geometry.Contains(screen) ? TransformHandleKind.Move : TransformHandleKind.None;
     }
+
+    internal TransformOverlayScreenGeometry GetTransformOverlayScreenGeometry()
+    {
+        var topLeft = WorldToScreen(_transformFrame.TopLeft);
+        var topRight = WorldToScreen(_transformFrame.TopRight);
+        var bottomRight = WorldToScreen(_transformFrame.BottomRight);
+        var bottomLeft = WorldToScreen(_transformFrame.BottomLeft);
+        var center = Midpoint(topLeft, bottomRight);
+        var top = Midpoint(topLeft, topRight);
+        var right = Midpoint(topRight, bottomRight);
+        var bottom = Midpoint(bottomLeft, bottomRight);
+        var left = Midpoint(topLeft, bottomLeft);
+        var axisX = UnitVector(topLeft, topRight);
+        var axisY = UnitVector(topLeft, bottomLeft);
+        const float offset = 19;
+
+        return new TransformOverlayScreenGeometry(
+            topLeft,
+            topRight,
+            bottomRight,
+            bottomLeft,
+            [
+                new(TransformHandleKind.TopLeft, topLeft, topLeft),
+                new(TransformHandleKind.Top, top, top),
+                new(TransformHandleKind.TopRight, topRight, topRight),
+                new(TransformHandleKind.Right, right, right),
+                new(TransformHandleKind.BottomRight, bottomRight, bottomRight),
+                new(TransformHandleKind.Bottom, bottom, bottom),
+                new(TransformHandleKind.BottomLeft, bottomLeft, bottomLeft),
+                new(TransformHandleKind.Left, left, left)
+            ],
+            [
+                new(TransformHandleKind.RotateTopLeft, Offset(topLeft, axisX, -offset, axisY, -offset), topLeft),
+                new(TransformHandleKind.RotateTopRight, Offset(topRight, axisX, offset, axisY, -offset), topRight),
+                new(TransformHandleKind.RotateBottomRight, Offset(bottomRight, axisX, offset, axisY, offset), bottomRight),
+                new(TransformHandleKind.RotateBottomLeft, Offset(bottomLeft, axisX, -offset, axisY, offset), bottomLeft)
+            ],
+            [
+                new(TransformHandleKind.SkewTop, OffsetFromEdge(topLeft, topRight, top, center, offset), top),
+                new(TransformHandleKind.SkewRight, OffsetFromEdge(topRight, bottomRight, right, center, offset), right),
+                new(TransformHandleKind.SkewBottom, OffsetFromEdge(bottomLeft, bottomRight, bottom, center, offset), bottom),
+                new(TransformHandleKind.SkewLeft, OffsetFromEdge(topLeft, bottomLeft, left, center, offset), left)
+            ]);
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg is WmPointerDown or WmPointerUpdate or WmPointerUp or WmPointerCaptureChanged
+            && TryDispatchPenPointer(ref message))
+        {
+            return;
+        }
+
+        base.WndProc(ref message);
+    }
+
+    private bool TryDispatchPenPointer(ref Message message)
+    {
+        var pointerId = unchecked((uint)message.WParam.ToInt64()) & 0xffffu;
+        if (pointerId == 0) return false;
+
+        var wasHandled = _handledPenPointers.Contains(pointerId);
+        if (message.Msg == WmPointerCaptureChanged)
+        {
+            if (!wasHandled) return false;
+            _handledPenPointers.Remove(pointerId);
+            var captureLost = new PenPointerEventArgs(
+                pointerId,
+                PenPointerEventKind.CaptureLost,
+                Array.Empty<PenPointerSample>())
+            {
+                Handled = true
+            };
+            PenPointerInput?.Invoke(this, captureLost);
+            message.Result = IntPtr.Zero;
+            return true;
+        }
+
+        var hasPenInfo = TryReadPenPointerSamples(pointerId, out var samples, out var pointerFlags);
+        if (!hasPenInfo && !wasHandled) return false;
+
+        var kind = (pointerFlags & PointerFlags.Canceled) != 0
+            ? PenPointerEventKind.CaptureLost
+            : message.Msg switch
+            {
+                WmPointerDown => PenPointerEventKind.Down,
+                WmPointerUp => PenPointerEventKind.Up,
+                _ => PenPointerEventKind.Update
+            };
+        var eventArgs = new PenPointerEventArgs(pointerId, kind, samples)
+        {
+            Handled = wasHandled
+        };
+        PenPointerInput?.Invoke(this, eventArgs);
+
+        if (message.Msg == WmPointerDown && eventArgs.Handled) _handledPenPointers.Add(pointerId);
+        if (kind is PenPointerEventKind.Up or PenPointerEventKind.CaptureLost) _handledPenPointers.Remove(pointerId);
+        if (!eventArgs.Handled) return false;
+
+        message.Result = IntPtr.Zero;
+        return true;
+    }
+
+    private bool TryReadPenPointerSamples(
+        uint pointerId,
+        out PenPointerSample[] samples,
+        out PointerFlags currentFlags)
+    {
+        samples = [];
+        currentFlags = PointerFlags.None;
+        if (!GetPointerPenInfo(pointerId, out var current)
+            || current.PointerInfo.PointerType != PointerInputType.Pen)
+        {
+            return false;
+        }
+
+        currentFlags = current.PointerInfo.PointerFlags;
+        var historyCount = (int)Math.Clamp(
+            current.PointerInfo.HistoryCount,
+            1u,
+            (uint)MaxPenHistoryEntries);
+        if (historyCount <= 1)
+        {
+            samples = [CreatePenPointerSample(current)];
+            return true;
+        }
+
+        if (_penHistoryBuffer.Length < historyCount)
+        {
+            var capacity = Math.Min(
+                MaxPenHistoryEntries,
+                Math.Max(historyCount, _penHistoryBuffer.Length * 2));
+            Array.Resize(ref _penHistoryBuffer, capacity);
+        }
+
+        var entriesCount = (uint)Math.Min(historyCount, _penHistoryBuffer.Length);
+        if (!GetPointerPenInfoHistory(pointerId, ref entriesCount, _penHistoryBuffer))
+        {
+            samples = [CreatePenPointerSample(current)];
+            return true;
+        }
+
+        var count = Math.Min((int)entriesCount, _penHistoryBuffer.Length);
+        var ordered = new List<PenPointerSample>(count);
+        for (var index = count - 1; index >= 0; index--)
+        {
+            var entry = _penHistoryBuffer[index];
+            if (entry.PointerInfo.PointerType != PointerInputType.Pen) continue;
+            ordered.Add(CreatePenPointerSample(entry));
+        }
+
+        samples = ordered.Count > 0 ? ordered.ToArray() : [CreatePenPointerSample(current)];
+        return true;
+    }
+
+    private PenPointerSample CreatePenPointerSample(PointerPenInfo info)
+    {
+        var pointer = info.PointerInfo;
+        var location = PointToClient(new Point(pointer.PixelLocation.X, pointer.PixelLocation.Y));
+        var pressure = (info.PenMask & PenMask.Pressure) != 0
+            ? Math.Clamp(info.Pressure / 1024f, 0f, 1f)
+            : float.NaN;
+        return new PenPointerSample(
+            location,
+            pressure,
+            (pointer.PointerFlags & PointerFlags.InContact) != 0,
+            (pointer.PointerFlags & PointerFlags.Primary) != 0,
+            (info.PenFlags & (PenFlags.Inverted | PenFlags.Eraser)) != 0,
+            (info.PenFlags & PenFlags.Barrel) != 0,
+            pointer.Time);
+    }
+
+    private enum PointerInputType : uint
+    {
+        Pen = 3
+    }
+
+    [Flags]
+    private enum PointerFlags : uint
+    {
+        None = 0,
+        InContact = 0x00000004,
+        Primary = 0x00002000,
+        Canceled = 0x00008000
+    }
+
+    [Flags]
+    private enum PenFlags : uint
+    {
+        None = 0,
+        Barrel = 0x00000001,
+        Inverted = 0x00000002,
+        Eraser = 0x00000004
+    }
+
+    [Flags]
+    private enum PenMask : uint
+    {
+        None = 0,
+        Pressure = 0x00000001
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PointerInfo
+    {
+        public PointerInputType PointerType;
+        public uint PointerId;
+        public uint FrameId;
+        public PointerFlags PointerFlags;
+        public IntPtr SourceDevice;
+        public IntPtr WindowTarget;
+        public NativePoint PixelLocation;
+        public NativePoint HimetricLocation;
+        public NativePoint PixelLocationRaw;
+        public NativePoint HimetricLocationRaw;
+        public uint Time;
+        public uint HistoryCount;
+        public int InputData;
+        public uint KeyStates;
+        public ulong PerformanceCount;
+        public uint ButtonChangeType;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PointerPenInfo
+    {
+        public PointerInfo PointerInfo;
+        public PenFlags PenFlags;
+        public PenMask PenMask;
+        public uint Pressure;
+        public uint Rotation;
+        public int TiltX;
+        public int TiltY;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetPointerPenInfo(uint pointerId, out PointerPenInfo penInfo);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetPointerPenInfoHistory(
+        uint pointerId,
+        ref uint entriesCount,
+        [Out] PointerPenInfo[] penInfo);
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -794,9 +1334,10 @@ internal sealed class StageControl : Control
         var onionSkinStats = default(RenderStats);
         var underlay = UnderlayScene;
         var underlayLimit = objectDrawLimit;
+        var forceEditableObjectRenderer = FillEdgeBezierPointerEditing;
         if (underlay is not null
             && UsesObjectRenderer(underlay)
-            && UsesObjectRenderer(editableScene))
+            && (forceEditableObjectRenderer || UsesObjectRenderer(editableScene)))
         {
             underlayLimit = objectDrawLimit - Math.Min(editableScene.ObjectCount, objectDrawLimit * 3 / 4);
         }
@@ -807,7 +1348,7 @@ internal sealed class StageControl : Control
                 ? Math.Min(underlay.ObjectCount, underlayLimit)
                 : 0;
             var editableCapacity = Math.Max(0, objectDrawLimit - reservedUnderlayObjects);
-            var reservedEditableObjects = UsesObjectRenderer(editableScene)
+            var reservedEditableObjects = forceEditableObjectRenderer || UsesObjectRenderer(editableScene)
                 ? Math.Min(editableScene.ObjectCount, editableCapacity)
                 : 0;
             var onionSkinLimit = Math.Max(0, editableCapacity - reservedEditableObjects);
@@ -823,7 +1364,11 @@ internal sealed class StageControl : Control
 
         var editableLimit = Math.Max(0, objectDrawLimit - underlayStats.DrawnObjects - onionSkinStats.DrawnObjects);
         RecordEditableScenePass();
-        var editableStats = DrawSceneGdi(g, editableScene, editableLimit);
+        var editableStats = DrawSceneGdi(
+            g,
+            editableScene,
+            editableLimit,
+            forceObjectRenderer: forceEditableObjectRenderer);
         if (DragPreviewScene is { } dragPreview)
         {
             DrawSceneGdi(g, dragPreview, Math.Min(objectDrawLimit, 80_000));
@@ -832,6 +1377,7 @@ internal sealed class StageControl : Control
         if (editableStats.TileLod) DrawLodDetailObjects(g);
         if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
         DrawSelection(g);
+        DrawFillEdgeBezierOverlay(g);
         DrawPenAnchorGuides(g);
         DrawDrawingPreview(g);
         DrawPenDirectionHandles(g);
@@ -845,14 +1391,18 @@ internal sealed class StageControl : Control
         DrawFillToolCursor(g);
     }
 
-    private RenderStats DrawSceneGdi(Graphics graphics, VectorScene scene, int objectDrawLimit)
+    private RenderStats DrawSceneGdi(
+        Graphics graphics,
+        VectorScene scene,
+        int objectDrawLimit,
+        bool forceObjectRenderer = false)
     {
         var editableScene = Scene;
         Scene = scene;
         try
         {
             var pixelZoom = EffectivePixelZoom();
-            if (SceneRenderOrder.RequiresObjectRenderer(Scene))
+            if (forceObjectRenderer || SceneRenderOrder.RequiresObjectRenderer(Scene))
             {
                 return DrawObjects(graphics, int.MaxValue);
             }
@@ -929,9 +1479,12 @@ internal sealed class StageControl : Control
     {
         base.OnResize(e);
         _direct2DRenderer.Resize(ClientSize);
-        if (_pendingVisibleWorldWidth is { } visibleWorldWidth) SetVisibleWorldWidth(visibleWorldWidth);
+        if (_pendingVisibleWorldWidth is { } visibleWorldWidth) SetVisibleWorldWidthCore(visibleWorldWidth, raiseViewChanged: false);
         if (MarqueeVisible && MarqueeOverlayActive) UpdateMarqueeOverlay();
+        RaiseViewChanged();
     }
+
+    private void RaiseViewChanged() => ViewChanged?.Invoke(this, EventArgs.Empty);
 
     protected override void OnHandleCreated(EventArgs e)
     {
@@ -951,6 +1504,7 @@ internal sealed class StageControl : Control
     protected override void OnHandleDestroyed(EventArgs e)
     {
         _marqueeOverlay.Hide();
+        _handledPenPointers.Clear();
         if (!_disposingResources) _selectionHighlightTimer.Stop();
         try
         {
@@ -968,6 +1522,7 @@ internal sealed class StageControl : Control
         if (disposing)
         {
             _disposingResources = true;
+            ResetFillEdgeBezierOverlay(invalidate: false);
             _fillAnimationTimer.Dispose();
             _selectionHighlightTimer.Dispose();
             _direct2DRenderer.Dispose();
@@ -992,6 +1547,9 @@ internal sealed class StageControl : Control
             _marqueeBrush.Dispose();
             _handleBrush.Dispose();
             _bezierHandleBrush.Dispose();
+            _textAreaGlowPen.Dispose();
+            _textAreaPen.Dispose();
+            _textAreaHandleBrush.Dispose();
             _handleBorderPen.Dispose();
         }
 
@@ -1165,7 +1723,7 @@ internal sealed class StageControl : Control
         FreehandPreviewPoints = points;
         FreehandPreviewDiameters = diameters is { Count: > 0 } ? diameters : Array.Empty<float>();
         FreehandPreviewColor = color;
-        FreehandPreviewStroke = Math.Max(VectorUnits.StrokePointsToUnits(0.5f), stroke);
+        FreehandPreviewStroke = Math.Max(VectorUnits.MinimumStrokeUnits, stroke);
         FreehandPreviewBrushShape = brushShape;
         Invalidate();
     }
@@ -1186,6 +1744,7 @@ internal sealed class StageControl : Control
         if (BrushTipCursorVisible
             && BrushTipCursorScreen == screen
             && ReferenceEquals(BrushTipCursorShape, shape)
+            && Math.Abs(BrushTipCursorDiameterWorld - diameter) < 0.001f
             && Math.Abs(BrushTipCursorRadiusPixels - radius) < 0.01f
             && BrushTipCursorIsEraser == eraser)
         {
@@ -1195,6 +1754,7 @@ internal sealed class StageControl : Control
         BrushTipCursorVisible = true;
         BrushTipCursorScreen = screen;
         BrushTipCursorShape = shape;
+        BrushTipCursorDiameterWorld = diameter;
         BrushTipCursorRadiusPixels = radius;
         BrushTipCursorIsEraser = eraser;
         Invalidate();
@@ -1205,7 +1765,14 @@ internal sealed class StageControl : Control
         if (!BrushTipCursorVisible) return;
         BrushTipCursorVisible = false;
         BrushTipCursorShape = null;
+        BrushTipCursorDiameterWorld = 0;
         Invalidate();
+    }
+
+    private void RefreshBrushTipCursorScale()
+    {
+        if (!BrushTipCursorVisible || BrushTipCursorShape is null) return;
+        BrushTipCursorRadiusPixels = Math.Max(2, WorldLengthToScreen(BrushTipCursorDiameterWorld) * 0.5f);
     }
 
     public void SetBrushColorPalette(Point center, IReadOnlyList<Color> colors, int hoveredIndex = -1)
@@ -1315,6 +1882,122 @@ internal sealed class StageControl : Control
         if (!_fillToolCursorVisible) return;
         _fillToolCursorVisible = false;
         Invalidate();
+    }
+
+    public void SetFillEdgeBezierOverlay(
+        int targetObject,
+        IReadOnlyList<FillEdgeBezierOverlaySegment> segments,
+        int activePartIndex = -1)
+    {
+        if ((uint)targetObject >= Scene.ObjectCount || segments.Count == 0)
+        {
+            ClearFillEdgeBezierOverlay();
+            return;
+        }
+
+        var copiedSegments = segments.ToArray();
+        _fillEdgeBezierOverlayTargetObject = targetObject;
+        _fillEdgeBezierOverlaySegments = copiedSegments;
+        _fillEdgeBezierOverlayActivePartIndex = copiedSegments.Any(segment => segment.PartIndex == activePartIndex)
+            ? activePartIndex
+            : -1;
+        _fillEdgeBezierOverlayRevision++;
+        _direct2DRenderer.InvalidateFillEdgeBezierOverlay();
+        UpdateSelectionHighlightAnimation();
+        InvalidateSelectionState();
+    }
+
+    public void SetFillEdgeBezierPointerEditing(bool editing)
+    {
+        if (FillEdgeBezierPointerEditing == editing) return;
+        FillEdgeBezierPointerEditing = editing;
+        Invalidate();
+    }
+
+    public void ClearFillEdgeBezierOverlay() => ResetFillEdgeBezierOverlay(invalidate: true);
+
+    private void ResetFillEdgeBezierOverlay(bool invalidate)
+    {
+        var wasVisible = FillEdgeBezierOverlayVisible;
+        _fillEdgeBezierOverlayTargetObject = -1;
+        _fillEdgeBezierOverlayActivePartIndex = -1;
+        _fillEdgeBezierOverlaySegments = [];
+        if (!wasVisible) return;
+
+        _fillEdgeBezierOverlayRevision++;
+        _direct2DRenderer.InvalidateFillEdgeBezierOverlay();
+        UpdateSelectionHighlightAnimation();
+        if (invalidate) InvalidateSelectionState();
+    }
+
+    public FillEdgeBezierOverlayHit HitTestFillEdgeBezierOverlay(Point screen)
+    {
+        if (!FillEdgeBezierOverlayVisible) return FillEdgeBezierOverlayHit.None;
+
+        var active = _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
+            segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex);
+        if (active.PartIndex == _fillEdgeBezierOverlayActivePartIndex && _fillEdgeBezierOverlayActivePartIndex >= 0)
+        {
+            var hit = HitTestFillEdgeBezierSegmentHandles(screen, active, includeControls: true);
+            if (hit.IsValid) return hit;
+        }
+
+        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        {
+            if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex) continue;
+            var hit = HitTestFillEdgeBezierSegmentHandles(screen, segment, includeControls: true);
+            if (hit.IsValid) return hit;
+        }
+
+        if (_fillEdgeBezierOverlayActivePartIndex >= 0
+            && CubicCurveHit(screen, active, FillEdgeBezierCurveHitRadiusPixels))
+        {
+            return new FillEdgeBezierOverlayHit(active.PartIndex, EditHandleKind.None);
+        }
+
+        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        {
+            if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex) continue;
+            if (CubicCurveHit(screen, segment, FillEdgeBezierCurveHitRadiusPixels))
+            {
+                return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.None);
+            }
+        }
+
+        return FillEdgeBezierOverlayHit.None;
+    }
+
+    private FillEdgeBezierOverlayHit HitTestFillEdgeBezierSegmentHandles(
+        Point screen,
+        FillEdgeBezierOverlaySegment segment,
+        bool includeControls)
+    {
+        if (includeControls)
+        {
+            if (SquaredDistance(screen, WorldToScreen(segment.Control1))
+                <= FillEdgeBezierControlHitRadiusPixels * FillEdgeBezierControlHitRadiusPixels)
+            {
+                return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.BezierControl);
+            }
+            if (SquaredDistance(screen, WorldToScreen(segment.Control2))
+                <= FillEdgeBezierControlHitRadiusPixels * FillEdgeBezierControlHitRadiusPixels)
+            {
+                return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.BezierControl2);
+            }
+        }
+
+        if (SquaredDistance(screen, WorldToScreen(segment.Start))
+            <= FillEdgeBezierAnchorHitRadiusPixels * FillEdgeBezierAnchorHitRadiusPixels)
+        {
+            return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.LineStart);
+        }
+        if (SquaredDistance(screen, WorldToScreen(segment.End))
+            <= FillEdgeBezierAnchorHitRadiusPixels * FillEdgeBezierAnchorHitRadiusPixels)
+        {
+            return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.LineEnd);
+        }
+
+        return FillEdgeBezierOverlayHit.None;
     }
 
     public void SetGradientOverlay(
@@ -1447,7 +2130,8 @@ internal sealed class StageControl : Control
     private void UpdateSelectionHighlightAnimation()
     {
         if (_disposingResources || Scene is null) return;
-        var hasSelection = _selectedObjects.Any(index => (uint)index < Scene.ObjectCount);
+        var hasSelection = _selectedObjects.Any(index =>
+            (uint)index < Scene.ObjectCount && !SuppressFillEdgeBezierSelectionOutline(index));
         if (hasSelection && Visible && IsHandleCreated)
         {
             if (_selectionHighlightTimer.Enabled) return;
@@ -1463,7 +2147,10 @@ internal sealed class StageControl : Control
 
     private void TickSelectionHighlight()
     {
-        if (!Visible || !IsHandleCreated || !_selectedObjects.Any(index => (uint)index < Scene.ObjectCount))
+        if (!Visible
+            || !IsHandleCreated
+            || !_selectedObjects.Any(index =>
+                (uint)index < Scene.ObjectCount && !SuppressFillEdgeBezierSelectionOutline(index)))
         {
             UpdateSelectionHighlightAnimation();
             return;
@@ -1472,6 +2159,28 @@ internal sealed class StageControl : Control
         var elapsed = Stopwatch.GetElapsedTime(_selectionHighlightStartedAt).TotalMilliseconds;
         _selectionHighlightPhase = (float)(elapsed % SelectionHighlightCycleMilliseconds / SelectionHighlightCycleMilliseconds);
         if (!Capture) Invalidate();
+    }
+
+    internal bool SuppressFillEdgeBezierSelectionOutline(int objectIndex)
+    {
+        if (!FillEdgeBezierOverlayVisible
+            || objectIndex != _fillEdgeBezierOverlayTargetObject
+            || _selectedObjects.Length != 1
+            || _selectedObjects[0] != objectIndex
+            || (uint)objectIndex >= Scene.ObjectCount)
+        {
+            return false;
+        }
+
+        if (_selectedElements.Length > 0)
+        {
+            return _selectedElements.All(hit =>
+                hit.Key.ObjectIndex == objectIndex
+                && hit.Key.Kind is DrawingElementKind.Fill or DrawingElementKind.BoundaryStroke);
+        }
+
+        var shape = Scene.ShapeKind[objectIndex];
+        return SelectionHighlightForShape(shape) == SelectionHighlightKind.Fill;
     }
 
     public void SetSelection(IEnumerable<int> objectIndices, int primaryObject = -1)
@@ -1992,11 +2701,7 @@ internal sealed class StageControl : Control
         foreach (var objectIndex in maskObjects)
         {
             if (!SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) continue;
-            foreach (var contour in scene.GetObjectBoundaryContours(objectIndex))
-            {
-                if (contour.Length < 3) continue;
-                path.AddPolygon(contour.Select(WorldToScreen).ToArray());
-            }
+            AppendObjectBoundaryPath(path, scene, objectIndex);
         }
 
         return path;
@@ -2005,7 +2710,7 @@ internal sealed class StageControl : Control
     private void DrawObject(Graphics g, int i, SceneRenderPass pass)
     {
         var scene = Scene;
-        if (IsHiddenByDragPreview(scene, i)) return;
+        if (IsObjectHiddenForRendering(scene, i)) return;
         var screen = WorldToScreen(scene.X[i], scene.Y[i]);
         var w = Math.Max(0.75f, WorldLengthToScreen(scene.Width[i]));
         var h = Math.Max(0.75f, WorldLengthToScreen(scene.Height[i]));
@@ -2027,6 +2732,15 @@ internal sealed class StageControl : Control
             return;
         }
 
+        if (shape == ShapeKind.Text)
+        {
+            if (pass == SceneRenderPass.Fill && scene.TryGetTextWorldContours(i, out var textContours))
+            {
+                DrawPathObject(g, i, textContours, brush, Color.Transparent, 0, 0, SceneRenderPass.Fill);
+            }
+            return;
+        }
+
         if (pass == SceneRenderPass.Fill && shape != ShapeKind.Line && scene.HasGradient(i))
         {
             if (scene.GetGradientKind(i) == GradientKind.Linear && scene.HasGradientPath(i))
@@ -2039,9 +2753,10 @@ internal sealed class StageControl : Control
             return;
         }
 
-        if (shape == ShapeKind.Path && scene.TryGetPathWorldContours(i, out var pathContours))
+        if (shape == ShapeKind.Path)
         {
-            DrawPathObject(g, i, pathContours, brush, strokeColor, scene.Stroke[i], screenStroke, pass);
+            using var path = CreateObjectBoundaryPath(scene, i);
+            DrawPathObject(g, path, brush, strokeColor, scene.Stroke[i], screenStroke, pass);
             return;
         }
 
@@ -2142,24 +2857,76 @@ internal sealed class StageControl : Control
     {
         if (worldContours.Length == 0) return;
         using var path = new GraphicsPath(FillMode.Alternate);
-        foreach (var contour in worldContours)
-        {
-            if (contour.Length < 3) continue;
-            var points = new PointF[contour.Length];
-            for (var p = 0; p < contour.Length; p++) points[p] = WorldToScreen(contour[p]);
-            path.AddPolygon(points);
-        }
+        AppendPolygonContours(path, worldContours);
+        DrawPathObject(g, path, brush, strokeColor, stroke, screenStroke, pass);
+    }
 
+    private static void DrawPathObject(
+        Graphics graphics,
+        GraphicsPath path,
+        Brush brush,
+        Color strokeColor,
+        float stroke,
+        float screenStroke,
+        SceneRenderPass pass)
+    {
         if (path.PointCount == 0) return;
         if (pass == SceneRenderPass.Fill)
         {
-            FillPathAntialiased(g, path, brush);
+            FillPathAntialiased(graphics, path, brush);
             return;
         }
 
         if (stroke <= 0) return;
         using var pen = StrokePen(strokeColor, screenStroke);
-        g.DrawPath(pen, path);
+        graphics.DrawPath(pen, path);
+    }
+
+    private GraphicsPath CreateObjectBoundaryPath(VectorScene scene, int objectIndex)
+    {
+        var path = new GraphicsPath(FillMode.Alternate);
+        AppendObjectBoundaryPath(path, scene, objectIndex);
+        return path;
+    }
+
+    private void AppendObjectBoundaryPath(GraphicsPath path, VectorScene scene, int objectIndex)
+    {
+        if (scene.TryGetPathBezierWorldContours(objectIndex, out var bezierContours))
+        {
+            AppendBezierContours(path, bezierContours);
+            return;
+        }
+
+        AppendPolygonContours(path, scene.GetObjectBoundaryContours(objectIndex));
+    }
+
+    private void AppendBezierContours(GraphicsPath path, IReadOnlyList<PathBezierNode[]> contours)
+    {
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            path.StartFigure();
+            for (var nodeIndex = 0; nodeIndex < contour.Length; nodeIndex++)
+            {
+                var current = contour[nodeIndex];
+                var next = contour[(nodeIndex + 1) % contour.Length];
+                path.AddBezier(
+                    WorldToScreen(current.Anchor),
+                    WorldToScreen(current.OutgoingControl),
+                    WorldToScreen(next.IncomingControl),
+                    WorldToScreen(next.Anchor));
+            }
+            path.CloseFigure();
+        }
+    }
+
+    private void AppendPolygonContours(GraphicsPath path, IReadOnlyList<PointF[]> contours)
+    {
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            path.AddPolygon(contour.Select(WorldToScreen).ToArray());
+        }
     }
 
     private Brush CreateGradientFillBrush(VectorScene scene, int objectIndex)
@@ -2184,12 +2951,7 @@ internal sealed class StageControl : Control
 
     private void DrawGradientFill(Graphics g, VectorScene scene, int objectIndex)
     {
-        using var path = new GraphicsPath(FillMode.Alternate);
-        foreach (var contour in scene.GetObjectBoundaryContours(objectIndex))
-        {
-            if (contour.Length < 3) continue;
-            path.AddPolygon(contour.Select(WorldToScreen).ToArray());
-        }
+        using var path = CreateObjectBoundaryPath(scene, objectIndex);
 
         if (path.PointCount == 0) return;
         var gradientStops = scene.GetGradientStops(objectIndex);
@@ -2254,11 +3016,7 @@ internal sealed class StageControl : Control
             Math.Clamp((int)MathF.Ceiling(screenLength / 4f), 8, 256));
         if (segments.Length == 0) return;
 
-        using var mask = new GraphicsPath(FillMode.Alternate);
-        foreach (var contour in scene.GetObjectBoundaryContours(objectIndex))
-        {
-            if (contour.Length >= 3) mask.AddPolygon(contour.Select(WorldToScreen).ToArray());
-        }
+        using var mask = CreateObjectBoundaryPath(scene, objectIndex);
 
         if (mask.PointCount == 0) return;
         var width = Math.Max(1f, WorldLengthToScreen(scene.EstimateGradientPathStrokeWidth(objectIndex) * 1.12f));
@@ -2942,6 +3700,7 @@ internal sealed class StageControl : Control
             {
                 if ((uint)hit.Key.ObjectIndex >= Scene.ObjectCount
                     || hit.Key == SelectedElement.Key
+                    || SuppressFillEdgeBezierSelectionOutline(hit.Key.ObjectIndex)
                     || !Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
                 {
                     continue;
@@ -2954,6 +3713,7 @@ internal sealed class StageControl : Control
 
             if (SelectedElement.IsValid
                 && (uint)SelectedElement.Key.ObjectIndex < Scene.ObjectCount
+                && !SuppressFillEdgeBezierSelectionOutline(SelectedElement.Key.ObjectIndex)
                 && Scene.IsObjectActive(SelectedElement.Key.ObjectIndex, Frame))
             {
                 DrawElementSelectionOutline(g, SelectedElement, primary: true);
@@ -2988,6 +3748,7 @@ internal sealed class StageControl : Control
         foreach (var index in SelectedObjects)
         {
             if (index == SelectedObject || index < 0 || index >= Scene.ObjectCount) continue;
+            if (SuppressFillEdgeBezierSelectionOutline(index)) continue;
             if (!Scene.IsObjectActive(index, Frame)) continue;
             DrawSelectionOutline(g, index, primary: false);
             drawn++;
@@ -2995,7 +3756,10 @@ internal sealed class StageControl : Control
         }
 
         var primary = SelectedObject;
-        if (primary >= 0 && primary < Scene.ObjectCount && Scene.IsObjectActive(primary, Frame))
+        if (primary >= 0
+            && primary < Scene.ObjectCount
+            && !SuppressFillEdgeBezierSelectionOutline(primary)
+            && Scene.IsObjectActive(primary, Frame))
         {
             DrawSelectionOutline(g, primary, primary: true);
         }
@@ -3009,6 +3773,15 @@ internal sealed class StageControl : Control
     private void DrawSelectionOutline(Graphics g, int i, bool primary)
     {
         var shape = Scene.ShapeKind.Length > i ? Scene.ShapeKind[i] : ShapeKind.Rectangle;
+
+        if (shape == ShapeKind.Text)
+        {
+            if (TextAreaOverlayVisible(i))
+            {
+                DrawTextAreaOverlay(g, i, primary && TextAreaResizeHandlesVisible(i));
+            }
+            return;
+        }
 
         if (shape == ShapeKind.Line)
         {
@@ -3030,7 +3803,15 @@ internal sealed class StageControl : Control
         }
         else
         {
-            if (shape == ShapeKind.Path && Scene.TryGetPathWorldContours(i, out var contours))
+            if (shape == ShapeKind.Path)
+            {
+                using var path = CreateObjectBoundaryPath(Scene, i);
+                if (path.PointCount > 0)
+                {
+                    DrawSelectionPath(g, path, primary, SelectionHighlightKind.Fill);
+                }
+            }
+            else if (TryGetSelectionWorldContours(i, shape, out var contours))
             {
                 foreach (var contour in contours)
                 {
@@ -3043,8 +3824,15 @@ internal sealed class StageControl : Control
                 DrawBoundaryOutline(g, i, primary, SelectionHighlightForShape(shape));
             }
 
-            if (primary && shape != ShapeKind.Path && !TransformMode) DrawBoundaryHandles(g, i);
+            if (primary && shape is not ShapeKind.Path and not ShapeKind.Text && !TransformMode) DrawBoundaryHandles(g, i);
         }
+    }
+
+    private bool TryGetSelectionWorldContours(int objectIndex, ShapeKind shape, out PointF[][] contours)
+    {
+        if (shape == ShapeKind.Text) return Scene.TryGetTextWorldContours(objectIndex, out contours);
+        contours = Array.Empty<PointF[]>();
+        return false;
     }
 
     private void DrawElementSelectionOutline(Graphics g, DrawingElementHit hit, bool primary)
@@ -3081,6 +3869,84 @@ internal sealed class StageControl : Control
             var points = GetSelectedBoundaryPartPoints(hit).Select(WorldToScreen).ToArray();
             if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
         }
+    }
+
+    private void DrawFillEdgeBezierOverlay(Graphics graphics)
+    {
+        if (!FillEdgeBezierOverlayVisible) return;
+
+        var oldMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var edge = new Pen(Color.Lime, 1.5f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+        using var guide = new Pen(Color.Lime, 1f);
+        using var handleCore = new SolidBrush(BackColor);
+        using var path = new GraphicsPath(FillMode.Alternate);
+        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        {
+            if (!Finite(segment)) continue;
+            path.StartFigure();
+            path.AddBezier(
+                WorldToScreen(segment.Start),
+                WorldToScreen(segment.Control1),
+                WorldToScreen(segment.Control2),
+                WorldToScreen(segment.End));
+        }
+
+        if (path.PointCount > 0) graphics.DrawPath(edge, path);
+        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        {
+            if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex || !Finite(segment)) continue;
+            DrawFillEdgeBezierSegmentHandles(graphics, segment, guide, handleCore, edge);
+        }
+
+        var active = _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
+            segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex);
+        if (_fillEdgeBezierOverlayActivePartIndex >= 0
+            && active.PartIndex == _fillEdgeBezierOverlayActivePartIndex
+            && Finite(active))
+        {
+            DrawFillEdgeBezierSegmentHandles(graphics, active, guide, handleCore, edge);
+        }
+
+        graphics.SmoothingMode = oldMode;
+    }
+
+    private void DrawFillEdgeBezierSegmentHandles(
+        Graphics graphics,
+        FillEdgeBezierOverlaySegment segment,
+        Pen guide,
+        Brush handleCore,
+        Pen edge)
+    {
+        var start = WorldToScreen(segment.Start);
+        var control1 = WorldToScreen(segment.Control1);
+        var control2 = WorldToScreen(segment.Control2);
+        var end = WorldToScreen(segment.End);
+        graphics.DrawLine(guide, start, control1);
+        graphics.DrawLine(guide, end, control2);
+        DrawFillEdgeBezierAnchor(graphics, start, handleCore, edge);
+        DrawFillEdgeBezierAnchor(graphics, end, handleCore, edge);
+        DrawFillEdgeBezierControl(graphics, control1, handleCore, edge);
+        DrawFillEdgeBezierControl(graphics, control2, handleCore, edge);
+    }
+
+    private static void DrawFillEdgeBezierAnchor(Graphics graphics, PointF point, Brush core, Pen edge)
+    {
+        const float radius = 3.5f;
+        graphics.FillRectangle(core, point.X - radius, point.Y - radius, radius * 2, radius * 2);
+        graphics.DrawRectangle(edge, point.X - radius, point.Y - radius, radius * 2, radius * 2);
+    }
+
+    private static void DrawFillEdgeBezierControl(Graphics graphics, PointF point, Brush core, Pen edge)
+    {
+        const float radius = 4f;
+        graphics.FillEllipse(core, point.X - radius, point.Y - radius, radius * 2, radius * 2);
+        graphics.DrawEllipse(edge, point.X - radius, point.Y - radius, radius * 2, radius * 2);
     }
 
     private void DrawPenAnchorGuides(Graphics graphics)
@@ -3551,6 +4417,58 @@ internal sealed class StageControl : Control
         return dx * dx + dy * dy;
     }
 
+    private bool CubicCurveHit(Point screen, FillEdgeBezierOverlaySegment segment, float radiusPixels)
+    {
+        if (!Finite(segment)) return false;
+        var start = WorldToScreen(segment.Start);
+        var control1 = WorldToScreen(segment.Control1);
+        var control2 = WorldToScreen(segment.Control2);
+        var end = WorldToScreen(segment.End);
+        var controlLength = Distance(start, control1) + Distance(control1, control2) + Distance(control2, end);
+        var steps = Math.Clamp((int)MathF.Ceiling(controlLength / 8f), 8, 64);
+        var point = new PointF(screen.X, screen.Y);
+        var previous = start;
+        var radiusSquared = radiusPixels * radiusPixels;
+        for (var step = 1; step <= steps; step++)
+        {
+            var current = CubicPoint(start, control1, control2, end, step / (float)steps);
+            if (SquaredDistanceToSegment(point, previous, current) <= radiusSquared) return true;
+            previous = current;
+        }
+
+        return false;
+    }
+
+    private static float SquaredDistanceToSegment(PointF point, PointF start, PointF end)
+    {
+        var dx = end.X - start.X;
+        var dy = end.Y - start.Y;
+        var lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= float.Epsilon)
+        {
+            dx = point.X - start.X;
+            dy = point.Y - start.Y;
+            return dx * dx + dy * dy;
+        }
+
+        var amount = Math.Clamp(((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared, 0f, 1f);
+        var closestX = start.X + dx * amount;
+        var closestY = start.Y + dy * amount;
+        dx = point.X - closestX;
+        dy = point.Y - closestY;
+        return dx * dx + dy * dy;
+    }
+
+    private static bool Finite(FillEdgeBezierOverlaySegment segment)
+    {
+        return Finite(segment.Start)
+            && Finite(segment.Control1)
+            && Finite(segment.Control2)
+            && Finite(segment.End);
+    }
+
+    private static bool Finite(PointF point) => float.IsFinite(point.X) && float.IsFinite(point.Y);
+
     private void DrawMarquee(Graphics g)
     {
         if (!MarqueeVisible || MarqueeOverlayActive) return;
@@ -3814,21 +4732,21 @@ internal sealed class StageControl : Control
     private void DrawTransformOverlay(Graphics g)
     {
         if (!TransformBoundsVisible) return;
-        var rect = TransformScreenBounds();
-        if (rect.Width <= 0 || rect.Height <= 0) return;
+        var geometry = GetTransformOverlayScreenGeometry();
+        var corners = new[] { geometry.TopLeft, geometry.TopRight, geometry.BottomRight, geometry.BottomLeft };
         using var boundsPen = new Pen(Color.FromArgb(235, 112, 204, 255), 1) { DashStyle = DashStyle.Dash };
         using var rotationPen = new Pen(Color.FromArgb(235, 112, 204, 255), 1);
         using var focusPen = new Pen(Color.FromArgb(245, 104, 255, 188), 1.5f);
         using var focusBrush = new SolidBrush(Color.FromArgb(220, 30, 82, 69));
-        g.DrawRectangle(boundsPen, rect.X, rect.Y, rect.Width, rect.Height);
-        foreach (var (_, point) in TransformHandlePoints(rect)) DrawHandle(g, point, _handleBrush, 8);
-        foreach (var (_, point, corner) in CornerRotationHandlePoints(rect))
+        g.DrawPolygon(boundsPen, corners);
+        foreach (var (_, point, _) in geometry.ResizeHandles) DrawHandle(g, point, _handleBrush, 8);
+        foreach (var (_, point, corner) in geometry.RotationHandles)
         {
             g.DrawLine(rotationPen, corner, point);
             g.FillEllipse(_bezierHandleBrush, point.X - 4, point.Y - 4, 8, 8);
             g.DrawEllipse(_handleBorderPen, point.X - 4, point.Y - 4, 8, 8);
         }
-        foreach (var (_, point, edge) in EdgeSkewHandlePoints(rect))
+        foreach (var (_, point, edge) in geometry.SkewHandles)
         {
             g.DrawLine(rotationPen, edge, point);
             var diamond = new[]
@@ -3867,11 +4785,6 @@ internal sealed class StageControl : Control
         }
     }
 
-    private RectangleF TransformScreenBounds()
-    {
-        return WorldToScreenBounds(_transformBounds);
-    }
-
     private RectangleF WorldToScreenBounds(RectangleF bounds)
     {
         var topLeft = WorldToScreen(new PointF(bounds.Left, bounds.Top));
@@ -3883,47 +4796,51 @@ internal sealed class StageControl : Control
             Math.Max(topLeft.Y, bottomRight.Y));
     }
 
-    private static (TransformHandleKind Kind, PointF Point)[] TransformHandlePoints(RectangleF rect)
+    private static PointF Midpoint(PointF left, PointF right)
     {
-        var centerX = rect.Left + rect.Width * 0.5f;
-        var centerY = rect.Top + rect.Height * 0.5f;
-        return
-        [
-            (TransformHandleKind.TopLeft, new PointF(rect.Left, rect.Top)),
-            (TransformHandleKind.Top, new PointF(centerX, rect.Top)),
-            (TransformHandleKind.TopRight, new PointF(rect.Right, rect.Top)),
-            (TransformHandleKind.Right, new PointF(rect.Right, centerY)),
-            (TransformHandleKind.BottomRight, new PointF(rect.Right, rect.Bottom)),
-            (TransformHandleKind.Bottom, new PointF(centerX, rect.Bottom)),
-            (TransformHandleKind.BottomLeft, new PointF(rect.Left, rect.Bottom)),
-            (TransformHandleKind.Left, new PointF(rect.Left, centerY))
-        ];
+        return new PointF((left.X + right.X) * 0.5f, (left.Y + right.Y) * 0.5f);
     }
 
-    private static (TransformHandleKind Kind, PointF Point, PointF Corner)[] CornerRotationHandlePoints(RectangleF rect)
+    private static PointF UnitVector(PointF start, PointF end)
     {
-        const float offset = 19;
-        return
-        [
-            (TransformHandleKind.RotateTopLeft, new PointF(rect.Left - offset, rect.Top - offset), new PointF(rect.Left, rect.Top)),
-            (TransformHandleKind.RotateTopRight, new PointF(rect.Right + offset, rect.Top - offset), new PointF(rect.Right, rect.Top)),
-            (TransformHandleKind.RotateBottomRight, new PointF(rect.Right + offset, rect.Bottom + offset), new PointF(rect.Right, rect.Bottom)),
-            (TransformHandleKind.RotateBottomLeft, new PointF(rect.Left - offset, rect.Bottom + offset), new PointF(rect.Left, rect.Bottom))
-        ];
+        var dx = end.X - start.X;
+        var dy = end.Y - start.Y;
+        var length = MathF.Sqrt(dx * dx + dy * dy);
+        return length > 0.0001f ? new PointF(dx / length, dy / length) : PointF.Empty;
     }
 
-    private static (TransformHandleKind Kind, PointF Point, PointF Edge)[] EdgeSkewHandlePoints(RectangleF rect)
+    private static PointF Offset(
+        PointF origin,
+        PointF firstAxis,
+        float firstDistance,
+        PointF secondAxis,
+        float secondDistance)
     {
-        const float offset = 19;
-        var centerX = rect.Left + rect.Width * 0.5f;
-        var centerY = rect.Top + rect.Height * 0.5f;
-        return
-        [
-            (TransformHandleKind.SkewTop, new PointF(centerX, rect.Top - offset), new PointF(centerX, rect.Top)),
-            (TransformHandleKind.SkewRight, new PointF(rect.Right + offset, centerY), new PointF(rect.Right, centerY)),
-            (TransformHandleKind.SkewBottom, new PointF(centerX, rect.Bottom + offset), new PointF(centerX, rect.Bottom)),
-            (TransformHandleKind.SkewLeft, new PointF(rect.Left - offset, centerY), new PointF(rect.Left, centerY))
-        ];
+        return new PointF(
+            origin.X + firstAxis.X * firstDistance + secondAxis.X * secondDistance,
+            origin.Y + firstAxis.Y * firstDistance + secondAxis.Y * secondDistance);
+    }
+
+    private static PointF OffsetFromEdge(
+        PointF edgeStart,
+        PointF edgeEnd,
+        PointF edgeMidpoint,
+        PointF center,
+        float distance)
+    {
+        var dx = edgeEnd.X - edgeStart.X;
+        var dy = edgeEnd.Y - edgeStart.Y;
+        var length = MathF.Sqrt(dx * dx + dy * dy);
+        if (length <= 0.0001f) return edgeMidpoint;
+        var normalX = -dy / length;
+        var normalY = dx / length;
+        if (normalX * (edgeMidpoint.X - center.X) + normalY * (edgeMidpoint.Y - center.Y) < 0)
+        {
+            normalX = -normalX;
+            normalY = -normalY;
+        }
+
+        return new PointF(edgeMidpoint.X + normalX * distance, edgeMidpoint.Y + normalY * distance);
     }
 
     private void DrawBezierGuides(Graphics g, int i, float startT, float endT, bool primary)
@@ -4139,6 +5056,24 @@ internal sealed class StageControl : Control
         }
     }
 
+    private void DrawTextAreaOverlay(Graphics graphics, int objectIndex, bool drawHandles)
+    {
+        var corners = GetTextAreaWorldCorners(objectIndex).Select(WorldToScreen).ToArray();
+        if (corners.Length != 4) return;
+        graphics.DrawPolygon(_textAreaGlowPen, corners);
+        graphics.DrawPolygon(_textAreaPen, corners);
+        if (!drawHandles) return;
+
+        foreach (var handle in TextAreaResizeHandles())
+        {
+            DrawHandle(
+                graphics,
+                WorldToScreen(GetTextAreaHandleWorldPoint(objectIndex, handle)),
+                _textAreaHandleBrush,
+                9);
+        }
+    }
+
     private void DrawHandle(Graphics g, PointF point, Brush brush, float size)
     {
         var rect = new RectangleF(point.X - size * 0.5f, point.Y - size * 0.5f, size, size);
@@ -4300,6 +5235,12 @@ internal sealed class StageControl : Control
         yield return EditHandleKind.BoundsTopRight;
         yield return EditHandleKind.BoundsBottomRight;
         yield return EditHandleKind.BoundsBottomLeft;
+    }
+
+    internal static IEnumerable<EditHandleKind> TextAreaResizeHandles()
+    {
+        yield return EditHandleKind.TextAreaLeft;
+        yield return EditHandleKind.TextAreaRight;
     }
 
     private static bool IsFreehandShape(ShapeKind shape)

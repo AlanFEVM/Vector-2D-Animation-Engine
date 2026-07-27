@@ -108,10 +108,10 @@ internal sealed class BrushTipPanel : UserControl
         _content.Controls.Add(tipDetails, 1, 0);
         _content.SetColumnSpan(tipDetails, 2);
 
-        _size.Minimum = 0.5m;
+        _size.Minimum = 0.1m;
         _size.Maximum = 128m;
         _size.DecimalPlaces = 1;
-        _size.Increment = 0.5m;
+        _size.Increment = 0.1m;
         _size.Value = 8m;
         _size.Suffix = "pt";
         _size.ValueChanged += (_, _) =>

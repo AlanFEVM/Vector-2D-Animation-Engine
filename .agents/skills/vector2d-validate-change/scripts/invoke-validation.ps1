@@ -17,6 +17,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\..\.."))
 $nativeProject = "native\VectorAnimationEngine.Native.csproj"
 $launcherProject = "launcher\VectorAnimationEngine.Launcher.csproj"
+$singleExePublishScript = "scripts\publish-single-exe.ps1"
 $nativeDll = "native\bin\Release\net8.0-windows\VectorAnimationEngine.dll"
 $benchmarkArguments = [ordered]@{
     Timeline = "--bench-timeline"
@@ -62,7 +63,7 @@ $shouldBuildNative = ($selected -contains "Build") -or ($benchmarkSuites.Count -
 $shouldBuildLauncher = $selected -contains "Launcher"
 $builds = @(
     if ($shouldBuildNative) { "Native" }
-    if ($shouldBuildLauncher) { "Launcher" }
+    if ($shouldBuildLauncher) { "Launcher"; "SingleExeRelease" }
 )
 
 function New-ValidationSummary {
@@ -108,7 +109,9 @@ try {
 
         if ($Restore) {
             if ($shouldBuildNative) { Invoke-DotnetChecked @("restore", $nativeProject) }
-            if ($shouldBuildLauncher) { Invoke-DotnetChecked @("restore", $launcherProject) }
+            if ($shouldBuildLauncher) {
+                Invoke-DotnetChecked @("restore", $launcherProject)
+            }
         }
 
         if ($shouldBuildNative) {
@@ -117,6 +120,23 @@ try {
 
         if ($shouldBuildLauncher) {
             Invoke-DotnetChecked @("build", $launcherProject, "-c", "Release", "--no-restore")
+            $validationReleaseDirectory = Join-Path $repoRoot (
+                "artifacts\validation\single-exe-" + [Guid]::NewGuid().ToString("N"))
+            try {
+                & $singleExePublishScript -OutputDirectory $validationReleaseDirectory
+                $releaseFiles = @(Get-ChildItem -LiteralPath $validationReleaseDirectory -File)
+                if ($releaseFiles.Count -ne 1 -or $releaseFiles[0].Extension -ne ".exe") {
+                    throw "Single-EXE release validation did not produce exactly one EXE."
+                }
+                $bootstrapValidation = Start-Process -FilePath $releaseFiles[0].FullName -ArgumentList "--validate-single-exe" -Wait -PassThru
+                if ($bootstrapValidation.ExitCode -ne 0) {
+                    throw "Single-EXE bootstrap validation failed with exit code $($bootstrapValidation.ExitCode)."
+                }
+            } finally {
+                if (Test-Path -LiteralPath $validationReleaseDirectory) {
+                    Remove-Item -LiteralPath $validationReleaseDirectory -Recurse -Force
+                }
+            }
         }
 
         if ($benchmarkSuites.Count -gt 0 -and -not (Test-Path -LiteralPath $nativeDll -PathType Leaf)) {

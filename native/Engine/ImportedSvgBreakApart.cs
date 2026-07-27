@@ -1,6 +1,9 @@
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml;
+using Clipper2Lib;
 using Svg;
 
 namespace VectorAnimationEngine;
@@ -9,15 +12,15 @@ namespace VectorAnimationEngine;
 internal enum ImportedSvgBreakApproximation
 {
     None = 0,
-    GradientRepresentativeColor = 1 << 0,
     NonZeroFillRule = 1 << 1,
     FlattenedGroupOpacity = 1 << 2,
     NonUniformStrokeScale = 1 << 3,
     FlattenedPaintOrder = 1 << 4,
-    StrokeStyle = 1 << 5
+    StrokeStyle = 1 << 5,
+    RasterizedContent = 1 << 6
 }
 
-internal readonly record struct ImportedSvgBreakPaint(Color Color, bool IsGradientRepresentative);
+internal readonly record struct ImportedSvgBreakPaint(Color Color);
 
 internal abstract record ImportedSvgBreakPart(int Order, string SourceElementName, ImportedSvgBreakPaint Paint);
 
@@ -51,7 +54,10 @@ internal static class ImportedSvgBreakApart
     private const int MaxXmlDepth = 256;
     private const int MaxOutputParts = 16_384;
     private const int MaxOutputPoints = 500_000;
+    private const int MaxRasterColorParts = 4_096;
     private const float FlatteningTolerance = 0.25f;
+    private const int RasterLongEdge = 256;
+    private static readonly int[] RasterChannelLevelCandidates = [16, 12, 8];
 
     private static readonly UTF8Encoding StrictUtf8 = new(
         encoderShouldEmitUTF8Identifier: false,
@@ -85,7 +91,7 @@ internal static class ImportedSvgBreakApart
             throw new InvalidDataException($"Imported SVG source must not exceed {MaxSourceBytes} bytes.");
         }
 
-        ValidateXml(source);
+        var requiresRasterFallback = ValidateXml(source);
         SvgDocument document;
         try
         {
@@ -101,39 +107,51 @@ internal static class ImportedSvgBreakApart
         var intrinsicSize = document.GetDimensions();
         ValidateSize(intrinsicSize);
 
-        var state = new ExtractionState();
-        var rootOpacity = Math.Clamp(document.Opacity, 0f, 1f);
-        if (rootOpacity < 1f) state.Approximations |= ImportedSvgBreakApproximation.FlattenedGroupOpacity;
-        using var rootViewBox = CreateFragmentViewBoxTransform(document, intrinsicSize);
-        using var rootTransform = GetElementTransform(document);
         using var outerTransformClone = outerTransform is null ? null : outerTransform.Clone();
-        IReadOnlyList<Matrix> outerTransforms = outerTransformClone is null
-            ? Array.Empty<Matrix>()
-            : new Matrix[] { outerTransformClone };
-        var rootTransforms = ComposeTransformList(rootViewBox, rootTransform, outerTransforms);
-        using var rendererBitmap = new Bitmap(1, 1);
-        using var renderer = SvgRenderer.FromImage(rendererBitmap);
-        foreach (var child in document.Children)
+        if (requiresRasterFallback)
         {
-            ExtractElement(child, rootTransforms, rootOpacity, state, renderer);
+            return RasterizeDocument(document, intrinsicSize, outerTransformClone);
         }
 
-        if (state.Parts.Count == 0)
+        try
         {
-            throw new InvalidDataException("The SVG contains no supported visible fill or stroke geometry.");
-        }
-        var strokeSeen = false;
-        foreach (var part in state.Parts)
-        {
-            if (part is ImportedSvgBreakStroke) strokeSeen = true;
-            else if (strokeSeen && part is ImportedSvgBreakFill)
+            var state = new ExtractionState();
+            var rootOpacity = Math.Clamp(document.Opacity, 0f, 1f);
+            if (rootOpacity < 1f) state.Approximations |= ImportedSvgBreakApproximation.FlattenedGroupOpacity;
+            using var rootViewBox = CreateFragmentViewBoxTransform(document, intrinsicSize);
+            using var rootTransform = GetElementTransform(document);
+            IReadOnlyList<Matrix> outerTransforms = outerTransformClone is null
+                ? Array.Empty<Matrix>()
+                : new Matrix[] { outerTransformClone };
+            var rootTransforms = ComposeTransformList(rootViewBox, rootTransform, outerTransforms);
+            using var rendererBitmap = new Bitmap(1, 1);
+            using var renderer = SvgRenderer.FromImage(rendererBitmap);
+            foreach (var child in document.Children)
             {
-                state.Approximations |= ImportedSvgBreakApproximation.FlattenedPaintOrder;
-                break;
+                ExtractElement(child, rootTransforms, rootOpacity, state, renderer);
             }
-        }
 
-        return new ImportedSvgBreakResult(intrinsicSize, state.Parts.ToArray(), state.Approximations);
+            if (state.Parts.Count == 0)
+            {
+                return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+            }
+            var strokeSeen = false;
+            foreach (var part in state.Parts)
+            {
+                if (part is ImportedSvgBreakStroke) strokeSeen = true;
+                else if (strokeSeen && part is ImportedSvgBreakFill)
+                {
+                    state.Approximations |= ImportedSvgBreakApproximation.FlattenedPaintOrder;
+                    break;
+                }
+            }
+
+            return new ImportedSvgBreakResult(intrinsicSize, state.Parts.ToArray(), state.Approximations);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+        }
     }
 
     private static void ExtractElement(
@@ -173,7 +191,8 @@ internal static class ImportedSvgBreakApart
             return;
         }
 
-        if (element is not SvgVisualElement visual || !IsSupportedGeometry(name))
+        if (element is not SvgVisualElement visual
+            || (!IsSupportedGeometry(name) && element is not SvgTextBase))
         {
             throw Unsupported(name, "element");
         }
@@ -192,6 +211,16 @@ internal static class ImportedSvgBreakApart
         ExtractionState state,
         ISvgRenderer renderer)
     {
+        if (!string.IsNullOrWhiteSpace(element.Clip) && !string.Equals(element.Clip, "auto", StringComparison.OrdinalIgnoreCase)
+            || element.ClipPath is not null
+            || element.Filter is not null
+            || element.StrokeDashArray is { Count: > 0 }
+            || element is SvgMarkerElement marker
+                && (marker.MarkerStart is not null || marker.MarkerMid is not null || marker.MarkerEnd is not null))
+        {
+            throw Unsupported(elementName, "rendered presentation");
+        }
+
         var sourcePath = element.Path(renderer);
         if (sourcePath is null || sourcePath.PointCount == 0) return;
         using var path = (GraphicsPath)sourcePath.Clone();
@@ -200,7 +229,7 @@ internal static class ImportedSvgBreakApart
         var figures = ReadFigures(path, state);
         if (figures.Count == 0) return;
 
-        if (TryResolvePaint(element.Fill, element, opacity * element.FillOpacity, fillDefault: true, state, out var fillPaint))
+        if (TryResolvePaint(element.Fill, element, opacity * element.FillOpacity, fillDefault: true, out var fillPaint))
         {
             var contours = figures
                 .Where(figure => figure.Points.Length >= 3)
@@ -219,7 +248,7 @@ internal static class ImportedSvgBreakApart
             }
         }
 
-        if (!TryResolvePaint(element.Stroke, element, opacity * element.StrokeOpacity, fillDefault: false, state, out var strokePaint))
+        if (!TryResolvePaint(element.Stroke, element, opacity * element.StrokeOpacity, fillDefault: false, out var strokePaint))
         {
             return;
         }
@@ -253,6 +282,219 @@ internal static class ImportedSvgBreakApart
                 width,
                 endpointStyle,
                 endpointStyle));
+        }
+    }
+
+    private static ImportedSvgBreakResult RasterizeDocument(
+        SvgDocument document,
+        SizeF intrinsicSize,
+        Matrix? outerTransform)
+    {
+        var rasterSize = GetRasterSize(intrinsicSize);
+        using var rendered = document.Draw(rasterSize.Width, rasterSize.Height);
+        Bitmap? normalized = null;
+        try
+        {
+            var raster = rendered;
+            var pixelFormat = raster.PixelFormat;
+            if (pixelFormat is not PixelFormat.Format32bppArgb and not PixelFormat.Format32bppPArgb)
+            {
+                normalized = new Bitmap(rasterSize.Width, rasterSize.Height, PixelFormat.Format32bppPArgb);
+                using var graphics = Graphics.FromImage(normalized);
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.Clear(Color.Transparent);
+                graphics.DrawImageUnscaled(rendered, 0, 0);
+                raster = normalized;
+                pixelFormat = PixelFormat.Format32bppPArgb;
+            }
+
+            Dictionary<int, Paths64>? runsByColor = null;
+            foreach (var channelLevels in RasterChannelLevelCandidates)
+            {
+                runsByColor = ReadRasterRuns(raster, pixelFormat, channelLevels);
+                if (runsByColor.Count <= MaxRasterColorParts) break;
+            }
+            if (runsByColor is null || runsByColor.Count > MaxRasterColorParts)
+            {
+                throw new InvalidDataException("The rasterized SVG exceeds the supported color complexity.");
+            }
+            var state = new ExtractionState
+            {
+                Approximations = ImportedSvgBreakApproximation.RasterizedContent
+            };
+            var scaleX = intrinsicSize.Width / rasterSize.Width;
+            var scaleY = intrinsicSize.Height / rasterSize.Height;
+            foreach (var entry in runsByColor.OrderBy(item => unchecked((uint)item.Key)))
+            {
+                Paths64 union;
+                try
+                {
+                    union = Clipper.Union(entry.Value, FillRule.NonZero);
+                }
+                catch (Exception exception) when (exception is ClipperLibException or OverflowException)
+                {
+                    throw new InvalidDataException("The rasterized SVG could not be converted to bounded vector geometry.", exception);
+                }
+
+                var contours = union
+                    .Where(path => path.Count >= 3)
+                    .OrderByDescending(path => Math.Abs(Clipper.Area(path)))
+                    .ThenBy(path => path.Min(point => point.Y))
+                    .ThenBy(path => path.Min(point => point.X))
+                    .Select(path => TransformRasterContour(path, scaleX, scaleY, outerTransform, state))
+                    .ToArray();
+                if (contours.Length == 0) continue;
+                state.AddPart(new ImportedSvgBreakFill(
+                    state.NextOrder(),
+                    "svg",
+                    new ImportedSvgBreakPaint(Color.FromArgb(entry.Key)),
+                    contours,
+                    UsesEvenOddFillRule: true));
+            }
+
+            if (state.Parts.Count == 0)
+            {
+                var bounds = new[]
+                {
+                    PointF.Empty,
+                    new PointF(intrinsicSize.Width, 0),
+                    new PointF(intrinsicSize.Width, intrinsicSize.Height),
+                    new PointF(0, intrinsicSize.Height)
+                };
+                TransformPoints(bounds, outerTransform);
+                state.AddPoints(bounds.Length);
+                state.AddPart(new ImportedSvgBreakFill(
+                    state.NextOrder(),
+                    "svg",
+                    new ImportedSvgBreakPaint(Color.Transparent),
+                    new[] { bounds },
+                    UsesEvenOddFillRule: true));
+            }
+
+            return new ImportedSvgBreakResult(intrinsicSize, state.Parts.ToArray(), state.Approximations);
+        }
+        finally
+        {
+            normalized?.Dispose();
+        }
+    }
+
+    private static Size GetRasterSize(SizeF intrinsicSize)
+    {
+        var scale = RasterLongEdge / (double)Math.Max(intrinsicSize.Width, intrinsicSize.Height);
+        return new Size(
+            Math.Max(1, (int)Math.Round(intrinsicSize.Width * scale)),
+            Math.Max(1, (int)Math.Round(intrinsicSize.Height * scale)));
+    }
+
+    private static Dictionary<int, Paths64> ReadRasterRuns(
+        Bitmap bitmap,
+        PixelFormat pixelFormat,
+        int channelLevels)
+    {
+        var result = new Dictionary<int, Paths64>();
+        var bounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+        BitmapData? bitmapData = null;
+        try
+        {
+            bitmapData = bitmap.LockBits(bounds, ImageLockMode.ReadOnly, pixelFormat);
+            var row = new byte[checked(bitmap.Width * 4)];
+            var premultiplied = pixelFormat == PixelFormat.Format32bppPArgb;
+            for (var y = 0; y < bitmap.Height; y++)
+            {
+                Marshal.Copy(IntPtr.Add(bitmapData.Scan0, checked(y * bitmapData.Stride)), row, 0, row.Length);
+                var x = 0;
+                while (x < bitmap.Width)
+                {
+                    var color = QuantizeArgb(row, x * 4, premultiplied, channelLevels);
+                    var runStart = x++;
+                    while (x < bitmap.Width
+                        && QuantizeArgb(row, x * 4, premultiplied, channelLevels) == color)
+                    {
+                        x++;
+                    }
+                    if ((color >>> 24) == 0) continue;
+
+                    if (!result.TryGetValue(color, out var paths))
+                    {
+                        paths = new Paths64();
+                        result.Add(color, paths);
+                    }
+                    paths.Add(new Path64
+                    {
+                        new(runStart, y),
+                        new(x, y),
+                        new(x, y + 1),
+                        new(runStart, y + 1)
+                    });
+                }
+            }
+        }
+        finally
+        {
+            if (bitmapData is not null) bitmap.UnlockBits(bitmapData);
+        }
+        return result;
+    }
+
+    private static int QuantizeArgb(byte[] row, int offset, bool premultiplied, int channelLevels)
+    {
+        var blue = row[offset];
+        var green = row[offset + 1];
+        var red = row[offset + 2];
+        var alpha = row[offset + 3];
+        if (alpha == 0) return 0;
+        if (premultiplied)
+        {
+            blue = Unpremultiply(blue, alpha);
+            green = Unpremultiply(green, alpha);
+            red = Unpremultiply(red, alpha);
+        }
+
+        var quantizedAlpha = Math.Max(1, QuantizeChannel(alpha, channelLevels));
+        return Color.FromArgb(
+            ExpandChannel(quantizedAlpha, channelLevels),
+            ExpandChannel(QuantizeChannel(red, channelLevels), channelLevels),
+            ExpandChannel(QuantizeChannel(green, channelLevels), channelLevels),
+            ExpandChannel(QuantizeChannel(blue, channelLevels), channelLevels)).ToArgb();
+    }
+
+    private static byte Unpremultiply(byte channel, byte alpha)
+    {
+        return (byte)Math.Min(255, (channel * 255 + alpha / 2) / alpha);
+    }
+
+    private static int QuantizeChannel(byte channel, int channelLevels)
+    {
+        return (channel * (channelLevels - 1) + 127) / 255;
+    }
+
+    private static int ExpandChannel(int channel, int channelLevels)
+    {
+        return (channel * 255 + (channelLevels - 1) / 2) / (channelLevels - 1);
+    }
+
+    private static PointF[] TransformRasterContour(
+        Path64 path,
+        float scaleX,
+        float scaleY,
+        Matrix? outerTransform,
+        ExtractionState state)
+    {
+        var contour = path
+            .Select(point => new PointF(point.X * scaleX, point.Y * scaleY))
+            .ToArray();
+        TransformPoints(contour, outerTransform);
+        state.AddPoints(contour.Length);
+        return contour;
+    }
+
+    private static void TransformPoints(PointF[] points, Matrix? transform)
+    {
+        transform?.TransformPoints(points);
+        if (points.Any(point => !float.IsFinite(point.X) || !float.IsFinite(point.Y)))
+        {
+            throw new InvalidDataException("The SVG produced non-finite rasterized geometry.");
         }
     }
 
@@ -304,7 +546,6 @@ internal static class ImportedSvgBreakApart
         SvgVisualElement owner,
         float opacity,
         bool fillDefault,
-        ExtractionState state,
         out ImportedSvgBreakPaint result)
     {
         result = default;
@@ -320,59 +561,20 @@ internal static class ImportedSvgBreakApart
             || string.Equals(paintText, "notSet", StringComparison.OrdinalIgnoreCase))
         {
             if (!fillDefault) return false;
-            result = new ImportedSvgBreakPaint(ApplyOpacity(Color.Black, opacity), false);
+            result = new ImportedSvgBreakPaint(ApplyOpacity(Color.Black, opacity));
             return result.Color.A > 0;
         }
 
         var colour = SvgDeferredPaintServer.TryGet<SvgColourServer>(paint, owner);
         if (colour is not null)
         {
-            result = new ImportedSvgBreakPaint(ApplyOpacity(colour.Colour, opacity), false);
+            result = new ImportedSvgBreakPaint(ApplyOpacity(colour.Colour, opacity));
             return result.Color.A > 0;
         }
 
         var gradient = SvgDeferredPaintServer.TryGet<SvgGradientServer>(paint, owner);
         if (gradient is null) throw Unsupported(ElementTag(owner), "paint server");
-        var representative = GradientRepresentativeColor(gradient, owner);
-        result = new ImportedSvgBreakPaint(ApplyOpacity(representative, opacity), true);
-        state.Approximations |= ImportedSvgBreakApproximation.GradientRepresentativeColor;
-        return result.Color.A > 0;
-    }
-
-    private static Color GradientRepresentativeColor(SvgGradientServer gradient, SvgElement owner)
-    {
-        var visited = new HashSet<SvgGradientServer>();
-        while (gradient.Stops.Count == 0 && visited.Add(gradient))
-        {
-            gradient = SvgDeferredPaintServer.TryGet<SvgGradientServer>(gradient.InheritGradient, owner)
-                ?? throw new InvalidDataException("The SVG gradient has no color stops.");
-        }
-        if (gradient.Stops.Count == 0) throw new InvalidDataException("The SVG gradient has no color stops.");
-
-        var stops = gradient.Stops
-            .Select(stop => new
-            {
-                Position = stop.Offset.Type == SvgUnitType.Percentage
-                    ? Math.Clamp(stop.Offset.Value / 100f, 0f, 1f)
-                    : Math.Clamp(stop.Offset.Value, 0f, 1f),
-                Color = ApplyOpacity(stop.GetColor(owner), stop.StopOpacity)
-            })
-            .OrderBy(stop => stop.Position)
-            .ToArray();
-        if (stops.Length == 1) return stops[0].Color;
-        const float sample = 0.5f;
-        var previous = stops[0];
-        foreach (var current in stops.Skip(1))
-        {
-            if (sample > current.Position)
-            {
-                previous = current;
-                continue;
-            }
-            var length = Math.Max(0.0001f, current.Position - previous.Position);
-            return Interpolate(previous.Color, current.Color, (sample - previous.Position) / length);
-        }
-        return stops[^1].Color;
+        throw Unsupported(ElementTag(owner), "gradient paint");
     }
 
     private static Matrix CreateFragmentViewBoxTransform(SvgFragment fragment, SizeF targetSize)
@@ -477,6 +679,9 @@ internal static class ImportedSvgBreakApart
             "SvgLine" => "line",
             "SvgPolyline" => "polyline",
             "SvgPolygon" => "polygon",
+            "SvgText" => "text",
+            "SvgTextSpan" => "tspan",
+            "SvgTextPath" => "textPath",
             "SvgDefinitionList" => "defs",
             "SvgStyle" => "style",
             "SvgTitle" => "title",
@@ -491,14 +696,15 @@ internal static class ImportedSvgBreakApart
         return name is "defs" or "style" or "title" or "desc" or "metadata";
     }
 
-    private static InvalidDataException Unsupported(string? elementName, string feature)
+    private static UnsupportedSvgFeatureException Unsupported(string? elementName, string feature)
     {
         var name = string.IsNullOrWhiteSpace(elementName) ? "unknown" : elementName;
-        return new InvalidDataException($"SVG break-apart does not support {feature} on <{name}>.");
+        return new UnsupportedSvgFeatureException($"SVG break-apart does not support {feature} on <{name}>.");
     }
 
-    private static void ValidateXml(string source)
+    private static bool ValidateXml(string source)
     {
+        var requiresRasterFallback = false;
         var settings = new XmlReaderSettings
         {
             DtdProcessing = DtdProcessing.Prohibit,
@@ -515,18 +721,47 @@ internal static class ImportedSvgBreakApart
             {
                 throw new InvalidDataException("SVG processing instructions are not supported for break-apart.");
             }
+            if (reader.NodeType is XmlNodeType.Text or XmlNodeType.CDATA
+                && ContainsRasterOnlyCss(reader.Value))
+            {
+                requiresRasterFallback = true;
+            }
             if (reader.NodeType != XmlNodeType.Element || !reader.HasAttributes) continue;
             for (var index = 0; index < reader.AttributeCount; index++)
             {
                 reader.MoveToAttribute(index);
                 if (reader.LocalName is "clip" or "clip-path" or "mask" or "filter" or "marker"
-                    or "marker-start" or "marker-mid" or "marker-end" or "vector-effect" or "mix-blend-mode")
+                    or "marker-start" or "marker-mid" or "marker-end" or "vector-effect" or "mix-blend-mode"
+                    or "stroke-dasharray" or "stroke-dashoffset" or "paint-order" or "overflow")
                 {
-                    throw Unsupported(reader.Name, reader.LocalName);
+                    requiresRasterFallback = true;
+                }
+                if (reader.LocalName == "style" && ContainsRasterOnlyCss(reader.Value))
+                {
+                    requiresRasterFallback = true;
                 }
             }
             reader.MoveToElement();
         }
+        return requiresRasterFallback;
+    }
+
+    private static bool ContainsRasterOnlyCss(string value)
+    {
+        return value.Contains("clip:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("clip-path:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("mask:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("filter:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("marker:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("marker-start:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("marker-mid:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("marker-end:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("vector-effect:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("mix-blend-mode:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("stroke-dasharray:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("stroke-dashoffset:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("paint-order:", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("overflow:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ValidateSize(SizeF size)
@@ -552,16 +787,6 @@ internal static class ImportedSvgBreakApart
         return Color.FromArgb(alpha, color.R, color.G, color.B);
     }
 
-    private static Color Interpolate(Color start, Color end, float amount)
-    {
-        amount = Math.Clamp(amount, 0f, 1f);
-        return Color.FromArgb(
-            (int)MathF.Round(start.A + (end.A - start.A) * amount),
-            (int)MathF.Round(start.R + (end.R - start.R) * amount),
-            (int)MathF.Round(start.G + (end.G - start.G) * amount),
-            (int)MathF.Round(start.B + (end.B - start.B) * amount));
-    }
-
     private static float Distance(PointF first, PointF second)
     {
         var dx = second.X - first.X;
@@ -570,6 +795,8 @@ internal static class ImportedSvgBreakApart
     }
 
     private readonly record struct FlattenedFigure(PointF[] Points, bool Closed);
+
+    private sealed class UnsupportedSvgFeatureException(string message) : Exception(message);
 
     private sealed class ExtractionState
     {

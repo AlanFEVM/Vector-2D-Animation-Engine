@@ -1,41 +1,101 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows.Forms;
 
 namespace VectorAnimationEngine.DistributionLauncher;
 
 internal static class Program
 {
-    private const int MissingRuntimeExitCode = 10;
-    private const int MissingApplicationExitCode = 11;
+    private const int ApplicationInstallFailedExitCode = 11;
     private const int LaunchFailedExitCode = 12;
+    private const int RuntimeInstallFailedExitCode = 13;
     private const uint ErrorMessageBox = 0x00000010;
-    private const string ValidateLayoutArgument = "--validate-package-layout";
-
-    private enum LayoutError
-    {
-        None,
-        MissingRuntime,
-        MissingApplication
-    }
 
     [STAThread]
     private static int Main(string[] args)
     {
-        var root = AppContext.BaseDirectory;
-        var layoutError = ValidateLayout(root);
-        var validationOnly = args.Any(arg =>
-            arg.Equals(ValidateLayoutArgument, StringComparison.OrdinalIgnoreCase));
-        if (layoutError != LayoutError.None)
-        {
-            var message = ErrorMessage(layoutError);
-            if (validationOnly) Console.Error.WriteLine(message);
-            else ShowError(message);
-            return layoutError == LayoutError.MissingRuntime
-                ? MissingRuntimeExitCode
-                : MissingApplicationExitCode;
-        }
-        if (validationOnly) return 0;
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
 
+        var root = AppContext.BaseDirectory;
+        if (HasArgument(args, "--validate-single-exe"))
+        {
+            return EmbeddedApplicationInstaller.HasValidEmbeddedPayload()
+                && EmbeddedApplicationInstaller.RunSelfTest()
+                && RuntimeInstaller.RunSelfTest()
+                    ? 0
+                    : ApplicationInstallFailedExitCode;
+        }
+
+        if (HasArgument(args, "--validate-package-layout"))
+        {
+            return ValidateInstalledLayout(root);
+        }
+
+        try
+        {
+            EmbeddedApplicationInstaller.EnsureInstalled(root);
+        }
+        catch (Exception ex)
+        {
+            return Fail("软件主体代码缺失", ex, root, ApplicationInstallFailedExitCode, args);
+        }
+
+        if (HasArgument(args, "--deploy-embedded-application")) return 0;
+
+        try
+        {
+            if (!RuntimeInstaller.IsRuntimeValid(Path.Combine(root, ".Runtime")))
+            {
+                if (HasArgument(args, "--provision-runtime"))
+                {
+                    RuntimeInstaller.EnsureInstalled(root, progress: null, CancellationToken.None);
+                }
+                else
+                {
+                    using var dialog = new RuntimeDownloadDialog(root);
+                    if (dialog.ShowDialog() != DialogResult.OK)
+                    {
+                        var message = string.IsNullOrWhiteSpace(dialog.ErrorMessage)
+                            ? "运行环境安装失败。"
+                            : dialog.ErrorMessage;
+                        throw new InvalidOperationException(message);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            return Fail("运行环境安装失败", ex, root, RuntimeInstallFailedExitCode, args);
+        }
+
+        if (HasArgument(args, "--provision-runtime")) return 0;
+        return LaunchApplication(root, ForwardedArguments(args));
+    }
+
+    private static int ValidateInstalledLayout(string root)
+    {
+        var applicationDirectory = Path.Combine(root, ".V2DEngine");
+        if (!File.Exists(Path.Combine(applicationDirectory, "VectorAnimationEngine.dll"))
+            || !File.Exists(Path.Combine(applicationDirectory, "VectorAnimationEngine.deps.json"))
+            || !File.Exists(Path.Combine(applicationDirectory, "VectorAnimationEngine.runtimeconfig.json"))
+            || !File.Exists(Path.Combine(applicationDirectory, "release.json")))
+        {
+            Console.Error.WriteLine("软件主体代码缺失");
+            return ApplicationInstallFailedExitCode;
+        }
+
+        if (!RuntimeInstaller.IsRuntimeValid(Path.Combine(root, ".Runtime")))
+        {
+            Console.Error.WriteLine("没有运行环境");
+            return RuntimeInstallFailedExitCode;
+        }
+        return 0;
+    }
+
+    private static int LaunchApplication(string root, string[] args)
+    {
         var runtimePath = Path.Combine(root, ".Runtime", "dotnet.exe");
         var applicationPath = Path.Combine(root, ".V2DEngine", "VectorAnimationEngine.dll");
         var startInfo = new ProcessStartInfo
@@ -54,60 +114,55 @@ internal static class Program
             using var process = Process.Start(startInfo);
             if (process is not null) return 0;
         }
-        catch
+        catch (Exception ex)
         {
-            // The package layout was valid, but the private runtime could not start the application.
+            WriteLog(root, "软件启动失败", ex);
         }
 
         ShowError("软件启动失败");
         return LaunchFailedExitCode;
     }
 
-    private static LayoutError ValidateLayout(string root)
+    private static int Fail(string message, Exception exception, string root, int exitCode, string[] args)
     {
-        var runtimeDirectory = Path.Combine(root, ".Runtime");
-        if (!File.Exists(Path.Combine(runtimeDirectory, "dotnet.exe"))
-            || !ContainsRuntimeFile(Path.Combine(runtimeDirectory, "host", "fxr"), "hostfxr.dll")
-            || !ContainsRuntimeFile(Path.Combine(runtimeDirectory, "shared", "Microsoft.NETCore.App"), "coreclr.dll")
-            || !ContainsRuntimeFile(Path.Combine(runtimeDirectory, "shared", "Microsoft.WindowsDesktop.App"), "System.Windows.Forms.dll"))
+        WriteLog(root, message, exception);
+        if (args.Any(arg => arg.StartsWith("--", StringComparison.Ordinal)))
         {
-            return LayoutError.MissingRuntime;
+            Console.Error.WriteLine($"{message}: {exception.Message}");
         }
-
-        var applicationDirectory = Path.Combine(root, ".V2DEngine");
-        return File.Exists(Path.Combine(applicationDirectory, "VectorAnimationEngine.dll"))
-            && File.Exists(Path.Combine(applicationDirectory, "VectorAnimationEngine.deps.json"))
-            && File.Exists(Path.Combine(applicationDirectory, "VectorAnimationEngine.runtimeconfig.json"))
-                ? LayoutError.None
-                : LayoutError.MissingApplication;
+        else
+        {
+            ShowError($"{message}\r\n\r\n{exception.Message}");
+        }
+        return exitCode;
     }
 
-    private static bool ContainsRuntimeFile(string versionRoot, string fileName)
+    private static void WriteLog(string root, string message, Exception exception)
     {
         try
         {
-            return Directory.Exists(versionRoot)
-                && Directory.EnumerateDirectories(versionRoot)
-                    .Any(directory => IsCompatibleRuntimeVersion(directory)
-                        && File.Exists(Path.Combine(directory, fileName)));
+            var logDirectory = Path.Combine(root, "logs");
+            Directory.CreateDirectory(logDirectory);
+            File.AppendAllText(
+                Path.Combine(logDirectory, "bootstrap.log"),
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}{exception}{Environment.NewLine}",
+                Encoding.UTF8);
         }
         catch
         {
-            return false;
+            // Logging must not mask the original startup error.
         }
     }
 
-    private static bool IsCompatibleRuntimeVersion(string directory)
-    {
-        return Version.TryParse(Path.GetFileName(directory), out var version) && version.Major == 8;
-    }
+    private static bool HasArgument(IEnumerable<string> args, string expected) =>
+        args.Any(arg => arg.Equals(expected, StringComparison.OrdinalIgnoreCase));
 
-    private static string ErrorMessage(LayoutError error) => error switch
-    {
-        LayoutError.MissingRuntime => "没有运行环境",
-        LayoutError.MissingApplication => "软件主体代码缺失",
-        _ => "软件启动失败"
-    };
+    private static string[] ForwardedArguments(IEnumerable<string> args) => args
+        .Where(arg => !arg.Equals("--validate-single-exe", StringComparison.OrdinalIgnoreCase)
+            && !arg.Equals("--validate-package-layout", StringComparison.OrdinalIgnoreCase)
+            && !arg.Equals("--deploy-embedded-application", StringComparison.OrdinalIgnoreCase)
+            && !arg.Equals("--provision-runtime", StringComparison.OrdinalIgnoreCase))
+        .ToArray();
 
     private static string QuoteArgument(string value)
     {
@@ -116,7 +171,7 @@ internal static class Program
             return value;
         }
 
-        var result = new System.Text.StringBuilder(value.Length + 2).Append('"');
+        var result = new StringBuilder(value.Length + 2).Append('"');
         var backslashes = 0;
         foreach (var character in value)
         {

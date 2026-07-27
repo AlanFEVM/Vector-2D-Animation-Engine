@@ -7,5 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>VectorAnimationEngine</AssemblyName>
     <RootNamespace>VectorAnimationEngine.Launcher</RootNamespace>
+    <AssemblyTitle>Vector 2D Animation Engine Development Launcher</AssemblyTitle>
+    <Product>Vector 2D Animation Engine Development Launcher</Product>
+    <Description>Source development launcher with dotnet watch and module hot reload.</Description>
   </PropertyGroup>
 </Project>

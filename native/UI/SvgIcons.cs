@@ -19,6 +19,7 @@ internal enum SvgIconKind
     Pencil,
     Brush,
     PressureBrush,
+    Text,
     Fill,
     InkBottle,
     Eyedropper,
@@ -32,6 +33,9 @@ internal enum SvgIconKind
     Objects,
     TightFit,
     Align,
+    TextAlignLeft,
+    TextAlignCenter,
+    TextAlignRight,
     Angle,
     Ratio,
     RestoreSize,
@@ -52,10 +56,13 @@ internal static class SvgIcons
     {
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var r = new RectangleF(bounds.X + 5, bounds.Y + 5, bounds.Width - 10, bounds.Height - 10);
-        using var pen = new Pen(color, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-        using var thinPen = new Pen(Color.FromArgb(170, color), 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        using var fill = new SolidBrush(Color.FromArgb(42, color));
+        var primaryTool = IsPrimaryToolIcon(kind);
+        var inset = primaryTool ? 4f : 5f;
+        var r = new RectangleF(bounds.X + inset, bounds.Y + inset, bounds.Width - inset * 2, bounds.Height - inset * 2);
+        using var pen = new Pen(color, primaryTool ? 2.15f : 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var thinPen = new Pen(Color.FromArgb(primaryTool ? 205 : 170, color), primaryTool ? 1.35f : 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var fill = new SolidBrush(Color.FromArgb(primaryTool ? 72 : 42, color));
+        using var solidFill = new SolidBrush(color);
 
         switch (kind)
         {
@@ -65,14 +72,21 @@ internal static class SvgIcons
                 g.DrawLine(pen, P(r, 4, 18), P(r, 20, 18));
                 break;
             case SvgIconKind.Select:
-                DrawPolygon(g, pen, [P(r, 4, 3), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12)]);
+            {
+                var pointer = new[] { P(r, 4, 2), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12) };
+                g.FillPolygon(fill, pointer);
+                DrawPolygon(g, pen, pointer);
                 break;
+            }
             case SvgIconKind.Transform:
-                DrawRectangle(g, pen, Rect(r, 6, 6, 12, 12));
-                g.DrawLine(thinPen, P(r, 3, 3), P(r, 8, 3));
-                g.DrawLine(thinPen, P(r, 3, 3), P(r, 3, 8));
-                g.DrawLine(thinPen, P(r, 21, 21), P(r, 16, 21));
-                g.DrawLine(thinPen, P(r, 21, 21), P(r, 21, 16));
+                DrawRectangle(g, thinPen, Rect(r, 5, 5, 14, 14));
+                FillHandle(g, solidFill, r, 5, 5);
+                FillHandle(g, solidFill, r, 19, 5);
+                FillHandle(g, solidFill, r, 5, 19);
+                FillHandle(g, solidFill, r, 19, 19);
+                g.DrawLine(pen, P(r, 9, 15), P(r, 15, 9));
+                DrawChevron(g, pen, P(r, 15, 9), 0);
+                DrawChevron(g, pen, P(r, 9, 15), 2);
                 break;
             case SvgIconKind.Pan:
                 g.DrawLine(pen, P(r, 12, 3), P(r, 12, 21));
@@ -91,64 +105,89 @@ internal static class SvgIcons
                 g.DrawEllipse(pen, Rect(r, 4, 5, 16, 14));
                 break;
             case SvgIconKind.Triangle:
-                DrawPolygon(g, pen, [P(r, 12, 4), P(r, 21, 20), P(r, 3, 20)]);
+            {
+                var triangle = new[] { P(r, 12, 4), P(r, 21, 20), P(r, 3, 20) };
+                g.FillPolygon(fill, triangle);
+                DrawPolygon(g, pen, triangle);
                 break;
+            }
             case SvgIconKind.Polygon:
-                DrawPolygon(g, pen, [P(r, 12, 3), P(r, 21, 8), P(r, 21, 17), P(r, 12, 22), P(r, 3, 17), P(r, 3, 8)]);
+            {
+                var polygon = new[] { P(r, 12, 3), P(r, 21, 8), P(r, 21, 17), P(r, 12, 22), P(r, 3, 17), P(r, 3, 8) };
+                g.FillPolygon(fill, polygon);
+                DrawPolygon(g, pen, polygon);
                 break;
+            }
             case SvgIconKind.Star:
-                DrawPolygon(g, pen, Star(r));
+            {
+                var star = Star(r);
+                g.FillPolygon(fill, star);
+                DrawPolygon(g, pen, star);
                 break;
+            }
             case SvgIconKind.Line:
                 g.DrawLine(pen, P(r, 4, 20), P(r, 20, 4));
-                g.DrawEllipse(thinPen, Rect(r, 3, 19, 3, 3));
-                g.DrawEllipse(thinPen, Rect(r, 19, 3, 3, 3));
+                g.FillEllipse(solidFill, Rect(r, 2.5f, 18.5f, 4, 4));
+                g.DrawEllipse(pen, Rect(r, 18.5f, 2.5f, 4, 4));
                 break;
             case SvgIconKind.Pen:
-                DrawPolygon(g, pen, [P(r, 12, 3), P(r, 19, 10), P(r, 13, 21), P(r, 5, 13)]);
-                g.DrawLine(thinPen, P(r, 9, 15), P(r, 15, 9));
-                g.FillEllipse(fill, Rect(r, 10.5f, 10.5f, 3, 3));
+            {
+                var nib = new[] { P(r, 6, 4), P(r, 18, 4), P(r, 21, 10), P(r, 12, 22), P(r, 3, 10) };
+                g.FillPolygon(fill, nib);
+                DrawPolygon(g, pen, nib);
+                g.DrawLine(pen, P(r, 12, 12), P(r, 12, 21));
+                g.FillEllipse(solidFill, Rect(r, 10, 8, 4, 4));
                 break;
+            }
             case SvgIconKind.SimplePen:
-                g.DrawBezier(pen, P(r, 4, 18), P(r, 8, 5), P(r, 16, 19), P(r, 21, 7));
-                g.FillEllipse(fill, Rect(r, 2.5f, 16.5f, 4, 4));
-                g.DrawEllipse(thinPen, Rect(r, 2.5f, 16.5f, 4, 4));
-                g.FillEllipse(fill, Rect(r, 19, 5, 4, 4));
-                g.DrawEllipse(thinPen, Rect(r, 19, 5, 4, 4));
+                g.DrawLine(thinPen, P(r, 4, 19), P(r, 8, 5));
+                g.DrawLine(thinPen, P(r, 16, 19), P(r, 21, 6));
+                g.DrawBezier(pen, P(r, 4, 19), P(r, 8, 5), P(r, 16, 19), P(r, 21, 6));
+                FillHandle(g, solidFill, r, 4, 19);
+                FillHandle(g, solidFill, r, 21, 6);
                 break;
             case SvgIconKind.Pencil:
-                g.DrawLine(pen, P(r, 5, 19), P(r, 17, 7));
-                g.DrawLine(pen, P(r, 8, 22), P(r, 20, 10));
-                g.DrawLine(thinPen, P(r, 5, 19), P(r, 8, 22));
-                g.DrawLine(thinPen, P(r, 17, 7), P(r, 20, 10));
-                DrawPolygon(g, thinPen, [P(r, 5, 19), P(r, 3, 22), P(r, 8, 22)]);
+            {
+                var body = new[] { P(r, 5, 17), P(r, 16, 6), P(r, 21, 11), P(r, 10, 22) };
+                g.FillPolygon(fill, body);
+                DrawPolygon(g, pen, body);
+                var tip = new[] { P(r, 5, 17), P(r, 2, 23), P(r, 10, 22) };
+                g.FillPolygon(solidFill, tip);
+                DrawPolygon(g, thinPen, tip);
+                g.DrawLine(thinPen, P(r, 16, 6), P(r, 21, 11));
                 break;
+            }
             case SvgIconKind.Brush:
-                g.DrawLine(pen, P(r, 14, 4), P(r, 9, 15));
-                g.DrawLine(pen, P(r, 20, 7), P(r, 11, 17));
-                g.FillEllipse(fill, Rect(r, 4, 14, 9, 8));
-                g.DrawArc(pen, Rect(r, 4, 14, 9, 8), 205, 285);
+                DrawBrushGlyph(g, pen, thinPen, fill, r, pressure: false);
                 break;
             case SvgIconKind.PressureBrush:
-                g.DrawLine(pen, P(r, 15, 4), P(r, 10, 15));
-                g.DrawLine(pen, P(r, 20, 7), P(r, 12, 17));
-                g.FillEllipse(fill, Rect(r, 4, 14, 10, 8));
-                g.DrawArc(pen, Rect(r, 4, 14, 10, 8), 205, 285);
-                g.FillEllipse(fill, Rect(r, 17, 17, 4, 4));
-                g.DrawEllipse(thinPen, Rect(r, 17, 17, 4, 4));
+                DrawBrushGlyph(g, pen, thinPen, fill, r, pressure: true);
+                break;
+            case SvgIconKind.Text:
+                g.DrawLine(pen, P(r, 4, 4), P(r, 20, 4));
+                g.DrawLine(pen, P(r, 12, 4), P(r, 12, 21));
+                g.DrawLine(thinPen, P(r, 8, 21), P(r, 16, 21));
                 break;
             case SvgIconKind.Fill:
-                DrawPolygon(g, pen, [P(r, 8, 4), P(r, 19, 15), P(r, 13, 21), P(r, 2, 10)]);
-                g.DrawLine(pen, P(r, 5, 13), P(r, 16, 13));
-                g.FillEllipse(fill, Rect(r, 17, 18, 4, 4));
+            {
+                var bucket = new[] { P(r, 7, 5), P(r, 20, 15), P(r, 13, 22), P(r, 2, 12) };
+                g.FillPolygon(fill, bucket);
+                DrawPolygon(g, pen, bucket);
+                g.DrawArc(thinPen, Rect(r, 6, 2, 12, 10), 190, 160);
+                g.DrawLine(pen, P(r, 4, 14), P(r, 18, 14));
+                g.FillEllipse(solidFill, Rect(r, 19, 18, 4, 4));
                 break;
+            }
             case SvgIconKind.InkBottle:
-                DrawPolygon(g, pen, [P(r, 8, 3), P(r, 17, 3), P(r, 20, 8), P(r, 18, 12), P(r, 7, 12), P(r, 5, 8)]);
-                g.DrawLine(pen, P(r, 9, 12), P(r, 7, 20));
-                g.DrawLine(pen, P(r, 16, 12), P(r, 18, 20));
-                g.DrawLine(thinPen, P(r, 7, 20), P(r, 18, 20));
-                g.FillEllipse(fill, Rect(r, 10, 15, 5, 5));
+            {
+                var bottle = new[] { P(r, 8, 3), P(r, 16, 3), P(r, 17, 8), P(r, 20, 11), P(r, 18, 22), P(r, 6, 22), P(r, 4, 11), P(r, 7, 8) };
+                g.FillPolygon(fill, bottle);
+                DrawPolygon(g, pen, bottle);
+                g.DrawLine(pen, P(r, 7, 8), P(r, 17, 8));
+                g.DrawLine(thinPen, P(r, 7, 15), P(r, 18, 15));
+                g.FillRectangle(solidFill, Rect(r, 9, 17, 6, 2));
                 break;
+            }
             case SvgIconKind.Eyedropper:
                 g.DrawLine(pen, P(r, 5, 19), P(r, 16, 8));
                 g.DrawLine(pen, P(r, 8, 22), P(r, 19, 11));
@@ -161,7 +200,9 @@ internal static class SvgIcons
                     g.FillRectangle(gradient, Rect(r, 3, 6, 18, 12));
                 }
                 DrawRectangle(g, pen, Rect(r, 3, 6, 18, 12));
-                g.DrawLine(thinPen, P(r, 5, 18), P(r, 19, 6));
+                g.DrawLine(thinPen, P(r, 4, 20), P(r, 20, 4));
+                g.FillEllipse(solidFill, Rect(r, 2.5f, 18.5f, 3, 3));
+                g.DrawEllipse(pen, Rect(r, 18.5f, 2.5f, 3, 3));
                 break;
             case SvgIconKind.Swatches:
             {
@@ -187,10 +228,14 @@ internal static class SvgIcons
                 break;
             }
             case SvgIconKind.Eraser:
-                DrawPolygon(g, pen, [P(r, 7, 5), P(r, 19, 17), P(r, 13, 22), P(r, 2, 11)]);
-                g.DrawLine(thinPen, P(r, 5, 14), P(r, 15, 4));
-                g.DrawLine(thinPen, P(r, 10, 19), P(r, 20, 9));
+            {
+                var eraser = new[] { P(r, 8, 4), P(r, 21, 17), P(r, 14, 23), P(r, 2, 11) };
+                g.FillPolygon(fill, eraser);
+                DrawPolygon(g, pen, eraser);
+                g.DrawLine(pen, P(r, 7, 16), P(r, 17, 6));
+                g.DrawLine(thinPen, P(r, 13, 22), P(r, 22, 22));
                 break;
+            }
             case SvgIconKind.Vault:
                 DrawRectangle(g, pen, Rect(r, 4, 5, 16, 15));
                 g.DrawLine(thinPen, P(r, 4, 10), P(r, 20, 10));
@@ -310,6 +355,15 @@ internal static class SvgIcons
                 g.DrawLine(thinPen, P(r, 8, 12), P(r, 16, 12));
                 g.DrawLine(thinPen, P(r, 8, 17), P(r, 21, 17));
                 break;
+            case SvgIconKind.TextAlignLeft:
+                DrawTextAlignmentGlyph(g, pen, r, TextHorizontalAlignment.Left);
+                break;
+            case SvgIconKind.TextAlignCenter:
+                DrawTextAlignmentGlyph(g, pen, r, TextHorizontalAlignment.Center);
+                break;
+            case SvgIconKind.TextAlignRight:
+                DrawTextAlignmentGlyph(g, pen, r, TextHorizontalAlignment.Right);
+                break;
             case SvgIconKind.Angle:
                 g.DrawLine(pen, P(r, 5, 19), P(r, 19, 19));
                 g.DrawLine(pen, P(r, 5, 19), P(r, 17, 7));
@@ -330,6 +384,87 @@ internal static class SvgIcons
         }
 
         g.SmoothingMode = oldMode;
+    }
+
+    private static bool IsPrimaryToolIcon(SvgIconKind kind)
+    {
+        return kind is SvgIconKind.Select
+            or SvgIconKind.Transform
+            or SvgIconKind.Pan
+            or SvgIconKind.Rectangle
+            or SvgIconKind.Ellipse
+            or SvgIconKind.Triangle
+            or SvgIconKind.Polygon
+            or SvgIconKind.Star
+            or SvgIconKind.Line
+            or SvgIconKind.Pen
+            or SvgIconKind.SimplePen
+            or SvgIconKind.Pencil
+            or SvgIconKind.Brush
+            or SvgIconKind.PressureBrush
+            or SvgIconKind.Text
+            or SvgIconKind.Fill
+            or SvgIconKind.InkBottle
+            or SvgIconKind.Eyedropper
+            or SvgIconKind.Gradient
+            or SvgIconKind.Eraser;
+    }
+
+    private static void FillHandle(Graphics g, Brush brush, RectangleF r, float x, float y)
+    {
+        g.FillRectangle(brush, Rect(r, x - 1.5f, y - 1.5f, 3, 3));
+    }
+
+    private static void DrawBrushGlyph(
+        Graphics g,
+        Pen pen,
+        Pen thinPen,
+        Brush fill,
+        RectangleF r,
+        bool pressure)
+    {
+        var handle = new[] { P(r, 13, 3), P(r, 21, 7), P(r, 12, 16), P(r, 8, 13) };
+        g.FillPolygon(fill, handle);
+        g.DrawPolygon(pen, handle);
+        g.DrawLine(thinPen, P(r, 12, 13), P(r, 17, 8));
+
+        using var bristles = new GraphicsPath();
+        if (pressure)
+        {
+            bristles.AddBezier(P(r, 11, 14), P(r, 9, 17), P(r, 11, 20), P(r, 3, 22));
+            bristles.AddBezier(P(r, 3, 22), P(r, 7, 18), P(r, 3, 15), P(r, 11, 14));
+            g.DrawLine(pen, P(r, 4, 3), P(r, 4, 10));
+            DrawChevron(g, pen, P(r, 4, 11), 2);
+        }
+        else
+        {
+            bristles.AddBezier(P(r, 10, 14), P(r, 8, 16), P(r, 9, 20), P(r, 4, 22));
+            bristles.AddBezier(P(r, 4, 22), P(r, 6, 18), P(r, 3, 16), P(r, 10, 14));
+        }
+        bristles.CloseFigure();
+        g.FillPath(fill, bristles);
+        g.DrawPath(pen, bristles);
+    }
+
+    private static void DrawTextAlignmentGlyph(
+        Graphics g,
+        Pen pen,
+        RectangleF r,
+        TextHorizontalAlignment alignment)
+    {
+        ReadOnlySpan<float> widths = [16, 11, 16, 8];
+        for (var index = 0; index < widths.Length; index++)
+        {
+            var width = widths[index];
+            var x = alignment switch
+            {
+                TextHorizontalAlignment.Center => 12 - width * 0.5f,
+                TextHorizontalAlignment.Right => 20 - width,
+                _ => 4
+            };
+            var y = 5 + index * 5;
+            g.DrawLine(pen, P(r, x, y), P(r, x + width, y));
+        }
     }
 
     private static PointF P(RectangleF r, float x, float y) => new(r.Left + r.Width * x / 24f, r.Top + r.Height * y / 24f);

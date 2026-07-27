@@ -13,6 +13,7 @@ internal static class Program
     private const long MaxRestartTokenSidecarBytes = 512;
     private static readonly TimeSpan RestartTokenLifetime = TimeSpan.FromMinutes(5);
     private const string RestartTokenArgumentPrefix = "--editor-restart-token=";
+    private const string ValidateDevelopmentLauncherArgument = "--validate-development-launcher";
     private static readonly object LogSync = new();
     private static long _launcherLogBytes = -1;
 
@@ -35,6 +36,12 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Any(arg => arg.Equals(ValidateDevelopmentLauncherArgument, StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.ExitCode = ValidateDevelopmentLauncher();
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
 
         using var launcherMutex = new Mutex(initiallyOwned: true, LauncherMutexName, out var createdNew);
@@ -145,6 +152,17 @@ internal static class Program
             Log(logDir, $"Launch failed: {ex}");
             ShowError("Failed to launch the development app.", ex.Message);
         }
+    }
+
+    private static int ValidateDevelopmentLauncher()
+    {
+        var root = ResolveRepositoryRoot();
+        var projectPath = Path.Combine(root, "native", "VectorAnimationEngine.Native.csproj");
+        return LaunchOptions.Parse(Array.Empty<string>()).ModuleHotReload
+            && File.Exists(projectPath)
+            && TryFindDotnet(out _)
+                ? 0
+                : 1;
     }
 
     private static string? TryConsumeEditorRestartToken(string logDir)

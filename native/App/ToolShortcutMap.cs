@@ -4,40 +4,45 @@ internal readonly record struct ToolShortcutDisplay(string Tool, string Shortcut
 
 internal static class ToolShortcutMap
 {
-    private static readonly ToolShortcutDisplay[] TraditionalFlashBindings =
-    [
-        new("Select", "V"),
-        new("Free Transform", "Q"),
-        new("Hand", "H"),
-        new("Rectangle", "R"),
-        new("Ellipse", "O"),
-        new("Line", "N"),
-        new("Pen", "P"),
-        new("Pencil", "Y"),
-        new("Brush", "B"),
-        new("Fill", "K"),
-        new("Ink Bottle", "S"),
-        new("Eyedropper", "I"),
-        new("Gradient", "G"),
-        new("Eraser", "E")
-    ];
-
-    private static readonly ToolShortcutDisplay[] NumberKeyBindings =
-    [
-        new("Selection group", "1"),
-        new("Shape group", "2"),
-        new("Line group", "3"),
-        new("Brush group", "4"),
-        new("Fill group", "5"),
-        new("Gradient", "6"),
-        new("Eraser", "7"),
-        new("Eyedropper", "8"),
-        new("Vault", "9")
-    ];
-
     public static IReadOnlyList<ToolShortcutDisplay> DisplayBindings(ToolShortcutPreset preset)
     {
-        return preset == ToolShortcutPreset.NumberKeys ? NumberKeyBindings : TraditionalFlashBindings;
+        return DisplayBindings(ShortcutProfiles.GetBuiltInProfile(preset));
+    }
+
+    public static IReadOnlyList<ToolShortcutDisplay> DisplayBindings(ShortcutProfileRecord profile)
+    {
+        var result = new List<ToolShortcutDisplay>();
+        foreach (var binding in profile.Bindings)
+        {
+            if (!ShortcutProfiles.TryGetCommand(binding.CommandId, out var command)) continue;
+            result.Add(new ToolShortcutDisplay(command.DisplayName, ShortcutProfiles.FormatGestures(binding.Gestures)));
+        }
+
+        return result;
+    }
+
+    public static IReadOnlyList<ToolShortcutDisplay> DisplayCatalogBindings(ShortcutProfileRecord profile)
+    {
+        var bindings = profile.Bindings.ToDictionary(binding => binding.CommandId, StringComparer.Ordinal);
+        return ShortcutProfiles.Commands
+            .Select(command => new ToolShortcutDisplay(
+                command.DisplayName,
+                bindings.TryGetValue(command.Id, out var binding)
+                    ? ShortcutProfiles.FormatGestures(binding.Gestures)
+                    : ""))
+            .ToArray();
+    }
+
+    public static string? ResolveCommandId(ShortcutProfileRecord profile, Keys keyData)
+    {
+        if (!ShortcutProfiles.TryCreateGesture(keyData, out var expected)) return null;
+        foreach (var binding in profile.Bindings)
+        {
+            if (!ShortcutProfiles.TryGetCommand(binding.CommandId, out _)) continue;
+            if (binding.Gestures.Any(gesture => GestureEquals(gesture, expected))) return binding.CommandId;
+        }
+
+        return null;
     }
 
     public static ToolMode? ResolveTool(
@@ -49,42 +54,62 @@ internal static class ToolShortcutMap
         ToolMode activeBrushTool,
         ToolMode activePaintTool)
     {
-        return preset == ToolShortcutPreset.NumberKeys
-            ? ResolveNumberKeyTool(
-                keyData,
-                activeSelectionTool,
-                activeShapeTool,
-                activeLineTool,
-                activeBrushTool,
-                activePaintTool)
-            : ResolveTraditionalFlashTool(keyData);
+        return ResolveTool(
+            ShortcutProfiles.GetBuiltInProfile(preset),
+            keyData,
+            activeSelectionTool,
+            activeShapeTool,
+            activeLineTool,
+            activeBrushTool,
+            activePaintTool);
+    }
+
+    public static ToolMode? ResolveTool(
+        ShortcutProfileRecord profile,
+        Keys keyData,
+        ToolMode activeSelectionTool,
+        ToolMode activeShapeTool,
+        ToolMode activeLineTool,
+        ToolMode activeBrushTool,
+        ToolMode activePaintTool)
+    {
+        var commandId = ResolveCommandId(profile, keyData);
+        if (!ShortcutProfiles.TryGetCommand(commandId, out var command)) return null;
+        return command.Kind switch
+        {
+            ShortcutCommandKind.Tool => command.Tool,
+            ShortcutCommandKind.SelectionGroup => activeSelectionTool,
+            ShortcutCommandKind.ShapeGroup => activeShapeTool,
+            ShortcutCommandKind.LineGroup => activeLineTool,
+            ShortcutCommandKind.BrushGroup => activeBrushTool,
+            ShortcutCommandKind.PaintGroup => activePaintTool,
+            _ => null
+        };
     }
 
     public static bool IsVaultShortcut(ToolShortcutPreset preset, Keys keyData)
     {
-        return preset == ToolShortcutPreset.NumberKeys && keyData is Keys.D9 or Keys.NumPad9;
+        return IsVaultShortcut(ShortcutProfiles.GetBuiltInProfile(preset), keyData);
+    }
+
+    public static bool IsVaultShortcut(ShortcutProfileRecord profile, Keys keyData)
+    {
+        return string.Equals(
+            ResolveCommandId(profile, keyData),
+            ShortcutCommandIds.ToggleVault,
+            StringComparison.Ordinal);
     }
 
     internal static ToolMode? ResolveTraditionalFlashTool(Keys keyData)
     {
-        return keyData switch
-        {
-            Keys.V => ToolMode.Select,
-            Keys.Q => ToolMode.Transform,
-            Keys.H => ToolMode.Hand,
-            Keys.R => ToolMode.Rectangle,
-            Keys.O => ToolMode.Ellipse,
-            Keys.N => ToolMode.Line,
-            Keys.P => ToolMode.Pen,
-            Keys.Y => ToolMode.Pencil,
-            Keys.B => ToolMode.Brush,
-            Keys.K => ToolMode.Fill,
-            Keys.S => ToolMode.InkBottle,
-            Keys.I => ToolMode.Eyedropper,
-            Keys.G => ToolMode.Gradient,
-            Keys.E => ToolMode.Eraser,
-            _ => null
-        };
+        return ResolveTool(
+            ShortcutProfiles.GetBuiltInProfile(ToolShortcutPreset.TraditionalFlash),
+            keyData,
+            ToolMode.Select,
+            ToolMode.Rectangle,
+            ToolMode.Line,
+            ToolMode.Brush,
+            ToolMode.Fill);
     }
 
     internal static ToolMode? ResolveNumberKeyTool(
@@ -95,17 +120,20 @@ internal static class ToolShortcutMap
         ToolMode activeBrushTool,
         ToolMode activePaintTool)
     {
-        return keyData switch
-        {
-            Keys.D1 or Keys.NumPad1 => activeSelectionTool,
-            Keys.D2 or Keys.NumPad2 => activeShapeTool,
-            Keys.D3 or Keys.NumPad3 => activeLineTool,
-            Keys.D4 or Keys.NumPad4 => activeBrushTool,
-            Keys.D5 or Keys.NumPad5 => activePaintTool,
-            Keys.D6 or Keys.NumPad6 => ToolMode.Gradient,
-            Keys.D7 or Keys.NumPad7 => ToolMode.Eraser,
-            Keys.D8 or Keys.NumPad8 => ToolMode.Eyedropper,
-            _ => null
-        };
+        return ResolveTool(
+            ShortcutProfiles.GetBuiltInProfile(ToolShortcutPreset.NumberKeys),
+            keyData,
+            activeSelectionTool,
+            activeShapeTool,
+            activeLineTool,
+            activeBrushTool,
+            activePaintTool);
+    }
+
+    private static bool GestureEquals(ShortcutGestureRecord left, ShortcutGestureRecord right)
+    {
+        return ShortcutProfiles.TryGetKeyData(left, out var leftKeyData)
+            && ShortcutProfiles.TryGetKeyData(right, out var rightKeyData)
+            && leftKeyData == rightKeyData;
     }
 }

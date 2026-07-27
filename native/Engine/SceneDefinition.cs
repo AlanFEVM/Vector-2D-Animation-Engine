@@ -24,11 +24,13 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     private readonly List<DrawingObjectInstanceDefinition> _instances = [];
     private readonly IReadOnlyList<SceneLayerDefinition> _layerView;
     private readonly IReadOnlyList<DrawingObjectInstanceDefinition> _instanceView;
+    private readonly LayeredInstanceIndex _instanceIndex;
 
     public SceneDefinition(int initialFrameCount = AnimationTimeline.DefaultDuration)
     {
         _layerView = _layers.AsReadOnly();
         _instanceView = _instances.AsReadOnly();
+        _instanceIndex = new LayeredInstanceIndex(_instanceView);
         var firstLayer = new SceneLayerDefinition { Name = "Layer 0001" };
         _layers.Add(firstLayer);
         _timeline.SynchronizeTracks([firstLayer.Id], Math.Max(1, initialFrameCount), populateNewTracks: false);
@@ -78,9 +80,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 
     public IReadOnlyList<DrawingObjectInstanceDefinition> InstancesInLayer(string layerId)
     {
-        return Instances
-            .Where(instance => string.Equals(instance.SceneLayerId, layerId, StringComparison.Ordinal))
-            .ToArray();
+        return _instanceIndex.Get(layerId);
     }
 
     public void SetActiveLayer(string layerId)
@@ -167,6 +167,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         {
             instance.SceneLayerId = snapshot.InstanceLayerIds.GetValueOrDefault(instance.Id, "");
         }
+        _instanceIndex.Invalidate();
 
         ActiveLayerId = snapshot.ActiveLayerId;
         NormalizeLayers();
@@ -216,6 +217,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         ArgumentNullException.ThrowIfNull(instances);
         _instances.Clear();
         _instances.AddRange(instances.Select(instance => instance.Clone()));
+        _instanceIndex.Invalidate();
         SynchronizeTimelineTracks();
     }
 
@@ -233,7 +235,10 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 
         var oldLayers = _layers.ToArray();
         var oldActiveIndex = Array.FindIndex(oldLayers, layer => string.Equals(layer.Id, ActiveLayerId, StringComparison.Ordinal));
-        _instances.RemoveAll(instance => removedIds.Contains(instance.SceneLayerId));
+        if (_instances.RemoveAll(instance => removedIds.Contains(instance.SceneLayerId)) > 0)
+        {
+            _instanceIndex.Invalidate();
+        }
         _layers.RemoveAll(layer => removedIds.Contains(layer.Id));
         if (FindLayer(ActiveLayerId) is null)
         {
@@ -262,6 +267,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 
         instance.SceneLayerId = FindLayer(instance.SceneLayerId)?.Id ?? ActiveLayerId;
         _instances.Add(instance);
+        _instanceIndex.Invalidate();
         SynchronizeTimelineTracks();
         var track = _timeline.FindTrackByTargetId(instance.SceneLayerId);
         if (track is not null && !track.EvaluateExposure(0).HasContent)
@@ -274,7 +280,11 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     {
         ArgumentNullException.ThrowIfNull(instance);
         var removed = _instances.Remove(instance);
-        if (removed) SynchronizeTimelineTracks();
+        if (removed)
+        {
+            _instanceIndex.Invalidate();
+            SynchronizeTimelineTracks();
+        }
         return removed;
     }
 
@@ -302,6 +312,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
             if (string.IsNullOrWhiteSpace(layer.Id) || !validLayers.Add(layer.Id)) _layers.RemoveAt(index);
         }
 
+        var reassignedInstance = false;
         foreach (var instance in _instances)
         {
             if (FindLayer(instance.SceneLayerId) is not null) continue;
@@ -319,7 +330,10 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
                 _layers.Add(legacyLayer);
             }
             instance.SceneLayerId = legacyLayer.Id;
+            reassignedInstance = true;
         }
+
+        if (reassignedInstance) _instanceIndex.Invalidate();
 
         if (_layers.Count == 0) _layers.Add(new SceneLayerDefinition { Name = "Layer 0001" });
         if (FindLayer(ActiveLayerId) is null) ActiveLayerId = _layers[0].Id;

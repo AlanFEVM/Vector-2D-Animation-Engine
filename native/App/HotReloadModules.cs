@@ -51,6 +51,7 @@ internal static class HotReloadModuleResolver
         nameof(Direct2DStageRenderer),
         nameof(TimelineStrip),
         nameof(DrawingObjectInstancePanel),
+        nameof(TextSettingsPanel),
         nameof(MaterialEditorPanel),
         nameof(SceneEditorPanel),
         nameof(LibraryVaultPanel),
@@ -58,6 +59,10 @@ internal static class HotReloadModuleResolver
         nameof(WorkspaceTabs),
         nameof(VectorScene),
         nameof(VectorSceneSnapshot),
+        nameof(TextObjectData),
+        nameof(TextGeometry),
+        nameof(TextFontStyle),
+        nameof(TextHorizontalAlignment),
         nameof(VectorProject),
         nameof(ProjectAssetFolder),
         nameof(DrawingObjectDefinition),
@@ -130,6 +135,7 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(MaterialEditorPanel)
+            or nameof(TextSettingsPanel)
             or nameof(SvgIcons)
             or nameof(SvgIconButton)
             or nameof(ThemedScrollPanel)
@@ -145,6 +151,7 @@ internal static class HotReloadModuleResolver
             or nameof(GradientStopStrip)
             or nameof(BrushTipPanel)
             or nameof(DrawSettingsPanel)
+            or nameof(ShapeSettingsPanel)
             or nameof(DrawingObjectInstancePanel)
             or nameof(DrawSettings)
             or nameof(ModernSlider)
@@ -158,8 +165,13 @@ internal static class HotReloadModuleResolver
             or nameof(ModernDialogForm)
             or nameof(ModernMessageDialog)
             or nameof(SettingsDialog)
+            or nameof(ShortcutProfileEditorPanel)
             or nameof(UiLocalization)
+            or nameof(Theme)
+            or nameof(ApplicationColorTheme)
             or nameof(ApplicationSettingsStore)
+            or nameof(ShortcutProfiles)
+            or nameof(ShortcutProfileRecord)
             or nameof(ToolShortcutMap))
         {
             return HotReloadModule.Shell;
@@ -169,6 +181,10 @@ internal static class HotReloadModuleResolver
             or nameof(VectorProject)
             or nameof(ProjectAssetFolder)
             or nameof(VectorSceneSnapshot)
+            or nameof(TextObjectData)
+            or nameof(TextGeometry)
+            or nameof(TextFontStyle)
+            or nameof(TextHorizontalAlignment)
             or nameof(LineEndpointStyle)
             or nameof(LineJoinGeometry)
             or nameof(SceneCompositionBuilder)

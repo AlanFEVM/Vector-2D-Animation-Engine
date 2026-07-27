@@ -14,13 +14,13 @@ internal static class SceneRenderOrder
 
     public static bool HasFill(ShapeKind shape)
     {
-        if (shape == ShapeKind.ImportedSvg) return true;
+        if (shape is ShapeKind.ImportedSvg or ShapeKind.Text) return true;
         return shape is not ShapeKind.Line and not ShapeKind.Freeform;
     }
 
     public static bool HasStroke(ShapeKind shape, float stroke)
     {
-        if (shape == ShapeKind.ImportedSvg) return false;
+        if (shape is ShapeKind.ImportedSvg or ShapeKind.Text) return false;
         return stroke > 0 && shape != ShapeKind.BrushStroke;
     }
 
@@ -28,7 +28,7 @@ internal static class SceneRenderOrder
     {
         for (var index = 0; index < scene.ObjectCount; index++)
         {
-            if (scene.ShapeKind[index] == ShapeKind.ImportedSvg) return true;
+            if (scene.ShapeKind[index] is ShapeKind.ImportedSvg or ShapeKind.Text) return true;
         }
         return false;
     }

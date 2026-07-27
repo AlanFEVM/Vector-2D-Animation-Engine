@@ -44,7 +44,16 @@ internal static class Program
         try
         {
             ApplicationConfiguration.Initialize();
-            UiLocalization.SetLanguage(ApplicationSettingsStore.Load().Language);
+            var settings = ApplicationSettingsStore.Load();
+            Theme.ConfigureColorAdjustments(
+                settings.ColorTheme,
+                settings.ThemeHueDegrees,
+                settings.ThemeSaturationPercent,
+                settings.ThemeBrightnessPercent,
+                settings.AccentHueDegrees,
+                settings.AccentSaturationPercent,
+                settings.AccentBrightnessPercent);
+            UiLocalization.SetLanguage(settings.Language);
             var inputFocusDismissalFilter = new InputFocusDismissalFilter();
             Application.AddMessageFilter(inputFocusDismissalFilter);
             using (instanceLease)

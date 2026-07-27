@@ -84,6 +84,8 @@ internal static class SceneCompositionBuilder
         string Name,
         Matrix3x2 Transform,
         float InheritedOpacity,
+        float Alpha,
+        int TintArgb,
         SceneCompositionObjectOwner Owner);
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
@@ -95,6 +97,8 @@ internal static class SceneCompositionBuilder
         int SourceObject,
         int DestinationLayer,
         Matrix3x2 Transform,
+        float Alpha,
+        int TintArgb,
         SceneCompositionObjectOwner Owner);
 
     private enum PreparedCompositionKind : byte
@@ -103,7 +107,8 @@ internal static class SceneCompositionBuilder
         Path,
         Freehand,
         Curve,
-        ImportedSvg
+        ImportedSvg,
+        Text
     }
 
     private readonly record struct PreparedCompositionObject(
@@ -134,9 +139,12 @@ internal static class SceneCompositionBuilder
         public GradientStop[] GradientStops { get; init; } = [];
         public PointF[] GradientPath { get; init; } = [];
         public PointF[][] ShapeGradientMappingContours { get; init; } = [];
+        public PathBezierNode[][] PathBezierContours { get; init; } = [];
         public int ShapeVertexCount { get; init; }
         public PointF Control2 { get; init; }
         public string ImportedSvgSource { get; init; } = "";
+        public TextObjectData? TextObjectData { get; init; }
+        public bool FillAutoMergeProtected { get; init; }
     }
 
     public static SceneCompositionResult Build(
@@ -289,6 +297,8 @@ internal static class SceneCompositionBuilder
                 layer.Name,
                 layer.Transform,
                 layer.InheritedOpacity,
+                layer.Alpha,
+                layer.TintArgb,
                 layer.Owner);
         }
 
@@ -491,6 +501,8 @@ internal static class SceneCompositionBuilder
         string path,
         string rootInstanceId,
         float inheritedOpacity = 1f,
+        float inheritedAlpha = 1f,
+        int inheritedTintArgb = unchecked((int)0xffffffff),
         bool synchronize = true)
     {
         if (!ancestry.Add(drawingObject.Id)) return;
@@ -503,6 +515,8 @@ internal static class SceneCompositionBuilder
                 drawingObject.SynchronizeTimelineTracks();
             }
             var state = instance.EvaluateState(parentFrame);
+            var alpha = Math.Clamp(inheritedAlpha * state.Alpha, 0f, 1f);
+            var tintArgb = MultiplyTintArgb(inheritedTintArgb, state.TintArgb);
             var localFrame = DrawingObjectInstanceDefinition.ResolvePlaybackFrame(
                 parentFrame,
                 parentFps,
@@ -517,6 +531,8 @@ internal static class SceneCompositionBuilder
                     $"{path} / {source.LayerNames[sourceLayer]}",
                     transform,
                     inheritedOpacity,
+                    alpha,
+                    tintArgb,
                     new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId)));
                 foreach (var childInstance in drawingObject.InstancesInLayer(source.LayerIds[sourceLayer]))
                 {
@@ -538,6 +554,8 @@ internal static class SceneCompositionBuilder
                         $"{path} / {childInstance.Name}",
                         rootInstanceId,
                         inheritedOpacity * EffectiveLayerOpacity(source, sourceLayer),
+                        alpha,
+                        tintArgb,
                         synchronize);
                 }
             }
@@ -679,7 +697,14 @@ internal static class SceneCompositionBuilder
                     var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
                     foreach (var sourceObject in sourceObjects)
                     {
-                        var item = new CompositionWorkItem(layer.Source, sourceObject, destinationLayer, layer.Transform, layer.Owner);
+                        var item = new CompositionWorkItem(
+                            layer.Source,
+                            sourceObject,
+                            destinationLayer,
+                            layer.Transform,
+                            layer.Alpha,
+                            layer.TintArgb,
+                            layer.Owner);
                         var destinationObject = AppendPreparedObject(destination, PrepareObject(item));
                         if (destinationObject >= 0) AppendOwner(owners, destinationObject, layer.Owner);
                     }
@@ -743,7 +768,7 @@ internal static class SceneCompositionBuilder
             var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
             foreach (var sourceObject in sourceObjects)
             {
-                if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path or ShapeKind.Freeform or ShapeKind.ImportedSvg) return false;
+                if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path or ShapeKind.Freeform or ShapeKind.ImportedSvg or ShapeKind.Text) return false;
             }
         }
 
@@ -763,7 +788,14 @@ internal static class SceneCompositionBuilder
             var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
             foreach (var sourceObject in sourceObjects)
             {
-                workItems[index++] = new CompositionWorkItem(layer.Source, sourceObject, destinationLayer, layer.Transform, layer.Owner);
+                workItems[index++] = new CompositionWorkItem(
+                    layer.Source,
+                    sourceObject,
+                    destinationLayer,
+                    layer.Transform,
+                    layer.Alpha,
+                    layer.TintArgb,
+                    layer.Owner);
             }
         }
 
@@ -847,9 +879,92 @@ internal static class SceneCompositionBuilder
         var shape = source.ShapeKind[sourceObject];
         var determinant = identityTransform ? 1f : transform.M11 * transform.M22 - transform.M12 * transform.M21;
         var stroke = source.Stroke[sourceObject] * MathF.Sqrt(Math.Abs(determinant));
-        var fillArgb = source.Argb[sourceObject];
-        var strokeArgb = source.StrokeArgb[sourceObject];
+        var fillArgb = ApplyInstanceAppearance(source.Argb[sourceObject], workItem.Alpha, workItem.TintArgb);
+        var strokeArgb = ApplyInstanceAppearance(source.StrokeArgb[sourceObject], workItem.Alpha, workItem.TintArgb);
         var atoms = source.AtomCount[sourceObject];
+
+        if (shape == ShapeKind.Text)
+        {
+            if (!source.TryGetTextObjectData(sourceObject, out var textObjectData))
+            {
+                throw new InvalidOperationException("Text composition source is missing its editable payload.");
+            }
+
+            if (!TryPrepareEditableTextTransform(
+                    source,
+                    sourceObject,
+                    transform,
+                    identityTransform,
+                    determinant,
+                    out var textCenter,
+                    out var textSize,
+                    out var textAngle))
+            {
+                if (source.TryGetTextWorldContours(sourceObject, out var textContours)
+                    && textContours.Length > 0)
+                {
+                    for (var contourIndex = 0; contourIndex < textContours.Length; contourIndex++)
+                    {
+                        var contour = textContours[contourIndex];
+                        for (var pointIndex = 0; pointIndex < contour.Length; pointIndex++)
+                        {
+                            contour[pointIndex] = TransformPoint(contour[pointIndex], transform, identityTransform);
+                        }
+                    }
+
+                    return new PreparedCompositionObject(
+                        PreparedCompositionKind.Path,
+                        destinationLayer,
+                        ShapeKind.Path,
+                        PointF.Empty,
+                        SizeF.Empty,
+                        0,
+                        0,
+                        fillArgb,
+                        Color.Transparent.ToArgb(),
+                        atoms,
+                        PointF.Empty,
+                        PointF.Empty,
+                        PointF.Empty,
+                        [],
+                        textContours);
+                }
+                if (!string.IsNullOrWhiteSpace(textObjectData.Content))
+                {
+                    throw new InvalidOperationException(
+                        "Unsupported text composition transform could not be materialized to outline geometry.");
+                }
+
+                PrepareApproximateObjectTransform(
+                    source,
+                    sourceObject,
+                    transform,
+                    identityTransform,
+                    out textCenter,
+                    out textSize,
+                    out textAngle);
+            }
+
+            return new PreparedCompositionObject(
+                PreparedCompositionKind.Text,
+                destinationLayer,
+                ShapeKind.Text,
+                textCenter,
+                textSize,
+                textAngle,
+                0,
+                fillArgb,
+                Color.Transparent.ToArgb(),
+                atoms,
+                PointF.Empty,
+                PointF.Empty,
+                PointF.Empty,
+                [],
+                [])
+            {
+                TextObjectData = textObjectData
+            };
+        }
 
         if (shape == ShapeKind.ImportedSvg)
         {
@@ -874,6 +989,10 @@ internal static class SceneCompositionBuilder
                 importedSize = wrapped.Size;
                 importedAngle = 0;
             }
+            if ((workItem.TintArgb & 0x00ffffff) != 0x00ffffff)
+            {
+                importedSvgSource = WrapImportedSvgTint(importedSvgSource, importedSize, workItem.TintArgb);
+            }
 
             return new PreparedCompositionObject(
                 PreparedCompositionKind.ImportedSvg,
@@ -896,7 +1015,8 @@ internal static class SceneCompositionBuilder
             };
         }
 
-        if (shape == ShapeKind.Path && source.TryGetPathWorldContours(sourceObject, out var contours))
+        if (shape == ShapeKind.Path
+            && source.TryGetPathWorldContours(sourceObject, out var contours))
         {
             for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
             {
@@ -907,7 +1027,7 @@ internal static class SceneCompositionBuilder
                 }
             }
 
-            return WithGradient(new PreparedCompositionObject(
+            var prepared = new PreparedCompositionObject(
                 PreparedCompositionKind.Path,
                 destinationLayer,
                 shape,
@@ -922,7 +1042,33 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 [],
-                contours), source, sourceObject, transform, identityTransform);
+                contours);
+            if (source.TryGetPathBezierWorldContours(sourceObject, out var bezierContours))
+            {
+                for (var contourIndex = 0; contourIndex < bezierContours.Length; contourIndex++)
+                {
+                    var contour = bezierContours[contourIndex];
+                    for (var nodeIndex = 0; nodeIndex < contour.Length; nodeIndex++)
+                    {
+                        var node = contour[nodeIndex];
+                        contour[nodeIndex] = new PathBezierNode(
+                            TransformPoint(node.Anchor, transform, identityTransform),
+                            TransformPoint(node.IncomingControl, transform, identityTransform),
+                            TransformPoint(node.OutgoingControl, transform, identityTransform));
+                    }
+                }
+
+                prepared = prepared with { PathBezierContours = bezierContours };
+            }
+
+            return WithGradient(
+                prepared,
+                source,
+                sourceObject,
+                transform,
+                identityTransform,
+                workItem.Alpha,
+                workItem.TintArgb);
         }
 
         if (shape == ShapeKind.Freeform && source.TryGetFreehandWorldPoints(sourceObject, out var freehand))
@@ -946,7 +1092,7 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 freehand,
-                []), source, sourceObject, transform, identityTransform);
+                []), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
         }
 
         if (shape == ShapeKind.Line
@@ -985,7 +1131,7 @@ internal static class SceneCompositionBuilder
                 source.GetLineEndpointStyle(sourceObject, startEndpoint: false))
             {
                 Control2 = transformedControl2
-            }, source, sourceObject, transform, identityTransform);
+            }, source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
         }
 
         if (!identityTransform && HasShear(transform))
@@ -1017,7 +1163,7 @@ internal static class SceneCompositionBuilder
                     PointF.Empty,
                     PointF.Empty,
                     [],
-                    skewContours), source, sourceObject, transform, identityTransform);
+                    skewContours), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
             }
         }
 
@@ -1038,7 +1184,7 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 [],
-                []), source, sourceObject, transform, identityTransform);
+                []), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
         }
 
         var center = Transform(new PointF(source.X[sourceObject], source.Y[sourceObject]), transform);
@@ -1064,7 +1210,19 @@ internal static class SceneCompositionBuilder
             PointF.Empty,
             PointF.Empty,
             [],
-            []), source, sourceObject, transform, identityTransform);
+            []), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
+    }
+
+    private static string WrapImportedSvgTint(string source, SizeF size, int tintArgb)
+    {
+        var width = Math.Max(1, size.Width);
+        var height = Math.Max(1, size.Height);
+        var encodedSource = Convert.ToBase64String(Encoding.UTF8.GetBytes(source));
+        return FormattableString.Invariant($"""
+            <svg xmlns="http://www.w3.org/2000/svg" xmlns:v2d="urn:vector-animation-engine:instance-appearance" v2d:multiply-tint="{(tintArgb & 0x00ffffff):X6}" width="{width:R}" height="{height:R}" viewBox="0 0 {width:R} {height:R}">
+              <image width="{width:R}" height="{height:R}" preserveAspectRatio="none" href="data:image/svg+xml;base64,{encodedSource}"/>
+            </svg>
+            """);
     }
 
     private static (string Source, PointF Center, SizeF Size) WrapImportedSvgTransform(
@@ -1121,7 +1279,10 @@ internal static class SceneCompositionBuilder
     private static PackedSceneObject PreparePackedObject(CompositionWorkItem workItem)
     {
         var item = PrepareObject(workItem);
-        if (item.Kind is PreparedCompositionKind.Path or PreparedCompositionKind.Freehand or PreparedCompositionKind.ImportedSvg)
+        if (item.Kind is PreparedCompositionKind.Path
+            or PreparedCompositionKind.Freehand
+            or PreparedCompositionKind.ImportedSvg
+            or PreparedCompositionKind.Text)
         {
             throw new InvalidOperationException("Sparse geometry cannot be written through the packed batch path.");
         }
@@ -1160,13 +1321,29 @@ internal static class SceneCompositionBuilder
                 item.Size,
                 item.Angle,
                 item.ImportedSvgSource),
-            PreparedCompositionKind.Path => destination.AppendPathObjectContours(
+            PreparedCompositionKind.Text => destination.AppendTextObject(
                 item.DestinationLayer,
-                item.Contours,
-                item.Stroke,
-                Color.FromArgb(item.FillArgb),
-                Color.FromArgb(item.StrokeArgb),
-                item.Atoms),
+                item.Center,
+                item.Size,
+                item.Angle,
+                item.TextObjectData
+                    ?? throw new InvalidOperationException("Prepared text composition is missing its editable payload."),
+                item.FillArgb),
+            PreparedCompositionKind.Path => item.PathBezierContours.Length > 0
+                ? destination.AppendPathBezierObjectContours(
+                    item.DestinationLayer,
+                    item.PathBezierContours,
+                    item.Stroke,
+                    Color.FromArgb(item.FillArgb),
+                    Color.FromArgb(item.StrokeArgb),
+                    item.Atoms)
+                : destination.AppendPathObjectContours(
+                    item.DestinationLayer,
+                    item.Contours,
+                    item.Stroke,
+                    Color.FromArgb(item.FillArgb),
+                    Color.FromArgb(item.StrokeArgb),
+                    item.Atoms),
             PreparedCompositionKind.Freehand => destination.AppendFreehandStroke(
                 item.DestinationLayer,
                 item.Points,
@@ -1204,6 +1381,11 @@ internal static class SceneCompositionBuilder
                 item.ShapeVertexCount,
                 curveControl2: item.Center)
         };
+        if (index >= 0)
+        {
+            destination.FillAutoMergeProtected[index] = item.FillAutoMergeProtected;
+            if (item.Kind == PreparedCompositionKind.ImportedSvg) destination.Argb[index] = item.FillArgb;
+        }
         if (item.LinearGradientEnabled)
         {
             destination.SetGradientPaint(
@@ -1227,19 +1409,27 @@ internal static class SceneCompositionBuilder
         VectorScene source,
         int sourceObject,
         Matrix3x2 transform,
-        bool identityTransform)
+        bool identityTransform,
+        float alpha,
+        int tintArgb)
     {
-        item = item with { ShapeVertexCount = source.GetShapeVertexCount(sourceObject) };
+        item = item with
+        {
+            ShapeVertexCount = source.GetShapeVertexCount(sourceObject),
+            FillAutoMergeProtected = source.FillAutoMergeProtected[sourceObject]
+        };
         if (!source.HasGradient(sourceObject)) return item;
         return item with
         {
             LinearGradientEnabled = true,
             GradientKind = source.GetGradientKind(sourceObject),
-            GradientStartArgb = source.GradientStartArgb[sourceObject],
-            GradientEndArgb = source.GradientEndArgb[sourceObject],
+            GradientStartArgb = ApplyInstanceAppearance(source.GradientStartArgb[sourceObject], alpha, tintArgb),
+            GradientEndArgb = ApplyInstanceAppearance(source.GradientEndArgb[sourceObject], alpha, tintArgb),
             GradientStart = TransformPoint(source.GetGradientStart(sourceObject), transform, identityTransform),
             GradientEnd = TransformPoint(source.GetGradientEnd(sourceObject), transform, identityTransform),
-            GradientStops = source.GetGradientStops(sourceObject),
+            GradientStops = source.GetGradientStops(sourceObject)
+                .Select(stop => new GradientStop(stop.Position, ApplyInstanceAppearance(stop.Argb, alpha, tintArgb)))
+                .ToArray(),
             GradientPath = source.TryGetGradientPathWorldPoints(sourceObject, out var gradientPath)
                 ? gradientPath.Select(point => TransformPoint(point, transform, identityTransform)).ToArray()
                 : [],
@@ -1250,6 +1440,110 @@ internal static class SceneCompositionBuilder
                 : []
         };
     }
+
+    private static bool TryPrepareEditableTextTransform(
+        VectorScene source,
+        int sourceObject,
+        Matrix3x2 transform,
+        bool identityTransform,
+        float determinant,
+        out PointF center,
+        out SizeF size,
+        out float angle)
+    {
+        PrepareApproximateObjectTransform(
+            source,
+            sourceObject,
+            transform,
+            identityTransform,
+            out center,
+            out size,
+            out angle,
+            out var widthAxis,
+            out var heightAxis);
+        var widthLength = widthAxis.Length();
+        var heightLength = heightAxis.Length();
+        var axisDot = Vector2.Dot(widthAxis, heightAxis);
+        return determinant > 0
+            && widthLength > 0
+            && heightLength > 0
+            && Math.Abs(axisDot) <= 0.0001f * widthLength * heightLength;
+    }
+
+    private static void PrepareApproximateObjectTransform(
+        VectorScene source,
+        int sourceObject,
+        Matrix3x2 transform,
+        bool identityTransform,
+        out PointF center,
+        out SizeF size,
+        out float angle)
+    {
+        PrepareApproximateObjectTransform(
+            source,
+            sourceObject,
+            transform,
+            identityTransform,
+            out center,
+            out size,
+            out angle,
+            out _,
+            out _);
+    }
+
+    private static void PrepareApproximateObjectTransform(
+        VectorScene source,
+        int sourceObject,
+        Matrix3x2 transform,
+        bool identityTransform,
+        out PointF center,
+        out SizeF size,
+        out float angle,
+        out Vector2 widthAxis,
+        out Vector2 heightAxis)
+    {
+        var sourceAngle = source.Angle[sourceObject];
+        var cosine = MathF.Cos(sourceAngle);
+        var sine = MathF.Sin(sourceAngle);
+        if (identityTransform)
+        {
+            center = new PointF(source.X[sourceObject], source.Y[sourceObject]);
+            size = new SizeF(source.Width[sourceObject], source.Height[sourceObject]);
+            angle = sourceAngle;
+            widthAxis = new Vector2(cosine * size.Width, sine * size.Width);
+            heightAxis = new Vector2(-sine * size.Height, cosine * size.Height);
+            return;
+        }
+
+        center = Transform(new PointF(source.X[sourceObject], source.Y[sourceObject]), transform);
+        widthAxis = Vector2.TransformNormal(
+            new Vector2(cosine * source.Width[sourceObject], sine * source.Width[sourceObject]),
+            transform);
+        heightAxis = Vector2.TransformNormal(
+            new Vector2(-sine * source.Height[sourceObject], cosine * source.Height[sourceObject]),
+            transform);
+        size = new SizeF(Math.Max(1, widthAxis.Length()), Math.Max(1, heightAxis.Length()));
+        angle = MathF.Atan2(widthAxis.Y, widthAxis.X);
+    }
+
+    private static int MultiplyTintArgb(int first, int second)
+    {
+        return unchecked((int)0xff000000)
+            | (MultiplyColorChannel((first >>> 16) & 0xff, (second >>> 16) & 0xff) << 16)
+            | (MultiplyColorChannel((first >>> 8) & 0xff, (second >>> 8) & 0xff) << 8)
+            | MultiplyColorChannel(first & 0xff, second & 0xff);
+    }
+
+    private static int ApplyInstanceAppearance(int argb, float alpha, int tintArgb)
+    {
+        var resultAlpha = (int)Math.Clamp(((argb >>> 24) & 0xff) * alpha, 0f, 255f);
+        return (resultAlpha << 24)
+            | (MultiplyColorChannel((argb >>> 16) & 0xff, (tintArgb >>> 16) & 0xff) << 16)
+            | (MultiplyColorChannel((argb >>> 8) & 0xff, (tintArgb >>> 8) & 0xff) << 8)
+            | MultiplyColorChannel(argb & 0xff, tintArgb & 0xff);
+    }
+
+    private static int MultiplyColorChannel(int first, int second) => (first * second + 127) / 255;
 
     private static Matrix3x2 InstanceMatrix(
         DrawingObjectDefinition drawingObject,

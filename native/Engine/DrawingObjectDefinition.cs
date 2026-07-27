@@ -6,13 +6,14 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
 {
     private readonly List<DrawingObjectInstanceDefinition> _instances = [];
     private readonly IReadOnlyList<DrawingObjectInstanceDefinition> _instanceView;
+    private readonly LayeredInstanceIndex _instanceIndex;
 
     public DrawingObjectDefinition()
     {
         _instanceView = _instances.AsReadOnly();
+        _instanceIndex = new LayeredInstanceIndex(_instanceView);
         Scene.ConfigureExternalLayerKeyframeContent(
-            (layerId, _) => _instances.Any(instance =>
-                string.Equals(instance.SceneLayerId, layerId, StringComparison.Ordinal)));
+            (layerId, _) => _instanceIndex.Any(layerId));
     }
 
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
@@ -43,9 +44,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
 
     public IReadOnlyList<DrawingObjectInstanceDefinition> InstancesInLayer(string layerId)
     {
-        return Instances
-            .Where(instance => string.Equals(instance.SceneLayerId, layerId, StringComparison.Ordinal))
-            .ToArray();
+        return _instanceIndex.Get(layerId);
     }
 
     internal void AddInstance(VectorProject project, DrawingObjectInstanceDefinition instance)
@@ -67,6 +66,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
             instance.SceneLayerId = Scene.ResolveInstanceLayerId(instance.SceneLayerId);
         }
         _instances.Add(instance);
+        _instanceIndex.Invalidate();
         SynchronizeTimelineTracks();
         var track = Scene.Timeline.FindTrackByTargetId(instance.SceneLayerId);
         if (track is not null && !track.EvaluateExposure(Scene.EditFrame).HasContent)
@@ -82,6 +82,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
             string.Equals(instance.DrawingObjectId, drawingObjectId, StringComparison.Ordinal));
         if (removed > 0)
         {
+            _instanceIndex.Invalidate();
             SynchronizeTimelineTracks();
             Scene.SynchronizeExternalLayerKeyframeContent();
         }
@@ -93,6 +94,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         ArgumentNullException.ThrowIfNull(instance);
         if (!_instances.Remove(instance)) return false;
 
+        _instanceIndex.Invalidate();
         SynchronizeTimelineTracks();
         Scene.SynchronizeExternalLayerKeyframeContent();
         return true;
@@ -108,6 +110,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         ArgumentNullException.ThrowIfNull(instances);
         _instances.Clear();
         _instances.AddRange(instances.Select(instance => instance.Clone()));
+        _instanceIndex.Invalidate();
         SynchronizeTimelineTracks();
         Scene.SynchronizeExternalLayerKeyframeContent();
     }
@@ -121,7 +124,10 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         var removal = Scene.ResolveLayerRemovalIndices(layerIds);
         if (removal.Length == 0 || removal.Length >= Scene.LayerCount) return false;
         var removedIds = removal.Select(layer => Scene.LayerIds[layer]).ToHashSet(StringComparer.Ordinal);
-        _instances.RemoveAll(instance => removedIds.Contains(instance.SceneLayerId));
+        if (_instances.RemoveAll(instance => removedIds.Contains(instance.SceneLayerId)) > 0)
+        {
+            _instanceIndex.Invalidate();
+        }
         if (!Scene.RemoveLayers(removedIds)) return false;
         Scene.SynchronizeExternalLayerKeyframeContent();
         return true;
@@ -137,6 +143,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         var plan = CreateInstanceMovePlan(instanceIds, direction);
         if (plan.Count == 0) return false;
         foreach (var (index, instance) in plan) _instances[index] = instance;
+        _instanceIndex.Invalidate();
         return true;
     }
 
@@ -212,10 +219,16 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
     private void NormalizeInstanceLayers()
     {
         if (Scene.LayerCount == 0) return;
+        var reassignedInstance = false;
         foreach (var instance in _instances)
         {
-            instance.SceneLayerId = Scene.ResolveInstanceLayerId(instance.SceneLayerId);
+            var layerId = Scene.ResolveInstanceLayerId(instance.SceneLayerId);
+            if (string.Equals(instance.SceneLayerId, layerId, StringComparison.Ordinal)) continue;
+            instance.SceneLayerId = layerId;
+            reassignedInstance = true;
         }
+
+        if (reassignedInstance) _instanceIndex.Invalidate();
     }
 
     public VaultItem ToVaultItem()

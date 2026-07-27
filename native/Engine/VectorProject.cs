@@ -751,6 +751,8 @@ internal sealed class VectorProject
                     ScaleX = restored.ScaleX,
                     ScaleY = restored.ScaleY,
                     ScaleZ = restored.ScaleZ,
+                    Alpha = restored.Alpha,
+                    TintArgb = restored.TintArgb,
                     PlaybackFps = restored.PlaybackFps,
                     PlaybackMode = restored.PlaybackMode,
                     HoldFrame = restored.HoldFrame
@@ -799,6 +801,8 @@ internal sealed class VectorProject
             ScaleX = instance.ScaleX,
             ScaleY = instance.ScaleY,
             ScaleZ = instance.ScaleZ,
+            Alpha = instance.Alpha,
+            TintArgb = instance.TintArgb,
             PlaybackFps = instance.PlaybackFps,
             PlaybackMode = instance.PlaybackMode,
             HoldFrame = instance.HoldFrame,
@@ -828,6 +832,8 @@ internal sealed class VectorProject
             ScaleX = snapshot.ScaleX,
             ScaleY = snapshot.ScaleY,
             ScaleZ = snapshot.ScaleZ,
+            Alpha = snapshot.Alpha,
+            TintArgb = snapshot.TintArgb,
             PlaybackFps = snapshot.PlaybackFps,
             PlaybackMode = snapshot.PlaybackMode,
             HoldFrame = snapshot.HoldFrame
@@ -1029,6 +1035,8 @@ internal sealed class VectorProject
             ScaleX = source.ScaleX,
             ScaleY = source.ScaleY,
             ScaleZ = source.ScaleZ,
+            Alpha = source.Alpha,
+            TintArgb = source.TintArgb,
             PlaybackFps = source.PlaybackFps,
             PlaybackMode = source.PlaybackMode,
             HoldFrame = source.HoldFrame

@@ -932,6 +932,7 @@ internal static class ProjectVaultStore
                 || instance.Name is null
                 || !IsValidState(instance.Visible, instance.X, instance.Y, instance.Z, instance.RotationX, instance.RotationY,
                     instance.RotationZ, instance.SkewX, instance.SkewY, instance.ScaleX, instance.ScaleY, instance.ScaleZ,
+                    instance.Alpha, instance.TintArgb,
                     instance.PlaybackFps, instance.PlaybackMode, instance.HoldFrame))
             {
                 throw new InvalidDataException($"An instance in {owner} is invalid.");
@@ -943,6 +944,7 @@ internal static class ProjectVaultStore
                 if (keyframe.Frame < 0 || !frames.Add(keyframe.Frame)
                     || !IsValidState(state.Visible, state.X, state.Y, state.Z, state.RotationX, state.RotationY,
                         state.RotationZ, state.SkewX, state.SkewY, state.ScaleX, state.ScaleY, state.ScaleZ,
+                        state.Alpha, state.TintArgb,
                         state.PlaybackFps, state.PlaybackMode, state.HoldFrame))
                 {
                     throw new InvalidDataException($"An instance state keyframe in {owner} is invalid.");
@@ -1062,6 +1064,8 @@ internal static class ProjectVaultStore
         float scaleX,
         float scaleY,
         float scaleZ,
+        float alpha,
+        int tintArgb,
         decimal playbackFps,
         DrawingObjectPlaybackMode playbackMode,
         int holdFrame)
@@ -1071,6 +1075,8 @@ internal static class ProjectVaultStore
             && float.IsFinite(rotationX) && float.IsFinite(rotationY) && float.IsFinite(rotationZ)
             && float.IsFinite(skewX) && float.IsFinite(skewY)
             && float.IsFinite(scaleX) && float.IsFinite(scaleY) && float.IsFinite(scaleZ)
+            && float.IsFinite(alpha) && alpha is >= 0f and <= 1f
+            && (uint)tintArgb >> 24 == 0xff
             && playbackFps is >= 1m and <= 120m && Enum.IsDefined(playbackMode) && holdFrame >= 0;
     }
 
@@ -1307,6 +1313,7 @@ internal static class ProjectVaultStore
             AtomCount = source.AtomCount,
             Argb = source.Argb,
             StrokeArgb = source.StrokeArgb,
+            FillAutoMergeProtected = source.FillAutoMergeProtected,
             LinearGradientEnabled = source.LinearGradientEnabled,
             GradientKinds = source.GradientKinds,
             GradientStartArgb = source.GradientStartArgb,
@@ -1320,8 +1327,10 @@ internal static class ProjectVaultStore
             ShapeGradientMappingLocalContours = source.ShapeGradientMappingLocalContours,
             Timeline = timeline,
             PathLocalContours = source.PathLocalContours,
+            PathBezierLocalContours = source.PathBezierLocalContours,
             FreehandLocalPoints = source.FreehandLocalPoints,
-            ImportedSvgSources = source.ImportedSvgSources
+            ImportedSvgSources = source.ImportedSvgSources,
+            TextObjects = source.TextObjects
         };
     }
 

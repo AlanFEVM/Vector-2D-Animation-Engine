@@ -6,8 +6,8 @@ internal class SvgIconButton : Button
     {
         Icon = icon;
         Text = string.Empty;
-        Width = 34;
-        Height = 34;
+        Width = Theme.IconButtonSize;
+        Height = Theme.IconButtonSize;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
     }
 
@@ -19,6 +19,7 @@ internal class SvgIconButton : Button
     {
         var active = UiMotion.IsActive(this);
         var hover = UiMotion.HoverProgress(this);
+        var foreground = Enabled ? ForeColor : Theme.DisabledText;
         using var background = new SolidBrush(BackColor);
         using var hoverWash = new SolidBrush(Color.FromArgb((int)Math.Round(24 * hover), Theme.Accent));
         using var border = new Pen(active ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, hover * 0.52f), 1f + hover * 0.25f);
@@ -26,16 +27,49 @@ internal class SvgIconButton : Button
         e.Graphics.FillRectangle(background, ClientRectangle);
         if (hover > 0.01f) e.Graphics.FillRectangle(hoverWash, new Rectangle(1, 1, Math.Max(0, Width - 2), Math.Max(0, Height - 2)));
         e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
-        SvgIcons.Draw(e.Graphics, Icon, ClientRectangle, ForeColor);
+        if (active)
+        {
+            using var activeBar = new SolidBrush(Theme.Accent);
+            e.Graphics.FillRectangle(activeBar, 1, 4, 3, Math.Max(0, Height - 8));
+        }
+
+        var hasLabel = !string.IsNullOrWhiteSpace(Text);
+        var iconBounds = hasLabel
+            ? new Rectangle(3, 0, Theme.IconButtonSize, Height)
+            : ClientRectangle;
+        SvgIcons.Draw(e.Graphics, Icon, iconBounds, foreground);
+        if (hasLabel)
+        {
+            var textBounds = new Rectangle(
+                Theme.IconButtonSize + 10,
+                1,
+                Math.Max(0, Width - Theme.IconButtonSize - 16),
+                Math.Max(0, Height - 2));
+            TextRenderer.DrawText(
+                e.Graphics,
+                Text,
+                Font,
+                textBounds,
+                foreground,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
         if (ShowsToolGroupIndicator)
         {
-            using var indicator = new SolidBrush(Color.FromArgb(220, ForeColor));
+            using var indicator = new SolidBrush(active ? Theme.Accent : Color.FromArgb(220, foreground));
             e.Graphics.FillPolygon(indicator, new Point[]
             {
                 new Point(Width - 10, Height - 4),
                 new Point(Width - 4, Height - 4),
                 new Point(Width - 4, Height - 10)
             });
+        }
+        if (Focused && ShowFocusCues)
+        {
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(ClientRectangle, -3, -3),
+                Theme.AccentLabel,
+                BackColor);
         }
     }
 }

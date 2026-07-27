@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 
 namespace VectorAnimationEngine;
 
@@ -22,6 +24,9 @@ internal sealed class ColorComponentSlider : Control
     {
         Interval = InteractionRefreshIntervalMilliseconds
     };
+    private Func<float, Color>? _gradientColor;
+    private Bitmap? _gradientBitmap;
+    private int[]? _gradientScanline;
     private int _minimum;
     private int _maximum = 255;
     private int _value;
@@ -30,6 +35,7 @@ internal sealed class ColorComponentSlider : Control
     private bool _interacting;
     private bool _hovered;
     private bool _pointerSurfaceActive;
+    private bool _gradientDirty = true;
 
     public ColorComponentSlider()
     {
@@ -91,14 +97,28 @@ internal sealed class ColorComponentSlider : Control
         }
     }
 
-    public Func<float, Color>? GradientColor { get; set; }
+    public Func<float, Color>? GradientColor
+    {
+        get => _gradientColor;
+        set
+        {
+            if (ReferenceEquals(_gradientColor, value)) return;
+            _gradientColor = value;
+            _gradientDirty = true;
+            Invalidate();
+        }
+    }
 
     public event EventHandler? ValueChanged;
     public event EventHandler? InteractionStarted;
     public event EventHandler? InteractionCompleted;
     public event EventHandler? InteractionCanceled;
 
-    public void RefreshGradient() => Invalidate();
+    public void RefreshGradient()
+    {
+        _gradientDirty = true;
+        Invalidate();
+    }
 
     protected override void Dispose(bool disposing)
     {
@@ -106,6 +126,7 @@ internal sealed class ColorComponentSlider : Control
         {
             _interactionRefreshTimer.Stop();
             _interactionRefreshTimer.Dispose();
+            _gradientBitmap?.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -285,14 +306,53 @@ internal sealed class ColorComponentSlider : Control
             rail.Right,
             rail.Bottom + (int)MathF.Ceiling(SurfaceBumpHeight));
         DrawCheckerboard(graphics, surfaceBounds);
-        var width = Math.Max(1, rail.Width);
+        EnsureGradientBitmap(surfaceBounds.Size, colorAt);
+        if (_gradientBitmap is not null)
+        {
+            graphics.DrawImageUnscaled(_gradientBitmap, surfaceBounds.Location);
+        }
+        graphics.Restore(state);
+    }
+
+    private void EnsureGradientBitmap(Size size, Func<float, Color> colorAt)
+    {
+        var width = Math.Max(1, size.Width);
+        var height = Math.Max(1, size.Height);
+        if (_gradientBitmap is null
+            || _gradientBitmap.Width != width
+            || _gradientBitmap.Height != height)
+        {
+            _gradientBitmap?.Dispose();
+            _gradientBitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            _gradientDirty = true;
+        }
+
+        if (!_gradientDirty) return;
+
+        if (_gradientScanline is null || _gradientScanline.Length < width)
+        {
+            _gradientScanline = new int[width];
+        }
         for (var x = 0; x < width; x++)
         {
             var amount = width <= 1 ? 0f : x / (float)(width - 1);
-            using var pen = new Pen(colorAt(amount));
-            graphics.DrawLine(pen, rail.Left + x, surfaceBounds.Top, rail.Left + x, surfaceBounds.Bottom - 1);
+            _gradientScanline[x] = colorAt(amount).ToArgb();
         }
-        graphics.Restore(state);
+
+        var bounds = new Rectangle(0, 0, width, height);
+        var bitmapData = _gradientBitmap.LockBits(bounds, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            for (var y = 0; y < height; y++)
+            {
+                Marshal.Copy(_gradientScanline, 0, IntPtr.Add(bitmapData.Scan0, y * bitmapData.Stride), width);
+            }
+        }
+        finally
+        {
+            _gradientBitmap.UnlockBits(bitmapData);
+        }
+        _gradientDirty = false;
     }
 
     private GraphicsPath CreateSurfacePath(Rectangle rail)

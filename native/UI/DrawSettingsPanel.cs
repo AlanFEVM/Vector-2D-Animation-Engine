@@ -10,8 +10,8 @@ internal sealed class DrawSettingsPanel : UserControl
     private readonly ModernSlider _freehandSmoothing = new();
     private readonly Label _freehandSmoothingValue = new();
     private readonly Panel _eraserOptions = new();
-    private readonly CheckBox _eraseLines = EraserOption("Erase Lines");
-    private readonly CheckBox _eraseFills = EraserOption("Erase Fills");
+    private readonly CheckBox _eraseLines = EraserOption("Stroke");
+    private readonly CheckBox _eraseFills = EraserOption("Fill");
     private TableLayoutPanel? _content;
     private Label? _shapeVertexCountLabel;
     private bool _updating;
@@ -47,7 +47,7 @@ internal sealed class DrawSettingsPanel : UserControl
         ConfigureShapeDetail(_settings.ShapeKind, syncValue: true);
     }
 
-    public int PreferredHeight => 164 + (_shapeDetailVisible ? 36 : 0) + (_eraserOptions.Visible ? 40 : 0);
+    public int PreferredHeight => 164 + (_shapeDetailVisible ? 36 : 0) + (_eraserOptions.Visible ? 36 : 0);
 
     public event EventHandler? PreferredHeightChanged;
 
@@ -90,9 +90,9 @@ internal sealed class DrawSettingsPanel : UserControl
         content.BringToFront();
 
         _eraserOptions.Dock = DockStyle.Bottom;
-        _eraserOptions.Height = 40;
+        _eraserOptions.Height = 36;
         _eraserOptions.BackColor = Theme.Panel;
-        _eraserOptions.Padding = new Padding(0, 4, 0, 4);
+        _eraserOptions.Padding = new Padding(0, 2, 0, 2);
         _eraserOptions.Visible = false;
         var eraseLabel = new Label
         {
@@ -290,6 +290,6 @@ internal sealed class DrawSettingsPanel : UserControl
         BackColor = Theme.Panel,
         FlatStyle = FlatStyle.Flat,
         Font = Theme.UiFont(),
-        Margin = new Padding(0, 4, 10, 0)
+        Margin = new Padding(0, 3, 14, 0)
     };
 }

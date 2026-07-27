@@ -4,19 +4,20 @@ Native Windows desktop prototype for a large-scale 2D vector animation engine.
 
 ## Run
 
-Source development requires the stable .NET 8 SDK selected by `global.json`. Start the development launcher with:
+Source development requires the stable .NET 8 SDK selected by `global.json`. Build or refresh the ignored root development launcher, then start it with:
 
 ```powershell
-dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj
+scripts\publish-development-launcher.ps1
+.\VectorAnimationEngine.exe
 ```
 
-The launcher restores the first build when needed, then starts non-interactive `dotnet watch` with Metadata Hot Reload. Changed engine and rendering method bodies apply in-process; shell, inspector, workspace, and timeline changes rebuild the workbench while preserving the open project, selection, frame, and view. Use the editor's restart button for unsupported structural edits.
+The root `VectorAnimationEngine.exe` is exclusively the source development launcher. It restores the first build when needed, then starts non-interactive `dotnet watch` with Metadata Hot Reload. Changed engine and rendering method bodies apply in-process; shell, inspector, workspace, and timeline changes rebuild the workbench while preserving the open project, selection, frame, and view. Use the editor's restart button for unsupported structural edits. Never overwrite the root EXE with a formal release package.
 
 ```powershell
 winget install --id Microsoft.DotNet.SDK.8 --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
 ```
 
-Use `dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj -- --no-hot-reload` for a single source run without file watching. Formal Windows packages are produced separately by the split-package script described below.
+`dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj` remains the equivalent source command. Use `.\VectorAnimationEngine.exe --no-hot-reload` for a single source run without file watching. Formal Windows packages are produced separately by the single-EXE script described below.
 
 The app opens with an empty project and one visible layer. The stress scene is not
 generated on startup; use `Run Stress Scene` when you explicitly want to benchmark.
@@ -41,6 +42,7 @@ generated on startup; use `Run Stress Scene` when you explicitly want to benchma
 - 3D scenes use Blender-style viewport navigation: middle mouse orbits, Shift + middle mouse pans, Ctrl + middle mouse dollies, mouse wheel dollies, Ctrl + wheel changes the view zoom scale, Numpad 1/3/7 switches front/right/top views, Numpad 5 toggles perspective/orthographic, and Home resets the reference view.
 - 2D stages use an origin-aware decimal world grid at 10% default opacity: the minimum cell is 10 vu, every tenth line becomes a major line, and line opacity/weight transitions continuously as zoom changes.
 - New projects start with one empty drawing object. All shape and line drawing is stored inside the active drawing object.
+- Basic Drawing includes an editable Text tool (`T` in the Traditional Flash preset). It creates multiline text objects, supports in-place secondary editing, double-click entry from Select/Free Transform, green text-area width handles with automatic reflow, installed font families, 4-512 pt sizes, regular/bold/italic/bold-italic styles, left/center/right alignment, Fill/opacity, undo, transforms, clipboard operations, timeline cel cloning, project persistence, and stage `Break Apart` conversion to one compound Path per text object. The tool is disabled outside Basic Drawing.
 - `Import SVG...` in Basic Drawing, or dragging one `.svg` file from File Explorer onto the stage, imports a validated SVG as exactly one opaque drawing object. A dropped SVG is placed at the pointer. The object can be selected, transformed, copied, layered, deleted, undone, and saved with the project. Stage right-click `Break Apart` converts supported SVG paths and shapes into editable compound Path fills and Freeform strokes; the same command freezes selected nested drawing-object instances at the current frame into ordinary local geometry, including vectorizing SVG content, as one undoable transaction.
 - Directory-backed project persistence stores software/project metadata and project playback settings in one `.v2dProject` manifest, reversible SVG drawing assets under `.Vault`, and drawing/scene layer and frame data under `.TimeLine`; Save/Open validate stable IDs, paths, references, timelines, aggregate limits, and SHA-256 checksums before replacing the live project, while refusing unmanaged target folders or manifests owned by another project. A durable save journal rolls an interrupted replacement back or finishes cleanup before the next Save/Open operation.
 - Vector-unit coordinate model with quantized geometry edits and point-based stroke authoring.
@@ -63,7 +65,7 @@ generated on startup; use `Run Stress Scene` when you explicitly want to benchma
 - Drawing preview overlay while dragging shape, line, pencil, and brush tools.
 - Flash-style freehand drawing: Pencil creates an open stroke with the stroke swatch, while Brush and Pressure Brush create closed filled outlines with the fill swatch; Pencil, Brush, and Eraser retain independent pt sizes. Pressure Brush derives fluid width from mouse speed and press duration. Brush Tip exposes Soft Round, Traditional Brush, and imported 128x128 tips, plus size in document units, frequency, continuity, and Soft Round hardness.
 - Freehand input is sampled in screen space and simplified on pointer-up. Pencil commits one selectable open stroke per gesture; Brush and Pressure Brush expand the sampled centerline into closed Path fills and immediately merge them with intersecting or nearby fills on the same layer that have the same ARGB color, then leave the Stage selection clear. Linear brush gradients follow path length on ordinary strokes and switch to a stable principal spatial axis on self-crossing strokes, avoiding conflicting colors at intersections. Intersecting shape-gradient brush strokes with identical stops and layer opacity preview and commit as one union whose center, boundary, and distance field are recalculated; different gradient materials retain normal overpaint behavior. Nearby solid-fill boundaries merge when their distance is under `10 vu`.
-- The title-bar menu opens persistent application settings with live English and Simplified Chinese interfaces. Tool shortcuts default to the Traditional Flash preset (V/Q/H/R/O/N/P/Y/B/K/S/I/G/E), with an optional number-key preset that follows the toolbar from 1 through 9; bracket keys adjust Pencil and Brush width. While Brush or Pressure Brush is active, hold Shift to open recent-color swatches around the cursor and hover a swatch to set the brush fill color.
+- The title-bar menu opens persistent application settings with live English and Simplified Chinese interfaces. Tool shortcuts default to the Traditional Flash preset (V/Q/H/R/O/N/P/Y/T/B/K/S/I/G/E), with an optional number-key preset that follows the toolbar from 1 through 9; bracket keys adjust Pencil and Brush width. While Brush or Pressure Brush is active, hold Shift to open recent-color swatches around the cursor and hover a swatch to set the brush fill color.
 - Animated tool-name hints when hovering drawing tools.
 - Animated selection highlights use distinct visual semantics: fills pulse with a slimmer cool cyan/mint boundary, while line and boundary-stroke segments use a stronger warm amber/orange path highlight. Filled shapes retain boundary handles and selected boundary-stroke segments retain partial edge highlights.
 - Marquee selection for selecting, highlighting, moving, and deleting multiple objects, with `1 vu`-aligned fill and stroke part materialization for boxed regions.
@@ -115,7 +117,8 @@ events and captured `dotnet watch` build diagnostics use `launcher.log`, rotated
 to `launcher.previous.log`. A development watch
 process that exits unexpectedly with a nonzero code is restarted up to three times. Unhandled UI thread exceptions, domain crashes,
 Direct2D fallback failures, application startup, and stress-scene generation
-events are recorded there.
+events are recorded there. The distribution bootstrap writes runtime acquisition, validation,
+installation, and startup failures to `bootstrap.log` in the packaged root `logs/` directory.
 
 ## Performance Model
 
@@ -144,7 +147,7 @@ native/Engine/           Project model, timeline, vector geometry, and persisten
 native/Rendering/        Stage control plus Direct2D/GDI rendering.
 native/UI/               WinForms workbench and reusable controls.
 launcher/                Source development and hot-reload coordinator.
-distribution-launcher/   Stable split-package bootstrap.
+distribution-launcher/   Stable single-EXE bootstrap.
 scripts/                 Release packaging entry points.
 .agents/                 Repository-specific Agent and validation workflows.
 ```
@@ -165,37 +168,29 @@ Use the same validation entry for focused regressions; it serializes builds and 
 .agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite Stress -EnforcePerformanceBudget
 ```
 
-The standard release command now creates only the replaceable application patch:
+Every release creates one replaceable EXE:
 
 ```powershell
-scripts\publish-split-package.ps1
+scripts\publish-single-exe.ps1
 ```
 
-This is the default for every normal release. It publishes `.V2DEngine`, validates that the ZIP contains no runtime or launcher files, and writes a matching `.sha256` file. Expanded package trees are temporary and are removed after archive validation.
-
-Generate a new full baseline only when the target framework, private runtime, root launcher, or
-package layout changes:
-
-```powershell
-scripts\publish-split-package.ps1 -FullPackage
-```
-
-Full-package generation uses the repository's pinned .NET 8 SDK to compile a small Windows
-bootstrap executable that is independent of the private `.Runtime` directory. Normal patch
-releases never rebuild or copy the bootstrap executable or private runtime.
-
-The full archive contains a Windows bootstrap EXE plus two isolated directories:
+The script builds the framework-dependent application, compresses the complete software payload,
+and embeds it into a small Windows bootstrap that can start before .NET 8 is installed. The release
+directory contains exactly one file and the script rejects an EXE of 5 MiB or larger:
 
 ```text
-VectorAnimationEngine.exe
-.Runtime\        Private .NET 8 Windows Desktop runtime
-.V2DEngine\      Engine assemblies, dependencies, and release metadata
+VectorAnimationEngine-<version>-win-x64.exe
 ```
 
-`-FullPackage` also creates the same patch archive containing only `.V2DEngine`. For every later
-version, run the standard command and upload only the patch ZIP (plus its checksum when desired).
-Close the application and replace the complete `.V2DEngine` directory when applying a patch; do
-not merge individual files, because a newer version may remove dependencies. Keep `.Runtime` and
-the root launcher unless the target framework, runtime family, or package layout changes. The
-bootstrap reports `没有运行环境` when the private runtime is absent or incomplete, and
-`软件主体代码缺失` when the `.V2DEngine` application payload is absent or incomplete.
+Formal packages exist only under `artifacts\release` (or an explicitly supplied empty release
+directory). They must never be copied over the repository-root `VectorAnimationEngine.exe`; that
+file is the development hot-reload launcher generated by `scripts\publish-development-launcher.ps1`.
+
+For an update, close the application and replace only this EXE. On the next launch the bootstrap
+compares the embedded payload hash and atomically creates or refreshes the external `.V2DEngine`
+directory. It keeps a valid existing `.Runtime`; when the runtime is absent or incomplete it reads
+Microsoft's official .NET 8 release metadata, downloads the matching Core and Windows Desktop x64
+ZIPs, verifies both SHA-512 hashes, and atomically installs them into `.Runtime`. Network access and
+write permission to the software directory are required only for first-time runtime acquisition.
+Logs, user data, `.Runtime`, and the extracted `.V2DEngine` stay outside the EXE and survive EXE
+replacement.

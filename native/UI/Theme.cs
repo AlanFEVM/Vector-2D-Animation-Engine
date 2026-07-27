@@ -3,38 +3,136 @@ using System.Runtime.InteropServices;
 
 namespace VectorAnimationEngine;
 
+internal readonly record struct ThemePalette(
+    Color App,
+    Color Top,
+    Color Panel,
+    Color PanelStrong,
+    Color PanelHover,
+    Color Field,
+    Color FieldHover,
+    Color FieldFocus,
+    Color Stage,
+    Color Border,
+    Color BorderHover,
+    Color Text,
+    Color Muted,
+    Color DisabledText,
+    Color Accent,
+    Color AccentSurface,
+    Color AccentHoverSurface,
+    Color AccentPressedSurface,
+    Color DisabledSurface,
+    Color AccentText,
+    Color AccentLabel,
+    Color Warning,
+    Color Danger);
+
 internal static class Theme
 {
     public const int ControlHeightCompact = 28;
     public const int ControlHeight = 32;
     public const int IconButtonSize = 34;
+    public const int ToolFlyoutButtonWidth = 196;
+    public const int ToolFlyoutPanelWidth = 208;
     public const int GapXs = 4;
     public const int GapSm = 8;
     public const int GapMd = 12;
 
-    public static readonly Color App = Color.FromArgb(18, 20, 22);
-    public static readonly Color Top = Color.FromArgb(24, 27, 30);
-    public static readonly Color Panel = Color.FromArgb(30, 34, 37);
-    public static readonly Color PanelStrong = Color.FromArgb(42, 48, 53);
-    public static readonly Color PanelHover = Color.FromArgb(55, 63, 68);
-    public static readonly Color Field = Color.FromArgb(15, 17, 19);
-    public static readonly Color FieldHover = Color.FromArgb(22, 25, 28);
-    public static readonly Color FieldFocus = Color.FromArgb(24, 31, 32);
-    public static readonly Color Stage = Color.FromArgb(13, 15, 17);
-    public static readonly Color Border = Color.FromArgb(61, 69, 76);
-    public static readonly Color BorderHover = Color.FromArgb(91, 103, 110);
-    public static readonly Color Text = Color.FromArgb(242, 246, 245);
-    public static readonly Color Muted = Color.FromArgb(190, 202, 202);
-    public static readonly Color DisabledText = Color.FromArgb(116, 125, 128);
-    public static readonly Color Accent = Color.FromArgb(79, 179, 162);
-    public static readonly Color AccentSurface = Color.FromArgb(39, 83, 77);
-    public static readonly Color AccentHoverSurface = Color.FromArgb(51, 107, 99);
-    public static readonly Color AccentPressedSurface = Color.FromArgb(31, 68, 63);
-    public static readonly Color DisabledSurface = Color.FromArgb(35, 39, 43);
-    public static readonly Color AccentText = Color.FromArgb(5, 22, 20);
-    public static readonly Color AccentLabel = Color.FromArgb(209, 247, 238);
-    public static readonly Color Warning = Color.FromArgb(232, 184, 92);
-    public static readonly Color Danger = Color.FromArgb(232, 104, 104);
+    private static readonly ThemePalette DefaultPalette = new(
+        Color.FromArgb(18, 20, 22),
+        Color.FromArgb(24, 27, 30),
+        Color.FromArgb(30, 34, 37),
+        Color.FromArgb(42, 48, 53),
+        Color.FromArgb(55, 63, 68),
+        Color.FromArgb(15, 17, 19),
+        Color.FromArgb(22, 25, 28),
+        Color.FromArgb(24, 31, 32),
+        Color.FromArgb(13, 15, 17),
+        Color.FromArgb(61, 69, 76),
+        Color.FromArgb(91, 103, 110),
+        Color.FromArgb(242, 246, 245),
+        Color.FromArgb(190, 202, 202),
+        Color.FromArgb(116, 125, 128),
+        Color.FromArgb(79, 179, 162),
+        Color.FromArgb(39, 83, 77),
+        Color.FromArgb(51, 107, 99),
+        Color.FromArgb(31, 68, 63),
+        Color.FromArgb(35, 39, 43),
+        Color.FromArgb(5, 22, 20),
+        Color.FromArgb(209, 247, 238),
+        Color.FromArgb(232, 184, 92),
+        Color.FromArgb(232, 104, 104));
+
+    private static readonly ThemePalette WhitePalette = new(
+        Color.FromArgb(242, 244, 245),
+        Color.FromArgb(255, 255, 255),
+        Color.FromArgb(248, 249, 250),
+        Color.FromArgb(232, 236, 238),
+        Color.FromArgb(222, 228, 231),
+        Color.FromArgb(255, 255, 255),
+        Color.FromArgb(246, 249, 249),
+        Color.FromArgb(238, 248, 246),
+        Color.FromArgb(237, 240, 242),
+        Color.FromArgb(198, 206, 211),
+        Color.FromArgb(137, 151, 158),
+        Color.FromArgb(31, 39, 43),
+        Color.FromArgb(91, 105, 112),
+        Color.FromArgb(151, 162, 167),
+        Color.FromArgb(22, 132, 113),
+        Color.FromArgb(211, 238, 232),
+        Color.FromArgb(190, 229, 221),
+        Color.FromArgb(169, 219, 209),
+        Color.FromArgb(231, 235, 237),
+        Color.FromArgb(255, 255, 255),
+        Color.FromArgb(7, 89, 75),
+        Color.FromArgb(155, 91, 0),
+        Color.FromArgb(190, 52, 62));
+
+    private static ThemePalette _palette = DefaultPalette;
+
+    public static ApplicationColorTheme ColorTheme { get; private set; } = ApplicationColorTheme.Dark;
+    public static bool IsLight => ColorTheme == ApplicationColorTheme.White;
+    public static int ThemeHueDegrees { get; private set; } = ApplicationSettings.DefaultThemeHueDegrees;
+    public static int ThemeSaturationPercent { get; private set; } = ApplicationSettings.DefaultThemeSaturationPercent;
+    public static int ThemeBrightnessPercent { get; private set; } = ApplicationSettings.DefaultThemeBrightnessPercent;
+    public static int AccentHueDegrees { get; private set; } = ApplicationSettings.DefaultAccentHueDegrees;
+    public static int AccentSaturationPercent { get; private set; } = ApplicationSettings.DefaultAccentSaturationPercent;
+    public static int AccentBrightnessPercent { get; private set; } = ApplicationSettings.DefaultAccentBrightnessPercent;
+    internal static ThemePalette CurrentPalette => _palette;
+    public static Color App => _palette.App;
+    public static Color Top => _palette.Top;
+    public static Color Panel => _palette.Panel;
+    public static Color PanelStrong => _palette.PanelStrong;
+    public static Color PanelHover => _palette.PanelHover;
+    public static Color Field => _palette.Field;
+    public static Color FieldHover => _palette.FieldHover;
+    public static Color FieldFocus => _palette.FieldFocus;
+    public static Color Stage => _palette.Stage;
+    public static Color Border => _palette.Border;
+    public static Color BorderHover => _palette.BorderHover;
+    public static Color Text => _palette.Text;
+    public static Color Muted => _palette.Muted;
+    public static Color DisabledText => _palette.DisabledText;
+    public static Color Accent => _palette.Accent;
+    public static Color AccentSurface => _palette.AccentSurface;
+    public static Color AccentHoverSurface => _palette.AccentHoverSurface;
+    public static Color AccentPressedSurface => _palette.AccentPressedSurface;
+    public static Color DisabledSurface => _palette.DisabledSurface;
+    public static Color AccentText => _palette.AccentText;
+    public static Color AccentLabel => _palette.AccentLabel;
+    public static Color Warning => _palette.Warning;
+    public static Color Danger => _palette.Danger;
+    public static Color DangerSurface => IsLight
+        ? Mix(PanelStrong, Danger, 0.14f)
+        : Color.FromArgb(72, 42, 44);
+    public static Color DangerHoverSurface => IsLight
+        ? Mix(PanelStrong, Danger, 0.22f)
+        : Color.FromArgb(98, 48, 51);
+    public static Color DangerPressedSurface => IsLight
+        ? Mix(Panel, Danger, 0.28f)
+        : Color.FromArgb(58, 34, 36);
+    public static Color DangerText => IsLight ? Danger : Color.FromArgb(255, 226, 226);
 
     private static readonly ConditionalWeakTable<Control, FieldInteractionState> FieldStates = new();
     private static readonly ConditionalWeakTable<ComboBox, object> StyledComboBoxes = new();
@@ -44,6 +142,340 @@ internal static class Theme
     private static readonly ConditionalWeakTable<ToolTip, object> StyledToolTips = new();
 
     public static Font UiFont(float size = 9.5f, FontStyle style = FontStyle.Regular) => new("Segoe UI", size, style);
+
+    public static void ConfigureHues(int themeHueDegrees, int accentHueDegrees)
+    {
+        ConfigureColorAdjustments(
+            ColorTheme,
+            themeHueDegrees,
+            ThemeSaturationPercent,
+            ThemeBrightnessPercent,
+            accentHueDegrees,
+            AccentSaturationPercent,
+            AccentBrightnessPercent);
+    }
+
+    public static void Configure(
+        ApplicationColorTheme colorTheme,
+        int themeHueDegrees,
+        int accentHueDegrees)
+    {
+        ConfigureColorAdjustments(
+            colorTheme,
+            themeHueDegrees,
+            ApplicationSettings.DefaultThemeSaturationPercent,
+            ApplicationSettings.DefaultThemeBrightnessPercent,
+            accentHueDegrees,
+            ApplicationSettings.DefaultAccentSaturationPercent,
+            ApplicationSettings.DefaultAccentBrightnessPercent);
+    }
+
+    public static void ConfigureColorAdjustments(
+        ApplicationColorTheme colorTheme,
+        int themeHueDegrees,
+        int themeSaturationPercent,
+        int themeBrightnessPercent,
+        int accentHueDegrees,
+        int accentSaturationPercent,
+        int accentBrightnessPercent)
+    {
+        ColorTheme = Enum.IsDefined(colorTheme) ? colorTheme : ApplicationColorTheme.Dark;
+        ThemeHueDegrees = ApplicationSettingsStore.NormalizeHueDegrees(themeHueDegrees);
+        ThemeSaturationPercent = ApplicationSettingsStore.NormalizeSaturationPercent(themeSaturationPercent);
+        ThemeBrightnessPercent = ApplicationSettingsStore.NormalizeBrightnessPercent(themeBrightnessPercent);
+        AccentHueDegrees = ApplicationSettingsStore.NormalizeHueDegrees(accentHueDegrees);
+        AccentSaturationPercent = ApplicationSettingsStore.NormalizeSaturationPercent(accentSaturationPercent);
+        AccentBrightnessPercent = ApplicationSettingsStore.NormalizeBrightnessPercent(accentBrightnessPercent);
+        _palette = PaletteForAdjustments(
+            ColorTheme,
+            ThemeHueDegrees,
+            ThemeSaturationPercent,
+            ThemeBrightnessPercent,
+            AccentHueDegrees,
+            AccentSaturationPercent,
+            AccentBrightnessPercent);
+    }
+
+    internal static void RefreshControlTree(Control root, ThemePalette previousPalette)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        root.SuspendLayout();
+        try
+        {
+            var nativeThemeChanged = IsLightPalette(previousPalette) != IsLightPalette(_palette);
+            RefreshControl(root, previousPalette, _palette, nativeThemeChanged);
+        }
+        finally
+        {
+            root.ResumeLayout(performLayout: false);
+        }
+        root.Invalidate(invalidateChildren: true);
+    }
+
+    private static void RefreshControl(
+        Control control,
+        ThemePalette previousPalette,
+        ThemePalette nextPalette,
+        bool nativeThemeChanged)
+    {
+        if (control is not StageControl)
+        {
+            control.BackColor = IsFieldControl(control)
+                ? RemapFieldColor(control.BackColor, previousPalette, nextPalette)
+                : RemapBackgroundColor(control.BackColor, previousPalette, nextPalette);
+        }
+        control.ForeColor = RemapForegroundColor(control.ForeColor, previousPalette, nextPalette);
+
+        if (control is Button button)
+        {
+            var dialogActionRefreshed = button.FindForm() is ModernDialogForm dialog
+                && dialog.RefreshDialogActionTheme(button);
+            if (!dialogActionRefreshed)
+            {
+                if (UiMotion.IsActive(button)) StyleActiveButton(button);
+                else StyleButton(button);
+            }
+        }
+        if (nativeThemeChanged && control is ListBox or TreeView or ListView) StyleNativeScrollBars(control);
+        if (control is TreeView tree) RefreshTreeNodes(tree.Nodes, previousPalette, nextPalette);
+        if (control is ListView list)
+        {
+            foreach (ListViewItem item in list.Items)
+            {
+                item.ForeColor = RemapForegroundColor(item.ForeColor, previousPalette, nextPalette);
+            }
+        }
+        if (control is ToolStrip strip)
+        {
+            foreach (ToolStripItem item in strip.Items) RefreshToolStripItem(item, previousPalette, nextPalette);
+        }
+
+        foreach (Control child in control.Controls)
+        {
+            RefreshControl(child, previousPalette, nextPalette, nativeThemeChanged);
+        }
+        control.Invalidate();
+    }
+
+    private static bool IsLightPalette(ThemePalette palette)
+    {
+        return palette.App.GetBrightness() > palette.Text.GetBrightness();
+    }
+
+    private static void RefreshTreeNodes(
+        TreeNodeCollection nodes,
+        ThemePalette previousPalette,
+        ThemePalette nextPalette)
+    {
+        foreach (TreeNode node in nodes)
+        {
+            node.ForeColor = RemapForegroundColor(node.ForeColor, previousPalette, nextPalette);
+            RefreshTreeNodes(node.Nodes, previousPalette, nextPalette);
+        }
+    }
+
+    private static void RefreshToolStripItem(
+        ToolStripItem item,
+        ThemePalette previousPalette,
+        ThemePalette nextPalette)
+    {
+        item.BackColor = RemapBackgroundColor(item.BackColor, previousPalette, nextPalette);
+        item.ForeColor = RemapForegroundColor(item.ForeColor, previousPalette, nextPalette);
+        if (item is not ToolStripDropDownItem dropDown) return;
+        foreach (ToolStripItem child in dropDown.DropDownItems)
+        {
+            RefreshToolStripItem(child, previousPalette, nextPalette);
+        }
+    }
+
+    private static bool IsFieldControl(Control control)
+    {
+        return control is TextBoxBase or ComboBox or NumericUpDown or ModernNumericUpDown;
+    }
+
+    private static Color RemapFieldColor(Color color, ThemePalette from, ThemePalette to)
+    {
+        if (SameRgb(color, from.Field)) return WithAlpha(to.Field, color.A);
+        if (SameRgb(color, from.FieldHover)) return WithAlpha(to.FieldHover, color.A);
+        if (SameRgb(color, from.FieldFocus)) return WithAlpha(to.FieldFocus, color.A);
+        if (SameRgb(color, from.DisabledSurface)) return WithAlpha(to.DisabledSurface, color.A);
+        return RemapBackgroundColor(color, from, to);
+    }
+
+    private static Color RemapBackgroundColor(Color color, ThemePalette from, ThemePalette to)
+    {
+        if (color.IsEmpty || color.A == 0) return color;
+        if (SameRgb(color, from.App)) return WithAlpha(to.App, color.A);
+        if (SameRgb(color, from.Top)) return WithAlpha(to.Top, color.A);
+        if (SameRgb(color, from.Panel)) return WithAlpha(to.Panel, color.A);
+        if (SameRgb(color, from.PanelStrong)) return WithAlpha(to.PanelStrong, color.A);
+        if (SameRgb(color, from.PanelHover)) return WithAlpha(to.PanelHover, color.A);
+        if (SameRgb(color, from.Field)) return WithAlpha(to.Field, color.A);
+        if (SameRgb(color, from.FieldHover)) return WithAlpha(to.FieldHover, color.A);
+        if (SameRgb(color, from.FieldFocus)) return WithAlpha(to.FieldFocus, color.A);
+        if (SameRgb(color, from.Stage)) return WithAlpha(to.Stage, color.A);
+        if (SameRgb(color, from.Border)) return WithAlpha(to.Border, color.A);
+        if (SameRgb(color, from.BorderHover)) return WithAlpha(to.BorderHover, color.A);
+        if (SameRgb(color, from.Accent)) return WithAlpha(to.Accent, color.A);
+        if (SameRgb(color, from.AccentSurface)) return WithAlpha(to.AccentSurface, color.A);
+        if (SameRgb(color, from.AccentHoverSurface)) return WithAlpha(to.AccentHoverSurface, color.A);
+        if (SameRgb(color, from.AccentPressedSurface)) return WithAlpha(to.AccentPressedSurface, color.A);
+        if (SameRgb(color, from.DisabledSurface)) return WithAlpha(to.DisabledSurface, color.A);
+        return color;
+    }
+
+    private static Color RemapForegroundColor(Color color, ThemePalette from, ThemePalette to)
+    {
+        if (color.IsEmpty || color.A == 0) return color;
+        if (SameRgb(color, from.Text)) return WithAlpha(to.Text, color.A);
+        if (SameRgb(color, from.Muted)) return WithAlpha(to.Muted, color.A);
+        if (SameRgb(color, from.DisabledText)) return WithAlpha(to.DisabledText, color.A);
+        if (SameRgb(color, from.Accent)) return WithAlpha(to.Accent, color.A);
+        if (SameRgb(color, from.AccentText)) return WithAlpha(to.AccentText, color.A);
+        if (SameRgb(color, from.AccentLabel)) return WithAlpha(to.AccentLabel, color.A);
+        if (SameRgb(color, from.Warning)) return WithAlpha(to.Warning, color.A);
+        if (SameRgb(color, from.Danger)) return WithAlpha(to.Danger, color.A);
+        if (SameRgb(color, from.Border)) return WithAlpha(to.Border, color.A);
+        if (SameRgb(color, from.BorderHover)) return WithAlpha(to.BorderHover, color.A);
+        return color;
+    }
+
+    private static bool SameRgb(Color left, Color right)
+    {
+        return left.R == right.R && left.G == right.G && left.B == right.B;
+    }
+
+    private static Color WithAlpha(Color color, int alpha)
+    {
+        return Color.FromArgb(alpha, color.R, color.G, color.B);
+    }
+
+    internal static ThemePalette PaletteForHues(int themeHueDegrees, int accentHueDegrees)
+    {
+        return PaletteFor(ApplicationColorTheme.Dark, themeHueDegrees, accentHueDegrees);
+    }
+
+    internal static ThemePalette PaletteFor(
+        ApplicationColorTheme colorTheme,
+        int themeHueDegrees,
+        int accentHueDegrees)
+    {
+        return PaletteForAdjustments(
+            colorTheme,
+            themeHueDegrees,
+            ApplicationSettings.DefaultThemeSaturationPercent,
+            ApplicationSettings.DefaultThemeBrightnessPercent,
+            accentHueDegrees,
+            ApplicationSettings.DefaultAccentSaturationPercent,
+            ApplicationSettings.DefaultAccentBrightnessPercent);
+    }
+
+    internal static ThemePalette PaletteForAdjustments(
+        ApplicationColorTheme colorTheme,
+        int themeHueDegrees,
+        int themeSaturationPercent,
+        int themeBrightnessPercent,
+        int accentHueDegrees,
+        int accentSaturationPercent,
+        int accentBrightnessPercent)
+    {
+        var basePalette = colorTheme == ApplicationColorTheme.White ? WhitePalette : DefaultPalette;
+        var themeShift = ApplicationSettingsStore.NormalizeHueDegrees(themeHueDegrees)
+            - ApplicationSettings.DefaultThemeHueDegrees;
+        var accentShift = ApplicationSettingsStore.NormalizeHueDegrees(accentHueDegrees)
+            - ApplicationSettings.DefaultAccentHueDegrees;
+        themeSaturationPercent = ApplicationSettingsStore.NormalizeSaturationPercent(themeSaturationPercent);
+        themeBrightnessPercent = ApplicationSettingsStore.NormalizeBrightnessPercent(themeBrightnessPercent);
+        accentSaturationPercent = ApplicationSettingsStore.NormalizeSaturationPercent(accentSaturationPercent);
+        accentBrightnessPercent = ApplicationSettingsStore.NormalizeBrightnessPercent(accentBrightnessPercent);
+        if (themeShift == 0
+            && accentShift == 0
+            && themeSaturationPercent == ApplicationSettings.DefaultThemeSaturationPercent
+            && themeBrightnessPercent == ApplicationSettings.DefaultThemeBrightnessPercent
+            && accentSaturationPercent == ApplicationSettings.DefaultAccentSaturationPercent
+            && accentBrightnessPercent == ApplicationSettings.DefaultAccentBrightnessPercent)
+        {
+            return basePalette;
+        }
+
+        return new ThemePalette(
+            AdjustColor(basePalette.App, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Top, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Panel, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.PanelStrong, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.PanelHover, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Field, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.FieldHover, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.FieldFocus, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Stage, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Border, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.BorderHover, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Text, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Muted, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.DisabledText, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.Accent, accentShift, accentSaturationPercent, accentBrightnessPercent),
+            AdjustColor(basePalette.AccentSurface, accentShift, accentSaturationPercent, accentBrightnessPercent),
+            AdjustColor(basePalette.AccentHoverSurface, accentShift, accentSaturationPercent, accentBrightnessPercent),
+            AdjustColor(basePalette.AccentPressedSurface, accentShift, accentSaturationPercent, accentBrightnessPercent),
+            AdjustColor(basePalette.DisabledSurface, themeShift, themeSaturationPercent, themeBrightnessPercent),
+            AdjustColor(basePalette.AccentText, accentShift, accentSaturationPercent, accentBrightnessPercent),
+            AdjustColor(basePalette.AccentLabel, accentShift, accentSaturationPercent, accentBrightnessPercent),
+            basePalette.Warning,
+            basePalette.Danger);
+    }
+
+    internal static Color HueSpectrumColor(float amount)
+    {
+        return ColorFromHsl(amount * 360f, 0.76f, 0.56f, 255);
+    }
+
+    internal static Color HslPreviewColor(float hue, float saturation, float lightness)
+    {
+        return ColorFromHsl(hue, saturation, lightness, 255);
+    }
+
+    private static Color AdjustColor(
+        Color color,
+        int shiftDegrees,
+        int saturationPercent,
+        int brightnessPercent)
+    {
+        if (ApplicationSettingsStore.NormalizeHueDegrees(shiftDegrees) == 0
+            && saturationPercent == 100
+            && brightnessPercent == 100)
+        {
+            return color;
+        }
+        return ColorFromHsl(
+            color.GetHue() + shiftDegrees,
+            color.GetSaturation() * saturationPercent / 100f,
+            color.GetBrightness() * brightnessPercent / 100f,
+            color.A);
+    }
+
+    private static Color ColorFromHsl(float hue, float saturation, float lightness, int alpha)
+    {
+        hue = ((hue % 360f) + 360f) % 360f;
+        saturation = Math.Clamp(saturation, 0f, 1f);
+        lightness = Math.Clamp(lightness, 0f, 1f);
+        var chroma = (1f - MathF.Abs(2f * lightness - 1f)) * saturation;
+        var secondary = chroma * (1f - MathF.Abs(hue / 60f % 2f - 1f));
+        var offset = lightness - chroma / 2f;
+        var (red, green, blue) = hue switch
+        {
+            < 60f => (chroma, secondary, 0f),
+            < 120f => (secondary, chroma, 0f),
+            < 180f => (0f, chroma, secondary),
+            < 240f => (0f, secondary, chroma),
+            < 300f => (secondary, 0f, chroma),
+            _ => (chroma, 0f, secondary)
+        };
+        return Color.FromArgb(
+            alpha,
+            (int)Math.Clamp(MathF.Round((red + offset) * 255f), 0, 255),
+            (int)Math.Clamp(MathF.Round((green + offset) * 255f), 0, 255),
+            (int)Math.Clamp(MathF.Round((blue + offset) * 255f), 0, 255));
+    }
 
     public static void StyleButton(Button button)
     {
@@ -213,7 +645,7 @@ internal static class Theme
             if (control.IsDisposed || !control.IsHandleCreated) return;
             try
             {
-                SetWindowTheme(control.Handle, "DarkMode_Explorer", null);
+                SetWindowTheme(control.Handle, IsLight ? "Explorer" : "DarkMode_Explorer", null);
             }
             catch (EntryPointNotFoundException)
             {

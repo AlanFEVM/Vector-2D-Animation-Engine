@@ -2,13 +2,14 @@
 
 ## Development Launcher
 
-Start the source launcher with:
+Build or refresh the repository-root development launcher, then start it with:
 
 ```powershell
-dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj
+scripts\publish-development-launcher.ps1
+.\VectorAnimationEngine.exe
 ```
 
-It locates the repository root, starts the native project with `dotnet watch`, and enables module-scoped Metadata Hot Reload. Pass `-- --no-hot-reload` to use a plain `dotnet run` session.
+The root `VectorAnimationEngine.exe` is exclusively a local source-development entry point and is ignored by git. It locates the repository root, starts the native project with `dotnet watch`, and enables module-scoped Metadata Hot Reload. Pass `--no-hot-reload` to use a plain `dotnet run` session. `dotnet run --project launcher\VectorAnimationEngine.Launcher.csproj` remains the equivalent command.
 
 Relevant code:
 
@@ -32,22 +33,23 @@ The launcher lets the first native build restore dependencies automatically. Unk
 ## Publish Releases
 
 ```powershell
-# Normal release: patch ZIP plus SHA-256 only
-scripts\publish-split-package.ps1
-
-# New runtime/launcher/layout baseline: full package plus patch
-scripts\publish-split-package.ps1 -FullPackage
+# Every release: one replaceable EXE only
+scripts\publish-single-exe.ps1
 ```
 
-Normal releases replace the complete `.V2DEngine` directory and preserve the installed root launcher and `.Runtime`. Use full-package mode only when those stable components or the layout must change. Publishing retains only ZIP and SHA-256 outputs; expanded package trees are temporary.
+The command publishes the framework-dependent application, embeds its compressed payload into a small `net472` bootstrap, and retains exactly one EXE smaller than 5 MiB. Replacing the EXE is the complete update operation. On the next launch it atomically refreshes the local `.V2DEngine` directory when the embedded payload changes, then reuses or downloads `.Runtime`.
+
+Formal release output belongs only in `artifacts\release` or an explicitly requested empty release directory. Never copy or rename it over the repository-root `VectorAnimationEngine.exe`; rebuild that development launcher with `scripts\publish-development-launcher.ps1` instead.
 
 Before distribution:
 
 - run all affected regression suites
-- validate that patch ZIP roots contain only `.V2DEngine`
-- for a full baseline, launch the packaged root EXE on Windows x64
+- verify the release directory contains exactly one EXE and no ZIP, checksum sidecar, `.V2DEngine`, or `.Runtime`
+- verify the EXE is smaller than 5 MiB and its embedded payload passes `--validate-single-exe`
+- test bootstrap runtime provisioning in a disposable writable directory with network access
+- verify repeated `--deploy-embedded-application` runs reuse the matching payload and EXE replacement refreshes it
 - verify startup, Direct2D/GDI fallback, logs, and shutdown
 - record file size and SHA256
-- verify that patch mode did not emit a root launcher, `.Runtime`, or full-package archive
+- verify `.Runtime`, `.V2DEngine`, logs, and user data remain external to the EXE after launch
 
 There is currently no signing, installer, or external release-upload integration.

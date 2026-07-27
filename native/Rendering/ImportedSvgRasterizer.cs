@@ -1,4 +1,5 @@
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -51,6 +52,7 @@ internal static class ImportedSvgRasterizer
     internal const int MaxRasterDimension = 8192;
     internal const int MaxRasterPixels = 16 * 1024 * 1024;
     private const int MaxXmlDepth = 256;
+    private const string InstanceAppearanceNamespace = "urn:vector-animation-engine:instance-appearance";
     private const int MaxRasterCacheEntries = 96;
     private const long MaxRasterCacheBytes = 256L * 1024 * 1024;
     private const int RasterDimensionQuantum = 32;
@@ -158,6 +160,7 @@ internal static class ImportedSvgRasterizer
                 using var graphics = Graphics.FromImage(raster.Bitmap);
                 graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
                 graphics.DrawImageUnscaled(rendered, 0, 0);
+                ApplyMultiplyTint(raster.Pixels, descriptor.MultiplyTintArgb);
             }
             catch
             {
@@ -207,7 +210,7 @@ internal static class ImportedSvgRasterizer
             throw new InvalidDataException($"Imported SVG source must not exceed {MaxRasterSourceBytes} bytes.");
         }
 
-        ValidateXml(source);
+        var multiplyTintArgb = ValidateXml(source);
         var document = ParseDocument(sourceBytes);
 
         var intrinsicSize = document.GetDimensions();
@@ -220,7 +223,7 @@ internal static class ImportedSvgRasterizer
         }
 
         var contentSha256 = Convert.ToHexString(SHA256.HashData(sourceBytes)).ToLowerInvariant();
-        return new SourceDescriptor(new WeakReference<SvgDocument>(document), intrinsicSize, contentSha256);
+        return new SourceDescriptor(new WeakReference<SvgDocument>(document), intrinsicSize, contentSha256, multiplyTintArgb);
     }
 
     private static SvgDocument ParseDocument(byte[] sourceBytes)
@@ -237,7 +240,7 @@ internal static class ImportedSvgRasterizer
         }
     }
 
-    private static void ValidateXml(string source)
+    private static int ValidateXml(string source)
     {
         var settings = new XmlReaderSettings
         {
@@ -251,6 +254,7 @@ internal static class ImportedSvgRasterizer
         using var text = new StringReader(source);
         using var reader = XmlReader.Create(text, settings);
         var rootFound = false;
+        var multiplyTintArgb = unchecked((int)0xffffffff);
         while (reader.Read())
         {
             if (reader.Depth > MaxXmlDepth)
@@ -268,9 +272,39 @@ internal static class ImportedSvgRasterizer
             {
                 throw new InvalidDataException("The imported document root is not an SVG element.");
             }
+
+            var multiplyTint = reader.GetAttribute("multiply-tint", InstanceAppearanceNamespace);
+            var rgb = 0;
+            if (multiplyTint is not null
+                && (multiplyTint.Length != 6
+                    || !int.TryParse(
+                        multiplyTint,
+                        NumberStyles.AllowHexSpecifier,
+                        CultureInfo.InvariantCulture,
+                        out rgb)))
+            {
+                throw new InvalidDataException("The imported SVG instance tint marker is invalid.");
+            }
+            if (multiplyTint is not null) multiplyTintArgb = unchecked((int)0xff000000) | rgb;
         }
 
         if (!rootFound) throw new InvalidDataException("The imported SVG document is empty.");
+        return multiplyTintArgb;
+    }
+
+    private static void ApplyMultiplyTint(byte[] pixels, int tintArgb)
+    {
+        var red = (tintArgb >>> 16) & 0xff;
+        var green = (tintArgb >>> 8) & 0xff;
+        var blue = tintArgb & 0xff;
+        if (red == 0xff && green == 0xff && blue == 0xff) return;
+
+        for (var offset = 0; offset < pixels.Length; offset += 4)
+        {
+            pixels[offset] = (byte)((pixels[offset] * blue + 127) / 255);
+            pixels[offset + 1] = (byte)((pixels[offset + 1] * green + 127) / 255);
+            pixels[offset + 2] = (byte)((pixels[offset + 2] * red + 127) / 255);
+        }
     }
 
     private static string NormalizeSource(string source)
@@ -330,7 +364,8 @@ internal static class ImportedSvgRasterizer
     private sealed record SourceDescriptor(
         WeakReference<SvgDocument> Document,
         SizeF IntrinsicSize,
-        string ContentSha256);
+        string ContentSha256,
+        int MultiplyTintArgb);
 
     private sealed class CacheEntry(ImportedSvgRaster raster, long lastUse)
     {
