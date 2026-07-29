@@ -1,0 +1,172 @@
+namespace VectorAnimationEngine;
+
+internal sealed class VectorSceneSnapshot
+{
+    public int LayerCount { get; init; }
+    public int ObjectCount { get; init; }
+    public long VirtualAtomCount { get; init; }
+    public long NextObjectOrder { get; init; }
+    public int ActiveLayer { get; init; }
+    public float MaxHalfExtent { get; init; }
+    public string[] LayerIds { get; init; } = [];
+    public string[] LayerNames { get; init; } = [];
+    public DrawingLayerKind[] LayerKinds { get; init; } = [];
+    public string[] LayerParentIds { get; init; } = [];
+    public string[] LayerMaskIds { get; init; } = [];
+    public bool[] LayerLocked { get; init; } = [];
+    public bool[] LayerVisible { get; init; } = [];
+    public float[] LayerOpacity { get; init; } = [];
+    public int[] LayerColorArgb { get; init; } = [];
+    public bool[] LayerOnionSkin { get; init; } = [];
+    public int? OnionSkinPreviousFrames { get; init; }
+    public int? OnionSkinNextFrames { get; init; }
+    public int[] LayerStart { get; init; } = [];
+    public int[] LayerEnd { get; init; } = [];
+    public ushort[] ObjectLayer { get; init; } = [];
+    public int[] ObjectKeyframeFrame { get; init; } = [];
+    public long[] ObjectOrder { get; init; } = [];
+    public double[] ObjectSubOrder { get; init; } = [];
+    public float[] X { get; init; } = [];
+    public float[] Y { get; init; } = [];
+    public float[] Width { get; init; } = [];
+    public float[] Height { get; init; } = [];
+    public float[] Angle { get; init; } = [];
+    public float[] Stroke { get; init; } = [];
+    public float[] CurveControlX { get; init; } = [];
+    public float[] CurveControlY { get; init; } = [];
+    public float[] CurveControl2X { get; init; } = [];
+    public float[] CurveControl2Y { get; init; } = [];
+    public LineEndpointStyle[] LineEndpointStyles { get; init; } = [];
+    public LineEndpointStyle[] LineEndEndpointStyles { get; init; } = [];
+    public ShapeKind[] ShapeKind { get; init; } = [];
+    public int[] ShapeVertexCounts { get; init; } = [];
+    public uint[] AtomCount { get; init; } = [];
+    public int[] Argb { get; init; } = [];
+    public int[] StrokeArgb { get; init; } = [];
+    public bool[] FillAutoMergeProtected { get; init; } = [];
+    public bool[] LinearGradientEnabled { get; init; } = [];
+    public GradientKind[] GradientKinds { get; init; } = [];
+    public int[] GradientStartArgb { get; init; } = [];
+    public int[] GradientEndArgb { get; init; } = [];
+    public float[] GradientStartX { get; init; } = [];
+    public float[] GradientStartY { get; init; } = [];
+    public float[] GradientEndX { get; init; } = [];
+    public float[] GradientEndY { get; init; } = [];
+    public Dictionary<int, GradientStop[]> GradientStops { get; init; } = new();
+    public Dictionary<int, PointF[]> GradientPathLocalPoints { get; init; } = new();
+    public Dictionary<int, PointF[][]> ShapeGradientMappingLocalContours { get; init; } = new();
+    public AnimationTimelineSnapshot? Timeline { get; init; }
+    public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
+    public Dictionary<int, PathBezierNode[][]> PathBezierLocalContours { get; init; } = new();
+    public Dictionary<int, PointF[]> FreehandLocalPoints { get; init; } = new();
+    public Dictionary<int, string> ImportedSvgSources { get; init; } = new();
+    public Dictionary<int, TextObjectData> TextObjects { get; init; } = new();
+
+    internal long EstimateMemoryBytes()
+    {
+        long bytes = 384;
+        bytes += StringArrayBytes(LayerIds);
+        bytes += StringArrayBytes(LayerNames);
+        bytes += ArrayBytes(LayerKinds.Length, 1);
+        bytes += StringArrayBytes(LayerParentIds);
+        bytes += StringArrayBytes(LayerMaskIds);
+        bytes += ArrayBytes(LayerLocked.Length, 1);
+        bytes += ArrayBytes(LayerVisible.Length, 1);
+        bytes += ArrayBytes(LayerOpacity.Length, 4);
+        bytes += ArrayBytes(LayerColorArgb.Length, 4);
+        bytes += ArrayBytes(LayerOnionSkin.Length, 1);
+        bytes += ArrayBytes(LayerStart.Length, 4);
+        bytes += ArrayBytes(LayerEnd.Length, 4);
+        bytes += ArrayBytes(ObjectLayer.Length, 2);
+        bytes += ArrayBytes(ObjectKeyframeFrame.Length, 4);
+        bytes += ArrayBytes(ObjectOrder.Length, 8);
+        bytes += ArrayBytes(ObjectSubOrder.Length, 8);
+        bytes += ArrayBytes(X.Length, 4);
+        bytes += ArrayBytes(Y.Length, 4);
+        bytes += ArrayBytes(Width.Length, 4);
+        bytes += ArrayBytes(Height.Length, 4);
+        bytes += ArrayBytes(Angle.Length, 4);
+        bytes += ArrayBytes(Stroke.Length, 4);
+        bytes += ArrayBytes(CurveControlX.Length, 4);
+        bytes += ArrayBytes(CurveControlY.Length, 4);
+        bytes += ArrayBytes(CurveControl2X.Length, 4);
+        bytes += ArrayBytes(CurveControl2Y.Length, 4);
+        bytes += ArrayBytes(LineEndpointStyles.Length, 4);
+        bytes += ArrayBytes(LineEndEndpointStyles.Length, 4);
+        bytes += ArrayBytes(ShapeKind.Length, 4);
+        bytes += ArrayBytes(ShapeVertexCounts.Length, 4);
+        bytes += ArrayBytes(AtomCount.Length, 4);
+        bytes += ArrayBytes(Argb.Length, 4);
+        bytes += ArrayBytes(StrokeArgb.Length, 4);
+        bytes += ArrayBytes(FillAutoMergeProtected.Length, 1);
+        bytes += ArrayBytes(LinearGradientEnabled.Length, 1);
+        bytes += ArrayBytes(GradientKinds.Length, 4);
+        bytes += ArrayBytes(GradientStartArgb.Length, 4);
+        bytes += ArrayBytes(GradientEndArgb.Length, 4);
+        bytes += ArrayBytes(GradientStartX.Length, 4);
+        bytes += ArrayBytes(GradientStartY.Length, 4);
+        bytes += ArrayBytes(GradientEndX.Length, 4);
+        bytes += ArrayBytes(GradientEndY.Length, 4);
+
+        bytes += 72L * GradientStops.Count;
+        foreach (var stops in GradientStops.Values) bytes += ArrayBytes(stops.Length, 8);
+
+        bytes += 64L * GradientPathLocalPoints.Count;
+        foreach (var points in GradientPathLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);
+
+        bytes += 72L * ShapeGradientMappingLocalContours.Count;
+        foreach (var contours in ShapeGradientMappingLocalContours.Values)
+        {
+            bytes += ArrayBytes(contours.Length, IntPtr.Size);
+            foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 8);
+        }
+
+        bytes += 72L * PathLocalContours.Count;
+        foreach (var contours in PathLocalContours.Values)
+        {
+            bytes += ArrayBytes(contours.Length, IntPtr.Size);
+            foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 8);
+        }
+
+        bytes += 72L * PathBezierLocalContours.Count;
+        foreach (var contours in PathBezierLocalContours.Values)
+        {
+            bytes += ArrayBytes(contours.Length, IntPtr.Size);
+            foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 24);
+        }
+
+        bytes += 64L * FreehandLocalPoints.Count;
+        foreach (var points in FreehandLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);
+
+        bytes += 72L * ImportedSvgSources.Count;
+        foreach (var source in ImportedSvgSources.Values) bytes += StringBytes(source);
+
+        bytes += 88L * TextObjects.Count;
+        foreach (var text in TextObjects.Values)
+        {
+            bytes += StringBytes(text.Content) + StringBytes(text.FontFamilyName);
+        }
+
+        if (Timeline is { } timeline)
+        {
+            bytes += ArrayBytes(timeline.Tracks.Length, IntPtr.Size);
+            foreach (var track in timeline.Tracks)
+            {
+                bytes += 96 + StringBytes(track.Id) + StringBytes(track.TargetId) + ArrayBytes(track.Keyframes.Length, 8);
+            }
+        }
+
+        return bytes;
+    }
+
+    private static long StringArrayBytes(IReadOnlyList<string> values)
+    {
+        var bytes = ArrayBytes(values.Count, IntPtr.Size);
+        foreach (var value in values) bytes += StringBytes(value);
+        return bytes;
+    }
+
+    private static long StringBytes(string? value) => string.IsNullOrEmpty(value) ? 0 : 26L + value.Length * 2L;
+
+    private static long ArrayBytes(int length, int elementBytes) => 24L + Math.Max(0, length) * (long)elementBytes;
+}

@@ -1,0 +1,385 @@
+using System.ComponentModel;
+
+namespace VectorAnimationEngine;
+
+internal enum WorkspaceView
+{
+    BasicDrawing,
+    SceneEditor,
+    Animation
+}
+
+internal enum WorkspaceTabPlacement
+{
+    Top,
+    Left
+}
+
+internal sealed class WorkspaceViewChangedEventArgs : EventArgs
+{
+    public WorkspaceViewChangedEventArgs(WorkspaceView previousView, WorkspaceView selectedView)
+    {
+        PreviousView = previousView;
+        SelectedView = selectedView;
+    }
+
+    public WorkspaceView PreviousView { get; }
+    public WorkspaceView SelectedView { get; }
+}
+
+internal sealed class WorkspaceTabs : UserControl
+{
+    private readonly FlowLayoutPanel _tabStrip = new();
+    private readonly Dictionary<WorkspaceView, Button> _buttons = new();
+    private readonly ToolTip _toolTip = new();
+    private readonly System.Windows.Forms.Timer _indicatorTimer = new() { Interval = 16 };
+    private readonly SvgIconButton _gridTypeButton = new(SvgIconKind.Grid)
+    {
+        AccessibleName = "Grid type",
+        ShowsToolGroupIndicator = true
+    };
+    private readonly AnimatedContextMenuStrip _gridTypeMenu = new();
+    private readonly ToolStripMenuItem _cartesianGridItem = new("Cartesian Grid");
+    private readonly ToolStripMenuItem _goldenSpiralGridItem = new("Golden Spiral");
+    private readonly ToolStripMenuItem _polarGridItem = new("Polar Grid");
+    private readonly ModernSlider _gridOpacity = new()
+    {
+        Minimum = 0,
+        Maximum = 100,
+        SmallChange = 1,
+        LargeChange = 10,
+        TickFrequency = 10,
+        Value = 10,
+        AccessibleName = "World grid opacity"
+    };
+    private readonly Label _gridOpacityValue = new();
+    private WorkspaceView _selectedView = WorkspaceView.BasicDrawing;
+    private WorkspaceTabPlacement _placement = WorkspaceTabPlacement.Top;
+    private WorldGridType _worldGridType;
+    private float _indicatorPosition;
+    private float _indicatorExtent;
+    private float _indicatorTargetPosition;
+    private float _indicatorTargetExtent;
+    private bool _indicatorInitialized;
+
+    public WorkspaceTabs()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        BackColor = Theme.Top;
+        MinimumSize = new Size(48, 42);
+        Theme.StyleToolTip(_toolTip);
+
+        _tabStrip.Dock = DockStyle.Fill;
+        _tabStrip.BackColor = Theme.Top;
+        _tabStrip.Padding = new Padding(8, 6, 8, 6);
+        _tabStrip.Margin = Padding.Empty;
+        _tabStrip.WrapContents = false;
+        _tabStrip.AutoScroll = false;
+        Controls.Add(_tabStrip);
+
+        var gridOpacity = new TableLayoutPanel
+        {
+            Dock = DockStyle.Right,
+            Width = 280,
+            BackColor = Theme.Top,
+            ColumnCount = 4,
+            RowCount = 1,
+            Padding = new Padding(0, 6, 10, 6),
+            Margin = Padding.Empty
+        };
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        gridOpacity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+        gridOpacity.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var gridLabel = new Label
+        {
+            Text = "Grid",
+            Dock = DockStyle.Fill,
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Top,
+            Font = Theme.UiFont(8.5f, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        gridOpacity.Controls.Add(gridLabel, 0, 0);
+
+        Theme.StyleButton(_gridTypeButton);
+        _gridTypeButton.Dock = DockStyle.Fill;
+        _gridTypeButton.Margin = new Padding(1, 0, 3, 0);
+        _gridTypeButton.Click += (_, _) =>
+        {
+            RefreshGridTypePresentation();
+            _gridTypeMenu.Show(_gridTypeButton, new Point(0, _gridTypeButton.Height + 2));
+        };
+        _toolTip.SetToolTip(_gridTypeButton, "Grid type");
+        _cartesianGridItem.Click += (_, _) => WorldGridType = VectorAnimationEngine.WorldGridType.Cartesian;
+        _goldenSpiralGridItem.Click += (_, _) => WorldGridType = VectorAnimationEngine.WorldGridType.GoldenSpiral;
+        _polarGridItem.Click += (_, _) => WorldGridType = VectorAnimationEngine.WorldGridType.Polar;
+        _gridTypeMenu.Items.AddRange(new ToolStripItem[] { _cartesianGridItem, _polarGridItem, _goldenSpiralGridItem });
+        gridOpacity.Controls.Add(_gridTypeButton, 1, 0);
+
+        _gridOpacity.Dock = DockStyle.Fill;
+        _gridOpacity.Margin = Padding.Empty;
+        _gridOpacity.ValueChanged += (_, _) =>
+        {
+            _gridOpacityValue.Text = $"{_gridOpacity.Value}%";
+            WorldGridOpacityChanged?.Invoke(this, EventArgs.Empty);
+        };
+        _toolTip.SetToolTip(_gridOpacity, "World grid opacity");
+        gridOpacity.Controls.Add(_gridOpacity, 2, 0);
+
+        _gridOpacityValue.Text = "10%";
+        _gridOpacityValue.Dock = DockStyle.Fill;
+        _gridOpacityValue.ForeColor = Theme.Muted;
+        _gridOpacityValue.BackColor = Theme.Top;
+        _gridOpacityValue.Font = Theme.UiFont(8.5f);
+        _gridOpacityValue.TextAlign = ContentAlignment.MiddleRight;
+        gridOpacity.Controls.Add(_gridOpacityValue, 3, 0);
+        Controls.Add(gridOpacity);
+
+        AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Shape drawing and direct object editing");
+        AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Edit", "Scene assembly, hierarchy and library workflow");
+        AddWorkspaceButton(WorkspaceView.Animation, "Animation", "Timeline, playback and keyframe workflow");
+
+        _indicatorTimer.Tick += (_, _) => TickIndicator();
+        RefreshGridTypePresentation();
+        ApplyPlacement();
+        RefreshButtons();
+    }
+
+    public event EventHandler<WorkspaceViewChangedEventArgs>? SelectedViewChanged;
+    public event EventHandler? WorldGridOpacityChanged;
+    public event EventHandler? WorldGridTypeChanged;
+
+    [DefaultValue(WorkspaceView.BasicDrawing)]
+    public WorkspaceView SelectedView
+    {
+        get => _selectedView;
+        set => SelectView(value, raiseEvent: true);
+    }
+
+    [DefaultValue(WorkspaceTabPlacement.Top)]
+    public WorkspaceTabPlacement Placement
+    {
+        get => _placement;
+        set
+        {
+            if (_placement == value) return;
+            _placement = value;
+            ApplyPlacement();
+            RefreshButtons();
+            Invalidate();
+        }
+    }
+
+    public IReadOnlyCollection<WorkspaceView> Views => _buttons.Keys;
+
+    [DefaultValue(10)]
+    public int WorldGridOpacity
+    {
+        get => _gridOpacity.Value;
+        set => _gridOpacity.Value = Math.Clamp(value, _gridOpacity.Minimum, _gridOpacity.Maximum);
+    }
+
+    [DefaultValue(VectorAnimationEngine.WorldGridType.Cartesian)]
+    public WorldGridType WorldGridType
+    {
+        get => _worldGridType;
+        set
+        {
+            var next = Enum.IsDefined(value) ? value : VectorAnimationEngine.WorldGridType.Cartesian;
+            if (_worldGridType == next)
+            {
+                RefreshGridTypePresentation();
+                return;
+            }
+
+            _worldGridType = next;
+            RefreshGridTypePresentation();
+            WorldGridTypeChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public void SelectView(WorkspaceView view) => SelectView(view, raiseEvent: true);
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        LayoutButtons();
+        UpdateIndicator(animate: false);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _indicatorTimer.Dispose();
+            _gridTypeMenu.Dispose();
+            _toolTip.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(Theme.Border);
+        if (_placement == WorkspaceTabPlacement.Top)
+        {
+            e.Graphics.DrawLine(pen, 0, Height - 1, Width, Height - 1);
+            if (_indicatorInitialized)
+            {
+                using var glow = new SolidBrush(Color.FromArgb(45, Theme.Accent));
+                using var accent = new SolidBrush(Theme.Accent);
+                var x = (int)Math.Round(_indicatorPosition);
+                var width = Math.Max(0, (int)Math.Round(_indicatorExtent));
+                e.Graphics.FillRectangle(glow, x - 3, Height - 6, width + 6, 4);
+                e.Graphics.FillRectangle(accent, x, Height - 4, width, 3);
+            }
+        }
+        else
+        {
+            e.Graphics.DrawLine(pen, Width - 1, 0, Width - 1, Height);
+            if (_indicatorInitialized)
+            {
+                using var glow = new SolidBrush(Color.FromArgb(45, Theme.Accent));
+                using var accent = new SolidBrush(Theme.Accent);
+                var y = (int)Math.Round(_indicatorPosition);
+                var height = Math.Max(0, (int)Math.Round(_indicatorExtent));
+                e.Graphics.FillRectangle(glow, Width - 6, y - 3, 4, height + 6);
+                e.Graphics.FillRectangle(accent, Width - 4, y, 3, height);
+            }
+        }
+    }
+
+    private void AddWorkspaceButton(WorkspaceView view, string text, string tip)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Height = 30,
+            Width = 128,
+            Margin = new Padding(0, 0, 6, 0),
+            Tag = view,
+            TextAlign = ContentAlignment.MiddleCenter,
+            AutoEllipsis = true
+        };
+        Theme.StyleButton(button);
+        button.Click += (_, _) => SelectView(view, raiseEvent: true);
+        _toolTip.SetToolTip(button, tip);
+        _buttons[view] = button;
+        _tabStrip.Controls.Add(button);
+    }
+
+    private void SelectView(WorkspaceView view, bool raiseEvent)
+    {
+        if (!_buttons.ContainsKey(view)) return;
+        if (_selectedView == view)
+        {
+            RefreshButtons();
+            return;
+        }
+
+        var previous = _selectedView;
+        _selectedView = view;
+        RefreshButtons();
+        if (raiseEvent) SelectedViewChanged?.Invoke(this, new WorkspaceViewChangedEventArgs(previous, _selectedView));
+    }
+
+    private void ApplyPlacement()
+    {
+        _tabStrip.FlowDirection = _placement == WorkspaceTabPlacement.Top
+            ? FlowDirection.LeftToRight
+            : FlowDirection.TopDown;
+        _tabStrip.Padding = _placement == WorkspaceTabPlacement.Top
+            ? new Padding(8, 6, 8, 6)
+            : new Padding(6, 8, 6, 8);
+        LayoutButtons();
+    }
+
+    private void LayoutButtons()
+    {
+        if (_buttons.Count == 0) return;
+
+        if (_placement == WorkspaceTabPlacement.Top)
+        {
+            Height = Math.Max(Height, 42);
+            foreach (var button in _buttons.Values)
+            {
+                button.Width = 128;
+                button.Height = 30;
+                button.Margin = new Padding(0, 0, 6, 0);
+            }
+
+            return;
+        }
+
+        foreach (var button in _buttons.Values)
+        {
+            button.Width = Math.Max(36, ClientSize.Width - _tabStrip.Padding.Horizontal);
+            button.Height = 34;
+            button.Margin = new Padding(0, 0, 0, 6);
+        }
+    }
+
+    private void RefreshButtons()
+    {
+        foreach (var (view, button) in _buttons)
+        {
+            if (view == _selectedView) Theme.StyleActiveButton(button);
+            else Theme.StyleButton(button);
+        }
+
+        UpdateIndicator(animate: _indicatorInitialized);
+    }
+
+    private void RefreshGridTypePresentation()
+    {
+        _cartesianGridItem.Checked = _worldGridType == VectorAnimationEngine.WorldGridType.Cartesian;
+        _goldenSpiralGridItem.Checked = _worldGridType == VectorAnimationEngine.WorldGridType.GoldenSpiral;
+        _polarGridItem.Checked = _worldGridType == VectorAnimationEngine.WorldGridType.Polar;
+        _gridTypeButton.Icon = _worldGridType switch
+        {
+            VectorAnimationEngine.WorldGridType.GoldenSpiral => SvgIconKind.GoldenSpiral,
+            VectorAnimationEngine.WorldGridType.Polar => SvgIconKind.PolarGrid,
+            _ => SvgIconKind.Grid
+        };
+        _gridTypeButton.Invalidate();
+    }
+
+    private void UpdateIndicator(bool animate)
+    {
+        if (!_buttons.TryGetValue(_selectedView, out var button)) return;
+        var bounds = button.Bounds;
+        var position = _placement == WorkspaceTabPlacement.Top ? bounds.Left : bounds.Top;
+        var extent = _placement == WorkspaceTabPlacement.Top ? bounds.Width : bounds.Height;
+        _indicatorTargetPosition = position;
+        _indicatorTargetExtent = extent;
+        if (!_indicatorInitialized || !animate)
+        {
+            _indicatorInitialized = true;
+            _indicatorPosition = _indicatorTargetPosition;
+            _indicatorExtent = _indicatorTargetExtent;
+            Invalidate();
+            return;
+        }
+
+        if (!_indicatorTimer.Enabled) _indicatorTimer.Start();
+    }
+
+    private void TickIndicator()
+    {
+        _indicatorPosition += (_indicatorTargetPosition - _indicatorPosition) * 0.28f;
+        _indicatorExtent += (_indicatorTargetExtent - _indicatorExtent) * 0.28f;
+        if (Math.Abs(_indicatorTargetPosition - _indicatorPosition) < 0.25f
+            && Math.Abs(_indicatorTargetExtent - _indicatorExtent) < 0.25f)
+        {
+            _indicatorPosition = _indicatorTargetPosition;
+            _indicatorExtent = _indicatorTargetExtent;
+            _indicatorTimer.Stop();
+        }
+
+        Invalidate();
+    }
+}
