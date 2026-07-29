@@ -53,6 +53,38 @@ internal readonly record struct FillBoundaryStrokeLink(
     int LineObjectIndex,
     bool Reversed);
 
+internal readonly record struct PathIntersectionAnchor(
+    int ObjectIndex,
+    int PartIndex,
+    bool StartEndpoint,
+    PathBezierSegmentPart OriginalSegment);
+
+internal readonly record struct LineIntersectionAnchor(
+    int ObjectIndex,
+    bool StartEndpoint,
+    PointF OriginalEndpoint,
+    PointF OppositeEndpoint,
+    PointF Control1,
+    PointF Control2,
+    bool KeepStraight);
+
+internal sealed record FreeformIntersectionAnchor(
+    int ObjectIndex,
+    int PointIndex,
+    bool MirrorsClosedEndpoint,
+    PointF[] OriginalPoints);
+
+internal sealed record SharedBoundaryIntersection(
+    PointF OriginalAnchor,
+    PathIntersectionAnchor[] PathAnchors,
+    LineIntersectionAnchor[] LineAnchors,
+    FreeformIntersectionAnchor[] FreeformAnchors,
+    int OwnerObjectIndex = -1,
+    int OwnerPartIndex = -1)
+{
+    public bool HasTargets => PathAnchors.Length > 0 || LineAnchors.Length > 0 || FreeformAnchors.Length > 0;
+}
+
 internal readonly record struct LineEndpointJunction(
     int NeighborCount,
     int OwnerObjectIndex,

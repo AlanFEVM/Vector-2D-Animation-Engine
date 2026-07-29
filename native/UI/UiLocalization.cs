@@ -55,6 +55,10 @@ internal static class UiLocalization
             ["Pressure Brush"] = "压感笔刷",
             ["Profile"] = "方案",
             ["Profile name"] = "方案名称",
+            ["Release Notes"] = "更新公告",
+            ["Release Notes..."] = "更新公告...",
+            ["Release notes for version {0}"] = "版本 {0} 的更新公告",
+            ["Released: {0}"] = "发布日期：{0}",
             ["Rename shortcut profile"] = "重命名快捷键方案",
             ["Rename Shortcut Profile"] = "重命名快捷键方案",
             ["Selection group"] = "选择组",
@@ -494,6 +498,7 @@ internal static class UiLocalization
             ["Untitled"] = "未命名",
             ["Use #RRGGBB or #RRGGBBAA"] = "请输入 #RRGGBB 或 #RRGGBBAA",
             ["Use the English interface"] = "使用英文界面",
+            ["Use arrow keys, Page Up, Page Down, Home, or End to read the release notes."] = "可使用方向键、Page Up、Page Down、Home 或 End 阅读更新公告。",
             ["Use a linear fill gradient"] = "使用线性填充渐变",
             ["Use a radial fill gradient"] = "使用径向填充渐变",
             ["Use a shape radial fill gradient"] = "使用形状径向填充渐变",
@@ -512,6 +517,7 @@ internal static class UiLocalization
             ["Vault is empty"] = "素材库为空",
             ["Vault Note"] = "素材库备注",
             ["Visible"] = "可见",
+            ["Version {0}"] = "版本 {0}",
             ["Width percentage relative to the brush size"] = "相对于笔刷大小的宽度百分比",
             ["Width pt"] = "宽度 pt",
             ["World grid opacity"] = "世界网格透明度",
@@ -525,9 +531,11 @@ internal static class UiLocalization
 
     public static UiLanguage CurrentLanguage { get; private set; } = UiLanguage.English;
 
-    public static string T(string? text)
+    public static string T(string? text) => T(text, CurrentLanguage);
+
+    public static string T(string? text, UiLanguage language)
     {
-        if (string.IsNullOrEmpty(text) || CurrentLanguage == UiLanguage.English) return text ?? string.Empty;
+        if (string.IsNullOrEmpty(text) || language != UiLanguage.SimplifiedChinese) return text ?? string.Empty;
         if (SimplifiedChinese.TryGetValue(text, out var translated)) return translated;
         return TranslateDynamic(text);
     }

@@ -260,6 +260,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<int, (PointF Start, PointF End)> _selectedGradientStarts = new();
     private readonly List<LineEndpointEditStart> _lineEndpointEditStarts = new();
     private readonly List<FillBoundaryLineLink> _fillBoundaryLineLinks = new();
+    private readonly List<SharedBoundaryIntersection> _lineEndpointFillIntersections = new();
     private readonly Dictionary<(int X, int Y), List<LineEndpointSnapCandidate>> _lineEndpointSnapBuckets = new();
     private readonly Stack<DrawingUndoEntry> _undoStack = new();
     private readonly Stack<SceneTimelineUndoEntry> _sceneTimelineUndoStack = new();
@@ -332,7 +333,10 @@ internal sealed class MainForm : Form
     private VectorSceneSnapshot? _gradientEditSnapshot;
     private bool _gradientEditChanged;
     private FillEdgeBezierEditSession? _fillEdgeBezierEditSession;
+    private LineBranchDragSession? _lineBranchDragSession;
     private int _fillEdgeBezierActivePartIndex = -1;
+    private int _fillEdgeBezierActivePieceIndex = -1;
+    private FillBezierSegmentPiece[] _fillEdgeBezierOverlayPieces = [];
     private PointF _transformLastPointer;
     private float _transformLastAngle;
     private bool _geometryDirty;
@@ -441,6 +445,7 @@ internal sealed class MainForm : Form
     private string[] _stageContextMenuBreakApartInstances = [];
     private readonly EditorRestartState? _restartState;
     private bool _restartRequested;
+    private bool _lineEndpointFillIntersectionsCaptured;
 
     private readonly record struct LineEndpointEditStart(
         int ObjectIndex,
@@ -510,11 +515,14 @@ internal sealed class MainForm : Form
         VectorSceneSnapshot Snapshot,
         int[] IndependentStrokeObjects);
 
+    private sealed record FillPartSelectionIdentity(PointF[] InteriorProbes);
+
     private sealed class FillEdgeBezierEditSession
     {
         public required VectorScene Scene { get; init; }
         public required VectorSceneSnapshot Snapshot { get; init; }
         public required DrawingStackKey StackKey { get; init; }
+        public required FillPartSelectionIdentity? FillPartSelection { get; init; }
         public required int ObjectIndex { get; init; }
         public required int PartIndex { get; init; }
         public required EditHandleKind Handle { get; init; }
@@ -524,7 +532,26 @@ internal sealed class MainForm : Form
         public required PointF Control2 { get; init; }
         public required PointF End { get; init; }
         public required FillBoundaryStrokeLink[] LinkedStrokes { get; init; }
+        public required SharedBoundaryIntersection SharedIntersection { get; init; }
+        public required bool IncludesAnchorInsertion { get; init; }
+        public required PointF[][] InitialFillContours { get; init; }
+        public required CubicDrawingPreviewSegment LastAppliedSegment { get; set; }
+        public bool BoundaryGeometryChanged { get; set; }
         public bool Changed { get; set; }
+    }
+
+    private sealed class LineBranchDragSession
+    {
+        public required VectorScene Scene { get; init; }
+        public required VectorSceneSnapshot Snapshot { get; init; }
+        public required int ObjectIndex { get; init; }
+        public required int Layer { get; init; }
+        public required float SourceParameter { get; init; }
+        public required PointF Anchor { get; init; }
+        public required Color StrokeColor { get; init; }
+        public required float Stroke { get; init; }
+        public PointF End { get; set; }
+        public bool DragExceeded { get; set; }
     }
 
     private sealed record ClipboardObject(
@@ -1081,6 +1108,8 @@ internal sealed class MainForm : Form
         saveProjectAs.Click += (_, _) => SaveProjectAs();
         var settings = new ToolStripMenuItem("Settings...");
         settings.Click += (_, _) => ShowSettings();
+        var releaseNotes = new ToolStripMenuItem("Release Notes...");
+        releaseNotes.Click += (_, _) => ShowReleaseNotes();
         _mainMenu.Items.AddRange(new ToolStripItem[]
         {
             newProject,
@@ -1090,7 +1119,9 @@ internal sealed class MainForm : Form
             saveProject,
             saveProjectAs,
             new ToolStripSeparator(),
-            settings
+            settings,
+            new ToolStripSeparator(),
+            releaseNotes
         });
         _mainMenu.Opening += (_, _) => importSvg.Enabled = CanImportSvg();
     }
@@ -1180,6 +1211,12 @@ internal sealed class MainForm : Form
         return new SizeF(
             Math.Max(1f, (float)Math.Min(maximumWidth, naturalWidth * scale)),
             Math.Max(1f, (float)Math.Min(maximumHeight, naturalHeight * scale)));
+    }
+
+    private void ShowReleaseNotes()
+    {
+        using var dialog = new ReleaseNotesDialog();
+        dialog.ShowDialog(this);
     }
 
     private void ShowSettings()
@@ -3050,6 +3087,11 @@ internal sealed class MainForm : Form
         if (tool != _tool && _fillEdgeBezierEditSession is not null)
         {
             CancelFillEdgeBezierPointer(restore: true);
+            FinishPointerInteraction();
+        }
+        if (tool != _tool && _lineBranchDragSession is not null)
+        {
+            CancelLineBranchDrag(restore: true);
             FinishPointerInteraction();
         }
         if (_marqueeSelecting
@@ -4945,6 +4987,12 @@ internal sealed class MainForm : Form
             if (keyData == Keys.Escape && _fillEdgeBezierEditSession is not null)
             {
                 CancelFillEdgeBezierPointer(restore: true);
+                FinishPointerInteraction();
+                return true;
+            }
+            if (keyData == Keys.Escape && _lineBranchDragSession is not null)
+            {
+                CancelLineBranchDrag(restore: true);
                 FinishPointerInteraction();
                 return true;
             }
@@ -7596,6 +7644,13 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_tool == ToolMode.Select
+            && IsControlPressed()
+            && TryBeginLineBranchDrag(e))
+        {
+            return;
+        }
+
         if (e.Button == MouseButtons.Right)
         {
             ShowStageContextMenu(e.Location);
@@ -7949,18 +8004,43 @@ internal sealed class MainForm : Form
         if (!insertsAnchor && !deletesAnchor) return false;
 
         var targetObject = _stage.FillEdgeBezierOverlayTargetObject;
-        if (targetObject != _selectedObject || (uint)targetObject >= _scene.ObjectCount) return false;
+        if (targetObject != _selectedObject
+            || (uint)targetObject >= _scene.ObjectCount
+            || !TryGetFillEdgeBezierOverlayPiece(overlayHit.PartIndex, out var overlayPiece))
+        {
+            return false;
+        }
 
+        if (deletesAnchor
+            && (overlayHit.Handle == EditHandleKind.LineStart && overlayPiece.StartIsVirtualAnchor
+                || overlayHit.Handle == EditHandleKind.LineEnd && overlayPiece.EndIsVirtualAnchor))
+        {
+            return true;
+        }
+
+        var hasSelectedFillPart = TryGetSelectedFillPartIndex(
+            targetObject,
+            _selectedElements,
+            out var selectedFillPartIndex);
+        var fillPartSelection = CaptureSelectedFillPartSelection(targetObject);
         var stackKey = new DrawingStackKey(
             _scene.ObjectOrder[targetObject],
             _scene.ObjectSubOrder[targetObject]);
         var snapshot = CreateCanvasMutationSnapshot([targetObject]);
         targetObject = FindActiveObjectByStackKey(stackKey);
-        if (targetObject < 0 || !_scene.TryConvertFillToBezierPath(targetObject))
+        if (targetObject < 0
+            || !CanEditFillEdgeBezierPiece(
+                targetObject,
+                hasSelectedFillPart ? selectedFillPartIndex : null,
+                overlayPiece)
+            || !_scene.TryConvertFillToBezierPath(targetObject))
         {
             RestoreCanvasMutationSnapshot(snapshot);
             return true;
         }
+        var editStackKey = new DrawingStackKey(
+            _scene.ObjectOrder[targetObject],
+            _scene.ObjectSubOrder[targetObject]);
 
         var activePartIndex = -1;
         var changed = false;
@@ -7970,9 +8050,15 @@ internal sealed class MainForm : Form
             var tolerance = Math.Max(
                 DrawingTopologyRules.MinStrokeSegmentUnits,
                 _stage.ScreenLengthToWorld(9));
-            changed = _scene.TryGetClosestPointOnPathBezierSegment(
+            changed = _scene.TryMaterializePathBezierSegmentInterval(
                     targetObject,
-                    overlayHit.PartIndex,
+                    overlayPiece.SourcePartIndex,
+                    overlayPiece.StartT,
+                    overlayPiece.EndT,
+                    out var isolatedPartIndex)
+                && _scene.TryGetClosestPointOnPathBezierSegment(
+                    targetObject,
+                    isolatedPartIndex,
                     world,
                     out var parameter,
                     out _,
@@ -7982,16 +8068,88 @@ internal sealed class MainForm : Form
                 && parameter < 0.975f
                 && _scene.TryInsertPathBezierAnchor(
                     targetObject,
-                    overlayHit.PartIndex,
+                    isolatedPartIndex,
                     parameter,
                     out activePartIndex,
                     out _);
+            if (!changed)
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                return true;
+            }
+
+            var sharedIntersection = CaptureFillEdgeSharedIntersection(
+                targetObject,
+                activePartIndex,
+                EditHandleKind.LineStart,
+                out var linkedStrokes);
+            if (!TryResolveCapturedFillEdgeOwner(
+                    sharedIntersection,
+                    editStackKey,
+                    EditHandleKind.LineStart,
+                    out targetObject,
+                    out activePartIndex,
+                    out var insertedSegment))
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                return true;
+            }
+
+            _fillEdgeBezierActivePartIndex = activePartIndex;
+            _fillEdgeBezierActivePieceIndex = -1;
+            if (!RestoreFillEdgeSelection(targetObject, fillPartSelection))
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                FinishPointerInteraction();
+                return true;
+            }
+            _lastMouse = e.Location;
+            _startScreen = e.Location;
+            _startWorld = world;
+            _pointerHitWasAlreadySelected = true;
+            _independentMarqueeStrokeMove = false;
+            _selectionWasEmptyOnPointerDown = false;
+            _forceMarqueeOnPointerDown = false;
+            _additiveSelection = false;
+            _pendingClickSelection = DrawingElementHit.None;
+            _fillEdgeBezierEditSession = new FillEdgeBezierEditSession
+            {
+                Scene = _scene,
+                Snapshot = snapshot,
+                StackKey = stackKey,
+                FillPartSelection = fillPartSelection,
+                ObjectIndex = targetObject,
+                PartIndex = activePartIndex,
+                Handle = EditHandleKind.LineStart,
+                PointerStart = world,
+                Start = insertedSegment.Start,
+                Control1 = insertedSegment.Control1,
+                Control2 = insertedSegment.Control2,
+                End = insertedSegment.End,
+                LinkedStrokes = linkedStrokes,
+                SharedIntersection = sharedIntersection,
+                IncludesAnchorInsertion = true,
+                InitialFillContours = _scene.GetObjectBoundaryContours(targetObject),
+                LastAppliedSegment = new CubicDrawingPreviewSegment(
+                    insertedSegment.Start,
+                    insertedSegment.Control1,
+                    insertedSegment.Control2,
+                    insertedSegment.End),
+                Changed = true
+            };
+            _stage.Focus();
+            _stage.Capture = true;
+            _stage.SetFillEdgeBezierPointerEditing(true);
+            UpdateFillEdgeBezierOverlay();
+            UpdateInteractionCursor(e.Location);
+            _stage.Invalidate();
+            return true;
         }
         else
         {
             changed = _scene.TryDeletePathBezierAnchor(
                 targetObject,
-                overlayHit.PartIndex,
+                overlayPiece.SourcePartIndex,
                 startEndpoint: overlayHit.Handle == EditHandleKind.LineStart,
                 out activePartIndex);
         }
@@ -8002,8 +8160,13 @@ internal sealed class MainForm : Form
             return true;
         }
 
-        SetSelection(targetObject);
         _fillEdgeBezierActivePartIndex = activePartIndex;
+        _fillEdgeBezierActivePieceIndex = -1;
+        if (!RestoreFillEdgeSelection(targetObject, fillPartSelection))
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return true;
+        }
         PushUndoSnapshot(snapshot);
         _timeline.RefreshTimeline();
         RebuildDrawingObjectUnderlay();
@@ -8036,6 +8199,259 @@ internal sealed class MainForm : Form
             && hit.Handle is EditHandleKind.LineStart or EditHandleKind.LineEnd;
     }
 
+    private bool TryBeginLineBranchDrag(MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || !IsControlPressed() || IsScene3DView()) return false;
+
+        var world = _stage.ScreenToWorld(e.Location);
+        var tolerance = Math.Max(
+            DrawingTopologyRules.MinStrokeSegmentUnits,
+            _stage.ScreenLengthToWorld(9));
+        var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+        var sourceObject = -1;
+        var sourceParameter = 0f;
+        var bestEndpointDistance = float.PositiveInfinity;
+
+        void ConsiderEndpoint(int candidate)
+        {
+            if ((uint)candidate >= _scene.ObjectCount
+                || _scene.ShapeKind[candidate] != ShapeKind.Line
+                || !_scene.IsObjectSelectable(candidate, _frame))
+            {
+                return;
+            }
+
+            if (_scene.TryGetLineEndpoint(candidate, startEndpoint: true, out var start))
+            {
+                var distance = Distance(world, start);
+                if (distance <= tolerance && distance <= bestEndpointDistance)
+                {
+                    sourceObject = candidate;
+                    sourceParameter = 0;
+                    bestEndpointDistance = distance;
+                }
+            }
+
+            if (_scene.TryGetLineEndpoint(candidate, startEndpoint: false, out var end))
+            {
+                var distance = Distance(world, end);
+                if (distance <= tolerance && distance < bestEndpointDistance)
+                {
+                    sourceObject = candidate;
+                    sourceParameter = 1;
+                    bestEndpointDistance = distance;
+                }
+            }
+        }
+
+        ConsiderEndpoint(_selectedObject);
+        if (hit.IsValid && hit.Key.Kind == DrawingElementKind.Stroke) ConsiderEndpoint(hit.Key.ObjectIndex);
+        var endpointBounds = RectangleF.FromLTRB(
+            world.X - tolerance,
+            world.Y - tolerance,
+            world.X + tolerance,
+            world.Y + tolerance);
+        foreach (var candidate in _scene.QueryObjects(endpointBounds, _frame)) ConsiderEndpoint(candidate);
+
+        var endpointGesture = IsLineEndpointBranchGesture(
+            e.Button,
+            controlPressed: true,
+            bestEndpointDistance,
+            tolerance);
+        if (!endpointGesture)
+        {
+            if (!hit.IsValid
+                || hit.Key.Kind != DrawingElementKind.Stroke
+                || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount
+                || _scene.ShapeKind[hit.Key.ObjectIndex] != ShapeKind.Line
+                || !_scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame)
+                || !_scene.TryGetClosestPointOnLine(
+                    hit.Key.ObjectIndex,
+                    world,
+                    out sourceParameter,
+                    out _,
+                    out _)
+                || !IsLineInteriorBranchGesture(
+                    e.Button,
+                    controlPressed: true,
+                    altPressed: IsAltPressed(),
+                    sourceParameter))
+            {
+                return false;
+            }
+
+            sourceObject = hit.Key.ObjectIndex;
+        }
+
+        var stackKey = new DrawingStackKey(
+            _scene.ObjectOrder[sourceObject],
+            _scene.ObjectSubOrder[sourceObject]);
+        var snapshot = CreateCanvasMutationSnapshot([sourceObject]);
+        sourceObject = FindActiveObjectByStackKey(stackKey);
+        if (sourceObject < 0 || _scene.ShapeKind[sourceObject] != ShapeKind.Line)
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return true;
+        }
+
+        PointF anchor;
+        if (endpointGesture)
+        {
+            if (!_scene.TryGetLineEndpoint(
+                    sourceObject,
+                    startEndpoint: sourceParameter <= 0.001f,
+                    out anchor))
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                return true;
+            }
+        }
+        else if (!_scene.TryGetClosestPointOnLine(
+                     sourceObject,
+                     world,
+                     out sourceParameter,
+                     out anchor,
+                     out _)
+                 || !IsLineInteriorBranchGesture(
+                     e.Button,
+                     controlPressed: true,
+                     altPressed: IsAltPressed(),
+                     sourceParameter))
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return true;
+        }
+
+        _stage.Capture = true;
+        _lastMouse = e.Location;
+        _startScreen = e.Location;
+        _startWorld = world;
+        _forceMarqueeOnPointerDown = false;
+        _additiveSelection = false;
+        _pendingClickSelection = DrawingElementHit.None;
+        _lineBranchDragSession = new LineBranchDragSession
+        {
+            Scene = _scene,
+            Snapshot = snapshot,
+            ObjectIndex = sourceObject,
+            Layer = _scene.ObjectLayer[sourceObject],
+            SourceParameter = sourceParameter,
+            Anchor = anchor,
+            End = anchor,
+            StrokeColor = Color.FromArgb(_scene.StrokeArgb[sourceObject]),
+            Stroke = _scene.Stroke[sourceObject]
+        };
+        _stage.ClearHoveredLineElement();
+        UpdateInteractionCursor(e.Location);
+        return true;
+    }
+
+    internal static bool IsLineEndpointBranchGesture(
+        MouseButtons button,
+        bool controlPressed,
+        float endpointDistance,
+        float tolerance)
+    {
+        return button == MouseButtons.Left
+            && controlPressed
+            && float.IsFinite(endpointDistance)
+            && endpointDistance <= tolerance;
+    }
+
+    internal static bool IsLineInteriorBranchGesture(
+        MouseButtons button,
+        bool controlPressed,
+        bool altPressed,
+        float parameter)
+    {
+        return button == MouseButtons.Left
+            && controlPressed
+            && altPressed
+            && float.IsFinite(parameter)
+            && parameter > 0.025f
+            && parameter < 0.975f;
+    }
+
+    internal static bool ShouldCommitLineBranchDrag(
+        MouseButtons button,
+        bool dragThresholdExceeded,
+        float branchLength)
+    {
+        return button == MouseButtons.Left
+            && dragThresholdExceeded
+            && branchLength >= DrawingTopologyRules.MinStrokeSegmentUnits;
+    }
+
+    private void UpdateLineBranchDrag(Point screen)
+    {
+        var session = _lineBranchDragSession;
+        if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
+        if (!session.DragExceeded && !PointerDragExceeded(screen)) return;
+
+        session.DragExceeded = true;
+        session.End = ResolveDrawingLineEnd(
+            session.Anchor,
+            _stage.ScreenToWorld(screen),
+            session.Layer,
+            temporarilySnapAngle: IsShiftPressed());
+        if (Distance(session.Anchor, session.End) < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            _stage.ClearDrawingPreview();
+            return;
+        }
+
+        _stage.SetDrawingPreview(
+            session.Anchor,
+            session.End,
+            ShapeKind.Line,
+            session.StrokeColor,
+            session.Stroke);
+    }
+
+    private void CompleteLineBranchDrag(Point screen, MouseButtons button)
+    {
+        var session = _lineBranchDragSession;
+        _lineBranchDragSession = null;
+        _stage.ClearDrawingPreview();
+        if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
+
+        var dragExceeded = session.DragExceeded || PointerDragExceeded(screen);
+        var end = dragExceeded
+            ? ResolveDrawingLineEnd(
+                session.Anchor,
+                _stage.ScreenToWorld(screen),
+                session.Layer,
+                temporarilySnapAngle: IsShiftPressed())
+            : session.Anchor;
+        if (!ShouldCommitLineBranchDrag(button, dragExceeded, Distance(session.Anchor, end))
+            || !_scene.AddConnectedLineBranch(
+                session.ObjectIndex,
+                session.SourceParameter,
+                end,
+                out var result))
+        {
+            RestoreCanvasMutationSnapshot(session.Snapshot);
+            return;
+        }
+
+        PushUndoSnapshot(session.Snapshot);
+        SetSelection(result.BranchObjectIndex);
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
+    private void CancelLineBranchDrag(bool restore)
+    {
+        var session = _lineBranchDragSession;
+        _lineBranchDragSession = null;
+        _stage.ClearDrawingPreview();
+        if (restore && session is not null && ReferenceEquals(session.Scene, _scene))
+        {
+            RestoreCanvasMutationSnapshot(session.Snapshot);
+        }
+    }
+
     private void BeginFillEdgeBezierPointer(MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left || _startWorld is not { } world)
@@ -8048,9 +8464,11 @@ internal sealed class MainForm : Form
         var targetObject = _stage.FillEdgeBezierOverlayTargetObject;
         if (overlayHit.IsValid
             && targetObject == _selectedObject
-            && (uint)targetObject < _scene.ObjectCount)
+            && (uint)targetObject < _scene.ObjectCount
+            && TryGetFillEdgeBezierOverlayPiece(overlayHit.PartIndex, out var overlayPiece))
         {
-            _fillEdgeBezierActivePartIndex = overlayHit.PartIndex;
+            _fillEdgeBezierActivePartIndex = overlayPiece.SourcePartIndex;
+            _fillEdgeBezierActivePieceIndex = overlayPiece.PieceIndex;
             if (overlayHit.Handle == EditHandleKind.None)
             {
                 UpdateFillEdgeBezierOverlay();
@@ -8058,39 +8476,85 @@ internal sealed class MainForm : Form
                 return;
             }
 
+            var hasSelectedFillPart = TryGetSelectedFillPartIndex(
+                targetObject,
+                _selectedElements,
+                out var selectedFillPartIndex);
             var stackKey = new DrawingStackKey(
                 _scene.ObjectOrder[targetObject],
                 _scene.ObjectSubOrder[targetObject]);
+            var fillPartSelection = CaptureSelectedFillPartSelection(targetObject);
             var snapshot = CreateCanvasMutationSnapshot([targetObject]);
             targetObject = FindActiveObjectByStackKey(stackKey);
             if (targetObject < 0
+                || !CanEditFillEdgeBezierPiece(
+                    targetObject,
+                    hasSelectedFillPart ? selectedFillPartIndex : null,
+                    overlayPiece)
                 || !_scene.TryConvertFillToBezierPath(targetObject)
-                || !_scene.TryGetPathBezierSegment(targetObject, overlayHit.PartIndex, out var segment))
+                || !TryMaterializeFillEdgeBezierPointerNeighborhood(
+                    targetObject,
+                    overlayPiece,
+                    overlayHit.Handle,
+                    out var editablePartIndex))
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                FinishPointerInteraction();
+                return;
+            }
+            var editStackKey = new DrawingStackKey(
+                _scene.ObjectOrder[targetObject],
+                _scene.ObjectSubOrder[targetObject]);
+
+            var sharedIntersection = CaptureFillEdgeSharedIntersection(
+                targetObject,
+                editablePartIndex,
+                overlayHit.Handle,
+                out var linkedStrokes);
+            if (!TryResolveCapturedFillEdgeOwner(
+                    sharedIntersection,
+                    editStackKey,
+                    overlayHit.Handle,
+                    out targetObject,
+                    out editablePartIndex,
+                    out var segment))
             {
                 RestoreCanvasMutationSnapshot(snapshot);
                 FinishPointerInteraction();
                 return;
             }
 
-            SetSelection(targetObject);
-            var linkedStrokes = _scene.CaptureFillBoundaryStrokeLinks(
-                targetObject,
-                overlayHit.PartIndex,
-                _frame);
+            _fillEdgeBezierActivePartIndex = editablePartIndex;
+            _fillEdgeBezierActivePieceIndex = -1;
+            if (!RestoreFillEdgeSelection(targetObject, fillPartSelection))
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                FinishPointerInteraction();
+                return;
+            }
             _fillEdgeBezierEditSession = new FillEdgeBezierEditSession
             {
                 Scene = _scene,
                 Snapshot = snapshot,
                 StackKey = stackKey,
+                FillPartSelection = fillPartSelection,
                 ObjectIndex = targetObject,
-                PartIndex = overlayHit.PartIndex,
+                PartIndex = editablePartIndex,
                 Handle = overlayHit.Handle,
                 PointerStart = world,
                 Start = segment.Start,
                 Control1 = segment.Control1,
                 Control2 = segment.Control2,
                 End = segment.End,
-                LinkedStrokes = linkedStrokes
+                LinkedStrokes = linkedStrokes,
+                SharedIntersection = sharedIntersection,
+                IncludesAnchorInsertion = false,
+                InitialFillContours = _scene.GetObjectBoundaryContours(targetObject),
+                LastAppliedSegment = new CubicDrawingPreviewSegment(
+                    segment.Start,
+                    segment.Control1,
+                    segment.Control2,
+                    segment.End)
             };
             _stage.SetFillEdgeBezierPointerEditing(true);
             UpdateFillEdgeBezierOverlay();
@@ -8101,23 +8565,107 @@ internal sealed class MainForm : Form
         FinishPointerInteraction();
     }
 
+    private bool TryMaterializeFillEdgeBezierPointerNeighborhood(
+        int objectIndex,
+        FillBezierSegmentPiece activePiece,
+        EditHandleKind handle,
+        out int activePartIndex)
+    {
+        if (handle is EditHandleKind.LineStart or EditHandleKind.LineEnd)
+        {
+            return _scene.TryMaterializePathBezierSegmentNeighborhood(
+                objectIndex,
+                activePiece,
+                startEndpoint: handle == EditHandleKind.LineStart,
+                _fillEdgeBezierOverlayPieces,
+                out activePartIndex);
+        }
+
+        return _scene.TryMaterializePathBezierSegmentInterval(
+            objectIndex,
+            activePiece.SourcePartIndex,
+            activePiece.StartT,
+            activePiece.EndT,
+            out activePartIndex);
+    }
+
+    private bool TryResolveCapturedFillEdgeOwner(
+        SharedBoundaryIntersection capture,
+        DrawingStackKey stackKey,
+        EditHandleKind handle,
+        out int objectIndex,
+        out int partIndex,
+        out PathBezierSegmentPart segment)
+    {
+        objectIndex = capture.OwnerObjectIndex;
+        partIndex = capture.OwnerPartIndex;
+        segment = default;
+        if ((uint)objectIndex >= _scene.ObjectCount
+            || partIndex < 0
+            || !_scene.IsObjectActive(objectIndex, _frame)
+            || !_scene.HasFill(objectIndex)
+            || !IsFillShape(_scene.ShapeKind[objectIndex])
+            || _scene.ObjectOrder[objectIndex] != stackKey.Order
+            || !_scene.ObjectSubOrder[objectIndex].Equals(stackKey.SubOrder)
+            || !_scene.TryGetPathBezierSegment(objectIndex, partIndex, out segment))
+        {
+            return false;
+        }
+
+        var currentAnchor = handle switch
+        {
+            EditHandleKind.LineStart => segment.Start,
+            EditHandleKind.LineEnd => segment.End,
+            _ => capture.OriginalAnchor
+        };
+        return handle is not EditHandleKind.LineStart and not EditHandleKind.LineEnd
+            || Distance(currentAnchor, capture.OriginalAnchor) <= EndpointConnectionToleranceUnits;
+    }
+
+    private SharedBoundaryIntersection CaptureFillEdgeSharedIntersection(
+        int objectIndex,
+        int partIndex,
+        EditHandleKind handle,
+        out FillBoundaryStrokeLink[] linkedStrokes)
+    {
+        linkedStrokes = _scene.CaptureFillBoundaryStrokeLinks(objectIndex, partIndex, _frame);
+        if (handle is not EditHandleKind.LineStart and not EditHandleKind.LineEnd)
+        {
+            return new SharedBoundaryIntersection(
+                PointF.Empty,
+                [],
+                [],
+                [],
+                objectIndex,
+                partIndex);
+        }
+
+        var fullCurveLineObjects = linkedStrokes
+            .Select(link => link.LineObjectIndex)
+            .ToHashSet();
+        return _scene.CaptureStrokeIntersectionsAtFillAnchor(
+            objectIndex,
+            partIndex,
+            startEndpoint: handle == EditHandleKind.LineStart,
+            _frame,
+            excludedLineObjectIndices: fullCurveLineObjects);
+    }
+
     private void UpdateFillEdgeBezierPointer(PointF world)
     {
         var session = _fillEdgeBezierEditSession;
         if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
 
-        var dx = world.X - session.PointerStart.X;
-        var dy = world.Y - session.PointerStart.Y;
         var start = session.Start;
         var control1 = session.Control1;
         var control2 = session.Control2;
         var end = session.End;
         var adjusted = session.Handle switch
         {
-            EditHandleKind.LineStart => new PointF(session.Start.X + dx, session.Start.Y + dy),
-            EditHandleKind.BezierControl => new PointF(session.Control1.X + dx, session.Control1.Y + dy),
-            EditHandleKind.BezierControl2 => new PointF(session.Control2.X + dx, session.Control2.Y + dy),
-            EditHandleKind.LineEnd => new PointF(session.End.X + dx, session.End.Y + dy),
+            EditHandleKind.LineStart => MoveHandleWithPointer(session.Start, session.PointerStart, world),
+            EditHandleKind.BezierControl => MoveHandleWithPointer(session.Control1, session.PointerStart, world),
+            EditHandleKind.BezierControl2 => MoveHandleWithPointer(session.Control2, session.PointerStart, world),
+            EditHandleKind.LineEnd => MoveHandleWithPointer(session.End, session.PointerStart, world),
             _ => PointF.Empty
         };
         adjusted = VectorUnits.Quantize(SnapDrawingPoint(adjusted));
@@ -8132,6 +8680,8 @@ internal sealed class MainForm : Form
         control1 = adjustedSegment.Control1;
         control2 = adjustedSegment.Control2;
         end = adjustedSegment.End;
+        var currentSegment = new CubicDrawingPreviewSegment(start, control1, control2, end);
+        if (!ShouldApplyFillEdgeBezierPointer(session.LastAppliedSegment, currentSegment)) return;
 
         if (!_scene.SetPathBezierSegment(
                 session.ObjectIndex,
@@ -8153,13 +8703,63 @@ internal sealed class MainForm : Form
             control2,
             end,
             rebuildGeometryIndex: false);
+        if (session.Handle is EditHandleKind.LineStart or EditHandleKind.LineEnd)
+        {
+            _scene.UpdateSharedBoundaryIntersection(
+                session.SharedIntersection,
+                session.Handle == EditHandleKind.LineStart ? start : end,
+                rebuildGeometryIndex: false);
+        }
 
-        session.Changed = start != session.Start
-            || control1 != session.Control1
-            || control2 != session.Control2
-            || end != session.End;
-        UpdateFillEdgeBezierOverlay();
-        _stage.Invalidate();
+        session.LastAppliedSegment = currentSegment;
+        var initialSegment = new CubicDrawingPreviewSegment(
+            session.Start,
+            session.Control1,
+            session.Control2,
+            session.End);
+        session.BoundaryGeometryChanged = currentSegment != initialSegment;
+        session.Changed = ShouldCommitFillEdgeBezierPointer(
+            session.IncludesAnchorInsertion,
+            initialSegment,
+            currentSegment);
+        RefreshFillEdgeBezierOverlayDuringPointer(session);
+    }
+
+    private void RefreshFillEdgeBezierOverlayDuringPointer(FillEdgeBezierEditSession session)
+    {
+        var pieces = _scene.RefreshFillBezierSegmentPieces(
+            session.ObjectIndex,
+            _frame,
+            _fillEdgeBezierOverlayPieces);
+        if (pieces.Length == 0)
+        {
+            UpdateFillEdgeBezierOverlay();
+            return;
+        }
+
+        _fillEdgeBezierOverlayPieces = pieces;
+        _stage.SetOwnedFillEdgeBezierOverlay(
+            session.ObjectIndex,
+            CreateFillEdgeBezierOverlaySegments(pieces),
+            _fillEdgeBezierActivePieceIndex);
+    }
+
+    private static FillEdgeBezierOverlaySegment[] CreateFillEdgeBezierOverlaySegments(
+        IReadOnlyList<FillBezierSegmentPiece> pieces)
+    {
+        var segments = new FillEdgeBezierOverlaySegment[pieces.Count];
+        for (var index = 0; index < pieces.Count; index++)
+        {
+            var piece = pieces[index];
+            segments[index] = new FillEdgeBezierOverlaySegment(
+                piece.PieceIndex,
+                piece.Start,
+                piece.Control1,
+                piece.Control2,
+                piece.End);
+        }
+
+        return segments;
     }
 
     internal static CubicDrawingPreviewSegment AdjustFillEdgeBezierHandle(
@@ -8197,6 +8797,60 @@ internal sealed class MainForm : Form
         return new CubicDrawingPreviewSegment(start, control1, control2, end);
     }
 
+    internal static EditHandleKind ReverseFillEdgeBezierHandle(EditHandleKind handle)
+    {
+        return handle switch
+        {
+            EditHandleKind.LineStart => EditHandleKind.LineEnd,
+            EditHandleKind.LineEnd => EditHandleKind.LineStart,
+            EditHandleKind.BezierControl => EditHandleKind.BezierControl2,
+            EditHandleKind.BezierControl2 => EditHandleKind.BezierControl,
+            _ => handle
+        };
+    }
+
+    internal static bool ShouldCommitFillEdgeBezierPointer(
+        bool includesAnchorInsertion,
+        CubicDrawingPreviewSegment initial,
+        CubicDrawingPreviewSegment current)
+    {
+        return includesAnchorInsertion || current != initial;
+    }
+
+    internal static bool ShouldApplyFillEdgeBezierPointer(
+        CubicDrawingPreviewSegment lastApplied,
+        CubicDrawingPreviewSegment current)
+    {
+        return current != lastApplied;
+    }
+
+    internal static bool ShouldUpdateFillEdgeBezierPointer(
+        MouseButtons button,
+        bool includesAnchorInsertion,
+        bool pointerMoved)
+    {
+        return button == MouseButtons.Left
+            && (includesAnchorInsertion || pointerMoved);
+    }
+
+    internal static bool ShouldUpdateSelectionPointer(
+        EditHandleKind handle,
+        bool pointerMoved,
+        bool dragThresholdExceeded)
+    {
+        return handle != EditHandleKind.None ? pointerMoved : dragThresholdExceeded;
+    }
+
+    internal static PointF MoveHandleWithPointer(
+        PointF originalHandle,
+        PointF pointerStart,
+        PointF pointer)
+    {
+        return new PointF(
+            originalHandle.X + pointer.X - pointerStart.X,
+            originalHandle.Y + pointer.Y - pointerStart.Y);
+    }
+
     private void CompleteFillEdgeBezierPointer()
     {
         var session = _fillEdgeBezierEditSession;
@@ -8206,7 +8860,18 @@ internal sealed class MainForm : Form
 
         if (session.Changed)
         {
+            if (session.BoundaryGeometryChanged)
+            {
+                _scene.NormalizeFillBoundaryOverlaps(
+                    session.ObjectIndex,
+                    session.InitialFillContours,
+                    rebuildGeometryIndex: false);
+            }
             _scene.CompleteDeferredBuild();
+            if (session.BoundaryGeometryChanged)
+            {
+                MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
+            }
             PushUndoSnapshot(session.Snapshot);
             _timeline.RefreshTimeline();
             RebuildDrawingObjectUnderlay();
@@ -8215,9 +8880,16 @@ internal sealed class MainForm : Form
         else
         {
             RestoreCanvasMutationSnapshot(session.Snapshot);
-            var restored = FindActiveObjectByStackKey(session.StackKey);
-            if (restored >= 0) SetSelection(restored);
         }
+
+        var selected = FindActiveObjectByStackKey(session.StackKey);
+        if (selected < 0
+            && (uint)_selectedObject < _scene.ObjectCount
+            && _scene.HasFill(_selectedObject))
+        {
+            selected = _selectedObject;
+        }
+        if (!RestoreFillEdgeSelection(selected, session.FillPartSelection)) ClearSelection();
 
         UpdateFillEdgeBezierOverlay();
         UpdateInspector();
@@ -8240,16 +8912,237 @@ internal sealed class MainForm : Form
         {
             RestoreCanvasMutationSnapshot(session.Snapshot);
             var restored = FindActiveObjectByStackKey(session.StackKey);
-            if (restored >= 0) SetSelection(restored);
+            if (!RestoreFillEdgeSelection(restored, session.FillPartSelection)) ClearSelection();
         }
 
         UpdateFillEdgeBezierOverlay();
     }
 
+    private FillPartSelectionIdentity? CaptureSelectedFillPartSelection(int objectIndex)
+    {
+        if (!TryGetSelectedFillPartIndex(objectIndex, _selectedElements, out _)) return null;
+        var selected = _selectedElements[0];
+        var contours = _scene.GetFillPartContours(selected, _frame);
+        return new FillPartSelectionIdentity(BuildFillPartSelectionProbes(contours));
+    }
+
+    private bool RestoreFillEdgeSelection(
+        int objectIndex,
+        FillPartSelectionIdentity? fillPartSelection)
+    {
+        if ((uint)objectIndex >= _scene.ObjectCount || !_scene.IsObjectSelectable(objectIndex, _frame))
+        {
+            return false;
+        }
+
+        if (fillPartSelection is null)
+        {
+            SetSelection(objectIndex);
+            return true;
+        }
+
+        if (TryResolveFillPartSelection(objectIndex, fillPartSelection, out var resolved))
+        {
+            SetSelection(resolved);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryResolveFillPartSelection(
+        int objectIndex,
+        FillPartSelectionIdentity identity,
+        out DrawingElementHit hit)
+    {
+        return TryResolveFillPartSelection(
+            _scene,
+            _frame,
+            objectIndex,
+            identity.InteriorProbes,
+            out hit);
+    }
+
+    internal static bool TryResolveFillPartSelection(
+        VectorScene scene,
+        int frame,
+        int objectIndex,
+        IReadOnlyList<PointF> interiorProbes,
+        out DrawingElementHit hit)
+    {
+        hit = DrawingElementHit.None;
+        var parts = scene.GetFillParts(objectIndex, frame);
+        if (parts.Length == 0) return false;
+        if (parts.Length == 1)
+        {
+            hit = new DrawingElementHit(
+                new DrawingElementKey(objectIndex, DrawingElementKind.Fill, parts[0].PartIndex),
+                0,
+                0,
+                1);
+            return true;
+        }
+
+        var bestPartIndex = -1;
+        var bestScore = 0;
+        foreach (var part in parts)
+        {
+            var score = interiorProbes.Count(probe =>
+                PointInFillPartContours(probe, part.Contours));
+            if (score <= bestScore) continue;
+
+            bestPartIndex = part.PartIndex;
+            bestScore = score;
+        }
+
+        if (bestPartIndex < 0 || bestScore == 0) return false;
+        hit = new DrawingElementHit(
+            new DrawingElementKey(objectIndex, DrawingElementKind.Fill, bestPartIndex),
+            0,
+            0,
+            1);
+        return true;
+    }
+
+    internal static PointF[] BuildFillPartSelectionProbes(IReadOnlyList<PointF[]> contours)
+    {
+        var points = contours.SelectMany(contour => contour).ToArray();
+        if (points.Length < 3) return [];
+
+        var left = points.Min(point => point.X);
+        var top = points.Min(point => point.Y);
+        var right = points.Max(point => point.X);
+        var bottom = points.Max(point => point.Y);
+        var width = right - left;
+        var height = bottom - top;
+        var probes = new List<PointF>(128);
+
+        void TryAdd(PointF candidate)
+        {
+            if (!float.IsFinite(candidate.X)
+                || !float.IsFinite(candidate.Y)
+                || !PointInFillPartContours(candidate, contours)
+                || probes.Any(existing => Distance(existing, candidate) <= 0.001f))
+            {
+                return;
+            }
+
+            probes.Add(candidate);
+        }
+
+        TryAdd(new PointF((left + right) * 0.5f, (top + bottom) * 0.5f));
+        const int gridSize = 9;
+        for (var y = 0; y < gridSize; y++)
+        {
+            for (var x = 0; x < gridSize; x++)
+            {
+                TryAdd(new PointF(
+                    left + width * (x + 0.5f) / gridSize,
+                    top + height * (y + 0.5f) / gridSize));
+            }
+        }
+
+        var inwardStep = Math.Max(0.25f, Math.Min(width, height) / 2048f);
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            var stride = Math.Max(1, contour.Length / 24);
+            for (var index = 0; index < contour.Length; index += stride)
+            {
+                var next = contour[(index + 1) % contour.Length];
+                var current = contour[index];
+                var midpoint = Lerp(current, next, 0.5f);
+                var dx = next.X - current.X;
+                var dy = next.Y - current.Y;
+                var length = MathF.Sqrt(dx * dx + dy * dy);
+                if (length <= 0.001f) continue;
+                var normal = new PointF(-dy / length * inwardStep, dx / length * inwardStep);
+                TryAdd(new PointF(midpoint.X + normal.X, midpoint.Y + normal.Y));
+                TryAdd(new PointF(midpoint.X - normal.X, midpoint.Y - normal.Y));
+            }
+        }
+
+        return probes.ToArray();
+    }
+
+    private static bool PointInFillPartContours(PointF point, IReadOnlyList<PointF[]> contours)
+    {
+        var inside = false;
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 3) continue;
+            var contourInside = false;
+            for (var index = 0; index < contour.Length; index++)
+            {
+                var previous = contour[(index - 1 + contour.Length) % contour.Length];
+                var current = contour[index];
+                if ((current.Y > point.Y) == (previous.Y > point.Y)) continue;
+                var intersectionX = (previous.X - current.X)
+                    * (point.Y - current.Y)
+                    / (previous.Y - current.Y)
+                    + current.X;
+                if (point.X < intersectionX) contourInside = !contourInside;
+            }
+
+            if (contourInside) inside = !inside;
+        }
+
+        return inside;
+    }
+
+    private bool TryGetFillEdgeBezierOverlayPiece(
+        int pieceIndex,
+        out FillBezierSegmentPiece piece)
+    {
+        foreach (var candidate in _fillEdgeBezierOverlayPieces)
+        {
+            if (candidate.PieceIndex != pieceIndex) continue;
+            piece = candidate;
+            return true;
+        }
+
+        piece = default;
+        return false;
+    }
+
+    private bool CanEditFillEdgeBezierPiece(
+        int objectIndex,
+        int? selectedFillPartIndex,
+        FillBezierSegmentPiece sourcePiece)
+    {
+        var fillParts = _scene.GetFillParts(objectIndex, _frame);
+        if (fillParts.Length <= 1)
+        {
+            return true;
+        }
+
+        if (!_scene.TryResolveFillPartForBezierSegmentPiece(
+                objectIndex,
+                _frame,
+                sourcePiece,
+                out var resolvedPartIndex))
+        {
+            return false;
+        }
+
+        return selectedFillPartIndex is null || selectedFillPartIndex == resolvedPartIndex;
+    }
+
+    private void ClearFillEdgeBezierOverlayState()
+    {
+        _fillEdgeBezierActivePartIndex = -1;
+        _fillEdgeBezierActivePieceIndex = -1;
+        _fillEdgeBezierOverlayPieces = [];
+        _stage.ClearFillEdgeBezierOverlay();
+    }
+
     private void UpdateFillEdgeBezierOverlay()
     {
-        var hasWholeFillSelection = _selectedElements.Count == 0
-            || IsWholeFillElementSelection(_scene, _frame, _selectedObject, _selectedElements);
+        var hasSelectedFillPart = TryGetSelectedFillPartIndex(
+            _selectedObject,
+            _selectedElements,
+            out var selectedFillPartIndex);
+        var hasEditableFillSelection = _selectedElements.Count == 0 || hasSelectedFillPart;
         var hasSelectedBoundarySegment = TryGetSelectedFillBoundaryBezierPart(
             _scene,
             _frame,
@@ -8259,7 +9152,7 @@ internal sealed class MainForm : Form
         if (!ShouldShowFillEdgeBezierOverlay(
                 _tool,
                 _selectedObjects.Count,
-                hasWholeFillSelection || hasSelectedBoundarySegment)
+                hasEditableFillSelection || hasSelectedBoundarySegment)
             || IsSceneCompositionContext()
             || IsScene3DView()
             || _selectedObject < 0
@@ -8268,39 +9161,53 @@ internal sealed class MainForm : Form
             || !_scene.HasFill(_selectedObject)
             || !IsFillShape(_scene.ShapeKind[_selectedObject]))
         {
-            _fillEdgeBezierActivePartIndex = -1;
-            _stage.ClearFillEdgeBezierOverlay();
+            ClearFillEdgeBezierOverlayState();
             return;
         }
 
-        var parts = _scene.GetExposedFillBezierSegmentParts(_selectedObject, _frame);
-        if (parts.Length == 0)
+        var pieces = _scene.GetExposedFillBezierSegmentPieces(
+            _selectedObject,
+            _frame,
+            hasSelectedFillPart ? selectedFillPartIndex : null);
+        if (pieces.Length == 0)
         {
-            _fillEdgeBezierActivePartIndex = -1;
-            _stage.ClearFillEdgeBezierOverlay();
+            ClearFillEdgeBezierOverlayState();
             return;
         }
 
         var targetChanged = _stage.FillEdgeBezierOverlayTargetObject != _selectedObject;
-        if (hasSelectedBoundarySegment
-            && parts.Any(part => part.PartIndex == selectedBoundaryPartIndex))
+        var activePieceArrayIndex = -1;
+        if (hasSelectedBoundarySegment)
         {
-            _fillEdgeBezierActivePartIndex = selectedBoundaryPartIndex;
+            activePieceArrayIndex = Array.FindIndex(pieces, piece =>
+                piece.SourcePartIndex == selectedBoundaryPartIndex);
         }
-        else if (targetChanged || parts.All(part => part.PartIndex != _fillEdgeBezierActivePartIndex))
+        else
         {
-            _fillEdgeBezierActivePartIndex = parts[0].PartIndex;
+            if (!targetChanged)
+            {
+                activePieceArrayIndex = Array.FindIndex(pieces, piece =>
+                    piece.PieceIndex == _fillEdgeBezierActivePieceIndex
+                    && piece.SourcePartIndex == _fillEdgeBezierActivePartIndex);
+            }
+            if (activePieceArrayIndex < 0)
+            {
+                activePieceArrayIndex = Array.FindIndex(pieces, piece =>
+                    piece.SourcePartIndex == _fillEdgeBezierActivePartIndex);
+            }
         }
 
-        _stage.SetFillEdgeBezierOverlay(
+        if (activePieceArrayIndex < 0) activePieceArrayIndex = 0;
+        var activePiece = pieces[activePieceArrayIndex];
+
+        _fillEdgeBezierActivePartIndex = activePiece.SourcePartIndex;
+        _fillEdgeBezierActivePieceIndex = activePiece.PieceIndex;
+        _fillEdgeBezierOverlayPieces = pieces;
+
+        _stage.SetOwnedFillEdgeBezierOverlay(
             _selectedObject,
-            parts.Select(part => new FillEdgeBezierOverlaySegment(
-                part.PartIndex,
-                part.Start,
-                part.Control1,
-                part.Control2,
-                part.End)).ToArray(),
-            _fillEdgeBezierActivePartIndex);
+            CreateFillEdgeBezierOverlaySegments(pieces),
+            _fillEdgeBezierActivePieceIndex);
     }
 
     private void BeginGradientPointer(MouseEventArgs e)
@@ -8615,11 +9522,20 @@ internal sealed class MainForm : Form
 
         if (_fillEdgeBezierEditSession is not null)
         {
-            if (e.Button == MouseButtons.Left
-                && PointerDragExceeded(e.Location))
+            if (ShouldUpdateFillEdgeBezierPointer(
+                    e.Button,
+                    _fillEdgeBezierEditSession.IncludesAnchorInsertion,
+                    PointerMovedFromStart(e.Location)))
             {
                 UpdateFillEdgeBezierPointer(_stage.ScreenToWorld(e.Location));
             }
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
+        if (_lineBranchDragSession is not null)
+        {
+            if (e.Button == MouseButtons.Left) UpdateLineBranchDrag(e.Location);
             UpdateInteractionCursor(e.Location);
             return;
         }
@@ -8743,7 +9659,13 @@ internal sealed class MainForm : Form
         }
         else if (_tool == ToolMode.Select && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null && e.Button == MouseButtons.Left)
         {
-            if (!PointerDragExceeded(e.Location)) return;
+            if (!ShouldUpdateSelectionPointer(
+                    _activeHandle,
+                    PointerMovedFromStart(e.Location),
+                    PointerDragExceeded(e.Location)))
+            {
+                return;
+            }
             QueueMoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
         }
         else if (IsFreehandTool(_tool) && _freehandDrawing && e.Button == MouseButtons.Left)
@@ -9773,6 +10695,7 @@ internal sealed class MainForm : Form
         {
             var editsWholePenLine = _tool == ToolMode.Pen && _traditionalPenAnchorEditing;
             if (!editsWholePenLine && !EnsureSelectedElementDetachedForMove()) return;
+            if (!_independentMarqueeStrokeMove) CaptureLineEndpointFillIntersections();
             if (!_independentMarqueeStrokeMove) CaptureFillBoundaryLineLinks();
             ApplyHandleDrag(world);
             if (synchronizeLinkedFills && !_independentMarqueeStrokeMove) SynchronizeLinkedFillBoundaries();
@@ -9981,23 +10904,67 @@ internal sealed class MainForm : Form
 
     private void SynchronizeLinkedFillBoundaries()
     {
-        if (_fillBoundaryLineLinks.Count == 0
-            || _selectedObject < 0
+        if (_selectedObject < 0
             || _selectedObject >= _scene.ObjectCount)
         {
             return;
         }
 
-        if (_scene.UpdateFillBoundaryLineLinks(_fillBoundaryLineLinks, rebuildGeometryIndex: false))
+        if (_fillBoundaryLineLinks.Count > 0
+            && _scene.UpdateFillBoundaryLineLinks(_fillBoundaryLineLinks, rebuildGeometryIndex: false))
         {
             _geometryDirty = true;
+        }
+        if (_activeHandle is EditHandleKind.LineStart or EditHandleKind.LineEnd
+            && _scene.TryGetLineEndpoint(
+                _selectedObject,
+                startEndpoint: _activeHandle == EditHandleKind.LineStart,
+                out var anchor))
+        {
+            SynchronizeLineEndpointFillIntersections(anchor);
         }
         _linkedFillBoundaryPreviewDirty = false;
     }
 
+    private void CaptureLineEndpointFillIntersections()
+    {
+        if (_lineEndpointFillIntersectionsCaptured) return;
+        _lineEndpointFillIntersectionsCaptured = true;
+        if (_activeHandle is not (EditHandleKind.LineStart or EditHandleKind.LineEnd)
+            || (uint)_selectedObject >= _scene.ObjectCount
+            || _scene.ShapeKind[_selectedObject] != ShapeKind.Line)
+        {
+            return;
+        }
+
+        var intersection = _scene.CaptureFillIntersectionsAtLineEndpoint(
+            _selectedObject,
+            startEndpoint: _activeHandle == EditHandleKind.LineStart,
+            _frame,
+            rebuildGeometryIndex: false);
+        if (!intersection.HasTargets) return;
+        _lineEndpointFillIntersections.Add(intersection);
+        _geometryDirty = true;
+    }
+
+    private void SynchronizeLineEndpointFillIntersections(PointF anchor)
+    {
+        foreach (var intersection in _lineEndpointFillIntersections)
+        {
+            _scene.UpdateSharedBoundaryIntersection(
+                intersection,
+                anchor,
+                rebuildGeometryIndex: false);
+        }
+    }
+
     private void SynchronizeLinkedFillBoundariesForPreview()
     {
-        if (_fillBoundaryLineLinks.Count == 0 || !_linkedFillBoundaryPreviewDirty) return;
+        if ((_fillBoundaryLineLinks.Count == 0 || !_linkedFillBoundaryPreviewDirty)
+            && _lineEndpointFillIntersections.Count == 0)
+        {
+            return;
+        }
         SynchronizeLinkedFillBoundaries();
     }
 
@@ -10029,6 +10996,11 @@ internal sealed class MainForm : Form
         return Math.Abs(current.X - start.X) + Math.Abs(current.Y - start.Y) > 6;
     }
 
+    private bool PointerMovedFromStart(Point current)
+    {
+        return _startScreen is { } start && current != start;
+    }
+
     private void BeginMarqueeFromPendingSelection(Point current)
     {
         _marqueeSelecting = true;
@@ -10048,6 +11020,8 @@ internal sealed class MainForm : Form
         _selectedCurve2Starts.Clear();
         _selectedGradientStarts.Clear();
         _lineEndpointEditStarts.Clear();
+        _lineEndpointFillIntersections.Clear();
+        _lineEndpointFillIntersectionsCaptured = false;
         _stage.SetMarquee(_marqueeStart.Value, current);
     }
 
@@ -10093,6 +11067,13 @@ internal sealed class MainForm : Form
         if (_fillEdgeBezierEditSession is not null)
         {
             CompleteFillEdgeBezierPointer();
+            FinishPointerInteraction();
+            return;
+        }
+
+        if (_lineBranchDragSession is not null)
+        {
+            CompleteLineBranchDrag(e.Location, e.Button);
             FinishPointerInteraction();
             return;
         }
@@ -10174,6 +11155,13 @@ internal sealed class MainForm : Form
         if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming)
         {
             EndGlobalViewDrag();
+            return;
+        }
+
+        if (_lineBranchDragSession is not null)
+        {
+            CancelLineBranchDrag(restore: true);
+            FinishPointerInteraction();
             return;
         }
 
@@ -10265,12 +11253,22 @@ internal sealed class MainForm : Form
         _marqueeSelectionBase = [];
         _marqueeInstanceSelectionBase = [];
         _fillBoundaryLineLinks.Clear();
+        _lineEndpointFillIntersections.Clear();
+        _lineEndpointFillIntersectionsCaptured = false;
         _stage.ClearMarquee();
     }
 
     private void FinishPointerInteraction()
     {
+        var lineMergeSeeds = _lineEndpointEditStarts
+            .Select(edit => edit.ObjectIndex)
+            .Concat(_selectedObjects)
+            .Distinct()
+            .ToArray();
+        var preserveSharedBoundarySplit = _lineEndpointFillIntersections.Any(intersection =>
+            intersection.PathAnchors.Length > 0);
         FinalizePendingMarqueeSelectionCancellation();
+        if (_lineBranchDragSession is not null) CancelLineBranchDrag(restore: true);
         ResetLineDragPreview();
         _lastMouse = null;
         _startScreen = null;
@@ -10283,6 +11281,8 @@ internal sealed class MainForm : Form
         _selectedCurve2Starts.Clear();
         _lineEndpointEditStarts.Clear();
         _fillBoundaryLineLinks.Clear();
+        _lineEndpointFillIntersections.Clear();
+        _lineEndpointFillIntersectionsCaptured = false;
         _detachedSelectionForMove = false;
         _independentMarqueeStrokeMove = false;
         _pointerHitWasAlreadySelected = false;
@@ -10320,7 +11320,8 @@ internal sealed class MainForm : Form
             _scene.CompleteDeferredBuild();
             var fillsOverwritten = ApplySelectedFillOverwriteAfterGeometryEdit();
             var fillsChanged = MergeSelectedFillsAfterGeometryEdit(connectNearby: true);
-            var linesChanged = MergeCompatibleLinesAfterDrawingOperation();
+            var linesChanged = !preserveSharedBoundarySplit
+                && MergeCompatibleLinesAfterDrawingOperation(LocalLineMergeScope(lineMergeSeeds));
             if (fillsOverwritten || fillsChanged || linesChanged) _hierarchyPanel.RefreshScene();
             _geometryDirty = false;
             UpdateInspector();
@@ -10454,7 +11455,10 @@ internal sealed class MainForm : Form
     {
         _lineDragPreviewTimer.Stop();
         ApplyPendingLineDragPreview(updateLinkedFillPreview: false);
-        if (_linkedFillBoundaryPreviewDirty) SynchronizeLinkedFillBoundaries();
+        if (_linkedFillBoundaryPreviewDirty || _lineEndpointFillIntersections.Count > 0)
+        {
+            SynchronizeLinkedFillBoundaries();
+        }
     }
 
     private void ResetLineDragPreview()
@@ -13788,6 +14792,8 @@ internal sealed class MainForm : Form
         _selectedCurveStarts.Clear();
         _selectedCurve2Starts.Clear();
         _lineEndpointEditStarts.Clear();
+        _lineEndpointFillIntersections.Clear();
+        _lineEndpointFillIntersectionsCaptured = false;
         foreach (var index in _selectedObjects)
         {
             if ((uint)index >= _scene.ObjectCount) continue;
@@ -13824,7 +14830,11 @@ internal sealed class MainForm : Form
         }
         if (_activeHandle == EditHandleKind.BezierControl)
         {
-            var snapped = VectorUnits.Quantize(SnapDrawingPoint(world));
+            if (_startWorld is not { } pointerStart || _curveControlStart is not { } originalControl) return;
+            var snapped = VectorUnits.Quantize(SnapDrawingPoint(MoveHandleWithPointer(
+                originalControl,
+                pointerStart,
+                world)));
             _scene.CurveControlX[_selectedObject] = snapped.X;
             _scene.CurveControlY[_selectedObject] = snapped.Y;
             return;
@@ -13832,7 +14842,11 @@ internal sealed class MainForm : Form
 
         if (_activeHandle == EditHandleKind.BezierControl2)
         {
-            var snapped = VectorUnits.Quantize(SnapDrawingPoint(world));
+            if (_startWorld is not { } pointerStart || _curveControl2Start is not { } originalControl) return;
+            var snapped = VectorUnits.Quantize(SnapDrawingPoint(MoveHandleWithPointer(
+                originalControl,
+                pointerStart,
+                world)));
             _scene.CurveControl2X[_selectedObject] = snapped.X;
             _scene.CurveControl2Y[_selectedObject] = snapped.Y;
             return;
@@ -14033,11 +15047,17 @@ internal sealed class MainForm : Form
 
     private void ApplyLineEndpointDrag(PointF world)
     {
-        if (_lineEndpointEditStarts.Count == 0) return;
+        if (_lineEndpointEditStarts.Count == 0 || _startWorld is not { } pointerStart) return;
         var layer = _selectedObject >= 0 && _selectedObject < _scene.ObjectCount
             ? _scene.ObjectLayer[_selectedObject]
             : _scene.ActiveLayer;
-        var (snapped, _) = ResolveLineEndpointSnap(world, layer, excludeEditedLines: true);
+        var selectedStarts = _activeHandle == EditHandleKind.LineStart;
+        var primaryEditIndex = _lineEndpointEditStarts.FindIndex(edit =>
+            edit.ObjectIndex == _selectedObject && edit.StartEndpoint == selectedStarts);
+        var originalAnchor = _lineEndpointEditStarts[
+            primaryEditIndex >= 0 ? primaryEditIndex : 0].OriginalEndpoint;
+        var adjusted = MoveHandleWithPointer(originalAnchor, pointerStart, world);
+        var (snapped, _) = ResolveLineEndpointSnap(adjusted, layer, excludeEditedLines: true);
 
         foreach (var edit in _lineEndpointEditStarts)
         {
@@ -14058,6 +15078,7 @@ internal sealed class MainForm : Form
                 control2,
                 edit.KeepStraight);
         }
+
     }
 
     private PointF ResolveDrawingLineEndpoint(PointF world)
@@ -14067,9 +15088,18 @@ internal sealed class MainForm : Form
 
     private PointF ResolveDrawingLineEnd(PointF start, PointF world, bool temporarilySnapAngle = false)
     {
+        return ResolveDrawingLineEnd(start, world, _scene.ActiveLayer, temporarilySnapAngle);
+    }
+
+    private PointF ResolveDrawingLineEnd(
+        PointF start,
+        PointF world,
+        int layer,
+        bool temporarilySnapAngle = false)
+    {
         var (candidate, snappedToObject) = ResolveLineEndpointSnap(
             world,
-            _scene.ActiveLayer,
+            layer,
             excludeEditedLines: false);
         return snappedToObject
             ? candidate
@@ -15321,6 +16351,11 @@ internal sealed class MainForm : Form
             CancelFillEdgeBezierPointer(restore: true);
             FinishPointerInteraction();
         }
+        if (_lineBranchDragSession is not null)
+        {
+            CancelLineBranchDrag(restore: true);
+            FinishPointerInteraction();
+        }
         if (_marqueeSelecting
             || _marqueeSelectionCancellationPending
             || _freehandDrawing
@@ -15419,11 +16454,28 @@ internal sealed class MainForm : Form
     internal static bool ShouldShowFillEdgeBezierOverlay(
         ToolMode tool,
         int selectedObjectCount,
-        bool hasWholeFillSelection)
+        bool hasEditableFillBoundarySelection)
     {
         return tool == ToolMode.Select
             && selectedObjectCount == 1
-            && hasWholeFillSelection;
+            && hasEditableFillBoundarySelection;
+    }
+
+    internal static bool TryGetSelectedFillPartIndex(
+        int selectedObject,
+        IReadOnlyList<DrawingElementHit> selectedElements,
+        out int partIndex)
+    {
+        partIndex = -1;
+        if (selectedElements.Count != 1
+            || selectedElements[0].Key.Kind != DrawingElementKind.Fill
+            || selectedElements[0].Key.ObjectIndex != selectedObject)
+        {
+            return false;
+        }
+
+        partIndex = selectedElements[0].Key.PartIndex;
+        return partIndex >= 0;
     }
 
     internal static bool IsWholeFillElementSelection(
@@ -15432,16 +16484,14 @@ internal sealed class MainForm : Form
         int selectedObject,
         IReadOnlyList<DrawingElementHit> selectedElements)
     {
-        if (selectedElements.Count != 1
-            || selectedElements[0].Key.Kind != DrawingElementKind.Fill
-            || selectedElements[0].Key.ObjectIndex != selectedObject)
+        if (!TryGetSelectedFillPartIndex(selectedObject, selectedElements, out var selectedPartIndex))
         {
             return false;
         }
 
         var parts = scene.GetFillParts(selectedObject, frame);
         return parts.Length == 1
-            && parts[0].PartIndex == selectedElements[0].Key.PartIndex;
+            && parts[0].PartIndex == selectedPartIndex;
     }
 
     internal static bool TryGetSelectedFillBoundaryBezierPart(

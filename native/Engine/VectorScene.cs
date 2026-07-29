@@ -9,6 +9,11 @@ internal readonly record struct LineAnchorSplitResult(
     int SecondObjectIndex,
     PointF Anchor);
 
+internal readonly record struct ConnectedLineBranchResult(
+    int BranchObjectIndex,
+    int[] SourceObjectIndices,
+    PointF Anchor);
+
 internal sealed record MarqueeMaterializationResult(
     bool Success,
     bool Changed,
@@ -26,6 +31,8 @@ internal sealed class VectorScene : ITimelineContext
         (int)MathF.Floor(MathF.PI / MathF.Asin(LineMergeDirectionTolerance)));
     private static readonly float LineMergeDirectionBucketRadians = MathF.PI / LineMergeDirectionBucketCount;
     private const float ConnectedStrokeEndpointToleranceUnits = 1.5f;
+    private const float BooleanBezierMaximumErrorUnits = 2f;
+    private const float BooleanBezierSimplificationToleranceUnits = 0.75f;
     private const double ClipperCoordinateScale = 1000d;
     private const double TopologyCutterHalfWidthClipper = 2d;
     private const int TileColumns = 384;
@@ -181,6 +188,11 @@ internal sealed class VectorScene : ITimelineContext
     private readonly record struct MarqueeBezierCurvePiece(
         CubicBoundarySegment Curve,
         PointF[] Samples);
+
+    private readonly record struct BooleanBezierCurveSource(
+        CubicBoundarySegment Curve,
+        CurveSample[] Samples,
+        RectangleF Bounds);
 
     private readonly record struct BoundaryStrokePart(
         int PartIndex,
@@ -6301,12 +6313,457 @@ internal sealed class VectorScene : ITimelineContext
             .ToArray();
     }
 
+    public FillBezierSegmentPiece[] GetExposedFillBezierSegmentPieces(
+        int objectIndex,
+        int frame,
+        int? fillPartIndex = null)
+    {
+        var sourceParts = GetEditableFillBezierSegmentParts(objectIndex);
+        if (sourceParts.Length == 0 || !IsObjectActive(objectIndex, frame)) return [];
+
+        var candidates = CollectTopologyCandidates(objectIndex, frame);
+        PointF[][]? selectedContours = null;
+        if (fillPartIndex is { } selectedPart)
+        {
+            var regions = BuildFillRegions(objectIndex, candidates);
+            if ((uint)selectedPart >= regions.Count) return [];
+            selectedContours = regions[selectedPart].Contours
+                .Where(contour => contour.Length >= 2)
+                .Select(ClosePolyline)
+                .ToArray();
+            if (selectedContours.Length == 0) return [];
+        }
+
+        var sourceLayer = ObjectLayer[objectIndex];
+        var coincidentStrokePaths = new List<PointF[]>();
+        foreach (var candidate in candidates)
+        {
+            if (candidate == objectIndex
+                || ObjectLayer[candidate] != sourceLayer
+                || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[objectIndex]
+                || !IsFillBoundaryLinkedStrokeShape(ShapeKind[candidate])
+                || !HasStroke(candidate))
+            {
+                continue;
+            }
+
+            var points = StrokeSamples(candidate).Select(sample => sample.Point).ToArray();
+            if (points.Length >= 2) coincidentStrokePaths.Add(points);
+        }
+
+        var result = new List<FillBezierSegmentPiece>();
+        foreach (var sourcePart in sourceParts)
+        {
+            var sourceCurve = new CubicBoundarySegment(
+                sourcePart.Start,
+                sourcePart.Control1,
+                sourcePart.Control2,
+                sourcePart.End);
+            var normalized = CollectFillBezierTopologySplits(
+                objectIndex,
+                sourceLayer,
+                sourceCurve,
+                candidates);
+            var retained = new List<(DrawingTopologySplit Start, DrawingTopologySplit End)>();
+            for (var splitIndex = 0; splitIndex < normalized.Count - 1; splitIndex++)
+            {
+                var startSplit = normalized[splitIndex];
+                var endSplit = normalized[splitIndex + 1];
+                if (endSplit.T - startSplit.T <= 0.0001f) continue;
+                var subcurve = CubicSubcurve(
+                    sourcePart.Start,
+                    sourcePart.Control1,
+                    sourcePart.Control2,
+                    sourcePart.End,
+                    startSplit.T,
+                    endSplit.T);
+                var curve = new CubicBoundarySegment(
+                    subcurve.Start,
+                    subcurve.Control1,
+                    subcurve.Control2,
+                    subcurve.End);
+                var samples = SampleCubicSegment(curve);
+                if (Math.Max(Distance(curve.Start, curve.End), PolylineLength(samples))
+                    < DrawingTopologyRules.MinStrokeSegmentUnits)
+                {
+                    continue;
+                }
+
+                var bordersSelectedPart = selectedContours is null
+                    || FillBezierSegmentBordersFillPart(curve, selectedContours);
+                var followsStroke = coincidentStrokePaths.Any(stroke =>
+                    FillBezierSegmentFollowsStroke(samples, stroke));
+                if (!bordersSelectedPart || followsStroke) continue;
+
+                // A real topology intersection remains an edit boundary even when
+                // both adjacent fill pieces are visible. Merging here makes a drag
+                // on one side mutate the source cubic on the other side as well.
+                retained.Add((startSplit, endSplit));
+            }
+
+            foreach (var interval in retained)
+            {
+                var subcurve = CubicSubcurve(
+                    sourcePart.Start,
+                    sourcePart.Control1,
+                    sourcePart.Control2,
+                    sourcePart.End,
+                    interval.Start.T,
+                    interval.End.T);
+                result.Add(new FillBezierSegmentPiece(
+                    result.Count,
+                    sourcePart.PartIndex,
+                    sourcePart.ContourIndex,
+                    sourcePart.SegmentIndex,
+                    interval.Start.T,
+                    interval.End.T,
+                    subcurve.Start,
+                    subcurve.Control1,
+                    subcurve.Control2,
+                    subcurve.End,
+                    interval.Start.T > 0.0001f,
+                    interval.End.T < 0.9999f));
+            }
+        }
+
+        return result.ToArray();
+    }
+
+    public FillBezierSegmentPiece[] RefreshFillBezierSegmentPieces(
+        int objectIndex,
+        IReadOnlyList<FillBezierSegmentPiece> pieces)
+    {
+        return RefreshFillBezierSegmentPieces(objectIndex, EditFrame, pieces);
+    }
+
+    public FillBezierSegmentPiece[] RefreshFillBezierSegmentPieces(
+        int objectIndex,
+        int frame,
+        IReadOnlyList<FillBezierSegmentPiece> pieces)
+    {
+        if ((uint)objectIndex >= ObjectCount || pieces.Count == 0)
+        {
+            return Array.Empty<FillBezierSegmentPiece>();
+        }
+
+        if (!TryGetPathBezierWorldContours(objectIndex, out var contours))
+        {
+            return Array.Empty<FillBezierSegmentPiece>();
+        }
+
+        var sourceCurves = BuildPathBezierCurves(contours);
+        var refreshed = new FillBezierSegmentPiece[pieces.Count];
+        IReadOnlyList<int>? topologyCandidates = null;
+        Dictionary<int, List<DrawingTopologySplit>>? topologySplits = null;
+        for (var index = 0; index < pieces.Count; index++)
+        {
+            var piece = pieces[index];
+            if ((uint)piece.SourcePartIndex >= sourceCurves.Length)
+            {
+                return Array.Empty<FillBezierSegmentPiece>();
+            }
+
+            var source = sourceCurves[piece.SourcePartIndex];
+            var startT = piece.StartT;
+            var endT = piece.EndT;
+            var subcurve = CubicSubcurve(
+                source.Start,
+                source.Control1,
+                source.Control2,
+                source.End,
+                startT,
+                endT);
+            var refreshStart = piece.StartIsVirtualAnchor
+                && Distance(subcurve.Start, piece.Start) > DrawingTopologyRules.UnitIntersectionTolerance;
+            var refreshEnd = piece.EndIsVirtualAnchor
+                && Distance(subcurve.End, piece.End) > DrawingTopologyRules.UnitIntersectionTolerance;
+            if (refreshStart || refreshEnd)
+            {
+                topologyCandidates ??= CollectTopologyCandidates(objectIndex, frame);
+                topologySplits ??= new Dictionary<int, List<DrawingTopologySplit>>();
+                if (!topologySplits.TryGetValue(piece.SourcePartIndex, out var splits))
+                {
+                    splits = CollectFillBezierTopologySplits(
+                        objectIndex,
+                        ObjectLayer[objectIndex],
+                        source,
+                        topologyCandidates);
+                    topologySplits[piece.SourcePartIndex] = splits;
+                }
+
+                if (refreshStart)
+                {
+                    startT = ResolveRefreshedFillBezierSplit(
+                        splits,
+                        piece.StartT,
+                        0,
+                        endT);
+                }
+                if (refreshEnd)
+                {
+                    endT = ResolveRefreshedFillBezierSplit(
+                        splits,
+                        piece.EndT,
+                        startT,
+                        1);
+                }
+                subcurve = CubicSubcurve(
+                    source.Start,
+                    source.Control1,
+                    source.Control2,
+                    source.End,
+                    startT,
+                    endT);
+            }
+            refreshed[index] = piece with
+            {
+                StartT = startT,
+                EndT = endT,
+                Start = subcurve.Start,
+                Control1 = subcurve.Control1,
+                Control2 = subcurve.Control2,
+                End = subcurve.End
+            };
+        }
+
+        return refreshed;
+    }
+
+    private List<DrawingTopologySplit> CollectFillBezierTopologySplits(
+        int objectIndex,
+        int sourceLayer,
+        CubicBoundarySegment sourceCurve,
+        IReadOnlyList<int> candidates)
+    {
+        var sourceSamples = SampleCubicSegmentWithParameters(sourceCurve);
+        var splits = new List<DrawingTopologySplit>
+        {
+            new(0, sourceCurve.Start),
+            new(1, sourceCurve.End)
+        };
+        foreach (var candidate in candidates)
+        {
+            if (candidate == objectIndex
+                || ObjectLayer[candidate] != sourceLayer
+                || !HasStroke(candidate))
+            {
+                continue;
+            }
+
+            var shape = ShapeKind.Length > candidate
+                ? ShapeKind[candidate]
+                : VectorAnimationEngine.ShapeKind.Rectangle;
+            if (IsTopologyStrokeShape(shape))
+            {
+                AddCurveCurveIntersections(
+                    splits,
+                    sourceSamples,
+                    StrokeSamples(candidate),
+                    includeSourceEndpoints: true);
+            }
+            else if (IsFillShape(shape))
+            {
+                foreach (var contour in ShapeBoundaryContours(candidate))
+                {
+                    AddCurvePolylineIntersections(
+                        splits,
+                        sourceSamples,
+                        contour,
+                        includeSourceEndpoints: true);
+                }
+            }
+        }
+
+        return NormalizeStrokeSplits(
+            splits.Select(split => RefineCubicTopologySplit(sourceCurve, split)).ToList());
+    }
+
+    private static float ResolveRefreshedFillBezierSplit(
+        IReadOnlyList<DrawingTopologySplit> splits,
+        float referenceT,
+        float minimumT,
+        float maximumT)
+    {
+        var resolved = referenceT;
+        var bestDistance = float.MaxValue;
+        foreach (var split in splits)
+        {
+            if (split.T <= minimumT + 0.0001f || split.T >= maximumT - 0.0001f) continue;
+            var distance = Math.Abs(split.T - referenceT);
+            if (distance >= bestDistance) continue;
+            resolved = split.T;
+            bestDistance = distance;
+        }
+
+        return resolved;
+    }
+
+    private static CubicBoundarySegment[] BuildPathBezierCurves(
+        IReadOnlyList<PathBezierNode[]> contours)
+    {
+        var segmentCount = 0;
+        for (var contourIndex = 0; contourIndex < contours.Count; contourIndex++)
+        {
+            segmentCount += contours[contourIndex].Length;
+        }
+
+        var curves = new CubicBoundarySegment[segmentCount];
+        var partIndex = 0;
+        for (var contourIndex = 0; contourIndex < contours.Count; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
+            {
+                var current = contour[segmentIndex];
+                var next = contour[(segmentIndex + 1) % contour.Length];
+                curves[partIndex++] = new CubicBoundarySegment(
+                    current.Anchor,
+                    current.OutgoingControl,
+                    next.IncomingControl,
+                    next.Anchor);
+            }
+        }
+
+        return curves;
+    }
+
+    public bool TryResolveFillBezierSegmentPiece(
+        int objectIndex,
+        FillBezierSegmentPiece reference,
+        out FillBezierSegmentPiece resolved,
+        out bool reversed)
+    {
+        resolved = default;
+        reversed = false;
+        foreach (var candidate in GetEditableFillBezierSegmentParts(objectIndex))
+        {
+            if (!CubicCurvesCoincide(
+                    reference.Start,
+                    reference.Control1,
+                    reference.Control2,
+                    reference.End,
+                    candidate.Start,
+                    candidate.Control1,
+                    candidate.Control2,
+                    candidate.End,
+                    out reversed))
+            {
+                continue;
+            }
+
+            resolved = new FillBezierSegmentPiece(
+                reference.PieceIndex,
+                candidate.PartIndex,
+                candidate.ContourIndex,
+                candidate.SegmentIndex,
+                0,
+                1,
+                candidate.Start,
+                candidate.Control1,
+                candidate.Control2,
+                candidate.End,
+                StartIsVirtualAnchor: false,
+                EndIsVirtualAnchor: false);
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryResolveFillPartForBezierSegmentPiece(
+        int objectIndex,
+        int frame,
+        FillBezierSegmentPiece piece,
+        out int fillPartIndex)
+    {
+        fillPartIndex = -1;
+        if ((uint)objectIndex >= ObjectCount
+            || !IsObjectActive(objectIndex, frame)
+            || !HasFill(objectIndex))
+        {
+            return false;
+        }
+
+        var regions = BuildFillRegions(objectIndex, CollectTopologyCandidates(objectIndex, frame));
+        if (regions.Count == 0) return false;
+        var curve = new CubicBoundarySegment(
+            piece.Start,
+            piece.Control1,
+            piece.Control2,
+            piece.End);
+        for (var partIndex = 0; partIndex < regions.Count; partIndex++)
+        {
+            var closedContours = regions[partIndex].Contours
+                .Where(contour => contour.Length >= 2)
+                .Select(ClosePolyline)
+                .ToArray();
+            if (closedContours.Length == 0
+                || !FillBezierSegmentBordersFillPart(curve, closedContours))
+            {
+                continue;
+            }
+
+            if (fillPartIndex >= 0) return false;
+            fillPartIndex = partIndex;
+        }
+
+        return fillPartIndex >= 0;
+    }
+
+    private static bool FillBezierSegmentBordersFillPart(
+        CubicBoundarySegment segment,
+        IReadOnlyList<PointF[]> closedContours)
+    {
+        var approximateLength = Math.Max(
+            Distance(segment.Start, segment.End),
+            PolylineLength(SampleCubicSegment(segment)));
+        var intervals = Math.Clamp(
+            (int)Math.Ceiling(approximateLength / VectorUnits.UnitsPerPixel),
+            8,
+            128);
+        var matchedLength = 0f;
+        var previous = segment.Start;
+        for (var index = 1; index <= intervals; index++)
+        {
+            var endT = index / (float)intervals;
+            var midpointT = (index - 0.5f) / intervals;
+            var current = CubicPoint(
+                segment.Start,
+                segment.Control1,
+                segment.Control2,
+                segment.End,
+                endT);
+            var midpoint = CubicPoint(
+                segment.Start,
+                segment.Control1,
+                segment.Control2,
+                segment.End,
+                midpointT);
+            if (closedContours.Any(contour =>
+                    DistanceToPolyline(midpoint, contour) <= ConnectedStrokeEndpointToleranceUnits))
+            {
+                matchedLength += Distance(previous, current);
+            }
+
+            previous = current;
+        }
+
+        return matchedLength >= DrawingTopologyRules.MinStrokeSegmentUnits;
+    }
+
     private static bool FillBezierSegmentFollowsStroke(
         PathBezierSegmentPart segment,
         IReadOnlyList<PointF> stroke)
     {
-        if (segment.Samples.Length < 2 || stroke.Count < 2) return false;
-        return segment.Samples.All(sample =>
+        return FillBezierSegmentFollowsStroke(segment.Samples, stroke);
+    }
+
+    private static bool FillBezierSegmentFollowsStroke(
+        IReadOnlyList<PointF> samples,
+        IReadOnlyList<PointF> stroke)
+    {
+        if (samples.Count < 2 || stroke.Count < 2) return false;
+        return samples.All(sample =>
             DistanceToPolyline(sample, stroke) <= ConnectedStrokeEndpointToleranceUnits);
     }
 
@@ -6416,6 +6873,55 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return false;
+    }
+
+    private static DrawingTopologySplit RefineCubicTopologySplit(
+        CubicBoundarySegment curve,
+        DrawingTopologySplit split)
+    {
+        if (split.T <= 0.0001f) return new DrawingTopologySplit(0, VectorUnits.Quantize(curve.Start));
+        if (split.T >= 0.9999f) return new DrawingTopologySplit(1, VectorUnits.Quantize(curve.End));
+
+        var samples = SampleCubicSegmentWithParameters(curve);
+        var low = Math.Max(0, split.T - 0.01f);
+        var high = Math.Min(1, split.T + 0.01f);
+        for (var index = 1; index < samples.Length; index++)
+        {
+            if (samples[index].T + 0.0001f < split.T) continue;
+            low = samples[index - 1].T;
+            high = samples[index].T;
+            break;
+        }
+
+        for (var iteration = 0; iteration < 12; iteration++)
+        {
+            var first = low + (high - low) / 3f;
+            var second = high - (high - low) / 3f;
+            var firstPoint = CubicPoint(
+                curve.Start,
+                curve.Control1,
+                curve.Control2,
+                curve.End,
+                first);
+            var secondPoint = CubicPoint(
+                curve.Start,
+                curve.Control1,
+                curve.Control2,
+                curve.End,
+                second);
+            if (Distance(split.Point, firstPoint) <= Distance(split.Point, secondPoint)) high = second;
+            else low = first;
+        }
+
+        var parameter = (low + high) * 0.5f;
+        return new DrawingTopologySplit(
+            parameter,
+            VectorUnits.Quantize(CubicPoint(
+                curve.Start,
+                curve.Control1,
+                curve.Control2,
+                curve.End,
+                parameter)));
     }
 
     public bool TryGetClosestPointOnPathBezierSegment(
@@ -6528,12 +7034,31 @@ internal sealed class VectorScene : ITimelineContext
             var nextIndex = (segmentIndex + 1) % contour.Length;
             var current = contour[segmentIndex];
             var next = contour[nextIndex];
+            var sourceIsStraight = IsStraightBezierSegment(
+                current.Anchor,
+                current.OutgoingControl,
+                next.IncomingControl,
+                next.Anchor);
             var p01 = VectorUnits.Quantize(Lerp(current.Anchor, current.OutgoingControl, parameter));
             var p12 = VectorUnits.Quantize(Lerp(current.OutgoingControl, next.IncomingControl, parameter));
             var p23 = VectorUnits.Quantize(Lerp(next.IncomingControl, next.Anchor, parameter));
             var p012 = VectorUnits.Quantize(Lerp(p01, p12, parameter));
             var p123 = VectorUnits.Quantize(Lerp(p12, p23, parameter));
             anchor = VectorUnits.Quantize(Lerp(p012, p123, parameter));
+
+            if (sourceIsStraight)
+            {
+                anchor = VectorUnits.Quantize(CubicPoint(
+                    current.Anchor,
+                    current.OutgoingControl,
+                    next.IncomingControl,
+                    next.Anchor,
+                    parameter));
+                p01 = current.Anchor;
+                p012 = anchor;
+                p123 = anchor;
+                p23 = next.Anchor;
+            }
 
             var nodes = contour.ToList();
             nodes[segmentIndex] = current with { OutgoingControl = p01 };
@@ -6548,6 +7073,140 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return false;
+    }
+
+    public bool TryMaterializePathBezierSegmentInterval(
+        int objectIndex,
+        int sourcePartIndex,
+        float startT,
+        float endT,
+        out int materializedPartIndex,
+        bool rebuildGeometryIndex = true)
+    {
+        materializedPartIndex = -1;
+        startT = Math.Clamp(startT, 0, 1);
+        endT = Math.Clamp(endT, 0, 1);
+        if (endT - startT <= 0.0001f
+            || !TryGetPathBezierSegment(objectIndex, sourcePartIndex, out _))
+        {
+            return false;
+        }
+
+        var changed = false;
+        if (endT < 0.9999f)
+        {
+            if (!TryInsertPathBezierAnchor(
+                    objectIndex,
+                    sourcePartIndex,
+                    endT,
+                    out _,
+                    out _,
+                    rebuildGeometryIndex: false))
+            {
+                return false;
+            }
+
+            changed = true;
+        }
+
+        materializedPartIndex = sourcePartIndex;
+        if (startT > 0.0001f)
+        {
+            var localStartT = endT < 0.9999f ? startT / endT : startT;
+            if (!TryInsertPathBezierAnchor(
+                    objectIndex,
+                    sourcePartIndex,
+                    localStartT,
+                    out materializedPartIndex,
+                    out _,
+                    rebuildGeometryIndex: false))
+            {
+                return false;
+            }
+
+            changed = true;
+        }
+
+        if (changed)
+        {
+            CompletePathBezierMutation(rebuildGeometryIndex);
+        }
+
+        return TryGetPathBezierSegment(objectIndex, materializedPartIndex, out _);
+    }
+
+    public bool TryMaterializePathBezierSegmentNeighborhood(
+        int objectIndex,
+        FillBezierSegmentPiece activePiece,
+        bool startEndpoint,
+        IReadOnlyList<FillBezierSegmentPiece> visiblePieces,
+        out int activePartIndex,
+        bool rebuildGeometryIndex = true)
+    {
+        activePartIndex = -1;
+        if ((uint)objectIndex >= ObjectCount) return false;
+
+        var activeAnchor = startEndpoint ? activePiece.Start : activePiece.End;
+        var activeAnchorIsVirtual = startEndpoint
+            ? activePiece.StartIsVirtualAnchor
+            : activePiece.EndIsVirtualAnchor;
+        var intervals = new List<FillBezierSegmentPiece> { activePiece };
+        if (!activeAnchorIsVirtual)
+        {
+            foreach (var piece in visiblePieces)
+            {
+                if (piece.PieceIndex == activePiece.PieceIndex
+                    || piece.ContourIndex != activePiece.ContourIndex)
+                {
+                    continue;
+                }
+
+                var sharesDurableStart = !piece.StartIsVirtualAnchor
+                    && Distance(piece.Start, activeAnchor) <= ConnectedStrokeEndpointToleranceUnits;
+                var sharesDurableEnd = !piece.EndIsVirtualAnchor
+                    && Distance(piece.End, activeAnchor) <= ConnectedStrokeEndpointToleranceUnits;
+                if (!sharesDurableStart && !sharesDurableEnd) continue;
+                intervals.Add(piece);
+            }
+        }
+
+        var activeMaterialized = false;
+        foreach (var interval in intervals
+                     .GroupBy(piece => piece.SourcePartIndex)
+                     .Select(group => group.First())
+                     .OrderByDescending(piece => piece.SourcePartIndex))
+        {
+            var partCountBefore = GetPathBezierSegmentParts(objectIndex).Length;
+            if (!TryMaterializePathBezierSegmentInterval(
+                    objectIndex,
+                    interval.SourcePartIndex,
+                    interval.StartT,
+                    interval.EndT,
+                    out var materializedPartIndex,
+                    rebuildGeometryIndex: false))
+            {
+                return false;
+            }
+
+            if (interval.SourcePartIndex == activePiece.SourcePartIndex)
+            {
+                activePartIndex = materializedPartIndex;
+                activeMaterialized = true;
+            }
+            else if (activeMaterialized)
+            {
+                activePartIndex += GetPathBezierSegmentParts(objectIndex).Length - partCountBefore;
+            }
+        }
+
+        if (!activeMaterialized
+            || !TryGetPathBezierSegment(objectIndex, activePartIndex, out _))
+        {
+            return false;
+        }
+
+        CompletePathBezierMutation(rebuildGeometryIndex);
+        return true;
     }
 
     public bool TryDeletePathBezierAnchor(
@@ -6682,6 +7341,14 @@ internal sealed class VectorScene : ITimelineContext
             end = VectorUnits.Quantize(end);
             var startChanged = start != current.Anchor;
             var endChanged = end != next.Anchor;
+            if (!startChanged
+                && control1 == current.OutgoingControl
+                && control2 == next.IncomingControl
+                && !endChanged)
+            {
+                return true;
+            }
+
             var preservePrevious = preserveStraightAdjacentSegments
                 && startChanged
                 && IsStraightBezierSegment(
@@ -6738,6 +7405,32 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return false;
+    }
+
+    internal bool NormalizeFillBoundaryOverlaps(
+        int objectIndex,
+        IReadOnlyList<PointF[]> referenceContours,
+        bool rebuildGeometryIndex = true)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Path
+            || !HasFill(objectIndex)
+            || referenceContours.Count == 0
+            || !TryGetPathBezierWorldContours(objectIndex, out var sourceBezierContours)
+            || !TryGetPathWorldContours(objectIndex, out var currentContours)
+            || currentContours.Length != referenceContours.Count
+            || !TryBuildNormalizedFillBoundaryPath(currentContours, referenceContours, out var normalizedContours)
+            || !TryRebuildBezierContoursFromBooleanBoundary(
+                sourceBezierContours,
+                normalizedContours,
+                out var normalizedBezierContours)
+            || !SetPathBezierContoursCore(objectIndex, normalizedBezierContours))
+        {
+            return false;
+        }
+
+        CompletePathBezierMutation(rebuildGeometryIndex);
+        return true;
     }
 
     internal static bool IsStraightBezierSegment(
@@ -6954,7 +7647,8 @@ internal sealed class VectorScene : ITimelineContext
         var radius = 1f / Math.Max(8, samples.Length - 1);
         var low = Math.Max(0, parameter - radius);
         var high = Math.Min(1, parameter + radius);
-        for (var iteration = 0; iteration < 10; iteration++)
+        const int closestPointRefinementIterations = 24;
+        for (var iteration = 0; iteration < closestPointRefinementIterations; iteration++)
         {
             var first = low + (high - low) / 3f;
             var second = high - (high - low) / 3f;
@@ -6967,10 +7661,28 @@ internal sealed class VectorScene : ITimelineContext
         parameter = (low + high) * 0.5f;
         point = CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, parameter);
         distance = Distance(world, point);
+        var startDistance = Distance(world, curve.Start);
+        if (startDistance <= distance)
+        {
+            parameter = 0;
+            point = curve.Start;
+            distance = startDistance;
+        }
+        var endDistance = Distance(world, curve.End);
+        if (endDistance < distance)
+        {
+            parameter = 1;
+            point = curve.End;
+            distance = endDistance;
+        }
         return true;
     }
 
-    public bool SplitLineAt(int objectIndex, float parameter, out LineAnchorSplitResult result)
+    public bool SplitLineAt(
+        int objectIndex,
+        float parameter,
+        out LineAnchorSplitResult result,
+        bool rebuildGeometryIndex = true)
     {
         result = default;
         if ((uint)objectIndex >= ObjectCount
@@ -7001,13 +7713,16 @@ internal sealed class VectorScene : ITimelineContext
         var layer = ObjectLayer[objectIndex];
         var keyframeFrame = ObjectKeyframeFrame[objectIndex];
         var order = ObjectOrder[objectIndex];
-        var subOrder = ObjectSubOrder[objectIndex];
         var stroke = Stroke[objectIndex];
         var fillColor = Color.FromArgb(Argb[objectIndex]);
         var strokeColor = Color.FromArgb(StrokeArgb[objectIndex]);
         var startStyle = GetLineEndpointStyle(objectIndex, startEndpoint: true);
         var endStyle = GetLineEndpointStyle(objectIndex, startEndpoint: false);
         var gradientPaint = CaptureGradientPaint(objectIndex);
+        var secondSubOrder = ReplacementSubOrders(
+            objectIndex,
+            1,
+            preserveSourceSubOrder: true)[0];
         var sourceAtoms = Math.Max(6u, AtomCount[objectIndex]);
         var firstAtoms = Math.Max(3u, (uint)Math.Round(sourceAtoms * parameter));
         var secondAtoms = Math.Max(3u, sourceAtoms - Math.Min(sourceAtoms - 3u, firstAtoms));
@@ -7039,12 +7754,116 @@ internal sealed class VectorScene : ITimelineContext
         ObjectLayer[secondObject] = layer;
         ObjectKeyframeFrame[secondObject] = keyframeFrame;
         ObjectOrder[secondObject] = order;
-        ObjectSubOrder[secondObject] = Math.BitIncrement(subOrder);
+        ObjectSubOrder[secondObject] = secondSubOrder;
         ApplyGradientPaint(objectIndex, gradientPaint);
         ApplyGradientPaint(secondObject, gradientPaint);
+        if (rebuildGeometryIndex)
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+        }
+        else
+        {
+            GeometryRevision++;
+        }
+        result = new LineAnchorSplitResult(objectIndex, secondObject, anchor);
+        return true;
+    }
+
+    public bool AddConnectedLineBranch(
+        int sourceObjectIndex,
+        float sourceParameter,
+        PointF end,
+        out ConnectedLineBranchResult result)
+    {
+        result = default;
+        if ((uint)sourceObjectIndex >= ObjectCount
+            || ShapeKind[sourceObjectIndex] != VectorAnimationEngine.ShapeKind.Line
+            || !float.IsFinite(sourceParameter)
+            || sourceParameter < 0
+            || sourceParameter > 1)
+        {
+            return false;
+        }
+
+        var atStart = sourceParameter <= 0.001f;
+        var atEnd = sourceParameter >= 0.999f;
+        PointF anchor;
+        if (atStart || atEnd)
+        {
+            if (!TryGetLineEndpoint(sourceObjectIndex, atStart, out anchor)) return false;
+        }
+        else
+        {
+            var curve = LineCurve(sourceObjectIndex);
+            anchor = VectorUnits.Quantize(CubicPoint(
+                curve.Start,
+                curve.Control1,
+                curve.Control2,
+                curve.End,
+                sourceParameter));
+        }
+
+        end = VectorUnits.Quantize(end);
+        if (Distance(anchor, end) < DrawingTopologyRules.MinStrokeSegmentUnits) return false;
+
+        var layer = ObjectLayer[sourceObjectIndex];
+        var keyframeFrame = ObjectKeyframeFrame[sourceObjectIndex];
+        var order = ObjectOrder[sourceObjectIndex];
+        var stroke = Stroke[sourceObjectIndex];
+        var fillColor = Color.FromArgb(Argb[sourceObjectIndex]);
+        var strokeColor = Color.FromArgb(StrokeArgb[sourceObjectIndex]);
+        var freeEndpointStyle = atStart
+            ? GetLineEndpointStyle(sourceObjectIndex, startEndpoint: true)
+            : atEnd
+                ? GetLineEndpointStyle(sourceObjectIndex, startEndpoint: false)
+                : LineEndpointStyle.Round;
+        var gradientPaint = CaptureGradientPaint(sourceObjectIndex);
+
+        int[] sourceObjects;
+        if (atStart || atEnd)
+        {
+            sourceObjects = [sourceObjectIndex];
+        }
+        else
+        {
+            if (!SplitLineAt(
+                    sourceObjectIndex,
+                    sourceParameter,
+                    out var split,
+                    rebuildGeometryIndex: false))
+            {
+                return false;
+            }
+
+            anchor = split.Anchor;
+            sourceObjects = [split.FirstObjectIndex, split.SecondObjectIndex];
+        }
+
+        var branchSubOrder = ReplacementSubOrders(
+            sourceObjects[0],
+            1,
+            preserveSourceSubOrder: true)[0];
+        var branchObject = AppendCubicCurveSegment(
+            layer,
+            anchor,
+            Lerp(anchor, end, 1f / 3f),
+            Lerp(anchor, end, 2f / 3f),
+            end,
+            stroke,
+            fillColor,
+            strokeColor,
+            6,
+            LineEndpointStyle.Round,
+            freeEndpointStyle);
+        ObjectLayer[branchObject] = layer;
+        ObjectKeyframeFrame[branchObject] = keyframeFrame;
+        ObjectOrder[branchObject] = order;
+        ObjectSubOrder[branchObject] = branchSubOrder;
+        ApplyGradientPaint(branchObject, gradientPaint);
         RebuildGeometryIndex();
         RebuildSummaries();
-        result = new LineAnchorSplitResult(objectIndex, secondObject, anchor);
+        result = new ConnectedLineBranchResult(branchObject, sourceObjects, anchor);
         return true;
     }
 
@@ -7530,6 +8349,595 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return true;
+    }
+
+    public SharedBoundaryIntersection CaptureStrokeIntersectionsAtFillAnchor(
+        int fillObjectIndex,
+        int fillPartIndex,
+        bool startEndpoint,
+        int frame,
+        bool rebuildGeometryIndex = true,
+        IReadOnlySet<int>? excludedLineObjectIndices = null)
+    {
+        if ((uint)fillObjectIndex >= ObjectCount
+            || !IsObjectActive(fillObjectIndex, frame)
+            || !TryGetPathBezierSegment(fillObjectIndex, fillPartIndex, out var fillSegment))
+        {
+            return EmptySharedBoundaryIntersection();
+        }
+
+        var anchor = startEndpoint ? fillSegment.Start : fillSegment.End;
+        var bounds = new RectangleF(
+            anchor.X - ConnectedStrokeEndpointToleranceUnits,
+            anchor.Y - ConnectedStrokeEndpointToleranceUnits,
+            ConnectedStrokeEndpointToleranceUnits * 2,
+            ConnectedStrokeEndpointToleranceUnits * 2);
+        var pathAnchors = new List<PathIntersectionAnchor>();
+        var lineAnchors = new List<LineIntersectionAnchor>();
+        var freeformAnchors = new List<FreeformIntersectionAnchor>();
+        var capturedPathAnchors = new HashSet<(int ObjectIndex, int PartIndex, bool StartEndpoint)>();
+        var capturedLineAnchors = new HashSet<(int ObjectIndex, bool StartEndpoint)>();
+        var capturedFreeformAnchors = new HashSet<(int ObjectIndex, int PointIndex)>();
+        var geometryChanged = false;
+        var ownerObjectIndex = fillObjectIndex;
+        var ownerPartIndex = fillPartIndex;
+
+        foreach (var candidate in QueryObjects(bounds, frame))
+        {
+            if (candidate == ownerObjectIndex
+                || ObjectLayer[candidate] != ObjectLayer[ownerObjectIndex]
+                || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[ownerObjectIndex])
+            {
+                continue;
+            }
+
+            var siblingFill = HasFill(candidate)
+                && ObjectOrder[candidate] == ObjectOrder[ownerObjectIndex];
+            if (IsFillShape(ShapeKind[candidate])
+                && (HasStroke(candidate) || siblingFill))
+            {
+                geometryChanged |= CapturePathIntersectionAnchors(
+                    candidate,
+                    anchor,
+                    pathAnchors,
+                    capturedPathAnchors);
+                continue;
+            }
+
+            if (!HasStroke(candidate)) continue;
+
+            if (ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line)
+            {
+                if (excludedLineObjectIndices?.Contains(candidate) == true
+                    || !TryGetLineCubic(candidate, out var lineStart, out _, out _, out var lineEnd))
+                {
+                    continue;
+                }
+
+                var touchesStart = Distance(anchor, lineStart) <= ConnectedStrokeEndpointToleranceUnits;
+                var touchesEnd = Distance(anchor, lineEnd) <= ConnectedStrokeEndpointToleranceUnits;
+                if (touchesStart || touchesEnd)
+                {
+                    if (touchesStart) AddLineIntersectionAnchor(candidate, startEndpoint: true);
+                    if (touchesEnd) AddLineIntersectionAnchor(candidate, startEndpoint: false);
+                    continue;
+                }
+
+                if (!TryGetClosestPointOnLine(candidate, anchor, out var parameter, out _, out var distance)
+                    || distance > ConnectedStrokeEndpointToleranceUnits
+                    || parameter <= 0.001f
+                    || parameter >= 0.999f)
+                {
+                    continue;
+                }
+
+                if (SplitLineAt(
+                    candidate,
+                    parameter,
+                    out var split,
+                    rebuildGeometryIndex: false))
+                {
+                    AddLineIntersectionAnchor(split.FirstObjectIndex, startEndpoint: false);
+                    AddLineIntersectionAnchor(split.SecondObjectIndex, startEndpoint: true);
+                    geometryChanged = true;
+                }
+
+                continue;
+            }
+
+            if (ShapeKind[candidate] != VectorAnimationEngine.ShapeKind.Freeform
+                || !TryMaterializeFreeformIntersectionAnchor(candidate, anchor, out var freeformAnchor, out var inserted))
+            {
+                continue;
+            }
+
+            if (capturedFreeformAnchors.Add((freeformAnchor.ObjectIndex, freeformAnchor.PointIndex)))
+            {
+                freeformAnchors.Add(freeformAnchor);
+            }
+            geometryChanged |= inserted;
+        }
+
+        if (geometryChanged)
+        {
+            CompleteSharedBoundaryIntersectionMutation(rebuildGeometryIndex);
+        }
+
+        return new SharedBoundaryIntersection(
+            anchor,
+            pathAnchors.ToArray(),
+            lineAnchors.ToArray(),
+            freeformAnchors.ToArray(),
+            ownerObjectIndex,
+            ownerPartIndex);
+
+        void AddLineIntersectionAnchor(int objectIndex, bool startEndpoint)
+        {
+            if (!capturedLineAnchors.Add((objectIndex, startEndpoint))) return;
+            lineAnchors.Add(CaptureLineIntersectionAnchor(objectIndex, startEndpoint));
+        }
+    }
+
+    public SharedBoundaryIntersection CaptureFillIntersectionsAtLineEndpoint(
+        int lineObjectIndex,
+        bool startEndpoint,
+        int frame,
+        bool rebuildGeometryIndex = true)
+    {
+        if ((uint)lineObjectIndex >= ObjectCount
+            || ShapeKind[lineObjectIndex] != VectorAnimationEngine.ShapeKind.Line
+            || !IsObjectActive(lineObjectIndex, frame)
+            || !TryGetLineEndpoint(lineObjectIndex, startEndpoint, out var anchor))
+        {
+            return EmptySharedBoundaryIntersection();
+        }
+
+        var bounds = new RectangleF(
+            anchor.X - ConnectedStrokeEndpointToleranceUnits,
+            anchor.Y - ConnectedStrokeEndpointToleranceUnits,
+            ConnectedStrokeEndpointToleranceUnits * 2,
+            ConnectedStrokeEndpointToleranceUnits * 2);
+        var pathAnchors = new List<PathIntersectionAnchor>();
+        var lineAnchors = new List<LineIntersectionAnchor>();
+        var capturedPathAnchors = new HashSet<(int ObjectIndex, int PartIndex, bool StartEndpoint)>();
+        var capturedLineAnchors = new HashSet<(int ObjectIndex, bool StartEndpoint)>();
+        var geometryChanged = false;
+        foreach (var candidate in QueryObjects(bounds, frame))
+        {
+            if (candidate == lineObjectIndex
+                || ObjectLayer[candidate] != ObjectLayer[lineObjectIndex]
+                || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[lineObjectIndex])
+            {
+                continue;
+            }
+
+            if (HasFill(candidate))
+            {
+                geometryChanged |= CapturePathIntersectionAnchors(
+                    candidate,
+                    anchor,
+                    pathAnchors,
+                    capturedPathAnchors);
+                continue;
+            }
+
+            if (ShapeKind[candidate] != VectorAnimationEngine.ShapeKind.Line) continue;
+            CaptureConnectedLineEndpoint(candidate, candidateStartsAtAnchor: true);
+            CaptureConnectedLineEndpoint(candidate, candidateStartsAtAnchor: false);
+        }
+
+        if (geometryChanged)
+        {
+            CompleteSharedBoundaryIntersectionMutation(rebuildGeometryIndex);
+        }
+
+        return new SharedBoundaryIntersection(
+            anchor,
+            pathAnchors.ToArray(),
+            lineAnchors.ToArray(),
+            []);
+
+        void CaptureConnectedLineEndpoint(int objectIndex, bool candidateStartsAtAnchor)
+        {
+            if (!TryGetLineEndpoint(objectIndex, candidateStartsAtAnchor, out var endpoint)
+                || Distance(endpoint, anchor) > ConnectedStrokeEndpointToleranceUnits
+                || !capturedLineAnchors.Add((objectIndex, candidateStartsAtAnchor)))
+            {
+                return;
+            }
+
+            lineAnchors.Add(CaptureLineIntersectionAnchor(objectIndex, candidateStartsAtAnchor));
+        }
+    }
+
+    public bool UpdateSharedBoundaryIntersection(
+        SharedBoundaryIntersection intersection,
+        PointF anchor,
+        bool rebuildGeometryIndex = true)
+    {
+        if (!intersection.HasTargets) return false;
+        anchor = VectorUnits.Quantize(anchor);
+        var changed = UpdateCapturedPathAnchors(intersection.PathAnchors, anchor);
+        foreach (var line in intersection.LineAnchors)
+        {
+            if ((uint)line.ObjectIndex >= ObjectCount
+                || ShapeKind[line.ObjectIndex] != VectorAnimationEngine.ShapeKind.Line)
+            {
+                continue;
+            }
+
+            var dx = anchor.X - line.OriginalEndpoint.X;
+            var dy = anchor.Y - line.OriginalEndpoint.Y;
+            var control1 = line.StartEndpoint
+                ? new PointF(line.Control1.X + dx, line.Control1.Y + dy)
+                : line.Control1;
+            var control2 = line.StartEndpoint
+                ? line.Control2
+                : new PointF(line.Control2.X + dx, line.Control2.Y + dy);
+            SetLineEndpoint(
+                line.ObjectIndex,
+                line.StartEndpoint,
+                anchor,
+                line.OppositeEndpoint,
+                control1,
+                control2,
+                line.KeepStraight);
+            changed = true;
+        }
+
+        foreach (var freeform in intersection.FreeformAnchors)
+        {
+            if ((uint)freeform.ObjectIndex >= ObjectCount
+                || ShapeKind[freeform.ObjectIndex] != VectorAnimationEngine.ShapeKind.Freeform
+                || (uint)freeform.PointIndex >= freeform.OriginalPoints.Length)
+            {
+                continue;
+            }
+
+            var points = (PointF[])freeform.OriginalPoints.Clone();
+            points[freeform.PointIndex] = anchor;
+            if (freeform.MirrorsClosedEndpoint)
+            {
+                points[0] = anchor;
+                points[^1] = anchor;
+            }
+
+            SetFreehandPoints(freeform.ObjectIndex, points);
+            changed = true;
+        }
+
+        if (changed) CompleteSharedBoundaryIntersectionMutation(rebuildGeometryIndex);
+        return changed;
+    }
+
+    private bool UpdateCapturedPathAnchors(
+        IReadOnlyList<PathIntersectionAnchor> pathAnchors,
+        PointF anchor)
+    {
+        var changed = false;
+        foreach (var path in pathAnchors)
+        {
+            var segment = path.OriginalSegment;
+            var start = path.StartEndpoint ? anchor : segment.Start;
+            var end = path.StartEndpoint ? segment.End : anchor;
+            var control1 = segment.Control1;
+            var control2 = segment.Control2;
+            if (IsStraightBezierSegment(
+                    segment.Start,
+                    segment.Control1,
+                    segment.Control2,
+                    segment.End))
+            {
+                control1 = Lerp(start, end, 1f / 3f);
+                control2 = Lerp(start, end, 2f / 3f);
+            }
+
+            changed |= SetPathBezierSegment(
+                path.ObjectIndex,
+                path.PartIndex,
+                start,
+                control1,
+                control2,
+                end,
+                rebuildGeometryIndex: false,
+                preserveStraightAdjacentSegments: true);
+        }
+
+        return changed;
+    }
+
+    private static SharedBoundaryIntersection EmptySharedBoundaryIntersection()
+    {
+        return new SharedBoundaryIntersection(PointF.Empty, [], [], []);
+    }
+
+    private bool CapturePathIntersectionAnchors(
+        int objectIndex,
+        PointF anchor,
+        ICollection<PathIntersectionAnchor> pathAnchors,
+        ISet<(int ObjectIndex, int PartIndex, bool StartEndpoint)> capturedPathAnchors)
+    {
+        if ((uint)objectIndex >= ObjectCount || !IsFillShape(ShapeKind[objectIndex])) return false;
+        var parts = GetEditableFillBezierSegmentParts(objectIndex);
+        if (parts.Length == 0) return false;
+
+        var partIndices = parts.ToDictionary(
+            part => (part.ContourIndex, part.SegmentIndex),
+            part => part.PartIndex);
+        var contourLengths = parts
+            .GroupBy(part => part.ContourIndex)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var existingNodes = new HashSet<(int ContourIndex, int NodeIndex)>();
+        var intersections = new List<(int PartIndex, float Parameter)>();
+        foreach (var part in parts)
+        {
+            if (!TryGetClosestPointOnBezierSegment(part, anchor, out var parameter, out _, out var distance)
+                || distance > ConnectedStrokeEndpointToleranceUnits)
+            {
+                continue;
+            }
+
+            var startDistance = Distance(anchor, part.Start);
+            var endDistance = Distance(anchor, part.End);
+            if (Math.Min(startDistance, endDistance) > ConnectedStrokeEndpointToleranceUnits)
+            {
+                intersections.Add((part.PartIndex, parameter));
+                continue;
+            }
+
+            var contourLength = contourLengths[part.ContourIndex];
+            var nodeIndex = startDistance <= endDistance
+                ? part.SegmentIndex
+                : (part.SegmentIndex + 1) % contourLength;
+            if (!existingNodes.Add((part.ContourIndex, nodeIndex))) continue;
+            intersections.Add((partIndices[(part.ContourIndex, nodeIndex)], 0));
+        }
+
+        if (intersections.Count == 0) return false;
+        var alreadyBezierPath = ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Path
+            && _pathBezierLocalContours.ContainsKey(objectIndex);
+        if (!TryConvertFillToBezierPath(objectIndex, rebuildGeometryIndex: false)) return false;
+
+        var geometryChanged = !alreadyBezierPath;
+        var insertionOffset = 0;
+        foreach (var intersection in intersections
+                     .OrderBy(intersection => intersection.PartIndex)
+                     .ThenBy(intersection => intersection.Parameter))
+        {
+            var partIndex = intersection.PartIndex + insertionOffset;
+            if (intersection.Parameter > 0.0001f)
+            {
+                if (!TryInsertPathBezierAnchor(
+                        objectIndex,
+                        partIndex,
+                        intersection.Parameter,
+                        out partIndex,
+                        out _,
+                        rebuildGeometryIndex: false))
+                {
+                    continue;
+                }
+
+                insertionOffset++;
+                geometryChanged = true;
+            }
+
+            if (!TryGetPathBezierSegment(objectIndex, partIndex, out var materializedSegment))
+            {
+                continue;
+            }
+
+            if (Distance(materializedSegment.Start, anchor) > DrawingTopologyRules.UnitIntersectionTolerance)
+            {
+                var control1 = materializedSegment.Control1;
+                var control2 = materializedSegment.Control2;
+                if (IsStraightBezierSegment(
+                        materializedSegment.Start,
+                        control1,
+                        control2,
+                        materializedSegment.End))
+                {
+                    control1 = Lerp(anchor, materializedSegment.End, 1f / 3f);
+                    control2 = Lerp(anchor, materializedSegment.End, 2f / 3f);
+                }
+
+                if (!SetPathBezierSegment(
+                        objectIndex,
+                        partIndex,
+                        anchor,
+                        control1,
+                        control2,
+                        materializedSegment.End,
+                        rebuildGeometryIndex: false,
+                        preserveStraightAdjacentSegments: true)
+                    || !TryGetPathBezierSegment(objectIndex, partIndex, out materializedSegment))
+                {
+                    continue;
+                }
+
+                geometryChanged = true;
+            }
+
+            if (!capturedPathAnchors.Add((objectIndex, partIndex, true))) continue;
+
+            pathAnchors.Add(new PathIntersectionAnchor(
+                objectIndex,
+                partIndex,
+                StartEndpoint: true,
+                materializedSegment));
+        }
+
+        return geometryChanged;
+    }
+
+    private LineIntersectionAnchor CaptureLineIntersectionAnchor(int objectIndex, bool startEndpoint)
+    {
+        TryGetLineCubic(objectIndex, out var start, out var control1, out var control2, out var end);
+        return new LineIntersectionAnchor(
+            objectIndex,
+            startEndpoint,
+            startEndpoint ? start : end,
+            startEndpoint ? end : start,
+            control1,
+            control2,
+            IsLineStraight(objectIndex));
+    }
+
+    private bool TryMaterializeFreeformIntersectionAnchor(
+        int objectIndex,
+        PointF anchor,
+        out FreeformIntersectionAnchor result,
+        out bool inserted)
+    {
+        result = null!;
+        inserted = false;
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Freeform
+            || !TryGetFreehandWorldPoints(objectIndex, out var originalPoints)
+            || originalPoints.Length < 2)
+        {
+            return false;
+        }
+
+        var pointIndex = -1;
+        var bestDistance = ConnectedStrokeEndpointToleranceUnits;
+        for (var index = 0; index < originalPoints.Length; index++)
+        {
+            var distance = Distance(anchor, originalPoints[index]);
+            if (distance > bestDistance) continue;
+            pointIndex = index;
+            bestDistance = distance;
+        }
+
+        var segmentIndex = -1;
+        var segmentParameter = 0f;
+        for (var index = 0; index < originalPoints.Length - 1; index++)
+        {
+            var start = originalPoints[index];
+            var end = originalPoints[index + 1];
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var lengthSquared = dx * dx + dy * dy;
+            var parameter = lengthSquared <= DrawingTopologyRules.UnitIntersectionTolerance
+                ? 0f
+                : Math.Clamp(((anchor.X - start.X) * dx + (anchor.Y - start.Y) * dy) / lengthSquared, 0f, 1f);
+            var distance = Distance(anchor, Lerp(start, end, parameter));
+            if (distance >= bestDistance - DrawingTopologyRules.UnitIntersectionTolerance) continue;
+            segmentIndex = index;
+            segmentParameter = parameter;
+            bestDistance = distance;
+        }
+
+        var points = originalPoints;
+        if (segmentIndex >= 0)
+        {
+            if (segmentParameter <= 0.0001f) pointIndex = segmentIndex;
+            else if (segmentParameter >= 0.9999f) pointIndex = segmentIndex + 1;
+            else
+            {
+                pointIndex = segmentIndex + 1;
+                points = new PointF[originalPoints.Length + 1];
+                Array.Copy(originalPoints, 0, points, 0, pointIndex);
+                points[pointIndex] = VectorUnits.Quantize(anchor);
+                Array.Copy(
+                    originalPoints,
+                    pointIndex,
+                    points,
+                    pointIndex + 1,
+                    originalPoints.Length - pointIndex);
+                SetFreehandPoints(objectIndex, points);
+                inserted = true;
+            }
+        }
+
+        if (pointIndex < 0) return false;
+
+        var closed = points.Length > 2 && points[0] == points[^1];
+        var mirrorsClosedEndpoint = closed && (pointIndex == 0 || pointIndex == points.Length - 1);
+        result = new FreeformIntersectionAnchor(
+            objectIndex,
+            pointIndex,
+            mirrorsClosedEndpoint,
+            (PointF[])points.Clone());
+        return true;
+    }
+
+    private static bool TryGetClosestPointOnBezierSegment(
+        PathBezierSegmentPart segment,
+        PointF world,
+        out float parameter,
+        out PointF point,
+        out float distance)
+    {
+        parameter = 0;
+        point = PointF.Empty;
+        distance = float.MaxValue;
+        var curve = new CubicBoundarySegment(
+            segment.Start,
+            segment.Control1,
+            segment.Control2,
+            segment.End);
+        var samples = SampleCubicSegmentWithParameters(curve);
+        if (samples.Length < 2) return false;
+        for (var index = 1; index < samples.Length; index++)
+        {
+            var a = samples[index - 1];
+            var b = samples[index];
+            var dx = b.Point.X - a.Point.X;
+            var dy = b.Point.Y - a.Point.Y;
+            var lengthSquared = dx * dx + dy * dy;
+            var localParameter = lengthSquared <= DrawingTopologyRules.UnitIntersectionTolerance
+                ? 0f
+                : Math.Clamp(((world.X - a.Point.X) * dx + (world.Y - a.Point.Y) * dy) / lengthSquared, 0f, 1f);
+            var candidateParameter = a.T + (b.T - a.T) * localParameter;
+            var candidate = CubicPoint(
+                segment.Start,
+                segment.Control1,
+                segment.Control2,
+                segment.End,
+                candidateParameter);
+            var candidateDistance = Distance(world, candidate);
+            if (candidateDistance >= distance) continue;
+            parameter = candidateParameter;
+            point = candidate;
+            distance = candidateDistance;
+        }
+
+        var radius = 1f / Math.Max(8, samples.Length - 1);
+        var low = Math.Max(0, parameter - radius);
+        var high = Math.Min(1, parameter + radius);
+        for (var iteration = 0; iteration < 10; iteration++)
+        {
+            var first = low + (high - low) / 3f;
+            var second = high - (high - low) / 3f;
+            var firstPoint = CubicPoint(segment.Start, segment.Control1, segment.Control2, segment.End, first);
+            var secondPoint = CubicPoint(segment.Start, segment.Control1, segment.Control2, segment.End, second);
+            if (Distance(world, firstPoint) <= Distance(world, secondPoint)) high = second;
+            else low = first;
+        }
+
+        parameter = (low + high) * 0.5f;
+        point = VectorUnits.Quantize(CubicPoint(
+            segment.Start,
+            segment.Control1,
+            segment.Control2,
+            segment.End,
+            parameter));
+        distance = Distance(world, point);
+        return true;
+    }
+
+    private void CompleteSharedBoundaryIntersectionMutation(bool rebuildGeometryIndex)
+    {
+        if (rebuildGeometryIndex)
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+        }
+        else
+        {
+            GeometryRevision++;
+        }
     }
 
     private bool TryCreateFillBezierWorldContours(int objectIndex, out PathBezierNode[][] contours)
@@ -8148,6 +9556,7 @@ internal sealed class VectorScene : ITimelineContext
                     continue;
                 }
 
+                TryCreateFillBezierWorldContours(source, out var sourceBezierContours);
                 remove[source] = true;
                 var replacementSubOrders = ReplacementSubOrders(
                     source,
@@ -8174,6 +9583,16 @@ internal sealed class VectorScene : ITimelineContext
                 var fillAtoms = Math.Max(3u, atoms / (uint)Math.Max(1, regions.Count));
                 for (var part = 0; part < regions.Count; part++)
                 {
+                    PathBezierNode[][]? regionBezierContours = null;
+                    if (sourceBezierContours.Length > 0
+                        && TryRebuildBezierContoursFromBooleanBoundary(
+                            sourceBezierContours,
+                            regions[part].Contours,
+                            out var rebuiltBezierContours))
+                    {
+                        regionBezierContours = rebuiltBezierContours;
+                    }
+
                     additions.Add(FillMaterialization(
                         selectedFillParts.GetValueOrDefault(part, DrawingElementKey.None),
                         layer,
@@ -8184,7 +9603,8 @@ internal sealed class VectorScene : ITimelineContext
                         fillAtoms,
                         regions[part].Contours,
                         gradientPaint,
-                        fillAutoMergeProtected: FillAutoMergeProtected[source]));
+                        fillAutoMergeProtected: FillAutoMergeProtected[source],
+                        bezierContours: regionBezierContours));
                 }
 
                 continue;
@@ -8727,6 +10147,15 @@ internal sealed class VectorScene : ITimelineContext
                 if (other == current) continue;
                 if (ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]) continue;
                 if (!TryBuildSameColorFillMerge(current, other, connectNearby, mergeBounds, out var mergedPath)) continue;
+                if (!TryCreateFillBezierWorldContours(current, out var currentBezierContours)
+                    || !TryCreateFillBezierWorldContours(other, out var otherBezierContours)
+                    || !TryRebuildBezierContoursFromBooleanBoundary(
+                        currentBezierContours.Concat(otherBezierContours).ToArray(),
+                        mergedPath,
+                        out var mergedBezierContours))
+                {
+                    continue;
+                }
 
                 var layer = ObjectLayer[current];
                 var topSource = CompareObjectStack(current, other) >= 0 ? current : other;
@@ -8746,7 +10175,13 @@ internal sealed class VectorScene : ITimelineContext
                     remove[current] = true;
                     remove[other] = true;
                     CompactObjectsForMaterialization(remove);
-                    current = AppendPathObjectContours(layer, mergedPath, 0, fillColor, strokeColor, atoms);
+                    current = AppendPathBezierObjectContours(
+                        layer,
+                        mergedBezierContours,
+                        0,
+                        fillColor,
+                        strokeColor,
+                        atoms);
                     if (current < 0) throw new InvalidOperationException("Merged fill geometry was invalid.");
                     ObjectOrder[current] = order;
                     ObjectSubOrder[current] = subOrder;
@@ -10488,6 +11923,520 @@ internal sealed class VectorScene : ITimelineContext
         {
             return Array.Empty<PointF[]>();
         }
+    }
+
+    private static bool TryRebuildBezierContoursFromBooleanBoundary(
+        IReadOnlyList<PathBezierNode[]> sourceContours,
+        IReadOnlyList<PointF[]> booleanContours,
+        out PathBezierNode[][] rebuiltContours)
+    {
+        rebuiltContours = [];
+        if (sourceContours.Count == 0 || booleanContours.Count == 0) return false;
+
+        var sources = new List<BooleanBezierCurveSource>();
+        foreach (var contour in sourceContours)
+        {
+            if (contour.Length < 3) continue;
+            for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
+            {
+                var current = contour[segmentIndex];
+                var next = contour[(segmentIndex + 1) % contour.Length];
+                var curve = new CubicBoundarySegment(
+                    current.Anchor,
+                    current.OutgoingControl,
+                    next.IncomingControl,
+                    next.Anchor);
+                var samples = SampleCubicSegmentWithParameters(curve);
+                if (samples.Length < 2) continue;
+                var bounds = CubicCurveBounds(
+                    curve.Start,
+                    curve.Control1,
+                    curve.Control2,
+                    curve.End);
+                bounds.Inflate(BooleanBezierMaximumErrorUnits, BooleanBezierMaximumErrorUnits);
+                sources.Add(new BooleanBezierCurveSource(curve, samples, bounds));
+            }
+        }
+
+        if (sources.Count == 0) return false;
+        var result = new PathBezierNode[booleanContours.Count][];
+        for (var contourIndex = 0; contourIndex < booleanContours.Count; contourIndex++)
+        {
+            if (!TryRebuildBezierContourFromBooleanBoundary(
+                    booleanContours[contourIndex],
+                    sources,
+                    out result[contourIndex]))
+            {
+                return false;
+            }
+        }
+
+        if (!BooleanBezierContoursMatch(booleanContours, result)) return false;
+        rebuiltContours = result;
+        return true;
+    }
+
+    private static bool TryRebuildBezierContourFromBooleanBoundary(
+        PointF[] booleanContour,
+        IReadOnlyList<BooleanBezierCurveSource> sources,
+        out PathBezierNode[] rebuiltContour)
+    {
+        rebuiltContour = [];
+        var anchors = OpenPolygon(booleanContour);
+        if (anchors.Length < 3) return false;
+
+        var labels = Enumerable.Repeat(-1, anchors.Length).ToArray();
+        for (var edgeIndex = 0; edgeIndex < anchors.Length; edgeIndex++)
+        {
+            var start = anchors[edgeIndex];
+            var end = anchors[(edgeIndex + 1) % anchors.Length];
+            var midpoint = Midpoint(start, end);
+            var bestScore = float.MaxValue;
+            for (var sourceIndex = 0; sourceIndex < sources.Count; sourceIndex++)
+            {
+                var source = sources[sourceIndex];
+                if (!source.Bounds.Contains(start)
+                    || !source.Bounds.Contains(end)
+                    || !source.Bounds.Contains(midpoint))
+                {
+                    continue;
+                }
+
+                var samples = source.Samples;
+                var startDistance = DistanceToCurveSamples(start, samples);
+                var endDistance = DistanceToCurveSamples(end, samples);
+                var midpointDistance = DistanceToCurveSamples(midpoint, samples);
+                if (Math.Max(startDistance, Math.Max(endDistance, midpointDistance))
+                    > BooleanBezierMaximumErrorUnits)
+                {
+                    continue;
+                }
+
+                var score = startDistance + endDistance + midpointDistance;
+                if (score >= bestScore) continue;
+                bestScore = score;
+                labels[edgeIndex] = sourceIndex;
+            }
+        }
+
+        var startEdge = 0;
+        for (var edgeIndex = 0; edgeIndex < labels.Length; edgeIndex++)
+        {
+            if (labels[edgeIndex] == labels[(edgeIndex - 1 + labels.Length) % labels.Length]) continue;
+            startEdge = edgeIndex;
+            break;
+        }
+
+        var segments = new List<CubicBoundarySegment>();
+        var processed = 0;
+        while (processed < anchors.Length)
+        {
+            var edgeIndex = (startEdge + processed) % anchors.Length;
+            var label = labels[edgeIndex];
+            var groupLength = 1;
+            while (processed + groupLength < anchors.Length
+                && labels[(edgeIndex + groupLength) % anchors.Length] == label)
+            {
+                groupLength++;
+            }
+
+            var runPoints = new PointF[groupLength + 1];
+            for (var pointIndex = 0; pointIndex <= groupLength; pointIndex++)
+            {
+                runPoints[pointIndex] = anchors[(edgeIndex + pointIndex) % anchors.Length];
+            }
+
+            if (label >= 0
+                && TryMatchBooleanCurveRun(
+                    runPoints,
+                    sources[label],
+                    out var matchedCurve))
+            {
+                segments.Add(matchedCurve);
+            }
+            else
+            {
+                AddLinearBooleanSegments(runPoints, segments);
+            }
+
+            processed += groupLength;
+        }
+
+        if (segments.Count == 0) return false;
+        var simplifiedAnchors = SimplifyClosedBooleanContour(anchors);
+        if (simplifiedAnchors.Length >= 3 && segments.Count > simplifiedAnchors.Length * 2)
+        {
+            segments.Clear();
+            AddLinearBooleanSegments(
+                simplifiedAnchors.Concat([simplifiedAnchors[0]]).ToArray(),
+                segments);
+        }
+
+        while (segments.Count < 3)
+        {
+            var splitIndex = Enumerable.Range(0, segments.Count)
+                .OrderByDescending(index => PolylineLength(SampleCubicSegment(segments[index])))
+                .First();
+            var source = segments[splitIndex];
+            var first = CubicSubcurve(
+                source.Start,
+                source.Control1,
+                source.Control2,
+                source.End,
+                0,
+                0.5f);
+            var second = CubicSubcurve(
+                source.Start,
+                source.Control1,
+                source.Control2,
+                source.End,
+                0.5f,
+                1);
+            segments[splitIndex] = new CubicBoundarySegment(
+                first.Start,
+                first.Control1,
+                first.Control2,
+                first.End);
+            segments.Insert(
+                splitIndex + 1,
+                new CubicBoundarySegment(
+                    second.Start,
+                    second.Control1,
+                    second.Control2,
+                    second.End));
+        }
+
+        rebuiltContour = CreateBezierContour(segments);
+        return rebuiltContour.Length >= 3;
+    }
+
+    private static bool TryMatchBooleanCurveRun(
+        IReadOnlyList<PointF> runPoints,
+        BooleanBezierCurveSource source,
+        out CubicBoundarySegment matched)
+    {
+        matched = default;
+        if (runPoints.Count < 2
+            || !TryGetClosestParameterOnCubic(source, runPoints[0], out var startT, out var startDistance)
+            || !TryGetClosestParameterOnCubic(source, runPoints[^1], out var endT, out var endDistance)
+            || !TryGetClosestParameterOnCubic(
+                source,
+                runPoints[runPoints.Count / 2],
+                out var middleT,
+                out var middleDistance)
+            || Math.Max(startDistance, Math.Max(endDistance, middleDistance)) > BooleanBezierMaximumErrorUnits
+            || Math.Abs(endT - startT) <= 0.0001f)
+        {
+            return false;
+        }
+
+        var forward = startT < endT;
+        var minimumT = Math.Min(startT, endT);
+        var maximumT = Math.Max(startT, endT);
+        if (middleT < minimumT - 0.001f || middleT > maximumT + 0.001f) return false;
+
+        var subcurve = CubicSubcurve(
+            source.Curve.Start,
+            source.Curve.Control1,
+            source.Curve.Control2,
+            source.Curve.End,
+            minimumT,
+            maximumT);
+        var curve = forward
+            ? new CubicBoundarySegment(
+                subcurve.Start,
+                subcurve.Control1,
+                subcurve.Control2,
+                subcurve.End)
+            : new CubicBoundarySegment(
+                subcurve.End,
+                subcurve.Control2,
+                subcurve.Control1,
+                subcurve.Start);
+        var startDelta = new PointF(
+            runPoints[0].X - curve.Start.X,
+            runPoints[0].Y - curve.Start.Y);
+        var endDelta = new PointF(
+            runPoints[^1].X - curve.End.X,
+            runPoints[^1].Y - curve.End.Y);
+        matched = new CubicBoundarySegment(
+            runPoints[0],
+            new PointF(curve.Control1.X + startDelta.X, curve.Control1.Y + startDelta.Y),
+            new PointF(curve.Control2.X + endDelta.X, curve.Control2.Y + endDelta.Y),
+            runPoints[^1]);
+
+        var matchedSamples = SampleCubicSegment(matched);
+        return runPoints.All(point =>
+            DistanceToPolyline(point, matchedSamples) <= BooleanBezierMaximumErrorUnits);
+    }
+
+    private static bool TryGetClosestParameterOnCubic(
+        BooleanBezierCurveSource source,
+        PointF point,
+        out float parameter,
+        out float distance)
+    {
+        parameter = 0;
+        distance = float.MaxValue;
+        var low = 0f;
+        var high = 1f;
+        for (var sampleIndex = 1; sampleIndex < source.Samples.Length; sampleIndex++)
+        {
+            var a = source.Samples[sampleIndex - 1];
+            var b = source.Samples[sampleIndex];
+            var dx = b.Point.X - a.Point.X;
+            var dy = b.Point.Y - a.Point.Y;
+            var lengthSquared = dx * dx + dy * dy;
+            var localT = lengthSquared <= DrawingTopologyRules.UnitIntersectionTolerance
+                ? 0f
+                : Math.Clamp(((point.X - a.Point.X) * dx + (point.Y - a.Point.Y) * dy) / lengthSquared, 0f, 1f);
+            var candidateT = a.T + (b.T - a.T) * localT;
+            var candidate = CubicPoint(
+                source.Curve.Start,
+                source.Curve.Control1,
+                source.Curve.Control2,
+                source.Curve.End,
+                candidateT);
+            var candidateDistance = Distance(point, candidate);
+            if (candidateDistance >= distance) continue;
+            parameter = candidateT;
+            distance = candidateDistance;
+            low = a.T;
+            high = b.T;
+        }
+
+        if (!float.IsFinite(distance)) return false;
+        for (var iteration = 0; iteration < 10; iteration++)
+        {
+            var first = low + (high - low) / 3f;
+            var second = high - (high - low) / 3f;
+            var firstPoint = CubicPoint(
+                source.Curve.Start,
+                source.Curve.Control1,
+                source.Curve.Control2,
+                source.Curve.End,
+                first);
+            var secondPoint = CubicPoint(
+                source.Curve.Start,
+                source.Curve.Control1,
+                source.Curve.Control2,
+                source.Curve.End,
+                second);
+            if (Distance(point, firstPoint) <= Distance(point, secondPoint)) high = second;
+            else low = first;
+        }
+
+        parameter = (low + high) * 0.5f;
+        distance = Distance(point, CubicPoint(
+            source.Curve.Start,
+            source.Curve.Control1,
+            source.Curve.Control2,
+            source.Curve.End,
+            parameter));
+        return true;
+    }
+
+    private static float DistanceToCurveSamples(PointF point, IReadOnlyList<CurveSample> samples)
+    {
+        if (samples.Count == 0) return float.MaxValue;
+        if (samples.Count == 1) return Distance(point, samples[0].Point);
+        var distance = float.MaxValue;
+        for (var index = 1; index < samples.Count; index++)
+        {
+            distance = Math.Min(distance, DistanceToSegment(point, samples[index - 1].Point, samples[index].Point));
+        }
+        return distance;
+    }
+
+    private static void AddLinearBooleanSegments(
+        IReadOnlyList<PointF> points,
+        ICollection<CubicBoundarySegment> segments)
+    {
+        for (var index = 1; index < points.Count; index++)
+        {
+            var start = points[index - 1];
+            var end = points[index];
+            if (SameDrawingUnit(start, end)) continue;
+            segments.Add(new CubicBoundarySegment(
+                start,
+                Lerp(start, end, 1f / 3f),
+                Lerp(start, end, 2f / 3f),
+                end));
+        }
+    }
+
+    private static PointF[] SimplifyClosedBooleanContour(PointF[] anchors)
+    {
+        var path = ToClipperPath(anchors, closed: true);
+        if (path.Count < 3) return anchors;
+        var simplified = Clipper.SimplifyPath(
+            path,
+            BooleanBezierSimplificationToleranceUnits * ClipperCoordinateScale,
+            isClosedPath: true);
+        if (simplified.Count < 3) return anchors;
+        var result = new PointF[simplified.Count];
+        for (var index = 0; index < simplified.Count; index++)
+        {
+            result[index] = VectorUnits.Quantize(new PointF(
+                (float)(simplified[index].X / ClipperCoordinateScale),
+                (float)(simplified[index].Y / ClipperCoordinateScale)));
+        }
+        return result;
+    }
+
+    private static bool BooleanBezierContoursMatch(
+        IReadOnlyList<PointF[]> booleanContours,
+        IReadOnlyList<PathBezierNode[]> rebuiltContours)
+    {
+        if (booleanContours.Count != rebuiltContours.Count
+            || !TryPreparePathBezierContours(
+                rebuiltContours,
+                out _,
+                out var sampledContours,
+                out _)
+            || sampledContours.Length != booleanContours.Count)
+        {
+            return false;
+        }
+
+        for (var contourIndex = 0; contourIndex < booleanContours.Count; contourIndex++)
+        {
+            var expected = ClosePolyline(booleanContours[contourIndex]);
+            var actual = ClosePolyline(sampledContours[contourIndex]);
+            if (expected.Length < 4
+                || actual.Length < 4
+                || expected.Any(point =>
+                    DistanceToPolyline(point, actual) > BooleanBezierMaximumErrorUnits)
+                || actual.Any(point =>
+                    DistanceToPolyline(point, expected) > BooleanBezierMaximumErrorUnits))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryBuildNormalizedFillBoundaryPath(
+        IReadOnlyList<PointF[]> currentContours,
+        IReadOnlyList<PointF[]> referenceContours,
+        out PointF[][] normalizedContours)
+    {
+        normalizedContours = Array.Empty<PointF[]>();
+        if (currentContours.Count == 0 || currentContours.Count != referenceContours.Count) return false;
+
+        try
+        {
+            var currentPaths = new Path64[currentContours.Count];
+            for (var index = 0; index < currentContours.Count; index++)
+            {
+                var path = ToClipperPath(currentContours[index], closed: true);
+                if (path.Count < 3 || Math.Abs(Clipper.Area(path)) < 0.5d * ClipperCoordinateScale * ClipperCoordinateScale)
+                {
+                    return false;
+                }
+
+                currentPaths[index] = path;
+            }
+
+            var depths = DetermineReferenceContourDepths(referenceContours);
+            var desired = new Paths64();
+            for (var depth = 0; depth <= depths.Max(); depth++)
+            {
+                var levelPaths = new Paths64();
+                for (var index = 0; index < currentPaths.Length; index++)
+                {
+                    if (depths[index] != depth) continue;
+                    var path = new Path64(currentPaths[index]);
+                    if (!Clipper.IsPositive(path)) path.Reverse();
+                    levelPaths.Add(path);
+                }
+
+                if (levelPaths.Count == 0) continue;
+                var levelRegion = Clipper.Union(levelPaths, FillRule.NonZero);
+                if (levelRegion.Count == 0) continue;
+                if (desired.Count == 0)
+                {
+                    if ((depth & 1) == 0) desired = levelRegion;
+                    continue;
+                }
+
+                var combined = new Paths64();
+                var clipper = new Clipper64 { PreserveCollinear = true };
+                clipper.AddSubject(desired);
+                clipper.AddClip(levelRegion);
+                var clipType = (depth & 1) == 0 ? ClipType.Union : ClipType.Difference;
+                if (!clipper.Execute(clipType, FillRule.NonZero, combined)) return false;
+                desired = combined;
+            }
+
+            if (desired.Count == 0) return false;
+
+            var currentEvenOdd = new Paths64();
+            var currentClipper = new Clipper64 { PreserveCollinear = true };
+            currentClipper.AddSubject(new Paths64(currentPaths));
+            if (!currentClipper.Execute(ClipType.Union, FillRule.EvenOdd, currentEvenOdd)) return false;
+
+            var difference = new Paths64();
+            var comparison = new Clipper64 { PreserveCollinear = true };
+            comparison.AddSubject(currentEvenOdd);
+            comparison.AddClip(desired);
+            if (!comparison.Execute(ClipType.Xor, FillRule.NonZero, difference)
+                || difference.Sum(path => Math.Abs(Clipper.Area(path))) < 0.5d * ClipperCoordinateScale * ClipperCoordinateScale)
+            {
+                return false;
+            }
+
+            normalizedContours = FromClipperPaths(desired);
+            return normalizedContours.Length > 0;
+        }
+        catch (Exception ex) when (ex is ClipperLibException or OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private static int[] DetermineReferenceContourDepths(IReadOnlyList<PointF[]> contours)
+    {
+        var depths = new int[contours.Count];
+        for (var index = 0; index < contours.Count; index++)
+        {
+            var contour = contours[index];
+            if (contour.Length < 3) continue;
+            for (var candidateIndex = 0; candidateIndex < contours.Count; candidateIndex++)
+            {
+                if (candidateIndex == index) continue;
+                var candidate = contours[candidateIndex];
+                if (candidate.Length < 3
+                    || PolygonBoundariesIntersect(contour, candidate)
+                    || !PointInPolygon(contour[0], candidate))
+                {
+                    continue;
+                }
+
+                depths[index]++;
+            }
+        }
+
+        return depths;
+    }
+
+    private static bool PolygonBoundariesIntersect(IReadOnlyList<PointF> a, IReadOnlyList<PointF> b)
+    {
+        for (var aIndex = 0; aIndex < a.Count; aIndex++)
+        {
+            var aStart = a[aIndex];
+            var aEnd = a[(aIndex + 1) % a.Count];
+            for (var bIndex = 0; bIndex < b.Count; bIndex++)
+            {
+                if (TrySegmentIntersection(aStart, aEnd, b[bIndex], b[(bIndex + 1) % b.Count], out _))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static Paths64 ToClipperPaths(
@@ -12530,6 +14479,11 @@ internal sealed class VectorScene : ITimelineContext
 
     private List<BoundaryStrokePart> BuildBoundaryStrokeParts(int objectIndex, IReadOnlyList<int> candidates)
     {
+        if (TryGetPathBezierWorldContours(objectIndex, out var bezierContours))
+        {
+            return BuildPathBezierBoundaryStrokeParts(objectIndex, bezierContours, candidates);
+        }
+
         if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Ellipse)
         {
             return BuildEllipseBoundaryStrokeParts(objectIndex, candidates);
@@ -12545,6 +14499,99 @@ internal sealed class VectorScene : ITimelineContext
             foreach (var part in BuildPolylinePathParts(contour, splits))
             {
                 result.Add(new BoundaryStrokePart(partIndex++, contourIndex, part.StartT, part.EndT, part.Points));
+            }
+        }
+
+        return result;
+    }
+
+    private List<BoundaryStrokePart> BuildPathBezierBoundaryStrokeParts(
+        int objectIndex,
+        IReadOnlyList<PathBezierNode[]> contours,
+        IReadOnlyList<int> candidates)
+    {
+        var result = new List<BoundaryStrokePart>();
+        var sourceLayer = ObjectLayer[objectIndex];
+        for (var contourIndex = 0; contourIndex < contours.Count; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            if (contour.Length == 0) continue;
+
+            for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
+            {
+                var current = contour[segmentIndex];
+                var next = contour[(segmentIndex + 1) % contour.Length];
+                var sourceCurve = new CubicBoundarySegment(
+                    current.Anchor,
+                    current.OutgoingControl,
+                    next.IncomingControl,
+                    next.Anchor);
+                var sourceSamples = SampleCubicSegmentWithParameters(sourceCurve);
+                var sourceBoundary = sourceSamples.Select(sample => sample.Point).ToArray();
+                var splits = new List<DrawingTopologySplit>
+                {
+                    new(0, sourceCurve.Start),
+                    new(1, sourceCurve.End)
+                };
+
+                foreach (var other in candidates)
+                {
+                    if (other == objectIndex || ObjectLayer[other] != sourceLayer || !HasStroke(other)) continue;
+                    var shape = ShapeKind.Length > other
+                        ? ShapeKind[other]
+                        : VectorAnimationEngine.ShapeKind.Rectangle;
+                    if (IsTopologyStrokeShape(shape))
+                    {
+                        var strokeSamples = StrokeSamples(other);
+                        if (LineCurveCoincidesWithFillBezierContour(other, objectIndex, contourIndex)
+                            || CurveSamplesFollowBoundary(strokeSamples, sourceBoundary))
+                        {
+                            continue;
+                        }
+
+                        AddCurveCurveIntersections(
+                            splits,
+                            sourceSamples,
+                            strokeSamples,
+                            includeSourceEndpoints: true);
+                    }
+                    else if (IsFillShape(shape))
+                    {
+                        foreach (var cutter in ShapeBoundaryContours(other))
+                        {
+                            AddCurvePolylineIntersections(
+                                splits,
+                                sourceSamples,
+                                cutter,
+                                includeSourceEndpoints: true);
+                        }
+                    }
+                }
+
+                var normalized = NormalizeStrokeSplits(
+                    splits.Select(split => RefineCubicTopologySplit(sourceCurve, split)).ToList());
+                foreach (var segment in BuildCurveParts(
+                             sourceCurve.Start,
+                             sourceCurve.Control1,
+                             sourceCurve.Control2,
+                             sourceCurve.End,
+                             normalized))
+                {
+                    var curve = new CubicBoundarySegment(
+                        segment.Start,
+                        segment.Control1,
+                        segment.Control2,
+                        segment.End);
+                    var localStartT = normalized[segment.PartIndex].T;
+                    var localEndT = normalized[segment.PartIndex + 1].T;
+                    result.Add(new BoundaryStrokePart(
+                        result.Count,
+                        contourIndex,
+                        (segmentIndex + localStartT) / contour.Length,
+                        (segmentIndex + localEndT) / contour.Length,
+                        SampleCubicSegment(curve),
+                        curve));
+                }
             }
         }
 

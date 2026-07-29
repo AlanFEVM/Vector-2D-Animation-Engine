@@ -35,7 +35,6 @@ internal static class EmbeddedApplicationInstaller
     {
         var applicationDirectory = Path.Combine(root, ApplicationDirectoryName);
         var payloadHash = EmbeddedPayloadHash();
-        if (IsCurrent(applicationDirectory, payloadHash)) return;
 
         using var mutex = new Mutex(false, InstallMutexName(root));
         var ownsMutex = false;
@@ -50,7 +49,6 @@ internal static class EmbeddedApplicationInstaller
                 ownsMutex = true;
             }
             if (!ownsMutex) throw new TimeoutException("等待软件主体更新超时。");
-            if (IsCurrent(applicationDirectory, payloadHash)) return;
 
             var operationId = Guid.NewGuid().ToString("N").Substring(0, 8);
             var stagingDirectory = Path.Combine(root, $".v2i-{operationId}");
@@ -93,9 +91,11 @@ internal static class EmbeddedApplicationInstaller
 
     public static bool RunSelfTest()
     {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"v2d-payload-self-test-{Guid.NewGuid():N}");
         try
         {
-            var root = Path.Combine(Path.GetTempPath(), "v2d-payload-self-test");
             _ = SafeArchive.ResolveTargetPath(root, "VectorAnimationEngine.dll");
             try
             {
@@ -104,12 +104,25 @@ internal static class EmbeddedApplicationInstaller
             }
             catch (InvalidDataException)
             {
-                return true;
             }
+
+            EnsureInstalled(root);
+            var applicationDirectory = Path.Combine(root, ApplicationDirectoryName);
+            if (!HasRequiredApplicationFiles(applicationDirectory)) return false;
+
+            var sentinel = Path.Combine(applicationDirectory, ".stale-install-sentinel");
+            File.WriteAllText(sentinel, "stale");
+            EnsureInstalled(root);
+            return HasRequiredApplicationFiles(applicationDirectory)
+                && !File.Exists(sentinel);
         }
         catch
         {
             return false;
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
         }
     }
 
@@ -124,20 +137,6 @@ internal static class EmbeddedApplicationInstaller
         using var sha256 = SHA256.Create();
         using var stream = OpenPayload();
         return BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", string.Empty);
-    }
-
-    private static bool IsCurrent(string applicationDirectory, string payloadHash)
-    {
-        if (!HasRequiredApplicationFiles(applicationDirectory)) return false;
-        try
-        {
-            var marker = File.ReadAllText(Path.Combine(applicationDirectory, PayloadMarkerName)).Trim();
-            return marker.Equals(payloadHash, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private static bool HasRequiredApplicationFiles(string directory)

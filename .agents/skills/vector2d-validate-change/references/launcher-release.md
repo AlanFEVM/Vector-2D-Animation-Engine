@@ -37,7 +37,7 @@ The launcher lets the first native build restore dependencies automatically. Unk
 scripts\publish-single-exe.ps1
 ```
 
-The command publishes the framework-dependent application, embeds its compressed payload into a small `net472` bootstrap, and retains exactly one EXE smaller than 5 MiB. Replacing the EXE is the complete update operation. On the next launch it atomically refreshes the local `.V2DEngine` directory when the embedded payload changes, then reuses or downloads `.Runtime`.
+The command publishes the framework-dependent application, embeds its compressed payload into a small `net472` bootstrap, and retains exactly one EXE smaller than 5 MiB. Replacing the EXE is the complete update operation. On every launch it atomically regenerates the local `.V2DEngine` directory from the embedded payload, then reuses a valid `.Runtime` or downloads one when needed.
 
 Formal release output belongs only in `artifacts\release` or an explicitly requested empty release directory. Never copy or rename it over the repository-root `VectorAnimationEngine.exe`; rebuild that development launcher with `scripts\publish-development-launcher.ps1` instead.
 
@@ -47,7 +47,7 @@ Before distribution:
 - verify the release directory contains exactly one EXE and no ZIP, checksum sidecar, `.V2DEngine`, or `.Runtime`
 - verify the EXE is smaller than 5 MiB and its embedded payload passes `--validate-single-exe`
 - test bootstrap runtime provisioning in a disposable writable directory with network access
-- verify repeated `--deploy-embedded-application` runs reuse the matching payload and EXE replacement refreshes it
+- verify repeated `--deploy-embedded-application` runs regenerate `.V2DEngine` while preserving a valid `.Runtime`
 - verify startup, Direct2D/GDI fallback, logs, and shutdown
 - record file size and SHA256
 - verify `.Runtime`, `.V2DEngine`, logs, and user data remain external to the EXE after launch

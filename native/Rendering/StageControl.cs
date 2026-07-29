@@ -1895,16 +1895,67 @@ internal sealed class StageControl : Control
             return;
         }
 
-        var copiedSegments = segments.ToArray();
+        SetFillEdgeBezierOverlayCore(targetObject, segments.ToArray(), activePartIndex);
+    }
+
+    internal void SetOwnedFillEdgeBezierOverlay(
+        int targetObject,
+        FillEdgeBezierOverlaySegment[] segments,
+        int activePartIndex = -1)
+    {
+        if ((uint)targetObject >= Scene.ObjectCount || segments.Length == 0)
+        {
+            ClearFillEdgeBezierOverlay();
+            return;
+        }
+
+        SetFillEdgeBezierOverlayCore(targetObject, segments, activePartIndex);
+    }
+
+    private void SetFillEdgeBezierOverlayCore(
+        int targetObject,
+        FillEdgeBezierOverlaySegment[] segments,
+        int activePartIndex)
+    {
+        var normalizedActivePartIndex = -1;
+        for (var index = 0; index < segments.Length; index++)
+        {
+            if (segments[index].PartIndex != activePartIndex) continue;
+            normalizedActivePartIndex = activePartIndex;
+            break;
+        }
+
+        if (FillEdgeBezierOverlayMatches(targetObject, segments, normalizedActivePartIndex)) return;
+
+        var selectionSuppressionMayChange = !FillEdgeBezierOverlayVisible
+            || _fillEdgeBezierOverlayTargetObject != targetObject;
         _fillEdgeBezierOverlayTargetObject = targetObject;
-        _fillEdgeBezierOverlaySegments = copiedSegments;
-        _fillEdgeBezierOverlayActivePartIndex = copiedSegments.Any(segment => segment.PartIndex == activePartIndex)
-            ? activePartIndex
-            : -1;
+        _fillEdgeBezierOverlaySegments = segments;
+        _fillEdgeBezierOverlayActivePartIndex = normalizedActivePartIndex;
         _fillEdgeBezierOverlayRevision++;
         _direct2DRenderer.InvalidateFillEdgeBezierOverlay();
-        UpdateSelectionHighlightAnimation();
+        if (selectionSuppressionMayChange) UpdateSelectionHighlightAnimation();
         InvalidateSelectionState();
+    }
+
+    private bool FillEdgeBezierOverlayMatches(
+        int targetObject,
+        IReadOnlyList<FillEdgeBezierOverlaySegment> segments,
+        int activePartIndex)
+    {
+        if (_fillEdgeBezierOverlayTargetObject != targetObject
+            || _fillEdgeBezierOverlayActivePartIndex != activePartIndex
+            || _fillEdgeBezierOverlaySegments.Length != segments.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < segments.Count; index++)
+        {
+            if (_fillEdgeBezierOverlaySegments[index] != segments[index]) return false;
+        }
+
+        return true;
     }
 
     public void SetFillEdgeBezierPointerEditing(bool editing)
@@ -1936,18 +1987,36 @@ internal sealed class StageControl : Control
 
         var active = _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
             segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex);
+        var bestHandle = FillEdgeBezierOverlayHit.None;
+        var bestHandleDistance = float.PositiveInfinity;
+        var bestHandleIsAnchor = false;
+        var bestHandleIsActive = false;
         if (active.PartIndex == _fillEdgeBezierOverlayActivePartIndex && _fillEdgeBezierOverlayActivePartIndex >= 0)
         {
-            var hit = HitTestFillEdgeBezierSegmentHandles(screen, active, includeControls: true);
-            if (hit.IsValid) return hit;
+            ConsiderFillEdgeBezierSegmentHandles(
+                screen,
+                active,
+                true,
+                ref bestHandle,
+                ref bestHandleDistance,
+                ref bestHandleIsAnchor,
+                ref bestHandleIsActive);
         }
 
         foreach (var segment in _fillEdgeBezierOverlaySegments)
         {
             if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex) continue;
-            var hit = HitTestFillEdgeBezierSegmentHandles(screen, segment, includeControls: true);
-            if (hit.IsValid) return hit;
+            ConsiderFillEdgeBezierSegmentHandles(
+                screen,
+                segment,
+                false,
+                ref bestHandle,
+                ref bestHandleDistance,
+                ref bestHandleIsAnchor,
+                ref bestHandleIsActive);
         }
+
+        if (bestHandle.IsValid) return bestHandle;
 
         if (_fillEdgeBezierOverlayActivePartIndex >= 0
             && CubicCurveHit(screen, active, FillEdgeBezierCurveHitRadiusPixels))
@@ -1967,37 +2036,93 @@ internal sealed class StageControl : Control
         return FillEdgeBezierOverlayHit.None;
     }
 
-    private FillEdgeBezierOverlayHit HitTestFillEdgeBezierSegmentHandles(
+    private void ConsiderFillEdgeBezierSegmentHandles(
         Point screen,
         FillEdgeBezierOverlaySegment segment,
-        bool includeControls)
+        bool isActive,
+        ref FillEdgeBezierOverlayHit best,
+        ref float bestDistance,
+        ref bool bestIsAnchor,
+        ref bool bestIsActive)
     {
-        if (includeControls)
-        {
-            if (SquaredDistance(screen, WorldToScreen(segment.Control1))
-                <= FillEdgeBezierControlHitRadiusPixels * FillEdgeBezierControlHitRadiusPixels)
-            {
-                return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.BezierControl);
-            }
-            if (SquaredDistance(screen, WorldToScreen(segment.Control2))
-                <= FillEdgeBezierControlHitRadiusPixels * FillEdgeBezierControlHitRadiusPixels)
-            {
-                return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.BezierControl2);
-            }
-        }
+        ConsiderFillEdgeBezierHandleCandidate(
+            screen,
+            segment,
+            segment.Control1,
+            EditHandleKind.BezierControl,
+            FillEdgeBezierControlHitRadiusPixels,
+            false,
+            isActive,
+            ref best,
+            ref bestDistance,
+            ref bestIsAnchor,
+            ref bestIsActive);
+        ConsiderFillEdgeBezierHandleCandidate(
+            screen,
+            segment,
+            segment.Control2,
+            EditHandleKind.BezierControl2,
+            FillEdgeBezierControlHitRadiusPixels,
+            false,
+            isActive,
+            ref best,
+            ref bestDistance,
+            ref bestIsAnchor,
+            ref bestIsActive);
+        ConsiderFillEdgeBezierHandleCandidate(
+            screen,
+            segment,
+            segment.Start,
+            EditHandleKind.LineStart,
+            FillEdgeBezierAnchorHitRadiusPixels,
+            true,
+            isActive,
+            ref best,
+            ref bestDistance,
+            ref bestIsAnchor,
+            ref bestIsActive);
+        ConsiderFillEdgeBezierHandleCandidate(
+            screen,
+            segment,
+            segment.End,
+            EditHandleKind.LineEnd,
+            FillEdgeBezierAnchorHitRadiusPixels,
+            true,
+            isActive,
+            ref best,
+            ref bestDistance,
+            ref bestIsAnchor,
+            ref bestIsActive);
+    }
 
-        if (SquaredDistance(screen, WorldToScreen(segment.Start))
-            <= FillEdgeBezierAnchorHitRadiusPixels * FillEdgeBezierAnchorHitRadiusPixels)
-        {
-            return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.LineStart);
-        }
-        if (SquaredDistance(screen, WorldToScreen(segment.End))
-            <= FillEdgeBezierAnchorHitRadiusPixels * FillEdgeBezierAnchorHitRadiusPixels)
-        {
-            return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.LineEnd);
-        }
+    private void ConsiderFillEdgeBezierHandleCandidate(
+        Point screen,
+        FillEdgeBezierOverlaySegment segment,
+        PointF world,
+        EditHandleKind handle,
+        float radius,
+        bool isAnchor,
+        bool isActive,
+        ref FillEdgeBezierOverlayHit best,
+        ref float bestDistance,
+        ref bool bestIsAnchor,
+        ref bool bestIsActive)
+    {
+        var distance = SquaredDistance(screen, WorldToScreen(world));
+        if (distance > radius * radius) return;
 
-        return FillEdgeBezierOverlayHit.None;
+        const float distanceTieTolerance = 0.001f;
+        var closer = distance < bestDistance - distanceTieTolerance;
+        var tied = Math.Abs(distance - bestDistance) <= distanceTieTolerance;
+        var preferred = tied
+            && (isAnchor && !bestIsAnchor
+                || isAnchor == bestIsAnchor && isActive && !bestIsActive);
+        if (!closer && !preferred) return;
+
+        best = new FillEdgeBezierOverlayHit(segment.PartIndex, handle);
+        bestDistance = distance;
+        bestIsAnchor = isAnchor;
+        bestIsActive = isActive;
     }
 
     public void SetGradientOverlay(

@@ -117,20 +117,53 @@ internal static class RuntimeInstaller
 
     public static bool RunSelfTest()
     {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"v2d-runtime-self-test-{Guid.NewGuid():N}");
         try
         {
             const string fixture = "{\"releases\":[{\"runtime\":{\"version\":\"8.0.12\",\"files\":[{\"name\":\"dotnet-runtime-win-x64.zip\",\"rid\":\"win-x64\",\"url\":\"https://builds.dotnet.microsoft.com/dotnet/Runtime/8.0.12/runtime.zip\",\"hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]},\"windowsdesktop\":{\"version\":\"8.0.12\",\"files\":[{\"name\":\"windowsdesktop-runtime-win-x64.zip\",\"rid\":\"win-x64\",\"url\":\"https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/8.0.12/runtime.zip\",\"hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]}}]}";
             using var stream = new MemoryStream(Encoding.UTF8.GetBytes(fixture));
             var bundle = ParseRuntimeBundle(stream);
-            return bundle.Version == new Version(8, 0, 12)
-                && bundle.Core.Hash.Length == 128
-                && bundle.Desktop.Hash.Length == 128
-                && IsOfficialDownloadUri(new Uri(bundle.Core.Url))
-                && IsOfficialDownloadUri(new Uri(bundle.Desktop.Url));
+            if (bundle.Version != new Version(8, 0, 12)
+                || bundle.Core.Hash.Length != 128
+                || bundle.Desktop.Hash.Length != 128
+                || !IsOfficialDownloadUri(new Uri(bundle.Core.Url))
+                || !IsOfficialDownloadUri(new Uri(bundle.Desktop.Url)))
+            {
+                return false;
+            }
+
+            var runtimeDirectory = Path.Combine(root, ".Runtime");
+            File.WriteAllText(Path.Combine(CreateDirectory(runtimeDirectory), "dotnet.exe"), string.Empty);
+            File.WriteAllText(Path.Combine(
+                CreateDirectory(Path.Combine(runtimeDirectory, "shared", "Microsoft.WindowsDesktop.App", "8.0.12")),
+                "System.Windows.Forms.dll"), string.Empty);
+            File.WriteAllText(Path.Combine(
+                CreateDirectory(Path.Combine(runtimeDirectory, "shared", "Microsoft.NETCore.App", "8.0.12")),
+                "coreclr.dll"), string.Empty);
+            File.WriteAllText(Path.Combine(
+                CreateDirectory(Path.Combine(runtimeDirectory, "host", "fxr", "8.0.12")),
+                "hostfxr.dll"), string.Empty);
+            var sentinel = Path.Combine(runtimeDirectory, ".existing-runtime-sentinel");
+            File.WriteAllText(sentinel, "existing");
+
+            EnsureInstalled(root, progress: null, CancellationToken.None);
+            return IsRuntimeValid(runtimeDirectory) && File.Exists(sentinel);
         }
         catch
         {
             return false;
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+
+        static string CreateDirectory(string path)
+        {
+            Directory.CreateDirectory(path);
+            return path;
         }
     }
 
