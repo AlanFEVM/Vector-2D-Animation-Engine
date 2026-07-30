@@ -90,27 +90,29 @@ internal sealed class VectorScene : ITimelineContext
     public bool[] LayerLocked { get; private set; } = [];
     public bool[] LayerVisible { get; private set; } = [];
     public float[] LayerOpacity { get; private set; } = [];
+    public LayerBlendMode[] LayerBlendModes { get; private set; } = [];
     public int[] LayerColorArgb { get; private set; } = [];
-    public bool[] LayerOnionSkin { get; private set; } = [];
+    public bool[] LayerOutline { get; private set; } = [];
+    public bool OnionSkinEnabled { get; private set; }
     public int OnionSkinPreviousFrames { get; private set; } = DefaultOnionSkinPreviousFrames;
     public int OnionSkinNextFrames { get; private set; } = DefaultOnionSkinNextFrames;
     public bool HasOnionSkinPreviewEnabled
     {
         get
         {
-            if (OnionSkinPreviousFrames <= 0 && OnionSkinNextFrames <= 0) return false;
-            for (var layer = 0; layer < LayerCount; layer++)
-            {
-                if (LayerVisible[layer] && LayerOnionSkin[layer]) return true;
-            }
-
-            return false;
+            return OnionSkinEnabled
+                && (OnionSkinPreviousFrames > 0 || OnionSkinNextFrames > 0)
+                && HasEligibleOnionSkinLayer();
         }
     }
     public int[] LayerStart { get; private set; } = [];
     public int[] LayerEnd { get; private set; } = [];
     public bool HasLayerEffects => LayerKinds.Any(kind => kind != DrawingLayerKind.Drawing)
-        || LayerMaskIds.Any(id => !string.IsNullOrWhiteSpace(id));
+        || LayerMaskIds.Any(id => !string.IsNullOrWhiteSpace(id))
+        || HasNonNormalLayerBlendModes;
+    public bool HasNonNormalLayerBlendModes => LayerBlendModes.Any(mode => mode != LayerBlendMode.Normal);
+    public bool HasLayerOutline => LayerOutline.Any(outline => outline);
+    public bool HasDisplayLayerEffects => HasLayerEffects || HasLayerOutline;
 
     public ushort[] ObjectLayer { get; private set; } = [];
     public int[] ObjectKeyframeFrame { get; private set; } = [];
@@ -361,6 +363,7 @@ internal sealed class VectorScene : ITimelineContext
         ActiveLayer = 0;
         EditFrame = 0;
         MaxHalfExtent = 128;
+        OnionSkinEnabled = false;
         OnionSkinPreviousFrames = DefaultOnionSkinPreviousFrames;
         OnionSkinNextFrames = DefaultOnionSkinNextFrames;
 
@@ -374,8 +377,9 @@ internal sealed class VectorScene : ITimelineContext
         LayerLocked = new bool[LayerCount];
         LayerVisible = new bool[LayerCount];
         LayerOpacity = new float[LayerCount];
+        LayerBlendModes = new LayerBlendMode[LayerCount];
         LayerColorArgb = new int[LayerCount];
-        LayerOnionSkin = new bool[LayerCount];
+        LayerOutline = new bool[LayerCount];
         LayerStart = new int[LayerCount];
         LayerEnd = new int[LayerCount];
         for (var i = 0; i < LayerCount; i++)
@@ -442,6 +446,7 @@ internal sealed class VectorScene : ITimelineContext
         ActiveLayer = 0;
         EditFrame = 0;
         MaxHalfExtent = 128;
+        OnionSkinEnabled = false;
         OnionSkinPreviousFrames = DefaultOnionSkinPreviousFrames;
         OnionSkinNextFrames = DefaultOnionSkinNextFrames;
 
@@ -456,8 +461,9 @@ internal sealed class VectorScene : ITimelineContext
         LayerLocked = new bool[LayerCount];
         LayerVisible = new bool[LayerCount];
         LayerOpacity = new float[LayerCount];
+        LayerBlendModes = new LayerBlendMode[LayerCount];
         LayerColorArgb = new int[LayerCount];
-        LayerOnionSkin = new bool[LayerCount];
+        LayerOutline = new bool[LayerCount];
         LayerStart = new int[LayerCount];
         LayerEnd = new int[LayerCount];
         Array.Fill(LayerVisible, true);
@@ -1966,7 +1972,7 @@ internal sealed class VectorScene : ITimelineContext
         }
         if (source.HasLayerEffects)
         {
-            throw new InvalidDataException("Break Apart cannot flatten drawing objects that use folders or masks.");
+            throw new InvalidDataException("Break Apart cannot flatten drawing objects that use folders, masks, or blend modes.");
         }
 
         var sourceObjects = Enumerable.Range(0, source.ObjectCount)
@@ -3745,8 +3751,11 @@ internal sealed class VectorScene : ITimelineContext
             LayerLocked = LayerLocked.ToArray(),
             LayerVisible = LayerVisible.ToArray(),
             LayerOpacity = LayerOpacity.ToArray(),
+            LayerBlendModes = LayerBlendModes.ToArray(),
             LayerColorArgb = LayerColorArgb.ToArray(),
-            LayerOnionSkin = LayerOnionSkin.ToArray(),
+            LayerOutline = LayerOutline.ToArray(),
+            OnionSkinEnabled = OnionSkinEnabled,
+            LayerOnionSkin = Enumerable.Repeat(OnionSkinEnabled, LayerCount).ToArray(),
             OnionSkinPreviousFrames = OnionSkinPreviousFrames,
             OnionSkinNextFrames = OnionSkinNextFrames,
             LayerStart = LayerStart.ToArray(),
@@ -3817,8 +3826,11 @@ internal sealed class VectorScene : ITimelineContext
         LayerLocked = NormalizeLayerLocked(snapshot.LayerLocked, LayerCount);
         LayerVisible = snapshot.LayerVisible.ToArray();
         LayerOpacity = snapshot.LayerOpacity.ToArray();
+        LayerBlendModes = NormalizeLayerBlendModes(snapshot.LayerBlendModes, LayerCount);
         LayerColorArgb = NormalizeLayerColors(snapshot.LayerColorArgb, LayerCount);
-        LayerOnionSkin = NormalizeLayerOnionSkin(snapshot.LayerOnionSkin, LayerCount);
+        LayerOutline = NormalizeLayerOutline(snapshot.LayerOutline, LayerCount);
+        OnionSkinEnabled = snapshot.OnionSkinEnabled
+            ?? snapshot.LayerOnionSkin.Any(enabled => enabled);
         OnionSkinPreviousFrames = NormalizeOnionSkinFrames(snapshot.OnionSkinPreviousFrames, DefaultOnionSkinPreviousFrames);
         OnionSkinNextFrames = NormalizeOnionSkinFrames(snapshot.OnionSkinNextFrames, DefaultOnionSkinNextFrames);
         LayerStart = snapshot.LayerStart.ToArray();
@@ -4444,8 +4456,9 @@ internal sealed class VectorScene : ITimelineContext
         LayerLocked = InsertLayerValue(LayerLocked, index, false);
         LayerVisible = InsertLayerValue(LayerVisible, index, true);
         LayerOpacity = InsertLayerValue(LayerOpacity, index, 1f);
+        LayerBlendModes = InsertLayerValue(LayerBlendModes, index, LayerBlendMode.Normal);
         LayerColorArgb = InsertLayerValue(LayerColorArgb, index, DefaultLayerColor(index).ToArgb());
-        LayerOnionSkin = InsertLayerValue(LayerOnionSkin, index, false);
+        LayerOutline = InsertLayerValue(LayerOutline, index, false);
         LayerStart = InsertLayerValue(LayerStart, index, 0);
         LayerEnd = InsertLayerValue(LayerEnd, index, -1);
         LayerCount++;
@@ -4533,10 +4546,55 @@ internal sealed class VectorScene : ITimelineContext
         return true;
     }
 
-    public bool ToggleLayerOnionSkin(int layer)
+    public bool SetLayerBlendMode(int layer, LayerBlendMode blendMode)
+    {
+        if ((uint)layer >= LayerCount || !Enum.IsDefined(blendMode) || LayerBlendModes[layer] == blendMode) return false;
+        LayerBlendModes[layer] = blendMode;
+        return true;
+    }
+
+    public bool IsLayerEffectivelyOutlined(int layer)
     {
         if ((uint)layer >= LayerCount) return false;
-        LayerOnionSkin[layer] = !LayerOnionSkin[layer];
+        var current = layer;
+        var visited = new HashSet<int>();
+        while (current >= 0 && visited.Add(current))
+        {
+            if (current < LayerOutline.Length && LayerOutline[current]) return true;
+            current = GetLayerParentIndex(current);
+        }
+
+        return false;
+    }
+
+    public Color GetEffectiveLayerOutlineColor(int layer)
+    {
+        return IsLayerEffectivelyOutlined(layer) ? GetLayerColor(layer) : Color.Empty;
+    }
+
+    public bool ToggleLayerOutline(int layer)
+    {
+        if ((uint)layer >= LayerCount) return false;
+        LayerOutline[layer] = !LayerOutline[layer];
+        return true;
+    }
+
+    public bool SetLayerOutline(int layer, bool outline)
+    {
+        if ((uint)layer >= LayerCount || LayerOutline[layer] == outline) return false;
+        LayerOutline[layer] = outline;
+        return true;
+    }
+
+    public bool ToggleOnionSkin()
+    {
+        return SetOnionSkinEnabled(!OnionSkinEnabled);
+    }
+
+    public bool SetOnionSkinEnabled(bool enabled)
+    {
+        if (OnionSkinEnabled == enabled) return false;
+        OnionSkinEnabled = enabled;
         return true;
     }
 
@@ -4582,8 +4640,9 @@ internal sealed class VectorScene : ITimelineContext
         LayerLocked = ReorderLayers(LayerLocked, destinationBySource);
         LayerVisible = ReorderLayers(LayerVisible, destinationBySource);
         LayerOpacity = ReorderLayers(LayerOpacity, destinationBySource);
+        LayerBlendModes = ReorderLayers(LayerBlendModes, destinationBySource);
         LayerColorArgb = ReorderLayers(LayerColorArgb, destinationBySource);
-        LayerOnionSkin = ReorderLayers(LayerOnionSkin, destinationBySource);
+        LayerOutline = ReorderLayers(LayerOutline, destinationBySource);
         LayerStart = ReorderLayers(LayerStart, destinationBySource);
         LayerEnd = ReorderLayers(LayerEnd, destinationBySource);
         for (var objectIndex = 0; objectIndex < ObjectCount; objectIndex++)
@@ -4699,8 +4758,9 @@ internal sealed class VectorScene : ITimelineContext
         LayerLocked = RemoveLayerValues(LayerLocked, removedLayers);
         LayerVisible = RemoveLayerValues(LayerVisible, removedLayers);
         LayerOpacity = RemoveLayerValues(LayerOpacity, removedLayers);
+        LayerBlendModes = RemoveLayerValues(LayerBlendModes, removedLayers);
         LayerColorArgb = RemoveLayerValues(LayerColorArgb, removedLayers);
-        LayerOnionSkin = RemoveLayerValues(LayerOnionSkin, removedLayers);
+        LayerOutline = RemoveLayerValues(LayerOutline, removedLayers);
         LayerStart = RemoveLayerValues(LayerStart, removedLayers);
         LayerEnd = RemoveLayerValues(LayerEnd, removedLayers);
         LayerCount = destination;
@@ -4830,7 +4890,9 @@ internal sealed class VectorScene : ITimelineContext
         ArgumentNullException.ThrowIfNull(destination);
         var previousRange = NormalizeOnionSkinFrames(previousFrames, OnionSkinPreviousFrames);
         var nextRange = NormalizeOnionSkinFrames(nextFrames, OnionSkinNextFrames);
-        if ((previousRange <= 0 && nextRange <= 0) || !HasVisibleOnionSkinLayer())
+        if (!OnionSkinEnabled
+            || (previousRange <= 0 && nextRange <= 0)
+            || !HasEligibleOnionSkinLayer())
         {
             destination.CreateEmpty();
             return;
@@ -4842,7 +4904,7 @@ internal sealed class VectorScene : ITimelineContext
 
         for (var layer = 0; layer < LayerCount; layer++)
         {
-            if (!LayerVisible[layer] || !LayerOnionSkin[layer]) continue;
+            if (!IsLayerEligibleForOnionSkin(layer)) continue;
             var track = TimelineTrackForLayer(layer);
             if (track is null) continue;
             var currentExposure = track.EvaluateExposure(Math.Clamp(frame, 0, track.Duration - 1));
@@ -4910,6 +4972,8 @@ internal sealed class VectorScene : ITimelineContext
             destination.LayerNames[destinationLayer] = $"{LayerNames[item.Candidate.Layer]} onion";
             destination.LayerVisible[destinationLayer] = true;
             destination.LayerOpacity[destinationLayer] = item.Candidate.Opacity;
+            destination.LayerBlendModes[destinationLayer] = LayerBlendMode.Normal;
+            destination.LayerOutline[destinationLayer] = IsLayerEffectivelyOutlined(item.Candidate.Layer);
             destination.LayerColorArgb[destinationLayer] = item.Candidate.IsPrevious
                 ? OnionSkinPreviousTintArgb
                 : OnionSkinNextTintArgb;
@@ -4936,11 +5000,19 @@ internal sealed class VectorScene : ITimelineContext
         destination.RebuildSummaries();
     }
 
-    private bool HasVisibleOnionSkinLayer()
+    internal bool IsLayerEligibleForOnionSkin(int layer)
+    {
+        return (uint)layer < LayerCount
+            && GetLayerKind(layer) != DrawingLayerKind.Folder
+            && IsLayerEffectivelyVisible(layer)
+            && !IsLayerEffectivelyLocked(layer);
+    }
+
+    private bool HasEligibleOnionSkinLayer()
     {
         for (var layer = 0; layer < LayerCount; layer++)
         {
-            if (LayerVisible[layer] && LayerOnionSkin[layer]) return true;
+            if (IsLayerEligibleForOnionSkin(layer)) return true;
         }
 
         return false;
@@ -4967,7 +5039,14 @@ internal sealed class VectorScene : ITimelineContext
                 LayerKinds[destinationLayer] = source.LayerKinds[sourceLayer];
                 LayerVisible[destinationLayer] = source.LayerVisible[sourceLayer];
                 LayerOpacity[destinationLayer] = source.LayerOpacity[sourceLayer] * sourceItem.Opacity;
-                LayerColorArgb[destinationLayer] = source.LayerColorArgb[sourceLayer];
+                LayerBlendModes[destinationLayer] = source.LayerBlendModes[sourceLayer];
+                LayerOutline[destinationLayer] = source.LayerOutline[sourceLayer];
+                LayerColorArgb[destinationLayer] = sourceItem.IsPrevious switch
+                {
+                    true => OnionSkinPreviousTintArgb,
+                    false => OnionSkinNextTintArgb,
+                    null => source.LayerColorArgb[sourceLayer]
+                };
                 var sourceParent = Array.IndexOf(source.LayerIds, source.LayerParentIds[sourceLayer]);
                 if (sourceParent >= 0)
                 {
@@ -5562,6 +5641,46 @@ internal sealed class VectorScene : ITimelineContext
             .ToArray();
     }
 
+    public bool TryGetLinePartEndpointStyles(
+        DrawingElementKey key,
+        int frame,
+        out LineEndpointStyle startStyle,
+        out LineEndpointStyle endStyle)
+    {
+        startStyle = LineEndpointStyle.Round;
+        endStyle = LineEndpointStyle.Round;
+        if (!key.IsValid
+            || (uint)key.ObjectIndex >= ObjectCount
+            || !IsObjectActive(key.ObjectIndex, frame)
+            || !HasStroke(key.ObjectIndex))
+        {
+            return false;
+        }
+
+        var candidates = CollectTopologyCandidates(key.ObjectIndex, frame);
+        if (key.Kind == DrawingElementKind.Stroke
+            && ShapeKind[key.ObjectIndex] == VectorAnimationEngine.ShapeKind.Line)
+        {
+            var splits = StrokeSplits(key.ObjectIndex, candidates);
+            if (key.PartIndex < 0 || key.PartIndex >= splits.Count - 1) return false;
+
+            if (key.PartIndex == 0)
+            {
+                startStyle = GetLineEndpointStyle(key.ObjectIndex, startEndpoint: true);
+            }
+            if (key.PartIndex == splits.Count - 2)
+            {
+                endStyle = GetLineEndpointStyle(key.ObjectIndex, startEndpoint: false);
+            }
+            return true;
+        }
+
+        if (key.Kind != DrawingElementKind.BoundaryStroke) return false;
+        var boundary = BuildBoundaryStrokeParts(key.ObjectIndex, candidates)
+            .FirstOrDefault(part => part.PartIndex == key.PartIndex);
+        return boundary.Curve is not null || boundary.Points is { Length: 2 };
+    }
+
     public PointF[] GetStrokePartPoints(DrawingElementHit hit, int frame)
     {
         if (!hit.IsValid || hit.Key.Kind != DrawingElementKind.Stroke || (uint)hit.Key.ObjectIndex >= ObjectCount)
@@ -5777,14 +5896,26 @@ internal sealed class VectorScene : ITimelineContext
         animationContours = Array.Empty<PointF[]>();
         if (!TryFindClosedStrokeFillRegion(world, frame, out var region)) return false;
 
-        var atoms = (uint)Math.Clamp(region.Contour.Length, 3, 4096);
-        var created = AppendPathObjectContours(
-            ActiveLayer,
-            new[] { region.Contour },
-            0,
-            color,
-            Color.Transparent,
-            atoms);
+        var hasExactBoundary = TryBuildClosedStrokeFillBezierContours(region, out var bezierContours);
+        var atoms = (uint)Math.Clamp(
+            hasExactBoundary ? bezierContours.Sum(contour => contour.Length) : region.Contour.Length,
+            3,
+            4096);
+        var created = hasExactBoundary
+            ? AppendPathBezierObjectContours(
+                ActiveLayer,
+                bezierContours,
+                0,
+                color,
+                Color.Transparent,
+                atoms)
+            : AppendPathObjectContours(
+                ActiveLayer,
+                new[] { region.Contour },
+                0,
+                color,
+                Color.Transparent,
+                atoms);
         if (created < 0) return false;
 
         var firstBoundary = region.BoundaryObjects
@@ -5977,6 +6108,58 @@ internal sealed class VectorScene : ITimelineContext
         if (bestContour is null || bestBoundaryObjects is null) return false;
         region = new ClosedStrokeFillRegion(bestContour, bestBoundaryObjects);
         return true;
+    }
+
+    private bool TryBuildClosedStrokeFillBezierContours(
+        ClosedStrokeFillRegion region,
+        out PathBezierNode[][] contours)
+    {
+        contours = [];
+        var sources = new List<BooleanBezierCurveSource>();
+        foreach (var objectIndex in region.BoundaryObjects)
+        {
+            if ((uint)objectIndex >= ObjectCount) continue;
+            if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Line)
+            {
+                var line = LineCurve(objectIndex);
+                AddSource(new CubicBoundarySegment(
+                    line.Start,
+                    line.Control1,
+                    line.Control2,
+                    line.End));
+                continue;
+            }
+
+            if (!TryGetEditableFillBezierContours(objectIndex, out var boundaryContours)) continue;
+            foreach (var segment in BuildPathBezierSegmentParts(boundaryContours))
+            {
+                AddSource(new CubicBoundarySegment(
+                    segment.Start,
+                    segment.Control1,
+                    segment.Control2,
+                    segment.End));
+            }
+        }
+
+        if (sources.Count == 0
+            || !TryRebuildBezierContourFromBooleanBoundary(region.Contour, sources, out var contour))
+        {
+            return false;
+        }
+
+        var rebuilt = new[] { contour };
+        if (!BooleanBezierContoursMatch(new[] { region.Contour }, rebuilt)) return false;
+        contours = rebuilt;
+        return true;
+
+        void AddSource(CubicBoundarySegment curve)
+        {
+            var samples = SampleCubicSegmentWithParameters(curve);
+            if (samples.Length < 2) return;
+            var bounds = CurveSampleBounds(samples);
+            bounds.Inflate(BooleanBezierMaximumErrorUnits, BooleanBezierMaximumErrorUnits);
+            sources.Add(new BooleanBezierCurveSource(curve, samples, bounds));
+        }
     }
 
     private PointF[] ClosedFillPartPoints(ConnectedStrokePart part, int frame)
@@ -6316,7 +6499,8 @@ internal sealed class VectorScene : ITimelineContext
     public FillBezierSegmentPiece[] GetExposedFillBezierSegmentPieces(
         int objectIndex,
         int frame,
-        int? fillPartIndex = null)
+        int? fillPartIndex = null,
+        bool includeCoincidentStrokes = false)
     {
         var sourceParts = GetEditableFillBezierSegmentParts(objectIndex);
         if (sourceParts.Length == 0 || !IsObjectActive(objectIndex, frame)) return [];
@@ -6336,19 +6520,22 @@ internal sealed class VectorScene : ITimelineContext
 
         var sourceLayer = ObjectLayer[objectIndex];
         var coincidentStrokePaths = new List<PointF[]>();
-        foreach (var candidate in candidates)
+        if (!includeCoincidentStrokes)
         {
-            if (candidate == objectIndex
-                || ObjectLayer[candidate] != sourceLayer
-                || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[objectIndex]
-                || !IsFillBoundaryLinkedStrokeShape(ShapeKind[candidate])
-                || !HasStroke(candidate))
+            foreach (var candidate in candidates)
             {
-                continue;
-            }
+                if (candidate == objectIndex
+                    || ObjectLayer[candidate] != sourceLayer
+                    || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[objectIndex]
+                    || !IsFillBoundaryLinkedStrokeShape(ShapeKind[candidate])
+                    || !HasStroke(candidate))
+                {
+                    continue;
+                }
 
-            var points = StrokeSamples(candidate).Select(sample => sample.Point).ToArray();
-            if (points.Length >= 2) coincidentStrokePaths.Add(points);
+                var points = StrokeSamples(candidate).Select(sample => sample.Point).ToArray();
+                if (points.Length >= 2) coincidentStrokePaths.Add(points);
+            }
         }
 
         var result = new List<FillBezierSegmentPiece>();
@@ -6391,7 +6578,7 @@ internal sealed class VectorScene : ITimelineContext
 
                 var bordersSelectedPart = selectedContours is null
                     || FillBezierSegmentBordersFillPart(curve, selectedContours);
-                var followsStroke = coincidentStrokePaths.Any(stroke =>
+                var followsStroke = !includeCoincidentStrokes && coincidentStrokePaths.Any(stroke =>
                     FillBezierSegmentFollowsStroke(samples, stroke));
                 if (!bordersSelectedPart || followsStroke) continue;
 
@@ -6541,6 +6728,34 @@ internal sealed class VectorScene : ITimelineContext
             new(0, sourceCurve.Start),
             new(1, sourceCurve.End)
         };
+        foreach (var selfPart in GetEditableFillBezierSegmentParts(objectIndex))
+        {
+            var selfCurve = new CubicBoundarySegment(
+                selfPart.Start,
+                selfPart.Control1,
+                selfPart.Control2,
+                selfPart.End);
+            if (CubicCurvesCoincide(
+                    sourceCurve.Start,
+                    sourceCurve.Control1,
+                    sourceCurve.Control2,
+                    sourceCurve.End,
+                    selfCurve.Start,
+                    selfCurve.Control1,
+                    selfCurve.Control2,
+                    selfCurve.End,
+                    out _))
+            {
+                continue;
+            }
+
+            AddCurveCurveIntersections(
+                splits,
+                sourceSamples,
+                SampleCubicSegmentWithParameters(selfCurve),
+                includeSourceEndpoints: true);
+        }
+
         foreach (var candidate in candidates)
         {
             if (candidate == objectIndex
@@ -6555,16 +6770,19 @@ internal sealed class VectorScene : ITimelineContext
                 : VectorAnimationEngine.ShapeKind.Rectangle;
             if (IsTopologyStrokeShape(shape))
             {
+                var candidateSamples = StrokeSamples(candidate);
+                if (FillBezierSegmentFollowsStroke(sourceSamples, candidateSamples)) continue;
                 AddCurveCurveIntersections(
                     splits,
                     sourceSamples,
-                    StrokeSamples(candidate),
+                    candidateSamples,
                     includeSourceEndpoints: true);
             }
             else if (IsFillShape(shape))
             {
                 foreach (var contour in ShapeBoundaryContours(candidate))
                 {
+                    if (FillBezierSegmentFollowsStroke(sourceSamples, contour)) continue;
                     AddCurvePolylineIntersections(
                         splits,
                         sourceSamples,
@@ -6765,6 +6983,38 @@ internal sealed class VectorScene : ITimelineContext
         if (samples.Count < 2 || stroke.Count < 2) return false;
         return samples.All(sample =>
             DistanceToPolyline(sample, stroke) <= ConnectedStrokeEndpointToleranceUnits);
+    }
+
+    private static bool FillBezierSegmentFollowsStroke(
+        IReadOnlyList<CurveSample> samples,
+        IReadOnlyList<CurveSample> stroke)
+    {
+        if (samples.Count < 2 || stroke.Count < 2) return false;
+        for (var index = 0; index < samples.Count; index++)
+        {
+            if (DistanceToCurveSamples(samples[index].Point, stroke) > ConnectedStrokeEndpointToleranceUnits)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool FillBezierSegmentFollowsStroke(
+        IReadOnlyList<CurveSample> samples,
+        IReadOnlyList<PointF> stroke)
+    {
+        if (samples.Count < 2 || stroke.Count < 2) return false;
+        for (var index = 0; index < samples.Count; index++)
+        {
+            if (DistanceToPolyline(samples[index].Point, stroke) > ConnectedStrokeEndpointToleranceUnits)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     internal bool TryGetExactFillBezierSegmentForBoundary(
@@ -8137,6 +8387,73 @@ internal sealed class VectorScene : ITimelineContext
         return links.ToArray();
     }
 
+    public bool CanonicalizeFlattenedFillBoundaryCurves(
+        int fillObjectIndex,
+        int frame,
+        bool rebuildGeometryIndex = true)
+    {
+        if ((uint)fillObjectIndex >= ObjectCount
+            || !HasFill(fillObjectIndex)
+            || !IsObjectActive(fillObjectIndex, frame))
+        {
+            return false;
+        }
+
+        var bounds = GetObjectWorldBounds(fillObjectIndex);
+        bounds.Inflate(ConnectedStrokeEndpointToleranceUnits, ConnectedStrokeEndpointToleranceUnits);
+        var links = QueryObjects(bounds, frame)
+            .Where(candidate => candidate != fillObjectIndex
+                && ObjectLayer[candidate] == ObjectLayer[fillObjectIndex]
+                && ObjectKeyframeFrame[candidate] == ObjectKeyframeFrame[fillObjectIndex]
+                && ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                && HasStroke(candidate))
+            .SelectMany(candidate => CaptureFillBoundaryLineLinks(candidate, frame))
+            .Where(link => link.FillObjectIndex == fillObjectIndex
+                && IsFlattenedFillBoundaryCurveLink(link))
+            .GroupBy(link => (link.ContourIndex, link.BezierSegmentIndex, link.BezierSegmentCount))
+            .Select(group => group.First())
+            .ToArray();
+        return links.Length > 0 && UpdateFillBoundaryLineLinks(links, rebuildGeometryIndex);
+    }
+
+    private bool IsFlattenedFillBoundaryCurveLink(FillBoundaryLineLink link)
+    {
+        if (link.BezierSegmentCount <= 1
+            || (uint)link.LineObjectIndex >= ObjectCount
+            || ShapeKind[link.LineObjectIndex] != VectorAnimationEngine.ShapeKind.Line
+            || (uint)link.ContourIndex >= link.OriginalBezierContours.Length)
+        {
+            return false;
+        }
+
+        var line = LineCurve(link.LineObjectIndex);
+        if (IsStraightBezierSegment(line.Start, line.Control1, line.Control2, line.End)) return false;
+
+        var contour = link.OriginalBezierContours[link.ContourIndex];
+        if (contour.Length < 3
+            || link.BezierSegmentIndex < 0
+            || link.BezierSegmentCount >= contour.Length)
+        {
+            return false;
+        }
+
+        for (var offset = 0; offset < link.BezierSegmentCount; offset++)
+        {
+            var segmentIndex = (link.BezierSegmentIndex + offset) % contour.Length;
+            var nextIndex = (segmentIndex + 1) % contour.Length;
+            if (!IsStraightBezierSegment(
+                    contour[segmentIndex].Anchor,
+                    contour[segmentIndex].OutgoingControl,
+                    contour[nextIndex].IncomingControl,
+                    contour[nextIndex].Anchor))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private FillBoundaryLineLink[] CaptureLinkedFillBoundariesForTransform(IReadOnlyCollection<int> targets)
     {
         if (targets.Count == 0) return Array.Empty<FillBoundaryLineLink>();
@@ -8382,6 +8699,26 @@ internal sealed class VectorScene : ITimelineContext
         var ownerObjectIndex = fillObjectIndex;
         var ownerPartIndex = fillPartIndex;
 
+        var ownerParts = GetEditableFillBezierSegmentParts(ownerObjectIndex);
+        var ownerNodePartIndex = fillPartIndex;
+        if (!startEndpoint)
+        {
+            var ownerContourLength = ownerParts.Count(part => part.ContourIndex == fillSegment.ContourIndex);
+            var nextSegmentIndex = (fillSegment.SegmentIndex + 1) % ownerContourLength;
+            ownerNodePartIndex = ownerParts.First(part =>
+                part.ContourIndex == fillSegment.ContourIndex
+                && part.SegmentIndex == nextSegmentIndex).PartIndex;
+        }
+
+        geometryChanged |= CapturePathIntersectionAnchors(
+            ownerObjectIndex,
+            anchor,
+            pathAnchors,
+            capturedPathAnchors,
+            excludedNodePartIndex: ownerNodePartIndex,
+            trackedPartIndex: ownerPartIndex,
+            out ownerPartIndex);
+
         foreach (var candidate in QueryObjects(bounds, frame))
         {
             if (candidate == ownerObjectIndex
@@ -8482,7 +8819,8 @@ internal sealed class VectorScene : ITimelineContext
         int lineObjectIndex,
         bool startEndpoint,
         int frame,
-        bool rebuildGeometryIndex = true)
+        bool rebuildGeometryIndex = true,
+        IReadOnlySet<int>? excludedFillObjectIndices = null)
     {
         if ((uint)lineObjectIndex >= ObjectCount
             || ShapeKind[lineObjectIndex] != VectorAnimationEngine.ShapeKind.Line
@@ -8513,6 +8851,7 @@ internal sealed class VectorScene : ITimelineContext
 
             if (HasFill(candidate))
             {
+                if (excludedFillObjectIndices?.Contains(candidate) == true) continue;
                 geometryChanged |= CapturePathIntersectionAnchors(
                     candidate,
                     anchor,
@@ -8657,6 +8996,26 @@ internal sealed class VectorScene : ITimelineContext
         ICollection<PathIntersectionAnchor> pathAnchors,
         ISet<(int ObjectIndex, int PartIndex, bool StartEndpoint)> capturedPathAnchors)
     {
+        return CapturePathIntersectionAnchors(
+            objectIndex,
+            anchor,
+            pathAnchors,
+            capturedPathAnchors,
+            excludedNodePartIndex: -1,
+            trackedPartIndex: -1,
+            out _);
+    }
+
+    private bool CapturePathIntersectionAnchors(
+        int objectIndex,
+        PointF anchor,
+        ICollection<PathIntersectionAnchor> pathAnchors,
+        ISet<(int ObjectIndex, int PartIndex, bool StartEndpoint)> capturedPathAnchors,
+        int excludedNodePartIndex,
+        int trackedPartIndex,
+        out int remappedTrackedPartIndex)
+    {
+        remappedTrackedPartIndex = trackedPartIndex;
         if ((uint)objectIndex >= ObjectCount || !IsFillShape(ShapeKind[objectIndex])) return false;
         var parts = GetEditableFillBezierSegmentParts(objectIndex);
         if (parts.Length == 0) return false;
@@ -8689,8 +9048,10 @@ internal sealed class VectorScene : ITimelineContext
             var nodeIndex = startDistance <= endDistance
                 ? part.SegmentIndex
                 : (part.SegmentIndex + 1) % contourLength;
+            var nodePartIndex = partIndices[(part.ContourIndex, nodeIndex)];
+            if (nodePartIndex == excludedNodePartIndex) continue;
             if (!existingNodes.Add((part.ContourIndex, nodeIndex))) continue;
-            intersections.Add((partIndices[(part.ContourIndex, nodeIndex)], 0));
+            intersections.Add((nodePartIndex, 0));
         }
 
         if (intersections.Count == 0) return false;
@@ -8718,6 +9079,10 @@ internal sealed class VectorScene : ITimelineContext
                     continue;
                 }
 
+                if (partIndex <= remappedTrackedPartIndex)
+                {
+                    remappedTrackedPartIndex++;
+                }
                 insertionOffset++;
                 geometryChanged = true;
             }
@@ -11948,11 +12313,7 @@ internal sealed class VectorScene : ITimelineContext
                     next.Anchor);
                 var samples = SampleCubicSegmentWithParameters(curve);
                 if (samples.Length < 2) continue;
-                var bounds = CubicCurveBounds(
-                    curve.Start,
-                    curve.Control1,
-                    curve.Control2,
-                    curve.End);
+                var bounds = CurveSampleBounds(samples);
                 bounds.Inflate(BooleanBezierMaximumErrorUnits, BooleanBezierMaximumErrorUnits);
                 sources.Add(new BooleanBezierCurveSource(curve, samples, bounds));
             }
@@ -12017,6 +12378,7 @@ internal sealed class VectorScene : ITimelineContext
                 bestScore = score;
                 labels[edgeIndex] = sourceIndex;
             }
+
         }
 
         var startEdge = 0;
@@ -12168,6 +12530,25 @@ internal sealed class VectorScene : ITimelineContext
         var matchedSamples = SampleCubicSegment(matched);
         return runPoints.All(point =>
             DistanceToPolyline(point, matchedSamples) <= BooleanBezierMaximumErrorUnits);
+    }
+
+    private static RectangleF CurveSampleBounds(IReadOnlyList<CurveSample> samples)
+    {
+        var first = samples[0].Point;
+        var left = first.X;
+        var right = first.X;
+        var top = first.Y;
+        var bottom = first.Y;
+        for (var index = 1; index < samples.Count; index++)
+        {
+            var point = samples[index].Point;
+            left = Math.Min(left, point.X);
+            right = Math.Max(right, point.X);
+            top = Math.Min(top, point.Y);
+            bottom = Math.Max(bottom, point.Y);
+        }
+
+        return RectangleF.FromLTRB(left, top, right, bottom);
     }
 
     private static bool TryGetClosestParameterOnCubic(
@@ -16963,7 +17344,19 @@ internal sealed class VectorScene : ITimelineContext
         return result;
     }
 
-    private static bool[] NormalizeLayerOnionSkin(IReadOnlyList<bool>? source, int count)
+    private static LayerBlendMode[] NormalizeLayerBlendModes(IReadOnlyList<LayerBlendMode>? source, int count)
+    {
+        var result = new LayerBlendMode[Math.Max(0, count)];
+        if (source is null) return result;
+        for (var index = 0; index < result.Length && index < source.Count; index++)
+        {
+            result[index] = Enum.IsDefined(source[index]) ? source[index] : LayerBlendMode.Normal;
+        }
+
+        return result;
+    }
+
+    private static bool[] NormalizeLayerOutline(IReadOnlyList<bool>? source, int count)
     {
         var result = new bool[Math.Max(0, count)];
         if (source is null) return result;

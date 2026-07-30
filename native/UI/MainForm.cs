@@ -221,6 +221,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripSeparator _lineActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _mergeAndSimplifyLinesMenuItem = new("Merge and Simplify Lines");
     private readonly Panel _inspectorHost = new();
+    private readonly LayerBlendModePanel _layerBlendModePanel = new();
     private readonly ThemedScrollPanel _basicInspectorPage = new();
     private readonly Panel _objectInspector = new();
     private readonly ThemedScrollPanel _sceneEditPage = new();
@@ -1973,6 +1974,10 @@ internal sealed class MainForm : Form
         inspector.Controls.Add(_animationPage);
         inspector.Controls.Add(_sceneEditPage);
         inspector.Controls.Add(_basicInspectorPage);
+        _layerBlendModePanel.Dock = DockStyle.Top;
+        _layerBlendModePanel.Height = _layerBlendModePanel.PreferredPanelHeight;
+        inspector.Controls.Add(_layerBlendModePanel);
+        _layerBlendModePanel.SendToBack();
         ShowWorkspace(WorkspaceView.BasicDrawing);
     }
 
@@ -4026,6 +4031,7 @@ internal sealed class MainForm : Form
             if (!CommitTextEdit()) return;
             MarkProjectDirty();
             if (_lastDrawingToolsBlocked != DrawingToolsBlocked()) RefreshToolButtons();
+            RefreshLayerBlendModePanel();
             UpdateInspectorForTimelineLayerChange();
             _stage.Invalidate();
         };
@@ -4050,11 +4056,14 @@ internal sealed class MainForm : Form
         _timeline.LayerRenameRequested += (_, _) => RenameTimelineLayer();
         _timeline.LayerColorRequested += (_, _) => ChooseTimelineLayerColor();
         _timeline.LayerLockRequested += (_, _) => ToggleTimelineLayerLock();
-        _timeline.LayerOnionSkinRequested += (_, _) => ToggleTimelineLayerOnionSkin();
+        _timeline.LayerOutlineRequested += (_, _) => ToggleTimelineLayerOutline();
+        _timeline.AllLayerOutlinesRequested += (_, _) => ToggleAllTimelineLayerOutlines();
+        _timeline.OnionSkinToggleRequested += (_, _) => ToggleTimelineOnionSkin();
         _timeline.OnionSkinRangeChanged += (_, e) => SetTimelineOnionSkinRange(e.PreviousFrames, e.NextFrames);
         _timeline.OnionSkinRangeInteractionStarted += (_, _) => BeginTimelineOnionSkinRangeEdit();
         _timeline.OnionSkinRangeInteractionCompleted += (_, _) => CompleteTimelineOnionSkinRangeEdit();
         _timeline.OnionSkinRangeInteractionCanceled += (_, _) => CancelTimelineOnionSkinRangeEdit();
+        _layerBlendModePanel.BlendModeChanged += (_, e) => ApplySelectedLayerBlendMode(e.BlendMode);
         _sceneEditorPanel.AddSceneRequested += (_, _) => AddScene();
         _sceneEditorPanel.AddDrawingObjectRequested += (_, _) => AddDrawingObject();
         _sceneEditorPanel.AddSceneInstanceRequested += (_, _) => AddSceneInstanceFromActiveDrawingObject();
@@ -4243,6 +4252,7 @@ internal sealed class MainForm : Form
             {
                 _scene.ActiveLayer = e.Index;
                 RefreshLayers();
+                _timeline.SelectModelActiveTrack();
                 UpdateInspector();
             }
             else if (e.Kind == HierarchyNodeKind.Object && e.Index >= 0 && e.Index < _scene.ObjectCount)
@@ -5661,7 +5671,7 @@ internal sealed class MainForm : Form
                 _hierarchyPanel.RefreshScene();
                 RebuildDrawingObjectUnderlay();
             }
-            else if (Array.IndexOf(drawingScene.LayerOnionSkin, true) >= 0)
+            else if (drawingScene.OnionSkinEnabled)
             {
                 RebuildOnionSkinPreview();
             }
@@ -6016,6 +6026,108 @@ internal sealed class MainForm : Form
         return active is null ? [] : [active.TargetId];
     }
 
+    private void RefreshLayerBlendModePanel()
+    {
+        var context = _timeline.Context;
+        var activeTargetId = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "")?.TargetId;
+        if (string.IsNullOrWhiteSpace(activeTargetId))
+        {
+            _layerBlendModePanel.ClearLayer();
+            return;
+        }
+
+        var drawingScene = context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            _ => null
+        };
+        if (drawingScene is not null)
+        {
+            var layer = Array.IndexOf(drawingScene.LayerIds, activeTargetId);
+            if ((uint)layer < drawingScene.LayerCount && layer < drawingScene.LayerBlendModes.Length)
+            {
+                _layerBlendModePanel.SetLayer(drawingScene.LayerNames[layer], drawingScene.LayerBlendModes[layer]);
+                return;
+            }
+        }
+        else if (context is SceneDefinition sceneDefinition
+            && sceneDefinition.FindLayer(activeTargetId) is { } sceneLayer)
+        {
+            _layerBlendModePanel.SetLayer(sceneLayer.Name, sceneLayer.BlendMode);
+            return;
+        }
+
+        _layerBlendModePanel.ClearLayer();
+    }
+
+    private void ApplySelectedLayerBlendMode(LayerBlendMode blendMode)
+    {
+        if (!Enum.IsDefined(blendMode)) return;
+        var context = _timeline.Context;
+        var targetIds = SelectedTimelineLayerTargetIds();
+        if (targetIds.Count == 0) return;
+
+        var drawingScene = context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            _ => null
+        };
+        if (drawingScene is not null)
+        {
+            var layers = targetIds
+                .Select(targetId => Array.IndexOf(drawingScene.LayerIds, targetId))
+                .Where(layer => layer >= 0)
+                .Distinct()
+                .ToArray();
+            if (layers.Length == 0) return;
+
+            var snapshot = drawingScene.CreateSnapshot();
+            var changed = false;
+            foreach (var layer in layers) changed |= drawingScene.SetLayerBlendMode(layer, blendMode);
+            if (!changed)
+            {
+                RefreshLayerBlendModePanel();
+                return;
+            }
+
+            PushUndoSnapshot(snapshot);
+            _timeline.Invalidate();
+            if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
+            _hierarchyPanel.RefreshScene();
+            RefreshLayerBlendModePanel();
+            _stage.Invalidate();
+            return;
+        }
+
+        if (context is not SceneDefinition sceneDefinition) return;
+        var layerIds = targetIds
+            .Where(targetId => sceneDefinition.FindLayer(targetId) is not null)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (layerIds.Length == 0) return;
+
+        var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
+        var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
+        var sceneChanged = false;
+        foreach (var layerId in layerIds)
+        {
+            sceneChanged |= _project.TrySetSceneLayerBlendMode(sceneDefinition.Id, layerId, blendMode);
+        }
+        if (!sceneChanged)
+        {
+            RefreshLayerBlendModePanel();
+            return;
+        }
+
+        PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot);
+        RebuildSceneComposition();
+        _timeline.Invalidate();
+        RefreshLayerBlendModePanel();
+        _stage.Invalidate();
+    }
+
     private void RemoveTimelineLayers()
     {
         var context = _timeline.Context;
@@ -6118,7 +6230,6 @@ internal sealed class MainForm : Form
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
             _ => null
         };
-        var current = Color.Empty;
         var activeTargetId = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "")?.TargetId;
         if (drawingScene is not null)
         {
@@ -6131,16 +6242,26 @@ internal sealed class MainForm : Form
             var activeLayer = string.IsNullOrWhiteSpace(activeTargetId)
                 ? -1
                 : Array.IndexOf(drawingScene.LayerIds, activeTargetId);
-            current = drawingScene.GetLayerColor(activeLayer >= 0 && layers.Contains(activeLayer) ? activeLayer : layers[0]);
-
-            using var picker = new ColorDialog { Color = current, FullOpen = true };
-            if (picker.ShowDialog(this) != DialogResult.OK) return;
             var snapshot = drawingScene.CreateSnapshot();
-            var changed = false;
-            foreach (var layer in layers) changed |= drawingScene.SetLayerColor(layer, picker.Color);
-            if (!changed) return;
+            var drawingOriginalColors = layers.Select(drawingScene.GetLayerColor).Select(color => color.ToArgb()).ToArray();
+            var drawingCurrentColor = drawingScene.GetLayerColor(activeLayer >= 0 && layers.Contains(activeLayer) ? activeLayer : layers[0]);
+            using var picker = new LayerColorDialog(drawingCurrentColor);
+            picker.ColorChanged += (_, _) =>
+            {
+                foreach (var layer in layers) drawingScene.SetLayerColor(layer, picker.Color);
+                RefreshTimelineLayerDisplay(context);
+            };
+            if (picker.ShowDialog(this) != DialogResult.OK)
+            {
+                drawingScene.RestoreSnapshot(snapshot);
+                RefreshTimelineLayerDisplay(context);
+                return;
+            }
+
+            foreach (var layer in layers) drawingScene.SetLayerColor(layer, picker.Color);
+            if (!layers.Select((layer, index) => drawingScene.GetLayerColor(layer).ToArgb() != drawingOriginalColors[index]).Any(changed => changed)) return;
             PushUndoSnapshot(snapshot);
-            _timeline.Invalidate();
+            RefreshTimelineLayerDisplay(context);
             return;
         }
 
@@ -6153,25 +6274,43 @@ internal sealed class MainForm : Form
         var activeSceneLayer = !string.IsNullOrWhiteSpace(activeTargetId)
             ? sceneDefinition.FindLayer(activeTargetId)
             : null;
-        current = activeSceneLayer is not null && sceneLayerIds.Contains(activeSceneLayer.Id, StringComparer.Ordinal)
+        var current = activeSceneLayer is not null && sceneLayerIds.Contains(activeSceneLayer.Id, StringComparer.Ordinal)
             ? Color.FromArgb(activeSceneLayer.ColorArgb)
             : Color.FromArgb(sceneDefinition.FindLayer(sceneLayerIds[0])!.ColorArgb);
-
-        using (var picker = new ColorDialog { Color = current, FullOpen = true })
+        var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
+        var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
+        var originalColors = sceneLayerIds.Select(layerId => sceneDefinition.FindLayer(layerId)!.ColorArgb).ToArray();
+        using (var picker = new LayerColorDialog(current))
         {
-            if (picker.ShowDialog(this) != DialogResult.OK) return;
-            var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
-            var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
-            var changed = false;
-            foreach (var layerId in sceneLayerIds)
+            picker.ColorChanged += (_, _) =>
             {
-                changed |= _project.TrySetSceneLayerColor(sceneDefinition.Id, layerId, picker.Color);
+                foreach (var layerId in sceneLayerIds) sceneDefinition.SetLayerColor(layerId, picker.Color);
+                RefreshTimelineLayerDisplay(context);
+            };
+            if (picker.ShowDialog(this) != DialogResult.OK)
+            {
+                sceneDefinition.RestoreLayerSnapshot(layerSnapshot);
+                RefreshTimelineLayerDisplay(context);
+                return;
             }
 
+            foreach (var layerId in sceneLayerIds) sceneDefinition.SetLayerColor(layerId, picker.Color);
+            var changed = sceneLayerIds
+                .Select((layerId, index) => sceneDefinition.FindLayer(layerId)!.ColorArgb != originalColors[index])
+                .Any(value => value);
             if (!changed) return;
             PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot);
         }
+        RefreshTimelineLayerDisplay(context);
+    }
+
+    private void RefreshTimelineLayerDisplay(ITimelineContext context)
+    {
         _timeline.Invalidate();
+        if (context is SceneDefinition) RebuildSceneComposition();
+        else if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
+        else RebuildOnionSkinPreview();
+        _stage.Invalidate();
     }
 
     private void RenameTimelineLayer()
@@ -6244,14 +6383,34 @@ internal sealed class MainForm : Form
         ClearInactiveSelection();
         _timeline.Invalidate();
         if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
+        else RebuildOnionSkinPreview();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         RefreshToolButtons();
         _stage.Invalidate();
     }
 
-    private void ToggleTimelineLayerOnionSkin()
+    private void ToggleTimelineLayerOutline()
     {
+        SetTimelineLayerOutline(SelectedTimelineLayerTargetIds(), outline: null);
+    }
+
+    private void ToggleAllTimelineLayerOutlines()
+    {
+        var context = _timeline.Context;
+        var targetIds = context switch
+        {
+            VectorScene vectorScene => vectorScene.LayerIds,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene.LayerIds,
+            SceneDefinition sceneDefinition => sceneDefinition.Layers.Select(layer => layer.Id).ToArray(),
+            _ => []
+        };
+        SetTimelineLayerOutline(targetIds, outline: null);
+    }
+
+    private void SetTimelineLayerOutline(IReadOnlyList<string> targetIds, bool? outline)
+    {
+        if (targetIds.Count == 0) return;
         var context = _timeline.Context;
         var drawingScene = context switch
         {
@@ -6259,15 +6418,72 @@ internal sealed class MainForm : Form
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
             _ => null
         };
-        var track = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "");
-        if (drawingScene is null || track is null) return;
-        var layer = Array.IndexOf(drawingScene.LayerIds, track.TargetId);
-        if (layer < 0) return;
+        if (drawingScene is not null)
+        {
+            var layers = targetIds
+                .Select(targetId => Array.IndexOf(drawingScene.LayerIds, targetId))
+                .Where(layer => layer >= 0)
+                .Distinct()
+                .ToArray();
+            if (layers.Length == 0) return;
+            var activeTargetId = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "")?.TargetId;
+            var activeLayer = string.IsNullOrWhiteSpace(activeTargetId)
+                ? layers[0]
+                : Array.IndexOf(drawingScene.LayerIds, activeTargetId);
+            if (!layers.Contains(activeLayer)) activeLayer = layers[0];
+            var next = outline ?? !drawingScene.LayerOutline[activeLayer];
+            if (targetIds.Count == drawingScene.LayerCount) next = outline ?? layers.Any(layer => !drawingScene.LayerOutline[layer]);
+
+            var snapshot = drawingScene.CreateSnapshot();
+            var changed = false;
+            foreach (var layer in layers) changed |= drawingScene.SetLayerOutline(layer, next);
+            if (!changed) return;
+            PushUndoSnapshot(snapshot);
+            RefreshTimelineLayerDisplay(context);
+            return;
+        }
+
+        if (context is not SceneDefinition sceneDefinition) return;
+        var layerIds = targetIds
+            .Where(targetId => sceneDefinition.FindLayer(targetId) is not null)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (layerIds.Length == 0) return;
+        var activeSceneTargetId = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "")?.TargetId;
+        var activeSceneLayer = !string.IsNullOrWhiteSpace(activeSceneTargetId)
+            ? sceneDefinition.FindLayer(activeSceneTargetId)
+            : null;
+        activeSceneLayer ??= sceneDefinition.FindLayer(layerIds[0]);
+        var sceneNext = outline ?? !(activeSceneLayer?.Outline == true);
+        if (layerIds.Length == sceneDefinition.Layers.Count)
+        {
+            sceneNext = outline ?? layerIds.Any(layerId => sceneDefinition.FindLayer(layerId)?.Outline != true);
+        }
+
+        var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
+        var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
+        var sceneChanged = false;
+        foreach (var layerId in layerIds) sceneChanged |= sceneDefinition.SetLayerOutline(layerId, sceneNext);
+        if (!sceneChanged) return;
+        PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot);
+        RefreshTimelineLayerDisplay(context);
+    }
+
+    private void ToggleTimelineOnionSkin()
+    {
+        var drawingScene = _timeline.Context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition drawingObject => drawingObject.Scene,
+            _ => null
+        };
+        if (drawingScene is null) return;
         var snapshot = drawingScene.CreateSnapshot();
-        if (!drawingScene.ToggleLayerOnionSkin(layer)) return;
+        if (!drawingScene.ToggleOnionSkin()) return;
         PushUndoSnapshot(snapshot);
-        RebuildDrawingObjectUnderlay();
+        RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
+        _stage.Invalidate();
     }
 
     private void SetTimelineOnionSkinRange(int previousFrames, int nextFrames)
@@ -6280,10 +6496,7 @@ internal sealed class MainForm : Form
         };
         if (drawingScene is null) return;
 
-        var track = _timeline.Context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "");
-        var layer = track is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
-        var enableOnionSkin = layer >= 0
-            && !drawingScene.LayerOnionSkin[layer]
+        var enableOnionSkin = !drawingScene.OnionSkinEnabled
             && (previousFrames > 0 || nextFrames > 0);
         var session = _onionSkinRangeEditSession;
         var snapshot = session is null || !ReferenceEquals(session.Scene, drawingScene)
@@ -6291,11 +6504,12 @@ internal sealed class MainForm : Form
             : null;
         var rangeChanged = drawingScene.SetOnionSkinRange(previousFrames, nextFrames);
         if (!rangeChanged && !enableOnionSkin) return;
-        if (enableOnionSkin) drawingScene.ToggleLayerOnionSkin(layer);
+        if (enableOnionSkin) drawingScene.SetOnionSkinEnabled(true);
         if (session is not null && ReferenceEquals(session.Scene, drawingScene)) session.Changed = true;
         else if (snapshot is not null) PushUndoSnapshot(snapshot);
-        RebuildDrawingObjectUnderlay();
+        RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
+        _stage.Invalidate();
     }
 
     private void BeginTimelineOnionSkinRangeEdit()
@@ -6330,8 +6544,9 @@ internal sealed class MainForm : Form
         if (session is null || !session.Changed) return;
 
         session.Scene.RestoreSnapshot(session.Snapshot);
-        RebuildDrawingObjectUnderlay();
+        RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
+        _stage.Invalidate();
     }
 
     private static int TrackIndex(AnimationTimeline timeline, string? trackId)
@@ -7702,9 +7917,15 @@ internal sealed class MainForm : Form
 
         if (_tool == ToolMode.Select)
         {
-            if (!_forceMarqueeOnPointerDown
-                && !_additiveSelection
-                && _stage.HitTestFillEdgeBezierOverlay(e.Location).IsValid)
+            var fillEdgeOverlayHit = _forceMarqueeOnPointerDown || _additiveSelection
+                ? FillEdgeBezierOverlayHit.None
+                : _stage.HitTestFillEdgeBezierOverlay(e.Location);
+            var fillEdgeSceneHit = fillEdgeOverlayHit.IsValid
+                && fillEdgeOverlayHit.Handle == EditHandleKind.None
+                && _startWorld is { } fillEdgeWorld
+                    ? _scene.HitTestElement(fillEdgeWorld, _frame, SelectionToleranceWorld())
+                    : DrawingElementHit.None;
+            if (FillEdgeOverlayOwnsPointer(fillEdgeOverlayHit, IsSelectableLineHit(fillEdgeSceneHit)))
             {
                 _stage.ClearHoveredLineElement();
                 BeginFillEdgeBezierPointer(e);
@@ -7722,6 +7943,7 @@ internal sealed class MainForm : Form
                 _activeHandle = hoveredHandle;
                 _forceMarqueeOnPointerDown = false;
                 if (_selectedObject >= 0) CaptureEditStart(_selectedObject);
+                if (TryResetSelectedBezierCurvature(e.Button, hoveredHandle)) return;
                 UpdateInspector();
                 _stage.Invalidate();
                 UpdateInteractionCursor(e.Location);
@@ -7736,6 +7958,7 @@ internal sealed class MainForm : Form
                 {
                     _forceMarqueeOnPointerDown = false;
                     CaptureEditStart(_selectedObject);
+                    if (TryResetSelectedBezierCurvature(e.Button, _activeHandle)) return;
                     UpdateInspector();
                     _stage.Invalidate();
                     UpdateInteractionCursor(e.Location);
@@ -7881,6 +8104,7 @@ internal sealed class MainForm : Form
 
                 var overwritten = NormalizeNewPaintObjects([created]);
                 if (overwritten.Length > 0) created = overwritten[0];
+                _scene.CanonicalizeFlattenedFillBoundaryCurves(created, _frame);
 
                 SetSelection(created);
                 PushUndoSnapshot(snapshot);
@@ -8558,6 +8782,13 @@ internal sealed class MainForm : Form
             };
             _stage.SetFillEdgeBezierPointerEditing(true);
             UpdateFillEdgeBezierOverlay();
+            if (IsBezierCurvatureResetGesture(e.Button, IsAltPressed(), overlayHit.Handle))
+            {
+                UpdateFillEdgeBezierPointer(world, resetCurvature: true);
+                CompleteFillEdgeBezierPointer();
+                FinishPointerInteraction();
+                return;
+            }
             UpdateInteractionCursor(e.Location);
             return;
         }
@@ -8651,7 +8882,7 @@ internal sealed class MainForm : Form
             excludedLineObjectIndices: fullCurveLineObjects);
     }
 
-    private void UpdateFillEdgeBezierPointer(PointF world)
+    private void UpdateFillEdgeBezierPointer(PointF world, bool resetCurvature = false)
     {
         var session = _fillEdgeBezierEditSession;
         if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
@@ -8660,27 +8891,34 @@ internal sealed class MainForm : Form
         var control1 = session.Control1;
         var control2 = session.Control2;
         var end = session.End;
-        var adjusted = session.Handle switch
+        CubicDrawingPreviewSegment currentSegment;
+        if (resetCurvature)
         {
-            EditHandleKind.LineStart => MoveHandleWithPointer(session.Start, session.PointerStart, world),
-            EditHandleKind.BezierControl => MoveHandleWithPointer(session.Control1, session.PointerStart, world),
-            EditHandleKind.BezierControl2 => MoveHandleWithPointer(session.Control2, session.PointerStart, world),
-            EditHandleKind.LineEnd => MoveHandleWithPointer(session.End, session.PointerStart, world),
-            _ => PointF.Empty
-        };
-        adjusted = VectorUnits.Quantize(SnapDrawingPoint(adjusted));
-        var adjustedSegment = AdjustFillEdgeBezierHandle(
-            start,
-            control1,
-            control2,
-            end,
-            session.Handle,
-            adjusted);
-        start = adjustedSegment.Start;
-        control1 = adjustedSegment.Control1;
-        control2 = adjustedSegment.Control2;
-        end = adjustedSegment.End;
-        var currentSegment = new CubicDrawingPreviewSegment(start, control1, control2, end);
+            currentSegment = ResetBezierCurvature(start, end);
+        }
+        else
+        {
+            var adjusted = session.Handle switch
+            {
+                EditHandleKind.LineStart => MoveHandleWithPointer(session.Start, session.PointerStart, world),
+                EditHandleKind.BezierControl => MoveHandleWithPointer(session.Control1, session.PointerStart, world),
+                EditHandleKind.BezierControl2 => MoveHandleWithPointer(session.Control2, session.PointerStart, world),
+                EditHandleKind.LineEnd => MoveHandleWithPointer(session.End, session.PointerStart, world),
+                _ => PointF.Empty
+            };
+            adjusted = VectorUnits.Quantize(SnapDrawingPoint(adjusted));
+            currentSegment = AdjustFillEdgeBezierHandle(
+                start,
+                control1,
+                control2,
+                end,
+                session.Handle,
+                adjusted);
+        }
+        start = currentSegment.Start;
+        control1 = currentSegment.Control1;
+        control2 = currentSegment.Control2;
+        end = currentSegment.End;
         if (!ShouldApplyFillEdgeBezierPointer(session.LastAppliedSegment, currentSegment)) return;
 
         if (!_scene.SetPathBezierSegment(
@@ -8797,6 +9035,25 @@ internal sealed class MainForm : Form
         return new CubicDrawingPreviewSegment(start, control1, control2, end);
     }
 
+    internal static bool IsBezierCurvatureResetGesture(
+        MouseButtons button,
+        bool altPressed,
+        EditHandleKind handle)
+    {
+        return button == MouseButtons.Left
+            && altPressed
+            && handle is EditHandleKind.BezierControl or EditHandleKind.BezierControl2;
+    }
+
+    internal static CubicDrawingPreviewSegment ResetBezierCurvature(PointF start, PointF end)
+    {
+        return new CubicDrawingPreviewSegment(
+            start,
+            VectorUnits.Quantize(Lerp(start, end, 1f / 3f)),
+            VectorUnits.Quantize(Lerp(start, end, 2f / 3f)),
+            end);
+    }
+
     internal static EditHandleKind ReverseFillEdgeBezierHandle(EditHandleKind handle)
     {
         return handle switch
@@ -8841,6 +9098,14 @@ internal sealed class MainForm : Form
         return handle != EditHandleKind.None ? pointerMoved : dragThresholdExceeded;
     }
 
+    internal static bool FillEdgeOverlayOwnsPointer(
+        FillEdgeBezierOverlayHit overlayHit,
+        bool selectableLineHit)
+    {
+        return overlayHit.IsValid
+            && (overlayHit.Handle != EditHandleKind.None || !selectableLineHit);
+    }
+
     internal static PointF MoveHandleWithPointer(
         PointF originalHandle,
         PointF pointerStart,
@@ -8866,6 +9131,16 @@ internal sealed class MainForm : Form
                     session.ObjectIndex,
                     session.InitialFillContours,
                     rebuildGeometryIndex: false);
+                if (_scene.TryGetPathBezierSegment(session.ObjectIndex, session.PartIndex, out var finalSegment))
+                {
+                    _scene.UpdateFillBoundaryStrokeLinks(
+                        session.LinkedStrokes,
+                        finalSegment.Start,
+                        finalSegment.Control1,
+                        finalSegment.Control2,
+                        finalSegment.End,
+                        rebuildGeometryIndex: false);
+                }
             }
             _scene.CompleteDeferredBuild();
             if (session.BoundaryGeometryChanged)
@@ -9165,10 +9440,16 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_fillEdgeBezierEditSession is null && !hasSelectedBoundarySegment)
+        {
+            _scene.CanonicalizeFlattenedFillBoundaryCurves(_selectedObject, _frame);
+        }
+
         var pieces = _scene.GetExposedFillBezierSegmentPieces(
             _selectedObject,
             _frame,
-            hasSelectedFillPart ? selectedFillPartIndex : null);
+            hasSelectedFillPart ? selectedFillPartIndex : null,
+            includeCoincidentStrokes: true);
         if (pieces.Length == 0)
         {
             ClearFillEdgeBezierOverlayState();
@@ -9686,7 +9967,9 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (_stage.HitTestFillEdgeBezierOverlay(screen).IsValid)
+        var overlayHit = _stage.HitTestFillEdgeBezierOverlay(screen);
+        var hit = _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld());
+        if (FillEdgeOverlayOwnsPointer(overlayHit, IsSelectableLineHit(hit)))
         {
             _stage.ClearHoveredLineElement();
             return;
@@ -9700,7 +9983,6 @@ internal sealed class MainForm : Form
 
         if (_stage.HitTestHoveredLineHandle(screen) != EditHandleKind.None) return;
 
-        var hit = _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld());
         if (hit.IsValid
             && hit.Key.Kind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke
             && (uint)hit.Key.ObjectIndex < _scene.ObjectCount
@@ -9712,6 +9994,15 @@ internal sealed class MainForm : Form
         }
 
         _stage.ClearHoveredLineElement();
+    }
+
+    private bool IsSelectableLineHit(DrawingElementHit hit)
+    {
+        return hit.IsValid
+            && hit.Key.Kind == DrawingElementKind.Stroke
+            && (uint)hit.Key.ObjectIndex < _scene.ObjectCount
+            && _scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+            && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame);
     }
 
     private void BeginSceneCompositionPointer(MouseEventArgs e)
@@ -10687,7 +10978,10 @@ internal sealed class MainForm : Form
         return false;
     }
 
-    private void MoveSelectedFromPointer(PointF world, bool synchronizeLinkedFills = true)
+    private void MoveSelectedFromPointer(
+        PointF world,
+        bool synchronizeLinkedFills = true,
+        bool resetBezierCurvature = false)
     {
         if (_selectedObject < 0 || _startWorld is null || _selectedStart is null) return;
         CapturePointerUndoSnapshot();
@@ -10695,9 +10989,9 @@ internal sealed class MainForm : Form
         {
             var editsWholePenLine = _tool == ToolMode.Pen && _traditionalPenAnchorEditing;
             if (!editsWholePenLine && !EnsureSelectedElementDetachedForMove()) return;
-            if (!_independentMarqueeStrokeMove) CaptureLineEndpointFillIntersections();
             if (!_independentMarqueeStrokeMove) CaptureFillBoundaryLineLinks();
-            ApplyHandleDrag(world);
+            if (!_independentMarqueeStrokeMove) CaptureLineEndpointFillIntersections();
+            ApplyHandleDrag(world, resetBezierCurvature);
             if (synchronizeLinkedFills && !_independentMarqueeStrokeMove) SynchronizeLinkedFillBoundaries();
         }
         else
@@ -10941,7 +11235,10 @@ internal sealed class MainForm : Form
             _selectedObject,
             startEndpoint: _activeHandle == EditHandleKind.LineStart,
             _frame,
-            rebuildGeometryIndex: false);
+            rebuildGeometryIndex: false,
+            excludedFillObjectIndices: _fillBoundaryLineLinks
+                .Select(link => link.FillObjectIndex)
+                .ToHashSet());
         if (!intersection.HasTargets) return;
         _lineEndpointFillIntersections.Add(intersection);
         _geometryDirty = true;
@@ -11418,6 +11715,19 @@ internal sealed class MainForm : Form
         _dragPreviewStage.TranslateAllObjectsForPreview(dx, dy);
         _dragPreviewPosition = world;
         _stage.Invalidate();
+    }
+
+    private bool TryResetSelectedBezierCurvature(MouseButtons button, EditHandleKind handle)
+    {
+        if (!IsBezierCurvatureResetGesture(button, IsAltPressed(), handle)
+            || _startWorld is not { } pointer)
+        {
+            return false;
+        }
+
+        MoveSelectedFromPointer(pointer, resetBezierCurvature: true);
+        FinishPointerInteraction();
+        return true;
     }
 
     private void QueueMoveSelectedFromPointer(PointF world)
@@ -14820,9 +15130,28 @@ internal sealed class MainForm : Form
         CaptureLineEndpointEditStart(objectIndex);
     }
 
-    private void ApplyHandleDrag(PointF world)
+    private void ApplyHandleDrag(PointF world, bool resetBezierCurvature = false)
     {
         if (_selectedObject < 0 || _resizeStartCenter is null || _resizeStartSize is null) return;
+        if (resetBezierCurvature
+            && _activeHandle is EditHandleKind.BezierControl or EditHandleKind.BezierControl2)
+        {
+            if (_scene.TryGetLineCubic(
+                    _selectedObject,
+                    out var start,
+                    out _,
+                    out _,
+                    out var end))
+            {
+                var reset = ResetBezierCurvature(start, end);
+                _scene.CurveControlX[_selectedObject] = reset.Control1.X;
+                _scene.CurveControlY[_selectedObject] = reset.Control1.Y;
+                _scene.CurveControl2X[_selectedObject] = reset.Control2.X;
+                _scene.CurveControl2Y[_selectedObject] = reset.Control2.Y;
+            }
+            return;
+        }
+
         if (_activeHandle is EditHandleKind.TextAreaLeft or EditHandleKind.TextAreaRight)
         {
             ApplyTextAreaHandleDrag(world);
@@ -15528,6 +15857,7 @@ internal sealed class MainForm : Form
 
     private void UpdateInspector()
     {
+        RefreshLayerBlendModePanel();
         var basicInspectorScrollY = CaptureInspectorScrollPosition(_basicInspectorPage);
         var sceneInspectorScrollY = CaptureInspectorScrollPosition(_sceneEditPage);
         var drawingObjectPanelWasVisible = _drawingObjectInstancePanel.Visible;
@@ -15770,7 +16100,7 @@ internal sealed class MainForm : Form
 
     private int[] SelectedLineEndpointStyleTargets()
     {
-        if (IsSceneCompositionContext()) return [];
+        if (IsSceneCompositionContext() || _selectedElements.Count > 0) return [];
         var selected = _selectedObjects
             .Where(index => (uint)index < _scene.ObjectCount)
             .Distinct()
@@ -15785,8 +16115,34 @@ internal sealed class MainForm : Form
             : [];
     }
 
+    private DrawingElementHit[] SelectedLineEndpointStyleElements()
+    {
+        if (IsSceneCompositionContext() || _selectedElements.Count == 0) return [];
+        var selected = _selectedElements
+            .Where(hit => hit.IsValid)
+            .GroupBy(hit => hit.Key)
+            .Select(group => group.First())
+            .ToArray();
+        return selected.Length > 0
+            && selected.All(hit => _scene.TryGetLinePartEndpointStyles(hit.Key, _frame, out _, out _))
+                ? selected
+                : [];
+    }
+
     private void UpdateLineEndpointStyleControl()
     {
+        var elements = SelectedLineEndpointStyleElements();
+        if (elements.Length > 0)
+        {
+            var primary = elements.FirstOrDefault(hit => hit.Key == _selectedElement.Key);
+            if (!primary.IsValid) primary = elements[0];
+            if (_scene.TryGetLinePartEndpointStyles(primary.Key, _frame, out var startStyle, out var endStyle))
+            {
+                _materialEditor.SetLineEndpointStyles(startStyle, endStyle, visible: true);
+                return;
+            }
+        }
+
         var targets = SelectedLineEndpointStyleTargets();
         if (targets.Length == 0)
         {
@@ -15802,10 +16158,46 @@ internal sealed class MainForm : Form
 
     private void ApplyLineEndpointStyle(LineEndpointStyle endpointStyle, bool startEndpoint)
     {
-        var targets = EndpointStyleTargets(SelectedLineEndpointStyleTargets(), startEndpoint);
-        if (targets.Length == 0) return;
+        var selectedElements = SelectedLineEndpointStyleElements();
+        var seedObjects = selectedElements.Length == 0
+            ? SelectedLineEndpointStyleTargets()
+            : [];
+        if (selectedElements.Length == 0 && seedObjects.Length == 0) return;
 
-        var snapshot = CreateCanvasMutationSnapshot(targets.Select(target => target.ObjectIndex));
+        var affectedObjects = selectedElements.Length > 0
+            ? selectedElements.Select(hit => hit.Key.ObjectIndex)
+            : seedObjects;
+        var snapshot = CreateCanvasMutationSnapshot(affectedObjects);
+        var hierarchyChanged = false;
+        if (selectedElements.Length > 0)
+        {
+            var selectedKeys = selectedElements.Select(hit => hit.Key).Distinct().ToArray();
+            var materialized = _scene.MaterializeSelectedParts(selectedKeys, _frame);
+            if (!materialized.Success || materialized.Parts.Length != selectedKeys.Length)
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                return;
+            }
+
+            seedObjects = materialized.Parts
+                .Select(part => part.Result.ObjectIndex)
+                .Distinct()
+                .ToArray();
+            if (seedObjects.Length == 0
+                || seedObjects.Any(index => (uint)index >= _scene.ObjectCount || _scene.ShapeKind[index] != ShapeKind.Line))
+            {
+                RestoreCanvasMutationSnapshot(snapshot);
+                return;
+            }
+            hierarchyChanged = materialized.Changed;
+        }
+
+        var targets = EndpointStyleTargets(seedObjects, startEndpoint);
+        if (targets.Length == 0)
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return;
+        }
         var changed = false;
         foreach (var target in targets)
         {
@@ -15817,7 +16209,8 @@ internal sealed class MainForm : Form
             RestoreCanvasMutationSnapshot(snapshot);
             return;
         }
-        var hierarchyChanged = MergeCompatibleLinesAfterDrawingOperation();
+        if (selectedElements.Length > 0) SetSelection(seedObjects);
+        hierarchyChanged |= MergeCompatibleLinesAfterDrawingOperation();
         PushUndoSnapshot(snapshot);
         RefreshHierarchyAfterMaterialChange(hierarchyChanged);
         UpdateInspector();

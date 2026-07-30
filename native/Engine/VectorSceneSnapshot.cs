@@ -16,7 +16,10 @@ internal sealed class VectorSceneSnapshot
     public bool[] LayerLocked { get; init; } = [];
     public bool[] LayerVisible { get; init; } = [];
     public float[] LayerOpacity { get; init; } = [];
+    public LayerBlendMode[] LayerBlendModes { get; init; } = [];
     public int[] LayerColorArgb { get; init; } = [];
+    public bool[] LayerOutline { get; init; } = [];
+    public bool? OnionSkinEnabled { get; init; }
     public bool[] LayerOnionSkin { get; init; } = [];
     public int? OnionSkinPreviousFrames { get; init; }
     public int? OnionSkinNextFrames { get; init; }
@@ -73,7 +76,9 @@ internal sealed class VectorSceneSnapshot
         bytes += ArrayBytes(LayerLocked.Length, 1);
         bytes += ArrayBytes(LayerVisible.Length, 1);
         bytes += ArrayBytes(LayerOpacity.Length, 4);
+        bytes += ArrayBytes(LayerBlendModes.Length, 1);
         bytes += ArrayBytes(LayerColorArgb.Length, 4);
+        bytes += ArrayBytes(LayerOutline.Length, 1);
         bytes += ArrayBytes(LayerOnionSkin.Length, 1);
         bytes += ArrayBytes(LayerStart.Length, 4);
         bytes += ArrayBytes(LayerEnd.Length, 4);

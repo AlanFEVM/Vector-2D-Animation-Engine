@@ -5,7 +5,9 @@ internal sealed class SceneLayerDefinition
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Layer";
     public bool Visible { get; set; } = true;
+    public LayerBlendMode BlendMode { get; set; } = LayerBlendMode.Normal;
     public int ColorArgb { get; set; } = Color.FromArgb(79, 195, 247).ToArgb();
+    public bool Outline { get; set; }
 }
 
 internal sealed class SceneLayerSnapshot
@@ -15,7 +17,13 @@ internal sealed class SceneLayerSnapshot
     public Dictionary<string, string> InstanceLayerIds { get; init; } = new(StringComparer.Ordinal);
 }
 
-internal sealed record SceneLayerSnapshotItem(string Id, string Name, bool Visible, int ColorArgb);
+internal sealed record SceneLayerSnapshotItem(
+    string Id,
+    string Name,
+    bool Visible,
+    int ColorArgb,
+    bool Outline = false,
+    LayerBlendMode BlendMode = LayerBlendMode.Normal);
 
 internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 {
@@ -123,6 +131,22 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         return true;
     }
 
+    public bool SetLayerBlendMode(string layerId, LayerBlendMode blendMode)
+    {
+        var layer = FindLayer(layerId);
+        if (layer is null || !Enum.IsDefined(blendMode) || layer.BlendMode == blendMode) return false;
+        layer.BlendMode = blendMode;
+        return true;
+    }
+
+    public bool SetLayerOutline(string layerId, bool outline)
+    {
+        var layer = FindLayer(layerId);
+        if (layer is null || layer.Outline == outline) return false;
+        layer.Outline = outline;
+        return true;
+    }
+
     internal bool RenameLayer(VectorProject project, string layerId, string? name)
     {
         ArgumentNullException.ThrowIfNull(project);
@@ -141,7 +165,13 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         NormalizeLayers();
         return new SceneLayerSnapshot
         {
-            Layers = _layers.Select(layer => new SceneLayerSnapshotItem(layer.Id, layer.Name, layer.Visible, layer.ColorArgb)).ToArray(),
+            Layers = _layers.Select(layer => new SceneLayerSnapshotItem(
+                layer.Id,
+                layer.Name,
+                layer.Visible,
+                layer.ColorArgb,
+                layer.Outline,
+                layer.BlendMode)).ToArray(),
             ActiveLayerId = ActiveLayerId,
             InstanceLayerIds = _instances.ToDictionary(instance => instance.Id, instance => instance.SceneLayerId, StringComparer.Ordinal)
         };
@@ -159,7 +189,9 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
                 Id = layer.Id,
                 Name = layer.Name,
                 Visible = layer.Visible,
-                ColorArgb = layer.ColorArgb
+                BlendMode = Enum.IsDefined(layer.BlendMode) ? layer.BlendMode : LayerBlendMode.Normal,
+                ColorArgb = layer.ColorArgb,
+                Outline = layer.Outline
             });
         }
 

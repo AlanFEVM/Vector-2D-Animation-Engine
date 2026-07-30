@@ -53,7 +53,8 @@ generated on startup; use `Run Stress Scene` when you explicitly want to benchma
 - Drawing-object keyframes own independent cels. F6 clones the currently held layer content into a new cel, later edits or deletion stay isolated from the source cel, F7 creates a blank cel, and drawing on a blank exposure promotes it to a populated keyframe automatically. F6/F7 extend the timeline when needed; a single-frame command advances the playhead, while a multi-frame command keeps the selection in place. Undoing an inserted keyframe restores the timeline content, playhead, frame selection, selection anchor, and active track from before the command.
 - Drawing inside a held blank exposure populates that exposure's source key rather than silently creating a key at the playhead; use F6 or F7 first when content must begin on a new frame.
 - F5 extends the selected exposure, shifts later keys right, and moves the playhead to the newly added exposure end. A scrollable future-frame grid remains selectable beyond the current timeline end, and inserting there extends the target track through the chosen cell. Frame removal preserves any cel whose held frames survive the removed range, and shifts key markers plus object ownership together. Batch frame/key commands apply to the selected timeline cells and create one undo entry.
-- Timeline `Ctrl+C` / `Ctrl+V` copies independent drawing cels with their geometry, paths, and strokes, then pastes them using the copied track/frame offsets. Layer rows can be dragged to reorder; their stable timeline IDs and object ownership remain aligned. Right-click also exposes layer color and per-drawing-layer onion skin, rendered as a non-editable warm previous-frame/cool next-frame preview in both Direct2D and GDI; changing a non-zero onion range enables it for the active layer.
+- Timeline `Ctrl+C` / `Ctrl+V` copies independent drawing cels with their geometry, paths, and strokes, then pastes them using the copied track/frame offsets. Layer rows can be dragged to reorder; their stable timeline IDs and object ownership remain aligned. Right-click also exposes layer color, while the drawing timeline provides one global onion-skin switch rendered as a non-editable warm previous-frame/cool next-frame preview in both Direct2D and GDI. Visible unlocked layers participate automatically, locked layers and locked-folder descendants are excluded, and changing to a non-zero onion range enables the global switch.
+- The Inspector exposes all 27 layer blend modes for selected drawing and scene layers, including darken/lighten, contrast, difference, component, subtract, divide, and deterministic dissolve modes. Masks clip before blending, folders and scene layers composite as isolated groups, and multi-layer edits share one undo entry.
 - Adobe Animate timeline shortcuts: Enter play/pause, comma/period previous/next frame, Shift+comma/period first/last playback frame, F5 insert frame, Shift+F5 remove frame, F6 copy/insert keyframe, Shift+F6 clear keyframe, and F7 insert blank keyframe.
 - The title bar exposes animation FPS with three-decimal precision and digit-targeted mouse-wheel adjustment; the timeline cursor keeps a three-decimal seconds readout derived from that active FPS.
 - The mouse wheel scrolls tracks vertically by default; holding Shift routes it horizontally through frames without axis fallback at an edge.
@@ -98,8 +99,9 @@ docs/USER_GUIDE.md
 ```
 
 Chinese release notes for the current formal package are available in
-[docs/RELEASE_NOTES_0.1.7.md](docs/RELEASE_NOTES_0.1.7.md). The previous
-[0.1.6 notes](docs/RELEASE_NOTES_0.1.6.md) and
+[docs/RELEASE_NOTES_0.1.9.md](docs/RELEASE_NOTES_0.1.9.md). The previous
+[0.1.7 notes](docs/RELEASE_NOTES_0.1.7.md),
+[0.1.6 notes](docs/RELEASE_NOTES_0.1.6.md), and
 [0.1.5 notes](docs/RELEASE_NOTES_0.1.5.md) remain available in the release history.
 
 Project rule: when a new user-facing feature is added or an interaction changes,

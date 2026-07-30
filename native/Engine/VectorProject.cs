@@ -472,6 +472,22 @@ internal sealed class VectorProject
         return true;
     }
 
+    public bool TrySetSceneLayerBlendMode(string sceneId, string layerId, LayerBlendMode blendMode)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.SetLayerBlendMode(layerId, blendMode)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TrySetSceneLayerOutline(string sceneId, string layerId, bool outline)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.SetLayerOutline(layerId, outline)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public bool TryRenameSceneLayer(string sceneId, string layerId, string? name)
     {
         var scene = FindScene(sceneId);

@@ -74,6 +74,11 @@ internal static class ReleaseNotesCatalog
         new[]
         {
             new ReleaseNoteEntry(
+                new Version(0, 1, 9),
+                new DateOnly(2026, 7, 30),
+                English019(),
+                SimplifiedChinese019()),
+            new ReleaseNoteEntry(
                 new Version(0, 1, 7),
                 new DateOnly(2026, 7, 29),
                 English017(),
@@ -95,6 +100,60 @@ internal static class ReleaseNotesCatalog
     public static IReadOnlyList<ReleaseNoteEntry> Entries => LatestFirstEntries;
     public static ReleaseNoteEntry Latest => LatestFirstEntries[0];
     public static Version LatestVersion => Latest.Version;
+
+    private static LocalizedReleaseNote English019() => new(
+        "Complete layer blending and clearer timeline display controls",
+        "Version 0.1.9 adds all 27 layer blend modes for drawing and scene layers, strengthens layer display workflows, and fixes Inspector composition and layout regressions.",
+        new ReleaseNoteSection(
+            "Layer blend modes",
+            "The Inspector now exposes Normal plus all darken, lighten, contrast, difference, component, Subtract, Divide, and deterministic Dissolve modes for the selected drawing or scene layer.",
+            "Ctrl/Shift multi-selection applies one blend mode to every selected layer and creates one undo entry.",
+            "Masks clip their content before blending, while folders and scene layers composite as isolated groups so the selected mode applies once to the complete group.",
+            "Blend modes persist through project snapshots, SVG and Vault data, duplication, nested composition, and application restart; legacy projects default missing values to Normal."),
+        new ReleaseNoteSection(
+            "Correct compositing and rendering",
+            "Non-Normal frames use an exact premultiplied-alpha software compositor, preserving every lower layer as the blend backdrop instead of making lower content disappear.",
+            "Normal-only frames continue to use the Direct2D hardware path, and switching modes automatically selects the correct renderer without recording a graphics failure.",
+            "Dissolve is deterministic for the same layer and pixel position, while masks, opacity, fill-before-stroke order, onion skin, underlays, and drag previews keep their established ordering."),
+        new ReleaseNoteSection(
+            "Layer color, Outline, and Inspector fixes",
+            "Timeline layer-color swatches now open a themed RGB and Hex editor with live preview, presets, Apply/Cancel behavior, multi-layer editing, and one undo entry.",
+            "Drawing, folder, and scene layers can use a non-destructive Outline display in their layer color; folder and scene states propagate through nested content without changing object materials.",
+            "The right Inspector reserves space for the layer blend panel, restoring the Fill and Stroke color target controls that were hidden by the panel layout.",
+            "Onion skin is now a drawing-timeline-wide switch: visible unlocked layers participate, locked layers are excluded, and outlined layers retain warm/cool outline previews."),
+        new ReleaseNoteSection(
+            "Editing, compatibility, and release",
+            "Self-intersecting Fill boundaries expose real intersection anchors, preserve exact cubic links where possible, and keep connected branches synchronized during editing.",
+            "The project format remains backward compatible; unsupported or invalid durable blend values are rejected, while older files without blend data open as Normal.",
+            "The formal package is the single replaceable VectorAnimationEngine-0.1.9-win-x64.exe, remains smaller than 5 MiB, and atomically refreshes .V2DEngine while preserving a compatible .Runtime, logs, projects, and user data.",
+            "Windows x64 is supported. First-time runtime provisioning requires network access, and the formal EXE is not code-signed."));
+
+    private static LocalizedReleaseNote SimplifiedChinese019() => new(
+        "完整图层混合与更清晰的时间轴显示控制",
+        "0.1.9 为绘制图层和场景图层加入全部 27 种混合模式，完善图层显示工作流，并修复检查器合成与布局回归。",
+        new ReleaseNoteSection(
+            "图层混合模式",
+            "右侧检查器现在为选中的绘制图层或场景图层提供 Normal，以及全部变暗、变亮、对比、差值、分量、Subtract、Divide 和确定性 Dissolve 模式。",
+            "通过 Ctrl/Shift 多选图层后可一次应用同一混合模式，并只生成一条撤销记录。",
+            "遮罩会先裁切内容再参与混合；文件夹和场景图层按隔离组整体合成，使所选模式只对完整组应用一次。",
+            "混合模式会随工程快照、SVG、Vault、复制、嵌套组合和应用重启持久保存；旧工程缺少该数据时默认使用 Normal。"),
+        new ReleaseNoteSection(
+            "正确的合成与渲染",
+            "包含非 Normal 模式的帧使用精确的预乘 Alpha 软件合成器，下层内容会继续作为混合背景参与计算，不再因混合而消失。",
+            "全部为 Normal 的帧继续使用 Direct2D 硬件路径；切换模式时会自动选择正确渲染器，也不会被记录为图形故障。",
+            "同一图层与像素位置的 Dissolve 结果保持确定性；遮罩、不透明度、先填色后描边顺序、洋葱皮、底图和拖拽预览继续遵守既有层级。"),
+        new ReleaseNoteSection(
+            "图层颜色、Outline 与检查器修复",
+            "时间轴图层色块现在会打开主题化 RGB 与 Hex 编辑器，支持实时预览、预设色、Apply/Cancel、多图层编辑，并只生成一次撤销。",
+            "绘制图层、文件夹和场景图层可以使用非破坏性 Outline 显示；文件夹和场景状态会传递到嵌套内容，但不会修改对象材质。",
+            "右侧检查器会为图层混合面板正确保留布局空间，恢复此前被遮挡的 Fill 与 Stroke 颜色目标控件。",
+            "洋葱皮改为绘制时间轴全局开关：所有可见且未锁定图层自动参与，锁定层被排除，Outline 图层继续显示暖色/冷色轮廓预览。"),
+        new ReleaseNoteSection(
+            "编辑、兼容性与发布",
+            "自相交 Fill 边界会显示真实交点锚点，在可行时保留精确三次贝塞尔关联，并在编辑时同步连接分支。",
+            "工程格式保持向后兼容；无法识别或非法的持久混合值会被拒绝，旧文件没有混合数据时按 Normal 打开。",
+            "正式发布物为唯一一个可替换的 VectorAnimationEngine-0.1.9-win-x64.exe，继续小于 5 MiB，并在保留兼容 .Runtime、日志、工程和用户数据的同时原子刷新 .V2DEngine。",
+            "支持 Windows x64；首次安装运行环境需要网络连接，当前正式 EXE 尚未进行代码签名。"));
 
     private static LocalizedReleaseNote English017() => new(
         "Reliable multi-intersection fill anchors and deterministic hot updates",

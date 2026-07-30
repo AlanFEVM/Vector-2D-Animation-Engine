@@ -49,7 +49,10 @@ internal static class HotReloadModuleResolver
         nameof(MainForm),
         nameof(StageControl),
         nameof(Direct2DStageRenderer),
+        nameof(LayerBlendCompositor),
         nameof(TimelineStrip),
+        nameof(LayerColorDialog),
+        nameof(LayerBlendModePanel),
         nameof(DrawingObjectInstancePanel),
         nameof(TextSettingsPanel),
         nameof(MaterialEditorPanel),
@@ -72,6 +75,7 @@ internal static class HotReloadModuleResolver
         nameof(SceneLayerDefinition),
         nameof(SceneLayerSnapshot),
         nameof(SceneLayerSnapshotItem),
+        nameof(LayerBlendMode),
         nameof(DrawingObjectPlaybackMode),
         nameof(LineEndpointStyle)
     };
@@ -117,6 +121,7 @@ internal static class HotReloadModuleResolver
     {
         if (typeName is nameof(StageControl)
             or nameof(Direct2DStageRenderer)
+            or nameof(LayerBlendCompositor)
             or nameof(SceneRenderOrderBuffer)
             or nameof(WorldGridLayout)
             or nameof(PolarGridLayout))
@@ -124,7 +129,7 @@ internal static class HotReloadModuleResolver
             return HotReloadModule.Rendering;
         }
 
-        if (typeName is nameof(TimelineStrip) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
+        if (typeName is nameof(TimelineStrip) or nameof(LayerColorDialog) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
         {
             return HotReloadModule.Timeline;
         }
@@ -152,6 +157,7 @@ internal static class HotReloadModuleResolver
             or nameof(BrushTipPanel)
             or nameof(DrawSettingsPanel)
             or nameof(ShapeSettingsPanel)
+            or nameof(LayerBlendModePanel)
             or nameof(DrawingObjectInstancePanel)
             or nameof(DrawSettings)
             or nameof(ModernSlider)
@@ -189,6 +195,7 @@ internal static class HotReloadModuleResolver
             or nameof(TextFontStyle)
             or nameof(TextHorizontalAlignment)
             or nameof(LineEndpointStyle)
+            or nameof(LayerBlendMode)
             or nameof(LineJoinGeometry)
             or nameof(SceneCompositionBuilder)
             or nameof(FreehandStrokeProcessor)

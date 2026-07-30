@@ -550,7 +550,9 @@ internal static class DrawingObjectSvgCodec
         ValidateArray(snapshot.LayerLocked, snapshot.LayerCount, nameof(snapshot.LayerLocked));
         ValidateArray(snapshot.LayerVisible, snapshot.LayerCount, nameof(snapshot.LayerVisible));
         ValidateArray(snapshot.LayerOpacity, snapshot.LayerCount, nameof(snapshot.LayerOpacity));
+        ValidateOptionalArray(snapshot.LayerBlendModes, snapshot.LayerCount, nameof(snapshot.LayerBlendModes));
         ValidateArray(snapshot.LayerColorArgb, snapshot.LayerCount, nameof(snapshot.LayerColorArgb));
+        ValidateOptionalArray(snapshot.LayerOutline, snapshot.LayerCount, nameof(snapshot.LayerOutline));
         ValidateArray(snapshot.LayerOnionSkin, snapshot.LayerCount, nameof(snapshot.LayerOnionSkin));
         ValidateArray(snapshot.LayerStart, snapshot.LayerCount, nameof(snapshot.LayerStart));
         ValidateArray(snapshot.LayerEnd, snapshot.LayerCount, nameof(snapshot.LayerEnd));
@@ -560,6 +562,9 @@ internal static class DrawingObjectSvgCodec
             || snapshot.LayerParentIds.Any(value => value is null)
             || snapshot.LayerMaskIds.Any(value => value is null)
             || snapshot.LayerKinds.Any(kind => !Enum.IsDefined(kind))
+            || snapshot.LayerBlendModes.Any(mode => !Enum.IsDefined(mode))
+            || snapshot.OnionSkinEnabled is { } onionSkinEnabled
+                && snapshot.LayerOnionSkin.Any(enabled => enabled != onionSkinEnabled)
             || snapshot.LayerOpacity.Any(value => !float.IsFinite(value) || value < 0f || value > 1f)
             || snapshot.LayerStart.Any(value => value < 0)
             || snapshot.LayerEnd.Select((value, index) => value < -1 || value >= 0 && value < snapshot.LayerStart[index]).Any(invalid => invalid))

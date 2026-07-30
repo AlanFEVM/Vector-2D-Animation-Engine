@@ -180,6 +180,7 @@ internal sealed class StageControl : Control
     private readonly System.Windows.Forms.Timer _selectionHighlightTimer = new() { Interval = 40 };
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
+    private LayerBlendCompositor? _layerBlendCompositor;
     private readonly MarqueeOverlayWindow _marqueeOverlay;
     private readonly HashSet<uint> _handledPenPointers = [];
     private PointerPenInfo[] _penHistoryBuffer = new PointerPenInfo[32];
@@ -468,6 +469,8 @@ internal sealed class StageControl : Control
     {
         ResetFillEdgeBezierOverlay(invalidate: false);
         _direct2DRenderer.ReloadRuntimeResources();
+        _layerBlendCompositor?.Dispose();
+        _layerBlendCompositor = null;
         ImportedSvgRasterizer.ClearCache();
         foreach (var brush in _brushCache.Values) brush.Dispose();
         _brushCache.Clear();
@@ -1402,17 +1405,18 @@ internal sealed class StageControl : Control
         try
         {
             var pixelZoom = EffectivePixelZoom();
-            if (forceObjectRenderer || SceneRenderOrder.RequiresObjectRenderer(Scene))
+            if (forceObjectRenderer)
             {
                 return DrawObjects(graphics, int.MaxValue);
             }
+            if (SceneRenderOrder.RequiresObjectRenderer(Scene)) return DrawObjects(graphics, objectDrawLimit);
             if (MarqueeLodPreviewActive && Scene.ObjectCount > 0)
             {
                 return pixelZoom < 0.08f
                     ? DrawOverviewTiles(graphics)
                     : DrawTiles(graphics);
             }
-            if (Scene.HasLayerEffects || pixelZoom >= 0.18f) return DrawObjects(graphics, objectDrawLimit);
+            if (Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f) return DrawObjects(graphics, objectDrawLimit);
             if (Scene.ObjectCount >= 5000)
             {
                 return pixelZoom < 0.08f
@@ -1463,7 +1467,7 @@ internal sealed class StageControl : Control
         return scene.ObjectCount > 0
             && (SceneRenderOrder.RequiresObjectRenderer(scene)
                 || scene.ObjectCount < 5000
-                || scene.HasLayerEffects
+                || scene.HasDisplayLayerEffects
                 || EffectivePixelZoom() >= 0.18f);
     }
 
@@ -1526,6 +1530,8 @@ internal sealed class StageControl : Control
             _fillAnimationTimer.Dispose();
             _selectionHighlightTimer.Dispose();
             _direct2DRenderer.Dispose();
+            _layerBlendCompositor?.Dispose();
+            _layerBlendCompositor = null;
             ImportedSvgRasterizer.ClearCache();
             _marqueeOverlay.Dispose();
             foreach (var item in _brushCache.Values) item.Dispose();
@@ -2723,11 +2729,52 @@ internal sealed class StageControl : Control
     private RenderStats DrawCollectedObjects(Graphics g, int drawLimit)
     {
         var scene = Scene;
+        if (scene.HasNonNormalLayerBlendModes)
+        {
+            return DrawCollectedObjectsComposited(g, scene, drawLimit);
+        }
+
         var drawn = _renderOrder.DrawLayers(
             scene,
             drawLimit,
             (layer, objects, start) => DrawLayerObjects(g, scene, layer, objects, start));
         return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
+    }
+
+    private RenderStats DrawCollectedObjectsComposited(Graphics graphics, VectorScene scene, int drawLimit)
+    {
+        var starts = new int[scene.LayerCount];
+        var skip = Math.Max(0, _renderOrder.VisibleCount - drawLimit);
+        var drawn = 0;
+        for (var layer = scene.LayerCount - 1; layer >= 0; layer--)
+        {
+            var objects = _renderOrder.GetLayerObjects(layer);
+            var start = Math.Min(skip, objects.Count);
+            starts[layer] = start;
+            skip -= start;
+            drawn += objects.Count - start;
+        }
+
+        var compositor = LayerCompositor();
+        compositor.CompositeTo(graphics, scene, (layerGraphics, layer) =>
+        {
+            DrawLayerObjects(
+                layerGraphics,
+                scene,
+                layer,
+                _renderOrder.GetLayerObjects(layer),
+                starts[layer]);
+        });
+        return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
+    }
+
+    private LayerBlendCompositor LayerCompositor()
+    {
+        var size = new Size(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
+        if (_layerBlendCompositor is not null && _layerBlendCompositor.Size == size) return _layerBlendCompositor;
+        _layerBlendCompositor?.Dispose();
+        _layerBlendCompositor = new LayerBlendCompositor(size);
+        return _layerBlendCompositor;
     }
 
     private void DrawLodDetailObjects(Graphics graphics)
@@ -2740,8 +2787,12 @@ internal sealed class StageControl : Control
                 continue;
             }
 
-            if (SceneRenderOrder.HasFill(Scene.ShapeKind[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Fill);
-            if (SceneRenderOrder.HasStroke(Scene.ShapeKind[objectIndex], Scene.Stroke[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Stroke);
+            if (Scene.IsLayerEffectivelyOutlined(Scene.ObjectLayer[objectIndex])) DrawObjectOutline(graphics, objectIndex);
+            else
+            {
+                if (SceneRenderOrder.HasFill(Scene.ShapeKind[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Fill);
+                if (SceneRenderOrder.HasStroke(Scene.ShapeKind[objectIndex], Scene.Stroke[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Stroke);
+            }
         }
     }
 
@@ -2780,12 +2831,12 @@ internal sealed class StageControl : Control
         if (!scene.ShouldRenderLayerContent(layer)) return;
         if (layerKind == DrawingLayerKind.Mask)
         {
-            DrawLayerObjectsUnmasked(graphics, objects, start);
+            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
             return;
         }
         if (!scene.TryGetMaskLayerIndex(layer, out var maskLayer))
         {
-            DrawLayerObjectsUnmasked(graphics, objects, start);
+            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
             return;
         }
 
@@ -2797,7 +2848,7 @@ internal sealed class StageControl : Control
         try
         {
             graphics.SetClip(maskPath, CombineMode.Intersect);
-            DrawLayerObjectsUnmasked(graphics, objects, start);
+            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
         }
         finally
         {
@@ -2805,8 +2856,23 @@ internal sealed class StageControl : Control
         }
     }
 
-    private void DrawLayerObjectsUnmasked(Graphics graphics, IReadOnlyList<int> objects, int start)
+    private void DrawLayerObjectsUnmasked(
+        Graphics graphics,
+        VectorScene scene,
+        int layer,
+        IReadOnlyList<int> objects,
+        int start)
     {
+        var outlineLayerColor = scene.GetEffectiveLayerOutlineColor(layer);
+        if (!outlineLayerColor.IsEmpty)
+        {
+            for (var index = start; index < objects.Count; index++)
+            {
+                DrawObjectOutline(graphics, objects[index], outlineLayerColor);
+            }
+            return;
+        }
+
         for (var index = start; index < objects.Count; index++)
         {
             var objectIndex = objects[index];
@@ -2818,6 +2884,118 @@ internal sealed class StageControl : Control
             var objectIndex = objects[index];
             if (SceneRenderOrder.HasStroke(Scene.ShapeKind[objectIndex], Scene.Stroke[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Stroke);
         }
+    }
+
+    private void DrawObjectOutline(Graphics graphics, int objectIndex)
+    {
+        var scene = Scene;
+        var layer = (uint)objectIndex < scene.ObjectLayer.Length ? scene.ObjectLayer[objectIndex] : -1;
+        DrawObjectOutline(graphics, objectIndex, scene.GetEffectiveLayerOutlineColor(layer));
+    }
+
+    private void DrawObjectOutline(Graphics graphics, int objectIndex, Color layerColor)
+    {
+        var scene = Scene;
+        if (IsObjectHiddenForRendering(scene, objectIndex)) return;
+        var color = OutlineColor(scene, objectIndex, layerColor);
+        if (color.A == 0) return;
+
+        var shape = scene.ShapeKind.Length > objectIndex ? scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
+        using var pen = new Pen(color, 1f)
+        {
+            LineJoin = LineJoin.Round,
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+        var oldMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        try
+        {
+            if (shape == ShapeKind.Line)
+            {
+                using var lineBrush = new SolidBrush(color);
+                DrawBezierLine(graphics, objectIndex, lineBrush, 1f);
+                return;
+            }
+
+            if (shape == ShapeKind.Freeform && scene.TryGetFreehandWorldPoints(objectIndex, out var centerline))
+            {
+                DrawOutlinePolyline(graphics, pen, centerline.Select(WorldToScreen).ToArray());
+                return;
+            }
+
+            if (shape == ShapeKind.BrushStroke && scene.TryGetFreehandWorldPoints(objectIndex, out var brushCenterline))
+            {
+                using var brushPath = new GraphicsPath(FillMode.Alternate);
+                AppendPolygonContours(
+                    brushPath,
+                    FreehandStrokeProcessor.CreateBrushOutlines(brushCenterline, scene.Stroke[objectIndex]));
+                if (brushPath.PointCount > 0) graphics.DrawPath(pen, brushPath);
+                return;
+            }
+
+            if (shape == ShapeKind.Text && scene.TryGetTextWorldContours(objectIndex, out var textContours))
+            {
+                using var textPath = new GraphicsPath(FillMode.Alternate);
+                AppendPolygonContours(textPath, textContours);
+                if (textPath.PointCount > 0) graphics.DrawPath(pen, textPath);
+                return;
+            }
+
+            if (shape == ShapeKind.ImportedSvg)
+            {
+                var screen = WorldToScreen(scene.X[objectIndex], scene.Y[objectIndex]);
+                var width = Math.Max(0.75f, WorldLengthToScreen(scene.Width[objectIndex]));
+                var height = Math.Max(0.75f, WorldLengthToScreen(scene.Height[objectIndex]));
+                var state = graphics.Save();
+                try
+                {
+                    graphics.TranslateTransform(screen.X, screen.Y);
+                    graphics.RotateTransform(scene.Angle[objectIndex] * 57.29578f);
+                    graphics.DrawRectangle(pen, -width * 0.5f, -height * 0.5f, width, height);
+                }
+                finally
+                {
+                    graphics.Restore(state);
+                }
+                return;
+            }
+
+            using var path = CreateObjectBoundaryPath(scene, objectIndex);
+            if (path.PointCount > 0) graphics.DrawPath(pen, path);
+        }
+        finally
+        {
+            graphics.SmoothingMode = oldMode;
+        }
+    }
+
+    private static void DrawOutlinePolyline(Graphics graphics, Pen pen, IReadOnlyList<PointF> points)
+    {
+        if (points.Count == 1)
+        {
+            graphics.DrawEllipse(pen, points[0].X - 0.5f, points[0].Y - 0.5f, 1f, 1f);
+        }
+        else if (points.Count > 1)
+        {
+            graphics.DrawLines(pen, points.ToArray());
+        }
+    }
+
+    private static Color OutlineColor(VectorScene scene, int objectIndex, Color layerColor)
+    {
+        if (layerColor.IsEmpty) return Color.Empty;
+        var shape = scene.ShapeKind.Length > objectIndex ? scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
+        var fillAlpha = SceneRenderOrder.HasFill(shape) && (uint)objectIndex < scene.Argb.Length
+            ? Color.FromArgb(scene.Argb[objectIndex]).A
+            : 0;
+        var strokeAlpha = SceneRenderOrder.HasStroke(shape, scene.Stroke[objectIndex])
+            && (uint)objectIndex < scene.StrokeArgb.Length
+                ? Color.FromArgb(scene.StrokeArgb[objectIndex]).A
+                : 0;
+        var materialAlpha = Math.Max(fillAlpha, strokeAlpha);
+        var alpha = (layerColor.A * materialAlpha + 127) / 255;
+        return Color.FromArgb(alpha, layerColor.R, layerColor.G, layerColor.B);
     }
 
     private GraphicsPath CreateMaskPath(VectorScene scene, IReadOnlyList<int> maskObjects)

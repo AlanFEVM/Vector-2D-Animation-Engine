@@ -1639,6 +1639,39 @@ internal static class Benchmark
 
         AssertTimeline(scene.SetLayerColor(1, Color.Orange), "Timeline layer workflow could not set a layer color.");
         AssertTimeline(
+            scene.SetLayerColor(0, Color.DeepSkyBlue)
+            && scene.SetLayerOutline(0, true)
+            && scene.HasLayerOutline
+            && scene.HasDisplayLayerEffects
+            && !scene.HasLayerEffects,
+            "Timeline layer workflow could not enable the non-destructive layer Outline display state.");
+        var blendModes = Enum.GetValues<LayerBlendMode>();
+        var blendScene = new VectorScene();
+        blendScene.CreateEmpty(blendModes.Length);
+        var expectedBlendModes = new Dictionary<string, LayerBlendMode>(StringComparer.Ordinal);
+        for (var layer = 0; layer < blendModes.Length; layer++)
+        {
+            AssertTimeline(
+                blendScene.SetLayerBlendMode(layer, blendModes[layer]) == (blendModes[layer] != LayerBlendMode.Normal),
+                $"Layer blend mode {blendModes[layer]} did not apply with the expected change result.");
+            expectedBlendModes[blendScene.LayerIds[layer]] = blendModes[layer];
+        }
+        var removedBlendIds = new[] { blendScene.LayerIds[3], blendScene.LayerIds[17] };
+        AssertTimeline(
+            blendModes.Length == 27
+            && blendModes.Distinct().Count() == blendModes.Length
+            && blendScene.MoveLayer(0, blendScene.LayerCount - 1)
+            && blendScene.RemoveLayers(removedBlendIds),
+            "Layer blend modes could not survive layer reordering and removal setup.");
+        var blendSnapshot = blendScene.CreateSnapshot();
+        var restoredBlendScene = new VectorScene();
+        restoredBlendScene.RestoreSnapshot(blendSnapshot);
+        AssertTimeline(
+            restoredBlendScene.LayerBlendModes.Length == restoredBlendScene.LayerCount
+            && Enumerable.Range(0, restoredBlendScene.LayerCount).All(layer =>
+                expectedBlendModes[restoredBlendScene.LayerIds[layer]] == restoredBlendScene.LayerBlendModes[layer]),
+            "Layer blend modes lost stable layer-ID alignment during reorder, remove, or snapshot restore.");
+        AssertTimeline(
             Enumerable.Range(0, scene.LayerCount).All(layer => scene.SetLayerVisible(layer, false))
             && scene.LayerVisible.All(visible => !visible)
             && Enumerable.Range(0, scene.LayerCount).All(layer => scene.SetLayerLocked(layer, true))
@@ -1646,7 +1679,7 @@ internal static class Benchmark
             && Enumerable.Range(0, scene.LayerCount).All(layer => scene.SetLayerVisible(layer, true))
             && Enumerable.Range(0, scene.LayerCount).All(layer => scene.SetLayerLocked(layer, false)),
             "Layer batch visibility or locking state did not apply consistently.");
-        AssertTimeline(scene.ToggleLayerOnionSkin(0), "Timeline layer workflow could not enable onion skin.");
+        AssertTimeline(scene.ToggleOnionSkin(), "Timeline workflow could not globally enable onion skin.");
         AssertTimeline(scene.SetOnionSkinRange(0, 0), "Timeline layer workflow could not disable both onion-skin ranges.");
         var emptyOnionPreview = new VectorScene();
         scene.BuildOnionSkinPreview(emptyOnionPreview, 1);
@@ -1657,6 +1690,14 @@ internal static class Benchmark
         AssertTimeline(scene.SetOnionSkinRange(3, 1), "Timeline layer workflow could not set the onion-skin frame range.");
         var onionPreview = new VectorScene();
         scene.BuildOnionSkinPreview(onionPreview, 1);
+        AssertTimeline(scene.SetLayerLocked(0, true), "Timeline workflow could not lock the onion-skin source layer.");
+        var lockedOnionPreview = new VectorScene();
+        scene.BuildOnionSkinPreview(lockedOnionPreview, 1);
+        AssertTimeline(
+            scene.OnionSkinEnabled
+            && lockedOnionPreview.ObjectCount == 0,
+            "A locked drawing layer still produced onion-skin content or disabled the global toggle.");
+        AssertTimeline(scene.SetLayerLocked(0, false), "Timeline workflow could not unlock the onion-skin source layer.");
         var previousOnionPreview = new VectorScene();
         scene.BuildOnionSkinPreview(previousOnionPreview, 2);
         AssertTimeline(
@@ -1666,8 +1707,12 @@ internal static class Benchmark
             && onionPreview.IsObjectActive(0, 1)
             && onionPreview.GetGradientStops(0).All(stop => ((stop.Argb >>> 24) & 0xff) is > 0 and < 160)
             && onionPreview.GetGradientStops(0).All(stop => (stop.Argb & 0x00ffffff) == 0x006fc3da)
+            && onionPreview.LayerOutline.Any(outlined => outlined)
+            && onionPreview.LayerColorArgb.All(argb => (argb & 0x00ffffff) == 0x006fc3da)
             && previousOnionPreview.ObjectCount > 0
-            && previousOnionPreview.GetGradientStops(0).All(stop => (stop.Argb & 0x00ffffff) == 0x00e0867e),
+            && previousOnionPreview.GetGradientStops(0).All(stop => (stop.Argb & 0x00ffffff) == 0x00e0867e)
+            && previousOnionPreview.LayerOutline.Any(outlined => outlined)
+            && previousOnionPreview.LayerColorArgb.All(argb => (argb & 0x00ffffff) == 0x00e0867e),
             "Onion skin preview did not build a visible non-destructive neighboring-frame scene.");
 
         var sourceLayerId = scene.LayerIds[0];
@@ -1681,15 +1726,18 @@ internal static class Benchmark
 
         var snapshot = scene.CreateSnapshot();
         scene.SetLayerColor(0, Color.Black);
-        scene.ToggleLayerOnionSkin(1);
+        scene.SetLayerOutline(1, false);
+        scene.ToggleOnionSkin();
         scene.SetOnionSkinRange(0, 0);
         scene.RestoreSnapshot(snapshot);
         AssertTimeline(
             scene.GetLayerColor(0).ToArgb() == Color.Orange.ToArgb()
-            && scene.LayerOnionSkin[1]
+            && scene.LayerOutline[1]
+            && scene.OnionSkinEnabled
+            && scene.CreateSnapshot().LayerOnionSkin.All(enabled => enabled)
             && scene.OnionSkinPreviousFrames == 3
             && scene.OnionSkinNextFrames == 1,
-            "Layer color or onion-skin state did not survive a scene snapshot round trip.");
+            "Layer color or global onion-skin state did not survive a scene snapshot round trip.");
 
         var groupedScene = new VectorScene();
         groupedScene.CreateEmpty();
@@ -1729,6 +1777,32 @@ internal static class Benchmark
             && linkedMaskLayer == maskLayer
             && groupedScene.IsObjectActive(maskObject, 0),
             "Folder or mask creation did not retain layer kind, parent, or mask ownership.");
+
+        AssertTimeline(
+            groupedScene.SetLayerOutline(folderLayer, true)
+            && groupedScene.IsLayerEffectivelyOutlined(contentLayer)
+            && groupedScene.GetEffectiveLayerOutlineColor(contentLayer).ToArgb() == groupedScene.GetLayerColor(contentLayer).ToArgb(),
+            "Folder Outline did not propagate while retaining the concrete content layer color.");
+
+        AssertTimeline(
+            groupedScene.InsertTimelineKeyframe(contentLayer, 2)
+            && groupedScene.SetOnionSkinEnabled(true)
+            && groupedScene.SetOnionSkinRange(0, 1),
+            "Folder onion-skin regression could not create a neighboring cel.");
+        var unlockedFolderOnionPreview = new VectorScene();
+        groupedScene.BuildOnionSkinPreview(unlockedFolderOnionPreview, 1);
+        AssertTimeline(
+            unlockedFolderOnionPreview.ObjectCount > 0
+            && groupedScene.SetLayerLocked(folderLayer, true),
+            "An unlocked folder descendant did not participate in the global onion skin.");
+        var lockedFolderOnionPreview = new VectorScene();
+        groupedScene.BuildOnionSkinPreview(lockedFolderOnionPreview, 1);
+        AssertTimeline(
+            groupedScene.OnionSkinEnabled
+            && !groupedScene.HasOnionSkinPreviewEnabled
+            && lockedFolderOnionPreview.ObjectCount == 0
+            && groupedScene.SetLayerLocked(folderLayer, false),
+            "Locking a folder did not exclude its descendants from the global onion skin.");
 
         groupedScene.ToggleLayer(folderLayer);
         AssertTimeline(!groupedScene.IsObjectActive(contentObject, 0), "Hiding a folder did not hide its child drawing layer.");
@@ -1864,6 +1938,18 @@ internal static class Benchmark
             && sceneDefinition.Layers[0].ColorArgb == Color.Coral.ToArgb()
             && sceneDefinition.Layers[0].Name == "Foreground",
             "Scene-layer color, rename, or reordering did not route through the project model.");
+        var projectChanged = 0;
+        project.Changed += (_, _) => projectChanged++;
+        var sceneLayerSnapshot = sceneDefinition.CreateLayerSnapshot();
+        AssertTimeline(
+            project.TrySetSceneLayerBlendMode(sceneDefinition.Id, addedLayer.Id, LayerBlendMode.Overlay)
+            && projectChanged == 1
+            && sceneDefinition.FindLayer(addedLayer.Id)?.BlendMode == LayerBlendMode.Overlay,
+            "Scene-layer blend mode did not route through the project model with one change notification.");
+        sceneDefinition.RestoreLayerSnapshot(sceneLayerSnapshot);
+        AssertTimeline(
+            sceneDefinition.FindLayer(addedLayer.Id)?.BlendMode == LayerBlendMode.Normal,
+            "Scene-layer blend mode did not restore through a scene-layer snapshot.");
     }
 
     private static void RunTimelineLayerRemovalRegression()
@@ -2721,9 +2807,9 @@ internal static class Benchmark
             && disabledNestedOnionSkinPreview.ObjectCount == 0,
             "A disabled nested-instance onion skin still built a preview scene.");
         AssertTimeline(
-            nestedKeyframeRoot.Scene.ToggleLayerOnionSkin(0)
+            nestedKeyframeRoot.Scene.ToggleOnionSkin()
             && nestedKeyframeRoot.Scene.SetOnionSkinRange(1, 1),
-            "Nested-instance onion-skin regression could not enable its host layer.");
+            "Nested-instance onion-skin regression could not enable the drawing timeline.");
         var nestedOnionSkinPreview = new VectorScene();
         SceneCompositionBuilder.BuildDrawingObjectOnionSkin(
             nestedOnionSkinPreview,
@@ -2737,6 +2823,31 @@ internal static class Benchmark
             && NearlyEqual(nestedOnionSkinPreview.Y[0], 78)
             && Color.FromArgb(nestedOnionSkinPreview.Argb[0]).A is > 0 and < 255,
             "Drawing-object onion skin did not show the nested instance at its neighboring keyed position.");
+        AssertTimeline(
+            nestedKeyframeChild.Scene.SetLayerLocked(0, true),
+            "Nested-instance onion-skin regression could not lock the child layer.");
+        var lockedChildOnionSkinPreview = new VectorScene();
+        SceneCompositionBuilder.BuildDrawingObjectOnionSkin(
+            lockedChildOnionSkinPreview,
+            nestedKeyframeRoot,
+            nestedKeyframeProject.DrawingObjects,
+            4);
+        AssertTimeline(
+            lockedChildOnionSkinPreview.ObjectCount == 0
+            && nestedKeyframeChild.Scene.SetLayerLocked(0, false)
+            && nestedKeyframeRoot.Scene.SetLayerLocked(0, true),
+            "A locked layer inside a nested drawing object still produced onion-skin content.");
+        var lockedHostOnionSkinPreview = new VectorScene();
+        SceneCompositionBuilder.BuildDrawingObjectOnionSkin(
+            lockedHostOnionSkinPreview,
+            nestedKeyframeRoot,
+            nestedKeyframeProject.DrawingObjects,
+            4);
+        AssertTimeline(
+            nestedKeyframeRoot.Scene.OnionSkinEnabled
+            && lockedHostOnionSkinPreview.ObjectCount == 0
+            && nestedKeyframeRoot.Scene.SetLayerLocked(0, false),
+            "A locked nested-instance host layer still produced onion-skin content or disabled the global toggle.");
         var nestedKeyframePreview = new VectorScene();
         var nestedKeyframeComposition = SceneCompositionBuilder.BuildDrawingObjectChildren(
             nestedKeyframePreview,
@@ -4227,6 +4338,9 @@ internal static class Benchmark
             project.TryAddSceneInstance(scene.Id, drawingObject.Id, PointF.Empty, 0, out _),
             "Layer-effect composition setup rejected a valid drawing-object instance.");
 
+        var sourceContentLayer = drawingObject.Scene.ObjectLayer[0];
+        drawingObject.Scene.SetLayerColor(sourceContentLayer, Color.DeepSkyBlue);
+        drawingObject.Scene.SetLayerOutline(sourceContentLayer, true);
         var destination = new VectorScene();
         SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 0);
         var folder = Array.FindIndex(destination.LayerKinds, kind => kind == DrawingLayerKind.Folder);
@@ -4241,8 +4355,19 @@ internal static class Benchmark
             && destination.GetLayerParentIndex(content) == folder
             && destination.TryGetMaskLayerIndex(content, out var linkedMask)
             && linkedMask == mask
+            && destination.LayerOutline[content]
+            && destination.GetLayerColor(content).ToArgb() == Color.DeepSkyBlue.ToArgb()
             && destination.HasLayerEffects,
-            "Flattened composition lost folder or mask layer relationships.");
+            $"Flattened composition lost folder, mask, or Outline relationships: objects={destination.ObjectCount}, folder={folder}, mask={mask}, content={content}, parentMask={destination.GetLayerParentIndex(mask)}, parentContent={destination.GetLayerParentIndex(content)}, outlined={(content >= 0 && destination.LayerOutline[content])}, color={(content >= 0 ? destination.GetLayerColor(content).ToArgb() : 0):X8}.");
+
+        var sceneLayer = scene.Layers[0];
+        scene.SetLayerColor(sceneLayer.Id, Color.Magenta);
+        scene.SetLayerOutline(sceneLayer.Id, true);
+        SceneCompositionBuilder.Build(destination, scene, project.DrawingObjects, 0);
+        AssertTimeline(
+            destination.LayerOutline.All(outlined => outlined)
+            && destination.LayerColorArgb.All(argb => argb == Color.Magenta.ToArgb()),
+            "Scene-layer Outline did not override every nested instance layer with the scene layer color.");
     }
 
     private static void RunSparseLayerCompositionRegression()
@@ -4475,8 +4600,127 @@ internal static class Benchmark
         if (!condition) throw new InvalidOperationException(message);
     }
 
+    private static void RunLayerBlendRegression()
+    {
+        var backdrop = Color.FromArgb(255, 64, 128, 192);
+        var source = Color.FromArgb(255, 128, 64, 32);
+        AssertColorNear(
+            LayerBlendCompositor.CompositeColorForRegression(backdrop, source, LayerBlendMode.Normal),
+            source,
+            "Normal");
+        AssertColorNear(
+            LayerBlendCompositor.CompositeColorForRegression(backdrop, source, LayerBlendMode.Multiply),
+            Color.FromArgb(255, 32, 32, 24),
+            "Multiply");
+        AssertColorNear(
+            LayerBlendCompositor.CompositeColorForRegression(backdrop, source, LayerBlendMode.Screen),
+            Color.FromArgb(255, 160, 160, 200),
+            "Screen");
+        AssertColorNear(
+            LayerBlendCompositor.CompositeColorForRegression(backdrop, source, LayerBlendMode.Difference),
+            Color.FromArgb(255, 64, 64, 160),
+            "Difference");
+
+        var translucentBackdrop = Color.FromArgb(120, 40, 100, 180);
+        var translucentSource = Color.FromArgb(180, 220, 80, 30);
+        var sourceAlpha = translucentSource.A / 255f * 0.75f;
+        var backdropAlpha = translucentBackdrop.A / 255f;
+        var expectedAlpha = (int)MathF.Round((sourceAlpha + backdropAlpha * (1f - sourceAlpha)) * 255f);
+        foreach (var mode in Enum.GetValues<LayerBlendMode>())
+        {
+            var result = LayerBlendCompositor.CompositeColorForRegression(
+                translucentBackdrop,
+                translucentSource,
+                mode,
+                opacity: 0.75f,
+                dissolveSeed: 0x12345678u,
+                x: 11,
+                y: 7);
+            if (mode != LayerBlendMode.Dissolve && Math.Abs(result.A - expectedAlpha) > 1)
+            {
+                throw new InvalidOperationException(
+                    $"Layer blend mode {mode} produced alpha {result.A}; expected {expectedAlpha}.");
+            }
+        }
+
+        var dissolveA = LayerBlendCompositor.CompositeColorForRegression(
+            translucentBackdrop,
+            translucentSource,
+            LayerBlendMode.Dissolve,
+            opacity: 0.55f,
+            dissolveSeed: 0x5a17c9e3u,
+            x: 29,
+            y: 31);
+        var dissolveB = LayerBlendCompositor.CompositeColorForRegression(
+            translucentBackdrop,
+            translucentSource,
+            LayerBlendMode.Dissolve,
+            opacity: 0.55f,
+            dissolveSeed: 0x5a17c9e3u,
+            x: 29,
+            y: 31);
+        if (dissolveA.ToArgb() != dissolveB.ToArgb())
+        {
+            throw new InvalidOperationException("Dissolve blend mode changed between identical samples.");
+        }
+
+        var layeredScene = new VectorScene();
+        layeredScene.CreateEmpty();
+        var lowerLayer = layeredScene.AddLayer("Backdrop");
+        layeredScene.SetLayerBlendMode(0, LayerBlendMode.Multiply);
+        using (var layeredBitmap = new Bitmap(12, 8, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+        using (var layeredGraphics = Graphics.FromImage(layeredBitmap))
+        using (var compositor = new LayerBlendCompositor(layeredBitmap.Size))
+        {
+            compositor.CompositeTo(layeredGraphics, layeredScene, (graphics, layer) =>
+            {
+                using var brush = new SolidBrush(layer == lowerLayer ? Color.CornflowerBlue : Color.Coral);
+                graphics.FillRectangle(brush, layer == lowerLayer ? new Rectangle(0, 0, 12, 8) : new Rectangle(0, 0, 6, 8));
+            });
+
+            AssertColorNear(layeredBitmap.GetPixel(9, 4), Color.CornflowerBlue, "Multiply lower-layer preservation");
+        }
+
+        var stageScene = new VectorScene();
+        stageScene.CreateEmpty();
+        var stageLowerLayer = stageScene.AddLayer("Stage Backdrop");
+        stageScene.AddObject(0, PointF.Empty, new SizeF(2_000, 2_000), 0, 0, Color.Coral, Color.Transparent, 12, ShapeKind.Rectangle);
+        stageScene.AddObject(stageLowerLayer, PointF.Empty, new SizeF(4_000, 3_000), 0, 0, Color.CornflowerBlue, Color.Transparent, 12, ShapeKind.Rectangle);
+        stageScene.SetLayerBlendMode(0, LayerBlendMode.Multiply);
+        using (var stage = new StageControl(stageScene) { ClientSize = new Size(320, 240), WorldGridOpacity = 0 })
+        using (var stageBitmap = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height))
+        using (var stageGraphics = Graphics.FromImage(stageBitmap))
+        {
+            var drawGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The GDI layer-blend regression entry point could not be located.");
+            drawGdi.Invoke(stage, [stageGraphics]);
+            var lowerOnlyPoint = Point.Round(stage.WorldToScreen(1_500, 0));
+            AssertColorNear(
+                stageBitmap.GetPixel(lowerOnlyPoint.X, lowerOnlyPoint.Y),
+                Color.CornflowerBlue,
+                "Stage lower-layer preservation");
+        }
+
+        static void AssertColorNear(Color actual, Color expected, string mode)
+        {
+            if (Math.Abs(actual.A - expected.A) <= 1
+                && Math.Abs(actual.R - expected.R) <= 1
+                && Math.Abs(actual.G - expected.G) <= 1
+                && Math.Abs(actual.B - expected.B) <= 1)
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"{mode} blend equation returned {actual.ToArgb():X8}; expected {expected.ToArgb():X8}.");
+        }
+    }
+
     public static void RunStageRendererRegression()
     {
+        RunLayerBlendRegression();
         RunImportedSvgRasterizerRegression();
         RunImportedSvgBreakApartRegression();
         RunSelectionHighlightStyleRegression();
@@ -4555,6 +4799,85 @@ internal static class Benchmark
         {
             throw new InvalidOperationException("The Stage did not activate the immediate Direct2D GPU hardware target.");
         }
+
+        AssertTimeline(
+            editable.SetLayerBlendMode(0, LayerBlendMode.Overlay),
+            "Renderer regression could not enable a non-Normal layer blend mode.");
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
+        if (stage.LastFrameUsedDirect2D)
+        {
+            throw new InvalidOperationException("A blended frame bypassed the authoritative software layer compositor.");
+        }
+        AssertTimeline(
+            editable.SetLayerBlendMode(0, LayerBlendMode.Normal),
+            "Renderer regression could not restore the Normal layer blend mode.");
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D)
+        {
+            throw new InvalidOperationException("Direct2D did not resume after restoring all layers to Normal mode.");
+        }
+
+        var originalLayerColor = editable.GetLayerColor(0);
+        AssertTimeline(
+            editable.SetLayerColor(0, Color.DeepPink)
+            && editable.SetLayerOutline(0, true),
+            "Renderer regression could not enable a colored Outline layer.");
+        stage.WorldGridOpacity = 0;
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
+        if (!stage.LastFrameUsedDirect2D || stage.LastStats.TileLod)
+        {
+            throw new InvalidOperationException("An outlined editable layer did not use the Direct2D object path.");
+        }
+
+        using (var outlineBitmap = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height))
+        using (var outlineGraphics = Graphics.FromImage(outlineBitmap))
+        {
+            var drawGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("The GDI Outline fallback entry point could not be located.");
+            drawGdi.Invoke(stage, [outlineGraphics]);
+            var center = Point.Round(stage.WorldToScreen(editable.X[editableObject], editable.Y[editableObject]));
+            var leftEdge = Point.Round(stage.WorldToScreen(
+                editable.X[editableObject] - editable.Width[editableObject] * 0.5f,
+                editable.Y[editableObject]));
+            var centerPixel = outlineBitmap.GetPixel(
+                Math.Clamp(center.X, 0, outlineBitmap.Width - 1),
+                Math.Clamp(center.Y, 0, outlineBitmap.Height - 1));
+            var foundOutlinePixel = false;
+            for (var y = Math.Max(0, leftEdge.Y - 3); y <= Math.Min(outlineBitmap.Height - 1, leftEdge.Y + 3); y++)
+            {
+                for (var x = Math.Max(0, leftEdge.X - 3); x <= Math.Min(outlineBitmap.Width - 1, leftEdge.X + 3); x++)
+                {
+                    var pixel = outlineBitmap.GetPixel(x, y);
+                    if (pixel.R >= 180 && pixel.B >= 80 && pixel.G <= 100)
+                    {
+                        foundOutlinePixel = true;
+                        break;
+                    }
+                }
+                if (foundOutlinePixel) break;
+            }
+
+            if (!foundOutlinePixel
+                || centerPixel.R >= 180 && centerPixel.B >= 80 && centerPixel.G <= 100)
+            {
+                throw new InvalidOperationException(
+                    $"The GDI Outline path did not keep the fill hollow while drawing the layer-color edge: center={centerPixel.ToArgb():X8}, edge={foundOutlinePixel}.");
+            }
+        }
+        editable.SetLayerOutline(0, false);
+        editable.SetLayerColor(0, originalLayerColor);
+        stage.WorldGridOpacity = 1;
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
 
         var polarViewState = stage.CaptureViewState();
         double polarDirect2DCommandMilliseconds;
@@ -4963,6 +5286,7 @@ internal static class Benchmark
         Console.WriteLine("underlay_direct2d=ok");
         Console.WriteLine("onion_skin_below_drawing_objects=ok");
         Console.WriteLine("onion_skin_below_drawing_objects_gdi=ok");
+        Console.WriteLine("layer_outline_gdi_direct2d=ok");
         Console.WriteLine("gpu_hardware_target=ok");
         Console.WriteLine("gpu_immediate_present=ok");
         Console.WriteLine($"polar_grid_zoomed_direct2d_command_ms={polarDirect2DCommandMilliseconds:0.000}");
@@ -6143,6 +6467,223 @@ internal static class Benchmark
             throw new InvalidOperationException("Closed stroke fill created geometry outside every bounded region.");
         }
 
+        var curvedScene = new VectorScene();
+        curvedScene.CreateEmpty();
+        var curvedBoundary = curvedScene.AddCubicCurveSegment(
+            0,
+            new PointF(0, 120),
+            new PointF(-80, 90),
+            new PointF(-80, 30),
+            new PointF(0, 0),
+            stroke,
+            Color.Transparent,
+            Color.White,
+            12);
+        curvedScene.AddLineSegment(0, new PointF(0, 0), new PointF(200, 0), stroke, Color.Transparent, Color.White, 6);
+        curvedScene.AddLineSegment(0, new PointF(200, 0), new PointF(200, 120), stroke, Color.Transparent, Color.White, 6);
+        curvedScene.AddLineSegment(0, new PointF(200, 120), new PointF(0, 120), stroke, Color.Transparent, Color.White, 6);
+        var curvedCreated = curvedScene.TryCreateFillFromClosedStrokeRegion(
+            new PointF(100, 60),
+            0,
+            Color.Teal,
+            out var curvedFill,
+            out var curvedAnimationContours);
+        PathBezierNode[][] curvedFillContours = [];
+        var hasCurvedBezier = curvedCreated
+            && curvedFill >= 0
+            && curvedScene.TryGetPathBezierWorldContours(curvedFill, out curvedFillContours);
+        var curvedBezierParts = hasCurvedBezier
+            ? curvedScene.GetPathBezierSegmentParts(curvedFill)
+            : [];
+        var curvedBoundaryLinks = curvedCreated
+            ? curvedScene.CaptureFillBoundaryLineLinks(curvedBoundary, 0)
+            : [];
+        if (!curvedCreated
+            || curvedFill < 0
+            || !hasCurvedBezier
+            || curvedFillContours.Length != 1
+            || curvedFillContours[0].Length != 4
+            || curvedBezierParts.Length != 4
+            || curvedBoundaryLinks is not [{ BezierSegmentCount: 1 }]
+            || curvedAnimationContours.Length != 1
+            || curvedAnimationContours[0].Length <= curvedFillContours[0].Length
+            || !curvedScene.FillContainsPoint(curvedFill, new PointF(100, 60)))
+        {
+            throw new InvalidOperationException(
+                $"Closed-stroke filling flattened an adjacent cubic boundary into sampled linear Bezier anchors: created={curvedCreated}/{curvedFill}, exact={hasCurvedBezier}, contours={curvedFillContours.Length}, nodes={(curvedFillContours.Length > 0 ? curvedFillContours[0].Length : 0)}, parts={curvedBezierParts.Length}, links={string.Join(',', curvedBoundaryLinks.Select(link => $"{link.BezierSegmentIndex}+{link.BezierSegmentCount}"))}, animation={(curvedAnimationContours.Length > 0 ? curvedAnimationContours[0].Length : 0)}.");
+        }
+
+        var shallowCurveScene = new VectorScene();
+        shallowCurveScene.CreateEmpty();
+        shallowCurveScene.AddLineSegment(0, new PointF(0, 0), new PointF(240, 0), stroke, Color.Transparent, Color.White, 6);
+        shallowCurveScene.AddLineSegment(0, new PointF(240, 0), new PointF(240, 140), stroke, Color.Transparent, Color.White, 6);
+        var shallowBoundary = shallowCurveScene.AddCubicCurveSegment(
+            0,
+            new PointF(240, 140),
+            new PointF(165, 145),
+            new PointF(75, 75),
+            new PointF(0, 140),
+            stroke,
+            Color.Transparent,
+            Color.White,
+            12);
+        shallowCurveScene.AddLineSegment(0, new PointF(0, 140), new PointF(0, 0), stroke, Color.Transparent, Color.White, 6);
+        if (!shallowCurveScene.TryCreateFillFromClosedStrokeRegion(
+                new PointF(120, 60),
+                0,
+                Color.Teal,
+                out var shallowFill,
+                out _)
+            || !shallowCurveScene.TryGetPathBezierWorldContours(shallowFill, out var shallowContours)
+            || shallowContours is not [{ Length: 4 }])
+        {
+            throw new InvalidOperationException("A shallow cubic closed-stroke boundary was flattened into sampled Fill anchors.");
+        }
+
+        var shallowOverlayPieces = shallowCurveScene.GetExposedFillBezierSegmentPieces(
+            shallowFill,
+            0,
+            includeCoincidentStrokes: true);
+        if (shallowOverlayPieces.Length != 4)
+        {
+            throw new InvalidOperationException(
+                $"A coincident cubic Line split the Fill edit overlay into sampled handles: pieces={shallowOverlayPieces.Length}.");
+        }
+
+        var shallowLineLinks = shallowCurveScene.CaptureFillBoundaryLineLinks(shallowBoundary, 0);
+        if (shallowLineLinks is not [{ BezierSegmentCount: 1 }])
+        {
+            throw new InvalidOperationException("A shallow cubic Fill boundary did not retain its editable Line link.");
+        }
+
+        var fillSegmentIndex = shallowLineLinks[0].BezierSegmentIndex;
+        var fillStrokeLinks = shallowCurveScene.CaptureFillBoundaryStrokeLinks(shallowFill, fillSegmentIndex, 0);
+        if (!shallowCurveScene.TryGetPathBezierSegment(shallowFill, fillSegmentIndex, out var shallowFillSegment))
+        {
+            throw new InvalidOperationException("The shallow cubic Fill boundary segment could not be resolved.");
+        }
+        if (fillStrokeLinks.Length != 1)
+        {
+            throw new InvalidOperationException("A shallow cubic Fill boundary did not retain its editable Line link.");
+        }
+
+        var adjustedControl1 = new PointF(shallowFillSegment.Control1.X, shallowFillSegment.Control1.Y - 20);
+        var adjustedControl2 = new PointF(shallowFillSegment.Control2.X, shallowFillSegment.Control2.Y - 20);
+        if (!shallowCurveScene.SetPathBezierSegment(
+                shallowFill,
+                fillSegmentIndex,
+                shallowFillSegment.Start,
+                adjustedControl1,
+                adjustedControl2,
+                shallowFillSegment.End,
+                rebuildGeometryIndex: false)
+            || !shallowCurveScene.UpdateFillBoundaryStrokeLinks(
+                fillStrokeLinks,
+                shallowFillSegment.Start,
+                adjustedControl1,
+                adjustedControl2,
+                shallowFillSegment.End)
+            || shallowCurveScene.CaptureFillBoundaryLineLinks(shallowBoundary, 0) is not [{ BezierSegmentCount: 1 }])
+        {
+            throw new InvalidOperationException("Editing a shallow cubic Fill boundary separated it from the adjacent Line.");
+        }
+
+        var legacyCurveScene = new VectorScene();
+        legacyCurveScene.CreateEmpty();
+        legacyCurveScene.AddLineSegment(0, new PointF(0, 0), new PointF(240, 0), stroke, Color.Transparent, Color.White, 6);
+        legacyCurveScene.AddLineSegment(0, new PointF(240, 0), new PointF(240, 140), stroke, Color.Transparent, Color.White, 6);
+        var legacyBoundary = legacyCurveScene.AddCubicCurveSegment(
+            0,
+            new PointF(240, 140),
+            new PointF(165, 145),
+            new PointF(75, 75),
+            new PointF(0, 140),
+            stroke,
+            Color.Transparent,
+            Color.White,
+            12);
+        legacyCurveScene.AddLineSegment(0, new PointF(0, 140), new PointF(0, 0), stroke, Color.Transparent, Color.White, 6);
+        if (!legacyCurveScene.TryGetClosedStrokeFillRegion(new PointF(120, 60), 0, out var legacyContours))
+        {
+            throw new InvalidOperationException("The legacy cubic Fill regression could not resolve its closed region.");
+        }
+
+        var legacyFill = legacyCurveScene.AddPathObjectContours(
+            0,
+            legacyContours,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            (uint)legacyContours.Sum(contour => contour.Length));
+        var legacyPartsBefore = legacyContours.Sum(contour => contour.Length);
+        var legacyCanonicalized = legacyCurveScene.CanonicalizeFlattenedFillBoundaryCurves(legacyFill, 0);
+        var legacyPartsAfter = legacyCurveScene.GetPathBezierSegmentParts(legacyFill);
+        var legacyLinksAfter = legacyCurveScene.CaptureFillBoundaryLineLinks(legacyBoundary, 0);
+        var legacyOverlayAfter = legacyCurveScene.GetExposedFillBezierSegmentPieces(
+            legacyFill,
+            0,
+            includeCoincidentStrokes: true);
+        if (legacyPartsBefore <= 4
+            || !legacyCanonicalized
+            || legacyPartsAfter.Length != 4
+            || legacyLinksAfter is not [{ BezierSegmentCount: 1 }]
+            || legacyOverlayAfter.Length != 4)
+        {
+            throw new InvalidOperationException(
+                $"A sampled legacy Fill boundary was not restored to its neighboring cubic Line: before={legacyPartsBefore}, canonicalized={legacyCanonicalized}, after={legacyPartsAfter.Length}, links={string.Join(',', legacyLinksAfter.Select(link => $"{link.BezierSegmentIndex}+{link.BezierSegmentCount}"))}, overlay={legacyOverlayAfter.Length}.");
+        }
+
+        var mergedCurveScene = new VectorScene();
+        mergedCurveScene.CreateEmpty();
+        mergedCurveScene.AddObject(
+            0,
+            new PointF(160, -5),
+            new SizeF(240, 70),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        mergedCurveScene.AddLineSegment(0, new PointF(0, 0), new PointF(240, 0), stroke, Color.Transparent, Color.White, 6);
+        mergedCurveScene.AddLineSegment(0, new PointF(240, 0), new PointF(240, 140), stroke, Color.Transparent, Color.White, 6);
+        var mergedBoundary = mergedCurveScene.AddCubicCurveSegment(
+            0,
+            new PointF(240, 140),
+            new PointF(165, 145),
+            new PointF(75, 75),
+            new PointF(0, 140),
+            stroke,
+            Color.Transparent,
+            Color.White,
+            12);
+        mergedCurveScene.AddLineSegment(0, new PointF(0, 140), new PointF(0, 0), stroke, Color.Transparent, Color.White, 6);
+        if (!mergedCurveScene.TryCreateFillFromClosedStrokeRegion(
+                new PointF(120, 80),
+                0,
+                Color.Teal,
+                out var mergedCurveFill,
+                out _))
+        {
+            throw new InvalidOperationException("The shallow cubic merge regression could not create its Fill region.");
+        }
+
+        var normalizedCurveFills = mergedCurveScene.NormalizePaintForInteractiveCommit([mergedCurveFill], frame: 0);
+        var normalizedCurveFill = normalizedCurveFills.FirstOrDefault(index =>
+            (uint)index < mergedCurveScene.ObjectCount
+            && mergedCurveScene.FillContainsPoint(index, new PointF(120, 80)), -1);
+        var normalizedCurveParts = normalizedCurveFill >= 0
+            ? mergedCurveScene.GetPathBezierSegmentParts(normalizedCurveFill)
+            : [];
+        var normalizedCurveLinks = mergedCurveScene.CaptureFillBoundaryLineLinks(mergedBoundary, 0);
+        if (normalizedCurveFill < 0
+            || normalizedCurveParts.Length > 10
+            || normalizedCurveLinks is not [{ BezierSegmentCount: 1 }])
+        {
+            throw new InvalidOperationException(
+                $"Interactive Fill normalization flattened a neighboring shallow cubic: fill={normalizedCurveFill}, parts={normalizedCurveParts.Length}, links={string.Join(',', normalizedCurveLinks.Select(link => $"{link.BezierSegmentIndex}+{link.BezierSegmentCount}"))}.");
+        }
+
         var pencilScene = new VectorScene();
         pencilScene.CreateEmpty();
         pencilScene.AddFreehandStroke(
@@ -6351,6 +6892,18 @@ internal static class Benchmark
 
     private static void RunRenderOrderRegression()
     {
+        var outlineScene = new VectorScene();
+        outlineScene.CreateEmpty();
+        outlineScene.AddObject(0, PointF.Empty, new SizeF(80, 60), 0, 0, Color.Coral, 4, ShapeKind.Rectangle);
+        outlineScene.SetLayerOutline(0, true);
+        if (!outlineScene.HasLayerOutline
+            || outlineScene.HasLayerEffects
+            || !outlineScene.HasDisplayLayerEffects
+            || !SceneRenderOrder.RequiresObjectRenderer(outlineScene))
+        {
+            throw new InvalidOperationException("Outline-only layers did not force object rendering without becoming geometry layer effects.");
+        }
+
         var scene = new VectorScene();
         scene.CreateEmpty(2);
         var strokeWidth = VectorUnits.StrokePointsToUnits(2);
@@ -7246,6 +7799,7 @@ internal static class Benchmark
             var updatedControl1 = new PointF(-85, -175);
             var updatedControl2 = new PointF(75, -105);
             var objectCountBeforeFillEdit = curvedScene.ObjectCount;
+            var fillEditInitialContours = curvedScene.GetObjectBoundaryContours(curvedFill);
             if (strokeLinks.Length != 1
                 || strokeLinks[0].LineObjectIndex != curvedLine
                 || strokeLinks[0].Reversed != reverse
@@ -7268,12 +7822,28 @@ internal static class Benchmark
                 throw new InvalidOperationException(
                     "Editing a fill boundary did not update its coincident cubic line.");
             }
+
+            curvedScene.NormalizeFillBoundaryOverlaps(
+                curvedFill,
+                fillEditInitialContours,
+                rebuildGeometryIndex: false);
+            if (!curvedScene.TryGetPathBezierSegment(curvedFill, fillEdge.PartIndex, out var finalFillEdge))
+            {
+                throw new InvalidOperationException("A normalized fill-boundary edit lost its active cubic segment.");
+            }
+            curvedScene.UpdateFillBoundaryStrokeLinks(
+                strokeLinks,
+                finalFillEdge.Start,
+                finalFillEdge.Control1,
+                finalFillEdge.Control2,
+                finalFillEdge.End,
+                rebuildGeometryIndex: false);
             curvedScene.CompleteDeferredBuild();
 
-            var expectedLineStart = reverse ? fillEdge.End : fillEdge.Start;
-            var expectedLineControl1 = reverse ? updatedControl2 : updatedControl1;
-            var expectedLineControl2 = reverse ? updatedControl1 : updatedControl2;
-            var expectedLineEnd = reverse ? fillEdge.Start : fillEdge.End;
+            var expectedLineStart = reverse ? finalFillEdge.End : finalFillEdge.Start;
+            var expectedLineControl1 = reverse ? finalFillEdge.Control2 : finalFillEdge.Control1;
+            var expectedLineControl2 = reverse ? finalFillEdge.Control1 : finalFillEdge.Control2;
+            var expectedLineEnd = reverse ? finalFillEdge.Start : finalFillEdge.End;
             var updatedFillEdges = curvedScene.GetPathBezierSegmentParts(curvedFill);
             var updatedEdge = updatedFillEdges.Single(part => part.PartIndex == fillEdge.PartIndex);
             var updatedProbe = updatedEdge.Samples[updatedEdge.Samples.Length / 2];
@@ -7298,6 +7868,94 @@ internal static class Benchmark
             {
                 throw new InvalidOperationException(
                     $"A fill-boundary edit flattened or split its linked {(reverse ? "reversed " : string.Empty)}cubic line: hit={updatedHit}, objects={curvedScene.ObjectCount}.");
+            }
+
+
+            var endpointLinks = curvedScene.CaptureFillBoundaryLineLinks(curvedLine, 0);
+            var excludedLinkedFills = endpointLinks
+                .Select(link => link.FillObjectIndex)
+                .ToHashSet();
+            var endpointIntersection = curvedScene.CaptureFillIntersectionsAtLineEndpoint(
+                curvedLine,
+                startEndpoint: true,
+                0,
+                rebuildGeometryIndex: false,
+                excludedFillObjectIndices: excludedLinkedFills);
+            var movedLineStart = VectorUnits.Quantize(new PointF(actualLineStart.X - 25, actualLineStart.Y - 15));
+            var movedLineControl1 = VectorUnits.Quantize(new PointF(actualLineControl1.X - 25, actualLineControl1.Y - 15));
+            curvedScene.SetLineEndpoint(
+                curvedLine,
+                startEndpoint: true,
+                movedLineStart,
+                actualLineEnd,
+                movedLineControl1,
+                actualLineControl2,
+                keepStraight: false);
+            if (endpointLinks.Length != 1
+                || endpointIntersection.PathAnchors.Any(anchor => anchor.ObjectIndex == curvedFill)
+                || !curvedScene.UpdateFillBoundaryLineLinks(endpointLinks, rebuildGeometryIndex: false))
+            {
+                throw new InvalidOperationException(
+                    "A curved Line endpoint edit did not reserve its coincident fill edge for full-curve synchronization.");
+            }
+            curvedScene.UpdateSharedBoundaryIntersection(
+                endpointIntersection,
+                movedLineStart,
+                rebuildGeometryIndex: false);
+            curvedScene.CompleteDeferredBuild();
+
+            var endpointFillEdge = curvedScene.GetPathBezierSegmentParts(curvedFill)
+                .Single(part => part.PartIndex == fillEdge.PartIndex);
+            var endpointLink = endpointLinks[0];
+            var expectedFillStart = endpointLink.Reversed ? actualLineEnd : movedLineStart;
+            var expectedFillControl1 = endpointLink.Reversed ? actualLineControl2 : movedLineControl1;
+            var expectedFillControl2 = endpointLink.Reversed ? movedLineControl1 : actualLineControl2;
+            var expectedFillEnd = endpointLink.Reversed ? movedLineStart : actualLineEnd;
+            if (!PointsNear(endpointFillEdge.Start, expectedFillStart)
+                || !PointsNear(endpointFillEdge.Control1, expectedFillControl1)
+                || !PointsNear(endpointFillEdge.Control2, expectedFillControl2)
+                || !PointsNear(endpointFillEdge.End, expectedFillEnd))
+            {
+                throw new InvalidOperationException(
+                    "Moving a curved Line endpoint allowed shared-anchor synchronization to overwrite its linked fill curve.");
+            }
+
+            var resetLine = MainForm.ResetBezierCurvature(movedLineStart, actualLineEnd);
+            curvedScene.SetLineEndpoint(
+                curvedLine,
+                startEndpoint: true,
+                resetLine.Start,
+                resetLine.End,
+                resetLine.Control1,
+                resetLine.Control2,
+                keepStraight: false);
+            if (!curvedScene.UpdateFillBoundaryLineLinks(endpointLinks, rebuildGeometryIndex: false))
+            {
+                throw new InvalidOperationException("Resetting a Line's Bezier controls did not update its linked fill edge.");
+            }
+            curvedScene.CompleteDeferredBuild();
+
+            var resetFillEdge = curvedScene.GetPathBezierSegmentParts(curvedFill)
+                .Single(part => part.PartIndex == fillEdge.PartIndex);
+            if (!curvedScene.TryGetLineCubic(
+                    curvedLine,
+                    out var resetLineStart,
+                    out var resetLineControl1,
+                    out var resetLineControl2,
+                    out var resetLineEnd)
+                || !VectorScene.IsStraightBezierSegment(
+                    resetLineStart,
+                    resetLineControl1,
+                    resetLineControl2,
+                    resetLineEnd)
+                || !VectorScene.IsStraightBezierSegment(
+                    resetFillEdge.Start,
+                    resetFillEdge.Control1,
+                    resetFillEdge.Control2,
+                    resetFillEdge.End))
+            {
+                throw new InvalidOperationException(
+                    "Alt-resetting both Bezier controls did not straighten the Line and linked fill edge together.");
             }
         }
     }
@@ -8302,6 +8960,9 @@ internal static class Benchmark
             new PointF(insertedInitialSegment.Control1.X - 0.49f, insertedInitialSegment.Control1.Y + 0.49f),
             new PointF(insertedInitialSegment.Control2.X + 0.49f, insertedInitialSegment.Control2.Y - 0.49f),
             new PointF(insertedInitialSegment.End.X - 0.49f, insertedInitialSegment.End.Y + 0.49f));
+        var resetCurvature = MainForm.ResetBezierCurvature(
+            new PointF(0, 0),
+            new PointF(90, 60));
         if (!MainForm.ShouldCommitFillEdgeBezierPointer(
                 includesAnchorInsertion: true,
                 insertedInitialSegment,
@@ -8361,6 +9022,42 @@ internal static class Benchmark
                 EditHandleKind.None,
                 pointerMoved: true,
                 dragThresholdExceeded: true)
+            || !MainForm.FillEdgeOverlayOwnsPointer(
+                new FillEdgeBezierOverlayHit(0, EditHandleKind.BezierControl),
+                selectableLineHit: true)
+            || MainForm.FillEdgeOverlayOwnsPointer(
+                new FillEdgeBezierOverlayHit(0, EditHandleKind.None),
+                selectableLineHit: true)
+            || !MainForm.FillEdgeOverlayOwnsPointer(
+                new FillEdgeBezierOverlayHit(0, EditHandleKind.None),
+                selectableLineHit: false)
+            || MainForm.FillEdgeOverlayOwnsPointer(
+                FillEdgeBezierOverlayHit.None,
+                selectableLineHit: false)
+            || !MainForm.IsBezierCurvatureResetGesture(
+                MouseButtons.Left,
+                altPressed: true,
+                EditHandleKind.BezierControl)
+            || !MainForm.IsBezierCurvatureResetGesture(
+                MouseButtons.Left,
+                altPressed: true,
+                EditHandleKind.BezierControl2)
+            || MainForm.IsBezierCurvatureResetGesture(
+                MouseButtons.Left,
+                altPressed: false,
+                EditHandleKind.BezierControl)
+            || MainForm.IsBezierCurvatureResetGesture(
+                MouseButtons.Right,
+                altPressed: true,
+                EditHandleKind.BezierControl)
+            || MainForm.IsBezierCurvatureResetGesture(
+                MouseButtons.Left,
+                altPressed: true,
+                EditHandleKind.LineStart)
+            || !PointsWithin(resetCurvature.Start, new PointF(0, 0), 0.01f)
+            || !PointsWithin(resetCurvature.Control1, new PointF(30, 20), 0.01f)
+            || !PointsWithin(resetCurvature.Control2, new PointF(60, 40), 0.01f)
+            || !PointsWithin(resetCurvature.End, new PointF(90, 60), 0.01f)
             || !PointsWithin(offsetHandle, new PointF(105, 86), 0.01f)
             || !unchangedSegmentAccepted
             || fillScene.GeometryRevision != unchangedGeometryRevision
@@ -9910,6 +10607,10 @@ internal static class Benchmark
             brushStroke: false,
             12);
         var fullyCoveredParts = coverageScene.GetExposedFillBezierSegmentPieces(coverageFill, 0);
+        var editableCoveredParts = coverageScene.GetExposedFillBezierSegmentPieces(
+            coverageFill,
+            0,
+            includeCoincidentStrokes: true);
         coverageStage.SetFillEdgeBezierOverlay(
             coverageFill,
             fullyCoveredParts.Select(part => new FillEdgeBezierOverlaySegment(
@@ -9921,6 +10622,28 @@ internal static class Benchmark
         if (fullyCoveredParts.Length != 0 || coverageStage.FillEdgeBezierOverlayVisible)
         {
             throw new InvalidOperationException("A fill enclosed by a coincident closed stroke retained fill-edge controls.");
+        }
+
+        coverageStage.SetFillEdgeBezierOverlay(
+            coverageFill,
+            editableCoveredParts.Select(part => new FillEdgeBezierOverlaySegment(
+                part.PieceIndex,
+                part.Start,
+                part.Control1,
+                part.Control2,
+                part.End)).ToArray(),
+            editableCoveredParts.FirstOrDefault().PieceIndex);
+        var editableCoveredControlHit = editableCoveredParts.Length > 0
+            ? coverageStage.HitTestFillEdgeBezierOverlay(Point.Round(coverageStage.WorldToScreen(
+                editableCoveredParts[0].Control1.X,
+                editableCoveredParts[0].Control1.Y)))
+            : FillEdgeBezierOverlayHit.None;
+        if (editableCoveredParts.Length != coverageParts.Length
+            || !coverageStage.FillEdgeBezierOverlayVisible
+            || editableCoveredControlHit.Handle != EditHandleKind.BezierControl)
+        {
+            throw new InvalidOperationException(
+                "Selecting a fill did not restore Bezier controls hidden by its synchronized coincident stroke.");
         }
 
         fillScene.RestoreSnapshot(originalSnapshot);
@@ -10121,6 +10844,98 @@ internal static class Benchmark
         RunVirtualFillIntersectionRefreshRegression();
         RunRepeatedFillAnchorLineEndpointRegression();
         RunCoincidentFillBoundaryLineRegression();
+        RunSelfIntersectingFillBoundaryRegression();
+    }
+
+    private static void RunSelfIntersectingFillBoundaryRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var fill = scene.AddPathObject(
+            0,
+            [
+                new PointF(-300, -100),
+                new PointF(300, -100),
+                new PointF(300, 200),
+                new PointF(0, -300),
+                new PointF(-300, 200)
+            ],
+            0,
+            Color.Teal,
+            Color.Transparent,
+            15);
+        var fillParts = scene.GetFillParts(fill, 0);
+        var pieces = scene.GetExposedFillBezierSegmentPieces(fill, 0);
+        var middleTop = pieces.FirstOrDefault(piece =>
+            piece.SourcePartIndex == 0
+            && piece.StartIsVirtualAnchor
+            && piece.EndIsVirtualAnchor);
+        var allPiecesResolve = pieces.All(piece =>
+            scene.TryResolveFillPartForBezierSegmentPiece(fill, 0, piece, out _));
+        var leftIntersection = middleTop.Start;
+        var crossingPiece = pieces.FirstOrDefault(piece =>
+            piece.SourcePartIndex != middleTop.SourcePartIndex
+            && ((piece.StartIsVirtualAnchor && PointsWithin(piece.Start, leftIntersection, 1.5f))
+                || (piece.EndIsVirtualAnchor && PointsWithin(piece.End, leftIntersection, 1.5f))));
+        var startEndpoint = crossingPiece.StartIsVirtualAnchor
+            && PointsWithin(crossingPiece.Start, leftIntersection, 1.5f);
+        var activePart = -1;
+        var prepared = middleTop.SourcePartIndex == 0
+            && allPiecesResolve
+            && crossingPiece.SourcePartIndex != middleTop.SourcePartIndex
+            && scene.TryConvertFillToBezierPath(fill)
+            && scene.TryMaterializePathBezierSegmentNeighborhood(
+                fill,
+                crossingPiece,
+                startEndpoint,
+                pieces,
+                out activePart);
+        var shared = prepared
+            ? scene.CaptureStrokeIntersectionsAtFillAnchor(
+                fill,
+                activePart,
+                startEndpoint,
+                0,
+                rebuildGeometryIndex: false)
+            : new SharedBoundaryIntersection(PointF.Empty, [], [], []);
+        var linkedBranch = shared.PathAnchors.FirstOrDefault(path =>
+            path.ObjectIndex == fill
+            && path.PartIndex != shared.OwnerPartIndex);
+        var target = new PointF(-150, -130);
+        var synchronized = shared.OwnerPartIndex == activePart + 1
+            && shared.PathAnchors.Length == 1
+            && linkedBranch.ObjectIndex == fill
+            && scene.TryGetPathBezierSegment(fill, shared.OwnerPartIndex, out var activeSegment)
+            && MainForm.AdjustFillEdgeBezierHandle(
+                activeSegment.Start,
+                activeSegment.Control1,
+                activeSegment.Control2,
+                activeSegment.End,
+                startEndpoint ? EditHandleKind.LineStart : EditHandleKind.LineEnd,
+                target) is var adjusted
+            && scene.SetPathBezierSegment(
+                fill,
+                shared.OwnerPartIndex,
+                adjusted.Start,
+                adjusted.Control1,
+                adjusted.Control2,
+                adjusted.End,
+                rebuildGeometryIndex: false,
+                preserveStraightAdjacentSegments: true)
+            && scene.UpdateSharedBoundaryIntersection(shared, target, rebuildGeometryIndex: false)
+            && scene.TryGetPathBezierSegment(fill, shared.OwnerPartIndex, out var movedActive)
+            && scene.TryGetPathBezierSegment(fill, linkedBranch.PartIndex, out var movedLinked)
+            && PointsWithin(startEndpoint ? movedActive.Start : movedActive.End, target, 0.01f)
+            && PointsWithin(movedLinked.Start, target, 0.01f);
+        if (fillParts.Length != 3
+            || pieces.Length != 9
+            || !allPiecesResolve
+            || !prepared
+            || !synchronized)
+        {
+            throw new InvalidOperationException(
+                $"A self-intersecting Fill knot did not keep both crossing branches draggable: regions={fillParts.Length}, pieces={pieces.Length}, allResolve={allPiecesResolve}, crossing={crossingPiece}, prepared={prepared}, owner={shared.OwnerPartIndex}, linked=[{string.Join(';', shared.PathAnchors)}], synchronized={synchronized}.");
+        }
     }
 
     private static void RunVirtualFillIntersectionRefreshRegression()
@@ -14138,6 +14953,57 @@ internal static class Benchmark
             || independentEndpointScene.GetLineEndpointStyle(0, startEndpoint: false) != LineEndpointStyle.Round)
         {
             throw new InvalidOperationException("Independent start and end line styles were not preserved by snapshot restoration.");
+        }
+
+        var boundaryEndpointScene = new VectorScene();
+        boundaryEndpointScene.CreateEmpty();
+        var outlinedRectangle = boundaryEndpointScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(240, 160),
+            0,
+            stroke,
+            Color.CornflowerBlue,
+            Color.Coral,
+            12,
+            ShapeKind.Rectangle);
+        var boundaryPart = boundaryEndpointScene.GetBoundaryParts(outlinedRectangle, 0)
+            .First(part => part.Points.Length == 2);
+        var boundaryKey = new DrawingElementKey(
+            outlinedRectangle,
+            DrawingElementKind.BoundaryStroke,
+            boundaryPart.PartIndex);
+        var boundarySnapshot = boundaryEndpointScene.CreateSnapshot();
+        if (!boundaryEndpointScene.TryGetLinePartEndpointStyles(boundaryKey, 0, out var boundaryStartStyle, out var boundaryEndStyle)
+            || boundaryStartStyle != LineEndpointStyle.Round
+            || boundaryEndStyle != LineEndpointStyle.Round)
+        {
+            throw new InvalidOperationException("A selected fill-boundary segment did not expose editable line endpoint styles.");
+        }
+
+        var materializedBoundary = boundaryEndpointScene.MaterializeSelectedParts([boundaryKey], 0);
+        var materializedBoundaryLine = materializedBoundary.Parts.FirstOrDefault().Result.ObjectIndex;
+        if (!materializedBoundary.Success
+            || !materializedBoundary.Changed
+            || materializedBoundary.Parts.Length != 1
+            || materializedBoundaryLine < 0
+            || boundaryEndpointScene.ShapeKind[materializedBoundaryLine] != ShapeKind.Line
+            || !boundaryEndpointScene.SetLineEndpointStyle(materializedBoundaryLine, startEndpoint: true, LineEndpointStyle.Sharp)
+            || boundaryEndpointScene.GetLineEndpointStyle(materializedBoundaryLine, startEndpoint: true) != LineEndpointStyle.Sharp
+            || Enumerable.Range(0, boundaryEndpointScene.ObjectCount)
+                .Where(index => index != materializedBoundaryLine && boundaryEndpointScene.ShapeKind[index] == ShapeKind.Line)
+                .Any(index => boundaryEndpointScene.GetLineEndpointStyle(index, startEndpoint: true) != LineEndpointStyle.Round
+                    || boundaryEndpointScene.GetLineEndpointStyle(index, startEndpoint: false) != LineEndpointStyle.Round))
+        {
+            throw new InvalidOperationException("Editing a fill-boundary endpoint style did not isolate the selected segment as a Line.");
+        }
+
+        boundaryEndpointScene.RestoreSnapshot(boundarySnapshot);
+        if (boundaryEndpointScene.ObjectCount != 1
+            || boundaryEndpointScene.ShapeKind[outlinedRectangle] != ShapeKind.Rectangle
+            || boundaryEndpointScene.Stroke[outlinedRectangle] != stroke)
+        {
+            throw new InvalidOperationException("Restoring a fill-boundary endpoint edit did not recover the original outlined fill.");
         }
 
         var mixedEndpointStyleScene = new VectorScene();

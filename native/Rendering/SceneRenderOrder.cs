@@ -26,6 +26,7 @@ internal static class SceneRenderOrder
 
     public static bool RequiresObjectRenderer(VectorScene scene)
     {
+        if (scene.HasLayerOutline) return true;
         for (var index = 0; index < scene.ObjectCount; index++)
         {
             if (scene.ShapeKind[index] is ShapeKind.ImportedSvg or ShapeKind.Text) return true;
@@ -39,7 +40,7 @@ internal static class SceneRenderOrder
         RectangleF visibleBounds,
         SceneRenderOrderBuffer renderOrder)
     {
-        if (scene.HasLayerEffects
+        if (scene.HasDisplayLayerEffects
             || !renderOrder.SummaryMatchesActiveContent
             || pixelZoom >= 0.18f
             || renderOrder.VisibleCount < DenseObjectLodMinimumVisibleObjects
@@ -277,7 +278,7 @@ internal sealed class SceneRenderOrderBuffer
 
     private bool ComputeSummaryMatchingActiveContent(VectorScene scene)
     {
-        if (scene.HasLayerEffects) return false;
+        if (scene.HasDisplayLayerEffects) return false;
         for (var layer = 0; layer < scene.LayerCount; layer++)
         {
             if (!scene.IsLayerEffectivelyVisible(layer)) return false;

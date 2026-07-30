@@ -86,7 +86,14 @@ internal static class SceneCompositionBuilder
         float InheritedOpacity,
         float Alpha,
         int TintArgb,
-        SceneCompositionObjectOwner Owner);
+        LayerBlendMode BlendMode,
+        bool Outline,
+        int OutlineColorArgb,
+        SceneCompositionObjectOwner Owner,
+        bool SyntheticGroup = false,
+        string GroupId = "",
+        string ParentGroupId = "",
+        bool PreserveSourceParent = false);
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
 
@@ -175,6 +182,7 @@ internal static class SceneCompositionBuilder
                 continue;
             }
 
+            var firstLayer = layers.Count;
             foreach (var instance in sceneDefinition.InstancesInLayer(sceneLayer.Id))
             {
                 if (!instance.EvaluateState(localFrame).Visible
@@ -193,7 +201,20 @@ internal static class SceneCompositionBuilder
                     layers,
                     new HashSet<string>(StringComparer.Ordinal),
                     $"{instance.Name} / {sceneLayer.Name}",
-                    instance.Id);
+                    instance.Id,
+                    inheritedOutline: sceneLayer.Outline,
+                    inheritedOutlineColorArgb: sceneLayer.ColorArgb);
+            }
+
+            if (sceneLayer.BlendMode != LayerBlendMode.Normal && layers.Count > firstLayer)
+            {
+                WrapCompositionRangeInGroup(
+                    layers,
+                    firstLayer,
+                    sceneLayer.Name,
+                    sceneLayer.BlendMode,
+                    sceneLayer.Outline,
+                    sceneLayer.ColorArgb);
             }
         }
 
@@ -244,6 +265,14 @@ internal static class SceneCompositionBuilder
         }
 
         var layers = new List<CompositionLayer>();
+        var hostLayer = Array.IndexOf(container.Scene.LayerIds, instance.SceneLayerId);
+        var hostOutline = hostLayer >= 0 && container.Scene.IsLayerEffectivelyOutlined(hostLayer);
+        if (hostLayer >= 0
+            && hostLayer < container.Scene.LayerBlendModes.Length
+            && container.Scene.LayerBlendModes[hostLayer] != LayerBlendMode.Normal)
+        {
+            throw new InvalidDataException("Break Apart cannot flatten a drawing-object instance from a blended host layer.");
+        }
         CollectDrawingObjectLayers(
             child,
             instance,
@@ -256,10 +285,12 @@ internal static class SceneCompositionBuilder
             instance.Name,
             instance.Id,
             inheritedOpacity: 1f,
-            synchronize: false);
+            synchronize: false,
+            inheritedOutline: hostOutline,
+            inheritedOutlineColorArgb: hostOutline ? container.Scene.LayerColorArgb[hostLayer] : 0);
         if (layers.Any(layer => layer.Source.HasLayerEffects))
         {
-            throw new InvalidDataException("Break Apart cannot flatten drawing objects that use folders or masks.");
+            throw new InvalidDataException("Break Apart cannot flatten drawing objects that use folders, masks, or blend modes.");
         }
 
         var vectorizedSources = new Dictionary<SourceFrameKey, VectorScene>();
@@ -299,7 +330,14 @@ internal static class SceneCompositionBuilder
                 layer.InheritedOpacity,
                 layer.Alpha,
                 layer.TintArgb,
-                layer.Owner);
+                layer.BlendMode,
+                layer.Outline,
+                layer.OutlineColorArgb,
+                layer.Owner,
+                layer.SyntheticGroup,
+                layer.GroupId,
+                layer.ParentGroupId,
+                layer.PreserveSourceParent);
         }
 
         return BuildLayers(destination, materializedLayers, Math.Max(AnimationTimeline.DefaultDuration, container.FrameCount));
@@ -333,7 +371,7 @@ internal static class SceneCompositionBuilder
         var seen = new HashSet<(int Layer, int Keyframe)>();
         for (var layer = 0; layer < scene.LayerCount; layer++)
         {
-            if (!scene.LayerVisible[layer] || !scene.LayerOnionSkin[layer]) continue;
+            if (!scene.IsLayerEligibleForOnionSkin(layer)) continue;
             var track = scene.Timeline.FindTrackByTargetId(scene.LayerIds[layer]);
             if (track is null) continue;
             var currentExposure = track.EvaluateExposure(Math.Min(currentFrame, track.Duration - 1));
@@ -383,7 +421,8 @@ internal static class SceneCompositionBuilder
                 candidate.Frame,
                 parentFps,
                 candidate.Layer,
-                definitionsById);
+                definitionsById,
+                excludeEffectivelyLockedLayers: true);
             if (preview.ObjectCount > 0) previews.Add((preview, candidate.Opacity, candidate.IsPrevious));
         }
         destination.CombineOnionSkinPreviews(previews);
@@ -396,7 +435,8 @@ internal static class SceneCompositionBuilder
         int frame,
         decimal parentFps,
         int? hostLayerFilter,
-        IReadOnlyDictionary<string, DrawingObjectDefinition>? definitionsById = null)
+        IReadOnlyDictionary<string, DrawingObjectDefinition>? definitionsById = null,
+        bool excludeEffectivelyLockedLayers = false)
     {
         if (drawingObject is null || drawingObject.Instances.Count == 0)
         {
@@ -412,6 +452,13 @@ internal static class SceneCompositionBuilder
         for (var hostLayer = 0; hostLayer < drawingObject.Scene.LayerCount; hostLayer++)
         {
             if (hostLayerFilter is not null && hostLayer != hostLayerFilter.Value) continue;
+            if (excludeEffectivelyLockedLayers
+                && drawingObject.Scene.IsLayerEffectivelyLocked(hostLayer))
+            {
+                continue;
+            }
+            var hostOutline = drawingObject.Scene.IsLayerEffectivelyOutlined(hostLayer);
+            var firstLayer = layers.Count;
             foreach (var instance in drawingObject.InstancesInLayer(drawingObject.Scene.LayerIds[hostLayer]))
             {
                 if (!IsDrawingObjectInstanceActive(drawingObject, instance, localFrame)
@@ -430,7 +477,25 @@ internal static class SceneCompositionBuilder
                     layers,
                     ancestry,
                     instance.Name,
-                    instance.Id);
+                    instance.Id,
+                    inheritedOutline: hostOutline,
+                    inheritedOutlineColorArgb: hostOutline
+                        ? drawingObject.Scene.LayerColorArgb[hostLayer]
+                        : 0,
+                    excludeEffectivelyLockedLayers: excludeEffectivelyLockedLayers);
+            }
+
+            if (hostLayer < drawingObject.Scene.LayerBlendModes.Length
+                && drawingObject.Scene.LayerBlendModes[hostLayer] != LayerBlendMode.Normal
+                && layers.Count > firstLayer)
+            {
+                WrapCompositionRangeInGroup(
+                    layers,
+                    firstLayer,
+                    drawingObject.Scene.LayerNames[hostLayer],
+                    drawingObject.Scene.LayerBlendModes[hostLayer],
+                    hostOutline,
+                    drawingObject.Scene.LayerColorArgb[hostLayer]);
             }
         }
 
@@ -496,14 +561,18 @@ internal static class SceneCompositionBuilder
         int parentFrame,
         decimal parentFps,
         IReadOnlyDictionary<string, DrawingObjectDefinition> definitionsById,
-        ICollection<CompositionLayer> layers,
+        List<CompositionLayer> layers,
         ISet<string> ancestry,
         string path,
         string rootInstanceId,
         float inheritedOpacity = 1f,
         float inheritedAlpha = 1f,
         int inheritedTintArgb = unchecked((int)0xffffffff),
-        bool synchronize = true)
+        bool synchronize = true,
+        bool inheritedOutline = false,
+        int inheritedOutlineColorArgb = 0,
+        string inheritedParentGroupId = "",
+        bool excludeEffectivelyLockedLayers = false)
     {
         if (!ancestry.Add(drawingObject.Id)) return;
         try
@@ -524,6 +593,47 @@ internal static class SceneCompositionBuilder
                 state);
             for (var sourceLayer = 0; sourceLayer < source.LayerCount; sourceLayer++)
             {
+                if (excludeEffectivelyLockedLayers && source.IsLayerEffectivelyLocked(sourceLayer)) continue;
+                var outline = inheritedOutline || source.IsLayerEffectivelyOutlined(sourceLayer);
+                var outlineColorArgb = inheritedOutline
+                    ? inheritedOutlineColorArgb
+                    : source.LayerColorArgb[sourceLayer];
+                var blendMode = sourceLayer < source.LayerBlendModes.Length
+                    ? source.LayerBlendModes[sourceLayer]
+                    : LayerBlendMode.Normal;
+                var activeChildren = drawingObject.InstancesInLayer(source.LayerIds[sourceLayer])
+                    .Where(childInstance => IsDrawingObjectInstanceActive(drawingObject, childInstance, localFrame))
+                    .Select(childInstance => definitionsById.TryGetValue(childInstance.DrawingObjectId, out var child)
+                        ? (Instance: childInstance, DrawingObject: child)
+                        : default)
+                    .Where(item => item.Instance is not null && item.DrawingObject is not null)
+                    .ToArray();
+                var sourceParentGroupId = string.IsNullOrWhiteSpace(source.LayerParentIds[sourceLayer])
+                    ? inheritedParentGroupId
+                    : "";
+                var hostGroupId = "";
+                if (blendMode != LayerBlendMode.Normal && activeChildren.Length > 0)
+                {
+                    hostGroupId = Guid.NewGuid().ToString("N");
+                    layers.Add(new CompositionLayer(
+                        source,
+                        sourceLayer,
+                        localFrame,
+                        $"{path} / {source.LayerNames[sourceLayer]} group",
+                        transform,
+                        1f,
+                        1f,
+                        unchecked((int)0xffffffff),
+                        blendMode,
+                        outline,
+                        outlineColorArgb,
+                        new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
+                        SyntheticGroup: true,
+                        GroupId: hostGroupId,
+                        ParentGroupId: sourceParentGroupId,
+                        PreserveSourceParent: true));
+                }
+
                 layers.Add(new CompositionLayer(
                     source,
                     sourceLayer,
@@ -533,14 +643,15 @@ internal static class SceneCompositionBuilder
                     inheritedOpacity,
                     alpha,
                     tintArgb,
-                    new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId)));
-                foreach (var childInstance in drawingObject.InstancesInLayer(source.LayerIds[sourceLayer]))
+                    hostGroupId.Length > 0 ? LayerBlendMode.Normal : blendMode,
+                    outline,
+                    outlineColorArgb,
+                    new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
+                    ParentGroupId: hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId));
+                foreach (var childItem in activeChildren)
                 {
-                    if (!IsDrawingObjectInstanceActive(drawingObject, childInstance, localFrame)
-                        || !definitionsById.TryGetValue(childInstance.DrawingObjectId, out var child))
-                    {
-                        continue;
-                    }
+                    var childInstance = childItem.Instance!;
+                    var child = childItem.DrawingObject!;
 
                     CollectDrawingObjectLayers(
                         child,
@@ -556,13 +667,58 @@ internal static class SceneCompositionBuilder
                         inheritedOpacity * EffectiveLayerOpacity(source, sourceLayer),
                         alpha,
                         tintArgb,
-                        synchronize);
+                        synchronize,
+                        outline,
+                        outlineColorArgb,
+                        hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId,
+                        excludeEffectivelyLockedLayers);
                 }
             }
         }
         finally
         {
             ancestry.Remove(drawingObject.Id);
+        }
+    }
+
+    private static void WrapCompositionRangeInGroup(
+        List<CompositionLayer> layers,
+        int firstLayer,
+        string name,
+        LayerBlendMode blendMode,
+        bool outline,
+        int outlineColorArgb)
+    {
+        if ((uint)firstLayer >= layers.Count) return;
+        var groupId = Guid.NewGuid().ToString("N");
+        var template = layers[firstLayer];
+        layers.Insert(firstLayer, template with
+        {
+            Name = name,
+            InheritedOpacity = 1f,
+            Alpha = 1f,
+            TintArgb = unchecked((int)0xffffffff),
+            BlendMode = blendMode,
+            Outline = outline,
+            OutlineColorArgb = outlineColorArgb,
+            SyntheticGroup = true,
+            GroupId = groupId,
+            ParentGroupId = "",
+            PreserveSourceParent = false
+        });
+
+        for (var index = firstLayer + 1; index < layers.Count; index++)
+        {
+            var layer = layers[index];
+            if (!string.IsNullOrWhiteSpace(layer.ParentGroupId)) continue;
+            if (!layer.SyntheticGroup
+                && layer.SourceLayer < layer.Source.LayerParentIds.Length
+                && !string.IsNullOrWhiteSpace(layer.Source.LayerParentIds[layer.SourceLayer]))
+            {
+                continue;
+            }
+
+            layers[index] = layer with { ParentGroupId = groupId };
         }
     }
 
@@ -605,7 +761,7 @@ internal static class SceneCompositionBuilder
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
-            var sourceObjectCount = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer].Length;
+            var sourceObjectCount = SourceObjects(layer, sourceObjectsByLayer).Length;
             expectedObjectCount += sourceObjectCount;
             if (sourceObjectCount > 0) populatedDestinationLayers.Add(destinationLayer);
         }
@@ -624,18 +780,32 @@ internal static class SceneCompositionBuilder
         }
 
         var destinationLayerBySource = new Dictionary<CompositionLayerGroupKey, Dictionary<string, int>>();
+        var destinationLayerByGroupId = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
             destination.LayerNames[destinationLayer] = layer.Name;
-            destination.LayerKinds[destinationLayer] = layer.Source.GetLayerKind(layer.SourceLayer);
-            destination.LayerLocked[destinationLayer] = layer.Source.LayerLocked[layer.SourceLayer];
-            destination.LayerVisible[destinationLayer] = layer.Source.LayerVisible[layer.SourceLayer];
-            destination.LayerOpacity[destinationLayer] = Math.Clamp(
-                layer.Source.LayerOpacity[layer.SourceLayer] * layer.InheritedOpacity,
-                0f,
-                1f);
-            destination.LayerColorArgb[destinationLayer] = layer.Source.LayerColorArgb[layer.SourceLayer];
+            destination.LayerKinds[destinationLayer] = layer.SyntheticGroup
+                ? DrawingLayerKind.Folder
+                : layer.Source.GetLayerKind(layer.SourceLayer);
+            destination.LayerLocked[destinationLayer] = !layer.SyntheticGroup
+                && layer.Source.LayerLocked[layer.SourceLayer];
+            destination.LayerVisible[destinationLayer] = layer.SyntheticGroup
+                || layer.Source.LayerVisible[layer.SourceLayer];
+            destination.LayerOpacity[destinationLayer] = layer.SyntheticGroup
+                ? 1f
+                : Math.Clamp(layer.Source.LayerOpacity[layer.SourceLayer] * layer.InheritedOpacity, 0f, 1f);
+            destination.LayerBlendModes[destinationLayer] = layer.BlendMode;
+            destination.LayerOutline[destinationLayer] = layer.Outline;
+            destination.LayerColorArgb[destinationLayer] = layer.Outline
+                ? layer.OutlineColorArgb
+                : layer.Source.LayerColorArgb[layer.SourceLayer];
+            if (!string.IsNullOrWhiteSpace(layer.GroupId))
+            {
+                destinationLayerByGroupId.Add(layer.GroupId, destinationLayer);
+            }
+            if (layer.SyntheticGroup) continue;
+
             var groupKey = new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId);
             if (!destinationLayerBySource.TryGetValue(groupKey, out var map))
             {
@@ -649,9 +819,30 @@ internal static class SceneCompositionBuilder
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
+            if (!string.IsNullOrWhiteSpace(layer.ParentGroupId)
+                && destinationLayerByGroupId.TryGetValue(layer.ParentGroupId, out var explicitParentLayer))
+            {
+                destination.LayerParentIds[destinationLayer] = destination.LayerIds[explicitParentLayer];
+            }
+
+            if (layer.SyntheticGroup)
+            {
+                if (string.IsNullOrWhiteSpace(destination.LayerParentIds[destinationLayer])
+                    && layer.PreserveSourceParent
+                    && destinationLayerBySource.TryGetValue(
+                        new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId),
+                        out var syntheticMap)
+                    && layer.SourceLayer < layer.Source.LayerParentIds.Length
+                    && syntheticMap.TryGetValue(layer.Source.LayerParentIds[layer.SourceLayer], out var syntheticParentLayer))
+                {
+                    destination.LayerParentIds[destinationLayer] = destination.LayerIds[syntheticParentLayer];
+                }
+                continue;
+            }
             var map = destinationLayerBySource[new CompositionLayerGroupKey(layer.Source, layer.Owner.InstanceId)];
             var sourceLayer = layer.SourceLayer;
-            if (sourceLayer < layer.Source.LayerParentIds.Length
+            if (string.IsNullOrWhiteSpace(destination.LayerParentIds[destinationLayer])
+                && sourceLayer < layer.Source.LayerParentIds.Length
                 && map.TryGetValue(layer.Source.LayerParentIds[sourceLayer], out var parentLayer))
             {
                 destination.LayerParentIds[destinationLayer] = destination.LayerIds[parentLayer];
@@ -694,7 +885,7 @@ internal static class SceneCompositionBuilder
                 for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
                 {
                     var layer = layers[destinationLayer];
-                    var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
+                    var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
                     foreach (var sourceObject in sourceObjects)
                     {
                         var item = new CompositionWorkItem(
@@ -765,7 +956,7 @@ internal static class SceneCompositionBuilder
         foreach (var layer in layers)
         {
             if (HasShear(layer.Transform)) return false;
-            var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
+            var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
             foreach (var sourceObject in sourceObjects)
             {
                 if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path or ShapeKind.Freeform or ShapeKind.ImportedSvg or ShapeKind.Text) return false;
@@ -785,7 +976,7 @@ internal static class SceneCompositionBuilder
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
-            var sourceObjects = sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
+            var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
             foreach (var sourceObject in sourceObjects)
             {
                 workItems[index++] = new CompositionWorkItem(
@@ -800,6 +991,15 @@ internal static class SceneCompositionBuilder
         }
 
         return workItems;
+    }
+
+    private static int[] SourceObjects(
+        CompositionLayer layer,
+        IReadOnlyDictionary<SourceFrameKey, int[][]> sourceObjectsByLayer)
+    {
+        return layer.SyntheticGroup
+            ? []
+            : sourceObjectsByLayer[new SourceFrameKey(layer.Source, layer.SourceFrame)][layer.SourceLayer];
     }
 
     private static Dictionary<SourceFrameKey, int[][]> BuildSourceObjectBuckets(

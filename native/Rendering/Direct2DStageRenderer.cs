@@ -336,6 +336,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         LastPathGradientBrushCacheReuses = 0;
         LastLineGeometryCacheBuilds = 0;
         LastLineGeometryCacheReuses = 0;
+        if (RequiresSoftwareLayerCompositing(stage)) return false;
         ClearTransientGradientBrushes();
         ClearTransientShapeGradientBitmaps();
         ClearTransientPathGradientBrushes();
@@ -500,6 +501,14 @@ internal sealed class Direct2DStageRenderer : IDisposable
         }
     }
 
+    private static bool RequiresSoftwareLayerCompositing(StageControl stage)
+    {
+        return stage.Scene.HasNonNormalLayerBlendModes
+            || stage.UnderlayScene?.HasNonNormalLayerBlendModes == true
+            || stage.OnionSkinScene?.HasNonNormalLayerBlendModes == true
+            || stage.DragPreviewScene?.HasNonNormalLayerBlendModes == true;
+    }
+
     public void Resize(System.Drawing.Size clientSize)
     {
         if (_target is null || clientSize.Width <= 0 || clientSize.Height <= 0) return;
@@ -610,17 +619,18 @@ internal sealed class Direct2DStageRenderer : IDisposable
         bool forceObjectRenderer = false)
     {
         var pixelZoom = EffectivePixelZoom(stage.Zoom);
-        if (forceObjectRenderer || SceneRenderOrder.RequiresObjectRenderer(stage.Scene))
+        if (forceObjectRenderer)
         {
             return DrawObjects(stage, int.MaxValue);
         }
+        if (SceneRenderOrder.RequiresObjectRenderer(stage.Scene)) return DrawObjects(stage, objectDrawLimit);
         if (stage.MarqueeLodPreviewActive && stage.Scene.ObjectCount > 0)
         {
             return pixelZoom < 0.08f
                 ? DrawOverviewTiles(stage)
                 : DrawTiles(stage);
         }
-        if (stage.Scene.HasLayerEffects || pixelZoom >= 0.18f) return DrawObjects(stage, objectDrawLimit);
+        if (stage.Scene.HasDisplayLayerEffects || pixelZoom >= 0.18f) return DrawObjects(stage, objectDrawLimit);
         if (stage.Scene.ObjectCount >= 5000)
         {
             return pixelZoom < 0.08f
@@ -652,7 +662,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         return scene.ObjectCount > 0
             && (SceneRenderOrder.RequiresObjectRenderer(scene)
                 || scene.ObjectCount < 5000
-                || scene.HasLayerEffects
+                || scene.HasDisplayLayerEffects
                 || EffectivePixelZoom(zoom) >= 0.18f);
     }
 
@@ -838,8 +848,12 @@ internal sealed class Direct2DStageRenderer : IDisposable
                 continue;
             }
 
-            if (SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) DrawObject(stage, objectIndex, SceneRenderPass.Fill);
-            if (SceneRenderOrder.HasStroke(scene.ShapeKind[objectIndex], scene.Stroke[objectIndex])) DrawObject(stage, objectIndex, SceneRenderPass.Stroke);
+            if (scene.IsLayerEffectivelyOutlined(scene.ObjectLayer[objectIndex])) DrawObjectOutline(stage, objectIndex);
+            else
+            {
+                if (SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) DrawObject(stage, objectIndex, SceneRenderPass.Fill);
+                if (SceneRenderOrder.HasStroke(scene.ShapeKind[objectIndex], scene.Stroke[objectIndex])) DrawObject(stage, objectIndex, SceneRenderPass.Stroke);
+            }
             drawn++;
         }
 
@@ -870,12 +884,12 @@ internal sealed class Direct2DStageRenderer : IDisposable
         if (!scene.ShouldRenderLayerContent(layer)) return;
         if (layerKind == DrawingLayerKind.Mask)
         {
-            DrawLayerObjectsUnmasked(stage, scene, objects, start);
+            DrawLayerObjectsUnmasked(stage, scene, layer, objects, start);
             return;
         }
         if (!scene.TryGetMaskLayerIndex(layer, out var maskLayer))
         {
-            DrawLayerObjectsUnmasked(stage, scene, objects, start);
+            DrawLayerObjectsUnmasked(stage, scene, layer, objects, start);
             return;
         }
 
@@ -897,7 +911,7 @@ internal sealed class Direct2DStageRenderer : IDisposable
         _target.PushLayer(parameters, targetLayer);
         try
         {
-            DrawLayerObjectsUnmasked(stage, scene, objects, start);
+            DrawLayerObjectsUnmasked(stage, scene, layer, objects, start);
         }
         finally
         {
@@ -905,8 +919,23 @@ internal sealed class Direct2DStageRenderer : IDisposable
         }
     }
 
-    private void DrawLayerObjectsUnmasked(StageControl stage, VectorScene scene, IReadOnlyList<int> objects, int start)
+    private void DrawLayerObjectsUnmasked(
+        StageControl stage,
+        VectorScene scene,
+        int layer,
+        IReadOnlyList<int> objects,
+        int start)
     {
+        var outlineLayerColor = scene.GetEffectiveLayerOutlineColor(layer);
+        if (!outlineLayerColor.IsEmpty)
+        {
+            for (var index = start; index < objects.Count; index++)
+            {
+                DrawObjectOutline(stage, objects[index], outlineLayerColor);
+            }
+            return;
+        }
+
         for (var index = start; index < objects.Count; index++)
         {
             var objectIndex = objects[index];
@@ -918,6 +947,136 @@ internal sealed class Direct2DStageRenderer : IDisposable
             var objectIndex = objects[index];
             if (SceneRenderOrder.HasStroke(scene.ShapeKind[objectIndex], scene.Stroke[objectIndex])) DrawObject(stage, objectIndex, SceneRenderPass.Stroke);
         }
+    }
+
+    private void DrawObjectOutline(StageControl stage, int objectIndex)
+    {
+        var scene = stage.Scene;
+        var layer = (uint)objectIndex < scene.ObjectLayer.Length ? scene.ObjectLayer[objectIndex] : -1;
+        DrawObjectOutline(stage, objectIndex, scene.GetEffectiveLayerOutlineColor(layer));
+    }
+
+    private void DrawObjectOutline(StageControl stage, int objectIndex, GdiColor layerColor)
+    {
+        var scene = stage.Scene;
+        if (stage.IsObjectHiddenForRendering(scene, objectIndex)) return;
+        var color = OutlineColor(scene, objectIndex, layerColor);
+        if (color.A == 0) return;
+
+        var brush = BrushFor(color.ToArgb());
+        var shape = scene.ShapeKind.Length > objectIndex ? scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
+        if (shape == ShapeKind.Line)
+        {
+            DrawBezierLine(stage, objectIndex, brush, 1f);
+            return;
+        }
+
+        if (shape == ShapeKind.Freeform && scene.TryGetFreehandLocalPoints(objectIndex, out var centerline))
+        {
+            DrawFreehandOutline(stage, objectIndex, centerline, brush);
+            return;
+        }
+
+        if (shape == ShapeKind.BrushStroke && scene.TryGetFreehandWorldPoints(objectIndex, out var brushCenterline))
+        {
+            using var brushOutline = CreatePolygonGeometry(
+                stage,
+                FreehandStrokeProcessor.CreateBrushOutlines(brushCenterline, scene.Stroke[objectIndex]));
+            if (brushOutline is not null) _target!.DrawGeometry(brushOutline, brush, 1f, RoundStrokeStyle());
+            return;
+        }
+
+        if (shape == ShapeKind.Text && scene.TryGetTextWorldContours(objectIndex, out var textContours))
+        {
+            using var textOutline = CreatePolygonGeometry(stage, textContours);
+            if (textOutline is not null) _target!.DrawGeometry(textOutline, brush, 1f, RoundStrokeStyle());
+            return;
+        }
+
+        if (shape == ShapeKind.ImportedSvg)
+        {
+            var screen = stage.WorldToScreen(scene.X[objectIndex], scene.Y[objectIndex]);
+            var width = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Width[objectIndex]));
+            var height = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Height[objectIndex]));
+            var bounds = Rect(screen.X - width * 0.5f, screen.Y - height * 0.5f, width, height);
+            var old = _target!.Transform;
+            try
+            {
+                _target.Transform = Matrix3x2.CreateRotation(scene.Angle[objectIndex], new Vector2(screen.X, screen.Y));
+                _target.DrawRectangle(in bounds, brush, 1f);
+            }
+            finally
+            {
+                _target.Transform = old;
+            }
+            return;
+        }
+
+        using var outline = CreateObjectBoundaryGeometry(stage, scene, objectIndex);
+        if (outline is not null) _target!.DrawGeometry(outline, brush, 1f, RoundStrokeStyle());
+    }
+
+    private void DrawFreehandOutline(
+        StageControl stage,
+        int objectIndex,
+        GdiPointF[] localPoints,
+        ID2D1SolidColorBrush brush)
+    {
+        if (localPoints.Length == 0) return;
+        if (localPoints.Length == 1)
+        {
+            var point = LocalFreehandPointToScreen(stage, objectIndex, localPoints[0]);
+            _target!.DrawEllipse(new Ellipse(point, 0.5f, 0.5f), brush, 1f);
+            return;
+        }
+
+        var scene = stage.Scene;
+        var geometry = FreehandGeometry(scene, objectIndex, localPoints);
+        var screen = stage.WorldToScreen(scene.X[objectIndex], scene.Y[objectIndex]);
+        var scale = VectorUnits.PixelsPerUnit * stage.Zoom;
+        var old = _target!.Transform;
+        try
+        {
+            _target.Transform = Matrix3x2.CreateScale(scale)
+                * Matrix3x2.CreateRotation(scene.Angle[objectIndex])
+                * Matrix3x2.CreateTranslation(screen.X, screen.Y);
+            _target.DrawGeometry(geometry, brush, 1f / Math.Max(0.0001f, scale), RoundStrokeStyle());
+        }
+        finally
+        {
+            _target.Transform = old;
+        }
+    }
+
+    private ID2D1PathGeometry? CreatePolygonGeometry(StageControl stage, IReadOnlyList<GdiPointF[]> contours)
+    {
+        var path = _factory!.CreatePathGeometry();
+        var hasContours = false;
+        using (var sink = path.Open())
+        {
+            sink.SetFillMode(FillMode.Alternate);
+            hasContours = AppendPolygonFigures(sink, stage, contours);
+            sink.Close();
+        }
+        if (hasContours) return path;
+        path.Dispose();
+        return null;
+    }
+
+    private static GdiColor OutlineColor(VectorScene scene, int objectIndex, GdiColor layerColor)
+    {
+        if (layerColor.IsEmpty) return GdiColor.Empty;
+        var shape = scene.ShapeKind.Length > objectIndex ? scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
+        var fillAlpha = SceneRenderOrder.HasFill(shape) && (uint)objectIndex < scene.Argb.Length
+            ? GdiColor.FromArgb(scene.Argb[objectIndex]).A
+            : 0;
+        var strokeAlpha = SceneRenderOrder.HasStroke(shape, scene.Stroke[objectIndex])
+            && (uint)objectIndex < scene.StrokeArgb.Length
+                ? GdiColor.FromArgb(scene.StrokeArgb[objectIndex]).A
+                : 0;
+        var materialAlpha = Math.Max(fillAlpha, strokeAlpha);
+        var alpha = (layerColor.A * materialAlpha + 127) / 255;
+        return GdiColor.FromArgb(alpha, layerColor.R, layerColor.G, layerColor.B);
     }
 
     private ID2D1PathGeometry? CreateMaskGeometry(StageControl stage, VectorScene scene, IReadOnlyList<int> maskObjects)

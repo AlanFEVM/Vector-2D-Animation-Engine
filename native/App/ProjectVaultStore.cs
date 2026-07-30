@@ -847,10 +847,16 @@ internal static class ProjectVaultStore
         {
             throw new InvalidDataException($"Drawing object '{expectedDrawingId}' has an invalid layer descriptor.");
         }
+        if (document.Layers.Any(item => !Enum.IsDefined(item.BlendMode)))
+        {
+            throw new InvalidDataException($"Drawing object '{expectedDrawingId}' has an invalid layer blend mode.");
+        }
         if (scene.LayerCount != document.Layers.Length
             || scene.ObjectCount != document.ObjectLayer.Length
             || scene.ObjectCount != document.ObjectKeyframeFrame.Length
             || scene.ActiveLayer != document.ActiveLayer
+            || (scene.OnionSkinEnabled ?? scene.LayerOnionSkin.Any(enabled => enabled))
+                != (document.OnionSkinEnabled ?? document.Layers.Any(layer => layer.OnionSkin))
             || scene.OnionSkinPreviousFrames != document.OnionSkinPreviousFrames
             || scene.OnionSkinNextFrames != document.OnionSkinNextFrames)
         {
@@ -897,9 +903,9 @@ internal static class ProjectVaultStore
             throw new InvalidDataException($"Scene '{expectedSceneId}' has an invalid layer descriptor.");
         }
         var layerIds = layers.Select(item => item.Id).ToArray();
-        if (layers.Any(item => item.Name is null))
+        if (layers.Any(item => item.Name is null || !Enum.IsDefined(item.BlendMode)))
         {
-            throw new InvalidDataException($"Scene '{expectedSceneId}' has an invalid layer name.");
+            throw new InvalidDataException($"Scene '{expectedSceneId}' has invalid layer metadata.");
         }
         if (!layerIds.Contains(document.Layers.ActiveLayerId, StringComparer.Ordinal))
         {
@@ -1286,7 +1292,10 @@ internal static class ProjectVaultStore
             LayerLocked = source.LayerLocked,
             LayerVisible = source.LayerVisible,
             LayerOpacity = source.LayerOpacity,
+            LayerBlendModes = source.LayerBlendModes,
             LayerColorArgb = source.LayerColorArgb,
+            LayerOutline = source.LayerOutline,
+            OnionSkinEnabled = source.OnionSkinEnabled,
             LayerOnionSkin = source.LayerOnionSkin,
             OnionSkinPreviousFrames = source.OnionSkinPreviousFrames,
             OnionSkinNextFrames = source.OnionSkinNextFrames,
@@ -1443,6 +1452,7 @@ internal static class ProjectVaultStore
         public string DrawingObjectId { get; init; } = "";
         public DrawingLayerDescriptor[] Layers { get; init; } = [];
         public int ActiveLayer { get; init; }
+        public bool? OnionSkinEnabled { get; init; }
         public int? OnionSkinPreviousFrames { get; init; }
         public int? OnionSkinNextFrames { get; init; }
         public ushort[] ObjectLayer { get; init; } = [];
@@ -1458,6 +1468,7 @@ internal static class ProjectVaultStore
                 .Select(index => DrawingLayerDescriptor.From(drawing.Scene, index))
                 .ToArray(),
             ActiveLayer = drawing.Scene.ActiveLayer,
+            OnionSkinEnabled = drawing.Scene.OnionSkinEnabled,
             OnionSkinPreviousFrames = drawing.Scene.OnionSkinPreviousFrames,
             OnionSkinNextFrames = drawing.Scene.OnionSkinNextFrames,
             ObjectLayer = drawing.Scene.ObjectLayer,
@@ -1477,7 +1488,9 @@ internal static class ProjectVaultStore
         public bool Locked { get; init; }
         public bool Visible { get; init; }
         public float Opacity { get; init; }
+        public LayerBlendMode BlendMode { get; init; } = LayerBlendMode.Normal;
         public int ColorArgb { get; init; }
+        public bool Outline { get; init; }
         public bool OnionSkin { get; init; }
         public int StartFrame { get; init; }
         public int EndFrame { get; init; }
@@ -1492,7 +1505,11 @@ internal static class ProjectVaultStore
             Locked = scene.LayerLocked[index],
             Visible = scene.LayerVisible[index],
             Opacity = scene.LayerOpacity[index],
+            BlendMode = index < scene.LayerBlendModes.Length
+                ? scene.LayerBlendModes[index]
+                : LayerBlendMode.Normal,
             ColorArgb = scene.LayerColorArgb[index],
+            Outline = scene.LayerOutline[index],
             OnionSkin = scene.LayerOnionSkin[index],
             StartFrame = scene.LayerStart[index],
             EndFrame = scene.LayerEnd[index]
@@ -1508,7 +1525,11 @@ internal static class ProjectVaultStore
                 && Locked == scene.LayerLocked[index]
                 && Visible == scene.LayerVisible[index]
                 && Opacity.Equals(scene.LayerOpacity[index])
+                && BlendMode == (index < scene.LayerBlendModes.Length
+                    ? scene.LayerBlendModes[index]
+                    : LayerBlendMode.Normal)
                 && ColorArgb == scene.LayerColorArgb[index]
+                && Outline == (index < scene.LayerOutline.Length && scene.LayerOutline[index])
                 && OnionSkin == scene.LayerOnionSkin[index]
                 && StartFrame == scene.LayerStart[index]
                 && EndFrame == scene.LayerEnd[index];
