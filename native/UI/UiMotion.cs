@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace VectorAnimationEngine;
@@ -12,6 +13,9 @@ internal static class UiMotion
     {
         Timer.Tick += (_, _) => Tick();
     }
+
+    public static bool AnimationsEnabled =>
+        SystemInformation.IsMenuAnimationEnabled && !SystemInformation.HighContrast;
 
     public static void ConfigureButton(Button button, Color normal, Color hover, Color pressed, bool active)
     {
@@ -34,6 +38,7 @@ internal static class UiMotion
     {
         if (state.Scheduled) return;
         state.Scheduled = true;
+        state.BeginScheduledMotion();
         RunningStates.Add(state);
         if (!Timer.Enabled) Timer.Start();
     }
@@ -64,6 +69,7 @@ internal static class UiMotion
         private bool _pressedDown;
         private float _hoverProgress;
         private float _hoverTarget;
+        private long _lastStepTimestamp;
 
         public ButtonMotionState(Button button)
         {
@@ -85,14 +91,14 @@ internal static class UiMotion
             {
                 if (e.Button != MouseButtons.Left) return;
                 _pressedDown = true;
-                Retarget();
+                Retarget(immediateColor: true);
             };
             _button.MouseUp += (_, _) =>
             {
                 _pressedDown = false;
                 Retarget();
             };
-            _button.EnabledChanged += (_, _) => Retarget();
+            _button.EnabledChanged += (_, _) => Retarget(immediateColor: true);
             _button.Disposed += (_, _) =>
             {
                 Scheduled = false;
@@ -103,6 +109,11 @@ internal static class UiMotion
         public bool Active { get; private set; }
         public float HoverProgress => _hoverProgress;
         public bool Scheduled { get; set; }
+
+        public void BeginScheduledMotion()
+        {
+            _lastStepTimestamp = Stopwatch.GetTimestamp();
+        }
 
         public void Configure(Color normal, Color hover, Color pressed, bool active)
         {
@@ -124,16 +135,28 @@ internal static class UiMotion
                 return;
             }
 
-            if (configurationChanged) Retarget();
+            if (configurationChanged) Retarget(immediateColor: !AnimationsEnabled);
         }
 
         public bool Step()
         {
             if (_button.IsDisposed) return false;
+            if (!AnimationsEnabled)
+            {
+                SnapToTargets();
+                return false;
+            }
+
+            var now = Stopwatch.GetTimestamp();
+            var elapsedMilliseconds = _lastStepTimestamp == 0
+                ? Timer.Interval
+                : Math.Clamp(Stopwatch.GetElapsedTime(_lastStepTimestamp, now).TotalMilliseconds, 1d, 64d);
+            _lastStepTimestamp = now;
+            var blend = 1f - MathF.Pow(0.70f, (float)(elapsedMilliseconds / Timer.Interval));
             var previousColor = _current;
             var previousHover = _hoverProgress;
-            _current = Mix(_current, _target, 0.30f);
-            _hoverProgress += (_hoverTarget - _hoverProgress) * 0.30f;
+            _current = Mix(_current, _target, blend);
+            _hoverProgress += (_hoverTarget - _hoverProgress) * blend;
             var settledColor = ColorDistance(_current, _target) < 1.2f;
             var settledHover = Math.Abs(_hoverProgress - _hoverTarget) < 0.015f;
             if (settledColor) _current = _target;
@@ -145,7 +168,7 @@ internal static class UiMotion
             return !settledColor || !settledHover;
         }
 
-        private void Retarget()
+        private void Retarget(bool immediateColor = false)
         {
             if (!_initialized || _button.IsDisposed) return;
             var nextTarget = ResolveTarget();
@@ -154,7 +177,27 @@ internal static class UiMotion
                 && Math.Abs(_hoverProgress - _hoverTarget) < 0.015f;
             _target = nextTarget;
             if (alreadySettled) return;
+            if (!AnimationsEnabled)
+            {
+                SnapToTargets();
+                return;
+            }
+            if (immediateColor)
+            {
+                _current = _target;
+                if (_button.BackColor != _current) _button.BackColor = _current;
+                _button.Invalidate();
+                if (Math.Abs(_hoverProgress - _hoverTarget) < 0.015f) return;
+            }
             Schedule(this);
+        }
+
+        private void SnapToTargets()
+        {
+            _current = _target;
+            _hoverProgress = _hoverTarget;
+            if (_button.BackColor != _current) _button.BackColor = _current;
+            _button.Invalidate();
         }
 
         private Color ResolveTarget()

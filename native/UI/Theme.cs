@@ -28,8 +28,29 @@ internal readonly record struct ThemePalette(
     Color Warning,
     Color Danger);
 
+internal interface ITreeNodeTrailingColorSource
+{
+    IReadOnlyList<Color> TrailingColors { get; }
+}
+
+internal interface ITreeNodeLeadingIconSource
+{
+    SvgIconKind LeadingIcon { get; }
+}
+
+internal enum ButtonVisualRole
+{
+    Standard,
+    Toolbar,
+    Segmented,
+    Primary,
+    Danger
+}
+
 internal static class Theme
 {
+    private readonly record struct RowInteractionProgress(float Hover, float Selection, float Pressed);
+
     public const int ControlHeightCompact = 28;
     public const int ControlHeight = 32;
     public const int IconButtonSize = 34;
@@ -38,6 +59,10 @@ internal static class Theme
     public const int GapXs = 4;
     public const int GapSm = 8;
     public const int GapMd = 12;
+
+    private const double RowHoverDurationMs = 110d;
+    private const double RowSelectionDurationMs = 160d;
+    private const double RowPressedDurationMs = 70d;
 
     private static readonly ThemePalette DefaultPalette = new(
         Color.FromArgb(18, 20, 22),
@@ -135,6 +160,7 @@ internal static class Theme
     public static Color DangerText => IsLight ? Danger : Color.FromArgb(255, 226, 226);
 
     private static readonly ConditionalWeakTable<Control, FieldInteractionState> FieldStates = new();
+    private static readonly ConditionalWeakTable<Button, ButtonThemeState> StyledButtons = new();
     private static readonly ConditionalWeakTable<ComboBox, object> StyledComboBoxes = new();
     private static readonly ConditionalWeakTable<ListBox, ListBoxInteractionState> StyledListBoxes = new();
     private static readonly ConditionalWeakTable<TreeView, TreeViewInteractionState> StyledTreeViews = new();
@@ -230,12 +256,9 @@ internal static class Theme
         {
             var dialogActionRefreshed = button.FindForm() is ModernDialogForm dialog
                 && dialog.RefreshDialogActionTheme(button);
-            if (!dialogActionRefreshed)
-            {
-                if (UiMotion.IsActive(button)) StyleActiveButton(button);
-                else StyleButton(button);
-            }
+            if (!dialogActionRefreshed) ReapplyButtonStyle(button);
         }
+        if (control is ModernNumericUpDown modernNumeric) modernNumeric.RefreshTheme();
         if (nativeThemeChanged && control is ListBox or TreeView or ListView) StyleNativeScrollBars(control);
         if (control is TreeView tree) RefreshTreeNodes(tree.Nodes, previousPalette, nextPalette);
         if (control is ListView list)
@@ -254,7 +277,6 @@ internal static class Theme
         {
             RefreshControl(child, previousPalette, nextPalette, nativeThemeChanged);
         }
-        control.Invalidate();
     }
 
     private static bool IsLightPalette(ThemePalette palette)
@@ -479,12 +501,44 @@ internal static class Theme
 
     public static void StyleButton(Button button)
     {
-        StyleButton(button, active: false);
+        var state = ButtonThemeStateFor(button);
+        ApplyButtonStyle(button, state.Role, active: false);
     }
 
     public static void StyleActiveButton(Button button)
     {
-        StyleButton(button, active: true);
+        var state = ButtonThemeStateFor(button);
+        ApplyButtonStyle(button, state.Role, active: true);
+    }
+
+    public static void StyleStandardButton(Button button, bool active = false)
+    {
+        ApplyButtonStyle(button, ButtonVisualRole.Standard, active);
+    }
+
+    public static void StyleToolbarButton(Button button, bool active = false)
+    {
+        ApplyButtonStyle(button, ButtonVisualRole.Toolbar, active);
+    }
+
+    public static void StyleSegmentedButton(Button button, bool active = false)
+    {
+        ApplyButtonStyle(button, ButtonVisualRole.Segmented, active);
+    }
+
+    public static void StylePrimaryButton(Button button)
+    {
+        ApplyButtonStyle(button, ButtonVisualRole.Primary, active: false);
+    }
+
+    public static void StyleDangerButton(Button button)
+    {
+        ApplyButtonStyle(button, ButtonVisualRole.Danger, active: false);
+    }
+
+    internal static ButtonVisualRole ButtonRoleFor(Button button)
+    {
+        return ButtonThemeStateFor(button).Role;
     }
 
     public static Color Mix(Color from, Color to, float amount)
@@ -497,18 +551,112 @@ internal static class Theme
             (int)Math.Round(from.B + (to.B - from.B) * amount));
     }
 
-    private static void StyleButton(Button button, bool active)
+    internal static float AdvanceRowMotion(float from, float to, double elapsedMs, double durationMs)
     {
-        var foreColor = active ? AccentLabel : Text;
-        var borderColor = active ? Accent : Border;
-        var hoverColor = active ? AccentSurface : PanelStrong;
+        if (durationMs <= 0d || elapsedMs >= durationMs) return to;
+        if (elapsedMs <= 0d) return from;
+        var linear = Math.Clamp((float)(elapsedMs / durationMs), 0f, 1f);
+        var eased = 1f - MathF.Pow(1f - linear, 3f);
+        return from + (to - from) * eased;
+    }
+
+    internal static Color AnimatedRowBackgroundColor(
+        Color rowColor,
+        float hoverProgress,
+        float selectionProgress,
+        float pressedProgress)
+    {
+        hoverProgress = Math.Clamp(hoverProgress, 0f, 1f);
+        selectionProgress = Math.Clamp(selectionProgress, 0f, 1f);
+        pressedProgress = Math.Clamp(pressedProgress, 0f, 1f);
+        var hoverAmount = 0.68f * hoverProgress * (1f - selectionProgress);
+        var result = Mix(rowColor, PanelHover, hoverAmount);
+        result = Mix(result, AccentSurface, 0.72f * selectionProgress);
+        return Mix(result, AccentPressedSurface, 0.32f * pressedProgress);
+    }
+
+    private static void ReapplyButtonStyle(Button button)
+    {
+        var state = ButtonThemeStateFor(button);
+        ApplyButtonStyle(button, state.Role, state.Active);
+    }
+
+    private static ButtonThemeState ButtonThemeStateFor(Button button)
+    {
+        return StyledButtons.GetValue(
+            button,
+            static control => new ButtonThemeState(
+                control,
+                control is SvgIconButton ? ButtonVisualRole.Toolbar : ButtonVisualRole.Standard));
+    }
+
+    private static void ApplyButtonStyle(Button button, ButtonVisualRole role, bool active)
+    {
+        var state = ButtonThemeStateFor(button);
+        state.Role = role;
+        state.Active = active;
+
+        var normalColor = role switch
+        {
+            ButtonVisualRole.Toolbar => button.Parent?.BackColor ?? Top,
+            ButtonVisualRole.Segmented => active ? AccentSurface : Panel,
+            ButtonVisualRole.Primary => Accent,
+            ButtonVisualRole.Danger => DangerSurface,
+            _ => active ? AccentSurface : PanelStrong
+        };
+        var hoverColor = role switch
+        {
+            ButtonVisualRole.Toolbar => active ? AccentHoverSurface : PanelStrong,
+            ButtonVisualRole.Segmented => active ? AccentHoverSurface : PanelStrong,
+            ButtonVisualRole.Primary => Mix(Accent, IsLight ? Color.Black : Color.White, 0.09f),
+            ButtonVisualRole.Danger => DangerHoverSurface,
+            _ => active ? AccentHoverSurface : PanelHover
+        };
+        var pressedColor = role switch
+        {
+            ButtonVisualRole.Toolbar => active ? AccentPressedSurface : Panel,
+            ButtonVisualRole.Segmented => active ? AccentPressedSurface : Top,
+            ButtonVisualRole.Primary => Mix(Accent, Color.Black, 0.18f),
+            ButtonVisualRole.Danger => DangerPressedSurface,
+            _ => active ? AccentPressedSurface : Panel
+        };
+        var foreColor = role switch
+        {
+            ButtonVisualRole.Primary => AccentText,
+            ButtonVisualRole.Danger => DangerText,
+            _ => active ? AccentLabel : Text
+        };
+        var borderColor = role switch
+        {
+            ButtonVisualRole.Primary => Accent,
+            ButtonVisualRole.Danger => Danger,
+            _ => active ? Accent : Border
+        };
+        var borderSize = role is ButtonVisualRole.Toolbar or ButtonVisualRole.Segmented ? 0 : 1;
+
+        if (SystemInformation.HighContrast)
+        {
+            var emphasized = active || role is ButtonVisualRole.Primary or ButtonVisualRole.Danger;
+            normalColor = emphasized ? SystemColors.Highlight : SystemColors.Control;
+            hoverColor = SystemColors.Highlight;
+            pressedColor = SystemColors.Highlight;
+            foreColor = emphasized ? SystemColors.HighlightText : SystemColors.ControlText;
+            borderColor = emphasized ? SystemColors.HighlightText : SystemColors.ControlText;
+            borderSize = role == ButtonVisualRole.Toolbar && !emphasized ? 0 : 1;
+        }
+        if (!button.Enabled)
+        {
+            foreColor = SystemInformation.HighContrast ? SystemColors.GrayText : DisabledText;
+        }
+
         if (button.UseVisualStyleBackColor) button.UseVisualStyleBackColor = false;
         if (button.FlatStyle != FlatStyle.Flat) button.FlatStyle = FlatStyle.Flat;
         if (button.ForeColor != foreColor) button.ForeColor = foreColor;
         if (button.FlatAppearance.BorderColor != borderColor) button.FlatAppearance.BorderColor = borderColor;
-        if (button.FlatAppearance.BorderSize != 1) button.FlatAppearance.BorderSize = 1;
-        if (button.FlatAppearance.MouseOverBackColor != hoverColor) button.FlatAppearance.MouseOverBackColor = hoverColor;
-        if (button.FlatAppearance.MouseDownBackColor != hoverColor) button.FlatAppearance.MouseDownBackColor = hoverColor;
+        if (button.FlatAppearance.BorderSize != borderSize) button.FlatAppearance.BorderSize = borderSize;
+        // Empty lets FlatButtonAdapter use the animated BackColor instead of replacing it with a native hot color.
+        if (!button.FlatAppearance.MouseOverBackColor.IsEmpty) button.FlatAppearance.MouseOverBackColor = Color.Empty;
+        if (!button.FlatAppearance.MouseDownBackColor.IsEmpty) button.FlatAppearance.MouseDownBackColor = Color.Empty;
         if (!string.Equals(button.Font.Name, "Segoe UI", StringComparison.Ordinal)
             || Math.Abs(button.Font.Size - 9.5f) > 0.01f
             || button.Font.Style != FontStyle.Regular)
@@ -517,12 +665,30 @@ internal static class Theme
         }
 
         if (button.TextAlign != ContentAlignment.MiddleCenter) button.TextAlign = ContentAlignment.MiddleCenter;
+        if (role == ButtonVisualRole.Segmented
+            && button.AccessibleRole == AccessibleRole.RadioButton
+            && button.TabStop != active)
+        {
+            button.TabStop = active;
+        }
         UiMotion.ConfigureButton(
             button,
-            active ? AccentSurface : PanelStrong,
-            active ? AccentHoverSurface : PanelHover,
-            active ? AccentPressedSurface : Panel,
+            normalColor,
+            hoverColor,
+            pressedColor,
             active);
+    }
+
+    private sealed class ButtonThemeState
+    {
+        public ButtonThemeState(Button owner, ButtonVisualRole role)
+        {
+            Role = role;
+            owner.EnabledChanged += (_, _) => ReapplyButtonStyle(owner);
+        }
+
+        public ButtonVisualRole Role { get; set; }
+        public bool Active { get; set; }
     }
 
     public static void StyleTextBox(TextBox box)
@@ -536,8 +702,8 @@ internal static class Theme
 
     public static void StyleComboBox(ComboBox box)
     {
-        box.BackColor = Field;
-        box.ForeColor = Text;
+        box.BackColor = SystemInformation.HighContrast ? SystemColors.Window : Field;
+        box.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText : Text;
         box.FlatStyle = FlatStyle.Flat;
         box.Font = UiFont();
         box.DrawMode = DrawMode.OwnerDrawFixed;
@@ -582,7 +748,11 @@ internal static class Theme
         list.DrawItem += DrawListBoxItem;
     }
 
-    public static void StyleTreeView(TreeView tree, bool useCustomExpandButtons = false)
+    public static void StyleTreeView(
+        TreeView tree,
+        bool useCustomExpandButtons = false,
+        bool animateRows = false,
+        bool useSolidFocusCue = false)
     {
         tree.BackColor = Panel;
         tree.ForeColor = Text;
@@ -597,13 +767,19 @@ internal static class Theme
         tree.DrawMode = TreeViewDrawMode.OwnerDrawAll;
         tree.HotTracking = true;
         StyleNativeScrollBars(tree);
-        if (StyledTreeViews.TryGetValue(tree, out _)) return;
-        var state = new TreeViewInteractionState(tree, useCustomExpandButtons);
+        if (StyledTreeViews.TryGetValue(tree, out var existingState))
+        {
+            existingState.ConfigureRowMotion(animateRows);
+            existingState.UseSolidFocusCue = useSolidFocusCue;
+            return;
+        }
+        EnableTreeViewDoubleBuffering(tree);
+        var state = new TreeViewInteractionState(tree, useCustomExpandButtons, animateRows, useSolidFocusCue);
         StyledTreeViews.Add(tree, state);
         tree.DrawNode += DrawTreeNode;
     }
 
-    public static void StyleListView(ListView list)
+    public static void StyleListView(ListView list, bool animateRows = false)
     {
         list.BackColor = Panel;
         list.ForeColor = Text;
@@ -616,8 +792,12 @@ internal static class Theme
         list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
         list.OwnerDraw = true;
         StyleNativeScrollBars(list);
-        if (StyledListViews.TryGetValue(list, out _)) return;
-        var state = new ListViewInteractionState(list);
+        if (StyledListViews.TryGetValue(list, out var existingState))
+        {
+            existingState.ConfigureRowMotion(animateRows);
+            return;
+        }
+        var state = new ListViewInteractionState(list, animateRows);
         StyledListViews.Add(list, state);
         list.DrawColumnHeader += DrawListViewHeader;
         list.DrawItem += DrawListViewItem;
@@ -655,6 +835,14 @@ internal static class Theme
 
         if (control.IsHandleCreated) ApplyTheme();
         else control.HandleCreated += (_, _) => ApplyTheme();
+    }
+
+    private static void EnableTreeViewDoubleBuffering(TreeView tree)
+    {
+        var doubleBuffered = typeof(Control).GetProperty(
+            "DoubleBuffered",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        doubleBuffered?.SetValue(tree, true);
     }
 
     public static void StyleToolTip(ToolTip toolTip)
@@ -723,13 +911,16 @@ internal static class Theme
         if (sender is not ComboBox box) return;
         var selected = (e.State & DrawItemState.Selected) != 0;
         var focused = (e.State & DrawItemState.Focus) != 0;
-        var background = selected ? AccentSurface : box.BackColor;
+        var highContrast = SystemInformation.HighContrast;
+        var background = highContrast
+            ? selected ? SystemColors.Highlight : SystemColors.Window
+            : selected ? AccentSurface : box.BackColor;
         using var backgroundBrush = new SolidBrush(background);
         e.Graphics.FillRectangle(backgroundBrush, e.Bounds);
 
         if (selected)
         {
-            using var accent = new SolidBrush(Accent);
+            using var accent = new SolidBrush(highContrast ? SystemColors.HighlightText : Accent);
             e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
         }
 
@@ -743,11 +934,13 @@ internal static class Theme
             text,
             box.Font,
             textBounds,
-            box.Enabled ? Text : DisabledText,
+            highContrast
+                ? box.Enabled ? selected ? SystemColors.HighlightText : SystemColors.WindowText : SystemColors.GrayText
+                : box.Enabled ? Text : DisabledText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         if (focused && e.Index >= 0)
         {
-            using var focus = new Pen(Accent);
+            using var focus = new Pen(highContrast ? SystemColors.HighlightText : Accent);
             var focusBounds = Rectangle.Inflate(e.Bounds, -1, -1);
             e.Graphics.DrawRectangle(focus, focusBounds);
         }
@@ -776,6 +969,14 @@ internal static class Theme
             textBounds,
             list.Enabled ? Text : DisabledText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if ((e.State & DrawItemState.Focus) != 0 && list.Focused)
+        {
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(e.Bounds, -2, -2),
+                SystemInformation.HighContrast ? SystemColors.HighlightText : AccentLabel,
+                background);
+        }
     }
 
     private static void DrawTreeNode(object? sender, DrawTreeNodeEventArgs e)
@@ -784,14 +985,20 @@ internal static class Theme
         StyledTreeViews.TryGetValue(tree, out var state);
         var selected = tree.SelectedNode == e.Node;
         var hovered = state?.HoverNode == e.Node;
+        var progress = state?.ProgressFor(e.Node, selected, hovered)
+            ?? new RowInteractionProgress(hovered ? 1f : 0f, selected ? 1f : 0f, 0f);
         var row = new Rectangle(0, e.Bounds.Top, tree.ClientSize.Width, e.Bounds.Height);
-        using var background = new SolidBrush(selected ? AccentSurface : hovered ? PanelHover : Panel);
+        var nodeBackground = e.Node.BackColor.IsEmpty
+            ? Panel
+            : e.Node.BackColor;
+        var backgroundColor = AnimatedRowBackgroundColor(
+            nodeBackground,
+            progress.Hover,
+            progress.Selection,
+            progress.Pressed);
+        using var background = new SolidBrush(backgroundColor);
         e.Graphics.FillRectangle(background, row);
-        if (selected)
-        {
-            using var accent = new SolidBrush(Accent);
-            e.Graphics.FillRectangle(accent, 0, row.Top, 3, row.Height);
-        }
+        DrawRowSelectionAccent(e.Graphics, row, progress.Selection);
 
         var customExpandButtons = state?.UseCustomExpandButtons == true;
         var indent = Math.Max(16, tree.Indent);
@@ -849,24 +1056,107 @@ internal static class Theme
 
         var color = e.Node.ForeColor.IsEmpty ? tree.ForeColor : e.Node.ForeColor;
         if (!tree.Enabled) color = DisabledText;
+        if (e.Node.Tag is ITreeNodeLeadingIconSource iconSource)
+        {
+            var iconSize = Math.Min(22, Math.Max(12, e.Bounds.Height - 4));
+            var iconBounds = new Rectangle(
+                contentLeft,
+                e.Bounds.Top + Math.Max(0, (e.Bounds.Height - iconSize) / 2),
+                iconSize,
+                iconSize);
+            var iconColor = selected ? AccentLabel : Mix(color, Muted, 0.36f);
+            SvgIcons.Draw(e.Graphics, iconSource.LeadingIcon, iconBounds, iconColor);
+            contentLeft = iconBounds.Right + 6;
+        }
         var bounds = new Rectangle(contentLeft, e.Bounds.Top, Math.Max(0, tree.ClientSize.Width - contentLeft - 6), e.Bounds.Height);
+        var markerColors = e.Node.Tag is ITreeNodeTrailingColorSource source
+            ? source.TrailingColors
+            : [];
+        const int markerDiameter = 7;
+        const int markerSpacing = 3;
+        const int markerGap = 6;
+        const int minimumTextWidth = 36;
+        var availableMarkerWidth = Math.Max(0, bounds.Width - minimumTextWidth - markerGap);
+        var markerCount = Math.Min(
+            markerColors.Count,
+            (availableMarkerWidth + markerSpacing) / (markerDiameter + markerSpacing));
+        var markerWidth = markerCount > 0
+            ? markerCount * markerDiameter + (markerCount - 1) * markerSpacing
+            : 0;
+        var textBounds = new Rectangle(
+            bounds.Left,
+            bounds.Top,
+            Math.Max(0, bounds.Width - markerWidth - (markerCount > 0 ? markerGap : 0)),
+            bounds.Height);
+        var text = UiLocalization.T(e.Node.Text);
         TextRenderer.DrawText(
             e.Graphics,
-            UiLocalization.T(e.Node.Text),
+            text,
             tree.Font,
-            bounds,
+            textBounds,
             color,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if (markerCount > 0)
+        {
+            var measuredTextWidth = TextRenderer.MeasureText(
+                e.Graphics,
+                text,
+                tree.Font,
+                new Size(int.MaxValue, bounds.Height),
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding).Width;
+            var markerLeft = Math.Min(textBounds.Right, textBounds.Left + measuredTextWidth) + markerGap;
+            markerLeft = Math.Min(markerLeft, bounds.Right - markerWidth);
+            var markerTop = bounds.Top + Math.Max(0, (bounds.Height - markerDiameter) / 2);
+            var markerBorderColor = SystemInformation.HighContrast
+                ? SystemColors.WindowText
+                : Mix(backgroundColor, Text, 0.42f);
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using var markerBorder = new Pen(markerBorderColor);
+            for (var index = 0; index < markerCount; index++)
+            {
+                var markerBounds = new Rectangle(
+                    markerLeft + index * (markerDiameter + markerSpacing),
+                    markerTop,
+                    markerDiameter,
+                    markerDiameter);
+                using var marker = new SolidBrush(markerColors[index]);
+                e.Graphics.FillEllipse(marker, markerBounds);
+                e.Graphics.DrawEllipse(markerBorder, markerBounds);
+            }
+        }
         if ((e.State & TreeNodeStates.Focused) != 0)
         {
             var focusBounds = new Rectangle(4, row.Top + 1, Math.Max(0, row.Width - 8), Math.Max(0, row.Height - 2));
-            ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, AccentLabel, background.Color);
+            if (state?.UseSolidFocusCue == true && !SystemInformation.HighContrast)
+            {
+                using var focus = new Pen(Mix(backgroundColor, Accent, 0.72f));
+                e.Graphics.DrawRectangle(
+                    focus,
+                    focusBounds.X,
+                    focusBounds.Y,
+                    Math.Max(0, focusBounds.Width - 1),
+                    Math.Max(0, focusBounds.Height - 1));
+            }
+            else
+            {
+                ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, AccentLabel, background.Color);
+            }
         }
     }
 
     internal static bool IsTreeExpandGlyphHit(TreeView tree, TreeNode node, Point location)
     {
         return node.Nodes.Count > 0 && TreeExpandGlyphBounds(tree, node).Contains(location);
+    }
+
+    internal static void RefreshTreeViewRowInteraction(TreeView tree)
+    {
+        if (StyledTreeViews.TryGetValue(tree, out var state)) state.RowsChanged();
+    }
+
+    internal static void RefreshListViewRowInteraction(ListView list)
+    {
+        if (StyledListViews.TryGetValue(list, out var state)) state.RowsChanged();
     }
 
     private static Rectangle TreeExpandGlyphBounds(TreeView tree, TreeNode node)
@@ -908,32 +1198,46 @@ internal static class Theme
 
     private static void DrawListViewItem(object? sender, DrawListViewItemEventArgs e)
     {
-        if (sender is not ListView list) return;
+        if (sender is not ListView list || e.Item is null) return;
+        var item = e.Item;
         StyledListViews.TryGetValue(list, out var state);
-        var selected = e.Item?.Selected == true;
-        var hovered = state?.HoverItem == e.ItemIndex;
-        using var background = new SolidBrush(selected ? AccentSurface : hovered ? PanelHover : Panel);
+        var selected = item.Selected;
+        var hovered = ReferenceEquals(state?.HoverItem, item);
+        var progress = state?.ProgressFor(item, selected, hovered)
+            ?? new RowInteractionProgress(hovered ? 1f : 0f, selected ? 1f : 0f, 0f);
+        var itemBackground = item.BackColor is { IsEmpty: false } customBackground
+            ? customBackground
+            : Panel;
+        var backgroundColor = AnimatedRowBackgroundColor(
+            itemBackground,
+            progress.Hover,
+            progress.Selection,
+            progress.Pressed);
+        using var background = new SolidBrush(backgroundColor);
         e.Graphics.FillRectangle(background, e.Bounds);
-        if (selected)
-        {
-            using var accent = new SolidBrush(Accent);
-            e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
-        }
+        DrawRowSelectionAccent(e.Graphics, e.Bounds, progress.Selection);
     }
 
     private static void DrawListViewSubItem(object? sender, DrawListViewSubItemEventArgs e)
     {
-        if (sender is not ListView list) return;
+        if (sender is not ListView list || e.Item is null) return;
+        var item = e.Item;
         StyledListViews.TryGetValue(list, out var state);
-        var selected = e.Item?.Selected == true;
-        var hovered = state?.HoverItem == e.ItemIndex;
-        using var background = new SolidBrush(selected ? AccentSurface : hovered ? PanelHover : Panel);
+        var selected = item.Selected;
+        var hovered = ReferenceEquals(state?.HoverItem, item);
+        var progress = state?.ProgressFor(item, selected, hovered)
+            ?? new RowInteractionProgress(hovered ? 1f : 0f, selected ? 1f : 0f, 0f);
+        var itemBackground = item.BackColor is { IsEmpty: false } customBackground
+            ? customBackground
+            : Panel;
+        var backgroundColor = AnimatedRowBackgroundColor(
+            itemBackground,
+            progress.Hover,
+            progress.Selection,
+            progress.Pressed);
+        using var background = new SolidBrush(backgroundColor);
         e.Graphics.FillRectangle(background, e.Bounds);
-        if (selected && e.ColumnIndex == 0)
-        {
-            using var accent = new SolidBrush(Accent);
-            e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
-        }
+        if (e.ColumnIndex == 0) DrawRowSelectionAccent(e.Graphics, e.Bounds, progress.Selection);
 
         var bounds = new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
         TextRenderer.DrawText(
@@ -943,6 +1247,25 @@ internal static class Theme
             bounds,
             list.Enabled ? Text : DisabledText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if (e.ColumnIndex == list.Columns.Count - 1 && item.Focused && list.Focused)
+        {
+            var focusBounds = Rectangle.Inflate(item.Bounds, -4, -2);
+            var graphicsState = e.Graphics.Save();
+            e.Graphics.SetClip(list.ClientRectangle, System.Drawing.Drawing2D.CombineMode.Replace);
+            ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, AccentLabel, backgroundColor);
+            e.Graphics.Restore(graphicsState);
+        }
+    }
+
+    private static void DrawRowSelectionAccent(Graphics graphics, Rectangle row, float selectionProgress)
+    {
+        selectionProgress = Math.Clamp(selectionProgress, 0f, 1f);
+        if (selectionProgress <= 0.001f || row.Width <= 0 || row.Height <= 0) return;
+        var height = Math.Clamp((int)MathF.Ceiling(row.Height * selectionProgress), 1, row.Height);
+        var top = row.Top + (row.Height - height) / 2;
+        var alpha = Math.Clamp((int)MathF.Round(Accent.A * selectionProgress), 1, 255);
+        using var accent = new SolidBrush(Color.FromArgb(alpha, Accent));
+        graphics.FillRectangle(accent, row.Left, top, Math.Min(3, row.Width), height);
     }
 
     private sealed class FieldInteractionState
@@ -1008,31 +1331,130 @@ internal static class Theme
     private sealed class TreeViewInteractionState
     {
         private readonly TreeView _tree;
+        private readonly RowMotionTimeline<TreeNode> _rowMotion;
+        private TreeNode? _selectedNode;
+        private TreeNode? _pressedRowNode;
+        private Point _lastPointerLocation;
+        private bool _pointerInside;
+        private bool _hoverReconcileQueued;
 
-        public TreeViewInteractionState(TreeView tree, bool useCustomExpandButtons)
+        public TreeViewInteractionState(
+            TreeView tree,
+            bool useCustomExpandButtons,
+            bool animateRows,
+            bool useSolidFocusCue)
         {
             _tree = tree;
             UseCustomExpandButtons = useCustomExpandButtons;
-            tree.MouseMove += (_, e) => SetHover(TreeNodeAtRow(tree, e.Y), e.Location);
-            tree.MouseLeave += (_, _) => SetHover(null, Point.Empty);
+            UseSolidFocusCue = useSolidFocusCue;
+            _selectedNode = tree.SelectedNode;
+            _rowMotion = new RowMotionTimeline<TreeNode>(tree, InvalidateNode, animateRows);
+            if (_selectedNode is not null)
+            {
+                _rowMotion.Set(_selectedNode, RowMotionChannel.Selection, active: true, immediate: true);
+            }
+            tree.MouseMove += (_, e) => UpdateHoverFromPointer(e.Location);
+            tree.MouseLeave += (_, _) =>
+            {
+                _pointerInside = false;
+                ReconcileHover();
+            };
             tree.MouseDown += (_, e) =>
             {
-                if (!UseCustomExpandButtons || e.Button != MouseButtons.Left || e.Clicks != 1) return;
+                if (e.Button != MouseButtons.Left || e.Clicks != 1) return;
                 var node = TreeNodeAtRow(tree, e.Y);
+                SetPressedRow(node);
+                if (!UseCustomExpandButtons) return;
                 if (node is null || !IsTreeExpandGlyphHit(tree, node, e.Location)) return;
                 PressedExpandNode = node;
-                tree.Invalidate(new Rectangle(0, node.Bounds.Top, tree.ClientSize.Width, node.Bounds.Height));
+                InvalidateNode(node);
                 if (node.IsExpanded) node.Collapse(ignoreChildren: true);
                 else node.Expand();
             };
-            tree.MouseUp += (_, _) => ClearPressedNode();
-            tree.MouseCaptureChanged += (_, _) => ClearPressedNode();
+            tree.MouseUp += (_, _) => ClearPressedNodes();
+            tree.MouseCaptureChanged += (_, _) => ClearPressedNodes();
+            tree.AfterSelect += (_, e) =>
+            {
+                SetSelectedNode(e.Node);
+                QueueHoverReconciliation();
+            };
+            tree.MouseWheel += (_, _) => QueueHoverReconciliation();
+            tree.KeyDown += (_, _) => QueueHoverReconciliation();
+            tree.AfterExpand += (_, _) => QueueHoverReconciliation();
+            tree.AfterCollapse += (_, _) => QueueHoverReconciliation();
+            tree.SizeChanged += (_, _) => ReconcileHover();
         }
 
         public TreeNode? HoverNode { get; private set; }
         public TreeNode? HoverExpandNode { get; private set; }
         public TreeNode? PressedExpandNode { get; private set; }
         public bool UseCustomExpandButtons { get; }
+        public bool UseSolidFocusCue { get; set; }
+
+        public void ConfigureRowMotion(bool animateRows)
+        {
+            _rowMotion.Configure(animateRows);
+            if (_selectedNode is not null)
+            {
+                _rowMotion.Set(_selectedNode, RowMotionChannel.Selection, active: true, immediate: true);
+            }
+        }
+
+        public RowInteractionProgress ProgressFor(TreeNode node, bool selected, bool hovered)
+        {
+            return _rowMotion.ProgressFor(
+                node,
+                hovered,
+                selected,
+                ReferenceEquals(_pressedRowNode, node));
+        }
+
+        public void RowsChanged()
+        {
+            SetSelectedNode(_tree.SelectedNode);
+            if (_pressedRowNode is not null && !ReferenceEquals(_pressedRowNode.TreeView, _tree))
+            {
+                SetPressedRow(null);
+            }
+            if (PressedExpandNode is not null && !ReferenceEquals(PressedExpandNode.TreeView, _tree))
+            {
+                PressedExpandNode = null;
+            }
+            ReconcileHover();
+        }
+
+        private void UpdateHoverFromPointer(Point location)
+        {
+            _lastPointerLocation = location;
+            _pointerInside = _tree.ClientRectangle.Contains(location);
+            ReconcileHover();
+        }
+
+        private void ReconcileHover()
+        {
+            var node = _pointerInside
+                ? TreeNodeAtRow(_tree, _lastPointerLocation.Y)
+                : null;
+            SetHover(node, _lastPointerLocation);
+        }
+
+        private void QueueHoverReconciliation()
+        {
+            if (_hoverReconcileQueued || _tree.IsDisposed || !_tree.IsHandleCreated) return;
+            _hoverReconcileQueued = true;
+            try
+            {
+                _tree.BeginInvoke((Action)(() =>
+                {
+                    _hoverReconcileQueued = false;
+                    if (!_tree.IsDisposed) ReconcileHover();
+                }));
+            }
+            catch (InvalidOperationException)
+            {
+                _hoverReconcileQueued = false;
+            }
+        }
 
         private void SetHover(TreeNode? node, Point location)
         {
@@ -1042,18 +1464,70 @@ internal static class Theme
                     ? node
                     : null;
             if (HoverNode == node && HoverExpandNode == expandNode) return;
-            var previous = HoverNode;
+            var previousNode = HoverNode;
+            var previousExpandNode = HoverExpandNode;
             HoverNode = node;
             HoverExpandNode = expandNode;
-            if (previous is not null) _tree.Invalidate(new Rectangle(0, previous.Bounds.Top, _tree.ClientSize.Width, previous.Bounds.Height));
-            if (HoverNode is not null) _tree.Invalidate(new Rectangle(0, HoverNode.Bounds.Top, _tree.ClientSize.Width, HoverNode.Bounds.Height));
+            if (previousNode is not null)
+            {
+                _rowMotion.Set(previousNode, RowMotionChannel.Hover, active: false);
+            }
+            if (HoverNode is not null)
+            {
+                _rowMotion.Set(HoverNode, RowMotionChannel.Hover, active: true);
+            }
+            if (ReferenceEquals(previousNode, HoverNode)
+                && !ReferenceEquals(previousExpandNode, HoverExpandNode)
+                && HoverNode is not null)
+            {
+                InvalidateNode(HoverNode);
+            }
         }
 
-        private void ClearPressedNode()
+        private void SetSelectedNode(TreeNode? node)
         {
-            var previous = PressedExpandNode;
+            if (ReferenceEquals(_selectedNode, node)) return;
+            var previous = _selectedNode;
+            _selectedNode = node;
+            if (previous is not null)
+            {
+                _rowMotion.Set(previous, RowMotionChannel.Selection, active: false);
+            }
+            if (_selectedNode is not null)
+            {
+                _rowMotion.Set(_selectedNode, RowMotionChannel.Selection, active: true);
+            }
+        }
+
+        private void SetPressedRow(TreeNode? node)
+        {
+            if (ReferenceEquals(_pressedRowNode, node)) return;
+            var previous = _pressedRowNode;
+            _pressedRowNode = node;
+            if (previous is not null)
+            {
+                _rowMotion.Set(previous, RowMotionChannel.Pressed, active: false);
+            }
+            if (_pressedRowNode is not null)
+            {
+                _rowMotion.Set(_pressedRowNode, RowMotionChannel.Pressed, active: true);
+            }
+        }
+
+        private void ClearPressedNodes()
+        {
+            SetPressedRow(null);
+            var previousExpandNode = PressedExpandNode;
             PressedExpandNode = null;
-            if (previous is not null) _tree.Invalidate(new Rectangle(0, previous.Bounds.Top, _tree.ClientSize.Width, previous.Bounds.Height));
+            if (previousExpandNode is not null) InvalidateNode(previousExpandNode);
+        }
+
+        private void InvalidateNode(TreeNode node)
+        {
+            if (_tree.IsDisposed || !ReferenceEquals(node.TreeView, _tree)) return;
+            var bounds = node.Bounds;
+            if (bounds.Height <= 0) return;
+            _tree.Invalidate(new Rectangle(0, bounds.Top, _tree.ClientSize.Width, bounds.Height));
         }
     }
 
@@ -1061,8 +1535,14 @@ internal static class Theme
     {
         private readonly ListView _list;
         private readonly ImageList? _rowHeightImages;
+        private readonly RowMotionTimeline<ListViewItem> _rowMotion;
+        private ListViewItem? _selectedItem;
+        private ListViewItem? _pressedItem;
+        private Point _lastPointerLocation;
+        private bool _pointerInside;
+        private bool _hoverReconcileQueued;
 
-        public ListViewInteractionState(ListView list)
+        public ListViewInteractionState(ListView list, bool animateRows)
         {
             _list = list;
             if (list.SmallImageList is null)
@@ -1074,20 +1554,331 @@ internal static class Theme
                 };
                 list.SmallImageList = _rowHeightImages;
             }
-            list.MouseMove += (_, e) => SetHover(list.GetItemAt(e.X, e.Y)?.Index ?? -1);
-            list.MouseLeave += (_, _) => SetHover(-1);
+            _selectedItem = SelectedItem();
+            _rowMotion = new RowMotionTimeline<ListViewItem>(list, InvalidateItem, animateRows);
+            if (_selectedItem is not null)
+            {
+                _rowMotion.Set(_selectedItem, RowMotionChannel.Selection, active: true, immediate: true);
+            }
+            list.MouseMove += (_, e) => UpdateHoverFromPointer(e.Location);
+            list.MouseLeave += (_, _) =>
+            {
+                _pointerInside = false;
+                ReconcileHover();
+            };
+            list.MouseDown += (_, e) =>
+            {
+                if (e.Button == MouseButtons.Left && e.Clicks == 1)
+                {
+                    SetPressed(list.GetItemAt(e.X, e.Y));
+                }
+            };
+            list.MouseUp += (_, _) => SetPressed(null);
+            list.MouseCaptureChanged += (_, _) => SetPressed(null);
+            list.SelectedIndexChanged += (_, _) => SetSelected(SelectedItem());
+            list.MouseWheel += (_, _) => QueueHoverReconciliation();
+            list.KeyDown += (_, _) => QueueHoverReconciliation();
+            list.SizeChanged += (_, _) => ReconcileHover();
             list.Disposed += (_, _) => _rowHeightImages?.Dispose();
         }
 
-        public int HoverItem { get; private set; } = -1;
+        public ListViewItem? HoverItem { get; private set; }
 
-        private void SetHover(int index)
+        public void ConfigureRowMotion(bool animateRows)
         {
-            if (HoverItem == index) return;
+            _rowMotion.Configure(animateRows);
+            if (_selectedItem is not null)
+            {
+                _rowMotion.Set(_selectedItem, RowMotionChannel.Selection, active: true, immediate: true);
+            }
+        }
+
+        public RowInteractionProgress ProgressFor(ListViewItem item, bool selected, bool hovered)
+        {
+            return _rowMotion.ProgressFor(item, hovered, selected, ReferenceEquals(_pressedItem, item));
+        }
+
+        public void RowsChanged()
+        {
+            SetSelected(SelectedItem());
+            if (_pressedItem is not null && !ReferenceEquals(_pressedItem.ListView, _list)) SetPressed(null);
+            ReconcileHover();
+        }
+
+        private void UpdateHoverFromPointer(Point location)
+        {
+            _lastPointerLocation = location;
+            _pointerInside = _list.ClientRectangle.Contains(location);
+            ReconcileHover();
+        }
+
+        private void ReconcileHover()
+        {
+            SetHover(_pointerInside ? _list.GetItemAt(_lastPointerLocation.X, _lastPointerLocation.Y) : null);
+        }
+
+        private void QueueHoverReconciliation()
+        {
+            if (_hoverReconcileQueued || _list.IsDisposed || !_list.IsHandleCreated) return;
+            _hoverReconcileQueued = true;
+            try
+            {
+                _list.BeginInvoke((Action)(() =>
+                {
+                    _hoverReconcileQueued = false;
+                    if (!_list.IsDisposed) ReconcileHover();
+                }));
+            }
+            catch (InvalidOperationException)
+            {
+                _hoverReconcileQueued = false;
+            }
+        }
+
+        private void SetHover(ListViewItem? item)
+        {
+            if (ReferenceEquals(HoverItem, item)) return;
             var previous = HoverItem;
-            HoverItem = index;
-            if (previous >= 0 && previous < _list.Items.Count) _list.Invalidate(_list.Items[previous].Bounds);
-            if (HoverItem >= 0 && HoverItem < _list.Items.Count) _list.Invalidate(_list.Items[HoverItem].Bounds);
+            HoverItem = item;
+            if (previous is not null) _rowMotion.Set(previous, RowMotionChannel.Hover, active: false);
+            if (HoverItem is not null) _rowMotion.Set(HoverItem, RowMotionChannel.Hover, active: true);
+        }
+
+        private void SetSelected(ListViewItem? item)
+        {
+            if (ReferenceEquals(_selectedItem, item)) return;
+            var previous = _selectedItem;
+            _selectedItem = item;
+            if (previous is not null) _rowMotion.Set(previous, RowMotionChannel.Selection, active: false);
+            if (_selectedItem is not null) _rowMotion.Set(_selectedItem, RowMotionChannel.Selection, active: true);
+        }
+
+        private void SetPressed(ListViewItem? item)
+        {
+            if (ReferenceEquals(_pressedItem, item)) return;
+            var previous = _pressedItem;
+            _pressedItem = item;
+            if (previous is not null) _rowMotion.Set(previous, RowMotionChannel.Pressed, active: false);
+            if (_pressedItem is not null) _rowMotion.Set(_pressedItem, RowMotionChannel.Pressed, active: true);
+        }
+
+        private ListViewItem? SelectedItem()
+        {
+            return _list.SelectedItems.Count > 0 ? _list.SelectedItems[0] : null;
+        }
+
+        private void InvalidateItem(ListViewItem item)
+        {
+            if (_list.IsDisposed || !ReferenceEquals(item.ListView, _list)) return;
+            _list.Invalidate(item.Bounds);
+        }
+    }
+
+    private enum RowMotionChannel
+    {
+        Hover,
+        Selection,
+        Pressed
+    }
+
+    private sealed class RowMotionTimeline<TKey> : IDisposable where TKey : notnull
+    {
+        private readonly Control _owner;
+        private readonly Action<TKey> _invalidate;
+        private readonly List<RowMotionEntry<TKey>> _entries = [];
+        private readonly System.Windows.Forms.Timer _timer = new() { Interval = 16 };
+        private bool _requested;
+        private bool _enabled;
+        private bool _disposed;
+
+        public RowMotionTimeline(Control owner, Action<TKey> invalidate, bool enabled)
+        {
+            _owner = owner;
+            _invalidate = invalidate;
+            _timer.Tick += (_, _) => Tick();
+            _owner.Disposed += (_, _) => Dispose();
+            Configure(enabled);
+        }
+
+        public void Configure(bool enabled)
+        {
+            if (_disposed) return;
+            _requested = enabled;
+            var next = enabled && UiMotion.AnimationsEnabled;
+            if (_enabled == next) return;
+            _enabled = next;
+            _timer.Stop();
+            _entries.Clear();
+            if (!_owner.IsDisposed) _owner.Invalidate();
+        }
+
+        public void Set(TKey key, RowMotionChannel channel, bool active, bool immediate = false)
+        {
+            if (_disposed) return;
+            if (!_enabled)
+            {
+                _invalidate(key);
+                return;
+            }
+
+            var entry = FindEntry(key) ?? AddEntry(key);
+            var value = entry.ValueFor(channel);
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (immediate) value.SetImmediate(active ? 1f : 0f);
+            else value.Retarget(active ? 1f : 0f, now, DurationFor(channel));
+            _invalidate(key);
+            if (entry.IsAnimating && !_timer.Enabled) _timer.Start();
+        }
+
+        public RowInteractionProgress ProgressFor(TKey key, bool hovered, bool selected, bool pressed)
+        {
+            if (!_enabled)
+            {
+                return new RowInteractionProgress(
+                    hovered ? 1f : 0f,
+                    selected ? 1f : 0f,
+                    _requested && pressed ? 1f : 0f);
+            }
+
+            var entry = FindEntry(key);
+            if (entry is null)
+            {
+                return new RowInteractionProgress(hovered ? 1f : 0f, selected ? 1f : 0f, pressed ? 1f : 0f);
+            }
+
+            return new RowInteractionProgress(
+                entry.Hover.ResolveCurrent(hovered),
+                entry.Selection.ResolveCurrent(selected),
+                entry.Pressed.ResolveCurrent(pressed));
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _timer.Stop();
+            _timer.Dispose();
+            _entries.Clear();
+        }
+
+        private void Tick()
+        {
+            if (_disposed) return;
+            if (_owner.IsDisposed)
+            {
+                Dispose();
+                return;
+            }
+
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            var anyAnimating = false;
+            for (var i = _entries.Count - 1; i >= 0; i--)
+            {
+                var entry = _entries[i];
+                if (entry.Advance(now)) _invalidate(entry.Key);
+                if (entry.IsAnimating) anyAnimating = true;
+                else if (entry.IsDormant) _entries.RemoveAt(i);
+            }
+
+            if (!anyAnimating) _timer.Stop();
+        }
+
+        private RowMotionEntry<TKey>? FindEntry(TKey key)
+        {
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                if (EqualityComparer<TKey>.Default.Equals(_entries[i].Key, key)) return _entries[i];
+            }
+            return null;
+        }
+
+        private RowMotionEntry<TKey> AddEntry(TKey key)
+        {
+            var entry = new RowMotionEntry<TKey>(key);
+            _entries.Add(entry);
+            return entry;
+        }
+
+        private static double DurationFor(RowMotionChannel channel)
+        {
+            return channel switch
+            {
+                RowMotionChannel.Hover => RowHoverDurationMs,
+                RowMotionChannel.Selection => RowSelectionDurationMs,
+                _ => RowPressedDurationMs
+            };
+        }
+    }
+
+    private sealed class RowMotionEntry<TKey>(TKey key) where TKey : notnull
+    {
+        public TKey Key { get; } = key;
+        public AnimatedRowValue Hover { get; } = new();
+        public AnimatedRowValue Selection { get; } = new();
+        public AnimatedRowValue Pressed { get; } = new();
+        public bool IsAnimating => Hover.IsAnimating || Selection.IsAnimating || Pressed.IsAnimating;
+        public bool IsDormant => Hover.IsDormant && Selection.IsDormant && Pressed.IsDormant;
+
+        public AnimatedRowValue ValueFor(RowMotionChannel channel)
+        {
+            return channel switch
+            {
+                RowMotionChannel.Hover => Hover,
+                RowMotionChannel.Selection => Selection,
+                _ => Pressed
+            };
+        }
+
+        public bool Advance(long timestamp)
+        {
+            return Hover.Advance(timestamp) | Selection.Advance(timestamp) | Pressed.Advance(timestamp);
+        }
+    }
+
+    private sealed class AnimatedRowValue
+    {
+        private float _start;
+        private long _startedAt;
+        private double _durationMs;
+
+        public float Current { get; private set; }
+        public float Target { get; private set; }
+        public bool IsAnimating => Math.Abs(Current - Target) > 0.0001f;
+        public bool IsDormant => !IsAnimating && Target <= 0.0001f;
+
+        public void SetImmediate(float value)
+        {
+            Current = Math.Clamp(value, 0f, 1f);
+            Target = Current;
+            _start = Current;
+            _durationMs = 0d;
+        }
+
+        public void Retarget(float target, long timestamp, double durationMs)
+        {
+            Advance(timestamp);
+            target = Math.Clamp(target, 0f, 1f);
+            if (Math.Abs(Target - target) <= 0.0001f) return;
+            _start = Current;
+            Target = target;
+            _startedAt = timestamp;
+            _durationMs = durationMs;
+        }
+
+        public bool Advance(long timestamp)
+        {
+            if (!IsAnimating) return false;
+            var previous = Current;
+            var elapsedMs = System.Diagnostics.Stopwatch.GetElapsedTime(_startedAt, timestamp).TotalMilliseconds;
+            Current = AdvanceRowMotion(_start, Target, elapsedMs, _durationMs);
+            if (Math.Abs(Current - Target) <= 0.0001f) Current = Target;
+            return Math.Abs(Current - previous) > 0.0001f;
+        }
+
+        public float ResolveCurrent(bool active)
+        {
+            var expected = active ? 1f : 0f;
+            return Math.Abs(Target - expected) <= 0.0001f ? Current : expected;
         }
     }
 

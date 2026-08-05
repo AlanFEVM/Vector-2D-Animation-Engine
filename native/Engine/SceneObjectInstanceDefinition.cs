@@ -338,6 +338,54 @@ internal class DrawingObjectInstanceDefinition
             * Matrix3x2.CreateRotation(state.RotationZ * MathF.PI / 180f);
     }
 
+    internal static InstanceFrameState InterpolateState(
+        InstanceFrameState source,
+        InstanceFrameState target,
+        float progress)
+    {
+        if (!float.IsFinite(progress) || progress <= 0) return source;
+        if (progress >= 1) return target;
+
+        return source with
+        {
+            X = Lerp(source.X, target.X, progress),
+            Y = Lerp(source.Y, target.Y, progress),
+            Z = Lerp(source.Z, target.Z, progress),
+            RotationX = LerpAngle(source.RotationX, target.RotationX, progress),
+            RotationY = LerpAngle(source.RotationY, target.RotationY, progress),
+            RotationZ = LerpAngle(source.RotationZ, target.RotationZ, progress),
+            SkewX = Lerp(source.SkewX, target.SkewX, progress),
+            SkewY = Lerp(source.SkewY, target.SkewY, progress),
+            ScaleX = Lerp(source.ScaleX, target.ScaleX, progress),
+            ScaleY = Lerp(source.ScaleY, target.ScaleY, progress),
+            ScaleZ = Lerp(source.ScaleZ, target.ScaleZ, progress),
+            Alpha = Lerp(source.Alpha, target.Alpha, progress),
+            TintArgb = LerpArgb(source.TintArgb, target.TintArgb, progress)
+        };
+    }
+
+    private static float Lerp(float source, float target, float progress) =>
+        source + (target - source) * progress;
+
+    private static float LerpAngle(float source, float target, float progress)
+    {
+        var delta = (target - source) % 360f;
+        if (delta > 180f) delta -= 360f;
+        else if (delta < -180f) delta += 360f;
+        return source + delta * progress;
+    }
+
+    private static int LerpArgb(int sourceArgb, int targetArgb, float progress)
+    {
+        var source = Color.FromArgb(sourceArgb);
+        var target = Color.FromArgb(targetArgb);
+        return Color.FromArgb(
+            255,
+            (int)MathF.Round(Lerp(source.R, target.R, progress)),
+            (int)MathF.Round(Lerp(source.G, target.G, progress)),
+            (int)MathF.Round(Lerp(source.B, target.B, progress))).ToArgb();
+    }
+
     private InstanceFrameState BaseState()
     {
         return new InstanceFrameState(

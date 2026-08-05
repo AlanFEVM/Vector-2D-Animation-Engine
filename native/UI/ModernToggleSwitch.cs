@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 
 namespace VectorAnimationEngine;
@@ -17,6 +18,7 @@ internal sealed class ModernToggleSwitch : CheckBox
     private float _hoverTarget;
     private float _pressProgress;
     private float _pressTarget;
+    private long _lastMotionTimestamp;
 
     public ModernToggleSwitch()
     {
@@ -165,6 +167,8 @@ internal sealed class ModernToggleSwitch : CheckBox
         base.OnMouseDown(e);
         if (!Enabled || e.Button != MouseButtons.Left) return;
         _pressTarget = 1f;
+        _pressProgress = 1f;
+        Invalidate();
         StartMotion();
     }
 
@@ -189,6 +193,8 @@ internal sealed class ModernToggleSwitch : CheckBox
         base.OnKeyDown(e);
         if (!Enabled || e.KeyCode != Keys.Space || e.Modifiers != Keys.None) return;
         _pressTarget = 1f;
+        _pressProgress = 1f;
+        Invalidate();
         StartMotion();
     }
 
@@ -279,9 +285,21 @@ internal sealed class ModernToggleSwitch : CheckBox
 
     private void HandleMotionTick(object? sender, EventArgs e)
     {
-        _checkedProgress = Approach(_checkedProgress, _checkedTarget);
-        _hoverProgress = Approach(_hoverProgress, _hoverTarget);
-        _pressProgress = Approach(_pressProgress, _pressTarget);
+        if (!UiMotion.AnimationsEnabled)
+        {
+            SnapToTargets();
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        var elapsedMilliseconds = _lastMotionTimestamp == 0
+            ? _motionTimer.Interval
+            : Math.Clamp(Stopwatch.GetElapsedTime(_lastMotionTimestamp, now).TotalMilliseconds, 1d, 64d);
+        _lastMotionTimestamp = now;
+        var blend = 1f - MathF.Pow(0.70f, (float)(elapsedMilliseconds / _motionTimer.Interval));
+        _checkedProgress = Approach(_checkedProgress, _checkedTarget, blend);
+        _hoverProgress = Approach(_hoverProgress, _hoverTarget, blend);
+        _pressProgress = Approach(_pressProgress, _pressTarget, blend);
         Invalidate();
 
         if (IsSettled(_checkedProgress, _checkedTarget)
@@ -295,6 +313,11 @@ internal sealed class ModernToggleSwitch : CheckBox
     private void StartMotion()
     {
         if (IsDisposed || Disposing) return;
+        if (!UiMotion.AnimationsEnabled)
+        {
+            SnapToTargets();
+            return;
+        }
         if (!Visible || !IsHandleCreated)
         {
             SnapToTargets();
@@ -302,7 +325,11 @@ internal sealed class ModernToggleSwitch : CheckBox
             return;
         }
 
-        if (!_motionTimer.Enabled) _motionTimer.Start();
+        if (!_motionTimer.Enabled)
+        {
+            _lastMotionTimestamp = Stopwatch.GetTimestamp();
+            _motionTimer.Start();
+        }
     }
 
     private void SnapToTargets()
@@ -381,9 +408,9 @@ internal sealed class ModernToggleSwitch : CheckBox
                 Theme.Muted);
     }
 
-    private static float Approach(float value, float target)
+    private static float Approach(float value, float target, float blend)
     {
-        value += (target - value) * 0.30f;
+        value += (target - value) * blend;
         return IsSettled(value, target) ? target : value;
     }
 

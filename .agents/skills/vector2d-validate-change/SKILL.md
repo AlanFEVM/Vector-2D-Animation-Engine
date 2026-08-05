@@ -43,7 +43,7 @@ Non-plan runs take a repository-specific Windows cross-process mutex. The defaul
 
 ## Validation Rules
 
-- The repository has no solution, test project, or CI pipeline. `native/App/Benchmark.cs` CLI modes are the regression harness.
+- The repository has no solution, test project, or CI pipeline. The `native/App/Benchmark*.cs` partial family supplies the CLI regression harness.
 - `global.json` pins the stable .NET 8 line. Do not validate with a preview SDK selected outside repository rules.
 - Benchmark mode is determined by the first native argument.
 - Close running GUI/launcher processes before treating performance numbers as a baseline.

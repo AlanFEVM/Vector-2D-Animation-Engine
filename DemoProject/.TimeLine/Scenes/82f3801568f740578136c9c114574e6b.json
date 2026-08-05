@@ -1,0 +1,35 @@
+{
+  "formatVersion": 1,
+  "sceneId": "82f3801568f740578136c9c114574e6b",
+  "layers": {
+    "layers": [
+      {
+        "id": "18ad0626b3134893965b553fb0558960",
+        "name": "Layer 0001",
+        "visible": true,
+        "colorArgb": -11549705,
+        "outline": false,
+        "blendMode": 0
+      }
+    ],
+    "activeLayerId": "18ad0626b3134893965b553fb0558960",
+    "instanceLayerIds": {}
+  },
+  "timeline": {
+    "tracks": [
+      {
+        "id": "427ee748feb14082aed14f37eb97e8c3",
+        "targetId": "18ad0626b3134893965b553fb0558960",
+        "duration": 1,
+        "keyframes": [
+          {
+            "frame": 0,
+            "kind": 1,
+            "hasContent": false
+          }
+        ]
+      }
+    ]
+  },
+  "instances": []
+}

@@ -115,7 +115,8 @@ internal sealed class HierarchyPanel : UserControl
                     return $"{_scene.LayerNames[index]} - {visibility}, {_scene.LayerOpacity[index]:P0}";
                 },
                 HierarchyNodeKind.Layer,
-                "layers");
+                "layers",
+                styleAt: (node, index) => node.BackColor = LayerNodeBackground(index));
             RefreshBranch(
                 _objectsRoot,
                 _scene.ObjectCount,
@@ -173,7 +174,9 @@ internal sealed class HierarchyPanel : UserControl
         {
             var visibility = _scene.LayerVisible[i] ? "Visible" : "Hidden";
             var opacity = _scene.LayerOpacity[i];
-            layersRoot.Nodes.Add(TaggedNode($"{_scene.LayerNames[i]} - {visibility}, {opacity:P0}", HierarchyNodeKind.Layer, i));
+            var node = TaggedNode($"{_scene.LayerNames[i]} - {visibility}, {opacity:P0}", HierarchyNodeKind.Layer, i);
+            node.BackColor = LayerNodeBackground(i);
+            layersRoot.Nodes.Add(node);
         }
 
         if (_scene.LayerCount > layerLimit)
@@ -235,7 +238,8 @@ internal sealed class HierarchyPanel : UserControl
         Func<int, string> textAt,
         HierarchyNodeKind kind,
         string overflowLabel,
-        Func<int, int>? detailAt = null)
+        Func<int, int>? detailAt = null,
+        Action<TreeNode, int>? styleAt = null)
     {
         var visibleCount = Math.Min(totalCount, limit);
         while (root.Nodes.Count > 0 && root.Nodes[root.Nodes.Count - 1].Tag is not HierarchyNodeTag)
@@ -264,11 +268,14 @@ internal sealed class HierarchyPanel : UserControl
             {
                 SetTextIfChanged(node, textAt(index));
             }
+            styleAt?.Invoke(node, index);
         }
 
         for (var index = root.Nodes.Count; index < visibleCount; index++)
         {
-            root.Nodes.Add(TaggedNode(textAt(index), kind, index, detailAt?.Invoke(index) ?? -1));
+            var node = TaggedNode(textAt(index), kind, index, detailAt?.Invoke(index) ?? -1);
+            styleAt?.Invoke(node, index);
+            root.Nodes.Add(node);
         }
 
         if (totalCount > visibleCount)
@@ -280,6 +287,12 @@ internal sealed class HierarchyPanel : UserControl
     private static void SetTextIfChanged(TreeNode node, string text)
     {
         if (!string.Equals(node.Text, text, StringComparison.Ordinal)) node.Text = text;
+    }
+
+    private Color LayerNodeBackground(int layerIndex)
+    {
+        if (_scene is null || layerIndex < 0 || layerIndex >= _scene.LayerCount) return Theme.Panel;
+        return Theme.Mix(Theme.Panel, _scene.GetLayerColor(layerIndex), Theme.IsLight ? 0.18f : 0.26f);
     }
 
     private static void SetTextIfChanged(Label label, string text)

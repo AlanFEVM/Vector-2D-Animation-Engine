@@ -113,6 +113,7 @@ internal static class SceneCompositionBuilder
         Primitive,
         Path,
         Freehand,
+        MixingStroke,
         Curve,
         ImportedSvg,
         Text
@@ -145,8 +146,11 @@ internal static class SceneCompositionBuilder
         public PointF GradientEnd { get; init; }
         public GradientStop[] GradientStops { get; init; } = [];
         public PointF[] GradientPath { get; init; } = [];
+        public MixingBrushTrajectorySample[] MixingSamples { get; init; } = [];
+        public MixingBrushRegionData? MixingRegion { get; init; }
         public PointF[][] ShapeGradientMappingContours { get; init; } = [];
         public PathBezierNode[][] PathBezierContours { get; init; } = [];
+        public PathBezierNode[] FreehandBezierNodes { get; init; } = [];
         public int ShapeVertexCount { get; init; }
         public PointF Control2 { get; init; }
         public string ImportedSvgSource { get; init; } = "";
@@ -959,7 +963,14 @@ internal static class SceneCompositionBuilder
             var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
             foreach (var sourceObject in sourceObjects)
             {
-                if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path or ShapeKind.Freeform or ShapeKind.ImportedSvg or ShapeKind.Text) return false;
+                if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path
+                    or ShapeKind.Freeform
+                    or ShapeKind.MixingStroke
+                    or ShapeKind.ImportedSvg
+                    or ShapeKind.Text)
+                {
+                    return false;
+                }
             }
         }
 
@@ -1215,6 +1226,83 @@ internal static class SceneCompositionBuilder
             };
         }
 
+        if (shape == ShapeKind.MixingStroke)
+        {
+            if (source.TryGetMixingBrushWorldRegion(sourceObject, out var mixingRegion))
+            {
+                var vertices = new MixingBrushRegionVertex[mixingRegion.Vertices.Length];
+                for (var vertexIndex = 0; vertexIndex < vertices.Length; vertexIndex++)
+                {
+                    var vertex = mixingRegion.Vertices[vertexIndex];
+                    vertices[vertexIndex] = vertex with
+                    {
+                        Point = TransformPoint(vertex.Point, transform, identityTransform),
+                        Argb = ApplyInstanceAppearance(vertex.Argb, workItem.Alpha, workItem.TintArgb)
+                    };
+                }
+
+                var transformedRegion = new MixingBrushRegionData(
+                    vertices,
+                    mixingRegion.TriangleIndices.ToArray());
+                return new PreparedCompositionObject(
+                    PreparedCompositionKind.MixingStroke,
+                    destinationLayer,
+                    shape,
+                    PointF.Empty,
+                    SizeF.Empty,
+                    0,
+                    0,
+                    vertices[^1].Argb,
+                    Color.Transparent.ToArgb(),
+                    atoms,
+                    PointF.Empty,
+                    PointF.Empty,
+                    PointF.Empty,
+                    [],
+                    [])
+                {
+                    MixingRegion = transformedRegion
+                };
+            }
+
+            if (!source.TryGetMixingStrokeWorldSamples(sourceObject, out var mixingSamples))
+            {
+                throw new InvalidOperationException("Mixing-stroke composition source is missing its trajectory payload.");
+            }
+
+            var diameterScale = MathF.Sqrt(Math.Abs(determinant));
+            for (var sampleIndex = 0; sampleIndex < mixingSamples.Length; sampleIndex++)
+            {
+                var sample = mixingSamples[sampleIndex];
+                mixingSamples[sampleIndex] = sample with
+                {
+                    Point = TransformPoint(sample.Point, transform, identityTransform),
+                    Diameter = Math.Max(VectorUnits.MinimumStrokeUnits, sample.Diameter * diameterScale),
+                    Argb = ApplyInstanceAppearance(sample.Argb, workItem.Alpha, workItem.TintArgb)
+                };
+            }
+
+            return new PreparedCompositionObject(
+                PreparedCompositionKind.MixingStroke,
+                destinationLayer,
+                shape,
+                PointF.Empty,
+                SizeF.Empty,
+                0,
+                0,
+                mixingSamples[^1].Argb,
+                Color.Transparent.ToArgb(),
+                atoms,
+                PointF.Empty,
+                PointF.Empty,
+                PointF.Empty,
+                [],
+                [])
+            {
+                MixingSamples = mixingSamples
+            };
+        }
+
         if (shape == ShapeKind.Path
             && source.TryGetPathWorldContours(sourceObject, out var contours))
         {
@@ -1277,7 +1365,7 @@ internal static class SceneCompositionBuilder
             {
                 freehand[pointIndex] = TransformPoint(freehand[pointIndex], transform, identityTransform);
             }
-            return WithGradient(new PreparedCompositionObject(
+            var prepared = new PreparedCompositionObject(
                 PreparedCompositionKind.Freehand,
                 destinationLayer,
                 shape,
@@ -1292,7 +1380,29 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 freehand,
-                []), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
+                []);
+            if (source.TryGetFreehandBezierWorldNodes(sourceObject, out var freehandBezierNodes))
+            {
+                for (var nodeIndex = 0; nodeIndex < freehandBezierNodes.Length; nodeIndex++)
+                {
+                    var node = freehandBezierNodes[nodeIndex];
+                    freehandBezierNodes[nodeIndex] = new PathBezierNode(
+                        TransformPoint(node.Anchor, transform, identityTransform),
+                        TransformPoint(node.IncomingControl, transform, identityTransform),
+                        TransformPoint(node.OutgoingControl, transform, identityTransform));
+                }
+
+                prepared = prepared with { FreehandBezierNodes = freehandBezierNodes };
+            }
+
+            return WithGradient(
+                prepared,
+                source,
+                sourceObject,
+                transform,
+                identityTransform,
+                workItem.Alpha,
+                workItem.TintArgb);
         }
 
         if (shape == ShapeKind.Line
@@ -1481,6 +1591,7 @@ internal static class SceneCompositionBuilder
         var item = PrepareObject(workItem);
         if (item.Kind is PreparedCompositionKind.Path
             or PreparedCompositionKind.Freehand
+            or PreparedCompositionKind.MixingStroke
             or PreparedCompositionKind.ImportedSvg
             or PreparedCompositionKind.Text)
         {
@@ -1544,12 +1655,28 @@ internal static class SceneCompositionBuilder
                     Color.FromArgb(item.FillArgb),
                     Color.FromArgb(item.StrokeArgb),
                     item.Atoms),
-            PreparedCompositionKind.Freehand => destination.AppendFreehandStroke(
-                item.DestinationLayer,
-                item.Points,
-                item.Stroke,
-                Color.FromArgb(item.StrokeArgb),
-                item.Atoms),
+            PreparedCompositionKind.Freehand => item.FreehandBezierNodes.Length >= 2
+                ? destination.AppendFreehandBezierStroke(
+                    item.DestinationLayer,
+                    item.FreehandBezierNodes,
+                    item.Stroke,
+                    Color.FromArgb(item.StrokeArgb),
+                    item.Atoms)
+                : destination.AppendFreehandStroke(
+                    item.DestinationLayer,
+                    item.Points,
+                    item.Stroke,
+                    Color.FromArgb(item.StrokeArgb),
+                    item.Atoms),
+            PreparedCompositionKind.MixingStroke => item.MixingRegion is { } mixingRegion
+                ? destination.AppendMixingBrushRegion(
+                    item.DestinationLayer,
+                    mixingRegion,
+                    item.Atoms)
+                : destination.AppendMixingBrushStroke(
+                    item.DestinationLayer,
+                    item.MixingSamples,
+                    item.Atoms),
             PreparedCompositionKind.Curve => destination.AppendPackedObject(
                 item.DestinationLayer,
                 item.Center,

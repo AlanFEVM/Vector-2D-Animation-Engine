@@ -273,7 +273,10 @@ internal sealed class ModernNumericUpDown : UserControl
     protected override void OnPaint(PaintEventArgs e)
     {
         using var fill = new SolidBrush(ResolveVisualColor());
-        using var border = new Pen(ContainsFocus ? Theme.Accent : Theme.Border);
+        using var border = new Pen(
+            SystemInformation.HighContrast
+                ? ContainsFocus ? SystemColors.Highlight : SystemColors.WindowText
+                : ContainsFocus ? Theme.Accent : Theme.Border);
         e.Graphics.FillRectangle(fill, ClientRectangle);
         e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
     }
@@ -723,6 +726,7 @@ internal sealed class ModernNumericUpDown : UserControl
 
     private Color ResolveVisualColor()
     {
+        if (SystemInformation.HighContrast) return Enabled ? SystemColors.Window : SystemColors.Control;
         if (!Enabled) return Theme.DisabledSurface;
         if (IsScrubbing || _stepperInteracting) return Theme.Mix(Theme.Field, Theme.AccentSurface, 0.72f);
         if (ContainsFocus) return Theme.Mix(Theme.Field, Theme.AccentSurface, 0.42f);
@@ -734,7 +738,9 @@ internal sealed class ModernNumericUpDown : UserControl
     {
         var background = ResolveVisualColor();
         if (BackColor != background) BackColor = background;
-        var foreground = Enabled ? Theme.Text : Theme.DisabledText;
+        var foreground = SystemInformation.HighContrast
+            ? Enabled ? SystemColors.WindowText : SystemColors.GrayText
+            : Enabled ? Theme.Text : Theme.DisabledText;
         if (ForeColor != foreground) ForeColor = foreground;
         if (_editor.BackColor != background) _editor.BackColor = background;
         if (_editor.ForeColor != foreground) _editor.ForeColor = foreground;
@@ -744,6 +750,11 @@ internal sealed class ModernNumericUpDown : UserControl
         _increaseButton.Invalidate();
         _decreaseButton.Invalidate();
         Invalidate();
+    }
+
+    internal void RefreshTheme()
+    {
+        RetargetVisual();
     }
 
     private void UpdateEditorAccessibility()
@@ -887,15 +898,20 @@ internal sealed class ModernNumericUpDown : UserControl
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            var background = !Enabled
-                ? Theme.DisabledSurface
-                : _pressed
-                    ? Theme.AccentSurface
-                    : _hovered
-                        ? Theme.PanelHover
-                        : Theme.PanelStrong;
+            var highContrast = SystemInformation.HighContrast;
+            var background = highContrast
+                ? !Enabled
+                    ? SystemColors.Control
+                    : _pressed || _hovered ? SystemColors.Highlight : SystemColors.Control
+                : !Enabled
+                    ? Theme.DisabledSurface
+                    : _pressed
+                        ? Theme.AccentSurface
+                        : _hovered
+                            ? Theme.PanelHover
+                            : Theme.PanelStrong;
             using var fill = new SolidBrush(background);
-            using var border = new Pen(Theme.Border);
+            using var border = new Pen(highContrast ? SystemColors.WindowText : Theme.Border);
             e.Graphics.FillRectangle(fill, ClientRectangle);
             e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
 
@@ -903,7 +919,10 @@ internal sealed class ModernNumericUpDown : UserControl
             var centerY = ClientSize.Height * 0.5f;
             var size = Math.Max(2f, Math.Min(ClientSize.Width, ClientSize.Height) * 0.22f);
             var sign = Direction > 0 ? 1f : -1f;
-            using var chevron = new Pen(Enabled ? Theme.Text : Theme.DisabledText, Math.Max(1f, DeviceDpi / 96f))
+            var foreground = highContrast
+                ? Enabled ? _pressed || _hovered ? SystemColors.HighlightText : SystemColors.ControlText : SystemColors.GrayText
+                : Enabled ? Theme.Text : Theme.DisabledText;
+            using var chevron = new Pen(foreground, Math.Max(1f, DeviceDpi / 96f))
             {
                 LineJoin = LineJoin.Round
             };

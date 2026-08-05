@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
 
@@ -14,6 +15,8 @@ internal static class Program
     private static readonly TimeSpan RestartTokenLifetime = TimeSpan.FromMinutes(5);
     private const string RestartTokenArgumentPrefix = "--editor-restart-token=";
     private const string ValidateDevelopmentLauncherArgument = "--validate-development-launcher";
+    private const int SwShow = 5;
+    private const int SwRestore = 9;
     private static readonly object LogSync = new();
     private static long _launcherLogBytes = -1;
 
@@ -43,20 +46,29 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
+        var root = ResolveRepositoryRoot();
 
         using var launcherMutex = new Mutex(initiallyOwned: true, LauncherMutexName, out var createdNew);
-        if (!createdNew) return;
+        if (!createdNew)
+        {
+            if (!TryActivateNativeMainWindow(root)) ShowStartupAlreadyInProgress();
+            return;
+        }
 
-        var root = ResolveRepositoryRoot();
         var logDir = Path.Combine(root, "logs");
         Directory.CreateDirectory(logDir);
         Log(logDir, $"Launcher starting. Repository root: {root}");
         var projectPath = Path.Combine(root, "native", "VectorAnimationEngine.Native.csproj");
         var launchOptions = LaunchOptions.Parse(args);
+        using var startupStatus = new StartupStatusForm(UseSimplifiedChinese());
+        startupStatus.Show();
+        startupStatus.Activate();
+        Application.DoEvents();
 
         if (!File.Exists(projectPath))
         {
             Log(logDir, $"Cannot find project: {projectPath}");
+            DismissStartupStatus(startupStatus);
             ShowError("Cannot find the development project.", projectPath);
             return;
         }
@@ -64,11 +76,14 @@ internal static class Program
         if (!TryFindDotnet(out var dotnet))
         {
             Log(logDir, ".NET SDK was not found in PATH");
+            DismissStartupStatus(startupStatus);
             ShowError(".NET SDK was not found in PATH.", "Install .NET SDK 8+ or run the release build instead.");
             return;
         }
 
         var skipInitialBuild = IsNativeDebugOutputCurrent(projectPath);
+        startupStatus.SetBuildRequired(!skipInitialBuild);
+        Application.DoEvents();
         var shutdownEventName = $"Local\\Vector2DAnimationEngine.LauncherShutdown.{Environment.ProcessId}.{Guid.NewGuid():N}";
         var restartEventName = $"Local\\Vector2DAnimationEngine.LauncherRestart.{Environment.ProcessId}.{Guid.NewGuid():N}";
         var nativeLauncherArguments = $" -- --launcher-shutdown-event={shutdownEventName} --launcher-restart-event={restartEventName}";
@@ -113,7 +128,7 @@ internal static class Program
                 using var watchProcess = Process.Start(startInfo);
                 if (watchProcess is null) throw new InvalidOperationException("The development watch process could not be started.");
                 AttachWatchLogging(watchProcess, logDir);
-                var reason = WaitForWatchProcessOrRequest(watchProcess, shutdownEvent, restartEvent);
+                var reason = WaitForWatchProcessOrRequest(watchProcess, shutdownEvent, restartEvent, root, startupStatus);
                 if (reason == WatchExitReason.RestartEditor)
                 {
                     pendingRestartToken = TryConsumeEditorRestartToken(logDir);
@@ -141,7 +156,7 @@ internal static class Program
                     unexpectedRestarts++;
                     var delayMilliseconds = Math.Min(2000, 250 * (1 << (unexpectedRestarts - 1)));
                     Log(logDir, $"Restarting the failed watch process in {delayMilliseconds} ms ({unexpectedRestarts}/{MaxUnexpectedWatchRestarts}).");
-                    Thread.Sleep(delayMilliseconds);
+                    WaitWithStartupStatus(delayMilliseconds, root, startupStatus);
                     continue;
                 }
                 break;
@@ -149,8 +164,13 @@ internal static class Program
         }
         catch (Exception ex)
         {
+            DismissStartupStatus(startupStatus);
             Log(logDir, $"Launch failed: {ex}");
             ShowError("Failed to launch the development app.", ex.Message);
+        }
+        finally
+        {
+            DismissStartupStatus(startupStatus);
         }
     }
 
@@ -313,16 +333,18 @@ internal static class Program
             var nativeDirectory = Path.GetDirectoryName(projectPath);
             if (string.IsNullOrWhiteSpace(nativeDirectory)) return false;
 
+            var managedAssemblyPath = Path.Combine(outputDirectory, "VectorAnimationEngine.dll");
             var outputFiles = new[]
             {
                 Path.Combine(outputDirectory, "VectorAnimationEngine.exe"),
-                Path.Combine(outputDirectory, "VectorAnimationEngine.dll"),
+                managedAssemblyPath,
                 Path.Combine(outputDirectory, "VectorAnimationEngine.deps.json"),
                 Path.Combine(outputDirectory, "VectorAnimationEngine.runtimeconfig.json")
             };
             if (outputFiles.Any(path => !File.Exists(path))) return false;
 
-            var outputTime = outputFiles.Min(File.GetLastWriteTimeUtc);
+            // Incremental builds can retain older deps/runtimeconfig files while refreshing the managed assembly.
+            var outputTime = File.GetLastWriteTimeUtc(managedAssemblyPath);
             var latestInputTime = File.GetLastWriteTimeUtc(projectPath);
             var rootDirectory = Directory.GetParent(nativeDirectory)?.FullName;
             if (!string.IsNullOrWhiteSpace(rootDirectory))
@@ -378,16 +400,95 @@ internal static class Program
     private static WatchExitReason WaitForWatchProcessOrRequest(
         Process watchProcess,
         EventWaitHandle shutdownEvent,
-        EventWaitHandle restartEvent)
+        EventWaitHandle restartEvent,
+        string root,
+        StartupStatusForm startupStatus)
     {
         while (!watchProcess.HasExited)
         {
-            var signal = WaitHandle.WaitAny([shutdownEvent, restartEvent], 250);
+            PumpStartupStatus(root, startupStatus);
+            var signal = WaitHandle.WaitAny([shutdownEvent, restartEvent], 100);
             if (signal == 0) return WatchExitReason.Shutdown;
             if (signal == 1) return WatchExitReason.RestartEditor;
         }
 
+        PumpStartupStatus(root, startupStatus);
         return WatchExitReason.Exited;
+    }
+
+    private static void WaitWithStartupStatus(int delayMilliseconds, string root, StartupStatusForm startupStatus)
+    {
+        var end = Environment.TickCount64 + delayMilliseconds;
+        while (true)
+        {
+            var remaining = end - Environment.TickCount64;
+            if (remaining <= 0) break;
+            PumpStartupStatus(root, startupStatus);
+            Thread.Sleep((int)Math.Min(50, remaining));
+        }
+    }
+
+    private static void PumpStartupStatus(string root, StartupStatusForm startupStatus)
+    {
+        if (startupStatus.IsDisposed) return;
+        Application.DoEvents();
+        if (!TryGetNativeMainWindow(root, out _)) return;
+        DismissStartupStatus(startupStatus);
+    }
+
+    private static void DismissStartupStatus(StartupStatusForm startupStatus)
+    {
+        if (startupStatus.IsDisposed) return;
+        startupStatus.Dismiss();
+        Application.DoEvents();
+    }
+
+    private static bool TryActivateNativeMainWindow(string root)
+    {
+        if (!TryGetNativeMainWindow(root, out var windowHandle)) return false;
+        ShowWindow(windowHandle, IsIconic(windowHandle) ? SwRestore : SwShow);
+        SetForegroundWindow(windowHandle);
+        return true;
+    }
+
+    private static bool TryGetNativeMainWindow(string root, out IntPtr windowHandle)
+    {
+        windowHandle = IntPtr.Zero;
+        var expectedPath = Path.GetFullPath(Path.Combine(
+            root,
+            "native",
+            "bin",
+            "Debug",
+            "net8.0-windows",
+            "VectorAnimationEngine.exe"));
+        foreach (var process in Process.GetProcessesByName("VectorAnimationEngine"))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.Id == Environment.ProcessId) continue;
+                    process.Refresh();
+                    var handle = process.MainWindowHandle;
+                    if (handle == IntPtr.Zero
+                        || !IsWindowVisible(handle)
+                        || string.IsNullOrWhiteSpace(process.MainWindowTitle)
+                        || !string.Equals(process.MainModule?.FileName, expectedPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    windowHandle = handle;
+                    return true;
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                {
+                    // Processes can exit while their window and executable path are being inspected.
+                }
+            }
+        }
+
+        return false;
     }
 
     private static void StopProcessTree(Process process, string logDir)
@@ -437,6 +538,18 @@ internal static class Program
             simplifiedChinese ? "Vector 2D Animation Engine 启动器" : "Vector 2D Animation Engine Launcher",
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
+    }
+
+    private static void ShowStartupAlreadyInProgress()
+    {
+        var simplifiedChinese = UseSimplifiedChinese();
+        MessageBox.Show(
+            simplifiedChinese
+                ? "开发版本正在编译或启动，请稍候。"
+                : "The development app is compiling or starting. Please wait.",
+            simplifiedChinese ? "Vector 2D Animation Engine 启动器" : "Vector 2D Animation Engine Launcher",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
     }
 
     private static bool UseSimplifiedChinese()
@@ -498,6 +611,109 @@ internal static class Program
             {
                 // Launcher logging must not block startup or error reporting.
             }
+        }
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr windowHandle, int command);
+
+    private sealed class StartupStatusForm : Form
+    {
+        private readonly bool _simplifiedChinese;
+        private readonly Label _detail;
+        private bool _dismissRequested;
+
+        public StartupStatusForm(bool simplifiedChinese)
+        {
+            _simplifiedChinese = simplifiedChinese;
+            AutoScaleMode = AutoScaleMode.Dpi;
+            BackColor = Color.FromArgb(30, 33, 37);
+            ClientSize = new Size(420, 132);
+            ControlBox = false;
+            Font = SystemFonts.MessageBoxFont;
+            ForeColor = Color.FromArgb(235, 238, 242);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowIcon = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            Text = simplifiedChinese
+                ? "Vector 2D Animation Engine 启动器"
+                : "Vector 2D Animation Engine Launcher";
+
+            var title = new Label
+            {
+                AccessibleName = simplifiedChinese ? "启动状态" : "Startup status",
+                AutoEllipsis = true,
+                Font = SystemFonts.CaptionFont,
+                ForeColor = ForeColor,
+                Location = new Point(24, 20),
+                Size = new Size(372, 24),
+                Text = "Vector 2D Animation Engine",
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            _detail = new Label
+            {
+                AutoEllipsis = true,
+                ForeColor = Color.FromArgb(178, 186, 196),
+                Location = new Point(24, 49),
+                Size = new Size(372, 35),
+                Text = simplifiedChinese ? "正在准备开发环境..." : "Preparing the development environment...",
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            var progress = new ProgressBar
+            {
+                AccessibleName = simplifiedChinese ? "启动进度" : "Startup progress",
+                Location = new Point(24, 94),
+                MarqueeAnimationSpeed = 24,
+                Size = new Size(372, 12),
+                Style = ProgressBarStyle.Marquee
+            };
+            Controls.Add(title);
+            Controls.Add(_detail);
+            Controls.Add(progress);
+        }
+
+        public void SetBuildRequired(bool buildRequired)
+        {
+            _detail.Text = _simplifiedChinese
+                ? buildRequired
+                    ? "正在编译并启动编辑器，首次启动可能需要一些时间..."
+                    : "正在启动编辑器..."
+                : buildRequired
+                    ? "Building and starting the editor. The first launch may take a moment..."
+                    : "Starting the editor...";
+        }
+
+        public void Dismiss()
+        {
+            if (IsDisposed) return;
+            _dismissRequested = true;
+            Close();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!_dismissRequested && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            base.OnFormClosing(e);
         }
     }
 }

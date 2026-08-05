@@ -10,11 +10,16 @@ internal enum UiLanguage
 
 internal static class UiLocalization
 {
-    private sealed class TextState(string sourceText, string sourceAccessibleName, string sourceAccessibleDescription)
+    private sealed class TextState(
+        string sourceText,
+        string sourceAccessibleName,
+        string sourceAccessibleDescription,
+        string sourcePlaceholderText = "")
     {
         public string SourceText { get; set; } = sourceText;
         public string SourceAccessibleName { get; set; } = sourceAccessibleName;
         public string SourceAccessibleDescription { get; set; } = sourceAccessibleDescription;
+        public string SourcePlaceholderText { get; set; } = sourcePlaceholderText;
     }
 
     private static readonly ConditionalWeakTable<Control, TextState> ControlStates = new();
@@ -28,7 +33,41 @@ internal static class UiLocalization
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["A shortcut profile already uses that name."] = "已有快捷键方案使用该名称。",
+            ["Add"] = "新增",
+            ["All tags"] = "全部标签",
             ["Assign"] = "分配",
+            ["Assigned"] = "已分配",
+            ["Asset"] = "素材",
+            ["Asset Tags"] = "素材标签",
+            ["Assign tags to this asset or manage project tag colors."] = "为此素材分配标签，或管理项目标签颜色。",
+            ["Choose color saturation and brightness"] = "选择颜色的饱和度和明度",
+            ["Color hue in degrees"] = "颜色色相（度）",
+            ["Color presets"] = "颜色预设",
+            ["Delete Tag"] = "删除标签",
+            ["Delete tag '{0}' from every project asset?"] = "确定从全部项目素材中删除标签“{0}”吗？",
+            ["Filter project assets by tag"] = "按标签筛选项目素材",
+            ["Manage tags for selected asset"] = "管理所选素材的标签",
+            ["Manage Tags..."] = "管理标签...",
+            ["New Tag"] = "新建标签",
+            ["New color"] = "新颜色",
+            ["No matching assets"] = "没有匹配的素材",
+            ["Not assigned"] = "未分配",
+            ["Original color"] = "原始颜色",
+            ["Rename Tag"] = "重命名标签",
+            ["RGB color"] = "RGB 颜色",
+            ["Search assets or tags..."] = "搜索素材或标签...",
+            ["Search project assets"] = "搜索项目素材",
+            ["Set Tags"] = "设置标签",
+            ["Set tags from existing project tags"] = "从已有项目标签中设置标签",
+            ["Tag"] = "标签",
+            ["Tag Color"] = "标签颜色",
+            ["Tag name"] = "标签名称",
+            ["Tag names must be unique and contain 1 to 64 characters."] = "标签名称必须唯一，且长度为 1 到 64 个字符。",
+            ["Tags..."] = "标签...",
+            ["Tags: {0}"] = "标签：{0}",
+            ["The asset tag changes could not be applied."] = "无法应用素材标签更改。",
+            ["The project tag limit has been reached."] = "已达到项目标签数量上限。",
+            ["Unassign"] = "取消分配",
             ["Assign selected shortcut"] = "分配所选快捷键",
             ["Assign Shortcut"] = "分配快捷键",
             ["Apply"] = "应用",
@@ -140,6 +179,32 @@ internal static class UiLocalization
             ["Brush Tip"] = "笔尖",
             ["Brush"] = "笔刷",
             ["Brush Tool"] = "笔刷工具",
+            ["Mixing Brush"] = "混色笔刷",
+            ["Mixing Brush Tool"] = "混色笔刷工具",
+            ["Mixing"] = "混色",
+            ["Optical"] = "光学",
+            ["Pigment"] = "颜料",
+            ["Strength"] = "力度",
+            ["Viscosity"] = "粘性",
+            ["Paint Load"] = "载色量",
+            ["Influence"] = "影响因子",
+            ["Mixing brush settings"] = "混色笔刷设置",
+            ["Optical mixing mode"] = "光学混色模式",
+            ["Pigment mixing mode"] = "颜料混色模式",
+            ["Mixing strength"] = "混色力度",
+            ["Mixing viscosity"] = "混色粘性",
+            ["Mixing paint load"] = "混色载色量",
+            ["Mixing influence"] = "混色影响因子",
+            ["Mixing strength value"] = "混色力度值",
+            ["Mixing viscosity value"] = "混色粘性值",
+            ["Mixing paint load value"] = "混色载色量值",
+            ["Mixing influence value"] = "混色影响因子值",
+            ["Mixes the sampled and loaded colors as emitted light"] = "以光学方式混合采样颜色与笔刷载色",
+            ["Mixes the sampled and loaded colors as physical pigments"] = "以颜料方式混合采样颜色与笔刷载色",
+            ["Controls how strongly the brush blends sampled color with loaded paint. Percentage from 0 to 100"] = "控制笔刷混合采样颜色与载色的力度，范围为 0% 到 100%",
+            ["Controls how quickly sampled color transfers into the brush. Percentage from 0 to 100"] = "控制采样颜色进入笔刷的速度，范围为 0% 到 100%",
+            ["Controls how much loaded paint the brush carries into the stroke. Percentage from 0 to 100"] = "控制笔刷带入笔迹的载色量，范围为 0% 到 100%",
+            ["Controls how quickly the brush returns to the selected fill color after leaving sampled paint. Percentage from 0 to 100"] = "控制笔刷离开采样颜料后恢复到当前填色的速度，范围为 0% 到 100%",
             ["Bring Forward"] = "上移一层",
             ["Camera"] = "镜头",
             ["Cartesian Grid"] = "直角坐标网格",
@@ -150,6 +215,12 @@ internal static class UiLocalization
             ["Choose or create a folder for the project asset library."] = "请选择或新建一个用于工程资产库的文件夹。",
             ["Choose a solid workspace color"] = "选择纯色工作区颜色",
             ["Clear Keyframes"] = "清除关键帧",
+            ["Classic Tween"] = "传统补间动画",
+            ["Classic Tween Curve"] = "传统补间曲线",
+            ["Classic tween endpoints must use the same shape type."] = "传统补间动画的起止对象必须使用相同的形状类型。",
+            ["Classic tweens require exactly one drawing object instance on an instance layer."] = "实例图层必须恰好包含一个绘制对象实例才能创建传统补间动画。",
+            ["Classic tweens require one drawing object at both endpoints."] = "传统补间动画的起止关键帧都必须恰好包含一个绘制对象。",
+            ["Both ends of the span must be populated keyframes."] = "补间范围两端都必须是有内容的关键帧。",
             ["Close"] = "关闭",
             ["Collapse Folder"] = "折叠文件夹",
             ["Color"] = "颜色",
@@ -167,6 +238,9 @@ internal static class UiLocalization
             ["Convert Line to Fill"] = "将线条转换为填色",
             ["Convert Lines to Fill"] = "将线条转换为填色",
             ["Copy Frames"] = "复制帧",
+            ["Create Classic Tween"] = "创建传统补间动画",
+            ["Create Shape Tween"] = "创建形状补间动画",
+            ["Delete Anchor"] = "删除锚点",
             ["Custom"] = "自定义",
             ["Decrease value"] = "减小数值",
             ["Delete"] = "删除",
@@ -346,6 +420,7 @@ internal static class UiLocalization
             ["Note"] = "备注",
             ["Note text"] = "备注内容",
             ["Number Keys"] = "数字键",
+            ["Object"] = "对象",
             ["Object placeholder"] = "对象占位符",
             ["Object snap"] = "对象吸附",
             ["Object Snapshot"] = "对象快照",
@@ -388,6 +463,7 @@ internal static class UiLocalization
             ["Previous onion skin frames"] = "前序洋葱皮帧数",
             ["Primitive Set"] = "基础图元集",
             ["Project"] = "项目",
+            ["Project asset count"] = "项目素材数量",
             ["Project Objects"] = "项目对象",
             ["Project Assets"] = "项目素材",
             ["Rad"] = "径",
@@ -416,6 +492,7 @@ internal static class UiLocalization
             ["Choose layer color saturation and brightness"] = "选择图层颜色的饱和度和明度",
             ["Regular"] = "常规",
             ["Remove"] = "移除",
+            ["Remove intermediate keyframes before creating a tween."] = "创建补间动画前请移除范围内的中间关键帧。",
             ["Remove selected custom color"] = "移除所选自定义颜色",
             ["Remove selected saved gradient"] = "移除所选已保存渐变",
             ["Remove the selected color stop"] = "移除所选色标",
@@ -456,6 +533,24 @@ internal static class UiLocalization
             ["Settings"] = "设置",
             ["Settings..."] = "设置...",
             ["Shape"] = "形状",
+            ["Shape Tween"] = "形状补间动画",
+            ["Shape Tween Curve"] = "形状补间曲线",
+            ["Tween Curve"] = "补间曲线",
+            ["Tween layers cannot mix vector shapes and drawing object instances."] = "同一补间图层不能混合矢量形状与绘制对象实例。",
+            ["Tween curve editor"] = "补间曲线编辑器",
+            ["Edits the selected tween easing curve"] = "编辑所选补间动画的缓动曲线",
+            ["Add Anchor"] = "添加锚点",
+            ["Remove Tween"] = "删除补间动画",
+            ["Frames {0}-{1} | {2} anchors{3}"] = "帧 {0}-{1} | {2} 个锚点{3}",
+            ["Shape tween endpoints require compatible closed contours."] = "形状补间动画的起止对象必须具有兼容的封闭轮廓。",
+            ["Shape tweens do not support drawing object instances."] = "形状补间动画不支持绘制对象实例，请使用传统补间动画。",
+            ["Shape tweens require editable filled vector shapes."] = "形状补间动画仅支持可编辑的封闭矢量填色形状。",
+            ["Shape tweens require vector shapes at both endpoints."] = "形状补间动画的起止关键帧都必须包含矢量形状。",
+            ["Shape tween endpoints must share a compatible closed shape or open stroke."] = "形状补间动画的起止关键帧必须至少具有一组兼容的封闭形状或开放描边。",
+            ["Shape tween endpoints must both be closed shapes or both be open vector strokes."] = "形状补间动画的起止对象必须同为封闭形状或同为开放矢量描边。",
+            ["Shape tween endpoints require compatible vector contours."] = "形状补间动画的起止对象必须具有兼容的矢量轮廓。",
+            ["Shape tweens require editable vector shapes or strokes."] = "形状补间动画仅支持可编辑的矢量形状或描边。",
+            ["Select a span containing a start and end frame."] = "请选择同时包含起始帧和结束帧的范围。",
             ["Shape Settings"] = "形状设置",
             ["Shp"] = "形",
             ["Sol"] = "纯",
@@ -466,6 +561,8 @@ internal static class UiLocalization
             ["Sharp"] = "尖角",
             ["Shortcut"] = "快捷键",
             ["Shortcut map"] = "快捷键映射",
+            ["Color editor collapsed"] = "颜色编辑器已折叠",
+            ["Color editor expanded"] = "颜色编辑器已展开",
             ["Show or hide color editor"] = "显示或隐藏颜色编辑器",
             ["Show Selected Layers"] = "显示所选图层",
             ["Sides"] = "边数",
@@ -639,7 +736,11 @@ internal static class UiLocalization
     {
         if (!ControlStates.TryGetValue(control, out _))
         {
-            var state = new TextState(control.Text, control.AccessibleName ?? string.Empty, control.AccessibleDescription ?? string.Empty);
+            var state = new TextState(
+                control.Text,
+                control.AccessibleName ?? string.Empty,
+                control.AccessibleDescription ?? string.Empty,
+                control is TextBox textBox ? textBox.PlaceholderText : string.Empty);
             ControlStates.Add(control, state);
             control.TextChanged += (_, _) => HandleControlTextChanged(control, state);
             control.ControlAdded += (_, e) =>
@@ -678,6 +779,10 @@ internal static class UiLocalization
         try
         {
             if (!skipText) control.Text = T(state.SourceText);
+            if (control is TextBox textBox && !string.IsNullOrEmpty(state.SourcePlaceholderText))
+            {
+                textBox.PlaceholderText = T(state.SourcePlaceholderText);
+            }
             if (!string.IsNullOrEmpty(state.SourceAccessibleName)) control.AccessibleName = T(state.SourceAccessibleName);
             if (!string.IsNullOrEmpty(state.SourceAccessibleDescription)) control.AccessibleDescription = T(state.SourceAccessibleDescription);
         }

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 
 namespace VectorAnimationEngine;
@@ -26,6 +27,7 @@ internal sealed class ModernSlider : Control
     private float _hoverTarget;
     private float _pressProgress;
     private float _pressTarget;
+    private long _lastMotionTimestamp;
     private InteractionSource _interactionSource;
 
     public ModernSlider()
@@ -162,15 +164,22 @@ internal sealed class ModernSlider : Control
         if (rail.Width <= 0 || rail.Height <= 0) return;
 
         var enabled = Enabled;
-        var railColor = enabled
-            ? Theme.Mix(Theme.Field, Theme.Border, 0.72f + _hoverProgress * 0.12f)
-            : Theme.Mix(Theme.Field, Theme.DisabledSurface, 0.78f);
-        var fillColor = enabled
-            ? Theme.Mix(Theme.Accent, Theme.Text, _hoverProgress * 0.08f)
-            : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.45f);
-        var thumbColor = enabled
-            ? Theme.Mix(Theme.Accent, Theme.Text, 0.10f + _hoverProgress * 0.08f)
-            : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.58f);
+        var highContrast = SystemInformation.HighContrast;
+        var railColor = highContrast
+            ? enabled ? SystemColors.ControlDark : SystemColors.Control
+            : enabled
+                ? Theme.Mix(Theme.Field, Theme.Border, 0.72f + _hoverProgress * 0.12f)
+                : Theme.Mix(Theme.Field, Theme.DisabledSurface, 0.78f);
+        var fillColor = highContrast
+            ? enabled ? SystemColors.Highlight : SystemColors.GrayText
+            : enabled
+                ? Theme.Mix(Theme.Accent, Theme.Text, _hoverProgress * 0.08f)
+                : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.45f);
+        var thumbColor = highContrast
+            ? enabled ? SystemColors.Highlight : SystemColors.GrayText
+            : enabled
+                ? Theme.Mix(Theme.Accent, Theme.Text, 0.10f + _hoverProgress * 0.08f)
+                : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.58f);
 
         DrawTicks(graphics, rail, enabled);
 
@@ -203,12 +212,15 @@ internal sealed class ModernSlider : Control
         {
             var focusPadding = Logical(3);
             var focusBounds = RectangleF.Inflate(thumbBounds, focusPadding, focusPadding);
-            using var focusPen = new Pen(Color.FromArgb(180, Theme.Accent), Math.Max(1f, Logical(1)));
+            using var focusPen = new Pen(
+                highContrast ? SystemColors.Highlight : Color.FromArgb(180, Theme.Accent),
+                Math.Max(1f, Logical(1)));
             graphics.DrawEllipse(focusPen, focusBounds);
         }
 
-        using (var shadowBrush = new SolidBrush(Color.FromArgb(enabled ? 72 : 36, Color.Black)))
+        if (!highContrast)
         {
+            using var shadowBrush = new SolidBrush(Color.FromArgb(enabled ? 72 : 36, Color.Black));
             var shadowOffset = Logical(1);
             graphics.FillEllipse(
                 shadowBrush,
@@ -220,7 +232,9 @@ internal sealed class ModernSlider : Control
 
         using var thumbBrush = new SolidBrush(thumbColor);
         using var thumbBorder = new Pen(
-            enabled ? Theme.Mix(Theme.Accent, Theme.Text, 0.24f) : Theme.Border,
+            highContrast
+                ? enabled ? SystemColors.HighlightText : SystemColors.GrayText
+                : enabled ? Theme.Mix(Theme.Accent, Theme.Text, 0.24f) : Theme.Border,
             Math.Max(1f, Logical(1)));
         graphics.FillEllipse(thumbBrush, thumbBounds);
         graphics.DrawEllipse(thumbBorder, thumbBounds);
@@ -252,7 +266,9 @@ internal sealed class ModernSlider : Control
         BeginInteraction(InteractionSource.Mouse);
         Capture = true;
         _pressTarget = 1f;
+        _pressProgress = 1f;
         SetValueFromPoint(e.X);
+        Invalidate();
         StartMotionIfNeeded();
     }
 
@@ -278,12 +294,14 @@ internal sealed class ModernSlider : Control
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
+        var consumesWheel = Enabled
+            && Focused
+            && e.Delta != 0
+            && _smallChange != 0
+            && _interactionSource != InteractionSource.Mouse;
+        if (e is HandledMouseEventArgs handled) handled.Handled = consumesWheel;
         base.OnMouseWheel(e);
-        if (!Enabled
-            || !Focused
-            || e.Delta == 0
-            || _smallChange == 0
-            || _interactionSource == InteractionSource.Mouse)
+        if (!consumesWheel)
         {
             return;
         }
@@ -301,8 +319,6 @@ internal sealed class ModernSlider : Control
             SetValueCore(next);
             CompleteInteraction();
         }
-
-        if (e is HandledMouseEventArgs handled) handled.Handled = true;
     }
 
     protected override bool IsInputKey(Keys keyData)
@@ -570,7 +586,9 @@ internal sealed class ModernSlider : Control
         var skip = Math.Max(1L, (long)Math.Ceiling(nominalCount / (double)maximumVisibleTicks));
         var step = Math.Max(1L, (long)_tickFrequency * skip);
         using var tickPen = new Pen(
-            enabled ? Color.FromArgb(126, Theme.Border) : Color.FromArgb(80, Theme.Border),
+            SystemInformation.HighContrast
+                ? enabled ? SystemColors.WindowText : SystemColors.GrayText
+                : enabled ? Color.FromArgb(126, Theme.Border) : Color.FromArgb(80, Theme.Border),
             Math.Max(1f, Logical(1)));
 
         for (long offset = 0; offset <= range; offset += step)
@@ -593,15 +611,45 @@ internal sealed class ModernSlider : Control
 
     private void StartMotionIfNeeded()
     {
+        if (!UiMotion.AnimationsEnabled)
+        {
+            _hoverProgress = _hoverTarget;
+            _pressProgress = _pressTarget;
+            _motionTimer.Stop();
+            Invalidate();
+            return;
+        }
+
         var hoverSettled = Math.Abs(_hoverProgress - _hoverTarget) < 0.01f;
         var pressSettled = Math.Abs(_pressProgress - _pressTarget) < 0.01f;
-        if ((!hoverSettled || !pressSettled) && !_motionTimer.Enabled) _motionTimer.Start();
+        if ((!hoverSettled || !pressSettled) && !_motionTimer.Enabled)
+        {
+            _lastMotionTimestamp = Stopwatch.GetTimestamp();
+            _motionTimer.Start();
+        }
     }
 
     private void TickMotion()
     {
-        _hoverProgress += (_hoverTarget - _hoverProgress) * 0.30f;
-        _pressProgress += (_pressTarget - _pressProgress) * 0.34f;
+        if (!UiMotion.AnimationsEnabled)
+        {
+            _hoverProgress = _hoverTarget;
+            _pressProgress = _pressTarget;
+            _motionTimer.Stop();
+            Invalidate();
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        var elapsedMilliseconds = _lastMotionTimestamp == 0
+            ? _motionTimer.Interval
+            : Math.Clamp(Stopwatch.GetElapsedTime(_lastMotionTimestamp, now).TotalMilliseconds, 1d, 64d);
+        _lastMotionTimestamp = now;
+        var timeScale = (float)(elapsedMilliseconds / _motionTimer.Interval);
+        var hoverBlend = 1f - MathF.Pow(0.70f, timeScale);
+        var pressBlend = 1f - MathF.Pow(0.66f, timeScale);
+        _hoverProgress += (_hoverTarget - _hoverProgress) * hoverBlend;
+        _pressProgress += (_pressTarget - _pressProgress) * pressBlend;
         var hoverSettled = Math.Abs(_hoverProgress - _hoverTarget) < 0.01f;
         var pressSettled = Math.Abs(_pressProgress - _pressTarget) < 0.01f;
         if (hoverSettled) _hoverProgress = _hoverTarget;

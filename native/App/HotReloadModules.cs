@@ -51,6 +51,8 @@ internal static class HotReloadModuleResolver
         nameof(Direct2DStageRenderer),
         nameof(LayerBlendCompositor),
         nameof(TimelineStrip),
+        nameof(TweenCurveEditorPanel),
+        nameof(TweenCurveEditor),
         nameof(LayerColorDialog),
         nameof(LayerBlendModePanel),
         nameof(DrawingObjectInstancePanel),
@@ -68,6 +70,8 @@ internal static class HotReloadModuleResolver
         nameof(TextHorizontalAlignment),
         nameof(VectorProject),
         nameof(ProjectAssetFolder),
+        nameof(ProjectAssetTag),
+        nameof(ProjectAssetTagData),
         nameof(DrawingObjectDefinition),
         nameof(DrawingObjectInstanceDefinition),
         nameof(SceneObjectInstanceDefinition),
@@ -140,6 +144,8 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(MaterialEditorPanel)
+            or nameof(TweenCurveEditorPanel)
+            or nameof(TweenCurveEditor)
             or nameof(TextSettingsPanel)
             or nameof(SvgIcons)
             or nameof(SvgIconButton)
@@ -155,6 +161,7 @@ internal static class HotReloadModuleResolver
             or nameof(GradientPreviewRenderer)
             or nameof(GradientStopStrip)
             or nameof(BrushTipPanel)
+            or nameof(MixingBrushSettingsPanel)
             or nameof(DrawSettingsPanel)
             or nameof(ShapeSettingsPanel)
             or nameof(LayerBlendModePanel)
@@ -189,6 +196,8 @@ internal static class HotReloadModuleResolver
         if (typeName is nameof(VectorScene)
             or nameof(VectorProject)
             or nameof(ProjectAssetFolder)
+            or nameof(ProjectAssetTag)
+            or nameof(ProjectAssetTagData)
             or nameof(VectorSceneSnapshot)
             or nameof(TextObjectData)
             or nameof(TextGeometry)
@@ -200,6 +209,14 @@ internal static class HotReloadModuleResolver
             or nameof(SceneCompositionBuilder)
             or nameof(FreehandStrokeProcessor)
             or nameof(BrushShape)
+            or nameof(BrushMixingMode)
+            or nameof(MixingBrushSettings)
+            or nameof(MixingBrushColorSample)
+            or nameof(MixingBrushTrajectorySample)
+            or nameof(MixingBrushRuntime)
+            or nameof(PaintColorMixer)
+            or nameof(MixingBrushProcessor)
+            or nameof(MixingBrushPaintSampler)
             or nameof(VectorUnits)
             or nameof(DrawingTopologyRules)
             or nameof(DrawingObjectDefinition)

@@ -21,7 +21,7 @@ internal static class SceneRenderOrder
     public static bool HasStroke(ShapeKind shape, float stroke)
     {
         if (shape is ShapeKind.ImportedSvg or ShapeKind.Text) return false;
-        return stroke > 0 && shape != ShapeKind.BrushStroke;
+        return stroke > 0 && shape is not ShapeKind.BrushStroke and not ShapeKind.MixingStroke;
     }
 
     public static bool RequiresObjectRenderer(VectorScene scene)
@@ -29,7 +29,7 @@ internal static class SceneRenderOrder
         if (scene.HasLayerOutline) return true;
         for (var index = 0; index < scene.ObjectCount; index++)
         {
-            if (scene.ShapeKind[index] is ShapeKind.ImportedSvg or ShapeKind.Text) return true;
+            if (scene.ShapeKind[index] is ShapeKind.ImportedSvg or ShapeKind.Text or ShapeKind.MixingStroke) return true;
         }
         return false;
     }
@@ -51,6 +51,47 @@ internal static class SceneRenderOrder
 
         var viewportArea = Math.Max(1d, visibleBounds.Width * visibleBounds.Height);
         return renderOrder.VisibleBoundsArea >= viewportArea * DenseObjectLodCoverageMultiplier;
+    }
+
+    public static void DrawObjectPasses(
+        VectorScene scene,
+        IReadOnlyList<int> objects,
+        int start,
+        IReadOnlySet<int>? deferredFillObjects,
+        Action<int> drawFill,
+        Action<int> drawStroke)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        ArgumentNullException.ThrowIfNull(objects);
+        ArgumentNullException.ThrowIfNull(drawFill);
+        ArgumentNullException.ThrowIfNull(drawStroke);
+
+        start = Math.Clamp(start, 0, objects.Count);
+        for (var index = start; index < objects.Count; index++)
+        {
+            var objectIndex = objects[index];
+            if (HasFill(scene.ShapeKind[objectIndex])
+                && deferredFillObjects?.Contains(objectIndex) != true)
+            {
+                drawFill(objectIndex);
+            }
+        }
+
+        for (var index = start; index < objects.Count; index++)
+        {
+            var objectIndex = objects[index];
+            if (HasStroke(scene.ShapeKind[objectIndex], scene.Stroke[objectIndex])) drawStroke(objectIndex);
+        }
+
+        if (deferredFillObjects is null || deferredFillObjects.Count == 0) return;
+        for (var index = 0; index < objects.Count; index++)
+        {
+            var objectIndex = objects[index];
+            if (HasFill(scene.ShapeKind[objectIndex]) && deferredFillObjects.Contains(objectIndex))
+            {
+                drawFill(objectIndex);
+            }
+        }
     }
 }
 
@@ -153,6 +194,7 @@ internal sealed class SceneRenderOrderBuffer
             for (var p = start; p < end; p++)
             {
                 var index = scene.CellObjects[p];
+                if ((uint)index >= scene.ObjectCount) continue;
                 var layer = scene.ObjectLayer[index];
                 if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
                 var objectBounds = scene.GetObjectWorldBounds(index);
@@ -172,6 +214,7 @@ internal sealed class SceneRenderOrderBuffer
 
             foreach (var index in scene.GetPendingSpatialCellObjects(cell))
             {
+                if ((uint)index >= scene.ObjectCount) continue;
                 var layer = scene.ObjectLayer[index];
                 if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
                 var objectBounds = scene.GetObjectWorldBounds(index);
@@ -205,6 +248,7 @@ internal sealed class SceneRenderOrderBuffer
         for (var p = start; p < end; p++)
         {
             var index = scene.CellObjects[p];
+            if ((uint)index >= scene.ObjectCount) continue;
             var layer = scene.ObjectLayer[index];
             if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
             var objectBounds = scene.GetObjectWorldBounds(index);
@@ -221,6 +265,7 @@ internal sealed class SceneRenderOrderBuffer
 
         foreach (var index in scene.GetPendingSpatialCellObjects(cell))
         {
+            if ((uint)index >= scene.ObjectCount) continue;
             var layer = scene.ObjectLayer[index];
             if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
             var objectBounds = scene.GetObjectWorldBounds(index);
@@ -344,17 +389,13 @@ internal sealed class SceneRenderOrderBuffer
         ArgumentNullException.ThrowIfNull(drawStroke);
         return DrawLayers(scene, drawLimit, (_, objects, start) =>
         {
-            for (var index = start; index < objects.Count; index++)
-            {
-                var objectIndex = objects[index];
-                if (SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) drawFill(objectIndex);
-            }
-
-            for (var index = start; index < objects.Count; index++)
-            {
-                var objectIndex = objects[index];
-                if (SceneRenderOrder.HasStroke(scene.ShapeKind[objectIndex], scene.Stroke[objectIndex])) drawStroke(objectIndex);
-            }
+            SceneRenderOrder.DrawObjectPasses(
+                scene,
+                objects,
+                start,
+                deferredFillObjects: null,
+                drawFill,
+                drawStroke);
         });
     }
 

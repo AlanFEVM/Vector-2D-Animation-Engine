@@ -23,6 +23,7 @@ internal sealed class TextSettingsPanel : UserControl
     private readonly SvgIconButton _alignRight = new(SvgIconKind.TextAlignRight);
     private readonly ToolTip _toolTip = new();
     private TextHorizontalAlignment _alignment = TextHorizontalAlignment.Left;
+    private bool _settingsInitialized;
     private bool _updating;
 
     public TextSettingsPanel()
@@ -64,15 +65,50 @@ internal sealed class TextSettingsPanel : UserControl
         TextFontStyle style,
         TextHorizontalAlignment alignment)
     {
+        var requestedName = string.IsNullOrWhiteSpace(fontFamilyName)
+            ? DefaultFontFamilyName
+            : fontFamilyName.Trim();
+        var normalizedSize = NormalizeFontSize(fontSizePoints);
+        var normalizedStyle = Enum.IsDefined(style) ? style : TextFontStyle.Regular;
+        var normalizedAlignment = Enum.IsDefined(alignment)
+            ? alignment
+            : TextHorizontalAlignment.Left;
+        if (_settingsInitialized
+            && string.Equals(FontFamilyName, requestedName, StringComparison.OrdinalIgnoreCase)
+            && Math.Abs(FontSizePoints - normalizedSize) <= 0.001f
+            && FontStyle == normalizedStyle
+            && _alignment == normalizedAlignment)
+        {
+            return;
+        }
+
+        var fontIndex = FindFontFamilyIndex(requestedName);
+        if (fontIndex < 0) fontIndex = FindFontFamilyIndex(DefaultFontFamilyName);
+        if (fontIndex < 0 && _fontFamily.Items.Count > 0) fontIndex = 0;
+        var styleIndex = FindFontStyleIndex(normalizedStyle);
+        if (styleIndex < 0) styleIndex = FindFontStyleIndex(TextFontStyle.Regular);
+        if (styleIndex < 0 && _fontStyle.Items.Count > 0) styleIndex = 0;
+        var alignmentChanged = !_settingsInitialized || _alignment != normalizedAlignment;
+        if (_settingsInitialized
+            && _fontFamily.SelectedIndex == fontIndex
+            && Math.Abs(FontSizePoints - normalizedSize) <= 0.001f
+            && _fontStyle.SelectedIndex == styleIndex
+            && !alignmentChanged)
+        {
+            return;
+        }
+
         var wasUpdating = _updating;
         _updating = true;
         try
         {
-            SelectFontFamily(fontFamilyName);
-            _fontSize.Value = (decimal)NormalizeFontSize(fontSizePoints);
-            SelectFontStyle(style);
-            _alignment = Enum.IsDefined(alignment) ? alignment : TextHorizontalAlignment.Left;
-            UpdateAlignmentButtons();
+            if (_fontFamily.SelectedIndex != fontIndex) _fontFamily.SelectedIndex = fontIndex;
+            var sizeValue = (decimal)normalizedSize;
+            if (_fontSize.Value != sizeValue) _fontSize.Value = sizeValue;
+            if (_fontStyle.SelectedIndex != styleIndex) _fontStyle.SelectedIndex = styleIndex;
+            _alignment = normalizedAlignment;
+            if (alignmentChanged) UpdateAlignmentButtons();
+            _settingsInitialized = true;
         }
         finally
         {
@@ -219,9 +255,9 @@ internal sealed class TextSettingsPanel : UserControl
         button.Height = Theme.ControlHeight;
         button.Margin = margin;
         button.AccessibleName = accessibleName;
-        button.AccessibleRole = AccessibleRole.PushButton;
+        button.AccessibleRole = AccessibleRole.RadioButton;
         button.TabStop = true;
-        Theme.StyleButton(button);
+        Theme.StyleSegmentedButton(button);
         _toolTip.SetToolTip(button, accessibleName);
         button.Click += (_, _) => SelectAlignment(alignment);
     }
@@ -243,19 +279,8 @@ internal sealed class TextSettingsPanel : UserControl
 
     private static void StyleAlignmentButton(SvgIconButton button, bool active)
     {
-        if (active) Theme.StyleActiveButton(button);
-        else Theme.StyleButton(button);
+        Theme.StyleSegmentedButton(button, active);
         button.Invalidate();
-    }
-
-    private void SelectFontFamily(string? fontFamilyName)
-    {
-        var requestedName = string.IsNullOrWhiteSpace(fontFamilyName)
-            ? DefaultFontFamilyName
-            : fontFamilyName.Trim();
-        var selectedIndex = FindFontFamilyIndex(requestedName);
-        if (selectedIndex < 0) selectedIndex = FindFontFamilyIndex(DefaultFontFamilyName);
-        _fontFamily.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
     }
 
     private int FindFontFamilyIndex(string name)
@@ -272,17 +297,13 @@ internal sealed class TextSettingsPanel : UserControl
         return -1;
     }
 
-    private void SelectFontStyle(TextFontStyle style)
+    private int FindFontStyleIndex(TextFontStyle style)
     {
-        var normalized = Enum.IsDefined(style) ? style : TextFontStyle.Regular;
         for (var index = 0; index < _fontStyle.Items.Count; index++)
         {
-            if (_fontStyle.Items[index] is not StyleOption option || option.Value != normalized) continue;
-            _fontStyle.SelectedIndex = index;
-            return;
+            if (_fontStyle.Items[index] is StyleOption option && option.Value == style) return index;
         }
-
-        _fontStyle.SelectedIndex = 0;
+        return -1;
     }
 
     private void NotifySettingsChanged()

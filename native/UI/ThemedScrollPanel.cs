@@ -66,7 +66,7 @@ internal sealed class ThemedScrollPanel : UserControl
 
     public void ResumeContentLayout(bool performLayout)
     {
-        _content.ResumeLayout(performLayout);
+        _content.ResumeLayout(performLayout: false);
         if (performLayout) UpdateScrollMetrics();
     }
 

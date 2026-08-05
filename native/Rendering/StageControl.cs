@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace VectorAnimationEngine;
@@ -131,7 +132,433 @@ internal enum SelectionHighlightKind
     Stroke
 }
 
-internal sealed class StageControl : Control
+internal enum MixingStrokeCoverageCellKind
+{
+    Circle,
+    Start,
+    Interior,
+    End
+}
+
+internal readonly record struct MixingStrokeCoverageCell(
+    int Argb,
+    MixingStrokeCoverageCellKind Kind,
+    PointF Center,
+    float Radius,
+    PointF Tangent,
+    PointF PreviousLeft,
+    PointF PreviousRight,
+    PointF CenterLeft,
+    PointF CenterRight,
+    PointF NextLeft,
+    PointF NextRight,
+    RectangleF Bounds)
+{
+    private const float QuarterCircleBezier = 0.55228475f;
+
+    internal bool Contains(PointF point)
+    {
+        if (!Bounds.Contains(point)) return false;
+        if (Kind == MixingStrokeCoverageCellKind.Circle)
+        {
+            return DistanceSquared(point, Center) <= Radius * Radius;
+        }
+
+        var offsetX = point.X - Center.X;
+        var offsetY = point.Y - Center.Y;
+        var tangentDistance = offsetX * Tangent.X + offsetY * Tangent.Y;
+        if (Kind == MixingStrokeCoverageCellKind.Start
+            && tangentDistance <= 0
+            && DistanceSquared(point, Center) <= Radius * Radius)
+        {
+            return true;
+        }
+        if (Kind == MixingStrokeCoverageCellKind.End
+            && tangentDistance >= 0
+            && DistanceSquared(point, Center) <= Radius * Radius)
+        {
+            return true;
+        }
+
+        return Kind switch
+        {
+            MixingStrokeCoverageCellKind.Start => PointInPolygon(
+                point,
+                [CenterLeft, NextLeft, NextRight, CenterRight]),
+            MixingStrokeCoverageCellKind.Interior => PointInPolygon(
+                point,
+                [PreviousLeft, CenterLeft, NextLeft, NextRight, CenterRight, PreviousRight]),
+            MixingStrokeCoverageCellKind.End => PointInPolygon(
+                point,
+                [PreviousLeft, CenterLeft, CenterRight, PreviousRight]),
+            _ => false
+        };
+    }
+
+    internal bool Intersects(float width, float height) =>
+        Bounds.Right >= 0
+        && Bounds.Left <= width
+        && Bounds.Bottom >= 0
+        && Bounds.Top <= height;
+
+    internal void GetCapCurve(
+        out PointF control1,
+        out PointF control2,
+        out PointF midpoint,
+        out PointF control3,
+        out PointF control4)
+    {
+        var direction = Kind == MixingStrokeCoverageCellKind.Start ? -1f : 1f;
+        var tangentRadius = Radius * direction;
+        var normal = new PointF(-Tangent.Y, Tangent.X);
+        var normalControl = Radius * QuarterCircleBezier;
+        midpoint = new PointF(
+            Center.X + Tangent.X * tangentRadius,
+            Center.Y + Tangent.Y * tangentRadius);
+        control1 = new PointF(
+            CenterLeft.X + Tangent.X * tangentRadius * QuarterCircleBezier,
+            CenterLeft.Y + Tangent.Y * tangentRadius * QuarterCircleBezier);
+        control2 = new PointF(
+            midpoint.X + normal.X * normalControl,
+            midpoint.Y + normal.Y * normalControl);
+        control3 = new PointF(
+            midpoint.X - normal.X * normalControl,
+            midpoint.Y - normal.Y * normalControl);
+        control4 = new PointF(
+            CenterRight.X + Tangent.X * tangentRadius * QuarterCircleBezier,
+            CenterRight.Y + Tangent.Y * tangentRadius * QuarterCircleBezier);
+    }
+
+    private static bool PointInPolygon(PointF point, ReadOnlySpan<PointF> polygon)
+    {
+        var inside = false;
+        for (var current = 0; current < polygon.Length; current++)
+        {
+            var previous = current == 0 ? polygon.Length - 1 : current - 1;
+            var start = polygon[previous];
+            var end = polygon[current];
+            if (DistanceToSegmentSquared(point, start, end) <= 0.000001f) return true;
+            if ((start.Y > point.Y) == (end.Y > point.Y)) continue;
+
+            var intersectionX = start.X
+                + (point.Y - start.Y) * (end.X - start.X) / (end.Y - start.Y);
+            if (point.X <= intersectionX) inside = !inside;
+        }
+        return inside;
+    }
+
+    private static float DistanceToSegmentSquared(PointF point, PointF start, PointF end)
+    {
+        var dx = end.X - start.X;
+        var dy = end.Y - start.Y;
+        var lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= 0.000001f) return DistanceSquared(point, start);
+        var amount = Math.Clamp(
+            ((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared,
+            0f,
+            1f);
+        var nearest = new PointF(start.X + dx * amount, start.Y + dy * amount);
+        return DistanceSquared(point, nearest);
+    }
+
+    private static float DistanceSquared(PointF first, PointF second)
+    {
+        var dx = first.X - second.X;
+        var dy = first.Y - second.Y;
+        return dx * dx + dy * dy;
+    }
+}
+
+internal static class MixingStrokeCoverageBuilder
+{
+    private const float MinimumScreenDiameter = 0.75f;
+    private static readonly ConditionalWeakTable<MixingBrushTrajectorySample[], CachedLocalCells> LocalCellCache = new();
+
+    private sealed record CachedLocalCells(MixingStrokeCoverageCell[] Cells);
+
+    private readonly record struct PreparedSample(
+        MixingBrushTrajectorySample Source,
+        PointF Center,
+        float Radius,
+        bool IsValid);
+
+    private readonly record struct Join(
+        PointF Left,
+        PointF Right,
+        PointF Tangent);
+
+    internal static List<MixingStrokeCoverageCell> Build(
+        MixingBrushTrajectorySample[] samples,
+        Func<PointF, PointF> pointToScreen,
+        Func<float, float> diameterToScreen)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        ArgumentNullException.ThrowIfNull(pointToScreen);
+        ArgumentNullException.ThrowIfNull(diameterToScreen);
+
+        var prepared = new PreparedSample[samples.Length];
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var source = samples[index];
+            if (!IsRenderable(source) || ((uint)source.Argb >> 24) == 0) continue;
+
+            var center = pointToScreen(source.Point);
+            var screenDiameter = diameterToScreen(source.Diameter);
+            if (!IsFinite(center) || !float.IsFinite(screenDiameter) || screenDiameter <= 0) continue;
+
+            prepared[index] = new PreparedSample(
+                source,
+                center,
+                Math.Max(MinimumScreenDiameter, screenDiameter) * 0.5f,
+                true);
+        }
+
+        var cells = new List<MixingStrokeCoverageCell>(samples.Length);
+        var runStart = 0;
+        while (runStart < prepared.Length)
+        {
+            if (!prepared[runStart].IsValid)
+            {
+                runStart++;
+                continue;
+            }
+
+            var runEnd = runStart;
+            while (runEnd + 1 < prepared.Length
+                && prepared[runEnd + 1].IsValid
+                && TouchOrOverlap(prepared[runEnd].Source, prepared[runEnd + 1].Source))
+            {
+                runEnd++;
+            }
+
+            AppendRun(cells, prepared, runStart, runEnd);
+            runStart = runEnd + 1;
+        }
+
+        return cells;
+    }
+
+    internal static IReadOnlyList<MixingStrokeCoverageCell> GetLocalCells(
+        MixingBrushTrajectorySample[] samples) =>
+        LocalCellCache.GetValue(
+            samples,
+            static source => new CachedLocalCells(Build(
+                source,
+                static point => point,
+                static diameter => diameter).ToArray())).Cells;
+
+    private static void AppendRun(
+        List<MixingStrokeCoverageCell> cells,
+        PreparedSample[] samples,
+        int runStart,
+        int runEnd)
+    {
+        if (runStart == runEnd)
+        {
+            var sample = samples[runStart];
+            cells.Add(new MixingStrokeCoverageCell(
+                sample.Source.Argb,
+                MixingStrokeCoverageCellKind.Circle,
+                sample.Center,
+                sample.Radius,
+                new PointF(1, 0),
+                default,
+                default,
+                default,
+                default,
+                default,
+                default,
+                CircleBounds(sample.Center, sample.Radius)));
+            return;
+        }
+
+        var joins = new Join[runEnd - runStart];
+        for (var sampleIndex = runStart; sampleIndex < runEnd; sampleIndex++)
+        {
+            var current = samples[sampleIndex];
+            var next = samples[sampleIndex + 1];
+            var tangent = ResolveTangent(samples, runStart, runEnd, sampleIndex);
+            var normal = new PointF(-tangent.Y, tangent.X);
+            var midpoint = new PointF(
+                (current.Center.X + next.Center.X) * 0.5f,
+                (current.Center.Y + next.Center.Y) * 0.5f);
+            var radius = (current.Radius + next.Radius) * 0.5f;
+            joins[sampleIndex - runStart] = new Join(
+                new PointF(midpoint.X + normal.X * radius, midpoint.Y + normal.Y * radius),
+                new PointF(midpoint.X - normal.X * radius, midpoint.Y - normal.Y * radius),
+                tangent);
+        }
+
+        for (var sampleIndex = runStart; sampleIndex <= runEnd; sampleIndex++)
+        {
+            var sample = samples[sampleIndex];
+            var relativeIndex = sampleIndex - runStart;
+            var kind = sampleIndex == runStart
+                ? MixingStrokeCoverageCellKind.Start
+                : sampleIndex == runEnd
+                    ? MixingStrokeCoverageCellKind.End
+                    : MixingStrokeCoverageCellKind.Interior;
+            var previous = relativeIndex > 0 ? joins[relativeIndex - 1] : default;
+            var next = relativeIndex < joins.Length ? joins[relativeIndex] : default;
+            var tangent = kind switch
+            {
+                MixingStrokeCoverageCellKind.Start => next.Tangent,
+                MixingStrokeCoverageCellKind.End => previous.Tangent,
+                _ => CenterTangent(previous.Tangent, next.Tangent)
+            };
+            var normal = new PointF(-tangent.Y, tangent.X);
+            var centerLeft = new PointF(
+                sample.Center.X + normal.X * sample.Radius,
+                sample.Center.Y + normal.Y * sample.Radius);
+            var centerRight = new PointF(
+                sample.Center.X - normal.X * sample.Radius,
+                sample.Center.Y - normal.Y * sample.Radius);
+            var bounds = CellBounds(
+                sample.Center,
+                sample.Radius,
+                previous.Left,
+                previous.Right,
+                centerLeft,
+                centerRight,
+                next.Left,
+                next.Right,
+                kind);
+
+            cells.Add(new MixingStrokeCoverageCell(
+                sample.Source.Argb,
+                kind,
+                sample.Center,
+                sample.Radius,
+                tangent,
+                previous.Left,
+                previous.Right,
+                centerLeft,
+                centerRight,
+                next.Left,
+                next.Right,
+                bounds));
+        }
+    }
+
+    private static PointF ResolveTangent(
+        PreparedSample[] samples,
+        int runStart,
+        int runEnd,
+        int segmentIndex)
+    {
+        for (var distance = 0; distance < runEnd - runStart; distance++)
+        {
+            var nextIndex = segmentIndex + distance;
+            if (nextIndex < runEnd
+                && TryUnitDirection(samples[nextIndex].Center, samples[nextIndex + 1].Center, out var next))
+            {
+                return next;
+            }
+
+            if (distance == 0) continue;
+            var previousIndex = segmentIndex - distance;
+            if (previousIndex >= runStart
+                && TryUnitDirection(samples[previousIndex].Center, samples[previousIndex + 1].Center, out var previous))
+            {
+                return previous;
+            }
+        }
+
+        return new PointF(1, 0);
+    }
+
+    private static PointF CenterTangent(PointF previous, PointF next)
+    {
+        var combined = new PointF(previous.X + next.X, previous.Y + next.Y);
+        return TryUnitDirection(default, combined, out var tangent) ? tangent : next;
+    }
+
+    private static bool TryUnitDirection(PointF start, PointF end, out PointF direction)
+    {
+        var dx = (double)end.X - start.X;
+        var dy = (double)end.Y - start.Y;
+        var length = Math.Sqrt(dx * dx + dy * dy);
+        if (!double.IsFinite(length) || length <= 0.000001d)
+        {
+            direction = default;
+            return false;
+        }
+
+        direction = new PointF((float)(dx / length), (float)(dy / length));
+        return true;
+    }
+
+    private static bool TouchOrOverlap(
+        MixingBrushTrajectorySample current,
+        MixingBrushTrajectorySample next)
+    {
+        var dx = (double)next.Point.X - current.Point.X;
+        var dy = (double)next.Point.Y - current.Point.Y;
+        var radiusSum = ((double)current.Diameter + next.Diameter) * 0.5d;
+        return dx * dx + dy * dy <= radiusSum * radiusSum;
+    }
+
+    private static RectangleF CellBounds(
+        PointF center,
+        float radius,
+        PointF previousLeft,
+        PointF previousRight,
+        PointF centerLeft,
+        PointF centerRight,
+        PointF nextLeft,
+        PointF nextRight,
+        MixingStrokeCoverageCellKind kind)
+    {
+        var includeRoundCap = kind is MixingStrokeCoverageCellKind.Start or MixingStrokeCoverageCellKind.End;
+        var left = includeRoundCap ? center.X - radius : centerLeft.X;
+        var top = includeRoundCap ? center.Y - radius : centerLeft.Y;
+        var right = includeRoundCap ? center.X + radius : centerLeft.X;
+        var bottom = includeRoundCap ? center.Y + radius : centerLeft.Y;
+        if (kind != MixingStrokeCoverageCellKind.Start)
+        {
+            Include(previousLeft, ref left, ref top, ref right, ref bottom);
+            Include(previousRight, ref left, ref top, ref right, ref bottom);
+        }
+        Include(centerLeft, ref left, ref top, ref right, ref bottom);
+        Include(centerRight, ref left, ref top, ref right, ref bottom);
+        if (kind != MixingStrokeCoverageCellKind.End)
+        {
+            Include(nextLeft, ref left, ref top, ref right, ref bottom);
+            Include(nextRight, ref left, ref top, ref right, ref bottom);
+        }
+        return RectangleF.FromLTRB(left, top, right, bottom);
+    }
+
+    private static RectangleF CircleBounds(PointF center, float radius) =>
+        RectangleF.FromLTRB(
+            center.X - radius,
+            center.Y - radius,
+            center.X + radius,
+            center.Y + radius);
+
+    private static void Include(
+        PointF point,
+        ref float left,
+        ref float top,
+        ref float right,
+        ref float bottom)
+    {
+        left = Math.Min(left, point.X);
+        top = Math.Min(top, point.Y);
+        right = Math.Max(right, point.X);
+        bottom = Math.Max(bottom, point.Y);
+    }
+
+    private static bool IsRenderable(MixingBrushTrajectorySample sample) =>
+        IsFinite(sample.Point)
+        && float.IsFinite(sample.Diameter)
+        && sample.Diameter > 0;
+
+    private static bool IsFinite(PointF point) =>
+        float.IsFinite(point.X) && float.IsFinite(point.Y);
+}
+
+internal sealed partial class StageControl : Control
 {
     private const int WmPointerUpdate = 0x0245;
     private const int WmPointerDown = 0x0246;
@@ -152,8 +579,13 @@ internal sealed class StageControl : Control
     private const float FillEdgeCoverageWidthPixels = 0.8f;
     private const double FillAnimationDurationMilliseconds = 420;
     private const double SelectionHighlightCycleMilliseconds = 1_100;
+    private const int AnimatedSelectionObjectBudget = 512;
+    private const long AnimatedSelectionAtomBudget = 8_192;
     private const double MarqueePreviewFrameBudgetMilliseconds = 8;
     private const int MarqueePreviewObjectThreshold = 2_000;
+    private const double InteractiveMoveFrameBudgetMilliseconds = 8;
+    private const double SlowPointerFeedbackMilliseconds = 50;
+    private const double SlowPointerLogIntervalMilliseconds = 5_000;
     private readonly Dictionary<int, SolidBrush> _brushCache = new(512);
     private readonly Pen _gridPen = new(Color.FromArgb(150, 58, 64, 69));
     private readonly Pen _strokePen = new(Color.FromArgb(210, 10, 12, 14));
@@ -180,6 +612,7 @@ internal sealed class StageControl : Control
     private readonly System.Windows.Forms.Timer _selectionHighlightTimer = new() { Interval = 40 };
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
+    private readonly MixingBrushRegionRasterCache _mixingBrushRasterCache = new();
     private LayerBlendCompositor? _layerBlendCompositor;
     private readonly MarqueeOverlayWindow _marqueeOverlay;
     private readonly HashSet<uint> _handledPenPointers = [];
@@ -228,6 +661,7 @@ internal sealed class StageControl : Control
     private FillEdgeBezierOverlaySegment[] _fillEdgeBezierOverlaySegments = [];
     private int _fillEdgeBezierOverlayTargetObject = -1;
     private int _fillEdgeBezierOverlayActivePartIndex = -1;
+    private PointF _fillEdgeBezierOverlayTranslation;
     private long _fillEdgeBezierOverlayRevision;
     private Point _brushColorPaletteCenter;
     private Color[] _brushColorPaletteColors = [];
@@ -237,6 +671,19 @@ internal sealed class StageControl : Control
     private int _scenePassSequence;
     private double _lastFrameRenderMilliseconds;
     private bool _marqueeSceneInvalidationPending;
+    private long _basePresentationRevision;
+    private bool _basePresentationInvalidationPending;
+    private int _frame;
+    private int _interactiveInputDepth;
+    private bool _interactiveFrameRequested;
+    private bool _paintInProgress;
+    private long _interactiveFrameRequestedAt;
+    private long _lastFramePresentedAt;
+    private long _pointerDownStartedAt;
+    private long _lastSlowPointerLogAt;
+    private bool _pointerDownAwaitingPresent;
+    private int _currentInteractiveRequestCount;
+    private int _currentInteractiveCoalescedCount;
 
     private readonly record struct SelectedFillOwnerCacheEntry(int Frame, long Revision, float X, float Y, DrawingFillPartGeometry[] Parts);
 
@@ -322,19 +769,32 @@ internal sealed class StageControl : Control
     internal PolarGridGeometry ResolvePolarGrid() => PolarGridLayout.Resolve(
         VisibleWorldBounds(),
         AdaptiveGridSnapStep);
-    public int Frame { get; set; }
+    public int Frame
+    {
+        get => _frame;
+        set
+        {
+            if (_frame == value) return;
+            ClearSelectionDragPreviewCore(invalidate: false);
+            ClearSelectionFillDragFront(invalidate: false);
+            _frame = value;
+            Invalidate();
+        }
+    }
     public int SelectedObject
     {
         get => _selectedObject;
         set
         {
+            ClearSelectionDragPreviewCore(invalidate: false);
+            ClearSelectionFillDragFront();
             _selectedObject = value;
             _selectedObjects = value >= 0 && value < Scene.ObjectCount ? new[] { value } : Array.Empty<int>();
             SelectedElement = DrawingElementHit.None;
             _selectedElements = Array.Empty<DrawingElementHit>();
             InvalidateSelectedFillCache();
             UpdateSelectionHighlightAnimation();
-            Invalidate();
+            InvalidateOverlay();
         }
     }
 
@@ -412,6 +872,7 @@ internal sealed class StageControl : Control
     public int FillEdgeBezierOverlayTargetObject => _fillEdgeBezierOverlayTargetObject;
     public int FillEdgeBezierOverlayActivePartIndex => _fillEdgeBezierOverlayActivePartIndex;
     public IReadOnlyList<FillEdgeBezierOverlaySegment> FillEdgeBezierOverlaySegments => _fillEdgeBezierOverlaySegments;
+    internal PointF FillEdgeBezierOverlayTranslation => _fillEdgeBezierOverlayTranslation;
     public bool FillEdgeBezierPointerEditing { get; private set; }
     internal long FillEdgeBezierOverlayRevision => _fillEdgeBezierOverlayRevision;
     public bool BrushColorPaletteVisible => _brushColorPaletteColors.Length > 0;
@@ -438,6 +899,7 @@ internal sealed class StageControl : Control
     internal int LastEditableScenePassOrder { get; private set; }
     internal bool GpuAccelerationActive => _direct2DRenderer.HardwareAccelerationActive;
     internal bool ImmediateGpuPresentationEnabled => _direct2DRenderer.ImmediatePresentationEnabled;
+    internal double LastDirect2DCacheMaintenanceMilliseconds => _direct2DRenderer.LastCacheMaintenanceMilliseconds;
     internal double LastDirect2DCommandMilliseconds => _direct2DRenderer.LastCommandMilliseconds;
     internal double LastDirect2DPresentMilliseconds => _direct2DRenderer.LastPresentMilliseconds;
     internal int LastDirect2DLodBitmapSubmissions => _direct2DRenderer.LastLodBitmapSubmissions;
@@ -453,9 +915,22 @@ internal sealed class StageControl : Control
     internal int LastDirect2DPathGradientBrushCacheReuses => _direct2DRenderer.LastPathGradientBrushCacheReuses;
     internal int LastDirect2DLineGeometryCacheBuilds => _direct2DRenderer.LastLineGeometryCacheBuilds;
     internal int LastDirect2DLineGeometryCacheReuses => _direct2DRenderer.LastLineGeometryCacheReuses;
+    internal int LastDirect2DObjectPathGeometryCacheBuilds => _direct2DRenderer.LastObjectPathGeometryCacheBuilds;
+    internal int LastDirect2DObjectPathGeometryCacheReuses => _direct2DRenderer.LastObjectPathGeometryCacheReuses;
+    internal int LastDirect2DFillEdgeBezierOverlayGeometryBuilds => _direct2DRenderer.LastFillEdgeBezierOverlayGeometryBuilds;
+    internal int LastDirect2DBaseFrameCacheBuilds => _direct2DRenderer.LastBaseFrameCacheBuilds;
+    internal int LastDirect2DBaseFrameCacheReuses => _direct2DRenderer.LastBaseFrameCacheReuses;
+    internal double LastDirect2DBaseFrameCopyMilliseconds => _direct2DRenderer.LastBaseFrameCopyMilliseconds;
     internal bool SelectionHighlightAnimating => _selectionHighlightTimer.Enabled;
     internal float SelectionHighlightPulse => 0.5f + 0.5f * MathF.Sin(_selectionHighlightPhase * MathF.Tau);
     internal double LastFrameRenderMilliseconds => _lastFrameRenderMilliseconds;
+    internal long BasePresentationRevision => _basePresentationRevision;
+    internal double LastPointerDownHandlerMilliseconds { get; private set; }
+    internal double LastPointerDownToPaintMilliseconds { get; private set; }
+    internal double LastPointerDownToPresentMilliseconds { get; private set; }
+    internal double LastInteractiveRequestToPaintMilliseconds { get; private set; }
+    internal int LastInteractiveRequestCount { get; private set; }
+    internal int LastInteractiveCoalescedRequestCount { get; private set; }
     public event EventHandler? FrameRendered;
     public event EventHandler? ViewChanged;
     internal event EventHandler<PenPointerEventArgs>? PenPointerInput;
@@ -467,10 +942,14 @@ internal sealed class StageControl : Control
 
     internal void ReloadRenderingModuleForHotReload()
     {
+        ClearSelectionDragPreviewCore(invalidate: false);
+        ClearSelectionFillDragFront(invalidate: false);
+        ResetFrameSchedulerState();
         ResetFillEdgeBezierOverlay(invalidate: false);
         _direct2DRenderer.ReloadRuntimeResources();
         _layerBlendCompositor?.Dispose();
         _layerBlendCompositor = null;
+        _mixingBrushRasterCache.Clear();
         ImportedSvgRasterizer.ClearCache();
         foreach (var brush in _brushCache.Values) brush.Dispose();
         _brushCache.Clear();
@@ -500,8 +979,164 @@ internal sealed class StageControl : Control
         _selectionHighlightTimer.Tick += (_, _) => TickSelectionHighlight();
     }
 
+    public new void Invalidate() => RequestStageFrame(basePresentationChanged: true);
+
+    internal void InvalidateOverlay() => RequestStageFrame(basePresentationChanged: false);
+
+    private void RequestStageFrame(bool basePresentationChanged)
+    {
+        if (basePresentationChanged && !_basePresentationInvalidationPending)
+        {
+            _basePresentationRevision++;
+            _basePresentationInvalidationPending = true;
+        }
+        if (_interactiveInputDepth > 0)
+        {
+            if (_currentInteractiveRequestCount < int.MaxValue) _currentInteractiveRequestCount++;
+            if (_interactiveFrameRequested)
+            {
+                if (_currentInteractiveCoalescedCount < int.MaxValue) _currentInteractiveCoalescedCount++;
+            }
+            else
+            {
+                _interactiveFrameRequested = true;
+                _interactiveFrameRequestedAt = Stopwatch.GetTimestamp();
+            }
+        }
+
+        base.Invalidate();
+    }
+
+    private void BeginInteractiveInput(bool pointerDown)
+    {
+        if (_interactiveInputDepth++ > 0) return;
+        _currentInteractiveRequestCount = 0;
+        _currentInteractiveCoalescedCount = 0;
+        if (!pointerDown) return;
+        _pointerDownStartedAt = Stopwatch.GetTimestamp();
+        _pointerDownAwaitingPresent = true;
+        LastPointerDownHandlerMilliseconds = 0;
+        LastPointerDownToPaintMilliseconds = 0;
+        LastPointerDownToPresentMilliseconds = 0;
+    }
+
+    private void EndInteractiveInput(
+        bool pointerDown,
+        bool forceFinalFrame,
+        bool allowSynchronousPresent = true)
+    {
+        if (_interactiveInputDepth <= 0) return;
+        if (_interactiveInputDepth > 1)
+        {
+            _interactiveInputDepth--;
+            return;
+        }
+
+        if (forceFinalFrame && !_interactiveFrameRequested)
+        {
+            InvalidateOverlay();
+        }
+        _interactiveInputDepth = 0;
+
+        if (pointerDown && _pointerDownStartedAt != 0)
+        {
+            LastPointerDownHandlerMilliseconds = ElapsedMilliseconds(
+                _pointerDownStartedAt,
+                Stopwatch.GetTimestamp());
+        }
+        LastInteractiveRequestCount = _currentInteractiveRequestCount;
+        LastInteractiveCoalescedRequestCount = _currentInteractiveCoalescedCount;
+        if (!allowSynchronousPresent)
+        {
+            if (pointerDown) CancelPendingPointerDownTelemetry();
+            return;
+        }
+        if (!_interactiveFrameRequested || _paintInProgress || !Visible || !IsHandleCreated)
+        {
+            if (pointerDown && (!Visible || !IsHandleCreated)) CancelPendingPointerDownTelemetry();
+            return;
+        }
+
+        var shouldPresent = forceFinalFrame
+            || _lastFramePresentedAt == 0
+            || ElapsedMilliseconds(_lastFramePresentedAt, Stopwatch.GetTimestamp()) >= InteractiveMoveFrameBudgetMilliseconds;
+        if (shouldPresent && CanSynchronouslyPresentInteractiveFrame()) Update();
+    }
+
+    private bool CanSynchronouslyPresentInteractiveFrame()
+    {
+        return LastFrameUsedDirect2D && _direct2DRenderer.HardwareAccelerationActive;
+    }
+
+    private void ResetFrameSchedulerState()
+    {
+        _basePresentationInvalidationPending = false;
+        _interactiveInputDepth = 0;
+        _interactiveFrameRequested = false;
+        _paintInProgress = false;
+        _interactiveFrameRequestedAt = 0;
+        _lastFramePresentedAt = 0;
+        _currentInteractiveRequestCount = 0;
+        _currentInteractiveCoalescedCount = 0;
+        CancelPendingPointerDownTelemetry();
+        ResetDragFirstMoveTelemetryState();
+    }
+
+    private void CancelPendingPointerDownTelemetry()
+    {
+        _pointerDownStartedAt = 0;
+        _pointerDownAwaitingPresent = false;
+    }
+
+    private static double ElapsedMilliseconds(long start, long end)
+    {
+        return start > 0 && end >= start
+            ? Math.Max(0, Stopwatch.GetElapsedTime(start, end).TotalMilliseconds)
+            : 0;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        BeginInteractiveInput(pointerDown: true);
+        try
+        {
+            base.OnMouseDown(e);
+        }
+        finally
+        {
+            EndInteractiveInput(pointerDown: true, forceFinalFrame: true);
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        BeginInteractiveInput(pointerDown: false);
+        try
+        {
+            base.OnMouseMove(e);
+        }
+        finally
+        {
+            EndInteractiveInput(pointerDown: false, forceFinalFrame: false);
+        }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        BeginInteractiveInput(pointerDown: false);
+        try
+        {
+            base.OnMouseUp(e);
+        }
+        finally
+        {
+            EndInteractiveInput(pointerDown: false, forceFinalFrame: true);
+        }
+    }
+
     public void BindScene(VectorScene scene)
     {
+        ClearSelectionDragPreviewCore(invalidate: false);
         ResetFillEdgeBezierOverlay(invalidate: false);
         FillEdgeBezierPointerEditing = false;
         Scene = scene;
@@ -546,12 +1181,17 @@ internal sealed class StageControl : Control
         VectorScene? sourceScene = null,
         IReadOnlyCollection<int>? hiddenSourceObjects = null)
     {
-        DragPreviewScene = scene is { ObjectCount: > 0 } ? scene : null;
-        _dragPreviewSourceScene = DragPreviewScene is not null ? sourceScene : null;
-        _dragPreviewHiddenObjects = DragPreviewScene is not null && hiddenSourceObjects is { Count: > 0 }
+        var nextPreviewScene = scene is { ObjectCount: > 0 } ? scene : null;
+        var nextSourceScene = nextPreviewScene is not null ? sourceScene : null;
+        var nextHiddenObjects = nextSourceScene is not null && hiddenSourceObjects is { Count: > 0 }
             ? hiddenSourceObjects.Where(index => index >= 0).ToHashSet()
             : [];
-        Invalidate();
+        var sourceVisibilityChanged = !ReferenceEquals(_dragPreviewSourceScene, nextSourceScene)
+            || !_dragPreviewHiddenObjects.SetEquals(nextHiddenObjects);
+        DragPreviewScene = nextPreviewScene;
+        _dragPreviewSourceScene = nextSourceScene;
+        _dragPreviewHiddenObjects = nextHiddenObjects;
+        RequestStageFrame(basePresentationChanged: sourceVisibilityChanged);
     }
 
     internal bool IsHiddenByDragPreview(VectorScene scene, int objectIndex)
@@ -800,7 +1440,7 @@ internal sealed class StageControl : Control
             if (boundaryHandle != EditHandleKind.None) return boundaryHandle;
         }
         if (_selectedElements.Any(hit => hit.Key.ObjectIndex == objectIndex)
-            && (shape != ShapeKind.Line
+            && (shape is not ShapeKind.Line and not ShapeKind.Freeform
                 || !_selectedElements.Any(hit => hit.Key.ObjectIndex == objectIndex && hit.Key.Kind == DrawingElementKind.Stroke)))
         {
             return EditHandleKind.None;
@@ -818,6 +1458,19 @@ internal sealed class StageControl : Control
             }
 
             return EditHandleKind.None;
+        }
+        if (shape == ShapeKind.Freeform)
+        {
+            var selectedFreeformPart = SelectedElement.IsValid
+                && SelectedElement.Key.ObjectIndex == objectIndex
+                && SelectedElement.Key.Kind == DrawingElementKind.Stroke
+                ? SelectedElement
+                : _selectedElements.FirstOrDefault(hit =>
+                    hit.Key.ObjectIndex == objectIndex
+                    && hit.Key.Kind == DrawingElementKind.Stroke);
+            return selectedFreeformPart.IsValid
+                ? HitTestLineBezierHandle(screen, selectedFreeformPart)
+                : EditHandleKind.None;
         }
         if (IsFreehandShape(shape) || shape == ShapeKind.Path) return EditHandleKind.None;
         if (shape == ShapeKind.Line)
@@ -1057,7 +1710,15 @@ internal sealed class StageControl : Control
             {
                 Handled = true
             };
-            PenPointerInput?.Invoke(this, captureLost);
+            BeginInteractiveInput(pointerDown: false);
+            try
+            {
+                PenPointerInput?.Invoke(this, captureLost);
+            }
+            finally
+            {
+                EndInteractiveInput(pointerDown: false, forceFinalFrame: true);
+            }
             message.Result = IntPtr.Zero;
             return true;
         }
@@ -1077,7 +1738,20 @@ internal sealed class StageControl : Control
         {
             Handled = wasHandled
         };
-        PenPointerInput?.Invoke(this, eventArgs);
+        var pointerDown = kind == PenPointerEventKind.Down;
+        BeginInteractiveInput(pointerDown);
+        try
+        {
+            PenPointerInput?.Invoke(this, eventArgs);
+        }
+        finally
+        {
+            EndInteractiveInput(
+                pointerDown,
+                forceFinalFrame: eventArgs.Handled
+                    && (kind is PenPointerEventKind.Down or PenPointerEventKind.Up or PenPointerEventKind.CaptureLost),
+                allowSynchronousPresent: eventArgs.Handled);
+        }
 
         if (message.Msg == WmPointerDown && eventArgs.Handled) _handledPenPointers.Add(pointerId);
         if (kind is PenPointerEventKind.Up or PenPointerEventKind.CaptureLost) _handledPenPointers.Remove(pointerId);
@@ -1240,7 +1914,24 @@ internal sealed class StageControl : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var frameStarted = Stopwatch.GetTimestamp();
+        var requestedAt = _interactiveFrameRequestedAt;
+        var reportsPointerDown = _pointerDownAwaitingPresent && _pointerDownStartedAt != 0;
+        var renderedSelectionDragPreviewRevision = SelectionDragPreviewActive
+            ? _selectionDragPreviewRevision
+            : 0;
+        var reportsDragFirstMove = _dragFirstMoveAwaitingPresent
+            && _dragFirstMoveStartedAt != 0
+            && (!_dragFirstMoveRequiresSelectionPreview || renderedSelectionDragPreviewRevision != 0);
+        if (requestedAt != 0)
+        {
+            LastInteractiveRequestToPaintMilliseconds = ElapsedMilliseconds(requestedAt, frameStarted);
+        }
+        if (reportsPointerDown)
+        {
+            LastPointerDownToPaintMilliseconds = ElapsedMilliseconds(_pointerDownStartedAt, frameStarted);
+        }
         var rendered = false;
+        _paintInProgress = true;
         try
         {
             if (_direct2DRenderer.TryRender(this, out var stats))
@@ -1278,19 +1969,64 @@ internal sealed class StageControl : Control
             LastStats = default;
             LastFrameUsedDirect2D = false;
         }
+        finally
+        {
+            _paintInProgress = false;
+        }
 
         if (rendered)
         {
-            _lastFrameRenderMilliseconds = Stopwatch.GetElapsedTime(frameStarted).TotalMilliseconds;
+            var presentedAt = Stopwatch.GetTimestamp();
+            _lastFramePresentedAt = presentedAt;
+            _lastFrameRenderMilliseconds = ElapsedMilliseconds(frameStarted, presentedAt);
+            _presentedSelectionDragPreviewRevision = renderedSelectionDragPreviewRevision;
+            _basePresentationInvalidationPending = false;
+            _interactiveFrameRequested = false;
+            _interactiveFrameRequestedAt = 0;
+            if (reportsPointerDown)
+            {
+                _pointerDownAwaitingPresent = false;
+                LastPointerDownToPresentMilliseconds = ElapsedMilliseconds(_pointerDownStartedAt, presentedAt);
+                _pointerDownStartedAt = 0;
+                LogSlowPointerFeedback(presentedAt);
+            }
+            if (reportsDragFirstMove)
+            {
+                _dragFirstMoveAwaitingPresent = false;
+                LastDragFirstMoveTotalMilliseconds = ElapsedMilliseconds(_dragFirstMoveStartedAt, presentedAt);
+                LastDragFirstPresentMilliseconds = ElapsedMilliseconds(_dragFirstMovePresentRequestedAt, presentedAt);
+                CompleteDragFirstMoveTelemetryIfReady();
+            }
             if (MarqueeVisible
                 && !MarqueeOverlayActive
                 && !MarqueeLodPreviewActive
                 && _lastFrameRenderMilliseconds > MarqueePreviewFrameBudgetMilliseconds)
             {
                 MarqueeLodPreviewActive = true;
+                Invalidate();
             }
             FrameRendered?.Invoke(this, EventArgs.Empty);
         }
+    }
+
+    private void LogSlowPointerFeedback(long presentedAt)
+    {
+        if (LastPointerDownToPresentMilliseconds < SlowPointerFeedbackMilliseconds
+            || _lastSlowPointerLogAt != 0
+                && ElapsedMilliseconds(_lastSlowPointerLogAt, presentedAt) < SlowPointerLogIntervalMilliseconds)
+        {
+            return;
+        }
+
+        _lastSlowPointerLogAt = presentedAt;
+        var backendTiming = LastFrameUsedDirect2D
+            ? $"commands={LastDirect2DCommandMilliseconds:0.0} ms, present={LastDirect2DPresentMilliseconds:0.0} ms"
+            : "commands=n/a, present=n/a";
+        AppLog.Warn(
+            $"Slow Stage pointer feedback: total={LastPointerDownToPresentMilliseconds:0.0} ms, "
+            + $"handler={LastPointerDownHandlerMilliseconds:0.0} ms, queue={Math.Max(0, LastPointerDownToPaintMilliseconds - LastPointerDownHandlerMilliseconds):0.0} ms, "
+            + $"frame={LastFrameRenderMilliseconds:0.0} ms, {backendTiming}, requests={LastInteractiveRequestCount}, "
+            + $"coalesced={LastInteractiveCoalescedRequestCount}, backend={(LastFrameUsedDirect2D ? "Direct2D" : "GDI")}.");
     }
 
     private void DrawBufferedGdi(Graphics target)
@@ -1337,7 +2073,8 @@ internal sealed class StageControl : Control
         var onionSkinStats = default(RenderStats);
         var underlay = UnderlayScene;
         var underlayLimit = objectDrawLimit;
-        var forceEditableObjectRenderer = FillEdgeBezierPointerEditing;
+        var forceEditableObjectRenderer = SelectionFillDragFrontActive
+            || FillEdgeBezierPointerEditing && UsesObjectRenderer(editableScene);
         if (underlay is not null
             && UsesObjectRenderer(underlay)
             && (forceEditableObjectRenderer || UsesObjectRenderer(editableScene)))
@@ -1479,12 +2216,20 @@ internal sealed class StageControl : Control
         // Letting WinForms erase the background first can produce visible flashes.
     }
 
+    protected override void OnBackColorChanged(EventArgs e)
+    {
+        base.OnBackColorChanged(e);
+        Invalidate();
+    }
+
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
+        ResetFrameSchedulerState();
         _direct2DRenderer.Resize(ClientSize);
         if (_pendingVisibleWorldWidth is { } visibleWorldWidth) SetVisibleWorldWidthCore(visibleWorldWidth, raiseViewChanged: false);
         if (MarqueeVisible && MarqueeOverlayActive) UpdateMarqueeOverlay();
+        Invalidate();
         RaiseViewChanged();
     }
 
@@ -1495,6 +2240,7 @@ internal sealed class StageControl : Control
         base.OnHandleCreated(e);
         _marqueeOverlay.Prepare();
         UpdateSelectionHighlightAnimation();
+        Invalidate();
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -1507,6 +2253,7 @@ internal sealed class StageControl : Control
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        ResetFrameSchedulerState();
         _marqueeOverlay.Hide();
         _handledPenPointers.Clear();
         if (!_disposingResources) _selectionHighlightTimer.Stop();
@@ -1526,12 +2273,14 @@ internal sealed class StageControl : Control
         if (disposing)
         {
             _disposingResources = true;
+            ResetFrameSchedulerState();
             ResetFillEdgeBezierOverlay(invalidate: false);
             _fillAnimationTimer.Dispose();
             _selectionHighlightTimer.Dispose();
             _direct2DRenderer.Dispose();
             _layerBlendCompositor?.Dispose();
             _layerBlendCompositor = null;
+            _mixingBrushRasterCache.Dispose();
             ImportedSvgRasterizer.ClearCache();
             _marqueeOverlay.Dispose();
             foreach (var item in _brushCache.Values) item.Dispose();
@@ -1581,7 +2330,7 @@ internal sealed class StageControl : Control
         DrawingPreviewShapeVertexCount = shapeVertexCount;
         DrawingPreviewColor = color;
         DrawingPreviewStroke = stroke;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetCurveDrawingPreview(PointF start, PointF control, PointF end, Color color, float stroke)
@@ -1614,7 +2363,7 @@ internal sealed class StageControl : Control
         DrawingPreviewShapeVertexCount = 0;
         DrawingPreviewColor = color;
         DrawingPreviewStroke = stroke;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetCurveDrawingPreview(
@@ -1639,7 +2388,7 @@ internal sealed class StageControl : Control
         DrawingPreviewShapeVertexCount = 0;
         DrawingPreviewColor = color;
         DrawingPreviewStroke = stroke;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearDrawingPreview()
@@ -1648,7 +2397,7 @@ internal sealed class StageControl : Control
         DrawingPreviewVisible = false;
         DrawingPreviewHasCurve = false;
         DrawingPreviewCurveSegments = Array.Empty<CubicDrawingPreviewSegment>();
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetPenAnchorGuides(
@@ -1675,7 +2424,7 @@ internal sealed class StageControl : Control
         PenAnchorGuideHorizontal = horizontal;
         PenAnchorGuideSnapped = snapped;
         PenAnchorGuideInsertion = insertion;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearPenAnchorGuides()
@@ -1686,7 +2435,7 @@ internal sealed class StageControl : Control
         PenAnchorGuideHorizontal = false;
         PenAnchorGuideSnapped = false;
         PenAnchorGuideInsertion = false;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetPenDirectionHandles(PointF anchor, PointF? incoming, PointF? outgoing)
@@ -1706,7 +2455,7 @@ internal sealed class StageControl : Control
         PenDirectionAnchor = anchor;
         PenDirectionIncoming = incoming;
         PenDirectionOutgoing = outgoing;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearPenDirectionHandles()
@@ -1715,7 +2464,7 @@ internal sealed class StageControl : Control
         PenDirectionHandlesVisible = false;
         PenDirectionIncoming = null;
         PenDirectionOutgoing = null;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetFreehandPreview(
@@ -1731,7 +2480,7 @@ internal sealed class StageControl : Control
         FreehandPreviewColor = color;
         FreehandPreviewStroke = Math.Max(VectorUnits.MinimumStrokeUnits, stroke);
         FreehandPreviewBrushShape = brushShape;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearFreehandPreview()
@@ -1741,7 +2490,7 @@ internal sealed class StageControl : Control
         FreehandPreviewPoints = Array.Empty<PointF>();
         FreehandPreviewDiameters = Array.Empty<float>();
         FreehandPreviewBrushShape = null;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetBrushTipCursor(Point screen, BrushShape shape, float diameter, bool eraser)
@@ -1763,7 +2512,7 @@ internal sealed class StageControl : Control
         BrushTipCursorDiameterWorld = diameter;
         BrushTipCursorRadiusPixels = radius;
         BrushTipCursorIsEraser = eraser;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearBrushTipCursor()
@@ -1772,7 +2521,7 @@ internal sealed class StageControl : Control
         BrushTipCursorVisible = false;
         BrushTipCursorShape = null;
         BrushTipCursorDiameterWorld = 0;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     private void RefreshBrushTipCursorScale()
@@ -1812,7 +2561,7 @@ internal sealed class StageControl : Control
         _brushColorPaletteCenter = clampedCenter;
         _brushColorPaletteColors = normalized;
         _brushColorPaletteHoveredIndex = nextHoveredIndex;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearBrushColorPalette()
@@ -1820,7 +2569,7 @@ internal sealed class StageControl : Control
         if (_brushColorPaletteColors.Length == 0) return;
         _brushColorPaletteColors = [];
         _brushColorPaletteHoveredIndex = -1;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public int HitTestBrushColorPalette(Point screen)
@@ -1858,14 +2607,14 @@ internal sealed class StageControl : Control
         if (ReferenceEquals(_fillPreviewContours, contours) && _fillPreviewColor.ToArgb() == color.ToArgb()) return;
         _fillPreviewContours = contours;
         _fillPreviewColor = color;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearFillPreview()
     {
         if (_fillPreviewContours.Length == 0) return;
         _fillPreviewContours = Array.Empty<PointF[]>();
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetFillToolCursor(Point screen, Color color)
@@ -1880,14 +2629,14 @@ internal sealed class StageControl : Control
         _fillToolCursorVisible = true;
         _fillToolCursorScreen = screen;
         _fillToolCursorColor = color;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearFillToolCursor()
     {
         if (!_fillToolCursorVisible) return;
         _fillToolCursorVisible = false;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void SetFillEdgeBezierOverlay(
@@ -1918,6 +2667,27 @@ internal sealed class StageControl : Control
         SetFillEdgeBezierOverlayCore(targetObject, segments, activePartIndex);
     }
 
+    internal void NotifyOwnedFillEdgeBezierOverlayChanged(
+        int targetObject,
+        FillEdgeBezierOverlaySegment[] segments,
+        int activePartIndex)
+    {
+        if (targetObject != _fillEdgeBezierOverlayTargetObject
+            || !ReferenceEquals(segments, _fillEdgeBezierOverlaySegments))
+        {
+            SetFillEdgeBezierOverlayCore(targetObject, segments, activePartIndex);
+            return;
+        }
+
+        _fillEdgeBezierOverlayActivePartIndex = segments.Any(segment => segment.PartIndex == activePartIndex)
+            ? activePartIndex
+            : -1;
+        _fillEdgeBezierOverlayTranslation = PointF.Empty;
+        _fillEdgeBezierOverlayRevision++;
+        _direct2DRenderer.InvalidateFillEdgeBezierOverlay();
+        InvalidateSelectionState();
+    }
+
     private void SetFillEdgeBezierOverlayCore(
         int targetObject,
         FillEdgeBezierOverlaySegment[] segments,
@@ -1931,7 +2701,13 @@ internal sealed class StageControl : Control
             break;
         }
 
-        if (FillEdgeBezierOverlayMatches(targetObject, segments, normalizedActivePartIndex)) return;
+        var translationChanged = _fillEdgeBezierOverlayTranslation != PointF.Empty;
+        _fillEdgeBezierOverlayTranslation = PointF.Empty;
+        if (FillEdgeBezierOverlayMatches(targetObject, segments, normalizedActivePartIndex))
+        {
+            if (translationChanged) InvalidateSelectionState();
+            return;
+        }
 
         var selectionSuppressionMayChange = !FillEdgeBezierOverlayVisible
             || _fillEdgeBezierOverlayTargetObject != targetObject;
@@ -1942,6 +2718,30 @@ internal sealed class StageControl : Control
         _direct2DRenderer.InvalidateFillEdgeBezierOverlay();
         if (selectionSuppressionMayChange) UpdateSelectionHighlightAnimation();
         InvalidateSelectionState();
+    }
+
+    internal void SetFillEdgeBezierOverlayTranslation(PointF translation)
+    {
+        if (!FillEdgeBezierOverlayVisible) return;
+        translation = VectorUnits.Quantize(translation);
+        if (_fillEdgeBezierOverlayTranslation == translation) return;
+        _fillEdgeBezierOverlayTranslation = translation;
+        InvalidateSelectionState();
+    }
+
+    internal FillEdgeBezierOverlaySegment TranslatedFillEdgeBezierOverlaySegment(
+        FillEdgeBezierOverlaySegment segment)
+    {
+        if (_fillEdgeBezierOverlayTranslation == PointF.Empty) return segment;
+        var dx = _fillEdgeBezierOverlayTranslation.X;
+        var dy = _fillEdgeBezierOverlayTranslation.Y;
+        return segment with
+        {
+            Start = new PointF(segment.Start.X + dx, segment.Start.Y + dy),
+            Control1 = new PointF(segment.Control1.X + dx, segment.Control1.Y + dy),
+            Control2 = new PointF(segment.Control2.X + dx, segment.Control2.Y + dy),
+            End = new PointF(segment.End.X + dx, segment.End.Y + dy)
+        };
     }
 
     private bool FillEdgeBezierOverlayMatches(
@@ -1979,6 +2779,7 @@ internal sealed class StageControl : Control
         _fillEdgeBezierOverlayTargetObject = -1;
         _fillEdgeBezierOverlayActivePartIndex = -1;
         _fillEdgeBezierOverlaySegments = [];
+        _fillEdgeBezierOverlayTranslation = PointF.Empty;
         if (!wasVisible) return;
 
         _fillEdgeBezierOverlayRevision++;
@@ -1991,8 +2792,9 @@ internal sealed class StageControl : Control
     {
         if (!FillEdgeBezierOverlayVisible) return FillEdgeBezierOverlayHit.None;
 
-        var active = _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
-            segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex);
+        var active = TranslatedFillEdgeBezierOverlaySegment(
+            _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
+                segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex));
         var bestHandle = FillEdgeBezierOverlayHit.None;
         var bestHandleDistance = float.PositiveInfinity;
         var bestHandleIsAnchor = false;
@@ -2009,8 +2811,9 @@ internal sealed class StageControl : Control
                 ref bestHandleIsActive);
         }
 
-        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        foreach (var source in _fillEdgeBezierOverlaySegments)
         {
+            var segment = TranslatedFillEdgeBezierOverlaySegment(source);
             if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex) continue;
             ConsiderFillEdgeBezierSegmentHandles(
                 screen,
@@ -2030,8 +2833,9 @@ internal sealed class StageControl : Control
             return new FillEdgeBezierOverlayHit(active.PartIndex, EditHandleKind.None);
         }
 
-        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        foreach (var source in _fillEdgeBezierOverlaySegments)
         {
+            var segment = TranslatedFillEdgeBezierOverlaySegment(source);
             if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex) continue;
             if (CubicCurveHit(screen, segment, FillEdgeBezierCurveHitRadiusPixels))
             {
@@ -2227,7 +3031,7 @@ internal sealed class StageControl : Control
         _fillAnimationProgress = 0f;
         _fillAnimationStartedAt = Stopwatch.GetTimestamp();
         if (!_fillAnimationTimer.Enabled) _fillAnimationTimer.Start();
-        Invalidate();
+        InvalidateOverlay();
     }
 
     private void TickFillAnimation()
@@ -2246,7 +3050,7 @@ internal sealed class StageControl : Control
             return;
         }
 
-        Invalidate();
+        InvalidateOverlay();
     }
 
     private void ClearFillAnimation()
@@ -2255,7 +3059,7 @@ internal sealed class StageControl : Control
         _fillAnimationContours = Array.Empty<PointF[]>();
         _fillAnimationMaxRadiusWorld = 0f;
         _fillAnimationProgress = 1f;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     private void UpdateSelectionHighlightAnimation()
@@ -2263,7 +3067,10 @@ internal sealed class StageControl : Control
         if (_disposingResources || Scene is null) return;
         var hasSelection = _selectedObjects.Any(index =>
             (uint)index < Scene.ObjectCount && !SuppressFillEdgeBezierSelectionOutline(index));
-        if (hasSelection && Visible && IsHandleCreated)
+        if (hasSelection
+            && ShouldAnimateSelectionHighlight(Scene.ObjectCount, Scene.VirtualAtomCount)
+            && Visible
+            && IsHandleCreated)
         {
             if (_selectionHighlightTimer.Enabled) return;
             _selectionHighlightPhase = 0f;
@@ -2280,6 +3087,7 @@ internal sealed class StageControl : Control
     {
         if (!Visible
             || !IsHandleCreated
+            || !ShouldAnimateSelectionHighlight(Scene.ObjectCount, Scene.VirtualAtomCount)
             || !_selectedObjects.Any(index =>
                 (uint)index < Scene.ObjectCount && !SuppressFillEdgeBezierSelectionOutline(index)))
         {
@@ -2289,12 +3097,19 @@ internal sealed class StageControl : Control
 
         var elapsed = Stopwatch.GetElapsedTime(_selectionHighlightStartedAt).TotalMilliseconds;
         _selectionHighlightPhase = (float)(elapsed % SelectionHighlightCycleMilliseconds / SelectionHighlightCycleMilliseconds);
-        if (!Capture) Invalidate();
+        if (!Capture) InvalidateOverlay();
+    }
+
+    internal static bool ShouldAnimateSelectionHighlight(int objectCount, long atomCount)
+    {
+        return objectCount <= AnimatedSelectionObjectBudget
+            && atomCount <= AnimatedSelectionAtomBudget;
     }
 
     internal bool SuppressFillEdgeBezierSelectionOutline(int objectIndex)
     {
-        if (!FillEdgeBezierOverlayVisible
+        if (SelectionDragPreviewActive
+            || !FillEdgeBezierOverlayVisible
             || objectIndex != _fillEdgeBezierOverlayTargetObject
             || _selectedObjects.Length != 1
             || _selectedObjects[0] != objectIndex
@@ -2324,6 +3139,8 @@ internal sealed class StageControl : Control
         if (primaryObject < 0 && selected.Length > 0) primaryObject = selected[^1];
         if (primaryObject >= 0 && !selected.Contains(primaryObject)) primaryObject = selected.Length > 0 ? selected[^1] : -1;
 
+        ClearSelectionDragPreviewCore(invalidate: false);
+        ClearSelectionFillDragFront();
         _selectedObjects = selected;
         _selectedObject = primaryObject;
         SelectedElement = DrawingElementHit.None;
@@ -2331,6 +3148,54 @@ internal sealed class StageControl : Control
         InvalidateSelectedFillCache();
         UpdateSelectionHighlightAnimation();
         InvalidateSelectionState();
+    }
+
+    public bool SetSelectionState(
+        IEnumerable<int> objectIndices,
+        int primaryObject,
+        IEnumerable<DrawingElementHit> hits,
+        DrawingElementHit primaryElement = default)
+    {
+        var selected = objectIndices
+            .Where(index => index >= 0 && index < Scene.ObjectCount)
+            .Distinct()
+            .ToArray();
+        if (primaryObject < 0 && selected.Length > 0) primaryObject = selected[^1];
+        if (primaryObject >= 0 && !selected.Contains(primaryObject))
+        {
+            primaryObject = selected.Length > 0 ? selected[^1] : -1;
+        }
+
+        var selectedOwners = selected.ToHashSet();
+        var elements = hits
+            .Where(hit => hit.IsValid
+                && (uint)hit.Key.ObjectIndex < Scene.ObjectCount
+                && selectedOwners.Contains(hit.Key.ObjectIndex))
+            .GroupBy(hit => hit.Key)
+            .Select(group => group.First())
+            .ToArray();
+        var element = primaryElement.IsValid && elements.Any(hit => hit.Key == primaryElement.Key)
+            ? elements.First(hit => hit.Key == primaryElement.Key)
+            : elements.Length > 0 ? elements[^1] : DrawingElementHit.None;
+
+        if (_selectedObject == primaryObject
+            && SelectedElement == element
+            && _selectedObjects.SequenceEqual(selected)
+            && _selectedElements.SequenceEqual(elements))
+        {
+            return false;
+        }
+
+        ClearSelectionDragPreviewCore(invalidate: false);
+        ClearSelectionFillDragFront();
+        _selectedObjects = selected;
+        _selectedObject = primaryObject;
+        _selectedElements = elements;
+        SelectedElement = element;
+        InvalidateSelectedFillCache();
+        UpdateSelectionHighlightAnimation();
+        InvalidateSelectionState();
+        return true;
     }
 
     public void SetSelectedElement(DrawingElementHit hit)
@@ -2341,16 +3206,22 @@ internal sealed class StageControl : Control
     public void SetSelectedElements(IEnumerable<DrawingElementHit> hits, DrawingElementHit primary = default)
     {
         var selectedOwners = _selectedObjects.ToHashSet();
-        _selectedElements = hits
+        var elements = hits
             .Where(hit => hit.IsValid
                 && (uint)hit.Key.ObjectIndex < Scene.ObjectCount
                 && selectedOwners.Contains(hit.Key.ObjectIndex))
             .GroupBy(hit => hit.Key)
             .Select(group => group.First())
             .ToArray();
-        SelectedElement = primary.IsValid && _selectedElements.Any(hit => hit.Key == primary.Key)
-            ? _selectedElements.First(hit => hit.Key == primary.Key)
-            : _selectedElements.Length > 0 ? _selectedElements[^1] : DrawingElementHit.None;
+        var element = primary.IsValid && elements.Any(hit => hit.Key == primary.Key)
+            ? elements.First(hit => hit.Key == primary.Key)
+            : elements.Length > 0 ? elements[^1] : DrawingElementHit.None;
+        if (SelectedElement == element && _selectedElements.SequenceEqual(elements)) return;
+
+        ClearSelectionDragPreviewCore(invalidate: false);
+        ClearSelectionFillDragFront();
+        _selectedElements = elements;
+        SelectedElement = element;
         InvalidateSelectedFillCache();
         UpdateSelectionHighlightAnimation();
         InvalidateSelectionState();
@@ -2368,7 +3239,7 @@ internal sealed class StageControl : Control
         if (!IsValidEditableBezierHit(hit)) hit = DrawingElementHit.None;
         if (_hoveredLineElement == hit) return;
         _hoveredLineElement = hit;
-        Invalidate();
+        InvalidateOverlay();
     }
 
     public void ClearHoveredLineElement() => SetHoveredLineElement(DrawingElementHit.None);
@@ -2410,6 +3281,66 @@ internal sealed class StageControl : Control
     internal bool IsValidEditableBezierHit(DrawingElementHit hit)
     {
         return TryGetEditableBezierWorldPoints(hit, out _, out _, out _, out _);
+    }
+
+    internal bool ShouldDrawHoveredLineControls()
+    {
+        var hit = _hoveredLineElement;
+        if (!IsValidEditableBezierHit(hit)) return false;
+
+        if (SelectedElement.IsValid && SelectedElement.Key == hit.Key)
+        {
+            var shape = Scene.ShapeKind[hit.Key.ObjectIndex];
+            if (shape != ShapeKind.Freeform
+                || SelectedElement.BezierSegmentIndex >= 0
+                    && SelectedElement.BezierSegmentIndex == hit.BezierSegmentIndex)
+            {
+                return false;
+            }
+        }
+
+        return SelectedElement.IsValid
+            || SelectedObject != hit.Key.ObjectIndex
+            || Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Freeform;
+    }
+
+    internal bool TryResolveEditableBezierHit(
+        Point screen,
+        DrawingElementHit hit,
+        out DrawingElementHit resolved)
+    {
+        resolved = DrawingElementHit.None;
+        if (!hit.IsValid
+            || (uint)hit.Key.ObjectIndex >= Scene.ObjectCount
+            || !Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
+        {
+            return false;
+        }
+
+        var shape = Scene.ShapeKind[hit.Key.ObjectIndex];
+        if (hit.Key.Kind == DrawingElementKind.BoundaryStroke
+            || hit.Key.Kind == DrawingElementKind.Stroke && shape == ShapeKind.Line)
+        {
+            if (!IsValidEditableBezierHit(hit)) return false;
+            resolved = hit;
+            return true;
+        }
+
+        if (hit.Key.Kind != DrawingElementKind.Stroke || shape != ShapeKind.Freeform) return false;
+        var maximumDistance = Math.Max(Scene.Stroke[hit.Key.ObjectIndex] * 0.5f, 1)
+            + Math.Max(4, ScreenLengthToWorld(10));
+        if (!Scene.TryFindClosestFreehandBezierSegment(
+                hit.Key.ObjectIndex,
+                ScreenToWorld(screen),
+                maximumDistance,
+                out var segmentIndex,
+                out _))
+        {
+            return false;
+        }
+
+        resolved = hit with { BezierSegmentIndex = segmentIndex };
+        return true;
     }
 
     private EditHandleKind HitTestLineBezierHandle(Point screen, DrawingElementHit hit)
@@ -2463,6 +3394,21 @@ internal sealed class StageControl : Control
                 out control1,
                 out control2,
                 out end);
+        }
+
+        if (hit.Key.Kind == DrawingElementKind.Stroke
+            && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Freeform
+            && hit.BezierSegmentIndex >= 0
+            && Scene.TryGetFreehandBezierSegment(
+                hit.Key.ObjectIndex,
+                hit.BezierSegmentIndex,
+                out var segment))
+        {
+            start = segment.Start;
+            control1 = segment.Control1;
+            control2 = segment.Control2;
+            end = segment.End;
+            return true;
         }
 
         if (hit.Key.Kind != DrawingElementKind.BoundaryStroke) return false;
@@ -2583,6 +3529,7 @@ internal sealed class StageControl : Control
     public void SetMarquee(Point start, Point end)
     {
         if (MarqueeVisible && MarqueeStart == start && MarqueeEnd == end) return;
+        var hadLodPreview = MarqueeLodPreviewActive;
         MarqueeVisible = true;
         MarqueeStart = start;
         MarqueeEnd = end;
@@ -2590,6 +3537,7 @@ internal sealed class StageControl : Control
         if (MarqueeOverlayActive)
         {
             MarqueeLodPreviewActive = false;
+            if (hadLodPreview) Invalidate();
             return;
         }
 
@@ -2599,20 +3547,23 @@ internal sealed class StageControl : Control
             UnderlayScene?.ObjectCount ?? 0,
             OnionSkinScene?.ObjectCount ?? 0,
             DragPreviewScene?.ObjectCount ?? 0);
-        Invalidate();
+        if (MarqueeLodPreviewActive != hadLodPreview) Invalidate();
+        else InvalidateOverlay();
     }
 
     public void ClearMarquee()
     {
         if (!MarqueeVisible) return;
         var usedOverlay = MarqueeOverlayActive;
+        var usedLodPreview = MarqueeLodPreviewActive;
         var pendingSceneInvalidation = _marqueeSceneInvalidationPending;
         _marqueeOverlay.Hide();
         MarqueeVisible = false;
         MarqueeOverlayActive = false;
         MarqueeLodPreviewActive = false;
         _marqueeSceneInvalidationPending = false;
-        if (!usedOverlay || pendingSceneInvalidation) Invalidate();
+        if (usedLodPreview) Invalidate();
+        else if (!usedOverlay || pendingSceneInvalidation) InvalidateOverlay();
     }
 
     private void UpdateMarqueeOverlay()
@@ -2627,7 +3578,7 @@ internal sealed class StageControl : Control
             _marqueeSceneInvalidationPending = true;
             return;
         }
-        Invalidate();
+        InvalidateOverlay();
     }
 
     internal static bool ShouldUseMarqueeLodPreview(
@@ -2873,17 +3824,13 @@ internal sealed class StageControl : Control
             return;
         }
 
-        for (var index = start; index < objects.Count; index++)
-        {
-            var objectIndex = objects[index];
-            if (SceneRenderOrder.HasFill(Scene.ShapeKind[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Fill);
-        }
-
-        for (var index = start; index < objects.Count; index++)
-        {
-            var objectIndex = objects[index];
-            if (SceneRenderOrder.HasStroke(Scene.ShapeKind[objectIndex], Scene.Stroke[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Stroke);
-        }
+        SceneRenderOrder.DrawObjectPasses(
+            scene,
+            objects,
+            start,
+            SelectionFillDragFrontObjectsFor(scene),
+            objectIndex => DrawObject(graphics, objectIndex, SceneRenderPass.Fill),
+            objectIndex => DrawObject(graphics, objectIndex, SceneRenderPass.Stroke));
     }
 
     private void DrawObjectOutline(Graphics graphics, int objectIndex)
@@ -2931,6 +3878,15 @@ internal sealed class StageControl : Control
                     brushPath,
                     FreehandStrokeProcessor.CreateBrushOutlines(brushCenterline, scene.Stroke[objectIndex]));
                 if (brushPath.PointCount > 0) graphics.DrawPath(pen, brushPath);
+                return;
+            }
+
+            if (shape == ShapeKind.MixingStroke)
+            {
+                foreach (var contour in GetMixingStrokeScreenContours(scene, objectIndex))
+                {
+                    DrawOutlinePolyline(graphics, pen, contour);
+                }
                 return;
             }
 
@@ -3018,8 +3974,14 @@ internal sealed class StageControl : Control
         var w = Math.Max(0.75f, WorldLengthToScreen(scene.Width[i]));
         var h = Math.Max(0.75f, WorldLengthToScreen(scene.Height[i]));
         var rect = new RectangleF(screen.X - w * 0.5f, screen.Y - h * 0.5f, w, h);
-        var brush = BrushFor(scene.Argb[i]);
         var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
+        if (shape == ShapeKind.MixingStroke)
+        {
+            if (pass == SceneRenderPass.Fill) DrawMixingStroke(g, scene, i);
+            return;
+        }
+
+        var brush = BrushFor(scene.Argb[i]);
         var shapeVertexCount = scene.GetShapeVertexCount(i);
         var strokeColor = StrokeColorFor(i);
         var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[i]));
@@ -3300,9 +4262,10 @@ internal sealed class StageControl : Control
 
     private void DrawPathGradientFill(Graphics g, VectorScene scene, int objectIndex)
     {
+        var estimatedWidth = scene.EstimateGradientPathStrokeWidth(objectIndex);
         if (!scene.TryGetGradientPathWorldPoints(objectIndex, out var pathPoints)
             || pathPoints.Length < 2
-            || scene.EstimateGradientPathStrokeWidth(objectIndex) is not > 0)
+            || estimatedWidth is not > 0)
         {
             return;
         }
@@ -3322,7 +4285,7 @@ internal sealed class StageControl : Control
         using var mask = CreateObjectBoundaryPath(scene, objectIndex);
 
         if (mask.PointCount == 0) return;
-        var width = Math.Max(1f, WorldLengthToScreen(scene.EstimateGradientPathStrokeWidth(objectIndex) * 1.12f));
+        var width = Math.Max(1f, WorldLengthToScreen(estimatedWidth * 1.12f));
         var smoothingMode = g.SmoothingMode;
         var state = g.Save();
         try
@@ -3340,7 +4303,7 @@ internal sealed class StageControl : Control
                     Color.FromArgb(segment.StartArgb),
                     Color.FromArgb(segment.EndArgb))
                 {
-                    WrapMode = WrapMode.Clamp
+                    WrapMode = WrapMode.TileFlipXY
                 };
                 using var pen = new Pen(brush, width)
                 {
@@ -3507,6 +4470,77 @@ internal sealed class StageControl : Control
         }
 
         g.SmoothingMode = oldMode;
+    }
+
+    private void DrawMixingStroke(Graphics graphics, VectorScene scene, int objectIndex)
+    {
+        var raster = MixingBrushRasterFor(scene, objectIndex);
+        if (raster is null) return;
+
+        var bounds = raster.LocalBounds;
+        var destination = new[]
+        {
+            WorldToScreen(ObjectLocalToWorld(scene, objectIndex, new PointF(bounds.Left, bounds.Top))),
+            WorldToScreen(ObjectLocalToWorld(scene, objectIndex, new PointF(bounds.Right, bounds.Top))),
+            WorldToScreen(ObjectLocalToWorld(scene, objectIndex, new PointF(bounds.Left, bounds.Bottom)))
+        };
+        var state = graphics.Save();
+        try
+        {
+            graphics.CompositingMode = CompositingMode.SourceOver;
+            graphics.CompositingQuality = CompositingQuality.HighQuality;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(
+                raster.Bitmap,
+                destination,
+                new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
+                GraphicsUnit.Pixel);
+        }
+        finally
+        {
+            graphics.Restore(state);
+        }
+    }
+
+    internal MixingBrushRegionRaster? MixingBrushRasterFor(
+        VectorScene scene,
+        int objectIndex)
+    {
+        if ((uint)objectIndex >= scene.ObjectCount
+            || scene.ShapeKind[objectIndex] != ShapeKind.MixingStroke)
+        {
+            return null;
+        }
+
+        var scaleBucket = MixingBrushRegionRasterizer.ResolveScaleBucket(WorldLengthToScreen(1));
+        return _mixingBrushRasterCache.GetOrCreate(
+            scene,
+            objectIndex,
+            scene.GeometryRevision,
+            scaleBucket,
+            scale =>
+            {
+                if (scene.TryGetMixingBrushLocalRegion(objectIndex, out var region))
+                {
+                    var vertices = region.Vertices
+                        .Select(vertex => new MixingBrushRasterVertex(vertex.Point, vertex.Argb))
+                        .ToArray();
+                    return MixingBrushRegionRasterizer.RasterizeMesh(
+                        vertices,
+                        region.TriangleIndices,
+                        scale);
+                }
+
+                if (!scene.TryGetMixingStrokeLocalSamples(objectIndex, out var samples)
+                    || samples.Length == 0)
+                {
+                    return null;
+                }
+                return MixingBrushRegionRasterizer.RasterizeTrajectory(
+                    MixingStrokeCoverageBuilder.GetLocalCells(samples),
+                    scale);
+            });
     }
 
     private void DrawLocalShape(
@@ -3986,58 +5020,72 @@ internal sealed class StageControl : Control
 
         if (_selectedElements.Length > 0)
         {
-            foreach (var objectIndex in _selectedElements
-                         .Where(hit => (uint)hit.Key.ObjectIndex < Scene.ObjectCount
-                             && hit.Key.Kind == DrawingElementKind.Stroke
-                             && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
-                             && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
-                         .Select(hit => hit.Key.ObjectIndex)
-                         .Distinct()
-                         .Take(MaxSelectionOutlines))
+            var previewState = g.Save();
+            try
             {
-                DrawBezierSelectionContext(g, objectIndex);
-            }
-
-            var drawnElements = 0;
-            foreach (var hit in _selectedElements)
-            {
-                if ((uint)hit.Key.ObjectIndex >= Scene.ObjectCount
-                    || hit.Key == SelectedElement.Key
-                    || SuppressFillEdgeBezierSelectionOutline(hit.Key.ObjectIndex)
-                    || !Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
+                if (SelectionDragPreviewActive)
                 {
-                    continue;
+                    var offset = SelectionDragPreviewOffset;
+                    var screenScale = VectorUnits.PixelsPerUnit * Zoom;
+                    g.TranslateTransform(offset.X * screenScale, offset.Y * screenScale);
+                }
+                foreach (var objectIndex in _selectedElements
+                             .Where(hit => (uint)hit.Key.ObjectIndex < Scene.ObjectCount
+                                 && hit.Key.Kind == DrawingElementKind.Stroke
+                                 && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+                                 && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
+                             .Select(hit => hit.Key.ObjectIndex)
+                             .Distinct()
+                             .Take(MaxSelectionOutlines))
+                {
+                    DrawBezierSelectionContext(g, objectIndex);
                 }
 
-                DrawElementSelectionOutline(g, hit, primary: false);
-                drawnElements++;
-                if (drawnElements >= MaxSelectionOutlines) break;
-            }
-
-            if (SelectedElement.IsValid
-                && (uint)SelectedElement.Key.ObjectIndex < Scene.ObjectCount
-                && !SuppressFillEdgeBezierSelectionOutline(SelectedElement.Key.ObjectIndex)
-                && Scene.IsObjectActive(SelectedElement.Key.ObjectIndex, Frame))
-            {
-                DrawElementSelectionOutline(g, SelectedElement, primary: true);
-                if (PenPathHandlesVisible && !TransformMode)
+                var drawnElements = 0;
+                foreach (var hit in _selectedElements)
                 {
-                    foreach (var objectIndex in _selectedElements
-                                 .Where(hit => hit.Key.Kind == DrawingElementKind.Stroke
-                                     && (uint)hit.Key.ObjectIndex < Scene.ObjectCount
-                                     && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
-                                     && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
-                                 .Select(hit => hit.Key.ObjectIndex)
-                                 .Distinct()
-                                 .Take(MaxSelectionOutlines))
+                    if ((uint)hit.Key.ObjectIndex >= Scene.ObjectCount
+                        || hit.Key == SelectedElement.Key
+                        || SuppressFillEdgeBezierSelectionOutline(hit.Key.ObjectIndex)
+                        || !Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
                     {
-                        DrawBezierHandles(g, objectIndex);
+                        continue;
+                    }
+
+                    DrawElementSelectionOutline(g, hit, primary: false);
+                    drawnElements++;
+                    if (drawnElements >= MaxSelectionOutlines) break;
+                }
+
+                if (SelectedElement.IsValid
+                    && (uint)SelectedElement.Key.ObjectIndex < Scene.ObjectCount
+                    && !SuppressFillEdgeBezierSelectionOutline(SelectedElement.Key.ObjectIndex)
+                    && Scene.IsObjectActive(SelectedElement.Key.ObjectIndex, Frame))
+                {
+                    DrawElementSelectionOutline(g, SelectedElement, primary: true);
+                    if (PenPathHandlesVisible && !TransformMode)
+                    {
+                        foreach (var objectIndex in _selectedElements
+                                     .Where(hit => hit.Key.Kind == DrawingElementKind.Stroke
+                                         && (uint)hit.Key.ObjectIndex < Scene.ObjectCount
+                                         && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+                                         && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
+                                     .Select(hit => hit.Key.ObjectIndex)
+                                     .Distinct()
+                                     .Take(MaxSelectionOutlines))
+                        {
+                            DrawBezierHandles(g, objectIndex);
+                        }
+                    }
+                    else if (IsValidEditableBezierHit(SelectedElement))
+                    {
+                        if (!TransformMode) DrawBezierHandles(g, SelectedElement);
                     }
                 }
-                else if (IsValidEditableBezierHit(SelectedElement))
-                {
-                    if (!TransformMode) DrawBezierHandles(g, SelectedElement);
-                }
+            }
+            finally
+            {
+                g.Restore(previewState);
             }
 
             DrawDrawingObjectSelectionOverlay(g);
@@ -4090,6 +5138,20 @@ internal sealed class StageControl : Control
         {
             if (primary && !TransformMode) DrawBezierGuides(g, i);
             else DrawBezierOutline(g, i, primary);
+        }
+        else if (shape == ShapeKind.MixingStroke)
+        {
+            foreach (var points in GetMixingStrokeScreenContours(Scene, i))
+            {
+                if (points.Length == 1)
+                {
+                    DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Fill);
+                }
+                else if (points.Length > 1)
+                {
+                    DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Fill);
+                }
+            }
         }
         else if (IsFreehandShape(shape))
         {
@@ -4189,8 +5251,9 @@ internal sealed class StageControl : Control
         using var guide = new Pen(Color.Lime, 1f);
         using var handleCore = new SolidBrush(BackColor);
         using var path = new GraphicsPath(FillMode.Alternate);
-        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        foreach (var source in _fillEdgeBezierOverlaySegments)
         {
+            var segment = TranslatedFillEdgeBezierOverlaySegment(source);
             if (!Finite(segment)) continue;
             path.StartFigure();
             path.AddBezier(
@@ -4201,14 +5264,16 @@ internal sealed class StageControl : Control
         }
 
         if (path.PointCount > 0) graphics.DrawPath(edge, path);
-        foreach (var segment in _fillEdgeBezierOverlaySegments)
+        foreach (var source in _fillEdgeBezierOverlaySegments)
         {
+            var segment = TranslatedFillEdgeBezierOverlaySegment(source);
             if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex || !Finite(segment)) continue;
             DrawFillEdgeBezierSegmentHandles(graphics, segment, guide, handleCore, edge);
         }
 
-        var active = _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
-            segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex);
+        var active = TranslatedFillEdgeBezierOverlaySegment(
+            _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
+                segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex));
         if (_fillEdgeBezierOverlayActivePartIndex >= 0
             && active.PartIndex == _fillEdgeBezierOverlayActivePartIndex
             && Finite(active))
@@ -4353,7 +5418,6 @@ internal sealed class StageControl : Control
                 return;
             }
 
-            g.DrawLine(_previewGuidePen, a, b);
             g.DrawLine(stroke, a, b);
             DrawHandle(g, a, _handleBrush, 7);
             DrawHandle(g, b, _handleBrush, 7);
@@ -4999,12 +6063,7 @@ internal sealed class StageControl : Control
     private void DrawHoveredLineControls(Graphics g)
     {
         var hit = _hoveredLineElement;
-        if (!IsValidEditableBezierHit(hit)
-            || (SelectedElement.IsValid && SelectedElement.Key == hit.Key)
-            || (!SelectedElement.IsValid && SelectedObject == hit.Key.ObjectIndex))
-        {
-            return;
-        }
+        if (!ShouldDrawHoveredLineControls()) return;
 
         if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control1, out var control2, out var end)) return;
         var startScreen = WorldToScreen(start);
@@ -5511,13 +6570,61 @@ internal sealed class StageControl : Control
 
     private PointF LocalToWorld(int i, PointF local)
     {
-        var angle = Scene.Angle[i];
+        return ObjectLocalToWorld(Scene, i, local);
+    }
+
+    private static PointF ObjectLocalToWorld(VectorScene scene, int i, PointF local)
+    {
+        var angle = scene.Angle[i];
         var cos = MathF.Cos(angle);
         var sin = MathF.Sin(angle);
         return new PointF(
-            Scene.X[i] + local.X * cos - local.Y * sin,
-            Scene.Y[i] + local.X * sin + local.Y * cos);
+            scene.X[i] + local.X * cos - local.Y * sin,
+            scene.Y[i] + local.X * sin + local.Y * cos);
     }
+
+    internal PointF[][] GetMixingStrokeScreenContours(VectorScene scene, int objectIndex)
+    {
+        if (scene.TryGetMixingBrushLocalRegion(objectIndex, out var region))
+        {
+            var edges = MixingBrushRegionRasterizer.ExtractBoundaryEdges(region.TriangleIndices);
+            var contours = new List<PointF[]>(edges.Length);
+            foreach (var edge in edges)
+            {
+                if ((uint)edge.StartVertex >= region.Vertices.Length
+                    || (uint)edge.EndVertex >= region.Vertices.Length)
+                {
+                    continue;
+                }
+                contours.Add(
+                [
+                    WorldToScreen(ObjectLocalToWorld(scene, objectIndex, region.Vertices[edge.StartVertex].Point)),
+                    WorldToScreen(ObjectLocalToWorld(scene, objectIndex, region.Vertices[edge.EndVertex].Point))
+                ]);
+            }
+            return contours.ToArray();
+        }
+
+        if (!scene.TryGetMixingStrokeLocalSamples(objectIndex, out var samples) || samples.Length == 0)
+        {
+            return [];
+        }
+        var points = new List<PointF>(samples.Length);
+        foreach (var sample in samples)
+        {
+            if (!IsFiniteMixingPoint(sample.Point)) continue;
+            points.Add(WorldToScreen(ObjectLocalToWorld(scene, objectIndex, sample.Point)));
+        }
+        return points.Count > 0 ? [points.ToArray()] : [];
+    }
+
+    private static bool IsRenderableMixingSample(MixingBrushTrajectorySample sample) =>
+        IsFiniteMixingPoint(sample.Point)
+        && float.IsFinite(sample.Diameter)
+        && sample.Diameter > 0;
+
+    private static bool IsFiniteMixingPoint(PointF point) =>
+        float.IsFinite(point.X) && float.IsFinite(point.Y);
 
     private PointF[] GetBoundaryScreenPolyline(int i)
     {

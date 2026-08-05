@@ -16,6 +16,7 @@ internal readonly record struct DrawingElementKey(int ObjectIndex, DrawingElemen
 
 internal readonly record struct DrawingElementHit(DrawingElementKey Key, float Distance, float StartT, float EndT)
 {
+    public int BezierSegmentIndex { get; init; } = -1;
     public static DrawingElementHit None => new(DrawingElementKey.None, float.MaxValue, 0, 1);
     public bool IsValid => Key.IsValid;
 }

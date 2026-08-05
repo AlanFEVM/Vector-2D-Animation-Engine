@@ -24,7 +24,7 @@ internal sealed class SceneCameraDefinition
     public float FieldOfViewDegrees { get; set; } = 60;
 }
 
-internal sealed class VectorProject
+internal sealed partial class VectorProject
 {
     private readonly List<SceneDefinition> _scenes = [];
     private readonly List<DrawingObjectDefinition> _drawingObjects = [];
@@ -42,6 +42,7 @@ internal sealed class VectorProject
         _sceneView = _scenes.AsReadOnly();
         _drawingObjectView = _drawingObjects.AsReadOnly();
         _assetFolderView = _assetFolders.AsReadOnly();
+        _assetTagView = _assetTags.AsReadOnly();
         AddScene("Scene 001");
         AddDrawingObject("Drawing Object 001");
     }
@@ -320,6 +321,7 @@ internal sealed class VectorProject
             AssetFolderId = assetFolderId
         };
         duplicate.SetAnchor(source.Anchor);
+        duplicate.ReplaceAssetTagIds(source.AssetTagIds);
         duplicate.Scene.RestoreSnapshot(sceneSnapshot);
         _drawingObjects.Add(duplicate);
         return duplicate;
@@ -348,7 +350,8 @@ internal sealed class VectorProject
                     Id = track.Id,
                     TargetId = instanceIdMap.GetValueOrDefault(track.TargetId, track.TargetId),
                     Duration = track.Duration,
-                    Keyframes = track.Keyframes.ToArray()
+                    Keyframes = track.Keyframes.ToArray(),
+                    Tweens = track.Tweens.ToArray()
                 }).ToArray()
             });
             duplicate.SynchronizeTimelineTracks();
@@ -604,6 +607,14 @@ internal sealed class VectorProject
             LoopPlayback = LoopPlayback,
             PlaybackStartFrame = PlaybackStartFrame,
             PlaybackEndFrame = PlaybackEndFrame,
+            AssetTags = _assetTags
+                .Select(tag => new ProjectAssetTagRestartSnapshot
+                {
+                    Id = tag.Id,
+                    Name = tag.Name,
+                    ColorArgb = tag.ColorArgb
+                })
+                .ToArray(),
             AssetFolders = _assetFolders
                 .Select(folder => new ProjectAssetFolderRestartSnapshot
                 {
@@ -621,6 +632,7 @@ internal sealed class VectorProject
                     Kind = drawingObject.Kind,
                     Detail = drawingObject.Detail,
                     AssetFolderId = drawingObject.AssetFolderId,
+                    AssetTagIds = drawingObject.AssetTagIds.ToArray(),
                     AnchorX = drawingObject.Anchor.X,
                     AnchorY = drawingObject.Anchor.Y,
                     CreatedAt = drawingObject.CreatedAt,
@@ -660,6 +672,7 @@ internal sealed class VectorProject
         project._drawingObjects.Clear();
         project._scenes.Clear();
         project._assetFolders.Clear();
+        project._assetTags.Clear();
         project.Name = string.IsNullOrWhiteSpace(snapshot.Name) ? "Untitled Project" : snapshot.Name;
         project.ApplyPlaybackSettings(NormalizePlaybackSettings(
             snapshot.PlaybackFps,
@@ -668,6 +681,8 @@ internal sealed class VectorProject
             snapshot.PlaybackEndFrame));
 
         project.RestoreAssetFolders(snapshot.AssetFolders ?? []);
+        project.RestoreAssetTags(snapshot.AssetTags ?? []);
+        var assetTagIds = project._assetTags.Select(tag => tag.Id).ToHashSet(StringComparer.Ordinal);
 
         var drawingSnapshots = snapshot.DrawingObjects
             .Where(item => IsValidRestartId(item.Id))
@@ -701,6 +716,7 @@ internal sealed class VectorProject
                     Math.Clamp(item.AnchorX, -5_000_000, 5_000_000),
                     Math.Clamp(item.AnchorY, -5_000_000, 5_000_000)));
             }
+            drawingObject.ReplaceAssetTagIds((item.AssetTagIds ?? []).Where(assetTagIds.Contains));
             project._drawingObjects.Add(drawingObject);
         }
 

@@ -3,7 +3,9 @@
 ## Roles
 
 - `StageControl`: camera, binding, render state, overlays, GDI fallback, cache ownership, and public Stage coordinate APIs.
+- `StageControl.SelectionDrag.cs`: transient selection translation, immediate presentation, and first-move telemetry.
 - `Direct2DStageRenderer`: HWND target, Direct2D resources, scene/object passes, geometry and LOD caches.
+- `Direct2DStageRenderer.Selection.cs`: Direct2D selection outlines, topology-part highlights, and the GPU selection-drag transform.
 - `SceneRenderOrder.cs`: stable visible-object ordering shared by render paths.
 - `RenderStats`: telemetry shown by the workbench and asserted by benchmarks.
 
@@ -51,5 +53,6 @@ Do not assume `DrawToBitmap` captures the HWND Direct2D target.
 - Do not parallelize work in a way that changes command order.
 - Extend `RenderStats` when adding a measurable stage path.
 - Use `RunStageRendererRegression` for underlay, cache, LOD, hot-reload routing, and Direct2D checks; use the stress benchmark for collection/composition budgets.
+- Keep the first Fill/Line transaction budget regression in `Benchmark.DragPerformance.cs` synchronized with `StageControl.DragFirstMoveBudgetMilliseconds`.
 
 Visual verification requires a real shown HWND. Check `LastFrameUsedDirect2D`, `LastStats`, repeated frame behavior, cache rebuild counts, and the GDI fallback path.

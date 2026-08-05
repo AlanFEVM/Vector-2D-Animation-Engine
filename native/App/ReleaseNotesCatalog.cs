@@ -74,6 +74,16 @@ internal static class ReleaseNotesCatalog
         new[]
         {
             new ReleaseNoteEntry(
+                new Version(0, 1, 12),
+                new DateOnly(2026, 8, 4),
+                English012(),
+                SimplifiedChinese012()),
+            new ReleaseNoteEntry(
+                new Version(0, 1, 11),
+                new DateOnly(2026, 8, 3),
+                English011(),
+                SimplifiedChinese011()),
+            new ReleaseNoteEntry(
                 new Version(0, 1, 9),
                 new DateOnly(2026, 7, 30),
                 English019(),
@@ -100,6 +110,118 @@ internal static class ReleaseNotesCatalog
     public static IReadOnlyList<ReleaseNoteEntry> Entries => LatestFirstEntries;
     public static ReleaseNoteEntry Latest => LatestFirstEntries[0];
     public static Version LatestVersion => Latest.Version;
+
+    private static LocalizedReleaseNote English012() => new(
+        "Animate-style tweening and editable Pencil curves",
+        "Version 0.1.12 adds production-oriented Classic and Shape tween workflows, editable fitted Pencil curves, and focused drawing and Mixing Brush reliability improvements.",
+        new ReleaseNoteSection(
+            "Classic and Shape tweens",
+            "Timeline frame context menus can create Classic or Shape tweens between populated endpoint keys, resolve a surrounding span from an interior frame, and remove a tween without deleting its materialized cels.",
+            "Classic tweens interpolate compatible local vector objects or one nested drawing-object instance, including position, scale, shortest-path rotation, skew, Alpha, tint, stroke, fill, and gradient state where applicable.",
+            "Shape tweens match closed fills separately from open Line, Pencil, and brush strokes. Cross-primitive edge plans support rectangles, circles, paths, unequal vertex counts, unequal object counts, and compound paths whose holes or islands appear, disappear, move, or merge.",
+            "Solid and gradient materials interpolate with geometry, including solid-to-gradient transitions, unequal stop layouts, and deterministic gradient-kind changes. Editing either endpoint or moving its keyframe rematerializes the affected tween."),
+        new ReleaseNoteSection(
+            "Tween editing and Auto Key",
+            "Selecting a tween shows a monotone Tween Curve editor in the right Inspector. Internal anchors can be added, dragged, keyboard-adjusted, or deleted while fixed endpoints preserve the 0 to 100 percent range.",
+            "Curve gestures create one undo entry, and spring feedback animates drag, insertion, and deletion without changing the deterministic saved curve values.",
+            "Tween metadata, easing anchors, remapped spans, materialized intermediate states, snapshots, project persistence, and Undo remain synchronized after timeline frame edits.",
+            "Drawing-object instance transforms and settings now honor Auto Key: enabled edits materialize the playhead key, while disabled edits update the held source key without creating a hidden playhead state."),
+        new ReleaseNoteSection(
+            "Pencil and drawing workflow",
+            "Pencil adds an Animate-style 0 to 100 percent Smoothing control. Higher values fit the pointer trajectory with fewer stable cubic Bezier segments while preserving endpoints and bounded error.",
+            "Committed Pencil strokes expose editable cubic anchors and controls, participate in intersections and normal topology splitting, and can be partially selected by a marquee that cuts out the enclosed open-curve section.",
+            "The Fill tool now treats same-layer existing fill edges together with strokes as boundaries when creating paint in an enclosed empty region.",
+            "Line drag previews use the active Stroke color and actual width, and drawing previews remain available after the recent tool and renderer changes."),
+        new ReleaseNoteSection(
+            "Performance, release, and compatibility",
+            "Long Mixing Brush gestures adapt preview rebuild frequency to the active work-grid size, avoiding the progressive slowdown previously seen during one continuous stroke while leaving final vertex colors unchanged.",
+            "The formal package is the single replaceable VectorAnimationEngine-0.1.12-win-x64.exe and remains smaller than 5 MiB.",
+            "Replacing the EXE atomically refreshes .V2DEngine while preserving a compatible .Runtime, logs, projects, and user data. Older projects continue to open with compatible defaults.",
+            "Windows x64 is supported. First-time runtime provisioning requires network access, and the formal EXE is not code-signed."));
+
+    private static LocalizedReleaseNote SimplifiedChinese012() => new(
+        "Animate 风格补间与可编辑铅笔曲线",
+        "0.1.12 新增面向实际制作的传统补间、形状补间与补间曲线工作流，完善铅笔贝塞尔编辑，并集中修复绘制和混色可靠性问题。",
+        new ReleaseNoteSection(
+            "传统补间与形状补间",
+            "时间轴帧右键菜单可在有内容的端点关键帧之间创建传统补间或形状补间；在区间内部右键可自动解析相邻端点，删除补间时会保留已经物化的中间 Cel。",
+            "传统补间支持兼容的本地矢量对象或单个嵌套绘制对象实例，并按适用类型插值位置、缩放、最短方向旋转、倾斜、Alpha、色调、描边、填色和渐变状态。",
+            "形状补间会分别匹配封闭填色与开放的 Line、Pencil、笔刷描边；跨类型边计划支持矩形、圆形、路径、不同顶点数、不同对象数，以及孔洞或岛屿出现、消失、移动和合并的复合 Path。",
+            "纯色和渐变会随几何一起插值，包括纯色到渐变、不同色标数量和确定性的渐变类型切换；修改任一端点或移动端点关键帧后会重新物化受影响的补间。"),
+        new ReleaseNoteSection(
+            "补间曲线与 Auto Key",
+            "选中补间后，右侧检查器会显示单调 Tween Curve 编辑器；内部锚点可新增、拖动、键盘微调或删除，固定端点始终保持 0 到 100 百分比范围。",
+            "每次曲线手势只生成一条撤销记录；拖动、新增和删除的弹性反馈只影响界面动画，不改变确定性保存的曲线值。",
+            "补间元数据、缓动锚点、帧移动后的区间、中间物化状态、快照、工程持久化和撤销会保持同步。",
+            "绘制对象实例的变换与设置现在正确遵循 Auto Key：开启时物化播放头关键帧，关闭时修改保持曝光的来源关键帧，不再创建隐藏的播放头状态。"),
+        new ReleaseNoteSection(
+            "铅笔与绘制工作流",
+            "Pencil 新增类似 Animate 的 0 到 100 百分比 Smoothing；数值越高，越会在保留首尾点和误差边界的前提下用更少、稳定的三次贝塞尔段拟合指针轨迹。",
+            "绘制后的 Pencil 描边可使用三次贝塞尔锚点和控制柄编辑，正常参与交点及拓扑切分；选框穿过描边时可切出并只选择框内的开放曲线部分。",
+            "Fill 工具创建封闭区域填色时，会把同图层已有填色边缘与描边共同作为边界。",
+            "Line 拖动预览改为使用当前 Stroke 颜色和实际线宽，并修复近期工具及渲染调整后绘制预览消失的问题。"),
+        new ReleaseNoteSection(
+            "性能、发布与兼容性",
+            "长时间连续使用 Mixing Brush 时，会根据活动工作网格规模自适应降低预览重建频率，避免单笔越画越慢，同时不改变最终顶点色。",
+            "正式发布物为唯一一个可替换的 VectorAnimationEngine-0.1.12-win-x64.exe，并继续保持小于 5 MiB。",
+            "替换 EXE 后会原子刷新 .V2DEngine，同时保留兼容的 .Runtime、日志、工程和用户数据；旧工程继续使用兼容默认值打开。",
+            "支持 Windows x64；首次安装运行环境需要网络连接，当前正式 EXE 尚未进行代码签名。"));
+
+    private static LocalizedReleaseNote English011() => new(
+        "Natural Mixing Brush and a more capable asset Vault",
+        "Version 0.1.11 introduces real-time optical and pigment paint mixing, connected-region editing, and a refined tag-driven asset workflow.",
+        new ReleaseNoteSection(
+            "Mixing Brush",
+            "The new Mixing Brush samples paint on the active layer and supports linear-light optical mixing or Kubelka-Munk pigment mixing with adjustable strength, viscosity, paint load, influence, size, and edge softness.",
+            "Fixed-distance region vertices store only the final real-time ARGB result and brush geometry. Soft alpha edges and premultiplied linear-light interpolation avoid hard bands without storing generated gradients.",
+            "Repeated passes recompute overlapped paint, optical deposits accumulate coverage, and pigment deposits preserve continuous transition colors while carried paint gradually returns to the current Fill color.",
+            "Incremental rasterization, cached sampling candidates, color conversion tables, and merged region results reduce preview and repaint cost while preserving deterministic output."),
+        new ReleaseNoteSection(
+            "Mixing-region editing",
+            "Each gesture is undoable with Ctrl+Z, and the Eraser can trim or split Mixing Brush paint when Fill erasing is enabled.",
+            "Click and marquee selection use actual painted coverage. A connected island inside a merged mixing object can be selected, moved, transformed, deleted, copied, and pasted without selecting unrelated islands.",
+            "Editing a selected island materializes only that region, preserves draw order and timeline ownership, and can be reverted to the previous merged result with Undo.",
+            "Legacy trajectory-based Mixing Brush data remains readable and renderable."),
+        new ReleaseNoteSection(
+            "Vault and tags",
+            "The Vault now provides a denser professional asset list with stable hover previews, text search, an independent tag filter, and smoother targeted row updates.",
+            "Asset right-click menus assign existing project tags without closing the tag submenu after each toggle, and assigned tags appear as compact colored dots beside the asset name.",
+            "A new tag starts as New tag with a random color; the manager exposes direct RGB sliders and numeric values for color adjustment.",
+            "Tag definitions, colors, assignments, filtering, and search by tag name persist with the project and restart restoration."),
+        new ReleaseNoteSection(
+            "Release and compatibility",
+            "The formal package is the single replaceable VectorAnimationEngine-0.1.11-win-x64.exe and remains smaller than 5 MiB.",
+            "Replacing the EXE atomically refreshes .V2DEngine while preserving a compatible .Runtime, logs, projects, and user data.",
+            "Older projects remain supported; missing tag and Mixing Brush region data use compatible defaults, and legacy Mixing Brush trajectories continue to render.",
+            "Windows x64 is supported. First-time runtime provisioning requires network access, and the formal EXE is not code-signed."));
+
+    private static LocalizedReleaseNote SimplifiedChinese011() => new(
+        "更自然的混色笔刷与更完善的素材库",
+        "0.1.11 新增实时光学/颜料混色、混色连通区域编辑，并完善基于标签的素材管理流程。",
+        new ReleaseNoteSection(
+            "混色笔刷",
+            "新增 Mixing Brush，可采样活动图层上的已有颜色，并以线性光光学混色或 Kubelka-Munk 颜料混色工作；支持调节混色力度、粘性、载色量、影响因子、笔刷大小和边缘柔度。",
+            "笔迹以固定距离区域顶点保存最终实时 ARGB 色值和笔刷几何，不保存生成渐变；透明柔边与预乘线性光插值可避免生硬边缘和色彩层次。",
+            "反复涂抹会重新计算重叠区域；光学模式可稳定叠加同色覆盖，颜料模式保留连续过渡色，离开采样颜色后携带色会逐渐恢复到当前 Fill 颜色。",
+            "增量栅格化、采样候选缓存、颜色转换表和区域结果合并降低了预览及反复涂抹开销，同时保持确定性输出。"),
+        new ReleaseNoteSection(
+            "混色区域编辑",
+            "每次混色笔迹都可使用 Ctrl+Z 撤销；启用 Fill 擦除时，Eraser 可以裁切混色区域或将中段擦除后的内容拆成有序片段。",
+            "点击与框选按真实上色覆盖命中；合并混色对象中的单个连通岛可独立选择、移动、变形、删除、复制和粘贴，不会连带选中无关区域。",
+            "首次编辑所选岛时只物化该局部区域，并保留绘制顺序与时间轴归属；Undo 可恢复编辑前的合并结果。",
+            "旧工程中按轨迹保存的 Mixing Brush 数据继续兼容读取与渲染。"),
+        new ReleaseNoteSection(
+            "素材库与标签",
+            "Vault 使用更紧凑、专业的素材列表，提供稳定的真实几何悬停预览、文字搜索、独立标签筛选以及更平滑的局部行重绘。",
+            "素材右键菜单可从已有项目标签中直接勾选；每次切换后标签子菜单保持打开，已分配标签以紧凑彩色圆点显示在素材名称右侧。",
+            "新标签默认命名为 New tag 并使用随机颜色；标签管理器直接提供 RGB 滑杆和数值框调色。",
+            "标签定义、颜色、素材分配、标签筛选和按标签名称搜索会随工程及编辑器重启恢复持久保存。"),
+        new ReleaseNoteSection(
+            "发布与兼容性",
+            "正式发布物为唯一一个可替换的 VectorAnimationEngine-0.1.11-win-x64.exe，并继续保持小于 5 MiB。",
+            "替换 EXE 后会原子刷新 .V2DEngine，同时保留兼容的 .Runtime、日志、工程和用户数据。",
+            "旧工程继续受支持；缺少标签或混色区域数据时会使用兼容默认值，旧版混色笔刷轨迹仍可正常渲染。",
+            "支持 Windows x64；首次安装运行环境需要网络连接，当前正式 EXE 尚未进行代码签名。"));
 
     private static LocalizedReleaseNote English019() => new(
         "Complete layer blending and clearer timeline display controls",

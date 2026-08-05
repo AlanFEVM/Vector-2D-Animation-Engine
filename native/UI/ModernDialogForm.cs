@@ -12,19 +12,15 @@ internal enum DialogActionStyle
 
 internal class ModernDialogForm : Form
 {
-    private const int MotionDurationMilliseconds = 170;
+    private const int OpeningMotionDurationMilliseconds = 140;
     private readonly System.Windows.Forms.Timer _motionTimer = new() { Interval = 15 };
     private readonly Stopwatch _motionWatch = new();
     private readonly Panel _header = new();
     private readonly Label _titleLabel = new();
     private readonly SvgIconButton _closeButton = new(SvgIconKind.Close);
     private readonly Dictionary<Button, DialogActionStyle> _dialogActionStyles = [];
-    private bool _shown;
-    private bool _closing;
-    private bool _allowClose;
     private Point _settledLocation;
     private Point _motionOrigin;
-    private DialogResult _pendingDialogResult = DialogResult.Cancel;
 
     protected ModernDialogForm(string title, Size clientSize)
     {
@@ -42,7 +38,7 @@ internal class ModernDialogForm : Form
         StartPosition = FormStartPosition.CenterParent;
         KeyPreview = true;
         Padding = new Padding(1);
-        Opacity = 0;
+        Opacity = UiMotion.AnimationsEnabled ? 0 : 1;
 
         var surface = new TableLayoutPanel
         {
@@ -97,7 +93,7 @@ internal class ModernDialogForm : Form
         _titleLabel.Margin = Padding.Empty;
         headerLayout.Controls.Add(_titleLabel, 0, 0);
 
-        Theme.StyleButton(_closeButton);
+        Theme.StyleToolbarButton(_closeButton);
         _closeButton.AccessibleName = "Close";
         _closeButton.Dock = DockStyle.Fill;
         _closeButton.Margin = Padding.Empty;
@@ -140,7 +136,7 @@ internal class ModernDialogForm : Form
     protected Panel DialogContent { get; } = new();
     protected FlowLayoutPanel DialogActions { get; } = new();
     internal bool IsDialogMotionRunning => _motionTimer.Enabled;
-    internal bool IsDialogClosing => _closing;
+    internal bool IsDialogClosing => false;
 
     protected Button AddDialogAction(
         string text,
@@ -176,8 +172,6 @@ internal class ModernDialogForm : Form
 
     protected void RequestDialogResult(DialogResult result)
     {
-        if (_closing) return;
-        _pendingDialogResult = result;
         DialogResult = result;
         Close();
     }
@@ -216,31 +210,16 @@ internal class ModernDialogForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        _shown = true;
         _settledLocation = Location;
-        _motionOrigin = new Point(Location.X, Location.Y + 12);
-        Location = _motionOrigin;
-        Opacity = 0;
-        _motionWatch.Restart();
-        _motionTimer.Start();
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (_allowClose
-            || !_shown
-            || !Visible
-            || e.CloseReason is CloseReason.ApplicationExitCall or CloseReason.WindowsShutDown or CloseReason.TaskManagerClosing)
+        if (!UiMotion.AnimationsEnabled)
         {
-            base.OnFormClosing(e);
+            CompleteOpeningMotion();
             return;
         }
 
-        e.Cancel = true;
-        if (_closing) return;
-        _closing = true;
-        if (DialogResult != DialogResult.None) _pendingDialogResult = DialogResult;
-        _motionOrigin = Location;
+        _motionOrigin = new Point(Location.X, Location.Y + 12);
+        Location = _motionOrigin;
+        Opacity = 0;
         _motionWatch.Restart();
         _motionTimer.Start();
     }
@@ -259,24 +238,16 @@ internal class ModernDialogForm : Form
             return;
         }
 
-        var progress = Math.Clamp(
-            _motionWatch.Elapsed.TotalMilliseconds / MotionDurationMilliseconds,
-            0,
-            1);
-        if (_closing)
+        if (!UiMotion.AnimationsEnabled)
         {
-            var eased = progress * progress;
-            Opacity = Math.Max(0, 1 - eased);
-            Location = new Point(_motionOrigin.X, _motionOrigin.Y + (int)Math.Round(8 * eased));
-            if (progress < 1) return;
-
-            _motionTimer.Stop();
-            _allowClose = true;
-            DialogResult = _pendingDialogResult;
-            Close();
+            CompleteOpeningMotion();
             return;
         }
 
+        var progress = Math.Clamp(
+            _motionWatch.Elapsed.TotalMilliseconds / OpeningMotionDurationMilliseconds,
+            0,
+            1);
         var openingEase = 1 - Math.Pow(1 - progress, 3);
         Opacity = openingEase;
         Location = new Point(
@@ -284,6 +255,11 @@ internal class ModernDialogForm : Form
             _motionOrigin.Y + (int)Math.Round((_settledLocation.Y - _motionOrigin.Y) * openingEase));
         if (progress < 1) return;
 
+        CompleteOpeningMotion();
+    }
+
+    private void CompleteOpeningMotion()
+    {
         Opacity = 1;
         Location = _settledLocation;
         _motionTimer.Stop();
@@ -291,27 +267,23 @@ internal class ModernDialogForm : Form
 
     private static void StyleDialogAction(Button button, DialogActionStyle style)
     {
-        if (style == DialogActionStyle.Primary)
+        switch (style)
         {
-            Theme.StyleActiveButton(button);
-            return;
+            case DialogActionStyle.Primary:
+                Theme.StylePrimaryButton(button);
+                break;
+            case DialogActionStyle.Danger:
+                Theme.StyleDangerButton(button);
+                break;
+            default:
+                Theme.StyleStandardButton(button);
+                break;
         }
-
-        Theme.StyleButton(button);
-        if (style != DialogActionStyle.Danger) return;
-        button.ForeColor = Theme.DangerText;
-        button.FlatAppearance.BorderColor = Theme.Danger;
-        UiMotion.ConfigureButton(
-            button,
-            Theme.DangerSurface,
-            Theme.DangerHoverSurface,
-            Theme.DangerPressedSurface,
-            active: false);
     }
 
     private void BeginTitleDrag(object? sender, MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left || _closing) return;
+        if (e.Button != MouseButtons.Left) return;
         ReleaseCapture();
         SendMessage(Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
     }
@@ -432,9 +404,10 @@ internal sealed class ModernMessageDialog : ModernDialogForm
 
     private static Size ResolveSize(string message)
     {
+        using var font = Theme.UiFont(9.7f);
         var measured = TextRenderer.MeasureText(
             message,
-            Theme.UiFont(9.7f),
+            font,
             new Size(430, 1000),
             TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
         return new Size(520, Math.Clamp(154 + measured.Height, 220, 390));

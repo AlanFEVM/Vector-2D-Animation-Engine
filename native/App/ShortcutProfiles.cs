@@ -61,6 +61,7 @@ internal static class ShortcutCommandIds
     public const string ToolPencil = "tool.pencil";
     public const string ToolBrush = "tool.brush";
     public const string ToolPressureBrush = "tool.pressure-brush";
+    public const string ToolMixingBrush = "tool.mixing-brush";
     public const string ToolText = "tool.text";
     public const string ToolFill = "tool.fill";
     public const string ToolInkBottle = "tool.ink-bottle";
@@ -103,6 +104,7 @@ internal static class ShortcutProfiles
         Tool(ShortcutCommandIds.ToolPencil, "Pencil", ToolMode.Pencil),
         Tool(ShortcutCommandIds.ToolBrush, "Brush", ToolMode.Brush),
         Tool(ShortcutCommandIds.ToolPressureBrush, "Pressure Brush", ToolMode.PressureBrush),
+        Tool(ShortcutCommandIds.ToolMixingBrush, "Mixing Brush", ToolMode.MixingBrush),
         Tool(ShortcutCommandIds.ToolText, "Text", ToolMode.Text),
         Tool(ShortcutCommandIds.ToolFill, "Fill", ToolMode.Fill),
         Tool(ShortcutCommandIds.ToolInkBottle, "Ink Bottle", ToolMode.InkBottle),

@@ -9,6 +9,7 @@ Keep input state, editable model state, Stage overlays, and both render backends
 
 ## Route The Task
 
+- Read [module-map.md](references/module-map.md) first to open the smallest Stage source module that owns the behavior.
 - Read [tool-lifecycle.md](references/tool-lifecycle.md) for tools, right-click commands, shortcuts, pointer sessions, selection, transforms, drag/drop, undo, or preview state.
 - Read [rendering-pipeline.md](references/rendering-pipeline.md) for new visuals/shapes, Direct2D or GDI drawing, render order, LOD, caches, camera, fallback, or performance.
 - Read both when a new tool introduces a preview or committed geometry that must render.
@@ -40,9 +41,9 @@ Keep input state, editable model state, Stage overlays, and both render backends
 ## Targeted Search
 
 ```powershell
-rg -n "ActivateTool|StageMouse(Down|Move|Up)|Finish.*Pointer|ProcessCmdKey" native/UI/MainForm.cs
-rg -n "Set.*Preview|Clear.*Preview|SetSelection|HitTest.*Handle|ScreenToWorld" native/Rendering/StageControl.cs
-rg -n "DrawObject|ResetTarget|LOD|Underlay|SceneRenderOrder" native/Rendering native/App/Benchmark.cs
+rg -n -g "MainForm*.cs" "ActivateTool|StageMouse(Down|Move|Up)|Finish.*Pointer|ProcessCmdKey" native/UI
+rg -n -g "StageControl*.cs" "Set.*Preview|Clear.*Preview|SetSelection|HitTest.*Handle|ScreenToWorld" native/Rendering
+rg -n -g "Direct2DStageRenderer*.cs" -g "Benchmark*.cs" "DrawObject|ResetTarget|LOD|Underlay|SceneRenderOrder" native/Rendering native/App
 ```
 
-Search symbols and callers rather than reading all of `MainForm.cs`, `StageControl.cs`, or `Direct2DStageRenderer.cs`.
+Search symbols and callers, then open the owning partial from the module map rather than reading an entire core file.

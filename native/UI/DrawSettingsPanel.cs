@@ -3,20 +3,24 @@ namespace VectorAnimationEngine;
 internal sealed class DrawSettingsPanel : UserControl
 {
     private readonly DrawSettings _settings;
+    private readonly Label _title = new();
     private readonly ComboBox _shape = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ToolTip _toolTip = new();
     private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
     private readonly ModernNumericUpDown _shapeVertexCount = new();
-    private readonly ModernSlider _freehandSmoothing = new();
-    private readonly Label _freehandSmoothingValue = new();
+    private readonly ModernSlider _pencilSmoothing = new();
+    private readonly Label _pencilSmoothingValue = new();
     private readonly Panel _eraserOptions = new();
     private readonly CheckBox _eraseLines = EraserOption("Stroke");
     private readonly CheckBox _eraseFills = EraserOption("Fill");
     private TableLayoutPanel? _content;
+    private Label? _shapeLabel;
+    private Label? _aspectLabel;
     private Label? _shapeVertexCountLabel;
     private bool _updating;
     private bool _shapeDetailToolsVisible = true;
     private bool _shapeDetailVisible;
+    private bool _pencilPresentation;
 
     public DrawSettingsPanel(DrawSettings settings)
     {
@@ -30,7 +34,7 @@ internal sealed class DrawSettingsPanel : UserControl
 
         BuildUi();
         ReadSettings();
-        _settings.Changed += (_, _) => ReadSettings();
+        _settings.Changed += SettingsChanged;
     }
 
     public void SetEraserOptionsVisible(bool visible)
@@ -47,29 +51,52 @@ internal sealed class DrawSettingsPanel : UserControl
         ConfigureShapeDetail(_settings.ShapeKind, syncValue: true);
     }
 
-    public int PreferredHeight => 164 + (_shapeDetailVisible ? 36 : 0) + (_eraserOptions.Visible ? 36 : 0);
+    public int PreferredHeight => _pencilPresentation
+        ? 84
+        : 164 + (_shapeDetailVisible ? 36 : 0) + (_eraserOptions.Visible ? 36 : 0);
+
+    public void SetPencilPresentation()
+    {
+        if (_pencilPresentation) return;
+        _pencilPresentation = true;
+        _title.Text = "Pencil";
+        _content!.RowStyles[0].Height = 0;
+        _content.RowStyles[1].Height = 0;
+        _content.RowStyles[2].Height = 0;
+        _content.RowStyles[3].Height = 36;
+        _shapeLabel!.Visible = false;
+        _shape.Visible = false;
+        _aspectLabel!.Visible = false;
+        _keepRatio.Visible = false;
+        _shapeVertexCountLabel!.Visible = false;
+        _shapeVertexCount.Visible = false;
+        _eraserOptions.Visible = false;
+        NotifyPreferredHeightChanged();
+    }
 
     public event EventHandler? PreferredHeightChanged;
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _toolTip.Dispose();
+        if (disposing)
+        {
+            _settings.Changed -= SettingsChanged;
+            _toolTip.Dispose();
+        }
         base.Dispose(disposing);
     }
 
     private void BuildUi()
     {
-        var title = new Label
-        {
-            Text = "Draw Settings",
-            Dock = DockStyle.Top,
-            Height = 28,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-        Controls.Add(title);
+        _title.Text = "Draw Settings";
+        _title.Dock = DockStyle.Top;
+        _title.Height = 28;
+        _title.ForeColor = Theme.Text;
+        _title.BackColor = Theme.Panel;
+        _title.Font = Theme.UiFont(10, FontStyle.Bold);
+        _title.TextAlign = ContentAlignment.MiddleLeft;
+        _title.AutoEllipsis = true;
+        Controls.Add(_title);
 
         var content = new TableLayoutPanel
         {
@@ -132,7 +159,7 @@ internal sealed class DrawSettingsPanel : UserControl
         _shape.Margin = new Padding(0, 3, 0, 3);
         Theme.StyleComboBox(_shape);
         _shape.SelectedIndexChanged += (_, _) => UpdateSettings();
-        AddField(content, "Shape", _shape, 0);
+        _shapeLabel = AddField(content, "Shape", _shape, 0);
 
         _eraseLines.CheckedChanged += (_, _) => UpdateSettings();
         _eraseFills.CheckedChanged += (_, _) => UpdateSettings();
@@ -143,7 +170,7 @@ internal sealed class DrawSettingsPanel : UserControl
         _keepRatio.Dock = DockStyle.Left;
         _keepRatio.Margin = new Padding(0, 2, 0, 2);
         _toolTip.SetToolTip(_keepRatio, _keepRatio.AccessibleName);
-        AddField(content, "Aspect", _keepRatio, 1, fillInput: false);
+        _aspectLabel = AddField(content, "Aspect", _keepRatio, 1, fillInput: false);
 
         _shapeVertexCount.Minimum = 3m;
         _shapeVertexCount.Maximum = 64m;
@@ -157,21 +184,27 @@ internal sealed class DrawSettingsPanel : UserControl
         _shapeVertexCountLabel.Visible = false;
         _shapeVertexCount.Visible = false;
 
-        _freehandSmoothing.Minimum = 0;
-        _freehandSmoothing.Maximum = 100;
-        _freehandSmoothing.TickFrequency = 20;
-        _freehandSmoothing.Dock = DockStyle.Fill;
-        _freehandSmoothing.Margin = Padding.Empty;
-        _freehandSmoothing.ValueChanged += (_, _) =>
+        _pencilSmoothing.Minimum = 0;
+        _pencilSmoothing.Maximum = 100;
+        _pencilSmoothing.SmallChange = 1;
+        _pencilSmoothing.LargeChange = 10;
+        _pencilSmoothing.TickFrequency = 20;
+        _pencilSmoothing.Dock = DockStyle.Fill;
+        _pencilSmoothing.Margin = Padding.Empty;
+        _pencilSmoothing.AccessibleName = "Pencil smoothing";
+        _pencilSmoothing.AccessibleDescription = "Controls Pencil path smoothing from 0 to 100 percent";
+        _pencilSmoothing.ValueChanged += (_, _) =>
         {
-            _freehandSmoothingValue.Text = $"{_freehandSmoothing.Value}%";
-            UpdateSettings();
+            _pencilSmoothingValue.Text = $"{_pencilSmoothing.Value}%";
+            UpdatePencilSmoothing();
         };
-        _freehandSmoothingValue.Dock = DockStyle.Fill;
-        _freehandSmoothingValue.ForeColor = Theme.Muted;
-        _freehandSmoothingValue.BackColor = Theme.Panel;
-        _freehandSmoothingValue.TextAlign = ContentAlignment.MiddleCenter;
-        _freehandSmoothingValue.Font = Theme.UiFont();
+        _pencilSmoothingValue.Dock = DockStyle.Fill;
+        _pencilSmoothingValue.ForeColor = Theme.Muted;
+        _pencilSmoothingValue.BackColor = Theme.Panel;
+        _pencilSmoothingValue.TextAlign = ContentAlignment.MiddleRight;
+        _pencilSmoothingValue.Font = Theme.UiFont();
+        _pencilSmoothingValue.AccessibleName = "Pencil smoothing value";
+        _pencilSmoothingValue.AccessibleRole = AccessibleRole.StaticText;
         var smoothingRow = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -182,8 +215,8 @@ internal sealed class DrawSettingsPanel : UserControl
         };
         smoothingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         smoothingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
-        smoothingRow.Controls.Add(_freehandSmoothing, 0, 0);
-        smoothingRow.Controls.Add(_freehandSmoothingValue, 1, 0);
+        smoothingRow.Controls.Add(_pencilSmoothing, 0, 0);
+        smoothingRow.Controls.Add(_pencilSmoothingValue, 1, 0);
         AddField(content, "Smoothing", smoothingRow, 3);
         ConfigureShapeDetail(_settings.ShapeKind, syncValue: true);
     }
@@ -194,12 +227,14 @@ internal sealed class DrawSettingsPanel : UserControl
         _shape.SelectedItem = _settings.ShapeKind.ToString();
         _keepRatio.Checked = _settings.KeepAspectRatio;
         ConfigureShapeDetail(_settings.ShapeKind, syncValue: true);
-        _freehandSmoothing.Value = _settings.FreehandSmoothing;
-        _freehandSmoothingValue.Text = $"{_settings.FreehandSmoothing}%";
+        _pencilSmoothing.Value = _settings.PencilSmoothing;
+        _pencilSmoothingValue.Text = $"{_settings.PencilSmoothing}%";
         _eraseLines.Checked = _settings.EraseLines;
         _eraseFills.Checked = _settings.EraseFills;
         _updating = false;
     }
+
+    private void SettingsChanged(object? sender, EventArgs e) => ReadSettings();
 
     private void UpdateSettings()
     {
@@ -212,9 +247,15 @@ internal sealed class DrawSettingsPanel : UserControl
         _settings.KeepAspectRatio = _keepRatio.Checked;
         if (_settings.ShapeKind == ShapeKind.Polygon) _settings.PolygonSides = (int)_shapeVertexCount.Value;
         else if (_settings.ShapeKind == ShapeKind.Star) _settings.StarPoints = (int)_shapeVertexCount.Value;
-        _settings.FreehandSmoothing = _freehandSmoothing.Value;
         _settings.EraseLines = _eraseLines.Checked;
         _settings.EraseFills = _eraseFills.Checked;
+        _settings.NotifyChanged();
+    }
+
+    private void UpdatePencilSmoothing()
+    {
+        if (_updating) return;
+        _settings.PencilSmoothing = _pencilSmoothing.Value;
         _settings.NotifyChanged();
     }
 
@@ -226,7 +267,7 @@ internal sealed class DrawSettingsPanel : UserControl
     private void ConfigureShapeDetail(ShapeKind shape, bool syncValue)
     {
         var supported = shape is ShapeKind.Polygon or ShapeKind.Star;
-        var visible = _shapeDetailToolsVisible && supported;
+        var visible = !_pencilPresentation && _shapeDetailToolsVisible && supported;
         if (supported)
         {
             var wasUpdating = _updating;
@@ -255,7 +296,7 @@ internal sealed class DrawSettingsPanel : UserControl
 
     private void NotifyPreferredHeightChanged()
     {
-        MinimumSize = new Size(248, PreferredHeight - 12);
+        MinimumSize = new Size(248, _pencilPresentation ? PreferredHeight : PreferredHeight - 12);
         PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
     }
 

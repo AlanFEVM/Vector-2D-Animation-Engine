@@ -1,0 +1,56 @@
+{
+  "formatVersion": 1,
+  "generator": {
+    "software": "Vector 2D Animation Engine",
+    "version": "0.1.11.0",
+    "savedUtc": "2026-08-03T13:00:24.9499014+00:00"
+  },
+  "project": {
+    "id": "d4cbd781657146918319b80f555b0010",
+    "name": "Untitled Project",
+    "playbackFps": 30,
+    "loopPlayback": true,
+    "playbackStartFrame": 0,
+    "playbackEndFrame": 239
+  },
+  "assetTags": [],
+  "assetFolders": [],
+  "drawingObjects": [
+    {
+      "id": "51cc425d24904a218cdc90e4eef4367c",
+      "name": "Drawing Object 001",
+      "kind": "Symbol",
+      "detail": "Reusable drawing object",
+      "assetFolderId": "",
+      "assetTagIds": [],
+      "anchorX": 0,
+      "anchorY": 0,
+      "createdAt": "2026-08-03T20:47:26.2381715+08:00",
+      "svgPath": ".Vault/51cc425d24904a218cdc90e4eef4367c.svg",
+      "svgSha256": "9ed9e49ca0faf9748117b911090cbeec5a5b362335d9eee871d17b4b08611b5c",
+      "timelinePath": ".TimeLine/Drawings/51cc425d24904a218cdc90e4eef4367c.json",
+      "timelineSha256": "cb46874a73f140421527309e1f950839930295895363887aa23c1a0c9c1ac024"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "82f3801568f740578136c9c114574e6b",
+      "name": "Scene 001",
+      "detail": "2D scene composition",
+      "dimension": 0,
+      "camera": {
+        "name": "Main Camera",
+        "projection": 0,
+        "x": 0,
+        "y": 0,
+        "z": -1000,
+        "depth": 1000,
+        "orthographicSize": 28000,
+        "fieldOfViewDegrees": 60
+      },
+      "createdAt": "2026-08-03T20:47:26.2378848+08:00",
+      "timelinePath": ".TimeLine/Scenes/82f3801568f740578136c9c114574e6b.json",
+      "timelineSha256": "7def13f9c89c823aee2cb0f183affd06fbb258696f5716cc079fd309c1c0b276"
+    }
+  ]
+}

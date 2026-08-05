@@ -6,9 +6,15 @@ internal sealed class DrawSettings
     private float _angleSnapDegrees = 15;
     private int _polygonSides = 6;
     private int _starPoints = 5;
-    private int _freehandSmoothing = 52;
+    private int _pencilSmoothing = 52;
     private int _pressureBrushSmoothing = 70;
     private int _brushFrequency = 8;
+    private MixingBrushSettings _mixingBrushSettings = new(
+        BrushMixingMode.Optical,
+        Strength: 0.65f,
+        Viscosity: 0.45f,
+        PaintLoad: 0.35f,
+        Influence: 0.4f);
 
     public event EventHandler? Changed;
 
@@ -48,10 +54,10 @@ internal sealed class DrawSettings
         set => _starPoints = Math.Clamp(value, 3, 32);
     }
 
-    public int FreehandSmoothing
+    public int PencilSmoothing
     {
-        get => _freehandSmoothing;
-        set => _freehandSmoothing = Math.Clamp(value, 0, 100);
+        get => _pencilSmoothing;
+        set => _pencilSmoothing = Math.Clamp(value, 0, 100);
     }
 
     public int PressureBrushSmoothing
@@ -64,6 +70,17 @@ internal sealed class DrawSettings
     {
         get => _brushFrequency;
         set => _brushFrequency = Math.Clamp(value, 1, 24);
+    }
+
+    public MixingBrushSettings MixingBrushSettings
+    {
+        get => _mixingBrushSettings;
+        set => _mixingBrushSettings = new MixingBrushSettings(
+            value.Mode,
+            value.Strength,
+            value.Viscosity,
+            value.PaintLoad,
+            value.Influence);
     }
 
     public PointF SnapPoint(PointF point, float? gridStep = null)

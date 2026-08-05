@@ -16,7 +16,7 @@ Treat geometry edits as transactions over packed structure-of-arrays storage. Se
 5. For multi-object edits, plan first: snapshot, calculate removals/additions, compact once, append replacements, then rebuild derived state.
 6. Preserve material, atoms, keyframe ownership, endpoint styles, `ObjectOrder`, and `ObjectSubOrder`.
 7. Return and consume old-to-new object mappings. Never continue using pre-compaction indices.
-8. Add the smallest regression beside the related cases in `native/App/Benchmark.cs`.
+8. Add the smallest regression beside the related cases in the `native/App/Benchmark*.cs` partial family. First-move drag budgets belong in `Benchmark.DragPerformance.cs`.
 9. Run `$vector2d-validate-change` with `Freehand`; add `Render` when Stage or Direct2D behavior is affected.
 
 ## Core Invariants
@@ -36,5 +36,5 @@ Treat geometry edits as transactions over packed structure-of-arrays storage. Se
 ```powershell
 rg -n "Add(Line|Curve|Path|Freehand)|EraseWithBrushStroke|TransformObjects" native/Engine/VectorScene.cs
 rg -n "HitTestElement|Get(Fill|Stroke|Boundary)Parts|Materialize|DetachElement" native/Engine/VectorScene.cs
-rg -n "MergeSameColorFillsAround|MergeCompatibleLineSegments|RebuildGeometryIndex" native/Engine/VectorScene.cs native/UI/MainForm.cs
+rg -n -g "MainForm*.cs" "MergeSameColorFillsAround|MergeCompatibleLineSegments|RebuildGeometryIndex" native/Engine/VectorScene.cs native/UI
 ```

@@ -33,8 +33,8 @@ internal sealed class LayerColorDialog : ModernDialogForm
     private bool _updating;
     private Color _color;
 
-    public LayerColorDialog(Color color)
-        : base("Layer Color", new Size(446, 462))
+    public LayerColorDialog(Color color, string title = "Layer Color")
+        : base(title, new Size(446, 462))
     {
         _initialColor = Opaque(color);
         _color = _initialColor;
@@ -88,13 +88,13 @@ internal sealed class LayerColorDialog : ModernDialogForm
         previews.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         previews.Controls.Add(CreateLabel("Original"), 0, 0);
         previews.Controls.Add(CreateLabel("New"), 1, 0);
-        previews.Controls.Add(ConfigurePreview(_originalPreview, "Original layer color"), 0, 1);
-        previews.Controls.Add(ConfigurePreview(_currentPreview, "New layer color"), 1, 1);
+        previews.Controls.Add(ConfigurePreview(_originalPreview, "Original color"), 0, 1);
+        previews.Controls.Add(ConfigurePreview(_currentPreview, "New color"), 1, 1);
         layout.Controls.Add(previews, 0, 0);
 
         _plane.Dock = DockStyle.Fill;
         _plane.Margin = new Padding(0, 8, 0, 8);
-        _plane.AccessibleDescription = "Choose layer color saturation and brightness";
+        _plane.AccessibleDescription = "Choose color saturation and brightness";
         layout.Controls.Add(_plane, 0, 1);
 
         _hue.Dock = DockStyle.Fill;
@@ -102,7 +102,7 @@ internal sealed class LayerColorDialog : ModernDialogForm
         _hue.Minimum = 0;
         _hue.Maximum = 359;
         _hue.AccessibleName = "Hue";
-        _hue.AccessibleDescription = "Layer outline hue in degrees";
+        _hue.AccessibleDescription = "Color hue in degrees";
         _hue.GradientColor = ratio => HsvToColor(ratio * 359f, 1f, 1f);
         layout.Controls.Add(_hue, 0, 2);
 
@@ -153,7 +153,7 @@ internal sealed class LayerColorDialog : ModernDialogForm
         _presets.Margin = new Padding(0, 5, 0, 0);
         _presets.SwatchSize = 22;
         _presets.Gap = 6;
-        _presets.AccessibleName = "Layer color presets";
+        _presets.AccessibleName = "Color presets";
         _presets.SetColors(PresetColors);
         layout.Controls.Add(_presets, 0, 5);
     }

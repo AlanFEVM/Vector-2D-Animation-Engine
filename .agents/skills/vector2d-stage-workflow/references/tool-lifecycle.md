@@ -32,6 +32,8 @@ Also call the same cleanup path during tool activation, frame change, workspace 
 
 ## Selection And Editing
 
+- `MainForm.SelectionDrag.cs` owns selected fill/stroke movement, topology-part materialization, linked-boundary synchronization, and frame-coalesced drag updates.
+- `StageControl.SelectionDrag.cs` owns the non-destructive selection offset, synchronous first presentation, and first-move telemetry. Keep its Set/Clear and Begin/Record paths paired.
 - Selection supports Shift additive behavior and delayed drag-vs-click decisions; preserve existing thresholds and priority rules.
 - Selected fill dragging has priority over starting a new marquee.
 - Topology hits may represent virtual parts. Call `DetachElementForMove` or materialization APIs before geometry edits.

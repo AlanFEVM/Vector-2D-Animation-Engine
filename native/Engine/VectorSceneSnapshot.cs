@@ -62,8 +62,100 @@ internal sealed class VectorSceneSnapshot
     public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
     public Dictionary<int, PathBezierNode[][]> PathBezierLocalContours { get; init; } = new();
     public Dictionary<int, PointF[]> FreehandLocalPoints { get; init; } = new();
+    public Dictionary<int, PathBezierNode[]> FreehandBezierLocalNodes { get; init; } = new();
+    public Dictionary<int, MixingBrushTrajectorySample[]> MixingStrokeLocalSamples { get; init; } = new();
+    public Dictionary<int, MixingBrushRegionData> MixingStrokeLocalRegions { get; init; } = new();
     public Dictionary<int, string> ImportedSvgSources { get; init; } = new();
     public Dictionary<int, TextObjectData> TextObjects { get; init; } = new();
+
+    internal void DetachSharedGeometry()
+    {
+        foreach (var key in GradientStops.Keys.ToArray())
+        {
+            GradientStops[key] = GradientStops[key].ToArray();
+        }
+        foreach (var key in GradientPathLocalPoints.Keys.ToArray())
+        {
+            GradientPathLocalPoints[key] = GradientPathLocalPoints[key].ToArray();
+        }
+        foreach (var key in ShapeGradientMappingLocalContours.Keys.ToArray())
+        {
+            ShapeGradientMappingLocalContours[key] = CloneContours(ShapeGradientMappingLocalContours[key]);
+        }
+        foreach (var key in PathLocalContours.Keys.ToArray())
+        {
+            PathLocalContours[key] = CloneContours(PathLocalContours[key]);
+        }
+        foreach (var key in PathBezierLocalContours.Keys.ToArray())
+        {
+            PathBezierLocalContours[key] = CloneContours(PathBezierLocalContours[key]);
+        }
+        foreach (var key in FreehandLocalPoints.Keys.ToArray())
+        {
+            FreehandLocalPoints[key] = FreehandLocalPoints[key].ToArray();
+        }
+        foreach (var key in FreehandBezierLocalNodes.Keys.ToArray())
+        {
+            FreehandBezierLocalNodes[key] = FreehandBezierLocalNodes[key].ToArray();
+        }
+        foreach (var key in MixingStrokeLocalSamples.Keys.ToArray())
+        {
+            MixingStrokeLocalSamples[key] = MixingStrokeLocalSamples[key].ToArray();
+        }
+        foreach (var key in MixingStrokeLocalRegions.Keys.ToArray())
+        {
+            MixingStrokeLocalRegions[key] = MixingStrokeLocalRegions[key].DeepClone();
+        }
+    }
+
+    internal void DetachSharedGeometry(IEnumerable<int> objectIndices)
+    {
+        foreach (var key in objectIndices.Distinct())
+        {
+            if (GradientStops.TryGetValue(key, out var stops))
+            {
+                GradientStops[key] = stops.ToArray();
+            }
+            if (GradientPathLocalPoints.TryGetValue(key, out var gradientPath))
+            {
+                GradientPathLocalPoints[key] = gradientPath.ToArray();
+            }
+            if (ShapeGradientMappingLocalContours.TryGetValue(key, out var shapeMapping))
+            {
+                ShapeGradientMappingLocalContours[key] = CloneContours(shapeMapping);
+            }
+            if (PathLocalContours.TryGetValue(key, out var pathContours))
+            {
+                PathLocalContours[key] = CloneContours(pathContours);
+            }
+            if (PathBezierLocalContours.TryGetValue(key, out var bezierContours))
+            {
+                PathBezierLocalContours[key] = CloneContours(bezierContours);
+            }
+            if (FreehandLocalPoints.TryGetValue(key, out var freehandPoints))
+            {
+                FreehandLocalPoints[key] = freehandPoints.ToArray();
+            }
+            if (FreehandBezierLocalNodes.TryGetValue(key, out var freehandBezierNodes))
+            {
+                FreehandBezierLocalNodes[key] = freehandBezierNodes.ToArray();
+            }
+            if (MixingStrokeLocalSamples.TryGetValue(key, out var mixingSamples))
+            {
+                MixingStrokeLocalSamples[key] = mixingSamples.ToArray();
+            }
+            if (MixingStrokeLocalRegions.TryGetValue(key, out var mixingRegion))
+            {
+                MixingStrokeLocalRegions[key] = mixingRegion.DeepClone();
+            }
+        }
+    }
+
+    private static PointF[][] CloneContours(PointF[][] contours)
+        => contours.Select(contour => contour.ToArray()).ToArray();
+
+    private static PathBezierNode[][] CloneContours(PathBezierNode[][] contours)
+        => contours.Select(contour => contour.ToArray()).ToArray();
 
     internal long EstimateMemoryBytes()
     {
@@ -143,6 +235,20 @@ internal sealed class VectorSceneSnapshot
         bytes += 64L * FreehandLocalPoints.Count;
         foreach (var points in FreehandLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);
 
+        bytes += 64L * FreehandBezierLocalNodes.Count;
+        foreach (var nodes in FreehandBezierLocalNodes.Values) bytes += ArrayBytes(nodes.Length, 24);
+
+        bytes += 64L * MixingStrokeLocalSamples.Count;
+        foreach (var samples in MixingStrokeLocalSamples.Values) bytes += ArrayBytes(samples.Length, 16);
+
+        bytes += 72L * MixingStrokeLocalRegions.Count;
+        foreach (var region in MixingStrokeLocalRegions.Values)
+        {
+            bytes += 48L;
+            bytes += ArrayBytes(region.Vertices?.Length ?? 0, 12);
+            bytes += ArrayBytes(region.TriangleIndices?.Length ?? 0, 4);
+        }
+
         bytes += 72L * ImportedSvgSources.Count;
         foreach (var source in ImportedSvgSources.Values) bytes += StringBytes(source);
 
@@ -157,7 +263,11 @@ internal sealed class VectorSceneSnapshot
             bytes += ArrayBytes(timeline.Tracks.Length, IntPtr.Size);
             foreach (var track in timeline.Tracks)
             {
-                bytes += 96 + StringBytes(track.Id) + StringBytes(track.TargetId) + ArrayBytes(track.Keyframes.Length, 8);
+                bytes += 96
+                    + StringBytes(track.Id)
+                    + StringBytes(track.TargetId)
+                    + ArrayBytes(track.Keyframes.Length, 8)
+                    + ArrayBytes(track.Tweens?.Length ?? 0, 12);
             }
         }
 

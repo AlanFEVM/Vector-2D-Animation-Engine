@@ -2,10 +2,10 @@ namespace VectorAnimationEngine;
 
 internal sealed class SettingsDialog : ModernDialogForm
 {
-    private readonly Button _englishLanguage = new() { Text = "English" };
-    private readonly Button _chineseLanguage = new() { Text = "简体中文" };
-    private readonly Button _darkColorTheme = new() { Text = "Dark" };
-    private readonly Button _whiteColorTheme = new() { Text = "White" };
+    private readonly Button _englishLanguage = new SegmentedButton { Text = "English" };
+    private readonly Button _chineseLanguage = new SegmentedButton { Text = "简体中文" };
+    private readonly Button _darkColorTheme = new SegmentedButton { Text = "Dark" };
+    private readonly Button _whiteColorTheme = new SegmentedButton { Text = "White" };
     private readonly ColorAdjustmentControl _themeColorAdjustment;
     private readonly ColorAdjustmentControl _highlightColorAdjustment;
     private readonly ShortcutProfileEditorPanel _shortcutProfiles;
@@ -290,7 +290,8 @@ internal sealed class SettingsDialog : ModernDialogForm
         button.Dock = DockStyle.Fill;
         button.AccessibleName = button.Text;
         button.AccessibleDescription = accessibleDescription;
-        Theme.StyleButton(button);
+        button.AccessibleRole = AccessibleRole.RadioButton;
+        Theme.StyleSegmentedButton(button);
     }
 
     private void SelectLanguage(UiLanguage language)
@@ -298,13 +299,13 @@ internal sealed class SettingsDialog : ModernDialogForm
         _selectedLanguage = language;
         if (language == UiLanguage.English)
         {
-            Theme.StyleActiveButton(_englishLanguage);
-            Theme.StyleButton(_chineseLanguage);
+            Theme.StyleSegmentedButton(_englishLanguage, active: true);
+            Theme.StyleSegmentedButton(_chineseLanguage);
         }
         else
         {
-            Theme.StyleButton(_englishLanguage);
-            Theme.StyleActiveButton(_chineseLanguage);
+            Theme.StyleSegmentedButton(_englishLanguage);
+            Theme.StyleSegmentedButton(_chineseLanguage, active: true);
         }
     }
 
@@ -314,13 +315,13 @@ internal sealed class SettingsDialog : ModernDialogForm
         _selectedColorTheme = colorTheme;
         if (colorTheme == ApplicationColorTheme.White)
         {
-            Theme.StyleButton(_darkColorTheme);
-            Theme.StyleActiveButton(_whiteColorTheme);
+            Theme.StyleSegmentedButton(_darkColorTheme);
+            Theme.StyleSegmentedButton(_whiteColorTheme, active: true);
         }
         else
         {
-            Theme.StyleActiveButton(_darkColorTheme);
-            Theme.StyleButton(_whiteColorTheme);
+            Theme.StyleSegmentedButton(_darkColorTheme, active: true);
+            Theme.StyleSegmentedButton(_whiteColorTheme);
         }
         UpdateColorPreviews();
         if (changed) ThemePreviewChanged?.Invoke(this, EventArgs.Empty);

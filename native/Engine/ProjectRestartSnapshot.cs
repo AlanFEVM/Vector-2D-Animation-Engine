@@ -10,9 +10,17 @@ internal sealed class ProjectRestartSnapshot
     public bool LoopPlayback { get; init; } = true;
     public int PlaybackStartFrame { get; init; }
     public int PlaybackEndFrame { get; init; } = 239;
+    public ProjectAssetTagRestartSnapshot[] AssetTags { get; init; } = [];
     public ProjectAssetFolderRestartSnapshot[] AssetFolders { get; init; } = [];
     public DrawingObjectRestartSnapshot[] DrawingObjects { get; init; } = [];
     public SceneRestartSnapshot[] Scenes { get; init; } = [];
+}
+
+internal sealed class ProjectAssetTagRestartSnapshot
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "Tag";
+    public int ColorArgb { get; init; } = Color.FromArgb(66, 165, 245).ToArgb();
 }
 
 internal sealed class ProjectAssetFolderRestartSnapshot
@@ -30,6 +38,7 @@ internal sealed class DrawingObjectRestartSnapshot
     public string Kind { get; init; } = "Symbol";
     public string Detail { get; init; } = "Reusable drawing object";
     public string AssetFolderId { get; init; } = "";
+    public string[] AssetTagIds { get; init; } = [];
     public float AnchorX { get; init; }
     public float AnchorY { get; init; }
     public DateTime CreatedAt { get; init; } = DateTime.Now;

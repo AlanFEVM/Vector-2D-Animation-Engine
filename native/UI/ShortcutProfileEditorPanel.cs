@@ -84,17 +84,14 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         _profileSelector.Dock = DockStyle.Fill;
         _profileSelector.Margin = new Padding(0, 4, 8, 4);
         _profileSelector.DropDownStyle = ComboBoxStyle.DropDownList;
-        _profileSelector.BackColor = Theme.Field;
-        _profileSelector.ForeColor = Theme.Text;
-        _profileSelector.FlatStyle = FlatStyle.Flat;
-        _profileSelector.Font = Theme.UiFont();
+        Theme.StyleComboBox(_profileSelector);
         _profileSelector.AccessibleName = "Shortcut profile";
         _profileSelector.SelectedIndexChanged += (_, _) => SelectProfileFromCombo();
         profileRow.Controls.Add(_profileSelector, 1, 0);
 
         ConfigureCommandButton(_newProfile, "Create shortcut profile");
         ConfigureCommandButton(_renameProfile, "Rename shortcut profile");
-        ConfigureCommandButton(_deleteProfile, "Delete shortcut profile");
+        ConfigureCommandButton(_deleteProfile, "Delete shortcut profile", CommandButtonRole.Danger);
         _newProfile.Click += (_, _) => CreateProfile();
         _renameProfile.Click += (_, _) => RenameProfile();
         _deleteProfile.Click += (_, _) => DeleteProfile();
@@ -117,7 +114,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
         actionRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        ConfigureCommandButton(_assignShortcut, "Assign selected shortcut");
+        ConfigureCommandButton(_assignShortcut, "Assign selected shortcut", CommandButtonRole.Primary);
         ConfigureCommandButton(_clearShortcut, "Clear selected shortcut");
         _assignShortcut.Click += (_, _) => AssignSelectedShortcut();
         _clearShortcut.Click += (_, _) => ClearSelectedShortcut();
@@ -180,12 +177,33 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         return table;
     }
 
-    private static void ConfigureCommandButton(Button button, string accessibleName)
+    private static void ConfigureCommandButton(
+        Button button,
+        string accessibleName,
+        CommandButtonRole role = CommandButtonRole.Standard)
     {
         button.Dock = DockStyle.Fill;
         button.Margin = new Padding(4);
         button.AccessibleName = accessibleName;
-        Theme.StyleButton(button);
+        switch (role)
+        {
+            case CommandButtonRole.Primary:
+                Theme.StylePrimaryButton(button);
+                break;
+            case CommandButtonRole.Danger:
+                Theme.StyleDangerButton(button);
+                break;
+            default:
+                Theme.StyleStandardButton(button);
+                break;
+        }
+    }
+
+    private enum CommandButtonRole
+    {
+        Standard,
+        Primary,
+        Danger
     }
 
     private static Label HeaderLabel(string text, ContentAlignment alignment)

@@ -16,6 +16,7 @@ internal enum ToolMode
     Pencil,
     Brush,
     PressureBrush,
+    MixingBrush,
     Text,
     Fill,
     InkBottle,

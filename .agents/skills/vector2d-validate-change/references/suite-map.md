@@ -39,7 +39,7 @@ Run suites sequentially. `Stress` and `Render` measurements are not clean while 
 ## Failure Interpretation
 
 1. Record the command, exit code, and first `InvalidOperationException` or build error.
-2. Locate the failing regression name in `native/App/Benchmark.cs`.
+2. Locate the failing regression name in the `native/App/Benchmark*.cs` partial family.
 3. Check whether the regression is shared by more than one CLI mode.
 4. If the worktree was already dirty, reproduce against the pre-change state when feasible; otherwise clearly mark the baseline uncertainty.
 5. Never waive a failure only because it occurred outside the nominal feature area.

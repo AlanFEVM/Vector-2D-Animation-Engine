@@ -19,6 +19,7 @@ internal enum SvgIconKind
     Pencil,
     Brush,
     PressureBrush,
+    MixingBrush,
     Text,
     Fill,
     InkBottle,
@@ -42,7 +43,15 @@ internal enum SvgIconKind
     PolarGrid,
     PropertiesPanel,
     TimelinePanel,
+    Folder,
     FolderPlus,
+    Open,
+    Add,
+    Remove,
+    ZoomIn,
+    ZoomOut,
+    ChevronUp,
+    ChevronDown,
     Close,
     Info,
     Warning,
@@ -57,10 +66,11 @@ internal static class SvgIcons
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var primaryTool = IsPrimaryToolIcon(kind);
-        var inset = primaryTool ? 4f : 5f;
+        var scale = Math.Clamp(Math.Min(bounds.Width, bounds.Height) / (float)Theme.IconButtonSize, 0.72f, 3f);
+        var inset = (primaryTool ? 4f : 5f) * scale;
         var r = new RectangleF(bounds.X + inset, bounds.Y + inset, bounds.Width - inset * 2, bounds.Height - inset * 2);
-        using var pen = new Pen(color, primaryTool ? 2.15f : 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-        using var thinPen = new Pen(Color.FromArgb(primaryTool ? 205 : 170, color), primaryTool ? 1.35f : 1.1f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var pen = new Pen(color, (primaryTool ? 2.15f : 1.8f) * scale) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var thinPen = new Pen(Color.FromArgb(primaryTool ? 205 : 170, color), (primaryTool ? 1.35f : 1.1f) * scale) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
         using var fill = new SolidBrush(Color.FromArgb(primaryTool ? 72 : 42, color));
         using var solidFill = new SolidBrush(color);
 
@@ -89,13 +99,26 @@ internal static class SvgIcons
                 DrawChevron(g, pen, P(r, 9, 15), 2);
                 break;
             case SvgIconKind.Pan:
-                g.DrawLine(pen, P(r, 12, 3), P(r, 12, 21));
-                g.DrawLine(pen, P(r, 3, 12), P(r, 21, 12));
-                DrawChevron(g, pen, P(r, 12, 3), 0);
-                DrawChevron(g, pen, P(r, 21, 12), 1);
-                DrawChevron(g, pen, P(r, 12, 21), 2);
-                DrawChevron(g, pen, P(r, 3, 12), 3);
+            {
+                using var hand = new GraphicsPath();
+                hand.StartFigure();
+                hand.AddBezier(P(r, 8, 13), P(r, 6, 10), P(r, 4, 11), P(r, 5, 14));
+                hand.AddLine(P(r, 7, 19), P(r, 10, 22));
+                hand.AddBezier(P(r, 10, 22), P(r, 15, 23), P(r, 20, 20), P(r, 20, 15));
+                hand.AddLine(P(r, 20, 9), P(r, 20, 8));
+                hand.AddBezier(P(r, 20, 8), P(r, 20, 6), P(r, 17, 6), P(r, 17, 8));
+                hand.AddLine(P(r, 17, 11), P(r, 17, 5));
+                hand.AddBezier(P(r, 17, 5), P(r, 17, 3), P(r, 14, 3), P(r, 14, 5));
+                hand.AddLine(P(r, 14, 11), P(r, 14, 4));
+                hand.AddBezier(P(r, 14, 4), P(r, 14, 2), P(r, 11, 2), P(r, 11, 4));
+                hand.AddLine(P(r, 11, 12), P(r, 11, 6));
+                hand.AddBezier(P(r, 11, 6), P(r, 11, 4), P(r, 8, 4), P(r, 8, 6));
+                hand.CloseFigure();
+                g.FillPath(fill, hand);
+                g.DrawPath(pen, hand);
+                g.DrawLine(thinPen, P(r, 11, 12), P(r, 11, 16));
                 break;
+            }
             case SvgIconKind.Rectangle:
                 g.FillRectangle(fill, Rect(r, 5, 5, 14, 14));
                 DrawRectangle(g, pen, Rect(r, 5, 5, 14, 14));
@@ -162,6 +185,13 @@ internal static class SvgIcons
                 break;
             case SvgIconKind.PressureBrush:
                 DrawBrushGlyph(g, pen, thinPen, fill, r, pressure: true);
+                break;
+            case SvgIconKind.MixingBrush:
+                DrawBrushGlyph(g, pen, thinPen, fill, r, pressure: false);
+                g.FillEllipse(solidFill, Rect(r, 2, 3, 4, 4));
+                g.FillEllipse(fill, Rect(r, 7, 6, 4, 4));
+                g.DrawEllipse(thinPen, Rect(r, 7, 6, 4, 4));
+                g.DrawArc(pen, Rect(r, 2, 2, 10, 9), 205, 115);
                 break;
             case SvgIconKind.Text:
                 g.DrawLine(pen, P(r, 4, 4), P(r, 20, 4));
@@ -241,10 +271,39 @@ internal static class SvgIcons
                 g.DrawLine(thinPen, P(r, 4, 10), P(r, 20, 10));
                 g.DrawEllipse(pen, Rect(r, 10, 12, 4, 4));
                 break;
+            case SvgIconKind.Folder:
+                DrawPolygon(g, pen, [P(r, 3, 7), P(r, 9, 7), P(r, 11, 10), P(r, 21, 10), P(r, 21, 20), P(r, 3, 20)]);
+                break;
             case SvgIconKind.FolderPlus:
                 DrawPolygon(g, pen, [P(r, 3, 7), P(r, 9, 7), P(r, 11, 10), P(r, 21, 10), P(r, 21, 20), P(r, 3, 20)]);
                 g.DrawLine(thinPen, P(r, 15, 12), P(r, 15, 18));
                 g.DrawLine(thinPen, P(r, 12, 15), P(r, 18, 15));
+                break;
+            case SvgIconKind.Open:
+                DrawRectangle(g, thinPen, Rect(r, 3, 5, 13, 14));
+                g.DrawLine(pen, P(r, 9, 12), P(r, 21, 12));
+                g.DrawLine(pen, P(r, 16, 7), P(r, 21, 12));
+                g.DrawLine(pen, P(r, 21, 12), P(r, 16, 17));
+                break;
+            case SvgIconKind.Add:
+                g.DrawLine(pen, P(r, 12, 4), P(r, 12, 20));
+                g.DrawLine(pen, P(r, 4, 12), P(r, 20, 12));
+                break;
+            case SvgIconKind.Remove:
+                g.DrawLine(pen, P(r, 4, 12), P(r, 20, 12));
+                break;
+            case SvgIconKind.ZoomIn:
+            case SvgIconKind.ZoomOut:
+                g.DrawEllipse(pen, Rect(r, 3, 3, 13, 13));
+                g.DrawLine(pen, P(r, 15, 15), P(r, 21, 21));
+                g.DrawLine(thinPen, P(r, 6, 9.5f), P(r, 13, 9.5f));
+                if (kind == SvgIconKind.ZoomIn) g.DrawLine(thinPen, P(r, 9.5f, 6), P(r, 9.5f, 13));
+                break;
+            case SvgIconKind.ChevronUp:
+                g.DrawLines(pen, [P(r, 5, 15), P(r, 12, 8), P(r, 19, 15)]);
+                break;
+            case SvgIconKind.ChevronDown:
+                g.DrawLines(pen, [P(r, 5, 9), P(r, 12, 16), P(r, 19, 9)]);
                 break;
             case SvgIconKind.Close:
                 g.DrawLine(pen, P(r, 5, 5), P(r, 19, 19));
@@ -402,6 +461,7 @@ internal static class SvgIcons
             or SvgIconKind.Pencil
             or SvgIconKind.Brush
             or SvgIconKind.PressureBrush
+            or SvgIconKind.MixingBrush
             or SvgIconKind.Text
             or SvgIconKind.Fill
             or SvgIconKind.InkBottle

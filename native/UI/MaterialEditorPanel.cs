@@ -113,12 +113,12 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly ColorTargetButton _fillTarget = new("Fill");
     private readonly ColorTargetButton _strokeTarget = new("Stroke");
     private readonly ColorTargetButton _gradientStopTarget = new("Stop color");
-    private readonly Button _solidFillMode = new() { Text = "Solid" };
-    private readonly Button _linearGradientMode = new() { Text = "Linear" };
-    private readonly Button _radialGradientMode = new() { Text = "Radial" };
-    private readonly Button _shapeRadialGradientMode = new() { Text = "Shape" };
-    private readonly Button _addGradientStop = new() { Text = "+" };
-    private readonly Button _removeGradientStop = new() { Text = "-" };
+    private readonly Button _solidFillMode = new SegmentedButton { Text = "Solid" };
+    private readonly Button _linearGradientMode = new SegmentedButton { Text = "Linear" };
+    private readonly Button _radialGradientMode = new SegmentedButton { Text = "Radial" };
+    private readonly Button _shapeRadialGradientMode = new SegmentedButton { Text = "Shape" };
+    private readonly Button _addGradientStop = new SvgIconButton(SvgIconKind.Add);
+    private readonly Button _removeGradientStop = new SvgIconButton(SvgIconKind.Remove);
     private readonly SvgIconButton _paletteButton = new(SvgIconKind.Swatches);
     private readonly ModernNumericUpDown _gradientStopPosition = new() { Suffix = "%" };
     private readonly GradientStopStrip _gradientStopStrip = new();
@@ -141,18 +141,18 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly ColorPaletteGrid _customGrid = new();
     private readonly Label _recentPaletteTitle = CreateSectionLabel("Recent");
     private readonly Label _customPaletteTitle = CreateSectionLabel("Custom");
-    private readonly Button _addCustom = new() { Text = "+" };
-    private readonly Button _removeCustom = new() { Text = "-" };
-    private readonly Button _saveGradientPreset = new() { Text = "+" };
-    private readonly Button _removeGradientPreset = new() { Text = "-" };
-    private readonly Button _colorEditorToggle = new() { Text = "Color" };
+    private readonly Button _addCustom = new SvgIconButton(SvgIconKind.Add);
+    private readonly Button _removeCustom = new SvgIconButton(SvgIconKind.Remove);
+    private readonly Button _saveGradientPreset = new SvgIconButton(SvgIconKind.Add);
+    private readonly Button _removeGradientPreset = new SvgIconButton(SvgIconKind.Remove);
+    private readonly Button _colorEditorToggle = new SvgIconButton(SvgIconKind.ChevronDown) { Text = "Color" };
     private readonly ModernNumericUpDown _strokeWidth = new() { Suffix = "pt" };
     private readonly Label _strokeWidthLabel = CreateFieldLabel("Width pt");
     private readonly Panel _lineEndpointStylePanel = new();
-    private readonly Button _startSharpEndpointStyle = new() { Text = "Sharp" };
-    private readonly Button _startRoundEndpointStyle = new() { Text = "Round" };
-    private readonly Button _endSharpEndpointStyle = new() { Text = "Sharp" };
-    private readonly Button _endRoundEndpointStyle = new() { Text = "Round" };
+    private readonly Button _startSharpEndpointStyle = new SegmentedButton { Text = "Sharp" };
+    private readonly Button _startRoundEndpointStyle = new SegmentedButton { Text = "Round" };
+    private readonly Button _endSharpEndpointStyle = new SegmentedButton { Text = "Sharp" };
+    private readonly Button _endRoundEndpointStyle = new SegmentedButton { Text = "Round" };
     private readonly ToolTip _toolTip = new();
     private readonly ToolStripDropDown _paletteDropDown = new()
     {
@@ -481,9 +481,10 @@ internal sealed class MaterialEditorPanel : UserControl
         _colorEditorToggle.Dock = DockStyle.Fill;
         _colorEditorToggle.Margin = new Padding(0, 2, 0, 2);
         _colorEditorToggle.AccessibleName = "Show or hide color editor";
+        _colorEditorToggle.AccessibleRole = AccessibleRole.CheckButton;
         _toolTip.SetToolTip(_colorEditorToggle, "Show or hide color editor");
         _colorEditorToggle.Click += (_, _) => SetColorEditorExpanded(!_colorEditorExpanded);
-        Theme.StyleButton(_colorEditorToggle);
+        Theme.StyleToolbarButton(_colorEditorToggle);
         content.Controls.Add(_colorEditorToggle, 0, 4);
     }
 
@@ -509,14 +510,15 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void AddModeButton(TableLayoutPanel row, ColorMode mode, string text, int column)
     {
-        var button = new Button
+        var button = new SegmentedButton
         {
             Text = text,
             Dock = DockStyle.Fill,
             Height = Theme.ControlHeightCompact,
             Margin = new Padding(column == 1 ? 0 : 1, 3, column == 3 ? 0 : 1, 3)
         };
-        Theme.StyleButton(button);
+        button.AccessibleRole = AccessibleRole.RadioButton;
+        Theme.StyleSegmentedButton(button);
         button.Click += (_, _) => SetColorMode(mode);
         _modeButtons.Add(mode, button);
         row.Controls.Add(button, column, 0);
@@ -849,8 +851,9 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         button.Dock = DockStyle.Fill;
         button.Margin = new Padding(3, 1, 0, 1);
-        button.Font = Theme.UiFont(10, FontStyle.Bold);
-        Theme.StyleButton(button);
+        button.AccessibleName = toolTip;
+        button.AccessibleRole = AccessibleRole.PushButton;
+        Theme.StyleToolbarButton(button);
         _toolTip.SetToolTip(button, toolTip);
     }
 
@@ -1098,7 +1101,8 @@ internal sealed class MaterialEditorPanel : UserControl
             GradientKind.ShapeRadial => "Shape radial gradient fill",
             _ => "Solid fill"
         };
-        Theme.StyleButton(button);
+        button.AccessibleRole = AccessibleRole.RadioButton;
+        Theme.StyleSegmentedButton(button);
         _toolTip.SetToolTip(button, toolTip);
         button.Click += (_, _) => SetGradientKind(kind);
     }
@@ -1107,7 +1111,7 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         button.Dock = DockStyle.Fill;
         button.AccessibleName = toolTip;
-        Theme.StyleButton(button);
+        Theme.StyleToolbarButton(button);
         _toolTip.SetToolTip(button, toolTip);
         button.Click += (_, _) => action();
     }
@@ -1214,9 +1218,14 @@ internal sealed class MaterialEditorPanel : UserControl
             _content.RowStyles[5].Height = expanded ? 36 : 0;
             _content.RowStyles[6].Height = expanded ? 236 : 0;
             _content.RowStyles[7].Height = 38;
-            _colorEditorToggle.Text = expanded ? "Color -" : "Color +";
-            if (expanded) Theme.StyleActiveButton(_colorEditorToggle);
-            else Theme.StyleButton(_colorEditorToggle);
+            _colorEditorToggle.Text = "Color";
+            if (_colorEditorToggle is SvgIconButton iconButton)
+            {
+                iconButton.Icon = expanded ? SvgIconKind.ChevronUp : SvgIconKind.ChevronDown;
+            }
+            _colorEditorToggle.AccessibleDescription = UiLocalization.T(
+                expanded ? "Color editor expanded" : "Color editor collapsed");
+            Theme.StyleToolbarButton(_colorEditorToggle, expanded);
         }
         finally
         {
@@ -1268,34 +1277,10 @@ internal sealed class MaterialEditorPanel : UserControl
         _addGradientStop.Enabled = enabled;
         _removeGradientStop.Enabled = movable;
         _shapeRadialGradientMode.Enabled = !_gradientPreviewOnStroke;
-        if (_gradientKind == GradientKind.Linear)
-        {
-            Theme.StyleButton(_solidFillMode);
-            Theme.StyleActiveButton(_linearGradientMode);
-            Theme.StyleButton(_radialGradientMode);
-            Theme.StyleButton(_shapeRadialGradientMode);
-        }
-        else if (_gradientKind == GradientKind.Radial)
-        {
-            Theme.StyleButton(_solidFillMode);
-            Theme.StyleButton(_linearGradientMode);
-            Theme.StyleActiveButton(_radialGradientMode);
-            Theme.StyleButton(_shapeRadialGradientMode);
-        }
-        else if (_gradientKind == GradientKind.ShapeRadial)
-        {
-            Theme.StyleButton(_solidFillMode);
-            Theme.StyleButton(_linearGradientMode);
-            Theme.StyleButton(_radialGradientMode);
-            Theme.StyleActiveButton(_shapeRadialGradientMode);
-        }
-        else
-        {
-            Theme.StyleActiveButton(_solidFillMode);
-            Theme.StyleButton(_linearGradientMode);
-            Theme.StyleButton(_radialGradientMode);
-            Theme.StyleButton(_shapeRadialGradientMode);
-        }
+        Theme.StyleSegmentedButton(_solidFillMode, _gradientKind == GradientKind.Solid);
+        Theme.StyleSegmentedButton(_linearGradientMode, _gradientKind == GradientKind.Linear);
+        Theme.StyleSegmentedButton(_radialGradientMode, _gradientKind == GradientKind.Radial);
+        Theme.StyleSegmentedButton(_shapeRadialGradientMode, _gradientKind == GradientKind.ShapeRadial);
         RefreshGradientPresetActions();
     }
 
@@ -1426,7 +1411,8 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         button.Dock = DockStyle.Fill;
         button.AccessibleName = $"{button.Text} line endpoints";
-        Theme.StyleButton(button);
+        button.AccessibleRole = AccessibleRole.RadioButton;
+        Theme.StyleSegmentedButton(button);
         _toolTip.SetToolTip(button, toolTip);
         button.Click += (_, _) => SelectLineEndpointStyle(endpointStyle, startEndpoint);
     }
@@ -1451,15 +1437,8 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private static void RefreshLineEndpointStyleButtons(LineEndpointStyle endpointStyle, Button sharp, Button round)
     {
-        if (endpointStyle == LineEndpointStyle.Sharp)
-        {
-            Theme.StyleActiveButton(sharp);
-            Theme.StyleButton(round);
-            return;
-        }
-
-        Theme.StyleButton(sharp);
-        Theme.StyleActiveButton(round);
+        Theme.StyleSegmentedButton(sharp, endpointStyle == LineEndpointStyle.Sharp);
+        Theme.StyleSegmentedButton(round, endpointStyle != LineEndpointStyle.Sharp);
     }
 
     private void ApplyMaterial(Color fill, Color stroke, float strokeWidth, float opacity, bool raiseEvent)
@@ -1579,8 +1558,7 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         foreach (var (mode, button) in _modeButtons)
         {
-            if (mode == _colorMode) Theme.StyleActiveButton(button);
-            else Theme.StyleButton(button);
+            Theme.StyleSegmentedButton(button, mode == _colorMode);
         }
     }
 
@@ -1621,7 +1599,9 @@ internal sealed class MaterialEditorPanel : UserControl
         _updatingComponents = false;
     }
 
-    private void UpdateEditorFromColor()
+    private void UpdateEditorFromColor(
+        bool refreshColorWheel = true,
+        bool refreshSelectionIndicators = true)
     {
         var color = EditedColor;
         _updatingComponents = true;
@@ -1649,10 +1629,10 @@ internal sealed class MaterialEditorPanel : UserControl
         _hexText.Text = ToHex(color);
         SetHexInvalid(false);
         _updatingComponents = false;
-        UpdateColorWheel();
+        if (refreshColorWheel) UpdateColorWheel();
         RefreshHarmonyPalette();
         RefreshChannelGradients();
-        UpdateColorSelectionIndicators();
+        if (refreshSelectionIndicators) UpdateColorSelectionIndicators();
     }
 
     private void SetChannelValues(int first, int second, int third, int alpha)
@@ -1706,7 +1686,12 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         if (_updatingComponents) return;
         var color = _colorWheel.Color;
-        if (SetEditedColor(color, addRecentForDiscreteEdit: true)) UpdateEditorFromColor();
+        if (SetEditedColor(color, addRecentForDiscreteEdit: true))
+        {
+            UpdateEditorFromColor(
+                refreshColorWheel: false,
+                refreshSelectionIndicators: false);
+        }
     }
 
     private void UpdateColorWheel()

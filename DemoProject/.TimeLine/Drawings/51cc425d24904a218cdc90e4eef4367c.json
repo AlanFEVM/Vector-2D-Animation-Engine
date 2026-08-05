@@ -1,0 +1,107 @@
+{
+  "formatVersion": 1,
+  "drawingObjectId": "51cc425d24904a218cdc90e4eef4367c",
+  "layers": [
+    {
+      "id": "3361572ecb924add8a0d1c99683e1f54",
+      "name": "Layer 0000",
+      "kind": 0,
+      "parentLayerId": "",
+      "maskLayerId": "",
+      "locked": false,
+      "visible": true,
+      "opacity": 1,
+      "blendMode": 0,
+      "colorArgb": -11549705,
+      "outline": true,
+      "onionSkin": false,
+      "startFrame": 0,
+      "endFrame": 0
+    },
+    {
+      "id": "7b912ee62b4d4479a74e2cce63a6f4e3",
+      "name": "Layer 0001",
+      "kind": 0,
+      "parentLayerId": "",
+      "maskLayerId": "",
+      "locked": false,
+      "visible": true,
+      "opacity": 1,
+      "blendMode": 0,
+      "colorArgb": -18611,
+      "outline": false,
+      "onionSkin": false,
+      "startFrame": 0,
+      "endFrame": 0
+    }
+  ],
+  "activeLayer": 1,
+  "onionSkinEnabled": false,
+  "onionSkinPreviousFrames": 2,
+  "onionSkinNextFrames": 2,
+  "objectLayer": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1
+  ],
+  "objectKeyframeFrame": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "timeline": {
+    "tracks": [
+      {
+        "id": "16dee2ac6b79410ea342626d193c2b5d",
+        "targetId": "3361572ecb924add8a0d1c99683e1f54",
+        "duration": 1,
+        "keyframes": [
+          {
+            "frame": 0,
+            "kind": 0,
+            "hasContent": true
+          }
+        ]
+      },
+      {
+        "id": "c3da89f5beed4ceb9884ec9491e34edb",
+        "targetId": "7b912ee62b4d4479a74e2cce63a6f4e3",
+        "duration": 1,
+        "keyframes": [
+          {
+            "frame": 0,
+            "kind": 0,
+            "hasContent": true
+          }
+        ]
+      }
+    ]
+  },
+  "instances": []
+}

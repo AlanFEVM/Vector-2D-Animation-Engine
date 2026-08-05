@@ -10,11 +10,60 @@ internal readonly record struct PressureBrushSample(
 
 internal readonly record struct PressureBrushPoint(PointF Point, float Diameter);
 
+internal readonly record struct PencilStrokeProcessResult(
+    PathBezierNode[] Nodes,
+    PointF[] PreviewPoints)
+{
+    public bool HasGeometry => Nodes.Length >= 2 && PreviewPoints.Length >= 2;
+}
+
 internal static class FreehandStrokeProcessor
 {
     private const double BrushCoordinateScale = 1000d;
     private const double BrushArcToleranceUnits = 0.5d;
     private const float VariableWidthCornerAlignment = 0.85f;
+
+    public static PencilStrokeProcessResult ProcessPencil(
+        IReadOnlyList<PointF> samples,
+        int smoothing,
+        float worldPerPixel)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        var points = RemoveDuplicatePoints(samples);
+        if (points.Count < 2)
+        {
+            return new PencilStrokeProcessResult([], points.ToArray());
+        }
+
+        var start = points[0];
+        var end = points[^1];
+        var t = Math.Clamp(smoothing, 0, 100) / 100f;
+        var smoothStep = t * t * (3f - 2f * t);
+        var amount = 0.48f * smoothStep;
+        for (var pass = 0; pass < 2; pass++) points = Smooth(points, amount);
+
+        worldPerPixel = float.IsFinite(worldPerPixel) && worldPerPixel > 0
+            ? worldPerPixel
+            : VectorUnits.UnitsPerPixel;
+        var totalErrorPixels = 0.75f + 5.25f * t * t;
+        var simplifyError = worldPerPixel * totalErrorPixels * 0.2f;
+        var fitError = worldPerPixel * totalErrorPixels * 0.8f;
+        points = RemoveDuplicatePoints(Simplify(points, simplifyError));
+        if (points.Count < 2)
+        {
+            return new PencilStrokeProcessResult([], points.ToArray());
+        }
+
+        points[0] = start;
+        points[^1] = end;
+        if (!VectorScene.TryCreateOpenFreehandBezierNodes(points, fitError, out var nodes))
+        {
+            return new PencilStrokeProcessResult([], points.ToArray());
+        }
+
+        var previewPoints = VectorScene.SampleOpenFreehandBezierNodes(nodes);
+        return new PencilStrokeProcessResult(nodes, previewPoints);
+    }
 
     public static PointF[] Process(IReadOnlyList<PointF> samples, int smoothing, float simplifyTolerance)
     {
@@ -254,6 +303,15 @@ internal static class FreehandStrokeProcessor
 
     public static PointF[][] CreateBrushOutlines(IReadOnlyList<PointF> centerline, float width)
     {
+        return CreateBrushSectionOutlines(centerline, width, roundStart: true, roundEnd: true);
+    }
+
+    public static PointF[][] CreateBrushSectionOutlines(
+        IReadOnlyList<PointF> centerline,
+        float width,
+        bool roundStart,
+        bool roundEnd)
+    {
         var points = RemoveDuplicatePoints(centerline);
         if (points.Count == 0) return Array.Empty<PointF[]>();
 
@@ -275,7 +333,22 @@ internal static class FreehandStrokeProcessor
                 BrushArcToleranceUnits * BrushCoordinateScale,
                 preserveCollinear: false,
                 reverseSolution: false);
-            offset.AddPath(path, JoinType.Round, EndType.Round);
+            if (path.Count == 1)
+            {
+                offset.AddPath(path, JoinType.Round, EndType.Round);
+            }
+            else
+            {
+                offset.AddPath(path, JoinType.Round, EndType.Butt);
+                if (roundStart)
+                {
+                    offset.AddPath(new Path64(1) { path[0] }, JoinType.Round, EndType.Round);
+                }
+                if (roundEnd)
+                {
+                    offset.AddPath(new Path64(1) { path[^1] }, JoinType.Round, EndType.Round);
+                }
+            }
             offset.Execute(radius * BrushCoordinateScale, solution);
             return FromClipperPaths(solution);
         }

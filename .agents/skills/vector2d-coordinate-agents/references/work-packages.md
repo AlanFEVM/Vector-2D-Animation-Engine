@@ -11,7 +11,7 @@
 | Launcher, validation, packaging, release | `$vector2d-validate-change` | `launcher/` or assigned validation/release files | `Launcher` or selected suites |
 | Cross-domain planning and integration | `$vector2d-coordinate-agents` | root workflow, shared hotspots, final diff | Aggregate minimum suite set |
 
-`MainForm.cs` crosses Stage and WinForms boundaries. Route by behavior, then assign the file to exactly one writer. The other domain Agent can provide a read-only design or integration notes.
+The `MainForm` partial family crosses Stage and WinForms boundaries. Route selection movement to `MainForm.SelectionDrag.cs`; keep general tool, UI, and workspace orchestration in `MainForm.cs`. Assign exactly one writer per partial file, and use a single integration owner when a change must touch both.
 
 ## Task Packet
 
@@ -42,8 +42,8 @@ Use `pending -> ready -> in_progress -> review -> done` for normal work. Use `bl
 
 ## Shared Hotspots
 
-- `native/App/Benchmark.cs`: assign one regression owner. Domain Agents should hand off cases, expected assertions, and insertion points when they do not own it.
-- `native/UI/MainForm.cs`: assign one integration owner because UI, Stage, undo, refresh, and shortcut behavior converge here.
+- `native/App/Benchmark.cs`: assign one regression owner. Focused `Benchmark.*.cs` partials may have separate owners only when their paths and callers are disjoint.
+- `native/UI/MainForm.cs`: assign one integration owner because UI, Stage, undo, refresh, and shortcut behavior converge here. A focused `MainForm.*.cs` partial may be independently owned when the task does not also edit the core file.
 - `native/Engine/VectorScene.cs`: keep one geometry writer when multiple operations touch packed arrays or index remapping.
 - `README.md` and `docs/USER_GUIDE.md`: update once behavior and terminology are stable.
 - `native/*.csproj`, `launcher/*.csproj`, `Directory.Build.props`, root/runtime binaries, and release artifacts: serialize and require explicit ownership.

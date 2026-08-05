@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Clipper2Lib;
 
@@ -20,7 +21,7 @@ internal sealed record MarqueeMaterializationResult(
     int[] SelectedObjects,
     int[] OldToNewObjectIndex);
 
-internal sealed class VectorScene : ITimelineContext
+internal sealed partial class VectorScene : ITimelineContext
 {
     private const float FillMergeDistanceUnits = 10f;
     private const float LineMergeDistanceUnits = 5f;
@@ -31,6 +32,7 @@ internal sealed class VectorScene : ITimelineContext
         (int)MathF.Floor(MathF.PI / MathF.Asin(LineMergeDirectionTolerance)));
     private static readonly float LineMergeDirectionBucketRadians = MathF.PI / LineMergeDirectionBucketCount;
     private const float ConnectedStrokeEndpointToleranceUnits = 1.5f;
+    private const float BezierCoincidenceToleranceUnits = 0.75f;
     private const float BooleanBezierMaximumErrorUnits = 2f;
     private const float BooleanBezierSimplificationToleranceUnits = 0.75f;
     private const double ClipperCoordinateScale = 1000d;
@@ -43,6 +45,8 @@ internal sealed class VectorScene : ITimelineContext
     private const int IndexRows = 160;
     private const int DeferredKeyframeUnset = int.MinValue;
     private const int SpatialIndexAppendRebuildThreshold = 4_096;
+    private const int MaximumTopologyQueryCacheEntries = 64;
+    private const int MaximumGradientPathCoverageSamples = 192;
     public const int DefaultOnionSkinPreviousFrames = 2;
     public const int DefaultOnionSkinNextFrames = 2;
     public const int MaximumOnionSkinFrames = 8;
@@ -54,6 +58,12 @@ internal sealed class VectorScene : ITimelineContext
     public long VirtualAtomCount { get; private set; }
     public long GeometryRevision { get; private set; }
     public long SummaryRevision { get; private set; }
+    internal double LastFillMergePlanMilliseconds { get; private set; }
+    internal double LastFillMergeSnapshotMilliseconds { get; private set; }
+    internal double LastFillMergeMutationMilliseconds { get; private set; }
+    internal double LastFillMergeSpatialMilliseconds { get; private set; }
+    internal double LastFillMergeSummaryMilliseconds { get; private set; }
+    internal double LastFillMergeTotalMilliseconds { get; private set; }
     private long _nextObjectOrder;
     private bool _synchronizingKeyframeContent;
     private Func<IReadOnlyList<string>>? _additionalTimelineTargets;
@@ -150,8 +160,22 @@ internal sealed class VectorScene : ITimelineContext
     private readonly Dictionary<int, PointF[][]> _pathLocalContours = new();
     private readonly Dictionary<int, PathBezierNode[][]> _pathBezierLocalContours = new();
     private readonly Dictionary<int, PointF[]> _freehandLocalPoints = new();
+    private readonly Dictionary<int, PathBezierNode[]> _freehandBezierLocalNodes = new();
+    private readonly Dictionary<int, (PointF[] SourcePoints, PathBezierNode[] Nodes)> _legacyFreehandBezierNodeCache = new();
+    private readonly Dictionary<int, MixingBrushTrajectorySample[]> _mixingStrokeLocalSamples = new();
+    private readonly Dictionary<int, MixingBrushRegionData> _mixingStrokeLocalRegions = new();
     private readonly Dictionary<int, string> _importedSvgSources = new();
     private readonly Dictionary<int, TextObjectData> _textObjects = new();
+    private readonly Dictionary<(int ObjectIndex, int Frame), FillPartition> _fillPartitionCache = new();
+    private readonly Dictionary<
+        (int ObjectIndex, int Frame, int FillPartIndex, bool IncludeCoincidentStrokes),
+        FillBezierSegmentPiece[]> _exposedFillBezierCache = new();
+    private readonly Dictionary<(int ObjectIndex, int Frame), int[]> _topologyCandidateCache = new();
+    private readonly Dictionary<(int ObjectIndex, int Frame), StrokeSplitCacheEntry> _hitStrokeSplitCache = new();
+    private readonly Dictionary<(int ObjectIndex, int Frame), BoundaryStrokePart[]> _hitBoundaryPartCache = new();
+    private long _fillPartitionCacheRevision = -1;
+    private long _exposedFillBezierCacheRevision = -1;
+    private long _interactiveQueryCacheRevision = -1;
 
     internal sealed class TransformSession
     {
@@ -175,13 +199,39 @@ internal sealed class VectorScene : ITimelineContext
 
     private readonly record struct FillRegion(PointF[][] Contours, RectangleF Bounds, float Area);
 
+    private readonly record struct FillPartition(
+        List<FillRegion> Regions,
+        PreparedBezierCurve[] Curves);
+
+    private readonly record struct StrokeSplitCacheEntry(
+        DrawingTopologySplit[] Splits,
+        float[] Parameters);
+
     private readonly record struct PolylinePart(int PartIndex, float StartT, float EndT, PointF[] Points);
 
-    private readonly record struct CubicBoundarySegment(
-        PointF Start,
-        PointF Control1,
-        PointF Control2,
-        PointF End);
+    private readonly record struct OpenBezierSample(
+        int SegmentIndex,
+        float LocalT,
+        PointF Point);
+
+    private readonly record struct OpenBezierCut(
+        int SegmentIndex,
+        float LocalT,
+        PointF Point)
+    {
+        public float PathT => SegmentIndex + LocalT;
+    }
+
+    private readonly record struct OpenBezierRun(
+        int PartIndex,
+        OpenBezierCut Start,
+        OpenBezierCut End,
+        PathBezierNode[] Nodes);
+
+    private readonly record struct MarqueeOpenBezierInterval(
+        OpenBezierCut Start,
+        OpenBezierCut End,
+        bool Selected);
 
     private readonly record struct BezierContourSegment(
         CubicBoundarySegment Curve,
@@ -191,7 +241,7 @@ internal sealed class VectorScene : ITimelineContext
         CubicBoundarySegment Curve,
         PointF[] Samples);
 
-    private readonly record struct BooleanBezierCurveSource(
+    private readonly record struct PreparedBezierCurve(
         CubicBoundarySegment Curve,
         CurveSample[] Samples,
         RectangleF Bounds);
@@ -289,11 +339,30 @@ internal sealed class VectorScene : ITimelineContext
         public GradientPaintData? GradientPaint { get; init; }
         public bool FillAutoMergeProtected { get; init; }
         public PathBezierNode[][] BezierContours { get; init; } = [];
+        public PathBezierNode[] OpenBezierNodes { get; init; } = [];
     }
+
+    private readonly record struct MixingMaterializedPartAddition(
+        DrawingElementKey SourceKey,
+        int Layer,
+        int KeyframeFrame,
+        long Order,
+        double SubOrder,
+        uint Atoms,
+        MixingBrushRegionData Region);
 
     private readonly record struct MarqueeMaterializedAddition(
         MaterializedPartAddition Addition,
         int KeyframeFrame,
+        bool Selected);
+
+    private readonly record struct MarqueeMixingMaterializedAddition(
+        int Layer,
+        int KeyframeFrame,
+        long Order,
+        double SubOrder,
+        uint Atoms,
+        MixingBrushRegionData Region,
         bool Selected);
 
     private readonly record struct GradientPaintData(
@@ -307,7 +376,20 @@ internal sealed class VectorScene : ITimelineContext
     private sealed record BrushEraserPlan(
         int Source,
         int KeyframeFrame,
-        IReadOnlyList<MaterializedPartAddition> Replacements);
+        IReadOnlyList<MaterializedPartAddition> Replacements)
+    {
+        public IReadOnlyList<MixingStrokeEraserReplacement> MixingStrokeReplacements { get; init; } = [];
+    }
+
+    private readonly record struct MixingStrokeEraserReplacement(
+        int Layer,
+        long Order,
+        double SubOrder,
+        uint Atoms,
+        MixingBrushTrajectorySample[] Samples)
+    {
+        public MixingBrushRegionData? Region { get; init; }
+    }
 
     private sealed record FillOverwritePlan(
         int Source,
@@ -428,6 +510,10 @@ internal sealed class VectorScene : ITimelineContext
         _pathLocalContours.Clear();
         _pathBezierLocalContours.Clear();
         _freehandLocalPoints.Clear();
+        _freehandBezierLocalNodes.Clear();
+        _legacyFreehandBezierNodeCache.Clear();
+        _mixingStrokeLocalSamples.Clear();
+        _mixingStrokeLocalRegions.Clear();
         _importedSvgSources.Clear();
         _textObjects.Clear();
         InitializeTimelineFromLayerExposure(frameCount);
@@ -513,6 +599,10 @@ internal sealed class VectorScene : ITimelineContext
         _pathLocalContours.Clear();
         _pathBezierLocalContours.Clear();
         _freehandLocalPoints.Clear();
+        _freehandBezierLocalNodes.Clear();
+        _legacyFreehandBezierNodeCache.Clear();
+        _mixingStrokeLocalSamples.Clear();
+        _mixingStrokeLocalRegions.Clear();
         _importedSvgSources.Clear();
         _textObjects.Clear();
 
@@ -1153,7 +1243,9 @@ internal sealed class VectorScene : ITimelineContext
     {
         ArgumentNullException.ThrowIfNull(objects);
         if (objects.Length == 0) return ObjectCount;
-        if (objects.Any(item => item.Shape is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Text))
+        if (objects.Any(item => item.Shape is VectorAnimationEngine.ShapeKind.ImportedSvg
+                or VectorAnimationEngine.ShapeKind.Text
+                or VectorAnimationEngine.ShapeKind.MixingStroke))
         {
             throw new InvalidOperationException("Sparse-payload objects cannot be appended through a packed batch.");
         }
@@ -1381,6 +1473,85 @@ internal sealed class VectorScene : ITimelineContext
             transform,
             convertPrimitivesToPaths,
             rebuildGeometryIndex);
+    }
+
+    internal bool ApplyTranslationSessionForPreview(
+        TransformSession session,
+        float dx,
+        float dy)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        if (!ReferenceEquals(session.Owner, this))
+        {
+            throw new ArgumentException("The transform session belongs to another scene.", nameof(session));
+        }
+        if (!float.IsFinite(dx) || !float.IsFinite(dy)) return false;
+
+        var source = session.Source;
+        var changed = false;
+        for (var sourceObject = 0; sourceObject < session.ObjectIndices.Length; sourceObject++)
+        {
+            var targetObject = session.ObjectIndices[sourceObject];
+            if ((uint)targetObject >= ObjectCount)
+            {
+                throw new InvalidOperationException("The scene structure changed during the transform session.");
+            }
+
+            var nextX = VectorUnits.Quantize(source.X[sourceObject] + dx);
+            var nextY = VectorUnits.Quantize(source.Y[sourceObject] + dy);
+            var nextControlX = VectorUnits.Quantize(source.CurveControlX[sourceObject] + dx);
+            var nextControlY = VectorUnits.Quantize(source.CurveControlY[sourceObject] + dy);
+            var nextControl2X = VectorUnits.Quantize(source.CurveControl2X[sourceObject] + dx);
+            var nextControl2Y = VectorUnits.Quantize(source.CurveControl2Y[sourceObject] + dy);
+            var hasGradient = source.HasGradient(sourceObject);
+            var nextGradientStartX = hasGradient
+                ? VectorUnits.Quantize(source.GradientStartX[sourceObject] + dx)
+                : GradientStartX[targetObject];
+            var nextGradientStartY = hasGradient
+                ? VectorUnits.Quantize(source.GradientStartY[sourceObject] + dy)
+                : GradientStartY[targetObject];
+            var nextGradientEndX = hasGradient
+                ? VectorUnits.Quantize(source.GradientEndX[sourceObject] + dx)
+                : GradientEndX[targetObject];
+            var nextGradientEndY = hasGradient
+                ? VectorUnits.Quantize(source.GradientEndY[sourceObject] + dy)
+                : GradientEndY[targetObject];
+            if (X[targetObject] == nextX
+                && Y[targetObject] == nextY
+                && CurveControlX[targetObject] == nextControlX
+                && CurveControlY[targetObject] == nextControlY
+                && CurveControl2X[targetObject] == nextControl2X
+                && CurveControl2Y[targetObject] == nextControl2Y
+                && GradientStartX[targetObject] == nextGradientStartX
+                && GradientStartY[targetObject] == nextGradientStartY
+                && GradientEndX[targetObject] == nextGradientEndX
+                && GradientEndY[targetObject] == nextGradientEndY)
+            {
+                continue;
+            }
+
+            X[targetObject] = nextX;
+            Y[targetObject] = nextY;
+            CurveControlX[targetObject] = nextControlX;
+            CurveControlY[targetObject] = nextControlY;
+            CurveControl2X[targetObject] = nextControl2X;
+            CurveControl2Y[targetObject] = nextControl2Y;
+            if (hasGradient)
+            {
+                GradientStartX[targetObject] = nextGradientStartX;
+                GradientStartY[targetObject] = nextGradientStartY;
+                GradientEndX[targetObject] = nextGradientEndX;
+                GradientEndY[targetObject] = nextGradientEndY;
+            }
+            changed = true;
+        }
+
+        if (!changed) return false;
+        var linkedBoundariesChanged = UpdateFillBoundaryLineLinks(
+            session.LinkedBoundaries,
+            rebuildGeometryIndex: false);
+        if (changed && !linkedBoundariesChanged) GeometryRevision++;
+        return true;
     }
 
     private void TransformObjectsCore(
@@ -1630,7 +1801,33 @@ internal sealed class VectorScene : ITimelineContext
         return true;
     }
 
+    internal bool TryGetGradientPathLocalPoints(int objectIndex, out PointF[] points)
+    {
+        if (HasGradientPath(objectIndex)
+            && _gradientPathLocalPoints.TryGetValue(objectIndex, out var localPoints))
+        {
+            points = localPoints;
+            return true;
+        }
+
+        points = Array.Empty<PointF>();
+        return false;
+    }
+
     public void SetGradientPath(int objectIndex, IReadOnlyList<PointF> worldPoints)
+    {
+        SetGradientPathCore(objectIndex, worldPoints, preserveTrajectoryOrder: false);
+    }
+
+    public void SetOrderedGradientPath(int objectIndex, IReadOnlyList<PointF> worldPoints)
+    {
+        SetGradientPathCore(objectIndex, worldPoints, preserveTrajectoryOrder: true);
+    }
+
+    private void SetGradientPathCore(
+        int objectIndex,
+        IReadOnlyList<PointF> worldPoints,
+        bool preserveTrajectoryOrder)
     {
         if ((uint)objectIndex >= ObjectCount
             || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Path
@@ -1648,7 +1845,8 @@ internal sealed class VectorScene : ITimelineContext
             return;
         }
 
-        if (GradientPaintUtilities.TryCreateSelfIntersectionFallbackAxis(points, out var fallbackAxis))
+        if (!preserveTrajectoryOrder
+            && GradientPaintUtilities.TryCreateSelfIntersectionFallbackAxis(points, out var fallbackAxis))
         {
             GradientStartX[objectIndex] = VectorUnits.Quantize(fallbackAxis.Start.X);
             GradientStartY[objectIndex] = VectorUnits.Quantize(fallbackAxis.Start.Y);
@@ -1744,8 +1942,42 @@ internal sealed class VectorScene : ITimelineContext
         for (var index = 1; index < points.Length; index++) length += Distance(points[index - 1], points[index]);
         if (length <= 0.001f) return 0;
 
-        var area = Math.Abs(CompoundContourArea(FillWorldContours(objectIndex)));
-        return Math.Max(VectorUnits.FromPixels(0.5f), area / length);
+        var contours = FillWorldContours(objectIndex);
+        var areaWidth = Math.Abs(CompoundContourArea(contours)) / length;
+        var coverageWidth = MaximumSampledBoundaryDistance(points, contours) * 2f;
+        return Math.Max(VectorUnits.FromPixels(0.5f), Math.Max(areaWidth, coverageWidth));
+    }
+
+    private static float MaximumSampledBoundaryDistance(
+        IReadOnlyList<PointF> path,
+        IReadOnlyList<PointF[]> contours)
+    {
+        var boundaryPointCount = contours.Sum(contour => contour.Length);
+        if (boundaryPointCount == 0) return 0;
+
+        var stride = Math.Max(
+            1,
+            (int)Math.Ceiling(boundaryPointCount / (double)MaximumGradientPathCoverageSamples));
+        var maximumDistance = 0f;
+        var globalPointIndex = 0;
+        foreach (var contour in contours)
+        {
+            for (var pointIndex = 0; pointIndex < contour.Length; pointIndex++, globalPointIndex++)
+            {
+                if (globalPointIndex % stride != 0
+                    && pointIndex != 0
+                    && pointIndex != contour.Length - 1)
+                {
+                    continue;
+                }
+
+                maximumDistance = Math.Max(
+                    maximumDistance,
+                    DistanceToPolyline(contour[pointIndex], path));
+            }
+        }
+
+        return maximumDistance;
     }
 
     private GradientPaintData? CaptureGradientPaint(int objectIndex)
@@ -1956,6 +2188,18 @@ internal sealed class VectorScene : ITimelineContext
                     .Select(stop => new GradientStop(stop.Position, ApplyOpacity(stop.Argb, factor)))
                     .ToArray();
             }
+            if (_mixingStrokeLocalSamples.TryGetValue(index, out var mixingSamples))
+            {
+                _mixingStrokeLocalSamples[index] = mixingSamples
+                    .Select(sample => sample with { Argb = ApplyOpacity(sample.Argb, factor) })
+                    .ToArray();
+            }
+            if (_mixingStrokeLocalRegions.TryGetValue(index, out var mixingRegion))
+            {
+                _mixingStrokeLocalRegions[index] = ApplyMixingRegionColor(
+                    mixingRegion,
+                    argb => ApplyOpacity(argb, factor));
+            }
         }
 
         RebuildSummaries();
@@ -2049,6 +2293,18 @@ internal sealed class VectorScene : ITimelineContext
                 .Select(stop => new GradientStop(stop.Position, ApplyOpacity(stop.Argb, factor)))
                 .ToArray();
         }
+        if (_mixingStrokeLocalSamples.TryGetValue(objectIndex, out var mixingSamples))
+        {
+            _mixingStrokeLocalSamples[objectIndex] = mixingSamples
+                .Select(sample => sample with { Argb = ApplyOpacity(sample.Argb, factor) })
+                .ToArray();
+        }
+        if (_mixingStrokeLocalRegions.TryGetValue(objectIndex, out var mixingRegion))
+        {
+            _mixingStrokeLocalRegions[objectIndex] = ApplyMixingRegionColor(
+                mixingRegion,
+                argb => ApplyOpacity(argb, factor));
+        }
     }
 
     private void ApplyOnionSkinAppearance(int objectIndex, float opacity, int tintArgb)
@@ -2064,6 +2320,21 @@ internal sealed class VectorScene : ITimelineContext
                 .Select(stop => new GradientStop(stop.Position, ApplyOnionSkinOpacity(stop.Argb, factor, tintArgb)))
                 .ToArray();
         }
+        if (_mixingStrokeLocalSamples.TryGetValue(objectIndex, out var mixingSamples))
+        {
+            _mixingStrokeLocalSamples[objectIndex] = mixingSamples
+                .Select(sample => sample with
+                {
+                    Argb = ApplyOnionSkinOpacity(sample.Argb, factor, tintArgb)
+                })
+                .ToArray();
+        }
+        if (_mixingStrokeLocalRegions.TryGetValue(objectIndex, out var mixingRegion))
+        {
+            _mixingStrokeLocalRegions[objectIndex] = ApplyMixingRegionColor(
+                mixingRegion,
+                argb => ApplyOnionSkinOpacity(argb, factor, tintArgb));
+        }
     }
 
     private static int ApplyOnionSkinOpacity(int argb, float factor, int tintArgb)
@@ -2076,6 +2347,25 @@ internal sealed class VectorScene : ITimelineContext
     {
         var alpha = (int)Math.Clamp(((argb >>> 24) & 0xff) * factor, 0, 255);
         return (argb & 0x00ffffff) | (alpha << 24);
+    }
+
+    private static MixingBrushRegionData ApplyMixingRegionColor(
+        MixingBrushRegionData region,
+        Func<int, int> transform)
+    {
+        var vertices = region.Vertices
+            .Select(vertex => vertex with { Argb = transform(vertex.Argb) })
+            .ToArray();
+        return new MixingBrushRegionData(vertices, region.TriangleIndices);
+    }
+
+    private static int MixingBrushRegionSummaryArgb(MixingBrushRegionData region)
+    {
+        for (var index = region.Vertices.Length - 1; index >= 0; index--)
+        {
+            if (((uint)region.Vertices[index].Argb >> 24) > 0) return region.Vertices[index].Argb;
+        }
+        return region.Vertices.Length > 0 ? region.Vertices[^1].Argb : Color.Transparent.ToArgb();
     }
 
     private void TransformObject(int objectIndex, Func<PointF, PointF> transform)
@@ -2140,6 +2430,53 @@ internal sealed class VectorScene : ITimelineContext
                     shapeGradientMapping.Select(contour => contour.Select(transform).ToArray()).ToArray());
             }
             if (gradientPath.Length > 1) SetGradientPath(objectIndex, gradientPath.Select(transform).ToArray());
+            return;
+        }
+
+        if (shape == VectorAnimationEngine.ShapeKind.MixingStroke
+            && TryGetMixingBrushWorldRegion(objectIndex, out var mixingRegion))
+        {
+            var transformedVertices = mixingRegion.Vertices
+                .Select(vertex => vertex with { Point = transform(vertex.Point) })
+                .ToArray();
+            SetMixingBrushRegion(
+                objectIndex,
+                new MixingBrushRegionData(transformedVertices, mixingRegion.TriangleIndices));
+            return;
+        }
+
+        if (shape == VectorAnimationEngine.ShapeKind.MixingStroke
+            && TryGetMixingStrokeWorldSamples(objectIndex, out var mixingSamples))
+        {
+            for (var sampleIndex = 0; sampleIndex < mixingSamples.Length; sampleIndex++)
+            {
+                var sample = mixingSamples[sampleIndex];
+                var radius = sample.Diameter * 0.5f;
+                var transformedPoint = transform(sample.Point);
+                var transformedSampleXAxis = transform(new PointF(sample.Point.X + radius, sample.Point.Y));
+                var transformedSampleYAxis = transform(new PointF(sample.Point.X, sample.Point.Y + radius));
+                var diameterX = Distance(transformedPoint, transformedSampleXAxis) * 2f;
+                var diameterY = Distance(transformedPoint, transformedSampleYAxis) * 2f;
+                var transformedDiameter = MathF.Sqrt(Math.Max(0f, diameterX * diameterY));
+                mixingSamples[sampleIndex] = sample with
+                {
+                    Point = transformedPoint,
+                    Diameter = float.IsFinite(transformedDiameter) && transformedDiameter > 0
+                        ? transformedDiameter
+                        : sample.Diameter
+                };
+            }
+
+            SetMixingStrokeSamples(objectIndex, mixingSamples);
+            return;
+        }
+
+        if (shape == VectorAnimationEngine.ShapeKind.Freeform
+            && TryGetFreehandBezierWorldNodes(objectIndex, out var freehandNodes))
+        {
+            TransformFreehandBezierNodes(freehandNodes, transform);
+            if (!SetFreehandBezierNodesCore(objectIndex, freehandNodes)) return;
+            if (hasGradient) SetLinearGradientEndpoints(objectIndex, transform(gradientStart), transform(gradientEnd));
             return;
         }
 
@@ -2263,6 +2600,7 @@ internal sealed class VectorScene : ITimelineContext
         CurveControlY[objectIndex] = VectorUnits.Quantize(control1.Y);
         CurveControl2X[objectIndex] = VectorUnits.Quantize(control2.X);
         CurveControl2Y[objectIndex] = VectorUnits.Quantize(control2.Y);
+        InvalidateDeferredTopologyQueries();
     }
 
     private void SetPathContours(int objectIndex, PointF[][] contours)
@@ -2297,7 +2635,15 @@ internal sealed class VectorScene : ITimelineContext
 
     private void SetFreehandPoints(int objectIndex, PointF[] points)
     {
+        points = NormalizeFreehandPoints(points);
         if (points.Length == 0) return;
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Freeform
+            && TryCreateOpenFreehandBezierNodes(points, out var nodes)
+            && SetFreehandBezierNodesCore(objectIndex, nodes))
+        {
+            return;
+        }
+
         var left = points.Min(point => point.X);
         var right = points.Max(point => point.X);
         var top = points.Min(point => point.Y);
@@ -2313,6 +2659,95 @@ internal sealed class VectorScene : ITimelineContext
                 VectorUnits.Quantize(point.X - center.X),
                 VectorUnits.Quantize(point.Y - center.Y)))
             .ToArray();
+        _freehandBezierLocalNodes.Remove(objectIndex);
+        _legacyFreehandBezierNodeCache.Remove(objectIndex);
+    }
+
+    private void SetMixingStrokeSamples(
+        int objectIndex,
+        IReadOnlyList<MixingBrushTrajectorySample> worldSamples)
+    {
+        var samples = NormalizeMixingStrokeSamples(worldSamples);
+        if (samples.Length == 0) return;
+
+        var firstRadius = samples[0].Diameter * 0.5f;
+        var left = samples[0].Point.X - firstRadius;
+        var right = samples[0].Point.X + firstRadius;
+        var top = samples[0].Point.Y - firstRadius;
+        var bottom = samples[0].Point.Y + firstRadius;
+        for (var index = 1; index < samples.Length; index++)
+        {
+            var radius = samples[index].Diameter * 0.5f;
+            left = Math.Min(left, samples[index].Point.X - radius);
+            right = Math.Max(right, samples[index].Point.X + radius);
+            top = Math.Min(top, samples[index].Point.Y - radius);
+            bottom = Math.Max(bottom, samples[index].Point.Y + radius);
+        }
+
+        var center = VectorUnits.Quantize(new PointF(
+            left + (right - left) * 0.5f,
+            top + (bottom - top) * 0.5f));
+        X[objectIndex] = center.X;
+        Y[objectIndex] = center.Y;
+        Width[objectIndex] = Math.Max(
+            VectorUnits.MinimumStrokeUnits,
+            VectorUnits.Quantize(right - left));
+        Height[objectIndex] = Math.Max(
+            VectorUnits.MinimumStrokeUnits,
+            VectorUnits.Quantize(bottom - top));
+        Angle[objectIndex] = 0;
+        Argb[objectIndex] = samples[^1].Argb;
+        _mixingStrokeLocalSamples[objectIndex] = samples
+            .Select(sample => sample with
+            {
+                Point = new PointF(
+                    VectorUnits.Quantize(sample.Point.X - center.X),
+                    VectorUnits.Quantize(sample.Point.Y - center.Y))
+            })
+            .ToArray();
+        _mixingStrokeLocalRegions.Remove(objectIndex);
+    }
+
+    private bool SetMixingBrushRegion(int objectIndex, MixingBrushRegionData worldRegion)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke
+            || worldRegion is null
+            || !MixingBrushRegionData.TryNormalize(
+                worldRegion.Vertices,
+                worldRegion.TriangleIndices,
+                out var normalized))
+        {
+            return false;
+        }
+
+        var bounds = normalized.CalculateBounds();
+        var center = VectorUnits.Quantize(new PointF(
+            bounds.Left + bounds.Width * 0.5f,
+            bounds.Top + bounds.Height * 0.5f));
+        var localVertices = normalized.Vertices
+            .Select(vertex => vertex with
+            {
+                Point = new PointF(
+                    VectorUnits.Quantize(vertex.Point.X - center.X),
+                    VectorUnits.Quantize(vertex.Point.Y - center.Y))
+            })
+            .ToArray();
+        var localRegion = new MixingBrushRegionData(localVertices, normalized.TriangleIndices);
+
+        X[objectIndex] = center.X;
+        Y[objectIndex] = center.Y;
+        Width[objectIndex] = Math.Max(
+            VectorUnits.MinimumStrokeUnits,
+            VectorUnits.Quantize(bounds.Width));
+        Height[objectIndex] = Math.Max(
+            VectorUnits.MinimumStrokeUnits,
+            VectorUnits.Quantize(bounds.Height));
+        Angle[objectIndex] = 0;
+        Argb[objectIndex] = MixingBrushRegionSummaryArgb(localRegion);
+        _mixingStrokeLocalRegions[objectIndex] = localRegion;
+        _mixingStrokeLocalSamples.Remove(objectIndex);
+        return true;
     }
 
     internal int AppendCurveSegment(
@@ -2540,6 +2975,20 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
+    public int AddFreehandBezierStroke(
+        int layer,
+        IReadOnlyList<PathBezierNode> worldNodes,
+        float stroke,
+        Color color,
+        uint atoms)
+    {
+        var index = AppendFreehandBezierStroke(layer, worldNodes, stroke, color, atoms);
+        if (index < 0) return -1;
+        AppendObjectToSpatialIndex(index);
+        AddObjectToSummariesIncremental(index, color);
+        return index;
+    }
+
     public int[] AddSoftBrushStroke(
         int layer,
         IReadOnlyList<PointF> worldPoints,
@@ -2578,6 +3027,132 @@ internal sealed class VectorScene : ITimelineContext
             CompleteIncrementalObjectAppends(added);
         }
         return added.ToArray();
+    }
+
+    public int AddMixingBrushStroke(
+        int layer,
+        IReadOnlyList<MixingBrushTrajectorySample> worldSamples,
+        uint atoms)
+    {
+        var index = AppendMixingBrushStroke(layer, worldSamples, atoms);
+        if (index < 0) return -1;
+        AppendObjectToSpatialIndex(index);
+        AddObjectToSummariesIncremental(index, Color.FromArgb(Argb[index]));
+        return index;
+    }
+
+    public int AddMixingBrushRegion(
+        int layer,
+        MixingBrushRegionData worldRegion,
+        uint atoms)
+    {
+        var index = AppendMixingBrushRegion(layer, worldRegion, atoms);
+        if (index < 0) return -1;
+        AppendObjectToSpatialIndex(index);
+        AddObjectToSummariesIncremental(index, Color.FromArgb(Argb[index]));
+        return index;
+    }
+
+    internal MixingBrushRegionMergeResult AddOrMergeMixingBrushRegion(
+        int layer,
+        int frame,
+        MixingBrushRegionData worldRegion,
+        uint atoms)
+    {
+        if (worldRegion is null
+            || !MixingBrushRegionData.TryNormalize(
+                worldRegion.Vertices,
+                worldRegion.TriangleIndices,
+                out var normalizedNewRegion))
+        {
+            return MixingBrushRegionMergeResult.Failed;
+        }
+        var canMergeNewRegion = MixingBrushRegionMerger.TryPrepareNormalized(
+            normalizedNewRegion,
+            out var newRegion);
+
+        var targetLayer = ResolveObjectLayer(layer);
+        var previousEditFrame = EditFrame;
+        try
+        {
+            EditFrame = Math.Max(0, frame);
+            var targetKeyframe = EnsureWritableKeyframe(targetLayer, EditFrame);
+            if (!canMergeNewRegion)
+            {
+                var independent = AppendNormalizedMixingBrushRegion(targetLayer, normalizedNewRegion, atoms);
+                if (independent < 0) return MixingBrushRegionMergeResult.Failed;
+                ObjectKeyframeFrame[independent] = targetKeyframe;
+                AppendObjectToSpatialIndex(independent);
+                AddObjectToSummariesIncremental(independent, Color.FromArgb(Argb[independent]));
+                return new MixingBrushRegionMergeResult(independent, 0);
+            }
+
+            var candidateObjects = new List<int>();
+            var preparedCandidates = new List<PreparedMixingBrushGridRegion>();
+            var orderedObjects = Enumerable.Range(0, ObjectCount)
+                .Where(index => ObjectLayer[index] == targetLayer
+                    && ObjectKeyframeFrame[index] == targetKeyframe)
+                .OrderByDescending(index => ObjectOrder[index])
+                .ThenByDescending(index => ObjectSubOrder[index])
+                .ThenByDescending(index => index);
+            foreach (var candidate in orderedObjects)
+            {
+                if (ShapeKind[candidate] != VectorAnimationEngine.ShapeKind.MixingStroke
+                    || !TryGetMixingBrushWorldRegion(candidate, out var candidateRegion)
+                    || !MixingBrushRegionMerger.TryPrepareNormalized(candidateRegion, out var preparedCandidate))
+                {
+                    break;
+                }
+
+                candidateObjects.Add(candidate);
+                preparedCandidates.Add(preparedCandidate);
+            }
+
+            if (candidateObjects.Count == 0)
+            {
+                var independent = AppendNormalizedMixingBrushRegion(targetLayer, newRegion.Region, atoms);
+                if (independent < 0) return MixingBrushRegionMergeResult.Failed;
+                ObjectKeyframeFrame[independent] = targetKeyframe;
+                AppendObjectToSpatialIndex(independent);
+                AddObjectToSummariesIncremental(independent, Color.FromArgb(Argb[independent]));
+                return new MixingBrushRegionMergeResult(independent, 0);
+            }
+
+            preparedCandidates.Reverse();
+            preparedCandidates.Add(newRegion);
+            if (!MixingBrushRegionMerger.TryMerge(preparedCandidates, out var mergedRegion))
+            {
+                var independent = AppendNormalizedMixingBrushRegion(targetLayer, newRegion.Region, atoms);
+                if (independent < 0) return MixingBrushRegionMergeResult.Failed;
+                ObjectKeyframeFrame[independent] = targetKeyframe;
+                AppendObjectToSpatialIndex(independent);
+                AddObjectToSummariesIncremental(independent, Color.FromArgb(Argb[independent]));
+                return new MixingBrushRegionMergeResult(independent, 0);
+            }
+
+            var mergedComplexity = (ulong)mergedRegion.Vertices.Length
+                + (ulong)(mergedRegion.TriangleIndices.Length / 3);
+            var mergedAtoms = (uint)Math.Clamp(mergedComplexity, 3ul, uint.MaxValue);
+            var appended = AppendNormalizedMixingBrushRegion(targetLayer, mergedRegion, mergedAtoms);
+            if (appended < 0) return MixingBrushRegionMergeResult.Failed;
+            ObjectKeyframeFrame[appended] = targetKeyframe;
+            var mergedOrder = ObjectOrder[appended];
+
+            var removed = RemoveObjects(candidateObjects);
+            var resultIndex = appended - removed;
+            if ((uint)resultIndex >= ObjectCount || ObjectOrder[resultIndex] != mergedOrder)
+            {
+                resultIndex = Enumerable.Range(0, ObjectCount)
+                    .FirstOrDefault(index => ObjectOrder[index] == mergedOrder, -1);
+            }
+            return resultIndex >= 0
+                ? new MixingBrushRegionMergeResult(resultIndex, removed)
+                : MixingBrushRegionMergeResult.Failed;
+        }
+        finally
+        {
+            EditFrame = previousEditFrame;
+        }
     }
 
     public int[] AddPressureBrushStroke(
@@ -2721,7 +3296,16 @@ internal sealed class VectorScene : ITimelineContext
         for (var index = 0; index < ObjectCount; index++)
         {
             if (!IsObjectActive(index, frame)) continue;
-            if (TryBuildBrushEraserPlan(index, cutter, eraseLines, eraseFills, out var plan)) plans.Add(plan);
+            if (TryBuildBrushEraserPlan(
+                    index,
+                    cutter,
+                    sweepContours,
+                    eraseLines,
+                    eraseFills,
+                    out var plan))
+            {
+                plans.Add(plan);
+            }
         }
 
         if (plans.Count == 0) return false;
@@ -2763,6 +3347,23 @@ internal sealed class VectorScene : ITimelineContext
                 if (index < 0) continue;
                 ObjectKeyframeFrame[index] = plan.KeyframeFrame;
             }
+
+            foreach (var replacement in plan.MixingStrokeReplacements)
+            {
+                var index = replacement.Region is { } region
+                    ? AppendMixingBrushRegion(
+                        replacement.Layer,
+                        region,
+                        replacement.Atoms)
+                    : AppendMixingBrushStroke(
+                        replacement.Layer,
+                        replacement.Samples,
+                        replacement.Atoms);
+                if (index < 0) continue;
+                ObjectOrder[index] = replacement.Order;
+                ObjectSubOrder[index] = replacement.SubOrder;
+                ObjectKeyframeFrame[index] = plan.KeyframeFrame;
+            }
         }
 
         RebuildGeometryIndex();
@@ -2782,11 +3383,18 @@ internal sealed class VectorScene : ITimelineContext
     private bool TryBuildBrushEraserPlan(
         int source,
         Paths64 cutter,
+        PointF[][] cutterContours,
         bool eraseLines,
         bool eraseFills,
         out BrushEraserPlan plan)
     {
         plan = null!;
+        if (ShapeKind[source] == VectorAnimationEngine.ShapeKind.MixingStroke)
+        {
+            return eraseFills
+                && TryBuildMixingStrokeEraserPlan(source, cutterContours, out plan);
+        }
+
         var eraserStrokePath = IsBrushEraserStrokePath(source);
         var hasFill = HasFill(source) && !eraserStrokePath;
         var hasStroke = HasStroke(source) || eraserStrokePath;
@@ -2937,6 +3545,244 @@ internal sealed class VectorScene : ITimelineContext
         plan = new BrushEraserPlan(source, ObjectKeyframeFrame[source], additions);
         return true;
     }
+
+    private bool TryBuildMixingStrokeEraserPlan(
+        int source,
+        PointF[][] cutterContours,
+        out BrushEraserPlan plan)
+    {
+        plan = null!;
+        if (TryGetMixingBrushWorldRegion(source, out var region))
+        {
+            return TryBuildMixingBrushRegionEraserPlan(source, region, cutterContours, out plan);
+        }
+        if (cutterContours.Length == 0
+            || !TryGetMixingStrokeWorldSamples(source, out var samples)
+            || samples.Length == 0)
+        {
+            return false;
+        }
+
+        var cutterBounds = ContourBounds(cutterContours);
+        var retainedRuns = new List<MixingBrushTrajectorySample[]>();
+        var currentRun = new List<MixingBrushTrajectorySample>(samples.Length);
+        var changed = false;
+
+        void CompleteRun()
+        {
+            if (currentRun.Count == 0) return;
+            retainedRuns.Add(currentRun.ToArray());
+            currentRun.Clear();
+        }
+
+        foreach (var sample in samples)
+        {
+            var radius = sample.Diameter * 0.5f;
+            if (sample.Point.X + radius < cutterBounds.Left
+                || sample.Point.X - radius > cutterBounds.Right
+                || sample.Point.Y + radius < cutterBounds.Top
+                || sample.Point.Y - radius > cutterBounds.Bottom)
+            {
+                currentRun.Add(sample);
+                continue;
+            }
+
+            if (PointInCompoundPolygonOrOnBoundary(sample.Point, cutterContours))
+            {
+                changed = true;
+                CompleteRun();
+                continue;
+            }
+
+            var distance = DistanceToCompoundPolygonBoundary(sample.Point, cutterContours);
+            if (distance >= radius - DrawingTopologyRules.UnitIntersectionTolerance)
+            {
+                currentRun.Add(sample);
+                continue;
+            }
+
+            changed = true;
+            var retainedDiameter = MathF.Floor(Math.Max(0, distance * 2f));
+            if (retainedDiameter < VectorUnits.MinimumStrokeUnits)
+            {
+                CompleteRun();
+                continue;
+            }
+
+            currentRun.Add(sample with { Diameter = retainedDiameter });
+        }
+
+        CompleteRun();
+        if (!changed) return false;
+
+        var replacements = new MixingStrokeEraserReplacement[retainedRuns.Count];
+        if (retainedRuns.Count > 0)
+        {
+            var subOrders = retainedRuns.Count == 1
+                ? [ObjectSubOrder[source]]
+                : ReplacementSubOrders(source, retainedRuns.Count);
+            var sourceAtoms = AtomCount[source];
+            var atoms = Math.Max(3u, sourceAtoms / (uint)retainedRuns.Count);
+            var atomRemainder = sourceAtoms >= 3u * (uint)retainedRuns.Count
+                ? sourceAtoms % (uint)retainedRuns.Count
+                : 0;
+            for (var index = 0; index < retainedRuns.Count; index++)
+            {
+                replacements[index] = new MixingStrokeEraserReplacement(
+                    ObjectLayer[source],
+                    ObjectOrder[source],
+                    subOrders[index],
+                    atoms + ((uint)index < atomRemainder ? 1u : 0u),
+                    retainedRuns[index]);
+            }
+        }
+
+        plan = new BrushEraserPlan(
+            source,
+            ObjectKeyframeFrame[source],
+            Array.Empty<MaterializedPartAddition>())
+        {
+            MixingStrokeReplacements = replacements
+        };
+        return true;
+    }
+
+    private bool TryBuildMixingBrushRegionEraserPlan(
+        int source,
+        MixingBrushRegionData region,
+        PointF[][] cutterContours,
+        out BrushEraserPlan plan)
+    {
+        plan = null!;
+        if (cutterContours.Length == 0) return false;
+
+        var cutterBounds = ContourBounds(cutterContours);
+        var triangleCount = region.TriangleIndices.Length / 3;
+        var retainedTriangles = new bool[triangleCount];
+        var changed = false;
+        for (var triangle = 0; triangle < triangleCount; triangle++)
+        {
+            var offset = triangle * 3;
+            var first = region.Vertices[region.TriangleIndices[offset]];
+            var second = region.Vertices[region.TriangleIndices[offset + 1]];
+            var third = region.Vertices[region.TriangleIndices[offset + 2]];
+            var intersects = TriangleIntersectsMixingCutter(
+                first,
+                second,
+                third,
+                cutterContours,
+                cutterBounds);
+            retainedTriangles[triangle] = !intersects;
+            changed |= intersects;
+        }
+        if (!changed) return false;
+
+        var components = region.CreateConnectedComponents(retainedTriangles);
+        var replacements = new MixingStrokeEraserReplacement[components.Length];
+        if (components.Length > 0)
+        {
+            var subOrders = components.Length == 1
+                ? [ObjectSubOrder[source]]
+                : ReplacementSubOrders(source, components.Length);
+            var sourceAtoms = AtomCount[source];
+            var atoms = Math.Max(3u, sourceAtoms / (uint)components.Length);
+            var atomRemainder = sourceAtoms >= 3u * (uint)components.Length
+                ? sourceAtoms % (uint)components.Length
+                : 0;
+            for (var index = 0; index < components.Length; index++)
+            {
+                replacements[index] = new MixingStrokeEraserReplacement(
+                    ObjectLayer[source],
+                    ObjectOrder[source],
+                    subOrders[index],
+                    atoms + ((uint)index < atomRemainder ? 1u : 0u),
+                    [])
+                {
+                    Region = components[index]
+                };
+            }
+        }
+
+        plan = new BrushEraserPlan(
+            source,
+            ObjectKeyframeFrame[source],
+            Array.Empty<MaterializedPartAddition>())
+        {
+            MixingStrokeReplacements = replacements
+        };
+        return true;
+    }
+
+    private static bool TriangleIntersectsMixingCutter(
+        MixingBrushRegionVertex first,
+        MixingBrushRegionVertex second,
+        MixingBrushRegionVertex third,
+        PointF[][] cutterContours,
+        RectangleF cutterBounds)
+    {
+        if (((uint)first.Argb >> 24) == 0
+            && ((uint)second.Argb >> 24) == 0
+            && ((uint)third.Argb >> 24) == 0)
+        {
+            return false;
+        }
+
+        var triangleLeft = Math.Min(first.Point.X, Math.Min(second.Point.X, third.Point.X));
+        var triangleRight = Math.Max(first.Point.X, Math.Max(second.Point.X, third.Point.X));
+        var triangleTop = Math.Min(first.Point.Y, Math.Min(second.Point.Y, third.Point.Y));
+        var triangleBottom = Math.Max(first.Point.Y, Math.Max(second.Point.Y, third.Point.Y));
+        if (triangleRight < cutterBounds.Left
+            || triangleLeft > cutterBounds.Right
+            || triangleBottom < cutterBounds.Top
+            || triangleTop > cutterBounds.Bottom)
+        {
+            return false;
+        }
+
+        if (PointInCompoundPolygonOrOnBoundary(first.Point, cutterContours)
+            || PointInCompoundPolygonOrOnBoundary(second.Point, cutterContours)
+            || PointInCompoundPolygonOrOnBoundary(third.Point, cutterContours))
+        {
+            return true;
+        }
+
+        foreach (var contour in cutterContours)
+        {
+            if (contour.Length == 0) continue;
+            if (PointInMixingTriangle(contour[0], first.Point, second.Point, third.Point)) return true;
+            for (var index = 0; index < contour.Length; index++)
+            {
+                var cutterStart = contour[index];
+                var cutterEnd = contour[(index + 1) % contour.Length];
+                if (TrySegmentIntersection(first.Point, second.Point, cutterStart, cutterEnd, out _)
+                    || TrySegmentIntersection(second.Point, third.Point, cutterStart, cutterEnd, out _)
+                    || TrySegmentIntersection(third.Point, first.Point, cutterStart, cutterEnd, out _))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static bool PointInMixingTriangle(
+        PointF point,
+        PointF first,
+        PointF second,
+        PointF third)
+    {
+        var firstSide = Cross(first, second, point);
+        var secondSide = Cross(second, third, point);
+        var thirdSide = Cross(third, first, point);
+        var tolerance = DrawingTopologyRules.UnitIntersectionTolerance;
+        var hasNegative = firstSide < -tolerance || secondSide < -tolerance || thirdSide < -tolerance;
+        var hasPositive = firstSide > tolerance || secondSide > tolerance || thirdSide > tolerance;
+        return !(hasNegative && hasPositive);
+    }
+
+    private static double Cross(PointF start, PointF end, PointF point) =>
+        ((double)end.X - start.X) * (point.Y - start.Y)
+        - ((double)end.Y - start.Y) * (point.X - start.X);
 
     private bool TryAddErasedEditableStrokeMaterializations(
         int source,
@@ -3485,9 +4331,266 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
+    internal int AppendMixingBrushStroke(
+        int layer,
+        IReadOnlyList<MixingBrushTrajectorySample> worldSamples,
+        uint atoms)
+    {
+        var samples = NormalizeMixingStrokeSamples(worldSamples);
+        if (samples.Length == 0) return -1;
+
+        var firstRadius = samples[0].Diameter * 0.5f;
+        var left = samples[0].Point.X - firstRadius;
+        var right = samples[0].Point.X + firstRadius;
+        var top = samples[0].Point.Y - firstRadius;
+        var bottom = samples[0].Point.Y + firstRadius;
+        for (var index = 1; index < samples.Length; index++)
+        {
+            var radius = samples[index].Diameter * 0.5f;
+            left = Math.Min(left, samples[index].Point.X - radius);
+            right = Math.Max(right, samples[index].Point.X + radius);
+            top = Math.Min(top, samples[index].Point.Y - radius);
+            bottom = Math.Max(bottom, samples[index].Point.Y + radius);
+        }
+
+        var center = VectorUnits.Quantize(new PointF(
+            left + (right - left) * 0.5f,
+            top + (bottom - top) * 0.5f));
+        var summaryColor = Color.FromArgb(samples[^1].Argb);
+        var objectIndex = AppendObject(
+            layer,
+            center,
+            new SizeF(
+                Math.Max(VectorUnits.MinimumStrokeUnits, VectorUnits.Quantize(right - left)),
+                Math.Max(VectorUnits.MinimumStrokeUnits, VectorUnits.Quantize(bottom - top))),
+            0,
+            0,
+            summaryColor,
+            Color.Transparent,
+            Math.Max(atoms, (uint)Math.Max(3, samples.Length)),
+            VectorAnimationEngine.ShapeKind.MixingStroke);
+        _mixingStrokeLocalSamples[objectIndex] = samples
+            .Select(sample => sample with
+            {
+                Point = new PointF(
+                    VectorUnits.Quantize(sample.Point.X - center.X),
+                    VectorUnits.Quantize(sample.Point.Y - center.Y))
+            })
+            .ToArray();
+        _mixingStrokeLocalRegions.Remove(objectIndex);
+        return objectIndex;
+    }
+
+    internal int AppendMixingBrushRegion(
+        int layer,
+        MixingBrushRegionData worldRegion,
+        uint atoms)
+    {
+        if (worldRegion is null
+            || !MixingBrushRegionData.TryNormalize(
+                worldRegion.Vertices,
+                worldRegion.TriangleIndices,
+                out var normalized))
+        {
+            return -1;
+        }
+
+        return AppendNormalizedMixingBrushRegion(layer, normalized, atoms);
+    }
+
+    internal int AppendMixingBrushPreviewRegion(
+        int layer,
+        MixingBrushRegionData worldRegion,
+        uint atoms)
+    {
+        if (worldRegion is null
+            || worldRegion.Vertices.Length < 3
+            || worldRegion.TriangleIndices.Length < 3
+            || worldRegion.TriangleIndices.Length % 3 != 0)
+        {
+            return -1;
+        }
+
+        for (var index = 0; index < worldRegion.TriangleIndices.Length; index++)
+        {
+            if ((uint)worldRegion.TriangleIndices[index] >= worldRegion.Vertices.Length)
+            {
+                return -1;
+            }
+        }
+
+        var previewIndex = AppendNormalizedMixingBrushRegion(layer, worldRegion, atoms);
+        if (previewIndex < 0) return -1;
+        AppendObjectToSpatialIndex(previewIndex);
+        AddObjectToSummariesIncremental(previewIndex, Color.FromArgb(Argb[previewIndex]));
+        return previewIndex;
+    }
+
+    private int AppendNormalizedMixingBrushRegion(
+        int layer,
+        MixingBrushRegionData normalized,
+        uint atoms)
+    {
+        var bounds = normalized.CalculateBounds();
+        var center = VectorUnits.Quantize(new PointF(
+            bounds.Left + bounds.Width * 0.5f,
+            bounds.Top + bounds.Height * 0.5f));
+        var localVertices = normalized.Vertices
+            .Select(vertex => vertex with
+            {
+                Point = new PointF(
+                    VectorUnits.Quantize(vertex.Point.X - center.X),
+                    VectorUnits.Quantize(vertex.Point.Y - center.Y))
+            })
+            .ToArray();
+        var localRegion = new MixingBrushRegionData(localVertices, normalized.TriangleIndices);
+
+        var objectIndex = AppendObject(
+            layer,
+            center,
+            new SizeF(
+                Math.Max(VectorUnits.MinimumStrokeUnits, VectorUnits.Quantize(bounds.Width)),
+                Math.Max(VectorUnits.MinimumStrokeUnits, VectorUnits.Quantize(bounds.Height))),
+            0,
+            0,
+            Color.FromArgb(MixingBrushRegionSummaryArgb(localRegion)),
+            Color.Transparent,
+            Math.Max(atoms, (uint)Math.Max(3, localRegion.Vertices.Length)),
+            VectorAnimationEngine.ShapeKind.MixingStroke);
+        _mixingStrokeLocalRegions[objectIndex] = localRegion;
+        _mixingStrokeLocalSamples.Remove(objectIndex);
+        return objectIndex;
+    }
+
+    public bool TryGetMixingBrushLocalRegion(
+        int objectIndex,
+        out MixingBrushRegionData region)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke
+            || !_mixingStrokeLocalRegions.TryGetValue(objectIndex, out region!))
+        {
+            region = new MixingBrushRegionData([], []);
+            return false;
+        }
+
+        return region.Vertices is { Length: >= 3 }
+            && region.TriangleIndices is { Length: >= 3 };
+    }
+
+    public bool TryGetMixingBrushWorldRegion(
+        int objectIndex,
+        out MixingBrushRegionData region)
+    {
+        if (!TryGetMixingBrushLocalRegion(objectIndex, out var localRegion))
+        {
+            region = new MixingBrushRegionData([], []);
+            return false;
+        }
+
+        var vertices = new MixingBrushRegionVertex[localRegion.Vertices.Length];
+        for (var index = 0; index < vertices.Length; index++)
+        {
+            var vertex = localRegion.Vertices[index];
+            vertices[index] = vertex with
+            {
+                Point = LocalToWorld(objectIndex, vertex.Point.X, vertex.Point.Y)
+            };
+        }
+        region = new MixingBrushRegionData(vertices, localRegion.TriangleIndices.ToArray());
+        return true;
+    }
+
+    public int GetMixingBrushRegionPartCount(int objectIndex)
+    {
+        return TryGetMixingBrushLocalRegion(objectIndex, out var region)
+            ? region.ConnectedComponentCount
+            : 0;
+    }
+
+    public bool TryGetMixingBrushLocalRegionPart(
+        int objectIndex,
+        int partIndex,
+        out MixingBrushRegionData region)
+    {
+        if (!TryGetMixingBrushLocalRegion(objectIndex, out var localRegion)
+            || !localRegion.TryGetConnectedComponent(partIndex, out region))
+        {
+            region = new MixingBrushRegionData([], []);
+            return false;
+        }
+        return true;
+    }
+
+    public bool TryGetMixingBrushWorldRegionPart(
+        int objectIndex,
+        int partIndex,
+        out MixingBrushRegionData region)
+    {
+        if (!TryGetMixingBrushLocalRegionPart(objectIndex, partIndex, out var localRegion))
+        {
+            region = new MixingBrushRegionData([], []);
+            return false;
+        }
+
+        var vertices = new MixingBrushRegionVertex[localRegion.Vertices.Length];
+        for (var index = 0; index < vertices.Length; index++)
+        {
+            var vertex = localRegion.Vertices[index];
+            vertices[index] = vertex with
+            {
+                Point = LocalToWorld(objectIndex, vertex.Point.X, vertex.Point.Y)
+            };
+        }
+        region = new MixingBrushRegionData(vertices, localRegion.TriangleIndices.ToArray());
+        return true;
+    }
+
+    public bool TryGetMixingStrokeLocalSamples(
+        int objectIndex,
+        out MixingBrushTrajectorySample[] samples)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke
+            || !_mixingStrokeLocalSamples.TryGetValue(objectIndex, out samples!))
+        {
+            samples = Array.Empty<MixingBrushTrajectorySample>();
+            return false;
+        }
+
+        return samples.Length > 0;
+    }
+
+    public bool TryGetMixingStrokeWorldSamples(
+        int objectIndex,
+        out MixingBrushTrajectorySample[] samples)
+    {
+        if (!TryGetMixingStrokeLocalSamples(objectIndex, out var localSamples))
+        {
+            samples = Array.Empty<MixingBrushTrajectorySample>();
+            return false;
+        }
+
+        samples = new MixingBrushTrajectorySample[localSamples.Length];
+        for (var index = 0; index < localSamples.Length; index++)
+        {
+            var sample = localSamples[index];
+            samples[index] = sample with
+            {
+                Point = LocalToWorld(objectIndex, sample.Point.X, sample.Point.Y)
+            };
+        }
+        return true;
+    }
+
     internal int AppendFreehandStroke(int layer, PointF[] points, float stroke, Color color, uint atoms)
     {
+        points = NormalizeFreehandPoints(points);
         if (points.Length == 0) return -1;
+        if (TryCreateOpenFreehandBezierNodes(points, out var nodes))
+        {
+            return AppendFreehandBezierStroke(layer, nodes, stroke, color, atoms);
+        }
 
         var left = points[0].X;
         var right = points[0].X;
@@ -3528,6 +4631,39 @@ internal sealed class VectorScene : ITimelineContext
         return index;
     }
 
+    internal int AppendFreehandBezierStroke(
+        int layer,
+        IReadOnlyList<PathBezierNode> worldNodes,
+        float stroke,
+        Color color,
+        uint atoms)
+    {
+        if (!TryPrepareFreehandBezierNodes(worldNodes, out var exactNodes, out var sampledPoints, out var bounds))
+        {
+            return -1;
+        }
+
+        stroke = Math.Max(VectorUnits.MinimumStrokeUnits, stroke);
+        var center = VectorUnits.Quantize(new PointF(
+            bounds.Left + bounds.Width * 0.5f,
+            bounds.Top + bounds.Height * 0.5f));
+        var transparent = Color.FromArgb(0, color);
+        var index = AppendObject(
+            layer,
+            center,
+            new SizeF(
+                Math.Max(stroke, VectorUnits.Quantize(bounds.Width + stroke)),
+                Math.Max(stroke, VectorUnits.Quantize(bounds.Height + stroke))),
+            0,
+            stroke,
+            transparent,
+            color,
+            Math.Max(3u, atoms),
+            VectorAnimationEngine.ShapeKind.Freeform);
+        StorePreparedFreehandBezierNodes(index, exactNodes, sampledPoints, bounds, center);
+        return index;
+    }
+
     public bool TryGetFreehandLocalPoints(int objectIndex, out PointF[] points)
     {
         if ((uint)objectIndex >= ObjectCount || !_freehandLocalPoints.TryGetValue(objectIndex, out points!))
@@ -3552,11 +4688,197 @@ internal sealed class VectorScene : ITimelineContext
         return true;
     }
 
+    internal bool TryGetFreehandBezierLocalNodes(int objectIndex, out PathBezierNode[] nodes)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Freeform)
+        {
+            nodes = Array.Empty<PathBezierNode>();
+            return false;
+        }
+
+        if (_freehandBezierLocalNodes.TryGetValue(objectIndex, out nodes!)) return nodes.Length >= 2;
+        if (!_freehandLocalPoints.TryGetValue(objectIndex, out var points))
+        {
+            nodes = Array.Empty<PathBezierNode>();
+            return false;
+        }
+
+        if (_legacyFreehandBezierNodeCache.TryGetValue(objectIndex, out var cached)
+            && ReferenceEquals(cached.SourcePoints, points))
+        {
+            nodes = cached.Nodes;
+            return nodes.Length >= 2;
+        }
+
+        if (!TryCreateOpenFreehandBezierNodes(points, out nodes))
+        {
+            nodes = Array.Empty<PathBezierNode>();
+            return false;
+        }
+
+        _legacyFreehandBezierNodeCache[objectIndex] = (points, nodes);
+
+        return true;
+    }
+
+    public bool TryGetFreehandBezierWorldNodes(int objectIndex, out PathBezierNode[] nodes)
+    {
+        if (!TryGetFreehandBezierLocalNodes(objectIndex, out var localNodes))
+        {
+            nodes = Array.Empty<PathBezierNode>();
+            return false;
+        }
+
+        nodes = new PathBezierNode[localNodes.Length];
+        for (var nodeIndex = 0; nodeIndex < localNodes.Length; nodeIndex++)
+        {
+            var node = localNodes[nodeIndex];
+            nodes[nodeIndex] = new PathBezierNode(
+                LocalToWorld(objectIndex, node.Anchor.X, node.Anchor.Y),
+                LocalToWorld(objectIndex, node.IncomingControl.X, node.IncomingControl.Y),
+                LocalToWorld(objectIndex, node.OutgoingControl.X, node.OutgoingControl.Y));
+        }
+
+        return true;
+    }
+
+    public bool TryGetFreehandBezierSegment(
+        int objectIndex,
+        int segmentIndex,
+        out PathBezierSegmentPart segment)
+    {
+        segment = default;
+        if (segmentIndex < 0
+            || !TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
+            || segmentIndex >= nodes.Length - 1)
+        {
+            return false;
+        }
+
+        var current = nodes[segmentIndex];
+        var next = nodes[segmentIndex + 1];
+        var curve = new CubicBoundarySegment(
+            current.Anchor,
+            current.OutgoingControl,
+            next.IncomingControl,
+            next.Anchor);
+        segment = new PathBezierSegmentPart(
+            segmentIndex,
+            0,
+            segmentIndex,
+            curve,
+            SampleCubicSegment(curve));
+        return true;
+    }
+
+    public bool TryFindClosestFreehandBezierSegment(
+        int objectIndex,
+        PointF world,
+        float maximumDistance,
+        out int segmentIndex,
+        out PathBezierSegmentPart segment)
+    {
+        segmentIndex = -1;
+        segment = default;
+        if (!Finite(world)
+            || !float.IsFinite(maximumDistance)
+            || maximumDistance < 0
+            || !TryGetFreehandBezierWorldNodes(objectIndex, out var nodes))
+        {
+            return false;
+        }
+
+        var bestDistance = maximumDistance;
+        for (var candidateIndex = 0; candidateIndex < nodes.Length - 1; candidateIndex++)
+        {
+            var current = nodes[candidateIndex];
+            var next = nodes[candidateIndex + 1];
+            var curve = new CubicBoundarySegment(
+                current.Anchor,
+                current.OutgoingControl,
+                next.IncomingControl,
+                next.Anchor);
+            var samples = SampleCubicSegment(curve);
+            var distance = DistanceToPolyline(world, samples);
+            if (distance > bestDistance) continue;
+            bestDistance = distance;
+            segmentIndex = candidateIndex;
+            segment = new PathBezierSegmentPart(candidateIndex, 0, candidateIndex, curve, samples);
+        }
+
+        return segmentIndex >= 0;
+    }
+
+    internal bool SetFreehandBezierSegmentForPreview(
+        int objectIndex,
+        int segmentIndex,
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        bool rebuildGeometryIndex = false)
+    {
+        if (segmentIndex < 0
+            || !TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
+            || segmentIndex >= nodes.Length - 1)
+        {
+            return false;
+        }
+
+        start = VectorUnits.Quantize(start);
+        control1 = VectorUnits.Quantize(control1);
+        control2 = VectorUnits.Quantize(control2);
+        end = VectorUnits.Quantize(end);
+        var current = nodes[segmentIndex];
+        var next = nodes[segmentIndex + 1];
+        var startDelta = new PointF(start.X - current.Anchor.X, start.Y - current.Anchor.Y);
+        var endDelta = new PointF(end.X - next.Anchor.X, end.Y - next.Anchor.Y);
+        nodes[segmentIndex] = current with
+        {
+            Anchor = start,
+            IncomingControl = VectorUnits.Quantize(new PointF(
+                current.IncomingControl.X + startDelta.X,
+                current.IncomingControl.Y + startDelta.Y)),
+            OutgoingControl = control1
+        };
+        nodes[segmentIndex + 1] = next with
+        {
+            Anchor = end,
+            IncomingControl = control2,
+            OutgoingControl = VectorUnits.Quantize(new PointF(
+                next.OutgoingControl.X + endDelta.X,
+                next.OutgoingControl.Y + endDelta.Y))
+        };
+        if (!SetFreehandBezierNodesCore(objectIndex, nodes)) return false;
+        CompleteFreehandBezierMutation(rebuildGeometryIndex);
+        return true;
+    }
+
+    internal bool CompleteFreehandBezierPreview(int objectIndex, bool rebuildGeometryIndex = true)
+    {
+        if (!TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
+            || !SetFreehandBezierNodesCore(objectIndex, nodes))
+        {
+            return false;
+        }
+
+        CompleteFreehandBezierMutation(rebuildGeometryIndex);
+        return true;
+    }
+
     public void UpdateFreehandStrokeWidth(int objectIndex, float stroke, bool rebuildGeometryIndex = true)
     {
         if ((uint)objectIndex >= ObjectCount || !IsFreehandShape(ShapeKind[objectIndex]) || !TryGetFreehandLocalPoints(objectIndex, out var points)) return;
         stroke = Math.Max(VectorUnits.MinimumStrokeUnits, stroke);
         Stroke[objectIndex] = stroke;
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Freeform
+            && TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
+            && SetFreehandBezierNodesCore(objectIndex, nodes))
+        {
+            if (rebuildGeometryIndex) RebuildGeometryIndex();
+            return;
+        }
 
         var left = points[0].X;
         var right = points[0].X;
@@ -3589,6 +4911,7 @@ internal sealed class VectorScene : ITimelineContext
         ResizeObjectArrays();
         RemovePathDataOutsideObjectCount();
         RemoveFreehandDataOutsideObjectCount();
+        RemoveMixingStrokeDataOutsideObjectCount();
         RemoveImportedSvgDataOutsideObjectCount();
         RemoveTextDataOutsideObjectCount();
         RemoveGradientDataOutsideObjectCount();
@@ -3624,7 +4947,7 @@ internal sealed class VectorScene : ITimelineContext
                 continue;
             }
 
-            if (write != read) CopyObjectData(read, write);
+            if (write != read) MoveObjectData(read, write);
             write++;
         }
 
@@ -3633,6 +4956,7 @@ internal sealed class VectorScene : ITimelineContext
         ResizeObjectArrays();
         RemovePathDataOutsideObjectCount();
         RemoveFreehandDataOutsideObjectCount();
+        RemoveMixingStrokeDataOutsideObjectCount();
         RemoveImportedSvgDataOutsideObjectCount();
         RemoveTextDataOutsideObjectCount();
         RemoveGradientDataOutsideObjectCount();
@@ -3677,6 +5001,15 @@ internal sealed class VectorScene : ITimelineContext
     {
         RebuildGeometryIndex();
         RebuildSummaries();
+    }
+
+    internal void InvalidateDeferredTopologyQueries()
+    {
+        _fillPartitionCache.Clear();
+        _exposedFillBezierCache.Clear();
+        _fillPartitionCacheRevision = -1;
+        _exposedFillBezierCacheRevision = -1;
+        InvalidateInteractiveQueryCaches();
     }
 
     internal void BeginDeferredAppend(int expectedObjectCount, IReadOnlyList<int> populatedLayers)
@@ -3733,7 +5066,12 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
-    public VectorSceneSnapshot CreateSnapshot()
+    public VectorSceneSnapshot CreateSnapshot() => CreateSnapshot(cloneGeometry: true);
+
+    internal VectorSceneSnapshot CreateWholeObjectTranslationSnapshot()
+        => CreateSnapshot(cloneGeometry: false);
+
+    private VectorSceneSnapshot CreateSnapshot(bool cloneGeometry)
     {
         return new VectorSceneSnapshot
         {
@@ -3790,17 +5128,34 @@ internal sealed class VectorScene : ITimelineContext
             GradientStartY = GradientStartY[..ObjectCount],
             GradientEndX = GradientEndX[..ObjectCount],
             GradientEndY = GradientEndY[..ObjectCount],
-            GradientStops = _gradientStops.ToDictionary(item => item.Key, item => item.Value.ToArray()),
-            GradientPathLocalPoints = _gradientPathLocalPoints.ToDictionary(item => item.Key, item => item.Value.ToArray()),
+            GradientStops = _gradientStops.ToDictionary(
+                item => item.Key,
+                item => cloneGeometry ? item.Value.ToArray() : item.Value),
+            GradientPathLocalPoints = _gradientPathLocalPoints.ToDictionary(
+                item => item.Key,
+                item => cloneGeometry ? item.Value.ToArray() : item.Value),
             ShapeGradientMappingLocalContours = _shapeGradientMappingLocalContours.ToDictionary(
                 item => item.Key,
-                item => CloneContours(item.Value)),
+                item => cloneGeometry ? CloneContours(item.Value) : item.Value),
             Timeline = Timeline.CreateSnapshot(),
-            PathLocalContours = _pathLocalContours.ToDictionary(item => item.Key, item => CloneContours(item.Value)),
+            PathLocalContours = _pathLocalContours.ToDictionary(
+                item => item.Key,
+                item => cloneGeometry ? CloneContours(item.Value) : item.Value),
             PathBezierLocalContours = _pathBezierLocalContours.ToDictionary(
                 item => item.Key,
-                item => CloneBezierContours(item.Value)),
-            FreehandLocalPoints = _freehandLocalPoints.ToDictionary(item => item.Key, item => item.Value.ToArray()),
+                item => cloneGeometry ? CloneBezierContours(item.Value) : item.Value),
+            FreehandLocalPoints = _freehandLocalPoints.ToDictionary(
+                item => item.Key,
+                item => cloneGeometry ? item.Value.ToArray() : item.Value),
+            FreehandBezierLocalNodes = _freehandBezierLocalNodes.ToDictionary(
+                item => item.Key,
+                item => cloneGeometry ? item.Value.ToArray() : item.Value),
+            MixingStrokeLocalSamples = _mixingStrokeLocalSamples.ToDictionary(
+                item => item.Key,
+                item => cloneGeometry ? item.Value.ToArray() : item.Value),
+            MixingStrokeLocalRegions = _mixingStrokeLocalRegions.ToDictionary(
+                item => item.Key,
+                item => cloneGeometry ? item.Value.DeepClone() : item.Value),
             ImportedSvgSources = _importedSvgSources.ToDictionary(item => item.Key, item => item.Value),
             TextObjects = _textObjects.ToDictionary(item => item.Key, item => item.Value)
         };
@@ -3810,6 +5165,7 @@ internal sealed class VectorScene : ITimelineContext
     {
         ValidateImportedSvgSnapshotPayload(snapshot);
         ValidateTextSnapshotPayload(snapshot);
+        ValidateMixingStrokeSnapshotPayload(snapshot);
         InvalidateQueryActiveKeyframes();
         LayerCount = snapshot.LayerCount;
         ObjectCount = snapshot.ObjectCount;
@@ -3989,6 +5345,51 @@ internal sealed class VectorScene : ITimelineContext
             _freehandLocalPoints[item.Key] = item.Value.ToArray();
         }
 
+        _freehandBezierLocalNodes.Clear();
+        _legacyFreehandBezierNodeCache.Clear();
+        foreach (var item in snapshot.FreehandBezierLocalNodes)
+        {
+            if ((uint)item.Key >= ObjectCount
+                || ShapeKind[item.Key] != VectorAnimationEngine.ShapeKind.Freeform
+                || !_freehandLocalPoints.ContainsKey(item.Key)
+                || !TryPrepareFreehandBezierNodes(item.Value, out var exactNodes, out var sampledPoints, out _))
+            {
+                continue;
+            }
+
+            _freehandBezierLocalNodes[item.Key] = exactNodes;
+            _freehandLocalPoints[item.Key] = sampledPoints;
+        }
+
+        _mixingStrokeLocalSamples.Clear();
+        foreach (var item in snapshot.MixingStrokeLocalSamples)
+        {
+            if ((uint)item.Key >= ObjectCount
+                || ShapeKind[item.Key] != VectorAnimationEngine.ShapeKind.MixingStroke)
+            {
+                continue;
+            }
+
+            var samples = NormalizeMixingStrokeSamples(item.Value);
+            if (samples.Length > 0) _mixingStrokeLocalSamples[item.Key] = samples;
+        }
+
+        _mixingStrokeLocalRegions.Clear();
+        foreach (var item in snapshot.MixingStrokeLocalRegions)
+        {
+            if ((uint)item.Key >= ObjectCount
+                || ShapeKind[item.Key] != VectorAnimationEngine.ShapeKind.MixingStroke
+                || !MixingBrushRegionData.TryNormalize(
+                    item.Value.Vertices,
+                    item.Value.TriangleIndices,
+                    out var region))
+            {
+                continue;
+            }
+
+            _mixingStrokeLocalRegions[item.Key] = region;
+        }
+
         _importedSvgSources.Clear();
         foreach (var item in snapshot.ImportedSvgSources)
         {
@@ -4010,6 +5411,7 @@ internal sealed class VectorScene : ITimelineContext
             Timeline.RestoreSnapshot(snapshot.Timeline);
             SynchronizeTimelineTracks();
             SynchronizeAllKeyframeContentKinds();
+            RefreshTimelineTweenMaterializations();
         }
 
         RebuildGeometryIndex();
@@ -4070,6 +5472,64 @@ internal sealed class VectorScene : ITimelineContext
                 && !snapshot.TextObjects.ContainsKey(index))
             {
                 throw new InvalidOperationException("The scene snapshot is missing editable text payload.");
+            }
+        }
+    }
+
+    private static void ValidateMixingStrokeSnapshotPayload(VectorSceneSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.MixingStrokeLocalSamples is null
+            || snapshot.MixingStrokeLocalRegions is null)
+        {
+            throw new InvalidOperationException("The scene snapshot is missing mixing-stroke metadata.");
+        }
+
+        foreach (var (objectIndex, samples) in snapshot.MixingStrokeLocalSamples)
+        {
+            if ((uint)objectIndex >= snapshot.ObjectCount
+                || objectIndex >= snapshot.ShapeKind.Length
+                || snapshot.ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke
+                || samples is null
+                || samples.Length == 0
+                || samples.Any(sample => !float.IsFinite(sample.Point.X)
+                    || !float.IsFinite(sample.Point.Y)
+                    || !float.IsFinite(sample.Diameter)
+                    || sample.Diameter <= 0))
+            {
+                throw new InvalidOperationException("The scene snapshot contains invalid mixing-stroke payload.");
+            }
+        }
+
+        foreach (var (objectIndex, region) in snapshot.MixingStrokeLocalRegions)
+        {
+            if ((uint)objectIndex >= snapshot.ObjectCount
+                || objectIndex >= snapshot.ShapeKind.Length
+                || snapshot.ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke
+                || region is null
+                || !MixingBrushRegionData.TryNormalize(
+                    region.Vertices,
+                    region.TriangleIndices,
+                    out _)
+                || snapshot.MixingStrokeLocalSamples.ContainsKey(objectIndex))
+            {
+                throw new InvalidOperationException("The scene snapshot contains invalid mixing-stroke region payload.");
+            }
+        }
+
+        for (var index = 0; index < Math.Min(snapshot.ObjectCount, snapshot.ShapeKind.Length); index++)
+        {
+            if (snapshot.ShapeKind[index] == VectorAnimationEngine.ShapeKind.MixingStroke
+                && snapshot.MixingStrokeLocalSamples.ContainsKey(index)
+                    == snapshot.MixingStrokeLocalRegions.ContainsKey(index))
+            {
+                throw new InvalidOperationException("The scene snapshot is missing mixing-stroke payload.");
+            }
+            if (snapshot.ShapeKind[index] != VectorAnimationEngine.ShapeKind.MixingStroke
+                && (snapshot.MixingStrokeLocalSamples.ContainsKey(index)
+                    || snapshot.MixingStrokeLocalRegions.ContainsKey(index)))
+            {
+                throw new InvalidOperationException("A non-mixing object owns mixing-stroke payload.");
             }
         }
     }
@@ -5499,9 +6959,7 @@ internal sealed class VectorScene : ITimelineContext
         foreach (var objectIndex in candidates)
         {
             if (!IsObjectSelectable(objectIndex, frame)) continue;
-            var bounds = GetObjectWorldBounds(objectIndex);
-            bounds.Inflate(toleranceWorld, toleranceWorld);
-            if (!bounds.Contains(world)) continue;
+            if (!ObjectMayContainHitPoint(objectIndex, world, toleranceWorld)) continue;
 
             var shape = ShapeKind[objectIndex];
             if (IsWholeObjectShape(shape)
@@ -5544,11 +7002,12 @@ internal sealed class VectorScene : ITimelineContext
     public DrawingElementHit HitTestElement(PointF world, int frame, float toleranceWorld = 6)
     {
         GetHitTestRange(world, toleranceWorld, out var minX, out var maxX, out var minY, out var maxY);
-        var candidates = CollectHitCandidates(minX, maxX, minY, maxY, frame);
+        var candidates = CollectHitCandidates(minX, maxX, minY, maxY, frame, sort: false);
         var best = DrawingElementHit.None;
 
         foreach (var i in candidates)
         {
+            if (!ObjectMayContainHitPoint(i, world, toleranceWorld)) continue;
             var hit = HitElement(world, i, candidates, frame, toleranceWorld);
             if (!hit.IsValid) continue;
             if (IsBetterHit(hit, best)) best = hit;
@@ -5605,9 +7064,32 @@ internal sealed class VectorScene : ITimelineContext
 
     public DrawingFillPartGeometry[] GetFillParts(int objectIndex, int frame)
     {
-        if ((uint)objectIndex >= ObjectCount || !HasFill(objectIndex)) return Array.Empty<DrawingFillPartGeometry>();
+        if ((uint)objectIndex >= ObjectCount) return Array.Empty<DrawingFillPartGeometry>();
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.MixingStroke
+            && TryGetMixingBrushLocalRegion(objectIndex, out var mixingRegion))
+        {
+            var mixingParts = new DrawingFillPartGeometry[mixingRegion.ConnectedComponentCount];
+            for (var partIndex = 0; partIndex < mixingParts.Length; partIndex++)
+            {
+                if (!mixingRegion.TryGetConnectedComponent(partIndex, out var component))
+                {
+                    return Array.Empty<DrawingFillPartGeometry>();
+                }
+                var localContours = component.GetBoundaryContours();
+                var worldContours = new PointF[localContours.Length][];
+                for (var contourIndex = 0; contourIndex < localContours.Length; contourIndex++)
+                {
+                    worldContours[contourIndex] = localContours[contourIndex]
+                        .Select(point => LocalToWorld(objectIndex, point.X, point.Y))
+                        .ToArray();
+                }
+                mixingParts[partIndex] = new DrawingFillPartGeometry(partIndex, worldContours);
+            }
+            return mixingParts;
+        }
+        if (!HasFill(objectIndex)) return Array.Empty<DrawingFillPartGeometry>();
         var candidates = CollectTopologyCandidates(objectIndex, frame);
-        var regions = BuildFillRegions(objectIndex, candidates);
+        var regions = BuildFillRegions(objectIndex, frame, candidates);
         var result = new DrawingFillPartGeometry[regions.Count];
         for (var part = 0; part < regions.Count; part++)
         {
@@ -5951,26 +7433,48 @@ internal sealed class VectorScene : ITimelineContext
         const int maximumRawSegments = 2048;
 
         var rawSegments = new List<ClosedFillRawSegment>();
+        void AppendRawSegments(IReadOnlyList<PointF> points, int objectIndex)
+        {
+            if (points.Count < 2 || rawSegments.Count >= maximumRawSegments) return;
+            for (var pointIndex = 0;
+                 pointIndex < points.Count - 1 && rawSegments.Count < maximumRawSegments;
+                 pointIndex++)
+            {
+                if (Distance(points[pointIndex], points[pointIndex + 1]) <= 0.001f) continue;
+                rawSegments.Add(new ClosedFillRawSegment(
+                    points[pointIndex],
+                    points[pointIndex + 1],
+                    objectIndex));
+            }
+        }
+
         for (var objectIndex = 0; objectIndex < ObjectCount; objectIndex++)
         {
             if (ObjectLayer[objectIndex] != ActiveLayer
-                || !IsObjectActive(objectIndex, frame)
-                || !HasStroke(objectIndex))
+                || !IsObjectActive(objectIndex, frame))
             {
                 continue;
             }
 
+            // A visible Fill edge is a paint boundary even when it has no outline.
+            // Use its contour instead of its coincident boundary stroke to keep the
+            // planar graph free of duplicate edges for outlined Fill objects.
+            if (HasFill(objectIndex))
+            {
+                foreach (var contour in ShapeBoundaryContours(objectIndex))
+                {
+                    AppendRawSegments(contour, objectIndex);
+                    if (rawSegments.Count >= maximumRawSegments) break;
+                }
+                if (rawSegments.Count >= maximumRawSegments) break;
+                continue;
+            }
+
+            if (!HasStroke(objectIndex)) continue;
             foreach (var part in BuildConnectedStrokeParts(objectIndex, frame))
             {
                 var points = ClosedFillPartPoints(part, frame);
-                if (points.Length < 2) continue;
-                for (var pointIndex = 0; pointIndex < points.Length - 1; pointIndex++)
-                {
-                    if (Distance(points[pointIndex], points[pointIndex + 1]) <= 0.001f) continue;
-                    rawSegments.Add(new ClosedFillRawSegment(points[pointIndex], points[pointIndex + 1], objectIndex));
-                    if (rawSegments.Count >= maximumRawSegments) break;
-                }
-
+                AppendRawSegments(points, objectIndex);
                 if (rawSegments.Count >= maximumRawSegments) break;
             }
 
@@ -6004,6 +7508,7 @@ internal sealed class VectorScene : ITimelineContext
 
         var vertices = new List<PointF>();
         var edges = new List<ClosedFillGraphEdge>();
+        var uniqueEdges = new HashSet<(int First, int Second)>();
         for (var segmentIndex = 0; segmentIndex < rawSegments.Count; segmentIndex++)
         {
             var segment = rawSegments[segmentIndex];
@@ -6022,6 +7527,8 @@ internal sealed class VectorScene : ITimelineContext
                 var from = FindClosedFillVertex(vertices, start);
                 var to = FindClosedFillVertex(vertices, end);
                 if (from == to) continue;
+                var edgeKey = from < to ? (from, to) : (to, from);
+                if (!uniqueEdges.Add(edgeKey)) continue;
                 edges.Add(new ClosedFillGraphEdge(from, to, new[] { start, end }, segment.ObjectIndex));
             }
         }
@@ -6115,29 +7622,32 @@ internal sealed class VectorScene : ITimelineContext
         out PathBezierNode[][] contours)
     {
         contours = [];
-        var sources = new List<BooleanBezierCurveSource>();
+        var sources = new List<PreparedBezierCurve>();
         foreach (var objectIndex in region.BoundaryObjects)
         {
             if ((uint)objectIndex >= ObjectCount) continue;
             if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Line)
             {
-                var line = LineCurve(objectIndex);
-                AddSource(new CubicBoundarySegment(
-                    line.Start,
-                    line.Control1,
-                    line.Control2,
-                    line.End));
+                AddPreparedBezierCurve(sources, LineCurve(objectIndex));
+                continue;
+            }
+
+            if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Freeform
+                && TryGetFreehandWorldPoints(objectIndex, out var freehandPoints))
+            {
+                foreach (var curve in FitPolylineBezierSegments(
+                             freehandPoints,
+                             ConnectedStrokeEndpointToleranceUnits))
+                {
+                    AddPreparedBezierCurve(sources, curve);
+                }
                 continue;
             }
 
             if (!TryGetEditableFillBezierContours(objectIndex, out var boundaryContours)) continue;
             foreach (var segment in BuildPathBezierSegmentParts(boundaryContours))
             {
-                AddSource(new CubicBoundarySegment(
-                    segment.Start,
-                    segment.Control1,
-                    segment.Control2,
-                    segment.End));
+                AddPreparedBezierCurve(sources, segment.Curve);
             }
         }
 
@@ -6151,15 +7661,205 @@ internal sealed class VectorScene : ITimelineContext
         if (!BooleanBezierContoursMatch(new[] { region.Contour }, rebuilt)) return false;
         contours = rebuilt;
         return true;
+    }
 
-        void AddSource(CubicBoundarySegment curve)
+    private static CubicBoundarySegment[] FitPolylineBezierSegments(
+        IReadOnlyList<PointF> source,
+        float maximumError)
+    {
+        if (source.Count < 2) return [];
+        var points = new List<PointF>(source.Count);
+        foreach (var point in source)
         {
-            var samples = SampleCubicSegmentWithParameters(curve);
-            if (samples.Length < 2) return;
-            var bounds = CurveSampleBounds(samples);
-            bounds.Inflate(BooleanBezierMaximumErrorUnits, BooleanBezierMaximumErrorUnits);
-            sources.Add(new BooleanBezierCurveSource(curve, samples, bounds));
+            if (points.Count == 0 || Distance(points[^1], point) > 0.001f)
+            {
+                points.Add(point);
+            }
         }
+        if (points.Count < 2) return [];
+
+        maximumError = Math.Max(0.1f, maximumError);
+        var result = new List<CubicBoundarySegment>();
+        var closed = points.Count > 2
+            && Distance(points[0], points[^1]) <= ConnectedStrokeEndpointToleranceUnits;
+        if (!closed)
+        {
+            FitOpenPolylineBezierSegments(points.ToArray(), maximumError, result);
+            return result.ToArray();
+        }
+
+        if (Distance(points[0], points[^1]) <= 0.001f) points.RemoveAt(points.Count - 1);
+        if (points.Count < 3) return [];
+        var split = points.Count / 2;
+        FitOpenPolylineBezierSegments(points.Take(split + 1).ToArray(), maximumError, result);
+        FitOpenPolylineBezierSegments(
+            points.Skip(split).Concat([points[0]]).ToArray(),
+            maximumError,
+            result);
+        return result.ToArray();
+    }
+
+    private static void FitOpenPolylineBezierSegments(
+        PointF[] points,
+        float maximumError,
+        ICollection<CubicBoundarySegment> result)
+    {
+        if (points.Length < 2) return;
+        FitRange(
+            0,
+            points.Length - 1,
+            UnitDirection(points[0], points[1]),
+            UnitDirection(points[^1], points[^2]));
+
+        void FitRange(int first, int last, PointF leftTangent, PointF rightTangent)
+        {
+            if (last - first == 1)
+            {
+                result.Add(new CubicBoundarySegment(
+                    points[first],
+                    Lerp(points[first], points[last], 1f / 3f),
+                    Lerp(points[first], points[last], 2f / 3f),
+                    points[last]));
+                return;
+            }
+
+            var parameters = ChordLengthParameters(points, first, last);
+            var curve = GenerateFittedCubic(
+                points,
+                first,
+                last,
+                parameters,
+                leftTangent,
+                rightTangent);
+            var samples = SampleCubicSegment(curve);
+            var split = (first + last) / 2;
+            var maximumPointError = 0f;
+            for (var index = first + 1; index < last; index++)
+            {
+                var error = DistanceToPolyline(points[index], samples);
+                if (error <= maximumPointError) continue;
+                maximumPointError = error;
+                split = index;
+            }
+
+            var rangePoints = points.AsSpan(first, last - first + 1).ToArray();
+            var followsPolyline = maximumPointError <= maximumError
+                && samples.All(point =>
+                    DistanceToPolyline(point, rangePoints) <= maximumError);
+            if (followsPolyline)
+            {
+                result.Add(curve);
+                return;
+            }
+
+            if (split <= first || split >= last) split = (first + last) / 2;
+            var centerTangent = UnitDirection(points[split + 1], points[split - 1]);
+            if (centerTangent == PointF.Empty)
+            {
+                centerTangent = UnitDirection(points[split], points[split - 1]);
+            }
+            FitRange(first, split, leftTangent, centerTangent);
+            FitRange(split, last, Negate(centerTangent), rightTangent);
+        }
+    }
+
+    private static float[] ChordLengthParameters(PointF[] points, int first, int last)
+    {
+        var result = new float[last - first + 1];
+        for (var index = first + 1; index <= last; index++)
+        {
+            result[index - first] = result[index - first - 1] + Distance(points[index - 1], points[index]);
+        }
+
+        var length = result[^1];
+        if (length <= 0.001f)
+        {
+            for (var index = 1; index < result.Length; index++)
+            {
+                result[index] = index / (float)(result.Length - 1);
+            }
+            return result;
+        }
+
+        for (var index = 1; index < result.Length; index++) result[index] /= length;
+        return result;
+    }
+
+    private static CubicBoundarySegment GenerateFittedCubic(
+        PointF[] points,
+        int first,
+        int last,
+        IReadOnlyList<float> parameters,
+        PointF leftTangent,
+        PointF rightTangent)
+    {
+        double c00 = 0;
+        double c01 = 0;
+        double c11 = 0;
+        double x0 = 0;
+        double x1 = 0;
+        for (var index = 0; index < parameters.Count; index++)
+        {
+            var t = parameters[index];
+            var mt = 1f - t;
+            var b0 = mt * mt * mt;
+            var b1 = 3f * t * mt * mt;
+            var b2 = 3f * t * t * mt;
+            var b3 = t * t * t;
+            var a1 = new PointF(leftTangent.X * b1, leftTangent.Y * b1);
+            var a2 = new PointF(rightTangent.X * b2, rightTangent.Y * b2);
+            var point = points[first + index];
+            var residual = new PointF(
+                point.X - points[first].X * (b0 + b1) - points[last].X * (b2 + b3),
+                point.Y - points[first].Y * (b0 + b1) - points[last].Y * (b2 + b3));
+            c00 += Dot(a1, a1);
+            c01 += Dot(a1, a2);
+            c11 += Dot(a2, a2);
+            x0 += Dot(a1, residual);
+            x1 += Dot(a2, residual);
+        }
+
+        var determinant = c00 * c11 - c01 * c01;
+        var alpha1 = determinant == 0 ? 0 : (x0 * c11 - x1 * c01) / determinant;
+        var alpha2 = determinant == 0 ? 0 : (c00 * x1 - c01 * x0) / determinant;
+        var chord = Distance(points[first], points[last]);
+        var minimumAlpha = chord * 0.0001f;
+        if (!double.IsFinite(alpha1)
+            || !double.IsFinite(alpha2)
+            || alpha1 < minimumAlpha
+            || alpha2 < minimumAlpha
+            || alpha1 > chord * 10
+            || alpha2 > chord * 10)
+        {
+            alpha1 = chord / 3f;
+            alpha2 = chord / 3f;
+        }
+
+        return new CubicBoundarySegment(
+            points[first],
+            AddScaled(points[first], leftTangent, (float)alpha1),
+            AddScaled(points[last], rightTangent, (float)alpha2),
+            points[last]);
+    }
+
+    private static PointF UnitDirection(PointF from, PointF to)
+    {
+        var dx = to.X - from.X;
+        var dy = to.Y - from.Y;
+        var length = MathF.Sqrt(dx * dx + dy * dy);
+        return length <= 0.0001f ? PointF.Empty : new PointF(dx / length, dy / length);
+    }
+
+    private static PointF AddScaled(PointF point, PointF direction, float scale)
+    {
+        return new PointF(point.X + direction.X * scale, point.Y + direction.Y * scale);
+    }
+
+    private static PointF Negate(PointF point) => new(-point.X, -point.Y);
+
+    private static float Dot(PointF first, PointF second)
+    {
+        return first.X * second.X + first.Y * second.Y;
     }
 
     private PointF[] ClosedFillPartPoints(ConnectedStrokePart part, int frame)
@@ -6287,11 +7987,24 @@ internal sealed class VectorScene : ITimelineContext
     {
         if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= ObjectCount) return 0;
         var atoms = Math.Max(1u, AtomCount[hit.Key.ObjectIndex]);
+        if (ShapeKind[hit.Key.ObjectIndex] == VectorAnimationEngine.ShapeKind.MixingStroke
+            && hit.Key.Kind == DrawingElementKind.Fill
+            && TryGetMixingBrushLocalRegion(hit.Key.ObjectIndex, out var mixingRegion))
+        {
+            if (!mixingRegion.TryGetConnectedComponent(hit.Key.PartIndex, out var component)) return 0;
+            var totalCost = Math.Max(
+                1,
+                mixingRegion.Vertices.Length + mixingRegion.TriangleIndices.Length / 3);
+            var componentCost = Math.Max(
+                1,
+                component.Vertices.Length + component.TriangleIndices.Length / 3);
+            return Math.Max(1, (long)Math.Round(atoms * Math.Clamp(componentCost / (double)totalCost, 0, 1)));
+        }
         if (IsWholeObjectShape(ShapeKind[hit.Key.ObjectIndex])) return atoms;
         if (hit.Key.Kind == DrawingElementKind.Fill)
         {
             var candidates = CollectTopologyCandidates(hit.Key.ObjectIndex, frame);
-            var regions = BuildFillRegions(hit.Key.ObjectIndex, candidates);
+            var regions = BuildFillRegions(hit.Key.ObjectIndex, frame, candidates);
             if ((uint)hit.Key.PartIndex >= regions.Count) return 0;
             var total = regions.Sum(region => Math.Max(0.001f, region.Area));
             var fraction = total > 0 ? regions[hit.Key.PartIndex].Area / total : 1;
@@ -6320,6 +8033,10 @@ internal sealed class VectorScene : ITimelineContext
     {
         if ((uint)objectIndex >= ObjectCount) return false;
         var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
+        {
+            return MixingStrokeContainsPoint(objectIndex, world, 0);
+        }
         if (!IsFillShape(shape) || !HasFill(objectIndex)) return false;
         if (shape == VectorAnimationEngine.ShapeKind.Path && TryGetPathWorldContours(objectIndex, out var contours))
         {
@@ -6502,6 +8219,31 @@ internal sealed class VectorScene : ITimelineContext
         int? fillPartIndex = null,
         bool includeCoincidentStrokes = false)
     {
+        if (_exposedFillBezierCacheRevision != GeometryRevision)
+        {
+            _exposedFillBezierCache.Clear();
+            _exposedFillBezierCacheRevision = GeometryRevision;
+        }
+
+        var cacheKey = (objectIndex, frame, fillPartIndex ?? -1, includeCoincidentStrokes);
+        if (_exposedFillBezierCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        var pieces = BuildExposedFillBezierSegmentPieces(
+            objectIndex,
+            frame,
+            fillPartIndex,
+            includeCoincidentStrokes);
+        if (_exposedFillBezierCache.Count >= MaximumTopologyQueryCacheEntries) _exposedFillBezierCache.Clear();
+        _exposedFillBezierCache[cacheKey] = pieces;
+        return pieces;
+    }
+
+    private FillBezierSegmentPiece[] BuildExposedFillBezierSegmentPieces(
+        int objectIndex,
+        int frame,
+        int? fillPartIndex,
+        bool includeCoincidentStrokes)
+    {
         var sourceParts = GetEditableFillBezierSegmentParts(objectIndex);
         if (sourceParts.Length == 0 || !IsObjectActive(objectIndex, frame)) return [];
 
@@ -6509,7 +8251,7 @@ internal sealed class VectorScene : ITimelineContext
         PointF[][]? selectedContours = null;
         if (fillPartIndex is { } selectedPart)
         {
-            var regions = BuildFillRegions(objectIndex, candidates);
+            var regions = BuildFillRegions(objectIndex, frame, candidates);
             if ((uint)selectedPart >= regions.Count) return [];
             selectedContours = regions[selectedPart].Contours
                 .Where(contour => contour.Length >= 2)
@@ -6519,6 +8261,10 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         var sourceLayer = ObjectLayer[objectIndex];
+        var preparedSourceCurves = sourceParts
+            .Select(part => PrepareBezierCurve(part.Curve))
+            .ToArray();
+        var lineCurves = PrepareTopologyLineCurves(objectIndex, sourceLayer, candidates);
         var coincidentStrokePaths = new List<PointF[]>();
         if (!includeCoincidentStrokes)
         {
@@ -6539,36 +8285,31 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         var result = new List<FillBezierSegmentPiece>();
-        foreach (var sourcePart in sourceParts)
+        for (var sourcePartIndex = 0; sourcePartIndex < sourceParts.Length; sourcePartIndex++)
         {
-            var sourceCurve = new CubicBoundarySegment(
-                sourcePart.Start,
-                sourcePart.Control1,
-                sourcePart.Control2,
-                sourcePart.End);
+            var sourcePart = sourceParts[sourcePartIndex];
+            var source = preparedSourceCurves[sourcePartIndex];
+            var sourceCurve = source.Curve;
             var normalized = CollectFillBezierTopologySplits(
                 objectIndex,
                 sourceLayer,
-                sourceCurve,
-                candidates);
+                source,
+                preparedSourceCurves,
+                candidates,
+                lineCurves);
             var retained = new List<(DrawingTopologySplit Start, DrawingTopologySplit End)>();
             for (var splitIndex = 0; splitIndex < normalized.Count - 1; splitIndex++)
             {
                 var startSplit = normalized[splitIndex];
                 var endSplit = normalized[splitIndex + 1];
                 if (endSplit.T - startSplit.T <= 0.0001f) continue;
-                var subcurve = CubicSubcurve(
+                var curve = CubicSubcurve(
                     sourcePart.Start,
                     sourcePart.Control1,
                     sourcePart.Control2,
                     sourcePart.End,
                     startSplit.T,
                     endSplit.T);
-                var curve = new CubicBoundarySegment(
-                    subcurve.Start,
-                    subcurve.Control1,
-                    subcurve.Control2,
-                    subcurve.End);
                 var samples = SampleCubicSegment(curve);
                 if (Math.Max(Distance(curve.Start, curve.End), PolylineLength(samples))
                     < DrawingTopologyRules.MinStrokeSegmentUnits)
@@ -6642,6 +8383,8 @@ internal sealed class VectorScene : ITimelineContext
         var refreshed = new FillBezierSegmentPiece[pieces.Count];
         IReadOnlyList<int>? topologyCandidates = null;
         Dictionary<int, List<DrawingTopologySplit>>? topologySplits = null;
+        PreparedBezierCurve[]? topologyCurves = null;
+        Dictionary<int, PreparedBezierCurve>? topologyLineCurves = null;
         for (var index = 0; index < pieces.Count; index++)
         {
             var piece = pieces[index];
@@ -6668,13 +8411,20 @@ internal sealed class VectorScene : ITimelineContext
             {
                 topologyCandidates ??= CollectTopologyCandidates(objectIndex, frame);
                 topologySplits ??= new Dictionary<int, List<DrawingTopologySplit>>();
+                topologyCurves ??= sourceCurves.Select(PrepareBezierCurve).ToArray();
+                topologyLineCurves ??= PrepareTopologyLineCurves(
+                    objectIndex,
+                    ObjectLayer[objectIndex],
+                    topologyCandidates);
                 if (!topologySplits.TryGetValue(piece.SourcePartIndex, out var splits))
                 {
                     splits = CollectFillBezierTopologySplits(
                         objectIndex,
                         ObjectLayer[objectIndex],
-                        source,
-                        topologyCandidates);
+                        topologyCurves[piece.SourcePartIndex],
+                        topologyCurves,
+                        topologyCandidates,
+                        topologyLineCurves);
                     topologySplits[piece.SourcePartIndex] = splits;
                 }
 
@@ -6716,43 +8466,130 @@ internal sealed class VectorScene : ITimelineContext
         return refreshed;
     }
 
-    private List<DrawingTopologySplit> CollectFillBezierTopologySplits(
+    internal FillBezierSegmentPiece[] RefreshFillBezierSegmentPiecesForPreview(
         int objectIndex,
-        int sourceLayer,
-        CubicBoundarySegment sourceCurve,
-        IReadOnlyList<int> candidates)
+        IReadOnlyList<FillBezierSegmentPiece> pieces,
+        int editedPartIndex,
+        EditHandleKind handle)
     {
-        var sourceSamples = SampleCubicSegmentWithParameters(sourceCurve);
-        var splits = new List<DrawingTopologySplit>
+        if ((uint)objectIndex >= ObjectCount
+            || pieces.Count == 0
+            || !TryGetPathBezierPreviewPart(
+                objectIndex,
+                editedPartIndex,
+                out _,
+                out var previousPartIndex,
+                out var nextPartIndex))
         {
-            new(0, sourceCurve.Start),
-            new(1, sourceCurve.End)
-        };
-        foreach (var selfPart in GetEditableFillBezierSegmentParts(objectIndex))
+            return Array.Empty<FillBezierSegmentPiece>();
+        }
+
+        var refreshPrevious = handle == EditHandleKind.LineStart;
+        var refreshNext = handle == EditHandleKind.LineEnd;
+        var refreshed = pieces as FillBezierSegmentPiece[] ?? pieces.ToArray();
+        for (var index = 0; index < refreshed.Length; index++)
         {
-            var selfCurve = new CubicBoundarySegment(
-                selfPart.Start,
-                selfPart.Control1,
-                selfPart.Control2,
-                selfPart.End);
-            if (CubicCurvesCoincide(
-                    sourceCurve.Start,
-                    sourceCurve.Control1,
-                    sourceCurve.Control2,
-                    sourceCurve.End,
-                    selfCurve.Start,
-                    selfCurve.Control1,
-                    selfCurve.Control2,
-                    selfCurve.End,
-                    out _))
+            var piece = refreshed[index];
+            if (piece.SourcePartIndex != editedPartIndex
+                && (!refreshPrevious || piece.SourcePartIndex != previousPartIndex)
+                && (!refreshNext || piece.SourcePartIndex != nextPartIndex))
             {
                 continue;
             }
 
-            AddCurveCurveIntersections(
+            if (!TryGetPathBezierPreviewPart(
+                    objectIndex,
+                    piece.SourcePartIndex,
+                    out var source,
+                    out _,
+                    out _))
+            {
+                return Array.Empty<FillBezierSegmentPiece>();
+            }
+
+            var subcurve = CubicSubcurve(
+                source.Start,
+                source.Control1,
+                source.Control2,
+                source.End,
+                piece.StartT,
+                piece.EndT);
+            refreshed[index] = piece with
+            {
+                Start = subcurve.Start,
+                Control1 = subcurve.Control1,
+                Control2 = subcurve.Control2,
+                End = subcurve.End
+            };
+        }
+
+        return refreshed;
+    }
+
+    private bool TryGetPathBezierPreviewPart(
+        int objectIndex,
+        int partIndex,
+        out CubicBoundarySegment curve,
+        out int previousPartIndex,
+        out int nextPartIndex)
+    {
+        curve = default;
+        previousPartIndex = -1;
+        nextPartIndex = -1;
+        if ((uint)objectIndex >= ObjectCount
+            || partIndex < 0
+            || !_pathBezierLocalContours.TryGetValue(objectIndex, out var contours))
+        {
+            return false;
+        }
+
+        var currentPart = 0;
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            if (partIndex >= currentPart + contour.Length)
+            {
+                currentPart += contour.Length;
+                continue;
+            }
+
+            var segmentIndex = partIndex - currentPart;
+            var nextIndex = (segmentIndex + 1) % contour.Length;
+            var current = contour[segmentIndex];
+            var next = contour[nextIndex];
+            curve = new CubicBoundarySegment(
+                LocalToWorld(objectIndex, current.Anchor.X, current.Anchor.Y),
+                LocalToWorld(objectIndex, current.OutgoingControl.X, current.OutgoingControl.Y),
+                LocalToWorld(objectIndex, next.IncomingControl.X, next.IncomingControl.Y),
+                LocalToWorld(objectIndex, next.Anchor.X, next.Anchor.Y));
+            previousPartIndex = currentPart + (segmentIndex - 1 + contour.Length) % contour.Length;
+            nextPartIndex = currentPart + nextIndex;
+            return true;
+        }
+
+        return false;
+    }
+
+    private List<DrawingTopologySplit> CollectFillBezierTopologySplits(
+        int objectIndex,
+        int sourceLayer,
+        PreparedBezierCurve source,
+        IReadOnlyList<PreparedBezierCurve> fillCurves,
+        IReadOnlyList<int> candidates,
+        IReadOnlyDictionary<int, PreparedBezierCurve> lineCurves)
+    {
+        var splits = new List<DrawingTopologySplit>
+        {
+            new(0, source.Curve.Start),
+            new(1, source.Curve.End)
+        };
+        foreach (var fillCurve in fillCurves)
+        {
+            if (fillCurve.Curve == source.Curve) continue;
+            AddBezierCurveRelationSplits(
                 splits,
-                sourceSamples,
-                SampleCubicSegmentWithParameters(selfCurve),
+                source,
+                fillCurve,
                 includeSourceEndpoints: true);
         }
 
@@ -6768,13 +8605,21 @@ internal sealed class VectorScene : ITimelineContext
             var shape = ShapeKind.Length > candidate
                 ? ShapeKind[candidate]
                 : VectorAnimationEngine.ShapeKind.Rectangle;
-            if (IsTopologyStrokeShape(shape))
+            if (shape == VectorAnimationEngine.ShapeKind.Line)
+            {
+                AddBezierCurveRelationSplits(
+                    splits,
+                    source,
+                    lineCurves[candidate],
+                    includeSourceEndpoints: true);
+            }
+            else if (IsTopologyStrokeShape(shape))
             {
                 var candidateSamples = StrokeSamples(candidate);
-                if (FillBezierSegmentFollowsStroke(sourceSamples, candidateSamples)) continue;
+                if (FillBezierSegmentFollowsStroke(source.Samples, candidateSamples)) continue;
                 AddCurveCurveIntersections(
                     splits,
-                    sourceSamples,
+                    source.Samples,
                     candidateSamples,
                     includeSourceEndpoints: true);
             }
@@ -6782,10 +8627,10 @@ internal sealed class VectorScene : ITimelineContext
             {
                 foreach (var contour in ShapeBoundaryContours(candidate))
                 {
-                    if (FillBezierSegmentFollowsStroke(sourceSamples, contour)) continue;
+                    if (FillBezierSegmentFollowsStroke(source.Samples, contour)) continue;
                     AddCurvePolylineIntersections(
                         splits,
-                        sourceSamples,
+                        source.Samples,
                         contour,
                         includeSourceEndpoints: true);
                 }
@@ -6793,7 +8638,20 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return NormalizeStrokeSplits(
-            splits.Select(split => RefineCubicTopologySplit(sourceCurve, split)).ToList());
+            splits.Select(split => RefineCubicTopologySplit(source.Curve, split)).ToList());
+    }
+
+    private Dictionary<int, PreparedBezierCurve> PrepareTopologyLineCurves(
+        int objectIndex,
+        int sourceLayer,
+        IReadOnlyList<int> candidates)
+    {
+        return candidates
+            .Where(candidate => candidate != objectIndex
+                && ObjectLayer[candidate] == sourceLayer
+                && HasStroke(candidate)
+                && ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line)
+            .ToDictionary(candidate => candidate, candidate => PrepareBezierCurve(LineCurve(candidate)));
     }
 
     private static float ResolveRefreshedFillBezierSplit(
@@ -6902,7 +8760,7 @@ internal sealed class VectorScene : ITimelineContext
             return false;
         }
 
-        var regions = BuildFillRegions(objectIndex, CollectTopologyCandidates(objectIndex, frame));
+        var regions = BuildFillRegions(objectIndex, frame, CollectTopologyCandidates(objectIndex, frame));
         if (regions.Count == 0) return false;
         var curve = new CubicBoundarySegment(
             piece.Start,
@@ -7100,10 +8958,7 @@ internal sealed class VectorScene : ITimelineContext
                     partIndex++,
                     contourIndex,
                     segmentIndex,
-                    curve.Start,
-                    curve.Control1,
-                    curve.Control2,
-                    curve.End,
+                    curve,
                     SampleCubicSegment(curve)));
             }
         }
@@ -7613,15 +9468,27 @@ internal sealed class VectorScene : ITimelineContext
                     next.OutgoingControl,
                     contour[followingIndex].IncomingControl,
                     contour[followingIndex].Anchor);
+            var startDelta = new PointF(start.X - current.Anchor.X, start.Y - current.Anchor.Y);
+            var endDelta = new PointF(end.X - next.Anchor.X, end.Y - next.Anchor.Y);
             contour[segmentIndex] = current with
             {
                 Anchor = start,
+                IncomingControl = startChanged
+                    ? VectorUnits.Quantize(new PointF(
+                        current.IncomingControl.X + startDelta.X,
+                        current.IncomingControl.Y + startDelta.Y))
+                    : current.IncomingControl,
                 OutgoingControl = control1
             };
             contour[nextIndex] = next with
             {
                 Anchor = end,
-                IncomingControl = control2
+                IncomingControl = control2,
+                OutgoingControl = endChanged
+                    ? VectorUnits.Quantize(new PointF(
+                        next.OutgoingControl.X + endDelta.X,
+                        next.OutgoingControl.Y + endDelta.Y))
+                    : next.OutgoingControl
             };
             if (preservePrevious)
             {
@@ -7655,6 +9522,137 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return false;
+    }
+
+    internal bool SetPathBezierSegmentForPreview(
+        int objectIndex,
+        int partIndex,
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end,
+        bool preserveStraightAdjacentSegments = false)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || partIndex < 0
+            || !_pathBezierLocalContours.TryGetValue(objectIndex, out var contours))
+        {
+            return false;
+        }
+
+        var currentPart = 0;
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            if (partIndex >= currentPart + contour.Length)
+            {
+                currentPart += contour.Length;
+                continue;
+            }
+
+            var segmentIndex = partIndex - currentPart;
+            var nextIndex = (segmentIndex + 1) % contour.Length;
+            var previousIndex = (segmentIndex - 1 + contour.Length) % contour.Length;
+            var followingIndex = (nextIndex + 1) % contour.Length;
+            var current = contour[segmentIndex];
+            var next = contour[nextIndex];
+            start = VectorUnits.Quantize(WorldToLocal(objectIndex, VectorUnits.Quantize(start)));
+            control1 = VectorUnits.Quantize(WorldToLocal(objectIndex, VectorUnits.Quantize(control1)));
+            control2 = VectorUnits.Quantize(WorldToLocal(objectIndex, VectorUnits.Quantize(control2)));
+            end = VectorUnits.Quantize(WorldToLocal(objectIndex, VectorUnits.Quantize(end)));
+            var startChanged = start != current.Anchor;
+            var endChanged = end != next.Anchor;
+            if (!startChanged
+                && control1 == current.OutgoingControl
+                && control2 == next.IncomingControl
+                && !endChanged)
+            {
+                return true;
+            }
+
+            var preservePrevious = preserveStraightAdjacentSegments
+                && startChanged
+                && IsStraightBezierSegment(
+                    contour[previousIndex].Anchor,
+                    contour[previousIndex].OutgoingControl,
+                    current.IncomingControl,
+                    current.Anchor);
+            var preserveFollowing = preserveStraightAdjacentSegments
+                && endChanged
+                && IsStraightBezierSegment(
+                    next.Anchor,
+                    next.OutgoingControl,
+                    contour[followingIndex].IncomingControl,
+                    contour[followingIndex].Anchor);
+            var startDelta = new PointF(start.X - current.Anchor.X, start.Y - current.Anchor.Y);
+            var endDelta = new PointF(end.X - next.Anchor.X, end.Y - next.Anchor.Y);
+            contour[segmentIndex] = current with
+            {
+                Anchor = start,
+                IncomingControl = startChanged
+                    ? VectorUnits.Quantize(new PointF(
+                        current.IncomingControl.X + startDelta.X,
+                        current.IncomingControl.Y + startDelta.Y))
+                    : current.IncomingControl,
+                OutgoingControl = control1
+            };
+            contour[nextIndex] = next with
+            {
+                Anchor = end,
+                IncomingControl = control2,
+                OutgoingControl = endChanged
+                    ? VectorUnits.Quantize(new PointF(
+                        next.OutgoingControl.X + endDelta.X,
+                        next.OutgoingControl.Y + endDelta.Y))
+                    : next.OutgoingControl
+            };
+            if (preservePrevious)
+            {
+                var previousAnchor = contour[previousIndex].Anchor;
+                contour[previousIndex] = contour[previousIndex] with
+                {
+                    OutgoingControl = VectorUnits.Quantize(Lerp(previousAnchor, start, 1f / 3f))
+                };
+                contour[segmentIndex] = contour[segmentIndex] with
+                {
+                    IncomingControl = VectorUnits.Quantize(Lerp(previousAnchor, start, 2f / 3f))
+                };
+            }
+
+            if (preserveFollowing)
+            {
+                var followingAnchor = contour[followingIndex].Anchor;
+                contour[nextIndex] = contour[nextIndex] with
+                {
+                    OutgoingControl = VectorUnits.Quantize(Lerp(end, followingAnchor, 1f / 3f))
+                };
+                contour[followingIndex] = contour[followingIndex] with
+                {
+                    IncomingControl = VectorUnits.Quantize(Lerp(end, followingAnchor, 2f / 3f))
+                };
+            }
+
+            // Replace only the outer identity so target-bound renderer caches
+            // observe the edit without cloning or resampling the whole contour.
+            _pathBezierLocalContours[objectIndex] = (PathBezierNode[][])contours.Clone();
+            GeometryRevision++;
+            InvalidateDeferredTopologyQueries();
+            return true;
+        }
+
+        return false;
+    }
+
+    internal bool CompletePathBezierPreview(int objectIndex, bool rebuildGeometryIndex = true)
+    {
+        if (!TryGetPathBezierWorldContours(objectIndex, out var contours)
+            || !SetPathBezierContoursCore(objectIndex, contours))
+        {
+            return false;
+        }
+
+        CompletePathBezierMutation(rebuildGeometryIndex);
+        return true;
     }
 
     internal bool NormalizeFillBoundaryOverlaps(
@@ -7982,42 +9980,54 @@ internal sealed class VectorScene : ITimelineContext
             secondAtoms = Math.Max(3u, sourceAtoms - firstAtoms);
         }
 
-        SetLineCurve(objectIndex, curve.Start, p01, p012, anchor);
-        LineEndpointStyles[objectIndex] = startStyle;
-        LineEndEndpointStyles[objectIndex] = LineEndpointStyle.Round;
-        VirtualAtomCount -= AtomCount[objectIndex];
-        AtomCount[objectIndex] = firstAtoms;
-        VirtualAtomCount += firstAtoms;
+        var snapshot = CreateSnapshot();
+        try
+        {
+            SetLineCurve(objectIndex, curve.Start, p01, p012, anchor);
+            LineEndpointStyles[objectIndex] = startStyle;
+            LineEndEndpointStyles[objectIndex] = LineEndpointStyle.Round;
+            VirtualAtomCount -= AtomCount[objectIndex];
+            AtomCount[objectIndex] = firstAtoms;
+            VirtualAtomCount += firstAtoms;
 
-        var secondObject = AppendCubicCurveSegment(
-            layer,
-            anchor,
-            p123,
-            p23,
-            curve.End,
-            stroke,
-            fillColor,
-            strokeColor,
-            secondAtoms,
-            LineEndpointStyle.Round,
-            endStyle);
-        ObjectLayer[secondObject] = layer;
-        ObjectKeyframeFrame[secondObject] = keyframeFrame;
-        ObjectOrder[secondObject] = order;
-        ObjectSubOrder[secondObject] = secondSubOrder;
-        ApplyGradientPaint(objectIndex, gradientPaint);
-        ApplyGradientPaint(secondObject, gradientPaint);
-        if (rebuildGeometryIndex)
-        {
-            RebuildGeometryIndex();
-            RebuildSummaries();
+            var secondObject = AppendCubicCurveSegment(
+                layer,
+                anchor,
+                p123,
+                p23,
+                curve.End,
+                stroke,
+                fillColor,
+                strokeColor,
+                secondAtoms,
+                LineEndpointStyle.Round,
+                endStyle);
+            if (secondObject < 0) throw new InvalidOperationException("The second line segment was invalid.");
+            ObjectLayer[secondObject] = layer;
+            ObjectKeyframeFrame[secondObject] = keyframeFrame;
+            ObjectOrder[secondObject] = order;
+            ObjectSubOrder[secondObject] = secondSubOrder;
+            ApplyGradientPaint(objectIndex, gradientPaint);
+            ApplyGradientPaint(secondObject, gradientPaint);
+            if (rebuildGeometryIndex)
+            {
+                RebuildGeometryIndex();
+                RebuildSummaries();
+            }
+            else
+            {
+                GeometryRevision++;
+                InvalidateDeferredTopologyQueries();
+            }
+            result = new LineAnchorSplitResult(objectIndex, secondObject, anchor);
+            return true;
         }
-        else
+        catch
         {
-            GeometryRevision++;
+            RestoreSnapshot(snapshot);
+            result = default;
+            return false;
         }
-        result = new LineAnchorSplitResult(objectIndex, secondObject, anchor);
-        return true;
     }
 
     public bool AddConnectedLineBranch(
@@ -8206,6 +10216,7 @@ internal sealed class VectorScene : ITimelineContext
         CurveControlY[objectIndex] = VectorUnits.Quantize(control1.Y);
         CurveControl2X[objectIndex] = VectorUnits.Quantize(control2.X);
         CurveControl2Y[objectIndex] = VectorUnits.Quantize(control2.Y);
+        InvalidateDeferredTopologyQueries();
     }
 
     public bool TryGetLineCubic(
@@ -8262,7 +10273,7 @@ internal sealed class VectorScene : ITimelineContext
             }
 
             var contours = ShapeBoundaryContours(fillObjectIndex);
-            if (!TryCreateFillBezierWorldContours(fillObjectIndex, out var originalBezierContours)) continue;
+            if (!TryGetEditableFillBezierContours(fillObjectIndex, out var originalBezierContours)) continue;
             PointF[][]? originalContours = null;
             if (ShapeKind[lineObjectIndex] == VectorAnimationEngine.ShapeKind.Line
                 && TryGetLineCubic(
@@ -8399,6 +10410,16 @@ internal sealed class VectorScene : ITimelineContext
             return false;
         }
 
+        var changed = false;
+        if (TryCanonicalizeFillBoundaryFromNeighboringStrokes(
+                fillObjectIndex,
+                frame,
+                out var canonicalContours)
+            && SetPathBezierContoursCore(fillObjectIndex, canonicalContours))
+        {
+            changed = true;
+        }
+
         var bounds = GetObjectWorldBounds(fillObjectIndex);
         bounds.Inflate(ConnectedStrokeEndpointToleranceUnits, ConnectedStrokeEndpointToleranceUnits);
         var links = QueryObjects(bounds, frame)
@@ -8413,7 +10434,108 @@ internal sealed class VectorScene : ITimelineContext
             .GroupBy(link => (link.ContourIndex, link.BezierSegmentIndex, link.BezierSegmentCount))
             .Select(group => group.First())
             .ToArray();
-        return links.Length > 0 && UpdateFillBoundaryLineLinks(links, rebuildGeometryIndex);
+        if (links.Length > 0
+            && UpdateFillBoundaryLineLinks(links, rebuildGeometryIndex: false))
+        {
+            changed = true;
+        }
+
+        if (changed && rebuildGeometryIndex)
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+        }
+
+        return changed;
+    }
+
+    private bool TryCanonicalizeFillBoundaryFromNeighboringStrokes(
+        int fillObjectIndex,
+        int frame,
+        out PathBezierNode[][] contours)
+    {
+        contours = [];
+        if (!TryGetEditableFillBezierContours(fillObjectIndex, out var currentContours)) return false;
+        var sampledContours = ShapeBoundaryContours(fillObjectIndex);
+        if (sampledContours.Length == 0) return false;
+
+        var sources = new List<PreparedBezierCurve>();
+        var bounds = GetObjectWorldBounds(fillObjectIndex);
+        bounds.Inflate(ConnectedStrokeEndpointToleranceUnits, ConnectedStrokeEndpointToleranceUnits);
+        foreach (var candidate in QueryObjects(bounds, frame))
+        {
+            if (candidate == fillObjectIndex
+                || ObjectLayer[candidate] != ObjectLayer[fillObjectIndex]
+                || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[fillObjectIndex]
+                || !HasStroke(candidate))
+            {
+                continue;
+            }
+
+            if (ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line)
+            {
+                AddPreparedBezierCurve(sources, LineCurve(candidate));
+            }
+            else if (ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Freeform
+                     && TryGetFreehandWorldPoints(candidate, out var freehandPoints))
+            {
+                foreach (var curve in FitPolylineBezierSegments(
+                             freehandPoints,
+                             ConnectedStrokeEndpointToleranceUnits))
+                {
+                    AddPreparedBezierCurve(sources, curve);
+                }
+            }
+            else if (TryGetEditableFillBezierContours(candidate, out var boundaryContours))
+            {
+                foreach (var segment in BuildPathBezierSegmentParts(boundaryContours))
+                {
+                    AddPreparedBezierCurve(sources, segment.Curve);
+                }
+            }
+        }
+
+        if (sources.Count == 0) return false;
+        foreach (var contour in currentContours)
+        {
+            foreach (var segment in BuildPathBezierSegmentParts([contour]))
+            {
+                var linearControl1 = Lerp(segment.Start, segment.End, 1f / 3f);
+                var linearControl2 = Lerp(segment.Start, segment.End, 2f / 3f);
+                if (Math.Max(
+                        Distance(segment.Control1, linearControl1),
+                        Distance(segment.Control2, linearControl2))
+                    <= ConnectedStrokeEndpointToleranceUnits)
+                {
+                    continue;
+                }
+
+                AddPreparedBezierCurve(sources, segment.Curve);
+            }
+        }
+
+        var rebuilt = new PathBezierNode[sampledContours.Length][];
+        for (var contourIndex = 0; contourIndex < sampledContours.Length; contourIndex++)
+        {
+            if (!TryRebuildBezierContourFromBooleanBoundary(
+                    sampledContours[contourIndex],
+                    sources,
+                    out rebuilt[contourIndex]))
+            {
+                return false;
+            }
+        }
+
+        var contoursMatch = BooleanBezierContoursMatch(sampledContours, rebuilt);
+        var rebuiltSegmentCount = rebuilt.Sum(contour => contour.Length);
+        var currentSegmentCount = currentContours.Sum(contour => contour.Length);
+        if (!contoursMatch || rebuiltSegmentCount >= currentSegmentCount)
+        {
+            return false;
+        }
+
+        contours = rebuilt;
+        return true;
     }
 
     private bool IsFlattenedFillBoundaryCurveLink(FillBoundaryLineLink link)
@@ -8554,6 +10676,10 @@ internal sealed class VectorScene : ITimelineContext
         {
             RebuildGeometryIndex();
             RebuildSummaries();
+        }
+        else if (changed)
+        {
+            GeometryRevision++;
         }
 
         return changed;
@@ -9305,49 +11431,6 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
-    private bool TryCreateFillBezierWorldContours(int objectIndex, out PathBezierNode[][] contours)
-    {
-        if ((uint)objectIndex >= ObjectCount || !IsFillShape(ShapeKind[objectIndex]))
-        {
-            contours = Array.Empty<PathBezierNode[]>();
-            return false;
-        }
-
-        if (TryGetPathBezierWorldContours(objectIndex, out var exactContours))
-        {
-            contours = CloneBezierContours(exactContours);
-            return true;
-        }
-
-        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Path)
-        {
-            if (!TryGetPathWorldContours(objectIndex, out var polygonContours))
-            {
-                contours = Array.Empty<PathBezierNode[]>();
-                return false;
-            }
-
-            contours = polygonContours.Select(CreateLinearBezierContour).ToArray();
-            return contours.Length > 0;
-        }
-
-        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Ellipse)
-        {
-            contours = [CreateBezierContour(EllipseBoundaryCurves(objectIndex))];
-            return true;
-        }
-
-        var boundary = OpenPolygon(ShapeBoundary(objectIndex));
-        if (boundary.Length < 3)
-        {
-            contours = Array.Empty<PathBezierNode[]>();
-            return false;
-        }
-
-        contours = [CreateLinearBezierContour(boundary)];
-        return true;
-    }
-
     private static bool TryFindCoincidentFillBezierSegment(
         IReadOnlyList<PathBezierNode[]> contours,
         PointF lineStart,
@@ -9661,7 +11744,8 @@ internal sealed class VectorScene : ITimelineContext
     {
         var seeds = seedObjects
             .Where(index => (uint)index < ObjectCount
-                && ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line
+                && (ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line
+                    || ShapeKind[index] == VectorAnimationEngine.ShapeKind.Freeform)
                 && HasStroke(index)
                 && IsObjectActive(index, frame))
             .Distinct()
@@ -9678,14 +11762,15 @@ internal sealed class VectorScene : ITimelineContext
         var impacted = new HashSet<int>();
         foreach (var seed in seeds)
         {
-            var lineCandidates = CollectTopologyCandidates(seed, frame)
+            var strokeCandidates = CollectTopologyCandidates(seed, frame)
                 .Where(candidate => candidate != seed
-                    && ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                    && (ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                        || ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Freeform)
                     && HasStroke(candidate)
                     && ObjectLayer[candidate] == ObjectLayer[seed])
                 .ToArray();
-            if (StrokeSplitParameters(seed, lineCandidates).Count > 2) impacted.Add(seed);
-            foreach (var candidate in lineCandidates)
+            if (StrokeSplitParameters(seed, strokeCandidates).Count > 2) impacted.Add(seed);
+            foreach (var candidate in strokeCandidates)
             {
                 if (StrokeSplitParameters(candidate, [seed]).Count > 2) impacted.Add(candidate);
             }
@@ -9694,12 +11779,13 @@ internal sealed class VectorScene : ITimelineContext
         var keys = new List<DrawingElementKey>();
         foreach (var source in impacted.OrderBy(index => index))
         {
-            var lineCandidates = CollectTopologyCandidates(source, frame)
+            var strokeCandidates = CollectTopologyCandidates(source, frame)
                 .Where(candidate => candidate != source
-                    && ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                    && (ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                        || ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Freeform)
                     && HasStroke(candidate))
                 .ToArray();
-            var splits = StrokeSplitParameters(source, lineCandidates);
+            var splits = StrokeSplitParameters(source, strokeCandidates);
             for (var part = 0; part < splits.Count - 1; part++)
             {
                 keys.Add(new DrawingElementKey(source, DrawingElementKind.Stroke, part));
@@ -9715,18 +11801,28 @@ internal sealed class VectorScene : ITimelineContext
                 Array.Empty<int>());
         }
 
-        return MaterializeSelectedParts(keys, frame, lineIntersectionsOnly: true);
+        return MaterializeSelectedParts(keys, frame, strokeIntersectionsOnly: true);
     }
 
     public MaterializeSelectedPartsResult MaterializeSelectedParts(IReadOnlyList<DrawingElementKey> selectedParts, int frame)
     {
-        return MaterializeSelectedParts(selectedParts, frame, lineIntersectionsOnly: false);
+        return MaterializeSelectedParts(selectedParts, frame, strokeIntersectionsOnly: false, rollbackSnapshot: null);
+    }
+
+    internal MaterializeSelectedPartsResult MaterializeSelectedParts(
+        IReadOnlyList<DrawingElementKey> selectedParts,
+        int frame,
+        VectorSceneSnapshot rollbackSnapshot)
+    {
+        ArgumentNullException.ThrowIfNull(rollbackSnapshot);
+        return MaterializeSelectedParts(selectedParts, frame, strokeIntersectionsOnly: false, rollbackSnapshot);
     }
 
     private MaterializeSelectedPartsResult MaterializeSelectedParts(
         IReadOnlyList<DrawingElementKey> selectedParts,
         int frame,
-        bool lineIntersectionsOnly)
+        bool strokeIntersectionsOnly,
+        VectorSceneSnapshot? rollbackSnapshot = null)
     {
         if (selectedParts.Count == 0 || selectedParts.Any(key => !key.IsValid))
         {
@@ -9738,7 +11834,9 @@ internal sealed class VectorScene : ITimelineContext
         var remove = new bool[oldObjectCount];
         var clearStroke = new HashSet<int>();
         var additions = new List<MaterializedPartAddition>();
+        var mixingAdditions = new List<MixingMaterializedPartAddition>();
         var mappedResults = new Dictionary<DrawingElementKey, DrawingElementKey>();
+        var keyframesBySourceStack = new Dictionary<(ushort Layer, long Order), int>();
 
         foreach (var group in keys.GroupBy(key => key.ObjectIndex).OrderBy(group => group.Key))
         {
@@ -9751,19 +11849,78 @@ internal sealed class VectorScene : ITimelineContext
             var sourceKeys = group.ToArray();
             var shape = ShapeKind[source];
             var candidates = CollectTopologyCandidates(source, frame);
-            if (lineIntersectionsOnly)
+            if (strokeIntersectionsOnly)
             {
                 candidates = candidates
-                    .Where(candidate => ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line && HasStroke(candidate))
+                    .Where(candidate => (ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line
+                            || ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Freeform)
+                        && HasStroke(candidate))
                     .ToList();
             }
             var layer = ObjectLayer[source];
             var order = ObjectOrder[source];
+            keyframesBySourceStack[((ushort)layer, order)] = ObjectKeyframeFrame[source];
             var stroke = Stroke[source];
             var fillColor = Color.FromArgb(Argb[source]);
             var strokeColor = Color.FromArgb(StrokeArgb[source]);
             var gradientPaint = CaptureGradientPaint(source);
             var atoms = AtomCount[source];
+
+            if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
+            {
+                if (sourceKeys.Any(key => key.Kind != DrawingElementKind.Fill))
+                {
+                    return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                }
+
+                if (!TryGetMixingBrushLocalRegion(source, out var mixingRegion))
+                {
+                    if (!_mixingStrokeLocalSamples.ContainsKey(source)
+                        || sourceKeys.Any(key => key.PartIndex != 0))
+                    {
+                        return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                    }
+                    foreach (var key in sourceKeys) mappedResults[key] = key;
+                    continue;
+                }
+
+                var componentCount = mixingRegion.ConnectedComponentCount;
+                var selectedByPart = sourceKeys.ToDictionary(key => key.PartIndex);
+                if (componentCount <= 0
+                    || selectedByPart.Keys.Any(part => part < 0 || part >= componentCount))
+                {
+                    return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                }
+                if (componentCount == 1)
+                {
+                    foreach (var key in sourceKeys) mappedResults[key] = key;
+                    continue;
+                }
+
+                var components = new MixingBrushRegionData[componentCount];
+                for (var partIndex = 0; partIndex < componentCount; partIndex++)
+                {
+                    if (!TryGetMixingBrushWorldRegionPart(source, partIndex, out components[partIndex]))
+                    {
+                        return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                    }
+                }
+                var componentAtoms = AllocateMixingComponentAtoms(atoms, components);
+                var subOrders = ReplacementSubOrders(source, componentCount);
+                remove[source] = true;
+                for (var partIndex = 0; partIndex < componentCount; partIndex++)
+                {
+                    mixingAdditions.Add(new MixingMaterializedPartAddition(
+                        selectedByPart.GetValueOrDefault(partIndex, DrawingElementKey.None),
+                        layer,
+                        ObjectKeyframeFrame[source],
+                        order,
+                        subOrders[partIndex],
+                        componentAtoms[partIndex],
+                        components[partIndex]));
+                }
+                continue;
+            }
 
             if (IsTopologyStrokeShape(shape))
             {
@@ -9772,7 +11929,9 @@ internal sealed class VectorScene : ITimelineContext
                     return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
                 }
 
-                var topologySplits = StrokeSplits(source, candidates);
+                var topologySplits = strokeIntersectionsOnly
+                    ? StrokeSplits(source, candidates)
+                    : CachedStrokeSplits(source, frame, candidates);
                 var splits = topologySplits.Select(split => split.T).ToList();
                 var selectedByPart = sourceKeys.ToDictionary(key => key.PartIndex);
                 if (selectedByPart.Keys.Any(part => part < 0 || part >= Math.Max(0, splits.Count - 1)))
@@ -9828,6 +11987,35 @@ internal sealed class VectorScene : ITimelineContext
                 }
                 else
                 {
+                    if (shape == VectorAnimationEngine.ShapeKind.Freeform
+                        && _freehandBezierLocalNodes.ContainsKey(source)
+                        && TryGetFreehandBezierWorldNodes(source, out var nodes)
+                        && TryBuildOpenBezierRuns(nodes, topologySplits, out var runs))
+                    {
+                        if (selectedByPart.Keys.Any(part => runs.All(run => run.PartIndex != part)))
+                        {
+                            return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+                        }
+
+                        var atomsPerRun = Math.Max(3u, atoms / (uint)Math.Max(1, runs.Count));
+                        var exactSubOrders = ReplacementSubOrders(source, runs.Count);
+                        for (var runIndex = 0; runIndex < runs.Count; runIndex++)
+                        {
+                            var run = runs[runIndex];
+                            additions.Add(FreehandBezierMaterialization(
+                                selectedByPart.GetValueOrDefault(run.PartIndex, DrawingElementKey.None),
+                                layer,
+                                order,
+                                exactSubOrders[runIndex],
+                                stroke,
+                                fillColor,
+                                strokeColor,
+                                atomsPerRun,
+                                run.Nodes));
+                        }
+                        continue;
+                    }
+
                     if (!TryGetFreehandWorldPoints(source, out var points))
                     {
                         return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
@@ -9875,15 +12063,18 @@ internal sealed class VectorScene : ITimelineContext
 
             var selectedFillParts = fillKeys.ToDictionary(key => key.PartIndex);
             var selectedBoundaryParts = boundaryKeys.ToDictionary(key => key.PartIndex);
-            var regions = fillKeys.Length > 0 ? BuildFillRegions(source, candidates) : new List<FillRegion>();
+            var fillPartition = fillKeys.Length > 0
+                ? BuildFillPartition(source, frame, candidates)
+                : new FillPartition([], []);
+            var regions = fillPartition.Regions;
             if (selectedFillParts.Keys.Any(part => part < 0 || part >= regions.Count))
             {
                 return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
             }
 
-            var boundaryParts = boundaryKeys.Length > 0 || fillKeys.Length > 0 && HasStroke(source)
-                ? BuildBoundaryStrokeParts(source, candidates)
-                : new List<BoundaryStrokePart>();
+            IReadOnlyList<BoundaryStrokePart> boundaryParts = boundaryKeys.Length > 0 || fillKeys.Length > 0 && HasStroke(source)
+                ? CachedBoundaryStrokeParts(source, frame, candidates)
+                : Array.Empty<BoundaryStrokePart>();
             if (selectedBoundaryParts.Keys.Any(part => boundaryParts.All(segment => segment.PartIndex != part)))
             {
                 return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
@@ -9921,7 +12112,7 @@ internal sealed class VectorScene : ITimelineContext
                     continue;
                 }
 
-                TryCreateFillBezierWorldContours(source, out var sourceBezierContours);
+                var regionBezierSources = fillPartition.Curves;
                 remove[source] = true;
                 var replacementSubOrders = ReplacementSubOrders(
                     source,
@@ -9949,9 +12140,9 @@ internal sealed class VectorScene : ITimelineContext
                 for (var part = 0; part < regions.Count; part++)
                 {
                     PathBezierNode[][]? regionBezierContours = null;
-                    if (sourceBezierContours.Length > 0
+                    if (regionBezierSources.Length > 0
                         && TryRebuildBezierContoursFromBooleanBoundary(
-                            sourceBezierContours,
+                            regionBezierSources,
                             regions[part].Contours,
                             out var rebuiltBezierContours))
                     {
@@ -9995,7 +12186,10 @@ internal sealed class VectorScene : ITimelineContext
             }
         }
 
-        var changed = remove.Any(value => value) || clearStroke.Count > 0 || additions.Count > 0;
+        var changed = remove.Any(value => value)
+            || clearStroke.Count > 0
+            || additions.Count > 0
+            || mixingAdditions.Count > 0;
         if (!changed)
         {
             var identity = Enumerable.Range(0, oldObjectCount).ToArray();
@@ -10003,10 +12197,31 @@ internal sealed class VectorScene : ITimelineContext
             return new MaterializeSelectedPartsResult(true, false, unchanged, identity);
         }
 
-        var snapshot = CreateSnapshot();
+        var additionKeyframes = new int[additions.Count];
+        for (var index = 0; index < additions.Count; index++)
+        {
+            var addition = additions[index];
+            if (!keyframesBySourceStack.TryGetValue(((ushort)addition.Layer, addition.Order), out additionKeyframes[index]))
+            {
+                return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
+            }
+        }
+
+        var affectedTileCells = new HashSet<int>();
+        var affectedOverviewCells = new HashSet<int>();
+        for (var source = 0; source < oldObjectCount; source++)
+        {
+            if (!remove[source] && !clearStroke.Contains(source)) continue;
+            AddObjectSummaryCells(source, affectedTileCells, TileColumns, TileRows);
+            AddObjectSummaryCells(source, affectedOverviewCells, OverviewColumns, OverviewRows);
+        }
+
+        var snapshot = rollbackSnapshot ?? CreateSnapshot();
+        var editFrame = EditFrame;
         try
         {
             var oldToNew = CompactObjectsForMaterialization(remove);
+            var spatialIndexRemapped = TryRemapSpatialIndexAfterCompaction(oldToNew);
             foreach (var source in clearStroke)
             {
                 var mapped = oldToNew[source];
@@ -10020,10 +12235,16 @@ internal sealed class VectorScene : ITimelineContext
                 mappedResults[item.Key] = item.Value with { ObjectIndex = mappedObject };
             }
 
-            foreach (var addition in additions)
+            for (var additionIndex = 0; additionIndex < additions.Count; additionIndex++)
             {
+                var addition = additions[additionIndex];
+                EditFrame = additionKeyframes[additionIndex];
                 var index = AppendMaterializedPart(addition);
                 if (index < 0) throw new InvalidOperationException("Topology materialization produced invalid replacement geometry.");
+                ObjectKeyframeFrame[index] = additionKeyframes[additionIndex];
+                if (spatialIndexRemapped) AppendObjectToSpatialIndex(index);
+                AddObjectSummaryCells(index, affectedTileCells, TileColumns, TileRows);
+                AddObjectSummaryCells(index, affectedOverviewCells, OverviewColumns, OverviewRows);
                 if (addition.SourceKey.IsValid)
                 {
                     var kind = addition.Geometry == MaterializedPartGeometry.Fill
@@ -10033,8 +12254,35 @@ internal sealed class VectorScene : ITimelineContext
                 }
             }
 
-            RebuildGeometryIndex();
-            RebuildSummaries();
+            foreach (var addition in mixingAdditions)
+            {
+                EditFrame = addition.KeyframeFrame;
+                var index = AppendMixingBrushRegion(
+                    addition.Layer,
+                    addition.Region,
+                    addition.Atoms);
+                if (index < 0) throw new InvalidOperationException("Topology materialization produced an invalid mixing-brush component.");
+                ObjectOrder[index] = addition.Order;
+                ObjectSubOrder[index] = addition.SubOrder;
+                ObjectKeyframeFrame[index] = addition.KeyframeFrame;
+                if (spatialIndexRemapped) AppendObjectToSpatialIndex(index);
+                AddObjectSummaryCells(index, affectedTileCells, TileColumns, TileRows);
+                AddObjectSummaryCells(index, affectedOverviewCells, OverviewColumns, OverviewRows);
+                if (addition.SourceKey.IsValid)
+                {
+                    mappedResults[addition.SourceKey] = new DrawingElementKey(index, DrawingElementKind.Fill, 0);
+                }
+            }
+
+            if (spatialIndexRemapped)
+            {
+                RebuildSummaryCells(affectedTileCells, affectedOverviewCells);
+            }
+            else
+            {
+                RebuildGeometryIndex();
+                RebuildSummaries();
+            }
             var mappings = keys.Select(key => new MaterializedPartMapping(key, mappedResults[key])).ToArray();
             return new MaterializeSelectedPartsResult(true, true, mappings, oldToNew);
         }
@@ -10043,6 +12291,42 @@ internal sealed class VectorScene : ITimelineContext
             RestoreSnapshot(snapshot);
             return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
         }
+        finally
+        {
+            EditFrame = editFrame;
+        }
+    }
+
+    private static uint[] AllocateMixingComponentAtoms(
+        uint sourceAtoms,
+        IReadOnlyList<MixingBrushRegionData> components)
+    {
+        if (components.Count == 0) return [];
+        var result = Enumerable.Repeat(3u, components.Count).ToArray();
+        var minimumTotal = (ulong)result.Length * 3;
+        if (sourceAtoms <= minimumTotal) return result;
+
+        var remaining = (ulong)sourceAtoms - minimumTotal;
+        var weights = components
+            .Select(component => (ulong)Math.Max(
+                1,
+                component.Vertices.Length + component.TriangleIndices.Length / 3))
+            .ToArray();
+        var totalWeight = Math.Max(1UL, weights.Aggregate(0UL, (total, value) => total + value));
+        var distributed = 0UL;
+        for (var index = 0; index < result.Length; index++)
+        {
+            var share = remaining * weights[index] / totalWeight;
+            result[index] += (uint)share;
+            distributed += share;
+        }
+        var remainder = remaining - distributed;
+        for (var index = 0; remainder > 0; index = (index + 1) % result.Length)
+        {
+            result[index]++;
+            remainder--;
+        }
+        return result;
     }
 
     private static MaterializedPartAddition CurveMaterialization(
@@ -10183,6 +12467,32 @@ internal sealed class VectorScene : ITimelineContext
             Array.Empty<PointF[]>());
     }
 
+    private static MaterializedPartAddition FreehandBezierMaterialization(
+        DrawingElementKey sourceKey,
+        int layer,
+        long order,
+        double subOrder,
+        float stroke,
+        Color fillColor,
+        Color strokeColor,
+        uint atoms,
+        PathBezierNode[] nodes)
+    {
+        return FreehandMaterialization(
+            sourceKey,
+            layer,
+            order,
+            subOrder,
+            stroke,
+            fillColor,
+            strokeColor,
+            atoms,
+            Array.Empty<PointF>()) with
+        {
+            OpenBezierNodes = nodes
+        };
+    }
+
     private static MaterializedPartAddition FillMaterialization(
         DrawingElementKey sourceKey,
         int layer,
@@ -10237,6 +12547,12 @@ internal sealed class VectorScene : ITimelineContext
                 addition.Atoms,
                 addition.StartEndpointStyle,
                 addition.EndEndpointStyle),
+            MaterializedPartGeometry.Freehand when addition.OpenBezierNodes.Length >= 2 => AppendFreehandBezierStroke(
+                addition.Layer,
+                addition.OpenBezierNodes,
+                addition.Stroke,
+                addition.StrokeColor,
+                addition.Atoms),
             MaterializedPartGeometry.Freehand => AppendFreehandStroke(
                 addition.Layer,
                 addition.Points,
@@ -10374,82 +12690,174 @@ internal sealed class VectorScene : ITimelineContext
             }
 
             oldToNew[read] = write;
-            if (write != read) CopyObjectData(read, write);
+            if (write != read) CopyObjectScalarDataFrom(this, read, write);
             write++;
         }
 
         ObjectCount = write;
         VirtualAtomCount = Math.Max(0, VirtualAtomCount - removedAtoms);
-        ResizeObjectArrays();
-        RemovePathDataOutsideObjectCount();
-        RemoveFreehandDataOutsideObjectCount();
-        RemoveImportedSvgDataOutsideObjectCount();
-        RemoveTextDataOutsideObjectCount();
-        RemoveGradientDataOutsideObjectCount();
+        RemapObjectDictionariesAfterCompaction(oldToNew);
         return oldToNew;
     }
 
     public (bool Changed, int[] SelectedObjects) MaterializeMarqueeParts(RectangleF worldBounds, int frame)
     {
-        var result = MaterializeMarqueeParts(worldBounds, frame, includeLines: true, includeFills: true);
+        var result = MaterializeMarqueeParts(
+            worldBounds,
+            frame,
+            includeLines: true,
+            includeFills: true,
+            includeWholeObjectSelections: false);
         return (result.Changed, result.SelectedObjects);
     }
 
     public (bool Changed, int[] SelectedObjects) MaterializeMarqueeFillParts(RectangleF worldBounds, int frame)
     {
-        var result = MaterializeMarqueeParts(worldBounds, frame, includeLines: false, includeFills: true);
+        var result = MaterializeMarqueeParts(
+            worldBounds,
+            frame,
+            includeLines: false,
+            includeFills: true,
+            includeWholeObjectSelections: false);
         return (result.Changed, result.SelectedObjects);
     }
 
     public (bool Changed, int[] SelectedObjects) MaterializeMarqueeLineParts(RectangleF worldBounds, int frame)
     {
-        var result = MaterializeMarqueeParts(worldBounds, frame, includeLines: true, includeFills: false);
+        var result = MaterializeMarqueeParts(
+            worldBounds,
+            frame,
+            includeLines: true,
+            includeFills: false,
+            includeWholeObjectSelections: false);
         return (result.Changed, result.SelectedObjects);
     }
 
     public MarqueeMaterializationResult MaterializeMarqueeSelectionParts(RectangleF worldBounds, int frame)
     {
-        return MaterializeMarqueeParts(worldBounds, frame, includeLines: true, includeFills: true);
+        return MaterializeMarqueeParts(
+            worldBounds,
+            frame,
+            includeLines: true,
+            includeFills: true,
+            includeWholeObjectSelections: true);
     }
 
     private MarqueeMaterializationResult MaterializeMarqueeParts(
         RectangleF worldBounds,
         int frame,
         bool includeLines,
-        bool includeFills)
+        bool includeFills,
+        bool includeWholeObjectSelections)
     {
         var oldObjectCount = ObjectCount;
         var identity = Enumerable.Range(0, oldObjectCount).ToArray();
         var bounds = NormalizeToDrawingUnits(worldBounds);
-        if (bounds.Width < DrawingTopologyRules.MinStrokeSegmentUnits
-            || bounds.Height < DrawingTopologyRules.MinStrokeSegmentUnits)
+        var canMaterializeParts = bounds.Width >= DrawingTopologyRules.MinStrokeSegmentUnits
+            && bounds.Height >= DrawingTopologyRules.MinStrokeSegmentUnits;
+        if (!canMaterializeParts && !includeWholeObjectSelections)
         {
-            return new MarqueeMaterializationResult(true, false, Array.Empty<int>(), identity);
+            return new MarqueeMaterializationResult(
+                true,
+                false,
+                Array.Empty<int>(),
+                identity);
         }
 
-        var candidates = QueryObjects(bounds, frame);
+        var queryBounds = bounds;
+        if (!canMaterializeParts)
+        {
+            queryBounds.Inflate(
+                Math.Max(0, DrawingTopologyRules.MinStrokeSegmentUnits - bounds.Width) * 0.5f,
+                Math.Max(0, DrawingTopologyRules.MinStrokeSegmentUnits - bounds.Height) * 0.5f);
+        }
+
+        var candidates = QueryObjects(queryBounds, frame);
         if (candidates.Length == 0)
         {
-            return new MarqueeMaterializationResult(true, false, Array.Empty<int>(), identity);
+            return new MarqueeMaterializationResult(
+                true,
+                false,
+                Array.Empty<int>(),
+                identity);
         }
 
         var snapshot = CreateSnapshot();
         var editFrame = EditFrame;
         try
         {
-            IReadOnlyList<int> activeCandidates = includeFills
+            IReadOnlyList<int> activeCandidates = canMaterializeParts && includeFills
                 ? CollectActiveCandidates(frame)
                 : Array.Empty<int>();
             var remove = new bool[oldObjectCount];
             var additions = new List<MarqueeMaterializedAddition>();
+            var mixingAdditions = new List<MarqueeMixingMaterializedAddition>();
+            var selectedWholeObjects = new List<int>();
             foreach (var source in candidates)
             {
                 if ((uint)source >= oldObjectCount || !IsObjectActive(source, frame)) continue;
                 var shape = ShapeKind[source];
+                if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
+                {
+                    if (TryGetMixingBrushLocalRegion(source, out var mixingRegion))
+                    {
+                        var componentCount = mixingRegion.ConnectedComponentCount;
+                        var selected = new bool[componentCount];
+                        for (var partIndex = 0; partIndex < componentCount; partIndex++)
+                        {
+                            if (!mixingRegion.TryGetConnectedComponent(partIndex, out var component)
+                                || !component.IntersectsBounds(bounds, point => LocalToWorld(source, point.X, point.Y))) continue;
+                            selected[partIndex] = true;
+                        }
+                        if (!selected.Any(value => value)) continue;
+                        if (componentCount <= 1 || includeWholeObjectSelections && selected.All(value => value))
+                        {
+                            if (includeWholeObjectSelections) selectedWholeObjects.Add(source);
+                            continue;
+                        }
+                        if (!includeFills && !includeWholeObjectSelections) continue;
+
+                        var components = new MixingBrushRegionData[componentCount];
+                        var validComponents = true;
+                        for (var partIndex = 0; partIndex < componentCount; partIndex++)
+                        {
+                            if (TryGetMixingBrushWorldRegionPart(source, partIndex, out components[partIndex])) continue;
+                            validComponents = false;
+                            break;
+                        }
+                        if (!validComponents) throw new InvalidOperationException("Marquee materialization could not extract a mixing-brush component.");
+                        var componentAtoms = AllocateMixingComponentAtoms(AtomCount[source], components);
+                        var subOrders = ReplacementSubOrders(source, componentCount);
+                        remove[source] = true;
+                        for (var partIndex = 0; partIndex < componentCount; partIndex++)
+                        {
+                            mixingAdditions.Add(new MarqueeMixingMaterializedAddition(
+                                ObjectLayer[source],
+                                ObjectKeyframeFrame[source],
+                                ObjectOrder[source],
+                                subOrders[partIndex],
+                                componentAtoms[partIndex],
+                                components[partIndex],
+                                selected[partIndex]));
+                        }
+                    }
+                    else if (includeWholeObjectSelections && MixingStrokeIntersectsBounds(source, bounds))
+                    {
+                        selectedWholeObjects.Add(source);
+                    }
+                    continue;
+                }
+                if (!canMaterializeParts) continue;
                 if (IsWholeObjectShape(shape)) continue;
                 if (shape == VectorAnimationEngine.ShapeKind.Line)
                 {
                     if (includeLines) AddLineMarqueeParts(source, bounds, additions, remove);
+                    continue;
+                }
+
+                if (shape == VectorAnimationEngine.ShapeKind.Freeform)
+                {
+                    if (includeLines) TryAddFreehandMarqueeParts(source, bounds, additions, remove);
                     continue;
                 }
 
@@ -10461,11 +12869,18 @@ internal sealed class VectorScene : ITimelineContext
 
             if (!remove.Any(value => value))
             {
-                return new MarqueeMaterializationResult(true, false, Array.Empty<int>(), identity);
+                return new MarqueeMaterializationResult(
+                    true,
+                    false,
+                    selectedWholeObjects.ToArray(),
+                    identity);
             }
 
             var oldToNew = CompactObjectsForMaterialization(remove);
-            var selectedObjects = new List<int>();
+            var selectedObjects = selectedWholeObjects
+                .Select(index => oldToNew[index])
+                .Where(index => index >= 0)
+                .ToList();
             foreach (var item in additions)
             {
                 EditFrame = item.KeyframeFrame;
@@ -10474,16 +12889,34 @@ internal sealed class VectorScene : ITimelineContext
                 ObjectKeyframeFrame[index] = item.KeyframeFrame;
                 if (item.Selected) selectedObjects.Add(index);
             }
+            foreach (var item in mixingAdditions)
+            {
+                EditFrame = item.KeyframeFrame;
+                var index = AppendMixingBrushRegion(item.Layer, item.Region, item.Atoms);
+                if (index < 0) throw new InvalidOperationException("Marquee materialization produced an invalid mixing-brush component.");
+                ObjectOrder[index] = item.Order;
+                ObjectSubOrder[index] = item.SubOrder;
+                ObjectKeyframeFrame[index] = item.KeyframeFrame;
+                if (item.Selected) selectedObjects.Add(index);
+            }
 
             SynchronizeAllKeyframeContentKinds();
             RebuildGeometryIndex();
             RebuildSummaries();
-            return new MarqueeMaterializationResult(true, true, selectedObjects.ToArray(), oldToNew);
+            return new MarqueeMaterializationResult(
+                true,
+                true,
+                selectedObjects.ToArray(),
+                oldToNew);
         }
         catch
         {
             RestoreSnapshot(snapshot);
-            return new MarqueeMaterializationResult(false, false, Array.Empty<int>(), identity);
+            return new MarqueeMaterializationResult(
+                false,
+                false,
+                Array.Empty<int>(),
+                identity);
         }
         finally
         {
@@ -10493,6 +12926,13 @@ internal sealed class VectorScene : ITimelineContext
 
     public int MergeSameColorFillsAround(int objectIndex, bool connectNearby = true, int frame = 0)
     {
+        var operationWatch = Stopwatch.StartNew();
+        LastFillMergePlanMilliseconds = 0;
+        LastFillMergeSnapshotMilliseconds = 0;
+        LastFillMergeMutationMilliseconds = 0;
+        LastFillMergeSpatialMilliseconds = 0;
+        LastFillMergeSummaryMilliseconds = 0;
+        LastFillMergeTotalMilliseconds = 0;
         if ((uint)objectIndex >= ObjectCount) return objectIndex;
         if (!IsFillShape(ShapeKind[objectIndex])) return objectIndex;
         if (FillAutoMergeProtected[objectIndex]) return objectIndex;
@@ -10512,17 +12952,23 @@ internal sealed class VectorScene : ITimelineContext
                 if (other == current) continue;
                 if (ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]) continue;
                 if (!TryBuildSameColorFillMerge(current, other, connectNearby, mergeBounds, out var mergedPath)) continue;
-                if (!TryCreateFillBezierWorldContours(current, out var currentBezierContours)
-                    || !TryCreateFillBezierWorldContours(other, out var otherBezierContours)
-                    || !TryRebuildBezierContoursFromBooleanBoundary(
-                        currentBezierContours.Concat(otherBezierContours).ToArray(),
-                        mergedPath,
-                        out var mergedBezierContours))
+                if (!TryGetEditableFillBezierContours(current, out var currentBezierContours)
+                    || !TryGetEditableFillBezierContours(other, out var otherBezierContours))
                 {
                     continue;
                 }
 
+                var sourceBezierContours = currentBezierContours.Concat(otherBezierContours).ToArray();
+                if (!TryRebuildBezierContoursFromBooleanBoundary(
+                        sourceBezierContours,
+                        mergedPath,
+                        out var mergedBezierContours))
+                {
+                    mergedBezierContours = mergedPath.Select(CreateLinearBezierContour).ToArray();
+                }
+
                 var layer = ObjectLayer[current];
+                var keyframeFrame = ObjectKeyframeFrame[current];
                 var topSource = CompareObjectStack(current, other) >= 0 ? current : other;
                 var order = ObjectOrder[topSource];
                 var subOrder = ObjectSubOrder[topSource];
@@ -10532,14 +12978,29 @@ internal sealed class VectorScene : ITimelineContext
                 var boundaryAdditions = new List<MaterializedPartAddition>();
                 PlanBoundaryMaterializations(current, frame, boundaryAdditions, preserveSourceSubOrder: current == topSource);
                 PlanBoundaryMaterializations(other, frame, boundaryAdditions, preserveSourceSubOrder: other == topSource);
+                var affectedTileCells = new HashSet<int>
+                {
+                    SummaryCellForObject(current, TileColumns, TileRows),
+                    SummaryCellForObject(other, TileColumns, TileRows)
+                };
+                var affectedOverviewCells = new HashSet<int>
+                {
+                    SummaryCellForObject(current, OverviewColumns, OverviewRows),
+                    SummaryCellForObject(other, OverviewColumns, OverviewRows)
+                };
                 var mergeSource = current;
+                LastFillMergePlanMilliseconds = operationWatch.Elapsed.TotalMilliseconds;
+                var stageWatch = Stopwatch.StartNew();
                 var snapshot = CreateSnapshot();
+                LastFillMergeSnapshotMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
                 try
                 {
+                    stageWatch.Restart();
                     var remove = new bool[ObjectCount];
                     remove[current] = true;
                     remove[other] = true;
-                    CompactObjectsForMaterialization(remove);
+                    var oldToNew = CompactObjectsForMaterialization(remove);
+                    var spatialIndexRemapped = TryRemapSpatialIndexAfterCompaction(oldToNew);
                     current = AppendPathBezierObjectContours(
                         layer,
                         mergedBezierContours,
@@ -10548,18 +13009,34 @@ internal sealed class VectorScene : ITimelineContext
                         strokeColor,
                         atoms);
                     if (current < 0) throw new InvalidOperationException("Merged fill geometry was invalid.");
+                    ObjectKeyframeFrame[current] = keyframeFrame;
                     ObjectOrder[current] = order;
                     ObjectSubOrder[current] = subOrder;
+                    if (spatialIndexRemapped) AppendObjectToSpatialIndex(current);
+                    affectedTileCells.Add(SummaryCellForObject(current, TileColumns, TileRows));
+                    affectedOverviewCells.Add(SummaryCellForObject(current, OverviewColumns, OverviewRows));
                     foreach (var addition in boundaryAdditions)
                     {
-                        if (AppendMaterializedPart(addition) < 0)
+                        var boundary = AppendMaterializedPart(addition);
+                        if (boundary < 0)
                         {
                             throw new InvalidOperationException("A fill boundary could not be preserved during merge.");
                         }
+                        ObjectKeyframeFrame[boundary] = keyframeFrame;
+                        if (spatialIndexRemapped) AppendObjectToSpatialIndex(boundary);
+                        AddObjectSummaryCells(boundary, affectedTileCells, TileColumns, TileRows);
+                        AddObjectSummaryCells(boundary, affectedOverviewCells, OverviewColumns, OverviewRows);
                     }
 
-                    RebuildGeometryIndex();
-                    RebuildSummaries();
+                    LastFillMergeMutationMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
+                    MaxHalfExtent = Math.Max(MaxHalfExtent, ObjectHalfExtent(current));
+                    stageWatch.Restart();
+                    if (!spatialIndexRemapped) RebuildSpatialIndex();
+                    LastFillMergeSpatialMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
+                    stageWatch.Restart();
+                    RebuildSummaryCells(affectedTileCells, affectedOverviewCells);
+                    LastFillMergeSummaryMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
+                    LastFillMergeTotalMilliseconds = operationWatch.Elapsed.TotalMilliseconds;
                     merged = true;
                 }
                 catch
@@ -10800,7 +13277,7 @@ internal sealed class VectorScene : ITimelineContext
         var pathsA = ToClipperPaths(FillWorldContours(a));
         var pathsB = ToClipperPaths(FillWorldContours(b));
         if (pathsA.Count == 0 || pathsB.Count == 0 || !ClipperPathsIntersect(pathsA, pathsB)) return false;
-        mergedPath = BuildMergedFillPath(pathsA, pathsB, Array.Empty<PointF>());
+        mergedPath = BuildMergedFillPath(pathsA, pathsB);
         return mergedPath.Length > 0;
     }
 
@@ -11086,7 +13563,7 @@ internal sealed class VectorScene : ITimelineContext
             retained = MergeMatchingShapeGradientFillsAroundNewObjects(retained, frame);
         }
 
-        if (retained.Length == 0 || !CanNormalizePaintInteractively(retained, frame)) return retained;
+        if (retained.Length == 0) return retained;
         retained = ApplyFillOverwriteToNewObjectsCore(retained, frame, mergeMatchingShapeGradients: false);
         return MergeSameColorFillsAroundNewObjects(retained, connectNearby, frame);
     }
@@ -11227,9 +13704,11 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         var candidateGeometry = new List<(int ObjectIndex, PointF Start, PointF End)>();
-        for (var index = 0; index < oldObjectCount; index++)
+        var candidateIndices = scopedObjects is null
+            ? Enumerable.Range(0, oldObjectCount)
+            : scopedObjects.OrderBy(index => index);
+        foreach (var index in candidateIndices)
         {
-            if (scopedObjects is not null && !scopedObjects.Contains(index)) continue;
             if (TryGetMergeableStraightLine(index, frame, out var start, out var end))
             {
                 candidateGeometry.Add((index, start, end));
@@ -12167,6 +14646,153 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
+    private bool TryAddFreehandMarqueeParts(
+        int source,
+        RectangleF bounds,
+        List<MarqueeMaterializedAddition> additions,
+        bool[] remove)
+    {
+        if ((uint)source >= ObjectCount
+            || ShapeKind[source] != VectorAnimationEngine.ShapeKind.Freeform
+            || !HasStroke(source))
+        {
+            return false;
+        }
+
+        if (!_freehandBezierLocalNodes.ContainsKey(source))
+        {
+            return TryAddLegacyFreehandMarqueeParts(source, bounds, additions, remove);
+        }
+
+        if (!TryGetFreehandBezierWorldNodes(source, out var nodes) || nodes.Length < 2) return false;
+
+        var intervals = new List<MarqueeOpenBezierInterval>();
+        for (var segmentIndex = 0; segmentIndex < nodes.Length - 1; segmentIndex++)
+        {
+            var current = nodes[segmentIndex];
+            var next = nodes[segmentIndex + 1];
+            var curve = new CubicBoundarySegment(
+                current.Anchor,
+                current.OutgoingControl,
+                next.IncomingControl,
+                next.Anchor);
+            var splits = CubicRectSplits(curve, bounds);
+            for (var splitIndex = 0; splitIndex < splits.Count - 1; splitIndex++)
+            {
+                var startT = splits[splitIndex].T;
+                var endT = splits[splitIndex + 1].T;
+                if (endT - startT <= 0.0001f) continue;
+                var start = new OpenBezierCut(
+                    segmentIndex,
+                    startT,
+                    CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, startT));
+                var end = new OpenBezierCut(
+                    segmentIndex,
+                    endT,
+                    CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, endT));
+                var selected = PointInRectangle(
+                    CubicPoint(
+                        curve.Start,
+                        curve.Control1,
+                        curve.Control2,
+                        curve.End,
+                        (startT + endT) * 0.5f),
+                    bounds);
+                if (intervals.Count > 0
+                    && intervals[^1].Selected == selected
+                    && Math.Abs(intervals[^1].End.PathT - start.PathT) <= 0.0001f)
+                {
+                    intervals[^1] = intervals[^1] with { End = end };
+                }
+                else
+                {
+                    intervals.Add(new MarqueeOpenBezierInterval(start, end, selected));
+                }
+            }
+        }
+
+        if (intervals.Count <= 1
+            || !intervals.Any(interval => interval.Selected)
+            || !intervals.Any(interval => !interval.Selected))
+        {
+            return false;
+        }
+
+        var planned = new List<MarqueeMaterializedAddition>(intervals.Count);
+        var subOrders = ReplacementSubOrders(source, intervals.Count);
+        var atomsPerRun = Math.Max(3u, AtomCount[source] / (uint)intervals.Count);
+        for (var intervalIndex = 0; intervalIndex < intervals.Count; intervalIndex++)
+        {
+            var interval = intervals[intervalIndex];
+            if (!TryCreateOpenBezierRunNodes(
+                    nodes,
+                    interval.Start,
+                    interval.End,
+                    out var runNodes))
+            {
+                return false;
+            }
+
+            planned.Add(new MarqueeMaterializedAddition(
+                FreehandBezierMaterialization(
+                    DrawingElementKey.None,
+                    ObjectLayer[source],
+                    ObjectOrder[source],
+                    subOrders[intervalIndex],
+                    Stroke[source],
+                    Color.FromArgb(Argb[source]),
+                    Color.FromArgb(StrokeArgb[source]),
+                    atomsPerRun,
+                    runNodes),
+                ObjectKeyframeFrame[source],
+                interval.Selected));
+        }
+
+        additions.AddRange(planned);
+        remove[source] = true;
+        return true;
+    }
+
+    private bool TryAddLegacyFreehandMarqueeParts(
+        int source,
+        RectangleF bounds,
+        List<MarqueeMaterializedAddition> additions,
+        bool[] remove)
+    {
+        if (!TryGetFreehandWorldPoints(source, out var points) || points.Length < 2) return false;
+        var splits = PolylineRectSplitParameters(points, bounds);
+        if (splits.Count <= 2) return false;
+
+        var runs = BuildPolylinePathParts(points, splits);
+        if (runs.Count <= 1) return false;
+        var selected = runs
+            .Select(run => PointInRectangle(PolylinePointAt(run.Points, 0.5f), bounds))
+            .ToArray();
+        if (!selected.Any(value => value) || !selected.Any(value => !value)) return false;
+
+        var subOrders = ReplacementSubOrders(source, runs.Count);
+        var atomsPerRun = Math.Max(3u, AtomCount[source] / (uint)runs.Count);
+        for (var runIndex = 0; runIndex < runs.Count; runIndex++)
+        {
+            additions.Add(new MarqueeMaterializedAddition(
+                FreehandMaterialization(
+                    DrawingElementKey.None,
+                    ObjectLayer[source],
+                    ObjectOrder[source],
+                    subOrders[runIndex],
+                    Stroke[source],
+                    Color.FromArgb(Argb[source]),
+                    Color.FromArgb(StrokeArgb[source]),
+                    atomsPerRun,
+                    runs[runIndex].Points),
+                ObjectKeyframeFrame[source],
+                selected[runIndex]));
+        }
+
+        remove[source] = true;
+        return true;
+    }
+
     private bool TryBuildSameColorFillMerge(
         int a,
         int b,
@@ -12192,15 +14818,14 @@ internal sealed class VectorScene : ITimelineContext
         if (pathsA.Count == 0 || pathsB.Count == 0) return false;
         if (ClipperPathsIntersect(pathsA, pathsB))
         {
-            mergedPath = BuildMergedFillPath(pathsA, pathsB, Array.Empty<PointF>());
+            mergedPath = BuildMergedFillPath(pathsA, pathsB);
             return mergedPath.Length > 0;
         }
 
         var distance = CompoundPolygonDistance(contoursA, contoursB, out var nearestA, out var nearestB);
         if (distance > mergeDistance) return false;
 
-        var connector = connectNearby && distance > 0.001f ? CreateFillConnector(nearestA, nearestB) : Array.Empty<PointF>();
-        mergedPath = BuildMergedFillPath(pathsA, pathsB, connector);
+        mergedPath = BuildMergedFillPath(pathsA, pathsB);
         return mergedPath.Length > 0;
     }
 
@@ -12221,37 +14846,7 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
-    private static PointF[] CreateFillConnector(PointF a, PointF b)
-    {
-        var dx = b.X - a.X;
-        var dy = b.Y - a.Y;
-        var length = MathF.Sqrt(dx * dx + dy * dy);
-        if (length <= 0.001f) return Array.Empty<PointF>();
-
-        const float halfThickness = 1f;
-        const float endpointOverlap = 1f;
-        var ux = dx / length;
-        var uy = dy / length;
-        var nx = -uy * halfThickness;
-        var ny = ux * halfThickness;
-        var start = new PointF(a.X - ux * endpointOverlap, a.Y - uy * endpointOverlap);
-        var end = new PointF(b.X + ux * endpointOverlap, b.Y + uy * endpointOverlap);
-
-        return
-        [
-            new PointF(start.X + nx, start.Y + ny),
-            new PointF(end.X + nx, end.Y + ny),
-            new PointF(end.X - nx, end.Y - ny),
-            new PointF(start.X - nx, start.Y - ny)
-        ];
-    }
-
-    private static PointF[][] BuildMergedFillPath(PointF[][] contoursA, PointF[][] contoursB, PointF[] connector)
-    {
-        return BuildMergedFillPath(ToClipperPaths(contoursA), ToClipperPaths(contoursB), connector);
-    }
-
-    private static PointF[][] BuildMergedFillPath(Paths64 subject, Paths64 clip, PointF[] connector)
+    private static PointF[][] BuildMergedFillPath(Paths64 subject, Paths64 clip)
     {
         if (subject.Count == 0 || clip.Count == 0) return Array.Empty<PointF[]>();
         try
@@ -12263,23 +14858,6 @@ internal sealed class VectorScene : ITimelineContext
             if (!union.Execute(ClipType.Union, FillRule.EvenOdd, solution) || solution.Count == 0)
             {
                 return Array.Empty<PointF[]>();
-            }
-
-            if (connector.Length >= 3)
-            {
-                var connectorPaths = ToClipperPaths(new[] { connector });
-                if (connectorPaths.Count == 0) return Array.Empty<PointF[]>();
-
-                var connected = new Paths64();
-                var connectorUnion = new Clipper64();
-                connectorUnion.AddSubject(solution);
-                connectorUnion.AddClip(connectorPaths);
-                if (!connectorUnion.Execute(ClipType.Union, FillRule.EvenOdd, connected) || connected.Count == 0)
-                {
-                    return Array.Empty<PointF[]>();
-                }
-
-                solution = connected;
             }
 
             return FromClipperPaths(solution);
@@ -12295,10 +14873,7 @@ internal sealed class VectorScene : ITimelineContext
         IReadOnlyList<PointF[]> booleanContours,
         out PathBezierNode[][] rebuiltContours)
     {
-        rebuiltContours = [];
-        if (sourceContours.Count == 0 || booleanContours.Count == 0) return false;
-
-        var sources = new List<BooleanBezierCurveSource>();
+        var sources = new List<PreparedBezierCurve>();
         foreach (var contour in sourceContours)
         {
             if (contour.Length < 3) continue;
@@ -12311,15 +14886,43 @@ internal sealed class VectorScene : ITimelineContext
                     current.OutgoingControl,
                     next.IncomingControl,
                     next.Anchor);
-                var samples = SampleCubicSegmentWithParameters(curve);
-                if (samples.Length < 2) continue;
-                var bounds = CurveSampleBounds(samples);
-                bounds.Inflate(BooleanBezierMaximumErrorUnits, BooleanBezierMaximumErrorUnits);
-                sources.Add(new BooleanBezierCurveSource(curve, samples, bounds));
+                AddPreparedBezierCurve(sources, curve);
             }
         }
 
-        if (sources.Count == 0) return false;
+        return TryRebuildBezierContoursFromBooleanBoundary(sources, booleanContours, out rebuiltContours);
+    }
+
+    private static void AddPreparedBezierCurve(
+        ICollection<PreparedBezierCurve> sources,
+        CubicBoundarySegment curve)
+    {
+        sources.Add(PrepareBezierCurve(curve));
+    }
+
+    private static PreparedBezierCurve PrepareBezierCurve(CubicBoundarySegment curve)
+    {
+        var samples = SampleCubicSegmentWithParameters(curve);
+        return PrepareBezierCurve(curve, samples);
+    }
+
+    private static PreparedBezierCurve PrepareBezierCurve(
+        CubicBoundarySegment curve,
+        CurveSample[] samples)
+    {
+        var bounds = CurveSampleBounds(samples);
+        bounds.Inflate(BooleanBezierMaximumErrorUnits, BooleanBezierMaximumErrorUnits);
+        return new PreparedBezierCurve(curve, samples, bounds);
+    }
+
+    private static bool TryRebuildBezierContoursFromBooleanBoundary(
+        IReadOnlyList<PreparedBezierCurve> sources,
+        IReadOnlyList<PointF[]> booleanContours,
+        out PathBezierNode[][] rebuiltContours)
+    {
+        rebuiltContours = [];
+        if (sources.Count == 0 || booleanContours.Count == 0) return false;
+
         var result = new PathBezierNode[booleanContours.Count][];
         for (var contourIndex = 0; contourIndex < booleanContours.Count; contourIndex++)
         {
@@ -12339,7 +14942,7 @@ internal sealed class VectorScene : ITimelineContext
 
     private static bool TryRebuildBezierContourFromBooleanBoundary(
         PointF[] booleanContour,
-        IReadOnlyList<BooleanBezierCurveSource> sources,
+        IReadOnlyList<PreparedBezierCurve> sources,
         out PathBezierNode[] rebuiltContour)
     {
         rebuiltContour = [];
@@ -12363,12 +14966,45 @@ internal sealed class VectorScene : ITimelineContext
                     continue;
                 }
 
-                var samples = source.Samples;
-                var startDistance = DistanceToCurveSamples(start, samples);
-                var endDistance = DistanceToCurveSamples(end, samples);
-                var midpointDistance = DistanceToCurveSamples(midpoint, samples);
-                if (Math.Max(startDistance, Math.Max(endDistance, midpointDistance))
-                    > BooleanBezierMaximumErrorUnits)
+                if (!TryGetClosestParameterOnCubic(
+                        source,
+                        start,
+                        out var startT,
+                        out var startDistance)
+                    || !TryGetClosestParameterOnCubic(
+                        source,
+                        end,
+                        out var endT,
+                        out var endDistance)
+                    || !TryGetClosestParameterOnCubic(
+                        source,
+                        midpoint,
+                        out var midpointT,
+                        out var midpointDistance)
+                    || Math.Max(startDistance, Math.Max(endDistance, midpointDistance))
+                    > BooleanBezierMaximumErrorUnits
+                    || Math.Abs(endT - startT) <= 0.0001f)
+                {
+                    continue;
+                }
+
+                var minimumT = Math.Min(startT, endT);
+                var maximumT = Math.Max(startT, endT);
+                if (midpointT < minimumT - 0.001f || midpointT > maximumT + 0.001f) continue;
+                var edgeSubcurve = CubicSubcurve(
+                    source.Curve.Start,
+                    source.Curve.Control1,
+                    source.Curve.Control2,
+                    source.Curve.End,
+                    minimumT,
+                    maximumT);
+                var edgeCurve = new CubicBoundarySegment(
+                    edgeSubcurve.Start,
+                    edgeSubcurve.Control1,
+                    edgeSubcurve.Control2,
+                    edgeSubcurve.End);
+                if (SampleCubicSegment(edgeCurve).Any(point =>
+                        DistanceToSegment(point, start, end) > BooleanBezierMaximumErrorUnits))
                 {
                     continue;
                 }
@@ -12380,7 +15016,6 @@ internal sealed class VectorScene : ITimelineContext
             }
 
         }
-
         var startEdge = 0;
         for (var edgeIndex = 0; edgeIndex < labels.Length; edgeIndex++)
         {
@@ -12418,7 +15053,11 @@ internal sealed class VectorScene : ITimelineContext
             }
             else
             {
-                AddLinearBooleanSegments(runPoints, segments);
+                var fitted = FitPolylineBezierSegments(
+                    runPoints,
+                    BooleanBezierSimplificationToleranceUnits);
+                if (fitted.Length > 0) segments.AddRange(fitted);
+                else AddLinearBooleanSegments(runPoints, segments);
             }
 
             processed += groupLength;
@@ -12474,7 +15113,7 @@ internal sealed class VectorScene : ITimelineContext
 
     private static bool TryMatchBooleanCurveRun(
         IReadOnlyList<PointF> runPoints,
-        BooleanBezierCurveSource source,
+        PreparedBezierCurve source,
         out CubicBoundarySegment matched)
     {
         matched = default;
@@ -12505,11 +15144,7 @@ internal sealed class VectorScene : ITimelineContext
             minimumT,
             maximumT);
         var curve = forward
-            ? new CubicBoundarySegment(
-                subcurve.Start,
-                subcurve.Control1,
-                subcurve.Control2,
-                subcurve.End)
+            ? subcurve
             : new CubicBoundarySegment(
                 subcurve.End,
                 subcurve.Control2,
@@ -12529,7 +15164,9 @@ internal sealed class VectorScene : ITimelineContext
 
         var matchedSamples = SampleCubicSegment(matched);
         return runPoints.All(point =>
-            DistanceToPolyline(point, matchedSamples) <= BooleanBezierMaximumErrorUnits);
+                DistanceToPolyline(point, matchedSamples) <= BooleanBezierMaximumErrorUnits)
+            && matchedSamples.All(point =>
+                DistanceToPolyline(point, runPoints) <= BooleanBezierMaximumErrorUnits);
     }
 
     private static RectangleF CurveSampleBounds(IReadOnlyList<CurveSample> samples)
@@ -12552,7 +15189,7 @@ internal sealed class VectorScene : ITimelineContext
     }
 
     private static bool TryGetClosestParameterOnCubic(
-        BooleanBezierCurveSource source,
+        PreparedBezierCurve source,
         PointF point,
         out float parameter,
         out float distance)
@@ -12587,6 +15224,8 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         if (!float.IsFinite(distance)) return false;
+        var closestParameter = parameter;
+        var closestDistance = distance;
         for (var iteration = 0; iteration < 10; iteration++)
         {
             var first = low + (high - low) / 3f;
@@ -12607,13 +15246,21 @@ internal sealed class VectorScene : ITimelineContext
             else low = first;
         }
 
-        parameter = (low + high) * 0.5f;
-        distance = Distance(point, CubicPoint(
+        var refinedParameter = (low + high) * 0.5f;
+        var refinedDistance = Distance(point, CubicPoint(
             source.Curve.Start,
             source.Curve.Control1,
             source.Curve.Control2,
             source.Curve.End,
-            parameter));
+            refinedParameter));
+        if (refinedDistance < closestDistance)
+        {
+            closestParameter = refinedParameter;
+            closestDistance = refinedDistance;
+        }
+
+        parameter = closestParameter;
+        distance = closestDistance;
         return true;
     }
 
@@ -12882,29 +15529,88 @@ internal sealed class VectorScene : ITimelineContext
         return polygon.Length >= 3 ? new[] { polygon } : Array.Empty<PointF[]>();
     }
 
-    private List<FillRegion> BuildFillRegions(int fillIndex, IReadOnlyList<int> candidates)
+    private List<FillRegion> BuildFillRegions(int fillIndex, int frame, IReadOnlyList<int> candidates)
     {
-        if ((uint)fillIndex >= ObjectCount || !HasFill(fillIndex)) return new List<FillRegion>();
+        return BuildFillPartition(fillIndex, frame, candidates).Regions;
+    }
+
+    private FillPartition BuildFillPartition(
+        int fillIndex,
+        int frame,
+        IReadOnlyList<int> candidates)
+    {
+        if (_fillPartitionCacheRevision != GeometryRevision)
+        {
+            _fillPartitionCache.Clear();
+            _fillPartitionCacheRevision = GeometryRevision;
+        }
+
+        var cacheKey = (fillIndex, frame);
+        if (_fillPartitionCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        var partition = BuildFillPartitionCore(fillIndex, candidates);
+        if (_fillPartitionCache.Count >= MaximumTopologyQueryCacheEntries) _fillPartitionCache.Clear();
+        _fillPartitionCache[cacheKey] = partition;
+        return partition;
+    }
+
+    private FillPartition BuildFillPartitionCore(
+        int fillIndex,
+        IReadOnlyList<int> candidates)
+    {
+        if ((uint)fillIndex >= ObjectCount || !HasFill(fillIndex)) return new FillPartition([], []);
+        PreparedBezierCurve[] fillBoundaryCurves = [];
 
         try
         {
-            var source = ToClipperPaths(FillWorldContours(fillIndex));
-            if (source.Count == 0) return new List<FillRegion>();
+            var sourceContours = FillWorldContours(fillIndex);
+            var source = ToClipperPaths(sourceContours);
+            if (source.Count == 0) return new FillPartition([], []);
 
-            var baseRegions = ExecuteFillRegions(source, new Paths64());
-            var cutterPaths = MergeConnectedOpenCutterPaths(BuildTopologyCutterPaths(fillIndex, candidates));
-            if (cutterPaths.Count == 0) return baseRegions;
+            fillBoundaryCurves = TryGetEditableFillBezierContours(fillIndex, out var fillBezierContours)
+                ? BuildPathBezierCurves(fillBezierContours)
+                    .Select(PrepareBezierCurve)
+                    .ToArray()
+                : [];
+            var curves = new List<PreparedBezierCurve>(fillBoundaryCurves);
+            var cutterPaths = MergeConnectedOpenCutterPaths(BuildTopologyCutterPaths(
+                fillIndex,
+                candidates,
+                sourceContours,
+                fillBoundaryCurves,
+                curves));
+            if (cutterPaths.Count == 0)
+            {
+                return new FillPartition(
+                    ExecuteFillRegions(source, new Paths64()),
+                    curves.ToArray());
+            }
 
             var cutRegions = ExecuteFillRegions(source, BuildTopologyCutterAreas(cutterPaths));
-            return cutRegions.Count > baseRegions.Count ? cutRegions : baseRegions;
+            var fallbackRegions = FallbackFillRegions(fillIndex);
+            if (cutRegions.Count > fallbackRegions.Count)
+            {
+                return new FillPartition(cutRegions, curves.ToArray());
+            }
+
+            var baseRegions = ExecuteFillRegions(source, new Paths64());
+            var regions = cutRegions.Count > baseRegions.Count ? cutRegions : baseRegions;
+            return new FillPartition(regions, curves.ToArray());
         }
         catch (Exception ex) when (ex is ClipperLibException or OverflowException)
         {
-            return FallbackFillRegions(fillIndex);
+            return new FillPartition(
+                FallbackFillRegions(fillIndex),
+                fillBoundaryCurves);
         }
     }
 
-    private List<TopologyCutterPath> BuildTopologyCutterPaths(int fillIndex, IReadOnlyList<int> candidates)
+    private List<TopologyCutterPath> BuildTopologyCutterPaths(
+        int fillIndex,
+        IReadOnlyList<int> candidates,
+        PointF[][] sourceContours,
+        IReadOnlyList<PreparedBezierCurve> fillBoundaryCurves,
+        ICollection<PreparedBezierCurve>? curves)
     {
         var layer = ObjectLayer[fillIndex];
         var result = new List<TopologyCutterPath>();
@@ -12912,12 +15618,33 @@ internal sealed class VectorScene : ITimelineContext
         {
             if (candidate == fillIndex || ObjectLayer[candidate] != layer || !HasStroke(candidate)) continue;
             var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
-            if (IsTopologyStrokeShape(shape))
+            if (shape == VectorAnimationEngine.ShapeKind.Line)
+            {
+                var curve = PrepareBezierCurve(LineCurve(candidate));
+                var paths = BuildInteriorTopologyCutterPaths(
+                    curve,
+                    fillBoundaryCurves,
+                    sourceContours);
+                if (paths.Count == 0) continue;
+                result.AddRange(paths);
+                curves?.Add(curve);
+            }
+            else if (IsTopologyStrokeShape(shape))
             {
                 var samples = StrokeSamples(candidate);
                 var closed = samples.Length > 2 && SameDrawingUnit(samples[0].Point, samples[^1].Point);
                 var path = ToClipperPath(samples.Select(sample => sample.Point), closed);
-                if (path.Count >= 2) result.Add(new TopologyCutterPath(path, closed));
+                if (path.Count < 2) continue;
+                result.Add(new TopologyCutterPath(path, closed));
+                if (curves is not null && TryGetFreehandWorldPoints(candidate, out var freehandPoints))
+                {
+                    foreach (var curve in FitPolylineBezierSegments(
+                                 freehandPoints,
+                                 ConnectedStrokeEndpointToleranceUnits))
+                    {
+                        curves.Add(PrepareBezierCurve(curve));
+                    }
+                }
             }
             else if (IsFillShape(shape))
             {
@@ -12926,10 +15653,179 @@ internal sealed class VectorScene : ITimelineContext
                     var path = ToClipperPath(contour, closed: true);
                     if (path.Count >= 3) result.Add(new TopologyCutterPath(path, Closed: true));
                 }
+                if (curves is not null
+                    && TryGetEditableFillBezierContours(candidate, out var cutterContours))
+                {
+                    foreach (var curve in BuildPathBezierCurves(cutterContours))
+                    {
+                        curves.Add(PrepareBezierCurve(curve));
+                    }
+                }
             }
         }
 
         return result;
+    }
+
+    private List<TopologyCutterPath> BuildInteriorTopologyCutterPaths(
+        PreparedBezierCurve cutter,
+        IReadOnlyList<PreparedBezierCurve> fillBoundaryCurves,
+        PointF[][] sourceContours)
+    {
+        var splits = new List<DrawingTopologySplit>
+        {
+            new(0, cutter.Curve.Start),
+            new(1, cutter.Curve.End)
+        };
+        var overlapIntervals = new List<(float StartT, float EndT)>();
+        foreach (var boundary in fillBoundaryCurves)
+        {
+            AddBezierCurveRelationSplits(
+                splits,
+                cutter,
+                boundary,
+                includeSourceEndpoints: true,
+                overlapIntervals: overlapIntervals);
+        }
+
+        if (overlapIntervals.Count == 0)
+        {
+            // Join Pen segments at their exact anchors before Clipper trims them to the Fill.
+            var fullPath = ToClipperPath(cutter.Samples.Select(sample => sample.Point), closed: false);
+            return fullPath.Count >= 2
+                ? [new TopologyCutterPath(fullPath, Closed: false)]
+                : [];
+        }
+
+        var normalized = NormalizeStrokeSplits(
+            splits.Select(split => RefineCubicTopologySplit(cutter.Curve, split)).ToList());
+        var result = new List<TopologyCutterPath>();
+        for (var index = 0; index < normalized.Count - 1; index++)
+        {
+            var startT = normalized[index].T;
+            var endT = normalized[index + 1].T;
+            if (endT - startT <= 0.0001f) continue;
+            var middleT = (startT + endT) * 0.5f;
+            var middle = CubicPoint(
+                cutter.Curve.Start,
+                cutter.Curve.Control1,
+                cutter.Curve.Control2,
+                cutter.Curve.End,
+                middleT);
+            if (!PointInCompoundPolygon(middle, sourceContours)
+                || overlapIntervals.Any(overlap =>
+                    middleT >= overlap.StartT - 0.0001f
+                    && middleT <= overlap.EndT + 0.0001f))
+            {
+                continue;
+            }
+
+            var curve = CubicSubcurve(
+                cutter.Curve.Start,
+                cutter.Curve.Control1,
+                cutter.Curve.Control2,
+                cutter.Curve.End,
+                startT,
+                endT);
+            var samples = SampleCubicSegment(curve);
+            if (PolylineLength(samples) < DrawingTopologyRules.MinStrokeSegmentUnits) continue;
+            var path = ToClipperPath(samples, closed: false);
+            if (path.Count >= 2) result.Add(new TopologyCutterPath(path, Closed: false));
+        }
+        return result;
+    }
+
+    private void AddBezierCurveRelationSplits(
+        List<DrawingTopologySplit> splits,
+        PreparedBezierCurve source,
+        PreparedBezierCurve other,
+        bool includeSourceEndpoints,
+        ICollection<(float StartT, float EndT)>? overlapIntervals = null)
+    {
+        if (!source.Bounds.IntersectsWith(other.Bounds)) return;
+        if (TryGetBezierSubcurveInterval(source, other.Curve, out var startT, out var endT))
+        {
+            overlapIntervals?.Add((startT, endT));
+            splits.Add(new DrawingTopologySplit(startT, CubicPoint(
+                source.Curve.Start,
+                source.Curve.Control1,
+                source.Curve.Control2,
+                source.Curve.End,
+                startT)));
+            splits.Add(new DrawingTopologySplit(endT, CubicPoint(
+                source.Curve.Start,
+                source.Curve.Control1,
+                source.Curve.Control2,
+                source.Curve.End,
+                endT)));
+            return;
+        }
+
+        if (TryGetBezierSubcurveInterval(other, source.Curve, out _, out _))
+        {
+            overlapIntervals?.Add((0, 1));
+            return;
+        }
+        AddCurveCurveIntersections(
+            splits,
+            source.Samples,
+            other.Samples,
+            includeSourceEndpoints);
+    }
+
+    private static bool TryGetBezierSubcurveInterval(
+        PreparedBezierCurve source,
+        CubicBoundarySegment candidate,
+        out float startT,
+        out float endT)
+    {
+        startT = 0;
+        endT = 0;
+        if (!TryGetClosestParameterOnCubic(
+                source,
+                candidate.Start,
+                out var candidateStartT,
+                out var startDistance)
+            || !TryGetClosestParameterOnCubic(
+                source,
+                candidate.End,
+                out var candidateEndT,
+                out var endDistance)
+            || Math.Max(startDistance, endDistance) > BezierCoincidenceToleranceUnits)
+        {
+            return false;
+        }
+
+        var reversed = candidateStartT > candidateEndT;
+        startT = Math.Min(candidateStartT, candidateEndT);
+        endT = Math.Max(candidateStartT, candidateEndT);
+        if (endT - startT <= 0.0001f) return false;
+        var subcurve = CubicSubcurve(
+            source.Curve.Start,
+            source.Curve.Control1,
+            source.Curve.Control2,
+            source.Curve.End,
+            startT,
+            endT);
+        if (reversed)
+        {
+            subcurve = new CubicBoundarySegment(
+                subcurve.End,
+                subcurve.Control2,
+                subcurve.Control1,
+                subcurve.Start);
+        }
+
+        return CubicControlPointsMatch(
+            subcurve.Start,
+            subcurve.Control1,
+            subcurve.Control2,
+            subcurve.End,
+            candidate.Start,
+            candidate.Control1,
+            candidate.Control2,
+            candidate.End,
+            ConnectedStrokeEndpointToleranceUnits);
     }
 
     private static Paths64 BuildTopologyCutterAreas(IReadOnlyList<TopologyCutterPath> paths)
@@ -13163,7 +16059,14 @@ internal sealed class VectorScene : ITimelineContext
                 if (child.IsHole) paths.Add(child.Polygon!);
             }
 
-            foreach (var region in NormalizeFillRegionContours(FromClipperPaths(paths))) regions.Add(region);
+            var contours = FromClipperPaths(paths);
+            if (contours.Length > 0)
+            {
+                regions.Add(new FillRegion(
+                    contours,
+                    ContourBounds(contours),
+                    CompoundContourArea(contours)));
+            }
         }
 
         for (var i = 0; i < node.Count; i++) CollectFillRegions(node[i], regions);
@@ -13349,16 +16252,40 @@ internal sealed class VectorScene : ITimelineContext
         return result;
     }
 
-    private List<int> CollectTopologyCandidates(int objectIndex, int frame)
+    private IReadOnlyList<int> CollectTopologyCandidates(int objectIndex, int frame)
     {
-        if ((uint)objectIndex >= ObjectCount) return new List<int>();
+        if ((uint)objectIndex >= ObjectCount) return Array.Empty<int>();
+
+        EnsureInteractiveQueryCacheRevision();
+        var cacheKey = (objectIndex, frame);
+        if (_topologyCandidateCache.TryGetValue(cacheKey, out var cached)) return cached;
 
         var layer = ObjectLayer[objectIndex];
         var bounds = GetObjectWorldBounds(objectIndex);
         bounds.Inflate(DrawingTopologyRules.MinStrokeSegmentUnits, DrawingTopologyRules.MinStrokeSegmentUnits);
-        return QueryObjects(bounds, frame)
+        var candidates = QueryObjects(bounds, frame)
             .Where(index => ObjectLayer[index] == layer)
-            .ToList();
+            .ToArray();
+        if (_topologyCandidateCache.Count >= MaximumTopologyQueryCacheEntries) _topologyCandidateCache.Clear();
+        _topologyCandidateCache[cacheKey] = candidates;
+        return candidates;
+    }
+
+    private void EnsureInteractiveQueryCacheRevision()
+    {
+        if (_interactiveQueryCacheRevision == GeometryRevision) return;
+        _topologyCandidateCache.Clear();
+        _hitStrokeSplitCache.Clear();
+        _hitBoundaryPartCache.Clear();
+        _interactiveQueryCacheRevision = GeometryRevision;
+    }
+
+    private void InvalidateInteractiveQueryCaches()
+    {
+        _topologyCandidateCache.Clear();
+        _hitStrokeSplitCache.Clear();
+        _hitBoundaryPartCache.Clear();
+        _interactiveQueryCacheRevision = -1;
     }
 
     private DrawingElementHit DetachStrokePart(DrawingElementHit hit, IReadOnlyList<int> candidates)
@@ -13480,7 +16407,7 @@ internal sealed class VectorScene : ITimelineContext
         var source = hit.Key.ObjectIndex;
         if ((uint)source >= ObjectCount || !HasFill(source)) return hit;
 
-        var regions = BuildFillRegions(source, candidates);
+        var regions = BuildFillRegions(source, EditFrame, candidates);
         if ((uint)hit.Key.PartIndex >= regions.Count) return DrawingElementHit.None;
         var detachBoundary = HasStroke(source);
         if (regions.Count <= 1 && !detachBoundary) return hit;
@@ -13555,6 +16482,202 @@ internal sealed class VectorScene : ITimelineContext
         }
 
         return result;
+    }
+
+    private static bool TryBuildOpenBezierRuns(
+        IReadOnlyList<PathBezierNode> nodes,
+        IReadOnlyList<DrawingTopologySplit> splits,
+        out List<OpenBezierRun> runs)
+    {
+        runs = [];
+        if (nodes.Count < 2 || splits.Count < 2) return false;
+        var samples = SampleOpenFreehandBezierNodesWithParameters(nodes);
+        if (samples.Length < 2) return false;
+
+        var cuts = new OpenBezierCut[splits.Count];
+        cuts[0] = new OpenBezierCut(0, 0, nodes[0].Anchor);
+        cuts[^1] = new OpenBezierCut(nodes.Count - 2, 1, nodes[^1].Anchor);
+        for (var splitIndex = 1; splitIndex < splits.Count - 1; splitIndex++)
+        {
+            if (!TryResolveOpenBezierCut(nodes, samples, splits[splitIndex], out cuts[splitIndex]))
+            {
+                runs = [];
+                return false;
+            }
+        }
+
+        for (var partIndex = 0; partIndex < cuts.Length - 1; partIndex++)
+        {
+            var start = cuts[partIndex];
+            var end = cuts[partIndex + 1];
+            if (end.PathT - start.PathT <= 0.0001f)
+            {
+                runs = [];
+                return false;
+            }
+            if (!TryCreateOpenBezierRunNodes(nodes, start, end, out var runNodes))
+            {
+                runs = [];
+                return false;
+            }
+            runs.Add(new OpenBezierRun(partIndex, start, end, runNodes));
+        }
+
+        return runs.Count > 0;
+    }
+
+    private static bool TryResolveOpenBezierCut(
+        IReadOnlyList<PathBezierNode> nodes,
+        IReadOnlyList<OpenBezierSample> samples,
+        DrawingTopologySplit split,
+        out OpenBezierCut cut)
+    {
+        cut = default;
+        if (nodes.Count < 2 || samples.Count < 2 || !Finite(split.Point)) return false;
+        var samplePosition = Math.Clamp(split.T, 0, 1) * (samples.Count - 1);
+        var lowerIndex = Math.Clamp((int)MathF.Floor(samplePosition), 0, samples.Count - 1);
+        var upperIndex = Math.Clamp(lowerIndex + 1, 0, samples.Count - 1);
+        var fraction = samplePosition - lowerIndex;
+        var lower = samples[lowerIndex];
+        var upper = samples[upperIndex];
+        var targetPathT = lower.SegmentIndex + lower.LocalT
+            + (upper.SegmentIndex + upper.LocalT - lower.SegmentIndex - lower.LocalT) * fraction;
+        var lastSegment = nodes.Count - 2;
+        var primarySegment = Math.Clamp((int)MathF.Floor(targetPathT), 0, lastSegment);
+        var candidateSegments = new[]
+            {
+                primarySegment - 1,
+                primarySegment,
+                primarySegment + 1
+            }
+            .Where(index => index >= 0 && index <= lastSegment)
+            .Distinct();
+
+        var bestDistance = float.MaxValue;
+        var bestPathDelta = float.MaxValue;
+        var bestSegment = -1;
+        var bestLocalT = 0f;
+        foreach (var segmentIndex in candidateSegments)
+        {
+            var current = nodes[segmentIndex];
+            var next = nodes[segmentIndex + 1];
+            var prepared = PrepareBezierCurve(new CubicBoundarySegment(
+                current.Anchor,
+                current.OutgoingControl,
+                next.IncomingControl,
+                next.Anchor));
+            if (!TryGetClosestParameterOnCubic(
+                    prepared,
+                    split.Point,
+                    out var localT,
+                    out var distance))
+            {
+                continue;
+            }
+
+            var pathDelta = Math.Abs(segmentIndex + localT - targetPathT);
+            if (distance > bestDistance + DrawingTopologyRules.UnitIntersectionTolerance
+                || Math.Abs(distance - bestDistance) <= DrawingTopologyRules.UnitIntersectionTolerance
+                && pathDelta >= bestPathDelta)
+            {
+                continue;
+            }
+
+            bestDistance = distance;
+            bestPathDelta = pathDelta;
+            bestSegment = segmentIndex;
+            bestLocalT = localT;
+        }
+
+        if (bestSegment < 0) return false;
+        if (bestLocalT <= 0.0001f)
+        {
+            bestLocalT = 0;
+        }
+        else if (bestLocalT >= 0.9999f)
+        {
+            if (bestSegment < lastSegment)
+            {
+                bestSegment++;
+                bestLocalT = 0;
+            }
+            else
+            {
+                bestLocalT = 1;
+            }
+        }
+
+        var point = bestLocalT <= 0
+            ? nodes[bestSegment].Anchor
+            : bestLocalT >= 1
+                ? nodes[bestSegment + 1].Anchor
+                : CubicPoint(
+                    nodes[bestSegment].Anchor,
+                    nodes[bestSegment].OutgoingControl,
+                    nodes[bestSegment + 1].IncomingControl,
+                    nodes[bestSegment + 1].Anchor,
+                    bestLocalT);
+        cut = new OpenBezierCut(bestSegment, bestLocalT, point);
+        return true;
+    }
+
+    private static bool TryCreateOpenBezierRunNodes(
+        IReadOnlyList<PathBezierNode> sourceNodes,
+        OpenBezierCut start,
+        OpenBezierCut end,
+        out PathBezierNode[] nodes)
+    {
+        nodes = [];
+        if (sourceNodes.Count < 2
+            || start.SegmentIndex < 0
+            || end.SegmentIndex < start.SegmentIndex
+            || end.SegmentIndex >= sourceNodes.Count - 1
+            || end.PathT - start.PathT <= 0.0001f)
+        {
+            return false;
+        }
+
+        var curves = new List<CubicBoundarySegment>(end.SegmentIndex - start.SegmentIndex + 1);
+        for (var segmentIndex = start.SegmentIndex; segmentIndex <= end.SegmentIndex; segmentIndex++)
+        {
+            var localStart = segmentIndex == start.SegmentIndex ? start.LocalT : 0;
+            var localEnd = segmentIndex == end.SegmentIndex ? end.LocalT : 1;
+            if (localEnd - localStart <= 0.0001f) continue;
+            var current = sourceNodes[segmentIndex];
+            var next = sourceNodes[segmentIndex + 1];
+            curves.Add(CubicSubcurve(
+                current.Anchor,
+                current.OutgoingControl,
+                next.IncomingControl,
+                next.Anchor,
+                localStart,
+                localEnd));
+        }
+        if (curves.Count == 0) return false;
+
+        var result = new PathBezierNode[curves.Count + 1];
+        result[0] = new PathBezierNode(
+            curves[0].Start,
+            curves[0].Start,
+            curves[0].Control1);
+        for (var curveIndex = 1; curveIndex < curves.Count; curveIndex++)
+        {
+            result[curveIndex] = new PathBezierNode(
+                curves[curveIndex].Start,
+                curves[curveIndex - 1].Control2,
+                curves[curveIndex].Control1);
+        }
+        var last = curves[^1];
+        result[^1] = new PathBezierNode(last.End, last.Control2, last.End);
+        var sampled = SampleOpenFreehandBezierNodes(result);
+        if (sampled.Length < 2
+            || PolylineLength(sampled) < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            return false;
+        }
+
+        nodes = result;
+        return true;
     }
 
     private List<CurveSegmentPart> BuildCurveParts(
@@ -13638,6 +16761,7 @@ internal sealed class VectorScene : ITimelineContext
                 for (var p = start; p < end; p++)
                 {
                     var i = CellObjects[p];
+                    if ((uint)i >= ObjectCount) continue;
                     if (ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
                     result.Add(i);
                 }
@@ -13674,6 +16798,7 @@ internal sealed class VectorScene : ITimelineContext
                 for (var p = start; p < end; p++)
                 {
                     var i = CellObjects[p];
+                    if ((uint)i >= ObjectCount) continue;
                     if (ObjectKeyframeFrame[i] != _queryActiveKeyframes[ObjectLayer[i]]) continue;
                     if (!ObjectIntersectsBounds(i, bounds)) continue;
 
@@ -13715,6 +16840,7 @@ internal sealed class VectorScene : ITimelineContext
     private void InvalidateQueryActiveKeyframes()
     {
         _queryActiveFrame = int.MinValue;
+        InvalidateInteractiveQueryCaches();
     }
 
     public int[] QueryDrawingObjects(RectangleF worldBounds, int frame, int limit = 100_000)
@@ -13732,6 +16858,36 @@ internal sealed class VectorScene : ITimelineContext
         foreach (var objectIndex in QueryDrawingObjects(bounds, frame, limit))
         {
             var shape = ShapeKind[objectIndex];
+            if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
+            {
+                if (TryGetMixingBrushLocalRegion(objectIndex, out var mixingRegion))
+                {
+                    for (var partIndex = 0; partIndex < mixingRegion.ConnectedComponentCount; partIndex++)
+                    {
+                        if (!mixingRegion.TryGetConnectedComponent(partIndex, out var component)
+                            || !component.IntersectsBounds(
+                                bounds,
+                                point => LocalToWorld(objectIndex, point.X, point.Y)))
+                        {
+                            continue;
+                        }
+                        result.Add(new DrawingElementHit(
+                            new DrawingElementKey(objectIndex, DrawingElementKind.Fill, partIndex),
+                            0,
+                            0,
+                            1));
+                    }
+                }
+                else if (MixingStrokeIntersectsBounds(objectIndex, bounds))
+                {
+                    result.Add(new DrawingElementHit(
+                        new DrawingElementKey(objectIndex, DrawingElementKind.Fill, 0),
+                        0,
+                        0,
+                        1));
+                }
+                continue;
+            }
             if (IsWholeObjectShape(shape))
             {
                 if (IsObjectGeometryInsideBounds(objectIndex, bounds))
@@ -13781,7 +16937,7 @@ internal sealed class VectorScene : ITimelineContext
 
             if (HasFill(objectIndex))
             {
-                var regions = BuildFillRegions(objectIndex, candidates);
+                var regions = BuildFillRegions(objectIndex, frame, candidates);
                 for (var part = 0; part < regions.Count; part++)
                 {
                     if (!regions[part].Contours.All(contour => contour.All(point => PointInRectangle(point, bounds)))) continue;
@@ -13826,6 +16982,10 @@ internal sealed class VectorScene : ITimelineContext
     private bool ObjectGeometryIntersectsBounds(int objectIndex, RectangleF bounds)
     {
         var shape = ShapeKind[objectIndex];
+        if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
+        {
+            return MixingStrokeIntersectsBounds(objectIndex, bounds);
+        }
         if (IsWholeObjectShape(shape))
         {
             var boundary = ShapeBoundary(objectIndex);
@@ -13926,7 +17086,11 @@ internal sealed class VectorScene : ITimelineContext
     internal int GetSpatialCellObjectCount(int cell)
     {
         if ((uint)cell >= IndexColumns * IndexRows) return 0;
-        var count = CellStart[cell + 1] - CellStart[cell];
+        var count = 0;
+        for (var position = CellStart[cell]; position < CellStart[cell + 1]; position++)
+        {
+            if ((uint)CellObjects[position] < ObjectCount) count++;
+        }
         return _spatialAppendCells is not null && _spatialAppendCells.TryGetValue(cell, out var appended)
             ? count + appended.Count
             : count;
@@ -13998,6 +17162,54 @@ internal sealed class VectorScene : ITimelineContext
         _spatialPendingObjectCount += count;
         if (_spatialPendingObjectCount >= SpatialIndexAppendRebuildThreshold) RebuildSpatialIndex();
         return true;
+    }
+
+    private bool TryRemapSpatialIndexAfterCompaction(IReadOnlyList<int> oldToNew)
+    {
+        var cellCount = IndexColumns * IndexRows;
+        if (CellStart.Length != cellCount + 1 || oldToNew.Count == 0) return false;
+
+        for (var position = 0; position < CellObjects.Length; position++)
+        {
+            var oldIndex = CellObjects[position];
+            CellObjects[position] = (uint)oldIndex < oldToNew.Count
+                ? oldToNew[oldIndex]
+                : -1;
+        }
+
+        Dictionary<int, List<int>>? remappedPending = null;
+        var pendingCount = 0;
+        if (_spatialAppendCells is not null)
+        {
+            foreach (var (cell, objects) in _spatialAppendCells)
+            {
+                foreach (var oldIndex in objects)
+                {
+                    if ((uint)oldIndex >= oldToNew.Count || oldToNew[oldIndex] < 0) continue;
+                    remappedPending ??= new Dictionary<int, List<int>>();
+                    if (!remappedPending.TryGetValue(cell, out var remapped))
+                    {
+                        remapped = new List<int>(objects.Count);
+                        remappedPending.Add(cell, remapped);
+                    }
+                    remapped.Add(oldToNew[oldIndex]);
+                    pendingCount++;
+                }
+            }
+        }
+
+        var baseLimit = Math.Min(_spatialBaseObjectCount, oldToNew.Count);
+        var baseCount = 0;
+        for (var oldIndex = 0; oldIndex < baseLimit; oldIndex++)
+        {
+            if (oldToNew[oldIndex] >= 0) baseCount++;
+        }
+
+        _spatialBaseObjectCount = baseCount;
+        _spatialPendingObjectCount = pendingCount;
+        _spatialAppendCells = remappedPending;
+        GeometryRevision++;
+        return baseCount + pendingCount == ObjectCount;
     }
 
     private void RebuildSpatialIndex()
@@ -14332,6 +17544,192 @@ internal sealed class VectorScene : ITimelineContext
         SummaryRevision++;
     }
 
+    private int SummaryCellForObject(int objectIndex, int columns, int rows)
+    {
+        var x = (int)Math.Clamp(
+            (X[objectIndex] + StageWidth * 0.5f) / StageWidth * columns,
+            0,
+            columns - 1);
+        var y = (int)Math.Clamp(
+            (Y[objectIndex] + StageHeight * 0.5f) / StageHeight * rows,
+            0,
+            rows - 1);
+        return y * columns + x;
+    }
+
+    private void AddObjectSummaryCells(
+        int objectIndex,
+        ISet<int> cells,
+        int columns,
+        int rows)
+    {
+        if (!IsFreehandShape(ShapeKind[objectIndex]))
+        {
+            cells.Add(SummaryCellForObject(objectIndex, columns, rows));
+            return;
+        }
+
+        GetObjectSummaryCellRange(objectIndex, columns, rows, out var minX, out var maxX, out var minY, out var maxY);
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++) cells.Add(y * columns + x);
+        }
+    }
+
+    private void RebuildSummaryCells(IReadOnlyCollection<int> tileCells, IReadOnlyCollection<int> overviewCells)
+    {
+        RebuildSummaryCells(
+            tileCells,
+            TileColumns,
+            TileRows,
+            TileCount,
+            TileAtoms,
+            TileArgb,
+            alphaBase: 44,
+            alphaStep: 9);
+        RebuildSummaryCells(
+            overviewCells,
+            OverviewColumns,
+            OverviewRows,
+            OverviewCount,
+            OverviewAtoms,
+            OverviewArgb,
+            alphaBase: 58,
+            alphaStep: 6);
+        SummaryRevision++;
+    }
+
+    private void RebuildSummaryCells(
+        IReadOnlyCollection<int> targetCells,
+        int columns,
+        int rows,
+        int[] counts,
+        long[] atoms,
+        int[] colors,
+        int alphaBase,
+        int alphaStep)
+    {
+        if (targetCells.Count == 0) return;
+        var summaryCellWidth = StageWidth / columns;
+        var summaryCellHeight = StageHeight / rows;
+        var hasSpatialIndex = CellStart.Length == IndexColumns * IndexRows + 1;
+        foreach (var cell in targetCells)
+        {
+            if ((uint)cell >= columns * rows) continue;
+            var targetX = cell % columns;
+            var targetY = cell / columns;
+            var count = 0;
+            long atomCount = 0;
+            long red = 0;
+            long green = 0;
+            long blue = 0;
+
+            if (!hasSpatialIndex
+                || targetX == 0
+                || targetX == columns - 1
+                || targetY == 0
+                || targetY == rows - 1)
+            {
+                for (var objectIndex = 0; objectIndex < ObjectCount; objectIndex++)
+                {
+                    AccumulateObject(objectIndex);
+                }
+            }
+            else
+            {
+                var worldBounds = new RectangleF(
+                    -StageWidth * 0.5f + targetX * summaryCellWidth,
+                    -StageHeight * 0.5f + targetY * summaryCellHeight,
+                    summaryCellWidth,
+                    summaryCellHeight);
+                GetIndexRange(worldBounds, out var minX, out var maxX, out var minY, out var maxY);
+                for (var spatialY = minY; spatialY <= maxY; spatialY++)
+                {
+                    for (var spatialX = minX; spatialX <= maxX; spatialX++)
+                    {
+                        var spatialCell = CellIndex(spatialX, spatialY);
+                        for (var position = CellStart[spatialCell]; position < CellStart[spatialCell + 1]; position++)
+                        {
+                            var objectIndex = CellObjects[position];
+                            if ((uint)objectIndex < ObjectCount) AccumulateObject(objectIndex);
+                        }
+
+                        foreach (var objectIndex in GetPendingSpatialCellObjects(spatialCell))
+                        {
+                            AccumulateObject(objectIndex);
+                        }
+                    }
+                }
+            }
+
+            counts[cell] = count;
+            atoms[cell] = atomCount;
+            colors[cell] = count == 0
+                ? Color.FromArgb(24, 36, 40, 42).ToArgb()
+                : Color.FromArgb(
+                    Math.Clamp(alphaBase + count * alphaStep, alphaBase + alphaStep, 230),
+                    (int)(red / count),
+                    (int)(green / count),
+                    (int)(blue / count)).ToArgb();
+
+            void AccumulateObject(int objectIndex)
+            {
+                var shape = ShapeKind[objectIndex];
+                if (IsFreehandShape(shape))
+                {
+                    GetObjectSummaryCellRange(
+                        objectIndex,
+                        columns,
+                        rows,
+                        out var objectMinX,
+                        out var objectMaxX,
+                        out var objectMinY,
+                        out var objectMaxY);
+                    if (targetX < objectMinX
+                        || targetX > objectMaxX
+                        || targetY < objectMinY
+                        || targetY > objectMaxY)
+                    {
+                        return;
+                    }
+                }
+                else if (SummaryCellForObject(objectIndex, columns, rows) != cell)
+                {
+                    return;
+                }
+
+                var color = Color.FromArgb(
+                    shape is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform
+                        ? StrokeArgb[objectIndex]
+                        : Argb[objectIndex]);
+                count++;
+                atomCount += AtomCount[objectIndex];
+                red += color.R;
+                green += color.G;
+                blue += color.B;
+            }
+        }
+    }
+
+    private void GetObjectSummaryCellRange(
+        int objectIndex,
+        int columns,
+        int rows,
+        out int minX,
+        out int maxX,
+        out int minY,
+        out int maxY)
+    {
+        var halfWidth = Width[objectIndex] * 0.5f;
+        var halfHeight = Height[objectIndex] * 0.5f;
+        var cellWidth = StageWidth / columns;
+        var cellHeight = StageHeight / rows;
+        minX = (int)Math.Clamp((X[objectIndex] - halfWidth + StageWidth * 0.5f) / cellWidth, 0, columns - 1);
+        maxX = (int)Math.Clamp((X[objectIndex] + halfWidth + StageWidth * 0.5f) / cellWidth, 0, columns - 1);
+        minY = (int)Math.Clamp((Y[objectIndex] - halfHeight + StageHeight * 0.5f) / cellHeight, 0, rows - 1);
+        maxY = (int)Math.Clamp((Y[objectIndex] + halfHeight + StageHeight * 0.5f) / cellHeight, 0, rows - 1);
+    }
+
     private void AddObjectToSummaryCell(
         int objectIndex,
         Color color,
@@ -14474,9 +17872,58 @@ internal sealed class VectorScene : ITimelineContext
         maxY = (int)Math.Clamp((world.Y + expanded + StageHeight * 0.5f) / cellH, 0, IndexRows - 1);
     }
 
+    private bool ObjectMayContainHitPoint(int objectIndex, PointF world, float toleranceWorld)
+    {
+        if ((uint)objectIndex >= ObjectCount) return false;
+
+        var shape = ShapeKind[objectIndex];
+        var margin = Math.Max(Stroke[objectIndex] * 0.5f, 1) + Math.Max(0, toleranceWorld);
+        if (shape == VectorAnimationEngine.ShapeKind.Line)
+        {
+            var halfWidth = Width[objectIndex] * 0.5f;
+            var angle = Angle[objectIndex];
+            var offsetX = Math.Abs(angle) < 0.0001f ? halfWidth : halfWidth * MathF.Cos(angle);
+            var offsetY = Math.Abs(angle) < 0.0001f ? 0 : halfWidth * MathF.Sin(angle);
+            var start = new PointF(X[objectIndex] - offsetX, Y[objectIndex] - offsetY);
+            var end = new PointF(X[objectIndex] + offsetX, Y[objectIndex] + offsetY);
+            var control1 = new PointF(CurveControlX[objectIndex], CurveControlY[objectIndex]);
+            var control2 = new PointF(CurveControl2X[objectIndex], CurveControl2Y[objectIndex]);
+            var left = Math.Min(Math.Min(start.X, end.X), Math.Min(control1.X, control2.X)) - margin;
+            var right = Math.Max(Math.Max(start.X, end.X), Math.Max(control1.X, control2.X)) + margin;
+            var top = Math.Min(Math.Min(start.Y, end.Y), Math.Min(control1.Y, control2.Y)) - margin;
+            var bottom = Math.Max(Math.Max(start.Y, end.Y), Math.Max(control1.Y, control2.Y)) + margin;
+            return world.X >= left && world.X <= right && world.Y >= top && world.Y <= bottom;
+        }
+
+        var local = WorldToLocal(objectIndex, world);
+        if (Math.Abs(local.X) <= Width[objectIndex] * 0.5f + margin
+            && Math.Abs(local.Y) <= Height[objectIndex] * 0.5f + margin)
+        {
+            return true;
+        }
+
+        // Bezier/freehand preview edits can temporarily outgrow Width/Height until commit.
+        if (shape == VectorAnimationEngine.ShapeKind.Path || IsFreehandShape(shape))
+        {
+            var bounds = GetObjectWorldBounds(objectIndex);
+            var tolerance = Math.Max(0, toleranceWorld);
+            bounds.Inflate(tolerance, tolerance);
+            return world.X >= bounds.Left
+                && world.X <= bounds.Right
+                && world.Y >= bounds.Top
+                && world.Y <= bounds.Bottom;
+        }
+
+        return false;
+    }
+
     private bool HitObject(PointF world, int i, float toleranceWorld)
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
+        {
+            return MixingStrokeContainsPoint(i, world, toleranceWorld);
+        }
         if (shape == VectorAnimationEngine.ShapeKind.Line)
         {
             var halfW = Width[i] * 0.5f;
@@ -14522,9 +17969,221 @@ internal sealed class VectorScene : ITimelineContext
         return true;
     }
 
+    public bool TrySampleMixingStrokeColor(int objectIndex, PointF world, out Color color)
+    {
+        color = Color.Transparent;
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke)
+        {
+            return false;
+        }
+
+        var local = WorldToLocal(objectIndex, world);
+        if (_mixingStrokeLocalRegions.TryGetValue(objectIndex, out var region))
+        {
+            return region.TrySampleColor(local, out color);
+        }
+        if (!_mixingStrokeLocalSamples.TryGetValue(objectIndex, out var samples)
+            || samples.Length == 0)
+        {
+            return false;
+        }
+
+        var cells = MixingStrokeCoverageBuilder.GetLocalCells(samples);
+        var hasPaint = false;
+        for (var index = cells.Count - 1; index >= 0; index--)
+        {
+            var cell = cells[index];
+            if (!cell.Contains(local)) continue;
+
+            var sampleColor = Color.FromArgb(cell.Argb);
+            if (sampleColor.A == 0) continue;
+            color = hasPaint
+                ? PaintColorMixer.CompositeSourceOver(sampleColor, color)
+                : sampleColor;
+            hasPaint = true;
+            if (color.A == 255) break;
+        }
+        return hasPaint;
+    }
+
+    private bool MixingStrokeContainsPoint(int objectIndex, PointF world, float toleranceWorld)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke)
+        {
+            return false;
+        }
+
+        var local = WorldToLocal(objectIndex, world);
+        var tolerance = Math.Max(0, toleranceWorld);
+        if (_mixingStrokeLocalRegions.TryGetValue(objectIndex, out var region))
+        {
+            return region.ContainsPaint(local, tolerance);
+        }
+        if (!_mixingStrokeLocalSamples.TryGetValue(objectIndex, out var samples)
+            || samples.Length == 0)
+        {
+            return false;
+        }
+
+        for (var index = samples.Length - 1; index >= 0; index--)
+        {
+            var radius = samples[index].Diameter * 0.5f + tolerance;
+            var dx = local.X - samples[index].Point.X;
+            var dy = local.Y - samples[index].Point.Y;
+            if (dx * dx + dy * dy <= radius * radius)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private bool MixingStrokeIntersectsBounds(int objectIndex, RectangleF bounds)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.MixingStroke)
+        {
+            return false;
+        }
+
+        if (_mixingStrokeLocalRegions.TryGetValue(objectIndex, out var region))
+        {
+            return region.IntersectsBounds(
+                bounds,
+                point => LocalToWorld(objectIndex, point.X, point.Y));
+        }
+        if (!_mixingStrokeLocalSamples.TryGetValue(objectIndex, out var samples)
+            || samples.Length == 0)
+        {
+            return false;
+        }
+
+        var hasPrevious = false;
+        var previousCenter = PointF.Empty;
+        var previousRadius = 0f;
+        foreach (var sample in samples)
+        {
+            if (Color.FromArgb(sample.Argb).A == 0
+                || !float.IsFinite(sample.Point.X)
+                || !float.IsFinite(sample.Point.Y)
+                || !float.IsFinite(sample.Diameter)
+                || sample.Diameter <= 0)
+            {
+                hasPrevious = false;
+                continue;
+            }
+
+            var center = LocalToWorld(objectIndex, sample.Point.X, sample.Point.Y);
+            var radius = sample.Diameter * 0.5f;
+            if (!float.IsFinite(center.X) || !float.IsFinite(center.Y))
+            {
+                hasPrevious = false;
+                continue;
+            }
+            if (CircleIntersectsRectangle(center, radius, bounds)
+                || (hasPrevious && MixingSegmentIntersectsBounds(
+                        previousCenter,
+                        previousRadius,
+                        center,
+                        radius,
+                        bounds)
+                    && MixingSamplesTouchOrOverlap(previousCenter, previousRadius, center, radius)))
+            {
+                return true;
+            }
+
+            previousCenter = center;
+            previousRadius = radius;
+            hasPrevious = true;
+        }
+
+        return false;
+    }
+
+    private static bool MixingSamplesTouchOrOverlap(
+        PointF start,
+        float startRadius,
+        PointF end,
+        float endRadius)
+    {
+        var dx = (double)end.X - start.X;
+        var dy = (double)end.Y - start.Y;
+        var radius = (double)startRadius + endRadius;
+        return dx * dx + dy * dy <= radius * radius;
+    }
+
+    private static bool MixingSegmentIntersectsBounds(
+        PointF start,
+        float startRadius,
+        PointF end,
+        float endRadius,
+        RectangleF bounds)
+    {
+        if (SegmentIntersectsRectangle(start, end, bounds)) return true;
+
+        var dx = end.X - start.X;
+        var dy = end.Y - start.Y;
+        var length = MathF.Sqrt(dx * dx + dy * dy);
+        if (length <= Math.Abs(endRadius - startRadius) + 0.001f)
+        {
+            return false;
+        }
+
+        var unitX = dx / length;
+        var unitY = dy / length;
+        var normalAlong = -(endRadius - startRadius) / length;
+        var normalAcross = MathF.Sqrt(Math.Max(0, 1 - normalAlong * normalAlong));
+        var firstNormal = new PointF(
+            normalAlong * unitX - normalAcross * unitY,
+            normalAlong * unitY + normalAcross * unitX);
+        var secondNormal = new PointF(
+            normalAlong * unitX + normalAcross * unitY,
+            normalAlong * unitY - normalAcross * unitX);
+        var hull = new[]
+        {
+            new PointF(start.X + firstNormal.X * startRadius, start.Y + firstNormal.Y * startRadius),
+            new PointF(end.X + firstNormal.X * endRadius, end.Y + firstNormal.Y * endRadius),
+            new PointF(end.X + secondNormal.X * endRadius, end.Y + secondNormal.Y * endRadius),
+            new PointF(start.X + secondNormal.X * startRadius, start.Y + secondNormal.Y * startRadius)
+        };
+        if (SegmentIntersectsRectangle(hull[0], hull[1], bounds)
+            || SegmentIntersectsRectangle(hull[2], hull[3], bounds))
+        {
+            return true;
+        }
+
+        var corners = new[]
+        {
+            new PointF(bounds.Left, bounds.Top),
+            new PointF(bounds.Right, bounds.Top),
+            new PointF(bounds.Right, bounds.Bottom),
+            new PointF(bounds.Left, bounds.Bottom)
+        };
+        return corners.Any(corner => PointInPolygonOrOnBoundary(corner, hull));
+    }
+
+    private static bool CircleIntersectsRectangle(PointF center, float radius, RectangleF bounds)
+    {
+        var nearestX = Math.Clamp(center.X, bounds.Left, bounds.Right);
+        var nearestY = Math.Clamp(center.Y, bounds.Top, bounds.Bottom);
+        var dx = center.X - nearestX;
+        var dy = center.Y - nearestY;
+        return dx * dx + dy * dy <= radius * radius;
+    }
+
     private DrawingElementHit HitElement(PointF world, int i, IReadOnlyList<int> hitCandidates, int frame, float toleranceWorld)
     {
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        if (shape == VectorAnimationEngine.ShapeKind.MixingStroke
+            && TryGetMixingBrushLocalRegion(i, out var mixingRegion))
+        {
+            var local = WorldToLocal(i, world);
+            return mixingRegion.TryHitConnectedComponent(local, toleranceWorld, out var partIndex)
+                ? new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, partIndex), 0, 0, 1)
+                : DrawingElementHit.None;
+        }
         if (IsWholeObjectShape(shape))
         {
             return HitObject(world, i, toleranceWorld)
@@ -14534,21 +18193,27 @@ internal sealed class VectorScene : ITimelineContext
         if (IsTopologyStrokeShape(shape))
         {
             if (!HasStroke(i)) return DrawingElementHit.None;
-            return HitStrokeElement(world, i, CollectTopologyCandidates(i, frame), toleranceWorld);
+            return HitStrokeElement(world, i, frame, CollectTopologyCandidates(i, frame), toleranceWorld);
         }
 
-        List<int>? topologyCandidates = null;
+        IReadOnlyList<int>? topologyCandidates = null;
         if (HasStroke(i))
         {
-            topologyCandidates = CollectTopologyCandidates(i, frame);
-            var boundaryHit = HitBoundaryStrokeElement(world, i, topologyCandidates, toleranceWorld);
-            if (boundaryHit.IsValid) return boundaryHit;
+            var hitRadius = Math.Max(Stroke[i] * 0.5f, 1) + toleranceWorld;
+            var nearBoundary = ShapeBoundaryContours(i).Any(contour =>
+                DistanceToPolyline(world, contour) <= hitRadius + BooleanBezierMaximumErrorUnits);
+            if (nearBoundary)
+            {
+                topologyCandidates = CollectTopologyCandidates(i, frame);
+                var boundaryHit = HitBoundaryStrokeElement(world, i, frame, topologyCandidates, toleranceWorld);
+                if (boundaryHit.IsValid) return boundaryHit;
+            }
         }
 
         if (!HasFill(i) || !FillContainsPoint(i, world)) return DrawingElementHit.None;
         if (!OwnsFillUnit(world, i, hitCandidates)) return DrawingElementHit.None;
         topologyCandidates ??= CollectTopologyCandidates(i, frame);
-        var part = FillPartIndex(world, i, topologyCandidates);
+        var part = FillPartIndex(world, i, frame, topologyCandidates);
         if (part < 0) return DrawingElementHit.None;
         return new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, part), 0, 0, 1);
     }
@@ -14565,6 +18230,7 @@ internal sealed class VectorScene : ITimelineContext
             if (ObjectLayer[candidate] != layer) continue;
             var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (!IsFillShape(shape) || !HasFill(candidate)) continue;
+            if (!ObjectMayContainHitPoint(candidate, sample, 0)) continue;
             if (!FillContainsPoint(candidate, sample)) continue;
             if (owner < 0 || CompareObjectStack(candidate, owner) > 0)
             {
@@ -14575,7 +18241,12 @@ internal sealed class VectorScene : ITimelineContext
         return owner == fillIndex;
     }
 
-    private DrawingElementHit HitStrokeElement(PointF world, int strokeIndex, IReadOnlyList<int> candidates, float toleranceWorld)
+    private DrawingElementHit HitStrokeElement(
+        PointF world,
+        int strokeIndex,
+        int frame,
+        IReadOnlyList<int> candidates,
+        float toleranceWorld)
     {
         var samples = StrokeSamples(strokeIndex);
         if (samples.Length == 0) return DrawingElementHit.None;
@@ -14588,15 +18259,27 @@ internal sealed class VectorScene : ITimelineContext
                 : DrawingElementHit.None;
         }
 
-        return HitCurvePart(world, strokeIndex, DrawingElementKind.Stroke, samples, StrokeSplitParameters(strokeIndex, candidates), hitRadius);
+        if (!CurveSamplesHit(world, samples, hitRadius)) return DrawingElementHit.None;
+        return HitCurvePart(
+            world,
+            strokeIndex,
+            DrawingElementKind.Stroke,
+            samples,
+            HitStrokeSplitParameters(strokeIndex, frame, candidates),
+            hitRadius);
     }
 
-    private DrawingElementHit HitBoundaryStrokeElement(PointF world, int objectIndex, IReadOnlyList<int> candidates, float toleranceWorld)
+    private DrawingElementHit HitBoundaryStrokeElement(
+        PointF world,
+        int objectIndex,
+        int frame,
+        IReadOnlyList<int> candidates,
+        float toleranceWorld)
     {
         if (!HasStroke(objectIndex)) return DrawingElementHit.None;
         var hitRadius = Math.Max(Stroke[objectIndex] * 0.5f, 1) + toleranceWorld;
         var best = DrawingElementHit.None;
-        foreach (var part in BuildBoundaryStrokeParts(objectIndex, candidates))
+        foreach (var part in HitBoundaryStrokeParts(objectIndex, frame, candidates))
         {
             var distance = DistanceToPolyline(world, part.Points);
             if (distance > hitRadius || (best.IsValid && distance >= best.Distance)) continue;
@@ -14637,7 +18320,13 @@ internal sealed class VectorScene : ITimelineContext
         return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, 0, 1);
     }
 
-    private DrawingElementHit HitCurvePart(PointF world, int objectIndex, DrawingElementKind kind, CurveSample[] samples, List<float> splitPoints, float hitRadius)
+    private DrawingElementHit HitCurvePart(
+        PointF world,
+        int objectIndex,
+        DrawingElementKind kind,
+        CurveSample[] samples,
+        IReadOnlyList<float> splitPoints,
+        float hitRadius)
     {
         var bestDistance = float.MaxValue;
         var bestT = 0f;
@@ -14666,6 +18355,63 @@ internal sealed class VectorScene : ITimelineContext
         return new DrawingElementHit(new DrawingElementKey(objectIndex, kind, part), bestDistance, 0, 1);
     }
 
+    private IReadOnlyList<float> HitStrokeSplitParameters(
+        int strokeIndex,
+        int frame,
+        IReadOnlyList<int> candidates)
+    {
+        return CachedStrokeSplitEntry(strokeIndex, frame, candidates).Parameters;
+    }
+
+    private IReadOnlyList<DrawingTopologySplit> CachedStrokeSplits(
+        int strokeIndex,
+        int frame,
+        IReadOnlyList<int> candidates)
+    {
+        return CachedStrokeSplitEntry(strokeIndex, frame, candidates).Splits;
+    }
+
+    private StrokeSplitCacheEntry CachedStrokeSplitEntry(
+        int strokeIndex,
+        int frame,
+        IReadOnlyList<int> candidates)
+    {
+        EnsureInteractiveQueryCacheRevision();
+        var cacheKey = (strokeIndex, frame);
+        if (_hitStrokeSplitCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        var splits = StrokeSplits(strokeIndex, candidates).ToArray();
+        var entry = new StrokeSplitCacheEntry(
+            splits,
+            splits.Select(split => split.T).ToArray());
+        if (_hitStrokeSplitCache.Count >= MaximumTopologyQueryCacheEntries) _hitStrokeSplitCache.Clear();
+        _hitStrokeSplitCache[cacheKey] = entry;
+        return entry;
+    }
+
+    private IReadOnlyList<BoundaryStrokePart> HitBoundaryStrokeParts(
+        int objectIndex,
+        int frame,
+        IReadOnlyList<int> candidates)
+    {
+        return CachedBoundaryStrokeParts(objectIndex, frame, candidates);
+    }
+
+    private IReadOnlyList<BoundaryStrokePart> CachedBoundaryStrokeParts(
+        int objectIndex,
+        int frame,
+        IReadOnlyList<int> candidates)
+    {
+        EnsureInteractiveQueryCacheRevision();
+        var cacheKey = (objectIndex, frame);
+        if (_hitBoundaryPartCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        var parts = BuildBoundaryStrokeParts(objectIndex, candidates).ToArray();
+        if (_hitBoundaryPartCache.Count >= MaximumTopologyQueryCacheEntries) _hitBoundaryPartCache.Clear();
+        _hitBoundaryPartCache[cacheKey] = parts;
+        return parts;
+    }
+
     private List<float> StrokeSplitParameters(int strokeIndex, IReadOnlyList<int> candidates)
     {
         return StrokeSplits(strokeIndex, candidates).Select(split => split.T).ToList();
@@ -14678,6 +18424,9 @@ internal sealed class VectorScene : ITimelineContext
         if (source.Length == 0) return splits;
         splits.Add(new DrawingTopologySplit(0, source[0].Point));
         splits.Add(new DrawingTopologySplit(1, source[^1].Point));
+        var sourceCurve = ShapeKind[strokeIndex] == VectorAnimationEngine.ShapeKind.Line
+            ? PrepareBezierCurve(LineCurve(strokeIndex), source)
+            : (PreparedBezierCurve?)null;
         var sourceLayer = ObjectLayer[strokeIndex];
         foreach (var other in candidates)
         {
@@ -14689,11 +18438,24 @@ internal sealed class VectorScene : ITimelineContext
             }
             else if (IsFillShape(shape) && (HasFill(other) || HasStroke(other)))
             {
+                if (sourceCurve is { } preparedSource
+                    && TryGetEditableFillBezierContours(other, out var fillContours))
+                {
+                    foreach (var curve in BuildPathBezierCurves(fillContours))
+                    {
+                        AddBezierCurveRelationSplits(
+                            splits,
+                            preparedSource,
+                            PrepareBezierCurve(curve),
+                            includeSourceEndpoints: false);
+                    }
+                    continue;
+                }
+
                 var contours = ShapeBoundaryContours(other);
                 for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
                 {
                     var contour = contours[contourIndex];
-                    if (LineCurveCoincidesWithFillBezierContour(strokeIndex, other, contourIndex)) continue;
                     if (CurveSamplesFollowBoundary(source, contour)) continue;
                     AddCurvePolylineIntersections(splits, source, contour, includeSourceEndpoints: false);
                 }
@@ -14893,6 +18655,7 @@ internal sealed class VectorScene : ITimelineContext
     {
         var result = new List<BoundaryStrokePart>();
         var sourceLayer = ObjectLayer[objectIndex];
+        var lineCurves = PrepareTopologyLineCurves(objectIndex, sourceLayer, candidates);
         for (var contourIndex = 0; contourIndex < contours.Count; contourIndex++)
         {
             var contour = contours[contourIndex];
@@ -14908,6 +18671,7 @@ internal sealed class VectorScene : ITimelineContext
                     next.IncomingControl,
                     next.Anchor);
                 var sourceSamples = SampleCubicSegmentWithParameters(sourceCurve);
+                var preparedSource = PrepareBezierCurve(sourceCurve, sourceSamples);
                 var sourceBoundary = sourceSamples.Select(sample => sample.Point).ToArray();
                 var splits = new List<DrawingTopologySplit>
                 {
@@ -14921,11 +18685,18 @@ internal sealed class VectorScene : ITimelineContext
                     var shape = ShapeKind.Length > other
                         ? ShapeKind[other]
                         : VectorAnimationEngine.ShapeKind.Rectangle;
-                    if (IsTopologyStrokeShape(shape))
+                    if (shape == VectorAnimationEngine.ShapeKind.Line)
+                    {
+                        AddBezierCurveRelationSplits(
+                            splits,
+                            preparedSource,
+                            lineCurves[other],
+                            includeSourceEndpoints: true);
+                    }
+                    else if (IsTopologyStrokeShape(shape))
                     {
                         var strokeSamples = StrokeSamples(other);
-                        if (LineCurveCoincidesWithFillBezierContour(other, objectIndex, contourIndex)
-                            || CurveSamplesFollowBoundary(strokeSamples, sourceBoundary))
+                        if (CurveSamplesFollowBoundary(strokeSamples, sourceBoundary))
                         {
                             continue;
                         }
@@ -15102,9 +18873,9 @@ internal sealed class VectorScene : ITimelineContext
         return filtered;
     }
 
-    private int FillPartIndex(PointF world, int fillIndex, IReadOnlyList<int> candidates)
+    private int FillPartIndex(PointF world, int fillIndex, int frame, IReadOnlyList<int> candidates)
     {
-        var regions = BuildFillRegions(fillIndex, candidates);
+        var regions = BuildFillRegions(fillIndex, frame, candidates);
         for (var part = 0; part < regions.Count; part++)
         {
             if (PointInCompoundPolygonOrOnBoundary(world, regions[part].Contours)) return part;
@@ -15280,24 +19051,17 @@ internal sealed class VectorScene : ITimelineContext
         result.Add(new DrawingTopologySplit(globalT, point));
     }
 
-    private (PointF Start, PointF Control1, PointF Control2, PointF End) LineCurve(int i)
+    private CubicBoundarySegment LineCurve(int i)
     {
         var halfW = Width[i] * 0.5f;
         var start = LocalToWorld(i, -halfW, 0);
         var end = LocalToWorld(i, halfW, 0);
         var control1 = new PointF(CurveControlX[i], CurveControlY[i]);
         var control2 = new PointF(CurveControl2X[i], CurveControl2Y[i]);
-        return (start, control1, control2, end);
+        return new CubicBoundarySegment(start, control1, control2, end);
     }
 
-    private CurveSample[] CurveSamples(int i)
-    {
-        var (start, control1, control2, end) = LineCurve(i);
-        var samples = new List<CurveSample>(32) { new(0, start) };
-        AddAdaptiveCubicSamples(samples, start, control1, control2, end, 0, 1, 0);
-        samples.Add(new CurveSample(1, end));
-        return samples.ToArray();
-    }
+    private CurveSample[] CurveSamples(int i) => SampleCubicSegmentWithParameters(LineCurve(i));
 
     private CurveSample[] StrokeSamples(int objectIndex)
     {
@@ -16035,6 +19799,234 @@ internal sealed class VectorScene : ITimelineContext
         return false;
     }
 
+    private static float DistanceToCompoundPolygonBoundary(PointF point, PointF[][] contours)
+    {
+        var distance = float.MaxValue;
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 2) continue;
+            for (var index = 0; index < contour.Length; index++)
+            {
+                distance = Math.Min(
+                    distance,
+                    DistanceToSegment(point, contour[index], contour[(index + 1) % contour.Length]));
+            }
+        }
+
+        return distance;
+    }
+
+    private bool SetFreehandBezierNodesCore(int objectIndex, IReadOnlyList<PathBezierNode> worldNodes)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Freeform
+            || !TryPrepareFreehandBezierNodes(worldNodes, out var exactNodes, out var sampledPoints, out var bounds))
+        {
+            return false;
+        }
+
+        var center = VectorUnits.Quantize(new PointF(
+            bounds.Left + bounds.Width * 0.5f,
+            bounds.Top + bounds.Height * 0.5f));
+        StorePreparedFreehandBezierNodes(objectIndex, exactNodes, sampledPoints, bounds, center);
+        return true;
+    }
+
+    private void StorePreparedFreehandBezierNodes(
+        int objectIndex,
+        IReadOnlyList<PathBezierNode> exactWorldNodes,
+        IReadOnlyList<PointF> sampledWorldPoints,
+        RectangleF bounds,
+        PointF center)
+    {
+        X[objectIndex] = center.X;
+        Y[objectIndex] = center.Y;
+        Width[objectIndex] = Math.Max(
+            Stroke[objectIndex],
+            VectorUnits.Quantize(bounds.Width + Stroke[objectIndex]));
+        Height[objectIndex] = Math.Max(
+            Stroke[objectIndex],
+            VectorUnits.Quantize(bounds.Height + Stroke[objectIndex]));
+        Angle[objectIndex] = 0;
+        _freehandBezierLocalNodes[objectIndex] = exactWorldNodes
+            .Select(node => new PathBezierNode(
+                VectorUnits.Quantize(new PointF(node.Anchor.X - center.X, node.Anchor.Y - center.Y)),
+                VectorUnits.Quantize(new PointF(
+                    node.IncomingControl.X - center.X,
+                    node.IncomingControl.Y - center.Y)),
+                VectorUnits.Quantize(new PointF(
+                    node.OutgoingControl.X - center.X,
+                    node.OutgoingControl.Y - center.Y))))
+            .ToArray();
+        _legacyFreehandBezierNodeCache.Remove(objectIndex);
+        _freehandLocalPoints[objectIndex] = sampledWorldPoints
+            .Select(point => VectorUnits.Quantize(new PointF(
+                point.X - center.X,
+                point.Y - center.Y)))
+            .ToArray();
+    }
+
+    private void CompleteFreehandBezierMutation(bool rebuildGeometryIndex)
+    {
+        if (rebuildGeometryIndex)
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            return;
+        }
+
+        GeometryRevision++;
+        InvalidateDeferredTopologyQueries();
+    }
+
+    private static bool TryPrepareFreehandBezierNodes(
+        IReadOnlyList<PathBezierNode> worldNodes,
+        out PathBezierNode[] exactNodes,
+        out PointF[] sampledPoints,
+        out RectangleF bounds)
+    {
+        exactNodes = Array.Empty<PathBezierNode>();
+        sampledPoints = Array.Empty<PointF>();
+        bounds = RectangleF.Empty;
+        if (worldNodes.Count < 2) return false;
+
+        var exact = new PathBezierNode[worldNodes.Count];
+        for (var nodeIndex = 0; nodeIndex < worldNodes.Count; nodeIndex++)
+        {
+            var node = worldNodes[nodeIndex];
+            if (!Finite(node.Anchor) || !Finite(node.IncomingControl) || !Finite(node.OutgoingControl))
+            {
+                return false;
+            }
+
+            exact[nodeIndex] = new PathBezierNode(
+                VectorUnits.Quantize(node.Anchor),
+                VectorUnits.Quantize(node.IncomingControl),
+                VectorUnits.Quantize(node.OutgoingControl));
+        }
+
+        var samples = SampleOpenFreehandBezierNodes(exact);
+        var hasBounds = false;
+        for (var segmentIndex = 0; segmentIndex < exact.Length - 1; segmentIndex++)
+        {
+            var current = exact[segmentIndex];
+            var next = exact[segmentIndex + 1];
+            var curve = new CubicBoundarySegment(
+                current.Anchor,
+                current.OutgoingControl,
+                next.IncomingControl,
+                next.Anchor);
+            var curveBounds = CubicCurveBounds(
+                curve.Start,
+                curve.Control1,
+                curve.Control2,
+                curve.End);
+            bounds = hasBounds ? RectangleF.Union(bounds, curveBounds) : curveBounds;
+            hasBounds = true;
+        }
+
+        if (!hasBounds || samples.Length < 2) return false;
+        exactNodes = exact;
+        sampledPoints = samples;
+        return true;
+    }
+
+    internal static bool TryCreateOpenFreehandBezierNodes(
+        IReadOnlyList<PointF> sourcePoints,
+        out PathBezierNode[] nodes)
+    {
+        return TryCreateOpenFreehandBezierNodes(
+            sourcePoints,
+            DrawingTopologyRules.MinStrokeSegmentUnits,
+            out nodes);
+    }
+
+    internal static bool TryCreateOpenFreehandBezierNodes(
+        IReadOnlyList<PointF> sourcePoints,
+        float maximumError,
+        out PathBezierNode[] nodes)
+    {
+        nodes = Array.Empty<PathBezierNode>();
+        var points = NormalizeFreehandPoints(sourcePoints);
+        if (points.Length < 2 || !float.IsFinite(maximumError)) return false;
+
+        var segments = new List<CubicBoundarySegment>();
+        FitOpenPolylineBezierSegments(
+            points,
+            Math.Max(0.1f, maximumError),
+            segments);
+        if (segments.Count == 0) return false;
+
+        nodes = new PathBezierNode[segments.Count + 1];
+        nodes[0] = new PathBezierNode(
+            VectorUnits.Quantize(segments[0].Start),
+            VectorUnits.Quantize(segments[0].Start),
+            VectorUnits.Quantize(segments[0].Control1));
+        for (var segmentIndex = 1; segmentIndex < segments.Count; segmentIndex++)
+        {
+            var previous = segments[segmentIndex - 1];
+            var current = segments[segmentIndex];
+            nodes[segmentIndex] = new PathBezierNode(
+                VectorUnits.Quantize(current.Start),
+                VectorUnits.Quantize(previous.Control2),
+                VectorUnits.Quantize(current.Control1));
+        }
+
+        var last = segments[^1];
+        nodes[^1] = new PathBezierNode(
+            VectorUnits.Quantize(last.End),
+            VectorUnits.Quantize(last.Control2),
+            VectorUnits.Quantize(last.End));
+        return true;
+    }
+
+    internal static PointF[] SampleOpenFreehandBezierNodes(IReadOnlyList<PathBezierNode> nodes)
+    {
+        return SampleOpenFreehandBezierNodesWithParameters(nodes)
+            .Select(sample => sample.Point)
+            .ToArray();
+    }
+
+    private static OpenBezierSample[] SampleOpenFreehandBezierNodesWithParameters(
+        IReadOnlyList<PathBezierNode> nodes)
+    {
+        if (nodes.Count < 2) return [];
+        var result = new List<OpenBezierSample>(nodes.Count * 4);
+        for (var segmentIndex = 0; segmentIndex < nodes.Count - 1; segmentIndex++)
+        {
+            var current = nodes[segmentIndex];
+            var next = nodes[segmentIndex + 1];
+            if (!Finite(current.Anchor)
+                || !Finite(current.OutgoingControl)
+                || !Finite(next.IncomingControl)
+                || !Finite(next.Anchor))
+            {
+                return [];
+            }
+
+            var curve = new CubicBoundarySegment(
+                current.Anchor,
+                current.OutgoingControl,
+                next.IncomingControl,
+                next.Anchor);
+            var linearControl1 = Lerp(curve.Start, curve.End, 1f / 3f);
+            var linearControl2 = Lerp(curve.Start, curve.End, 2f / 3f);
+            var segmentSamples = Distance(curve.Control1, linearControl1) <= 1f
+                && Distance(curve.Control2, linearControl2) <= 1f
+                    ? new[] { new CurveSample(0, curve.Start), new CurveSample(1, curve.End) }
+                    : SampleCubicSegmentWithParameters(curve);
+            for (var sampleIndex = segmentIndex == 0 ? 0 : 1; sampleIndex < segmentSamples.Length; sampleIndex++)
+            {
+                var sample = segmentSamples[sampleIndex];
+                var point = VectorUnits.Quantize(sample.Point);
+                if (result.Count > 0 && result[^1].Point == point) continue;
+                result.Add(new OpenBezierSample(segmentIndex, sample.T, point));
+            }
+        }
+
+        return result.ToArray();
+    }
+
     private bool SetPathBezierContoursCore(int objectIndex, IReadOnlyList<PathBezierNode[]> worldContours)
     {
         if ((uint)objectIndex >= ObjectCount
@@ -16242,6 +20234,20 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
+    private static void TransformFreehandBezierNodes(
+        PathBezierNode[] nodes,
+        Func<PointF, PointF> transform)
+    {
+        for (var nodeIndex = 0; nodeIndex < nodes.Length; nodeIndex++)
+        {
+            var node = nodes[nodeIndex];
+            nodes[nodeIndex] = new PathBezierNode(
+                transform(node.Anchor),
+                transform(node.IncomingControl),
+                transform(node.OutgoingControl));
+        }
+    }
+
     private static bool Finite(PointF point) => float.IsFinite(point.X) && float.IsFinite(point.Y);
 
     private static PointF[][] NormalizePathContours(IReadOnlyList<PointF[]> contours)
@@ -16270,6 +20276,37 @@ internal sealed class VectorScene : ITimelineContext
             result.Add(point);
         }
 
+        return result.ToArray();
+    }
+
+    private static MixingBrushTrajectorySample[] NormalizeMixingStrokeSamples(
+        IReadOnlyList<MixingBrushTrajectorySample> samples)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        var result = new List<MixingBrushTrajectorySample>(samples.Count);
+        foreach (var source in samples)
+        {
+            if (!float.IsFinite(source.Point.X)
+                || !float.IsFinite(source.Point.Y)
+                || !float.IsFinite(source.Diameter))
+            {
+                continue;
+            }
+
+            var sample = source with
+            {
+                Point = VectorUnits.Quantize(source.Point),
+                Diameter = Math.Max(
+                    VectorUnits.MinimumStrokeUnits,
+                    VectorUnits.Quantize(source.Diameter))
+            };
+            if (result.Count > 0 && result[^1].Point == sample.Point)
+            {
+                result[^1] = sample;
+                continue;
+            }
+            result.Add(sample);
+        }
         return result.ToArray();
     }
 
@@ -16373,6 +20410,32 @@ internal sealed class VectorScene : ITimelineContext
             var bounds = CubicCurveBounds(start, control1, control2, end);
             bounds.Inflate(margin, margin);
             return bounds;
+        }
+
+        if (shape == VectorAnimationEngine.ShapeKind.Freeform
+            && _freehandBezierLocalNodes.TryGetValue(i, out var freehandBezierNodes)
+            && freehandBezierNodes.Length >= 2)
+        {
+            var bounds = RectangleF.Empty;
+            var hasCurve = false;
+            for (var segmentIndex = 0; segmentIndex < freehandBezierNodes.Length - 1; segmentIndex++)
+            {
+                var current = freehandBezierNodes[segmentIndex];
+                var next = freehandBezierNodes[segmentIndex + 1];
+                var curveBounds = CubicCurveBounds(
+                    LocalToWorld(i, current.Anchor.X, current.Anchor.Y),
+                    LocalToWorld(i, current.OutgoingControl.X, current.OutgoingControl.Y),
+                    LocalToWorld(i, next.IncomingControl.X, next.IncomingControl.Y),
+                    LocalToWorld(i, next.Anchor.X, next.Anchor.Y));
+                bounds = hasCurve ? RectangleF.Union(bounds, curveBounds) : curveBounds;
+                hasCurve = true;
+            }
+
+            if (hasCurve)
+            {
+                bounds.Inflate(margin, margin);
+                return bounds;
+            }
         }
 
         if (IsFreehandShape(shape)
@@ -16533,7 +20596,7 @@ internal sealed class VectorScene : ITimelineContext
             CubicCoordinate(start.Y, control1.Y, control2.Y, end.Y, t));
     }
 
-    private static (PointF Start, PointF Control1, PointF Control2, PointF End) CubicSubcurve(
+    private static CubicBoundarySegment CubicSubcurve(
         PointF start,
         PointF control1,
         PointF control2,
@@ -16545,14 +20608,14 @@ internal sealed class VectorScene : ITimelineContext
         endT = Math.Clamp(endT, startT, 1);
         var p0 = CubicPoint(start, control1, control2, end, startT);
         var p3 = CubicPoint(start, control1, control2, end, endT);
-        if (endT - startT <= 0.0001f) return (p0, p0, p3, p3);
+        if (endT - startT <= 0.0001f) return new CubicBoundarySegment(p0, p0, p3, p3);
 
         var derivativeStart = CubicDerivative(start, control1, control2, end, startT);
         var derivativeEnd = CubicDerivative(start, control1, control2, end, endT);
         var duration = endT - startT;
         var c1 = new PointF(p0.X + derivativeStart.X * duration / 3f, p0.Y + derivativeStart.Y * duration / 3f);
         var c2 = new PointF(p3.X - derivativeEnd.X * duration / 3f, p3.Y - derivativeEnd.Y * duration / 3f);
-        return (p0, c1, c2, p3);
+        return new CubicBoundarySegment(p0, c1, c2, p3);
     }
 
     private static PointF CubicDerivative(PointF start, PointF control1, PointF control2, PointF end, float t)
@@ -16593,7 +20656,9 @@ internal sealed class VectorScene : ITimelineContext
 
     private static bool IsWholeObjectShape(ShapeKind shape)
     {
-        return shape is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Text;
+        return shape is VectorAnimationEngine.ShapeKind.ImportedSvg
+            or VectorAnimationEngine.ShapeKind.Text
+            or VectorAnimationEngine.ShapeKind.MixingStroke;
     }
 
     private static bool IsTopologyStrokeShape(ShapeKind shape)
@@ -16627,7 +20692,8 @@ internal sealed class VectorScene : ITimelineContext
             and not VectorAnimationEngine.ShapeKind.Freeform
             and not VectorAnimationEngine.ShapeKind.BrushStroke
             and not VectorAnimationEngine.ShapeKind.ImportedSvg
-            and not VectorAnimationEngine.ShapeKind.Text;
+            and not VectorAnimationEngine.ShapeKind.Text
+            and not VectorAnimationEngine.ShapeKind.MixingStroke;
     }
 
     private static bool SupportsGradient(ShapeKind shape) => IsFillShape(shape) || shape == VectorAnimationEngine.ShapeKind.Line;
@@ -16639,36 +20705,7 @@ internal sealed class VectorScene : ITimelineContext
 
     private void CopyObjectDataFrom(VectorScene source, int from, int to)
     {
-        ObjectLayer[to] = source.ObjectLayer[from];
-        ObjectKeyframeFrame[to] = source.ObjectKeyframeFrame[from];
-        ObjectOrder[to] = source.ObjectOrder[from];
-        ObjectSubOrder[to] = source.ObjectSubOrder[from];
-        X[to] = source.X[from];
-        Y[to] = source.Y[from];
-        Width[to] = source.Width[from];
-        Height[to] = source.Height[from];
-        Angle[to] = source.Angle[from];
-        Stroke[to] = source.Stroke[from];
-        CurveControlX[to] = source.CurveControlX[from];
-        CurveControlY[to] = source.CurveControlY[from];
-        CurveControl2X[to] = source.CurveControl2X[from];
-        CurveControl2Y[to] = source.CurveControl2Y[from];
-        LineEndpointStyles[to] = source.LineEndpointStyles[from];
-        LineEndEndpointStyles[to] = source.LineEndEndpointStyles[from];
-        ShapeKind[to] = source.ShapeKind[from];
-        ShapeVertexCounts[to] = source.GetShapeVertexCount(from);
-        AtomCount[to] = source.AtomCount[from];
-        Argb[to] = source.Argb[from];
-        StrokeArgb[to] = source.StrokeArgb[from];
-        FillAutoMergeProtected[to] = source.FillAutoMergeProtected[from];
-        LinearGradientEnabled[to] = source.LinearGradientEnabled[from];
-        GradientStartArgb[to] = source.GradientStartArgb[from];
-        GradientEndArgb[to] = source.GradientEndArgb[from];
-        GradientStartX[to] = source.GradientStartX[from];
-        GradientStartY[to] = source.GradientStartY[from];
-        GradientEndX[to] = source.GradientEndX[from];
-        GradientEndY[to] = source.GradientEndY[from];
-        GradientKinds[to] = source.GradientKinds[from];
+        CopyObjectScalarDataFrom(source, from, to);
         if (source._gradientStops.TryGetValue(from, out var gradientStops))
         {
             _gradientStops[to] = gradientStops.ToArray();
@@ -16719,6 +20756,34 @@ internal sealed class VectorScene : ITimelineContext
             _freehandLocalPoints.Remove(to);
         }
 
+        if (source._freehandBezierLocalNodes.TryGetValue(from, out var freehandBezierNodes))
+        {
+            _freehandBezierLocalNodes[to] = freehandBezierNodes.ToArray();
+        }
+        else
+        {
+            _freehandBezierLocalNodes.Remove(to);
+        }
+        _legacyFreehandBezierNodeCache.Remove(to);
+
+        if (source._mixingStrokeLocalSamples.TryGetValue(from, out var mixingSamples))
+        {
+            _mixingStrokeLocalSamples[to] = mixingSamples.ToArray();
+        }
+        else
+        {
+            _mixingStrokeLocalSamples.Remove(to);
+        }
+
+        if (source._mixingStrokeLocalRegions.TryGetValue(from, out var mixingRegion))
+        {
+            _mixingStrokeLocalRegions[to] = mixingRegion.DeepClone();
+        }
+        else
+        {
+            _mixingStrokeLocalRegions.Remove(to);
+        }
+
         if (source._importedSvgSources.TryGetValue(from, out var importedSvgSource))
         {
             _importedSvgSources[to] = importedSvgSource;
@@ -16738,6 +20803,92 @@ internal sealed class VectorScene : ITimelineContext
         }
     }
 
+    private void MoveObjectData(int from, int to)
+    {
+        CopyObjectScalarDataFrom(this, from, to);
+        MoveObjectDictionaryEntry(_gradientStops, from, to);
+        MoveObjectDictionaryEntry(_gradientPathLocalPoints, from, to);
+        MoveObjectDictionaryEntry(_shapeGradientMappingLocalContours, from, to);
+        MoveObjectDictionaryEntry(_pathLocalContours, from, to);
+        MoveObjectDictionaryEntry(_pathBezierLocalContours, from, to);
+        MoveObjectDictionaryEntry(_freehandLocalPoints, from, to);
+        MoveObjectDictionaryEntry(_freehandBezierLocalNodes, from, to);
+        MoveObjectDictionaryEntry(_legacyFreehandBezierNodeCache, from, to);
+        MoveObjectDictionaryEntry(_mixingStrokeLocalSamples, from, to);
+        MoveObjectDictionaryEntry(_mixingStrokeLocalRegions, from, to);
+        MoveObjectDictionaryEntry(_importedSvgSources, from, to);
+        MoveObjectDictionaryEntry(_textObjects, from, to);
+    }
+
+    private void RemapObjectDictionariesAfterCompaction(IReadOnlyList<int> oldToNew)
+    {
+        RemapObjectDictionary(_gradientStops, oldToNew);
+        RemapObjectDictionary(_gradientPathLocalPoints, oldToNew);
+        RemapObjectDictionary(_shapeGradientMappingLocalContours, oldToNew);
+        RemapObjectDictionary(_pathLocalContours, oldToNew);
+        RemapObjectDictionary(_pathBezierLocalContours, oldToNew);
+        RemapObjectDictionary(_freehandLocalPoints, oldToNew);
+        RemapObjectDictionary(_freehandBezierLocalNodes, oldToNew);
+        RemapObjectDictionary(_legacyFreehandBezierNodeCache, oldToNew);
+        RemapObjectDictionary(_mixingStrokeLocalSamples, oldToNew);
+        RemapObjectDictionary(_mixingStrokeLocalRegions, oldToNew);
+        RemapObjectDictionary(_importedSvgSources, oldToNew);
+        RemapObjectDictionary(_textObjects, oldToNew);
+    }
+
+    private static void RemapObjectDictionary<T>(Dictionary<int, T> dictionary, IReadOnlyList<int> oldToNew)
+    {
+        if (dictionary.Count == 0) return;
+        var entries = dictionary.ToArray();
+        dictionary.Clear();
+        foreach (var (oldIndex, value) in entries)
+        {
+            if ((uint)oldIndex >= oldToNew.Count) continue;
+            var newIndex = oldToNew[oldIndex];
+            if (newIndex >= 0) dictionary[newIndex] = value;
+        }
+    }
+
+    private static void MoveObjectDictionaryEntry<T>(Dictionary<int, T> dictionary, int from, int to)
+    {
+        if (dictionary.TryGetValue(from, out var value)) dictionary[to] = value;
+        else dictionary.Remove(to);
+    }
+
+    private void CopyObjectScalarDataFrom(VectorScene source, int from, int to)
+    {
+        ObjectLayer[to] = source.ObjectLayer[from];
+        ObjectKeyframeFrame[to] = source.ObjectKeyframeFrame[from];
+        ObjectOrder[to] = source.ObjectOrder[from];
+        ObjectSubOrder[to] = source.ObjectSubOrder[from];
+        X[to] = source.X[from];
+        Y[to] = source.Y[from];
+        Width[to] = source.Width[from];
+        Height[to] = source.Height[from];
+        Angle[to] = source.Angle[from];
+        Stroke[to] = source.Stroke[from];
+        CurveControlX[to] = source.CurveControlX[from];
+        CurveControlY[to] = source.CurveControlY[from];
+        CurveControl2X[to] = source.CurveControl2X[from];
+        CurveControl2Y[to] = source.CurveControl2Y[from];
+        LineEndpointStyles[to] = source.LineEndpointStyles[from];
+        LineEndEndpointStyles[to] = source.LineEndEndpointStyles[from];
+        ShapeKind[to] = source.ShapeKind[from];
+        ShapeVertexCounts[to] = source.GetShapeVertexCount(from);
+        AtomCount[to] = source.AtomCount[from];
+        Argb[to] = source.Argb[from];
+        StrokeArgb[to] = source.StrokeArgb[from];
+        FillAutoMergeProtected[to] = source.FillAutoMergeProtected[from];
+        LinearGradientEnabled[to] = source.LinearGradientEnabled[from];
+        GradientStartArgb[to] = source.GradientStartArgb[from];
+        GradientEndArgb[to] = source.GradientEndArgb[from];
+        GradientStartX[to] = source.GradientStartX[from];
+        GradientStartY[to] = source.GradientStartY[from];
+        GradientEndX[to] = source.GradientEndX[from];
+        GradientEndY[to] = source.GradientEndY[from];
+        GradientKinds[to] = source.GradientKinds[from];
+    }
+
     private void RemovePathDataOutsideObjectCount()
     {
         foreach (var index in _pathLocalContours.Keys.Where(index => index >= ObjectCount).ToArray())
@@ -16755,6 +20906,26 @@ internal sealed class VectorScene : ITimelineContext
         foreach (var index in _freehandLocalPoints.Keys.Where(index => index >= ObjectCount).ToArray())
         {
             _freehandLocalPoints.Remove(index);
+        }
+        foreach (var index in _freehandBezierLocalNodes.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _freehandBezierLocalNodes.Remove(index);
+        }
+        foreach (var index in _legacyFreehandBezierNodeCache.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _legacyFreehandBezierNodeCache.Remove(index);
+        }
+    }
+
+    private void RemoveMixingStrokeDataOutsideObjectCount()
+    {
+        foreach (var index in _mixingStrokeLocalSamples.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _mixingStrokeLocalSamples.Remove(index);
+        }
+        foreach (var index in _mixingStrokeLocalRegions.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _mixingStrokeLocalRegions.Remove(index);
         }
     }
 
@@ -16793,6 +20964,11 @@ internal sealed class VectorScene : ITimelineContext
     }
 
     private void ResizeObjectArrays()
+    {
+        // Packed arrays retain capacity after removals; ObjectCount is the live range.
+    }
+
+    private void TrimObjectArrays()
     {
         var objectLayer = ObjectLayer;
         var objectKeyframeFrame = ObjectKeyframeFrame;
@@ -17157,7 +21333,8 @@ internal sealed class VectorScene : ITimelineContext
                 Id = Guid.NewGuid().ToString("N"),
                 TargetId = targetId,
                 Duration = defaultDuration,
-                Keyframes = [new TimelineKeyframe(0, TimelineKeyframeKind.Populated)]
+                Keyframes = [new TimelineKeyframe(0, TimelineKeyframeKind.Populated)],
+                Tweens = []
             });
         Timeline.RestoreSnapshot(new AnimationTimelineSnapshot
         {

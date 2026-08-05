@@ -20,6 +20,7 @@ internal static class ProjectVaultStore
     private const long MaxTimelineBytes = 128L * 1024 * 1024;
     private const long MaxSvgAssetBytes = 128L * 1024 * 1024;
     private const int MaxAssetFolders = 100_000;
+    private const int MaxAssetTags = VectorProject.MaxAssetTagCount;
     private const int MaxDrawingObjects = 100_000;
     private const int MaxScenes = 100_000;
     private const long MaxProjectBytes = 8L * 1024 * 1024 * 1024;
@@ -89,6 +90,7 @@ internal static class ProjectVaultStore
                     Kind = drawing.Kind,
                     Detail = drawing.Detail,
                     AssetFolderId = drawing.AssetFolderId,
+                    AssetTagIds = drawing.AssetTagIds,
                     AnchorX = drawing.AnchorX,
                     AnchorY = drawing.AnchorY,
                     CreatedAt = drawing.CreatedAt,
@@ -137,6 +139,7 @@ internal static class ProjectVaultStore
                     PlaybackStartFrame = snapshot.PlaybackStartFrame,
                     PlaybackEndFrame = snapshot.PlaybackEndFrame
                 },
+                AssetTags = snapshot.AssetTags.Select(AssetTagDescriptor.From).ToArray(),
                 AssetFolders = snapshot.AssetFolders.Select(AssetFolderDescriptor.From).ToArray(),
                 DrawingObjects = drawingEntries.ToArray(),
                 Scenes = sceneEntries.ToArray()
@@ -216,6 +219,7 @@ internal static class ProjectVaultStore
                 Kind = entry.Kind,
                 Detail = entry.Detail,
                 AssetFolderId = entry.AssetFolderId,
+                AssetTagIds = entry.AssetTagIds,
                 AnchorX = entry.AnchorX,
                 AnchorY = entry.AnchorY,
                 CreatedAt = entry.CreatedAt,
@@ -257,6 +261,7 @@ internal static class ProjectVaultStore
             LoopPlayback = manifest.Project.LoopPlayback,
             PlaybackStartFrame = manifest.Project.PlaybackStartFrame,
             PlaybackEndFrame = manifest.Project.PlaybackEndFrame,
+            AssetTags = manifest.AssetTags.Select(item => item.ToSnapshot()).ToArray(),
             AssetFolders = manifest.AssetFolders.Select(item => item.ToSnapshot()).ToArray(),
             DrawingObjects = drawings,
             Scenes = scenes
@@ -683,11 +688,13 @@ internal static class ProjectVaultStore
         }
         if (manifest.DrawingObjects is null || manifest.DrawingObjects.Length == 0
             || manifest.Scenes is null || manifest.Scenes.Length == 0
-            || manifest.AssetFolders is null)
+            || manifest.AssetFolders is null
+            || manifest.AssetTags is null)
         {
             throw new InvalidDataException("The project manifest has no valid project roots.");
         }
         if (manifest.AssetFolders.Length > MaxAssetFolders
+            || manifest.AssetTags.Length > MaxAssetTags
             || manifest.DrawingObjects.Length > MaxDrawingObjects
             || manifest.Scenes.Length > MaxScenes)
         {
@@ -701,16 +708,22 @@ internal static class ProjectVaultStore
         }
 
         ValidateUniqueIds(manifest.AssetFolders.Select(item => item?.Id), "asset folder");
+        ValidateUniqueIds(manifest.AssetTags.Select(item => item?.Id), "asset tag");
         ValidateUniqueIds(manifest.DrawingObjects.Select(item => item?.Id), "drawing object");
         ValidateUniqueIds(manifest.Scenes.Select(item => item?.Id), "scene");
         ValidateAssetFolders(manifest.AssetFolders);
+        ValidateAssetTags(manifest.AssetTags);
 
         var folderIds = manifest.AssetFolders.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var assetTagIds = manifest.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var drawing in manifest.DrawingObjects)
         {
             if (drawing is null || !IsSafeStableId(drawing.Id) || string.IsNullOrWhiteSpace(drawing.Name)
-                || drawing.Kind is null || drawing.Detail is null || drawing.AssetFolderId is null)
+                || drawing.Kind is null || drawing.Detail is null || drawing.AssetFolderId is null
+                || drawing.AssetTagIds is null
+                || drawing.AssetTagIds.Distinct(StringComparer.Ordinal).Count() != drawing.AssetTagIds.Length
+                || drawing.AssetTagIds.Any(tagId => !assetTagIds.Contains(tagId)))
             {
                 throw new InvalidDataException("A drawing-object descriptor is invalid.");
             }
@@ -781,15 +794,34 @@ internal static class ProjectVaultStore
         }
     }
 
+    private static void ValidateAssetTags(IReadOnlyList<AssetTagDescriptor> tags)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tag in tags)
+        {
+            if (tag is null
+                || !IsSafeStableId(tag.Id)
+                || string.IsNullOrWhiteSpace(tag.Name)
+                || tag.Name.Length > VectorProject.MaxAssetTagNameLength
+                || !names.Add(tag.Name.Trim())
+                || Color.FromArgb(tag.ColorArgb).A != 255)
+            {
+                throw new InvalidDataException("An asset-tag descriptor is invalid.");
+            }
+        }
+    }
+
     private static void ValidateRestartSnapshot(ProjectRestartSnapshot snapshot)
     {
         if (snapshot is null || string.IsNullOrWhiteSpace(snapshot.Id) || string.IsNullOrWhiteSpace(snapshot.Name)
-            || snapshot.AssetFolders is null || snapshot.DrawingObjects is null || snapshot.DrawingObjects.Length == 0
+            || snapshot.AssetFolders is null || snapshot.AssetTags is null
+            || snapshot.DrawingObjects is null || snapshot.DrawingObjects.Length == 0
             || snapshot.Scenes is null || snapshot.Scenes.Length == 0)
         {
             throw new InvalidDataException("The project snapshot is incomplete.");
         }
         if (snapshot.AssetFolders.Length > MaxAssetFolders
+            || snapshot.AssetTags.Length > MaxAssetTags
             || snapshot.DrawingObjects.Length > MaxDrawingObjects
             || snapshot.Scenes.Length > MaxScenes)
         {
@@ -802,9 +834,12 @@ internal static class ProjectVaultStore
             throw new InvalidDataException("The project snapshot playback settings are invalid.");
         }
         ValidateUniqueIds(snapshot.AssetFolders.Select(item => item?.Id), "asset folder");
+        ValidateUniqueIds(snapshot.AssetTags.Select(item => item?.Id), "asset tag");
         ValidateUniqueIds(snapshot.DrawingObjects.Select(item => item?.Id), "drawing object");
         ValidateUniqueIds(snapshot.Scenes.Select(item => item?.Id), "scene");
 
+        ValidateAssetTags(snapshot.AssetTags.Select(AssetTagDescriptor.From).ToArray());
+        var assetTagIds = snapshot.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var drawingIds = snapshot.DrawingObjects.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var graph = snapshot.DrawingObjects.ToDictionary(
             item => item.Id,
@@ -812,7 +847,12 @@ internal static class ProjectVaultStore
             StringComparer.Ordinal);
         foreach (var drawing in snapshot.DrawingObjects)
         {
-            if (!IsSafeStableId(drawing.Id) || drawing.Scene is null || drawing.Instances is null)
+            if (!IsSafeStableId(drawing.Id)
+                || drawing.Scene is null
+                || drawing.Instances is null
+                || drawing.AssetTagIds is null
+                || drawing.AssetTagIds.Distinct(StringComparer.Ordinal).Count() != drawing.AssetTagIds.Length
+                || drawing.AssetTagIds.Any(tagId => !assetTagIds.Contains(tagId)))
             {
                 throw new InvalidDataException("A drawing-object snapshot is invalid.");
             }
@@ -1008,6 +1048,25 @@ internal static class ProjectVaultStore
                     throw new InvalidDataException("A timeline keyframe is invalid.");
                 }
                 previousFrame = keyframe.Frame;
+            }
+
+            var populatedFrames = track.Keyframes
+                .Where(keyframe => keyframe.HasContent)
+                .Select(keyframe => keyframe.Frame)
+                .ToHashSet();
+            var previousTweenEnd = -1;
+            foreach (var tween in track.Tweens ?? [])
+            {
+                if (!tween.IsValid
+                    || tween.EndFrame >= track.Duration
+                    || !populatedFrames.Contains(tween.StartFrame)
+                    || !populatedFrames.Contains(tween.EndFrame)
+                    || tween.StartFrame < previousTweenEnd)
+                {
+                    throw new InvalidDataException("A timeline tween is invalid.");
+                }
+
+                previousTweenEnd = tween.EndFrame;
             }
         }
         if (!actualTargets.SetEquals(expectedTargets))
@@ -1338,6 +1397,9 @@ internal static class ProjectVaultStore
             PathLocalContours = source.PathLocalContours,
             PathBezierLocalContours = source.PathBezierLocalContours,
             FreehandLocalPoints = source.FreehandLocalPoints,
+            FreehandBezierLocalNodes = source.FreehandBezierLocalNodes,
+            MixingStrokeLocalSamples = source.MixingStrokeLocalSamples,
+            MixingStrokeLocalRegions = source.MixingStrokeLocalRegions,
             ImportedSvgSources = source.ImportedSvgSources,
             TextObjects = source.TextObjects
         };
@@ -1348,6 +1410,7 @@ internal static class ProjectVaultStore
         public int FormatVersion { get; init; }
         public GeneratorDescriptor Generator { get; init; } = new();
         public ProjectDescriptor Project { get; init; } = new();
+        public AssetTagDescriptor[] AssetTags { get; init; } = [];
         public AssetFolderDescriptor[] AssetFolders { get; init; } = [];
         public DrawingManifestEntry[] DrawingObjects { get; init; } = [];
         public SceneManifestEntry[] Scenes { get; init; } = [];
@@ -1418,6 +1481,27 @@ internal static class ProjectVaultStore
         };
     }
 
+    private sealed class AssetTagDescriptor
+    {
+        public string Id { get; init; } = "";
+        public string Name { get; init; } = "Tag";
+        public int ColorArgb { get; init; } = Color.FromArgb(66, 165, 245).ToArgb();
+
+        public static AssetTagDescriptor From(ProjectAssetTagRestartSnapshot snapshot) => new()
+        {
+            Id = snapshot.Id,
+            Name = snapshot.Name,
+            ColorArgb = snapshot.ColorArgb
+        };
+
+        public ProjectAssetTagRestartSnapshot ToSnapshot() => new()
+        {
+            Id = Id,
+            Name = Name,
+            ColorArgb = ColorArgb
+        };
+    }
+
     private sealed class DrawingManifestEntry
     {
         public string Id { get; init; } = "";
@@ -1425,6 +1509,7 @@ internal static class ProjectVaultStore
         public string Kind { get; init; } = "Symbol";
         public string Detail { get; init; } = "";
         public string AssetFolderId { get; init; } = "";
+        public string[] AssetTagIds { get; init; } = [];
         public float AnchorX { get; init; }
         public float AnchorY { get; init; }
         public DateTime CreatedAt { get; init; }
