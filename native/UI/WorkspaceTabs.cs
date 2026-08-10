@@ -157,8 +157,7 @@ internal sealed class WorkspaceTabs : UserControl
         Controls.Add(_gridControls);
 
         AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Shape drawing and direct object editing");
-        AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Edit", "Scene assembly, hierarchy and library workflow");
-        AddWorkspaceButton(WorkspaceView.Animation, "Animation", "Timeline, playback and keyframe workflow");
+        AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Building", "Scene assembly, animation and keyframe workflow");
 
         _indicatorTimer.Tick += (_, _) => TickIndicator();
         RefreshGridTypePresentation();
@@ -315,6 +314,7 @@ internal sealed class WorkspaceTabs : UserControl
 
     private void SelectView(WorkspaceView view, bool raiseEvent)
     {
+        view = NormalizeWorkspaceView(view);
         if (!_buttons.ContainsKey(view)) return;
         if (_selectedView == view)
         {
@@ -326,6 +326,11 @@ internal sealed class WorkspaceTabs : UserControl
         _selectedView = view;
         RefreshButtons();
         if (raiseEvent) SelectedViewChanged?.Invoke(this, new WorkspaceViewChangedEventArgs(previous, _selectedView));
+    }
+
+    private static WorkspaceView NormalizeWorkspaceView(WorkspaceView view)
+    {
+        return view == WorkspaceView.Animation ? WorkspaceView.SceneEditor : view;
     }
 
     private void ApplyPlacement()

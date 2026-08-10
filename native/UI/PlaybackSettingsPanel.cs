@@ -107,22 +107,25 @@ internal sealed class PlaybackSettingsPanel : Panel
         }
     }
 
-    public void SetFrameRange(int startFrame, int endFrame)
+    public void SetFrameRange(int startFrame, int endFrame, bool notifyChanged = true)
     {
         if (endFrame < startFrame) (startFrame, endFrame) = (endFrame, startFrame);
+        var nextStartFrame = Math.Clamp(startFrame, (int)_startFrame.Minimum, (int)_startFrame.Maximum);
+        var nextEndFrame = Math.Clamp(endFrame, (int)_endFrame.Minimum, (int)_endFrame.Maximum);
+        if ((int)_startFrame.Value == nextStartFrame && (int)_endFrame.Value == nextEndFrame) return;
 
         _updating = true;
         try
         {
-            _startFrame.Value = Math.Clamp(startFrame, (int)_startFrame.Minimum, (int)_startFrame.Maximum);
-            _endFrame.Value = Math.Clamp(endFrame, (int)_endFrame.Minimum, (int)_endFrame.Maximum);
+            _startFrame.Value = nextStartFrame;
+            _endFrame.Value = nextEndFrame;
         }
         finally
         {
             _updating = false;
         }
 
-        RaiseFrameRangeChanged();
+        if (notifyChanged) RaiseFrameRangeChanged();
     }
 
     protected override void OnResize(EventArgs eventargs)

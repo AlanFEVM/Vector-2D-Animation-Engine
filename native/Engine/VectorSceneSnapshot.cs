@@ -66,7 +66,9 @@ internal sealed class VectorSceneSnapshot
     public Dictionary<int, MixingBrushTrajectorySample[]> MixingStrokeLocalSamples { get; init; } = new();
     public Dictionary<int, MixingBrushRegionData> MixingStrokeLocalRegions { get; init; } = new();
     public Dictionary<int, string> ImportedSvgSources { get; init; } = new();
+    public Dictionary<int, string> ImportedSvgNames { get; init; } = new();
     public Dictionary<int, TextObjectData> TextObjects { get; init; } = new();
+    public Dictionary<int, DistortWarp[]> ObjectDistortions { get; init; } = new();
 
     internal void DetachSharedGeometry()
     {
@@ -105,6 +107,12 @@ internal sealed class VectorSceneSnapshot
         foreach (var key in MixingStrokeLocalRegions.Keys.ToArray())
         {
             MixingStrokeLocalRegions[key] = MixingStrokeLocalRegions[key].DeepClone();
+        }
+        foreach (var key in ObjectDistortions.Keys.ToArray())
+        {
+            ObjectDistortions[key] = ObjectDistortions[key]
+                .Select(distortion => distortion.DeepClone())
+                .ToArray();
         }
     }
 
@@ -147,6 +155,12 @@ internal sealed class VectorSceneSnapshot
             if (MixingStrokeLocalRegions.TryGetValue(key, out var mixingRegion))
             {
                 MixingStrokeLocalRegions[key] = mixingRegion.DeepClone();
+            }
+            if (ObjectDistortions.TryGetValue(key, out var distortions))
+            {
+                ObjectDistortions[key] = distortions
+                    .Select(distortion => distortion.DeepClone())
+                    .ToArray();
             }
         }
     }
@@ -251,6 +265,23 @@ internal sealed class VectorSceneSnapshot
 
         bytes += 72L * ImportedSvgSources.Count;
         foreach (var source in ImportedSvgSources.Values) bytes += StringBytes(source);
+
+        bytes += 72L * ImportedSvgNames.Count;
+        foreach (var name in ImportedSvgNames.Values) bytes += StringBytes(name);
+
+        bytes += 72L * ObjectDistortions.Count;
+        foreach (var distortions in ObjectDistortions.Values)
+        {
+            bytes += ArrayBytes(distortions.Length, 80);
+            foreach (var distortion in distortions)
+            {
+                bytes += 80;
+                bytes += ArrayBytes(distortion.Envelope.Top.Length, 48);
+                bytes += ArrayBytes(distortion.Envelope.Right.Length, 48);
+                bytes += ArrayBytes(distortion.Envelope.Bottom.Length, 48);
+                bytes += ArrayBytes(distortion.Envelope.Left.Length, 48);
+            }
+        }
 
         bytes += 88L * TextObjects.Count;
         foreach (var text in TextObjects.Values)

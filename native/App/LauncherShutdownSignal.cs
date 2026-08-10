@@ -6,8 +6,11 @@ internal static class LauncherShutdownSignal
     private const string EventArgumentPrefix = "--launcher-shutdown-event=";
     private const string RestartEventVariable = "V2D_LAUNCHER_RESTART_EVENT";
     private const string RestartEventArgumentPrefix = "--launcher-restart-event=";
+    private const string ReadyEventVariable = "V2D_LAUNCHER_READY_EVENT";
+    private const string ReadyEventArgumentPrefix = "--launcher-ready-event=";
     private static string? _eventName;
     private static string? _restartEventName;
+    private static string? _readyEventName;
 
     public static void Configure(IReadOnlyList<string> arguments)
     {
@@ -17,6 +20,9 @@ internal static class LauncherShutdownSignal
         _restartEventName = arguments
             .LastOrDefault(argument => argument.StartsWith(RestartEventArgumentPrefix, StringComparison.OrdinalIgnoreCase))?
             .Substring(RestartEventArgumentPrefix.Length);
+        _readyEventName = arguments
+            .LastOrDefault(argument => argument.StartsWith(ReadyEventArgumentPrefix, StringComparison.OrdinalIgnoreCase))?
+            .Substring(ReadyEventArgumentPrefix.Length);
     }
 
     public static void NotifyLauncher()
@@ -66,6 +72,28 @@ internal static class LauncherShutdownSignal
         {
             AppLog.Error("Unable to request a development editor-process restart", ex);
             return false;
+        }
+    }
+
+    public static void NotifyMainWindowReady()
+    {
+        var eventName = _readyEventName;
+        if (string.IsNullOrWhiteSpace(eventName)) eventName = Environment.GetEnvironmentVariable(ReadyEventVariable);
+        if (string.IsNullOrWhiteSpace(eventName)) return;
+
+        try
+        {
+            using var readyEvent = EventWaitHandle.OpenExisting(eventName);
+            readyEvent.Set();
+            AppLog.Info($"Notified the development launcher that the main window is ready. PID: {Environment.ProcessId}.");
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            // The launcher already exited or this run was started without it.
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Unable to notify the development launcher that the main window is ready", ex);
         }
     }
 }

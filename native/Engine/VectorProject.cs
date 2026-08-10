@@ -44,7 +44,7 @@ internal sealed partial class VectorProject
         _assetFolderView = _assetFolders.AsReadOnly();
         _assetTagView = _assetTags.AsReadOnly();
         AddScene("Scene 001");
-        AddDrawingObject("Drawing Object 001");
+        AddDrawingObject("Symbol 001");
     }
 
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
@@ -124,13 +124,149 @@ internal sealed partial class VectorProject
         var index = _drawingObjects.Count + 1;
         var drawingObject = new DrawingObjectDefinition
         {
-            Name = string.IsNullOrWhiteSpace(name) ? $"Drawing Object {index:000}" : name,
-            Detail = "Reusable drawing object"
+            Name = string.IsNullOrWhiteSpace(name) ? $"Symbol {index:000}" : name,
+            Detail = "Reusable symbol"
         };
         drawingObject.Scene.CreateEmpty(frameCount: 1);
         _drawingObjects.Add(drawingObject);
         Changed?.Invoke(this, EventArgs.Empty);
         return drawingObject;
+    }
+
+    public bool TryConvertDrawingObjectsToSymbol(
+        string containerId,
+        IReadOnlyCollection<int> objectIndices,
+        int frame,
+        out DrawingObjectDefinition? symbol,
+        out DrawingObjectInstanceDefinition? instance)
+    {
+        symbol = null;
+        instance = null;
+        var container = FindDrawingObject(containerId);
+        if (container is null || frame < 0) return false;
+
+        var source = container.Scene;
+        var targets = objectIndices
+            .Distinct()
+            .Where(index => (uint)index < source.ObjectCount && source.IsObjectActive(index, frame))
+            .ToArray();
+        if (targets.Length == 0) return false;
+
+        var sourceLayer = source.ObjectLayer[targets[0]];
+        if (targets.Any(index => source.ObjectLayer[index] != sourceLayer
+                || source.ObjectKeyframeFrame[index] != source.ObjectKeyframeFrame[targets[0]])
+            || source.GetLayerKind(sourceLayer) != DrawingLayerKind.Drawing
+            || source.IsLayerEffectivelyLocked(sourceLayer))
+        {
+            return false;
+        }
+
+        var bounds = source.GetObjectWorldBounds(targets[0]);
+        for (var index = 1; index < targets.Length; index++)
+        {
+            bounds = RectangleF.Union(bounds, source.GetObjectWorldBounds(targets[index]));
+        }
+        var anchor = VectorUnits.Quantize(new PointF(
+            bounds.Left + bounds.Width * 0.5f,
+            bounds.Top + bounds.Height * 0.5f));
+        var sourceFrame = source.ObjectKeyframeFrame[targets[0]];
+        var hostLayerId = source.LayerIds[sourceLayer];
+        var targetSet = targets.ToHashSet();
+        var activeLayerObjects = Enumerable.Range(0, source.ObjectCount)
+            .Where(index => source.ObjectLayer[index] == sourceLayer
+                && source.ObjectKeyframeFrame[index] == sourceFrame
+                && source.IsObjectActive(index, frame))
+            .OrderBy(index => source.ObjectOrder[index])
+            .ThenBy(index => source.ObjectSubOrder[index])
+            .ThenBy(index => index)
+            .ToArray();
+        var firstUnselected = Array.FindIndex(activeLayerObjects, index => !targetSet.Contains(index));
+        if (firstUnselected >= 0
+            && activeLayerObjects.Skip(firstUnselected + 1).Any(targetSet.Contains))
+        {
+            return false;
+        }
+
+        source.SynchronizeTimelineTracks();
+        var exposure = source.Timeline.FindTrackByTargetId(hostLayerId)?.EvaluateExposure(frame)
+            ?? TimelineExposure.None(frame);
+        if (!exposure.HasContent || exposure.SourceKeyframeFrame != sourceFrame) return false;
+
+        VectorScene selectionScene;
+        try
+        {
+            selectionScene = source.CreateStaticSelectionScene(targets, frame);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+
+        var sceneSnapshot = source.CreateSnapshot();
+        var instanceSnapshot = container.CreateInstanceSnapshot();
+        var previousEditFrame = source.EditFrame;
+        var created = new DrawingObjectDefinition
+        {
+            Name = $"Symbol {_drawingObjects.Count + 1:000}",
+            Detail = "Reusable symbol"
+        };
+        created.SetAnchor(anchor);
+        created.Scene.RestoreSnapshot(selectionScene.CreateSnapshot());
+
+        var nested = new DrawingObjectInstanceDefinition
+        {
+            DrawingObjectId = created.Id,
+            SceneLayerId = hostLayerId,
+            Name = $"{created.Name} Instance {container.Instances.Count + 1:000}",
+            Visible = sourceFrame == 0,
+            X = anchor.X,
+            Y = anchor.Y
+        };
+        if (sourceFrame > 0)
+        {
+            nested.SetStateAtFrame(sourceFrame, nested.EvaluateState(sourceFrame) with { Visible = true });
+        }
+        var continuationFrame = exposure.EndFrame < int.MaxValue
+            ? exposure.EndFrame + 1
+            : int.MaxValue;
+        var track = source.Timeline.FindTrackByTargetId(hostLayerId);
+        if (track is not null && continuationFrame < track.Duration)
+        {
+            nested.SetStateAtFrame(continuationFrame, nested.EvaluateState(continuationFrame) with { Visible = false });
+        }
+
+        try
+        {
+            using var batch = source.Timeline.BeginBatchUpdate();
+            _drawingObjects.Add(created);
+            source.EditFrame = sourceFrame;
+            container.AddInstance(this, nested);
+            while (container.MoveInstancesInLayer([nested.Id], direction: 1))
+            {
+            }
+            if (source.RemoveObjects(targets) != targets.Length)
+            {
+                throw new InvalidOperationException("The selected drawing objects could not be replaced.");
+            }
+            container.SynchronizeTimelineTracks();
+        }
+        catch
+        {
+            container.RestoreInstanceSnapshot(instanceSnapshot);
+            source.RestoreSnapshot(sceneSnapshot);
+            _drawingObjects.Remove(created);
+            source.EditFrame = previousEditFrame;
+            return false;
+        }
+        finally
+        {
+            source.EditFrame = previousEditFrame;
+        }
+
+        symbol = created;
+        instance = nested;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
     }
 
     public bool TryRenameDrawingObject(string drawingObjectId, string? name)
@@ -423,7 +559,8 @@ internal sealed partial class VectorProject
             Name = $"{drawingObject.Name} Instance {scene.Instances.Count + 1:000}",
             X = position.X,
             Y = position.Y,
-            Z = z
+            Z = z,
+            ScaleZ = 0
         };
         scene.AddInstance(this, instance);
         Changed?.Invoke(this, EventArgs.Empty);
@@ -440,6 +577,44 @@ internal sealed partial class VectorProject
         return TryAddSceneInstance(sceneId, drawingObjectId, position, z, sceneLayerId: null, out instance);
     }
 
+    public bool TryRemoveSceneInstance(
+        string sceneId,
+        string instanceId,
+        out DrawingObjectInstanceDefinition? removed)
+    {
+        removed = null;
+        if (string.IsNullOrWhiteSpace(sceneId) || string.IsNullOrWhiteSpace(instanceId)) return false;
+
+        var scene = FindScene(sceneId);
+        var instance = scene?.Instances.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, instanceId, StringComparison.Ordinal));
+        if (scene is null || instance is null || !scene.RemoveInstance(instance)) return false;
+
+        removed = instance;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool CanMoveSceneInstancesInLayer(
+        string sceneId,
+        IReadOnlyCollection<string> instanceIds,
+        int direction)
+    {
+        var scene = FindScene(sceneId);
+        return scene is not null && scene.CanMoveInstancesInLayer(instanceIds, direction);
+    }
+
+    public bool TryMoveSceneInstancesInLayer(
+        string sceneId,
+        IReadOnlyCollection<string> instanceIds,
+        int direction)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.MoveInstancesInLayer(instanceIds, direction)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public bool TryAddSceneLayer(string sceneId, out SceneLayerDefinition? layer)
     {
         layer = null;
@@ -447,6 +622,151 @@ internal sealed partial class VectorProject
         if (scene is null) return false;
 
         layer = scene.AddLayer(this);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryAddSceneMaskLayer(
+        string sceneId,
+        string contentLayerId,
+        out SceneLayerDefinition? layer,
+        string? name = null)
+    {
+        layer = null;
+        var scene = FindScene(sceneId);
+        if (scene is null) return false;
+
+        layer = scene.AddMaskLayer(this, contentLayerId, name);
+        if (layer is null) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TrySetSceneLayerMask(string sceneId, string contentLayerId, string maskLayerId)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.SetLayerMask(contentLayerId, maskLayerId)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryClearSceneLayerMask(string sceneId, string contentLayerId)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.ClearLayerMask(contentLayerId)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryMoveSceneLayerOutOfMask(string sceneId, string contentLayerId)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.MoveLayerOutOfMask(this, contentLayerId)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryInsertSceneMaskTimelineFrame(
+        string sceneId,
+        string maskLayerId,
+        int frame,
+        int count = 1)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.InsertMaskTimelineFrame(maskLayerId, frame, count)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryRemoveSceneMaskTimelineFrame(
+        string sceneId,
+        string maskLayerId,
+        int frame,
+        int count = 1)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.RemoveMaskTimelineFrame(maskLayerId, frame, count)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryInsertSceneMaskTimelineKeyframe(string sceneId, string maskLayerId, int frame)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.InsertMaskTimelineKeyframe(maskLayerId, frame)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryInsertSceneMaskTimelineBlankKeyframe(string sceneId, string maskLayerId, int frame)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.InsertMaskTimelineBlankKeyframe(maskLayerId, frame)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryClearSceneMaskTimelineKeyframe(string sceneId, string maskLayerId, int frame)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.ClearMaskTimelineKeyframe(maskLayerId, frame)) return false;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryCopySceneMaskTimelineFrame(
+        string sourceSceneId,
+        string sourceMaskLayerId,
+        int sourceFrame,
+        string destinationSceneId,
+        string destinationMaskLayerId,
+        int destinationFrame)
+    {
+        var sourceScene = FindScene(sourceSceneId);
+        var destinationScene = FindScene(destinationSceneId);
+        if (sourceScene is null
+            || destinationScene is null
+            || !destinationScene.CopyMaskTimelineFrameFrom(
+                sourceScene,
+                sourceMaskLayerId,
+                sourceFrame,
+                destinationMaskLayerId,
+                destinationFrame))
+        {
+            return false;
+        }
+
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryPasteSceneMaskTimelineFrame(
+        string destinationSceneId,
+        string destinationMaskLayerId,
+        VectorScene sourceMaskScene,
+        int sourceFrame,
+        int destinationFrame)
+    {
+        ArgumentNullException.ThrowIfNull(sourceMaskScene);
+        var destinationScene = FindScene(destinationSceneId);
+        if (destinationScene is null
+            || !destinationScene.CopyMaskTimelineFrameFrom(
+                sourceMaskScene,
+                sourceFrame,
+                destinationMaskLayerId,
+                destinationFrame))
+        {
+            return false;
+        }
+
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TrySynchronizeSceneMaskTimelineContent(string sceneId, string maskLayerId, int frame)
+    {
+        var scene = FindScene(sceneId);
+        if (scene is null || !scene.SynchronizeMaskTimelineContent(maskLayerId, frame)) return false;
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -750,7 +1070,7 @@ internal sealed partial class VectorProject
             {
                 if (!TryCreateRestartInstance(instance, out var restored))
                 {
-                    throw new InvalidOperationException("The editor restart snapshot contains an invalid drawing-object instance.");
+                    throw new InvalidOperationException("The editor restart snapshot contains an invalid symbol instance.");
                 }
                 drawingObject.AddInstance(project, restored);
             }
@@ -833,6 +1153,7 @@ internal sealed partial class VectorProject
             ScaleX = instance.ScaleX,
             ScaleY = instance.ScaleY,
             ScaleZ = instance.ScaleZ,
+            Distortion = instance.Distortion?.DeepClone(),
             Alpha = instance.Alpha,
             TintArgb = instance.TintArgb,
             PlaybackFps = instance.PlaybackFps,
@@ -864,6 +1185,7 @@ internal sealed partial class VectorProject
             ScaleX = snapshot.ScaleX,
             ScaleY = snapshot.ScaleY,
             ScaleZ = snapshot.ScaleZ,
+            Distortion = snapshot.Distortion?.DeepClone(),
             Alpha = snapshot.Alpha,
             TintArgb = snapshot.TintArgb,
             PlaybackFps = snapshot.PlaybackFps,
@@ -1034,7 +1356,7 @@ internal sealed partial class VectorProject
 
     private string NextDrawingObjectCopyName(string sourceName)
     {
-        var baseName = string.IsNullOrWhiteSpace(sourceName) ? "Drawing Object" : sourceName.Trim();
+        var baseName = string.IsNullOrWhiteSpace(sourceName) ? "Symbol" : sourceName.Trim();
         var candidate = $"{baseName} Copy";
         var suffix = 2;
         while (_drawingObjects.Any(item => string.Equals(item.Name, candidate, StringComparison.OrdinalIgnoreCase)))
@@ -1067,6 +1389,7 @@ internal sealed partial class VectorProject
             ScaleX = source.ScaleX,
             ScaleY = source.ScaleY,
             ScaleZ = source.ScaleZ,
+            Distortion = source.Distortion?.DeepClone(),
             Alpha = source.Alpha,
             TintArgb = source.TintArgb,
             PlaybackFps = source.PlaybackFps,

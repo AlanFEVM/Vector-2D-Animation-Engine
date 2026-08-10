@@ -9,7 +9,7 @@ internal sealed partial class MainForm
         if (drawingObject is null
             || !_project.AssetTags.Any(tag => string.Equals(tag.Id, tagId, StringComparison.Ordinal)))
         {
-            AppLog.Warn($"Unable to set asset tag because the drawing object or tag no longer exists: {drawingObjectId}/{tagId}");
+            AppLog.Warn($"Unable to set asset tag because the symbol or tag no longer exists: {drawingObjectId}/{tagId}");
             return;
         }
 
@@ -22,11 +22,11 @@ internal sealed partial class MainForm
             .ToArray();
         if (!_project.TryApplyAssetTagEdit(drawingObject.Id, tags, assignedTagIds))
         {
-            AppLog.Warn($"Unable to set asset tag assignment for drawing object: {drawingObject.Id}");
+            AppLog.Warn($"Unable to set asset tag assignment for symbol: {drawingObject.Id}");
             return;
         }
 
-        AppLog.Info($"{(assigned ? "Assigned" : "Unassigned")} asset tag for drawing object: {drawingObject.Name}");
+        AppLog.Info($"{(assigned ? "Assigned" : "Unassigned")} asset tag for symbol: {drawingObject.Name}");
     }
 
     private void EditDrawingObjectAssetTags(string drawingObjectId)
@@ -35,7 +35,7 @@ internal sealed partial class MainForm
             string.Equals(item.Id, drawingObjectId, StringComparison.Ordinal));
         if (drawingObject is null)
         {
-            AppLog.Warn($"Unable to edit asset tags because the drawing object no longer exists: {drawingObjectId}");
+            AppLog.Warn($"Unable to edit asset tags because the symbol no longer exists: {drawingObjectId}");
             return;
         }
 
@@ -51,7 +51,7 @@ internal sealed partial class MainForm
 
         if (!_project.TryApplyAssetTagEdit(drawingObject.Id, tags, assignedTagIds))
         {
-            AppLog.Warn($"Unable to apply asset tag changes for drawing object: {drawingObject.Id}");
+            AppLog.Warn($"Unable to apply asset tag changes for symbol: {drawingObject.Id}");
             ModernMessageDialog.Show(
                 this,
                 UiLocalization.T("The asset tag changes could not be applied."),
@@ -61,6 +61,6 @@ internal sealed partial class MainForm
             return;
         }
 
-        AppLog.Info($"Updated asset tags for drawing object: {drawingObject.Name}");
+        AppLog.Info($"Updated asset tags for symbol: {drawingObject.Name}");
     }
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Release Workflow"
+  short_description: "Version, release-note, release-manager, and packaging workflows"
+  default_prompt: "Use $vector2d-release-workflow to implement or review a versioning, release-note, or packaging change."

@@ -58,19 +58,19 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Increment = 0.001m,
         WheelAdjustsHoveredDigit = true,
         Suffix = "fps",
-        AccessibleName = "Drawing object playback FPS"
+        AccessibleName = "Symbol playback FPS"
     };
     private readonly ComboBox _playbackMode = new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList,
-        AccessibleName = "Drawing object playback mode"
+        AccessibleName = "Symbol playback mode"
     };
     private readonly ModernNumericUpDown _holdFrame = new()
     {
         Minimum = 0,
         Maximum = 999999,
         Value = 0,
-        AccessibleName = "Drawing object hold frame"
+        AccessibleName = "Symbol hold frame"
     };
     private readonly ModernNumericUpDown _anchorX = new()
     {
@@ -78,7 +78,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Maximum = 5_000_000,
         Increment = 10,
         Suffix = "vu",
-        AccessibleName = "Drawing object anchor X"
+        AccessibleName = "Symbol anchor X"
     };
     private readonly ModernNumericUpDown _anchorY = new()
     {
@@ -86,7 +86,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Maximum = 5_000_000,
         Increment = 10,
         Suffix = "vu",
-        AccessibleName = "Drawing object anchor Y"
+        AccessibleName = "Symbol anchor Y"
     };
     private readonly ModernSlider _alpha = new()
     {
@@ -95,8 +95,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Value = 100,
         SmallChange = 1,
         LargeChange = 10,
-        AccessibleName = "Drawing object alpha",
-        AccessibleDescription = "Drawing object alpha percentage"
+        AccessibleName = "Symbol alpha",
+        AccessibleDescription = "Symbol alpha percentage"
     };
     private readonly Label _alphaValue = new()
     {
@@ -105,15 +105,15 @@ internal sealed class DrawingObjectInstancePanel : Panel
         BackColor = Color.Transparent,
         TextAlign = ContentAlignment.MiddleRight,
         AutoEllipsis = true,
-        AccessibleName = "Drawing object alpha value",
+        AccessibleName = "Symbol alpha value",
         AccessibleRole = AccessibleRole.StaticText
     };
     private readonly ColorTargetButton _tint = new("Tint")
     {
         SwatchColor = Color.White,
         DetailText = "#FFFFFF",
-        AccessibleName = "Drawing object tint",
-        AccessibleDescription = "Multiply drawing object colors by this tint"
+        AccessibleName = "Symbol tint",
+        AccessibleDescription = "Multiply symbol colors by this tint"
     };
     private readonly Label _holdFrameLabel;
     private readonly SvgIconButton _restoreSize = new(SvgIconKind.RestoreSize)
@@ -142,7 +142,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
         Controls.Add(new Label
         {
-            Text = "Drawing Object",
+            Text = "Symbol Instance",
             Left = 12,
             Top = 8,
             Width = 210,
@@ -175,8 +175,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Theme.StyleComboBox(_playbackMode);
         Theme.StyleButton(_restoreSize);
         Theme.StyleToolTip(_toolTip);
-        _toolTip.SetToolTip(_alpha, "Adjust drawing object alpha");
-        _toolTip.SetToolTip(_tint, "Choose drawing object tint");
+        _toolTip.SetToolTip(_alpha, "Adjust symbol alpha");
+        _toolTip.SetToolTip(_tint, "Choose symbol tint");
         _toolTip.SetToolTip(_restoreSize, "Restore original size");
 
         Controls.Add(_fps);
@@ -340,22 +340,35 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
     private void ChooseTint()
     {
-        using var picker = new ColorDialog
-        {
-            Color = _tintColor,
-            FullOpen = true,
-            SolidColorOnly = true
-        };
-        if (picker.ShowDialog(FindForm()) != DialogResult.OK) return;
-
-        var tint = Opaque(picker.Color);
-        if (!_tintMixed && tint.ToArgb() == _tintColor.ToArgb()) return;
+        using var picker = new ProfessionalColorPickerDialog(_tintColor, "Symbol tint");
+        var startedMixed = _tintMixed;
+        var changed = false;
         AppearanceInteractionStarted?.Invoke(this, EventArgs.Empty);
-        _tintColor = tint;
-        _tintMixed = false;
+        picker.ColorChanged += (_, _) =>
+        {
+            _tintColor = Opaque(picker.Color);
+            _tintMixed = false;
+            changed = true;
+            UpdateTintPresentation();
+            RaiseAppearanceChanged(alphaChanged: false, tintChanged: true);
+        };
+
+        if (picker.ShowDialog(FindForm()) == DialogResult.OK)
+        {
+            if (startedMixed && !changed)
+            {
+                _tintMixed = false;
+                UpdateTintPresentation();
+                RaiseAppearanceChanged(alphaChanged: false, tintChanged: true);
+            }
+            AppearanceInteractionCompleted?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        _tintColor = picker.InitialColor;
+        _tintMixed = startedMixed;
         UpdateTintPresentation();
-        RaiseAppearanceChanged(alphaChanged: false, tintChanged: true);
-        AppearanceInteractionCompleted?.Invoke(this, EventArgs.Empty);
+        AppearanceInteractionCanceled?.Invoke(this, EventArgs.Empty);
     }
 
     private void RaiseAppearanceChanged(bool alphaChanged, bool tintChanged)
@@ -399,9 +412,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private void UpdateAlphaPresentation()
     {
         _alphaValue.Text = _alphaMixed ? "Mixed" : $"{_alpha.Value}%";
-        _alpha.AccessibleDescription = _alphaMixed
-            ? "Drawing object alpha percentage, mixed values"
-            : $"Drawing object alpha percentage, {_alpha.Value}%";
+        _alpha.AccessibleDescription = UiLocalization.T(_alphaMixed
+            ? "Symbol alpha percentage, mixed values"
+            : $"Symbol alpha percentage, {_alpha.Value}%");
     }
 
     private void UpdateTintPresentation()
@@ -410,9 +423,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
         _tint.DetailText = _tintMixed
             ? "Mixed"
             : $"#{_tintColor.R:X2}{_tintColor.G:X2}{_tintColor.B:X2}";
-        _tint.AccessibleDescription = _tintMixed
-            ? "Drawing object tint, mixed values"
-            : $"Drawing object tint {_tint.DetailText}";
+        _tint.AccessibleDescription = UiLocalization.T(_tintMixed
+            ? "Symbol tint, mixed values"
+            : $"Symbol tint {_tint.DetailText}");
     }
 
     private DrawingObjectPlaybackMode SelectedMode()

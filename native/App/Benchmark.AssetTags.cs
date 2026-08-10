@@ -155,7 +155,44 @@ internal static partial class Benchmark
             && hoverBackground != rowTint,
             "Asset-library row motion did not preserve bounded easing and distinct hover, selected, or pressed states.");
 
+        RunVaultPreviewRegression();
         Console.WriteLine("asset_tag_regression=ok");
+    }
+
+    private static void RunVaultPreviewRegression()
+    {
+        var oneFrameAt24Fps = TimeSpan.FromTicks((TimeSpan.TicksPerSecond + 23) / 24);
+        var justBeforeOneFrameAt24Fps = oneFrameAt24Fps - TimeSpan.FromTicks(1);
+        AssertTimeline(
+            LibraryVaultPanel.ResolvePreviewFrame(1, 4, 24m, TimeSpan.Zero) == 1
+            && LibraryVaultPanel.ResolvePreviewFrame(1, 4, 24m, justBeforeOneFrameAt24Fps) == 1
+            && LibraryVaultPanel.ResolvePreviewFrame(1, 4, 24m, oneFrameAt24Fps) == 2
+            && LibraryVaultPanel.ResolvePreviewFrame(3, 4, 24m, oneFrameAt24Fps) == 0
+            && LibraryVaultPanel.ResolvePreviewFrame(0, 100, 23.976m, TimeSpan.FromSeconds(2)) == 47
+            && LibraryVaultPanel.ResolvePreviewFrame(2, 8, 24m, TimeSpan.FromMilliseconds(250)) == 0
+            && LibraryVaultPanel.ResolvePreviewFrame(0, 1, 120m, TimeSpan.FromSeconds(10)) == 0
+            && LibraryVaultPanel.ResolvePreviewFrame(99, 4, 24m, TimeSpan.Zero) == 3
+            && LibraryVaultPanel.ResolvePreviewFrame(
+                int.MaxValue - 2,
+                int.MaxValue,
+                1m,
+                TimeSpan.FromSeconds(3)) == 1,
+            "Vault preview playback did not preserve its initial frame, fractional project FPS, catch-up, or looping behavior.");
+
+        var slowTimerInterval = LibraryVaultPanel.PreviewTimerIntervalMilliseconds(1m);
+        var fastTimerInterval = LibraryVaultPanel.PreviewTimerIntervalMilliseconds(120m);
+        AssertTimeline(
+            slowTimerInterval == 50
+            && fastTimerInterval == 8
+            && fastTimerInterval < slowTimerInterval,
+            "Vault preview timer polling was not bounded for the supported project FPS range.");
+
+        var sourceBounds = new Rectangle(100, 40, 300, 500);
+        var rowBounds = new Rectangle(164, 220, 96, 24);
+        var anchor = LibraryVaultPanel.ExpandPreviewAnchor(sourceBounds, rowBounds);
+        AssertTimeline(
+            anchor == new Rectangle(100, 220, 300, 24),
+            "Vault preview anchoring did not expand the hovered row to the full source-control width.");
     }
 
     private static void AssertAssetTagPersistence(

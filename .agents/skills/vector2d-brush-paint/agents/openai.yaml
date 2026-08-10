@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Brush And Paint"
+  short_description: "Brush, pressure, mixing paint, and eraser workflows"
+  default_prompt: "Use $vector2d-brush-paint to implement or review a brush, pressure, mixing-paint, or eraser change."

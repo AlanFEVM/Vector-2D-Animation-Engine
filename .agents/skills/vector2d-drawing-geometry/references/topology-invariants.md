@@ -53,4 +53,4 @@ Fill materialization may also emit boundary-stroke objects. Selection callers mu
 - `RunOutlinedFillMergeRegression`
 - `RunBrushEraserRegression`
 
-When adding a topology regression, update the hard-coded regression count printed by `RunDrawingTopologyRegression`.
+Place new cases in `Benchmark.TopologyMaterialization.cs`, `Benchmark.BezierGeometry.cs`, or the nearest focused partial, and run the `Freehand` suite.

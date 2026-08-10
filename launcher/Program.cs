@@ -27,6 +27,8 @@ internal static class Program
         RestartEditor
     }
 
+    private readonly record struct WatchRunResult(WatchExitReason Reason, bool MainWindowReady);
+
     private readonly record struct LaunchOptions(bool ModuleHotReload)
     {
         public static LaunchOptions Parse(IReadOnlyList<string> args)
@@ -86,10 +88,15 @@ internal static class Program
         Application.DoEvents();
         var shutdownEventName = $"Local\\Vector2DAnimationEngine.LauncherShutdown.{Environment.ProcessId}.{Guid.NewGuid():N}";
         var restartEventName = $"Local\\Vector2DAnimationEngine.LauncherRestart.{Environment.ProcessId}.{Guid.NewGuid():N}";
-        var nativeLauncherArguments = $" -- --launcher-shutdown-event={shutdownEventName} --launcher-restart-event={restartEventName}";
+        var readyEventName = $"Local\\Vector2DAnimationEngine.LauncherReady.{Environment.ProcessId}.{Guid.NewGuid():N}";
+        var nativeLauncherArguments =
+            $" -- --launcher-shutdown-event={shutdownEventName}" +
+            $" --launcher-restart-event={restartEventName}" +
+            $" --launcher-ready-event={readyEventName}";
         var runArguments = $"-c Debug{(skipInitialBuild ? " --no-build" : string.Empty)}{nativeLauncherArguments}";
         using var shutdownEvent = new EventWaitHandle(false, EventResetMode.ManualReset, shutdownEventName);
         using var restartEvent = new EventWaitHandle(false, EventResetMode.AutoReset, restartEventName);
+        using var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyEventName);
         var startInfo = new ProcessStartInfo
         {
             FileName = dotnet,
@@ -106,6 +113,7 @@ internal static class Program
         startInfo.Environment["V2D_DEV_HOT_RELOAD"] = launchOptions.ModuleHotReload ? "1" : "0";
         startInfo.Environment["V2D_LAUNCHER_SHUTDOWN_EVENT"] = shutdownEventName;
         startInfo.Environment["V2D_LAUNCHER_RESTART_EVENT"] = restartEventName;
+        startInfo.Environment["V2D_LAUNCHER_READY_EVENT"] = readyEventName;
         // Unsupported CLR edits remain opt-in through the preserved-state restart command.
         // Do not let dotnet watch discard an unsaved editor project behind the user's back.
         startInfo.Environment["DOTNET_WATCH_RESTART_ON_RUDE_EDIT"] = "0";
@@ -125,20 +133,31 @@ internal static class Program
                 startInfo.Arguments = launchOptions.ModuleHotReload
                     ? $"watch --non-interactive --project \"{projectPath}\" run {runArguments}{tokenArgument}"
                     : $"run --project \"{projectPath}\" {runArguments}{tokenArgument}";
+                readyEvent.Reset();
                 using var watchProcess = Process.Start(startInfo);
                 if (watchProcess is null) throw new InvalidOperationException("The development watch process could not be started.");
+                Log(logDir, $"Started development watch generation. PID: {watchProcess.Id}; restart state requested: {launchToken is not null}.");
                 AttachWatchLogging(watchProcess, logDir);
-                var reason = WaitForWatchProcessOrRequest(watchProcess, shutdownEvent, restartEvent, root, startupStatus);
-                if (reason == WatchExitReason.RestartEditor)
+                var result = WaitForWatchProcessOrRequest(
+                    watchProcess,
+                    shutdownEvent,
+                    restartEvent,
+                    readyEvent,
+                    root,
+                    logDir,
+                    startupStatus);
+                if (result.Reason == WatchExitReason.RestartEditor)
                 {
                     pendingRestartToken = TryConsumeEditorRestartToken(logDir);
+                    ShowRestartStatus(startupStatus);
                     Log(logDir, "Native app requested a development editor-process restart; restarting the watch process tree.");
+                    WaitForNativeApplicationExit(root, TimeSpan.FromSeconds(3), logDir);
                     StopProcessTree(watchProcess, logDir);
                     WaitForExitAndDrain(watchProcess, logDir);
                     continue;
                 }
 
-                if (reason == WatchExitReason.Shutdown)
+                if (result.Reason == WatchExitReason.Shutdown)
                 {
                     Log(logDir, "Native app requested shutdown; stopping development watch process tree.");
                     StopProcessTree(watchProcess, logDir);
@@ -148,15 +167,21 @@ internal static class Program
                 var exitCode = watchProcess.HasExited ? watchProcess.ExitCode : -1;
                 Log(logDir, $"Native watch process exited with code {exitCode}.");
                 var ranFor = DateTime.UtcNow - startedUtc;
-                if (reason == WatchExitReason.Exited
-                    && exitCode != 0
+                var failedBeforeWindowReady = result.Reason == WatchExitReason.Exited && !result.MainWindowReady;
+                if (result.Reason == WatchExitReason.Exited
+                    && (exitCode != 0 || failedBeforeWindowReady)
                     && unexpectedRestarts < MaxUnexpectedWatchRestarts)
                 {
                     if (ranFor >= TimeSpan.FromSeconds(30)) unexpectedRestarts = 0;
                     unexpectedRestarts++;
+                    if (failedBeforeWindowReady) pendingRestartToken = launchToken;
                     var delayMilliseconds = Math.Min(2000, 250 * (1 << (unexpectedRestarts - 1)));
-                    Log(logDir, $"Restarting the failed watch process in {delayMilliseconds} ms ({unexpectedRestarts}/{MaxUnexpectedWatchRestarts}).");
-                    WaitWithStartupStatus(delayMilliseconds, root, startupStatus);
+                    ShowRestartStatus(startupStatus);
+                    Log(
+                        logDir,
+                        $"Restarting the failed watch process in {delayMilliseconds} ms " +
+                        $"({unexpectedRestarts}/{MaxUnexpectedWatchRestarts}); main window ready: {result.MainWindowReady}.");
+                    WaitWithStartupStatus(delayMilliseconds, startupStatus);
                     continue;
                 }
                 break;
@@ -176,11 +201,32 @@ internal static class Program
 
     private static int ValidateDevelopmentLauncher()
     {
+        ApplicationConfiguration.Initialize();
         var root = ResolveRepositoryRoot();
         var projectPath = Path.Combine(root, "native", "VectorAnimationEngine.Native.csproj");
+        using var startupStatus = new StartupStatusForm(simplifiedChinese: false)
+        {
+            Opacity = 0,
+            ShowInTaskbar = false
+        };
+        startupStatus.Show();
+        Application.DoEvents();
+        var initiallyVisible = startupStatus.Visible;
+        startupStatus.Dismiss();
+        Application.DoEvents();
+        var reusableAfterDismiss = !startupStatus.Visible && !startupStatus.IsDisposed;
+        startupStatus.SetRestarting();
+        startupStatus.Show();
+        Application.DoEvents();
+        var restartVisible = startupStatus.Visible && !startupStatus.IsDisposed;
+        startupStatus.Dismiss();
+
         return LaunchOptions.Parse(Array.Empty<string>()).ModuleHotReload
             && File.Exists(projectPath)
             && TryFindDotnet(out _)
+            && initiallyVisible
+            && reusableAfterDismiss
+            && restartVisible
                 ? 0
                 : 1;
     }
@@ -397,49 +443,76 @@ internal static class Program
 
     private static DateTime Max(DateTime first, DateTime second) => first >= second ? first : second;
 
-    private static WatchExitReason WaitForWatchProcessOrRequest(
+    private static WatchRunResult WaitForWatchProcessOrRequest(
         Process watchProcess,
         EventWaitHandle shutdownEvent,
         EventWaitHandle restartEvent,
+        EventWaitHandle readyEvent,
         string root,
+        string logDir,
         StartupStatusForm startupStatus)
     {
-        while (!watchProcess.HasExited)
+        var mainWindowReady = false;
+
+        void AcceptMainWindowReady()
         {
-            PumpStartupStatus(root, startupStatus);
-            var signal = WaitHandle.WaitAny([shutdownEvent, restartEvent], 100);
-            if (signal == 0) return WatchExitReason.Shutdown;
-            if (signal == 1) return WatchExitReason.RestartEditor;
+            if (mainWindowReady) return;
+            mainWindowReady = true;
+            var activated = TryActivateNativeMainWindow(root);
+            Log(
+                logDir,
+                $"Native main window reported ready for watch PID {watchProcess.Id}; foreground activation: {activated}.");
+            DismissStartupStatus(startupStatus);
         }
 
-        PumpStartupStatus(root, startupStatus);
-        return WatchExitReason.Exited;
+        while (!watchProcess.HasExited)
+        {
+            PumpStartupStatus(startupStatus);
+            var signal = mainWindowReady
+                ? WaitHandle.WaitAny([shutdownEvent, restartEvent], 100)
+                : WaitHandle.WaitAny([shutdownEvent, restartEvent, readyEvent], 100);
+            if (signal == 0) return new WatchRunResult(WatchExitReason.Shutdown, mainWindowReady);
+            if (signal == 1) return new WatchRunResult(WatchExitReason.RestartEditor, mainWindowReady);
+            if (signal == 2) AcceptMainWindowReady();
+        }
+
+        if (!mainWindowReady && readyEvent.WaitOne(0)) AcceptMainWindowReady();
+        PumpStartupStatus(startupStatus);
+        return new WatchRunResult(WatchExitReason.Exited, mainWindowReady);
     }
 
-    private static void WaitWithStartupStatus(int delayMilliseconds, string root, StartupStatusForm startupStatus)
+    private static void WaitWithStartupStatus(int delayMilliseconds, StartupStatusForm startupStatus)
     {
         var end = Environment.TickCount64 + delayMilliseconds;
         while (true)
         {
             var remaining = end - Environment.TickCount64;
             if (remaining <= 0) break;
-            PumpStartupStatus(root, startupStatus);
+            PumpStartupStatus(startupStatus);
             Thread.Sleep((int)Math.Min(50, remaining));
         }
     }
 
-    private static void PumpStartupStatus(string root, StartupStatusForm startupStatus)
+    private static void PumpStartupStatus(StartupStatusForm startupStatus)
     {
         if (startupStatus.IsDisposed) return;
         Application.DoEvents();
-        if (!TryGetNativeMainWindow(root, out _)) return;
-        DismissStartupStatus(startupStatus);
     }
 
     private static void DismissStartupStatus(StartupStatusForm startupStatus)
     {
         if (startupStatus.IsDisposed) return;
         startupStatus.Dismiss();
+        Application.DoEvents();
+    }
+
+    private static void ShowRestartStatus(StartupStatusForm startupStatus)
+    {
+        if (startupStatus.IsDisposed) return;
+        startupStatus.SetRestarting();
+        if (!startupStatus.Visible) startupStatus.Show();
+        startupStatus.BringToFront();
+        startupStatus.Activate();
         Application.DoEvents();
     }
 
@@ -502,6 +575,64 @@ internal static class Program
         {
             Log(logDir, $"Failed to stop the development watch process tree: {ex}");
         }
+    }
+
+    private static void WaitForNativeApplicationExit(string root, TimeSpan timeout, string logDir)
+    {
+        var expectedPath = Path.GetFullPath(Path.Combine(
+            root,
+            "native",
+            "bin",
+            "Debug",
+            "net8.0-windows",
+            "VectorAnimationEngine.exe"));
+        var nativeProcesses = new List<Process>();
+        foreach (var process in Process.GetProcessesByName("VectorAnimationEngine"))
+        {
+            try
+            {
+                if (process.Id == Environment.ProcessId
+                    || !string.Equals(process.MainModule?.FileName, expectedPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    process.Dispose();
+                    continue;
+                }
+
+                nativeProcesses.Add(process);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                process.Dispose();
+            }
+        }
+
+        if (nativeProcesses.Count == 0) return;
+        Log(logDir, $"Waiting up to {timeout.TotalSeconds:0.#} seconds for {nativeProcesses.Count} native process(es) to exit cleanly.");
+        var deadline = DateTime.UtcNow + timeout;
+        var allExited = true;
+        foreach (var process in nativeProcesses)
+        {
+            using (process)
+            {
+                try
+                {
+                    var remaining = deadline - DateTime.UtcNow;
+                    if (remaining <= TimeSpan.Zero
+                        || (!process.HasExited && !process.WaitForExit((int)Math.Max(1, remaining.TotalMilliseconds))))
+                    {
+                        allExited = false;
+                    }
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                {
+                    // A process that disappears while being inspected has completed the desired shutdown.
+                }
+            }
+        }
+
+        Log(logDir, allExited
+            ? "The previous native process exited cleanly before its watch process was stopped."
+            : "Timed out waiting for the previous native process; the watch process tree will be stopped.");
     }
 
     private static void WaitForExitAndDrain(Process process, string logDir)
@@ -634,7 +765,6 @@ internal static class Program
     {
         private readonly bool _simplifiedChinese;
         private readonly Label _detail;
-        private bool _dismissRequested;
 
         public StartupStatusForm(bool simplifiedChinese)
         {
@@ -698,18 +828,25 @@ internal static class Program
                     : "Starting the editor...";
         }
 
+        public void SetRestarting()
+        {
+            _detail.Text = _simplifiedChinese
+                ? "正在重新编译并恢复编辑器窗口..."
+                : "Rebuilding and restoring the editor window...";
+        }
+
         public void Dismiss()
         {
             if (IsDisposed) return;
-            _dismissRequested = true;
-            Close();
+            Hide();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (!_dismissRequested && e.CloseReason == CloseReason.UserClosing)
+            if (e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
+                Hide();
                 return;
             }
 

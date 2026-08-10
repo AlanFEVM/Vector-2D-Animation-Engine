@@ -4,10 +4,13 @@ internal sealed class SceneLayerDefinition
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Layer";
+    public SceneLayerKind Kind { get; internal set; }
+    public string MaskLayerId { get; internal set; } = "";
     public bool Visible { get; set; } = true;
     public LayerBlendMode BlendMode { get; set; } = LayerBlendMode.Normal;
     public int ColorArgb { get; set; } = Color.FromArgb(79, 195, 247).ToArgb();
     public bool Outline { get; set; }
+    internal VectorScene? MaskScene { get; set; }
 }
 
 internal sealed class SceneLayerSnapshot
@@ -23,7 +26,12 @@ internal sealed record SceneLayerSnapshotItem(
     bool Visible,
     int ColorArgb,
     bool Outline = false,
-    LayerBlendMode BlendMode = LayerBlendMode.Normal);
+    LayerBlendMode BlendMode = LayerBlendMode.Normal)
+{
+    public SceneLayerKind Kind { get; init; }
+    public string MaskLayerId { get; init; } = "";
+    public VectorSceneSnapshot? MaskScene { get; init; }
+}
 
 internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 {
@@ -71,6 +79,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     public void SynchronizeTimelineTracks()
     {
         NormalizeLayers();
+        using var batchUpdate = _timeline.BeginBatchUpdate();
         _timeline.SynchronizeTracks(Layers.Select(layer => layer.Id), FrameCount, populateNewTracks: false);
         foreach (var track in _timeline.Tracks)
         {
@@ -78,7 +87,21 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
             {
                 _timeline.InsertBlankKeyframe(track.Id, 0);
             }
+
+            var emptyKeyframeFrames = track.Keyframes
+                .Where(keyframe => ResolveKeyframeKindForLayerContent(
+                    track.TargetId,
+                    keyframe.Kind,
+                    keyframe.Frame) != keyframe.Kind)
+                .Select(keyframe => keyframe.Frame)
+                .ToArray();
+            foreach (var frame in emptyKeyframeFrames)
+            {
+                _timeline.InsertBlankKeyframe(track.Id, frame);
+            }
         }
+
+        SynchronizeMaskSceneDurations(FrameCount);
     }
 
     public SceneLayerDefinition? FindLayer(string layerId)
@@ -86,9 +109,230 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         return Layers.FirstOrDefault(layer => string.Equals(layer.Id, layerId, StringComparison.Ordinal));
     }
 
+    public VectorScene? FindMaskScene(string maskLayerId)
+    {
+        var layer = FindLayer(maskLayerId);
+        return layer?.Kind == SceneLayerKind.Mask ? layer.MaskScene : null;
+    }
+
+    public VectorScene? ActiveMaskScene() => FindMaskScene(ActiveLayerId);
+
+    public SceneLayerDefinition? GetMaskContentLayer(string maskLayerId)
+    {
+        return Layers.FirstOrDefault(layer =>
+            layer.Kind == SceneLayerKind.Content
+            && string.Equals(layer.MaskLayerId, maskLayerId, StringComparison.Ordinal));
+    }
+
     public IReadOnlyList<DrawingObjectInstanceDefinition> InstancesInLayer(string layerId)
     {
         return _instanceIndex.Get(layerId);
+    }
+
+    internal TimelineKeyframeKind ResolveKeyframeKindForLayerContent(
+        string layerId,
+        TimelineKeyframeKind requestedKind)
+    {
+        return ResolveKeyframeKindForLayerContent(layerId, requestedKind, frame: -1);
+    }
+
+    internal TimelineKeyframeKind ResolveKeyframeKindForLayerContent(
+        string layerId,
+        TimelineKeyframeKind requestedKind,
+        int frame)
+    {
+        if (FindLayer(layerId)?.Kind == SceneLayerKind.Mask)
+        {
+            return frame < 0
+                ? requestedKind
+                : MaskSceneHasContent(layerId, frame)
+                    ? TimelineKeyframeKind.Populated
+                    : TimelineKeyframeKind.Blank;
+        }
+        return requestedKind == TimelineKeyframeKind.Populated && InstancesInLayer(layerId).Count == 0
+            ? TimelineKeyframeKind.Blank
+            : requestedKind;
+    }
+
+    internal bool InsertMaskTimelineFrame(string maskLayerId, int frame, int count = 1)
+    {
+        if (frame < 0 || count <= 0) return false;
+        return ApplyMaskTimelineMutation(maskLayerId, (maskScene, outerTrack) =>
+        {
+            var outerChanged = _timeline.InsertFrame(outerTrack.Id, frame, count);
+            if (!outerChanged) return (false, false);
+
+            var maskChanged = false;
+            for (var layer = 0; layer < maskScene.LayerCount; layer++)
+            {
+                if (!maskScene.InsertTimelineFrame(layer, frame, count)) return (false, false);
+                maskChanged = true;
+            }
+            return (true, maskChanged);
+        });
+    }
+
+    internal bool RemoveMaskTimelineFrame(string maskLayerId, int frame, int count = 1)
+    {
+        if (frame < 0 || count <= 0) return false;
+        return ApplyMaskTimelineMutation(maskLayerId, (maskScene, outerTrack) =>
+        {
+            var outerChanged = _timeline.RemoveFrame(outerTrack.Id, frame, count);
+            if (!outerChanged) return (false, false);
+
+            var maskChanged = false;
+            for (var layer = 0; layer < maskScene.LayerCount; layer++)
+            {
+                if (!maskScene.RemoveTimelineFrame(layer, frame, count)) return (false, false);
+                maskChanged = true;
+            }
+            return (true, maskChanged);
+        });
+    }
+
+    internal bool InsertMaskTimelineKeyframe(string maskLayerId, int frame)
+    {
+        if (frame < 0) return false;
+        return ApplyMaskTimelineMutation(maskLayerId, (maskScene, outerTrack) =>
+        {
+            var changed = false;
+            for (var layer = 0; layer < maskScene.LayerCount; layer++)
+            {
+                changed |= maskScene.InsertTimelineKeyframe(layer, frame);
+            }
+
+            changed |= SetMaskTrackKeyframeKind(
+                outerTrack,
+                frame,
+                MaskSceneHasContent(maskLayerId, frame)
+                    ? TimelineKeyframeKind.Populated
+                    : TimelineKeyframeKind.Blank);
+            return (true, changed);
+        });
+    }
+
+    internal bool InsertMaskTimelineBlankKeyframe(string maskLayerId, int frame)
+    {
+        if (frame < 0) return false;
+        return ApplyMaskTimelineMutation(maskLayerId, (maskScene, outerTrack) =>
+        {
+            var changed = false;
+            for (var layer = 0; layer < maskScene.LayerCount; layer++)
+            {
+                changed |= maskScene.InsertTimelineBlankKeyframe(layer, frame);
+            }
+            changed |= SetMaskTrackKeyframeKind(outerTrack, frame, TimelineKeyframeKind.Blank);
+            return (true, changed);
+        });
+    }
+
+    internal bool ClearMaskTimelineKeyframe(string maskLayerId, int frame)
+    {
+        if (frame < 0) return false;
+        return ApplyMaskTimelineMutation(maskLayerId, (maskScene, outerTrack) =>
+        {
+            var changed = false;
+            for (var layer = 0; layer < maskScene.LayerCount; layer++)
+            {
+                changed |= maskScene.ClearTimelineKeyframe(layer, frame);
+            }
+            changed |= _timeline.ClearKeyframe(outerTrack.Id, frame);
+            return (true, changed);
+        });
+    }
+
+    internal bool CopyMaskTimelineFrameFrom(
+        SceneDefinition sourceScene,
+        string sourceMaskLayerId,
+        int sourceFrame,
+        string destinationMaskLayerId,
+        int destinationFrame)
+    {
+        ArgumentNullException.ThrowIfNull(sourceScene);
+        if (sourceFrame < 0 || destinationFrame < 0) return false;
+
+        sourceScene.SynchronizeTimelineTracks();
+        var sourceMaskScene = sourceScene.FindMaskScene(sourceMaskLayerId);
+        if (sourceMaskScene is null) return false;
+        if (ReferenceEquals(sourceScene, this)
+            && string.Equals(sourceMaskLayerId, destinationMaskLayerId, StringComparison.Ordinal)
+            && sourceFrame == destinationFrame)
+        {
+            return false;
+        }
+
+        return CopyMaskTimelineFrameFrom(
+            sourceMaskScene,
+            sourceFrame,
+            destinationMaskLayerId,
+            destinationFrame);
+    }
+
+    internal bool CopyMaskTimelineFrameFrom(
+        VectorScene sourceMaskScene,
+        int sourceFrame,
+        string destinationMaskLayerId,
+        int destinationFrame)
+    {
+        ArgumentNullException.ThrowIfNull(sourceMaskScene);
+        if (sourceFrame < 0
+            || sourceFrame >= sourceMaskScene.FrameCount
+            || destinationFrame < 0)
+        {
+            return false;
+        }
+
+        return ApplyMaskTimelineMutation(destinationMaskLayerId, (destinationMaskScene, outerTrack) =>
+        {
+            if (sourceMaskScene.LayerCount != destinationMaskScene.LayerCount) return (false, false);
+
+            var changed = false;
+            for (var layer = 0; layer < destinationMaskScene.LayerCount; layer++)
+            {
+                changed |= destinationMaskScene.CopyTimelineFrameFrom(
+                    sourceMaskScene,
+                    layer,
+                    sourceFrame,
+                    layer,
+                    destinationFrame);
+            }
+
+            changed |= SetMaskTrackKeyframeKind(
+                outerTrack,
+                destinationFrame,
+                MaskSceneHasContent(destinationMaskLayerId, destinationFrame)
+                    ? TimelineKeyframeKind.Populated
+                    : TimelineKeyframeKind.Blank);
+            return (true, changed);
+        });
+    }
+
+    internal bool SynchronizeMaskTimelineContent(string maskLayerId, int frame)
+    {
+        if (frame < 0) return false;
+        return ApplyMaskTimelineMutation(maskLayerId, (maskScene, outerTrack) =>
+        {
+            var sourceFrames = Enumerable.Range(0, maskScene.LayerCount)
+                .Select(layer => maskScene.Timeline.EvaluateTargetExposure(maskScene.LayerIds[layer], frame))
+                .Where(exposure => exposure.SourceKind is not null)
+                .Select(exposure => exposure.SourceKeyframeFrame)
+                .Distinct()
+                .ToArray();
+            var keyframeFrame = sourceFrames.Length == 1 ? sourceFrames[0] : frame;
+            var kind = MaskSceneHasContent(maskLayerId, frame)
+                ? TimelineKeyframeKind.Populated
+                : TimelineKeyframeKind.Blank;
+            return (true, SetMaskTrackKeyframeKind(outerTrack, keyframeFrame, kind));
+        });
+    }
+
+    public bool IsMaskLayerActive(string maskLayerId, int frame)
+    {
+        var layer = FindLayer(maskLayerId);
+        return layer?.Kind == SceneLayerKind.Mask
+            && layer.Visible
+            && _timeline.EvaluateTargetExposure(layer.Id, frame).HasContent
+            && MaskSceneHasContent(layer.Id, frame);
     }
 
     public void SetActiveLayer(string layerId)
@@ -171,7 +415,12 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
                 layer.Visible,
                 layer.ColorArgb,
                 layer.Outline,
-                layer.BlendMode)).ToArray(),
+                layer.BlendMode)
+            {
+                Kind = layer.Kind,
+                MaskLayerId = layer.MaskLayerId,
+                MaskScene = layer.MaskScene?.CreateSnapshot()
+            }).ToArray(),
             ActiveLayerId = ActiveLayerId,
             InstanceLayerIds = _instances.ToDictionary(instance => instance.Id, instance => instance.SceneLayerId, StringComparer.Ordinal)
         };
@@ -191,7 +440,10 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
                 Visible = layer.Visible,
                 BlendMode = Enum.IsDefined(layer.BlendMode) ? layer.BlendMode : LayerBlendMode.Normal,
                 ColorArgb = layer.ColorArgb,
-                Outline = layer.Outline
+                Outline = layer.Outline,
+                Kind = Enum.IsDefined(layer.Kind) ? layer.Kind : SceneLayerKind.Content,
+                MaskLayerId = layer.MaskLayerId ?? "",
+                MaskScene = RestoreMaskScene(layer.Kind, layer.MaskScene)
             });
         }
 
@@ -220,6 +472,103 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         ActiveLayerId = layer.Id;
         SynchronizeTimelineTracks();
         return layer;
+    }
+
+    internal SceneLayerDefinition? AddMaskLayer(
+        VectorProject project,
+        string contentLayerId,
+        string? name = null)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        if (!project.OwnsScene(this)) throw new InvalidOperationException("The scene is not owned by this project.");
+
+        NormalizeLayers();
+        var contentLayer = FindLayer(contentLayerId);
+        if (contentLayer?.Kind != SceneLayerKind.Content) return null;
+
+        if (!string.IsNullOrWhiteSpace(contentLayer.MaskLayerId))
+        {
+            var existing = FindLayer(contentLayer.MaskLayerId);
+            if (existing?.Kind == SceneLayerKind.Mask)
+            {
+                return null;
+            }
+            contentLayer.MaskLayerId = "";
+        }
+
+        var contentIndex = _layers.IndexOf(contentLayer);
+        var maskLayer = new SceneLayerDefinition
+        {
+            Name = string.IsNullOrWhiteSpace(name) ? $"Mask {_layers.Count + 1:0000}" : name.Trim(),
+            Kind = SceneLayerKind.Mask,
+            ColorArgb = DefaultLayerColor(contentIndex).ToArgb(),
+            MaskScene = CreateMaskScene(FrameCount)
+        };
+        _layers.Insert(Math.Max(0, contentIndex), maskLayer);
+        contentLayer.MaskLayerId = maskLayer.Id;
+        ActiveLayerId = maskLayer.Id;
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(maskLayer.Id);
+        if (track is not null) _timeline.InsertBlankKeyframe(track.Id, 0);
+        return maskLayer;
+    }
+
+    internal bool SetLayerMask(string contentLayerId, string maskLayerId)
+    {
+        NormalizeLayers();
+        var contentLayer = FindLayer(contentLayerId);
+        var maskLayer = FindLayer(maskLayerId);
+        if (contentLayer?.Kind != SceneLayerKind.Content || maskLayer?.Kind != SceneLayerKind.Mask) return false;
+
+        var changed = false;
+        foreach (var layer in _layers)
+        {
+            if (ReferenceEquals(layer, contentLayer)
+                || layer.Kind != SceneLayerKind.Content
+                || !string.Equals(layer.MaskLayerId, maskLayer.Id, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            layer.MaskLayerId = "";
+            changed = true;
+        }
+
+        if (!string.Equals(contentLayer.MaskLayerId, maskLayer.Id, StringComparison.Ordinal))
+        {
+            contentLayer.MaskLayerId = maskLayer.Id;
+            changed = true;
+        }
+        return changed;
+    }
+
+    internal bool ClearLayerMask(string contentLayerId)
+    {
+        NormalizeLayers();
+        var contentLayer = FindLayer(contentLayerId);
+        if (contentLayer?.Kind != SceneLayerKind.Content || string.IsNullOrWhiteSpace(contentLayer.MaskLayerId)) return false;
+        contentLayer.MaskLayerId = "";
+        return true;
+    }
+
+    internal bool MoveLayerOutOfMask(VectorProject project, string contentLayerId)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        if (!project.OwnsScene(this)) throw new InvalidOperationException("The scene is not owned by this project.");
+
+        NormalizeLayers();
+        var contentLayer = FindLayer(contentLayerId);
+        var maskLayer = contentLayer?.Kind == SceneLayerKind.Content
+            ? FindLayer(contentLayer.MaskLayerId)
+            : null;
+        if (contentLayer is null || maskLayer?.Kind != SceneLayerKind.Mask) return false;
+
+        contentLayer.MaskLayerId = "";
+        _layers.Remove(contentLayer);
+        var maskIndex = _layers.IndexOf(maskLayer);
+        _layers.Insert(Math.Clamp(maskIndex + 1, 0, _layers.Count), contentLayer);
+        SynchronizeTimelineTracks();
+        return true;
     }
 
     internal bool MoveLayer(VectorProject project, string layerId, int destinationIndex)
@@ -263,7 +612,20 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         var removedIds = layerIds
             .Where(layerId => FindLayer(layerId) is not null)
             .ToHashSet(StringComparer.Ordinal);
-        if (removedIds.Count == 0 || removedIds.Count >= _layers.Count) return false;
+        if (removedIds.Count == 0) return false;
+
+        foreach (var contentLayer in _layers.Where(layer =>
+                     layer.Kind == SceneLayerKind.Content
+                     && removedIds.Contains(layer.Id)))
+        {
+            if (!string.IsNullOrWhiteSpace(contentLayer.MaskLayerId)) removedIds.Add(contentLayer.MaskLayerId);
+        }
+
+        if (removedIds.Count >= _layers.Count
+            || !_layers.Any(layer => layer.Kind == SceneLayerKind.Content && !removedIds.Contains(layer.Id)))
+        {
+            return false;
+        }
 
         var oldLayers = _layers.ToArray();
         var oldActiveIndex = Array.FindIndex(oldLayers, layer => string.Equals(layer.Id, ActiveLayerId, StringComparison.Ordinal));
@@ -272,6 +634,10 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
             _instanceIndex.Invalidate();
         }
         _layers.RemoveAll(layer => removedIds.Contains(layer.Id));
+        foreach (var contentLayer in _layers.Where(layer => layer.Kind == SceneLayerKind.Content))
+        {
+            if (removedIds.Contains(contentLayer.MaskLayerId)) contentLayer.MaskLayerId = "";
+        }
         if (FindLayer(ActiveLayerId) is null)
         {
             var nearest = oldLayers
@@ -297,7 +663,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
             throw new InvalidOperationException("The scene instance reference or identifier is invalid for this project.");
         }
 
-        instance.SceneLayerId = FindLayer(instance.SceneLayerId)?.Id ?? ActiveLayerId;
+        instance.SceneLayerId = ResolveContentLayerId(instance.SceneLayerId);
         _instances.Add(instance);
         _instanceIndex.Invalidate();
         SynchronizeTimelineTracks();
@@ -318,6 +684,20 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
             SynchronizeTimelineTracks();
         }
         return removed;
+    }
+
+    internal bool CanMoveInstancesInLayer(IReadOnlyCollection<string> instanceIds, int direction)
+    {
+        return _instanceIndex.CreateMovePlan(instanceIds, direction).Count > 0;
+    }
+
+    internal bool MoveInstancesInLayer(IReadOnlyCollection<string> instanceIds, int direction)
+    {
+        var plan = _instanceIndex.CreateMovePlan(instanceIds, direction);
+        if (plan.Count == 0) return false;
+        foreach (var (index, instance) in plan) _instances[index] = instance;
+        _instanceIndex.Invalidate();
+        return true;
     }
 
     internal void InsertInstanceStateFrames(string layerId, int frame, int count)
@@ -344,10 +724,56 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
             if (string.IsNullOrWhiteSpace(layer.Id) || !validLayers.Add(layer.Id)) _layers.RemoveAt(index);
         }
 
+        if (_layers.Count == 0) _layers.Add(new SceneLayerDefinition { Name = "Layer 0001" });
+        foreach (var layer in _layers)
+        {
+            if (!Enum.IsDefined(layer.Kind)) layer.Kind = SceneLayerKind.Content;
+            if (layer.Kind == SceneLayerKind.Mask)
+            {
+                layer.MaskLayerId = "";
+                layer.MaskScene ??= CreateMaskScene(FrameCount);
+            }
+            else
+            {
+                layer.MaskScene = null;
+                layer.MaskLayerId ??= "";
+            }
+        }
+
+        if (!_layers.Any(layer => layer.Kind == SceneLayerKind.Content))
+        {
+            _layers[0].Kind = SceneLayerKind.Content;
+            _layers[0].MaskLayerId = "";
+            _layers[0].MaskScene = null;
+        }
+
+        var maskIds = _layers
+            .Where(layer => layer.Kind == SceneLayerKind.Mask)
+            .Select(layer => layer.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        var claimedMasks = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var layer in _layers.Where(layer => layer.Kind == SceneLayerKind.Content))
+        {
+            if (string.IsNullOrWhiteSpace(layer.MaskLayerId)
+                || !maskIds.Contains(layer.MaskLayerId)
+                || !claimedMasks.Add(layer.MaskLayerId))
+            {
+                layer.MaskLayerId = "";
+            }
+        }
+
         var reassignedInstance = false;
         foreach (var instance in _instances)
         {
-            if (FindLayer(instance.SceneLayerId) is not null) continue;
+            var assignedLayer = FindLayer(instance.SceneLayerId);
+            if (assignedLayer?.Kind == SceneLayerKind.Content) continue;
+
+            if (assignedLayer?.Kind == SceneLayerKind.Mask)
+            {
+                instance.SceneLayerId = ResolveContentLayerId(assignedLayer.Id);
+                reassignedInstance = true;
+                continue;
+            }
 
             // Legacy scene tracks were keyed by instance ID. Preserve those keys
             // by promoting each unassigned instance to a distinct scene layer.
@@ -367,8 +793,120 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 
         if (reassignedInstance) _instanceIndex.Invalidate();
 
-        if (_layers.Count == 0) _layers.Add(new SceneLayerDefinition { Name = "Layer 0001" });
         if (FindLayer(ActiveLayerId) is null) ActiveLayerId = _layers[0].Id;
+    }
+
+    private string ResolveContentLayerId(string? requestedLayerId)
+    {
+        var requested = FindLayer(requestedLayerId ?? "");
+        if (requested?.Kind == SceneLayerKind.Content) return requested.Id;
+        if (requested?.Kind == SceneLayerKind.Mask && GetMaskContentLayer(requested.Id) is { } linkedContent)
+        {
+            return linkedContent.Id;
+        }
+
+        var requestedIndex = requested is null ? -1 : _layers.IndexOf(requested);
+        var active = FindLayer(ActiveLayerId);
+        if (active?.Kind == SceneLayerKind.Content) return active.Id;
+        if (active?.Kind == SceneLayerKind.Mask && GetMaskContentLayer(active.Id) is { } activeContent)
+        {
+            return activeContent.Id;
+        }
+
+        return _layers
+            .Select((layer, index) => (layer, index))
+            .Where(item => item.layer.Kind == SceneLayerKind.Content)
+            .MinBy(item => requestedIndex < 0 ? item.index : Math.Abs(item.index - requestedIndex))
+            .layer.Id;
+    }
+
+    private bool MaskSceneHasContent(string maskLayerId, int frame)
+    {
+        var maskScene = FindMaskScene(maskLayerId);
+        if (maskScene is null || frame < 0 || frame >= maskScene.FrameCount) return false;
+        for (var objectIndex = 0; objectIndex < maskScene.ObjectCount; objectIndex++)
+        {
+            if (maskScene.IsObjectActive(objectIndex, frame)) return true;
+        }
+        return false;
+    }
+
+    private bool ApplyMaskTimelineMutation(
+        string maskLayerId,
+        Func<VectorScene, AnimationTimelineTrack, (bool Success, bool Changed)> mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        SynchronizeTimelineTracks();
+        var maskScene = FindMaskScene(maskLayerId);
+        var outerTrack = _timeline.FindTrackByTargetId(maskLayerId);
+        if (maskScene is null || outerTrack is null || maskScene.LayerCount <= 0) return false;
+
+        var outerSnapshot = _timeline.CreateSnapshot();
+        var maskSnapshot = maskScene.CreateSnapshot();
+        try
+        {
+            (bool Success, bool Changed) result;
+            using (_timeline.BeginBatchUpdate())
+            using (maskScene.Timeline.BeginBatchUpdate())
+            {
+                result = mutation(maskScene, outerTrack);
+            }
+
+            if (result.Success) return result.Changed;
+        }
+        catch
+        {
+            _timeline.RestoreSnapshot(outerSnapshot);
+            maskScene.RestoreSnapshot(maskSnapshot);
+            throw;
+        }
+
+        _timeline.RestoreSnapshot(outerSnapshot);
+        maskScene.RestoreSnapshot(maskSnapshot);
+        return false;
+    }
+
+    private bool SetMaskTrackKeyframeKind(
+        AnimationTimelineTrack outerTrack,
+        int frame,
+        TimelineKeyframeKind kind)
+    {
+        return kind == TimelineKeyframeKind.Populated
+            ? _timeline.InsertKeyframe(outerTrack.Id, frame)
+            : _timeline.InsertBlankKeyframe(outerTrack.Id, frame);
+    }
+
+    private static VectorScene CreateMaskScene(int frameCount)
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(frameCount: Math.Max(1, frameCount));
+        scene.LayerNames[0] = "Mask";
+        return scene;
+    }
+
+    private static VectorScene? RestoreMaskScene(SceneLayerKind kind, VectorSceneSnapshot? snapshot)
+    {
+        if (kind != SceneLayerKind.Mask) return null;
+        var scene = CreateMaskScene(AnimationTimeline.DefaultDuration);
+        if (snapshot is not null) scene.RestoreSnapshot(snapshot);
+        return scene;
+    }
+
+    private void SynchronizeMaskSceneDurations(int frameCount)
+    {
+        frameCount = Math.Max(1, frameCount);
+        foreach (var layer in _layers)
+        {
+            if (layer.Kind != SceneLayerKind.Mask) continue;
+            var maskScene = layer.MaskScene ??= CreateMaskScene(frameCount);
+            maskScene.SynchronizeTimelineTracks();
+            using var batchUpdate = maskScene.Timeline.BeginBatchUpdate();
+            foreach (var track in maskScene.Timeline.Tracks)
+            {
+                maskScene.Timeline.SetTrackDuration(track.Id, frameCount);
+            }
+            maskScene.EditFrame = Math.Clamp(maskScene.EditFrame, 0, frameCount - 1);
+        }
     }
 
     private static Color DefaultLayerColor(int index)

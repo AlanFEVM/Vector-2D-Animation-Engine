@@ -3,9 +3,28 @@
 ## Bootstrap
 
 - Start with `git status --short --branch` and record pre-existing changes. Treat unknown changes as user or other-Agent work; never revert, overwrite, stage, or attribute them to the current task.
-- Route implementation through the matching project skill: `$vector2d-drawing-geometry`, `$vector2d-project-model`, `$vector2d-stage-workflow`, or `$vector2d-winforms-ui`.
+- Select the smallest owning skill from the routing table below. Read that `SKILL.md` completely, then load only the references it names for the requested behavior. Combine skills only when the change crosses contracts.
 - Use `$vector2d-coordinate-agents` when the user requests multiple Agents or when a change has at least two independent workstreams. Keep a small or tightly coupled change with one Agent.
-- Use `$vector2d-validate-change` after changes under `native/` or `launcher/`, and before declaring a product change complete.
+- Use `$vector2d-validate-change` after product, launcher, release-manager, or publishing changes and before declaring a product change complete. Load it for validation planning/execution, not as the implementation owner.
+
+## Skill Routing
+
+| Request surface | Owning skill |
+| --- | --- |
+| Packed geometry, topology, hit/query, Boolean operations, transforms, distortions | `$vector2d-drawing-geometry` |
+| Brush, pressure, Mixing Brush, painted regions, brush erasing | `$vector2d-brush-paint` |
+| Project graph, scenes, symbols, instances, layers, masks, composition/provenance | `$vector2d-project-model` |
+| Frames, Cels, exposures, keyframes, Auto Key, tween, onion skin, playback | `$vector2d-timeline-animation` |
+| Project Save/Open, Vault, asset tags/folders, SVG import/export/Break Apart | `$vector2d-assets-persistence` |
+| Stage tools, pointer/keyboard sessions, selection, overlays, 2D rendering/caches | `$vector2d-stage-workflow` |
+| Scene reference 3D, cameras, spatial transforms, scene masks/reference projection | `$vector2d-scene-spatial` |
+| Non-Stage WinForms panels, controls, layout, theme, accessibility, binding | `$vector2d-winforms-ui` |
+| Native/source-launcher startup, hot reload, restart, single instance, diagnostics | `$vector2d-app-lifecycle` |
+| Versioning, bilingual release notes, Release Manager, formal single-EXE publishing | `$vector2d-release-workflow` |
+| Multi-Agent decomposition, ownership, handoff, integration | `$vector2d-coordinate-agents` |
+| Suite selection, builds, benchmarks, visual/manual and release acceptance | `$vector2d-validate-change` |
+
+Do not load a neighboring skill only because its directory appears in the diff. Load it when the requested behavior crosses that skill's contract. For example, a tween model change uses `$vector2d-timeline-animation`; add `$vector2d-stage-workflow` only if Stage presentation changes, and add `$vector2d-winforms-ui` only if a non-canvas control changes.
 
 ## Coordination Contract
 
@@ -14,7 +33,7 @@ The root Agent is the coordinator and integration owner. All Agents share this w
 1. Build a dependency graph before delegating. Run only work packages that are independent and ready.
 2. Give each sub-Agent a bounded packet containing the goal, owned paths or symbols, read-only dependencies, prerequisites, required invariants, deliverable, and suggested validation.
 3. Assign exactly one writer to each file at a time. An Agent may read outside its owned paths but must not edit there.
-4. Reserve shared hotspots for one integration owner: `native/App/Benchmark.cs`, `native/UI/MainForm.cs`, `README.md`, `docs/USER_GUIDE.md`, project files, and release artifacts. If a domain Agent owns one of these, no other Agent may edit it concurrently.
+4. Reserve shared hotspots for one integration owner: core files in the `Benchmark*`, `MainForm*`, `VectorScene*`, `StageControl*`, and `Direct2DStageRenderer*` partial families; `README.md`; `docs/USER_GUIDE.md`; project files; release sources; publishing scripts; and release artifacts. Disjoint partial files may have separate writers only when their contracts and callers are stable.
 5. Prefer parallel read-only reconnaissance, independent implementation in disjoint files, and independent review. Serialize dependent model/UI work, edits to the same file, final documentation, builds, benchmarks, visual capture, publishing, and release-launcher generation.
 6. Sub-Agents must refresh `git status --short` before editing and before handoff. They must preserve changes outside their packet and report unexpected overlap to the coordinator.
 7. Sub-Agents do not stage, commit, cherry-pick, reset, or create worktrees unless the coordinator explicitly delegates that operation. The coordinator owns the final diff and any requested commit.

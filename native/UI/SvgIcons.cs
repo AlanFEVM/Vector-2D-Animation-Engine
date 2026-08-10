@@ -7,6 +7,8 @@ internal enum SvgIconKind
     Menu,
     Select,
     Transform,
+    Transform3D,
+    Distort,
     Pan,
     Rectangle,
     Ellipse,
@@ -52,6 +54,9 @@ internal enum SvgIconKind
     ZoomOut,
     ChevronUp,
     ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    FrontView,
     Close,
     Info,
     Warning,
@@ -98,6 +103,37 @@ internal static class SvgIcons
                 DrawChevron(g, pen, P(r, 15, 9), 0);
                 DrawChevron(g, pen, P(r, 9, 15), 2);
                 break;
+            case SvgIconKind.Transform3D:
+            {
+                var origin = P(r, 11, 13);
+                g.FillRectangle(fill, Rect(r, 7, 9, 8, 8));
+                DrawRectangle(g, thinPen, Rect(r, 7, 9, 8, 8));
+                g.DrawLine(pen, origin, P(r, 21, 13));
+                DrawChevron(g, pen, P(r, 21, 13), 1);
+                g.DrawLine(pen, origin, P(r, 11, 3));
+                DrawChevron(g, pen, P(r, 11, 3), 0);
+                g.DrawLine(pen, origin, P(r, 4, 21));
+                g.DrawLine(pen, P(r, 4, 21), P(r, 5, 16));
+                g.DrawLine(pen, P(r, 4, 21), P(r, 9, 20));
+                FillHandle(g, solidFill, r, 11, 13);
+                break;
+            }
+            case SvgIconKind.Distort:
+            {
+                var quad = new[]
+                {
+                    P(r, 5, 7), P(r, 19, 4), P(r, 21, 18), P(r, 4, 21)
+                };
+                g.FillPolygon(fill, quad);
+                DrawPolygon(g, pen, quad);
+                g.DrawLine(thinPen, P(r, 9, 6), P(r, 10, 20));
+                g.DrawLine(thinPen, P(r, 16, 5), P(r, 17, 19));
+                FillHandle(g, solidFill, r, 5, 7);
+                FillHandle(g, solidFill, r, 19, 4);
+                FillHandle(g, solidFill, r, 21, 18);
+                FillHandle(g, solidFill, r, 4, 21);
+                break;
+            }
             case SvgIconKind.Pan:
             {
                 using var hand = new GraphicsPath();
@@ -305,6 +341,19 @@ internal static class SvgIcons
             case SvgIconKind.ChevronDown:
                 g.DrawLines(pen, [P(r, 5, 9), P(r, 12, 16), P(r, 19, 9)]);
                 break;
+            case SvgIconKind.ChevronLeft:
+                g.DrawLines(pen, [P(r, 15, 5), P(r, 8, 12), P(r, 15, 19)]);
+                break;
+            case SvgIconKind.ChevronRight:
+                g.DrawLines(pen, [P(r, 9, 5), P(r, 16, 12), P(r, 9, 19)]);
+                break;
+            case SvgIconKind.FrontView:
+                g.FillRectangle(fill, Rect(r, 4, 4, 16, 16));
+                DrawRectangle(g, pen, Rect(r, 4, 4, 16, 16));
+                g.DrawLine(thinPen, P(r, 12, 6), P(r, 12, 18));
+                g.DrawLine(thinPen, P(r, 6, 12), P(r, 18, 12));
+                g.FillEllipse(solidFill, Rect(r, 10, 10, 4, 4));
+                break;
             case SvgIconKind.Close:
                 g.DrawLine(pen, P(r, 5, 5), P(r, 19, 19));
                 g.DrawLine(pen, P(r, 19, 5), P(r, 5, 19));
@@ -449,6 +498,8 @@ internal static class SvgIcons
     {
         return kind is SvgIconKind.Select
             or SvgIconKind.Transform
+            or SvgIconKind.Transform3D
+            or SvgIconKind.Distort
             or SvgIconKind.Pan
             or SvgIconKind.Rectangle
             or SvgIconKind.Ellipse

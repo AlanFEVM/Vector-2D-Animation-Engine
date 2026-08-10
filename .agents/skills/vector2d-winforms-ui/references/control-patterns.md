@@ -13,6 +13,9 @@
 | Dense inspector example | `MaterialEditorPanel.cs` |
 | Bound workspace panel example | `SceneEditorPanel.cs`, `LibraryVaultPanel.cs` |
 | Large owner-drawn surface example | `TimelineStrip.cs` |
+| Dense dock/workspace example | `DashDock.cs`, `WorkspaceTabs.cs` |
+| Color flyout/dialog examples | `WorkspaceColorFlyout.cs`, `ProfessionalColorPickerDialog.cs` |
+| Spatial control examples | `ReferenceViewPad.cs`, `SpatialTransformPanel.cs` |
 
 ## Layout
 

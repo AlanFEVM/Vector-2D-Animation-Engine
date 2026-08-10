@@ -71,7 +71,7 @@ internal sealed partial class Direct2DStageRenderer
                     && stage.Scene.IsObjectActive(primaryElement.Key.ObjectIndex, stage.Frame))
                 {
                     DrawElementSelectionOutline(stage, primaryElement, primary: true);
-                    if (stage.PenPathHandlesVisible && !stage.TransformMode)
+                    if (stage.PenPathHandlesVisible && !(stage.TransformMode || stage.DistortMode))
                     {
                         foreach (var objectIndex in stage.SelectedElements
                                      .Where(hit => hit.Key.Kind == DrawingElementKind.Stroke
@@ -87,7 +87,7 @@ internal sealed partial class Direct2DStageRenderer
                     }
                     else if (stage.IsValidEditableBezierHit(primaryElement))
                     {
-                        if (!stage.TransformMode) DrawBezierHandles(stage, primaryElement);
+                        if (!(stage.TransformMode || stage.DistortMode)) DrawBezierHandles(stage, primaryElement);
                     }
                 }
             }
@@ -98,6 +98,7 @@ internal sealed partial class Direct2DStageRenderer
 
             DrawDrawingObjectSelectionOverlay(stage);
             DrawTransformOverlay(stage);
+            DrawDistortOverlay(stage);
             DrawHoveredLineControls(stage);
             return;
         }
@@ -124,12 +125,30 @@ internal sealed partial class Direct2DStageRenderer
 
         DrawDrawingObjectSelectionOverlay(stage);
         DrawTransformOverlay(stage);
+        DrawDistortOverlay(stage);
         DrawHoveredLineControls(stage);
     }
 
     private void DrawSelectionOutline(StageControl stage, int i, bool primary)
     {
         var shape = stage.Scene.ShapeKind.Length > i ? stage.Scene.ShapeKind[i] : ShapeKind.Rectangle;
+        if (stage.Scene.TryGetObjectDistortions(i, out _))
+        {
+            foreach (var contour in stage.Scene.GetDistortedObjectBoundaryContours(i))
+            {
+                var points = contour.Select(point => WorldToVector(stage, point)).ToArray();
+                if (points.Length == 1) DrawSelectionDot(points[0], primary, SelectionHighlightKind.Fill);
+                else if (points.Length > 1)
+                {
+                    DrawSelectionPolyline(
+                        points.Length >= 3 ? CloseSelectionPolyline(points) : points,
+                        primary,
+                        SelectionHighlightKind.Fill);
+                }
+            }
+            return;
+        }
+
         if (shape == ShapeKind.Text)
         {
             if (stage.TextAreaOverlayVisible(i))
@@ -140,7 +159,7 @@ internal sealed partial class Direct2DStageRenderer
         }
         if (shape == ShapeKind.Line)
         {
-            if (primary && !stage.TransformMode) DrawBezierGuides(stage, i);
+            if (primary && !(stage.TransformMode || stage.DistortMode)) DrawBezierGuides(stage, i);
             else DrawBezierOutline(stage, i, primary);
             return;
         }
@@ -213,7 +232,7 @@ internal sealed partial class Direct2DStageRenderer
             DrawSelectionPolyline(points, primary, StageControl.SelectionHighlightForShape(shape));
         }
 
-        if (!primary || shape is ShapeKind.Path or ShapeKind.Text || stage.TransformMode) return;
+        if (!primary || shape is ShapeKind.Path or ShapeKind.Text || stage.TransformMode || stage.DistortMode) return;
         foreach (var handle in BoundaryHandles()) DrawHandle(WorldToVector(stage, stage.GetBoundaryHandleWorldPoint(i, handle)), BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 9);
     }
 
@@ -235,6 +254,29 @@ internal sealed partial class Direct2DStageRenderer
     {
         var objectIndex = hit.Key.ObjectIndex;
         var shape = stage.Scene.ShapeKind[objectIndex];
+        if (hit.Key.Kind == DrawingElementKind.BoundaryStroke
+            && DrawPresentedEditableBezierSelection(stage, hit, primary))
+        {
+            return;
+        }
+
+        if (stage.Scene.TryGetObjectDistortions(objectIndex, out _))
+        {
+            foreach (var contour in stage.Scene.GetDistortedObjectBoundaryContours(objectIndex))
+            {
+                var points = contour.Select(point => WorldToVector(stage, point)).ToArray();
+                if (points.Length == 1) DrawSelectionDot(points[0], primary, SelectionHighlightKind.Fill);
+                else if (points.Length > 1)
+                {
+                    DrawSelectionPolyline(
+                        points.Length >= 3 ? CloseSelectionPolyline(points) : points,
+                        primary,
+                        SelectionHighlightKind.Fill);
+                }
+            }
+            return;
+        }
+
         if (hit.Key.Kind == DrawingElementKind.Stroke)
         {
             if (shape == ShapeKind.Line)
@@ -271,6 +313,39 @@ internal sealed partial class Direct2DStageRenderer
         }
     }
 
+    private bool DrawPresentedEditableBezierSelection(
+        StageControl stage,
+        DrawingElementHit hit,
+        bool primary)
+    {
+        var segments = stage.GetPresentedEditableBezierWorldSegments(hit);
+        if (segments.Length == 0) return false;
+
+        using var path = _factory!.CreatePathGeometry();
+        using (var sink = path.Open())
+        {
+            foreach (var segment in segments)
+            {
+                var start = WorldToVector(stage, segment.Start);
+                var control1 = WorldToVector(stage, segment.Control1);
+                var control2 = WorldToVector(stage, segment.Control2);
+                var end = WorldToVector(stage, segment.End);
+                sink.BeginFigure(start, FigureBegin.Hollow);
+                sink.AddBezier(new BezierSegment(in control1, in control2, in end));
+                sink.EndFigure(FigureEnd.Open);
+            }
+            sink.Close();
+        }
+
+        stage.Scene.TryGetLinePartEndpointStyles(
+            hit.Key,
+            stage.Frame,
+            out var startStyle,
+            out var endStyle);
+        DrawSelectionGeometry(path, primary, startStyle, endStyle);
+        return true;
+    }
+
     private void DrawBezierOutline(StageControl stage, int i, bool primary)
     {
         var startStyle = stage.Scene.GetLineEndpointStyle(i, startEndpoint: true);
@@ -290,16 +365,38 @@ internal sealed partial class Direct2DStageRenderer
     {
         var startStyle = stage.Scene.GetLineEndpointStyle(i, startEndpoint: true);
         var endStyle = stage.Scene.GetLineEndpointStyle(i, startEndpoint: false);
-        if (stage.Scene.IsLineStraight(i))
+        var hit = new DrawingElementHit(
+            new DrawingElementKey(i, DrawingElementKind.Stroke, 0),
+            0,
+            0,
+            1);
+        var segments = stage.GetPresentedEditableBezierWorldSegments(hit);
+        if (segments.Length == 0) return;
+        using (var path = _factory!.CreatePathGeometry())
+        using (var sink = path.Open())
         {
-            var points = GetBezierScreenPoints(stage, i);
-            DrawSelectionLine(points.Start, points.End, primary: true, startStyle, endStyle);
+            foreach (var segment in segments)
+            {
+                var start = WorldToVector(stage, segment.Start);
+                var control1 = WorldToVector(stage, segment.Control1);
+                var control2 = WorldToVector(stage, segment.Control2);
+                var end = WorldToVector(stage, segment.End);
+                sink.BeginFigure(start, FigureBegin.Hollow);
+                sink.AddBezier(new BezierSegment(in control1, in control2, in end));
+                sink.EndFigure(FigureEnd.Open);
+            }
+            sink.Close();
+            DrawSelectionGeometry(path, primary: true, startStyle, endStyle);
         }
-        else
+
+        foreach (var segment in segments)
         {
-            DrawCachedLineSelectionGeometry(stage, i, primary: true, startStyle, endStyle);
+            DrawBezierHandles(
+                WorldToVector(stage, segment.Start),
+                WorldToVector(stage, segment.Control1),
+                WorldToVector(stage, segment.Control2),
+                WorldToVector(stage, segment.End));
         }
-        DrawBezierHandles(stage, i);
     }
 
     private void DrawBezierHandles(StageControl stage, int i)
@@ -310,8 +407,27 @@ internal sealed partial class Direct2DStageRenderer
 
     private void DrawBezierHandles(StageControl stage, DrawingElementHit hit)
     {
-        if (!TryGetEditableBezierScreenPoints(stage, hit, out var start, out var control1, out var control2, out var end)) return;
-        DrawBezierHandles(start, control1, control2, end);
+        var segments = stage.GetPresentedEditableBezierWorldSegments(hit);
+        if (segments.Length == 0) return;
+        if ((uint)hit.PresentedBezierSegmentIndex < segments.Length)
+        {
+            var selected = segments[hit.PresentedBezierSegmentIndex];
+            DrawBezierHandles(
+                WorldToVector(stage, selected.Start),
+                WorldToVector(stage, selected.Control1),
+                WorldToVector(stage, selected.Control2),
+                WorldToVector(stage, selected.End));
+            return;
+        }
+
+        foreach (var segment in segments)
+        {
+            DrawBezierHandles(
+                WorldToVector(stage, segment.Start),
+                WorldToVector(stage, segment.Control1),
+                WorldToVector(stage, segment.Control2),
+                WorldToVector(stage, segment.End));
+        }
     }
 
     private void DrawHoveredLineControls(StageControl stage)
@@ -391,12 +507,84 @@ internal sealed partial class Direct2DStageRenderer
             _target.DrawGeometry(diamond, handleBorder, 1);
         }
 
-        var focus = WorldToVector(stage, stage.TransformFocus);
-        var focusLine = BrushFor(GdiColor.FromArgb(245, 104, 255, 188).ToArgb());
-        _target.FillEllipse(new Ellipse(focus, 6, 6), BrushFor(GdiColor.FromArgb(220, 30, 82, 69).ToArgb()));
-        _target.DrawEllipse(new Ellipse(focus, 6, 6), focusLine, 1.5f);
-        _target.DrawLine(new Vector2(focus.X - 9, focus.Y), new Vector2(focus.X + 9, focus.Y), focusLine, 1.5f);
-        _target.DrawLine(new Vector2(focus.X, focus.Y - 9), new Vector2(focus.X, focus.Y + 9), focusLine, 1.5f);
+        if (stage.IsTransformFocusVisible(geometry))
+        {
+            var focus = ToVector(stage.TransformOverlayPointToScreen(stage.TransformFocus));
+            var focusLine = BrushFor(GdiColor.FromArgb(245, 104, 255, 188).ToArgb());
+            _target.FillEllipse(new Ellipse(focus, 6, 6), BrushFor(GdiColor.FromArgb(220, 30, 82, 69).ToArgb()));
+            _target.DrawEllipse(new Ellipse(focus, 6, 6), focusLine, 1.5f);
+            _target.DrawLine(new Vector2(focus.X - 9, focus.Y), new Vector2(focus.X + 9, focus.Y), focusLine, 1.5f);
+            _target.DrawLine(new Vector2(focus.X, focus.Y - 9), new Vector2(focus.X, focus.Y + 9), focusLine, 1.5f);
+        }
+    }
+
+    private void DrawDistortOverlay(StageControl stage)
+    {
+        if (!stage.DistortBoundsVisible) return;
+        var geometry = stage.GetDistortOverlayScreenGeometry();
+        var boundary = BrushFor(GdiColor.FromArgb(245, 104, 255, 188).ToArgb());
+        var grid = BrushFor(GdiColor.FromArgb(120, 104, 255, 188).ToArgb());
+        var guide = BrushFor(GdiColor.FromArgb(165, 112, 204, 255).ToArgb());
+        var dashedBoundary = PreviewBoundsStrokeStyle();
+        using (var path = _factory!.CreatePathGeometry())
+        {
+            using (var sink = path.Open())
+            {
+                foreach (var segment in geometry.BezierSegments)
+                {
+                    var start = ToVector(segment.Start);
+                    var control1 = ToVector(segment.Control1);
+                    var control2 = ToVector(segment.Control2);
+                    var end = ToVector(segment.End);
+                    sink.BeginFigure(start, FigureBegin.Hollow);
+                    sink.AddBezier(new BezierSegment(in control1, in control2, in end));
+                    sink.EndFigure(FigureEnd.Open);
+                }
+                sink.Close();
+            }
+
+            _target!.DrawGeometry(path, boundary, 1.4f, dashedBoundary);
+        }
+
+        for (var index = 1; index < 3; index++)
+        {
+            var t = index / 3f;
+            var left = ToVector(stage.TransformOverlayPointToScreen(
+                stage.DistortFrame.BoundaryPoint(DistortSide.Left, t)));
+            var right = ToVector(stage.TransformOverlayPointToScreen(
+                stage.DistortFrame.BoundaryPoint(DistortSide.Right, t)));
+            var top = ToVector(stage.TransformOverlayPointToScreen(
+                stage.DistortFrame.BoundaryPoint(DistortSide.Top, t)));
+            var bottom = ToVector(stage.TransformOverlayPointToScreen(
+                stage.DistortFrame.BoundaryPoint(DistortSide.Bottom, t)));
+            _target.DrawLine(left, right, grid, 1);
+            _target.DrawLine(top, bottom, grid, 1);
+        }
+
+        foreach (var handle in geometry.VisualHandles)
+        {
+            if (handle.Reference.Kind == DistortHandleKind.Anchor) continue;
+            _target.DrawLine(ToVector(handle.Anchor), ToVector(handle.Point), guide, 1, dashedBoundary);
+        }
+
+        var anchorFill = BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb());
+        var controlFill = BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb());
+        var border = BrushFor(GdiColor.FromArgb(255, 16, 18, 22).ToArgb());
+        foreach (var visual in geometry.VisualHandles)
+        {
+            var handle = ToVector(visual.Point);
+            if (visual.Reference.Kind == DistortHandleKind.Anchor)
+            {
+                var rect = Rect(handle.X - 4.5f, handle.Y - 4.5f, 9, 9);
+                _target.FillRectangle(in rect, anchorFill);
+                _target.DrawRectangle(in rect, border, 1);
+            }
+            else
+            {
+                _target.FillEllipse(new Ellipse(handle, 3.5f, 3.5f), controlFill);
+                _target.DrawEllipse(new Ellipse(handle, 3.5f, 3.5f), border, 1);
+            }
+        }
     }
 
     private void DrawDrawingObjectSelectionOverlay(StageControl stage)

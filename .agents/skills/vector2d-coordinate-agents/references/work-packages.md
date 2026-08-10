@@ -2,20 +2,24 @@
 
 ## Domain Routing
 
-| Area | Required skill | Typical ownership | Suggested validation |
+| Behavior | Owning skill | Typical ownership | Suggested validation |
 | --- | --- | --- | --- |
-| Packed drawing objects, topology, hit testing, fill/line operations | `$vector2d-drawing-geometry` | `native/Engine/VectorScene.cs` and closely related geometry types | `Build`, `Freehand`; add `Render` for visible output |
-| Project, timeline, snapshots, instances, composition | `$vector2d-project-model` | project-model types under `native/Engine/` | `Build`, `Timeline`; add `Stress` for batching/performance |
-| Canvas tools, pointer state, overlays, cameras, Direct2D/GDI | `$vector2d-stage-workflow` | `native/Rendering/` and assigned Stage coordination symbols | `Build`, `Freehand` and/or `Render` |
-| Panels, inspectors, dialogs, controls, theme, accessibility | `$vector2d-winforms-ui` | disjoint controls under `native/UI/` | `Build` plus visual/manual verification |
-| Launcher, validation, packaging, release | `$vector2d-validate-change` | `launcher/` or assigned validation/release files | `Launcher` or selected suites |
-| Cross-domain planning and integration | `$vector2d-coordinate-agents` | root workflow, shared hotspots, final diff | Aggregate minimum suite set |
+| Packed geometry, topology, Boolean, hit/query, transforms | `$vector2d-drawing-geometry` | focused `VectorScene.*.cs` geometry partials | `Build`, `Freehand`; add `Render` for output |
+| Brush, pressure, mixing paint, brush erasing | `$vector2d-brush-paint` | brush/paint Engine modules plus assigned tool/render partials | `Pressure` and/or `Freehand`; add `Render` for raster changes |
+| Project graph, instances, layers, masks, composition | `$vector2d-project-model` | definitions and `SceneCompositionBuilder.cs` | `Build`, `Timeline`; add `Stress` for batching |
+| Timeline, Cels, keys, tween, playback | `$vector2d-timeline-animation` | timeline/tween Engine and focused UI partials | `Build`, `Timeline`; add `Render` for Stage feedback |
+| Save/Open, Vault, tags/folders, SVG | `$vector2d-assets-persistence` | `ProjectVaultStore.cs`, asset/SVG modules and assigned panels | `Build`, `Timeline`; add `Freehand`/`Render` as applicable |
+| Stage tools, pointer state, overlays, 2D rendering | `$vector2d-stage-workflow` | focused `MainForm.*`, `StageControl.*`, renderer partials | `Build`, `Freehand` and/or `Render` |
+| Scene 3D references, cameras, masks, spatial transforms | `$vector2d-scene-spatial` | spatial model/Stage/UI partials | `Build`, `Timeline`, `Render` |
+| Non-Stage panels, controls, theme, accessibility | `$vector2d-winforms-ui` | disjoint controls under `native/UI/` | `Build` plus visual/manual verification |
+| Startup, source launcher, hot reload, restart, diagnostics | `$vector2d-app-lifecycle` | `launcher/`, assigned `native/App/` files | `Build`, `Launcher`; add affected suites |
+| Versioning, release notes, Release Manager, packaging | `$vector2d-release-workflow` | release sources, manager, scripts, distribution bootstrap | `Release` plus affected product suites |
+| Cross-domain planning and integration | `$vector2d-coordinate-agents` | root workflow and shared hotspots | aggregate minimum suite set |
+| Validation selection and execution | `$vector2d-validate-change` | validation scripts/artifacts only | selected suites, serialized |
 
-The `MainForm` partial family crosses Stage and WinForms boundaries. Route selection movement to `MainForm.SelectionDrag.cs`; keep general tool, UI, and workspace orchestration in `MainForm.cs`. Assign exactly one writer per partial file, and use a single integration owner when a change must touch both.
+Choose by behavior, not directory alone. A vertical feature may need a primary skill plus one neighboring contract; for example, a spatial mask model/render change uses project model, scene spatial, and final validation, while a spatial-panel layout-only change uses scene spatial plus WinForms UI.
 
 ## Task Packet
-
-Send this contract before an Agent starts implementation:
 
 ```text
 Task: <stable id and short name>
@@ -29,29 +33,26 @@ Suggested validation: <suite or focused check; coordinator runs exclusive suites
 Do not: <explicit exclusions, especially shared hotspots>
 ```
 
-Use path ownership as the enforceable boundary. Symbol ownership is acceptable only when the coordinator has deliberately assigned one Agent as the sole writer for the containing file.
+Use path ownership as the enforceable boundary. Symbol ownership is acceptable only when the coordinator deliberately assigns one Agent as the sole writer for the containing file.
 
 ## State And Dependencies
 
-Use `pending -> ready -> in_progress -> review -> done` for normal work. Use `blocked` only with a concrete missing input and `cancelled` only when the coordinator deliberately removes the package.
+Use `pending -> ready -> in_progress -> review -> done`. Use `blocked` only with a concrete missing input and `cancelled` only when the coordinator deliberately removes the package.
 
-- A package is `ready` only after all dependencies are `done` or its input contract is frozen.
-- At most one Agent owns an `in_progress` package.
-- Rework moves `review` back to `in_progress` with the same owner unless ownership is explicitly transferred.
-- The coordinator does not finish while a required package is `pending`, `ready`, `in_progress`, `review`, or silently blocked.
+- Mark a package `ready` only after dependencies are done or its input contract is frozen.
+- Assign at most one Agent to an `in_progress` package.
+- Move rework from `review` back to `in_progress` with the same owner unless ownership is explicitly transferred.
+- Do not finish while required work remains pending, ready, in progress, in review, or silently blocked.
 
 ## Shared Hotspots
 
-- `native/App/Benchmark.cs`: assign one regression owner. Focused `Benchmark.*.cs` partials may have separate owners only when their paths and callers are disjoint.
-- `native/UI/MainForm.cs`: assign one integration owner because UI, Stage, undo, refresh, and shortcut behavior converge here. A focused `MainForm.*.cs` partial may be independently owned when the task does not also edit the core file.
-- `native/Engine/VectorScene.cs`: keep one geometry writer when multiple operations touch packed arrays or index remapping.
-- `README.md` and `docs/USER_GUIDE.md`: update once behavior and terminology are stable.
-- `native/*.csproj`, `launcher/*.csproj`, `Directory.Build.props`, root/runtime binaries, and release artifacts: serialize and require explicit ownership.
-- `native/bin`, `native/obj`, benchmark DLLs, GPU/GUI resources, and screenshot destinations: treat as exclusive validation resources, not implementation work packages.
+- Core `Benchmark.cs`, `MainForm.cs`, `VectorScene.cs`, `StageControl.cs`, and `Direct2DStageRenderer.cs` remain single-owner integration files. Focused partials may have separate writers only when files and callers are disjoint.
+- `README.md` and `docs/USER_GUIDE.md` update once behavior and terminology stabilize.
+- `Directory.Build.props`, `release/release-notes.json`, `scripts/publish-single-exe.ps1`, project files, and release-manager shared sources are serialized release hotspots.
+- Root/runtime binaries, `bin`, `obj`, validation output, screenshots, GPU/GUI resources, publishing, builds, and benchmarks are exclusive resources.
+- A dirty diff that extracts code into untracked partials must be reviewed with both tracked and untracked file lists; `git diff --stat` alone can misreport extraction as deletion.
 
 ## Handoff
-
-Require a compact, evidence-based handoff:
 
 ```text
 Status: done | blocked | cancelled
@@ -63,4 +64,4 @@ Integration: <callers, contracts, docs, tests, or shared files still needed>
 Workspace: <unexpected overlapping changes observed>
 ```
 
-The coordinator then reviews the actual diff, checks call sites and ownership boundaries, integrates shared files, and runs final validation through one validation owner.
+The coordinator reviews the actual diff, checks call sites and ownership boundaries, integrates shared files, and assigns one final validation owner.

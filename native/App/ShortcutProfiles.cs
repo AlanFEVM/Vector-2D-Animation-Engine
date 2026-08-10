@@ -49,6 +49,7 @@ internal static class ShortcutCommandIds
 {
     public const string ToolSelect = "tool.select";
     public const string ToolTransform = "tool.transform";
+    public const string ToolDistort = "tool.distort";
     public const string ToolHand = "tool.hand";
     public const string ToolRectangle = "tool.rectangle";
     public const string ToolEllipse = "tool.ellipse";
@@ -92,6 +93,7 @@ internal static class ShortcutProfiles
     [
         Tool(ShortcutCommandIds.ToolSelect, "Select", ToolMode.Select),
         Tool(ShortcutCommandIds.ToolTransform, "Free Transform", ToolMode.Transform),
+        Tool(ShortcutCommandIds.ToolDistort, "Distort", ToolMode.Distort),
         Tool(ShortcutCommandIds.ToolHand, "Hand", ToolMode.Hand),
         Tool(ShortcutCommandIds.ToolRectangle, "Rectangle", ToolMode.Rectangle),
         Tool(ShortcutCommandIds.ToolEllipse, "Ellipse", ToolMode.Ellipse),

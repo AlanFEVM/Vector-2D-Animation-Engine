@@ -80,7 +80,20 @@ internal static class EditorRestartStore
 
     public static bool TryConsume(string? requestedToken, out EditorRestartState? state)
     {
+        try
+        {
+            return TryPrepareConsume(requestedToken, out state);
+        }
+        finally
+        {
+            DeletePending();
+        }
+    }
+
+    public static bool TryPrepareConsume(string? requestedToken, out EditorRestartState? state)
+    {
         state = null;
+        var prepared = false;
 
         try
         {
@@ -113,6 +126,7 @@ internal static class EditorRestartStore
                 WindowState = file.WindowState
             };
             AppLog.Info("Loaded the preserved editor restart state");
+            prepared = true;
             return true;
         }
         catch (Exception ex)
@@ -122,8 +136,15 @@ internal static class EditorRestartStore
         }
         finally
         {
-            DeletePending();
+            if (!prepared) DeletePending();
         }
+    }
+
+    public static void CompletePreparedConsume(string? requestedToken)
+    {
+        if (!IsCanonicalToken(requestedToken)) return;
+        DeletePending();
+        AppLog.Info("Completed the editor restart-state handoff after the main window became ready");
     }
 
     public static void DeletePending()

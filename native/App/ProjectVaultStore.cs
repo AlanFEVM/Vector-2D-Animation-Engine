@@ -23,6 +23,8 @@ internal static class ProjectVaultStore
     private const int MaxAssetTags = VectorProject.MaxAssetTagCount;
     private const int MaxDrawingObjects = 100_000;
     private const int MaxScenes = 100_000;
+    private const int MaxSceneMaskLayers = ushort.MaxValue;
+    private const int MaxSceneMaskObjects = 1_000_000;
     private const long MaxProjectBytes = 8L * 1024 * 1024 * 1024;
     private const long MaxSaveJournalBytes = 16L * 1024;
 
@@ -709,7 +711,7 @@ internal static class ProjectVaultStore
 
         ValidateUniqueIds(manifest.AssetFolders.Select(item => item?.Id), "asset folder");
         ValidateUniqueIds(manifest.AssetTags.Select(item => item?.Id), "asset tag");
-        ValidateUniqueIds(manifest.DrawingObjects.Select(item => item?.Id), "drawing object");
+        ValidateUniqueIds(manifest.DrawingObjects.Select(item => item?.Id), "symbol");
         ValidateUniqueIds(manifest.Scenes.Select(item => item?.Id), "scene");
         ValidateAssetFolders(manifest.AssetFolders);
         ValidateAssetTags(manifest.AssetTags);
@@ -725,15 +727,15 @@ internal static class ProjectVaultStore
                 || drawing.AssetTagIds.Distinct(StringComparer.Ordinal).Count() != drawing.AssetTagIds.Length
                 || drawing.AssetTagIds.Any(tagId => !assetTagIds.Contains(tagId)))
             {
-                throw new InvalidDataException("A drawing-object descriptor is invalid.");
+                throw new InvalidDataException("A symbol descriptor is invalid.");
             }
             if (drawing.AssetFolderId.Length > 0 && !folderIds.Contains(drawing.AssetFolderId))
             {
-                throw new InvalidDataException($"Drawing object '{drawing.Id}' references a missing asset folder.");
+                throw new InvalidDataException($"Symbol '{drawing.Id}' references a missing asset folder.");
             }
             if (!float.IsFinite(drawing.AnchorX) || !float.IsFinite(drawing.AnchorY))
             {
-                throw new InvalidDataException($"Drawing object '{drawing.Id}' has an invalid anchor.");
+                throw new InvalidDataException($"Symbol '{drawing.Id}' has an invalid anchor.");
             }
             ValidateManifestFile(projectRoot, drawing.SvgPath, DrawingSvgRelativePath(drawing.Id), drawing.SvgSha256, paths);
             ValidateManifestFile(
@@ -835,7 +837,7 @@ internal static class ProjectVaultStore
         }
         ValidateUniqueIds(snapshot.AssetFolders.Select(item => item?.Id), "asset folder");
         ValidateUniqueIds(snapshot.AssetTags.Select(item => item?.Id), "asset tag");
-        ValidateUniqueIds(snapshot.DrawingObjects.Select(item => item?.Id), "drawing object");
+        ValidateUniqueIds(snapshot.DrawingObjects.Select(item => item?.Id), "symbol");
         ValidateUniqueIds(snapshot.Scenes.Select(item => item?.Id), "scene");
 
         ValidateAssetTags(snapshot.AssetTags.Select(AssetTagDescriptor.From).ToArray());
@@ -854,9 +856,9 @@ internal static class ProjectVaultStore
                 || drawing.AssetTagIds.Distinct(StringComparer.Ordinal).Count() != drawing.AssetTagIds.Length
                 || drawing.AssetTagIds.Any(tagId => !assetTagIds.Contains(tagId)))
             {
-                throw new InvalidDataException("A drawing-object snapshot is invalid.");
+                throw new InvalidDataException("A symbol snapshot is invalid.");
             }
-            ValidateInstances(drawing.Instances, drawingIds, $"drawing object '{drawing.Id}'");
+            ValidateInstances(drawing.Instances, drawingIds, $"symbol '{drawing.Id}'");
         }
         foreach (var scene in snapshot.Scenes)
         {
@@ -865,6 +867,10 @@ internal static class ProjectVaultStore
                 throw new InvalidDataException("A scene snapshot is invalid.");
             }
             ValidateInstances(scene.Instances, drawingIds, $"scene '{scene.Id}'");
+            var (layerIds, contentLayerIds) = ValidateSceneLayerSnapshot(scene.Layers, scene.Id);
+            ValidateInstanceLayerReferences(scene.Instances, contentLayerIds, scene.Id);
+            ValidateSceneLayerInstanceAssignments(scene.Layers, scene.Instances, scene.Id);
+            ValidateTimeline(scene.Timeline, layerIds);
         }
         ValidateAcyclicDrawingGraph(graph);
     }
@@ -880,16 +886,16 @@ internal static class ProjectVaultStore
             || document.Layers is null || document.Timeline is null || document.Instances is null
             || document.ObjectLayer is null || document.ObjectKeyframeFrame is null)
         {
-            throw new InvalidDataException($"The timeline for drawing object '{expectedDrawingId}' is invalid.");
+            throw new InvalidDataException($"The timeline for symbol '{expectedDrawingId}' is invalid.");
         }
         ValidateUniqueIds(document.Layers.Select(item => item?.Id), "drawing layer");
         if (document.Layers.Any(item => item is null))
         {
-            throw new InvalidDataException($"Drawing object '{expectedDrawingId}' has an invalid layer descriptor.");
+            throw new InvalidDataException($"Symbol '{expectedDrawingId}' has an invalid layer descriptor.");
         }
         if (document.Layers.Any(item => !Enum.IsDefined(item.BlendMode)))
         {
-            throw new InvalidDataException($"Drawing object '{expectedDrawingId}' has an invalid layer blend mode.");
+            throw new InvalidDataException($"Symbol '{expectedDrawingId}' has an invalid layer blend mode.");
         }
         if (scene.LayerCount != document.Layers.Length
             || scene.ObjectCount != document.ObjectLayer.Length
@@ -900,24 +906,24 @@ internal static class ProjectVaultStore
             || scene.OnionSkinPreviousFrames != document.OnionSkinPreviousFrames
             || scene.OnionSkinNextFrames != document.OnionSkinNextFrames)
         {
-            throw new InvalidDataException($"Drawing object '{expectedDrawingId}' has mismatched SVG and timeline state.");
+            throw new InvalidDataException($"Symbol '{expectedDrawingId}' has mismatched SVG and timeline state.");
         }
 
         for (var index = 0; index < document.Layers.Length; index++)
         {
             if (!document.Layers[index].Matches(scene, index))
             {
-                throw new InvalidDataException($"Drawing object '{expectedDrawingId}' has mismatched layer metadata.");
+                throw new InvalidDataException($"Symbol '{expectedDrawingId}' has mismatched layer metadata.");
             }
         }
         if (!scene.ObjectLayer.SequenceEqual(document.ObjectLayer)
             || !scene.ObjectKeyframeFrame.SequenceEqual(document.ObjectKeyframeFrame))
         {
-            throw new InvalidDataException($"Drawing object '{expectedDrawingId}' has mismatched cel ownership.");
+            throw new InvalidDataException($"Symbol '{expectedDrawingId}' has mismatched cel ownership.");
         }
 
         var drawingIds = drawings.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
-        ValidateInstances(document.Instances, drawingIds, $"drawing object '{expectedDrawingId}'");
+        ValidateInstances(document.Instances, drawingIds, $"symbol '{expectedDrawingId}'");
         var layerIds = document.Layers.Select(item => item.Id).ToArray();
         ValidateTimeline(document.Timeline, layerIds);
         ValidateInstanceLayerReferences(document.Instances, layerIds, expectedDrawingId);
@@ -936,34 +942,290 @@ internal static class ProjectVaultStore
         {
             throw new InvalidDataException($"The timeline for scene '{expectedSceneId}' is invalid.");
         }
-        var layers = document.Layers.Layers;
-        ValidateUniqueIds(layers.Select(item => item?.Id), "scene layer");
-        if (layers.Any(item => item is null))
-        {
-            throw new InvalidDataException($"Scene '{expectedSceneId}' has an invalid layer descriptor.");
-        }
-        var layerIds = layers.Select(item => item.Id).ToArray();
-        if (layers.Any(item => item.Name is null || !Enum.IsDefined(item.BlendMode)))
-        {
-            throw new InvalidDataException($"Scene '{expectedSceneId}' has invalid layer metadata.");
-        }
-        if (!layerIds.Contains(document.Layers.ActiveLayerId, StringComparer.Ordinal))
-        {
-            throw new InvalidDataException($"Scene '{expectedSceneId}' has an invalid active layer.");
-        }
+        var (layerIds, contentLayerIds) = ValidateSceneLayerSnapshot(document.Layers, expectedSceneId);
         var drawingIds = drawings.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         ValidateInstances(document.Instances, drawingIds, $"scene '{expectedSceneId}'");
-        ValidateInstanceLayerReferences(document.Instances, layerIds, expectedSceneId);
-        if (document.Layers.InstanceLayerIds.Count != document.Instances.Length
-            || document.Instances.Any(instance =>
+        ValidateInstanceLayerReferences(document.Instances, contentLayerIds, expectedSceneId);
+        ValidateSceneLayerInstanceAssignments(document.Layers, document.Instances, expectedSceneId);
+        ValidateTimeline(document.Timeline, layerIds);
+    }
+
+    private static (string[] LayerIds, string[] ContentLayerIds) ValidateSceneLayerSnapshot(
+        SceneLayerSnapshot snapshot,
+        string sceneId)
+    {
+        if (snapshot.Layers is null || snapshot.Layers.Length == 0 || snapshot.InstanceLayerIds is null)
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' has incomplete layer metadata.");
+        }
+
+        var layers = snapshot.Layers;
+        ValidateUniqueIds(layers.Select(item => item?.Id), "scene layer");
+        if (layers.Any(layer => layer is null
+                || !IsSafeStableId(layer.Id)
+                || layer.Name is null
+                || layer.MaskLayerId is null
+                || !Enum.IsDefined(layer.Kind)
+                || !Enum.IsDefined(layer.BlendMode)))
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' has invalid layer metadata.");
+        }
+
+        var layerIds = layers.Select(layer => layer.Id).ToArray();
+        if (!layerIds.Contains(snapshot.ActiveLayerId, StringComparer.Ordinal))
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' has an invalid active layer.");
+        }
+
+        var masks = layers
+            .Where(layer => layer.Kind == SceneLayerKind.Mask)
+            .ToDictionary(layer => layer.Id, StringComparer.Ordinal);
+        var claimedMasks = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var layer in layers)
+        {
+            if (layer.Kind == SceneLayerKind.Mask)
+            {
+                if (!string.IsNullOrWhiteSpace(layer.MaskLayerId) || layer.MaskScene is null)
+                {
+                    throw new InvalidDataException($"Scene '{sceneId}' has an invalid mask layer '{layer.Id}'.");
+                }
+                ValidateSceneMaskSnapshot(layer.MaskScene, sceneId, layer.Id);
+                continue;
+            }
+
+            if (layer.MaskScene is not null)
+            {
+                throw new InvalidDataException($"Scene '{sceneId}' has mask geometry on content layer '{layer.Id}'.");
+            }
+            if (string.IsNullOrWhiteSpace(layer.MaskLayerId)) continue;
+            if (!masks.ContainsKey(layer.MaskLayerId) || !claimedMasks.Add(layer.MaskLayerId))
+            {
+                throw new InvalidDataException($"Scene '{sceneId}' has an invalid or multiply claimed mask link.");
+            }
+        }
+
+        var contentLayerIds = layers
+            .Where(layer => layer.Kind == SceneLayerKind.Content)
+            .Select(layer => layer.Id)
+            .ToArray();
+        if (contentLayerIds.Length == 0)
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' has no content layer.");
+        }
+        return (layerIds, contentLayerIds);
+    }
+
+    private static void ValidateSceneLayerInstanceAssignments(
+        SceneLayerSnapshot snapshot,
+        IReadOnlyList<InstanceRestartSnapshot> instances,
+        string sceneId)
+    {
+        if (snapshot.InstanceLayerIds.Count != instances.Count
+            || instances.Any(instance =>
                 !string.Equals(
-                    document.Layers.InstanceLayerIds.GetValueOrDefault(instance.Id),
+                    snapshot.InstanceLayerIds.GetValueOrDefault(instance.Id),
                     instance.SceneLayerId,
                     StringComparison.Ordinal)))
         {
-            throw new InvalidDataException($"Scene '{expectedSceneId}' has mismatched instance-layer metadata.");
+            throw new InvalidDataException($"Scene '{sceneId}' has mismatched instance-layer metadata.");
         }
-        ValidateTimeline(document.Timeline, layerIds);
+    }
+
+    private static void ValidateSceneMaskSnapshot(
+        VectorSceneSnapshot snapshot,
+        string sceneId,
+        string maskLayerId)
+    {
+        if (snapshot.LayerCount <= 0
+            || snapshot.LayerCount > MaxSceneMaskLayers
+            || snapshot.ObjectCount < 0
+            || snapshot.ObjectCount > MaxSceneMaskObjects
+            || snapshot.VirtualAtomCount < 0
+            || snapshot.NextObjectOrder < 0
+            || (uint)snapshot.ActiveLayer >= snapshot.LayerCount
+            || !float.IsFinite(snapshot.MaxHalfExtent)
+            || snapshot.MaxHalfExtent < 0
+            || snapshot.Timeline is null)
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' mask '{maskLayerId}' has invalid scene state.");
+        }
+
+        ValidateSceneMaskArray(snapshot.LayerIds, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerIds));
+        ValidateSceneMaskArray(snapshot.LayerNames, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerNames));
+        ValidateSceneMaskArray(snapshot.LayerKinds, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerKinds));
+        ValidateSceneMaskArray(snapshot.LayerParentIds, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerParentIds));
+        ValidateSceneMaskArray(snapshot.LayerMaskIds, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerMaskIds));
+        ValidateSceneMaskArray(snapshot.LayerLocked, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerLocked));
+        ValidateSceneMaskArray(snapshot.LayerVisible, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerVisible));
+        ValidateSceneMaskArray(snapshot.LayerOpacity, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerOpacity));
+        ValidateSceneMaskArray(snapshot.LayerBlendModes, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerBlendModes));
+        ValidateSceneMaskArray(snapshot.LayerColorArgb, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerColorArgb));
+        ValidateSceneMaskArray(snapshot.LayerOutline, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerOutline));
+        ValidateSceneMaskArray(snapshot.LayerOnionSkin, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerOnionSkin));
+        ValidateSceneMaskArray(snapshot.LayerStart, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerStart));
+        ValidateSceneMaskArray(snapshot.LayerEnd, snapshot.LayerCount, sceneId, maskLayerId, nameof(snapshot.LayerEnd));
+
+        var layerIds = snapshot.LayerIds.ToHashSet(StringComparer.Ordinal);
+        if (snapshot.LayerIds.Any(id => !IsSafeStableId(id))
+            || layerIds.Count != snapshot.LayerCount
+            || snapshot.LayerNames.Any(name => name is null)
+            || snapshot.LayerParentIds.Any(parentId => parentId is null)
+            || snapshot.LayerMaskIds.Any(linkedMaskId => linkedMaskId is null)
+            || snapshot.LayerKinds.Any(kind => !Enum.IsDefined(kind))
+            || snapshot.LayerBlendModes.Any(mode => !Enum.IsDefined(mode))
+            || snapshot.LayerOpacity.Any(opacity => !float.IsFinite(opacity) || opacity is < 0f or > 1f)
+            || snapshot.LayerStart.Any(start => start < 0)
+            || snapshot.LayerEnd.Select((end, index) => end < -1 || end >= 0 && end < snapshot.LayerStart[index]).Any(invalid => invalid))
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' mask '{maskLayerId}' has invalid layer metadata.");
+        }
+
+        var claimedDrawingMasks = new HashSet<string>(StringComparer.Ordinal);
+        for (var layer = 0; layer < snapshot.LayerCount; layer++)
+        {
+            var parentId = snapshot.LayerParentIds[layer];
+            if (!string.IsNullOrWhiteSpace(parentId))
+            {
+                var parent = Array.IndexOf(snapshot.LayerIds, parentId);
+                if (parent < 0 || snapshot.LayerKinds[parent] != DrawingLayerKind.Folder || parent == layer)
+                {
+                    throw new InvalidDataException($"Scene '{sceneId}' mask '{maskLayerId}' has an invalid layer parent.");
+                }
+            }
+
+            var linkedMaskId = snapshot.LayerMaskIds[layer];
+            if (string.IsNullOrWhiteSpace(linkedMaskId)) continue;
+            var linkedMask = Array.IndexOf(snapshot.LayerIds, linkedMaskId);
+            if (snapshot.LayerKinds[layer] != DrawingLayerKind.Drawing
+                || linkedMask < 0
+                || snapshot.LayerKinds[linkedMask] != DrawingLayerKind.Mask
+                || !claimedDrawingMasks.Add(linkedMaskId))
+            {
+                throw new InvalidDataException($"Scene '{sceneId}' mask '{maskLayerId}' has an invalid drawing-layer mask link.");
+            }
+        }
+
+        ValidateSceneMaskObjectArrays(snapshot, sceneId, maskLayerId);
+        for (var index = 0; index < snapshot.ObjectCount; index++)
+        {
+            if (snapshot.ObjectLayer[index] >= snapshot.LayerCount
+                || snapshot.ObjectKeyframeFrame[index] < 0
+                || !double.IsFinite(snapshot.ObjectSubOrder[index])
+                || !float.IsFinite(snapshot.X[index])
+                || !float.IsFinite(snapshot.Y[index])
+                || !float.IsFinite(snapshot.Width[index])
+                || !float.IsFinite(snapshot.Height[index])
+                || !float.IsFinite(snapshot.Angle[index])
+                || !float.IsFinite(snapshot.Stroke[index])
+                || snapshot.Width[index] < 0
+                || snapshot.Height[index] < 0
+                || snapshot.Stroke[index] < 0
+                || !float.IsFinite(snapshot.CurveControlX[index])
+                || !float.IsFinite(snapshot.CurveControlY[index])
+                || !float.IsFinite(snapshot.CurveControl2X[index])
+                || !float.IsFinite(snapshot.CurveControl2Y[index])
+                || !Enum.IsDefined(snapshot.LineEndpointStyles[index])
+                || !Enum.IsDefined(snapshot.LineEndEndpointStyles[index])
+                || !Enum.IsDefined(snapshot.ShapeKind[index])
+                || !Enum.IsDefined(snapshot.GradientKinds[index])
+                || !float.IsFinite(snapshot.GradientStartX[index])
+                || !float.IsFinite(snapshot.GradientStartY[index])
+                || !float.IsFinite(snapshot.GradientEndX[index])
+                || !float.IsFinite(snapshot.GradientEndY[index]))
+            {
+                throw new InvalidDataException($"Scene '{sceneId}' mask '{maskLayerId}' has invalid object metadata.");
+            }
+        }
+
+        if (SceneMaskDictionaryInvalid(snapshot.GradientStops, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.GradientPathLocalPoints, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.ShapeGradientMappingLocalContours, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.PathLocalContours, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.PathBezierLocalContours, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.FreehandLocalPoints, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.FreehandBezierLocalNodes, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.MixingStrokeLocalSamples, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.MixingStrokeLocalRegions, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.ImportedSvgSources, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.ImportedSvgNames, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.TextObjects, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.ObjectDistortions, snapshot.ObjectCount)
+            || snapshot.ObjectDistortions.Any(item => item.Value.Any(distortion => !distortion.IsValid)))
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' mask '{maskLayerId}' has invalid sparse object data.");
+        }
+
+        ValidateTimeline(snapshot.Timeline, snapshot.LayerIds);
+        var tracksByLayer = snapshot.Timeline.Tracks.ToDictionary(track => track.TargetId, StringComparer.Ordinal);
+        for (var objectIndex = 0; objectIndex < snapshot.ObjectCount; objectIndex++)
+        {
+            var layerId = snapshot.LayerIds[snapshot.ObjectLayer[objectIndex]];
+            var frame = snapshot.ObjectKeyframeFrame[objectIndex];
+            if (!tracksByLayer[layerId].Keyframes.Any(keyframe =>
+                    keyframe.Frame == frame && keyframe.Kind == TimelineKeyframeKind.Populated))
+            {
+                throw new InvalidDataException($"Scene '{sceneId}' mask '{maskLayerId}' has invalid Cel ownership.");
+            }
+        }
+    }
+
+    private static void ValidateSceneMaskObjectArrays(
+        VectorSceneSnapshot snapshot,
+        string sceneId,
+        string maskLayerId)
+    {
+        var count = snapshot.ObjectCount;
+        ValidateSceneMaskArray(snapshot.ObjectLayer, count, sceneId, maskLayerId, nameof(snapshot.ObjectLayer));
+        ValidateSceneMaskArray(snapshot.ObjectKeyframeFrame, count, sceneId, maskLayerId, nameof(snapshot.ObjectKeyframeFrame));
+        ValidateSceneMaskArray(snapshot.ObjectOrder, count, sceneId, maskLayerId, nameof(snapshot.ObjectOrder));
+        ValidateSceneMaskArray(snapshot.ObjectSubOrder, count, sceneId, maskLayerId, nameof(snapshot.ObjectSubOrder));
+        ValidateSceneMaskArray(snapshot.X, count, sceneId, maskLayerId, nameof(snapshot.X));
+        ValidateSceneMaskArray(snapshot.Y, count, sceneId, maskLayerId, nameof(snapshot.Y));
+        ValidateSceneMaskArray(snapshot.Width, count, sceneId, maskLayerId, nameof(snapshot.Width));
+        ValidateSceneMaskArray(snapshot.Height, count, sceneId, maskLayerId, nameof(snapshot.Height));
+        ValidateSceneMaskArray(snapshot.Angle, count, sceneId, maskLayerId, nameof(snapshot.Angle));
+        ValidateSceneMaskArray(snapshot.Stroke, count, sceneId, maskLayerId, nameof(snapshot.Stroke));
+        ValidateSceneMaskArray(snapshot.CurveControlX, count, sceneId, maskLayerId, nameof(snapshot.CurveControlX));
+        ValidateSceneMaskArray(snapshot.CurveControlY, count, sceneId, maskLayerId, nameof(snapshot.CurveControlY));
+        ValidateSceneMaskArray(snapshot.CurveControl2X, count, sceneId, maskLayerId, nameof(snapshot.CurveControl2X));
+        ValidateSceneMaskArray(snapshot.CurveControl2Y, count, sceneId, maskLayerId, nameof(snapshot.CurveControl2Y));
+        ValidateSceneMaskArray(snapshot.LineEndpointStyles, count, sceneId, maskLayerId, nameof(snapshot.LineEndpointStyles));
+        ValidateSceneMaskArray(snapshot.LineEndEndpointStyles, count, sceneId, maskLayerId, nameof(snapshot.LineEndEndpointStyles));
+        ValidateSceneMaskArray(snapshot.ShapeKind, count, sceneId, maskLayerId, nameof(snapshot.ShapeKind));
+        ValidateSceneMaskArray(snapshot.ShapeVertexCounts, count, sceneId, maskLayerId, nameof(snapshot.ShapeVertexCounts));
+        ValidateSceneMaskArray(snapshot.AtomCount, count, sceneId, maskLayerId, nameof(snapshot.AtomCount));
+        ValidateSceneMaskArray(snapshot.Argb, count, sceneId, maskLayerId, nameof(snapshot.Argb));
+        ValidateSceneMaskArray(snapshot.StrokeArgb, count, sceneId, maskLayerId, nameof(snapshot.StrokeArgb));
+        ValidateSceneMaskArray(snapshot.FillAutoMergeProtected, count, sceneId, maskLayerId, nameof(snapshot.FillAutoMergeProtected));
+        ValidateSceneMaskArray(snapshot.LinearGradientEnabled, count, sceneId, maskLayerId, nameof(snapshot.LinearGradientEnabled));
+        ValidateSceneMaskArray(snapshot.GradientKinds, count, sceneId, maskLayerId, nameof(snapshot.GradientKinds));
+        ValidateSceneMaskArray(snapshot.GradientStartArgb, count, sceneId, maskLayerId, nameof(snapshot.GradientStartArgb));
+        ValidateSceneMaskArray(snapshot.GradientEndArgb, count, sceneId, maskLayerId, nameof(snapshot.GradientEndArgb));
+        ValidateSceneMaskArray(snapshot.GradientStartX, count, sceneId, maskLayerId, nameof(snapshot.GradientStartX));
+        ValidateSceneMaskArray(snapshot.GradientStartY, count, sceneId, maskLayerId, nameof(snapshot.GradientStartY));
+        ValidateSceneMaskArray(snapshot.GradientEndX, count, sceneId, maskLayerId, nameof(snapshot.GradientEndX));
+        ValidateSceneMaskArray(snapshot.GradientEndY, count, sceneId, maskLayerId, nameof(snapshot.GradientEndY));
+    }
+
+    private static void ValidateSceneMaskArray<T>(
+        T[]? values,
+        int expectedCount,
+        string sceneId,
+        string maskLayerId,
+        string name)
+    {
+        if (values is null || values.Length != expectedCount)
+        {
+            throw new InvalidDataException(
+                $"Scene '{sceneId}' mask '{maskLayerId}' has an invalid {name} array.");
+        }
+    }
+
+    private static bool SceneMaskDictionaryInvalid<T>(
+        IReadOnlyDictionary<int, T>? values,
+        int objectCount)
+    {
+        return values is null || values.Any(item => (uint)item.Key >= objectCount || item.Value is null);
     }
 
     private static void ValidateInstances(
@@ -979,7 +1241,8 @@ internal static class ProjectVaultStore
                 || !IsValidState(instance.Visible, instance.X, instance.Y, instance.Z, instance.RotationX, instance.RotationY,
                     instance.RotationZ, instance.SkewX, instance.SkewY, instance.ScaleX, instance.ScaleY, instance.ScaleZ,
                     instance.Alpha, instance.TintArgb,
-                    instance.PlaybackFps, instance.PlaybackMode, instance.HoldFrame))
+                    instance.PlaybackFps, instance.PlaybackMode, instance.HoldFrame)
+                || !IsValidDistortion(instance.Distortion))
             {
                 throw new InvalidDataException($"An instance in {owner} is invalid.");
             }
@@ -991,7 +1254,8 @@ internal static class ProjectVaultStore
                     || !IsValidState(state.Visible, state.X, state.Y, state.Z, state.RotationX, state.RotationY,
                         state.RotationZ, state.SkewX, state.SkewY, state.ScaleX, state.ScaleY, state.ScaleZ,
                         state.Alpha, state.TintArgb,
-                        state.PlaybackFps, state.PlaybackMode, state.HoldFrame))
+                        state.PlaybackFps, state.PlaybackMode, state.HoldFrame)
+                    || !IsValidDistortion(state.Distortion))
                 {
                     throw new InvalidDataException($"An instance state keyframe in {owner} is invalid.");
                 }
@@ -1083,7 +1347,7 @@ internal static class ProjectVaultStore
             var layerIndex = document.ObjectLayer[objectIndex];
             if (layerIndex >= document.Layers.Length)
             {
-                throw new InvalidDataException($"Drawing object '{drawingObjectId}' has an invalid object layer.");
+                throw new InvalidDataException($"Symbol '{drawingObjectId}' has an invalid object layer.");
             }
             var frame = document.ObjectKeyframeFrame[objectIndex];
             var track = tracks[document.Layers[layerIndex].Id];
@@ -1091,7 +1355,7 @@ internal static class ProjectVaultStore
                     keyframe.Frame == frame && keyframe.Kind == TimelineKeyframeKind.Populated))
             {
                 throw new InvalidDataException(
-                    $"Drawing object '{drawingObjectId}' has an object whose Cel is not owned by a populated keyframe.");
+                    $"Symbol '{drawingObjectId}' has an object whose Cel is not owned by a populated keyframe.");
             }
         }
     }
@@ -1109,7 +1373,7 @@ internal static class ProjectVaultStore
         void Visit(string id)
         {
             if (visited.Contains(id)) return;
-            if (!active.Add(id)) throw new InvalidDataException("The drawing-object graph contains a cycle.");
+            if (!active.Add(id)) throw new InvalidDataException("The symbol graph contains a cycle.");
             foreach (var childId in graph[id]) Visit(childId);
             active.Remove(id);
             visited.Add(id);
@@ -1144,6 +1408,9 @@ internal static class ProjectVaultStore
             && (uint)tintArgb >> 24 == 0xff
             && playbackFps is >= 1m and <= 120m && Enum.IsDefined(playbackMode) && holdFrame >= 0;
     }
+
+    private static bool IsValidDistortion(DistortWarp? distortion) =>
+        !distortion.HasValue || distortion.Value.IsValid;
 
     private static bool IsValidCamera(SceneCameraDefinition camera)
     {
@@ -1401,7 +1668,9 @@ internal static class ProjectVaultStore
             MixingStrokeLocalSamples = source.MixingStrokeLocalSamples,
             MixingStrokeLocalRegions = source.MixingStrokeLocalRegions,
             ImportedSvgSources = source.ImportedSvgSources,
-            TextObjects = source.TextObjects
+            ImportedSvgNames = source.ImportedSvgNames,
+            TextObjects = source.TextObjects,
+            ObjectDistortions = source.ObjectDistortions
         };
     }
 
@@ -1505,7 +1774,7 @@ internal static class ProjectVaultStore
     private sealed class DrawingManifestEntry
     {
         public string Id { get; init; } = "";
-        public string Name { get; init; } = "Drawing Object";
+        public string Name { get; init; } = "Symbol";
         public string Kind { get; init; } = "Symbol";
         public string Detail { get; init; } = "";
         public string AssetFolderId { get; init; } = "";

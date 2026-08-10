@@ -42,6 +42,59 @@ internal sealed class LayerBlendCompositor : IDisposable
         }
     }
 
+    public void CompositeBatchesTo(
+        Graphics destination,
+        VectorScene scene,
+        Func<int, bool> shouldDrawLayer,
+        Action<Graphics, IReadOnlyList<int>> drawLayers)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(scene);
+        ArgumentNullException.ThrowIfNull(shouldDrawLayer);
+        ArgumentNullException.ThrowIfNull(drawLayers);
+
+        var root = RentSurface();
+        try
+        {
+            var children = BuildLayerTree(scene);
+            var pendingLayers = new List<int>();
+            AppendChildrenBatched(
+                scene,
+                children,
+                scene.LayerCount,
+                root,
+                pendingLayers,
+                shouldDrawLayer,
+                drawLayers);
+            FlushLayerBatch(root, pendingLayers, drawLayers, $"root:{scene.LayerCount}");
+            destination.DrawImageUnscaled(root, 0, 0);
+        }
+        finally
+        {
+            ReturnSurface(root);
+        }
+    }
+
+    internal static int[][] GetSpatialLayerBatches(
+        VectorScene scene,
+        Func<int, bool> shouldDrawLayer)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        ArgumentNullException.ThrowIfNull(shouldDrawLayer);
+        var children = BuildLayerTree(scene);
+        var result = new List<int[]>();
+        var pendingLayers = new List<int>();
+        AppendSpatialLayerBatches(
+            scene,
+            children,
+            scene.LayerCount,
+            pendingLayers,
+            result,
+            shouldDrawLayer);
+        FlushSpatialLayerBatch(pendingLayers, result);
+        return result.ToArray();
+    }
+
     private void CompositeChildren(
         VectorScene scene,
         IReadOnlyList<int>[] children,
@@ -86,6 +139,216 @@ internal sealed class LayerBlendCompositor : IDisposable
                 ReturnSurface(source);
             }
         }
+    }
+
+    private void AppendChildrenBatched(
+        VectorScene scene,
+        IReadOnlyList<int>[] children,
+        int parent,
+        Bitmap destination,
+        List<int> pendingLayers,
+        Func<int, bool> shouldDrawLayer,
+        Action<Graphics, IReadOnlyList<int>> drawLayers)
+    {
+        var siblings = children[parent];
+        for (var siblingIndex = siblings.Count - 1; siblingIndex >= 0; siblingIndex--)
+        {
+            var layer = siblings[siblingIndex];
+            if (!LayerIsVisible(scene, layer)) continue;
+            var isFolder = scene.GetLayerKind(layer) == DrawingLayerKind.Folder;
+            if (isFolder
+                && BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            {
+                AppendChildrenBatched(
+                    scene,
+                    children,
+                    layer,
+                    destination,
+                    pendingLayers,
+                    shouldDrawLayer,
+                    drawLayers);
+                continue;
+            }
+
+            if (isFolder)
+            {
+                if (!SubtreeHasDrawableLayer(scene, children, layer, shouldDrawLayer)) continue;
+                FlushLayerBatch(destination, pendingLayers, drawLayers, $"before:{layer}");
+                var folderSurface = RentSurface();
+                try
+                {
+                    var isolatedPendingLayers = new List<int>();
+                    AppendChildrenBatched(
+                        scene,
+                        children,
+                        layer,
+                        folderSurface,
+                        isolatedPendingLayers,
+                        shouldDrawLayer,
+                        drawLayers);
+                    FlushLayerBatch(
+                        folderSurface,
+                        isolatedPendingLayers,
+                        drawLayers,
+                        $"folder:{layer}");
+                    CompositeSurface(
+                        destination,
+                        folderSurface,
+                        BlendModeFor(scene, layer),
+                        OpacityFor(scene, layer),
+                        StableSeed(DissolveKey(scene, layer)));
+                }
+                finally
+                {
+                    ReturnSurface(folderSurface);
+                }
+                continue;
+            }
+
+            if (!shouldDrawLayer(layer)) continue;
+            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            {
+                pendingLayers.Add(layer);
+                continue;
+            }
+
+            FlushLayerBatch(destination, pendingLayers, drawLayers, $"before:{layer}");
+            var layerSurface = RentSurface();
+            try
+            {
+                using var graphics = Graphics.FromImage(layerSurface);
+                ConfigureLayerGraphics(graphics);
+                drawLayers(graphics, [layer]);
+
+                CompositeSurface(
+                    destination,
+                    layerSurface,
+                    BlendModeFor(scene, layer),
+                    OpacityFor(scene, layer),
+                    StableSeed(DissolveKey(scene, layer)));
+            }
+            finally
+            {
+                ReturnSurface(layerSurface);
+            }
+        }
+    }
+
+    private void FlushLayerBatch(
+        Bitmap destination,
+        List<int> pendingLayers,
+        Action<Graphics, IReadOnlyList<int>> drawLayers,
+        string stableKey)
+    {
+        if (pendingLayers.Count == 0) return;
+        var source = RentSurface();
+        try
+        {
+            using var graphics = Graphics.FromImage(source);
+            ConfigureLayerGraphics(graphics);
+            drawLayers(graphics, pendingLayers);
+            CompositeSurface(
+                destination,
+                source,
+                LayerBlendMode.Normal,
+                1f,
+                StableSeed(stableKey));
+        }
+        finally
+        {
+            ReturnSurface(source);
+            pendingLayers.Clear();
+        }
+    }
+
+    private static bool SubtreeHasDrawableLayer(
+        VectorScene scene,
+        IReadOnlyList<int>[] children,
+        int layer,
+        Func<int, bool> shouldDrawLayer)
+    {
+        if (!LayerIsVisible(scene, layer)) return false;
+        if (scene.GetLayerKind(layer) != DrawingLayerKind.Folder) return shouldDrawLayer(layer);
+        foreach (var descendant in children[layer])
+        {
+            if (SubtreeHasDrawableLayer(scene, children, descendant, shouldDrawLayer)) return true;
+        }
+        return false;
+    }
+
+    private static void AppendSpatialLayerBatches(
+        VectorScene scene,
+        IReadOnlyList<int>[] children,
+        int parent,
+        List<int> pendingLayers,
+        ICollection<int[]> destination,
+        Func<int, bool> shouldDrawLayer)
+    {
+        var siblings = children[parent];
+        for (var siblingIndex = siblings.Count - 1; siblingIndex >= 0; siblingIndex--)
+        {
+            var layer = siblings[siblingIndex];
+            if (!LayerIsVisible(scene, layer)) continue;
+            var isFolder = scene.GetLayerKind(layer) == DrawingLayerKind.Folder;
+            if (isFolder
+                && BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            {
+                AppendSpatialLayerBatches(
+                    scene,
+                    children,
+                    layer,
+                    pendingLayers,
+                    destination,
+                    shouldDrawLayer);
+                continue;
+            }
+
+            if (isFolder)
+            {
+                if (!SubtreeHasDrawableLayer(scene, children, layer, shouldDrawLayer)) continue;
+                FlushSpatialLayerBatch(pendingLayers, destination);
+                var isolatedPendingLayers = new List<int>();
+                AppendSpatialLayerBatches(
+                    scene,
+                    children,
+                    layer,
+                    isolatedPendingLayers,
+                    destination,
+                    shouldDrawLayer);
+                FlushSpatialLayerBatch(isolatedPendingLayers, destination);
+                continue;
+            }
+
+            if (!shouldDrawLayer(layer)) continue;
+            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            {
+                pendingLayers.Add(layer);
+                continue;
+            }
+
+            FlushSpatialLayerBatch(pendingLayers, destination);
+            destination.Add([layer]);
+        }
+    }
+
+    private static void FlushSpatialLayerBatch(
+        List<int> pendingLayers,
+        ICollection<int[]> destination)
+    {
+        if (pendingLayers.Count == 0) return;
+        destination.Add(pendingLayers.ToArray());
+        pendingLayers.Clear();
+    }
+
+    private static bool LayerIsVisible(VectorScene scene, int layer)
+    {
+        return (uint)layer < scene.LayerCount
+            && layer < scene.LayerVisible.Length
+            && scene.LayerVisible[layer];
     }
 
     private static IReadOnlyList<int>[] BuildLayerTree(VectorScene scene)

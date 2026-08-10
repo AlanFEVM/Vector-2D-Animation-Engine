@@ -5,45 +5,28 @@
 | Concern | Primary code |
 | --- | --- |
 | Project roots and controlled mutation | `native/Engine/VectorProject.cs` |
-| Drawable reusable asset | `native/Engine/DrawingObjectDefinition.cs` |
-| Non-drawable scene composition | `native/Engine/SceneDefinition.cs` |
-| Shared instance transform fields | `native/Engine/SceneObjectInstanceDefinition.cs` |
-| Composition/timeline contract | `native/Engine/CompositionDefinition.cs` |
-| Editable packed geometry | `native/Engine/VectorScene.cs` |
-| Scene undo/clone DTO | `native/Engine/VectorSceneSnapshot.cs` |
+| Asset folders and tags in memory | `ProjectAssetFolder.cs`, `ProjectAssetTag.cs`, `VectorProject.AssetTags.cs` |
+| Reusable symbol/drawing object | `DrawingObjectDefinition.cs` |
+| Scene/layer composition | `SceneDefinition.cs`, `LayeredInstanceIndex.cs` |
+| Scene masks | `SceneMaskDefinition.cs` |
+| Instance transform/state | `SceneObjectInstanceDefinition.cs` |
+| Composition/timeline-facing interfaces | `CompositionDefinition.cs` |
+| Editable packed geometry | focused `VectorScene.*.cs` partials |
+| Geometry undo/clone DTO | `VectorSceneSnapshot.cs` |
 
-`Scenes`, `DrawingObjects`, and `Instances` expose read-only views. Route adds, removes, duplication, and reference cleanup through their owning model.
+Collections expose read-only views. Route adds, removes, duplication, layer moves, mask changes, and reference cleanup through the owning model.
 
 ## Mutation Rules
 
-- Validate that both container and referenced drawing object belong to the same project.
-- Keep IDs non-empty and unique. A drawing-object instance ID must not collide with a drawing layer ID.
-- After instance changes, call the owning definition's timeline synchronization method.
-- Removing a drawing object must remove scene instances and nested drawing-object references to it.
-- Duplicating a drawing object must create new nested-instance IDs and rewrite timeline snapshot `TargetId` values before restore.
-- Raise `VectorProject.Changed` once after a successful project mutation; avoid exposing partially updated collections.
+- Validate container and referenced definitions belong to the same project.
+- Keep IDs non-empty, unique, and stable; do not derive durable identity from row/object indices.
+- Synchronize layer-based timeline targets after layer changes. Instances are assigned to layers; do not invent synthetic instance tracks.
+- Remove references to deleted definitions and reject invalid mask/folder relationships.
+- Duplicate nested content with new instance IDs and remap snapshot references.
+- Raise project/model change events only after a complete valid mutation.
 
 ## Snapshot Checklist
 
-When adding model or geometry state, update all applicable locations:
+When adding mutable model or geometry state, update the applicable DTO field, deep-copy creation path, restore validation/default, compaction/remap path, duplication path, composition preparation, and regression.
 
-1. `VectorSceneSnapshot` or `AnimationTimelineSnapshot` field.
-2. `CreateSnapshot` deep copy.
-3. `RestoreSnapshot` validation/default handling.
-4. Object compaction/remapping when the state is indexed by object.
-5. Drawing-object duplication.
-6. Benchmark coverage for round trip and independent ownership.
-
-Snapshots currently support undo, cloning, and rollback. They are not a complete durable project file format, so do not imply save/load compatibility without implementing it explicitly.
-
-## UI Rebind Points
-
-Project mutations usually require targeted refreshes in `native/UI/MainForm.cs`:
-
-- `RefreshDrawingObjectAssetPresentation`
-- `BindActiveDrawingObjectScene`
-- `BindSceneEditStage`
-- `SceneEditorPanel.BindProject`
-- `LibraryVaultPanel.BindProject`
-
-Preserve the current project, active object, frame, and workspace whenever a refresh can do so.
+Snapshots support undo, cloning, rollback, and restart handoff. Durable project-file compatibility belongs to `$vector2d-assets-persistence`.

@@ -4,6 +4,8 @@ internal enum ToolMode
 {
     Select,
     Transform,
+    Transform3D,
+    Distort,
     Hand,
     Rectangle,
     Ellipse,

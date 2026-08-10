@@ -2,6 +2,8 @@ namespace VectorAnimationEngine;
 
 internal static class Program
 {
+    private static readonly TimeSpan EditorRestartInstanceWait = TimeSpan.FromSeconds(10);
+
     private sealed record BenchmarkCommand(string LogMessage, Action Execute);
 
     private static readonly IReadOnlyDictionary<string, BenchmarkCommand> BenchmarkCommands =
@@ -33,11 +35,21 @@ internal static class Program
             e.SetObserved();
         };
 
-        if (TryRunBenchmark(args)) return;
+        if (TryRunBenchmark(args) || TryValidateReleaseNotes(args)) return;
 
-        if (!SingleInstanceLease.TryAcquire(out var instanceLease))
+        var restartToken = EditorRestartStore.GetRequestedToken(args);
+        var instanceWait = string.IsNullOrWhiteSpace(restartToken)
+            ? TimeSpan.Zero
+            : EditorRestartInstanceWait;
+        if (instanceWait > TimeSpan.Zero)
         {
-            AppLog.Info("A native application instance is already active; skipping duplicate startup.");
+            AppLog.Info($"Editor restart is waiting up to {instanceWait.TotalSeconds:0} seconds for the previous native instance to exit.");
+        }
+        if (!SingleInstanceLease.TryAcquire(instanceWait, out var instanceLease))
+        {
+            AppLog.Warn(instanceWait > TimeSpan.Zero
+                ? "The previous native instance did not exit before the editor-restart startup timed out."
+                : "A native application instance is already active; skipping duplicate startup.");
             return;
         }
 
@@ -60,9 +72,11 @@ internal static class Program
             {
                 try
                 {
-                    var restartToken = EditorRestartStore.GetRequestedToken(args);
-                    EditorRestartStore.TryConsume(restartToken, out var restartState);
-                    Application.Run(new AppHost(restartState));
+                    var restartPrepared = EditorRestartStore.TryPrepareConsume(restartToken, out var restartState);
+                    Action? completeRestartHandoff = restartPrepared
+                        ? () => EditorRestartStore.CompletePreparedConsume(restartToken)
+                        : null;
+                    Application.Run(new AppHost(restartState, completeRestartHandoff));
                 }
                 finally
                 {
@@ -92,6 +106,21 @@ internal static class Program
         if (args.Count == 0 || !BenchmarkCommands.TryGetValue(args[0], out var command)) return false;
         AppLog.Info(command.LogMessage);
         command.Execute();
+        return true;
+    }
+
+    private static bool TryValidateReleaseNotes(IReadOnlyList<string> args)
+    {
+        if (args.Count == 0
+            || !string.Equals(args[0], "--validate-release-notes", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        _ = ReleaseNotesCatalog.AllEntries;
+        _ = ReleaseNotesCatalog.Current;
+        AppLog.Info($"Embedded release notes validated for version {ReleaseNotesCatalog.CurrentVersion}.");
+        AppLog.Flush();
         return true;
     }
 }

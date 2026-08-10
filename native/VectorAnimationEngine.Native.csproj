@@ -9,6 +9,14 @@
     <RootNamespace>VectorAnimationEngine</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="VectorAnimationEngine.ReleaseManager" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\release\release-notes.json"
+                      Link="ReleaseNotes\release-notes.json"
+                      LogicalName="VectorAnimationEngine.ReleaseNotes.release-notes.json" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Clipper2" Version="2.0.0" />
     <PackageReference Include="Svg" Version="3.4.7" />
     <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />

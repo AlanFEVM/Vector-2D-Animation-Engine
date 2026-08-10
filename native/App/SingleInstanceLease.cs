@@ -12,18 +12,55 @@ internal sealed class SingleInstanceLease : IDisposable
         _ownsMutex = ownsMutex;
     }
 
-    public static bool TryAcquire(out SingleInstanceLease? lease)
+    public static bool TryAcquire(TimeSpan waitTimeout, out SingleInstanceLease? lease)
+        => TryAcquire(MutexName, waitTimeout, out lease);
+
+    internal static bool TryAcquireForRegression(
+        string mutexName,
+        TimeSpan waitTimeout,
+        out SingleInstanceLease? lease)
+        => TryAcquire(mutexName, waitTimeout, out lease);
+
+    private static bool TryAcquire(
+        string mutexName,
+        TimeSpan waitTimeout,
+        out SingleInstanceLease? lease)
     {
-        var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
-        if (!createdNew)
+        ArgumentException.ThrowIfNullOrWhiteSpace(mutexName);
+        if (waitTimeout < TimeSpan.Zero && waitTimeout != Timeout.InfiniteTimeSpan)
         {
-            mutex.Dispose();
-            lease = null;
-            return false;
+            throw new ArgumentOutOfRangeException(nameof(waitTimeout));
         }
 
-        lease = new SingleInstanceLease(mutex, ownsMutex: true);
-        return true;
+        var mutex = new Mutex(initiallyOwned: false, mutexName);
+        var ownsMutex = false;
+        try
+        {
+            try
+            {
+                ownsMutex = mutex.WaitOne(waitTimeout);
+            }
+            catch (AbandonedMutexException)
+            {
+                ownsMutex = true;
+            }
+
+            if (!ownsMutex)
+            {
+                mutex.Dispose();
+                lease = null;
+                return false;
+            }
+
+            lease = new SingleInstanceLease(mutex, ownsMutex: true);
+            return true;
+        }
+        catch
+        {
+            if (ownsMutex) mutex.ReleaseMutex();
+            mutex.Dispose();
+            throw;
+        }
     }
 
     public void Dispose()

@@ -19,17 +19,18 @@ internal sealed class ReleaseNotesPanel : UserControl
     internal ReleaseNotesPanel(IReadOnlyList<ReleaseNoteEntry> entries, UiLanguage language)
     {
         ArgumentNullException.ThrowIfNull(entries);
-        if (entries.Count == 0) throw new ArgumentException("At least one release note is required.", nameof(entries));
 
         _language = Enum.IsDefined(language) ? language : UiLanguage.English;
         BackColor = Theme.Panel;
         MinimumSize = new Size(440, 300);
         AccessibleRole = AccessibleRole.Document;
         AccessibleName = UiLocalization.T("Release Notes", _language);
-        AccessibleDescription = string.Format(
-            CultureInfo.CurrentCulture,
-            UiLocalization.T("Release notes for version {0}", _language),
-            entries[0].Version);
+        AccessibleDescription = entries.Count == 0
+            ? UiLocalization.T("No release notes are enabled for this build.", _language)
+            : string.Format(
+                CultureInfo.CurrentCulture,
+                UiLocalization.T("Release notes for version {0}", _language),
+                entries[0].Version);
 
         _focusFrame.BackColor = Theme.Border;
         _focusFrame.Dock = DockStyle.Fill;
@@ -68,10 +69,21 @@ internal sealed class ReleaseNotesPanel : UserControl
         _content.SuspendLayout();
         try
         {
-            for (var index = 0; index < entries.Count; index++)
+            if (entries.Count == 0)
             {
-                if (index > 0) AddEntrySeparator();
-                AddEntry(entries[index]);
+                AddLabel(
+                    UiLocalization.T("No release notes are enabled for this build.", _language),
+                    Theme.UiFont(10),
+                    Theme.Muted,
+                    Padding.Empty);
+            }
+            else
+            {
+                for (var index = 0; index < entries.Count; index++)
+                {
+                    if (index > 0) AddEntrySeparator();
+                    AddEntry(entries[index]);
+                }
             }
         }
         finally

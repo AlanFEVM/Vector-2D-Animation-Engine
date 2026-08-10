@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -107,6 +108,59 @@ internal readonly record struct TransformOverlayScreenGeometry(
     }
 }
 
+internal readonly record struct DistortOverlayBezierSegment(
+    DistortSide Side,
+    Guid StartAnchorId,
+    Guid EndAnchorId,
+    PointF Start,
+    PointF Control1,
+    PointF Control2,
+    PointF End);
+
+internal readonly record struct DistortOverlayVisualHandle(
+    DistortHandleRef Reference,
+    PointF Point,
+    PointF Anchor);
+
+internal readonly record struct DistortOverlayScreenGeometry(
+    PointF[][] BoundarySides,
+    PointF[] BoundaryContour,
+    DistortOverlayBezierSegment[] BezierSegments,
+    DistortOverlayVisualHandle[] VisualHandles,
+    TransformOverlayHandleGeometry[] Handles)
+{
+    public PointF TopLeft => BoundarySides is { Length: > 0 } && BoundarySides[0].Length > 0
+        ? BoundarySides[0][0]
+        : PointF.Empty;
+    public PointF TopRight => BoundarySides is { Length: > 0 } && BoundarySides[0].Length > 0
+        ? BoundarySides[0][^1]
+        : PointF.Empty;
+    public PointF BottomRight => BoundarySides is { Length: > 2 } && BoundarySides[2].Length > 0
+        ? BoundarySides[2][^1]
+        : PointF.Empty;
+    public PointF BottomLeft => BoundarySides is { Length: > 2 } && BoundarySides[2].Length > 0
+        ? BoundarySides[2][0]
+        : PointF.Empty;
+
+    public bool Contains(PointF point)
+    {
+        if (BoundaryContour is not { Length: >= 3 }) return false;
+        var inside = false;
+        for (var index = 0; index < BoundaryContour.Length; index++)
+        {
+            var previous = BoundaryContour[(index + BoundaryContour.Length - 1) % BoundaryContour.Length];
+            var current = BoundaryContour[index];
+            if ((current.Y > point.Y) == (previous.Y > point.Y)) continue;
+            var denominator = previous.Y - current.Y;
+            if (Math.Abs(denominator) < 0.0001f) continue;
+            var crossingX = (previous.X - current.X) * (point.Y - current.Y) / denominator + current.X;
+            if (point.X < crossingX) inside = !inside;
+        }
+
+        return inside;
+    }
+}
+
 internal readonly record struct CubicDrawingPreviewSegment(
     PointF Start,
     PointF Control1,
@@ -118,9 +172,15 @@ internal readonly record struct FillEdgeBezierOverlaySegment(
     PointF Start,
     PointF Control1,
     PointF Control2,
-    PointF End);
+    PointF End,
+    float SourceStartT = 0,
+    float SourceEndT = 1);
 
-internal readonly record struct FillEdgeBezierOverlayHit(int PartIndex, EditHandleKind Handle)
+internal readonly record struct FillEdgeBezierOverlayHit(
+    int PartIndex,
+    EditHandleKind Handle,
+    float SourceStartT = 0,
+    float SourceEndT = 1)
 {
     public bool IsValid => PartIndex >= 0;
     public static FillEdgeBezierOverlayHit None => new(-1, EditHandleKind.None);
@@ -583,6 +643,16 @@ internal sealed partial class StageControl : Control
     private const long AnimatedSelectionAtomBudget = 8_192;
     private const double MarqueePreviewFrameBudgetMilliseconds = 8;
     private const int MarqueePreviewObjectThreshold = 2_000;
+    private const int ZoomLodPreviewObjectThreshold = 320;
+    private const int ZoomLodPreviewIdleMilliseconds = 100;
+    private const int DistortRasterMaximumDimension = 2048;
+    private const int DistortPreviewRasterMaximumDimension = 1024;
+    private const long DistortRasterCacheBudgetBytes = 64L * 1024 * 1024;
+    private const int DistortMeshMinimumDivisions = 6;
+    private const int DistortMeshMaximumDivisions = 24;
+    private const int DistortPreviewMeshMinimumDivisions = 4;
+    private const int DistortPreviewMeshMaximumDivisions = 5;
+    private const float DistortMeshCellPixels = 48f;
     private const double InteractiveMoveFrameBudgetMilliseconds = 8;
     private const double SlowPointerFeedbackMilliseconds = 50;
     private const double SlowPointerLogIntervalMilliseconds = 5_000;
@@ -610,9 +680,28 @@ internal sealed partial class StageControl : Control
     private readonly Pen _handleBorderPen = new(Color.FromArgb(255, 16, 18, 22), 1);
     private readonly System.Windows.Forms.Timer _fillAnimationTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _selectionHighlightTimer = new() { Interval = 40 };
+    private readonly System.Windows.Forms.Timer _zoomLodPreviewTimer = new() { Interval = ZoomLodPreviewIdleMilliseconds };
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private readonly MixingBrushRegionRasterCache _mixingBrushRasterCache = new();
+    private readonly Dictionary<DistortRasterCacheKey, Bitmap> _distortRasterCache = new();
+    private readonly Dictionary<(VectorScene Scene, int ObjectIndex), DistortedVectorGeometryCacheEntry>
+        _distortedVectorGeometryCache = new();
+    private long _distortRasterCacheBytes;
+    private Bitmap? _gdiBaseFrameBitmap;
+    private Size _gdiBaseFrameSize;
+    private long _gdiBaseFramePresentationRevision = -1;
+    private VectorScene? _gdiBaseFrameEditableScene;
+    private long _gdiBaseFrameEditableGeometryRevision = -1;
+    private long _gdiBaseFrameEditableSummaryRevision = -1;
+    private VectorScene? _gdiBaseFrameUnderlayScene;
+    private long _gdiBaseFrameUnderlayGeometryRevision = -1;
+    private long _gdiBaseFrameUnderlaySummaryRevision = -1;
+    private VectorScene? _gdiBaseFrameOnionSkinScene;
+    private long _gdiBaseFrameOnionSkinGeometryRevision = -1;
+    private long _gdiBaseFrameOnionSkinSummaryRevision = -1;
+    private RenderStats _gdiBaseFrameStats;
+    private RenderStats _gdiBaseFrameEditableStats;
     private LayerBlendCompositor? _layerBlendCompositor;
     private readonly MarqueeOverlayWindow _marqueeOverlay;
     private readonly HashSet<uint> _handledPenPointers = [];
@@ -622,8 +711,14 @@ internal sealed partial class StageControl : Control
     private DrawingElementHit[] _selectedElements = Array.Empty<DrawingElementHit>();
     private DrawingElementHit _hoveredLineElement = DrawingElementHit.None;
     private TransformOverlayFrame _transformFrame;
+    private DistortEnvelope _distortFrame;
+    private VectorScene? _distortPreviewScene;
+    private IReadOnlyDictionary<int, DistortWarp[]> _distortPreviewOverrides =
+        new Dictionary<int, DistortWarp[]>();
     private RectangleF _transformBounds = RectangleF.Empty;
     private PointF _transformFocus;
+    private bool _transformOverlayUsesReferenceProjection;
+    private Matrix4x4 _transformOverlayFlatToScene = Matrix4x4.Identity;
     private RectangleF _drawingObjectSelectionBounds = RectangleF.Empty;
     private PointF _drawingObjectAnchor;
     private readonly Dictionary<int, SelectedFillOwnerCacheEntry> _selectedFillCache = new();
@@ -659,10 +754,16 @@ internal sealed partial class StageControl : Control
     private GradientKind _gradientOverlayKind;
     private GradientStop[] _gradientOverlayStops = [new GradientStop(0, Color.White), new GradientStop(1, Color.White)];
     private FillEdgeBezierOverlaySegment[] _fillEdgeBezierOverlaySegments = [];
+    private FillEdgeBezierOverlaySegment[] _presentedFillEdgeBezierOverlaySegments = [];
     private int _fillEdgeBezierOverlayTargetObject = -1;
     private int _fillEdgeBezierOverlayActivePartIndex = -1;
     private PointF _fillEdgeBezierOverlayTranslation;
     private long _fillEdgeBezierOverlayRevision;
+    private long _presentedFillEdgeBezierOverlayRevision;
+    private long _presentedFillEdgeBezierSourceRevision = -1;
+    private long _presentedFillEdgeBezierSceneRevision = -1;
+    private VectorScene? _presentedFillEdgeBezierScene;
+    private IReadOnlyList<DistortWarp>? _presentedFillEdgeBezierDistortions;
     private Point _brushColorPaletteCenter;
     private Color[] _brushColorPaletteColors = [];
     private int _brushColorPaletteHoveredIndex = -1;
@@ -671,6 +772,7 @@ internal sealed partial class StageControl : Control
     private int _scenePassSequence;
     private double _lastFrameRenderMilliseconds;
     private bool _marqueeSceneInvalidationPending;
+    private bool _zoomLodPreviewActive;
     private long _basePresentationRevision;
     private bool _basePresentationInvalidationPending;
     private int _frame;
@@ -682,8 +784,31 @@ internal sealed partial class StageControl : Control
     private long _pointerDownStartedAt;
     private long _lastSlowPointerLogAt;
     private bool _pointerDownAwaitingPresent;
+    private bool _interactiveSynchronousPresentDeferred;
     private int _currentInteractiveRequestCount;
     private int _currentInteractiveCoalescedCount;
+
+    private readonly record struct DistortRasterCacheKey(
+        VectorScene Scene,
+        int ObjectIndex,
+        SceneRenderPass Pass,
+        long GeometryRevision,
+        long SummaryRevision,
+        long PresentationRevision,
+        int Frame,
+        float CameraX,
+        float CameraY,
+        float Zoom,
+        int ViewWidth,
+        int ViewHeight,
+        RectangleF SourceScreenBounds,
+        int BitmapWidth,
+        int BitmapHeight);
+
+    private readonly record struct DistortedVectorGeometryCacheEntry(
+        long GeometryRevision,
+        IReadOnlyList<DistortWarp> Distortions,
+        DistortedVectorGeometry Geometry);
 
     private readonly record struct SelectedFillOwnerCacheEntry(int Frame, long Revision, float X, float Y, DrawingFillPartGeometry[] Parts);
 
@@ -804,8 +929,11 @@ internal sealed partial class StageControl : Control
     public bool PenPathHandlesVisible { get; private set; }
     public DrawingElementHit HoveredLineElement => _hoveredLineElement;
     public bool TransformMode { get; private set; }
+    public bool DistortMode { get; private set; }
     public bool TransformBoundsVisible { get; private set; }
+    public bool DistortBoundsVisible { get; private set; }
     public TransformOverlayFrame TransformFrame => _transformFrame;
+    internal DistortEnvelope DistortFrame => _distortFrame;
     public RectangleF TransformBounds => _transformBounds;
     public PointF TransformFocus => _transformFocus;
     public bool DrawingObjectSelectionVisible { get; private set; }
@@ -818,6 +946,7 @@ internal sealed partial class StageControl : Control
     public Point MarqueeStart { get; private set; }
     public Point MarqueeEnd { get; private set; }
     internal bool MarqueeLodPreviewActive { get; private set; }
+    internal bool ZoomLodPreviewActive => _zoomLodPreviewActive;
     internal bool MarqueeOverlayActive { get; private set; }
     internal Rectangle MarqueeOverlayScreenBounds => _marqueeOverlay.ScreenBounds;
     internal long MarqueeOverlayUpdateCount => _marqueeOverlay.UpdateCount;
@@ -871,10 +1000,18 @@ internal sealed partial class StageControl : Control
         && _fillEdgeBezierOverlaySegments.Length > 0;
     public int FillEdgeBezierOverlayTargetObject => _fillEdgeBezierOverlayTargetObject;
     public int FillEdgeBezierOverlayActivePartIndex => _fillEdgeBezierOverlayActivePartIndex;
-    public IReadOnlyList<FillEdgeBezierOverlaySegment> FillEdgeBezierOverlaySegments => _fillEdgeBezierOverlaySegments;
+    public IReadOnlyList<FillEdgeBezierOverlaySegment> FillEdgeBezierOverlaySegments =>
+        PresentedFillEdgeBezierOverlaySegments();
     internal PointF FillEdgeBezierOverlayTranslation => _fillEdgeBezierOverlayTranslation;
     public bool FillEdgeBezierPointerEditing { get; private set; }
-    internal long FillEdgeBezierOverlayRevision => _fillEdgeBezierOverlayRevision;
+    internal long FillEdgeBezierOverlayRevision
+    {
+        get
+        {
+            PresentedFillEdgeBezierOverlaySegments();
+            return _presentedFillEdgeBezierOverlayRevision;
+        }
+    }
     public bool BrushColorPaletteVisible => _brushColorPaletteColors.Length > 0;
     public Point BrushColorPaletteCenter => _brushColorPaletteCenter;
     public IReadOnlyList<Color> BrushColorPaletteColors => _brushColorPaletteColors;
@@ -925,6 +1062,15 @@ internal sealed partial class StageControl : Control
     internal float SelectionHighlightPulse => 0.5f + 0.5f * MathF.Sin(_selectionHighlightPhase * MathF.Tau);
     internal double LastFrameRenderMilliseconds => _lastFrameRenderMilliseconds;
     internal long BasePresentationRevision => _basePresentationRevision;
+    internal bool HasDistortPreview => _distortPreviewScene is not null
+        && _distortPreviewOverrides.Count > 0;
+    internal int DistortPreviewRasterBuildCount { get; private set; }
+    internal int DistortPreviewRasterReuseCount { get; private set; }
+    internal int LastGdiDistortRasterBuilds { get; private set; }
+    internal int LastGdiDistortRasterReuses { get; private set; }
+    internal int LastGdiBaseFrameCacheBuilds { get; private set; }
+    internal int LastGdiBaseFrameCacheReuses { get; private set; }
+    internal double LastGdiBaseFrameCopyMilliseconds { get; private set; }
     internal double LastPointerDownHandlerMilliseconds { get; private set; }
     internal double LastPointerDownToPaintMilliseconds { get; private set; }
     internal double LastPointerDownToPresentMilliseconds { get; private set; }
@@ -942,14 +1088,18 @@ internal sealed partial class StageControl : Control
 
     internal void ReloadRenderingModuleForHotReload()
     {
+        CompleteReferenceCameraTransition(invalidate: false);
         ClearSelectionDragPreviewCore(invalidate: false);
         ClearSelectionFillDragFront(invalidate: false);
         ResetFrameSchedulerState();
         ResetFillEdgeBezierOverlay(invalidate: false);
         _direct2DRenderer.ReloadRuntimeResources();
+        ClearGdiBaseFrameCache();
         _layerBlendCompositor?.Dispose();
         _layerBlendCompositor = null;
         _mixingBrushRasterCache.Clear();
+        ClearDistortPreviewCore(invalidate: false);
+        _distortedVectorGeometryCache.Clear();
         ImportedSvgRasterizer.ClearCache();
         foreach (var brush in _brushCache.Values) brush.Dispose();
         _brushCache.Clear();
@@ -977,11 +1127,18 @@ internal sealed partial class StageControl : Control
         BackColor = Color.FromArgb(17, 19, 21);
         _fillAnimationTimer.Tick += (_, _) => TickFillAnimation();
         _selectionHighlightTimer.Tick += (_, _) => TickSelectionHighlight();
+        _zoomLodPreviewTimer.Tick += (_, _) => EndZoomLodPreview(invalidate: true);
+        InitializeReferenceCameraTransitions();
     }
 
     public new void Invalidate() => RequestStageFrame(basePresentationChanged: true);
 
     internal void InvalidateOverlay() => RequestStageFrame(basePresentationChanged: false);
+
+    internal void DeferCurrentInteractiveSynchronousPresent()
+    {
+        if (_interactiveInputDepth > 0) _interactiveSynchronousPresentDeferred = true;
+    }
 
     private void RequestStageFrame(bool basePresentationChanged)
     {
@@ -1037,6 +1194,8 @@ internal sealed partial class StageControl : Control
             InvalidateOverlay();
         }
         _interactiveInputDepth = 0;
+        var synchronousPresentDeferred = _interactiveSynchronousPresentDeferred;
+        _interactiveSynchronousPresentDeferred = false;
 
         if (pointerDown && _pointerDownStartedAt != 0)
         {
@@ -1057,10 +1216,24 @@ internal sealed partial class StageControl : Control
             return;
         }
 
-        var shouldPresent = forceFinalFrame
-            || _lastFramePresentedAt == 0
-            || ElapsedMilliseconds(_lastFramePresentedAt, Stopwatch.GetTimestamp()) >= InteractiveMoveFrameBudgetMilliseconds;
+        var shouldPresent = ShouldSynchronouslyPresentInteractiveFrame(
+            forceFinalFrame,
+            synchronousPresentDeferred,
+            _lastFramePresentedAt != 0,
+            ElapsedMilliseconds(_lastFramePresentedAt, Stopwatch.GetTimestamp()));
         if (shouldPresent && CanSynchronouslyPresentInteractiveFrame()) Update();
+    }
+
+    internal static bool ShouldSynchronouslyPresentInteractiveFrame(
+        bool forceFinalFrame,
+        bool presentationDeferred,
+        bool hasPresentedFrame,
+        double elapsedSinceLastFrameMilliseconds)
+    {
+        return !presentationDeferred
+            && (forceFinalFrame
+                || !hasPresentedFrame
+                || elapsedSinceLastFrameMilliseconds >= InteractiveMoveFrameBudgetMilliseconds);
     }
 
     private bool CanSynchronouslyPresentInteractiveFrame()
@@ -1076,6 +1249,7 @@ internal sealed partial class StageControl : Control
         _paintInProgress = false;
         _interactiveFrameRequestedAt = 0;
         _lastFramePresentedAt = 0;
+        _interactiveSynchronousPresentDeferred = false;
         _currentInteractiveRequestCount = 0;
         _currentInteractiveCoalescedCount = 0;
         CancelPendingPointerDownTelemetry();
@@ -1097,6 +1271,7 @@ internal sealed partial class StageControl : Control
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
+        CompleteReferenceCameraTransition();
         BeginInteractiveInput(pointerDown: true);
         try
         {
@@ -1136,9 +1311,15 @@ internal sealed partial class StageControl : Control
 
     public void BindScene(VectorScene scene)
     {
+        CompleteReferenceCameraTransition(invalidate: false);
         ClearSelectionDragPreviewCore(invalidate: false);
         ResetFillEdgeBezierOverlay(invalidate: false);
+        EndZoomLodPreview(invalidate: false);
+        SetTransformOverlay(false, RectangleF.Empty);
+        SetDistortOverlay(false, default);
+        ClearDistortPreviewCore(invalidate: false);
         FillEdgeBezierPointerEditing = false;
+        ClearReference3DStateForSceneBinding();
         Scene = scene;
         UnderlayScene = null;
         OnionSkinScene = null;
@@ -1205,6 +1386,208 @@ internal sealed partial class StageControl : Control
             || (ReferenceEquals(scene, _editingTextScene) && objectIndex == _editingTextObject);
     }
 
+    internal void SetDistortPreview(
+        VectorScene scene,
+        IReadOnlyDictionary<int, DistortWarp[]> overrides)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        ArgumentNullException.ThrowIfNull(overrides);
+        var next = overrides
+            .Where(item => (uint)item.Key < scene.ObjectCount
+                && item.Value is { Length: > 0 }
+                && item.Value.All(distortion => distortion.IsValid))
+            .ToDictionary(item => item.Key, item => item.Value);
+        var targetsChanged = !ReferenceEquals(_distortPreviewScene, scene)
+            || !_distortPreviewOverrides.Keys.OrderBy(index => index)
+                .SequenceEqual(next.Keys.OrderBy(index => index));
+        if (targetsChanged) ClearDistortRasterCache();
+        _distortPreviewScene = next.Count > 0 ? scene : null;
+        _distortPreviewOverrides = next;
+        RequestStageFrame(basePresentationChanged: true);
+    }
+
+    internal void ClearDistortPreview() => ClearDistortPreviewCore(invalidate: true);
+
+    private void ClearDistortPreviewCore(bool invalidate)
+    {
+        var hadPreview = HasDistortPreview;
+        _distortPreviewScene = null;
+        _distortPreviewOverrides = new Dictionary<int, DistortWarp[]>();
+        _distortedVectorGeometryCache.Clear();
+        ClearDistortRasterCache();
+        DistortPreviewRasterBuildCount = 0;
+        DistortPreviewRasterReuseCount = 0;
+        if (invalidate && hadPreview) RequestStageFrame(basePresentationChanged: true);
+    }
+
+    private void ClearDistortRasterCache()
+    {
+        foreach (var bitmap in _distortRasterCache.Values) bitmap.Dispose();
+        _distortRasterCache.Clear();
+        _distortRasterCacheBytes = 0;
+    }
+
+    private bool TryCacheDistortRaster(DistortRasterCacheKey key, Bitmap bitmap)
+    {
+        var bytes = (long)bitmap.Width * bitmap.Height * 4;
+        if (bytes <= 0 || bytes > DistortRasterCacheBudgetBytes) return false;
+        while (_distortRasterCacheBytes + bytes > DistortRasterCacheBudgetBytes
+            && _distortRasterCache.Count > 0)
+        {
+            var oldest = _distortRasterCache.First();
+            _distortRasterCache.Remove(oldest.Key);
+            _distortRasterCacheBytes -= (long)oldest.Value.Width * oldest.Value.Height * 4;
+            oldest.Value.Dispose();
+        }
+        _distortRasterCache[key] = bitmap;
+        _distortRasterCacheBytes += bytes;
+        return true;
+    }
+
+    internal bool SceneHasDistortionsForRendering(VectorScene? scene)
+    {
+        return scene is not null
+            && (scene.HasObjectDistortions
+                || ReferenceEquals(scene, _distortPreviewScene) && _distortPreviewOverrides.Count > 0);
+    }
+
+    private bool TryGetObjectDistortionsForRendering(
+        VectorScene scene,
+        int objectIndex,
+        out IReadOnlyList<DistortWarp> distortions)
+    {
+        if (ReferenceEquals(scene, _distortPreviewScene)
+            && _distortPreviewOverrides.TryGetValue(objectIndex, out var preview))
+        {
+            distortions = preview;
+            return preview.Length > 0;
+        }
+        return scene.TryGetObjectDistortionsView(objectIndex, out distortions);
+    }
+
+    private PointF MapObjectPointForRendering(VectorScene scene, int objectIndex, PointF point)
+    {
+        if (!TryGetObjectDistortionsForRendering(scene, objectIndex, out var distortions)) return point;
+        var mapped = point;
+        foreach (var distortion in distortions) mapped = distortion.Map(mapped);
+        return mapped;
+    }
+
+    private bool TryGetDistortedVectorGeometryForRendering(
+        VectorScene scene,
+        int objectIndex,
+        IReadOnlyList<DistortWarp> distortions,
+        out DistortedVectorGeometry geometry)
+    {
+        var key = (scene, objectIndex);
+        if (_distortedVectorGeometryCache.TryGetValue(key, out var cached)
+            && cached.GeometryRevision == scene.GeometryRevision
+            && ReferenceEquals(cached.Distortions, distortions))
+        {
+            geometry = cached.Geometry;
+            return true;
+        }
+
+        if (!scene.TryBuildDistortedVectorGeometry(objectIndex, distortions, out geometry))
+        {
+            _distortedVectorGeometryCache.Remove(key);
+            return false;
+        }
+
+        _distortedVectorGeometryCache[key] = new DistortedVectorGeometryCacheEntry(
+            scene.GeometryRevision,
+            distortions,
+            geometry);
+        return true;
+    }
+
+    private DistortedBezierSegment[] GetPresentedBezierSegments(
+        VectorScene scene,
+        int objectIndex,
+        CubicBoundarySegment source)
+    {
+        if (!TryGetObjectDistortionsForRendering(scene, objectIndex, out var distortions))
+        {
+            return [new DistortedBezierSegment(source, 0, 0, 1)];
+        }
+
+        var presented = VectorScene.BuildDistortedBezierSegmentsWithProvenance([source], distortions);
+        return presented.Length > 0
+            ? presented
+            : [new DistortedBezierSegment(source, 0, 0, 1)];
+    }
+
+    private IReadOnlyList<FillEdgeBezierOverlaySegment> PresentedFillEdgeBezierOverlaySegments()
+    {
+        IReadOnlyList<DistortWarp>? distortions = null;
+        if ((uint)_fillEdgeBezierOverlayTargetObject < Scene.ObjectCount)
+        {
+            if (TryGetObjectDistortionsForRendering(
+                    Scene,
+                    _fillEdgeBezierOverlayTargetObject,
+                    out var resolvedDistortions))
+            {
+                distortions = resolvedDistortions;
+            }
+        }
+
+        if (_presentedFillEdgeBezierSourceRevision == _fillEdgeBezierOverlayRevision
+            && ReferenceEquals(_presentedFillEdgeBezierScene, Scene)
+            && _presentedFillEdgeBezierSceneRevision == Scene.GeometryRevision
+            && ReferenceEquals(_presentedFillEdgeBezierDistortions, distortions))
+        {
+            return _presentedFillEdgeBezierOverlaySegments;
+        }
+
+        if (distortions is null || distortions.Count == 0)
+        {
+            _presentedFillEdgeBezierOverlaySegments = _fillEdgeBezierOverlaySegments;
+        }
+        else
+        {
+            var presented = new List<FillEdgeBezierOverlaySegment>(_fillEdgeBezierOverlaySegments.Length * 2);
+            foreach (var source in _fillEdgeBezierOverlaySegments)
+            {
+                var sourceCurve = new CubicBoundarySegment(
+                    source.Start,
+                    source.Control1,
+                    source.Control2,
+                    source.End);
+                foreach (var derived in VectorScene.BuildDistortedBezierSegmentsWithProvenance(
+                             [sourceCurve],
+                             distortions))
+                {
+                    var curve = derived.Curve;
+                    presented.Add(new FillEdgeBezierOverlaySegment(
+                        source.PartIndex,
+                        curve.Start,
+                        curve.Control1,
+                        curve.Control2,
+                        curve.End,
+                        derived.SourceStartT,
+                        derived.SourceEndT));
+                }
+            }
+            _presentedFillEdgeBezierOverlaySegments = presented.Count > 0
+                ? presented.ToArray()
+                : _fillEdgeBezierOverlaySegments;
+        }
+
+        _presentedFillEdgeBezierSourceRevision = _fillEdgeBezierOverlayRevision;
+        _presentedFillEdgeBezierScene = Scene;
+        _presentedFillEdgeBezierSceneRevision = Scene.GeometryRevision;
+        _presentedFillEdgeBezierDistortions = distortions;
+        _presentedFillEdgeBezierOverlayRevision++;
+        return _presentedFillEdgeBezierOverlaySegments;
+    }
+
+    private PointF[][] GetObjectBoundaryContoursForRendering(VectorScene scene, int objectIndex)
+    {
+        return TryGetObjectDistortionsForRendering(scene, objectIndex, out var distortions)
+            ? scene.GetDistortedObjectBoundaryContours(objectIndex, distortions)
+            : scene.GetObjectBoundaryContours(objectIndex);
+    }
+
     public void SetEditingTextObject(int objectIndex)
     {
         if ((uint)objectIndex >= Scene.ObjectCount)
@@ -1230,15 +1613,18 @@ internal sealed partial class StageControl : Control
         Invalidate();
     }
 
-    public void ConfigureReferenceView(SceneDefinition? scene)
+    public void ConfigureReferenceView(
+        SceneDefinition? scene,
+        SceneDimension? viewDimension = null,
+        ReferenceCameraMotion motion = ReferenceCameraMotion.Immediate)
     {
-        ReferenceDimension = scene?.Dimension ?? SceneDimension.TwoD;
-        ReferenceProjection = scene?.Camera.Projection ?? CameraProjection.Orthographic;
-        Invalidate();
+        var nextDimension = viewDimension ?? scene?.Dimension ?? SceneDimension.TwoD;
+        ConfigureReferenceViewCore(scene, nextDimension, motion);
     }
 
     public void RotateReferenceCamera(float dx, float dy)
     {
+        CompleteReferenceCameraTransitionForDirectInput();
         _referenceYaw = NormalizeRadians(_referenceYaw + dx * 0.01f);
         _referencePitch = Math.Clamp(_referencePitch + dy * 0.01f, -1.5f, 1.5f);
         Invalidate();
@@ -1246,6 +1632,8 @@ internal sealed partial class StageControl : Control
 
     public void DollyReferenceCamera(float wheelDelta)
     {
+        if (wheelDelta == 0) return;
+        CompleteReferenceCameraTransitionForDirectInput();
         var factor = wheelDelta > 0 ? 0.9f : 1.1f;
         _referenceDistance = Math.Clamp(_referenceDistance * factor, 2000, 80000);
         Invalidate();
@@ -1253,6 +1641,7 @@ internal sealed partial class StageControl : Control
 
     public void DollyReferenceCameraByPixels(float dy)
     {
+        CompleteReferenceCameraTransitionForDirectInput();
         var factor = Math.Clamp(Math.Exp(dy * 0.012), 0.2, 5.0);
         _referenceDistance = Math.Clamp(_referenceDistance * (float)factor, 2000, 80000);
         Invalidate();
@@ -1260,22 +1649,27 @@ internal sealed partial class StageControl : Control
 
     public void ZoomReferenceCamera(float factor)
     {
+        CompleteReferenceCameraTransitionForDirectInput();
         _referenceZoomScale = Math.Clamp(_referenceZoomScale * factor, 0.25f, 8f);
         Invalidate();
     }
 
     public void PanReferenceCamera(float dx, float dy)
     {
-        var yawCos = MathF.Cos(_referenceYaw);
-        var yawSin = MathF.Sin(_referenceYaw);
-        var pitchCos = MathF.Cos(_referencePitch);
-        var pitchSin = MathF.Sin(_referencePitch);
+        CompleteReferenceCameraTransitionForDirectInput();
+        var yawCos = MathF.Cos(EffectiveReferenceYaw);
+        var yawSin = MathF.Sin(EffectiveReferenceYaw);
+        var pitchCos = MathF.Cos(EffectiveReferencePitch);
+        var pitchSin = MathF.Sin(EffectiveReferencePitch);
         var rightX = yawCos;
         var rightZ = -yawSin;
         var upX = -pitchSin * yawSin;
         var upY = pitchCos;
         var upZ = -pitchSin * yawCos;
-        var distanceScale = Math.Clamp(_referenceDistance / 12000f, 0.25f, 8f);
+        var distanceScale = Math.Clamp(
+            _referenceDistance / ReferencePerspectiveFocalLength,
+            0.25f,
+            8f);
         var worldPerPixel = distanceScale / Math.Max(0.002f, 0.035f * _referenceZoomScale);
         var horizontal = -dx * worldPerPixel;
         var vertical = dy * worldPerPixel;
@@ -1286,45 +1680,42 @@ internal sealed partial class StageControl : Control
         Invalidate();
     }
 
-    public void SetReferenceCameraOrientation(float yaw, float pitch)
+    public void SetReferenceCameraOrientation(
+        float yaw,
+        float pitch,
+        ReferenceCameraMotion motion = ReferenceCameraMotion.Immediate)
     {
-        _referenceYaw = NormalizeRadians(yaw);
-        _referencePitch = Math.Clamp(pitch, -1.5f, 1.5f);
-        Invalidate();
+        SetReferenceCameraOrientationCore(yaw, pitch, motion);
     }
 
-    public void ResetReferenceCameraView()
+    public void ResetReferenceCameraView(ReferenceCameraMotion motion = ReferenceCameraMotion.Immediate)
     {
-        _referenceYaw = -0.72f;
-        _referencePitch = 0.76f;
-        _referenceDistance = 12000;
-        _referenceZoomScale = 1;
-        _referenceTargetX = 0;
-        _referenceTargetY = 0;
-        _referenceTargetZ = 0;
-        Invalidate();
+        ResetReferenceCameraViewCore(motion);
     }
 
     internal StageViewState CaptureViewState()
     {
+        var reference = CaptureReferenceCameraFrameForPersistence();
         return new StageViewState(
             CameraX,
             CameraY,
             Zoom,
-            _referenceYaw,
-            _referencePitch,
-            _referenceDistance,
-            _referenceZoomScale,
-            _referenceTargetX,
-            _referenceTargetY,
-            _referenceTargetZ,
+            reference.Yaw,
+            reference.Pitch,
+            reference.Distance,
+            reference.ZoomScale,
+            reference.TargetX,
+            reference.TargetY,
+            reference.TargetZ,
             WorldGridOpacity,
             WorldGridType);
     }
 
     internal void RestoreViewState(StageViewState state)
     {
+        CancelReferenceCameraTransitionForStateReplacement();
         _pendingVisibleWorldWidth = null;
+        EndZoomLodPreview(invalidate: false);
         CameraX = Math.Clamp(state.CameraX, -5_000_000, 5_000_000);
         CameraY = Math.Clamp(state.CameraY, -5_000_000, 5_000_000);
         Zoom = Math.Clamp(state.Zoom, 0.02f, 64f);
@@ -1335,6 +1726,7 @@ internal sealed partial class StageControl : Control
         _referenceTargetX = Math.Clamp(state.ReferenceTargetX, -5_000_000, 5_000_000);
         _referenceTargetY = Math.Clamp(state.ReferenceTargetY, -5_000_000, 5_000_000);
         _referenceTargetZ = Math.Clamp(state.ReferenceTargetZ, -5_000_000, 5_000_000);
+        SynchronizeReferenceProjectionBlend();
         WorldGridOpacity = state.WorldGridOpacity;
         WorldGridType = state.WorldGridType;
         RefreshBrushTipCursorScale();
@@ -1353,6 +1745,7 @@ internal sealed partial class StageControl : Control
     {
         if (Width <= 0 || Height <= 0) return;
         _pendingVisibleWorldWidth = null;
+        EndZoomLodPreview(invalidate: false);
         CameraX = 0;
         CameraY = 0;
         Zoom = (float)Math.Clamp(Math.Min(Width / VectorUnits.ToPixels(Scene.StageWidth), Height / VectorUnits.ToPixels(Scene.StageHeight)) * 0.9, 0.02, 64);
@@ -1375,6 +1768,7 @@ internal sealed partial class StageControl : Control
         }
 
         _pendingVisibleWorldWidth = null;
+        EndZoomLodPreview(invalidate: false);
         CameraX = 0;
         CameraY = 0;
         Zoom = (float)Math.Clamp(Width / Math.Max(1, VectorUnits.ToPixels(vectorUnits)), 0.02, 64);
@@ -1399,19 +1793,29 @@ internal sealed partial class StageControl : Control
 
     public void Pan(float dx, float dy)
     {
+        CompleteReferenceCameraTransitionForDirectInput();
         CameraX -= VectorUnits.FromPixels(dx / Zoom);
         CameraY -= VectorUnits.FromPixels(dy / Zoom);
         Invalidate();
         RaiseViewChanged();
     }
 
-    public void ZoomAt(Point screen, float factor)
+    public void ZoomAt(Point screen, float factor, bool interactivePreview = false)
     {
+        CompleteReferenceCameraTransitionForDirectInput();
         var before = ScreenToWorld(screen);
         Zoom = (float)Math.Clamp(Zoom * factor, 0.02, 64);
         var after = ScreenToWorld(screen);
         CameraX += before.X - after.X;
         CameraY += before.Y - after.Y;
+        if (interactivePreview && ShouldUseZoomLodPreview(Scene.ObjectCount, Scene.HasDisplayLayerEffects))
+        {
+            BeginZoomLodPreview();
+        }
+        else
+        {
+            EndZoomLodPreview(invalidate: false);
+        }
         RefreshBrushTipCursorScale();
         Invalidate();
         RaiseViewChanged();
@@ -1546,7 +1950,7 @@ internal sealed partial class StageControl : Control
 
     internal bool TextAreaOverlayVisible(int objectIndex)
     {
-        return !TransformMode
+        return !(TransformMode || DistortMode)
             && (uint)objectIndex < Scene.ObjectCount
             && Scene.ShapeKind[objectIndex] == ShapeKind.Text
             && !(ReferenceEquals(_editingTextScene, Scene) && _editingTextObject == objectIndex);
@@ -1560,15 +1964,23 @@ internal sealed partial class StageControl : Control
             && _selectedObject == objectIndex;
     }
 
-    public void SetTransformOverlay(bool transformMode, RectangleF bounds, PointF? focus = null)
+    public void SetTransformOverlay(
+        bool transformMode,
+        RectangleF bounds,
+        PointF? focus = null,
+        Matrix4x4? referenceTransform = null)
     {
         var frame = bounds.Width > 0.001f && bounds.Height > 0.001f
             ? TransformOverlayFrame.FromBounds(bounds)
             : default;
-        SetTransformOverlay(transformMode, frame, focus);
+        SetTransformOverlay(transformMode, frame, focus, referenceTransform);
     }
 
-    public void SetTransformOverlay(bool transformMode, TransformOverlayFrame frame, PointF? focus = null)
+    public void SetTransformOverlay(
+        bool transformMode,
+        TransformOverlayFrame frame,
+        PointF? focus = null,
+        Matrix4x4? referenceTransform = null)
     {
         var visible = transformMode && frame.IsValid;
         var nextFrame = visible ? frame : default;
@@ -1576,10 +1988,16 @@ internal sealed partial class StageControl : Control
         var nextFocus = visible
             ? focus ?? frame.Center
             : PointF.Empty;
+        var nextUsesReference = visible
+            && referenceTransform is { } candidate
+            && IsValidTransformOverlayReference(candidate);
+        var nextReferenceTransform = nextUsesReference ? referenceTransform!.Value : Matrix4x4.Identity;
         if (TransformMode == transformMode
             && TransformBoundsVisible == visible
             && _transformFrame == nextFrame
-            && _transformFocus == nextFocus)
+            && _transformFocus == nextFocus
+            && _transformOverlayUsesReferenceProjection == nextUsesReference
+            && _transformOverlayFlatToScene == nextReferenceTransform)
         {
             return;
         }
@@ -1589,6 +2007,36 @@ internal sealed partial class StageControl : Control
         _transformFrame = nextFrame;
         _transformBounds = nextBounds;
         _transformFocus = nextFocus;
+        _transformOverlayUsesReferenceProjection = nextUsesReference;
+        _transformOverlayFlatToScene = nextReferenceTransform;
+        InvalidateSelectionState();
+    }
+
+    public void SetDistortOverlay(
+        bool distortMode,
+        DistortEnvelope envelope,
+        Matrix4x4? referenceTransform = null)
+    {
+        var visible = distortMode && envelope.IsValid;
+        var nextFrame = visible ? envelope : default;
+        var nextUsesReference = visible
+            && referenceTransform is { } candidate
+            && IsValidTransformOverlayReference(candidate);
+        var nextReferenceTransform = nextUsesReference ? referenceTransform!.Value : Matrix4x4.Identity;
+        if (DistortMode == distortMode
+            && DistortBoundsVisible == visible
+            && _distortFrame == nextFrame
+            && _transformOverlayUsesReferenceProjection == nextUsesReference
+            && _transformOverlayFlatToScene == nextReferenceTransform)
+        {
+            return;
+        }
+
+        DistortMode = distortMode;
+        DistortBoundsVisible = visible;
+        _distortFrame = nextFrame;
+        _transformOverlayUsesReferenceProjection = nextUsesReference;
+        _transformOverlayFlatToScene = nextReferenceTransform;
         InvalidateSelectionState();
     }
 
@@ -1618,32 +2066,184 @@ internal sealed partial class StageControl : Control
     public TransformHandleKind HitTestTransformHandle(Point screen)
     {
         if (!TransformBoundsVisible) return TransformHandleKind.None;
-        if (Distance(screen, WorldToScreen(_transformFocus)) <= 10) return TransformHandleKind.Focus;
         var geometry = GetTransformOverlayScreenGeometry();
+        var nearestHandle = TransformHandleKind.None;
+        var nearestDistance = float.PositiveInfinity;
         foreach (var (kind, point, _) in geometry.ResizeHandles)
         {
-            if (Distance(screen, point) <= 10) return kind;
+            ConsiderHandle(kind, point, 10f);
         }
 
         foreach (var (kind, point, _) in geometry.RotationHandles)
         {
-            if (Distance(screen, point) <= 11) return kind;
+            ConsiderHandle(kind, point, 11f);
         }
 
         foreach (var (kind, point, _) in geometry.SkewHandles)
         {
-            if (Distance(screen, point) <= 10) return kind;
+            ConsiderHandle(kind, point, 10f);
+        }
+        if (nearestHandle != TransformHandleKind.None) return nearestHandle;
+
+        if (IsTransformFocusVisible(geometry)
+            && Distance(screen, TransformOverlayPointToScreen(_transformFocus)) <= 10)
+        {
+            return TransformHandleKind.Focus;
+        }
+
+        return geometry.Contains(screen) ? TransformHandleKind.Move : TransformHandleKind.None;
+
+        void ConsiderHandle(TransformHandleKind kind, PointF point, float hitRadius)
+        {
+            var distance = Distance(screen, point);
+            if (distance > hitRadius || distance >= nearestDistance) return;
+            nearestDistance = distance;
+            nearestHandle = kind;
+        }
+    }
+
+    internal bool IsTransformFocusVisible(TransformOverlayScreenGeometry geometry)
+    {
+        var focus = TransformOverlayPointToScreen(_transformFocus);
+        const float minimumHandleSeparation = 20f;
+        return geometry.ResizeHandles.All(handle => Distance(focus, handle.Point) > minimumHandleSeparation)
+            && geometry.RotationHandles.All(handle => Distance(focus, handle.Point) > minimumHandleSeparation)
+            && geometry.SkewHandles.All(handle => Distance(focus, handle.Point) > minimumHandleSeparation);
+    }
+
+    public TransformHandleKind HitTestDistortHandle(Point screen)
+    {
+        if (!DistortBoundsVisible) return TransformHandleKind.None;
+        var geometry = GetDistortOverlayScreenGeometry();
+        foreach (var (kind, point, _) in geometry.Handles)
+        {
+            if (Distance(screen, point) <= 11) return kind;
         }
 
         return geometry.Contains(screen) ? TransformHandleKind.Move : TransformHandleKind.None;
     }
 
+    /// <summary>
+    /// Resolves the actual curved-envelope handle under the pointer.  The legacy
+    /// TransformHandleKind hit test above remains for callers that only understand
+    /// the original eight handles.
+    /// </summary>
+    internal bool TryHitTestDistortVisualHandle(Point screen, out DistortHandleRef handle)
+    {
+        handle = default;
+        if (!DistortBoundsVisible) return false;
+        var geometry = GetDistortOverlayScreenGeometry();
+        var bestDistance = 11f;
+        var found = false;
+        foreach (var visual in geometry.VisualHandles)
+        {
+            var distance = Distance(screen, visual.Point);
+            if (distance > bestDistance) continue;
+            // Anchors win ties with tangent controls, which makes corner picking
+            // deterministic when a control is close to its anchor.
+            if (found
+                && distance >= bestDistance - 0.001f
+                && visual.Reference.Kind != DistortHandleKind.Anchor)
+            {
+                continue;
+            }
+            bestDistance = distance;
+            handle = visual.Reference;
+            found = true;
+        }
+
+        return found;
+    }
+
+    internal bool TryHitTestDistortBoundary(Point screen, out DistortBoundaryHit hit)
+    {
+        hit = default;
+        if (!DistortBoundsVisible) return false;
+        var maximumDistance = Math.Max(0.001f, TransformOverlayScreenLengthToWorld(12f));
+        return _distortFrame.TryFindNearestBoundary(
+            TransformOverlayScreenToWorld(screen),
+            maximumDistance,
+            out hit);
+    }
+
+    internal DistortOverlayScreenGeometry GetDistortOverlayScreenGeometry()
+    {
+        if (!_distortFrame.IsValid)
+        {
+            return new DistortOverlayScreenGeometry([], [], [], [], []);
+        }
+
+        var envelope = _distortFrame;
+        var sides = Enum.GetValues<DistortSide>()
+            .Select(side => envelope.GetBoundaryPolyline(side)
+                .Select(TransformOverlayPointToScreen)
+                .ToArray())
+            .ToArray();
+        var contour = envelope.GetBoundaryContour()
+            .Select(TransformOverlayPointToScreen)
+            .ToArray();
+        var segments = Enum.GetValues<DistortSide>()
+            .SelectMany(side => envelope.GetSegments(side))
+            .Select(segment => new DistortOverlayBezierSegment(
+                segment.Side,
+                segment.StartAnchorId,
+                segment.EndAnchorId,
+                TransformOverlayPointToScreen(segment.Start),
+                TransformOverlayPointToScreen(segment.Control1),
+                TransformOverlayPointToScreen(segment.Control2),
+                TransformOverlayPointToScreen(segment.End)))
+            .ToArray();
+        var visualHandles = envelope.GetVisualHandles()
+            .Select(handle =>
+            {
+                var anchorRef = handle.Reference with { Kind = DistortHandleKind.Anchor };
+                var anchor = envelope.TryGetHandlePosition(anchorRef, out var anchorPoint)
+                    ? TransformOverlayPointToScreen(anchorPoint)
+                    : TransformOverlayPointToScreen(handle.Position);
+                return new DistortOverlayVisualHandle(
+                    handle.Reference,
+                    TransformOverlayPointToScreen(handle.Position),
+                    anchor);
+            })
+            .ToArray();
+
+        var topLeft = sides.Length > 0 && sides[0].Length > 0 ? sides[0][0] : PointF.Empty;
+        var topRight = sides.Length > 0 && sides[0].Length > 0 ? sides[0][^1] : PointF.Empty;
+        var bottomRight = sides.Length > 2 && sides[2].Length > 0 ? sides[2][^1] : PointF.Empty;
+        var bottomLeft = sides.Length > 2 && sides[2].Length > 0 ? sides[2][0] : PointF.Empty;
+        var top = Midpoint(topLeft, topRight);
+        var right = sides.Length > 1 && sides[1].Length > 0
+            ? sides[1][sides[1].Length / 2]
+            : Midpoint(topRight, bottomRight);
+        var bottom = sides.Length > 2 && sides[2].Length > 0
+            ? sides[2][sides[2].Length / 2]
+            : Midpoint(bottomLeft, bottomRight);
+        var left = sides.Length > 3 && sides[3].Length > 0
+            ? sides[3][sides[3].Length / 2]
+            : Midpoint(topLeft, bottomLeft);
+        return new DistortOverlayScreenGeometry(
+            sides,
+            contour,
+            segments,
+            visualHandles,
+            [
+                new(TransformHandleKind.TopLeft, topLeft, topLeft),
+                new(TransformHandleKind.Top, top, top),
+                new(TransformHandleKind.TopRight, topRight, topRight),
+                new(TransformHandleKind.Right, right, right),
+                new(TransformHandleKind.BottomRight, bottomRight, bottomRight),
+                new(TransformHandleKind.Bottom, bottom, bottom),
+                new(TransformHandleKind.BottomLeft, bottomLeft, bottomLeft),
+                new(TransformHandleKind.Left, left, left)
+            ]);
+    }
+
     internal TransformOverlayScreenGeometry GetTransformOverlayScreenGeometry()
     {
-        var topLeft = WorldToScreen(_transformFrame.TopLeft);
-        var topRight = WorldToScreen(_transformFrame.TopRight);
-        var bottomRight = WorldToScreen(_transformFrame.BottomRight);
-        var bottomLeft = WorldToScreen(_transformFrame.BottomLeft);
+        var topLeft = TransformOverlayPointToScreen(_transformFrame.TopLeft);
+        var topRight = TransformOverlayPointToScreen(_transformFrame.TopRight);
+        var bottomRight = TransformOverlayPointToScreen(_transformFrame.BottomRight);
+        var bottomLeft = TransformOverlayPointToScreen(_transformFrame.BottomLeft);
         var center = Midpoint(topLeft, bottomRight);
         var top = Midpoint(topLeft, topRight);
         var right = Midpoint(topRight, bottomRight);
@@ -1680,6 +2280,97 @@ internal sealed partial class StageControl : Control
                 new(TransformHandleKind.SkewBottom, OffsetFromEdge(bottomLeft, bottomRight, bottom, center, offset), bottom),
                 new(TransformHandleKind.SkewLeft, OffsetFromEdge(topLeft, bottomLeft, left, center, offset), left)
             ]);
+    }
+
+    internal PointF TransformOverlayPointToScreen(PointF point)
+    {
+        if (_transformOverlayUsesReferenceProjection)
+        {
+            var scene = Vector3.Transform(
+                new Vector3(point.X, point.Y, 0),
+                _transformOverlayFlatToScene);
+            if (TryProjectScenePosition(scene, out var screen, out _)) return screen;
+        }
+        return WorldToScreen(point);
+    }
+
+    internal PointF TransformOverlayScreenToWorld(Point screen)
+    {
+        return TryGetTransformOverlayReferencePoint(screen, out var point)
+            ? point
+            : ScreenToWorld(screen);
+    }
+
+    private float TransformOverlayScreenLengthToWorld(float pixels)
+    {
+        if (!_transformOverlayUsesReferenceProjection) return ScreenLengthToWorld(pixels);
+        var distortBounds = _distortFrame.Bounds;
+        var center = TransformMode
+            ? _transformFrame.Center
+            : new PointF(
+                distortBounds.Left + distortBounds.Width * 0.5f,
+                distortBounds.Top + distortBounds.Height * 0.5f);
+        var screen = TransformOverlayPointToScreen(center);
+        var distances = new List<float>(2);
+        if (TryGetTransformOverlayReferencePoint(
+                Point.Round(new PointF(screen.X + pixels, screen.Y)),
+                out var horizontal))
+        {
+            distances.Add(Distance(center, horizontal));
+        }
+        if (TryGetTransformOverlayReferencePoint(
+                Point.Round(new PointF(screen.X, screen.Y + pixels)),
+                out var vertical))
+        {
+            distances.Add(Distance(center, vertical));
+        }
+        return distances.Count > 0 ? distances.Max() : ScreenLengthToWorld(pixels);
+    }
+
+    private bool TryGetTransformOverlayReferencePoint(Point screen, out PointF point)
+    {
+        point = PointF.Empty;
+        if (!_transformOverlayUsesReferenceProjection
+            || !TryGetReferenceRay(screen, out var ray))
+        {
+            return false;
+        }
+
+        var origin = Vector3.Transform(Vector3.Zero, _transformOverlayFlatToScene);
+        var axisX = Vector3.TransformNormal(Vector3.UnitX, _transformOverlayFlatToScene);
+        var axisY = Vector3.TransformNormal(Vector3.UnitY, _transformOverlayFlatToScene);
+        var normal = Vector3.Cross(axisX, axisY);
+        var denominator = Vector3.Dot(ray.Direction, normal);
+        if (normal.LengthSquared() <= 0.00000001f || Math.Abs(denominator) <= 0.00001f)
+        {
+            return false;
+        }
+
+        var distance = Vector3.Dot(origin - ray.Origin, normal) / denominator;
+        var offset = ray.Origin + ray.Direction * distance - origin;
+        var xx = Vector3.Dot(axisX, axisX);
+        var xy = Vector3.Dot(axisX, axisY);
+        var yy = Vector3.Dot(axisY, axisY);
+        var dx = Vector3.Dot(offset, axisX);
+        var dy = Vector3.Dot(offset, axisY);
+        var determinant = xx * yy - xy * xy;
+        if (!float.IsFinite(determinant) || Math.Abs(determinant) <= 0.00000001f) return false;
+        point = new PointF(
+            (dx * yy - dy * xy) / determinant,
+            (dy * xx - dx * xy) / determinant);
+        return float.IsFinite(point.X) && float.IsFinite(point.Y);
+    }
+
+    private static bool IsValidTransformOverlayReference(Matrix4x4 transform)
+    {
+        var origin = Vector3.Transform(Vector3.Zero, transform);
+        var axisX = Vector3.TransformNormal(Vector3.UnitX, transform);
+        var axisY = Vector3.TransformNormal(Vector3.UnitY, transform);
+        var normal = Vector3.Cross(axisX, axisY);
+        return float.IsFinite(origin.X) && float.IsFinite(origin.Y) && float.IsFinite(origin.Z)
+            && float.IsFinite(axisX.X) && float.IsFinite(axisX.Y) && float.IsFinite(axisX.Z)
+            && float.IsFinite(axisY.X) && float.IsFinite(axisY.Y) && float.IsFinite(axisY.Z)
+            && normal.LengthSquared() > 0.00000001f;
     }
 
     protected override void WndProc(ref Message message)
@@ -1914,6 +2605,7 @@ internal sealed partial class StageControl : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var frameStarted = Stopwatch.GetTimestamp();
+        UpdateSelectionHighlightAnimation();
         var requestedAt = _interactiveFrameRequestedAt;
         var reportsPointerDown = _pointerDownAwaitingPresent && _pointerDownStartedAt != 0;
         var renderedSelectionDragPreviewRevision = SelectionDragPreviewActive
@@ -1936,6 +2628,11 @@ internal sealed partial class StageControl : Control
         {
             if (_direct2DRenderer.TryRender(this, out var stats))
             {
+                if (!HasSoftwareDistortionForCurrentFrame())
+                {
+                    ClearGdiBaseFrameCache();
+                    ClearDistortRasterCache();
+                }
                 LastStats = stats;
                 LastFrameUsedDirect2D = true;
                 _paintFailureLogged = false;
@@ -2032,9 +2729,173 @@ internal sealed partial class StageControl : Control
     private void DrawBufferedGdi(Graphics target)
     {
         if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+        ResetLastGdiFrameTelemetry();
         using var buffer = BufferedGraphicsManager.Current.Allocate(target, ClientRectangle);
-        DrawGdi(buffer.Graphics);
+        if (ShouldCacheGdiBaseFrame())
+        {
+            try
+            {
+                DrawCachedGdi2D(buffer.Graphics);
+            }
+            catch (Exception ex) when (ex is ArgumentException or ExternalException or OutOfMemoryException)
+            {
+                ClearGdiBaseFrameCache();
+                DrawGdi(buffer.Graphics);
+            }
+        }
+        else
+        {
+            ClearGdiBaseFrameCache();
+            if (!HasSoftwareDistortionForCurrentFrame()) ClearDistortRasterCache();
+            DrawGdi(buffer.Graphics);
+        }
         buffer.Render(target);
+    }
+
+    private bool ShouldCacheGdiBaseFrame()
+    {
+        return !RendersReferenceProjection
+            && !HasDistortPreview
+            && HasSoftwareDistortionForCurrentFrame();
+    }
+
+    private bool HasSoftwareDistortionForCurrentFrame()
+    {
+        return SceneHasDistortionsForRendering(Scene)
+            || SceneHasDistortionsForRendering(UnderlayScene)
+            || SceneHasDistortionsForRendering(OnionSkinScene)
+            || SceneHasDistortionsForRendering(DragPreviewScene);
+    }
+
+    private void DrawCachedGdi2D(Graphics graphics)
+    {
+        if (!CanReuseGdiBaseFrame())
+        {
+            EnsureGdiBaseFrameBitmap();
+            using var baseGraphics = Graphics.FromImage(_gdiBaseFrameBitmap!);
+            var editableStats = DrawGdiBase2D(baseGraphics);
+            StoreGdiBaseFrame(editableStats);
+            LastGdiBaseFrameCacheBuilds = 1;
+        }
+        else
+        {
+            ReplayGdiBaseScenePassOrder();
+            LastStats = _gdiBaseFrameStats;
+            LastGdiBaseFrameCacheReuses = 1;
+        }
+
+        var copyStarted = Stopwatch.GetTimestamp();
+        var copyState = graphics.Save();
+        try
+        {
+            graphics.ResetTransform();
+            graphics.CompositingMode = CompositingMode.SourceCopy;
+            graphics.DrawImageUnscaled(_gdiBaseFrameBitmap!, 0, 0);
+        }
+        finally
+        {
+            graphics.Restore(copyState);
+        }
+        LastGdiBaseFrameCopyMilliseconds = Stopwatch.GetElapsedTime(copyStarted).TotalMilliseconds;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        DrawGdiDynamic2D(graphics, _gdiBaseFrameEditableStats);
+    }
+
+    private bool CanReuseGdiBaseFrame()
+    {
+        return _gdiBaseFrameBitmap is not null
+            && _gdiBaseFrameSize == ClientSize
+            && _gdiBaseFramePresentationRevision == BasePresentationRevision
+            && GdiBaseFrameSceneMatches(
+                _gdiBaseFrameEditableScene,
+                _gdiBaseFrameEditableGeometryRevision,
+                _gdiBaseFrameEditableSummaryRevision,
+                Scene)
+            && GdiBaseFrameSceneMatches(
+                _gdiBaseFrameUnderlayScene,
+                _gdiBaseFrameUnderlayGeometryRevision,
+                _gdiBaseFrameUnderlaySummaryRevision,
+                UnderlayScene)
+            && GdiBaseFrameSceneMatches(
+                _gdiBaseFrameOnionSkinScene,
+                _gdiBaseFrameOnionSkinGeometryRevision,
+                _gdiBaseFrameOnionSkinSummaryRevision,
+                OnionSkinScene);
+    }
+
+    private static bool GdiBaseFrameSceneMatches(
+        VectorScene? cachedScene,
+        long cachedGeometryRevision,
+        long cachedSummaryRevision,
+        VectorScene? scene)
+    {
+        return ReferenceEquals(cachedScene, scene)
+            && cachedGeometryRevision == (scene?.GeometryRevision ?? -1)
+            && cachedSummaryRevision == (scene?.SummaryRevision ?? -1);
+    }
+
+    private void EnsureGdiBaseFrameBitmap()
+    {
+        if (_gdiBaseFrameBitmap is not null && _gdiBaseFrameSize == ClientSize) return;
+        ClearGdiBaseFrameCache();
+        _gdiBaseFrameBitmap = new Bitmap(
+            ClientSize.Width,
+            ClientSize.Height,
+            PixelFormat.Format32bppPArgb);
+        _gdiBaseFrameSize = ClientSize;
+    }
+
+    private void StoreGdiBaseFrame(RenderStats editableStats)
+    {
+        _gdiBaseFramePresentationRevision = BasePresentationRevision;
+        _gdiBaseFrameEditableScene = Scene;
+        _gdiBaseFrameEditableGeometryRevision = Scene.GeometryRevision;
+        _gdiBaseFrameEditableSummaryRevision = Scene.SummaryRevision;
+        _gdiBaseFrameUnderlayScene = UnderlayScene;
+        _gdiBaseFrameUnderlayGeometryRevision = UnderlayScene?.GeometryRevision ?? -1;
+        _gdiBaseFrameUnderlaySummaryRevision = UnderlayScene?.SummaryRevision ?? -1;
+        _gdiBaseFrameOnionSkinScene = OnionSkinScene;
+        _gdiBaseFrameOnionSkinGeometryRevision = OnionSkinScene?.GeometryRevision ?? -1;
+        _gdiBaseFrameOnionSkinSummaryRevision = OnionSkinScene?.SummaryRevision ?? -1;
+        _gdiBaseFrameStats = LastStats;
+        _gdiBaseFrameEditableStats = editableStats;
+    }
+
+    private void ReplayGdiBaseScenePassOrder()
+    {
+        BeginScenePassOrder();
+        if (OnionSkinScene is not null) RecordOnionSkinScenePass();
+        if (UnderlayScene is not null) RecordUnderlayScenePass();
+        RecordEditableScenePass();
+    }
+
+    private void ClearGdiBaseFrameCache()
+    {
+        _gdiBaseFrameBitmap?.Dispose();
+        _gdiBaseFrameBitmap = null;
+        _gdiBaseFrameSize = default;
+        _gdiBaseFramePresentationRevision = -1;
+        _gdiBaseFrameEditableScene = null;
+        _gdiBaseFrameEditableGeometryRevision = -1;
+        _gdiBaseFrameEditableSummaryRevision = -1;
+        _gdiBaseFrameUnderlayScene = null;
+        _gdiBaseFrameUnderlayGeometryRevision = -1;
+        _gdiBaseFrameUnderlaySummaryRevision = -1;
+        _gdiBaseFrameOnionSkinScene = null;
+        _gdiBaseFrameOnionSkinGeometryRevision = -1;
+        _gdiBaseFrameOnionSkinSummaryRevision = -1;
+        _gdiBaseFrameStats = default;
+        _gdiBaseFrameEditableStats = default;
+    }
+
+    private void ResetLastGdiFrameTelemetry()
+    {
+        LastGdiDistortRasterBuilds = 0;
+        LastGdiDistortRasterReuses = 0;
+        LastGdiBaseFrameCacheBuilds = 0;
+        LastGdiBaseFrameCacheReuses = 0;
+        LastGdiBaseFrameCopyMilliseconds = 0;
     }
 
     private void DrawEmergencyBackground(Graphics graphics)
@@ -2053,6 +2914,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawGdi(Graphics g)
     {
+        ResetLastGdiFrameTelemetry();
         g.Clear(BackColor);
         g.SmoothingMode = SmoothingMode.None;
         DrawGrid(g);
@@ -2060,11 +2922,44 @@ internal sealed partial class StageControl : Control
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         BeginScenePassOrder();
 
-        if (ReferenceDimension == SceneDimension.ThreeD)
+        if (RendersReferenceProjection)
         {
-            LastStats = default;
+            LastStats = DrawReference3DScene(g);
+            if (DragPreviewScene is { } dragPreview)
+            {
+                var editableScene = Scene;
+                Scene = dragPreview;
+                try
+                {
+                    DrawReference3DCurrentScene(g);
+                }
+                finally
+                {
+                    Scene = editableScene;
+                }
+            }
+            DrawReference3DSelection(g);
+            DrawTransformOverlay(g);
+            DrawDistortOverlay(g);
             DrawMarquee(g);
+            if (ReferenceDimension == SceneDimension.ThreeD) DrawSpatialTransformGizmoGdi(g);
             return;
+        }
+
+        var editableStats = DrawGdiBase2D(g, backgroundAlreadyDrawn: true);
+        DrawGdiDynamic2D(g, editableStats);
+    }
+
+    private RenderStats DrawGdiBase2D(Graphics g, bool backgroundAlreadyDrawn = false)
+    {
+        if (!backgroundAlreadyDrawn)
+        {
+            g.Clear(BackColor);
+            g.SmoothingMode = SmoothingMode.None;
+            DrawGrid(g);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            BeginScenePassOrder();
         }
 
         var editableScene = Scene;
@@ -2109,11 +3004,17 @@ internal sealed partial class StageControl : Control
             editableScene,
             editableLimit,
             forceObjectRenderer: forceEditableObjectRenderer);
+        LastStats = RenderStats.Combine(RenderStats.Combine(onionSkinStats, underlayStats), editableStats);
+        return editableStats;
+    }
+
+    private void DrawGdiDynamic2D(Graphics g, RenderStats editableStats)
+    {
+        var objectDrawLimit = ObjectDrawLimit();
         if (DragPreviewScene is { } dragPreview)
         {
             DrawSceneGdi(g, dragPreview, Math.Min(objectDrawLimit, 80_000));
         }
-        LastStats = RenderStats.Combine(RenderStats.Combine(onionSkinStats, underlayStats), editableStats);
         if (editableStats.TileLod) DrawLodDetailObjects(g);
         if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
         DrawSelection(g);
@@ -2146,8 +3047,18 @@ internal sealed partial class StageControl : Control
             {
                 return DrawObjects(graphics, int.MaxValue);
             }
+            if (HasSceneCompositionMaskClips(Scene)) return DrawObjects(graphics, objectDrawLimit);
+            if (SceneHasDistortionsForRendering(Scene)) return DrawObjects(graphics, objectDrawLimit);
             if (SceneRenderOrder.RequiresObjectRenderer(Scene)) return DrawObjects(graphics, objectDrawLimit);
             if (MarqueeLodPreviewActive && Scene.ObjectCount > 0)
+            {
+                return pixelZoom < 0.08f
+                    ? DrawOverviewTiles(graphics)
+                    : DrawTiles(graphics);
+            }
+            if (ZoomLodPreviewActive
+                && Scene.ObjectCount >= SceneRenderOrder.DenseObjectLodMinimumVisibleObjects
+                && !Scene.HasDisplayLayerEffects)
             {
                 return pixelZoom < 0.08f
                     ? DrawOverviewTiles(graphics)
@@ -2202,7 +3113,8 @@ internal sealed partial class StageControl : Control
     private bool UsesObjectRenderer(VectorScene scene)
     {
         return scene.ObjectCount > 0
-            && (SceneRenderOrder.RequiresObjectRenderer(scene)
+            && (HasSceneCompositionMaskClips(scene)
+                || SceneRenderOrder.RequiresObjectRenderer(scene)
                 || scene.ObjectCount < 5000
                 || scene.HasDisplayLayerEffects
                 || EffectivePixelZoom() >= 0.18f);
@@ -2224,9 +3136,11 @@ internal sealed partial class StageControl : Control
 
     protected override void OnResize(EventArgs e)
     {
+        CompleteReferenceCameraTransition(invalidate: false);
         base.OnResize(e);
         ResetFrameSchedulerState();
         _direct2DRenderer.Resize(ClientSize);
+        ClearGdiBaseFrameCache();
         if (_pendingVisibleWorldWidth is { } visibleWorldWidth) SetVisibleWorldWidthCore(visibleWorldWidth, raiseViewChanged: false);
         if (MarqueeVisible && MarqueeOverlayActive) UpdateMarqueeOverlay();
         Invalidate();
@@ -2247,19 +3161,26 @@ internal sealed partial class StageControl : Control
     {
         base.OnVisibleChanged(e);
         if (Visible) _marqueeOverlay.Prepare();
-        else _marqueeOverlay.Hide();
+        else
+        {
+            CompleteReferenceCameraTransition(invalidate: false);
+            _marqueeOverlay.Hide();
+        }
         UpdateSelectionHighlightAnimation();
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        CompleteReferenceCameraTransition(invalidate: false);
         ResetFrameSchedulerState();
+        _zoomLodPreviewTimer.Stop();
         _marqueeOverlay.Hide();
         _handledPenPointers.Clear();
         if (!_disposingResources) _selectionHighlightTimer.Stop();
         try
         {
             _direct2DRenderer.ReleaseTarget();
+            ClearGdiBaseFrameCache();
         }
         catch (Exception ex)
         {
@@ -2277,10 +3198,14 @@ internal sealed partial class StageControl : Control
             ResetFillEdgeBezierOverlay(invalidate: false);
             _fillAnimationTimer.Dispose();
             _selectionHighlightTimer.Dispose();
+            _zoomLodPreviewTimer.Dispose();
+            DisposeReferenceCameraTransitions();
             _direct2DRenderer.Dispose();
+            ClearGdiBaseFrameCache();
             _layerBlendCompositor?.Dispose();
             _layerBlendCompositor = null;
             _mixingBrushRasterCache.Dispose();
+            ClearDistortPreviewCore(invalidate: false);
             ImportedSvgRasterizer.ClearCache();
             _marqueeOverlay.Dispose();
             foreach (var item in _brushCache.Values) item.Dispose();
@@ -2792,26 +3717,28 @@ internal sealed partial class StageControl : Control
     {
         if (!FillEdgeBezierOverlayVisible) return FillEdgeBezierOverlayHit.None;
 
-        var active = TranslatedFillEdgeBezierOverlaySegment(
-            _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
-                segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex));
+        var presented = PresentedFillEdgeBezierOverlaySegments();
         var bestHandle = FillEdgeBezierOverlayHit.None;
         var bestHandleDistance = float.PositiveInfinity;
         var bestHandleIsAnchor = false;
         var bestHandleIsActive = false;
-        if (active.PartIndex == _fillEdgeBezierOverlayActivePartIndex && _fillEdgeBezierOverlayActivePartIndex >= 0)
+        if (_fillEdgeBezierOverlayActivePartIndex >= 0)
         {
-            ConsiderFillEdgeBezierSegmentHandles(
-                screen,
-                active,
-                true,
-                ref bestHandle,
-                ref bestHandleDistance,
-                ref bestHandleIsAnchor,
-                ref bestHandleIsActive);
+            foreach (var source in presented)
+            {
+                if (source.PartIndex != _fillEdgeBezierOverlayActivePartIndex) continue;
+                ConsiderFillEdgeBezierSegmentHandles(
+                    screen,
+                    TranslatedFillEdgeBezierOverlaySegment(source),
+                    true,
+                    ref bestHandle,
+                    ref bestHandleDistance,
+                    ref bestHandleIsAnchor,
+                    ref bestHandleIsActive);
+            }
         }
 
-        foreach (var source in _fillEdgeBezierOverlaySegments)
+        foreach (var source in presented)
         {
             var segment = TranslatedFillEdgeBezierOverlaySegment(source);
             if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex) continue;
@@ -2827,19 +3754,34 @@ internal sealed partial class StageControl : Control
 
         if (bestHandle.IsValid) return bestHandle;
 
-        if (_fillEdgeBezierOverlayActivePartIndex >= 0
-            && CubicCurveHit(screen, active, FillEdgeBezierCurveHitRadiusPixels))
+        if (_fillEdgeBezierOverlayActivePartIndex >= 0)
         {
-            return new FillEdgeBezierOverlayHit(active.PartIndex, EditHandleKind.None);
+            foreach (var source in presented)
+            {
+                if (source.PartIndex != _fillEdgeBezierOverlayActivePartIndex) continue;
+                var active = TranslatedFillEdgeBezierOverlaySegment(source);
+                if (CubicCurveHit(screen, active, FillEdgeBezierCurveHitRadiusPixels))
+                {
+                    return new FillEdgeBezierOverlayHit(
+                        active.PartIndex,
+                        EditHandleKind.None,
+                        active.SourceStartT,
+                        active.SourceEndT);
+                }
+            }
         }
 
-        foreach (var source in _fillEdgeBezierOverlaySegments)
+        foreach (var source in presented)
         {
             var segment = TranslatedFillEdgeBezierOverlaySegment(source);
             if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex) continue;
             if (CubicCurveHit(screen, segment, FillEdgeBezierCurveHitRadiusPixels))
             {
-                return new FillEdgeBezierOverlayHit(segment.PartIndex, EditHandleKind.None);
+                return new FillEdgeBezierOverlayHit(
+                    segment.PartIndex,
+                    EditHandleKind.None,
+                    segment.SourceStartT,
+                    segment.SourceEndT);
             }
         }
 
@@ -2929,7 +3871,11 @@ internal sealed partial class StageControl : Control
                 || isAnchor == bestIsAnchor && isActive && !bestIsActive);
         if (!closer && !preferred) return;
 
-        best = new FillEdgeBezierOverlayHit(segment.PartIndex, handle);
+        best = new FillEdgeBezierOverlayHit(
+            segment.PartIndex,
+            handle,
+            segment.SourceStartT,
+            segment.SourceEndT);
         bestDistance = distance;
         bestIsAnchor = isAnchor;
         bestIsActive = isActive;
@@ -3068,6 +4014,7 @@ internal sealed partial class StageControl : Control
         var hasSelection = _selectedObjects.Any(index =>
             (uint)index < Scene.ObjectCount && !SuppressFillEdgeBezierSelectionOutline(index));
         if (hasSelection
+            && !HasSoftwareDistortionForCurrentFrame()
             && ShouldAnimateSelectionHighlight(Scene.ObjectCount, Scene.VirtualAtomCount)
             && Visible
             && IsHandleCreated)
@@ -3087,6 +4034,7 @@ internal sealed partial class StageControl : Control
     {
         if (!Visible
             || !IsHandleCreated
+            || HasSoftwareDistortionForCurrentFrame()
             || !ShouldAnimateSelectionHighlight(Scene.ObjectCount, Scene.VirtualAtomCount)
             || !_selectedObjects.Any(index =>
                 (uint)index < Scene.ObjectCount && !SuppressFillEdgeBezierSelectionOutline(index)))
@@ -3288,6 +4236,14 @@ internal sealed partial class StageControl : Control
         var hit = _hoveredLineElement;
         if (!IsValidEditableBezierHit(hit)) return false;
 
+        if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+            && hit.PresentedBezierSegmentIndex >= 0)
+        {
+            return !SelectedElement.IsValid
+                || SelectedElement.Key != hit.Key
+                || SelectedElement.PresentedBezierSegmentIndex != hit.PresentedBezierSegmentIndex;
+        }
+
         if (SelectedElement.IsValid && SelectedElement.Key == hit.Key)
         {
             var shape = Scene.ShapeKind[hit.Key.ObjectIndex];
@@ -3321,8 +4277,15 @@ internal sealed partial class StageControl : Control
         if (hit.Key.Kind == DrawingElementKind.BoundaryStroke
             || hit.Key.Kind == DrawingElementKind.Stroke && shape == ShapeKind.Line)
         {
-            if (!IsValidEditableBezierHit(hit)) return false;
-            resolved = hit;
+            if (!TryGetPresentedEditableBezierSegments(hit, out var presented)) return false;
+            var presentedIndex = ClosestPresentedBezierSegment(screen, presented);
+            var sourceRange = presented[presentedIndex];
+            resolved = hit with
+            {
+                PresentedBezierSegmentIndex = presentedIndex,
+                PresentedSourceStartT = sourceRange.SourceStartT,
+                PresentedSourceEndT = sourceRange.SourceEndT
+            };
             return true;
         }
 
@@ -3341,6 +4304,63 @@ internal sealed partial class StageControl : Control
 
         resolved = hit with { BezierSegmentIndex = segmentIndex };
         return true;
+    }
+
+    internal static DrawingElementHit ResolvePresentedBezierSourceHit(DrawingElementHit hit)
+    {
+        var sourceStart = Math.Clamp(hit.PresentedSourceStartT, 0, 1);
+        var sourceEnd = Math.Clamp(hit.PresentedSourceEndT, sourceStart, 1);
+        if (sourceStart <= DrawingTopologyRules.UnitIntersectionTolerance
+            && sourceEnd >= 1f - DrawingTopologyRules.UnitIntersectionTolerance)
+        {
+            return hit;
+        }
+
+        var range = hit.EndT - hit.StartT;
+        return hit with
+        {
+            StartT = hit.StartT + range * sourceStart,
+            EndT = hit.StartT + range * sourceEnd,
+            PresentedBezierSegmentIndex = -1,
+            PresentedSourceStartT = 0,
+            PresentedSourceEndT = 1
+        };
+    }
+
+    private int ClosestPresentedBezierSegment(
+        Point screen,
+        IReadOnlyList<DistortedBezierSegment> segments)
+    {
+        var bestIndex = 0;
+        var bestDistance = float.PositiveInfinity;
+        for (var index = 0; index < segments.Count; index++)
+        {
+            var distance = SquaredDistanceToCubicScreen(screen, segments[index].Curve);
+            if (distance >= bestDistance) continue;
+            bestDistance = distance;
+            bestIndex = index;
+        }
+        return bestIndex;
+    }
+
+    private float SquaredDistanceToCubicScreen(Point screen, CubicBoundarySegment curve)
+    {
+        var start = WorldToScreen(curve.Start);
+        var control1 = WorldToScreen(curve.Control1);
+        var control2 = WorldToScreen(curve.Control2);
+        var end = WorldToScreen(curve.End);
+        var controlLength = Distance(start, control1) + Distance(control1, control2) + Distance(control2, end);
+        var steps = Math.Clamp((int)MathF.Ceiling(controlLength / 8f), 8, 64);
+        var point = new PointF(screen.X, screen.Y);
+        var previous = start;
+        var best = float.PositiveInfinity;
+        for (var step = 1; step <= steps; step++)
+        {
+            var current = CubicPoint(start, control1, control2, end, step / (float)steps);
+            best = Math.Min(best, SquaredDistanceToSegment(point, previous, current));
+            previous = current;
+        }
+        return best;
     }
 
     private EditHandleKind HitTestLineBezierHandle(Point screen, DrawingElementHit hit)
@@ -3372,10 +4392,48 @@ internal sealed partial class StageControl : Control
         out PointF control2,
         out PointF end)
     {
-        start = PointF.Empty;
-        control1 = PointF.Empty;
-        control2 = PointF.Empty;
-        end = PointF.Empty;
+        if (!TryGetPresentedEditableBezierSegments(hit, out var presented))
+        {
+            start = PointF.Empty;
+            control1 = PointF.Empty;
+            control2 = PointF.Empty;
+            end = PointF.Empty;
+            return false;
+        }
+
+        var index = hit.PresentedBezierSegmentIndex;
+        var segment = (uint)index < presented.Length
+            ? presented[index].Curve
+            : presented.Length == 1
+                ? presented[0].Curve
+                : new CubicBoundarySegment(
+                    presented[0].Curve.Start,
+                    presented[0].Curve.Control1,
+                    presented[^1].Curve.Control2,
+                    presented[^1].Curve.End);
+        start = segment.Start;
+        control1 = segment.Control1;
+        control2 = segment.Control2;
+        end = segment.End;
+        return true;
+    }
+
+    internal CubicBoundarySegment[] GetPresentedEditableBezierWorldSegments(DrawingElementHit hit)
+    {
+        return TryGetPresentedEditableBezierSegments(hit, out var presented)
+            ? presented.Select(segment => segment.Curve).ToArray()
+            : [];
+    }
+
+    private bool TryGetPresentedEditableBezierSegments(
+        DrawingElementHit hit,
+        out DistortedBezierSegment[] presented)
+    {
+        presented = [];
+        var start = PointF.Empty;
+        var control1 = PointF.Empty;
+        var control2 = PointF.Empty;
+        var end = PointF.Empty;
         if (!hit.IsValid
             || (uint)hit.Key.ObjectIndex >= Scene.ObjectCount
             || !Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
@@ -3386,14 +4444,38 @@ internal sealed partial class StageControl : Control
         if (hit.Key.Kind == DrawingElementKind.Stroke
             && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
         {
-            return TryGetLineBezierWorldPoints(
+            if (!TryGetLineBezierWorldPoints(
                 hit.Key.ObjectIndex,
                 hit.StartT,
                 hit.EndT,
                 out start,
                 out control1,
                 out control2,
-                out end);
+                out end))
+            {
+                return false;
+            }
+            if (hit.StartT <= DrawingTopologyRules.UnitIntersectionTolerance
+                && hit.EndT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance
+                && TryGetObjectDistortionsForRendering(
+                    Scene,
+                    hit.Key.ObjectIndex,
+                    out var distortions)
+                && TryGetDistortedVectorGeometryForRendering(
+                    Scene,
+                    hit.Key.ObjectIndex,
+                    distortions,
+                    out var geometry)
+                && geometry.HasOpenStroke)
+            {
+                presented = geometry.OpenStrokeProvenance;
+                return true;
+            }
+            presented = GetPresentedBezierSegments(
+                Scene,
+                hit.Key.ObjectIndex,
+                new CubicBoundarySegment(start, control1, control2, end));
+            return presented.Length > 0;
         }
 
         if (hit.Key.Kind == DrawingElementKind.Stroke
@@ -3404,21 +4486,18 @@ internal sealed partial class StageControl : Control
                 hit.BezierSegmentIndex,
                 out var segment))
         {
-            start = segment.Start;
-            control1 = segment.Control1;
-            control2 = segment.Control2;
-            end = segment.End;
+            presented = [new DistortedBezierSegment(segment.Curve, 0, 0, 1)];
             return true;
         }
 
-        if (hit.Key.Kind != DrawingElementKind.BoundaryStroke) return false;
-        var points = GetSelectedBoundaryPartPoints(hit);
-        if (points.Length != 2) return false;
-        start = points[0];
-        end = points[1];
-        control1 = Lerp(start, end, 1f / 3f);
-        control2 = Lerp(start, end, 2f / 3f);
-        return true;
+        if (hit.Key.Kind != DrawingElementKind.BoundaryStroke
+            || !Scene.TryGetBoundaryBezierSegment(hit, Frame, out var boundary))
+        {
+            return false;
+        }
+
+        presented = GetPresentedBezierSegments(Scene, hit.Key.ObjectIndex, boundary);
+        return presented.Length > 0;
     }
 
     public PointF[][] GetSelectedFillPartContours() => GetSelectedFillPartContours(SelectedElement);
@@ -3581,6 +4660,26 @@ internal sealed partial class StageControl : Control
         InvalidateOverlay();
     }
 
+    private void BeginZoomLodPreview()
+    {
+        _zoomLodPreviewActive = true;
+        _zoomLodPreviewTimer.Stop();
+        _zoomLodPreviewTimer.Start();
+    }
+
+    private void EndZoomLodPreview(bool invalidate)
+    {
+        _zoomLodPreviewTimer.Stop();
+        if (!_zoomLodPreviewActive) return;
+        _zoomLodPreviewActive = false;
+        if (invalidate) Invalidate();
+    }
+
+    internal static bool ShouldUseZoomLodPreview(int objectCount, bool hasDisplayLayerEffects)
+    {
+        return objectCount >= ZoomLodPreviewObjectThreshold && !hasDisplayLayerEffects;
+    }
+
     internal static bool ShouldUseMarqueeLodPreview(
         double lastFrameMilliseconds,
         int editableObjectCount,
@@ -3594,3097 +4693,5 @@ internal sealed partial class StageControl : Control
             + Math.Max(0, dragPreviewObjectCount);
         return lastFrameMilliseconds > MarqueePreviewFrameBudgetMilliseconds
             || totalObjects >= MarqueePreviewObjectThreshold;
-    }
-
-    private RenderStats DrawOverviewTiles(Graphics g)
-    {
-        var scene = Scene;
-        var tileW = scene.StageWidth / scene.OverviewColumnCount;
-        var tileH = scene.StageHeight / scene.OverviewRowCount;
-        var viewport = VisibleWorldBounds();
-        var left = viewport.Left;
-        var right = viewport.Right;
-        var top = viewport.Top;
-        var bottom = viewport.Bottom;
-        var minX = (int)Math.Clamp((left + scene.StageWidth * 0.5f) / tileW, 0, scene.OverviewColumnCount - 1);
-        var maxX = (int)Math.Clamp((right + scene.StageWidth * 0.5f) / tileW, 0, scene.OverviewColumnCount - 1);
-        var minY = (int)Math.Clamp((top + scene.StageHeight * 0.5f) / tileH, 0, scene.OverviewRowCount - 1);
-        var maxY = (int)Math.Clamp((bottom + scene.StageHeight * 0.5f) / tileH, 0, scene.OverviewRowCount - 1);
-        var draws = 0;
-        long atoms = 0;
-
-        for (var ty = minY; ty <= maxY; ty++)
-        {
-            for (var tx = minX; tx <= maxX; tx++)
-            {
-                var tile = ty * scene.OverviewColumnCount + tx;
-                var count = scene.OverviewCount[tile];
-                if (count <= 0) continue;
-                atoms += scene.OverviewAtoms[tile];
-                var wx = tx * tileW - scene.StageWidth * 0.5f;
-                var wy = ty * tileH - scene.StageHeight * 0.5f;
-                var screen = WorldToScreen(wx, wy);
-                g.FillRectangle(BrushFor(scene.OverviewArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
-                draws++;
-            }
-        }
-
-        return new RenderStats(0, 0, atoms, draws, 0, true);
-    }
-
-    private RenderStats DrawTiles(Graphics g)
-    {
-        var scene = Scene;
-        var tileW = scene.StageWidth / scene.TileColumnCount;
-        var tileH = scene.StageHeight / scene.TileRowCount;
-        var viewport = VisibleWorldBounds();
-        var left = viewport.Left;
-        var right = viewport.Right;
-        var top = viewport.Top;
-        var bottom = viewport.Bottom;
-        var minX = (int)Math.Clamp((left + scene.StageWidth * 0.5f) / tileW, 0, scene.TileColumnCount - 1);
-        var maxX = (int)Math.Clamp((right + scene.StageWidth * 0.5f) / tileW, 0, scene.TileColumnCount - 1);
-        var minY = (int)Math.Clamp((top + scene.StageHeight * 0.5f) / tileH, 0, scene.TileRowCount - 1);
-        var maxY = (int)Math.Clamp((bottom + scene.StageHeight * 0.5f) / tileH, 0, scene.TileRowCount - 1);
-        var draws = 0;
-        long atoms = 0;
-
-        for (var ty = minY; ty <= maxY; ty++)
-        {
-            for (var tx = minX; tx <= maxX; tx++)
-            {
-                var tile = ty * scene.TileColumnCount + tx;
-                var count = scene.TileCount[tile];
-                if (count <= 0) continue;
-                atoms += scene.TileAtoms[tile];
-                var wx = tx * tileW - scene.StageWidth * 0.5f;
-                var wy = ty * tileH - scene.StageHeight * 0.5f;
-                var screen = WorldToScreen(wx, wy);
-                g.FillRectangle(BrushFor(scene.TileArgb[tile]), screen.X, screen.Y, Math.Max(1, WorldLengthToScreen(tileW) + 1), Math.Max(1, WorldLengthToScreen(tileH) + 1));
-                draws++;
-            }
-        }
-
-        return new RenderStats(0, 0, atoms, draws, 0, true);
-    }
-
-    private RenderStats DrawObjects(Graphics g, int drawLimit)
-    {
-        var scene = Scene;
-        var bounds = VisibleWorldBounds();
-        _renderOrder.Collect(scene, bounds, Frame);
-
-        return DrawCollectedObjects(g, drawLimit);
-    }
-
-    private RenderStats DrawCollectedObjects(Graphics g, int drawLimit)
-    {
-        var scene = Scene;
-        if (scene.HasNonNormalLayerBlendModes)
-        {
-            return DrawCollectedObjectsComposited(g, scene, drawLimit);
-        }
-
-        var drawn = _renderOrder.DrawLayers(
-            scene,
-            drawLimit,
-            (layer, objects, start) => DrawLayerObjects(g, scene, layer, objects, start));
-        return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
-    }
-
-    private RenderStats DrawCollectedObjectsComposited(Graphics graphics, VectorScene scene, int drawLimit)
-    {
-        var starts = new int[scene.LayerCount];
-        var skip = Math.Max(0, _renderOrder.VisibleCount - drawLimit);
-        var drawn = 0;
-        for (var layer = scene.LayerCount - 1; layer >= 0; layer--)
-        {
-            var objects = _renderOrder.GetLayerObjects(layer);
-            var start = Math.Min(skip, objects.Count);
-            starts[layer] = start;
-            skip -= start;
-            drawn += objects.Count - start;
-        }
-
-        var compositor = LayerCompositor();
-        compositor.CompositeTo(graphics, scene, (layerGraphics, layer) =>
-        {
-            DrawLayerObjects(
-                layerGraphics,
-                scene,
-                layer,
-                _renderOrder.GetLayerObjects(layer),
-                starts[layer]);
-        });
-        return new RenderStats(_renderOrder.VisibleCount, drawn, _renderOrder.VisibleAtoms, 0, _renderOrder.ScannedCount, false);
-    }
-
-    private LayerBlendCompositor LayerCompositor()
-    {
-        var size = new Size(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
-        if (_layerBlendCompositor is not null && _layerBlendCompositor.Size == size) return _layerBlendCompositor;
-        _layerBlendCompositor?.Dispose();
-        _layerBlendCompositor = new LayerBlendCompositor(size);
-        return _layerBlendCompositor;
-    }
-
-    private void DrawLodDetailObjects(Graphics graphics)
-    {
-        foreach (var objectIndex in GetLodDetailObjectIndices())
-        {
-            if (!Scene.IsObjectActive(objectIndex, Frame)
-                || !Scene.ShouldRenderLayerContent(Scene.ObjectLayer[objectIndex]))
-            {
-                continue;
-            }
-
-            if (Scene.IsLayerEffectivelyOutlined(Scene.ObjectLayer[objectIndex])) DrawObjectOutline(graphics, objectIndex);
-            else
-            {
-                if (SceneRenderOrder.HasFill(Scene.ShapeKind[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Fill);
-                if (SceneRenderOrder.HasStroke(Scene.ShapeKind[objectIndex], Scene.Stroke[objectIndex])) DrawObject(graphics, objectIndex, SceneRenderPass.Stroke);
-            }
-        }
-    }
-
-    internal bool TryGetActiveMaskLayer(out int layer)
-    {
-        layer = Scene.ActiveLayer;
-        return (uint)layer < Scene.LayerCount
-            && Scene.GetLayerKind(layer) == DrawingLayerKind.Mask
-            && Scene.IsLayerEffectivelyVisible(layer)
-            && !Scene.IsLayerEffectivelyLocked(layer);
-    }
-
-    private void DrawActiveMaskOutline(Graphics graphics)
-    {
-        if (!TryGetActiveMaskLayer(out var maskLayer)) return;
-        var maskObjects = Enumerable.Range(0, Scene.ObjectCount)
-            .Where(index => Scene.ObjectLayer[index] == maskLayer
-                && Scene.IsObjectActive(index, Frame)
-                && SceneRenderOrder.HasFill(Scene.ShapeKind[index]))
-            .ToArray();
-        if (maskObjects.Length == 0) return;
-
-        using var path = CreateMaskPath(Scene, maskObjects);
-        if (path.PointCount == 0) return;
-        using var fill = new SolidBrush(Color.FromArgb(48, 112, 205, 209));
-        using var glow = new Pen(Color.FromArgb(110, 104, 231, 232), 4f);
-        using var outline = new Pen(Color.FromArgb(244, 159, 242, 242), 1.4f) { DashStyle = DashStyle.Dash };
-        graphics.FillPath(fill, path);
-        graphics.DrawPath(glow, path);
-        graphics.DrawPath(outline, path);
-    }
-
-    private void DrawLayerObjects(Graphics graphics, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)
-    {
-        var layerKind = scene.GetLayerKind(layer);
-        if (!scene.ShouldRenderLayerContent(layer)) return;
-        if (layerKind == DrawingLayerKind.Mask)
-        {
-            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
-            return;
-        }
-        if (!scene.TryGetMaskLayerIndex(layer, out var maskLayer))
-        {
-            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
-            return;
-        }
-
-        if (!scene.IsLayerEffectivelyVisible(maskLayer)) return;
-        using var maskPath = CreateMaskPath(scene, _renderOrder.GetLayerObjects(maskLayer));
-        if (maskPath.PointCount == 0) return;
-
-        var state = graphics.Save();
-        try
-        {
-            graphics.SetClip(maskPath, CombineMode.Intersect);
-            DrawLayerObjectsUnmasked(graphics, scene, layer, objects, start);
-        }
-        finally
-        {
-            graphics.Restore(state);
-        }
-    }
-
-    private void DrawLayerObjectsUnmasked(
-        Graphics graphics,
-        VectorScene scene,
-        int layer,
-        IReadOnlyList<int> objects,
-        int start)
-    {
-        var outlineLayerColor = scene.GetEffectiveLayerOutlineColor(layer);
-        if (!outlineLayerColor.IsEmpty)
-        {
-            for (var index = start; index < objects.Count; index++)
-            {
-                DrawObjectOutline(graphics, objects[index], outlineLayerColor);
-            }
-            return;
-        }
-
-        SceneRenderOrder.DrawObjectPasses(
-            scene,
-            objects,
-            start,
-            SelectionFillDragFrontObjectsFor(scene),
-            objectIndex => DrawObject(graphics, objectIndex, SceneRenderPass.Fill),
-            objectIndex => DrawObject(graphics, objectIndex, SceneRenderPass.Stroke));
-    }
-
-    private void DrawObjectOutline(Graphics graphics, int objectIndex)
-    {
-        var scene = Scene;
-        var layer = (uint)objectIndex < scene.ObjectLayer.Length ? scene.ObjectLayer[objectIndex] : -1;
-        DrawObjectOutline(graphics, objectIndex, scene.GetEffectiveLayerOutlineColor(layer));
-    }
-
-    private void DrawObjectOutline(Graphics graphics, int objectIndex, Color layerColor)
-    {
-        var scene = Scene;
-        if (IsObjectHiddenForRendering(scene, objectIndex)) return;
-        var color = OutlineColor(scene, objectIndex, layerColor);
-        if (color.A == 0) return;
-
-        var shape = scene.ShapeKind.Length > objectIndex ? scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
-        using var pen = new Pen(color, 1f)
-        {
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-        var oldMode = graphics.SmoothingMode;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        try
-        {
-            if (shape == ShapeKind.Line)
-            {
-                using var lineBrush = new SolidBrush(color);
-                DrawBezierLine(graphics, objectIndex, lineBrush, 1f);
-                return;
-            }
-
-            if (shape == ShapeKind.Freeform && scene.TryGetFreehandWorldPoints(objectIndex, out var centerline))
-            {
-                DrawOutlinePolyline(graphics, pen, centerline.Select(WorldToScreen).ToArray());
-                return;
-            }
-
-            if (shape == ShapeKind.BrushStroke && scene.TryGetFreehandWorldPoints(objectIndex, out var brushCenterline))
-            {
-                using var brushPath = new GraphicsPath(FillMode.Alternate);
-                AppendPolygonContours(
-                    brushPath,
-                    FreehandStrokeProcessor.CreateBrushOutlines(brushCenterline, scene.Stroke[objectIndex]));
-                if (brushPath.PointCount > 0) graphics.DrawPath(pen, brushPath);
-                return;
-            }
-
-            if (shape == ShapeKind.MixingStroke)
-            {
-                foreach (var contour in GetMixingStrokeScreenContours(scene, objectIndex))
-                {
-                    DrawOutlinePolyline(graphics, pen, contour);
-                }
-                return;
-            }
-
-            if (shape == ShapeKind.Text && scene.TryGetTextWorldContours(objectIndex, out var textContours))
-            {
-                using var textPath = new GraphicsPath(FillMode.Alternate);
-                AppendPolygonContours(textPath, textContours);
-                if (textPath.PointCount > 0) graphics.DrawPath(pen, textPath);
-                return;
-            }
-
-            if (shape == ShapeKind.ImportedSvg)
-            {
-                var screen = WorldToScreen(scene.X[objectIndex], scene.Y[objectIndex]);
-                var width = Math.Max(0.75f, WorldLengthToScreen(scene.Width[objectIndex]));
-                var height = Math.Max(0.75f, WorldLengthToScreen(scene.Height[objectIndex]));
-                var state = graphics.Save();
-                try
-                {
-                    graphics.TranslateTransform(screen.X, screen.Y);
-                    graphics.RotateTransform(scene.Angle[objectIndex] * 57.29578f);
-                    graphics.DrawRectangle(pen, -width * 0.5f, -height * 0.5f, width, height);
-                }
-                finally
-                {
-                    graphics.Restore(state);
-                }
-                return;
-            }
-
-            using var path = CreateObjectBoundaryPath(scene, objectIndex);
-            if (path.PointCount > 0) graphics.DrawPath(pen, path);
-        }
-        finally
-        {
-            graphics.SmoothingMode = oldMode;
-        }
-    }
-
-    private static void DrawOutlinePolyline(Graphics graphics, Pen pen, IReadOnlyList<PointF> points)
-    {
-        if (points.Count == 1)
-        {
-            graphics.DrawEllipse(pen, points[0].X - 0.5f, points[0].Y - 0.5f, 1f, 1f);
-        }
-        else if (points.Count > 1)
-        {
-            graphics.DrawLines(pen, points.ToArray());
-        }
-    }
-
-    private static Color OutlineColor(VectorScene scene, int objectIndex, Color layerColor)
-    {
-        if (layerColor.IsEmpty) return Color.Empty;
-        var shape = scene.ShapeKind.Length > objectIndex ? scene.ShapeKind[objectIndex] : ShapeKind.Rectangle;
-        var fillAlpha = SceneRenderOrder.HasFill(shape) && (uint)objectIndex < scene.Argb.Length
-            ? Color.FromArgb(scene.Argb[objectIndex]).A
-            : 0;
-        var strokeAlpha = SceneRenderOrder.HasStroke(shape, scene.Stroke[objectIndex])
-            && (uint)objectIndex < scene.StrokeArgb.Length
-                ? Color.FromArgb(scene.StrokeArgb[objectIndex]).A
-                : 0;
-        var materialAlpha = Math.Max(fillAlpha, strokeAlpha);
-        var alpha = (layerColor.A * materialAlpha + 127) / 255;
-        return Color.FromArgb(alpha, layerColor.R, layerColor.G, layerColor.B);
-    }
-
-    private GraphicsPath CreateMaskPath(VectorScene scene, IReadOnlyList<int> maskObjects)
-    {
-        var path = new GraphicsPath(FillMode.Alternate);
-        foreach (var objectIndex in maskObjects)
-        {
-            if (!SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex])) continue;
-            AppendObjectBoundaryPath(path, scene, objectIndex);
-        }
-
-        return path;
-    }
-
-    private void DrawObject(Graphics g, int i, SceneRenderPass pass)
-    {
-        var scene = Scene;
-        if (IsObjectHiddenForRendering(scene, i)) return;
-        var screen = WorldToScreen(scene.X[i], scene.Y[i]);
-        var w = Math.Max(0.75f, WorldLengthToScreen(scene.Width[i]));
-        var h = Math.Max(0.75f, WorldLengthToScreen(scene.Height[i]));
-        var rect = new RectangleF(screen.X - w * 0.5f, screen.Y - h * 0.5f, w, h);
-        var shape = scene.ShapeKind.Length > i ? scene.ShapeKind[i] : ShapeKind.Rectangle;
-        if (shape == ShapeKind.MixingStroke)
-        {
-            if (pass == SceneRenderPass.Fill) DrawMixingStroke(g, scene, i);
-            return;
-        }
-
-        var brush = BrushFor(scene.Argb[i]);
-        var shapeVertexCount = scene.GetShapeVertexCount(i);
-        var strokeColor = StrokeColorFor(i);
-        var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[i]));
-
-        if (shape == ShapeKind.ImportedSvg)
-        {
-            if (pass == SceneRenderPass.Fill
-                && scene.TryGetImportedSvgSource(i, out var source)
-                && !string.IsNullOrWhiteSpace(source))
-            {
-                DrawImportedSvg(g, source, screen, w, h, scene.Angle[i], Color.FromArgb(scene.Argb[i]).A / 255f);
-            }
-            return;
-        }
-
-        if (shape == ShapeKind.Text)
-        {
-            if (pass == SceneRenderPass.Fill && scene.TryGetTextWorldContours(i, out var textContours))
-            {
-                DrawPathObject(g, i, textContours, brush, Color.Transparent, 0, 0, SceneRenderPass.Fill);
-            }
-            return;
-        }
-
-        if (pass == SceneRenderPass.Fill && shape != ShapeKind.Line && scene.HasGradient(i))
-        {
-            if (scene.GetGradientKind(i) == GradientKind.Linear && scene.HasGradientPath(i))
-            {
-                DrawPathGradientFill(g, scene, i);
-                return;
-            }
-
-            DrawGradientFill(g, scene, i);
-            return;
-        }
-
-        if (shape == ShapeKind.Path)
-        {
-            using var path = CreateObjectBoundaryPath(scene, i);
-            DrawPathObject(g, path, brush, strokeColor, scene.Stroke[i], screenStroke, pass);
-            return;
-        }
-
-        if (IsFreehandShape(shape) && scene.TryGetFreehandLocalPoints(i, out var freehandPoints))
-        {
-            var color = shape == ShapeKind.BrushStroke ? Color.FromArgb(scene.Argb[i]) : strokeColor;
-            DrawFreehandStroke(g, i, freehandPoints, color, scene.Stroke[i]);
-            return;
-        }
-
-        if (shape == ShapeKind.Line)
-        {
-            if (scene.Stroke[i] <= 0) return;
-            if (pass == SceneRenderPass.Stroke && scene.HasGradient(i))
-            {
-                DrawGradientBezierLine(g, scene, i, screenStroke);
-            }
-            else if (pass == SceneRenderPass.Stroke)
-            {
-                DrawBezierLine(g, i, BrushFor(strokeColor.ToArgb()), screenStroke);
-            }
-            return;
-        }
-
-        if (Math.Abs(scene.Angle[i]) > 0.01f || shape is not ShapeKind.Rectangle)
-        {
-            var state = g.Save();
-            g.TranslateTransform(screen.X, screen.Y);
-            g.RotateTransform(scene.Angle[i] * 57.29578f);
-            DrawLocalShape(g, shape, shapeVertexCount, brush, strokeColor, scene.Stroke[i], screenStroke, w, h, pass);
-            g.Restore(state);
-            return;
-        }
-
-        if (pass == SceneRenderPass.Fill)
-        {
-            using var edge = new Pen(brush, FillEdgeCoverageWidthPixels);
-            g.DrawRectangle(edge, rect.X, rect.Y, rect.Width, rect.Height);
-            g.FillRectangle(brush, rect);
-        }
-        else if (scene.Stroke[i] > 0 && w > 4 && h > 4)
-        {
-            using var pen = StrokePen(strokeColor, screenStroke);
-            g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
-        }
-    }
-
-    private static void DrawImportedSvg(
-        Graphics graphics,
-        string source,
-        PointF screenCenter,
-        float screenWidth,
-        float screenHeight,
-        float angleRadians,
-        float opacity)
-    {
-        var raster = ImportedSvgRasterizer.Rasterize(source, screenWidth, screenHeight);
-        var state = graphics.Save();
-        try
-        {
-            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            graphics.TranslateTransform(screenCenter.X, screenCenter.Y);
-            graphics.RotateTransform(angleRadians * 57.29578f);
-            var destination = new RectangleF(
-                -screenWidth * 0.5f,
-                -screenHeight * 0.5f,
-                screenWidth,
-                screenHeight);
-            if (opacity >= 0.999f)
-            {
-                graphics.DrawImage(raster.Bitmap, destination);
-                return;
-            }
-
-            using var attributes = new ImageAttributes();
-            var colorMatrix = new ColorMatrix { Matrix33 = Math.Clamp(opacity, 0f, 1f) };
-            attributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
-            var destinationPoints = new[]
-            {
-                new PointF(destination.Left, destination.Top),
-                new PointF(destination.Right, destination.Top),
-                new PointF(destination.Left, destination.Bottom)
-            };
-            graphics.DrawImage(
-                raster.Bitmap,
-                destinationPoints,
-                new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
-                GraphicsUnit.Pixel,
-                attributes);
-        }
-        finally
-        {
-            graphics.Restore(state);
-        }
-    }
-
-    private void DrawPathObject(Graphics g, int i, PointF[][] worldContours, Brush brush, Color strokeColor, float stroke, float screenStroke, SceneRenderPass pass)
-    {
-        if (worldContours.Length == 0) return;
-        using var path = new GraphicsPath(FillMode.Alternate);
-        AppendPolygonContours(path, worldContours);
-        DrawPathObject(g, path, brush, strokeColor, stroke, screenStroke, pass);
-    }
-
-    private static void DrawPathObject(
-        Graphics graphics,
-        GraphicsPath path,
-        Brush brush,
-        Color strokeColor,
-        float stroke,
-        float screenStroke,
-        SceneRenderPass pass)
-    {
-        if (path.PointCount == 0) return;
-        if (pass == SceneRenderPass.Fill)
-        {
-            FillPathAntialiased(graphics, path, brush);
-            return;
-        }
-
-        if (stroke <= 0) return;
-        using var pen = StrokePen(strokeColor, screenStroke);
-        graphics.DrawPath(pen, path);
-    }
-
-    private GraphicsPath CreateObjectBoundaryPath(VectorScene scene, int objectIndex)
-    {
-        var path = new GraphicsPath(FillMode.Alternate);
-        AppendObjectBoundaryPath(path, scene, objectIndex);
-        return path;
-    }
-
-    private void AppendObjectBoundaryPath(GraphicsPath path, VectorScene scene, int objectIndex)
-    {
-        if (scene.TryGetPathBezierWorldContours(objectIndex, out var bezierContours))
-        {
-            AppendBezierContours(path, bezierContours);
-            return;
-        }
-
-        AppendPolygonContours(path, scene.GetObjectBoundaryContours(objectIndex));
-    }
-
-    private void AppendBezierContours(GraphicsPath path, IReadOnlyList<PathBezierNode[]> contours)
-    {
-        foreach (var contour in contours)
-        {
-            if (contour.Length < 3) continue;
-            path.StartFigure();
-            for (var nodeIndex = 0; nodeIndex < contour.Length; nodeIndex++)
-            {
-                var current = contour[nodeIndex];
-                var next = contour[(nodeIndex + 1) % contour.Length];
-                path.AddBezier(
-                    WorldToScreen(current.Anchor),
-                    WorldToScreen(current.OutgoingControl),
-                    WorldToScreen(next.IncomingControl),
-                    WorldToScreen(next.Anchor));
-            }
-            path.CloseFigure();
-        }
-    }
-
-    private void AppendPolygonContours(GraphicsPath path, IReadOnlyList<PointF[]> contours)
-    {
-        foreach (var contour in contours)
-        {
-            if (contour.Length < 3) continue;
-            path.AddPolygon(contour.Select(WorldToScreen).ToArray());
-        }
-    }
-
-    private Brush CreateGradientFillBrush(VectorScene scene, int objectIndex)
-    {
-        var start = WorldToScreen(scene.GetGradientStart(objectIndex));
-        var end = WorldToScreen(scene.GetGradientEnd(objectIndex));
-        var stops = scene.GetGradientStops(objectIndex);
-        var endColor = Color.FromArgb(stops[^1].Argb);
-        if (Distance(start, end) < 0.5f) return new SolidBrush(endColor);
-        var brush = new LinearGradientBrush(
-            start,
-            end,
-            Color.FromArgb(stops[0].Argb),
-            endColor);
-        brush.InterpolationColors = new ColorBlend
-        {
-            Colors = stops.Select(stop => Color.FromArgb(stop.Argb)).ToArray(),
-            Positions = stops.Select(stop => stop.Position).ToArray()
-        };
-        return brush;
-    }
-
-    private void DrawGradientFill(Graphics g, VectorScene scene, int objectIndex)
-    {
-        using var path = CreateObjectBoundaryPath(scene, objectIndex);
-
-        if (path.PointCount == 0) return;
-        var gradientStops = scene.GetGradientStops(objectIndex);
-        if (scene.GetGradientKind(objectIndex) == GradientKind.Radial)
-        {
-            DrawRadialGradientFill(g, path, scene, objectIndex, gradientStops);
-            return;
-        }
-
-        if (scene.GetGradientKind(objectIndex) == GradientKind.ShapeRadial)
-        {
-            DrawShapeRadialGradientFill(g, path, scene, objectIndex, gradientStops);
-            return;
-        }
-
-        using var brush = CreateGradientFillBrush(scene, objectIndex);
-        FillPathAntialiased(g, path, brush);
-    }
-
-    internal static void FillPathAntialiased(Graphics g, GraphicsPath path, Brush brush)
-    {
-        var smoothingMode = g.SmoothingMode;
-        var pixelOffsetMode = g.PixelOffsetMode;
-        try
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            using var edge = new Pen(brush, FillEdgeCoverageWidthPixels)
-            {
-                LineJoin = LineJoin.Round,
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round
-            };
-            g.DrawPath(edge, path);
-            g.FillPath(brush, path);
-        }
-        finally
-        {
-            g.SmoothingMode = smoothingMode;
-            g.PixelOffsetMode = pixelOffsetMode;
-        }
-    }
-
-    private void DrawPathGradientFill(Graphics g, VectorScene scene, int objectIndex)
-    {
-        var estimatedWidth = scene.EstimateGradientPathStrokeWidth(objectIndex);
-        if (!scene.TryGetGradientPathWorldPoints(objectIndex, out var pathPoints)
-            || pathPoints.Length < 2
-            || estimatedWidth is not > 0)
-        {
-            return;
-        }
-
-        var screenLength = 0f;
-        for (var index = 1; index < pathPoints.Length; index++)
-        {
-            screenLength += Distance(WorldToScreen(pathPoints[index - 1]), WorldToScreen(pathPoints[index]));
-        }
-
-        var segments = GradientPaintUtilities.CreatePathGradientSegments(
-            pathPoints,
-            scene.GetGradientStops(objectIndex),
-            Math.Clamp((int)MathF.Ceiling(screenLength / 4f), 8, 256));
-        if (segments.Length == 0) return;
-
-        using var mask = CreateObjectBoundaryPath(scene, objectIndex);
-
-        if (mask.PointCount == 0) return;
-        var width = Math.Max(1f, WorldLengthToScreen(estimatedWidth * 1.12f));
-        var smoothingMode = g.SmoothingMode;
-        var state = g.Save();
-        try
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.SetClip(mask, CombineMode.Intersect);
-            foreach (var segment in segments)
-            {
-                var start = WorldToScreen(segment.Start);
-                var end = WorldToScreen(segment.End);
-                if (Distance(start, end) < 0.1f) continue;
-                using var brush = new LinearGradientBrush(
-                    start,
-                    end,
-                    Color.FromArgb(segment.StartArgb),
-                    Color.FromArgb(segment.EndArgb))
-                {
-                    WrapMode = WrapMode.TileFlipXY
-                };
-                using var pen = new Pen(brush, width)
-                {
-                    StartCap = LineCap.Round,
-                    EndCap = LineCap.Round,
-                    LineJoin = LineJoin.Round
-                };
-                g.DrawLine(pen, start, end);
-            }
-        }
-        finally
-        {
-            g.Restore(state);
-            g.SmoothingMode = smoothingMode;
-        }
-
-        using var edgeBrush = CreateGradientFillBrush(scene, objectIndex);
-        ReinforcePathEdge(g, mask, edgeBrush);
-    }
-
-    private void DrawRadialGradientFill(
-        Graphics g,
-        GraphicsPath path,
-        VectorScene scene,
-        int objectIndex,
-        IReadOnlyList<GradientStop> stops)
-    {
-        var center = WorldToScreen(scene.GetGradientStart(objectIndex));
-        var radiusPoint = WorldToScreen(scene.GetGradientEnd(objectIndex));
-        var radius = Math.Max(1f, Distance(center, radiusPoint));
-        using var outer = new SolidBrush(Color.FromArgb(stops[^1].Argb));
-        g.FillPath(outer, path);
-        var state = g.Save();
-        try
-        {
-            g.SetClip(path, CombineMode.Intersect);
-            const int rings = 64;
-            for (var ring = rings - 1; ring >= 0; ring--)
-            {
-                var position = ring / (float)(rings - 1);
-                using var fill = new SolidBrush(GradientColorAt(stops, position));
-                var ringRadius = Math.Max(0.5f, radius * position);
-                g.FillEllipse(fill, center.X - ringRadius, center.Y - ringRadius, ringRadius * 2, ringRadius * 2);
-            }
-        }
-        finally
-        {
-            g.Restore(state);
-        }
-        using var edge = new SolidBrush(Color.FromArgb(stops[^1].Argb));
-        ReinforcePathEdge(g, path, edge);
-    }
-
-    private static void ReinforcePathEdge(Graphics graphics, GraphicsPath path, Brush brush)
-    {
-        var smoothingMode = graphics.SmoothingMode;
-        var pixelOffsetMode = graphics.PixelOffsetMode;
-        try
-        {
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            using var edge = new Pen(brush, FillEdgeCoverageWidthPixels)
-            {
-                LineJoin = LineJoin.Round,
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round
-            };
-            graphics.DrawPath(edge, path);
-        }
-        finally
-        {
-            graphics.SmoothingMode = smoothingMode;
-            graphics.PixelOffsetMode = pixelOffsetMode;
-        }
-    }
-
-    private void DrawShapeRadialGradientFill(
-        Graphics g,
-        GraphicsPath path,
-        VectorScene scene,
-        int objectIndex,
-        IReadOnlyList<GradientStop> stops)
-    {
-        try
-        {
-            using var mappingPath = new GraphicsPath(FillMode.Alternate);
-            foreach (var contour in scene.GetShapeGradientMappingContours(objectIndex))
-            {
-                if (contour.Length >= 3) mappingPath.AddPolygon(contour.Select(WorldToScreen).ToArray());
-            }
-            if (mappingPath.PointCount == 0)
-            {
-                DrawRadialGradientFill(g, path, scene, objectIndex, stops);
-                return;
-            }
-
-            using var brush = new PathGradientBrush(mappingPath)
-            {
-                CenterPoint = WorldToScreen(scene.GetGradientStart(objectIndex)),
-                InterpolationColors = new ColorBlend
-                {
-                    Colors = stops.Select(stop => Color.FromArgb(stop.Argb)).ToArray(),
-                    Positions = stops.Select(stop => stop.Position).ToArray()
-                }
-            };
-            FillPathAntialiased(g, path, brush);
-        }
-        catch (ArgumentException)
-        {
-            DrawRadialGradientFill(g, path, scene, objectIndex, stops);
-        }
-        catch (OutOfMemoryException)
-        {
-            DrawRadialGradientFill(g, path, scene, objectIndex, stops);
-        }
-    }
-
-    private static Color GradientColorAt(IReadOnlyList<GradientStop> stops, float position)
-    {
-        position = Math.Clamp(position, 0f, 1f);
-        var previous = stops[0];
-        foreach (var current in stops.Skip(1))
-        {
-            if (position <= current.Position)
-            {
-                var length = Math.Max(0.0001f, current.Position - previous.Position);
-                var amount = Math.Clamp((position - previous.Position) / length, 0f, 1f);
-                var from = Color.FromArgb(previous.Argb);
-                var to = Color.FromArgb(current.Argb);
-                return Color.FromArgb(
-                    (int)MathF.Round(from.A + (to.A - from.A) * amount),
-                    (int)MathF.Round(from.R + (to.R - from.R) * amount),
-                    (int)MathF.Round(from.G + (to.G - from.G) * amount),
-                    (int)MathF.Round(from.B + (to.B - from.B) * amount));
-            }
-
-            previous = current;
-        }
-
-        return Color.FromArgb(stops[^1].Argb);
-    }
-
-    private void DrawFreehandStroke(Graphics g, int i, PointF[] localPoints, Color color, float stroke)
-    {
-        if (localPoints.Length == 0) return;
-        var screenWidth = Math.Max(0.75f, WorldLengthToScreen(stroke));
-        if (localPoints.Length == 1)
-        {
-            var point = WorldToScreen(LocalToWorld(i, localPoints[0]));
-            using var dot = new SolidBrush(color);
-            g.FillEllipse(dot, point.X - screenWidth * 0.5f, point.Y - screenWidth * 0.5f, screenWidth, screenWidth);
-            return;
-        }
-
-        using var pen = StrokePen(color, screenWidth);
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var previous = WorldToScreen(LocalToWorld(i, localPoints[0]));
-        for (var p = 1; p < localPoints.Length; p++)
-        {
-            var current = WorldToScreen(LocalToWorld(i, localPoints[p]));
-            g.DrawLine(pen, previous, current);
-            previous = current;
-        }
-
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawMixingStroke(Graphics graphics, VectorScene scene, int objectIndex)
-    {
-        var raster = MixingBrushRasterFor(scene, objectIndex);
-        if (raster is null) return;
-
-        var bounds = raster.LocalBounds;
-        var destination = new[]
-        {
-            WorldToScreen(ObjectLocalToWorld(scene, objectIndex, new PointF(bounds.Left, bounds.Top))),
-            WorldToScreen(ObjectLocalToWorld(scene, objectIndex, new PointF(bounds.Right, bounds.Top))),
-            WorldToScreen(ObjectLocalToWorld(scene, objectIndex, new PointF(bounds.Left, bounds.Bottom)))
-        };
-        var state = graphics.Save();
-        try
-        {
-            graphics.CompositingMode = CompositingMode.SourceOver;
-            graphics.CompositingQuality = CompositingQuality.HighQuality;
-            graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
-            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            graphics.DrawImage(
-                raster.Bitmap,
-                destination,
-                new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
-                GraphicsUnit.Pixel);
-        }
-        finally
-        {
-            graphics.Restore(state);
-        }
-    }
-
-    internal MixingBrushRegionRaster? MixingBrushRasterFor(
-        VectorScene scene,
-        int objectIndex)
-    {
-        if ((uint)objectIndex >= scene.ObjectCount
-            || scene.ShapeKind[objectIndex] != ShapeKind.MixingStroke)
-        {
-            return null;
-        }
-
-        var scaleBucket = MixingBrushRegionRasterizer.ResolveScaleBucket(WorldLengthToScreen(1));
-        return _mixingBrushRasterCache.GetOrCreate(
-            scene,
-            objectIndex,
-            scene.GeometryRevision,
-            scaleBucket,
-            scale =>
-            {
-                if (scene.TryGetMixingBrushLocalRegion(objectIndex, out var region))
-                {
-                    var vertices = region.Vertices
-                        .Select(vertex => new MixingBrushRasterVertex(vertex.Point, vertex.Argb))
-                        .ToArray();
-                    return MixingBrushRegionRasterizer.RasterizeMesh(
-                        vertices,
-                        region.TriangleIndices,
-                        scale);
-                }
-
-                if (!scene.TryGetMixingStrokeLocalSamples(objectIndex, out var samples)
-                    || samples.Length == 0)
-                {
-                    return null;
-                }
-                return MixingBrushRegionRasterizer.RasterizeTrajectory(
-                    MixingStrokeCoverageBuilder.GetLocalCells(samples),
-                    scale);
-            });
-    }
-
-    private void DrawLocalShape(
-        Graphics g,
-        ShapeKind shape,
-        int shapeVertexCount,
-        Brush brush,
-        Color strokeColor,
-        float stroke,
-        float screenStroke,
-        float w,
-        float h,
-        SceneRenderPass pass)
-    {
-        var rect = new RectangleF(-w * 0.5f, -h * 0.5f, w, h);
-        switch (shape)
-        {
-            case ShapeKind.Ellipse:
-                if (pass == SceneRenderPass.Fill)
-                {
-                    using var edge = new Pen(brush, FillEdgeCoverageWidthPixels);
-                    g.DrawEllipse(edge, rect);
-                    g.FillEllipse(brush, rect);
-                }
-                else if (stroke > 0 && w > 4 && h > 4)
-                {
-                    using var pen = StrokePen(strokeColor, screenStroke);
-                    g.DrawEllipse(pen, rect);
-                }
-                break;
-            case ShapeKind.Line:
-                if (pass == SceneRenderPass.Stroke)
-                {
-                    using var linePen = StrokePen(strokeColor, screenStroke);
-                    g.DrawLine(linePen, -w * 0.5f, 0, w * 0.5f, 0);
-                }
-                break;
-            case ShapeKind.Triangle:
-                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, RegularPolygonPoints(3, w, h, -MathF.PI / 2), pass);
-                break;
-            case ShapeKind.Polygon:
-                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, RegularPolygonPoints(PolygonVertexCount(shapeVertexCount), w, h, -MathF.PI / 2), pass);
-                break;
-            case ShapeKind.Star:
-                DrawPolygonShape(g, brush, strokeColor, stroke, screenStroke, StarPoints(StarVertexCount(shapeVertexCount), w, h, -MathF.PI / 2), pass);
-                break;
-            default:
-                if (pass == SceneRenderPass.Fill)
-                {
-                    using var edge = new Pen(brush, FillEdgeCoverageWidthPixels);
-                    g.DrawRectangle(edge, rect.X, rect.Y, rect.Width, rect.Height);
-                    g.FillRectangle(brush, rect);
-                }
-                else if (stroke > 0 && w > 4 && h > 4)
-                {
-                    using var pen = StrokePen(strokeColor, screenStroke);
-                    g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
-                }
-                break;
-        }
-    }
-
-    private static void DrawPolygonShape(Graphics g, Brush brush, Color strokeColor, float stroke, float screenStroke, PointF[] points, SceneRenderPass pass)
-    {
-        if (pass == SceneRenderPass.Fill)
-        {
-            using var edge = new Pen(brush, FillEdgeCoverageWidthPixels)
-            {
-                LineJoin = LineJoin.Round
-            };
-            g.DrawPolygon(edge, points);
-            g.FillPolygon(brush, points);
-            return;
-        }
-
-        if (stroke <= 0) return;
-        using var pen = StrokePen(strokeColor, screenStroke);
-        g.DrawPolygon(pen, points);
-    }
-
-    private Color StrokeColorFor(int objectIndex)
-    {
-        return Scene.StrokeArgb.Length > objectIndex
-            ? Color.FromArgb(Scene.StrokeArgb[objectIndex])
-            : Color.FromArgb(238, 242, 241);
-    }
-
-    private static Pen StrokePen(Color color, float width)
-    {
-        return new Pen(color, Math.Max(1.5f, width))
-        {
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-    }
-
-    private static Pen SelectionPen(Color color, float width)
-    {
-        return new Pen(color, width)
-        {
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-    }
-
-    private static PointF[] RegularPolygonPoints(int sides, float w, float h, float startAngle)
-    {
-        var points = new PointF[sides];
-        for (var i = 0; i < sides; i++)
-        {
-            var angle = startAngle + i * MathF.Tau / sides;
-            points[i] = new PointF(MathF.Cos(angle) * w * 0.5f, MathF.Sin(angle) * h * 0.5f);
-        }
-
-        return points;
-    }
-
-    private static PointF[] StarPoints(int points, float w, float h, float startAngle)
-    {
-        var result = new PointF[points * 2];
-        for (var i = 0; i < result.Length; i++)
-        {
-            var radius = i % 2 == 0 ? 0.5f : 0.23f;
-            var angle = startAngle + i * MathF.Tau / result.Length;
-            result[i] = new PointF(MathF.Cos(angle) * w * radius, MathF.Sin(angle) * h * radius);
-        }
-
-        return result;
-    }
-
-    private static int PolygonVertexCount(int value) => Math.Clamp(value == 0 ? 6 : value, 3, 64);
-
-    private static int StarVertexCount(int value) => Math.Clamp(value == 0 ? 5 : value, 3, 32);
-
-    private void DrawGrid(Graphics g)
-    {
-        if (_worldGridOpacity <= 0.001f) return;
-        if (ReferenceDimension == SceneDimension.ThreeD)
-        {
-            Draw3DReferenceGrid(g);
-            return;
-        }
-        if (_worldGridType == VectorAnimationEngine.WorldGridType.GoldenSpiral)
-        {
-            DrawGoldenSpiralGrid(g);
-            return;
-        }
-        if (_worldGridType == VectorAnimationEngine.WorldGridType.Polar)
-        {
-            DrawPolarGrid(g);
-            return;
-        }
-
-        var scale = CurrentWorldGridScale;
-        var bounds = VisibleWorldBounds();
-        var origin = WorldToScreen(0, 0);
-        DrawWorldGridLines(g, scale, bounds.Left, bounds.Right, vertical: true);
-        DrawWorldGridLines(g, scale, bounds.Top, bounds.Bottom, vertical: false);
-
-        if (origin.Y >= 0 && origin.Y <= Height)
-        {
-            _gridPen.Color = Color.FromArgb(GridAlpha(205), 214, 82, 82);
-            _gridPen.Width = 1.6f;
-            g.DrawLine(_gridPen, 0, origin.Y, Width, origin.Y);
-        }
-        if (origin.X >= 0 && origin.X <= Width)
-        {
-            _gridPen.Color = Color.FromArgb(GridAlpha(205), 82, 190, 122);
-            _gridPen.Width = 1.6f;
-            g.DrawLine(_gridPen, origin.X, 0, origin.X, Height);
-        }
-        if (origin.X >= 0 && origin.X <= Width && origin.Y >= 0 && origin.Y <= Height)
-        {
-            var previousSmoothing = g.SmoothingMode;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.FillEllipse(BrushFor(Color.FromArgb(GridAlpha(230), 224, 232, 234).ToArgb()), origin.X - 3, origin.Y - 3, 6, 6);
-            _gridPen.Color = Color.FromArgb(GridAlpha(235), 22, 26, 29);
-            _gridPen.Width = 1.2f;
-            g.DrawEllipse(_gridPen, origin.X - 4.5f, origin.Y - 4.5f, 9, 9);
-            g.SmoothingMode = previousSmoothing;
-        }
-    }
-
-    private void DrawGoldenSpiralGrid(Graphics graphics)
-    {
-        var geometry = ResolveGoldenSpiralGrid();
-        if (geometry.SpiralPoints.Length < 2) return;
-
-        var previousSmoothing = graphics.SmoothingMode;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var guidePen = new Pen(Color.FromArgb(GridAlpha(82), 118, 128, 134), 1f);
-        using var spiralPen = new Pen(Color.FromArgb(GridAlpha(205), 232, 194, 86), 1.6f)
-        {
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-        foreach (var segment in geometry.GuideSegments)
-        {
-            graphics.DrawLine(
-                guidePen,
-                WorldToScreen(segment.Start.X, segment.Start.Y),
-                WorldToScreen(segment.End.X, segment.End.Y));
-        }
-        var spiral = new PointF[geometry.SpiralPoints.Length];
-        for (var index = 0; index < spiral.Length; index++)
-        {
-            var point = geometry.SpiralPoints[index];
-            spiral[index] = WorldToScreen(point.X, point.Y);
-        }
-        graphics.DrawLines(spiralPen, spiral);
-        graphics.SmoothingMode = previousSmoothing;
-    }
-
-    private void DrawPolarGrid(Graphics graphics)
-    {
-        var geometry = ResolvePolarGrid();
-        if (geometry.Circles.Length == 0) return;
-
-        var previousSmoothing = graphics.SmoothingMode;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var origin = WorldToScreen(geometry.Origin.X, geometry.Origin.Y);
-        var scale = CurrentWorldGridScale;
-        var visibleBounds = VisibleWorldBounds();
-        var arcOverscan = ScreenLengthToWorld(2f);
-        visibleBounds.Inflate(arcOverscan, arcOverscan);
-        var maximumFastEllipseRadius = Math.Max(Width, Height) * 2f;
-        Span<PolarGridArc> visibleArcs = stackalloc PolarGridArc[PolarGridLayout.MaximumVisibleArcsPerCircle];
-        foreach (var circle in geometry.Circles)
-        {
-            var style = WorldGridLayout.ResolveLineStyle(circle.Index, scale, _worldGridOpacity);
-            if (style.Color.A == 0) continue;
-            var radius = WorldLengthToScreen(circle.Radius);
-            _gridPen.Color = style.Color;
-            _gridPen.Width = style.Width;
-            if (radius <= maximumFastEllipseRadius)
-            {
-                graphics.DrawEllipse(_gridPen, origin.X - radius, origin.Y - radius, radius * 2, radius * 2);
-                continue;
-            }
-
-            var arcCount = PolarGridLayout.ResolveVisibleArcs(visibleBounds, circle.Radius, visibleArcs);
-            if (arcCount == 0) continue;
-            using var path = new GraphicsPath();
-            for (var arcIndex = 0; arcIndex < arcCount; arcIndex++)
-            {
-                var arc = visibleArcs[arcIndex];
-                var segmentCount = PolarGridLayout.ResolveArcSegmentCount(radius, arc.SweepAngle);
-                var previous = PolarArcScreenPoint(origin, radius, arc.StartAngle);
-                path.StartFigure();
-                for (var segmentIndex = 1; segmentIndex <= segmentCount; segmentIndex++)
-                {
-                    var angle = arc.StartAngle + arc.SweepAngle * segmentIndex / segmentCount;
-                    var current = PolarArcScreenPoint(origin, radius, angle);
-                    path.AddLine(previous, current);
-                    previous = current;
-                }
-            }
-            graphics.DrawPath(_gridPen, path);
-        }
-
-        for (var index = 0; index < geometry.DiameterSegments.Length; index++)
-        {
-            if (!PolarGridLayout.TryClipSegment(visibleBounds, geometry.DiameterSegments[index], out var segment)) continue;
-            _gridPen.Color = index switch
-            {
-                0 => Color.FromArgb(GridAlpha(205), 214, 82, 82),
-                PolarGridLayout.DiameterCount / 2 => Color.FromArgb(GridAlpha(205), 82, 190, 122),
-                _ => Color.FromArgb(GridAlpha(index % 3 == 0 ? 112 : 72), 92, 104, 112)
-            };
-            _gridPen.Width = index is 0 or PolarGridLayout.DiameterCount / 2
-                ? 1.6f
-                : index % 3 == 0 ? 1.15f : 0.8f;
-            graphics.DrawLine(
-                _gridPen,
-                WorldToScreen(segment.Start.X, segment.Start.Y),
-                WorldToScreen(segment.End.X, segment.End.Y));
-        }
-
-        if (origin.X >= 0 && origin.X <= Width && origin.Y >= 0 && origin.Y <= Height)
-        {
-            graphics.FillEllipse(BrushFor(Color.FromArgb(GridAlpha(230), 224, 232, 234).ToArgb()), origin.X - 3, origin.Y - 3, 6, 6);
-            _gridPen.Color = Color.FromArgb(GridAlpha(235), 22, 26, 29);
-            _gridPen.Width = 1.2f;
-            graphics.DrawEllipse(_gridPen, origin.X - 4.5f, origin.Y - 4.5f, 9, 9);
-        }
-        graphics.SmoothingMode = previousSmoothing;
-    }
-
-    private static PointF PolarArcScreenPoint(PointF origin, float radius, float angle)
-    {
-        return new PointF(
-            (float)(origin.X + Math.Cos(angle) * radius),
-            (float)(origin.Y + Math.Sin(angle) * radius));
-    }
-
-    private void DrawWorldGridLines(
-        Graphics graphics,
-        WorldGridScale scale,
-        float minimumWorld,
-        float maximumWorld,
-        bool vertical)
-    {
-        var (first, last) = WorldGridLayout.VisibleIndexRange(minimumWorld, maximumWorld, scale.StepWorld);
-        for (var index = first; index <= last; index++)
-        {
-            if (index == 0) continue;
-            var style = WorldGridLayout.ResolveLineStyle(index, scale, _worldGridOpacity);
-            if (style.Color.A == 0) continue;
-            var world = index * scale.StepWorld;
-            var position = vertical ? WorldToScreen((float)world, 0).X : WorldToScreen(0, (float)world).Y;
-            if (vertical && (position < -style.Width || position > Width + style.Width)
-                || !vertical && (position < -style.Width || position > Height + style.Width))
-            {
-                continue;
-            }
-
-            _gridPen.Color = style.Color;
-            _gridPen.Width = style.Width;
-            if (vertical) graphics.DrawLine(_gridPen, position, 0, position, Height);
-            else graphics.DrawLine(_gridPen, 0, position, Width, position);
-        }
-    }
-
-    private void Draw3DReferenceGrid(Graphics g)
-    {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var horizonPen = new Pen(Color.FromArgb(GridAlpha(40), 112, 204, 255), 1);
-        using var gridPen = new Pen(Color.FromArgb(GridAlpha(70), 72, 84, 92), 1);
-        using var centerPen = new Pen(Color.FromArgb(GridAlpha(110), 150, 164, 174), 1.3f);
-        using var xPen = new Pen(Color.FromArgb(GridAlpha(210), 255, 92, 92), 2);
-        using var yPen = new Pen(Color.FromArgb(GridAlpha(210), 122, 224, 92), 2);
-        using var zPen = new Pen(Color.FromArgb(GridAlpha(210), 92, 172, 255), 2);
-
-        var horizonY = Height * 0.42f;
-        g.DrawLine(horizonPen, 0, horizonY, Width, horizonY);
-
-        var step = InfiniteGridStep();
-        var lineRadius = InfiniteGridLineRadius();
-        var centerX = SnapToGrid(_referenceTargetX, step);
-        var centerZ = SnapToGrid(_referenceTargetZ, step);
-        var minX = centerX - lineRadius * step;
-        var maxX = centerX + lineRadius * step;
-        var minZ = centerZ - lineRadius * step;
-        var maxZ = centerZ + lineRadius * step;
-
-        for (var offset = -lineRadius; offset <= lineRadius; offset++)
-        {
-            var z = centerZ + offset * step;
-            var x = centerX + offset * step;
-            DrawProjectedLine(g, new Point3(minX, 0, z), new Point3(maxX, 0, z), Math.Abs(z) < 0.001f ? centerPen : gridPen);
-            DrawProjectedLine(g, new Point3(x, 0, minZ), new Point3(x, 0, maxZ), Math.Abs(x) < 0.001f ? centerPen : gridPen);
-        }
-
-        DrawProjectedLine(g, new Point3(0, _referenceTargetY - 5000, 0), new Point3(0, _referenceTargetY + 5000, 0), yPen);
-        DrawProjectedLine(g, new Point3(minX, 0, 0), new Point3(maxX, 0, 0), xPen);
-        DrawProjectedLine(g, new Point3(0, 0, minZ), new Point3(0, 0, maxZ), zPen);
-        DrawAxisLabel(g, "X", new Point3(maxX, 0, 0), xPen.Color);
-        DrawAxisLabel(g, "Y", new Point3(0, 5000, 0), yPen.Color);
-        DrawAxisLabel(g, "Z", new Point3(0, 0, maxZ), zPen.Color);
-    }
-
-    private void DrawProjectedLine(Graphics g, Point3 a, Point3 b, Pen pen)
-    {
-        var ca = CameraSpacePoint(a);
-        var cb = CameraSpacePoint(b);
-        if (!ClipNear(ref ca, ref cb)) return;
-        var pa = ProjectCameraPoint(ca);
-        var pb = ProjectCameraPoint(cb);
-        if (!LineMayTouchViewport(pa, pb)) return;
-        g.DrawLine(pen, pa, pb);
-    }
-
-    private void DrawAxisLabel(Graphics g, string text, Point3 point, Color color)
-    {
-        var projected = ProjectReferencePoint(point);
-        if (projected is null) return;
-        using var brush = new SolidBrush(color);
-        g.DrawString(text, Font, brush, projected.Value.X + 6, projected.Value.Y - 16);
-    }
-
-    private PointF? ProjectReferencePoint(Point3 point)
-    {
-        var cameraPoint = CameraSpacePoint(point);
-        if (cameraPoint.Z < 120) return null;
-        return ProjectCameraPoint(cameraPoint);
-    }
-
-    private Point3 CameraSpacePoint(Point3 point)
-    {
-        var yawCos = MathF.Cos(_referenceYaw);
-        var yawSin = MathF.Sin(_referenceYaw);
-        var pitchCos = MathF.Cos(_referencePitch);
-        var pitchSin = MathF.Sin(_referencePitch);
-
-        var worldX = point.X - _referenceTargetX;
-        var worldY = point.Y - _referenceTargetY;
-        var worldZ = point.Z - _referenceTargetZ;
-        var x = worldX * yawCos - worldZ * yawSin;
-        var z = worldX * yawSin + worldZ * yawCos;
-        var y = worldY;
-        var py = y * pitchCos - z * pitchSin;
-        var pz = y * pitchSin + z * pitchCos + _referenceDistance;
-        return new Point3(x, py, pz);
-    }
-
-    private PointF ProjectCameraPoint(Point3 point)
-    {
-        var scale = 0.035f * _referenceZoomScale;
-        var perspective = ReferenceProjection == CameraProjection.Perspective ? _referenceDistance / Math.Max(120f, point.Z) : 1f;
-        return new PointF(
-            Width * 0.5f + point.X * scale * perspective,
-            Height * 0.58f - point.Y * scale * perspective);
-    }
-
-    private static bool ClipNear(ref Point3 a, ref Point3 b)
-    {
-        const float near = 120f;
-        var aInside = a.Z >= near;
-        var bInside = b.Z >= near;
-        if (!aInside && !bInside) return false;
-        if (aInside && bInside) return true;
-        var t = Math.Clamp((near - a.Z) / (b.Z - a.Z), 0, 1);
-        var clipped = new Point3(
-            a.X + (b.X - a.X) * t,
-            a.Y + (b.Y - a.Y) * t,
-            a.Z + (b.Z - a.Z) * t);
-        if (aInside) b = clipped;
-        else a = clipped;
-        return true;
-    }
-
-    private bool LineMayTouchViewport(PointF a, PointF b)
-    {
-        const float margin = 320;
-        var minX = MathF.Min(a.X, b.X);
-        var maxX = MathF.Max(a.X, b.X);
-        var minY = MathF.Min(a.Y, b.Y);
-        var maxY = MathF.Max(a.Y, b.Y);
-        return maxX >= -margin && minX <= Width + margin && maxY >= -margin && minY <= Height + margin;
-    }
-
-    private int InfiniteGridLineRadius()
-    {
-        return Math.Clamp((int)MathF.Ceiling(Math.Max(Width, Height) / 14f), 64, 180);
-    }
-
-    private float InfiniteGridStep()
-    {
-        var raw = _referenceDistance / Math.Max(0.35f, _referenceZoomScale) / 10f;
-        if (raw <= 750) return 500;
-        if (raw <= 1500) return 1000;
-        if (raw <= 3500) return 2000;
-        if (raw <= 7000) return 5000;
-        return 10000;
-    }
-
-    private static float SnapToGrid(float value, float step) => MathF.Round(value / step) * step;
-
-    private int GridAlpha(int alpha) => (int)MathF.Round(Math.Clamp(alpha * _worldGridOpacity, 0f, 255f));
-
-    private readonly record struct Point3(float X, float Y, float Z);
-
-    private void DrawSelection(Graphics g)
-    {
-        if ((SelectedObject < 0 || SelectedObject >= Scene.ObjectCount)
-            && SelectedObjects.Count == 0
-            && !IsValidEditableBezierHit(_hoveredLineElement)
-            && !DrawingObjectSelectionVisible)
-        {
-            return;
-        }
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-
-        if (_selectedElements.Length > 0)
-        {
-            var previewState = g.Save();
-            try
-            {
-                if (SelectionDragPreviewActive)
-                {
-                    var offset = SelectionDragPreviewOffset;
-                    var screenScale = VectorUnits.PixelsPerUnit * Zoom;
-                    g.TranslateTransform(offset.X * screenScale, offset.Y * screenScale);
-                }
-                foreach (var objectIndex in _selectedElements
-                             .Where(hit => (uint)hit.Key.ObjectIndex < Scene.ObjectCount
-                                 && hit.Key.Kind == DrawingElementKind.Stroke
-                                 && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
-                                 && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
-                             .Select(hit => hit.Key.ObjectIndex)
-                             .Distinct()
-                             .Take(MaxSelectionOutlines))
-                {
-                    DrawBezierSelectionContext(g, objectIndex);
-                }
-
-                var drawnElements = 0;
-                foreach (var hit in _selectedElements)
-                {
-                    if ((uint)hit.Key.ObjectIndex >= Scene.ObjectCount
-                        || hit.Key == SelectedElement.Key
-                        || SuppressFillEdgeBezierSelectionOutline(hit.Key.ObjectIndex)
-                        || !Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
-                    {
-                        continue;
-                    }
-
-                    DrawElementSelectionOutline(g, hit, primary: false);
-                    drawnElements++;
-                    if (drawnElements >= MaxSelectionOutlines) break;
-                }
-
-                if (SelectedElement.IsValid
-                    && (uint)SelectedElement.Key.ObjectIndex < Scene.ObjectCount
-                    && !SuppressFillEdgeBezierSelectionOutline(SelectedElement.Key.ObjectIndex)
-                    && Scene.IsObjectActive(SelectedElement.Key.ObjectIndex, Frame))
-                {
-                    DrawElementSelectionOutline(g, SelectedElement, primary: true);
-                    if (PenPathHandlesVisible && !TransformMode)
-                    {
-                        foreach (var objectIndex in _selectedElements
-                                     .Where(hit => hit.Key.Kind == DrawingElementKind.Stroke
-                                         && (uint)hit.Key.ObjectIndex < Scene.ObjectCount
-                                         && Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
-                                         && Scene.IsObjectActive(hit.Key.ObjectIndex, Frame))
-                                     .Select(hit => hit.Key.ObjectIndex)
-                                     .Distinct()
-                                     .Take(MaxSelectionOutlines))
-                        {
-                            DrawBezierHandles(g, objectIndex);
-                        }
-                    }
-                    else if (IsValidEditableBezierHit(SelectedElement))
-                    {
-                        if (!TransformMode) DrawBezierHandles(g, SelectedElement);
-                    }
-                }
-            }
-            finally
-            {
-                g.Restore(previewState);
-            }
-
-            DrawDrawingObjectSelectionOverlay(g);
-            DrawTransformOverlay(g);
-            DrawHoveredLineControls(g);
-            g.SmoothingMode = oldMode;
-            return;
-        }
-
-        var drawn = 0;
-        foreach (var index in SelectedObjects)
-        {
-            if (index == SelectedObject || index < 0 || index >= Scene.ObjectCount) continue;
-            if (SuppressFillEdgeBezierSelectionOutline(index)) continue;
-            if (!Scene.IsObjectActive(index, Frame)) continue;
-            DrawSelectionOutline(g, index, primary: false);
-            drawn++;
-            if (drawn >= MaxSelectionOutlines) break;
-        }
-
-        var primary = SelectedObject;
-        if (primary >= 0
-            && primary < Scene.ObjectCount
-            && !SuppressFillEdgeBezierSelectionOutline(primary)
-            && Scene.IsObjectActive(primary, Frame))
-        {
-            DrawSelectionOutline(g, primary, primary: true);
-        }
-
-        DrawDrawingObjectSelectionOverlay(g);
-        DrawTransformOverlay(g);
-        DrawHoveredLineControls(g);
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawSelectionOutline(Graphics g, int i, bool primary)
-    {
-        var shape = Scene.ShapeKind.Length > i ? Scene.ShapeKind[i] : ShapeKind.Rectangle;
-
-        if (shape == ShapeKind.Text)
-        {
-            if (TextAreaOverlayVisible(i))
-            {
-                DrawTextAreaOverlay(g, i, primary && TextAreaResizeHandlesVisible(i));
-            }
-            return;
-        }
-
-        if (shape == ShapeKind.Line)
-        {
-            if (primary && !TransformMode) DrawBezierGuides(g, i);
-            else DrawBezierOutline(g, i, primary);
-        }
-        else if (shape == ShapeKind.MixingStroke)
-        {
-            foreach (var points in GetMixingStrokeScreenContours(Scene, i))
-            {
-                if (points.Length == 1)
-                {
-                    DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Fill);
-                }
-                else if (points.Length > 1)
-                {
-                    DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Fill);
-                }
-            }
-        }
-        else if (IsFreehandShape(shape))
-        {
-            var points = GetBoundaryScreenPolyline(i);
-            var highlightKind = SelectionHighlightForShape(shape);
-            if (points.Length == 1)
-            {
-                DrawSelectionDot(g, points[0], primary, highlightKind);
-            }
-            else if (points.Length > 1)
-            {
-                DrawSelectionPolyline(g, points, primary, highlightKind);
-            }
-        }
-        else
-        {
-            if (shape == ShapeKind.Path)
-            {
-                using var path = CreateObjectBoundaryPath(Scene, i);
-                if (path.PointCount > 0)
-                {
-                    DrawSelectionPath(g, path, primary, SelectionHighlightKind.Fill);
-                }
-            }
-            else if (TryGetSelectionWorldContours(i, shape, out var contours))
-            {
-                foreach (var contour in contours)
-                {
-                    var points = contour.Select(WorldToScreen).ToArray();
-                    if (points.Length >= 3) DrawSelectionPolygon(g, points, primary, SelectionHighlightKind.Fill);
-                }
-            }
-            else
-            {
-                DrawBoundaryOutline(g, i, primary, SelectionHighlightForShape(shape));
-            }
-
-            if (primary && shape is not ShapeKind.Path and not ShapeKind.Text && !TransformMode) DrawBoundaryHandles(g, i);
-        }
-    }
-
-    private bool TryGetSelectionWorldContours(int objectIndex, ShapeKind shape, out PointF[][] contours)
-    {
-        if (shape == ShapeKind.Text) return Scene.TryGetTextWorldContours(objectIndex, out contours);
-        contours = Array.Empty<PointF[]>();
-        return false;
-    }
-
-    private void DrawElementSelectionOutline(Graphics g, DrawingElementHit hit, bool primary)
-    {
-        var objectIndex = hit.Key.ObjectIndex;
-        var shape = Scene.ShapeKind[objectIndex];
-        if (hit.Key.Kind == DrawingElementKind.Stroke)
-        {
-            if (shape == ShapeKind.Line)
-            {
-                DrawBezierGuides(g, objectIndex, hit.StartT, hit.EndT, primary);
-                return;
-            }
-
-            var points = GetSelectedStrokePartPoints(hit).Select(WorldToScreen).ToArray();
-            if (points.Length == 1) DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Stroke);
-            else if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
-            return;
-        }
-
-        if (hit.Key.Kind == DrawingElementKind.Fill)
-        {
-            foreach (var contour in GetSelectedFillPartContours(hit))
-            {
-                var points = contour.Select(WorldToScreen).ToArray();
-                if (points.Length >= 3) DrawSelectionPolygon(g, points, primary, SelectionHighlightKind.Fill);
-            }
-
-            return;
-        }
-
-        if (hit.Key.Kind == DrawingElementKind.BoundaryStroke)
-        {
-            var points = GetSelectedBoundaryPartPoints(hit).Select(WorldToScreen).ToArray();
-            if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
-        }
-    }
-
-    private void DrawFillEdgeBezierOverlay(Graphics graphics)
-    {
-        if (!FillEdgeBezierOverlayVisible) return;
-
-        var oldMode = graphics.SmoothingMode;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var edge = new Pen(Color.Lime, 1.5f)
-        {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        };
-        using var guide = new Pen(Color.Lime, 1f);
-        using var handleCore = new SolidBrush(BackColor);
-        using var path = new GraphicsPath(FillMode.Alternate);
-        foreach (var source in _fillEdgeBezierOverlaySegments)
-        {
-            var segment = TranslatedFillEdgeBezierOverlaySegment(source);
-            if (!Finite(segment)) continue;
-            path.StartFigure();
-            path.AddBezier(
-                WorldToScreen(segment.Start),
-                WorldToScreen(segment.Control1),
-                WorldToScreen(segment.Control2),
-                WorldToScreen(segment.End));
-        }
-
-        if (path.PointCount > 0) graphics.DrawPath(edge, path);
-        foreach (var source in _fillEdgeBezierOverlaySegments)
-        {
-            var segment = TranslatedFillEdgeBezierOverlaySegment(source);
-            if (segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex || !Finite(segment)) continue;
-            DrawFillEdgeBezierSegmentHandles(graphics, segment, guide, handleCore, edge);
-        }
-
-        var active = TranslatedFillEdgeBezierOverlaySegment(
-            _fillEdgeBezierOverlaySegments.FirstOrDefault(segment =>
-                segment.PartIndex == _fillEdgeBezierOverlayActivePartIndex));
-        if (_fillEdgeBezierOverlayActivePartIndex >= 0
-            && active.PartIndex == _fillEdgeBezierOverlayActivePartIndex
-            && Finite(active))
-        {
-            DrawFillEdgeBezierSegmentHandles(graphics, active, guide, handleCore, edge);
-        }
-
-        graphics.SmoothingMode = oldMode;
-    }
-
-    private void DrawFillEdgeBezierSegmentHandles(
-        Graphics graphics,
-        FillEdgeBezierOverlaySegment segment,
-        Pen guide,
-        Brush handleCore,
-        Pen edge)
-    {
-        var start = WorldToScreen(segment.Start);
-        var control1 = WorldToScreen(segment.Control1);
-        var control2 = WorldToScreen(segment.Control2);
-        var end = WorldToScreen(segment.End);
-        graphics.DrawLine(guide, start, control1);
-        graphics.DrawLine(guide, end, control2);
-        DrawFillEdgeBezierAnchor(graphics, start, handleCore, edge);
-        DrawFillEdgeBezierAnchor(graphics, end, handleCore, edge);
-        DrawFillEdgeBezierControl(graphics, control1, handleCore, edge);
-        DrawFillEdgeBezierControl(graphics, control2, handleCore, edge);
-    }
-
-    private static void DrawFillEdgeBezierAnchor(Graphics graphics, PointF point, Brush core, Pen edge)
-    {
-        const float radius = 3.5f;
-        graphics.FillRectangle(core, point.X - radius, point.Y - radius, radius * 2, radius * 2);
-        graphics.DrawRectangle(edge, point.X - radius, point.Y - radius, radius * 2, radius * 2);
-    }
-
-    private static void DrawFillEdgeBezierControl(Graphics graphics, PointF point, Brush core, Pen edge)
-    {
-        const float radius = 4f;
-        graphics.FillEllipse(core, point.X - radius, point.Y - radius, radius * 2, radius * 2);
-        graphics.DrawEllipse(edge, point.X - radius, point.Y - radius, radius * 2, radius * 2);
-    }
-
-    private void DrawPenAnchorGuides(Graphics graphics)
-    {
-        if (!PenAnchorGuidesVisible) return;
-        var point = WorldToScreen(PenAnchorGuidePoint);
-        var oldMode = graphics.SmoothingMode;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var guidePen = new Pen(Color.FromArgb(205, 70, 210, 235), 1f) { DashStyle = DashStyle.Dash };
-        using var markerPen = new Pen(Color.FromArgb(245, 128, 239, 255), 1.5f);
-        using var markerFill = new SolidBrush(Color.FromArgb(210, 18, 48, 55));
-        if (PenAnchorGuideVertical) graphics.DrawLine(guidePen, point.X, 0, point.X, Height);
-        if (PenAnchorGuideHorizontal) graphics.DrawLine(guidePen, 0, point.Y, Width, point.Y);
-
-        if (PenAnchorGuideInsertion)
-        {
-            var diamond = new[]
-            {
-                new PointF(point.X, point.Y - 7),
-                new PointF(point.X + 7, point.Y),
-                new PointF(point.X, point.Y + 7),
-                new PointF(point.X - 7, point.Y)
-            };
-            graphics.FillPolygon(markerFill, diamond);
-            graphics.DrawPolygon(markerPen, diamond);
-            graphics.DrawLine(markerPen, point.X - 3, point.Y, point.X + 3, point.Y);
-            graphics.DrawLine(markerPen, point.X, point.Y - 3, point.X, point.Y + 3);
-        }
-        else if (PenAnchorGuideSnapped)
-        {
-            graphics.FillEllipse(markerFill, point.X - 6, point.Y - 6, 12, 12);
-            graphics.DrawEllipse(markerPen, point.X - 6, point.Y - 6, 12, 12);
-            graphics.DrawLine(markerPen, point.X - 8, point.Y, point.X + 8, point.Y);
-            graphics.DrawLine(markerPen, point.X, point.Y - 8, point.X, point.Y + 8);
-        }
-        else
-        {
-            graphics.FillEllipse(markerFill, point.X - 3, point.Y - 3, 6, 6);
-            graphics.DrawEllipse(markerPen, point.X - 3, point.Y - 3, 6, 6);
-        }
-
-        graphics.SmoothingMode = oldMode;
-    }
-
-    private void DrawDrawingPreview(Graphics g)
-    {
-        if (!DrawingPreviewVisible) return;
-
-        var start = DrawingPreviewStart;
-        var end = DrawingPreviewEnd;
-        var dx = end.X - start.X;
-        var dy = end.Y - start.Y;
-        if (Math.Abs(dx) + Math.Abs(dy) < 0.001f) return;
-
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var fillColor = Color.FromArgb(72, DrawingPreviewColor);
-        var strokeColor = Color.FromArgb(230, DrawingPreviewColor);
-        using var fill = new SolidBrush(fillColor);
-        using var stroke = new Pen(strokeColor, Math.Max(0.1f, WorldLengthToScreen(DrawingPreviewStroke)))
-        {
-            DashStyle = DashStyle.Solid,
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-
-        if (DrawingPreviewShape == ShapeKind.Line)
-        {
-            var a = WorldToScreen(start);
-            var b = WorldToScreen(end);
-            if (DrawingPreviewHasCurve)
-            {
-                var segments = DrawingPreviewCurveSegments.Count > 0
-                    ? DrawingPreviewCurveSegments
-                    : [new CubicDrawingPreviewSegment(start, DrawingPreviewControl, DrawingPreviewControl2, end)];
-                foreach (var segment in segments)
-                {
-                    var segmentStart = WorldToScreen(segment.Start);
-                    var segmentControl1 = WorldToScreen(segment.Control1);
-                    var segmentControl2 = WorldToScreen(segment.Control2);
-                    var segmentEnd = WorldToScreen(segment.End);
-                    using var path = BuildCubicPath(segmentStart, segmentControl1, segmentControl2, segmentEnd);
-                    g.DrawPath(stroke, path);
-                }
-                var control1 = WorldToScreen(DrawingPreviewControl);
-                var control2 = WorldToScreen(DrawingPreviewControl2);
-                if (segments.Count == 1)
-                {
-                    g.DrawLine(_previewGuidePen, a, control1);
-                    g.DrawLine(_previewGuidePen, b, control2);
-                }
-                DrawHandle(g, a, _handleBrush, 7);
-                DrawHandle(g, b, _handleBrush, 7);
-                if (segments.Count == 1)
-                {
-                    DrawHandle(g, control1, _bezierHandleBrush, 9);
-                    DrawHandle(g, control2, _bezierHandleBrush, 9);
-                }
-                g.SmoothingMode = oldMode;
-                return;
-            }
-
-            g.DrawLine(stroke, a, b);
-            DrawHandle(g, a, _handleBrush, 7);
-            DrawHandle(g, b, _handleBrush, 7);
-            g.SmoothingMode = oldMode;
-            return;
-        }
-
-        var center = WorldToScreen((start.X + end.X) * 0.5f, (start.Y + end.Y) * 0.5f);
-        var w = Math.Max(2, WorldLengthToScreen(Math.Abs(dx)));
-        var h = Math.Max(2, WorldLengthToScreen(Math.Abs(dy)));
-        var state = g.Save();
-        g.TranslateTransform(center.X, center.Y);
-        DrawPreviewLocalShape(g, DrawingPreviewShape, DrawingPreviewShapeVertexCount, fill, stroke, w, h);
-        g.Restore(state);
-
-        using var boundsPen = new Pen(Color.FromArgb(180, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
-        g.DrawRectangle(boundsPen, center.X - w * 0.5f, center.Y - h * 0.5f, w, h);
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawPenDirectionHandles(Graphics graphics)
-    {
-        if (!PenDirectionHandlesVisible) return;
-        var anchor = WorldToScreen(PenDirectionAnchor);
-        var oldMode = graphics.SmoothingMode;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var guide = new Pen(Color.FromArgb(220, 112, 204, 255), 1f);
-        using var pointFill = new SolidBrush(Color.FromArgb(245, 18, 48, 55));
-        using var pointBorder = new Pen(Color.FromArgb(250, 146, 224, 255), 1.4f);
-        DrawDirectionPoint(PenDirectionIncoming);
-        DrawDirectionPoint(PenDirectionOutgoing);
-        graphics.FillRectangle(pointFill, anchor.X - 3.5f, anchor.Y - 3.5f, 7, 7);
-        graphics.DrawRectangle(pointBorder, anchor.X - 3.5f, anchor.Y - 3.5f, 7, 7);
-        graphics.SmoothingMode = oldMode;
-
-        void DrawDirectionPoint(PointF? world)
-        {
-            if (world is not { } point) return;
-            var screen = WorldToScreen(point);
-            graphics.DrawLine(guide, anchor, screen);
-            graphics.FillEllipse(pointFill, screen.X - 3.5f, screen.Y - 3.5f, 7, 7);
-            graphics.DrawEllipse(pointBorder, screen.X - 3.5f, screen.Y - 3.5f, 7, 7);
-        }
-    }
-
-    private void DrawFreehandPreview(Graphics g)
-    {
-        if (!FreehandPreviewVisible || FreehandPreviewPoints.Count == 0) return;
-        var screenWidth = Math.Max(0.75f, WorldLengthToScreen(FreehandPreviewStroke));
-        var variableWidth = FreehandPreviewDiameters.Count == FreehandPreviewPoints.Count;
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        if (FreehandPreviewBrushShape is { IsTraditionalBrush: true, IsRadiallySymmetric: false } tipShape)
-        {
-            DrawTraditionalBrushPreview(g, tipShape, screenWidth, variableWidth);
-            g.SmoothingMode = oldMode;
-            return;
-        }
-
-        if (FreehandPreviewPoints.Count == 1)
-        {
-            var point = WorldToScreen(FreehandPreviewPoints[0]);
-            if (variableWidth) screenWidth = Math.Max(0.75f, WorldLengthToScreen(FreehandPreviewDiameters[0]));
-            using var dot = new SolidBrush(FreehandPreviewColor);
-            g.FillEllipse(dot, point.X - screenWidth * 0.5f, point.Y - screenWidth * 0.5f, screenWidth, screenWidth);
-        }
-        else if (variableWidth)
-        {
-            using var dot = new SolidBrush(FreehandPreviewColor);
-            var previous = WorldToScreen(FreehandPreviewPoints[0]);
-            var previousWidth = Math.Max(0.75f, WorldLengthToScreen(FreehandPreviewDiameters[0]));
-            g.FillEllipse(dot, previous.X - previousWidth * 0.5f, previous.Y - previousWidth * 0.5f, previousWidth, previousWidth);
-            for (var i = 1; i < FreehandPreviewPoints.Count; i++)
-            {
-                var current = WorldToScreen(FreehandPreviewPoints[i]);
-                var currentWidth = Math.Max(0.75f, WorldLengthToScreen(FreehandPreviewDiameters[i]));
-                using var pen = StrokePen(FreehandPreviewColor, (previousWidth + currentWidth) * 0.5f);
-                g.DrawLine(pen, previous, current);
-                g.FillEllipse(dot, current.X - currentWidth * 0.5f, current.Y - currentWidth * 0.5f, currentWidth, currentWidth);
-                previous = current;
-                previousWidth = currentWidth;
-            }
-        }
-        else
-        {
-            using var pen = StrokePen(FreehandPreviewColor, screenWidth);
-            var previous = WorldToScreen(FreehandPreviewPoints[0]);
-            for (var i = 1; i < FreehandPreviewPoints.Count; i++)
-            {
-                var current = WorldToScreen(FreehandPreviewPoints[i]);
-                g.DrawLine(pen, previous, current);
-                previous = current;
-            }
-        }
-
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawTraditionalBrushPreview(Graphics g, BrushShape tipShape, float defaultWidth, bool variableWidth)
-    {
-        var contour = tipShape.NormalizedContour(0.5f);
-        if (contour.Length < 3) return;
-
-        using var fill = new SolidBrush(FreehandPreviewColor);
-        for (var index = 0; index < FreehandPreviewPoints.Count; index++)
-        {
-            var diameter = variableWidth
-                ? Math.Max(0.75f, WorldLengthToScreen(FreehandPreviewDiameters[index]))
-                : defaultWidth;
-            var center = WorldToScreen(FreehandPreviewPoints[index]);
-            var radius = diameter * 0.5f;
-            var points = new PointF[contour.Length];
-            for (var pointIndex = 0; pointIndex < contour.Length; pointIndex++)
-            {
-                points[pointIndex] = new PointF(
-                    center.X + contour[pointIndex].X * radius,
-                    center.Y + contour[pointIndex].Y * radius);
-            }
-
-            g.FillPolygon(fill, points);
-        }
-    }
-
-    private void DrawBrushTipCursor(Graphics g)
-    {
-        if (!BrushTipCursorVisible || BrushTipCursorShape is null) return;
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var outlineColor = BrushTipCursorIsEraser
-            ? Color.FromArgb(235, 255, 120, 120)
-            : Color.FromArgb(235, 112, 204, 255);
-        foreach (var layer in BrushTipCursorShape.Layers)
-        {
-            var points = BrushTipCursorShape.NormalizedContour(layer.Threshold)
-                .Select(point => new PointF(
-                    BrushTipCursorScreen.X + point.X * BrushTipCursorRadiusPixels,
-                    BrushTipCursorScreen.Y + point.Y * BrushTipCursorRadiusPixels))
-                .ToArray();
-            if (points.Length < 3) continue;
-            using var fill = new SolidBrush(Color.FromArgb(
-                (int)Math.Clamp(42 * layer.Opacity / 0.66f, 8, 42),
-                outlineColor));
-            using var pen = new Pen(Color.FromArgb(
-                (int)Math.Clamp(190 * layer.Opacity / 0.66f, 48, 190),
-                outlineColor),
-                layer.Threshold >= 0.7f ? 1.4f : 1f);
-            g.FillPolygon(fill, points);
-            g.DrawPolygon(pen, points);
-        }
-
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawBrushColorPalette(Graphics g)
-    {
-        if (!BrushColorPaletteVisible) return;
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var center = BrushColorPaletteCenter;
-        var radius = BrushColorPaletteRadius + BrushColorPaletteSwatchSize * 0.72f;
-        using (var backdrop = new SolidBrush(Color.FromArgb(214, Theme.Top)))
-        {
-            g.FillEllipse(backdrop, center.X - radius, center.Y - radius, radius * 2, radius * 2);
-        }
-
-        using (var backdropOutline = new Pen(Color.FromArgb(225, Theme.BorderHover), 1f))
-        {
-            g.DrawEllipse(backdropOutline, center.X - radius, center.Y - radius, radius * 2, radius * 2);
-        }
-
-        for (var index = 0; index < _brushColorPaletteColors.Length; index++)
-        {
-            var bounds = BrushColorPaletteSwatchBounds(index);
-            using var fill = new SolidBrush(_brushColorPaletteColors[index]);
-            using var outline = new Pen(
-                index == _brushColorPaletteHoveredIndex
-                    ? Color.FromArgb(255, 255, 240, 168)
-                    : Color.FromArgb(235, Theme.BorderHover),
-                index == _brushColorPaletteHoveredIndex ? 2.4f : 1f);
-            g.FillRectangle(fill, bounds);
-            g.DrawRectangle(outline, bounds.X, bounds.Y, Math.Max(0, bounds.Width - 1), Math.Max(0, bounds.Height - 1));
-        }
-
-        using var pointer = new SolidBrush(Color.FromArgb(230, Theme.Text));
-        g.FillEllipse(pointer, center.X - 3, center.Y - 3, 6, 6);
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawFillAnimation(Graphics g)
-    {
-        if (!FillAnimationVisible) return;
-
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = new GraphicsPath(FillMode.Alternate);
-        foreach (var contour in _fillAnimationContours)
-        {
-            var points = contour.Select(point => WorldToScreen(point.X, point.Y)).ToArray();
-            if (points.Length >= 3) path.AddPolygon(points);
-        }
-
-        if (path.PointCount > 0)
-        {
-            var origin = WorldToScreen(_fillAnimationOrigin);
-            var radius = Math.Max(10f, WorldLengthToScreen(FillAnimationBloomRadiusWorld));
-            var fade = FillAnimationFade;
-            var glowColor = FillAnimationGlowColor;
-            var state = g.Save();
-            try
-            {
-                g.SetClip(path, CombineMode.Intersect);
-                DrawFillBloom(g, origin, radius, glowColor, fade);
-            }
-            finally
-            {
-                g.Restore(state);
-            }
-        }
-        g.SmoothingMode = oldMode;
-    }
-
-    private static void DrawFillBloom(Graphics g, PointF origin, float radius, Color color, float fade)
-    {
-        DrawFillBloomLayer(g, origin, radius, color, 20f * fade);
-        DrawFillBloomLayer(g, origin, radius * 0.72f, color, 28f * fade);
-        DrawFillBloomLayer(g, origin, radius * 0.38f, color, 38f * fade);
-
-        var waveWidth = Math.Clamp(radius * 0.025f, 2f, 12f);
-        var waveAlpha = (int)Math.Clamp(210f * fade, 0f, 210f);
-        using var wave = new Pen(Color.FromArgb(waveAlpha, color), waveWidth);
-        g.DrawEllipse(wave, origin.X - radius, origin.Y - radius, radius * 2f, radius * 2f);
-    }
-
-    private static void DrawFillBloomLayer(Graphics g, PointF origin, float radius, Color color, float alpha)
-    {
-        if (radius <= 0.5f || alpha <= 0.5f) return;
-        using var brush = new SolidBrush(Color.FromArgb((int)Math.Clamp(alpha, 0f, 255f), color));
-        g.FillEllipse(brush, origin.X - radius, origin.Y - radius, radius * 2f, radius * 2f);
-    }
-
-    private static float SmoothStep(float value)
-    {
-        value = Math.Clamp(value, 0f, 1f);
-        return value * value * (3f - 2f * value);
-    }
-
-    private static Color LightenForFillAnimation(Color color)
-    {
-        return Color.FromArgb(
-            color.A,
-            (int)Math.Round(color.R + (255 - color.R) * 0.38f),
-            (int)Math.Round(color.G + (255 - color.G) * 0.38f),
-            (int)Math.Round(color.B + (255 - color.B) * 0.38f));
-    }
-
-    private void DrawFillPreview(Graphics g)
-    {
-        if (!FillPreviewVisible) return;
-
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = new GraphicsPath(FillMode.Alternate);
-        foreach (var contour in _fillPreviewContours)
-        {
-            var points = contour.Select(point => WorldToScreen(point.X, point.Y)).ToArray();
-            if (points.Length >= 3) path.AddPolygon(points);
-        }
-
-        if (path.PointCount > 0)
-        {
-            using var fill = new SolidBrush(Color.FromArgb(72, _fillPreviewColor));
-            using var outline = new Pen(Color.FromArgb(150, _fillPreviewColor), 1f) { DashStyle = DashStyle.Dash };
-            g.FillPath(fill, path);
-            g.DrawPath(outline, path);
-        }
-
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawFillToolCursor(Graphics g)
-    {
-        if (!_fillToolCursorVisible) return;
-
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var x = _fillToolCursorScreen.X;
-        var y = _fillToolCursorScreen.Y;
-        var bucket = new[]
-        {
-            new PointF(x - 10, y - 12),
-            new PointF(x + 3, y - 12),
-            new PointF(x + 10, y - 5),
-            new PointF(x - 3, y - 5)
-        };
-        using var fill = new SolidBrush(Color.FromArgb(150, _fillToolCursorColor));
-        using var outline = new Pen(Color.FromArgb(235, Theme.Text), 1.4f);
-        using var drop = new SolidBrush(Color.FromArgb(220, _fillToolCursorColor));
-        using var dropOutline = new Pen(Color.FromArgb(235, Theme.Text), 1f);
-        g.FillPolygon(fill, bucket);
-        g.DrawPolygon(outline, bucket);
-        g.FillEllipse(drop, x + 3, y - 1, 6, 8);
-        g.DrawEllipse(dropOutline, x + 3, y - 1, 6, 8);
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawGradientOverlay(Graphics g)
-    {
-        if (!_gradientOverlayVisible) return;
-        var start = WorldToScreen(_gradientOverlayStart);
-        var end = WorldToScreen(_gradientOverlayEnd);
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var guide = new Pen(Color.FromArgb(230, 255, 244, 166), 1.5f) { DashStyle = DashStyle.Dash };
-        using var startFill = new SolidBrush(_gradientOverlayStartColor);
-        using var endFill = new SolidBrush(_gradientOverlayEndColor);
-        using var outline = new Pen(Color.FromArgb(245, 16, 18, 22), 1.4f);
-        if (_gradientOverlayKind == GradientKind.Radial)
-        {
-            var radius = Distance(start, end);
-            using var radialGuide = new Pen(Color.FromArgb(190, 255, 244, 166), 1.25f) { DashStyle = DashStyle.Dash };
-            g.DrawEllipse(radialGuide, start.X - radius, start.Y - radius, radius * 2, radius * 2);
-        }
-        g.DrawLine(guide, start, end);
-        g.FillEllipse(startFill, start.X - 6, start.Y - 6, 12, 12);
-        g.DrawEllipse(outline, start.X - 6, start.Y - 6, 12, 12);
-        if (_gradientOverlayKind == GradientKind.ShapeRadial)
-        {
-            var edgeMarker = new[]
-            {
-                new PointF(end.X, end.Y - 4),
-                new PointF(end.X + 4, end.Y),
-                new PointF(end.X, end.Y + 4),
-                new PointF(end.X - 4, end.Y)
-            };
-            g.FillPolygon(endFill, edgeMarker);
-            g.DrawPolygon(outline, edgeMarker);
-        }
-        else
-        {
-            g.FillEllipse(endFill, end.X - 6, end.Y - 6, 12, 12);
-            g.DrawEllipse(outline, end.X - 6, end.Y - 6, 12, 12);
-        }
-        for (var index = 1; index < _gradientOverlayStops.Length - 1; index++)
-        {
-            var point = Lerp(start, end, _gradientOverlayStops[index].Position);
-            var diamond = new[]
-            {
-                new PointF(point.X, point.Y - 6),
-                new PointF(point.X + 6, point.Y),
-                new PointF(point.X, point.Y + 6),
-                new PointF(point.X - 6, point.Y)
-            };
-            using var fill = new SolidBrush(Color.FromArgb(_gradientOverlayStops[index].Argb));
-            g.FillPolygon(fill, diamond);
-            g.DrawPolygon(outline, diamond);
-        }
-        g.SmoothingMode = oldMode;
-    }
-
-    private static float SquaredDistance(Point a, PointF b)
-    {
-        var dx = a.X - b.X;
-        var dy = a.Y - b.Y;
-        return dx * dx + dy * dy;
-    }
-
-    private bool CubicCurveHit(Point screen, FillEdgeBezierOverlaySegment segment, float radiusPixels)
-    {
-        if (!Finite(segment)) return false;
-        var start = WorldToScreen(segment.Start);
-        var control1 = WorldToScreen(segment.Control1);
-        var control2 = WorldToScreen(segment.Control2);
-        var end = WorldToScreen(segment.End);
-        var controlLength = Distance(start, control1) + Distance(control1, control2) + Distance(control2, end);
-        var steps = Math.Clamp((int)MathF.Ceiling(controlLength / 8f), 8, 64);
-        var point = new PointF(screen.X, screen.Y);
-        var previous = start;
-        var radiusSquared = radiusPixels * radiusPixels;
-        for (var step = 1; step <= steps; step++)
-        {
-            var current = CubicPoint(start, control1, control2, end, step / (float)steps);
-            if (SquaredDistanceToSegment(point, previous, current) <= radiusSquared) return true;
-            previous = current;
-        }
-
-        return false;
-    }
-
-    private static float SquaredDistanceToSegment(PointF point, PointF start, PointF end)
-    {
-        var dx = end.X - start.X;
-        var dy = end.Y - start.Y;
-        var lengthSquared = dx * dx + dy * dy;
-        if (lengthSquared <= float.Epsilon)
-        {
-            dx = point.X - start.X;
-            dy = point.Y - start.Y;
-            return dx * dx + dy * dy;
-        }
-
-        var amount = Math.Clamp(((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared, 0f, 1f);
-        var closestX = start.X + dx * amount;
-        var closestY = start.Y + dy * amount;
-        dx = point.X - closestX;
-        dy = point.Y - closestY;
-        return dx * dx + dy * dy;
-    }
-
-    private static bool Finite(FillEdgeBezierOverlaySegment segment)
-    {
-        return Finite(segment.Start)
-            && Finite(segment.Control1)
-            && Finite(segment.Control2)
-            && Finite(segment.End);
-    }
-
-    private static bool Finite(PointF point) => float.IsFinite(point.X) && float.IsFinite(point.Y);
-
-    private void DrawMarquee(Graphics g)
-    {
-        if (!MarqueeVisible || MarqueeOverlayActive) return;
-        var rect = Rectangle.FromLTRB(
-            Math.Min(MarqueeStart.X, MarqueeEnd.X),
-            Math.Min(MarqueeStart.Y, MarqueeEnd.Y),
-            Math.Max(MarqueeStart.X, MarqueeEnd.X),
-            Math.Max(MarqueeStart.Y, MarqueeEnd.Y));
-
-        if (rect.Width < 2 || rect.Height < 2) return;
-        g.FillRectangle(_marqueeBrush, rect);
-        g.DrawRectangle(_marqueePen, rect);
-    }
-
-    private void DrawPreviewLocalShape(Graphics g, ShapeKind shape, int shapeVertexCount, Brush fill, Pen stroke, float w, float h)
-    {
-        var rect = new RectangleF(-w * 0.5f, -h * 0.5f, w, h);
-        switch (shape)
-        {
-            case ShapeKind.Ellipse:
-                g.FillEllipse(fill, rect);
-                g.DrawEllipse(stroke, rect);
-                break;
-            case ShapeKind.Triangle:
-                DrawPreviewPolygon(g, fill, stroke, RegularPolygonPoints(3, w, h, -MathF.PI / 2));
-                break;
-            case ShapeKind.Polygon:
-                DrawPreviewPolygon(g, fill, stroke, RegularPolygonPoints(PolygonVertexCount(shapeVertexCount), w, h, -MathF.PI / 2));
-                break;
-            case ShapeKind.Star:
-                DrawPreviewPolygon(g, fill, stroke, StarPoints(StarVertexCount(shapeVertexCount), w, h, -MathF.PI / 2));
-                break;
-            default:
-                g.FillRectangle(fill, rect);
-                g.DrawRectangle(stroke, rect.X, rect.Y, rect.Width, rect.Height);
-                break;
-        }
-    }
-
-    private static void DrawPreviewPolygon(Graphics g, Brush fill, Pen stroke, PointF[] points)
-    {
-        g.FillPolygon(fill, points);
-        g.DrawPolygon(stroke, points);
-    }
-
-    private void DrawBezierLine(Graphics g, int i, Brush brush, float screenStroke)
-    {
-        var (start, control1, control2, end) = GetBezierScreenPoints(i);
-        var startStyle = Scene.GetLineEndpointStyle(i, startEndpoint: true);
-        var endStyle = Scene.GetLineEndpointStyle(i, startEndpoint: false);
-        using var linePen = new Pen(brush, screenStroke)
-        {
-            StartCap = LineCapForEndpoint(startStyle),
-            EndCap = LineCapForEndpoint(endStyle),
-            LineJoin = startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp ? LineJoin.Miter : LineJoin.Round,
-            MiterLimit = startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp ? 8 : 1
-        };
-
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        if (Scene.IsLineStraight(i)) g.DrawLine(linePen, start, end);
-        else
-        {
-            using var path = BuildCubicPath(start, control1, control2, end);
-            g.DrawPath(linePen, path);
-        }
-        DrawEndpointJoin(g, i, startEndpoint: true, screenStroke, brush);
-        DrawEndpointJoin(g, i, startEndpoint: false, screenStroke, brush);
-        g.SmoothingMode = oldMode;
-    }
-
-    private void DrawGradientBezierLine(Graphics g, VectorScene scene, int objectIndex, float screenStroke)
-    {
-        if (scene.GetGradientKind(objectIndex) == GradientKind.Radial)
-        {
-            DrawRadialGradientBezierLine(g, scene, objectIndex, screenStroke);
-            return;
-        }
-
-        using var gradient = CreateGradientFillBrush(scene, objectIndex);
-        DrawBezierLine(g, objectIndex, gradient, screenStroke);
-    }
-
-    private void DrawRadialGradientBezierLine(Graphics g, VectorScene scene, int objectIndex, float screenStroke)
-    {
-        var (start, control1, control2, end) = GetBezierScreenPoints(objectIndex);
-        var center = WorldToScreen(scene.GetGradientStart(objectIndex));
-        var radiusPoint = WorldToScreen(scene.GetGradientEnd(objectIndex));
-        var radius = Math.Max(0.5f, Distance(center, radiusPoint));
-        var stops = scene.GetGradientStops(objectIndex);
-        var startStyle = scene.GetLineEndpointStyle(objectIndex, startEndpoint: true);
-        var endStyle = scene.GetLineEndpointStyle(objectIndex, startEndpoint: false);
-        var oldMode = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        const int segments = 64;
-        for (var segment = 0; segment < segments; segment++)
-        {
-            var startT = segment / (float)segments;
-            var endT = (segment + 1) / (float)segments;
-            var a = CubicPoint(start, control1, control2, end, startT);
-            var b = CubicPoint(start, control1, control2, end, endT);
-            var midpoint = CubicPoint(start, control1, control2, end, (startT + endT) * 0.5f);
-            var position = Math.Clamp(Distance(midpoint, center) / radius, 0f, 1f);
-            using var pen = new Pen(GradientColorAt(stops, position), screenStroke)
-            {
-                StartCap = segment == 0 ? LineCapForEndpoint(startStyle) : LineCap.Round,
-                EndCap = segment == segments - 1 ? LineCapForEndpoint(endStyle) : LineCap.Round,
-                LineJoin = LineJoin.Round
-            };
-            g.DrawLine(pen, a, b);
-        }
-
-        DrawRadialGradientEndpointJoin(g, scene, objectIndex, startEndpoint: true, screenStroke);
-        DrawRadialGradientEndpointJoin(g, scene, objectIndex, startEndpoint: false, screenStroke);
-
-        g.SmoothingMode = oldMode;
-    }
-
-    private static LineCap LineCapForEndpoint(LineEndpointStyle endpointStyle)
-    {
-        return endpointStyle == LineEndpointStyle.Sharp ? LineCap.Flat : LineCap.Round;
-    }
-
-    private void DrawEndpointJoin(Graphics g, int objectIndex, bool startEndpoint, float screenStroke, Brush brush)
-    {
-        if (!TryGetEndpointJoins(objectIndex, startEndpoint, screenStroke, out var joint, out var miters)) return;
-        foreach (var miter in miters) FillMiterJoin(g, brush, joint, miter);
-    }
-
-    private void DrawRadialGradientEndpointJoin(
-        Graphics g,
-        VectorScene scene,
-        int objectIndex,
-        bool startEndpoint,
-        float screenStroke)
-    {
-        if (!TryGetEndpointJoins(objectIndex, startEndpoint, screenStroke, out var joint, out var miters)) return;
-        using var path = new GraphicsPath(FillMode.Winding);
-        foreach (var miter in miters) AddMiterJoinPolygons(path, joint, miter);
-        DrawRadialGradientFill(g, path, scene, objectIndex, scene.GetGradientStops(objectIndex));
-    }
-
-    private bool TryGetEndpointJoins(
-        int objectIndex,
-        bool startEndpoint,
-        float screenStroke,
-        out PointF joint,
-        out LineMiterJoin[] miters)
-    {
-        joint = PointF.Empty;
-        miters = Array.Empty<LineMiterJoin>();
-        if (Scene.GetLineEndpointStyle(objectIndex, startEndpoint) != LineEndpointStyle.Sharp
-            || !Scene.TryGetLineEndpointJunctionForRender(objectIndex, startEndpoint, Frame, out var junction)
-            || !junction.AllSharp
-            || objectIndex != junction.OwnerObjectIndex)
-        {
-            return false;
-        }
-
-        var current = GetBezierScreenPoints(objectIndex);
-        joint = startEndpoint ? current.Start : current.End;
-        var interiorPoints = new PointF[junction.Connections.Length + 1];
-        interiorPoints[0] = EndpointInteriorPoint(current, startEndpoint);
-        for (var index = 0; index < junction.Connections.Length; index++)
-        {
-            var connection = junction.Connections[index];
-            var adjacent = GetBezierScreenPoints(connection.ObjectIndex);
-            interiorPoints[index + 1] = EndpointInteriorPoint(adjacent, connection.StartEndpoint);
-        }
-
-        miters = LineJoinGeometry.CreateJunctionMiters(joint, interiorPoints, screenStroke * 0.5f);
-        return miters.Length > 0;
-    }
-
-    private static void FillMiterJoin(Graphics g, Brush brush, PointF joint, LineMiterJoin miter)
-    {
-        g.FillPolygon(brush, [joint, miter.OuterFirstOffset, miter.OuterMiter, miter.OuterSecondOffset]);
-        g.FillPolygon(brush, [joint, miter.InnerFirstOffset, miter.InnerMiter, miter.InnerSecondOffset]);
-    }
-
-    private static void AddMiterJoinPolygons(GraphicsPath path, PointF joint, LineMiterJoin miter)
-    {
-        path.AddPolygon([joint, miter.OuterFirstOffset, miter.OuterMiter, miter.OuterSecondOffset]);
-        path.AddPolygon([joint, miter.InnerFirstOffset, miter.InnerMiter, miter.InnerSecondOffset]);
-    }
-
-    private static PointF EndpointInteriorPoint(
-        (PointF Start, PointF Control1, PointF Control2, PointF End) curve,
-        bool startEndpoint)
-    {
-        var endpoint = startEndpoint ? curve.Start : curve.End;
-        var control = startEndpoint ? curve.Control1 : curve.Control2;
-        var controlDistanceSquared = (control.X - endpoint.X) * (control.X - endpoint.X)
-            + (control.Y - endpoint.Y) * (control.Y - endpoint.Y);
-        if (controlDistanceSquared > 0.01f) return control;
-        return startEndpoint ? curve.End : curve.Start;
-    }
-
-    private void DrawBezierGuides(Graphics g, int i)
-    {
-        var (start, control1, control2, end) = GetBezierScreenPoints(i);
-        using var path = BuildCubicPath(start, control1, control2, end);
-        DrawSelectionPath(
-            g,
-            path,
-            true,
-            SelectionHighlightKind.Stroke,
-            Scene.GetLineEndpointStyle(i, startEndpoint: true),
-            Scene.GetLineEndpointStyle(i, startEndpoint: false));
-        DrawBezierHandles(g, start, control1, control2, end);
-    }
-
-    private void DrawBezierHandles(Graphics g, int i)
-    {
-        var (start, control1, control2, end) = GetBezierScreenPoints(i);
-        DrawBezierHandles(g, start, control1, control2, end);
-    }
-
-    private void DrawBezierHandles(Graphics g, DrawingElementHit hit)
-    {
-        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control1, out var control2, out var end)) return;
-        DrawBezierHandles(g, WorldToScreen(start), WorldToScreen(control1), WorldToScreen(control2), WorldToScreen(end));
-    }
-
-    private void DrawHoveredLineControls(Graphics g)
-    {
-        var hit = _hoveredLineElement;
-        if (!ShouldDrawHoveredLineControls()) return;
-
-        if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control1, out var control2, out var end)) return;
-        var startScreen = WorldToScreen(start);
-        var control1Screen = WorldToScreen(control1);
-        var control2Screen = WorldToScreen(control2);
-        var endScreen = WorldToScreen(end);
-        using var guide = new Pen(Color.FromArgb(120, 112, 204, 255), 1);
-        using var endpoint = new SolidBrush(Color.FromArgb(210, 255, 240, 168));
-        using var controlBrush = new SolidBrush(Color.FromArgb(210, 112, 204, 255));
-        g.DrawLine(guide, startScreen, control1Screen);
-        g.DrawLine(guide, endScreen, control2Screen);
-        DrawHandle(g, startScreen, endpoint, 7);
-        DrawHandle(g, endScreen, endpoint, 7);
-        DrawHandle(g, control1Screen, controlBrush, 9);
-        DrawHandle(g, control2Screen, controlBrush, 9);
-    }
-
-    private void DrawBezierHandles(Graphics g, PointF start, PointF control1, PointF control2, PointF end)
-    {
-        g.DrawLine(_guidePen, start, control1);
-        g.DrawLine(_guidePen, end, control2);
-        DrawHandle(g, start, _handleBrush, 8);
-        DrawHandle(g, end, _handleBrush, 8);
-        DrawHandle(g, control1, _bezierHandleBrush, 10);
-        DrawHandle(g, control2, _bezierHandleBrush, 10);
-    }
-
-    private void DrawTransformOverlay(Graphics g)
-    {
-        if (!TransformBoundsVisible) return;
-        var geometry = GetTransformOverlayScreenGeometry();
-        var corners = new[] { geometry.TopLeft, geometry.TopRight, geometry.BottomRight, geometry.BottomLeft };
-        using var boundsPen = new Pen(Color.FromArgb(235, 112, 204, 255), 1) { DashStyle = DashStyle.Dash };
-        using var rotationPen = new Pen(Color.FromArgb(235, 112, 204, 255), 1);
-        using var focusPen = new Pen(Color.FromArgb(245, 104, 255, 188), 1.5f);
-        using var focusBrush = new SolidBrush(Color.FromArgb(220, 30, 82, 69));
-        g.DrawPolygon(boundsPen, corners);
-        foreach (var (_, point, _) in geometry.ResizeHandles) DrawHandle(g, point, _handleBrush, 8);
-        foreach (var (_, point, corner) in geometry.RotationHandles)
-        {
-            g.DrawLine(rotationPen, corner, point);
-            g.FillEllipse(_bezierHandleBrush, point.X - 4, point.Y - 4, 8, 8);
-            g.DrawEllipse(_handleBorderPen, point.X - 4, point.Y - 4, 8, 8);
-        }
-        foreach (var (_, point, edge) in geometry.SkewHandles)
-        {
-            g.DrawLine(rotationPen, edge, point);
-            var diamond = new[]
-            {
-                new PointF(point.X, point.Y - 5),
-                new PointF(point.X + 5, point.Y),
-                new PointF(point.X, point.Y + 5),
-                new PointF(point.X - 5, point.Y)
-            };
-            g.FillPolygon(_bezierHandleBrush, diamond);
-            g.DrawPolygon(_handleBorderPen, diamond);
-        }
-
-        var focus = WorldToScreen(_transformFocus);
-        g.FillEllipse(focusBrush, focus.X - 6, focus.Y - 6, 12, 12);
-        g.DrawEllipse(focusPen, focus.X - 6, focus.Y - 6, 12, 12);
-        g.DrawLine(focusPen, focus.X - 9, focus.Y, focus.X + 9, focus.Y);
-        g.DrawLine(focusPen, focus.X, focus.Y - 9, focus.X, focus.Y + 9);
-    }
-
-    private void DrawDrawingObjectSelectionOverlay(Graphics g)
-    {
-        if (!DrawingObjectSelectionVisible) return;
-        var rect = WorldToScreenBounds(_drawingObjectSelectionBounds);
-        if (rect.Width <= 0 || rect.Height <= 0) return;
-        g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
-        g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
-        g.DrawRectangle(_drawingObjectSelectionPen, rect.X, rect.Y, rect.Width, rect.Height);
-        if (DrawingObjectAnchorVisible)
-        {
-            var anchor = WorldToScreen(_drawingObjectAnchor);
-            g.FillEllipse(_handleBrush, anchor.X - 4, anchor.Y - 4, 8, 8);
-            g.DrawEllipse(_handleBorderPen, anchor.X - 4, anchor.Y - 4, 8, 8);
-            g.DrawLine(_drawingObjectSelectionPen, anchor.X - 9, anchor.Y, anchor.X + 9, anchor.Y);
-            g.DrawLine(_drawingObjectSelectionPen, anchor.X, anchor.Y - 9, anchor.X, anchor.Y + 9);
-        }
-    }
-
-    private RectangleF WorldToScreenBounds(RectangleF bounds)
-    {
-        var topLeft = WorldToScreen(new PointF(bounds.Left, bounds.Top));
-        var bottomRight = WorldToScreen(new PointF(bounds.Right, bounds.Bottom));
-        return RectangleF.FromLTRB(
-            Math.Min(topLeft.X, bottomRight.X),
-            Math.Min(topLeft.Y, bottomRight.Y),
-            Math.Max(topLeft.X, bottomRight.X),
-            Math.Max(topLeft.Y, bottomRight.Y));
-    }
-
-    private static PointF Midpoint(PointF left, PointF right)
-    {
-        return new PointF((left.X + right.X) * 0.5f, (left.Y + right.Y) * 0.5f);
-    }
-
-    private static PointF UnitVector(PointF start, PointF end)
-    {
-        var dx = end.X - start.X;
-        var dy = end.Y - start.Y;
-        var length = MathF.Sqrt(dx * dx + dy * dy);
-        return length > 0.0001f ? new PointF(dx / length, dy / length) : PointF.Empty;
-    }
-
-    private static PointF Offset(
-        PointF origin,
-        PointF firstAxis,
-        float firstDistance,
-        PointF secondAxis,
-        float secondDistance)
-    {
-        return new PointF(
-            origin.X + firstAxis.X * firstDistance + secondAxis.X * secondDistance,
-            origin.Y + firstAxis.Y * firstDistance + secondAxis.Y * secondDistance);
-    }
-
-    private static PointF OffsetFromEdge(
-        PointF edgeStart,
-        PointF edgeEnd,
-        PointF edgeMidpoint,
-        PointF center,
-        float distance)
-    {
-        var dx = edgeEnd.X - edgeStart.X;
-        var dy = edgeEnd.Y - edgeStart.Y;
-        var length = MathF.Sqrt(dx * dx + dy * dy);
-        if (length <= 0.0001f) return edgeMidpoint;
-        var normalX = -dy / length;
-        var normalY = dx / length;
-        if (normalX * (edgeMidpoint.X - center.X) + normalY * (edgeMidpoint.Y - center.Y) < 0)
-        {
-            normalX = -normalX;
-            normalY = -normalY;
-        }
-
-        return new PointF(edgeMidpoint.X + normalX * distance, edgeMidpoint.Y + normalY * distance);
-    }
-
-    private void DrawBezierGuides(Graphics g, int i, float startT, float endT, bool primary)
-    {
-        var (start, control1, control2, end) = GetBezierScreenPoints(i);
-        using var partialPath = BuildCubicSamplePath(start, control1, control2, end, startT, endT);
-        DrawSelectionPath(
-            g,
-            partialPath,
-            primary,
-            SelectionHighlightKind.Stroke,
-            startT <= DrawingTopologyRules.UnitIntersectionTolerance
-                ? Scene.GetLineEndpointStyle(i, startEndpoint: true)
-                : LineEndpointStyle.Round,
-            endT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance
-                ? Scene.GetLineEndpointStyle(i, startEndpoint: false)
-                : LineEndpointStyle.Round);
-    }
-
-    private void DrawBezierSelectionContext(Graphics g, int i)
-    {
-        var (start, control1, control2, end) = GetBezierScreenPoints(i);
-        using var fullPath = BuildCubicPath(start, control1, control2, end);
-        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightKind.Stroke, primary: false)), 1.2f);
-        g.DrawPath(mutedPen, fullPath);
-    }
-
-    private void DrawBezierOutline(Graphics g, int i, bool primary)
-    {
-        var (start, control1, control2, end) = GetBezierScreenPoints(i);
-        using var path = BuildCubicPath(start, control1, control2, end);
-        DrawSelectionPath(
-            g,
-            path,
-            primary,
-            SelectionHighlightKind.Stroke,
-            Scene.GetLineEndpointStyle(i, startEndpoint: true),
-            Scene.GetLineEndpointStyle(i, startEndpoint: false));
-    }
-
-    private void DrawBoundaryOutline(Graphics g, int i, bool primary, SelectionHighlightKind highlightKind)
-    {
-        var points = GetBoundaryScreenPolyline(i);
-        if (points.Length < 2) return;
-        DrawSelectionPolygon(g, points, primary, highlightKind);
-    }
-
-    private void DrawBoundaryPartialOutline(Graphics g, int i, float startT, float endT)
-    {
-        var points = GetBoundaryScreenPolyline(i);
-        if (points.Length < 2) return;
-
-        using var fullPath = BuildPolylineSamplePath(points, 0, 1);
-        using var partialPath = BuildPolylineSamplePath(points, startT, endT);
-        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightKind.Stroke, primary: false)), 1.2f);
-        g.DrawPath(mutedPen, fullPath);
-        DrawSelectionPath(g, partialPath, true, SelectionHighlightKind.Stroke);
-    }
-
-    private void DrawSelectionPath(
-        Graphics g,
-        GraphicsPath path,
-        bool primary,
-        SelectionHighlightKind highlightKind,
-        LineEndpointStyle startStyle = LineEndpointStyle.Round,
-        LineEndpointStyle endStyle = LineEndpointStyle.Round)
-    {
-        PrepareSelectionHighlightPens(highlightKind);
-        var outer = primary ? _selectionOuterGlowPen : _multiSelectionOuterGlowPen;
-        var glow = primary ? _selectionGlowPen : _multiSelectionGlowPen;
-        var line = primary ? _selectionPen : _multiSelectionPen;
-        var startCap = LineCapForEndpoint(startStyle);
-        var endCap = LineCapForEndpoint(endStyle);
-        outer.StartCap = glow.StartCap = line.StartCap = startCap;
-        outer.EndCap = glow.EndCap = line.EndCap = endCap;
-        try
-        {
-            g.DrawPath(outer, path);
-            g.DrawPath(glow, path);
-            g.DrawPath(line, path);
-        }
-        finally
-        {
-            outer.StartCap = glow.StartCap = line.StartCap = LineCap.Round;
-            outer.EndCap = glow.EndCap = line.EndCap = LineCap.Round;
-        }
-    }
-
-    internal static SelectionHighlightKind SelectionHighlightForShape(ShapeKind shape)
-    {
-        return shape is ShapeKind.Line or ShapeKind.Freeform
-            ? SelectionHighlightKind.Stroke
-            : SelectionHighlightKind.Fill;
-    }
-
-    internal static Color SelectionLineColor(SelectionHighlightKind highlightKind, bool primary)
-    {
-        return (highlightKind, primary) switch
-        {
-            (SelectionHighlightKind.Fill, true) => Color.FromArgb(255, 104, 244, 214),
-            (SelectionHighlightKind.Fill, false) => Color.FromArgb(235, 112, 220, 255),
-            (SelectionHighlightKind.Stroke, true) => Color.FromArgb(255, 255, 214, 92),
-            _ => Color.FromArgb(235, 255, 171, 72)
-        };
-    }
-
-    internal static Color SelectionGlowColor(SelectionHighlightKind highlightKind, bool primary, float pulse)
-    {
-        pulse = Math.Clamp(pulse, 0, 1);
-        if (highlightKind == SelectionHighlightKind.Fill)
-        {
-            return primary
-                ? Color.FromArgb(140 + (int)MathF.Round(55 * pulse), 32, 190, 224)
-                : Color.FromArgb(100 + (int)MathF.Round(45 * pulse), 32, 172, 220);
-        }
-
-        return primary
-            ? Color.FromArgb(145 + (int)MathF.Round(65 * pulse), 255, 145, 44)
-            : Color.FromArgb(100 + (int)MathF.Round(50 * pulse), 255, 126, 40);
-    }
-
-    internal static Color SelectionOuterGlowColor(SelectionHighlightKind highlightKind, bool primary, float pulse)
-    {
-        pulse = Math.Clamp(pulse, 0, 1);
-        if (highlightKind == SelectionHighlightKind.Fill)
-        {
-            return primary
-                ? Color.FromArgb(55 + (int)MathF.Round(40 * pulse), 20, 150, 180)
-                : Color.FromArgb(38 + (int)MathF.Round(30 * pulse), 20, 140, 175);
-        }
-
-        return primary
-            ? Color.FromArgb(65 + (int)MathF.Round(50 * pulse), 255, 86, 30)
-            : Color.FromArgb(45 + (int)MathF.Round(35 * pulse), 240, 78, 28);
-    }
-
-    internal static float SelectionOuterGlowWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
-    {
-        return highlightKind == SelectionHighlightKind.Fill
-            ? primary ? 7.5f + 2f * pulse : 5.5f + 1.5f * pulse
-            : primary ? 10.5f + 3f * pulse : 7f + 2f * pulse;
-    }
-
-    internal static float SelectionGlowWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
-    {
-        return highlightKind == SelectionHighlightKind.Fill
-            ? primary ? 4.2f + 1.4f * pulse : 3.2f + 1f * pulse
-            : primary ? 5.8f + 2.4f * pulse : 4.2f + 1.6f * pulse;
-    }
-
-    internal static float SelectionLineWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
-    {
-        return highlightKind == SelectionHighlightKind.Fill
-            ? primary ? 1.7f + 0.45f * pulse : 1.15f + 0.35f * pulse
-            : primary ? 2.2f + 0.7f * pulse : 1.35f + 0.45f * pulse;
-    }
-
-    private void PrepareSelectionHighlightPens(SelectionHighlightKind highlightKind)
-    {
-        var pulse = SelectionHighlightPulse;
-        _selectionOuterGlowPen.Color = SelectionOuterGlowColor(highlightKind, primary: true, pulse);
-        _selectionOuterGlowPen.Width = SelectionOuterGlowWidth(highlightKind, primary: true, pulse);
-        _selectionGlowPen.Color = SelectionGlowColor(highlightKind, primary: true, pulse);
-        _selectionGlowPen.Width = SelectionGlowWidth(highlightKind, primary: true, pulse);
-        _selectionPen.Color = SelectionLineColor(highlightKind, primary: true);
-        _selectionPen.Width = SelectionLineWidth(highlightKind, primary: true, pulse);
-
-        _multiSelectionOuterGlowPen.Color = SelectionOuterGlowColor(highlightKind, primary: false, pulse);
-        _multiSelectionOuterGlowPen.Width = SelectionOuterGlowWidth(highlightKind, primary: false, pulse);
-        _multiSelectionGlowPen.Color = SelectionGlowColor(highlightKind, primary: false, pulse);
-        _multiSelectionGlowPen.Width = SelectionGlowWidth(highlightKind, primary: false, pulse);
-        _multiSelectionPen.Color = SelectionLineColor(highlightKind, primary: false);
-        _multiSelectionPen.Width = SelectionLineWidth(highlightKind, primary: false, pulse);
-    }
-
-    private void DrawSelectionPolygon(Graphics g, PointF[] points, bool primary, SelectionHighlightKind highlightKind)
-    {
-        if (points.Length < 3) return;
-        using var path = new GraphicsPath();
-        path.AddLines(points);
-        path.CloseFigure();
-        DrawSelectionPath(g, path, primary, highlightKind);
-    }
-
-    private void DrawSelectionPolyline(Graphics g, PointF[] points, bool primary, SelectionHighlightKind highlightKind)
-    {
-        if (points.Length < 2) return;
-        using var path = new GraphicsPath();
-        path.AddLines(points);
-        DrawSelectionPath(g, path, primary, highlightKind);
-    }
-
-    private void DrawSelectionDot(Graphics g, PointF point, bool primary, SelectionHighlightKind highlightKind)
-    {
-        PrepareSelectionHighlightPens(highlightKind);
-        var pulseScale = 0.92f + 0.16f * SelectionHighlightPulse;
-        var outer = (primary ? 12f : 8f) * pulseScale;
-        var glow = (primary ? 7f : 5f) * pulseScale;
-        var line = (primary ? 2.5f : 1.5f) * pulseScale;
-        using var outerBrush = new SolidBrush(primary ? _selectionOuterGlowPen.Color : _multiSelectionOuterGlowPen.Color);
-        using var glowBrush = new SolidBrush(primary ? _selectionGlowPen.Color : _multiSelectionGlowPen.Color);
-        using var lineBrush = new SolidBrush(primary ? _selectionPen.Color : _multiSelectionPen.Color);
-        g.FillEllipse(outerBrush, point.X - outer * 0.5f, point.Y - outer * 0.5f, outer, outer);
-        g.FillEllipse(glowBrush, point.X - glow * 0.5f, point.Y - glow * 0.5f, glow, glow);
-        g.FillEllipse(lineBrush, point.X - line * 0.5f, point.Y - line * 0.5f, line, line);
-    }
-
-    private void DrawBoundaryHandles(Graphics g, int i)
-    {
-        foreach (var handle in BoundaryHandles())
-        {
-            DrawHandle(g, WorldToScreen(GetBoundaryHandleWorldPoint(i, handle)), _handleBrush, 9);
-        }
-    }
-
-    private void DrawTextAreaOverlay(Graphics graphics, int objectIndex, bool drawHandles)
-    {
-        var corners = GetTextAreaWorldCorners(objectIndex).Select(WorldToScreen).ToArray();
-        if (corners.Length != 4) return;
-        graphics.DrawPolygon(_textAreaGlowPen, corners);
-        graphics.DrawPolygon(_textAreaPen, corners);
-        if (!drawHandles) return;
-
-        foreach (var handle in TextAreaResizeHandles())
-        {
-            DrawHandle(
-                graphics,
-                WorldToScreen(GetTextAreaHandleWorldPoint(objectIndex, handle)),
-                _textAreaHandleBrush,
-                9);
-        }
-    }
-
-    private void DrawHandle(Graphics g, PointF point, Brush brush, float size)
-    {
-        var rect = new RectangleF(point.X - size * 0.5f, point.Y - size * 0.5f, size, size);
-        g.FillRectangle(brush, rect);
-        g.DrawRectangle(_handleBorderPen, rect.X, rect.Y, rect.Width, rect.Height);
-    }
-
-    private (PointF Start, PointF Control1, PointF Control2, PointF End) GetBezierScreenPoints(int i)
-    {
-        var halfW = Scene.Width[i] * 0.5f;
-        var start = WorldToScreen(LocalToWorld(i, new PointF(-halfW, 0)));
-        var end = WorldToScreen(LocalToWorld(i, new PointF(halfW, 0)));
-        var control1 = WorldToScreen(Scene.CurveControlX[i], Scene.CurveControlY[i]);
-        var control2 = WorldToScreen(Scene.CurveControl2X[i], Scene.CurveControl2Y[i]);
-        return (start, control1, control2, end);
-    }
-
-    private (PointF Start, PointF Control1, PointF Control2, PointF End) GetBezierScreenPoints(DrawingElementHit hit)
-    {
-        if (TryGetLineBezierWorldPoints(
-                hit.Key.ObjectIndex,
-                hit.StartT,
-                hit.EndT,
-                out var start,
-                out var control1,
-                out var control2,
-                out var end))
-        {
-            return (WorldToScreen(start), WorldToScreen(control1), WorldToScreen(control2), WorldToScreen(end));
-        }
-
-        return GetBezierScreenPoints(hit.Key.ObjectIndex);
-    }
-
-    internal bool TryGetLineBezierWorldPoints(
-        int objectIndex,
-        float startT,
-        float endT,
-        out PointF start,
-        out PointF control1,
-        out PointF control2,
-        out PointF end)
-    {
-        start = PointF.Empty;
-        control1 = PointF.Empty;
-        control2 = PointF.Empty;
-        end = PointF.Empty;
-        return Scene.TryGetLineBezierPart(
-            objectIndex,
-            startT,
-            endT,
-            out start,
-            out control1,
-            out control2,
-            out end);
-    }
-
-    private static GraphicsPath BuildCubicPath(PointF start, PointF control1, PointF control2, PointF end)
-    {
-        var path = new GraphicsPath();
-        path.AddBezier(start, control1, control2, end);
-        return path;
-    }
-
-    private static GraphicsPath BuildCubicSamplePath(
-        PointF start,
-        PointF control1,
-        PointF control2,
-        PointF end,
-        float startT,
-        float endT)
-    {
-        startT = Math.Clamp(startT, 0, 1);
-        endT = Math.Clamp(endT, startT, 1);
-        var path = new GraphicsPath();
-        var previous = CubicPoint(start, control1, control2, end, startT);
-        const int samples = 20;
-        for (var i = 1; i <= samples; i++)
-        {
-            var t = startT + (endT - startT) * i / samples;
-            var current = CubicPoint(start, control1, control2, end, t);
-            path.AddLine(previous, current);
-            previous = current;
-        }
-
-        return path;
-    }
-
-    private static GraphicsPath BuildPolylineSamplePath(PointF[] points, float startT, float endT)
-    {
-        startT = Math.Clamp(startT, 0, 1);
-        endT = Math.Clamp(endT, startT, 1);
-        var path = new GraphicsPath();
-        var previous = PolylinePointAt(points, startT);
-        var segments = Math.Max(1, points.Length - 1);
-        var samples = Math.Max(2, (int)Math.Ceiling((endT - startT) * segments * 4));
-        for (var i = 1; i <= samples; i++)
-        {
-            var t = startT + (endT - startT) * i / samples;
-            var current = PolylinePointAt(points, t);
-            path.AddLine(previous, current);
-            previous = current;
-        }
-
-        return path;
-    }
-
-    private static PointF PolylinePointAt(PointF[] points, float t)
-    {
-        if (points.Length == 0) return PointF.Empty;
-        if (points.Length == 1) return points[0];
-        t = Math.Clamp(t, 0, 1);
-        var segments = points.Length - 1;
-        var scaled = t * segments;
-        var index = Math.Min(segments - 1, (int)MathF.Floor(scaled));
-        return Lerp(points[index], points[index + 1], scaled - index);
-    }
-
-    private static PointF CubicPoint(PointF start, PointF control1, PointF control2, PointF end, float t)
-    {
-        var inv = 1 - t;
-        return new PointF(
-            inv * inv * inv * start.X
-                + 3 * inv * inv * t * control1.X
-                + 3 * inv * t * t * control2.X
-                + t * t * t * end.X,
-            inv * inv * inv * start.Y
-                + 3 * inv * inv * t * control1.Y
-                + 3 * inv * t * t * control2.Y
-                + t * t * t * end.Y);
-    }
-
-    private PointF LocalToWorld(int i, PointF local)
-    {
-        return ObjectLocalToWorld(Scene, i, local);
-    }
-
-    private static PointF ObjectLocalToWorld(VectorScene scene, int i, PointF local)
-    {
-        var angle = scene.Angle[i];
-        var cos = MathF.Cos(angle);
-        var sin = MathF.Sin(angle);
-        return new PointF(
-            scene.X[i] + local.X * cos - local.Y * sin,
-            scene.Y[i] + local.X * sin + local.Y * cos);
-    }
-
-    internal PointF[][] GetMixingStrokeScreenContours(VectorScene scene, int objectIndex)
-    {
-        if (scene.TryGetMixingBrushLocalRegion(objectIndex, out var region))
-        {
-            var edges = MixingBrushRegionRasterizer.ExtractBoundaryEdges(region.TriangleIndices);
-            var contours = new List<PointF[]>(edges.Length);
-            foreach (var edge in edges)
-            {
-                if ((uint)edge.StartVertex >= region.Vertices.Length
-                    || (uint)edge.EndVertex >= region.Vertices.Length)
-                {
-                    continue;
-                }
-                contours.Add(
-                [
-                    WorldToScreen(ObjectLocalToWorld(scene, objectIndex, region.Vertices[edge.StartVertex].Point)),
-                    WorldToScreen(ObjectLocalToWorld(scene, objectIndex, region.Vertices[edge.EndVertex].Point))
-                ]);
-            }
-            return contours.ToArray();
-        }
-
-        if (!scene.TryGetMixingStrokeLocalSamples(objectIndex, out var samples) || samples.Length == 0)
-        {
-            return [];
-        }
-        var points = new List<PointF>(samples.Length);
-        foreach (var sample in samples)
-        {
-            if (!IsFiniteMixingPoint(sample.Point)) continue;
-            points.Add(WorldToScreen(ObjectLocalToWorld(scene, objectIndex, sample.Point)));
-        }
-        return points.Count > 0 ? [points.ToArray()] : [];
-    }
-
-    private static bool IsRenderableMixingSample(MixingBrushTrajectorySample sample) =>
-        IsFiniteMixingPoint(sample.Point)
-        && float.IsFinite(sample.Diameter)
-        && sample.Diameter > 0;
-
-    private static bool IsFiniteMixingPoint(PointF point) =>
-        float.IsFinite(point.X) && float.IsFinite(point.Y);
-
-    private PointF[] GetBoundaryScreenPolyline(int i)
-    {
-        var boundary = Scene.GetShapeBoundary(i);
-        var points = new PointF[boundary.Length];
-        for (var p = 0; p < boundary.Length; p++) points[p] = WorldToScreen(boundary[p]);
-        return points;
-    }
-
-    private static PointF Lerp(PointF a, PointF b, float t)
-    {
-        return new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
-    }
-
-    private static IEnumerable<EditHandleKind> BoundaryHandles()
-    {
-        yield return EditHandleKind.BoundsTopLeft;
-        yield return EditHandleKind.BoundsTopRight;
-        yield return EditHandleKind.BoundsBottomRight;
-        yield return EditHandleKind.BoundsBottomLeft;
-    }
-
-    internal static IEnumerable<EditHandleKind> TextAreaResizeHandles()
-    {
-        yield return EditHandleKind.TextAreaLeft;
-        yield return EditHandleKind.TextAreaRight;
-    }
-
-    private static bool IsFreehandShape(ShapeKind shape)
-    {
-        return shape is ShapeKind.Freeform or ShapeKind.BrushStroke;
-    }
-
-    private static float Distance(Point screen, PointF point)
-    {
-        var dx = screen.X - point.X;
-        var dy = screen.Y - point.Y;
-        return MathF.Sqrt(dx * dx + dy * dy);
-    }
-
-    private static float Distance(PointF a, PointF b)
-    {
-        var dx = a.X - b.X;
-        var dy = a.Y - b.Y;
-        return MathF.Sqrt(dx * dx + dy * dy);
-    }
-
-    private PointF WorldToScreen(PointF point) => WorldToScreen(point.X, point.Y);
-
-    private SolidBrush BrushFor(int argb)
-    {
-        if (_brushCache.TryGetValue(argb, out var brush)) return brush;
-        if (_brushCache.Count >= MaxGdiBrushCacheEntries)
-        {
-            foreach (var item in _brushCache.Values) item.Dispose();
-            _brushCache.Clear();
-        }
-
-        brush = new SolidBrush(Color.FromArgb(argb));
-        _brushCache[argb] = brush;
-        return brush;
     }
 }

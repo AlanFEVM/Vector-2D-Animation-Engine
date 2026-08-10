@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Scene Spatial"
+  short_description: "Scene masks, 3D views, cameras, and spatial transforms"
+  default_prompt: "Use $vector2d-scene-spatial to implement or review a scene mask, camera, or spatial-transform change."

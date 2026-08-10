@@ -1,40 +1,34 @@
 ---
 name: vector2d-project-model
-description: Implement and review Vector 2D Animation Engine project-document changes involving scenes, drawing objects, nested instances, timeline tracks, cel ownership, snapshots, composition previews, transform propagation, provenance, or composition performance. Use for edits around VectorProject, DrawingObjectDefinition, SceneDefinition, AnimationTimeline, VectorSceneSnapshot, or SceneCompositionBuilder.
+description: Implement and review Vector 2D Animation Engine in-memory project-document structure involving VectorProject, scenes, symbols/drawing objects, nested instances, layers, folders, masks, stable IDs, recursion rules, snapshots, composition flattening, transform propagation, provenance, and composition performance. Use vector2d-timeline-animation for frame/Cel/tween semantics and vector2d-assets-persistence for durable Save/Open or SVG storage.
 ---
 
 # Vector2D Project Model
 
-Keep project ownership, timeline identity, and flattened composition aligned. Read only the reference that matches the change instead of loading the large engine files wholesale.
+Keep object-graph ownership, stable identity, layer assignment, snapshots, and flattened composition aligned.
+
+## Route The Task
+
+- Read [model-map.md](references/model-map.md) for project graph, IDs, definitions, instances, layers, masks, duplication/removal, and snapshots.
+- Read [composition-provenance.md](references/composition-provenance.md) only for flattening, transforms, masks, batching, previews, or owner provenance.
+- Use `$vector2d-timeline-animation` for frames, Cels, exposures, Auto Key, onion skin, or tweens.
+- Use `$vector2d-assets-persistence` for manifests, Vault files, checksums, journal recovery, or SVG I/O.
+- Use `$vector2d-scene-spatial` for reference 3D, cameras, spatial handles, or mask rendering.
 
 ## Workflow
 
-1. Locate the mutation entry point in `VectorProject`; do not mutate the read-only project collections directly.
-2. Read [model-map.md](references/model-map.md) for ownership, identifiers, duplication/removal, and snapshot rules.
-3. Read [timeline-composition.md](references/timeline-composition.md) when changing tracks, cels, nested instances, transforms, flattening, or preview ownership.
-4. Define the invariant before editing: stable target IDs, active exposure, object keyframe ownership, recursion rejection, or destination-owner alignment.
-5. Update every representation crossed by the change: source model, snapshot/clone path, timeline synchronization, scalar and packed composition paths, and UI bind/refresh callers.
-6. Add a focused regression to `native/App/Benchmark.cs`; extend the nearest existing regression rather than creating an unrelated harness.
-7. Run `$vector2d-validate-change` with `Timeline`; add `Stress` for composition batching or performance work.
-8. Update `README.md` and `docs/USER_GUIDE.md` when behavior or interaction is user-visible.
+1. Locate the controlled mutation entry point in the owning project/definition type.
+2. Define stable IDs, container/reference ownership, recursion rules, layer/mask assignment, and expected provenance.
+3. Update each crossed representation: model, snapshot/clone, synchronization, scalar/packed composition, and bind/refresh callers.
+4. Reject missing references, duplicate IDs, self-reference, cycles, and partially updated collections before publishing change events.
+5. Extend `Benchmark.ProjectComposition.cs` or the nearest focused model regression partial.
+6. Run `$vector2d-validate-change` with `Timeline`; add `Stress` for composition batching/performance and `Render` for visible mask/output changes.
+7. Update user documentation for visible project behavior.
 
-## Non-Negotiable Invariants
+## Invariants
 
-- A project starts with at least one scene and one drawing object; the last drawing object cannot be removed.
-- Scene instances reference drawing objects. Drawing-object instances may nest, but self-reference and cycles are rejected by `VectorProject.CanContainDrawingObject`.
-- Drawing-object timelines use one shared `Scene.Timeline`: layer IDs first, nested-instance IDs after them. Scene timelines target scene-instance IDs only.
-- Track synchronization preserves surviving track IDs and keyframes. New empty drawing layers start blank; new instance tracks start populated.
-- `ObjectKeyframeFrame` owns cel content. A populated exposure alone does not make an object active.
-- Snapshots and duplication must deep-copy mutable arrays/contours and remap duplicated instance target IDs.
-- Flattened composition is derived data. `SceneCompositionResult` owner index `i` must describe destination object `i`.
-- New packed object fields must cross snapshot, scalar append, packed append, composition preparation, and renderer consumption paths.
-
-## Targeted Search
-
-```powershell
-rg -n "CanContainDrawingObject|TryAdd.*Instance|TryDuplicateDrawingObject|TryRemoveDrawingObject" native/Engine/VectorProject.cs
-rg -n "SynchronizeTracks|EvaluateExposure|Insert.*Frame|Snapshot" native/Engine/AnimationTimeline.cs native/Engine/VectorScene.cs
-rg -n "BuildDrawingObject|BuildLayers|PrepareObject|ObjectOwners" native/Engine/SceneCompositionBuilder.cs
-```
-
-Avoid reading all of `VectorScene.cs` or `MainForm.cs`; search the symbol and inspect its callers first.
+- A project retains at least one scene and one drawing object; the last drawing object cannot be removed.
+- Stable IDs, not list indices, connect definitions, instances, layers, masks, tracks, UI selection, and provenance.
+- Nested drawing objects reject self-reference and cycles.
+- Snapshots and duplication deep-copy mutable arrays/contours and remap duplicated instance IDs.
+- Flattened composition is derived data; destination owner metadata aligns exactly with appended destination objects.

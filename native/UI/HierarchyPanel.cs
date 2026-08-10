@@ -35,6 +35,14 @@ internal sealed class HierarchyPanel : UserControl
     private TreeNode? _sceneNode;
     private TreeNode? _layersRoot;
     private TreeNode? _objectsRoot;
+    private bool _presentationSnapshotValid;
+    private int _presentedLayerCount;
+    private int _presentedObjectCount;
+    private string[] _presentedLayerNames = [];
+    private bool[] _presentedLayerVisible = [];
+    private float[] _presentedLayerOpacity = [];
+    private int[] _presentedLayerColors = [];
+    private ushort[] _presentedObjectLayers = [];
 
     public HierarchyPanel()
     {
@@ -76,7 +84,14 @@ internal sealed class HierarchyPanel : UserControl
 
     public void BindScene(VectorScene scene)
     {
+        if (ReferenceEquals(_scene, scene))
+        {
+            RefreshScene();
+            return;
+        }
+
         _scene = scene;
+        InvalidatePresentationSnapshot();
         Rebuild();
     }
 
@@ -86,7 +101,7 @@ internal sealed class HierarchyPanel : UserControl
         RebuildPlaceholder();
     }
 
-    public void RefreshScene()
+    public void RefreshScene(bool force = false)
     {
         if (_scene is null
             || _sceneNode is null
@@ -101,6 +116,8 @@ internal sealed class HierarchyPanel : UserControl
             Rebuild();
             return;
         }
+
+        if (!force && PresentationSnapshotMatches()) return;
 
         _tree.BeginUpdate();
         try
@@ -137,6 +154,8 @@ internal sealed class HierarchyPanel : UserControl
         {
             _tree.EndUpdate();
         }
+
+        CapturePresentationSnapshot();
     }
 
     public void SelectLayer(int layerIndex)
@@ -209,10 +228,12 @@ internal sealed class HierarchyPanel : UserControl
         _tree.EndUpdate();
 
         _summary.Text = $"{_scene.LayerCount} layers, {_scene.ObjectCount} objects";
+        CapturePresentationSnapshot();
     }
 
     private void RebuildPlaceholder()
     {
+        InvalidatePresentationSnapshot();
         _sceneNode = null;
         _layersRoot = null;
         _objectsRoot = null;
@@ -229,6 +250,85 @@ internal sealed class HierarchyPanel : UserControl
         sceneNode.ExpandAll();
         _tree.EndUpdate();
         _summary.Text = "Scene, layers and objects";
+    }
+
+    private bool PresentationSnapshotMatches()
+    {
+        if (!_presentationSnapshotValid || _scene is null
+            || _presentedLayerCount != _scene.LayerCount
+            || _presentedObjectCount != _scene.ObjectCount)
+        {
+            return false;
+        }
+
+        var layerCount = Math.Min(_scene.LayerCount, MaxLayerNodes);
+        if (_presentedLayerNames.Length != layerCount
+            || _presentedLayerVisible.Length != layerCount
+            || _presentedLayerOpacity.Length != layerCount
+            || _presentedLayerColors.Length != layerCount)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < layerCount; index++)
+        {
+            if (!string.Equals(_presentedLayerNames[index], _scene.LayerNames[index], StringComparison.Ordinal)
+                || _presentedLayerVisible[index] != _scene.LayerVisible[index]
+                || _presentedLayerOpacity[index] != _scene.LayerOpacity[index]
+                || _presentedLayerColors[index] != _scene.GetLayerColor(index).ToArgb())
+            {
+                return false;
+            }
+        }
+
+        var objectCount = Math.Min(_scene.ObjectCount, MaxObjectNodes);
+        if (_presentedObjectLayers.Length != objectCount) return false;
+        for (var index = 0; index < objectCount; index++)
+        {
+            var layer = _scene.ObjectLayer.Length > index ? _scene.ObjectLayer[index] : (ushort)0;
+            if (_presentedObjectLayers[index] != layer) return false;
+        }
+
+        return true;
+    }
+
+    private void CapturePresentationSnapshot()
+    {
+        if (_scene is null)
+        {
+            InvalidatePresentationSnapshot();
+            return;
+        }
+
+        _presentedLayerCount = _scene.LayerCount;
+        _presentedObjectCount = _scene.ObjectCount;
+        var layerCount = Math.Min(_scene.LayerCount, MaxLayerNodes);
+        Array.Resize(ref _presentedLayerNames, layerCount);
+        Array.Resize(ref _presentedLayerVisible, layerCount);
+        Array.Resize(ref _presentedLayerOpacity, layerCount);
+        Array.Resize(ref _presentedLayerColors, layerCount);
+        for (var index = 0; index < layerCount; index++)
+        {
+            _presentedLayerNames[index] = _scene.LayerNames[index];
+            _presentedLayerVisible[index] = _scene.LayerVisible[index];
+            _presentedLayerOpacity[index] = _scene.LayerOpacity[index];
+            _presentedLayerColors[index] = _scene.GetLayerColor(index).ToArgb();
+        }
+
+        var objectCount = Math.Min(_scene.ObjectCount, MaxObjectNodes);
+        Array.Resize(ref _presentedObjectLayers, objectCount);
+        for (var index = 0; index < objectCount; index++)
+        {
+            _presentedObjectLayers[index] = _scene.ObjectLayer.Length > index
+                ? _scene.ObjectLayer[index]
+                : (ushort)0;
+        }
+        _presentationSnapshotValid = true;
+    }
+
+    private void InvalidatePresentationSnapshot()
+    {
+        _presentationSnapshotValid = false;
     }
 
     private static void RefreshBranch(

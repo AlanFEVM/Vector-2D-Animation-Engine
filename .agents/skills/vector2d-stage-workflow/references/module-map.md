@@ -1,26 +1,26 @@
 # Stage Source Module Map
 
-Use this map before opening the large Stage owners. Private members remain shared across each partial class, but file ownership still follows the coordination contract.
-
 | Task or behavior | Start here | Read next only when needed |
 | --- | --- | --- |
-| Selected fill/stroke movement, topology materialization, linked fill boundaries, coalesced drag updates | `native/UI/MainForm.SelectionDrag.cs` | `native/Engine/VectorScene.cs`, `native/UI/MainForm.cs` pointer routing |
-| Tool activation, pointer dispatch, commit/cancel, workspace and undo orchestration | `native/UI/MainForm.cs` | the focused `MainForm.*.cs` partial named by the caller |
-| Selection drag offset, synchronous first frame, 30 ms telemetry | `native/Rendering/StageControl.SelectionDrag.cs` | `native/Rendering/StageControl.cs` paint scheduling |
-| Stage binding, camera, input events, overlay lifecycle, GDI fallback | `native/Rendering/StageControl.cs` | `StageControl.SelectionDrag.cs` for selection movement |
-| Direct2D selection outlines, topology highlights, GPU drag translation | `native/Rendering/Direct2DStageRenderer.Selection.cs` | `native/Rendering/Direct2DStageRenderer.cs` geometry helpers and target state |
-| Direct2D scene passes, target lifecycle, base-frame and geometry caches | `native/Rendering/Direct2DStageRenderer.cs` | `native/Rendering/SceneRenderOrder.cs` |
-| First Fill/Line drag CPU transaction budget | `native/App/Benchmark.DragPerformance.cs` | `native/App/Benchmark.cs` suite caller |
-| Stage HWND, overlay, cache, and Direct2D regression | `Benchmark.RunStageRendererRegression` in `native/App/Benchmark.cs` | the renderer partial owning the assertion |
-
-## Focused Searches
+| Shared Stage binding, 2D camera, preview state, coordinate APIs | `native/Rendering/StageControl.cs` | focused GDI/selection partial |
+| Tool activation and drawing workflow | `native/UI/MainForm.DrawingTools.cs` | `MainForm.StagePointerInput.cs` |
+| Pointer dispatch, capture, hover, tool sessions | `native/UI/MainForm.StagePointerInput.cs` | owning tool/transform partial |
+| Selection and topology commands | `native/UI/MainForm.SelectionAndTopology.cs` | `$vector2d-drawing-geometry` |
+| Selected part movement and coalesced drag | `native/UI/MainForm.SelectionDrag.cs` | `StageControl.SelectionDrag.cs`, renderer Selection partial |
+| Free Transform/distort interactions | `native/UI/MainForm.TransformInteractions.cs` | `VectorScene.Transforms.cs` or `Distortions.cs` |
+| Stage-facing workbench commands, drop/import | `native/UI/MainForm.WorkbenchCommands.cs` | `$vector2d-assets-persistence` |
+| Workspace/inspector Stage binding | `native/UI/MainForm.InspectorAndWorkspace.cs` | `$vector2d-winforms-ui` |
+| GDI scene objects | `native/Rendering/StageControl.GdiSceneRendering.cs` | Direct2D core renderer |
+| GDI overlays, previews, handles, cursors | `native/Rendering/StageControl.GdiOverlays.cs` | renderer Selection partial |
+| Direct2D scene passes | `native/Rendering/Direct2DStageRenderer.cs` | `Direct2DStageRenderer.Caching.cs` |
+| Direct2D selection/topology/drag | `native/Rendering/Direct2DStageRenderer.Selection.cs` | `StageControl.SelectionDrag.cs` |
+| LOD and renderer caches | `native/Rendering/Direct2DStageRenderer.Caching.cs` | scene revision producers |
+| Reference 3D/spatial cameras/masks | `$vector2d-scene-spatial` | spatial module map |
+| Tool/selection regressions | `Benchmark.DrawingTools.cs`, `Benchmark.StageInteraction.cs` | `Benchmark.DragPerformance.cs` |
+| Rendering/visual regressions | `Benchmark.StageRenderSuite.cs`, `Benchmark.StageVisualRegression.cs` | `Benchmark.FillRendering.cs` |
 
 ```powershell
-rg -n "MoveSelectedFromPointer|EnsureSelectedElementDetachedForMove|ApplyPendingLineDragPreview" native/UI/MainForm.SelectionDrag.cs
-rg -n "PresentSelectionDragPreview|BeginDragFirstMoveTelemetry|ClearSelectionDragPreview" native/Rendering/StageControl.SelectionDrag.cs
-rg -n "DrawSelection|DrawElementSelectionOutline|SelectionDragPreviewOffset" native/Rendering/Direct2DStageRenderer.Selection.cs
-rg -n "RunFirstDragMovePerformanceRegression|drag_.*first_move" native/App/Benchmark.DragPerformance.cs
-rg -n -g "MainForm*.cs" -g "StageControl*.cs" -g "Direct2DStageRenderer*.cs" "<caller-or-symbol>" native/UI native/Rendering
+rg -n -g "MainForm*.cs" "ActivateTool|StageMouse(Down|Move|Up)|Finish.*Pointer|ProcessCmdKey" native/UI
+rg -n -g "StageControl*.cs" "Set.*Preview|Clear.*Preview|SetSelection|ScreenToWorld|WorldToScreen" native/Rendering
+rg -n -g "Direct2DStageRenderer*.cs" "DrawObject|ResetTarget|LOD|Underlay|SceneRenderOrder" native/Rendering
 ```
-
-For topology semantics such as part identity, object-index remapping, detach/materialize behavior, or fill/stroke connectivity, switch to `$vector2d-drawing-geometry` before editing `VectorScene`.

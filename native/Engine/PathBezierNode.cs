@@ -11,6 +11,23 @@ internal readonly record struct CubicBoundarySegment(
     PointF Control2,
     PointF End);
 
+internal readonly record struct DistortedBezierSegment(
+    CubicBoundarySegment Curve,
+    int SourceSegmentIndex,
+    float SourceStartT,
+    float SourceEndT);
+
+internal readonly record struct MappedDistortSample(PointF Point, float SourceT);
+
+internal readonly record struct DistortedVectorGeometry(
+    PathBezierNode[][] ClosedContours,
+    CubicBoundarySegment[] OpenStrokeSegments,
+    DistortedBezierSegment[] OpenStrokeProvenance)
+{
+    public bool HasClosedContours => ClosedContours.Length > 0;
+    public bool HasOpenStroke => OpenStrokeSegments.Length > 0;
+}
+
 internal readonly record struct PathBezierSegmentPart(
     int PartIndex,
     int ContourIndex,

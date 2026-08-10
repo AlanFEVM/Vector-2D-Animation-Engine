@@ -121,6 +121,52 @@ internal static partial class Benchmark
                 .All(index => shapeScene.ShapeKind[index] == ShapeKind.Path),
             "Shape tween did not interpolate multiple or cross-primitive shapes as editable paths.");
 
+        var maskScene = new VectorScene();
+        maskScene.CreateEmpty();
+        var maskLayer = maskScene.AddMaskLayer("Tween Mask");
+        maskScene.AddObject(
+            maskLayer,
+            new PointF(20, 20),
+            new SizeF(80, 80),
+            0,
+            0,
+            Color.White,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        AssertTimeline(
+            maskScene.InsertTimelineKeyframe(maskLayer, 4),
+            "Mask shape tween setup could not create its end keyframe.");
+        var maskTarget = Enumerable.Range(0, maskScene.ObjectCount)
+            .Single(index => maskScene.ObjectLayer[index] == maskLayer
+                && maskScene.ObjectKeyframeFrame[index] == 4);
+        maskScene.X[maskTarget] = 260;
+        maskScene.Width[maskTarget] = 160;
+        maskScene.Height[maskTarget] = 120;
+        maskScene.ShapeKind[maskTarget] = ShapeKind.Ellipse;
+        AssertTimeline(
+            VectorScene.SupportsTimelineTweenLayer(DrawingLayerKind.Mask, TimelineTweenKind.Shape)
+            && !VectorScene.SupportsTimelineTweenLayer(DrawingLayerKind.Mask, TimelineTweenKind.Classic),
+            "Mask layers did not allow only the shape-tween command.");
+        AssertTimeline(
+            maskScene.TryCreateTimelineTween(
+                maskLayer,
+                0,
+                4,
+                TimelineTweenKind.Shape,
+                out var maskTweenError),
+            $"Mask layer shape tween creation failed: {maskTweenError}");
+        var maskMiddle = Enumerable.Range(0, maskScene.ObjectCount)
+            .Single(index => maskScene.ObjectLayer[index] == maskLayer
+                && maskScene.ObjectKeyframeFrame[index] == 2);
+        AssertTimeline(
+            maskScene.GetLayerKind(maskLayer) == DrawingLayerKind.Mask
+            && maskScene.ShapeKind[maskMiddle] == ShapeKind.Path
+            && maskScene.IsObjectActive(maskMiddle, 2)
+            && maskScene.Timeline.FindTrackByTargetId(maskScene.LayerIds[maskLayer])?.EvaluateTween(2)
+                is { Kind: TimelineTweenKind.Shape },
+            "Mask layer shape tween did not materialize or retain its tween metadata.");
+
         var rectangleScene = new VectorScene();
         rectangleScene.CreateEmpty();
         rectangleScene.AddObject(
@@ -182,21 +228,33 @@ internal static partial class Benchmark
             "Split-circle shape tween setup could not replace its end shape.");
         var splitCirclePreviousFrame = splitCircleScene.EditFrame;
         splitCircleScene.EditFrame = 4;
-        splitCircleScene.AddPathObjectContours(
+        var splitCircleTargetFill = splitCircleScene.AddObject(
             0,
-            [TweenCircle(new PointF(320, 80), 60)],
+            new PointF(320, 80),
+            new SizeF(120, 120),
+            0,
             0,
             Color.MediumTurquoise,
             Color.Transparent,
-            24);
+            24,
+            ShapeKind.Ellipse);
         AddTweenCircleOutline(splitCircleScene, 0, new PointF(320, 80), 60, 12, Color.White);
         splitCircleScene.EditFrame = splitCirclePreviousFrame;
+        var splitCircleTargetLines = Enumerable.Range(0, splitCircleScene.ObjectCount)
+            .Where(index => splitCircleScene.ObjectKeyframeFrame[index] == 4
+                && index != splitCircleTargetFill)
+            .ToArray();
+        var splitCircleTargetLinkCounts = splitCircleTargetLines
+            .Select(line => splitCircleScene.CaptureFillBoundaryLineLinks(line, 4)
+                .Count(link => link.FillObjectIndex == splitCircleTargetFill))
+            .ToArray();
         AssertTimeline(
             Enumerable.Range(0, splitCircleScene.ObjectCount)
                 .Count(index => splitCircleScene.ObjectKeyframeFrame[index] == 0) == 1
             && Enumerable.Range(0, splitCircleScene.ObjectCount)
-                .Count(index => splitCircleScene.ObjectKeyframeFrame[index] == 4) == 5,
-            "Split-circle shape tween setup did not reproduce unequal endpoint object counts.");
+                .Count(index => splitCircleScene.ObjectKeyframeFrame[index] == 4) == 5
+            && splitCircleTargetLinkCounts.All(count => count == 1),
+            $"Split-circle shape tween setup did not reproduce exact boundary links ({string.Join(',', splitCircleTargetLinkCounts)}).");
         AssertTimeline(
             splitCircleScene.TryCreateTimelineTween(
                 0,
@@ -210,14 +268,57 @@ internal static partial class Benchmark
             .ToArray();
         var splitCircleMiddleFill = splitCircleMiddleObjects
             .Single(index => splitCircleScene.ShapeKind[index] == ShapeKind.Path);
+        var splitCircleBoundaryFrames = Enumerable.Range(1, 3)
+            .Select(frame =>
+            {
+                var frameObjects = Enumerable.Range(0, splitCircleScene.ObjectCount)
+                    .Where(index => splitCircleScene.ObjectKeyframeFrame[index] == frame)
+                    .ToArray();
+                var fills = frameObjects.Where(splitCircleScene.HasFill).ToArray();
+                var boundaryLines = frameObjects
+                    .Where(index => splitCircleScene.ShapeKind[index] == ShapeKind.Freeform)
+                    .ToArray();
+                var linkCounts = fills.Length == 1
+                    ? boundaryLines.Select(line => splitCircleScene
+                        .CaptureFillBoundaryLineLinks(line, frame)
+                        .Count(link => link.FillObjectIndex == fills[0])).ToArray()
+                    : [];
+                return (
+                    Frame: frame,
+                    FillCount: fills.Length,
+                    LineCount: boundaryLines.Length,
+                    LinkCounts: linkCounts);
+            })
+            .ToArray();
         AssertTimeline(
             splitCircleMiddleObjects.Length == 5
             && splitCircleScene.FillContainsPoint(splitCircleMiddleFill, new PointF(200, 80))
             && splitCircleMiddleObjects.Count(index => splitCircleScene.ShapeKind[index] == ShapeKind.Freeform) == 4
             && splitCircleMiddleObjects
                 .Where(index => splitCircleScene.ShapeKind[index] == ShapeKind.Freeform)
-                .All(index => Color.FromArgb(splitCircleScene.StrokeArgb[index]).A is > 0 and < 255),
-            "Unequal circle fill/boundary objects were not materialized as a stable shape tween.");
+                .All(index => Color.FromArgb(splitCircleScene.StrokeArgb[index]).A is > 0 and < 255)
+            && splitCircleBoundaryFrames.All(item => item.FillCount == 1
+                && item.LineCount == 4
+                && item.LinkCounts.All(count => count == 1)),
+            $"Unequal circle fill/boundary objects detached during a shape tween ({string.Join(';', splitCircleBoundaryFrames.Select(item => $"{item.Frame}:{item.FillCount}/{item.LineCount}/{string.Join(',', item.LinkCounts)}"))}).");
+        AssertTimeline(
+            splitCircleScene.RefreshTimelineTweenMaterializationsAtEndpointFrame(4)
+            && Enumerable.Range(1, 3).All(frame =>
+            {
+                var frameObjects = Enumerable.Range(0, splitCircleScene.ObjectCount)
+                    .Where(index => splitCircleScene.ObjectKeyframeFrame[index] == frame)
+                    .ToArray();
+                var fills = frameObjects.Where(splitCircleScene.HasFill).ToArray();
+                var boundaryLines = frameObjects
+                    .Where(index => splitCircleScene.ShapeKind[index] == ShapeKind.Freeform)
+                    .ToArray();
+                return fills.Length == 1
+                    && boundaryLines.Length == 4
+                    && boundaryLines.All(line => splitCircleScene
+                        .CaptureFillBoundaryLineLinks(line, frame)
+                        .Any(link => link.FillObjectIndex == fills[0]));
+            }),
+            "Refreshing a shape tween endpoint detached its materialized boundary lines.");
         var restoredSplitCircleScene = new VectorScene();
         restoredSplitCircleScene.RestoreSnapshot(splitCircleScene.CreateSnapshot());
         AssertTimeline(
@@ -307,6 +408,8 @@ internal static partial class Benchmark
             && strokeScene.TryGetFreehandWorldPoints(strokeMiddle, out var strokeMiddlePoints)
             && strokeMiddlePoints.Length >= 2,
             "Shape tween did not materialize an editable interpolated vector stroke.");
+        RunShapeTweenLineMatchingRegression();
+        RunOutlinedShapeTweenBoundaryRegression();
 
         var invalidScene = new VectorScene();
         invalidScene.CreateEmpty();
@@ -321,6 +424,311 @@ internal static partial class Benchmark
         RunTimelineTweenGradientRegression();
         RunTimelineTweenComplexTopologyRegression();
         RunTimelineTweenCurveRegression();
+    }
+
+    private static void RunShapeTweenLineMatchingRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(1, 5);
+        var stationary = scene.AddLineSegment(
+            0,
+            new PointF(0, 0),
+            new PointF(100, 0),
+            8,
+            Color.Transparent,
+            Color.Black,
+            4);
+        var moving = scene.AddLineSegment(
+            0,
+            new PointF(300, 100),
+            new PointF(400, 100),
+            6,
+            Color.Transparent,
+            Color.Crimson,
+            4);
+        var stationaryOrder = scene.ObjectOrder[stationary];
+        var movingOrder = scene.ObjectOrder[moving];
+
+        AssertTimeline(
+            scene.InsertTimelineKeyframe(0, 4),
+            "Line shape tween setup could not create its end keyframe.");
+        var movingTarget = Enumerable.Range(0, scene.ObjectCount)
+            .Single(index => scene.ObjectKeyframeFrame[index] == 4
+                && scene.ObjectOrder[index] == movingOrder);
+        scene.SetLineEndpoint(
+            movingTarget,
+            startEndpoint: true,
+            endpoint: new PointF(-200, 100),
+            oppositeEndpoint: new PointF(-300, 100),
+            control: PointF.Empty,
+            keepStraight: true);
+
+        AssertTimeline(
+            scene.TryCreateTimelineTween(0, 0, 4, TimelineTweenKind.Shape, out var error),
+            $"Line shape tween creation failed: {error}");
+        for (var frame = 1; frame < 4; frame++)
+        {
+            var frameObjects = Enumerable.Range(0, scene.ObjectCount)
+                .Where(index => scene.ObjectLayer[index] == 0
+                    && scene.ObjectKeyframeFrame[index] == frame)
+                .ToArray();
+            AssertTimeline(
+                frameObjects.Length == 2
+                && frameObjects.Select(index => scene.ObjectOrder[index]).Order().SequenceEqual(
+                    new[] { stationaryOrder, movingOrder }.Order()),
+                "A line shape tween materialized duplicate or mismatched intermediate strokes.");
+
+            var stationaryFrame = frameObjects.Single(index => scene.ObjectOrder[index] == stationaryOrder);
+            AssertTimeline(
+                scene.ShapeKind[stationaryFrame] == ShapeKind.Line
+                && scene.TryGetLineCubic(
+                    stationaryFrame,
+                    out var start,
+                    out var control1,
+                    out var control2,
+                    out var end)
+                && SamePoint(start, new PointF(0, 0))
+                && SamePoint(control1, new PointF(33, 0))
+                && SamePoint(control2, new PointF(67, 0))
+                && SamePoint(end, new PointF(100, 0))
+                && Math.Abs(scene.Stroke[stationaryFrame] - 8) <= 0.001f
+                && scene.StrokeArgb[stationaryFrame] == Color.Black.ToArgb(),
+                "An unchanged line moved, changed appearance, or lost its native curve during a shape tween.");
+        }
+
+        var middle = Enumerable.Range(0, scene.ObjectCount)
+            .Single(index => scene.ObjectKeyframeFrame[index] == 2
+                && scene.ObjectOrder[index] == movingOrder);
+        AssertTimeline(
+            scene.ShapeKind[middle] == ShapeKind.Line
+            && scene.TryGetLineCubic(middle, out var middleStart, out var middleControl1, out var middleControl2, out var middleEnd)
+            && SamePoint(middleStart, new PointF(0, 100))
+            && SamePoint(middleControl1, new PointF(33, 100))
+            && SamePoint(middleControl2, new PointF(67, 100))
+            && SamePoint(middleEnd, new PointF(100, 100))
+            && Math.Abs(scene.Stroke[middle] - 6) <= 0.001f
+            && scene.StrokeArgb[middle] == Color.Crimson.ToArgb(),
+            "A reversed line endpoint produced a fold, style blend, or sampled-polyline transition.");
+
+        scene.SetLineEndpoint(
+            movingTarget,
+            startEndpoint: true,
+            endpoint: new PointF(-400, 200),
+            oppositeEndpoint: new PointF(-500, 200),
+            control: PointF.Empty,
+            keepStraight: true);
+        AssertTimeline(
+            scene.RefreshTimelineTweenMaterializationsAtEndpointFrame(4),
+            "Editing a line tween endpoint did not refresh its materialized frames.");
+        var refreshedFrameObjects = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index => scene.ObjectKeyframeFrame[index] == 2)
+            .ToArray();
+        var refreshedStationary = refreshedFrameObjects
+            .Single(index => scene.ObjectOrder[index] == stationaryOrder);
+        AssertTimeline(
+            refreshedFrameObjects.Length == 2
+            && scene.TryGetLineCubic(
+                refreshedStationary,
+                out var refreshedStart,
+                out _,
+                out _,
+                out var refreshedEnd)
+            && SamePoint(refreshedStart, new PointF(0, 0))
+            && SamePoint(refreshedEnd, new PointF(100, 0)),
+            "Refreshing an edited line tween rematched or duplicated its unchanged stroke.");
+
+        static bool SamePoint(PointF left, PointF right) =>
+            Math.Abs(left.X - right.X) <= 0.001f
+            && Math.Abs(left.Y - right.Y) <= 0.001f;
+    }
+
+    private static void RunOutlinedShapeTweenBoundaryRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(1, 5);
+        scene.AddObject(
+            0,
+            new PointF(120, 90),
+            new SizeF(240, 180),
+            0,
+            12,
+            Color.MediumTurquoise,
+            Color.White,
+            40,
+            ShapeKind.Rectangle);
+        AssertTimeline(
+            scene.InsertTimelineKeyframe(0, 4),
+            "Outlined shape tween setup could not create its end keyframe.");
+        var target = Enumerable.Range(0, scene.ObjectCount)
+            .Single(index => scene.ObjectKeyframeFrame[index] == 4);
+        scene.TransformObjects(
+            [target],
+            point =>
+            {
+                var dx = point.X - 120;
+                var dy = point.Y - 90;
+                return new PointF(
+                    360 + dx * 1.25f + dy * 0.35f,
+                    180 + dy * 1.4f);
+            });
+        var targetBezierPrepared = scene.TryConvertFillToBezierPath(target);
+        var targetTopBeforeMaterialization = targetBezierPrepared
+            ? scene.GetEditableFillBezierSegmentParts(target)
+                .OrderBy(part => (part.Start.Y + part.End.Y) * 0.5f)
+                .FirstOrDefault()
+            : default;
+        var targetTopControl1 = new PointF(
+            targetTopBeforeMaterialization.Start.X
+                + (targetTopBeforeMaterialization.End.X - targetTopBeforeMaterialization.Start.X) / 3f,
+            targetTopBeforeMaterialization.Start.Y - 120);
+        var targetTopControl2 = new PointF(
+            targetTopBeforeMaterialization.Start.X
+                + (targetTopBeforeMaterialization.End.X - targetTopBeforeMaterialization.Start.X) * 2f / 3f,
+            targetTopBeforeMaterialization.End.Y - 120);
+        var targetTopCurved = targetBezierPrepared
+            && scene.SetPathBezierSegment(
+                target,
+                targetTopBeforeMaterialization.PartIndex,
+                targetTopBeforeMaterialization.Start,
+                targetTopControl1,
+                targetTopControl2,
+                targetTopBeforeMaterialization.End);
+        var source = Enumerable.Range(0, scene.ObjectCount)
+            .Single(index => scene.ObjectKeyframeFrame[index] == 0);
+        var sourceKey = new DrawingElementKey(source, DrawingElementKind.Fill, 0);
+        var sourceMaterialized = scene.MaterializeSelectedParts([sourceKey], 0);
+        target = Enumerable.Range(0, scene.ObjectCount)
+            .Single(index => scene.ObjectKeyframeFrame[index] == 4);
+        var targetKey = new DrawingElementKey(target, DrawingElementKind.Fill, 0);
+        var targetMaterialized = scene.MaterializeSelectedParts([targetKey], 4);
+        var sourceObjects = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index => scene.ObjectKeyframeFrame[index] == 0)
+            .ToArray();
+        var targetObjects = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index => scene.ObjectKeyframeFrame[index] == 4)
+            .ToArray();
+        var sourceFill = sourceObjects.SingleOrDefault(scene.HasFill, -1);
+        var targetFill = targetObjects.SingleOrDefault(scene.HasFill, -1);
+        var sourceLines = sourceObjects
+            .Where(index => scene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        var targetLines = targetObjects
+            .Where(index => scene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        AssertTimeline(
+            sourceMaterialized.Success
+            && sourceMaterialized.Changed
+            && targetMaterialized.Success
+            && targetMaterialized.Changed
+            && sourceFill >= 0
+            && targetFill >= 0
+            && sourceObjects.Length == 5
+            && targetObjects.Length == 5
+            && sourceLines.Length == 4
+            && targetLines.Length == 4
+            && targetTopCurved
+            && scene.Stroke[sourceFill] == 0
+            && scene.Stroke[targetFill] == 0
+            && sourceLines.All(line => scene.CaptureFillBoundaryLineLinks(line, 0)
+                .Count(link => link.FillObjectIndex == sourceFill) == 1)
+            && targetLines.All(line => scene.CaptureFillBoundaryLineLinks(line, 4)
+                .Count(link => link.FillObjectIndex == targetFill) == 1),
+            "Outlined shape tween setup did not separate exact boundaries at both endpoints.");
+        AssertTimeline(
+            scene.TryCreateTimelineTween(0, 0, 4, TimelineTweenKind.Shape, out var error),
+            $"Outlined shape tween creation failed: {error}");
+        AssertTimeline(
+            OutlinedBoundaryFramesAreLinked(scene),
+            $"An outlined shape tween separated its materialized boundary lines from the fill ({OutlinedBoundaryDiagnostics(scene)}).");
+
+        scene.TransformObjects(
+            targetObjects,
+            point => new PointF(point.X + 30, point.Y + 20));
+        AssertTimeline(
+            targetLines.All(line => scene.CaptureFillBoundaryLineLinks(line, 4)
+                .Count(link => link.FillObjectIndex == targetFill) == 1)
+            && scene.RefreshTimelineTweenMaterializationsAtEndpointFrame(4)
+            && OutlinedBoundaryFramesAreLinked(scene),
+            "Refreshing a transformed outlined endpoint detached its boundary lines.");
+
+        static bool OutlinedBoundaryFramesAreLinked(VectorScene tweenScene) =>
+            Enumerable.Range(1, 3).All(frame =>
+            {
+                var frameObjects = Enumerable.Range(0, tweenScene.ObjectCount)
+                    .Where(index => tweenScene.ObjectKeyframeFrame[index] == frame)
+                    .ToArray();
+                var fills = frameObjects.Where(tweenScene.HasFill).ToArray();
+                var lines = frameObjects
+                    .Where(index => tweenScene.ShapeKind[index] == ShapeKind.Freeform)
+                    .ToArray();
+                return frameObjects.Length == 5
+                    && fills.Length == 1
+                    && lines.Length == 4
+                    && lines.All(line => Color.FromArgb(tweenScene.StrokeArgb[line]).A == 255)
+                    && lines.All(line => MaximumBoundaryDistance(tweenScene, line, fills[0]) <= 2f);
+            });
+
+        static string OutlinedBoundaryDiagnostics(VectorScene tweenScene) =>
+            string.Join(';', Enumerable.Range(1, 3).Select(frame =>
+            {
+                var frameObjects = Enumerable.Range(0, tweenScene.ObjectCount)
+                    .Where(index => tweenScene.ObjectKeyframeFrame[index] == frame)
+                    .ToArray();
+                var fills = frameObjects.Where(tweenScene.HasFill).ToArray();
+                var lines = frameObjects
+                    .Where(index => tweenScene.ShapeKind[index] == ShapeKind.Freeform)
+                    .ToArray();
+                var distances = fills.Length == 1
+                    ? lines.Select(line => MaximumBoundaryDistance(tweenScene, line, fills[0]))
+                    : [];
+                return $"{frame}:{frameObjects.Length}/{fills.Length}/{lines.Length}/{string.Join(',', distances.Select(distance => distance.ToString("F4")))}";
+            }));
+
+        static float MaximumBoundaryDistance(VectorScene tweenScene, int line, int fill)
+        {
+            if (!tweenScene.TryGetFreehandWorldPoints(line, out var linePoints)
+                || !tweenScene.TryGetPathWorldContours(fill, out var fillContours)
+                || linePoints.Length < 2
+                || fillContours.Length == 0)
+            {
+                return float.MaxValue;
+            }
+
+            var maximum = 0f;
+            foreach (var point in linePoints)
+            {
+                var minimum = float.MaxValue;
+                foreach (var contour in fillContours)
+                {
+                    for (var index = 0; index < contour.Length; index++)
+                    {
+                        minimum = Math.Min(
+                            minimum,
+                            PointSegmentDistance(point, contour[index], contour[(index + 1) % contour.Length]));
+                    }
+                }
+                maximum = Math.Max(maximum, minimum);
+            }
+            return maximum;
+        }
+
+        static float PointSegmentDistance(PointF point, PointF start, PointF end)
+        {
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var lengthSquared = dx * dx + dy * dy;
+            var amount = lengthSquared <= 0.000001f
+                ? 0
+                : Math.Clamp(
+                    ((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared,
+                    0,
+                    1);
+            var x = start.X + dx * amount;
+            var y = start.Y + dy * amount;
+            var distanceX = point.X - x;
+            var distanceY = point.Y - y;
+            return MathF.Sqrt(distanceX * distanceX + distanceY * distanceY);
+        }
     }
 
     private static void RunTimelineTweenInstanceRegression()

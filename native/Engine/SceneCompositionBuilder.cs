@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace VectorAnimationEngine;
@@ -9,6 +10,14 @@ internal readonly record struct SceneCompositionObjectOwner(
     string InstanceId,
     string DrawingObjectId,
     string RootInstanceId = "");
+
+internal readonly record struct SceneCompositionObjectPose(
+    Matrix4x4 FlatToScene,
+    Vector3 ExtrusionVector = default,
+    float FlatStrokeScale = 1f)
+{
+    public static SceneCompositionObjectPose Identity { get; } = new(Matrix4x4.Identity);
+}
 
 internal readonly record struct SceneCompositionBuildMetrics(
     double BucketMilliseconds,
@@ -19,15 +28,24 @@ internal readonly record struct SceneCompositionBuildMetrics(
 internal sealed class SceneCompositionResult
 {
     private readonly SceneCompositionObjectOwner[] _owners;
+    private readonly SceneCompositionObjectPose[] _poses;
     private IReadOnlyDictionary<int, SceneCompositionObjectOwner>? _ownerView;
 
-    public SceneCompositionResult(SceneCompositionObjectOwner[]? owners = null)
+    public SceneCompositionResult(
+        SceneCompositionObjectOwner[]? owners = null,
+        SceneCompositionObjectPose[]? poses = null)
     {
         _owners = owners ?? [];
+        _poses = poses ?? Enumerable.Repeat(SceneCompositionObjectPose.Identity, _owners.Length).ToArray();
+        if (_poses.Length != _owners.Length)
+        {
+            throw new ArgumentException("Composition poses must align with composition owners.", nameof(poses));
+        }
     }
 
     public static SceneCompositionResult Empty { get; } = new();
     public IReadOnlyDictionary<int, SceneCompositionObjectOwner> ObjectOwners => _ownerView ??= new IndexedOwnerMap(_owners);
+    public IReadOnlyList<SceneCompositionObjectPose> ObjectPoses => _poses;
 
     public bool TryGetOwner(int objectIndex, out SceneCompositionObjectOwner owner)
     {
@@ -38,6 +56,18 @@ internal sealed class SceneCompositionResult
         }
 
         owner = default;
+        return false;
+    }
+
+    public bool TryGetPose(int objectIndex, out SceneCompositionObjectPose pose)
+    {
+        if ((uint)objectIndex < _poses.Length)
+        {
+            pose = _poses[objectIndex];
+            return true;
+        }
+
+        pose = default;
         return false;
     }
 
@@ -76,6 +106,10 @@ internal static class SceneCompositionBuilder
     private const int PreparedChunkSize = 2048;
 
     public static SceneCompositionBuildMetrics LastBuildMetrics { get; private set; }
+    internal static int LastActiveObjectBucketCacheHits { get; private set; }
+    internal static int LastActiveObjectBucketCacheMisses { get; private set; }
+
+    private static readonly ConditionalWeakTable<VectorScene, ActiveObjectBucketCache> ActiveObjectBucketCaches = new();
 
     private readonly record struct CompositionLayer(
         VectorScene Source,
@@ -83,6 +117,9 @@ internal static class SceneCompositionBuilder
         int SourceFrame,
         string Name,
         Matrix3x2 Transform,
+        Matrix4x4 SpatialTransform,
+        bool SpatialIsPlanar,
+        Vector3 ExtrusionVector,
         float InheritedOpacity,
         float Alpha,
         int TintArgb,
@@ -93,7 +130,8 @@ internal static class SceneCompositionBuilder
         bool SyntheticGroup = false,
         string GroupId = "",
         string ParentGroupId = "",
-        bool PreserveSourceParent = false);
+        bool PreserveSourceParent = false,
+        DistortWarp[]? Distortions = null);
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
 
@@ -104,9 +142,11 @@ internal static class SceneCompositionBuilder
         int SourceObject,
         int DestinationLayer,
         Matrix3x2 Transform,
+        SceneCompositionObjectPose Pose,
         float Alpha,
         int TintArgb,
-        SceneCompositionObjectOwner Owner);
+        SceneCompositionObjectOwner Owner,
+        DistortWarp[]? Distortions = null);
 
     private enum PreparedCompositionKind : byte
     {
@@ -154,8 +194,10 @@ internal static class SceneCompositionBuilder
         public int ShapeVertexCount { get; init; }
         public PointF Control2 { get; init; }
         public string ImportedSvgSource { get; init; } = "";
+        public string ImportedSvgName { get; init; } = "";
         public TextObjectData? TextObjectData { get; init; }
         public bool FillAutoMergeProtected { get; init; }
+        public DistortWarp[] Distortions { get; init; } = [];
     }
 
     public static SceneCompositionResult Build(
@@ -189,16 +231,21 @@ internal static class SceneCompositionBuilder
             var firstLayer = layers.Count;
             foreach (var instance in sceneDefinition.InstancesInLayer(sceneLayer.Id))
             {
-                if (!instance.EvaluateState(localFrame).Visible
+                var state = instance.EvaluateState(localFrame);
+                if (!state.Visible
                     || !definitionsById.TryGetValue(instance.DrawingObjectId, out var drawingObject))
                 {
                     continue;
                 }
 
+                var spatialTransform = InstanceSpatialMatrix(drawingObject, state);
                 CollectDrawingObjectLayers(
                     drawingObject,
                     instance,
-                    InstanceMatrix(drawingObject, instance, localFrame),
+                    InstanceMatrix(drawingObject, state),
+                    spatialTransform,
+                    InstanceSpatialIsPlanar(state),
+                    CreateRootExtrusionVector(state, spatialTransform),
                     localFrame,
                     parentFps,
                     definitionsById,
@@ -275,12 +322,17 @@ internal static class SceneCompositionBuilder
             && hostLayer < container.Scene.LayerBlendModes.Length
             && container.Scene.LayerBlendModes[hostLayer] != LayerBlendMode.Normal)
         {
-            throw new InvalidDataException("Break Apart cannot flatten a drawing-object instance from a blended host layer.");
+            throw new InvalidDataException("Break Apart cannot flatten a symbol instance from a blended host layer.");
         }
+        var instanceState = instance.EvaluateState(localFrame);
+        var spatialTransform = InstanceSpatialMatrix(child, instanceState);
         CollectDrawingObjectLayers(
             child,
             instance,
-            InstanceMatrix(child, instance, localFrame),
+            InstanceMatrix(child, instanceState),
+            spatialTransform,
+            InstanceSpatialIsPlanar(instanceState),
+            CreateRootExtrusionVector(instanceState, spatialTransform),
             localFrame,
             parentFps,
             definitionsById,
@@ -294,7 +346,7 @@ internal static class SceneCompositionBuilder
             inheritedOutlineColorArgb: hostOutline ? container.Scene.LayerColorArgb[hostLayer] : 0);
         if (layers.Any(layer => layer.Source.HasLayerEffects))
         {
-            throw new InvalidDataException("Break Apart cannot flatten drawing objects that use folders, masks, or blend modes.");
+            throw new InvalidDataException("Break Apart cannot flatten symbols that use folders, masks, or blend modes.");
         }
 
         var vectorizedSources = new Dictionary<SourceFrameKey, VectorScene>();
@@ -320,7 +372,7 @@ internal static class SceneCompositionBuilder
                     vectorized = new VectorScene();
                     vectorized.RestoreSnapshot(layer.Source.CreateSnapshot());
                     vectorized.EditFrame = layer.SourceFrame;
-                    vectorized.BreakApartImportedSvgObjects(importedObjects);
+                    vectorized.BreakApartImportedSvgObjects(importedObjects, createDrawingLayers: false);
                 }
                 vectorizedSources.Add(key, vectorized);
             }
@@ -331,6 +383,9 @@ internal static class SceneCompositionBuilder
                 layer.SourceFrame,
                 layer.Name,
                 layer.Transform,
+                layer.SpatialTransform,
+                layer.SpatialIsPlanar,
+                layer.ExtrusionVector,
                 layer.InheritedOpacity,
                 layer.Alpha,
                 layer.TintArgb,
@@ -341,7 +396,8 @@ internal static class SceneCompositionBuilder
                 layer.SyntheticGroup,
                 layer.GroupId,
                 layer.ParentGroupId,
-                layer.PreserveSourceParent);
+                layer.PreserveSourceParent,
+                layer.Distortions);
         }
 
         return BuildLayers(destination, materializedLayers, Math.Max(AnimationTimeline.DefaultDuration, container.FrameCount));
@@ -471,10 +527,15 @@ internal static class SceneCompositionBuilder
                     continue;
                 }
 
+                var instanceState = instance.EvaluateState(localFrame);
+                var spatialTransform = InstanceSpatialMatrix(child, instanceState);
                 CollectDrawingObjectLayers(
                     child,
                     instance,
-                    InstanceMatrix(child, instance, localFrame),
+                    InstanceMatrix(child, instanceState),
+                    spatialTransform,
+                    InstanceSpatialIsPlanar(instanceState),
+                    CreateRootExtrusionVector(instanceState, spatialTransform),
                     localFrame,
                     parentFps,
                     definitionsById,
@@ -534,10 +595,15 @@ internal static class SceneCompositionBuilder
         };
         var layers = new List<CompositionLayer>();
         var localFrame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
+        var previewState = previewInstance.EvaluateState(localFrame);
+        var spatialTransform = InstanceSpatialMatrix(drawingObject, previewState);
         CollectDrawingObjectLayers(
             drawingObject,
             previewInstance,
-            InstanceMatrix(drawingObject, previewInstance, localFrame),
+            InstanceMatrix(drawingObject, previewState),
+            spatialTransform,
+            InstanceSpatialIsPlanar(previewState),
+            CreateRootExtrusionVector(previewState, spatialTransform),
             localFrame,
             parentFps,
             definitionsById,
@@ -562,6 +628,9 @@ internal static class SceneCompositionBuilder
         DrawingObjectDefinition drawingObject,
         DrawingObjectInstanceDefinition instance,
         Matrix3x2 transform,
+        Matrix4x4 spatialTransform,
+        bool spatialIsPlanar,
+        Vector3 extrusionVector,
         int parentFrame,
         decimal parentFps,
         IReadOnlyDictionary<string, DrawingObjectDefinition> definitionsById,
@@ -576,7 +645,8 @@ internal static class SceneCompositionBuilder
         bool inheritedOutline = false,
         int inheritedOutlineColorArgb = 0,
         string inheritedParentGroupId = "",
-        bool excludeEffectivelyLockedLayers = false)
+        bool excludeEffectivelyLockedLayers = false,
+        IReadOnlyList<DistortWarp>? inheritedDistortions = null)
     {
         if (!ancestry.Add(drawingObject.Id)) return;
         try
@@ -588,6 +658,10 @@ internal static class SceneCompositionBuilder
                 drawingObject.SynchronizeTimelineTracks();
             }
             var state = instance.EvaluateState(parentFrame);
+            var compositionDistortions = ComposeInstanceDistortions(
+                state.Distortion,
+                transform,
+                inheritedDistortions);
             var alpha = Math.Clamp(inheritedAlpha * state.Alpha, 0f, 1f);
             var tintArgb = MultiplyTintArgb(inheritedTintArgb, state.TintArgb);
             var localFrame = DrawingObjectInstanceDefinition.ResolvePlaybackFrame(
@@ -625,6 +699,9 @@ internal static class SceneCompositionBuilder
                         localFrame,
                         $"{path} / {source.LayerNames[sourceLayer]} group",
                         transform,
+                        spatialTransform,
+                        spatialIsPlanar,
+                        extrusionVector,
                         1f,
                         1f,
                         unchecked((int)0xffffffff),
@@ -635,7 +712,8 @@ internal static class SceneCompositionBuilder
                         SyntheticGroup: true,
                         GroupId: hostGroupId,
                         ParentGroupId: sourceParentGroupId,
-                        PreserveSourceParent: true));
+                        PreserveSourceParent: true,
+                        Distortions: compositionDistortions));
                 }
 
                 layers.Add(new CompositionLayer(
@@ -644,6 +722,9 @@ internal static class SceneCompositionBuilder
                     localFrame,
                     $"{path} / {source.LayerNames[sourceLayer]}",
                     transform,
+                    spatialTransform,
+                    spatialIsPlanar,
+                    extrusionVector,
                     inheritedOpacity,
                     alpha,
                     tintArgb,
@@ -651,16 +732,25 @@ internal static class SceneCompositionBuilder
                     outline,
                     outlineColorArgb,
                     new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
-                    ParentGroupId: hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId));
+                    ParentGroupId: hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId,
+                    Distortions: compositionDistortions));
                 foreach (var childItem in activeChildren)
                 {
                     var childInstance = childItem.Instance!;
                     var child = childItem.DrawingObject!;
+                    var childTransform = InstanceMatrix(child, childInstance, localFrame) * transform;
+                    var childSpatialIsPlanar = spatialIsPlanar && InstanceSpatialIsPlanar(childInstance, localFrame);
+                    var childSpatialTransform = childSpatialIsPlanar
+                        ? Lift(childTransform)
+                        : InstanceSpatialMatrix(child, childInstance, localFrame) * spatialTransform;
 
                     CollectDrawingObjectLayers(
                         child,
                         childInstance,
-                        InstanceMatrix(child, childInstance, localFrame) * transform,
+                        childTransform,
+                        childSpatialTransform,
+                        childSpatialIsPlanar,
+                        extrusionVector,
                         localFrame,
                         state.PlaybackFps,
                         definitionsById,
@@ -675,7 +765,8 @@ internal static class SceneCompositionBuilder
                         outline,
                         outlineColorArgb,
                         hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId,
-                        excludeEffectivelyLockedLayers);
+                        excludeEffectivelyLockedLayers,
+                        compositionDistortions);
                 }
             }
         }
@@ -683,6 +774,49 @@ internal static class SceneCompositionBuilder
         {
             ancestry.Remove(drawingObject.Id);
         }
+    }
+
+    private static DistortWarp[] ComposeInstanceDistortions(
+        DistortWarp? localDistortion,
+        Matrix3x2 transform,
+        IReadOnlyList<DistortWarp>? inheritedDistortions)
+    {
+        var inheritedCount = inheritedDistortions?.Count ?? 0;
+        var hasLocal = localDistortion is { IsValid: true };
+        if (!hasLocal && inheritedCount == 0) return [];
+
+        var result = new DistortWarp[inheritedCount + (hasLocal ? 1 : 0)];
+        var offset = 0;
+        if (hasLocal)
+        {
+            result[0] = localDistortion!.Value.AffineTransform(transform);
+            offset = 1;
+        }
+        for (var index = 0; index < inheritedCount; index++)
+        {
+            result[offset + index] = inheritedDistortions![index].DeepClone();
+        }
+        return result;
+    }
+
+    private static DistortWarp[] PrepareCompositionDistortions(CompositionWorkItem workItem)
+    {
+        workItem.Source.TryGetObjectDistortions(workItem.SourceObject, out var objectDistortions);
+        var inheritedCount = workItem.Distortions?.Length ?? 0;
+        if (objectDistortions.Length == 0 && inheritedCount == 0) return [];
+
+        var result = new DistortWarp[objectDistortions.Length + inheritedCount];
+        for (var index = 0; index < objectDistortions.Length; index++)
+        {
+            result[index] = workItem.Transform.IsIdentity
+                ? objectDistortions[index].DeepClone()
+                : objectDistortions[index].AffineTransform(workItem.Transform);
+        }
+        for (var index = 0; index < inheritedCount; index++)
+        {
+            result[objectDistortions.Length + index] = workItem.Distortions![index].DeepClone();
+        }
+        return result;
     }
 
     private static void WrapCompositionRangeInGroup(
@@ -759,6 +893,8 @@ internal static class SceneCompositionBuilder
         int duration)
     {
         var phaseStarted = Stopwatch.GetTimestamp();
+        LastActiveObjectBucketCacheHits = 0;
+        LastActiveObjectBucketCacheMisses = 0;
         var sourceObjectsByLayer = BuildSourceObjectBuckets(layers);
         var expectedObjectCount = 0;
         var populatedDestinationLayers = new List<int>(layers.Count);
@@ -862,6 +998,7 @@ internal static class SceneCompositionBuilder
 
         phaseStarted = Stopwatch.GetTimestamp();
         var owners = new List<SceneCompositionObjectOwner>(expectedObjectCount);
+        var poses = new List<SceneCompositionObjectPose>(expectedObjectCount);
         destination.BeginDeferredAppend(expectedObjectCount, populatedDestinationLayers);
         try
         {
@@ -876,19 +1013,31 @@ internal static class SceneCompositionBuilder
                 });
 
                 var firstObject = destination.AppendPackedObjects(packedObjects);
-                if (firstObject != owners.Count) throw new InvalidOperationException("Packed composition owners lost object-index alignment.");
-                for (var index = 0; index < workItems.Length; index++) owners.Add(workItems[index].Owner);
+                if (firstObject != owners.Count || firstObject != poses.Count)
+                {
+                    throw new InvalidOperationException("Packed composition metadata lost object-index alignment.");
+                }
+                for (var index = 0; index < workItems.Length; index++)
+                {
+                    owners.Add(workItems[index].Owner);
+                    poses.Add(workItems[index].Pose);
+                }
             }
             else if (expectedObjectCount >= 8192)
             {
                 var workItems = BuildWorkItems(layers, sourceObjectsByLayer, expectedObjectCount);
-                AppendPreparedChunks(destination, workItems, owners);
+                AppendPreparedChunks(destination, workItems, owners, poses);
             }
             else
             {
                 for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
                 {
                     var layer = layers[destinationLayer];
+                    var pose = CreateObjectPose(
+                        layer.Transform,
+                        layer.SpatialTransform,
+                        layer.SpatialIsPlanar,
+                        layer.ExtrusionVector);
                     var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
                     foreach (var sourceObject in sourceObjects)
                     {
@@ -897,11 +1046,16 @@ internal static class SceneCompositionBuilder
                             sourceObject,
                             destinationLayer,
                             layer.Transform,
+                            pose,
                             layer.Alpha,
                             layer.TintArgb,
-                            layer.Owner);
+                            layer.Owner,
+                            layer.Distortions);
                         var destinationObject = AppendPreparedObject(destination, PrepareObject(item));
-                        if (destinationObject >= 0) AppendOwner(owners, destinationObject, layer.Owner);
+                        if (destinationObject >= 0)
+                        {
+                            AppendCompositionMetadata(owners, poses, destinationObject, layer.Owner, pose);
+                        }
                     }
                 }
             }
@@ -914,19 +1068,24 @@ internal static class SceneCompositionBuilder
 
         phaseStarted = Stopwatch.GetTimestamp();
         destination.CompleteDeferredBuild();
+        if (owners.Count != destination.ObjectCount || poses.Count != destination.ObjectCount)
+        {
+            throw new InvalidOperationException("Composition metadata does not align with destination objects.");
+        }
         var finalizeMilliseconds = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
         LastBuildMetrics = new SceneCompositionBuildMetrics(
             bucketMilliseconds,
             setupMilliseconds,
             appendMilliseconds,
             finalizeMilliseconds);
-        return new SceneCompositionResult(owners.ToArray());
+        return new SceneCompositionResult(owners.ToArray(), poses.ToArray());
     }
 
     private static void AppendPreparedChunks(
         VectorScene destination,
         CompositionWorkItem[] workItems,
-        List<SceneCompositionObjectOwner> owners)
+        List<SceneCompositionObjectOwner> owners,
+        List<SceneCompositionObjectPose> poses)
     {
         var preparedObjects = new PreparedCompositionObject[Math.Min(PreparedChunkSize, workItems.Length)];
         for (var offset = 0; offset < workItems.Length; offset += preparedObjects.Length)
@@ -940,17 +1099,30 @@ internal static class SceneCompositionBuilder
             for (var index = 0; index < count; index++)
             {
                 var destinationObject = AppendPreparedObject(destination, preparedObjects[index]);
-                if (destinationObject >= 0) AppendOwner(owners, destinationObject, workItems[offset + index].Owner);
+                if (destinationObject >= 0)
+                {
+                    var workItem = workItems[offset + index];
+                    AppendCompositionMetadata(owners, poses, destinationObject, workItem.Owner, workItem.Pose);
+                }
             }
 
             Array.Clear(preparedObjects, 0, count);
         }
     }
 
-    private static void AppendOwner(List<SceneCompositionObjectOwner> owners, int objectIndex, SceneCompositionObjectOwner owner)
+    private static void AppendCompositionMetadata(
+        List<SceneCompositionObjectOwner> owners,
+        List<SceneCompositionObjectPose> poses,
+        int objectIndex,
+        SceneCompositionObjectOwner owner,
+        SceneCompositionObjectPose pose)
     {
-        if (objectIndex != owners.Count) throw new InvalidOperationException("Composition owners lost object-index alignment.");
+        if (objectIndex != owners.Count || objectIndex != poses.Count)
+        {
+            throw new InvalidOperationException("Composition metadata lost object-index alignment.");
+        }
         owners.Add(owner);
+        poses.Add(pose);
     }
 
     private static bool CanUsePackedBatch(
@@ -959,10 +1131,11 @@ internal static class SceneCompositionBuilder
     {
         foreach (var layer in layers)
         {
-            if (HasShear(layer.Transform)) return false;
+            if (HasShear(layer.Transform) || layer.Distortions is { Length: > 0 }) return false;
             var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
             foreach (var sourceObject in sourceObjects)
             {
+                if (layer.Source.TryGetObjectDistortions(sourceObject, out _)) return false;
                 if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path
                     or ShapeKind.Freeform
                     or ShapeKind.MixingStroke
@@ -987,6 +1160,11 @@ internal static class SceneCompositionBuilder
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
+            var pose = CreateObjectPose(
+                layer.Transform,
+                layer.SpatialTransform,
+                layer.SpatialIsPlanar,
+                layer.ExtrusionVector);
             var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
             foreach (var sourceObject in sourceObjects)
             {
@@ -995,9 +1173,11 @@ internal static class SceneCompositionBuilder
                     sourceObject,
                     destinationLayer,
                     layer.Transform,
+                    pose,
                     layer.Alpha,
                     layer.TintArgb,
-                    layer.Owner);
+                    layer.Owner,
+                    layer.Distortions);
             }
         }
 
@@ -1030,6 +1210,14 @@ internal static class SceneCompositionBuilder
     {
         var activeKeyframes = new int[source.LayerCount];
         source.PopulateActiveKeyframeFrames(frame, activeKeyframes);
+        var cache = ActiveObjectBucketCaches.GetValue(source, static _ => new ActiveObjectBucketCache());
+        if (cache.TryGet(source, activeKeyframes, out var cached))
+        {
+            LastActiveObjectBucketCacheHits++;
+            return cached;
+        }
+
+        LastActiveObjectBucketCacheMisses++;
         var workers = ParallelBatch.WorkerCount(source.ObjectCount, 8192);
         var batches = new List<int>?[workers][];
         for (var worker = 0; worker < workers; worker++) batches[worker] = new List<int>?[source.LayerCount];
@@ -1069,7 +1257,41 @@ internal static class SceneCompositionBuilder
             Array.Sort(objects, (a, b) => CompareSourceObjects(source, a, b));
             objectsByLayer[layer] = objects;
         });
+        cache.Store(source, activeKeyframes, objectsByLayer);
         return objectsByLayer;
+    }
+
+    private sealed class ActiveObjectBucketCache
+    {
+        private long _geometryRevision = -1;
+        private int _objectCount = -1;
+        private int _layerCount = -1;
+        private int[] _activeKeyframes = [];
+        private int[][] _objectsByLayer = [];
+
+        public bool TryGet(VectorScene source, int[] activeKeyframes, out int[][] objectsByLayer)
+        {
+            if (_geometryRevision == source.GeometryRevision
+                && _objectCount == source.ObjectCount
+                && _layerCount == source.LayerCount
+                && _activeKeyframes.AsSpan().SequenceEqual(activeKeyframes))
+            {
+                objectsByLayer = _objectsByLayer;
+                return true;
+            }
+
+            objectsByLayer = [];
+            return false;
+        }
+
+        public void Store(VectorScene source, int[] activeKeyframes, int[][] objectsByLayer)
+        {
+            _geometryRevision = source.GeometryRevision;
+            _objectCount = source.ObjectCount;
+            _layerCount = source.LayerCount;
+            _activeKeyframes = (int[])activeKeyframes.Clone();
+            _objectsByLayer = objectsByLayer;
+        }
     }
 
     private static int CompareSourceObjects(VectorScene source, int a, int b)
@@ -1093,6 +1315,7 @@ internal static class SceneCompositionBuilder
         var fillArgb = ApplyInstanceAppearance(source.Argb[sourceObject], workItem.Alpha, workItem.TintArgb);
         var strokeArgb = ApplyInstanceAppearance(source.StrokeArgb[sourceObject], workItem.Alpha, workItem.TintArgb);
         var atoms = source.AtomCount[sourceObject];
+        var distortions = PrepareCompositionDistortions(workItem);
 
         if (shape == ShapeKind.Text)
         {
@@ -1138,7 +1361,10 @@ internal static class SceneCompositionBuilder
                         PointF.Empty,
                         PointF.Empty,
                         [],
-                        textContours);
+                        textContours)
+                    {
+                        Distortions = distortions
+                    };
                 }
                 if (!string.IsNullOrWhiteSpace(textObjectData.Content))
                 {
@@ -1173,7 +1399,8 @@ internal static class SceneCompositionBuilder
                 [],
                 [])
             {
-                TextObjectData = textObjectData
+                TextObjectData = textObjectData,
+                Distortions = distortions
             };
         }
 
@@ -1183,6 +1410,7 @@ internal static class SceneCompositionBuilder
             {
                 throw new InvalidOperationException("Imported SVG composition source is missing its payload.");
             }
+            source.TryGetImportedSvgName(sourceObject, out var importedSvgName);
 
             var importedCenter = new PointF(source.X[sourceObject], source.Y[sourceObject]);
             var importedSize = new SizeF(source.Width[sourceObject], source.Height[sourceObject]);
@@ -1222,7 +1450,9 @@ internal static class SceneCompositionBuilder
                 [],
                 [])
             {
-                ImportedSvgSource = importedSvgSource
+                ImportedSvgSource = importedSvgSource,
+                ImportedSvgName = importedSvgName,
+                Distortions = distortions
             };
         }
 
@@ -1261,7 +1491,8 @@ internal static class SceneCompositionBuilder
                     [],
                     [])
                 {
-                    MixingRegion = transformedRegion
+                    MixingRegion = transformedRegion,
+                    Distortions = distortions
                 };
             }
 
@@ -1299,7 +1530,8 @@ internal static class SceneCompositionBuilder
                 [],
                 [])
             {
-                MixingSamples = mixingSamples
+                MixingSamples = mixingSamples,
+                Distortions = distortions
             };
         }
 
@@ -1330,7 +1562,10 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 [],
-                contours);
+                contours)
+            {
+                Distortions = distortions
+            };
             if (source.TryGetPathBezierWorldContours(sourceObject, out var bezierContours))
             {
                 for (var contourIndex = 0; contourIndex < bezierContours.Length; contourIndex++)
@@ -1380,7 +1615,10 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 freehand,
-                []);
+                [])
+            {
+                Distortions = distortions
+            };
             if (source.TryGetFreehandBezierWorldNodes(sourceObject, out var freehandBezierNodes))
             {
                 for (var nodeIndex = 0; nodeIndex < freehandBezierNodes.Length; nodeIndex++)
@@ -1440,7 +1678,8 @@ internal static class SceneCompositionBuilder
                 source.GetLineEndpointStyle(sourceObject, startEndpoint: true),
                 source.GetLineEndpointStyle(sourceObject, startEndpoint: false))
             {
-                Control2 = transformedControl2
+                Control2 = transformedControl2,
+                Distortions = distortions
             }, source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
         }
 
@@ -1473,7 +1712,10 @@ internal static class SceneCompositionBuilder
                     PointF.Empty,
                     PointF.Empty,
                     [],
-                    skewContours), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
+                    skewContours)
+                {
+                    Distortions = distortions
+                }, source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
             }
         }
 
@@ -1494,7 +1736,10 @@ internal static class SceneCompositionBuilder
                 PointF.Empty,
                 PointF.Empty,
                 [],
-                []), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
+                [])
+            {
+                Distortions = distortions
+            }, source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
         }
 
         var center = Transform(new PointF(source.X[sourceObject], source.Y[sourceObject]), transform);
@@ -1520,7 +1765,10 @@ internal static class SceneCompositionBuilder
             PointF.Empty,
             PointF.Empty,
             [],
-            []), source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
+            [])
+        {
+            Distortions = distortions
+        }, source, sourceObject, transform, identityTransform, workItem.Alpha, workItem.TintArgb);
     }
 
     private static string WrapImportedSvgTint(string source, SizeF size, int tintArgb)
@@ -1631,7 +1879,8 @@ internal static class SceneCompositionBuilder
                 item.Center,
                 item.Size,
                 item.Angle,
-                item.ImportedSvgSource),
+                item.ImportedSvgSource,
+                item.ImportedSvgName),
             PreparedCompositionKind.Text => destination.AppendTextObject(
                 item.DestinationLayer,
                 item.Center,
@@ -1712,6 +1961,7 @@ internal static class SceneCompositionBuilder
         {
             destination.FillAutoMergeProtected[index] = item.FillAutoMergeProtected;
             if (item.Kind == PreparedCompositionKind.ImportedSvg) destination.Argb[index] = item.FillArgb;
+            if (item.Distortions.Length > 0) destination.SetObjectDistortionsForComposition(index, item.Distortions);
         }
         if (item.LinearGradientEnabled)
         {
@@ -1877,10 +2127,161 @@ internal static class SceneCompositionBuilder
         DrawingObjectInstanceDefinition instance,
         int frame)
     {
-        var state = instance.EvaluateState(frame);
+        return InstanceMatrix(drawingObject, instance.EvaluateState(frame));
+    }
+
+    private static Matrix3x2 InstanceMatrix(
+        DrawingObjectDefinition drawingObject,
+        InstanceFrameState state)
+    {
         return Matrix3x2.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y)
             * DrawingObjectInstanceDefinition.CreateLinearTransform(state)
             * Matrix3x2.CreateTranslation(state.X, state.Y);
+    }
+
+    private static Matrix4x4 InstanceSpatialMatrix(
+        DrawingObjectDefinition drawingObject,
+        DrawingObjectInstanceDefinition instance,
+        int frame)
+    {
+        return InstanceSpatialMatrix(drawingObject, instance.EvaluateState(frame));
+    }
+
+    private static Matrix4x4 InstanceSpatialMatrix(
+        DrawingObjectDefinition drawingObject,
+        InstanceFrameState state)
+    {
+        if (InstanceSpatialIsPlanar(state)) return Lift(InstanceMatrix(drawingObject, state));
+        return Matrix4x4.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y, 0)
+            * Matrix4x4.CreateScale(state.ScaleX, state.ScaleY, state.ScaleZ)
+            * Lift(Matrix3x2.CreateSkew(
+                state.SkewX * MathF.PI / 180f,
+                state.SkewY * MathF.PI / 180f))
+            * Matrix4x4.CreateRotationZ(state.RotationZ * MathF.PI / 180f)
+            * Matrix4x4.CreateRotationX(state.RotationX * MathF.PI / 180f)
+            * Matrix4x4.CreateRotationY(state.RotationY * MathF.PI / 180f)
+            * Matrix4x4.CreateTranslation(state.X, state.Y, state.Z);
+    }
+
+    private static Vector3 CreateRootExtrusionVector(
+        InstanceFrameState state,
+        Matrix4x4 spatialTransform)
+    {
+        return state.ScaleZ == 0
+            ? Vector3.Zero
+            : Vector3.TransformNormal(Vector3.UnitZ, spatialTransform);
+    }
+
+    private static SceneCompositionObjectPose CreateObjectPose(
+        Matrix3x2 flattenedTransform,
+        Matrix4x4 spatialTransform,
+        bool spatialIsPlanar,
+        Vector3 extrusionVector)
+    {
+        var flatStrokeScale = MathF.Sqrt(Math.Abs(
+            flattenedTransform.M11 * flattenedTransform.M22
+            - flattenedTransform.M12 * flattenedTransform.M21));
+        if (!float.IsFinite(flatStrokeScale)) flatStrokeScale = 1f;
+        if (spatialIsPlanar)
+        {
+            return new SceneCompositionObjectPose(
+                Matrix4x4.Identity,
+                extrusionVector,
+                flatStrokeScale);
+        }
+        if (!IsFinite(flattenedTransform)
+            || !IsFinite(spatialTransform)
+            || !Matrix3x2.Invert(flattenedTransform, out var inverse)
+            || !IsFinite(inverse))
+        {
+            // A collapsed flat plane has no unique inverse, so retain its finite flattened presentation.
+            return new SceneCompositionObjectPose(
+                Matrix4x4.Identity,
+                extrusionVector,
+                flatStrokeScale);
+        }
+
+        var flatToScene = Lift(inverse) * spatialTransform;
+        if (!IsFinite(flatToScene))
+        {
+            return new SceneCompositionObjectPose(
+                Matrix4x4.Identity,
+                extrusionVector,
+                flatStrokeScale);
+        }
+        return new SceneCompositionObjectPose(
+            IsNearlyIdentity(flatToScene) ? Matrix4x4.Identity : flatToScene,
+            extrusionVector,
+            flatStrokeScale);
+    }
+
+    private static bool InstanceSpatialIsPlanar(DrawingObjectInstanceDefinition instance, int frame)
+    {
+        return InstanceSpatialIsPlanar(instance.EvaluateState(frame));
+    }
+
+    private static bool InstanceSpatialIsPlanar(InstanceFrameState state)
+    {
+        return state.Z == 0
+            && state.RotationX == 0
+            && state.RotationY == 0
+            && (state.ScaleZ == 0 || state.ScaleZ == 1);
+    }
+
+    private static Matrix4x4 Lift(Matrix3x2 transform)
+    {
+        return new Matrix4x4(
+            transform.M11, transform.M12, 0, 0,
+            transform.M21, transform.M22, 0, 0,
+            0, 0, 1, 0,
+            transform.M31, transform.M32, 0, 1);
+    }
+
+    private static bool IsFinite(Matrix3x2 transform)
+    {
+        return float.IsFinite(transform.M11)
+            && float.IsFinite(transform.M12)
+            && float.IsFinite(transform.M21)
+            && float.IsFinite(transform.M22)
+            && float.IsFinite(transform.M31)
+            && float.IsFinite(transform.M32);
+    }
+
+    private static bool IsFinite(Matrix4x4 transform)
+    {
+        return float.IsFinite(transform.M11)
+            && float.IsFinite(transform.M12)
+            && float.IsFinite(transform.M13)
+            && float.IsFinite(transform.M14)
+            && float.IsFinite(transform.M21)
+            && float.IsFinite(transform.M22)
+            && float.IsFinite(transform.M23)
+            && float.IsFinite(transform.M24)
+            && float.IsFinite(transform.M31)
+            && float.IsFinite(transform.M32)
+            && float.IsFinite(transform.M33)
+            && float.IsFinite(transform.M34)
+            && float.IsFinite(transform.M41)
+            && float.IsFinite(transform.M42)
+            && float.IsFinite(transform.M43)
+            && float.IsFinite(transform.M44);
+    }
+
+    private static bool IsNearlyIdentity(Matrix4x4 transform)
+    {
+        return NearlyEqual(transform.M11, 1) && NearlyEqual(transform.M12, 0)
+            && NearlyEqual(transform.M13, 0) && NearlyEqual(transform.M14, 0)
+            && NearlyEqual(transform.M21, 0) && NearlyEqual(transform.M22, 1)
+            && NearlyEqual(transform.M23, 0) && NearlyEqual(transform.M24, 0)
+            && NearlyEqual(transform.M31, 0) && NearlyEqual(transform.M32, 0)
+            && NearlyEqual(transform.M33, 1) && NearlyEqual(transform.M34, 0)
+            && NearlyEqual(transform.M41, 0) && NearlyEqual(transform.M42, 0)
+            && NearlyEqual(transform.M43, 0) && NearlyEqual(transform.M44, 1);
+    }
+
+    private static bool NearlyEqual(float value, float expected)
+    {
+        return Math.Abs(value - expected) <= 0.00001f * Math.Max(1f, Math.Max(Math.Abs(value), Math.Abs(expected)));
     }
 
     private static bool HasShear(Matrix3x2 transform)

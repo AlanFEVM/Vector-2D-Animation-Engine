@@ -5,11 +5,11 @@
 When adding a tool, inspect all applicable locations:
 
 - `native/App/ToolMode.cs`
-- toolbar/flyout construction in `MainForm`
+- toolbar/flyout construction in `MainForm.DrawingTools.cs`
 - `ToolIconKind`, tool grouping, and `Is*Tool` predicates
-- `ActivateTool` and cursor application
-- `ProcessCmdKey` shortcut handling and input-control exclusions
-- `StageMouseDown`, `StageMouseMove`, `StageMouseUp`
+- `ActivateTool` and cursor application in the focused `MainForm.*` partial
+- `ProcessCmdKey` shortcut handling and input-control exclusions in `MainForm.WorkbenchCommands.cs`
+- pointer routing in `MainForm.StagePointerInput.cs`
 - inspector/brush-tip/settings visibility
 - workspace enablement in `RefreshToolButtons`
 - `docs/USER_GUIDE.md`
@@ -54,6 +54,6 @@ Keep transient Stage state paired and self-clearing:
 
 Do not store preview geometry in `VectorScene` unless it is intended to become editable project data.
 
-## Right-Click Commands
+## Canvas Context Commands
 
-Use `AnimatedContextMenuStrip` for every Stage or list right-click menu. Keep hit-testing and command enablement in the owning panel's `Opening` handler, keep the click coordinate/selection in explicit state, and let the shared component provide themed rendering, crisp text, accessible defaults, and the opening scale-back animation.
+Use `AnimatedContextMenuStrip` for Stage context menus. Keep hit testing, click coordinates, selection, and enablement explicit. Non-canvas panel/list menus belong to `$vector2d-winforms-ui`.

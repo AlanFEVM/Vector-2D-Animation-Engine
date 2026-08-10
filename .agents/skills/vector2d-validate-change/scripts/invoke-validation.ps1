@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Build", "Launcher", "Timeline", "Pressure", "Freehand", "Stress", "Render", "All")]
+    [ValidateSet("Build", "Launcher", "Release", "Timeline", "Pressure", "Freehand", "Stress", "Render", "All")]
     [string[]]$Suite = @("Build"),
 
     [switch]$Restore,
@@ -17,6 +17,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\..\.."))
 $nativeProject = "native\VectorAnimationEngine.Native.csproj"
 $launcherProject = "launcher\VectorAnimationEngine.Launcher.csproj"
+$releaseManagerProject = "release-manager\VectorAnimationEngine.ReleaseManager.csproj"
 $singleExePublishScript = "scripts\publish-single-exe.ps1"
 $nativeDll = "native\bin\Release\net8.0-windows\VectorAnimationEngine.dll"
 $benchmarkArguments = [ordered]@{
@@ -53,7 +54,7 @@ function Get-ValidationMutexName {
 }
 
 $selected = if ($Suite -contains "All") {
-    @("Build", "Launcher", "Timeline", "Pressure", "Freehand", "Stress", "Render")
+    @("Build", "Launcher", "Release", "Timeline", "Pressure", "Freehand", "Stress", "Render")
 } else {
     @($Suite | Select-Object -Unique)
 }
@@ -61,9 +62,11 @@ $selected = if ($Suite -contains "All") {
 $benchmarkSuites = @($selected | Where-Object { $benchmarkArguments.Contains($_) })
 $shouldBuildNative = ($selected -contains "Build") -or ($benchmarkSuites.Count -gt 0 -and -not $NoBuild)
 $shouldBuildLauncher = $selected -contains "Launcher"
+$shouldValidateRelease = $selected -contains "Release"
 $builds = @(
     if ($shouldBuildNative) { "Native" }
-    if ($shouldBuildLauncher) { "Launcher"; "SingleExeRelease" }
+    if ($shouldBuildLauncher) { "Launcher" }
+    if ($shouldValidateRelease) { "ReleaseManager"; "SingleExeRelease" }
 )
 
 function New-ValidationSummary {
@@ -76,6 +79,7 @@ function New-ValidationSummary {
         Benchmarks = @($benchmarkSuites)
         NativeBuild = $shouldBuildNative
         LauncherBuild = $shouldBuildLauncher
+        ReleaseBuild = $shouldValidateRelease
         Restore = [bool]$Restore
         PerformanceBudgetEnforced = [bool]$EnforcePerformanceBudget
     }
@@ -109,9 +113,8 @@ try {
 
         if ($Restore) {
             if ($shouldBuildNative) { Invoke-DotnetChecked @("restore", $nativeProject) }
-            if ($shouldBuildLauncher) {
-                Invoke-DotnetChecked @("restore", $launcherProject)
-            }
+            if ($shouldBuildLauncher) { Invoke-DotnetChecked @("restore", $launcherProject) }
+            if ($shouldValidateRelease) { Invoke-DotnetChecked @("restore", $releaseManagerProject) }
         }
 
         if ($shouldBuildNative) {
@@ -120,6 +123,14 @@ try {
 
         if ($shouldBuildLauncher) {
             Invoke-DotnetChecked @("build", $launcherProject, "-c", "Release", "--no-restore")
+            Invoke-DotnetChecked @(
+                "run", "--project", $launcherProject,
+                "-c", "Release", "--no-build", "--",
+                "--validate-development-launcher")
+        }
+
+        if ($shouldValidateRelease) {
+            Invoke-DotnetChecked @("build", $releaseManagerProject, "-c", "Release", "--no-restore")
             $validationReleaseDirectory = Join-Path $repoRoot (
                 "artifacts\validation\single-exe-" + [Guid]::NewGuid().ToString("N"))
             try {

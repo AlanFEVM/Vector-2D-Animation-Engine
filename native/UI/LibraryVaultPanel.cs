@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace VectorAnimationEngine;
@@ -124,6 +125,39 @@ internal sealed partial class LibraryVaultPanel : UserControl
     public event EventHandler<DrawingObjectAssetTagsRequestedEventArgs>? DrawingObjectAssetTagsRequested;
     public event EventHandler<DrawingObjectAssetTagAssignmentRequestedEventArgs>? DrawingObjectAssetTagAssignmentRequested;
 
+    internal static int ResolvePreviewFrame(
+        int initialFrame,
+        int frameCount,
+        decimal playbackFps,
+        TimeSpan elapsed)
+    {
+        var count = Math.Max(1, frameCount);
+        if (count == 1) return 0;
+
+        var start = Math.Clamp(initialFrame, 0, count - 1);
+        var fps = Math.Clamp(playbackFps, 1m, 120m);
+        var elapsedTicks = Math.Max(0, elapsed.Ticks);
+        var advancedFrames = decimal.Floor(elapsedTicks * fps / TimeSpan.TicksPerSecond);
+        var offset = (int)(advancedFrames % count);
+        return (int)(((long)start + offset) % count);
+    }
+
+    internal static int PreviewTimerIntervalMilliseconds(decimal playbackFps)
+    {
+        var fps = Math.Clamp(playbackFps, 1m, 120m);
+        var halfFrameMilliseconds = decimal.Floor(500m / fps);
+        return Math.Clamp((int)halfFrameMilliseconds, 8, 50);
+    }
+
+    internal static Rectangle ExpandPreviewAnchor(Rectangle sourceScreenBounds, Rectangle rowScreenBounds)
+    {
+        return new Rectangle(
+            sourceScreenBounds.Left,
+            rowScreenBounds.Top,
+            Math.Max(1, sourceScreenBounds.Width),
+            Math.Max(1, rowScreenBounds.Height));
+    }
+
     public LibraryVaultPanel()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -231,7 +265,6 @@ internal sealed partial class LibraryVaultPanel : UserControl
         }
 
         if (!Visible) return;
-        HidePreview(clearContent: true);
         RefreshProjectObjects();
     }
 
@@ -295,12 +328,12 @@ internal sealed partial class LibraryVaultPanel : UserControl
         {
             Dock = DockStyle.Fill,
             Margin = new Padding(1, 3, 0, 3),
-            AccessibleName = "Open selected drawing object"
+            AccessibleName = "Open selected symbol"
         };
         _openButton.Click += (_, _) => OpenSelectedVaultItem();
         header.Controls.Add(_openButton, 3, 0);
         Theme.StyleToolbarButton(_openButton);
-        _toolTip.SetToolTip(_openButton, "Open selected drawing object");
+        _toolTip.SetToolTip(_openButton, "Open selected symbol");
         layout.Controls.Add(header, 0, 0);
         layout.Controls.Add(BuildAssetFilterBar(), 0, 1);
 
@@ -766,7 +799,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         var item = row.Item;
         if (string.Equals(item.ReferenceKind, "DrawingObject", StringComparison.Ordinal))
         {
-            ModernMessageDialog.Show(this, UiLocalization.T("This drawing object is not available in the current project."), item.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ModernMessageDialog.Show(this, UiLocalization.T("This symbol is not available in the current project."), item.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -843,7 +876,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
             if (_projectObjects.Nodes.Count == 0)
             {
-                var emptyText = AssetFilterActive ? "No matching assets" : "No drawing objects";
+                var emptyText = AssetFilterActive ? "No matching assets" : "No symbols";
                 _projectObjects.Nodes.Add(new TreeNode(emptyText) { ForeColor = Theme.Muted });
             }
             SynchronizeProjectObjectSelection();
@@ -1127,8 +1160,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _preview ??= new VaultPreviewForm();
             var projectFrame = Math.Max(0, _frameProvider?.Invoke() ?? drawingObject.Scene.EditFrame);
             _preview.ShowDrawingObject(drawingObject, _project, projectFrame);
-            var projectTopLeft = _projectObjects.PointToScreen(projectNode.Bounds.Location);
-            _preview.ShowAt(FindForm(), new Rectangle(projectTopLeft, projectNode.Bounds.Size));
+            _preview.ShowAt(FindForm(), PreviewAnchor(_projectObjects, projectNode.Bounds));
             return;
         }
 
@@ -1150,9 +1182,14 @@ internal sealed partial class LibraryVaultPanel : UserControl
         }
 
         var itemBounds = list.GetItemRect(index);
-        var topLeft = list.PointToScreen(itemBounds.Location);
-        var anchor = new Rectangle(topLeft, itemBounds.Size);
-        _preview.ShowAt(FindForm(), anchor);
+        _preview.ShowAt(FindForm(), PreviewAnchor(list, itemBounds));
+    }
+
+    private static Rectangle PreviewAnchor(Control source, Rectangle rowBounds)
+    {
+        return ExpandPreviewAnchor(
+            source.RectangleToScreen(source.ClientRectangle),
+            source.RectangleToScreen(rowBounds));
     }
 
     private void HidePreview(bool clearContent = false)
@@ -1208,6 +1245,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         private readonly VectorScene _emptyScene = new();
         private readonly VectorScene _underlayScene = new();
         private readonly StageControl _stage;
+        private readonly System.Windows.Forms.Timer _playbackTimer = new();
         private readonly Label _emptyState = new();
         private readonly Label _title = new();
         private readonly Label _kind = new();
@@ -1216,12 +1254,19 @@ internal sealed partial class LibraryVaultPanel : UserControl
         private VectorScene? _contentScene;
         private VectorScene? _contentUnderlay;
         private int _contentFrame;
+        private DrawingObjectDefinition? _drawingObject;
+        private VectorProject? _project;
+        private bool _hasFittedContent;
+        private int _playbackStartFrame;
+        private decimal _playbackFps = 30m;
+        private long _playbackStartedAt;
 
         public VaultPreviewForm()
         {
             _emptyScene.CreateEmpty();
             _underlayScene.CreateEmpty();
             _stage = new StageControl(_emptyScene) { Dock = DockStyle.Fill, TabStop = false };
+            _playbackTimer.Tick += (_, _) => AdvancePlayback();
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -1286,6 +1331,19 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
         protected override bool ShowWithoutActivation => true;
 
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            if (!Visible) StopPlayback();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) StopPlayback();
+            base.Dispose(disposing);
+            if (disposing) _playbackTimer.Dispose();
+        }
+
         protected override CreateParams CreateParams
         {
             get
@@ -1298,43 +1356,28 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
         public void ShowDrawingObject(DrawingObjectDefinition drawingObject, VectorProject project, int frame)
         {
+            StopPlayback();
             frame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
-            _underlayScene.CreateEmpty();
-            try
-            {
-                SceneCompositionBuilder.BuildDrawingObjectChildren(
-                    _underlayScene,
-                    drawingObject,
-                    project.DrawingObjects,
-                    frame);
-            }
-            catch (Exception ex)
-            {
-                _underlayScene.CreateEmpty();
-                AppLog.Error("Vault drawing-object preview composition failed", ex);
-            }
-
+            _drawingObject = drawingObject;
+            _project = project;
+            _hasFittedContent = false;
             _stage.BindScene(drawingObject.Scene);
-            _stage.Frame = frame;
-            _stage.BindUnderlayScene(_underlayScene);
             _contentScene = drawingObject.Scene;
             _contentUnderlay = _underlayScene;
-            _contentFrame = frame;
-
-            var objectCount = drawingObject.Scene.ObjectCount + _underlayScene.ObjectCount;
-            var activeObjectCount = CountActiveObjects(drawingObject.Scene, frame) + CountActiveObjects(_underlayScene, frame);
-            _emptyState.Text = objectCount == 0 ? "Empty drawing object" : "No content at this frame";
-            _emptyState.Visible = activeObjectCount == 0;
             _title.Text = drawingObject.Name;
-            _kind.Text = $"Drawing Object | {drawingObject.Kind}";
-            _metadata.Text = $"{activeObjectCount}/{objectCount} visible | {drawingObject.Scene.LayerCount} layers | {drawingObject.Instances.Count} nested | frame {frame + 1}";
+            _kind.Text = $"Kind: {drawingObject.Kind}";
             _detail.Text = string.IsNullOrWhiteSpace(drawingObject.Detail)
                 ? $"Created {drawingObject.CreatedAt:g}"
                 : drawingObject.Detail;
+            RenderDrawingObjectFrame(frame);
         }
 
         public void ShowVaultItem(VaultItem item)
         {
+            StopPlayback();
+            _drawingObject = null;
+            _project = null;
+            _hasFittedContent = false;
             _stage.BindScene(_emptyScene);
             _stage.Frame = 0;
             _stage.BindUnderlayScene(null);
@@ -1343,7 +1386,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _contentUnderlay = null;
             _contentFrame = 0;
             _emptyState.Text = string.Equals(item.ReferenceKind, "DrawingObject", StringComparison.Ordinal)
-                ? "Drawing object unavailable"
+                ? "Symbol unavailable"
                 : "No visual preview";
             _emptyState.Visible = true;
             _title.Text = item.Name;
@@ -1354,6 +1397,10 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
         public void ClearContent()
         {
+            StopPlayback();
+            _drawingObject = null;
+            _project = null;
+            _hasFittedContent = false;
             _underlayScene.CreateEmpty();
             _stage.BindScene(_emptyScene);
             _stage.Frame = 0;
@@ -1378,6 +1425,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
             var y = Math.Clamp(anchor.Top, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - Height));
             Location = new Point(x, y);
 
+            if (!Visible) PerformLayout();
+            FitContent();
             if (!Visible)
             {
                 if (owner is null) Show();
@@ -1386,6 +1435,85 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
             FitContent();
             Invalidate(true);
+            StartPlayback();
+        }
+
+        private void StartPlayback()
+        {
+            if (_drawingObject is null || _project is null || _drawingObject.FrameCount <= 1) return;
+
+            _playbackStartFrame = _contentFrame;
+            _playbackFps = Math.Clamp(_project.PlaybackFps, 1m, 120m);
+            _playbackStartedAt = Stopwatch.GetTimestamp();
+            _playbackTimer.Interval = PreviewTimerIntervalMilliseconds(_playbackFps);
+            _playbackTimer.Start();
+        }
+
+        private void StopPlayback()
+        {
+            _playbackTimer.Stop();
+            _playbackStartedAt = 0;
+        }
+
+        private void AdvancePlayback()
+        {
+            if (!Visible || _drawingObject is null || _project is null || _drawingObject.FrameCount <= 1)
+            {
+                StopPlayback();
+                return;
+            }
+
+            var now = Stopwatch.GetTimestamp();
+            var fps = Math.Clamp(_project.PlaybackFps, 1m, 120m);
+            if (_playbackStartedAt == 0 || fps != _playbackFps)
+            {
+                _playbackStartFrame = _contentFrame;
+                _playbackFps = fps;
+                _playbackStartedAt = now;
+                _playbackTimer.Interval = PreviewTimerIntervalMilliseconds(fps);
+                return;
+            }
+
+            var frame = ResolvePreviewFrame(
+                _playbackStartFrame,
+                _drawingObject.FrameCount,
+                fps,
+                Stopwatch.GetElapsedTime(_playbackStartedAt, now));
+            if (frame != _contentFrame) RenderDrawingObjectFrame(frame);
+        }
+
+        private void RenderDrawingObjectFrame(int frame)
+        {
+            if (_drawingObject is null || _project is null) return;
+
+            frame = Math.Clamp(frame, 0, Math.Max(0, _drawingObject.FrameCount - 1));
+            _underlayScene.CreateEmpty();
+            try
+            {
+                SceneCompositionBuilder.BuildDrawingObjectChildren(
+                    _underlayScene,
+                    _drawingObject,
+                    _project.DrawingObjects,
+                    frame,
+                    _project.PlaybackFps);
+            }
+            catch (Exception ex)
+            {
+                _underlayScene.CreateEmpty();
+                AppLog.Error("Vault symbol preview composition failed", ex);
+            }
+
+            _stage.Frame = frame;
+            _stage.BindUnderlayScene(_underlayScene);
+            _contentFrame = frame;
+
+            var objectCount = _drawingObject.Scene.ObjectCount + _underlayScene.ObjectCount;
+            var activeObjectCount = CountActiveObjects(_drawingObject.Scene, frame)
+                + CountActiveObjects(_underlayScene, frame);
+            _emptyState.Text = objectCount == 0 ? "Empty symbol" : "No content at this frame";
+            _emptyState.Visible = activeObjectCount == 0;
+            _metadata.Text = $"{activeObjectCount}/{objectCount} visible | {_drawingObject.Scene.LayerCount} layers | {_drawingObject.Instances.Count} nested | frame {frame + 1}/{_drawingObject.FrameCount}";
+            if (Visible && !_hasFittedContent && activeObjectCount > 0) FitContent();
         }
 
         private void FitContent()
@@ -1393,10 +1521,19 @@ internal sealed partial class LibraryVaultPanel : UserControl
             if (_contentScene is null || _stage.Width <= 0 || _stage.Height <= 0) return;
             var hasBounds = false;
             var bounds = RectangleF.Empty;
-            IncludeSceneBounds(_contentScene, _contentFrame, ref hasBounds, ref bounds);
+            if (_drawingObject is { FrameCount: > 1 }
+                && ReferenceEquals(_contentScene, _drawingObject.Scene))
+            {
+                IncludeAllFrameSceneBounds(_contentScene, ref hasBounds, ref bounds);
+            }
+            else
+            {
+                IncludeSceneBounds(_contentScene, _contentFrame, ref hasBounds, ref bounds);
+            }
             if (_contentUnderlay is not null) IncludeSceneBounds(_contentUnderlay, _contentFrame, ref hasBounds, ref bounds);
             if (!hasBounds)
             {
+                _hasFittedContent = false;
                 _stage.ResetDefaultView();
                 return;
             }
@@ -1408,6 +1545,19 @@ internal sealed partial class LibraryVaultPanel : UserControl
             var center = new PointF(bounds.Left + bounds.Width * 0.5f, bounds.Top + bounds.Height * 0.5f);
             var screenCenter = _stage.WorldToScreen(center.X, center.Y);
             _stage.Pan(_stage.Width * 0.5f - screenCenter.X, _stage.Height * 0.5f - screenCenter.Y);
+            _hasFittedContent = true;
+        }
+
+        private static void IncludeAllFrameSceneBounds(VectorScene scene, ref bool hasBounds, ref RectangleF bounds)
+        {
+            for (var i = 0; i < scene.ObjectCount; i++)
+            {
+                var layer = scene.ObjectLayer[i];
+                if (layer >= scene.LayerCount || !scene.IsLayerEffectivelyVisible(layer)) continue;
+                var objectBounds = scene.GetObjectWorldBounds(i);
+                bounds = hasBounds ? RectangleF.Union(bounds, objectBounds) : objectBounds;
+                hasBounds = true;
+            }
         }
 
         private static void IncludeSceneBounds(VectorScene scene, int frame, ref bool hasBounds, ref RectangleF bounds)

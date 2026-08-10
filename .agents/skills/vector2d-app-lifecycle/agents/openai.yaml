@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D App Lifecycle"
+  short_description: "Startup, hot reload, restart, single-instance, and diagnostics"
+  default_prompt: "Use $vector2d-app-lifecycle to implement or review an application lifecycle change."

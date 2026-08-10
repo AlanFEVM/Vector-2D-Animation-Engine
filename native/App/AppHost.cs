@@ -7,14 +7,19 @@ internal sealed class AppHost : ApplicationContext
     private EditorRestartState? _restartState;
     private bool _exiting;
     private bool _processRestartRequested;
+    private bool _mainFormReady;
+    private readonly object _hotReloadSync = new();
+    private HotReloadPlan? _startupHotReloadPlan;
     private readonly HotReloadCoordinator _hotReloadCoordinator;
+    private Action? _completeRestartHandoff;
 
     public static AppHost? Current { get; private set; }
 
-    public AppHost(EditorRestartState? restartState = null)
+    public AppHost(EditorRestartState? restartState = null, Action? completeRestartHandoff = null)
     {
+        _hotReloadCoordinator = new HotReloadCoordinator(GetReadyMainForm, ApplyHotReloadBatch);
+        _completeRestartHandoff = completeRestartHandoff;
         Current = this;
-        _hotReloadCoordinator = new HotReloadCoordinator(() => _mainForm, ApplyHotReloadBatch);
         AppLog.Info("Creating application host");
         _startupBanner = new StartupBannerForm();
         _startupBanner.Show();
@@ -34,7 +39,65 @@ internal sealed class AppHost : ApplicationContext
         {
             return;
         }
-        host._hotReloadCoordinator.Enqueue(plan);
+        host.EnqueueOrDeferHotReload(plan);
+    }
+
+    private Control? GetReadyMainForm()
+    {
+        lock (_hotReloadSync)
+        {
+            return _mainFormReady ? _mainForm : null;
+        }
+    }
+
+    private void EnqueueOrDeferHotReload(HotReloadPlan plan)
+    {
+        lock (_hotReloadSync)
+        {
+            if (!_mainFormReady)
+            {
+                _startupHotReloadPlan = _startupHotReloadPlan is { } pending
+                    ? pending.Merge(plan)
+                    : plan;
+                AppLog.Info($"Deferred hot reload until the main window is ready: {_startupHotReloadPlan.Value.Modules}; types: {_startupHotReloadPlan.Value.UpdatedTypes}");
+                return;
+            }
+        }
+
+        _hotReloadCoordinator.Enqueue(plan);
+    }
+
+    private void SetMainFormUnavailable()
+    {
+        lock (_hotReloadSync) _mainFormReady = false;
+    }
+
+    private void CompleteMainFormStartup(MainForm form)
+    {
+        if (_exiting || form.IsDisposed || !ReferenceEquals(_mainForm, form)) return;
+
+        if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+        form.Show();
+        form.BringToFront();
+        form.Activate();
+        var activated = ReferenceEquals(Form.ActiveForm, form) || form.ContainsFocus;
+        _startupBanner?.DismissWhenReady();
+
+        HotReloadPlan? deferredPlan;
+        lock (_hotReloadSync)
+        {
+            _mainFormReady = true;
+            deferredPlan = _startupHotReloadPlan;
+            _startupHotReloadPlan = null;
+        }
+
+        AppLog.Info(
+            $"Main window ready. PID: {Environment.ProcessId}; handle: 0x{form.Handle.ToInt64():X}; " +
+            $"visible: {form.Visible}; active: {activated}; state: {form.WindowState}; bounds: {form.Bounds}.");
+        _completeRestartHandoff?.Invoke();
+        _completeRestartHandoff = null;
+        LauncherShutdownSignal.NotifyMainWindowReady();
+        if (deferredPlan is { } plan) _hotReloadCoordinator.Enqueue(plan);
     }
 
     private bool TryRequestDetachedEditorProcessRestart()
@@ -97,6 +160,7 @@ internal sealed class AppHost : ApplicationContext
 
     private void ShowMainForm(EditorRestartState? restartState = null)
     {
+        SetMainFormUnavailable();
         var form = restartState is null
             ? new VectorAnimationEngine.MainForm()
             : VectorAnimationEngine.MainForm.CreateForRestart(restartState);
@@ -105,7 +169,7 @@ internal sealed class AppHost : ApplicationContext
         _mainForm = form;
         form.Shown += (_, _) =>
         {
-            _startupBanner?.DismissWhenReady();
+            CompleteMainFormStartup(form);
         };
         form.RestartRequested += MainFormRestartRequested;
         form.ProcessRestartRequested += MainFormProcessRestartRequested;
@@ -119,6 +183,7 @@ internal sealed class AppHost : ApplicationContext
         var form = _mainForm;
         if (_exiting || form is null || !ReferenceEquals(sender, form)) return;
         _restartState = e.State;
+        SetMainFormUnavailable();
         // Detach ApplicationContext's default close-to-exit handler before
         // closing the old window; MainFormClosed creates the replacement.
         MainForm = null;
@@ -130,6 +195,7 @@ internal sealed class AppHost : ApplicationContext
         var form = _mainForm;
         if (_exiting || form is null || !ReferenceEquals(sender, form)) return;
         _processRestartRequested = true;
+        SetMainFormUnavailable();
         MainForm = null;
         form.Close();
     }
@@ -137,7 +203,7 @@ internal sealed class AppHost : ApplicationContext
     private void ApplyHotReloadBatch(HotReloadBatch batch)
     {
         var form = _mainForm;
-        if (_exiting || form is null || form.IsDisposed) return;
+        if (_exiting || !_mainFormReady || form is null || form.IsDisposed) return;
         var plan = batch.Plan;
         var queuedMilliseconds = Math.Max(0, (DateTime.UtcNow - batch.QueuedUtc).TotalMilliseconds);
         AppLog.Info($"Applying hot reload generation {batch.Generation} after {queuedMilliseconds:0} ms: {plan.Modules}; types: {plan.UpdatedTypes}");
@@ -189,6 +255,7 @@ internal sealed class AppHost : ApplicationContext
 
     private void MainFormClosed(object? sender, FormClosedEventArgs e)
     {
+        SetMainFormUnavailable();
         AppLog.Info($"Main form closed. Reason: {e.CloseReason}");
         if (_exiting) return;
 

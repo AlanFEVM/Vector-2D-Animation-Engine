@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Timeline Animation"
+  short_description: "Timeline, Cel, keyframe, tween, and playback workflows"
+  default_prompt: "Use $vector2d-timeline-animation to implement or review a timeline, keyframe, tween, or playback change."

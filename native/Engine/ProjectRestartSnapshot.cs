@@ -34,9 +34,9 @@ internal sealed class ProjectAssetFolderRestartSnapshot
 internal sealed class DrawingObjectRestartSnapshot
 {
     public string Id { get; init; } = "";
-    public string Name { get; init; } = "Drawing Object";
+    public string Name { get; init; } = "Symbol";
     public string Kind { get; init; } = "Symbol";
-    public string Detail { get; init; } = "Reusable drawing object";
+    public string Detail { get; init; } = "Reusable symbol";
     public string AssetFolderId { get; init; } = "";
     public string[] AssetTagIds { get; init; } = [];
     public float AnchorX { get; init; }
@@ -77,6 +77,7 @@ internal sealed class InstanceRestartSnapshot
     public float ScaleX { get; init; } = 1;
     public float ScaleY { get; init; } = 1;
     public float ScaleZ { get; init; } = 1;
+    public DistortWarp? Distortion { get; init; }
     public float Alpha { get; init; } = 1;
     public int TintArgb { get; init; } = unchecked((int)0xffffffff);
     public decimal PlaybackFps { get; init; } = 30m;

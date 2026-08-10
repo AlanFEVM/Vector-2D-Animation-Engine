@@ -53,14 +53,20 @@ internal static class HotReloadModuleResolver
         nameof(TimelineStrip),
         nameof(TweenCurveEditorPanel),
         nameof(TweenCurveEditor),
+        nameof(ProfessionalColorPickerDialog),
         nameof(LayerColorDialog),
+        nameof(DashDock),
+        nameof(WorkspaceColorFlyout),
+        nameof(WorkspaceColorPickerPanel),
         nameof(LayerBlendModePanel),
         nameof(DrawingObjectInstancePanel),
         nameof(TextSettingsPanel),
         nameof(MaterialEditorPanel),
+        nameof(SpatialTransformPanel),
         nameof(SceneEditorPanel),
         nameof(LibraryVaultPanel),
         nameof(HierarchyPanel),
+        nameof(ReferenceViewPad),
         nameof(WorkspaceTabs),
         nameof(VectorScene),
         nameof(VectorSceneSnapshot),
@@ -79,6 +85,7 @@ internal static class HotReloadModuleResolver
         nameof(SceneLayerDefinition),
         nameof(SceneLayerSnapshot),
         nameof(SceneLayerSnapshotItem),
+        nameof(SceneLayerKind),
         nameof(LayerBlendMode),
         nameof(DrawingObjectPlaybackMode),
         nameof(LineEndpointStyle)
@@ -133,12 +140,28 @@ internal static class HotReloadModuleResolver
             return HotReloadModule.Rendering;
         }
 
+        if (typeName is nameof(ReferenceViewDirection)
+            or nameof(SpatialTransformMode)
+            or nameof(SpatialTransformAxis)
+            or nameof(SpatialTransformHandleHit)
+            or nameof(SpatialRay)
+            or nameof(SceneCompositionMaskClip)
+            or nameof(Reference3DProjectedContour))
+        {
+            return HotReloadModule.Rendering;
+        }
+
         if (typeName is nameof(TimelineStrip) or nameof(LayerColorDialog) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
         {
             return HotReloadModule.Timeline;
         }
 
-        if (typeName is nameof(LibraryVaultPanel) or nameof(HierarchyPanel) or nameof(SceneEditorPanel) or nameof(WorkspaceTabs))
+        if (typeName is nameof(LibraryVaultPanel)
+            or nameof(HierarchyPanel)
+            or nameof(SceneEditorPanel)
+            or nameof(ReferenceViewPad)
+            or nameof(ReferenceViewRequestedEventArgs)
+            or nameof(WorkspaceTabs))
         {
             return HotReloadModule.Workspace;
         }
@@ -166,6 +189,10 @@ internal static class HotReloadModuleResolver
             or nameof(ShapeSettingsPanel)
             or nameof(LayerBlendModePanel)
             or nameof(DrawingObjectInstancePanel)
+            or nameof(SpatialTransformPanel)
+            or nameof(SpatialTransformValues)
+            or nameof(SpatialTransformValuesChangedEventArgs)
+            or nameof(SpatialTransformModeChangedEventArgs)
             or nameof(DrawSettings)
             or nameof(ModernSlider)
             or nameof(ModernNumericUpDown)
@@ -177,6 +204,10 @@ internal static class HotReloadModuleResolver
         if (typeName is nameof(AnimatedContextMenuStrip)
             or nameof(ModernDialogForm)
             or nameof(ModernMessageDialog)
+            or nameof(ProfessionalColorPickerDialog)
+            or nameof(DashDock)
+            or nameof(WorkspaceColorFlyout)
+            or nameof(WorkspaceColorPickerPanel)
             or nameof(ReleaseNotesCatalog)
             or nameof(ReleaseNotesDialog)
             or nameof(ReleaseNotesPanel)
@@ -226,6 +257,7 @@ internal static class HotReloadModuleResolver
             or nameof(SceneLayerDefinition)
             or nameof(SceneLayerSnapshot)
             or nameof(SceneLayerSnapshotItem)
+            or nameof(SceneLayerKind)
             or nameof(SceneObjectInstanceDefinition)
             or nameof(ICompositionDefinition))
         {

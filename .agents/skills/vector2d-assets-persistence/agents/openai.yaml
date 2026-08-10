@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector2D Assets And Persistence"
+  short_description: "Project storage, Vault assets, tags, and SVG workflows"
+  default_prompt: "Use $vector2d-assets-persistence to implement or review a project storage, Vault, tag, or SVG change."

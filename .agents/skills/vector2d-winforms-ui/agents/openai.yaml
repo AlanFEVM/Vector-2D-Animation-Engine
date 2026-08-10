@@ -1,4 +1,4 @@
 interface:
   display_name: "Vector2D WinForms UI"
   short_description: "Workbench panels and custom WinForms controls"
-  default_prompt: "Use $vector2d-winforms-ui to build or revise a workbench panel or custom control."
+  default_prompt: "Use $vector2d-winforms-ui to implement or review a non-Stage workbench panel or custom control."

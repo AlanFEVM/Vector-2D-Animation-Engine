@@ -37,6 +37,11 @@ foreach ($skillDirectory in $skillDirectories) {
     }
 
     $skillText = [IO.File]::ReadAllText($skillFile)
+    $skillLineCount = @($skillText -split '\r?\n').Count
+    if ($skillLineCount -gt 500) {
+        Add-WorkflowError "SKILL.md exceeds 500 lines: $skillFile ($skillLineCount)"
+    }
+
     $frontmatter = [regex]::Match(
         $skillText,
         '\A---\r?\n(?<value>.*?)\r?\n---(?:\r?\n|$)',
@@ -48,19 +53,30 @@ foreach ($skillDirectory in $skillDirectories) {
 
     $nameMatch = [regex]::Match($frontmatter.Groups["value"].Value, '(?m)^name:\s*(?<value>[a-z0-9][a-z0-9-]*)\s*$')
     $descriptionMatch = [regex]::Match($frontmatter.Groups["value"].Value, '(?m)^description:\s*(?<value>.+?)\s*$')
+    foreach ($frontmatterLine in @($frontmatter.Groups["value"].Value -split '\r?\n')) {
+        if (-not [string]::IsNullOrWhiteSpace($frontmatterLine) -and
+                $frontmatterLine -notmatch '^(name|description):\s*.+$') {
+            Add-WorkflowError "Unsupported SKILL.md frontmatter field in $skillFile`: $frontmatterLine"
+        }
+    }
     if (-not $nameMatch.Success) {
         Add-WorkflowError "Missing or invalid skill name: $skillFile"
         continue
     }
 
     $name = $nameMatch.Groups["value"].Value
+    if ($name.Length -gt 64) {
+        Add-WorkflowError "Skill name exceeds 64 characters: $name"
+    }
     if ($name -cne $skillDirectory.Name) {
         Add-WorkflowError "Skill name '$name' does not match directory '$($skillDirectory.Name)'"
     }
     if (-not $skillNames.Add($name)) {
         Add-WorkflowError "Duplicate skill name: $name"
     }
-    if (-not $descriptionMatch.Success -or $descriptionMatch.Groups["value"].Value -match 'TODO') {
+    if (-not $descriptionMatch.Success -or
+            $descriptionMatch.Groups["value"].Value -match 'TODO' -or
+            $descriptionMatch.Groups["value"].Value.Length -lt 40) {
         Add-WorkflowError "Missing or placeholder description: $skillFile"
     }
 
@@ -69,8 +85,18 @@ foreach ($skillDirectory in $skillDirectories) {
         Add-WorkflowError "Missing agents/openai.yaml for $name"
     } else {
         $manifestText = [IO.File]::ReadAllText($manifestFile)
+        $displayNameMatch = [regex]::Match($manifestText, '(?m)^\s*display_name:\s*"(?<value>.+)"\s*$')
+        $shortDescriptionMatch = [regex]::Match($manifestText, '(?m)^\s*short_description:\s*"(?<value>.+)"\s*$')
         $promptMatch = [regex]::Match($manifestText, '(?m)^\s*default_prompt:\s*"(?<value>.*)"\s*$')
         $skillToken = '$' + $name
+        if (-not $displayNameMatch.Success) {
+            Add-WorkflowError "Missing quoted display_name for $name"
+        }
+        if (-not $shortDescriptionMatch.Success -or
+                $shortDescriptionMatch.Groups["value"].Value.Length -lt 25 -or
+                $shortDescriptionMatch.Groups["value"].Value.Length -gt 64) {
+            Add-WorkflowError "short_description for $name must be a quoted 25-64 character string"
+        }
         if (-not $promptMatch.Success -or $promptMatch.Groups["value"].Value.IndexOf($skillToken, [StringComparison]::Ordinal) -lt 0) {
             Add-WorkflowError "default_prompt for $name must mention $skillToken"
         }
@@ -79,7 +105,18 @@ foreach ($skillDirectory in $skillDirectories) {
     $markdownFiles = @($skillFile)
     $referenceRoot = Join-Path $skillDirectory.FullName "references"
     if (Test-Path -LiteralPath $referenceRoot -PathType Container) {
-        $markdownFiles += @(Get-ChildItem -LiteralPath $referenceRoot -Recurse -File -Filter *.md | Select-Object -ExpandProperty FullName)
+        $referenceFiles = @(Get-ChildItem -LiteralPath $referenceRoot -Recurse -File -Filter *.md)
+        $markdownFiles += @($referenceFiles | Select-Object -ExpandProperty FullName)
+        foreach ($referenceFile in $referenceFiles) {
+            if ($referenceFile.DirectoryName -ne $referenceRoot) {
+                Add-WorkflowError "Nested reference files are not allowed: $($referenceFile.FullName)"
+                continue
+            }
+            $referenceLink = "references/" + $referenceFile.Name
+            if ($skillText.IndexOf($referenceLink, [StringComparison]::Ordinal) -lt 0) {
+                Add-WorkflowError "Reference is not linked directly from SKILL.md: $($referenceFile.FullName)"
+            }
+        }
     }
 
     foreach ($markdownFile in $markdownFiles) {
@@ -100,6 +137,27 @@ foreach ($skillDirectory in $skillDirectories) {
     }
 }
 
+if (Test-Path -LiteralPath $agentsFile -PathType Leaf) {
+    foreach ($skillName in $skillNames) {
+        $skillToken = '$' + $skillName
+        if ($agentsText.IndexOf($skillToken, [StringComparison]::Ordinal) -lt 0) {
+            Add-WorkflowError "AGENTS.md does not route skill $skillToken"
+        }
+    }
+}
+
+$benchmarkMapFile = Join-Path $skillsRoot "vector2d-validate-change\references\benchmark-map.md"
+if (-not (Test-Path -LiteralPath $benchmarkMapFile -PathType Leaf)) {
+    Add-WorkflowError "Missing benchmark partial map: $benchmarkMapFile"
+} else {
+    $benchmarkMapText = [IO.File]::ReadAllText($benchmarkMapFile)
+    foreach ($benchmarkFile in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot "native\App") -File -Filter "Benchmark*.cs")) {
+        if ($benchmarkMapText.IndexOf($benchmarkFile.Name, [StringComparison]::Ordinal) -lt 0) {
+            Add-WorkflowError "Benchmark partial is not routed in benchmark-map.md: $($benchmarkFile.Name)"
+        }
+    }
+}
+
 $powerShellFiles = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot ".agents") -Recurse -File -Filter *.ps1)
 foreach ($powerShellFile in $powerShellFiles) {
     $tokens = $null
@@ -110,6 +168,25 @@ foreach ($powerShellFile in $powerShellFiles) {
         [ref]$parseErrors) | Out-Null
     foreach ($parseError in @($parseErrors)) {
         Add-WorkflowError "PowerShell parse error in $($powerShellFile.FullName): $($parseError.Message)"
+    }
+}
+
+$validationScript = Join-Path $skillsRoot "vector2d-validate-change\scripts\invoke-validation.ps1"
+if (Test-Path -LiteralPath $validationScript -PathType Leaf) {
+    try {
+        $validationPlan = (& $validationScript -Suite All -Plan | ConvertFrom-Json)
+        $expectedSuites = @("Build", "Launcher", "Release", "Timeline", "Pressure", "Freehand", "Stress", "Render")
+        foreach ($expectedSuite in $expectedSuites) {
+            if ($validationPlan.Suites -notcontains $expectedSuite) {
+                Add-WorkflowError "Validation All plan does not include suite: $expectedSuite"
+            }
+        }
+        if ($validationPlan.Builds -notcontains "ReleaseManager" -or
+                $validationPlan.Builds -notcontains "SingleExeRelease") {
+            Add-WorkflowError "Validation All plan does not include Release Manager and single-EXE builds"
+        }
+    } catch {
+        Add-WorkflowError "Validation plan smoke test failed: $($_.Exception.Message)"
     }
 }
 

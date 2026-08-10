@@ -9,7 +9,7 @@ namespace VectorAnimationEngine;
 internal static class DrawingObjectSvgCodec
 {
     private const int MinimumReadableFormatVersion = 1;
-    private const int CurrentFormatVersion = 3;
+    private const int CurrentFormatVersion = 4;
     private const string MetadataId = "v2d-metadata";
     private const string SvgVersion = "1.1";
     private const string StageViewBox = "-24000 -14000 48000 28000";
@@ -19,6 +19,8 @@ internal static class DrawingObjectSvgCodec
     private const long MaxPointsPerAsset = 2_000_000;
     private const int MaxImportedSvgSourceCharacters = 8 * 1024 * 1024;
     private const long MaxImportedSvgSourceCharactersPerAsset = 8L * 1024 * 1024;
+    private const int MaxImportedSvgNameCharacters = 80;
+    private const int MaxDistortionWarpsPerObject = 256;
     private const long MaxSvgFileBytes = 128L * 1024 * 1024;
     private const long MaxSvgCharacters = 128L * 1024 * 1024;
     private static readonly XNamespace SvgNamespace = "http://www.w3.org/2000/svg";
@@ -80,7 +82,7 @@ internal static class DrawingObjectSvgCodec
         {
             if (new FileInfo(path).Length > MaxSvgFileBytes)
             {
-                throw new InvalidDataException("The drawing-object SVG exceeds the supported per-file size limit.");
+                throw new InvalidDataException("The symbol SVG exceeds the supported per-file size limit.");
             }
             var settings = new XmlReaderSettings
             {
@@ -93,24 +95,24 @@ internal static class DrawingObjectSvgCodec
             var root = document.Root;
             if (root is null || root.Name != SvgNamespace + "svg")
             {
-                throw new InvalidDataException("The drawing-object asset is not an SVG document.");
+                throw new InvalidDataException("The symbol asset is not an SVG document.");
             }
             if (!string.Equals((string?)root.Attribute("version"), SvgVersion, StringComparison.Ordinal)
                 || !string.Equals((string?)root.Attribute("viewBox"), StageViewBox, StringComparison.Ordinal))
             {
-                throw new InvalidDataException("The drawing-object SVG root has an unsupported version or view box.");
+                throw new InvalidDataException("The symbol SVG root has an unsupported version or view box.");
             }
             if (!TryParseVersion((string?)root.Attribute("data-v2d-format-version"), out var rootVersion)
                 || !IsReadableFormatVersion(rootVersion))
             {
-                throw new InvalidDataException("The drawing-object SVG format version is unsupported.");
+                throw new InvalidDataException("The symbol SVG format version is unsupported.");
             }
             if (!string.Equals(
                     (string?)root.Attribute("data-v2d-drawing-object-id"),
                     expectedDrawingObjectId,
                     StringComparison.Ordinal))
             {
-                throw new InvalidDataException("The drawing-object SVG asset identifier does not match the project manifest.");
+                throw new InvalidDataException("The symbol SVG asset identifier does not match the project manifest.");
             }
 
             var metadataElements = root
@@ -119,7 +121,7 @@ internal static class DrawingObjectSvgCodec
                 .ToArray();
             if (metadataElements.Length != 1)
             {
-                throw new InvalidDataException("The drawing-object SVG must contain exactly one V2D metadata element.");
+                throw new InvalidDataException("The symbol SVG must contain exactly one V2D metadata element.");
             }
 
             var metadataElement = metadataElements[0];
@@ -130,11 +132,11 @@ internal static class DrawingObjectSvgCodec
                     MetadataEncoding,
                     StringComparison.Ordinal))
             {
-                throw new InvalidDataException("The drawing-object SVG metadata format is unsupported.");
+                throw new InvalidDataException("The symbol SVG metadata format is unsupported.");
             }
 
             var encoded = metadataElement.Value.Trim();
-            if (encoded.Length == 0) throw new InvalidDataException("The drawing-object SVG metadata is empty.");
+            if (encoded.Length == 0) throw new InvalidDataException("The symbol SVG metadata is empty.");
             var json = Convert.FromBase64String(encoded);
             var envelope = JsonSerializer.Deserialize<MetadataEnvelope>(json, JsonOptions);
             if (envelope is null
@@ -142,7 +144,7 @@ internal static class DrawingObjectSvgCodec
                 || !string.Equals(envelope.DrawingObjectId, expectedDrawingObjectId, StringComparison.Ordinal)
                 || envelope.Snapshot is null)
             {
-                throw new InvalidDataException("The drawing-object SVG metadata does not match the requested asset.");
+                throw new InvalidDataException("The symbol SVG metadata does not match the requested asset.");
             }
 
             ValidateSnapshot(envelope.Snapshot, rootVersion);
@@ -154,7 +156,7 @@ internal static class DrawingObjectSvgCodec
         }
         catch (Exception ex) when (ex is XmlException or JsonException or FormatException or OverflowException)
         {
-            throw new InvalidDataException("The drawing-object SVG metadata is malformed.", ex);
+            throw new InvalidDataException("The symbol SVG metadata is malformed.", ex);
         }
     }
 
@@ -633,11 +635,11 @@ internal static class DrawingObjectSvgCodec
             || snapshot.ObjectCount < 0 || snapshot.ObjectCount > MaxObjectsPerAsset
             || snapshot.VirtualAtomCount < 0)
         {
-            throw new InvalidDataException("The drawing-object scene counts are invalid.");
+            throw new InvalidDataException("The symbol scene counts are invalid.");
         }
         if ((uint)snapshot.ActiveLayer >= snapshot.LayerCount || !FiniteNonNegative(snapshot.MaxHalfExtent))
         {
-            throw new InvalidDataException("The drawing-object scene state is invalid.");
+            throw new InvalidDataException("The symbol scene state is invalid.");
         }
 
         ValidateArray(snapshot.LayerIds, snapshot.LayerCount, nameof(snapshot.LayerIds));
@@ -667,7 +669,7 @@ internal static class DrawingObjectSvgCodec
             || snapshot.LayerStart.Any(value => value < 0)
             || snapshot.LayerEnd.Select((value, index) => value < -1 || value >= 0 && value < snapshot.LayerStart[index]).Any(invalid => invalid))
         {
-            throw new InvalidDataException("The drawing-object layer metadata is invalid.");
+            throw new InvalidDataException("The symbol layer metadata is invalid.");
         }
 
         ValidateObjectArrays(snapshot);
@@ -705,6 +707,7 @@ internal static class DrawingObjectSvgCodec
         ValidateMixingStrokePayloads(snapshot, formatVersion);
         ValidateImportedSvgSources(snapshot);
         ValidateTextObjects(snapshot);
+        ValidateObjectDistortions(snapshot, formatVersion);
         var pointCount = CountPoints(snapshot.GradientPathLocalPoints)
             + CountPoints(snapshot.FreehandLocalPoints)
             + snapshot.MixingStrokeLocalSamples.Values.Sum(samples => (long)samples.Length)
@@ -713,10 +716,11 @@ internal static class DrawingObjectSvgCodec
             + CountPoints(snapshot.ShapeGradientMappingLocalContours)
             + CountPoints(snapshot.PathLocalContours)
             + CountPoints(snapshot.PathBezierLocalContours) * 3
-            + CountPoints(snapshot.FreehandBezierLocalNodes) * 3;
+            + CountPoints(snapshot.FreehandBezierLocalNodes) * 3
+            + CountDistortionPoints(snapshot.ObjectDistortions);
         if (pointCount > MaxPointsPerAsset)
         {
-            throw new InvalidDataException("The drawing-object asset exceeds the supported point count.");
+            throw new InvalidDataException("The symbol asset exceeds the supported point count.");
         }
         ValidateTimeline(snapshot.Timeline, formatVersion);
     }
@@ -820,6 +824,21 @@ internal static class DrawingObjectSvgCodec
                 throw new InvalidDataException($"Imported SVG object {index} has no source payload.");
             }
         }
+
+        if (snapshot.ImportedSvgNames is null)
+        {
+            throw new InvalidDataException("Imported SVG name metadata is missing.");
+        }
+        foreach (var (index, name) in snapshot.ImportedSvgNames)
+        {
+            if ((uint)index >= snapshot.ObjectCount
+                || snapshot.ShapeKind[index] != ShapeKind.ImportedSvg
+                || string.IsNullOrWhiteSpace(name)
+                || name.Length > MaxImportedSvgNameCharacters)
+            {
+                throw new InvalidDataException("Imported SVG name metadata is invalid.");
+            }
+        }
     }
 
     private static void ValidateTextObjects(VectorSceneSnapshot snapshot)
@@ -858,6 +877,68 @@ internal static class DrawingObjectSvgCodec
             {
                 throw new InvalidDataException($"Text object {index} has no editable payload.");
             }
+        }
+    }
+
+    private static void ValidateObjectDistortions(VectorSceneSnapshot snapshot, int formatVersion)
+    {
+        if (snapshot.ObjectDistortions is null)
+        {
+            throw new InvalidDataException("Object-distortion metadata is missing.");
+        }
+        if (formatVersion < 4 && snapshot.ObjectDistortions.Count > 0)
+        {
+            throw new InvalidDataException("Object-distortion metadata requires SVG format version 4.");
+        }
+
+        foreach (var (objectIndex, warps) in snapshot.ObjectDistortions)
+        {
+            if ((uint)objectIndex >= snapshot.ObjectCount
+                || warps is null
+                || warps.Length is 0 or > MaxDistortionWarpsPerObject
+                || warps.Any(warp => !warp.IsValid))
+            {
+                throw new InvalidDataException("Object-distortion metadata is invalid.");
+            }
+
+            foreach (var warp in warps)
+            {
+                ValidateDistortionSide(warp.Envelope.Top);
+                ValidateDistortionSide(warp.Envelope.Right);
+                ValidateDistortionSide(warp.Envelope.Bottom);
+                ValidateDistortionSide(warp.Envelope.Left);
+            }
+        }
+    }
+
+    private static void ValidateDistortionSide(IReadOnlyList<DistortBezierAnchor> anchors)
+    {
+        if (anchors.Count < 2)
+        {
+            throw new InvalidDataException("A distortion boundary has too few anchors.");
+        }
+
+        var ids = new HashSet<Guid>();
+        var previousSourceT = -1f;
+        foreach (var anchor in anchors)
+        {
+            if (anchor.Id == Guid.Empty
+                || !ids.Add(anchor.Id)
+                || !float.IsFinite(anchor.SourceT)
+                || anchor.SourceT < 0f
+                || anchor.SourceT > 1f
+                || anchor.SourceT <= previousSourceT
+                || !Finite(
+                    anchor.Anchor.X,
+                    anchor.Anchor.Y,
+                    anchor.IncomingControl.X,
+                    anchor.IncomingControl.Y,
+                    anchor.OutgoingControl.X,
+                    anchor.OutgoingControl.Y))
+            {
+                throw new InvalidDataException("A distortion boundary anchor is invalid.");
+            }
+            previousSourceT = anchor.SourceT;
         }
     }
 
@@ -1063,6 +1144,16 @@ internal static class DrawingObjectSvgCodec
 
     private static long CountPoints(IReadOnlyDictionary<int, PathBezierNode[]> values) =>
         values.Values.Sum(nodes => (long)nodes.Length);
+
+    private static long CountDistortionPoints(IReadOnlyDictionary<int, DistortWarp[]> values)
+    {
+        return values.Values.Sum(warps => warps.Sum(warp =>
+            3L * (warp.Envelope.Top.Length
+                + warp.Envelope.Right.Length
+                + warp.Envelope.Bottom.Length
+                + warp.Envelope.Left.Length)
+            + 3L));
+    }
 
     private static void ValidateArray<T>(T[]? values, int expectedLength, string name)
     {

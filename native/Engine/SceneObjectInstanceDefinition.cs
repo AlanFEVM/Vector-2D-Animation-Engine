@@ -33,6 +33,8 @@ internal readonly record struct InstanceFrameState(
     private readonly bool _hasStoredTintArgb;
     private readonly int _storedTintArgb;
 
+    public DistortWarp? Distortion { get; init; }
+
     public PointF Position => new(X, Y);
 
     // Zero-initialized structs come from project files written before appearance fields existed.
@@ -94,6 +96,7 @@ internal class DrawingObjectInstanceDefinition
     public float ScaleX { get; set; } = 1;
     public float ScaleY { get; set; } = 1;
     public float ScaleZ { get; set; } = 1;
+    public DistortWarp? Distortion { get; set; }
     public float Alpha
     {
         get => _alpha;
@@ -144,6 +147,7 @@ internal class DrawingObjectInstanceDefinition
             ScaleX = ScaleX,
             ScaleY = ScaleY,
             ScaleZ = ScaleZ,
+            Distortion = Distortion?.DeepClone(),
             Alpha = Alpha,
             TintArgb = TintArgb,
             PlaybackFps = PlaybackFps,
@@ -360,7 +364,8 @@ internal class DrawingObjectInstanceDefinition
             ScaleY = Lerp(source.ScaleY, target.ScaleY, progress),
             ScaleZ = Lerp(source.ScaleZ, target.ScaleZ, progress),
             Alpha = Lerp(source.Alpha, target.Alpha, progress),
-            TintArgb = LerpArgb(source.TintArgb, target.TintArgb, progress)
+            TintArgb = LerpArgb(source.TintArgb, target.TintArgb, progress),
+            Distortion = source.Distortion?.DeepClone()
         };
     }
 
@@ -406,7 +411,8 @@ internal class DrawingObjectInstanceDefinition
             HoldFrame)
         {
             Alpha = Alpha,
-            TintArgb = TintArgb
+            TintArgb = TintArgb,
+            Distortion = Distortion?.DeepClone()
         };
     }
 
@@ -424,6 +430,7 @@ internal class DrawingObjectInstanceDefinition
         ScaleX = state.ScaleX;
         ScaleY = state.ScaleY;
         ScaleZ = state.ScaleZ;
+        Distortion = state.Distortion?.DeepClone();
         Alpha = state.Alpha;
         TintArgb = state.TintArgb;
         PlaybackFps = state.PlaybackFps;
@@ -445,7 +452,8 @@ internal class DrawingObjectInstanceDefinition
             || !float.IsFinite(state.ScaleX)
             || !float.IsFinite(state.ScaleY)
             || !float.IsFinite(state.ScaleZ)
-            || !float.IsFinite(state.Alpha))
+            || !float.IsFinite(state.Alpha)
+            || state.Distortion is { IsValid: false })
         {
             return false;
         }
@@ -456,7 +464,8 @@ internal class DrawingObjectInstanceDefinition
             TintArgb = state.TintArgb | unchecked((int)0xff000000),
             PlaybackFps = Math.Clamp(state.PlaybackFps, 1m, 120m),
             PlaybackMode = Enum.IsDefined(state.PlaybackMode) ? state.PlaybackMode : DrawingObjectPlaybackMode.PlayOnce,
-            HoldFrame = Math.Max(0, state.HoldFrame)
+            HoldFrame = Math.Max(0, state.HoldFrame),
+            Distortion = state.Distortion?.DeepClone()
         };
         return true;
     }

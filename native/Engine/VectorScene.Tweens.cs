@@ -4,11 +4,45 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class VectorScene
 {
+    internal static bool SupportsTimelineTweenLayer(
+        DrawingLayerKind layerKind,
+        TimelineTweenKind kind)
+    {
+        return layerKind == DrawingLayerKind.Drawing
+            || (layerKind == DrawingLayerKind.Mask && kind == TimelineTweenKind.Shape);
+    }
+
     private sealed record ShapeTweenGeometryPlan(
         bool Closed,
         PointF[][] SourceContours,
         PointF[][] TargetContours,
-        int[] ContourDepths);
+        int[] ContourDepths,
+        ShapeTweenContourMapping[] ContourMappings,
+        bool BoundaryCoupled = false,
+        ShapeTweenBoundaryConstraint? BoundaryConstraint = null);
+
+    private sealed record ShapeTweenContourMapping(
+        int? SourceOriginalIndex,
+        int? TargetOriginalIndex,
+        float[] SourcePositions,
+        float[] TargetPositions,
+        bool SourceReversed,
+        bool TargetReversed);
+
+    private sealed record ShapeTweenBoundarySlice(
+        int FillPlanIndex,
+        int ContourPlanIndex,
+        ShapeTweenGeometryPlan Geometry,
+        double StartCoordinate,
+        double EndCoordinate);
+
+    private sealed record ShapeTweenBoundaryConstraint(
+        ShapeTweenGeometryPlan FillGeometry,
+        int ContourPlanIndex,
+        double SourceStartCoordinate,
+        double SourceEndCoordinate,
+        double TargetStartCoordinate,
+        double TargetEndCoordinate);
 
     private sealed record ShapeTweenContourDescriptor(
         int OriginalIndex,
@@ -27,6 +61,7 @@ internal sealed partial class VectorScene
         int OriginalIndex,
         int ObjectIndex,
         bool Closed,
+        PointF[][] Contours,
         PointF NormalizedCenter,
         float MeasureRatio,
         float PerimeterRatio);
@@ -154,6 +189,11 @@ internal sealed partial class VectorScene
             error = "Select a drawing layer.";
             return false;
         }
+        if (!SupportsTimelineTweenLayer(GetLayerKind(layer), kind))
+        {
+            error = "Select a drawing layer.";
+            return false;
+        }
 
         SynchronizeTimelineTracks();
         var resolvedTrack = Timeline.FindTrackByTargetId(LayerIds[layer]);
@@ -194,7 +234,7 @@ internal sealed partial class VectorScene
         if (kind == TimelineTweenKind.Classic
             && (sourceObjects.Length != 1 || targetObjects.Length != 1))
         {
-            error = "Classic tweens require one drawing object at both endpoints.";
+            error = "Classic tweens require one vector object at both endpoints.";
             return false;
         }
         if (kind == TimelineTweenKind.Shape
@@ -387,13 +427,427 @@ internal sealed partial class VectorScene
                 ObjectSubOrder[template]));
         }
 
-        plans = prepared
+        plans = CoupleShapeTweenBoundaryPlans(prepared)
             .OrderBy(plan => plan.ObjectOrder)
             .ThenBy(plan => plan.ObjectSubOrder)
             .ThenBy(plan => plan.Source ?? int.MaxValue)
             .ThenBy(plan => plan.Target ?? int.MaxValue)
             .ToArray();
         return plans.Length > 0;
+    }
+
+    private IReadOnlyList<ShapeTweenObjectPlan> CoupleShapeTweenBoundaryPlans(
+        IReadOnlyList<ShapeTweenObjectPlan> plans)
+    {
+        var coupled = new List<ShapeTweenObjectPlan>(plans.Count);
+        foreach (var plan in plans)
+        {
+            if (plan.Geometry.Closed)
+            {
+                coupled.Add(plan);
+                continue;
+            }
+
+            ShapeTweenBoundarySlice? sourceSlice = null;
+            ShapeTweenBoundarySlice? targetSlice = null;
+            var hasSourceSlice = plan.Source.HasValue
+                && TryCreateShapeTweenBoundarySlice(
+                    plan.Source.Value,
+                    sourceEndpoint: true,
+                    plans,
+                    out sourceSlice);
+            var hasTargetSlice = plan.Target.HasValue
+                && TryCreateShapeTweenBoundarySlice(
+                    plan.Target.Value,
+                    sourceEndpoint: false,
+                    plans,
+                    out targetSlice);
+
+            if (plan.Source.HasValue && plan.Target.HasValue)
+            {
+                if (hasSourceSlice
+                    && hasTargetSlice
+                    && sourceSlice!.FillPlanIndex == targetSlice!.FillPlanIndex
+                    && sourceSlice.ContourPlanIndex == targetSlice.ContourPlanIndex)
+                {
+                    var fillGeometry = plans[sourceSlice.FillPlanIndex].Geometry;
+                    coupled.Add(plan with
+                    {
+                        Geometry = CreateShapeTweenBoundaryConstraintGeometry(
+                            sourceSlice!,
+                            targetSlice!,
+                            fillGeometry)
+                    });
+                }
+                else
+                {
+                    coupled.Add(plan);
+                }
+                continue;
+            }
+
+            if (hasSourceSlice)
+            {
+                coupled.Add(plan with
+                {
+                    Geometry = CreateShapeTweenBoundaryConstraintGeometry(
+                        sourceSlice!,
+                        sourceSlice!,
+                        plans[sourceSlice!.FillPlanIndex].Geometry)
+                });
+            }
+            else if (hasTargetSlice)
+            {
+                coupled.Add(plan with
+                {
+                    Geometry = CreateShapeTweenBoundaryConstraintGeometry(
+                        targetSlice!,
+                        targetSlice!,
+                        plans[targetSlice!.FillPlanIndex].Geometry)
+                });
+            }
+            else
+            {
+                coupled.Add(plan);
+            }
+        }
+
+        return coupled;
+    }
+
+    private static ShapeTweenGeometryPlan CreateShapeTweenBoundaryConstraintGeometry(
+        ShapeTweenBoundarySlice source,
+        ShapeTweenBoundarySlice target,
+        ShapeTweenGeometryPlan fillGeometry)
+    {
+        var sourceStart = source.StartCoordinate;
+        var sourceEnd = source.EndCoordinate;
+        var targetStart = target.StartCoordinate;
+        var targetEnd = target.EndCoordinate;
+        if (Math.Sign(sourceEnd - sourceStart) != Math.Sign(targetEnd - targetStart))
+        {
+            (targetStart, targetEnd) = (targetEnd, targetStart);
+        }
+
+        var pointCount = fillGeometry.SourceContours[source.ContourPlanIndex].Length;
+        if (pointCount > 0)
+        {
+            var cycleShift = Math.Round((sourceStart - targetStart) / pointCount) * pointCount;
+            targetStart += cycleShift;
+            targetEnd += cycleShift;
+        }
+
+        return source.Geometry with
+        {
+            BoundaryCoupled = true,
+            BoundaryConstraint = new ShapeTweenBoundaryConstraint(
+                fillGeometry,
+                source.ContourPlanIndex,
+                sourceStart,
+                sourceEnd,
+                targetStart,
+                targetEnd)
+        };
+    }
+
+    private bool TryCreateShapeTweenBoundarySlice(
+        int lineObjectIndex,
+        bool sourceEndpoint,
+        IReadOnlyList<ShapeTweenObjectPlan> plans,
+        out ShapeTweenBoundarySlice? slice)
+    {
+        slice = null;
+        var candidates = new List<ShapeTweenBoundarySlice>();
+        foreach (var link in CaptureFillBoundaryLineLinks(
+                     lineObjectIndex,
+                     ObjectKeyframeFrame[lineObjectIndex]))
+        {
+            for (var fillPlanIndex = 0; fillPlanIndex < plans.Count; fillPlanIndex++)
+            {
+                var fillPlan = plans[fillPlanIndex];
+                if (!fillPlan.Geometry.Closed
+                    || (sourceEndpoint ? fillPlan.Source : fillPlan.Target) != link.FillObjectIndex)
+                {
+                    continue;
+                }
+
+                for (var contourPlanIndex = 0;
+                     contourPlanIndex < fillPlan.Geometry.ContourMappings.Length;
+                     contourPlanIndex++)
+                {
+                    var mapping = fillPlan.Geometry.ContourMappings[contourPlanIndex];
+                    if ((sourceEndpoint
+                            ? mapping.SourceOriginalIndex
+                            : mapping.TargetOriginalIndex) != link.ContourIndex
+                        || !TryCreateShapeTweenBoundaryGeometry(
+                            fillPlan.Geometry,
+                            contourPlanIndex,
+                            link,
+                            sourceEndpoint,
+                            out var geometry,
+                            out var startCoordinate,
+                            out var endCoordinate))
+                    {
+                        continue;
+                    }
+
+                    candidates.Add(new ShapeTweenBoundarySlice(
+                        fillPlanIndex,
+                        contourPlanIndex,
+                        geometry,
+                        startCoordinate,
+                        endCoordinate));
+                }
+            }
+        }
+
+        if (candidates.Count != 1) return false;
+        slice = candidates[0];
+        return true;
+    }
+
+    private static bool TryCreateShapeTweenBoundaryGeometry(
+        ShapeTweenGeometryPlan fillGeometry,
+        int contourPlanIndex,
+        FillBoundaryLineLink link,
+        bool sourceEndpoint,
+        out ShapeTweenGeometryPlan geometry,
+        out double lineStartCoordinate,
+        out double lineEndCoordinate)
+    {
+        geometry = null!;
+        lineStartCoordinate = lineEndCoordinate = 0;
+        if (fillGeometry.SourceContours.Length != 1
+            || fillGeometry.TargetContours.Length != 1
+            || (uint)contourPlanIndex >= fillGeometry.SourceContours.Length
+            || (uint)contourPlanIndex >= fillGeometry.TargetContours.Length
+            || (uint)contourPlanIndex >= fillGeometry.ContourMappings.Length
+            || !TryGetShapeTweenBoundarySpan(link, out var startPosition, out var endPosition))
+        {
+            return false;
+        }
+
+        var mapping = fillGeometry.ContourMappings[contourPlanIndex];
+        var referencePositions = sourceEndpoint
+            ? mapping.SourcePositions
+            : mapping.TargetPositions;
+        var referenceReversed = sourceEndpoint
+            ? mapping.SourceReversed
+            : mapping.TargetReversed;
+        var sourceContour = fillGeometry.SourceContours[contourPlanIndex];
+        var targetContour = fillGeometry.TargetContours[contourPlanIndex];
+        if (sourceContour.Length < 2
+            || sourceContour.Length != targetContour.Length
+            || referencePositions.Length != sourceContour.Length
+            || !TryLocateShapeTweenContourPosition(
+                referencePositions,
+                referenceReversed,
+                startPosition,
+                out var rawStartCoordinate)
+            || !TryLocateShapeTweenContourPosition(
+                referencePositions,
+                referenceReversed,
+                endPosition,
+                out var rawEndCoordinate)
+            || !TryNormalizeShapeTweenBoundaryCoordinates(
+                rawStartCoordinate,
+                rawEndCoordinate,
+                sourceContour.Length,
+                referenceReversed,
+                link.Reversed,
+                out lineStartCoordinate,
+                out lineEndCoordinate)
+            || !TryBuildShapeTweenBoundarySlice(
+                sourceContour,
+                targetContour,
+                lineStartCoordinate,
+                lineEndCoordinate,
+                out var preparedSource,
+                out var preparedTarget))
+        {
+            return false;
+        }
+
+        geometry = new ShapeTweenGeometryPlan(
+            false,
+            [preparedSource],
+            [preparedTarget],
+            [0],
+            [],
+            BoundaryCoupled: true);
+        return true;
+    }
+
+    private static bool TryGetShapeTweenBoundarySpan(
+        FillBoundaryLineLink link,
+        out float startPosition,
+        out float endPosition)
+    {
+        startPosition = endPosition = 0;
+        if ((uint)link.ContourIndex >= link.OriginalContours.Length
+            || link.SegmentIndex < 0
+            || link.SegmentCount <= 0)
+        {
+            return false;
+        }
+
+        var contour = NormalizeTweenContour(link.OriginalContours[link.ContourIndex]);
+        if (contour.Length < 3
+            || link.SegmentIndex >= contour.Length
+            || link.SegmentCount > contour.Length)
+        {
+            return false;
+        }
+
+        var lengths = TweenContourLengths(contour, out var perimeter);
+        if (perimeter <= DrawingTopologyRules.UnitIntersectionTolerance) return false;
+        var spanLength = 0f;
+        for (var segmentOffset = 0; segmentOffset < link.SegmentCount; segmentOffset++)
+        {
+            var segmentIndex = (link.SegmentIndex + segmentOffset) % contour.Length;
+            spanLength += TweenDistance(contour[segmentIndex], contour[(segmentIndex + 1) % contour.Length]);
+        }
+        if (spanLength <= DrawingTopologyRules.UnitIntersectionTolerance) return false;
+
+        startPosition = lengths[link.SegmentIndex] / perimeter;
+        endPosition = TweenWrapPosition(startPosition + spanLength / perimeter);
+        return true;
+    }
+
+    private static bool TryLocateShapeTweenContourPosition(
+        IReadOnlyList<float> positions,
+        bool reversed,
+        float position,
+        out double coordinate)
+    {
+        coordinate = 0;
+        if (positions.Count < 2) return false;
+        position = TweenWrapPosition(position);
+        const float tolerance = 0.0000001f;
+        for (var index = 0; index < positions.Count; index++)
+        {
+            var vertexPosition = TweenWrapPosition(positions[index]);
+            var distance = Math.Min(
+                TweenWrapPosition(position - vertexPosition),
+                TweenWrapPosition(vertexPosition - position));
+            if (distance > tolerance) continue;
+            coordinate = index;
+            return true;
+        }
+
+        for (var index = 0; index < positions.Count; index++)
+        {
+            var from = TweenWrapPosition(positions[index]);
+            var to = TweenWrapPosition(positions[(index + 1) % positions.Count]);
+            var span = reversed
+                ? TweenWrapPosition(from - to)
+                : TweenWrapPosition(to - from);
+            if (span <= tolerance) continue;
+            var offset = reversed
+                ? TweenWrapPosition(from - position)
+                : TweenWrapPosition(position - from);
+            if (offset <= tolerance || offset >= span - tolerance || offset > span) continue;
+            coordinate = index + offset / span;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryNormalizeShapeTweenBoundaryCoordinates(
+        double startCoordinate,
+        double endCoordinate,
+        int pointCount,
+        bool referenceReversed,
+        bool lineReversed,
+        out double lineStartCoordinate,
+        out double lineEndCoordinate)
+    {
+        lineStartCoordinate = lineEndCoordinate = 0;
+        if (pointCount < 2) return false;
+        const double tolerance = 0.000001d;
+        if (!referenceReversed)
+        {
+            while (endCoordinate <= startCoordinate + tolerance) endCoordinate += pointCount;
+            if (endCoordinate - startCoordinate > pointCount + tolerance) return false;
+        }
+        else
+        {
+            while (endCoordinate >= startCoordinate - tolerance) endCoordinate -= pointCount;
+            if (startCoordinate - endCoordinate > pointCount + tolerance) return false;
+        }
+
+        lineStartCoordinate = lineReversed ? endCoordinate : startCoordinate;
+        lineEndCoordinate = lineReversed ? startCoordinate : endCoordinate;
+        return Math.Abs(lineEndCoordinate - lineStartCoordinate) > tolerance;
+    }
+
+    private static bool TryBuildShapeTweenBoundarySlice(
+        IReadOnlyList<PointF> sourceContour,
+        IReadOnlyList<PointF> targetContour,
+        double startCoordinate,
+        double endCoordinate,
+        out PointF[] preparedSource,
+        out PointF[] preparedTarget)
+    {
+        preparedSource = preparedTarget = [];
+        if (sourceContour.Count < 2 || sourceContour.Count != targetContour.Count) return false;
+        var pointCount = sourceContour.Count;
+        const double tolerance = 0.000001d;
+        var increasing = endCoordinate > startCoordinate;
+        if (Math.Abs(endCoordinate - startCoordinate) <= tolerance
+            || Math.Abs(endCoordinate - startCoordinate) > pointCount + tolerance)
+        {
+            return false;
+        }
+
+        var source = new List<PointF>();
+        var target = new List<PointF>();
+        AddShapeTweenBoundaryPoint(source, target, sourceContour, targetContour, startCoordinate);
+        if (increasing)
+        {
+            for (var vertex = (int)Math.Floor(startCoordinate + tolerance) + 1;
+                 vertex < endCoordinate - tolerance;
+                 vertex++)
+            {
+                AddShapeTweenBoundaryPoint(source, target, sourceContour, targetContour, vertex);
+            }
+        }
+        else
+        {
+            for (var vertex = (int)Math.Ceiling(startCoordinate - tolerance) - 1;
+                 vertex > endCoordinate + tolerance;
+                 vertex--)
+            {
+                AddShapeTweenBoundaryPoint(source, target, sourceContour, targetContour, vertex);
+            }
+        }
+        AddShapeTweenBoundaryPoint(source, target, sourceContour, targetContour, endCoordinate);
+        if (source.Count < 2) return false;
+
+        preparedSource = source.ToArray();
+        preparedTarget = target.ToArray();
+        return true;
+    }
+
+    private static void AddShapeTweenBoundaryPoint(
+        ICollection<PointF> source,
+        ICollection<PointF> target,
+        IReadOnlyList<PointF> sourceContour,
+        IReadOnlyList<PointF> targetContour,
+        double coordinate)
+    {
+        var edge = (int)Math.Floor(coordinate);
+        var amount = (float)(coordinate - edge);
+        if (amount >= 1f - 0.000001f)
+        {
+            edge++;
+            amount = 0;
+        }
+        var start = ((edge % sourceContour.Count) + sourceContour.Count) % sourceContour.Count;
+        var end = (start + 1) % sourceContour.Count;
+        source.Add(TweenPoint(sourceContour[start], sourceContour[end], amount));
+        target.Add(TweenPoint(targetContour[start], targetContour[end], amount));
     }
 
     private bool TryDescribeShapeTweenObjects(
@@ -459,6 +913,7 @@ internal sealed partial class VectorScene
                 item.OriginalIndex,
                 item.ObjectIndex,
                 item.Closed,
+                item.Contours,
                 NormalizeTweenPoint(item.Center, bounds),
                 item.Measure / totalMeasure,
                 item.Perimeter / totalPerimeter);
@@ -491,6 +946,29 @@ internal sealed partial class VectorScene
         ShapeTweenObjectDescriptor[] target,
         List<ShapeTweenObjectMatch> matches)
     {
+        if (source.Length == 0)
+        {
+            matches.AddRange(target.Select(item => new ShapeTweenObjectMatch(null, item)));
+            return;
+        }
+        if (target.Length == 0)
+        {
+            matches.AddRange(source.Select(item => new ShapeTweenObjectMatch(item, null)));
+            return;
+        }
+
+        var matchedSource = new bool[source.Length];
+        var matchedTarget = new bool[target.Length];
+        MatchUniqueShapeTweenObjects(
+            source,
+            target,
+            matchedSource,
+            matchedTarget,
+            matches,
+            ShapeTweenOpenGeometryMatches);
+
+        source = source.Where((_, index) => !matchedSource[index]).ToArray();
+        target = target.Where((_, index) => !matchedTarget[index]).ToArray();
         if (source.Length == 0)
         {
             matches.AddRange(target.Select(item => new ShapeTweenObjectMatch(null, item)));
@@ -535,6 +1013,79 @@ internal sealed partial class VectorScene
         {
             if (!matchedTargets[targetIndex]) matches.Add(new ShapeTweenObjectMatch(null, target[targetIndex]));
         }
+    }
+
+    private static void MatchUniqueShapeTweenObjects(
+        IReadOnlyList<ShapeTweenObjectDescriptor> source,
+        IReadOnlyList<ShapeTweenObjectDescriptor> target,
+        bool[] matchedSource,
+        bool[] matchedTarget,
+        List<ShapeTweenObjectMatch> matches,
+        Func<ShapeTweenObjectDescriptor, ShapeTweenObjectDescriptor, bool> predicate)
+    {
+        var sourceCandidateCounts = new int[source.Count];
+        var targetCandidateCounts = new int[target.Count];
+        var sourceCandidates = new int[source.Count];
+        Array.Fill(sourceCandidates, -1);
+        for (var sourceIndex = 0; sourceIndex < source.Count; sourceIndex++)
+        {
+            if (matchedSource[sourceIndex]) continue;
+            for (var targetIndex = 0; targetIndex < target.Count; targetIndex++)
+            {
+                if (matchedTarget[targetIndex]
+                    || !predicate(source[sourceIndex], target[targetIndex]))
+                {
+                    continue;
+                }
+
+                sourceCandidateCounts[sourceIndex]++;
+                targetCandidateCounts[targetIndex]++;
+                sourceCandidates[sourceIndex] = targetIndex;
+            }
+        }
+
+        for (var sourceIndex = 0; sourceIndex < source.Count; sourceIndex++)
+        {
+            var targetIndex = sourceCandidates[sourceIndex];
+            if (matchedSource[sourceIndex]
+                || sourceCandidateCounts[sourceIndex] != 1
+                || targetIndex < 0
+                || targetCandidateCounts[targetIndex] != 1)
+            {
+                continue;
+            }
+
+            matchedSource[sourceIndex] = true;
+            matchedTarget[targetIndex] = true;
+            matches.Add(new ShapeTweenObjectMatch(source[sourceIndex], target[targetIndex]));
+        }
+    }
+
+    private static bool ShapeTweenOpenGeometryMatches(
+        ShapeTweenObjectDescriptor source,
+        ShapeTweenObjectDescriptor target)
+    {
+        if (source.Closed
+            || target.Closed
+            || source.Contours.Length != 1
+            || target.Contours.Length != 1)
+        {
+            return false;
+        }
+
+        var sourceContour = source.Contours[0];
+        var targetContour = target.Contours[0];
+        if (sourceContour.Length != targetContour.Length || sourceContour.Length < 2) return false;
+        var forward = true;
+        var reverse = true;
+        for (var index = 0; index < sourceContour.Length && (forward || reverse); index++)
+        {
+            forward &= TweenDistance(sourceContour[index], targetContour[index])
+                <= DrawingTopologyRules.UnitIntersectionTolerance;
+            reverse &= TweenDistance(sourceContour[index], targetContour[^(index + 1)])
+                <= DrawingTopologyRules.UnitIntersectionTolerance;
+        }
+        return forward || reverse;
     }
 
     private static double ShapeTweenObjectMatchCost(
@@ -848,23 +1399,26 @@ internal sealed partial class VectorScene
         StrokeArgb[destination] = TweenArgb(StrokeArgb[source], StrokeArgb[target], t);
         InterpolateGradientPaint(source, target, destination, t);
 
+        var shape = ShapeKind[source];
         if (kind == TimelineTweenKind.Shape)
         {
-            if (shapePlan is not null) InterpolateShapeGeometry(destination, t, shapePlan);
+            if (shapePlan is not null
+                && !shapePlan.BoundaryCoupled
+                && shape == VectorAnimationEngine.ShapeKind.Line
+                && ShapeKind[target] == VectorAnimationEngine.ShapeKind.Line)
+            {
+                InterpolateLineGeometry(source, target, destination, t, alignDirection: true);
+            }
+            else if (shapePlan is not null)
+            {
+                InterpolateShapeGeometry(destination, t, shapePlan);
+            }
             return;
         }
 
-        var shape = ShapeKind[source];
         if (shape == VectorAnimationEngine.ShapeKind.Line)
         {
-            var sourceCurve = LineCurve(source);
-            var targetCurve = LineCurve(target);
-            SetLineCurve(
-                destination,
-                TweenPoint(sourceCurve.Start, targetCurve.Start, t),
-                TweenPoint(sourceCurve.Control1, targetCurve.Control1, t),
-                TweenPoint(sourceCurve.Control2, targetCurve.Control2, t),
-                TweenPoint(sourceCurve.End, targetCurve.End, t));
+            InterpolateLineGeometry(source, target, destination, t, alignDirection: false);
             return;
         }
 
@@ -945,6 +1499,38 @@ internal sealed partial class VectorScene
                 .ToArray();
             SetMixingBrushRegion(destination, new MixingBrushRegionData(vertices, sourceRegion.TriangleIndices));
         }
+    }
+
+    private void InterpolateLineGeometry(
+        int source,
+        int target,
+        int destination,
+        float t,
+        bool alignDirection)
+    {
+        var sourceCurve = LineCurve(source);
+        var targetCurve = LineCurve(target);
+        if (alignDirection
+            && ShouldReverseOpenContour(
+                sourceCurve.Start,
+                sourceCurve.End,
+                targetCurve.Start,
+                targetCurve.End))
+        {
+            targetCurve = new CubicBoundarySegment(
+                targetCurve.End,
+                targetCurve.Control2,
+                targetCurve.Control1,
+                targetCurve.Start);
+        }
+
+        ShapeKind[destination] = VectorAnimationEngine.ShapeKind.Line;
+        SetLineCurve(
+            destination,
+            TweenPoint(sourceCurve.Start, targetCurve.Start, t),
+            TweenPoint(sourceCurve.Control1, targetCurve.Control1, t),
+            TweenPoint(sourceCurve.Control2, targetCurve.Control2, t),
+            TweenPoint(sourceCurve.End, targetCurve.End, t));
     }
 
     private void InterpolateShapeObject(
@@ -1272,18 +1858,21 @@ internal sealed partial class VectorScene
                 false,
                 [sampledSource],
                 [sampledTarget],
-                [0]);
+                [0],
+                []);
             return true;
         }
 
-        var normalizedSource = sourceContours
-            .Select(NormalizeTweenContour)
-            .Where(contour => contour.Length >= 3)
+        var normalizedSourceItems = sourceContours
+            .Select((contour, index) => (OriginalIndex: index, Points: NormalizeTweenContour(contour)))
+            .Where(item => item.Points.Length >= 3)
             .ToArray();
-        var normalizedTarget = targetContours
-            .Select(NormalizeTweenContour)
-            .Where(contour => contour.Length >= 3)
+        var normalizedTargetItems = targetContours
+            .Select((contour, index) => (OriginalIndex: index, Points: NormalizeTweenContour(contour)))
+            .Where(item => item.Points.Length >= 3)
             .ToArray();
+        var normalizedSource = normalizedSourceItems.Select(item => item.Points).ToArray();
+        var normalizedTarget = normalizedTargetItems.Select(item => item.Points).ToArray();
         if (source.HasValue && normalizedSource.Length == 0
             || target.HasValue && normalizedTarget.Length == 0)
         {
@@ -1293,8 +1882,12 @@ internal sealed partial class VectorScene
         if (!source.HasValue || !target.HasValue)
         {
             var reference = source.HasValue ? normalizedSource : normalizedTarget;
+            var referenceIndices = source.HasValue
+                ? normalizedSourceItems.Select(item => item.OriginalIndex).ToArray()
+                : normalizedTargetItems.Select(item => item.OriginalIndex).ToArray();
             var unmatchedPreparedSource = new PointF[reference.Length][];
             var unmatchedPreparedTarget = new PointF[reference.Length][];
+            var unmatchedMappings = new ShapeTweenContourMapping[reference.Length];
             for (var contourIndex = 0; contourIndex < reference.Length; contourIndex++)
             {
                 var contour = reference[contourIndex];
@@ -1306,7 +1899,17 @@ internal sealed partial class VectorScene
                         contour,
                         degenerate,
                         out unmatchedPreparedSource[contourIndex],
-                        out unmatchedPreparedTarget[contourIndex]);
+                        out unmatchedPreparedTarget[contourIndex],
+                        out var sourcePositions,
+                        out var targetPositions,
+                        out var targetReversed);
+                    unmatchedMappings[contourIndex] = new ShapeTweenContourMapping(
+                        referenceIndices[contourIndex],
+                        null,
+                        sourcePositions,
+                        targetPositions,
+                        SourceReversed: false,
+                        TargetReversed: targetReversed);
                 }
                 else
                 {
@@ -1314,7 +1917,17 @@ internal sealed partial class VectorScene
                         degenerate,
                         contour,
                         out unmatchedPreparedSource[contourIndex],
-                        out unmatchedPreparedTarget[contourIndex]);
+                        out unmatchedPreparedTarget[contourIndex],
+                        out var sourcePositions,
+                        out var targetPositions,
+                        out var targetReversed);
+                    unmatchedMappings[contourIndex] = new ShapeTweenContourMapping(
+                        null,
+                        referenceIndices[contourIndex],
+                        sourcePositions,
+                        targetPositions,
+                        SourceReversed: false,
+                        TargetReversed: targetReversed);
                 }
             }
 
@@ -1322,20 +1935,28 @@ internal sealed partial class VectorScene
                 true,
                 unmatchedPreparedSource,
                 unmatchedPreparedTarget,
-                DetermineReferenceContourDepths(reference));
+                DetermineReferenceContourDepths(reference),
+                unmatchedMappings);
             return true;
         }
 
         var sourceBounds = ContourBounds(normalizedSource);
         var targetBounds = ContourBounds(normalizedTarget);
-        var sourceDescriptors = DescribeTweenContours(normalizedSource, sourceBounds);
-        var targetDescriptors = DescribeTweenContours(normalizedTarget, targetBounds);
+        var sourceDescriptors = DescribeTweenContours(
+            normalizedSource,
+            sourceBounds,
+            normalizedSourceItems.Select(item => item.OriginalIndex).ToArray());
+        var targetDescriptors = DescribeTweenContours(
+            normalizedTarget,
+            targetBounds,
+            normalizedTargetItems.Select(item => item.OriginalIndex).ToArray());
         var matches = MatchTweenContours(sourceDescriptors, targetDescriptors);
         if (matches.Length == 0) return false;
 
         var preparedSource = new PointF[matches.Length][];
         var preparedTarget = new PointF[matches.Length][];
         var depths = new int[matches.Length];
+        var mappings = new ShapeTweenContourMapping[matches.Length];
         for (var matchIndex = 0; matchIndex < matches.Length; matchIndex++)
         {
             var match = matches[matchIndex];
@@ -1352,6 +1973,13 @@ internal sealed partial class VectorScene
             {
                 preparedSource[matchIndex] = sourceContour!.ToArray();
                 preparedTarget[matchIndex] = targetContour!.ToArray();
+                mappings[matchIndex] = new ShapeTweenContourMapping(
+                    match.Source!.OriginalIndex,
+                    match.Target!.OriginalIndex,
+                    TweenContourVertexPositions(sourceContour!),
+                    TweenContourVertexPositions(targetContour!),
+                    SourceReversed: false,
+                    TargetReversed: false);
             }
             else
             {
@@ -1370,13 +1998,23 @@ internal sealed partial class VectorScene
                     sourceContour,
                     targetContour,
                     out preparedSource[matchIndex],
-                    out preparedTarget[matchIndex]);
+                    out preparedTarget[matchIndex],
+                    out var sourcePositions,
+                    out var targetPositions,
+                    out var targetReversed);
+                mappings[matchIndex] = new ShapeTweenContourMapping(
+                    match.Source?.OriginalIndex,
+                    match.Target?.OriginalIndex,
+                    sourcePositions,
+                    targetPositions,
+                    SourceReversed: false,
+                    TargetReversed: targetReversed);
             }
 
             depths[matchIndex] = match.Source?.Depth ?? match.Target!.Depth;
         }
 
-        plan = new ShapeTweenGeometryPlan(true, preparedSource, preparedTarget, depths);
+        plan = new ShapeTweenGeometryPlan(true, preparedSource, preparedTarget, depths, mappings);
         return true;
     }
 
@@ -1389,14 +2027,31 @@ internal sealed partial class VectorScene
         {
             ShapeKind[destination] = VectorAnimationEngine.ShapeKind.Freeform;
             ShapeVertexCounts[destination] = 0;
-            SetFreehandPoints(
-                destination,
-                plan.SourceContours[0]
+            var points = plan.BoundaryConstraint is { } constraint
+                ? InterpolateShapeTweenBoundaryConstraint(constraint, t)
+                : plan.SourceContours[0]
                     .Select((point, pointIndex) => TweenPoint(
                         point,
                         plan.TargetContours[0][pointIndex],
                         t))
-                    .ToArray());
+                    .ToArray();
+            if (points.Length < 2)
+            {
+                points = plan.SourceContours[0]
+                    .Select((point, pointIndex) => TweenPoint(
+                        point,
+                        plan.TargetContours[0][pointIndex],
+                        t))
+                    .ToArray();
+            }
+            if (plan.BoundaryCoupled)
+            {
+                SetShapeTweenBoundaryPoints(destination, points);
+            }
+            else
+            {
+                SetFreehandPoints(destination, points);
+            }
             return;
         }
 
@@ -1417,9 +2072,73 @@ internal sealed partial class VectorScene
         SetPathContours(destination, interpolated);
     }
 
+    private static PointF[] InterpolateShapeTweenBoundaryConstraint(
+        ShapeTweenBoundaryConstraint constraint,
+        float t)
+    {
+        var fillGeometry = constraint.FillGeometry;
+        var contourIndex = constraint.ContourPlanIndex;
+        if ((uint)contourIndex >= fillGeometry.SourceContours.Length
+            || (uint)contourIndex >= fillGeometry.TargetContours.Length)
+        {
+            return [];
+        }
+
+        var sourceContour = fillGeometry.SourceContours[contourIndex];
+        var targetContour = fillGeometry.TargetContours[contourIndex];
+        if (sourceContour.Length < 2 || sourceContour.Length != targetContour.Length) return [];
+        var interpolatedContour = sourceContour
+            .Select((point, pointIndex) => TweenPoint(point, targetContour[pointIndex], t))
+            .ToArray();
+        var startCoordinate = constraint.SourceStartCoordinate
+            + (constraint.TargetStartCoordinate - constraint.SourceStartCoordinate) * t;
+        var endCoordinate = constraint.SourceEndCoordinate
+            + (constraint.TargetEndCoordinate - constraint.SourceEndCoordinate) * t;
+        return TryBuildShapeTweenBoundarySlice(
+                interpolatedContour,
+                interpolatedContour,
+                startCoordinate,
+                endCoordinate,
+                out var points,
+                out _)
+            ? points
+            : [];
+    }
+
+    private void SetShapeTweenBoundaryPoints(int objectIndex, PointF[] points)
+    {
+        points = NormalizeFreehandPoints(points);
+        if (points.Length == 0) return;
+        var left = points.Min(point => point.X);
+        var right = points.Max(point => point.X);
+        var top = points.Min(point => point.Y);
+        var bottom = points.Max(point => point.Y);
+        var center = VectorUnits.Quantize(new PointF(
+            (left + right) * 0.5f,
+            (top + bottom) * 0.5f));
+        X[objectIndex] = center.X;
+        Y[objectIndex] = center.Y;
+        Width[objectIndex] = Math.Max(
+            Stroke[objectIndex],
+            VectorUnits.Quantize(right - left + Stroke[objectIndex]));
+        Height[objectIndex] = Math.Max(
+            Stroke[objectIndex],
+            VectorUnits.Quantize(bottom - top + Stroke[objectIndex]));
+        Angle[objectIndex] = 0;
+        _freehandLocalPoints[objectIndex] = points
+            .Select(point => new PointF(
+                VectorUnits.Quantize(point.X - center.X),
+                VectorUnits.Quantize(point.Y - center.Y)))
+            .ToArray();
+        _freehandBezierLocalNodes.Remove(objectIndex);
+        _legacyFreehandBezierNodeCache.Remove(objectIndex);
+        InvalidateDeferredTopologyQueries();
+    }
+
     private static ShapeTweenContourDescriptor[] DescribeTweenContours(
         PointF[][] contours,
-        RectangleF bounds)
+        RectangleF bounds,
+        IReadOnlyList<int>? originalIndices = null)
     {
         var depths = DetermineReferenceContourDepths(contours);
         var areas = contours.Select(contour => Math.Abs(TweenSignedArea(contour))).ToArray();
@@ -1431,7 +2150,9 @@ internal sealed partial class VectorScene
             {
                 var center = TweenContourCentroid(contour);
                 return new ShapeTweenContourDescriptor(
-                    index,
+                    originalIndices is not null && index < originalIndices.Count
+                        ? originalIndices[index]
+                        : index,
                     contour,
                     center,
                     NormalizeTweenPoint(center, bounds),
@@ -1607,12 +2328,16 @@ internal sealed partial class VectorScene
         PointF[] source,
         PointF[] target,
         out PointF[] preparedSource,
-        out PointF[] preparedTarget)
+        out PointF[] preparedTarget,
+        out float[] preparedSourcePositions,
+        out float[] preparedTargetPositions,
+        out bool targetReversed)
     {
         var probeCount = Math.Clamp(Math.Max(source.Length, target.Length), 16, 64);
         var sourceProbe = ResampleClosedContour(source, probeCount);
         var targetProbe = ResampleClosedContour(target, probeCount);
         FindClosedContourAlignment(sourceProbe, targetProbe, out var offset, out var reversed);
+        targetReversed = reversed;
         var phase = offset / (float)probeCount;
 
         var sourceLengths = TweenContourLengths(source, out var sourcePerimeter);
@@ -1637,6 +2362,8 @@ internal sealed partial class VectorScene
 
         preparedSource = new PointF[positions.Count];
         preparedTarget = new PointF[positions.Count];
+        preparedSourcePositions = new float[positions.Count];
+        preparedTargetPositions = new float[positions.Count];
         var pointIndex = 0;
         foreach (var positionKey in positions)
         {
@@ -1644,8 +2371,23 @@ internal sealed partial class VectorScene
             var targetPosition = TweenWrapPosition(phase + (reversed ? -position : position));
             preparedSource[pointIndex] = SampleTweenContour(source, sourceLengths, sourcePerimeter, position);
             preparedTarget[pointIndex] = SampleTweenContour(target, targetLengths, targetPerimeter, targetPosition);
+            preparedSourcePositions[pointIndex] = TweenWrapPosition(position);
+            preparedTargetPositions[pointIndex] = TweenWrapPosition(targetPosition);
             pointIndex++;
         }
+    }
+
+    private static float[] TweenContourVertexPositions(IReadOnlyList<PointF> contour)
+    {
+        var lengths = TweenContourLengths(contour, out var perimeter);
+        if (perimeter <= DrawingTopologyRules.UnitIntersectionTolerance)
+        {
+            return new float[contour.Count];
+        }
+
+        return Enumerable.Range(0, contour.Count)
+            .Select(index => TweenWrapPosition(lengths[index] / perimeter))
+            .ToArray();
     }
 
     private static void AddTweenContourBreakpoints(
@@ -1887,11 +2629,27 @@ internal sealed partial class VectorScene
     private static void AlignOpenContourDirection(IReadOnlyList<PointF> source, PointF[] target)
     {
         if (source.Count < 2 || target.Length < 2) return;
-        var forward = TweenDistance(source[0], target[0])
-            + TweenDistance(source[^1], target[^1]);
-        var reverse = TweenDistance(source[0], target[^1])
-            + TweenDistance(source[^1], target[0]);
-        if (reverse < forward) Array.Reverse(target);
+        if (ShouldReverseOpenContour(source[0], source[^1], target[0], target[^1])) Array.Reverse(target);
+    }
+
+    private static bool ShouldReverseOpenContour(
+        PointF sourceStart,
+        PointF sourceEnd,
+        PointF targetStart,
+        PointF targetEnd)
+    {
+        var forward = TweenDistance(sourceStart, targetStart)
+            + TweenDistance(sourceEnd, targetEnd);
+        var reverse = TweenDistance(sourceStart, targetEnd)
+            + TweenDistance(sourceEnd, targetStart);
+        if (reverse < forward - DrawingTopologyRules.UnitIntersectionTolerance) return true;
+        if (Math.Abs(reverse - forward) > DrawingTopologyRules.UnitIntersectionTolerance) return false;
+
+        var sourceDx = sourceEnd.X - sourceStart.X;
+        var sourceDy = sourceEnd.Y - sourceStart.Y;
+        var targetDx = targetEnd.X - targetStart.X;
+        var targetDy = targetEnd.Y - targetStart.Y;
+        return sourceDx * targetDx + sourceDy * targetDy < 0;
     }
 
     private static PointF[] NormalizeTweenContour(IReadOnlyList<PointF> contour)

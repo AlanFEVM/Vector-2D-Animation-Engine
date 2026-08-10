@@ -1,4 +1,4 @@
 interface:
   display_name: "Vector2D Drawing Geometry"
   short_description: "Drawing geometry and topology edit workflows"
-  default_prompt: "Use $vector2d-drawing-geometry to implement a drawing geometry or topology change."
+  default_prompt: "Use $vector2d-drawing-geometry to implement or review an Engine-side geometry or topology change."

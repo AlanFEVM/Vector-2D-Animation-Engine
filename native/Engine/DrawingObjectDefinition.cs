@@ -20,9 +20,9 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
     }
 
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
-    public string Name { get; set; } = "Drawing Object";
+    public string Name { get; set; } = "Symbol";
     public string Kind { get; set; } = "Symbol";
-    public string Detail { get; set; } = "Reusable drawing object";
+    public string Detail { get; set; } = "Reusable symbol";
     public string AssetFolderId { get; internal set; } = "";
     public IReadOnlyList<string> AssetTagIds => _assetTagIdView;
     public bool CanDraw => true;
@@ -71,7 +71,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
             || _instances.Any(item => string.Equals(item.Id, instance.Id, StringComparison.Ordinal)))
         {
             throw new InvalidOperationException(
-                "The drawing-object instance would create an invalid or recursive containment relationship.");
+                "The symbol instance would create an invalid or recursive containment relationship.");
         }
 
         if (Scene.LayerCount > 0)
@@ -312,7 +312,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         var instances = InstancesInLayer(Scene.LayerIds[layer]);
         if (kind == TimelineTweenKind.Shape)
         {
-            error = "Shape tweens do not support drawing object instances.";
+            error = "Shape tweens do not support symbol instances.";
             return false;
         }
 
@@ -320,13 +320,13 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         var targetObjectCount = Scene.TimelineObjectCountForKeyframe(layer, endExposure.SourceKeyframeFrame);
         if (sourceObjectCount > 0 || targetObjectCount > 0)
         {
-            error = "Tween layers cannot mix vector shapes and drawing object instances.";
+            error = "Tween layers cannot mix vector shapes and symbol instances.";
             return false;
         }
 
         if (instances.Count != 1)
         {
-            error = "Classic tweens require exactly one drawing object instance on an instance layer.";
+            error = "Classic tweens require exactly one symbol instance on an instance layer.";
             return false;
         }
 
@@ -381,7 +381,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(layerIds);
-        if (!project.OwnsDrawingObject(this)) throw new InvalidOperationException("The drawing object is not owned by this project.");
+        if (!project.OwnsDrawingObject(this)) throw new InvalidOperationException("The symbol is not owned by this project.");
 
         var removal = Scene.ResolveLayerRemovalIndices(layerIds);
         if (removal.Length == 0 || removal.Length >= Scene.LayerCount) return false;
@@ -397,70 +397,16 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
 
     internal bool CanMoveInstancesInLayer(IReadOnlyCollection<string> instanceIds, int direction)
     {
-        return CreateInstanceMovePlan(instanceIds, direction).Count > 0;
+        return _instanceIndex.CreateMovePlan(instanceIds, direction).Count > 0;
     }
 
     internal bool MoveInstancesInLayer(IReadOnlyCollection<string> instanceIds, int direction)
     {
-        var plan = CreateInstanceMovePlan(instanceIds, direction);
+        var plan = _instanceIndex.CreateMovePlan(instanceIds, direction);
         if (plan.Count == 0) return false;
         foreach (var (index, instance) in plan) _instances[index] = instance;
         _instanceIndex.Invalidate();
         return true;
-    }
-
-    private Dictionary<int, DrawingObjectInstanceDefinition> CreateInstanceMovePlan(
-        IReadOnlyCollection<string> instanceIds,
-        int direction)
-    {
-        ArgumentNullException.ThrowIfNull(instanceIds);
-        if (instanceIds.Count == 0 || direction == 0) return [];
-
-        var selectedIds = instanceIds.ToHashSet(StringComparer.Ordinal);
-        var plan = new Dictionary<int, DrawingObjectInstanceDefinition>();
-        foreach (var layerId in _instances
-                     .Where(instance => selectedIds.Contains(instance.Id))
-                     .Select(instance => instance.SceneLayerId)
-                     .Distinct(StringComparer.Ordinal))
-        {
-            var positions = Enumerable.Range(0, _instances.Count)
-                .Where(index => string.Equals(_instances[index].SceneLayerId, layerId, StringComparison.Ordinal))
-                .ToArray();
-            if (positions.Length < 2) continue;
-            var arranged = positions.Select(index => _instances[index]).ToArray();
-            var moved = false;
-            if (direction > 0)
-            {
-                for (var index = arranged.Length - 2; index >= 0; index--)
-                {
-                    if (!selectedIds.Contains(arranged[index].Id)
-                        || selectedIds.Contains(arranged[index + 1].Id))
-                    {
-                        continue;
-                    }
-                    (arranged[index], arranged[index + 1]) = (arranged[index + 1], arranged[index]);
-                    moved = true;
-                }
-            }
-            else
-            {
-                for (var index = 1; index < arranged.Length; index++)
-                {
-                    if (!selectedIds.Contains(arranged[index].Id)
-                        || selectedIds.Contains(arranged[index - 1].Id))
-                    {
-                        continue;
-                    }
-                    (arranged[index], arranged[index - 1]) = (arranged[index - 1], arranged[index]);
-                    moved = true;
-                }
-            }
-
-            if (!moved) continue;
-            for (var index = 0; index < positions.Length; index++) plan[positions[index]] = arranged[index];
-        }
-
-        return plan;
     }
 
     internal void InsertInstanceStateFrames(string layerId, int frame, int count)
@@ -506,7 +452,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
 
         return new VaultItem
         {
-            Kind = "Drawing Object",
+            Kind = "Symbol",
             Name = Name,
             Detail = Detail,
             Payload = payload,

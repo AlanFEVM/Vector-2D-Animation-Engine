@@ -1,40 +1,34 @@
 ---
 name: vector2d-drawing-geometry
-description: Implement and review Vector 2D Animation Engine drawing geometry changes involving VectorScene object storage, shapes, lines, paths, freehand or brush strokes, erasing, hit testing, fill/stroke/boundary topology, intersection splitting, part detach or materialization, marquee edits, fill or line merging, object-index remapping, and render-order preservation.
+description: Implement and review Vector 2D Animation Engine engine-side drawing geometry involving packed VectorScene object storage, primitives, lines, paths, Bezier nodes, fill/stroke/boundary topology, hit or spatial queries, Boolean fill operations, intersection splitting, materialization/merging, object-index remapping, transforms, distortions, snapshots, and render-order preservation. Use vector2d-brush-paint for brush sampling, Mixing Brush, or brush erasing.
 ---
 
 # Vector2D Drawing Geometry
 
-Treat geometry edits as transactions over packed structure-of-arrays storage. Search the relevant symbol first; `VectorScene.cs` is intentionally large.
+Treat geometry edits as transactions over packed structure-of-arrays storage and open the focused partial that owns the operation.
+
+## Route The Task
+
+- Read [vector-scene-map.md](references/vector-scene-map.md) first to select the owning `VectorScene.*.cs` partial and regression file.
+- Read [topology-invariants.md](references/topology-invariants.md) only for element parts, intersections, Boolean operations, split/materialize/merge work, or edits that remove and append objects.
+- Use `$vector2d-brush-paint` for brush/pressure/mixing sampling, paint regions, or brush erasing.
+- Use `$vector2d-stage-workflow` for pointer state, previews, overlays, or renderer behavior.
+- Use `$vector2d-assets-persistence` for SVG document encoding, project Save/Open, or durable compatibility.
 
 ## Workflow
 
-1. Read [vector-scene-map.md](references/vector-scene-map.md) to identify the storage and mutation family involved.
-2. Read [topology-invariants.md](references/topology-invariants.md) for element parts, split/materialize/merge work, or any edit that removes and appends objects.
-3. Define the active layer, frame, cel, element kind, and expected drawing order before changing code.
-4. Reuse existing curve sampling, topology candidates, fill-region, Clipper2, and quantization helpers.
-5. For multi-object edits, plan first: snapshot, calculate removals/additions, compact once, append replacements, then rebuild derived state.
-6. Preserve material, atoms, keyframe ownership, endpoint styles, `ObjectOrder`, and `ObjectSubOrder`.
-7. Return and consume old-to-new object mappings. Never continue using pre-compaction indices.
-8. Add the smallest regression beside the related cases in the `native/App/Benchmark*.cs` partial family. First-move drag budgets belong in `Benchmark.DragPerformance.cs`.
-9. Run `$vector2d-validate-change` with `Freehand`; add `Render` when Stage or Direct2D behavior is affected.
+1. Define active layer, frame, Cel, element kind, units, and drawing order.
+2. Search the symbol and callers, then edit the focused partial from the module map.
+3. Reuse existing curve sampling, Clipper2, topology, fill-region, quantization, and spatial helpers.
+4. For multi-object edits: snapshot, validate, plan replacements, compact once, append, remap, then rebuild derived state.
+5. Preserve materials, atoms, keyframe ownership, endpoint styles, `ObjectOrder`, and `ObjectSubOrder`.
+6. Extend the nearest focused regression partial; do not add feature regressions to `Benchmark.cs`.
+7. Run `$vector2d-validate-change` with `Freehand`; add `Render` when visible Stage output changes.
 
 ## Core Invariants
 
-- Geometry is stored in vector units, quantized to integer-valued floats. Convert UI pixels and stroke points through `VectorUnits`.
-- Topology only relates objects on the same layer and active cel.
-- `DrawingElementKey.PartIndex` is derived from current candidates and is not durable identity.
-- Array object indices are unstable after removal/compaction. Sparse path/freehand dictionaries must be remapped with the arrays.
-- Drawing order is `ObjectOrder`, then `ObjectSubOrder`, then index; do not use array order as semantic z-order.
-- Fill uses even-odd compound contours. Holes and multiple islands must survive copy, snapshot, transform, merge, and materialization.
-- Straight lines are quadratic curves whose control point is the midpoint; curve and line intersections share the same split path.
-- Derived spatial index, LOD summaries, active-keyframe content, and renderer caches must be invalidated or rebuilt after the matching mutation.
-- Undo snapshots belong before the first mutation in an interaction, not on every pointer move.
-
-## Targeted Search
-
-```powershell
-rg -n "Add(Line|Curve|Path|Freehand)|EraseWithBrushStroke|TransformObjects" native/Engine/VectorScene.cs
-rg -n "HitTestElement|Get(Fill|Stroke|Boundary)Parts|Materialize|DetachElement" native/Engine/VectorScene.cs
-rg -n -g "MainForm*.cs" "MergeSameColorFillsAround|MergeCompatibleLineSegments|RebuildGeometryIndex" native/Engine/VectorScene.cs native/UI
-```
+- Geometry is stored in vector units and committed coordinates use established quantization boundaries.
+- Object indices are unstable after compaction; remap arrays, sparse dictionaries, selections, and topology hits.
+- Drawing order is `ObjectOrder`, then `ObjectSubOrder`, then stable index tie-break.
+- Compound even-odd fills retain holes and islands through snapshots, transforms, merging, and materialization.
+- Derived spatial, LOD, timeline-content, and renderer state is rebuilt or invalidated after the matching mutation.
