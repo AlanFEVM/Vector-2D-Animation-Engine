@@ -1142,6 +1142,7 @@ internal sealed partial class StageControl : Control
 
     private void RequestStageFrame(bool basePresentationChanged)
     {
+        if (basePresentationChanged) InvalidateReference3DRenderPlanCache();
         if (basePresentationChanged && !_basePresentationInvalidationPending)
         {
             _basePresentationRevision++;

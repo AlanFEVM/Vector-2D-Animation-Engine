@@ -10,24 +10,48 @@ internal sealed partial class StageControl
     private const double Reference3DIntersectionAreaEpsilon = 0.25d;
     private const double Reference3DIntersectionLineEpsilon = 0.000001d;
     private const double Reference3DIntersectionSegmentEpsilon = 0.75d;
+    private const double Reference3DIntersectionPieceEpsilon = 0.001d;
     private const int Reference3DClipperPrecision = 3;
 
     private sealed class Reference3DIntersectionSurface
     {
-        public Reference3DIntersectionSurface(Reference3DRenderItem fillItem, RectangleF bounds)
+        public Reference3DIntersectionSurface(
+            Reference3DRenderItem fillItem,
+            Reference3DProjectedContour[] contours,
+            RectangleF bounds,
+            PathsD region)
         {
             FillItem = fillItem;
+            Contours = contours;
             Bounds = bounds;
+            Region = region;
         }
 
         public Reference3DRenderItem FillItem { get; }
 
+        public Reference3DProjectedContour[] Contours { get; }
+
         public RectangleF Bounds { get; }
 
-        public List<Reference3DScreenLine> Cuts { get; } = [];
+        public PathsD Region { get; }
 
-        public List<Reference3DProjectedContour[]> PartitionRegions { get; } = [];
+        public List<Reference3DIntersectionCut> Cuts { get; } = [];
+
+        public List<Reference3DPathRegion> PartitionRegions { get; } = [];
     }
+
+    private readonly record struct Reference3DPathRegion(
+        PathsD Paths,
+        RectangleF Bounds,
+        Reference3DProjectedContour[]? StableSourceContours = null,
+        int StableObjectIndex = -1,
+        int StableSurfaceSlot = -1);
+
+    private readonly record struct Reference3DIntersectionCut(
+        Reference3DScreenLine Line,
+        Reference3DSurfacePlane OtherPlane,
+        int StableObjectIndex,
+        int StableSurfaceSlot);
 
     private readonly record struct Reference3DScreenLine(double A, double B, double C)
     {
@@ -53,10 +77,16 @@ internal sealed partial class StageControl
         Reference3DProjectedContour[] Segments,
         int StableSlot);
 
+    private readonly record struct Reference3DIntersectionEdgeSegment(
+        Reference3DProjectedContour Contour,
+        bool StartCap,
+        bool EndCap);
+
     private readonly record struct Reference3DFragmentPlan(
         Reference3DProjectedContour[] Clip,
         float Depth,
-        int Slot);
+        int Slot,
+        ulong StableSignature);
 
     private readonly record struct Reference3DFragmentBuildResult(
         bool Succeeded,
@@ -64,6 +94,12 @@ internal sealed partial class StageControl
     {
         public static Reference3DFragmentBuildResult Failed { get; } = new(false, []);
     }
+
+    private readonly record struct Reference3DGroupSurfaceRegion(
+        Reference3DRenderItem Item,
+        PathsD Paths,
+        Reference3DProjectedContour[] Contours,
+        RectangleF Bounds);
 
     private Reference3DRenderItem[] BuildReference3DIntersectionRenderItems(
         IReadOnlyList<Reference3DRenderItem> source)
@@ -78,104 +114,165 @@ internal sealed partial class StageControl
         var surfaces = new List<Reference3DIntersectionSurface>();
         foreach (var item in source)
         {
-            if (item.Kind != Reference3DRenderKind.FrontFill
+            if (!TryGetReference3DOcclusionContours(item, out var surfaceContours)
                 || !item.Plane.IsValid
-                || item.Contours.Length == 0
-                || !TryGetReference3DProjectedBounds(item.Contours, 0, out var bounds)
+                || !TryGetReference3DProjectedBounds(surfaceContours, 0, out var bounds)
                 || bounds.Width <= 0
                 || bounds.Height <= 0)
             {
                 continue;
             }
 
-            surfaces.Add(new Reference3DIntersectionSurface(item, bounds));
+            var region = Reference3DContoursToPaths(surfaceContours);
+            if (region.Count == 0) continue;
+            surfaces.Add(new Reference3DIntersectionSurface(item, surfaceContours, bounds, region));
         }
         if (surfaces.Count < 2) return source.ToArray();
 
-        surfaces.Sort((left, right) =>
-        {
-            var comparison = left.Bounds.Left.CompareTo(right.Bounds.Left);
-            if (comparison != 0) return comparison;
-            comparison = left.FillItem.ObjectIndex.CompareTo(right.FillItem.ObjectIndex);
-            return comparison != 0
-                ? comparison
-                : left.FillItem.SurfaceSlot.CompareTo(right.FillItem.SurfaceSlot);
-        });
+        surfaces.Sort((left, right) => CompareReference3DRenderItemStableIdentity(
+            left.FillItem,
+            right.FillItem));
 
-        var edgePlans = new List<Reference3DIntersectionEdgePlan>();
-        var stableEdgeSlot = 0;
-        for (var leftIndex = 0; leftIndex < surfaces.Count; leftIndex++)
+        // Keep the projected-bounds sweep camera-local, but process its hits by stable surface identity.
+        var sweepOrder = Enumerable.Range(0, surfaces.Count)
+            .OrderBy(index => surfaces[index].Bounds.Left)
+            .ThenBy(index => index)
+            .ToArray();
+        var candidateRightsByLeft = Enumerable.Range(0, surfaces.Count)
+            .Select(_ => new List<int>())
+            .ToArray();
+        for (var sweepIndex = 0; sweepIndex < sweepOrder.Length; sweepIndex++)
         {
-            var left = surfaces[leftIndex];
-            for (var rightIndex = leftIndex + 1; rightIndex < surfaces.Count; rightIndex++)
+            var firstIndex = sweepOrder[sweepIndex];
+            var first = surfaces[firstIndex];
+            for (var candidateIndex = sweepIndex + 1;
+                 candidateIndex < sweepOrder.Length;
+                 candidateIndex++)
             {
-                var right = surfaces[rightIndex];
-                if (right.Bounds.Left > left.Bounds.Right + ReferenceSurfaceOverlapTolerancePixels) break;
-                if (left.FillItem.ObjectIndex == right.FillItem.ObjectIndex
-                    || left.FillItem.PlaneKey == right.FillItem.PlaneKey
-                    || !Reference3DProjectedBoundsOverlap(left.Bounds, right.Bounds)
-                    || !Reference3DRegionsOverlap(
-                        left.FillItem.Contours,
-                        right.FillItem.Contours))
+                var secondIndex = sweepOrder[candidateIndex];
+                var second = surfaces[secondIndex];
+                if (second.Bounds.Left
+                    > first.Bounds.Right + ReferenceSurfaceOverlapTolerancePixels)
+                {
+                    break;
+                }
+                if (first.FillItem.ObjectIndex == second.FillItem.ObjectIndex
+                    || first.FillItem.PlaneKey == second.FillItem.PlaneKey
+                    || !Reference3DProjectedBoundsOverlap(first.Bounds, second.Bounds))
                 {
                     continue;
                 }
-
-                left.PartitionRegions.Add(right.FillItem.Contours);
-                right.PartitionRegions.Add(left.FillItem.Contours);
-                if (!TryGetReference3DProjectedIntersectionLine(
-                        left.FillItem.Plane,
-                        right.FillItem.Plane,
-                        out var line)
-                    || !TryGetReference3DIntersectionSegments(
-                        line,
-                        left.FillItem.Contours,
-                        right.FillItem.Contours,
-                        left.FillItem.Plane,
-                        out var segments)
-                    || segments.Length == 0)
-                {
-                    continue;
-                }
-
-                if (!CanAddReference3DIntersectionCut(left, line)
-                    || !CanAddReference3DIntersectionCut(right, line))
-                {
-                    continue;
-                }
-
-                AddReference3DIntersectionCut(left, line);
-                AddReference3DIntersectionCut(right, line);
-                var primary = CompareReference3DCoplanarItems(left.FillItem, right.FillItem) <= 0
-                    ? right.FillItem
-                    : left.FillItem;
-                var secondary = primary.ObjectIndex == left.FillItem.ObjectIndex
-                    ? right.FillItem
-                    : left.FillItem;
-                edgePlans.Add(new Reference3DIntersectionEdgePlan(
-                    primary,
-                    secondary,
-                    segments,
-                    stableEdgeSlot++));
+                var stableLeft = Math.Min(firstIndex, secondIndex);
+                candidateRightsByLeft[stableLeft].Add(Math.Max(firstIndex, secondIndex));
             }
         }
+
+        IEnumerable<(int Left, int Right)> EnumerateStableCandidatePairs()
+        {
+            for (var left = 0; left < candidateRightsByLeft.Length; left++)
+            {
+                var rights = candidateRightsByLeft[left];
+                rights.Sort();
+                foreach (var right in rights) yield return (left, right);
+            }
+        }
+
+        var edgePlans = new List<Reference3DIntersectionEdgePlan>();
+        foreach (var (leftIndex, rightIndex) in EnumerateStableCandidatePairs())
+        {
+            var left = surfaces[leftIndex];
+            var right = surfaces[rightIndex];
+            var regionsOverlap = Reference3DRegionsOverlap(left.Region, right.Region);
+            var producesIntersectionEdge = Reference3DRenderItemProducesIntersectionEdge(left.FillItem)
+                && Reference3DRenderItemProducesIntersectionEdge(right.FillItem);
+            if (!regionsOverlap && !producesIntersectionEdge) continue;
+            var splitLeft = regionsOverlap
+                && (producesIntersectionEdge
+                    || left.FillItem.Kind != Reference3DRenderKind.FrontFill);
+            var splitRight = regionsOverlap
+                && (producesIntersectionEdge
+                    || right.FillItem.Kind != Reference3DRenderKind.FrontFill);
+            if (splitLeft)
+            {
+                left.PartitionRegions.Add(new Reference3DPathRegion(
+                    right.Region,
+                    right.Bounds,
+                    right.Contours,
+                    right.FillItem.ObjectIndex,
+                    right.FillItem.SurfaceSlot));
+            }
+            if (splitRight)
+            {
+                right.PartitionRegions.Add(new Reference3DPathRegion(
+                    left.Region,
+                    left.Bounds,
+                    left.Contours,
+                    left.FillItem.ObjectIndex,
+                    left.FillItem.SurfaceSlot));
+            }
+            if (!TryGetReference3DProjectedIntersectionLine(
+                    left.FillItem.Plane,
+                    right.FillItem.Plane,
+                    out var line)
+                || !TryGetReference3DIntersectionSegments(
+                    line,
+                    left.Contours,
+                    right.Contours,
+                    left.FillItem.Plane,
+                    out var segments)
+                || segments.Length == 0)
+            {
+                continue;
+            }
+
+            if ((!splitLeft || CanAddReference3DIntersectionCut(left, line))
+                && (!splitRight || CanAddReference3DIntersectionCut(right, line)))
+            {
+                if (splitLeft) AddReference3DIntersectionCut(left, line, right.FillItem);
+                if (splitRight) AddReference3DIntersectionCut(right, line, left.FillItem);
+            }
+
+            if (!producesIntersectionEdge) continue;
+            var primary = CompareReference3DCoplanarItems(left.FillItem, right.FillItem) <= 0
+                ? right.FillItem
+                : left.FillItem;
+            var secondary = primary.ObjectIndex == left.FillItem.ObjectIndex
+                ? right.FillItem
+                : left.FillItem;
+            edgePlans.Add(new Reference3DIntersectionEdgePlan(
+                primary,
+                secondary,
+                segments,
+                Reference3DIntersectionEdgeStableSlot(primary, secondary)));
+        }
+        edgePlans.Sort(static (left, right) =>
+        {
+            var comparison = Math.Min(left.Primary.ObjectIndex, left.Secondary.ObjectIndex)
+                .CompareTo(Math.Min(right.Primary.ObjectIndex, right.Secondary.ObjectIndex));
+            if (comparison != 0) return comparison;
+            comparison = Math.Max(left.Primary.ObjectIndex, left.Secondary.ObjectIndex)
+                .CompareTo(Math.Max(right.Primary.ObjectIndex, right.Secondary.ObjectIndex));
+            if (comparison != 0) return comparison;
+            comparison = left.Primary.SurfaceSlot.CompareTo(right.Primary.SurfaceSlot);
+            return comparison != 0
+                ? comparison
+                : left.Secondary.SurfaceSlot.CompareTo(right.Secondary.SurfaceSlot);
+        });
         if (edgePlans.Count == 0
             && surfaces.All(surface => surface.PartitionRegions.Count == 0))
         {
             return source.ToArray();
         }
 
-        var fragmentBuilds = new Dictionary<
-            (int ObjectIndex, int SurfaceSlot),
-            Reference3DFragmentBuildResult>();
         var fragmentPlans = new Dictionary<(int ObjectIndex, int SurfaceSlot), Reference3DFragmentPlan[]>();
         foreach (var surface in surfaces)
         {
             if (surface.Cuts.Count == 0 && surface.PartitionRegions.Count == 0) continue;
             var key = (surface.FillItem.ObjectIndex, surface.FillItem.SurfaceSlot);
             var build = BuildReference3DSurfaceFragments(surface);
-            fragmentBuilds[key] = build;
-            if (build.Succeeded && build.Plans.Length > 1)
+            if (build.Succeeded
+                && (build.Plans.Length > 1
+                    || surface.FillItem.Kind != Reference3DRenderKind.FrontFill))
             {
                 fragmentPlans[key] = build.Plans;
             }
@@ -192,41 +289,37 @@ internal sealed partial class StageControl
                 continue;
             }
 
+            var occlusionContours = item.Kind == Reference3DRenderKind.FrontStroke
+                && item.OcclusionContours is null
+                    ? GetReference3DProjectedStrokeOcclusionContours(item.ObjectIndex)
+                    : item.OcclusionContours;
             foreach (var fragment in fragments)
             {
                 result.Add(item with
                 {
                     FragmentClip = fragment.Clip,
                     FragmentSlot = fragment.Slot,
-                    AverageDepth = fragment.Depth
+                    StableFragmentIdentity = fragment.StableSignature,
+                    AverageDepth = fragment.Depth,
+                    OcclusionContours = occlusionContours
                 });
             }
         }
 
         foreach (var edgePlan in edgePlans)
         {
-            if (!fragmentBuilds.TryGetValue(
-                    (edgePlan.Primary.ObjectIndex, edgePlan.Primary.SurfaceSlot),
-                    out var primaryBuild)
-                || !primaryBuild.Succeeded
-                || !fragmentBuilds.TryGetValue(
-                    (edgePlan.Secondary.ObjectIndex, edgePlan.Secondary.SurfaceSlot),
-                    out var secondaryBuild)
-                || !secondaryBuild.Succeeded)
-            {
-                continue;
-            }
-
             var edgeColor = GetReference3DIntersectionEdgeColor(edgePlan.Primary);
             var edgeWidth = GetReference3DIntersectionEdgeWidth(edgePlan.Primary, edgePlan.Secondary);
-            foreach (var segment in SplitReference3DIntersectionEdgeSegments(edgePlan, surfaces))
+            var segments = SplitReference3DIntersectionEdgeSegments(edgePlan, surfaces);
+            for (var segmentIndex = 0; segmentIndex < segments.Length; segmentIndex++)
             {
+                var segment = segments[segmentIndex];
                 result.Add(new Reference3DRenderItem(
                     edgePlan.Primary.ObjectIndex,
                     edgePlan.Primary.LayerIndex,
                     Reference3DRenderKind.IntersectionEdge,
-                    [segment],
-                    segment.AverageDepth,
+                    [segment.Contour],
+                    segment.Contour.AverageDepth,
                     default,
                     edgePlan.Primary.ObjectSlot,
                     edgePlan.StableSlot)
@@ -234,7 +327,10 @@ internal sealed partial class StageControl
                     Plane = edgePlan.Primary.Plane,
                     SecondaryObjectIndex = edgePlan.Secondary.ObjectIndex,
                     EdgeArgb = edgeColor.ToArgb(),
-                    EdgeWidth = edgeWidth
+                    EdgeWidth = edgeWidth,
+                    EdgeStartCap = segment.StartCap,
+                    EdgeEndCap = segment.EndCap,
+                    FragmentSlot = segmentIndex
                 });
             }
         }
@@ -242,21 +338,67 @@ internal sealed partial class StageControl
         return result.ToArray();
     }
 
+    private static int Reference3DIntersectionEdgeStableSlot(
+        Reference3DRenderItem primary,
+        Reference3DRenderItem secondary)
+    {
+        var first = primary.ObjectIndex <= secondary.ObjectIndex ? primary : secondary;
+        var second = primary.ObjectIndex <= secondary.ObjectIndex ? secondary : primary;
+        const uint offset = 2166136261;
+        const uint prime = 16777619;
+        var hash = offset;
+        Add(first.ObjectIndex);
+        Add(first.SurfaceSlot);
+        Add(second.ObjectIndex);
+        Add(second.SurfaceSlot);
+        return (int)(hash & int.MaxValue);
+
+        void Add(int value)
+        {
+            unchecked
+            {
+                hash ^= (uint)value;
+                hash *= prime;
+            }
+        }
+    }
+
+    private static bool TryGetReference3DOcclusionContours(
+        Reference3DRenderItem item,
+        out Reference3DProjectedContour[] contours)
+    {
+        contours = item.Kind == Reference3DRenderKind.FrontFill
+            ? item.Contours
+            : item.OcclusionContours ?? [];
+        return contours.Any(contour => contour.Closed && contour.Points.Length >= 3);
+    }
+
+    private static bool Reference3DRenderItemProducesIntersectionEdge(
+        Reference3DRenderItem item)
+    {
+        return item.Kind == Reference3DRenderKind.FrontFill;
+    }
+
     private static bool CanAddReference3DIntersectionCut(
         Reference3DIntersectionSurface surface,
         Reference3DScreenLine candidate)
     {
-        return surface.Cuts.Any(line => Reference3DScreenLinesEquivalent(line, candidate))
+        return surface.Cuts.Any(cut => Reference3DScreenLinesEquivalent(cut.Line, candidate))
             || surface.Cuts.Count < Reference3DMaximumIntersectionCutsPerSurface;
     }
 
     private static void AddReference3DIntersectionCut(
         Reference3DIntersectionSurface surface,
-        Reference3DScreenLine candidate)
+        Reference3DScreenLine candidate,
+        Reference3DRenderItem other)
     {
-        if (!surface.Cuts.Any(line => Reference3DScreenLinesEquivalent(line, candidate)))
+        if (!surface.Cuts.Any(cut => Reference3DScreenLinesEquivalent(cut.Line, candidate)))
         {
-            surface.Cuts.Add(candidate);
+            surface.Cuts.Add(new Reference3DIntersectionCut(
+                candidate,
+                other.Plane,
+                other.ObjectIndex,
+                other.SurfaceSlot));
         }
     }
 
@@ -264,9 +406,13 @@ internal sealed partial class StageControl
         Reference3DScreenLine left,
         Reference3DScreenLine right)
     {
-        return Math.Abs(left.A - right.A) <= 0.0001d
+        var sameDirection = Math.Abs(left.A - right.A) <= 0.0001d
             && Math.Abs(left.B - right.B) <= 0.0001d
             && Math.Abs(left.C - right.C) <= 0.25d;
+        var oppositeDirection = Math.Abs(left.A + right.A) <= 0.0001d
+            && Math.Abs(left.B + right.B) <= 0.0001d
+            && Math.Abs(left.C + right.C) <= 0.25d;
+        return sameDirection || oppositeDirection;
     }
 
     private Reference3DFragmentBuildResult BuildReference3DSurfaceFragments(
@@ -292,8 +438,9 @@ internal sealed partial class StageControl
             }
         };
 
-        foreach (var line in surface.Cuts)
+        foreach (var cut in surface.Cuts)
         {
+            var line = cut.Line;
             var next = new List<PointF[]>(Math.Min(cells.Count * 2, Reference3DMaximumFragmentsPerSurface));
             foreach (var cell in cells)
             {
@@ -319,32 +466,47 @@ internal sealed partial class StageControl
             cells = next;
         }
 
-        var regions = cells
-            .Select(cell => Reference3DContoursToPaths(
-                [new Reference3DProjectedContour(cell, true, surface.FillItem.AverageDepth)]))
-            .Where(Reference3DPathsHaveArea)
-            .ToList();
-        foreach (var partitionContours in surface.PartitionRegions)
+        var regions = new List<Reference3DPathRegion>(cells.Count);
+        foreach (var cell in cells)
         {
-            var partition = Reference3DContoursToPaths(partitionContours);
-            if (!Reference3DPathsHaveArea(partition)) continue;
-            var next = new List<PathsD>(Math.Min(
+            var paths = Reference3DContoursToPaths(
+                [new Reference3DProjectedContour(cell, true, surface.FillItem.AverageDepth)]);
+            if (Reference3DPathsHaveArea(paths)
+                && TryGetReference3DPathsBounds(paths, out var pathBounds))
+            {
+                regions.Add(new Reference3DPathRegion(paths, pathBounds));
+            }
+        }
+        foreach (var partition in surface.PartitionRegions)
+        {
+            var next = new List<Reference3DPathRegion>(Math.Min(
                 regions.Count * 2,
                 Reference3DMaximumFragmentsPerSurface));
             foreach (var region in regions)
             {
+                if (!Reference3DProjectedBoundsOverlap(region.Bounds, partition.Bounds))
+                {
+                    next.Add(region);
+                    continue;
+                }
+
                 PathsD inside;
                 PathsD outside;
                 try
                 {
                     inside = Clipper.Intersect(
-                        region,
-                        partition,
+                        region.Paths,
+                        partition.Paths,
                         FillRule.EvenOdd,
                         Reference3DClipperPrecision);
+                    if (!Reference3DPathsHaveArea(inside))
+                    {
+                        next.Add(region);
+                        continue;
+                    }
                     outside = Clipper.Difference(
-                        region,
-                        partition,
+                        region.Paths,
+                        partition.Paths,
                         FillRule.EvenOdd,
                         Reference3DClipperPrecision);
                 }
@@ -353,12 +515,13 @@ internal sealed partial class StageControl
                     return Reference3DFragmentBuildResult.Failed;
                 }
 
-                var hasInside = Reference3DPathsHaveArea(inside);
                 var hasOutside = Reference3DPathsHaveArea(outside);
-                if (hasInside && hasOutside)
+                if (hasOutside
+                    && TryGetReference3DPathsBounds(inside, out var insideBounds)
+                    && TryGetReference3DPathsBounds(outside, out var outsideBounds))
                 {
-                    next.Add(inside);
-                    next.Add(outside);
+                    next.Add(new Reference3DPathRegion(inside, insideBounds));
+                    next.Add(new Reference3DPathRegion(outside, outsideBounds));
                 }
                 else
                 {
@@ -375,26 +538,108 @@ internal sealed partial class StageControl
         var fragments = new List<Reference3DFragmentPlan>(regions.Count);
         foreach (var region in regions)
         {
-            var clip = Reference3DPathsToContours(region);
+            var clip = Reference3DPathsToContours(region.Paths);
             if (!TryFindReference3DRegionPoint(
-                    surface.FillItem.Contours,
-                    clip,
+                    surface.Region,
+                    region.Paths,
                     out var sample))
             {
                 continue;
             }
 
+            if (!TryGetReference3DFragmentStableSignature(surface, sample, out var stableSignature))
+            {
+                return Reference3DFragmentBuildResult.Failed;
+            }
             var depth = TryGetReference3DPlaneDepthAtScreen(
                     surface.FillItem.Plane,
                     sample,
                     out var sampledDepth)
                 ? sampledDepth
                 : surface.FillItem.AverageDepth;
-            fragments.Add(new Reference3DFragmentPlan(clip, depth, fragments.Count));
+            fragments.Add(new Reference3DFragmentPlan(clip, depth, 0, stableSignature));
         }
-        return fragments.Count == 0
-            ? Reference3DFragmentBuildResult.Failed
-            : new Reference3DFragmentBuildResult(true, fragments.ToArray());
+        if (fragments.Count == 0) return Reference3DFragmentBuildResult.Failed;
+
+        var stableFragments = new List<Reference3DFragmentPlan>();
+        foreach (var group in fragments
+                     .GroupBy(fragment => fragment.StableSignature)
+                     .OrderBy(group => group.Key))
+        {
+            var clip = group.SelectMany(fragment => fragment.Clip).ToArray();
+            var paths = Reference3DContoursToPaths(clip);
+            if (!TryFindReference3DRegionPoint(surface.Region, paths, out var sample))
+            {
+                return Reference3DFragmentBuildResult.Failed;
+            }
+            var depth = TryGetReference3DPlaneDepthAtScreen(
+                    surface.FillItem.Plane,
+                    sample,
+                    out var sampledDepth)
+                ? sampledDepth
+                : surface.FillItem.AverageDepth;
+            stableFragments.Add(new Reference3DFragmentPlan(
+                clip,
+                depth,
+                (int)(group.Key & int.MaxValue),
+                group.Key));
+        }
+        return new Reference3DFragmentBuildResult(true, stableFragments.ToArray());
+    }
+
+    private bool TryGetReference3DFragmentStableSignature(
+        Reference3DIntersectionSurface surface,
+        PointF screen,
+        out ulong signature)
+    {
+        signature = 0;
+        var hash = 14695981039346656037UL;
+        if (!surface.FillItem.Plane.IsValid
+            || !TryGetReference3DRay(screen, out var ray))
+        {
+            return false;
+        }
+        var denominator = Vector3.Dot(surface.FillItem.Plane.Normal, ray.Direction);
+        if (!float.IsFinite(denominator) || Math.Abs(denominator) <= 0.000001f)
+        {
+            return false;
+        }
+        var distance = (surface.FillItem.Plane.Distance
+                - Vector3.Dot(surface.FillItem.Plane.Normal, ray.Origin))
+            / denominator;
+        if (!float.IsFinite(distance) || distance <= 0) return false;
+        var scenePoint = ray.Origin + ray.Direction * distance;
+        if (!Finite(scenePoint)) return false;
+
+        foreach (var cut in surface.Cuts)
+        {
+            Add(1);
+            Add(cut.StableObjectIndex);
+            Add(cut.StableSurfaceSlot);
+            var side = Vector3.Dot(cut.OtherPlane.Normal, scenePoint) - cut.OtherPlane.Distance;
+            Add(side > 0.0001f ? 2 : side < -0.0001f ? 0 : 1);
+        }
+        foreach (var partition in surface.PartitionRegions)
+        {
+            Add(2);
+            Add(partition.StableObjectIndex);
+            Add(partition.StableSurfaceSlot);
+            Add(partition.StableSourceContours is { Length: > 0 }
+                && PointInProjectedFill(screen, partition.StableSourceContours)
+                    ? 1
+                    : 0);
+        }
+        signature = hash;
+        return true;
+
+        void Add(int value)
+        {
+            unchecked
+            {
+                hash ^= (uint)value;
+                hash *= 1099511628211UL;
+            }
+        }
     }
 
     private static PointF[] ClipReference3DFragmentCell(
@@ -492,13 +737,6 @@ internal sealed partial class StageControl
         a /= length;
         b /= length;
         c /= length;
-        if (a < -Reference3DIntersectionLineEpsilon
-            || Math.Abs(a) <= Reference3DIntersectionLineEpsilon && b < 0)
-        {
-            a = -a;
-            b = -b;
-            c = -c;
-        }
         line = new Reference3DScreenLine(a, b, c);
         return double.IsFinite(a) && double.IsFinite(b) && double.IsFinite(c);
     }
@@ -573,22 +811,28 @@ internal sealed partial class StageControl
         return segments.Length > 0;
     }
 
-    private Reference3DProjectedContour[] SplitReference3DIntersectionEdgeSegments(
+    private Reference3DIntersectionEdgeSegment[] SplitReference3DIntersectionEdgeSegments(
         Reference3DIntersectionEdgePlan edgePlan,
         IReadOnlyList<Reference3DIntersectionSurface> surfaces)
     {
-        var result = new List<Reference3DProjectedContour>();
+        var result = new List<Reference3DIntersectionEdgeSegment>();
         foreach (var segment in edgePlan.Segments)
         {
             if (segment.Points.Length < 2) continue;
             var start = segment.Points[0];
             var end = segment.Points[^1];
+            var segmentBounds = RectangleF.FromLTRB(
+                Math.Min(start.X, end.X),
+                Math.Min(start.Y, end.Y),
+                Math.Max(start.X, end.X),
+                Math.Max(start.Y, end.Y));
             var parameters = new List<double> { 0d, 1d };
             foreach (var surface in surfaces)
             {
                 var surfaceItem = surface.FillItem;
                 if (surfaceItem.ObjectIndex == edgePlan.Primary.ObjectIndex
-                    || surfaceItem.ObjectIndex == edgePlan.Secondary.ObjectIndex)
+                    || surfaceItem.ObjectIndex == edgePlan.Secondary.ObjectIndex
+                    || !Reference3DProjectedBoundsOverlap(segmentBounds, surface.Bounds))
                 {
                     continue;
                 }
@@ -596,7 +840,7 @@ internal sealed partial class StageControl
                 AppendReference3DSegmentBoundaryParameters(
                     start,
                     end,
-                    surfaceItem.Contours,
+                    surface.Contours,
                     parameters);
                 AppendReference3DEdgeDepthCrossingParameter(
                     start,
@@ -607,7 +851,7 @@ internal sealed partial class StageControl
             }
             if (parameters.Count > 512)
             {
-                result.Add(segment);
+                result.Add(new Reference3DIntersectionEdgeSegment(segment, true, true));
                 continue;
             }
 
@@ -622,13 +866,14 @@ internal sealed partial class StageControl
                 }
             }
 
+            var firstPieceIndex = result.Count;
             for (var index = 1; index < unique.Count; index++)
             {
                 var from = unique[index - 1];
                 var to = unique[index];
                 var pieceStart = Reference3DLerp(start, end, from);
                 var pieceEnd = Reference3DLerp(start, end, to);
-                if (ReferencePointDistance(pieceStart, pieceEnd) <= Reference3DIntersectionSegmentEpsilon)
+                if (ReferencePointDistance(pieceStart, pieceEnd) <= Reference3DIntersectionPieceEpsilon)
                 {
                     continue;
                 }
@@ -639,7 +884,15 @@ internal sealed partial class StageControl
                         out var sampledDepth)
                     ? sampledDepth
                     : segment.AverageDepth;
-                result.Add(new Reference3DProjectedContour([pieceStart, pieceEnd], false, depth));
+                result.Add(new Reference3DIntersectionEdgeSegment(
+                    new Reference3DProjectedContour([pieceStart, pieceEnd], false, depth),
+                    from <= 0.000001d,
+                    to >= 0.999999d));
+            }
+            if (result.Count > firstPieceIndex)
+            {
+                result[firstPieceIndex] = result[firstPieceIndex] with { StartCap = true };
+                result[^1] = result[^1] with { EndCap = true };
             }
         }
         return result.ToArray();
@@ -911,7 +1164,8 @@ internal sealed partial class StageControl
     {
         if (left.ObjectIndex == right.ObjectIndex
             && left.SurfaceSlot == right.SurfaceSlot
-            && left.FragmentSlot != right.FragmentSlot
+            && (left.StableFragmentIdentity != right.StableFragmentIdentity
+                || left.FragmentSlot != right.FragmentSlot)
             && left.FragmentClip is { Length: > 0 }
             && right.FragmentClip is { Length: > 0 })
         {
@@ -932,49 +1186,109 @@ internal sealed partial class StageControl
         var groups = sourceGroups.ToArray();
         if (groups.Length <= 1) return groups.SelectMany(group => group.Items).ToArray();
 
-        var representatives = new Reference3DRenderItem?[groups.Length];
-        var regions = new PathsD?[groups.Length];
+        var surfaceRegions = new Reference3DGroupSurfaceRegion[groups.Length][];
+        var edgeStrokeRegions = new PathsD[groups.Length];
+        var strokeOcclusionCache = new Dictionary<
+            (int ObjectIndex, int SurfaceSlot),
+            Reference3DProjectedContour[]>();
         var bounds = new RectangleF[groups.Length];
         var hasBounds = new bool[groups.Length];
         for (var index = 0; index < groups.Length; index++)
         {
-            if (TryGetReference3DGroupSurfaceItem(groups[index], out var representative))
-            {
-                representatives[index] = representative;
-                regions[index] = TryBuildReference3DItemRegion(representative, out var region)
-                    ? region
-                    : null;
-            }
+            surfaceRegions[index] = BuildReference3DGroupSurfaceRegions(
+                groups[index],
+                strokeOcclusionCache);
+            edgeStrokeRegions[index] = TryGetReference3DGroupEdgeItem(groups[index], out var edge)
+                && TryBuildReference3DEdgeStrokeRegion(edge, out var strokeRegion)
+                    ? strokeRegion
+                    : [];
             hasBounds[index] = TryGetReference3DGroupBounds(groups[index], out bounds[index]);
         }
 
         var edges = Enumerable.Range(0, groups.Length).Select(_ => new HashSet<int>()).ToArray();
+        var mandatoryEdges = Enumerable.Range(0, groups.Length).Select(_ => new HashSet<int>()).ToArray();
         var indegree = new int[groups.Length];
         foreach (var (leftIndex, rightIndex) in GetReference3DConstraintCandidates(bounds, hasBounds))
         {
             if (TryAddReference3DIntersectionEdgeConstraint(
                     groups,
+                    surfaceRegions,
+                    edgeStrokeRegions,
                     leftIndex,
                     rightIndex,
                     edges,
-                    indegree))
+                    indegree,
+                    mandatoryEdges))
             {
                 continue;
             }
 
             var leftHasEdge = TryGetReference3DGroupEdgeItem(groups[leftIndex], out var leftEdge);
             var rightHasEdge = TryGetReference3DGroupEdgeItem(groups[rightIndex], out var rightEdge);
+            if (leftHasEdge && rightHasEdge)
+            {
+                if (!TryFindReference3DRegionOverlapPoint(
+                        edgeStrokeRegions[leftIndex],
+                        edgeStrokeRegions[rightIndex],
+                        out var edgeOverlap,
+                        Reference3DIntersectionLineEpsilon)
+                    || !TryGetReference3DPlaneDepthAtScreen(
+                        leftEdge.Plane,
+                        Reference3DClosestPointOnEdge(leftEdge, edgeOverlap),
+                        out var leftEdgeDepth)
+                    || !TryGetReference3DPlaneDepthAtScreen(
+                        rightEdge.Plane,
+                        Reference3DClosestPointOnEdge(rightEdge, edgeOverlap),
+                        out var rightEdgeDepth))
+                {
+                    continue;
+                }
+
+                if (Math.Abs(leftEdgeDepth - rightEdgeDepth) > 0.01f)
+                {
+                    if (leftEdgeDepth > rightEdgeDepth)
+                    {
+                        AddReference3DRenderConstraint(leftIndex, rightIndex, edges, indegree);
+                    }
+                    else
+                    {
+                        AddReference3DRenderConstraint(rightIndex, leftIndex, edges, indegree);
+                    }
+                }
+                else
+                {
+                    var comparison = CompareReference3DRenderGroupStableIdentity(
+                        groups[leftIndex],
+                        groups[rightIndex]);
+                    if (comparison < 0)
+                    {
+                        AddReference3DRenderConstraint(leftIndex, rightIndex, edges, indegree);
+                    }
+                    else if (comparison > 0)
+                    {
+                        AddReference3DRenderConstraint(rightIndex, leftIndex, edges, indegree);
+                    }
+                }
+                continue;
+            }
             if (leftHasEdge || rightHasEdge)
             {
-                if (leftHasEdge == rightHasEdge) continue;
                 var edgeIndex = leftHasEdge ? leftIndex : rightIndex;
                 var surfaceIndex = leftHasEdge ? rightIndex : leftIndex;
                 var edge = leftHasEdge ? leftEdge : rightEdge;
-                if (representatives[surfaceIndex] is not { } surface
-                    || regions[surfaceIndex] is not { } surfaceRegion
-                    || !TryFindReference3DEdgeRegionOverlapPoint(edge, surfaceRegion, out var edgeSample)
-                    || !TryGetReference3DPlaneDepthAtScreen(edge.Plane, edgeSample, out var edgeDepth)
-                    || !TryGetReference3DPlaneDepthAtScreen(surface.Plane, edgeSample, out var surfaceDepth))
+                if (!TryFindReference3DEdgeGroupRegionOverlapPoint(
+                        edgeStrokeRegions[edgeIndex],
+                        surfaceRegions[surfaceIndex],
+                        out var surface,
+                        out var edgeSample)
+                    || !TryGetReference3DPlaneDepthAtScreen(
+                        edge.Plane,
+                        Reference3DClosestPointOnEdge(edge, edgeSample),
+                        out var edgeDepth)
+                    || !TryGetReference3DPlaneDepthAtScreen(
+                        surface.Item.Plane,
+                        edgeSample,
+                        out var surfaceDepth))
                 {
                     continue;
                 }
@@ -990,13 +1304,14 @@ internal sealed partial class StageControl
                 continue;
             }
 
-            if (representatives[leftIndex] is not { } left
-                || representatives[rightIndex] is not { } right
-                || regions[leftIndex] is not { } leftRegion
-                || regions[rightIndex] is not { } rightRegion
-                || !TryFindReference3DRegionOverlapPoint(leftRegion, rightRegion, out var sample)
-                || !TryGetReference3DPlaneDepthAtScreen(left.Plane, sample, out var leftDepth)
-                || !TryGetReference3DPlaneDepthAtScreen(right.Plane, sample, out var rightDepth))
+            if (!TryFindReference3DGroupRegionOverlapPoint(
+                    surfaceRegions[leftIndex],
+                    surfaceRegions[rightIndex],
+                    out var left,
+                    out var right,
+                    out var sample)
+                || !TryGetReference3DPlaneDepthAtScreen(left.Item.Plane, sample, out var leftDepth)
+                || !TryGetReference3DPlaneDepthAtScreen(right.Item.Plane, sample, out var rightDepth))
             {
                 continue;
             }
@@ -1014,7 +1329,7 @@ internal sealed partial class StageControl
             }
             else
             {
-                var comparison = CompareReference3DCoplanarItems(left, right);
+                var comparison = CompareReference3DCoplanarItems(left.Item, right.Item);
                 if (comparison < 0)
                 {
                     AddReference3DRenderConstraint(leftIndex, rightIndex, edges, indegree);
@@ -1026,32 +1341,7 @@ internal sealed partial class StageControl
             }
         }
 
-        var readyComparer = Comparer<int>.Create((left, right) =>
-        {
-            var comparison = CompareReference3DRenderGroups(groups[left], groups[right]);
-            return comparison != 0 ? comparison : left.CompareTo(right);
-        });
-        var ready = new SortedSet<int>(
-            Enumerable.Range(0, groups.Length).Where(index => indegree[index] == 0),
-            readyComparer);
-        var ordered = new List<int>(groups.Length);
-        while (ready.Count > 0)
-        {
-            var current = ready.Min;
-            ready.Remove(current);
-            ordered.Add(current);
-            foreach (var next in edges[current].Order())
-            {
-                indegree[next]--;
-                if (indegree[next] == 0) ready.Add(next);
-            }
-        }
-
-        if (ordered.Count != groups.Length)
-        {
-            Array.Sort(groups, CompareReference3DRenderGroups);
-            ordered = Enumerable.Range(0, groups.Length).ToList();
-        }
+        var ordered = OrderReference3DConstraintComponents(groups, edges, mandatoryEdges);
 
         var result = new List<Reference3DRenderItem>();
         foreach (var groupIndex in ordered)
@@ -1064,6 +1354,198 @@ internal sealed partial class StageControl
             result.AddRange(items);
         }
         return result.ToArray();
+    }
+
+    private static int[] OrderReference3DConstraintComponents(
+        IReadOnlyList<Reference3DRenderGroup> groups,
+        IReadOnlyList<HashSet<int>> edges,
+        IReadOnlyList<HashSet<int>> mandatoryEdges)
+    {
+        var indices = Enumerable.Repeat(-1, groups.Count).ToArray();
+        var lowLinks = new int[groups.Count];
+        var onStack = new bool[groups.Count];
+        var stack = new Stack<int>();
+        var components = new List<int[]>();
+        var componentByNode = new int[groups.Count];
+        var nextIndex = 0;
+        for (var node = 0; node < groups.Count; node++)
+        {
+            if (indices[node] < 0) Visit(node);
+        }
+
+        var componentEdges = Enumerable.Range(0, components.Count)
+            .Select(_ => new HashSet<int>())
+            .ToArray();
+        var componentIndegree = new int[components.Count];
+        for (var source = 0; source < groups.Count; source++)
+        {
+            var sourceComponent = componentByNode[source];
+            foreach (var destination in edges[source])
+            {
+                var destinationComponent = componentByNode[destination];
+                if (sourceComponent == destinationComponent
+                    || !componentEdges[sourceComponent].Add(destinationComponent))
+                {
+                    continue;
+                }
+                componentIndegree[destinationComponent]++;
+            }
+        }
+
+        var stableGroupComparer = Comparer<int>.Create((left, right) =>
+        {
+            var comparison = CompareReference3DRenderGroupStableIdentity(
+                groups[left],
+                groups[right]);
+            return comparison != 0 ? comparison : left.CompareTo(right);
+        });
+        var renderGroupComparer = Comparer<int>.Create((left, right) =>
+        {
+            var comparison = CompareReference3DRenderGroups(groups[left], groups[right]);
+            if (comparison == 0) comparison = stableGroupComparer.Compare(left, right);
+            return comparison != 0 ? comparison : left.CompareTo(right);
+        });
+        var representatives = new int[components.Count];
+        for (var component = 0; component < components.Count; component++)
+        {
+            representatives[component] = components[component].Order(stableGroupComparer).First();
+        }
+        var componentComparer = Comparer<int>.Create((left, right) =>
+        {
+            var comparison = stableGroupComparer.Compare(
+                representatives[left],
+                representatives[right]);
+            return comparison != 0 ? comparison : left.CompareTo(right);
+        });
+        var readyComponents = new SortedSet<int>(
+            Enumerable.Range(0, components.Count)
+                .Where(component => componentIndegree[component] == 0),
+            componentComparer);
+        var componentOrder = new List<int>(components.Count);
+        while (readyComponents.Count > 0)
+        {
+            var component = readyComponents.Min;
+            readyComponents.Remove(component);
+            componentOrder.Add(component);
+            foreach (var next in componentEdges[component])
+            {
+                componentIndegree[next]--;
+                if (componentIndegree[next] == 0) readyComponents.Add(next);
+            }
+        }
+
+        var ordered = new List<int>(groups.Count);
+        var localIndegree = new int[groups.Count];
+        var mandatoryIndegree = new int[groups.Count];
+        var emitted = new bool[groups.Count];
+        foreach (var component in componentOrder)
+        {
+            var nodes = components[component];
+            if (nodes.Length == 1)
+            {
+                ordered.Add(nodes[0]);
+                continue;
+            }
+
+            foreach (var node in nodes)
+            {
+                localIndegree[node] = 0;
+                mandatoryIndegree[node] = 0;
+                emitted[node] = false;
+            }
+            foreach (var node in nodes)
+            {
+                foreach (var next in edges[node])
+                {
+                    if (componentByNode[next] == component) localIndegree[next]++;
+                }
+                foreach (var next in mandatoryEdges[node])
+                {
+                    if (componentByNode[next] == component) mandatoryIndegree[next]++;
+                }
+            }
+            var readyNodes = new SortedSet<int>(
+                nodes.Where(node => localIndegree[node] == 0),
+                renderGroupComparer);
+            var emittedCount = 0;
+            while (emittedCount < nodes.Length)
+            {
+                while (readyNodes.Count > 0)
+                {
+                    var node = readyNodes.Min;
+                    readyNodes.Remove(node);
+                    if (emitted[node]) continue;
+                    emitted[node] = true;
+                    emittedCount++;
+                    ordered.Add(node);
+                    foreach (var next in edges[node])
+                    {
+                        if (componentByNode[next] != component) continue;
+                        localIndegree[next]--;
+                        if (localIndegree[next] == 0) readyNodes.Add(next);
+                    }
+                    foreach (var next in mandatoryEdges[node])
+                    {
+                        if (componentByNode[next] == component) mandatoryIndegree[next]--;
+                    }
+                }
+                if (emittedCount == nodes.Length) break;
+
+                var cycleBreak = -1;
+                foreach (var node in nodes)
+                {
+                    if (emitted[node] || mandatoryIndegree[node] != 0) continue;
+                    if (cycleBreak < 0 || renderGroupComparer.Compare(node, cycleBreak) < 0)
+                    {
+                        cycleBreak = node;
+                    }
+                }
+                if (cycleBreak < 0)
+                {
+                    cycleBreak = nodes
+                        .Where(node => !emitted[node])
+                        .Order(renderGroupComparer)
+                        .First();
+                }
+                localIndegree[cycleBreak] = 0;
+                mandatoryIndegree[cycleBreak] = 0;
+                readyNodes.Add(cycleBreak);
+            }
+        }
+        return ordered.ToArray();
+
+        void Visit(int node)
+        {
+            indices[node] = nextIndex;
+            lowLinks[node] = nextIndex;
+            nextIndex++;
+            stack.Push(node);
+            onStack[node] = true;
+            foreach (var next in edges[node])
+            {
+                if (indices[next] < 0)
+                {
+                    Visit(next);
+                    lowLinks[node] = Math.Min(lowLinks[node], lowLinks[next]);
+                }
+                else if (onStack[next])
+                {
+                    lowLinks[node] = Math.Min(lowLinks[node], indices[next]);
+                }
+            }
+            if (lowLinks[node] != indices[node]) return;
+
+            var members = new List<int>();
+            while (stack.Count > 0)
+            {
+                var member = stack.Pop();
+                onStack[member] = false;
+                componentByNode[member] = components.Count;
+                members.Add(member);
+                if (member == node) break;
+            }
+            components.Add(members.ToArray());
+        }
     }
 
     private static IEnumerable<(int Left, int Right)> GetReference3DConstraintCandidates(
@@ -1092,19 +1574,107 @@ internal sealed partial class StageControl
         }
     }
 
-    private static bool TryGetReference3DGroupSurfaceItem(
+    private Reference3DGroupSurfaceRegion[] BuildReference3DGroupSurfaceRegions(
         Reference3DRenderGroup group,
-        out Reference3DRenderItem item)
+        IDictionary<
+            (int ObjectIndex, int SurfaceSlot),
+            Reference3DProjectedContour[]> strokeOcclusionCache)
     {
-        foreach (var candidate in group.Items)
+        var result = new List<Reference3DGroupSurfaceRegion>();
+        foreach (var sourceItem in group.Items)
         {
-            if (candidate.Kind == Reference3DRenderKind.FrontFill && candidate.Plane.IsValid)
+            var item = sourceItem;
+            if (item.Kind == Reference3DRenderKind.FrontStroke
+                && item.OcclusionContours is not { Length: > 0 })
             {
-                item = candidate;
+                var key = (item.ObjectIndex, item.SurfaceSlot);
+                if (!strokeOcclusionCache.TryGetValue(key, out var strokeContours))
+                {
+                    strokeContours = GetReference3DProjectedStrokeOcclusionContours(item.ObjectIndex);
+                    strokeOcclusionCache.Add(key, strokeContours);
+                }
+                item = item with { OcclusionContours = strokeContours };
+            }
+            if (!TryGetReference3DOcclusionContours(item, out _)) continue;
+            if (!TryBuildReference3DItemRegion(item, out var paths))
+            {
+                continue;
+            }
+
+            var contours = Reference3DPathsToContours(paths);
+            if (contours.Length == 0
+                || !TryGetReference3DProjectedBounds(contours, 0, out var bounds))
+            {
+                continue;
+            }
+            result.Add(new Reference3DGroupSurfaceRegion(item, paths, contours, bounds));
+        }
+        return result.ToArray();
+    }
+
+    private static bool TryFindReference3DGroupRegionOverlapPoint(
+        IReadOnlyList<Reference3DGroupSurfaceRegion> leftRegions,
+        IReadOnlyList<Reference3DGroupSurfaceRegion> rightRegions,
+        out Reference3DGroupSurfaceRegion left,
+        out Reference3DGroupSurfaceRegion right,
+        out PointF point)
+    {
+        foreach (var leftCandidate in leftRegions)
+        {
+            foreach (var rightCandidate in rightRegions)
+            {
+                if (!Reference3DProjectedBoundsOverlap(
+                        leftCandidate.Bounds,
+                        rightCandidate.Bounds)
+                    || !TryFindReference3DRegionOverlapPoint(
+                        leftCandidate.Paths,
+                        rightCandidate.Paths,
+                        out point))
+                {
+                    continue;
+                }
+
+                left = leftCandidate;
+                right = rightCandidate;
                 return true;
             }
         }
-        item = default;
+
+        left = default;
+        right = default;
+        point = PointF.Empty;
+        return false;
+    }
+
+    private static bool TryFindReference3DEdgeGroupRegionOverlapPoint(
+        PathsD edgeStrokeRegion,
+        IReadOnlyList<Reference3DGroupSurfaceRegion> regions,
+        out Reference3DGroupSurfaceRegion surface,
+        out PointF point)
+    {
+        if (edgeStrokeRegion.Count == 0)
+        {
+            surface = default;
+            point = PointF.Empty;
+            return false;
+        }
+        foreach (var candidate in regions)
+        {
+            if (!TryFindReference3DRegionOverlapPoint(
+                    edgeStrokeRegion,
+                    candidate.Paths,
+                    out point,
+                    Reference3DIntersectionLineEpsilon))
+            {
+                continue;
+            }
+
+            surface = candidate;
+            return true;
+        }
+
+        surface = default;
+        point = PointF.Empty;
         return false;
     }
 
@@ -1133,7 +1703,10 @@ internal sealed partial class StageControl
             var radius = item.Kind == Reference3DRenderKind.IntersectionEdge
                 ? Math.Max(0.5f, item.EdgeWidth * 0.5f)
                 : 0f;
-            if (!TryGetReference3DProjectedBounds(item.FragmentClip ?? item.Contours, radius, out var itemBounds))
+            if (!TryGetReference3DProjectedBounds(
+                    item.FragmentClip ?? item.OcclusionContours ?? item.Contours,
+                    radius,
+                    out var itemBounds))
             {
                 continue;
             }
@@ -1145,10 +1718,13 @@ internal sealed partial class StageControl
 
     private bool TryAddReference3DIntersectionEdgeConstraint(
         IReadOnlyList<Reference3DRenderGroup> groups,
+        IReadOnlyList<Reference3DGroupSurfaceRegion[]> surfaceRegions,
+        IReadOnlyList<PathsD> edgeStrokeRegions,
         int leftIndex,
         int rightIndex,
         IReadOnlyList<HashSet<int>> edges,
-        int[] indegree)
+        int[] indegree,
+        IReadOnlyList<HashSet<int>> mandatoryEdges)
     {
         var leftEdge = groups[leftIndex].Items.FirstOrDefault(
             item => item.Kind == Reference3DRenderKind.IntersectionEdge);
@@ -1162,13 +1738,17 @@ internal sealed partial class StageControl
         var edgeIndex = leftIsEdge ? leftIndex : rightIndex;
         var surfaceIndex = leftIsEdge ? rightIndex : leftIndex;
         var belongsToPair = false;
-        foreach (var item in groups[surfaceIndex].Items)
+        foreach (var surface in surfaceRegions[surfaceIndex])
         {
-            if (item.Kind != Reference3DRenderKind.FrontFill
+            var item = surface.Item;
+            if (!TryGetReference3DOcclusionContours(item, out _)
                 || (item.ObjectIndex != edge.ObjectIndex
                     && item.ObjectIndex != edge.SecondaryObjectIndex)
-                || !TryBuildReference3DItemRegion(item, out var region)
-                || !TryFindReference3DEdgeRegionContactPoint(edge, region, out _))
+                || !TryFindReference3DRegionOverlapPoint(
+                    edgeStrokeRegions[edgeIndex],
+                    surface.Paths,
+                    out _,
+                    Reference3DIntersectionLineEpsilon))
             {
                 continue;
             }
@@ -1177,6 +1757,7 @@ internal sealed partial class StageControl
         }
         if (!belongsToPair) return false;
         AddReference3DRenderConstraint(surfaceIndex, edgeIndex, edges, indegree);
+        mandatoryEdges[surfaceIndex].Add(edgeIndex);
         return true;
     }
 
@@ -1194,7 +1775,12 @@ internal sealed partial class StageControl
         Reference3DRenderItem item,
         out PathsD region)
     {
-        region = Reference3DContoursToPaths(item.Contours);
+        if (!TryGetReference3DOcclusionContours(item, out var contours))
+        {
+            region = [];
+            return false;
+        }
+        region = Reference3DContoursToPaths(contours);
         if (region.Count == 0) return false;
         if (item.FragmentClip is not { Length: > 0 }) return true;
         try
@@ -1217,11 +1803,18 @@ internal sealed partial class StageControl
         IReadOnlyList<Reference3DProjectedContour> left,
         IReadOnlyList<Reference3DProjectedContour> right)
     {
+        return Reference3DRegionsOverlap(
+            Reference3DContoursToPaths(left),
+            Reference3DContoursToPaths(right));
+    }
+
+    private static bool Reference3DRegionsOverlap(PathsD left, PathsD right)
+    {
         try
         {
             var intersection = Clipper.Intersect(
-                Reference3DContoursToPaths(left),
-                Reference3DContoursToPaths(right),
+                left,
+                right,
                 FillRule.EvenOdd,
                 Reference3DClipperPrecision);
             return Reference3DPathsHaveArea(intersection);
@@ -1235,7 +1828,8 @@ internal sealed partial class StageControl
     private static bool TryFindReference3DRegionOverlapPoint(
         PathsD left,
         PathsD right,
-        out PointF point)
+        out PointF point,
+        double minimumArea = Reference3DIntersectionAreaEpsilon)
     {
         point = PointF.Empty;
         try
@@ -1245,7 +1839,7 @@ internal sealed partial class StageControl
                 right,
                 FillRule.EvenOdd,
                 Reference3DClipperPrecision);
-            return TryFindReference3DPointInPaths(intersection, out point);
+            return TryFindReference3DPointInPaths(intersection, out point, minimumArea);
         }
         catch (Exception exception) when (Reference3DIsClipperFailure(exception))
         {
@@ -1253,96 +1847,121 @@ internal sealed partial class StageControl
         }
     }
 
-    private static bool TryFindReference3DEdgeRegionOverlapPoint(
+    private static bool TryBuildReference3DEdgeStrokeRegion(
         Reference3DRenderItem edge,
-        PathsD region,
-        out PointF point)
+        out PathsD region)
     {
-        point = PointF.Empty;
-        var contours = Reference3DPathsToContours(region);
-        foreach (var segment in edge.Contours)
+        region = [];
+        var width = Math.Max(
+            ReferenceSurfaceOverlapTolerancePixels * 2f,
+            edge.EdgeWidth + ReferenceSurfaceOverlapTolerancePixels * 2f);
+        if (!float.IsFinite(width) || width <= 0) return false;
+        var radius = width * 0.5d;
+
+        try
         {
-            if (segment.Points.Length < 2) continue;
-            var start = segment.Points[0];
-            var end = segment.Points[^1];
-            var parameters = new List<double> { 0d, 1d };
-            AppendReference3DSegmentBoundaryParameters(start, end, contours, parameters);
-            parameters.Sort();
-            var previous = double.NaN;
-            foreach (var parameter in parameters)
+            foreach (var contour in edge.Contours)
             {
-                if (!double.IsFinite(parameter)
-                    || parameter < 0
-                    || parameter > 1
-                    || double.IsFinite(previous) && parameter - previous <= 0.000001d)
+                if (contour.Points.Length < 2
+                    || contour.Points.Any(point =>
+                        !float.IsFinite(point.X) || !float.IsFinite(point.Y)))
                 {
                     continue;
                 }
-                if (double.IsFinite(previous))
+                var centerline = new PathsD
                 {
-                    var candidate = Reference3DLerp(start, end, (previous + parameter) * 0.5d);
-                    if (PointInProjectedFill(candidate, contours))
-                    {
-                        point = candidate;
-                        return true;
-                    }
+                    new PathD(contour.Points.Select(point => new PointD(point.X, point.Y)))
+                };
+                var endType = edge.EdgeStartCap && edge.EdgeEndCap
+                    ? EndType.Round
+                    : EndType.Butt;
+                region.AddRange(Clipper.InflatePaths(
+                    centerline,
+                    radius,
+                    JoinType.Round,
+                    endType,
+                    precision: Reference3DClipperPrecision));
+                if (edge.EdgeStartCap != edge.EdgeEndCap)
+                {
+                    var roundPoint = edge.EdgeStartCap
+                        ? contour.Points[0]
+                        : contour.Points[^1];
+                    region.AddRange(Clipper.InflatePaths(
+                        new PathsD
+                        {
+                            new PathD { new PointD(roundPoint.X, roundPoint.Y) }
+                        },
+                        radius,
+                        JoinType.Round,
+                        EndType.Round,
+                        precision: Reference3DClipperPrecision));
                 }
-                previous = parameter;
             }
+            if (region.Count == 0) return false;
+            if (region.Count > 1)
+            {
+                region = Clipper.Union(
+                    region,
+                    new PathsD(),
+                    FillRule.NonZero,
+                    Reference3DClipperPrecision);
+            }
+            return region.Any(path => path.Count >= 3
+                && Math.Abs(Clipper.Area(path)) > Reference3DIntersectionLineEpsilon);
         }
-        return false;
+        catch (Exception exception) when (Reference3DIsClipperFailure(exception))
+        {
+            region = [];
+            return false;
+        }
     }
 
-    private static bool TryFindReference3DEdgeRegionContactPoint(
+    private static PointF Reference3DClosestPointOnEdge(
         Reference3DRenderItem edge,
-        PathsD region,
-        out PointF point)
+        PointF point)
     {
-        if (TryFindReference3DEdgeRegionOverlapPoint(edge, region, out point)) return true;
-        var contours = Reference3DPathsToContours(region);
-        const float contactOffset = 0.5f;
-        foreach (var segment in edge.Contours)
+        var bestPoint = point;
+        var bestDistanceSquared = float.PositiveInfinity;
+        foreach (var contour in edge.Contours)
         {
-            if (segment.Points.Length < 2) continue;
-            var start = segment.Points[0];
-            var end = segment.Points[^1];
-            var dx = end.X - start.X;
-            var dy = end.Y - start.Y;
-            var length = MathF.Sqrt(dx * dx + dy * dy);
-            if (!float.IsFinite(length) || length <= 0.000001f) continue;
-            var normalX = -dy / length * contactOffset;
-            var normalY = dx / length * contactOffset;
-            for (var sampleIndex = 1; sampleIndex < 8; sampleIndex++)
+            for (var index = 1; index < contour.Points.Length; index++)
             {
-                var amount = sampleIndex / 8f;
+                var start = contour.Points[index - 1];
+                var end = contour.Points[index];
+                var dx = end.X - start.X;
+                var dy = end.Y - start.Y;
+                var lengthSquared = dx * dx + dy * dy;
+                var amount = lengthSquared <= Reference3DIntersectionLineEpsilon
+                    ? 0f
+                    : Math.Clamp(
+                        ((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared,
+                        0f,
+                        1f);
                 var candidate = new PointF(start.X + dx * amount, start.Y + dy * amount);
-                var positive = new PointF(candidate.X + normalX, candidate.Y + normalY);
-                var negative = new PointF(candidate.X - normalX, candidate.Y - normalY);
-                if (!PointInProjectedFill(candidate, contours)
-                    && !PointInProjectedFill(positive, contours)
-                    && !PointInProjectedFill(negative, contours))
+                var offsetX = candidate.X - point.X;
+                var offsetY = candidate.Y - point.Y;
+                var distanceSquared = offsetX * offsetX + offsetY * offsetY;
+                if (distanceSquared < bestDistanceSquared)
                 {
-                    continue;
+                    bestDistanceSquared = distanceSquared;
+                    bestPoint = candidate;
                 }
-                point = candidate;
-                return true;
             }
         }
-        point = PointF.Empty;
-        return false;
+        return bestPoint;
     }
 
     private static bool TryFindReference3DRegionPoint(
-        IReadOnlyList<Reference3DProjectedContour> surface,
-        IReadOnlyList<Reference3DProjectedContour> clip,
+        PathsD surface,
+        PathsD clip,
         out PointF point)
     {
         point = PointF.Empty;
         try
         {
             var intersection = Clipper.Intersect(
-                Reference3DContoursToPaths(surface),
-                Reference3DContoursToPaths(clip),
+                surface,
+                clip,
                 FillRule.EvenOdd,
                 Reference3DClipperPrecision);
             return TryFindReference3DPointInPaths(intersection, out point);
@@ -1364,16 +1983,91 @@ internal sealed partial class StageControl
                 contour.Points.Select(point => new PointD(point.X, point.Y)))));
     }
 
+    private static Reference3DProjectedContour[] CreateReference3DClosedStrokeOcclusionContours(
+        Reference3DProjectedContour centerline,
+        float width)
+    {
+        var count = EffectiveReference3DPointCount(centerline.Points, closed: true);
+        if (count < 3 || !float.IsFinite(width) || width <= 0) return [];
+        try
+        {
+            var source = new PathsD
+            {
+                new(centerline.Points
+                    .Take(count)
+                    .Select(point => new PointD(point.X, point.Y)))
+            };
+            return Clipper.InflatePaths(
+                    source,
+                    width * 0.5,
+                    JoinType.Round,
+                    EndType.Joined,
+                    precision: Reference3DClipperPrecision)
+                .Where(path => path.Count >= 3)
+                .Select(path => new Reference3DProjectedContour(
+                    path.Select(point => new PointF((float)point.x, (float)point.y)).ToArray(),
+                    true,
+                    centerline.AverageDepth))
+                .ToArray();
+        }
+        catch (Exception exception) when (Reference3DIsClipperFailure(exception))
+        {
+            return [];
+        }
+    }
+
     private static bool Reference3DPathsHaveArea(PathsD paths)
     {
         return paths.Any(path => path.Count >= 3
             && Math.Abs(Clipper.Area(path)) > Reference3DIntersectionAreaEpsilon);
     }
 
-    private static bool TryFindReference3DPointInPaths(PathsD paths, out PointF point)
+    private static bool TryGetReference3DPathsBounds(PathsD paths, out RectangleF bounds)
+    {
+        var left = double.PositiveInfinity;
+        var top = double.PositiveInfinity;
+        var right = double.NegativeInfinity;
+        var bottom = double.NegativeInfinity;
+        foreach (var path in paths)
+        {
+            foreach (var point in path)
+            {
+                if (!double.IsFinite(point.x) || !double.IsFinite(point.y)) continue;
+                left = Math.Min(left, point.x);
+                top = Math.Min(top, point.y);
+                right = Math.Max(right, point.x);
+                bottom = Math.Max(bottom, point.y);
+            }
+        }
+
+        var floatLeft = (float)left;
+        var floatTop = (float)top;
+        var floatRight = (float)right;
+        var floatBottom = (float)bottom;
+        if (!float.IsFinite(floatLeft)
+            || !float.IsFinite(floatTop)
+            || !float.IsFinite(floatRight)
+            || !float.IsFinite(floatBottom))
+        {
+            bounds = RectangleF.Empty;
+            return false;
+        }
+
+        bounds = RectangleF.FromLTRB(floatLeft, floatTop, floatRight, floatBottom);
+        return true;
+    }
+
+    private static bool TryFindReference3DPointInPaths(
+        PathsD paths,
+        out PointF point,
+        double minimumArea = Reference3DIntersectionAreaEpsilon)
     {
         point = PointF.Empty;
-        if (!Reference3DPathsHaveArea(paths)) return false;
+        if (!paths.Any(path => path.Count >= 3
+                && Math.Abs(Clipper.Area(path)) > minimumArea))
+        {
+            return false;
+        }
         var contours = Reference3DPathsToContours(paths);
         if (!TryGetReference3DProjectedBounds(contours, 0, out var bounds)) return false;
 

@@ -341,8 +341,8 @@ internal sealed partial class StageControl
         using var pen = new Pen(Color.FromArgb(item.EdgeArgb), item.EdgeWidth)
         {
             LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
+            StartCap = item.EdgeStartCap ? LineCap.Round : LineCap.Flat,
+            EndCap = item.EdgeEndCap ? LineCap.Round : LineCap.Flat
         };
         graphics.DrawPath(pen, path);
         return true;

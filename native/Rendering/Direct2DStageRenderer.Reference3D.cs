@@ -363,7 +363,10 @@ internal sealed partial class Direct2DStageRenderer
             geometry,
             BrushFor(item.EdgeArgb),
             item.EdgeWidth,
-            RoundStrokeStyle());
+            LineStrokeStyle(
+                item.EdgeStartCap ? CapStyle.Round : CapStyle.Flat,
+                item.EdgeEndCap ? CapStyle.Round : CapStyle.Flat,
+                miterJoin: false));
         return true;
     }
 

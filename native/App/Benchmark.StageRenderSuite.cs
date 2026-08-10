@@ -1024,19 +1024,19 @@ internal static partial class Benchmark
                 + $"middle={string.Join(',', stableOrderCenterFills.Select(item => item.AverageDepth))}/{stableOrderCenterFills.FirstOrDefault().PlaneKey}, "
                 + $"near={string.Join(',', stableOrderNearFills.Select(item => item.AverageDepth))}/{stableOrderNearFills.FirstOrDefault().PlaneKey}.");
         }
-        var sharedStableFragments = stableOrderNearFills.Select(item => item.FragmentSlot)
-            .Intersect(stableOrderFarFills.Select(item => item.FragmentSlot))
+        var sharedStableFragments = stableOrderNearFills.Select(item => item.StableFragmentIdentity)
+            .Intersect(stableOrderFarFills.Select(item => item.StableFragmentIdentity))
             .ToArray();
         if (sharedStableFragments.Length == 0
-            || sharedStableFragments.Any(fragmentSlot =>
+            || sharedStableFragments.Any(fragmentIdentity =>
                 Array.FindIndex(stableOrderItems, item =>
                     item.ObjectIndex == stableOrderNearObject
                     && item.Kind == Reference3DRenderKind.FrontFill
-                    && item.FragmentSlot == fragmentSlot)
+                    && item.StableFragmentIdentity == fragmentIdentity)
                 >= Array.FindIndex(stableOrderItems, item =>
                     item.ObjectIndex == stableOrderFarObject
                     && item.Kind == Reference3DRenderKind.FrontFill
-                    && item.FragmentSlot == fragmentSlot)))
+                    && item.StableFragmentIdentity == fragmentIdentity)))
         {
             throw new InvalidOperationException(
                 "The coplanar pair in the three-object fixture did not retain its layer tie-break.");
@@ -1055,7 +1055,9 @@ internal static partial class Benchmark
                         or Reference3DRenderKind.FrontStroke)
                 .ToArray();
             var invalidFragment = frontItems
-                .GroupBy(entry => entry.Item.FragmentSlot)
+                .GroupBy(entry => (
+                    entry.Item.StableFragmentIdentity,
+                    entry.Item.FragmentSlot))
                 .Any(fragment =>
                 {
                     var passes = fragment.OrderBy(entry => entry.Index).ToArray();
@@ -1080,6 +1082,7 @@ internal static partial class Benchmark
                 item.AverageDepth,
                 item.PlaneKey,
                 item.SurfaceSlot,
+                item.StableFragmentIdentity,
                 item.FragmentSlot))
             .ToArray();
         for (var attempt = 0; attempt < 12; attempt++)
@@ -1092,6 +1095,7 @@ internal static partial class Benchmark
                     item.AverageDepth,
                     item.PlaneKey,
                     item.SurfaceSlot,
+                    item.StableFragmentIdentity,
                     item.FragmentSlot))
                 .ToArray();
             if (!repeatedSignature.SequenceEqual(stableOrderSignature))
@@ -1333,7 +1337,307 @@ internal static partial class Benchmark
         var crossingCardBFallbackColor = Color.FromArgb(255, 34, 104, 156);
         var crossingCardATransform = System.Numerics.Matrix4x4.CreateRotationX(crossingCardAngle);
         var crossingCardBTransform = System.Numerics.Matrix4x4.CreateRotationX(-crossingCardAngle);
+        var containedStrokeScene = new VectorScene();
+        containedStrokeScene.CreateEmpty();
+        var containedStrokeCoverLayer = containedStrokeScene.AddLayer("Contained stroke cover");
+        var containedStrokeColor = Color.White;
+        var containedStrokeCoverColor = Color.FromArgb(255, 42, 204, 116);
+        var containedStrokeObject = containedStrokeScene.AddLineSegment(
+            0,
+            new PointF(-600, 700),
+            new PointF(600, 700),
+            240,
+            Color.Transparent,
+            containedStrokeColor,
+            12);
+        var containedStrokeCoverObject = containedStrokeScene.AddObject(
+            containedStrokeCoverLayer,
+            PointF.Empty,
+            new SizeF(8_000, 8_000),
+            angle: 0,
+            stroke: 0,
+            color: containedStrokeCoverColor,
+            strokeColor: Color.Transparent,
+            atoms: 12,
+            shapeKind: ShapeKind.Rectangle);
+        var containedStrokeTransform = System.Numerics.Matrix4x4.CreateRotationX(0.18f);
+        var containedStrokeCoverTransform = System.Numerics.Matrix4x4.CreateRotationX(0.72f);
+        using var containedStrokeStage = CreateStage(containedStrokeScene);
+        var containedStrokeView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        containedStrokeView.Camera.Projection = CameraProjection.Perspective;
+        containedStrokeStage.ConfigureReferenceView(containedStrokeView, SceneDimension.ThreeD);
+        containedStrokeStage.ResetReferenceCameraView();
+        containedStrokeStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+        containedStrokeStage.SetSceneCompositionResult(
+            CompositionResult(containedStrokeTransform, containedStrokeCoverTransform),
+            containedStrokeScene);
+        var containedStrokeLocalSample = new PointF(0, 700);
+        if (!containedStrokeStage.TryProjectScenePoint(
+                containedStrokeObject,
+                containedStrokeLocalSample,
+                out var containedStrokeProjectedSample,
+                out _))
+        {
+            throw new InvalidOperationException("The contained-stroke sample could not be projected.");
+        }
+        var containedStrokeSample = Point.Round(containedStrokeProjectedSample);
+        var containedStrokeCoverContours =
+            containedStrokeStage.GetReference3DProjectedContours(containedStrokeCoverObject);
+        var containedStrokeInsideCover = ProjectedFillContainsMargin(
+            containedStrokeCoverContours,
+            containedStrokeSample,
+            8);
+        var containedStrokeHasRay = containedStrokeStage.TryGetReferenceRay(
+            containedStrokeSample,
+            out var containedStrokeRay);
+        var containedStrokeDepth = 0f;
+        var containedStrokeHasDepth = containedStrokeHasRay
+            && TryIntersectCardPlane(
+                containedStrokeRay,
+                containedStrokeTransform,
+                out containedStrokeDepth,
+                out _);
+        var containedStrokeCoverDepth = 0f;
+        var containedStrokeCoverHasDepth = containedStrokeHasRay
+            && TryIntersectCardPlane(
+                containedStrokeRay,
+                containedStrokeCoverTransform,
+                out containedStrokeCoverDepth,
+                out _);
+        if (!containedStrokeInsideCover
+            || !containedStrokeHasDepth
+            || !containedStrokeCoverHasDepth
+            || Math.Abs(containedStrokeDepth - containedStrokeCoverDepth) < 90f)
+        {
+            throw new InvalidOperationException(
+                "The contained-stroke sample did not expose stable depth overlap inside its cover plane: "
+                + $"inside={containedStrokeInsideCover}, ray={containedStrokeHasRay}, "
+                + $"line={containedStrokeHasDepth}/{containedStrokeDepth:0.###}, "
+                + $"cover={containedStrokeCoverHasDepth}/{containedStrokeCoverDepth:0.###}.");
+        }
+        var containedRawItems = containedStrokeStage.GetReference3DLayerRenderItems(
+            [containedStrokeObject, containedStrokeCoverObject]);
+        var containedRawStroke = containedRawItems.Single(item =>
+            item.ObjectIndex == containedStrokeObject
+            && item.Kind == Reference3DRenderKind.FrontStroke);
+        var containedRawCover = containedRawItems.Single(item =>
+            item.ObjectIndex == containedStrokeCoverObject
+            && item.Kind == Reference3DRenderKind.FrontFill);
+        var containedStrokeVisible = containedStrokeDepth < containedStrokeCoverDepth;
+        if (containedStrokeVisible
+            == (containedRawStroke.AverageDepth < containedRawCover.AverageDepth))
+        {
+            throw new InvalidOperationException(
+                "The contained-stroke fixture did not distinguish local depth from whole-object depth: "
+                + $"local={containedStrokeDepth:0.###}/{containedStrokeCoverDepth:0.###}, "
+                + $"average={containedRawStroke.AverageDepth:0.###}/{containedRawCover.AverageDepth:0.###}.");
+        }
+        var containedStrokeItems = containedStrokeStage.GetReference3DSceneRenderItems();
+        var containedStrokeFragments = containedStrokeItems.Where(item =>
+                item.ObjectIndex == containedStrokeObject
+                && item.Kind == Reference3DRenderKind.FrontStroke)
+            .ToArray();
+        if (containedStrokeFragments.Length != 1
+            || containedStrokeFragments[0].OcclusionContours is not { Length: > 0 }
+            || containedStrokeFragments[0].FragmentClip is not { Length: > 0 })
+        {
+            throw new InvalidOperationException(
+                "A fully covered stroke did not retain its single local-depth fragment plan.");
+        }
+        if (containedStrokeFragments[0].OcclusionContours!.Any(contour =>
+                contour.Points.Any(point => !ProjectedFillContainsMargin(
+                    containedStrokeCoverContours,
+                    Point.Round(point),
+                    4))))
+        {
+            throw new InvalidOperationException(
+                "The contained-stroke occupancy extended outside its cover plane.");
+        }
+        var containedStrokeCoverItems = containedStrokeItems.Where(item =>
+                item.ObjectIndex == containedStrokeCoverObject
+                && item.Kind == Reference3DRenderKind.FrontFill)
+            .ToArray();
+        if (containedStrokeCoverItems.Length != 1
+            || containedStrokeCoverItems[0].FragmentClip is not null)
+        {
+            throw new InvalidOperationException(
+                "A narrow contained stroke unnecessarily fragmented its large cover plane.");
+        }
+        if (containedStrokeItems.Any(item => item.Kind == Reference3DRenderKind.IntersectionEdge))
+        {
+            throw new InvalidOperationException(
+                "A stroke-only intersection generated a synthetic surface connection edge.");
+        }
+        foreach (var endpoint in new[] { new PointF(-600, 700), new PointF(600, 700) })
+        {
+            if (!containedStrokeStage.TryProjectScenePoint(
+                    containedStrokeObject,
+                    endpoint,
+                    out var projectedEndpoint,
+                    out _)
+                || !ProjectedFillContainsMargin(
+                    containedStrokeCoverContours,
+                    Point.Round(projectedEndpoint),
+                    8)
+                || !containedStrokeStage.TryGetReferenceRay(
+                    Point.Round(projectedEndpoint),
+                    out var endpointRay)
+                || !TryIntersectCardPlane(
+                    endpointRay,
+                    containedStrokeTransform,
+                    out var endpointStrokeDepth,
+                    out _)
+                || !TryIntersectCardPlane(
+                    endpointRay,
+                    containedStrokeCoverTransform,
+                    out var endpointCoverDepth,
+                    out _)
+                || Math.Abs(endpointStrokeDepth - endpointCoverDepth) < 90f
+                || (endpointStrokeDepth < endpointCoverDepth) != containedStrokeVisible)
+            {
+                throw new InvalidOperationException(
+                    "The contained-stroke endpoints did not remain fully covered on one depth side.");
+            }
+        }
+        var containedStrokeExpectedObject = containedStrokeVisible
+            ? containedStrokeObject
+            : containedStrokeCoverObject;
+        var containedStrokeExpectedColor = containedStrokeVisible
+            ? containedStrokeColor
+            : containedStrokeCoverColor;
+        using (var containedStrokeBitmap = RenderGdi(containedStrokeStage))
+        {
+            AssertPixelNear(
+                Sample(containedStrokeBitmap, containedStrokeSample),
+                containedStrokeExpectedColor,
+                "A contained 3D stroke used whole-object depth instead of local cover depth",
+                tolerance: 20);
+        }
+        if (!containedStrokeStage.TryHitTestProjectedObject(
+                containedStrokeSample,
+                1f,
+                out var containedStrokeHit)
+            || containedStrokeHit != containedStrokeExpectedObject)
+        {
+            throw new InvalidOperationException(
+                "Contained-stroke hit testing disagreed with its locally visible object: "
+                + $"expected={containedStrokeExpectedObject}, hit={containedStrokeHit}.");
+        }
+        var crossingLineScene = new VectorScene();
+        crossingLineScene.CreateEmpty();
+        var crossingLineBottomLayer = crossingLineScene.AddLayer("Crossing line cover");
+        var crossingLineColor = Color.White;
+        var crossingLineFillColor = Color.FromArgb(255, 42, 204, 116);
+        var crossingLineObject = crossingLineScene.AddLineSegment(
+            0,
+            new PointF(0, -1_000),
+            new PointF(0, 1_000),
+            96,
+            Color.Transparent,
+            crossingLineColor,
+            12);
+        var crossingLineFillObject = crossingLineScene.AddObject(
+            crossingLineBottomLayer,
+            PointF.Empty,
+            crossingCardSize,
+            angle: 0,
+            stroke: 0,
+            color: crossingLineFillColor,
+            strokeColor: Color.Transparent,
+            atoms: 12,
+            shapeKind: ShapeKind.Rectangle);
+        using var crossingLineStage = CreateStage(crossingLineScene);
+        var crossingLineView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        crossingLineView.Camera.Projection = CameraProjection.Perspective;
+        crossingLineStage.ConfigureReferenceView(crossingLineView, SceneDimension.ThreeD);
+        crossingLineStage.ResetReferenceCameraView();
+        crossingLineStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+        crossingLineStage.SetSceneCompositionResult(
+            CompositionResult(crossingCardATransform, crossingCardBTransform),
+            crossingLineScene);
+        var crossingLineSamples =
+            new List<(Point Screen, int ExpectedObject, Color ExpectedColor)>();
+        foreach (var localY in new[] { -700f, 700f })
+        {
+            if (!crossingLineStage.TryProjectScenePoint(
+                    crossingLineObject,
+                    new PointF(0, localY),
+                    out var projected,
+                    out _))
+            {
+                throw new InvalidOperationException("The crossing-line sample could not be projected.");
+            }
+
+            var screen = Point.Round(projected);
+            if (!ProjectedFillContainsMargin(
+                    crossingLineStage.GetReference3DProjectedContours(crossingLineFillObject),
+                    screen,
+                    4)
+                || !crossingLineStage.TryGetReferenceRay(screen, out var ray)
+                || !TryIntersectCardPlane(ray, crossingCardATransform, out var lineDepth, out _)
+                || !TryIntersectCardPlane(ray, crossingCardBTransform, out var fillDepth, out _)
+                || Math.Abs(lineDepth - fillDepth) < 90f)
+            {
+                throw new InvalidOperationException(
+                    $"The crossing-line sample at local Y={localY:0.###} did not expose stable depth overlap.");
+            }
+            var lineVisible = lineDepth < fillDepth;
+            crossingLineSamples.Add((
+                screen,
+                lineVisible ? crossingLineObject : crossingLineFillObject,
+                lineVisible ? crossingLineColor : crossingLineFillColor));
+        }
+        if (crossingLineSamples.Count(sample =>
+                sample.ExpectedObject == crossingLineObject) != 1
+            || crossingLineSamples.Count(sample =>
+                sample.ExpectedObject == crossingLineFillObject) != 1)
+        {
+            throw new InvalidOperationException(
+                "The crossing-line fixture did not expose one visible-line half and one cover-occluded half.");
+        }
+        var crossingLineItems = crossingLineStage.GetReference3DSceneRenderItems();
+        if (crossingLineItems.Count(item => item.ObjectIndex == crossingLineObject
+                && item.Kind == Reference3DRenderKind.FrontStroke
+                && item.OcclusionContours is { Length: > 0 }
+                && item.FragmentClip is { Length: > 0 }) < 2)
+        {
+            throw new InvalidOperationException(
+                "A stroke-only 3D line did not receive local occlusion fragments.");
+        }
+        using (var crossingLineBitmap = RenderGdi(crossingLineStage))
+        {
+            foreach (var sample in crossingLineSamples)
+            {
+                AssertPixelNear(
+                    Sample(crossingLineBitmap, sample.Screen),
+                    sample.ExpectedColor,
+                    "A crossing 3D line segment used one whole-object depth across its cover plane",
+                    tolerance: 20);
+                if (!crossingLineStage.TryHitTestProjectedObject(
+                        sample.Screen,
+                        1f,
+                        out var hit)
+                    || hit != sample.ExpectedObject)
+                {
+                    throw new InvalidOperationException(
+                        $"Crossing-line hit testing disagreed with the visible fragment at {sample.Screen}: "
+                        + $"expected={sample.ExpectedObject}, hit={hit}.");
+                }
+            }
+        }
         var crossingDirect2DSamples = new List<(Point Screen, int ObjectIndex, Color ExpectedColor)>();
+        var crossingOccludedStrokeSamples =
+            new List<(
+                Point Screen,
+                int ObjectIndex,
+                Color ExpectedColor,
+                int SourceObject,
+                PointF SourcePoint,
+                float DepthGap)>();
+        var crossingRotationDirect2DSamples =
+            new List<(float Yaw, float Pitch, Point Screen, Color ExpectedColor)>();
+        var crossingIntersectionOrbitAnchors = new[] { -1_200f, -600f, 0f, 600f, 1_200f };
+        var crossingIntersectionDirect2DFrames = new[] { 0, 12, 24, 36, 48 };
         var crossingScene = new VectorScene();
         crossingScene.CreateEmpty();
         var crossingBottomLayer = crossingScene.AddLayer("Crossing card bottom");
@@ -1417,6 +1721,8 @@ internal static partial class Benchmark
             throw new InvalidOperationException("Changing crossing-card yaw and pitch did not change its perspective projection.");
         }
         AssertCrossingCardView("perspective-oblique");
+        AssertCrossingCardRotationTrajectory();
+        AssertCrossingIntersectionEdgeOrbit();
 
         var blendedCrossingScene = new VectorScene();
         blendedCrossingScene.RestoreSnapshot(crossingScene.CreateSnapshot());
@@ -1591,6 +1897,84 @@ internal static partial class Benchmark
                     + "].");
             }
         }
+        AssertGrazingIntersectionEdgeOrbit();
+
+        const float thickEdgeIncidentAngle = 0.62f;
+        const float thickEdgeStroke = 360f;
+        const float thickEdgeCoverPivotY = 80f;
+        const float thickEdgeCoverTilt = 0.88f;
+        var thickEdgeIncidentATransform = System.Numerics.Matrix4x4.CreateRotationX(
+            thickEdgeIncidentAngle);
+        var thickEdgeIncidentBTransform = System.Numerics.Matrix4x4.CreateRotationX(
+            -thickEdgeIncidentAngle);
+        var thickEdgeCoverTransform = System.Numerics.Matrix4x4.CreateTranslation(
+                0,
+                -thickEdgeCoverPivotY,
+                0)
+            * System.Numerics.Matrix4x4.CreateRotationX(thickEdgeCoverTilt)
+            * System.Numerics.Matrix4x4.CreateTranslation(0, thickEdgeCoverPivotY, -800f);
+        var thickEdgeSurfaceColor = Color.FromArgb(255, 36, 70, 108);
+        var thickEdgeCoverColor = Color.FromArgb(255, 242, 196, 54);
+        var thickEdgeScene = new VectorScene();
+        thickEdgeScene.CreateEmpty();
+        var thickEdgeIncidentB = thickEdgeScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(3_600, 60),
+            angle: 0,
+            stroke: thickEdgeStroke,
+            color: thickEdgeSurfaceColor,
+            strokeColor: Color.Transparent,
+            atoms: 12,
+            shapeKind: ShapeKind.Rectangle);
+        var thickEdgeIncidentALayer = thickEdgeScene.AddLayer("Thick intersection incident surface");
+        var thickEdgeIncidentA = thickEdgeScene.AddObject(
+            thickEdgeIncidentALayer,
+            PointF.Empty,
+            new SizeF(8_000, 8_000),
+            angle: 0,
+            stroke: 0,
+            color: thickEdgeSurfaceColor,
+            strokeColor: Color.Transparent,
+            atoms: 12,
+            shapeKind: ShapeKind.Rectangle);
+        var thickEdgeCoverLayer = thickEdgeScene.AddLayer("Thick intersection grazing cover");
+        var thickEdgeCover = thickEdgeScene.AddObject(
+            thickEdgeCoverLayer,
+            new PointF(0, 1_280),
+            new SizeF(2_400, 2_400),
+            angle: 0,
+            stroke: 0,
+            color: thickEdgeCoverColor,
+            strokeColor: Color.Transparent,
+            atoms: 12,
+            shapeKind: ShapeKind.Rectangle);
+        using var thickEdgeStage = CreateStage(thickEdgeScene);
+        var thickEdgeView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        thickEdgeView.Camera.Projection = CameraProjection.Perspective;
+        thickEdgeStage.ConfigureReferenceView(thickEdgeView, SceneDimension.ThreeD);
+        thickEdgeStage.ResetReferenceCameraView();
+        thickEdgeStage.SetSceneCompositionResult(
+            CompositionResult(
+                thickEdgeIncidentBTransform,
+                thickEdgeIncidentATransform,
+                thickEdgeCoverTransform),
+            thickEdgeScene);
+        const int thickEdgeOrbitFrameCount = 17;
+        var thickEdgeDirect2DFrames = new[] { 0, 4, 8, 12, 16 };
+        for (var frame = 0; frame < thickEdgeOrbitFrameCount; frame++)
+        {
+            var progress = frame / (thickEdgeOrbitFrameCount - 1f);
+            var yaw = -0.12f + 0.24f * progress;
+            var pitch = 0.02f * MathF.Sin(progress * MathF.PI * 2f);
+            var samples = AssertThickEdgeGrazingFrame(
+                thickEdgeStage,
+                yaw,
+                pitch,
+                $"GDI frame={frame}");
+            using var bitmap = RenderGdi(thickEdgeStage);
+            AssertThickEdgeGrazingPixels(bitmap, samples, $"GDI frame={frame}");
+        }
 
         var threeCardSize = new SizeF(4_200, 3_200);
         var threeCardColors = new[]
@@ -1612,6 +1996,7 @@ internal static partial class Benchmark
         var threeCardScene = new VectorScene();
         threeCardScene.CreateEmpty();
         var threeCardObjects = new int[threeCardTransforms.Length];
+        var threeCardOccludedEdgeSamples = new List<(Point Screen, Color ExpectedColor)>();
         for (var cardIndex = 0; cardIndex < threeCardObjects.Length; cardIndex++)
         {
             var layer = cardIndex == 0
@@ -1646,7 +2031,219 @@ internal static partial class Benchmark
         threeCardStage.SetReferenceCameraOrientation(0, 0);
         AssertThreeCrossingCardView("perspective-front");
         threeCardStage.SetReferenceCameraOrientation(0.47f, -0.29f);
+        var coldPlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
         AssertThreeCrossingCardView("perspective-oblique");
+        AssertOccludedThreeCardEdges();
+        var coldPlanBuilds = threeCardStage.Reference3DRenderPlanBuildCount - coldPlanBuildsBefore;
+        if (coldPlanBuilds is < 1 or > 2)
+        {
+            throw new InvalidOperationException(
+                $"The stable three-card render built {coldPlanBuilds} reference plans; expected one display plan and at most one hit-test plan.");
+        }
+
+        var threeCardFragmentProbeCandidates = new[] { 450f, 700f }
+            .SelectMany(radius => Enumerable.Range(0, 32).Select(index =>
+            {
+                var angle = index * MathF.PI * 2f / 32f + 0.043f;
+                return new PointF(radius * MathF.Cos(angle), radius * MathF.Sin(angle));
+            }))
+            .ToArray();
+        var threeCardFragmentObservations = new Dictionary<
+            (int ObjectIndex, int CandidateIndex),
+            List<(int Frame, ulong FragmentIdentity)>>();
+        const int threeCardFragmentOrbitFrames = 17;
+        for (var frame = 0; frame < threeCardFragmentOrbitFrames; frame++)
+        {
+            var progress = frame / (threeCardFragmentOrbitFrames - 1f);
+            var yaw = -0.55f + 1.10f * progress;
+            var pitch = -0.18f + 0.08f * MathF.Sin(progress * MathF.PI * 2f);
+            threeCardStage.SetReferenceCameraOrientation(yaw, pitch);
+            var renderItems = threeCardStage.GetReference3DSceneRenderItems();
+            foreach (var objectIndex in threeCardObjects)
+            {
+                for (var candidateIndex = 0;
+                     candidateIndex < threeCardFragmentProbeCandidates.Length;
+                     candidateIndex++)
+                {
+                    var sourcePoint = threeCardFragmentProbeCandidates[candidateIndex];
+                    if (!TryResolvePhysicalFragmentSlot(
+                            threeCardStage,
+                            renderItems,
+                            objectIndex,
+                            sourcePoint,
+                            out var fragmentIdentity))
+                    {
+                        continue;
+                    }
+                    var key = (objectIndex, candidateIndex);
+                    if (!threeCardFragmentObservations.TryGetValue(key, out var observations))
+                    {
+                        observations = [];
+                        threeCardFragmentObservations.Add(key, observations);
+                    }
+                    observations.Add((frame, fragmentIdentity));
+                }
+            }
+        }
+        foreach (var pair in threeCardFragmentObservations)
+        {
+            var distinctSlots = pair.Value.Select(value => value.FragmentIdentity).Distinct().ToArray();
+            if (distinctSlots.Length <= 1) continue;
+            throw new InvalidOperationException(
+                "A physical surface fragment changed identity during the camera orbit: "
+                + $"object={pair.Key.ObjectIndex}, "
+                + $"source={threeCardFragmentProbeCandidates[pair.Key.CandidateIndex]}, "
+                + $"observations=[{string.Join(',', pair.Value)}].");
+        }
+        foreach (var objectIndex in threeCardObjects)
+        {
+            var retained = threeCardFragmentObservations.Count(pair =>
+                pair.Key.ObjectIndex == objectIndex
+                && pair.Value.Count >= 12);
+            if (retained < 4)
+            {
+                throw new InvalidOperationException(
+                    "The three-card fixture could not retain enough physical fragment probes: "
+                    + $"object={objectIndex}, retained={retained}.");
+            }
+        }
+        threeCardStage.SetReferenceCameraOrientation(0.47f, -0.29f);
+
+        const int renderPlanCacheSamples = 64;
+        const long renderPlanCacheAllocationBudget = 4_096;
+        var cachedRenderItems = threeCardStage.GetReference3DSceneRenderItems();
+        var cachedRenderItemCount = cachedRenderItems.Length;
+        var cachedPlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        var sameCachedRenderItems = true;
+        long observedCachedRenderItems = 0;
+        for (var sample = 0; sample < renderPlanCacheSamples; sample++)
+        {
+            var renderItems = threeCardStage.GetReference3DSceneRenderItems();
+            sameCachedRenderItems &= ReferenceEquals(cachedRenderItems, renderItems);
+            observedCachedRenderItems += renderItems.Length;
+        }
+        var referencePlanCacheAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        var cachedPlanBuilds = threeCardStage.Reference3DRenderPlanBuildCount - cachedPlanBuildsBefore;
+        if (cachedPlanBuilds != 0
+            || !sameCachedRenderItems
+            || observedCachedRenderItems != (long)cachedRenderItemCount * renderPlanCacheSamples
+            || referencePlanCacheAllocatedBytes > renderPlanCacheAllocationBudget)
+        {
+            throw new InvalidOperationException(
+                $"Stable reference-3D render-plan reuse regressed: builds={cachedPlanBuilds}, "
+                + $"same={sameCachedRenderItems}, items={observedCachedRenderItems}/"
+                + $"{(long)cachedRenderItemCount * renderPlanCacheSamples}, "
+                + $"allocated={referencePlanCacheAllocatedBytes}.");
+        }
+
+        var overlayPlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        threeCardStage.SetReference3DSelection([threeCardObjects[0]]);
+        _ = threeCardStage.GetReference3DSceneRenderItems();
+        threeCardStage.ClearReference3DSelection();
+        _ = threeCardStage.GetReference3DSceneRenderItems();
+        if (threeCardStage.Reference3DRenderPlanBuildCount != overlayPlanBuildsBefore)
+        {
+            throw new InvalidOperationException("Reference-3D overlay invalidation rebuilt the stable scene plan.");
+        }
+
+        var cameraPlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        threeCardStage.SetReferenceCameraOrientation(0.51f, -0.31f);
+        _ = threeCardStage.GetReference3DSceneRenderItems();
+        _ = threeCardStage.GetReference3DSceneRenderItems();
+        if (threeCardStage.Reference3DRenderPlanBuildCount != cameraPlanBuildsBefore + 1)
+        {
+            throw new InvalidOperationException("A reference-camera change did not lazily rebuild exactly one scene plan.");
+        }
+
+        var changedThreeCardComposition = CompositionResult(
+            threeCardTransforms[0] * System.Numerics.Matrix4x4.CreateTranslation(0, 0, 48),
+            threeCardTransforms[1],
+            threeCardTransforms[2]);
+        var compositionPlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        threeCardStage.SetSceneCompositionResult(changedThreeCardComposition, threeCardScene);
+        _ = threeCardStage.GetReference3DSceneRenderItems();
+        _ = threeCardStage.GetReference3DSceneRenderItems();
+        if (threeCardStage.Reference3DRenderPlanBuildCount != compositionPlanBuildsBefore + 1)
+        {
+            throw new InvalidOperationException("A scene-composition change did not lazily rebuild exactly one reference plan.");
+        }
+
+        var geometryRevisionBefore = threeCardScene.GeometryRevision;
+        var geometryPlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        threeCardScene.TransformObjects(
+            [threeCardObjects[0]],
+            static point => new PointF(point.X + 24f, point.Y));
+        if (threeCardScene.GeometryRevision == geometryRevisionBefore)
+        {
+            throw new InvalidOperationException("The reference-plan geometry invalidation fixture did not advance its revision.");
+        }
+        var geometryRenderItems = threeCardStage.GetReference3DSceneRenderItems();
+        _ = threeCardStage.GetReference3DSceneRenderItems();
+        if (threeCardStage.Reference3DRenderPlanBuildCount != geometryPlanBuildsBefore + 1)
+        {
+            throw new InvalidOperationException("A geometry revision did not lazily rebuild exactly one reference plan.");
+        }
+
+        var directStateLayer = threeCardScene.ObjectLayer[threeCardObjects[0]];
+        var layerStatePlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        if (!threeCardScene.SetLayerOutline(directStateLayer, true)
+            || !threeCardStage.GetReference3DSceneRenderItems().Any(item =>
+                item.ObjectIndex == threeCardObjects[0]
+                && item.Kind == Reference3DRenderKind.Outline)
+            || threeCardStage.Reference3DRenderPlanBuildCount != layerStatePlanBuildsBefore + 1)
+        {
+            throw new InvalidOperationException("A direct layer-outline change reused a stale reference render plan.");
+        }
+        if (!threeCardScene.SetLayerOutline(directStateLayer, false)
+            || !ReferenceEquals(geometryRenderItems, threeCardStage.GetReference3DSceneRenderItems()))
+        {
+            throw new InvalidOperationException("Restoring layer outline did not recover the matching cached render plan.");
+        }
+
+        layerStatePlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        if (!threeCardScene.SetLayerBlendMode(directStateLayer, LayerBlendMode.Multiply))
+        {
+            throw new InvalidOperationException("The reference-plan layer-blend fixture could not change its blend mode.");
+        }
+        var blendedRenderItems = threeCardStage.GetReference3DSceneRenderItems();
+        if (threeCardStage.Reference3DRenderPlanBuildCount != layerStatePlanBuildsBefore + 1)
+        {
+            throw new InvalidOperationException("A direct layer-blend change reused a stale reference render plan.");
+        }
+        var hiddenStateLayer = threeCardScene.ObjectLayer[threeCardObjects[1]];
+        layerStatePlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        if (!threeCardScene.SetLayerVisible(hiddenStateLayer, false)
+            || threeCardStage.GetReference3DSceneRenderItems().Any(item =>
+                item.ObjectIndex == threeCardObjects[1])
+            || threeCardStage.Reference3DRenderPlanBuildCount != layerStatePlanBuildsBefore + 1)
+        {
+            throw new InvalidOperationException("A direct layer-visibility change reused a stale reference render plan.");
+        }
+        if (!threeCardScene.SetLayerVisible(hiddenStateLayer, true)
+            || !ReferenceEquals(blendedRenderItems, threeCardStage.GetReference3DSceneRenderItems())
+            || !threeCardScene.SetLayerBlendMode(directStateLayer, LayerBlendMode.Normal)
+            || !ReferenceEquals(geometryRenderItems, threeCardStage.GetReference3DSceneRenderItems()))
+        {
+            throw new InvalidOperationException("Restoring direct layer state did not recover matching reference plans.");
+        }
+
+        var directTimelineTrack = threeCardScene.Timeline.FindTrackByTargetId(
+            threeCardScene.LayerIds[directStateLayer]);
+        layerStatePlanBuildsBefore = threeCardStage.Reference3DRenderPlanBuildCount;
+        if (directTimelineTrack is null
+            || !threeCardScene.Timeline.InsertBlankKeyframe(directTimelineTrack.Id, 0)
+            || threeCardStage.GetReference3DSceneRenderItems().Any(item =>
+                item.ObjectIndex == threeCardObjects[0])
+            || threeCardStage.Reference3DRenderPlanBuildCount != layerStatePlanBuildsBefore + 1)
+        {
+            throw new InvalidOperationException("A direct timeline-exposure change reused a stale reference render plan.");
+        }
+        if (!threeCardScene.Timeline.InsertKeyframe(directTimelineTrack.Id, 0)
+            || !ReferenceEquals(geometryRenderItems, threeCardStage.GetReference3DSceneRenderItems()))
+        {
+            throw new InvalidOperationException("Restoring timeline exposure did not recover the matching reference plan.");
+        }
 
         var cyclicCardPoints = new[]
         {
@@ -2066,16 +2663,121 @@ internal static partial class Benchmark
             }
         }
 
+        const int denseIntersectionPlaneCount = 14;
+        var denseIntersectionScene = new VectorScene();
+        denseIntersectionScene.CreateEmpty();
+        var denseIntersectionObjects = new int[denseIntersectionPlaneCount];
+        var denseIntersectionTransforms = new System.Numerics.Matrix4x4[denseIntersectionPlaneCount];
+        denseIntersectionTransforms[0] = System.Numerics.Matrix4x4.Identity;
+        for (var planeIndex = 0; planeIndex < denseIntersectionPlaneCount; planeIndex++)
+        {
+            denseIntersectionObjects[planeIndex] = denseIntersectionScene.AddObject(
+                0,
+                PointF.Empty,
+                new SizeF(4_000, 4_000),
+                angle: 0,
+                stroke: 24,
+                color: Color.FromArgb(
+                    255,
+                    52 + planeIndex * 11 % 170,
+                    72 + planeIndex * 17 % 160,
+                    88 + planeIndex * 23 % 150),
+                strokeColor: Color.White,
+                atoms: 12,
+                shapeKind: ShapeKind.Rectangle);
+            if (planeIndex == 0) continue;
+            var axisAngle = (planeIndex - 1) * MathF.PI / (denseIntersectionPlaneCount - 1);
+            denseIntersectionTransforms[planeIndex] =
+                System.Numerics.Matrix4x4.CreateRotationZ(-axisAngle)
+                * System.Numerics.Matrix4x4.CreateRotationX(0.68f)
+                * System.Numerics.Matrix4x4.CreateRotationZ(axisAngle);
+        }
+        using var denseIntersectionStage = CreateStage(denseIntersectionScene);
+        var denseIntersectionView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        denseIntersectionView.Camera.Projection = CameraProjection.Perspective;
+        denseIntersectionStage.ConfigureReferenceView(denseIntersectionView, SceneDimension.ThreeD);
+        denseIntersectionStage.ResetReferenceCameraView();
+        denseIntersectionStage.SetSceneCompositionResult(
+            CompositionResult(denseIntersectionTransforms),
+            denseIntersectionScene);
+        var denseExpectedPairs = new HashSet<(int First, int Second)>();
+        for (var first = 0; first < denseIntersectionObjects.Length; first++)
+        {
+            for (var second = first + 1; second < denseIntersectionObjects.Length; second++)
+            {
+                denseExpectedPairs.Add((
+                    denseIntersectionObjects[first],
+                    denseIntersectionObjects[second]));
+            }
+        }
+        Dictionary<(int First, int Second), int>? denseStableSlots = null;
+        var denseSharedEndpointCount = 0;
+        const int denseIntersectionFrameCount = 5;
+        for (var frame = 0; frame < denseIntersectionFrameCount; frame++)
+        {
+            var progress = frame / (denseIntersectionFrameCount - 1f);
+            var yaw = -0.36f + 0.72f * progress;
+            var pitch = -0.18f + 0.08f * MathF.Sin(progress * MathF.PI * 2f);
+            denseIntersectionStage.SetReferenceCameraOrientation(yaw, pitch);
+            var edges = denseIntersectionStage.GetReference3DSceneRenderItems()
+                .Where(item => item.Kind == Reference3DRenderKind.IntersectionEdge)
+                .ToArray();
+            var actualPairs = edges
+                .Select(item => (
+                    First: Math.Min(item.ObjectIndex, item.SecondaryObjectIndex),
+                    Second: Math.Max(item.ObjectIndex, item.SecondaryObjectIndex)))
+                .ToHashSet();
+            if (!actualPairs.SetEquals(denseExpectedPairs))
+            {
+                var missing = denseExpectedPairs.Except(actualPairs);
+                throw new InvalidOperationException(
+                    "A valid dense-plane intersection edge was dropped by the surface-fragment budget: "
+                    + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                    + $"missing=[{string.Join(',', missing)}], pairs={actualPairs.Count}, "
+                    + $"segments={edges.Length}.");
+            }
+
+            var currentSlots = edges
+                .GroupBy(item => (
+                    First: Math.Min(item.ObjectIndex, item.SecondaryObjectIndex),
+                    Second: Math.Max(item.ObjectIndex, item.SecondaryObjectIndex)))
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.SurfaceSlot).Distinct().Single());
+            denseStableSlots ??= currentSlots;
+            if (denseStableSlots.Any(pair => currentSlots[pair.Key] != pair.Value))
+            {
+                throw new InvalidOperationException(
+                    "Dense-plane intersection edge identities changed during the camera orbit: "
+                    + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}.");
+            }
+            denseSharedEndpointCount += AssertIntersectionEdgeCapTopology(
+                edges,
+                $"dense frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}");
+        }
+        if (denseSharedEndpointCount == 0)
+        {
+            throw new InvalidOperationException(
+                "The dense-plane fixture produced no shared internal intersection-edge endpoint.");
+        }
+
         Console.WriteLine("scene_reference_projection_2d_spatial_pose=ok");
         Console.WriteLine("scene_reference_projection_2d_gradients_and_blend=ok");
         Console.WriteLine("scene_reference_depth_order_and_hit_test=ok");
         Console.WriteLine("scene_reference_intersecting_planes=ok");
+        Console.WriteLine("scene_reference_stroke_occlusion_fragments=ok");
         Console.WriteLine("scene_reference_grazing_intersection_edges=ok");
+        Console.WriteLine("scene_reference_thick_edge_grazing_orbit=ok");
         Console.WriteLine("scene_reference_blend_isolated_intersections=ok");
         Console.WriteLine("scene_reference_multi_plane_cycles=ok");
+        Console.WriteLine("scene_reference_fragment_identity_orbit=ok");
+        Console.WriteLine("scene_reference_dense_intersection_edges=ok");
+        Console.WriteLine("scene_reference_intersection_edge_camera_orbits=ok");
         Console.WriteLine("scene_reference_projective_materials=ok");
         Console.WriteLine("scene_reference_non_scaling_strokes=ok");
         Console.WriteLine("scene_reference_extrusion_and_selection=ok");
+        Console.WriteLine("scene_reference_render_plan_cache=ok");
+        Console.WriteLine($"scene_reference_render_plan_cache_allocated_bytes={referencePlanCacheAllocatedBytes}");
 
         void AssertCrossingCardView(string label)
         {
@@ -2161,6 +2863,48 @@ internal static partial class Benchmark
 
             if (label == "perspective-oblique")
             {
+                crossingOccludedStrokeSamples.Clear();
+                crossingOccludedStrokeSamples.AddRange(FindOccludedCrossingCardStrokeSamples());
+                foreach (var sample in crossingOccludedStrokeSamples)
+                {
+                    var actual = Sample(bitmap, sample.Screen);
+                    if (!PixelRgbNear(actual, sample.ExpectedColor, 20))
+                    {
+                        var diagnosticItems = crossingStage.GetReference3DSceneRenderItems()
+                            .Where(item => item.ObjectIndex == sample.SourceObject
+                                || item.ObjectIndex == sample.ObjectIndex)
+                            .Select((item, index) =>
+                                $"{index}:{item.ObjectIndex}/{item.Kind}/fragment={item.FragmentSlot}"
+                                + $"/depth={item.AverageDepth:0.###}"
+                                + $"/clip={(item.FragmentClip is not { Length: > 0 } ? "none" : ProjectedFillContainsMargin(item.FragmentClip, sample.Screen, 0))}"
+                                + $"/surface={ProjectedFillContainsMargin(item.Contours, sample.Screen, 0)}");
+                        throw new InvalidOperationException(
+                            "A foreground crossing card did not hide the rear card boundary: "
+                            + $"screen={sample.Screen}, source={sample.SourceObject}/{sample.SourcePoint}, "
+                            + $"foreground={sample.ObjectIndex}, gap={sample.DepthGap:0.###}, "
+                            + $"actual={actual.ToArgb():X8}, expected={sample.ExpectedColor.ToArgb():X8}, "
+                            + $"items=[{string.Join(',', diagnosticItems)}].");
+                    }
+                    AssertPixelNear(
+                        actual,
+                        sample.ExpectedColor,
+                        "A foreground crossing card did not hide the rear card boundary: "
+                        + $"screen={sample.Screen}, source={sample.SourceObject}/{sample.SourcePoint}, "
+                        + $"foreground={sample.ObjectIndex}, gap={sample.DepthGap:0.###}",
+                        tolerance: 20);
+                }
+                var expectedBoundary = new PointF(crossingCardSize.Width * 0.5f, -450f);
+                if (!crossingOccludedStrokeSamples.Any(sample =>
+                        sample.SourceObject == crossingCardB
+                        && CrossingPointDistance(sample.SourcePoint, expectedBoundary) <= 0.001f))
+                {
+                    throw new InvalidOperationException(
+                        "The oblique crossing-card regression did not retain its known occluded side boundary.");
+                }
+            }
+
+            if (label == "perspective-oblique")
+            {
                 crossingDirect2DSamples.Clear();
                 crossingDirect2DSamples.AddRange(samples.Select(sample => (
                     sample.Screen,
@@ -2209,6 +2953,428 @@ internal static partial class Benchmark
             }
         }
 
+        void AssertCrossingCardRotationTrajectory()
+        {
+            var sampledViews = 0;
+            var sampledBoundaries = 0;
+            foreach (var yaw in new[] { -1.2f, -0.8f, -0.4f, 0f, 0.4f, 0.8f, 1.2f })
+            {
+                foreach (var pitch in new[] { -0.9f, -0.6f, -0.3f, 0f, 0.3f, 0.6f, 0.9f })
+                {
+                    crossingStage.SetReferenceCameraOrientation(yaw, pitch);
+                    var samples = FindOccludedCrossingCardStrokeSamples(requireSample: false);
+                    if (samples.Count == 0) continue;
+                    sampledViews++;
+                    sampledBoundaries += samples.Count;
+                    using var bitmap = RenderGdi(crossingStage);
+                    foreach (var sample in samples)
+                    {
+                        var actual = Sample(bitmap, sample.Screen);
+                        if (!PixelRgbNear(actual, sample.ExpectedColor, 20))
+                        {
+                            var diagnosticItems = crossingStage.GetReference3DSceneRenderItems()
+                                .Where(item => item.ObjectIndex == sample.SourceObject
+                                    || item.ObjectIndex == sample.ObjectIndex)
+                                .Select((item, index) =>
+                                    $"{index}:{item.ObjectIndex}/{item.Kind}/fragment={item.FragmentSlot}"
+                                    + $"/depth={item.AverageDepth:0.###}"
+                                    + $"/clip={(item.FragmentClip is not { Length: > 0 } ? "none" : ProjectedFillContainsMargin(item.FragmentClip, sample.Screen, 0))}"
+                                    + $"/occlusion={(item.OcclusionContours is not { Length: > 0 } ? "none" : ProjectedFillContainsMargin(item.OcclusionContours, sample.Screen, 0))}"
+                                    + $"/surface={ProjectedFillContainsMargin(item.Contours, sample.Screen, 0)}");
+                            throw new InvalidOperationException(
+                                "A rear card boundary leaked while rotating the camera: "
+                                + $"yaw={yaw:0.###}, pitch={pitch:0.###}, screen={sample.Screen}, "
+                                + $"source={sample.SourceObject}/{sample.SourcePoint}, foreground={sample.ObjectIndex}, "
+                                + $"gap={sample.DepthGap:0.###}, actual={actual.ToArgb():X8}, "
+                                + $"expected={sample.ExpectedColor.ToArgb():X8}, "
+                                + $"items=[{string.Join(',', diagnosticItems)}].");
+                        }
+                        AssertPixelNear(
+                            actual,
+                            sample.ExpectedColor,
+                            $"A rear card boundary leaked while rotating the camera to yaw={yaw:0.###}, pitch={pitch:0.###}",
+                            tolerance: 20);
+                        if (!crossingStage.TryHitTestProjectedObject(
+                                sample.Screen,
+                                1f,
+                                out var hit)
+                            || hit != sample.ObjectIndex)
+                        {
+                            throw new InvalidOperationException(
+                                "Crossing-card camera-rotation hit testing exposed a rear boundary: "
+                                + $"yaw={yaw:0.###}, pitch={pitch:0.###}, point={sample.Screen}, "
+                                + $"expected={sample.ObjectIndex}, hit={hit}.");
+                        }
+                    }
+                    if (yaw is -0.8f or 0f or 0.8f
+                        && !crossingRotationDirect2DSamples.Any(sample => sample.Yaw == yaw))
+                    {
+                        var retained = samples[0];
+                        crossingRotationDirect2DSamples.Add((
+                            yaw,
+                            pitch,
+                            retained.Screen,
+                            retained.ExpectedColor));
+                    }
+                }
+            }
+            crossingStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            if (sampledViews < 12
+                || sampledBoundaries < 18
+                || crossingRotationDirect2DSamples.Count != 3)
+            {
+                throw new InvalidOperationException(
+                    "The crossing-card camera trajectory did not retain enough occluded boundaries: "
+                    + $"views={sampledViews}, samples={sampledBoundaries}, "
+                    + $"direct2D={crossingRotationDirect2DSamples.Count}.");
+            }
+        }
+
+        void AssertCrossingIntersectionEdgeOrbit()
+        {
+            const int frameCount = 49;
+            for (var frame = 0; frame < frameCount; frame++)
+            {
+                var progress = frame / (frameCount - 1f);
+                var yaw = -0.72f + 1.44f * progress;
+                var pitch = -0.28f + 0.12f * MathF.Sin(progress * MathF.PI * 2f);
+                crossingStage.SetReferenceCameraOrientation(yaw, pitch);
+
+                var projected = new PointF[crossingIntersectionOrbitAnchors.Length];
+                for (var index = 0; index < crossingIntersectionOrbitAnchors.Length; index++)
+                {
+                    if (!crossingStage.TryProjectScenePosition(
+                            new System.Numerics.Vector3(crossingIntersectionOrbitAnchors[index], 0, 0),
+                            out projected[index],
+                            out _)
+                        || !float.IsFinite(projected[index].X)
+                        || !float.IsFinite(projected[index].Y)
+                        || projected[index].X < 6
+                        || projected[index].X >= crossingStage.ClientSize.Width - 6
+                        || projected[index].Y < 6
+                        || projected[index].Y >= crossingStage.ClientSize.Height - 6)
+                    {
+                        throw new InvalidOperationException(
+                            "The analytic crossing-card intersection left the orbit fixture bounds: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                            + $"anchor={crossingIntersectionOrbitAnchors[index]:0.###}, "
+                            + $"projected={projected[index]}.");
+                    }
+                }
+                if (CrossingPointDistance(projected[0], projected[^1]) < 24f)
+                {
+                    throw new InvalidOperationException(
+                        "The analytic crossing-card intersection collapsed during the orbit fixture: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}.");
+                }
+
+                var edges = crossingStage.GetReference3DSceneRenderItems()
+                    .Where(item => item.Kind == Reference3DRenderKind.IntersectionEdge
+                        && (item.ObjectIndex == crossingCardA
+                            && item.SecondaryObjectIndex == crossingCardB
+                            || item.ObjectIndex == crossingCardB
+                            && item.SecondaryObjectIndex == crossingCardA))
+                    .ToArray();
+                if (edges.Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        "A crossing-card intersection edge disappeared during a continuous camera orbit: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}.");
+                }
+                if (edges.Any(item => item.Contours.Length == 0
+                        || item.Contours.Any(contour => contour.Points.Length < 2)))
+                {
+                    throw new InvalidOperationException(
+                        "A crossing-card intersection edge retained an item but no drawable contour: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                        + $"segments={edges.Length}.");
+                }
+                var contours = edges.SelectMany(item => item.Contours).ToArray();
+
+                foreach (var anchor in projected)
+                {
+                    var distance = contours.Min(contour => CrossingDistanceToPolyline(
+                            Point.Round(anchor),
+                            contour.Points,
+                            contour.Closed));
+                    if (distance > 1.25f)
+                    {
+                        throw new InvalidOperationException(
+                            "A crossing-card intersection edge was discontinuous during a continuous camera orbit: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                            + $"anchor={anchor}, distance={distance:0.###}, segments={edges.Length}.");
+                    }
+                }
+
+                using var bitmap = RenderGdi(crossingStage);
+                var radius = Math.Clamp(
+                    (int)MathF.Ceiling(edges.Max(item => item.EdgeWidth) * 0.5f) + 1,
+                    2,
+                    4);
+                foreach (var anchor in projected)
+                {
+                    if (!HasPixelNearColor(
+                            bitmap,
+                            anchor,
+                            crossingEdgeColor,
+                            radius,
+                            tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            "GDI dropped a crossing-card intersection edge during a continuous camera orbit: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, anchor={anchor}.");
+                    }
+                }
+            }
+
+            crossingStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+        }
+
+        void AssertGrazingIntersectionEdgeOrbit()
+        {
+            const int frameCount = 33;
+            var anchors = new[] { -700f, 0f, 700f };
+            var perspectiveView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            perspectiveView.Camera.Projection = CameraProjection.Perspective;
+            grazingStage.ConfigureReferenceView(perspectiveView, SceneDimension.ThreeD);
+            grazingStage.ResetReferenceCameraView();
+            for (var frame = 0; frame < frameCount; frame++)
+            {
+                var progress = frame / (frameCount - 1f);
+                var yaw = -0.24f + 0.48f * progress;
+                var pitch = -0.12f + 0.08f * MathF.Sin(progress * MathF.PI * 2f);
+                grazingStage.SetReferenceCameraOrientation(yaw, pitch);
+
+                var projected = new PointF[anchors.Length];
+                for (var index = 0; index < anchors.Length; index++)
+                {
+                    if (!grazingStage.TryProjectScenePosition(
+                            new System.Numerics.Vector3(grazingPivotX, anchors[index], 0),
+                            out projected[index],
+                            out _)
+                        || !float.IsFinite(projected[index].X)
+                        || !float.IsFinite(projected[index].Y)
+                        || projected[index].X < 6
+                        || projected[index].X >= grazingStage.ClientSize.Width - 6
+                        || projected[index].Y < 6
+                        || projected[index].Y >= grazingStage.ClientSize.Height - 6)
+                    {
+                        throw new InvalidOperationException(
+                            "The analytic grazing intersection left the orbit fixture bounds: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                            + $"anchor={anchors[index]:0.###}, projected={projected[index]}.");
+                    }
+                }
+                if (CrossingPointDistance(projected[0], projected[^1]) < 24f)
+                {
+                    throw new InvalidOperationException(
+                        "The analytic grazing intersection collapsed during the orbit fixture: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}.");
+                }
+                var edges = grazingStage.GetReference3DSceneRenderItems()
+                    .Where(item => item.Kind == Reference3DRenderKind.IntersectionEdge
+                        && (item.ObjectIndex == grazingSurface
+                            && item.SecondaryObjectIndex == grazingTilted
+                            || item.ObjectIndex == grazingTilted
+                            && item.SecondaryObjectIndex == grazingSurface))
+                    .ToArray();
+                if (edges.Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        "A grazing intersection edge disappeared during a continuous camera orbit: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}.");
+                }
+                if (edges.Any(item => item.Contours.Length == 0
+                        || item.Contours.Any(contour => contour.Points.Length < 2)))
+                {
+                    throw new InvalidOperationException(
+                        "A grazing intersection edge retained an item but no drawable contour: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                        + $"segments={edges.Length}.");
+                }
+                var contours = edges.SelectMany(item => item.Contours).ToArray();
+
+                foreach (var anchor in projected)
+                {
+                    var distance = contours.Min(contour => CrossingDistanceToPolyline(
+                            Point.Round(anchor),
+                            contour.Points,
+                            contour.Closed));
+                    if (distance > 1.25f)
+                    {
+                        throw new InvalidOperationException(
+                            "A grazing intersection edge was discontinuous during a continuous camera orbit: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                            + $"anchor={anchor}, distance={distance:0.###}, segments={edges.Length}.");
+                    }
+                }
+
+                using var bitmap = RenderGdi(grazingStage);
+                foreach (var anchor in projected)
+                {
+                    if (!HasPixelNearColor(bitmap, anchor, grazingStrokeColor, radius: 3, tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            "GDI dropped a grazing intersection edge during a continuous camera orbit: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, anchor={anchor}.");
+                    }
+                }
+            }
+
+            grazingView.Camera.Projection = CameraProjection.Orthographic;
+            grazingStage.ConfigureReferenceView(grazingView, SceneDimension.ThreeD);
+            grazingStage.ResetReferenceCameraView();
+            grazingStage.SetReferenceCameraOrientation(0, 0);
+        }
+
+        static int AssertIntersectionEdgeCapTopology(
+            IReadOnlyList<Reference3DRenderItem> edges,
+            string context)
+        {
+            const float endpointTolerance = 0.01f;
+            var sharedEndpointCount = 0;
+            foreach (var pair in edges.GroupBy(item => (
+                         First: Math.Min(item.ObjectIndex, item.SecondaryObjectIndex),
+                         Second: Math.Max(item.ObjectIndex, item.SecondaryObjectIndex),
+                         item.SurfaceSlot)))
+            {
+                var pieces = pair.OrderBy(item => item.FragmentSlot).ToArray();
+                var contours = new Reference3DProjectedContour[pieces.Length];
+                for (var index = 0; index < pieces.Length; index++)
+                {
+                    if (pieces[index].Contours is not { Length: 1 }
+                        || pieces[index].Contours[0].Points is not { Length: >= 2 })
+                    {
+                        throw new InvalidOperationException(
+                            "An intersection-edge piece had no single drawable contour while checking caps: "
+                            + $"{context}, pair={pair.Key}, fragment={pieces[index].FragmentSlot}.");
+                    }
+                    contours[index] = pieces[index].Contours[0];
+                }
+
+                if (!pieces[0].EdgeStartCap || !pieces[^1].EdgeEndCap)
+                {
+                    throw new InvalidOperationException(
+                        "An intersection-edge chain did not preserve round physical endpoints: "
+                        + $"{context}, pair={pair.Key}, start={pieces[0].EdgeStartCap}, "
+                        + $"end={pieces[^1].EdgeEndCap}.");
+                }
+                for (var index = 1; index < pieces.Length; index++)
+                {
+                    var previousEnd = contours[index - 1].Points[^1];
+                    var currentStart = contours[index].Points[0];
+                    var shared = CrossingPointDistance(previousEnd, currentStart) <= endpointTolerance;
+                    if (shared && (pieces[index - 1].EdgeEndCap || pieces[index].EdgeStartCap))
+                    {
+                        throw new InvalidOperationException(
+                            "A shared intersection-edge endpoint used a round cap: "
+                            + $"{context}, pair={pair.Key}, previous={previousEnd}, current={currentStart}.");
+                    }
+                    if (!shared && (!pieces[index - 1].EdgeEndCap || !pieces[index].EdgeStartCap))
+                    {
+                        throw new InvalidOperationException(
+                            "Separated intersection-edge contours did not preserve round physical endpoints: "
+                            + $"{context}, pair={pair.Key}, previous={previousEnd}, current={currentStart}.");
+                    }
+                    if (shared) sharedEndpointCount++;
+                }
+            }
+            return sharedEndpointCount;
+        }
+
+        List<(
+            Point Screen,
+            int ObjectIndex,
+            Color ExpectedColor,
+            int SourceObject,
+            PointF SourcePoint,
+            float DepthGap)>
+            FindOccludedCrossingCardStrokeSamples(bool requireSample = true)
+        {
+            const float minimumDepthGap = 90f;
+            var objects = new[] { crossingCardA, crossingCardB };
+            var transforms = new[] { crossingCardATransform, crossingCardBTransform };
+            var colors = new[] { crossingCardAColor, crossingCardBColor };
+            var intersectionEdges = crossingStage.GetReference3DSceneRenderItems()
+                .Where(item => item.Kind == Reference3DRenderKind.IntersectionEdge)
+                .ToArray();
+            var halfWidth = crossingCardSize.Width * 0.5f;
+            var halfHeight = crossingCardSize.Height * 0.5f;
+            var boundaryPoints = new List<PointF>();
+            foreach (var localX in new[] { -1_500f, -900f, -300f, 300f, 900f, 1_500f })
+            {
+                boundaryPoints.Add(new PointF(localX, -halfHeight));
+                boundaryPoints.Add(new PointF(localX, halfHeight));
+            }
+            foreach (var localY in new[] { -900f, -450f, 0f, 450f, 900f })
+            {
+                boundaryPoints.Add(new PointF(-halfWidth, localY));
+                boundaryPoints.Add(new PointF(halfWidth, localY));
+            }
+
+            var result = new List<(
+                Point Screen,
+                int ObjectIndex,
+                Color ExpectedColor,
+                int SourceObject,
+                PointF SourcePoint,
+                float DepthGap)>();
+            for (var sourceSlot = 0; sourceSlot < objects.Length; sourceSlot++)
+            {
+                var foregroundSlot = 1 - sourceSlot;
+                var foregroundContours = crossingStage.GetReference3DProjectedContours(objects[foregroundSlot]);
+                foreach (var localPoint in boundaryPoints)
+                {
+                    if (!crossingStage.TryProjectScenePoint(
+                            objects[sourceSlot],
+                            localPoint,
+                            out var projected,
+                            out _))
+                    {
+                        continue;
+                    }
+
+                    var screen = Point.Round(projected);
+                    if (!ProjectedFillContainsMargin(foregroundContours, screen, 8)
+                        || !crossingStage.TryGetReferenceRay(screen, out var ray)
+                        || !TryIntersectCardPlane(
+                            ray,
+                            transforms[sourceSlot],
+                            out var sourceDepth,
+                            out _)
+                        || !TryIntersectCardPlane(
+                            ray,
+                            transforms[foregroundSlot],
+                            out var foregroundDepth,
+                            out _)
+                        || sourceDepth - foregroundDepth < minimumDepthGap
+                        || intersectionEdges.Any(edge => edge.Contours.Any(contour =>
+                            CrossingDistanceToPolyline(screen, contour.Points, contour.Closed)
+                                <= Math.Max(6f, edge.EdgeWidth * 0.5f + 3f)))
+                        || result.Any(sample => CrossingScreenDistance(sample.Screen, screen) < 8f))
+                    {
+                        continue;
+                    }
+
+                    result.Add((
+                        screen,
+                        objects[foregroundSlot],
+                        colors[foregroundSlot],
+                        objects[sourceSlot],
+                        localPoint,
+                        sourceDepth - foregroundDepth));
+                    break;
+                }
+            }
+
+            if (requireSample && result.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "The oblique crossing-card fixture exposed no occluded boundary sample.");
+            }
+            return result;
+        }
+
         bool TryResolveCrossingCardFront(Point screen, out int objectIndex, out float depthGap)
         {
             objectIndex = -1;
@@ -2226,6 +3392,276 @@ internal static partial class Benchmark
             return true;
         }
 
+        (PointF Point, Color Expected, Color Forbidden, string Role)[] AssertThickEdgeGrazingFrame(
+            StageControl stage,
+            float yaw,
+            float pitch,
+            string label)
+        {
+            stage.SetReferenceCameraOrientation(yaw, pitch);
+            var indexedItems = stage.GetReference3DSceneRenderItems()
+                .Select((item, index) => (Item: item, Index: index))
+                .ToArray();
+            var edgeEntries = indexedItems
+                .Where(entry => entry.Item.Kind == Reference3DRenderKind.IntersectionEdge)
+                .ToArray();
+            var expectedFirst = Math.Min(thickEdgeIncidentA, thickEdgeIncidentB);
+            var expectedSecond = Math.Max(thickEdgeIncidentA, thickEdgeIncidentB);
+            var edgePairs = edgeEntries
+                .Select(entry => (
+                    First: Math.Min(entry.Item.ObjectIndex, entry.Item.SecondaryObjectIndex),
+                    Second: Math.Max(entry.Item.ObjectIndex, entry.Item.SecondaryObjectIndex)))
+                .ToHashSet();
+            if (edgeEntries.Length == 0
+                || edgePairs.Count != 1
+                || !edgePairs.Contains((expectedFirst, expectedSecond)))
+            {
+                throw new InvalidOperationException(
+                    "The thick-edge grazing fixture generated an unexpected intersection pair: "
+                    + $"{label}, pairs=[{string.Join(',', edgePairs)}].");
+            }
+
+            var coverEntries = indexedItems
+                .Where(entry => entry.Item.ObjectIndex == thickEdgeCover
+                    && entry.Item.Kind == Reference3DRenderKind.FrontFill)
+                .ToArray();
+            if (coverEntries.Length != 1 || coverEntries[0].Item.FragmentClip is not null)
+            {
+                throw new InvalidOperationException(
+                    "The thick-edge grazing cover did not remain one unfragmented fill: "
+                    + $"{label}, fills={coverEntries.Length}.");
+            }
+            var coverEntry = coverEntries[0];
+            var coverContours = stage.GetReference3DProjectedContours(thickEdgeCover);
+            var samples = new List<(PointF Point, Color Expected, Color Forbidden, string Role)>();
+            foreach (var anchorX in new[] { -600f, 0f, 600f })
+            {
+                if (!stage.TryProjectScenePosition(
+                        new System.Numerics.Vector3(anchorX, 0, 0),
+                        out var center,
+                        out _)
+                    || !stage.TryProjectScenePosition(
+                        new System.Numerics.Vector3(anchorX - 100f, 0, 0),
+                        out var tangentStart,
+                        out _)
+                    || !stage.TryProjectScenePosition(
+                        new System.Numerics.Vector3(anchorX + 100f, 0, 0),
+                        out var tangentEnd,
+                        out _)
+                    || !stage.TryProjectScenePoint(
+                        thickEdgeCover,
+                        new PointF(anchorX, 80f),
+                        out var coverBoundary,
+                        out _)
+                    || !stage.TryProjectScenePoint(
+                        thickEdgeCover,
+                        new PointF(anchorX, 160f),
+                        out var coverInterior,
+                        out _))
+                {
+                    throw new InvalidOperationException(
+                        $"The thick-edge grazing samples could not be projected: {label}, X={anchorX:0.###}.");
+                }
+
+                var tangentX = tangentEnd.X - tangentStart.X;
+                var tangentY = tangentEnd.Y - tangentStart.Y;
+                var tangentLength = MathF.Sqrt(tangentX * tangentX + tangentY * tangentY);
+                if (!float.IsFinite(tangentLength) || tangentLength <= 0.001f)
+                {
+                    throw new InvalidOperationException(
+                        $"The thick-edge grazing tangent collapsed: {label}, X={anchorX:0.###}.");
+                }
+                var normalX = -tangentY / tangentLength;
+                var normalY = tangentX / tangentLength;
+                if ((coverInterior.X - center.X) * normalX
+                        + (coverInterior.Y - center.Y) * normalY
+                    < 0)
+                {
+                    normalX = -normalX;
+                    normalY = -normalY;
+                }
+
+                var nearestEdge = edgeEntries
+                    .Select(entry => (
+                        Entry: entry,
+                        Distance: entry.Item.Contours.Min(contour => CrossingDistanceToPolyline(
+                            Point.Round(center),
+                            contour.Points,
+                            contour.Closed))))
+                    .OrderBy(candidate => candidate.Distance)
+                    .First();
+                var edge = nearestEdge.Entry.Item;
+                var radius = edge.EdgeWidth * 0.5f;
+                var boundaryDistance = (coverBoundary.X - center.X) * normalX
+                    + (coverBoundary.Y - center.Y) * normalY;
+                var open = new PointF(
+                    center.X - normalX * radius * 0.65f,
+                    center.Y - normalY * radius * 0.65f);
+                var covered = new PointF(
+                    center.X + normalX * radius * 0.82f,
+                    center.Y + normalY * radius * 0.82f);
+                var centerScreen = Point.Round(center);
+                var openScreen = Point.Round(open);
+                var coveredScreen = Point.Round(covered);
+                var centerStable = ProjectedFillMembershipStable(
+                    coverContours,
+                    centerScreen,
+                    1,
+                    out var centerInside);
+                var openStable = ProjectedFillMembershipStable(
+                    coverContours,
+                    openScreen,
+                    1,
+                    out var openInside);
+                var coveredStable = ProjectedFillMembershipStable(
+                    coverContours,
+                    coveredScreen,
+                    1,
+                    out var coveredInside);
+                if (!float.IsFinite(radius)
+                    || radius <= 3f
+                    || nearestEdge.Distance > 1.25f
+                    || boundaryDistance < radius * 0.35f
+                    || boundaryDistance > radius * 0.60f
+                    || !centerStable
+                    || centerInside
+                    || !openStable
+                    || openInside
+                    || !coveredStable
+                    || !coveredInside)
+                {
+                    throw new InvalidOperationException(
+                        "The thick-edge grazing footprint was not stable around the cover boundary: "
+                        + $"{label}, X={anchorX:0.###}, radius={radius:0.###}, "
+                        + $"edgeDistance={nearestEdge.Distance:0.###}, boundary={boundaryDistance:0.###}, "
+                        + $"stable={centerStable}/{openStable}/{coveredStable}, "
+                        + $"inside={centerInside}/{openInside}/{coveredInside}.");
+                }
+
+                var openDistance = edge.Contours.Min(contour => CrossingDistanceToPolyline(
+                    openScreen,
+                    contour.Points,
+                    contour.Closed));
+                var coveredDistance = edge.Contours.Min(contour => CrossingDistanceToPolyline(
+                    coveredScreen,
+                    contour.Points,
+                    contour.Closed));
+                if (openDistance >= radius - 0.5f || coveredDistance >= radius - 0.5f)
+                {
+                    throw new InvalidOperationException(
+                        "A thick-edge grazing sample left the synthetic stroke footprint: "
+                        + $"{label}, X={anchorX:0.###}, radius={radius:0.###}, "
+                        + $"distances={openDistance:0.###}/{coveredDistance:0.###}.");
+                }
+
+                var hasRay = stage.TryGetReferenceRay(coveredScreen, out var ray);
+                var edgeDistance = 0f;
+                var hasEdgeDepth = hasRay
+                    && TryIntersectCardPlane(
+                        ray,
+                        thickEdgeIncidentATransform,
+                        out edgeDistance,
+                        out _);
+                var coverDistance = 0f;
+                var hasCoverDepth = hasRay
+                    && TryIntersectCardPlane(
+                        ray,
+                        thickEdgeCoverTransform,
+                        out coverDistance,
+                        out _);
+                if (!hasEdgeDepth
+                    || !hasCoverDepth
+                    || edgeDistance - coverDistance <= 300f)
+                {
+                    throw new InvalidOperationException(
+                        "The thick-edge grazing cover was not locally in front of the edge footprint: "
+                        + $"{label}, X={anchorX:0.###}, depth={edgeDistance:0.###}/{coverDistance:0.###}.");
+                }
+
+                if (coverEntry.Item.AverageDepth <= edge.AverageDepth + 50f
+                    || nearestEdge.Entry.Index >= coverEntry.Index)
+                {
+                    throw new InvalidOperationException(
+                        "The thick-edge grazing fixture did not override misleading average-depth order: "
+                        + $"{label}, X={anchorX:0.###}, average={edge.AverageDepth:0.###}/"
+                        + $"{coverEntry.Item.AverageDepth:0.###}, order={nearestEdge.Entry.Index}/"
+                        + $"{coverEntry.Index}.");
+                }
+
+                var edgeColor = Color.FromArgb(edge.EdgeArgb);
+                samples.Add((center, edgeColor, thickEdgeSurfaceColor, $"X={anchorX:0.###} center"));
+                samples.Add((open, edgeColor, thickEdgeSurfaceColor, $"X={anchorX:0.###} open"));
+                samples.Add((covered, thickEdgeCoverColor, edgeColor, $"X={anchorX:0.###} covered"));
+            }
+            return samples.ToArray();
+        }
+
+        static void AssertThickEdgeGrazingPixels(
+            Bitmap bitmap,
+            IReadOnlyList<(PointF Point, Color Expected, Color Forbidden, string Role)> samples,
+            string label,
+            Func<PointF, PointF>? mapPoint = null)
+        {
+            foreach (var sample in samples)
+            {
+                var point = mapPoint is null ? sample.Point : mapPoint(sample.Point);
+                var actual = Sample(bitmap, point);
+                if (!PixelRgbNear(actual, sample.Expected, 28)
+                    || PixelRgbNear(actual, sample.Forbidden, 18))
+                {
+                    throw new InvalidOperationException(
+                        "A thick intersection edge flickered across its grazing cover: "
+                        + $"{label}, role={sample.Role}, point={point}, "
+                        + $"actual={actual.ToArgb():X8}, expected={sample.Expected.ToArgb():X8}, "
+                        + $"forbidden={sample.Forbidden.ToArgb():X8}.");
+                }
+            }
+        }
+
+        static bool TryResolvePhysicalFragmentSlot(
+            StageControl stage,
+            IReadOnlyList<Reference3DRenderItem> renderItems,
+            int objectIndex,
+            PointF sourcePoint,
+            out ulong fragmentIdentity)
+        {
+            fragmentIdentity = 0;
+            if (!stage.TryProjectScenePoint(
+                    objectIndex,
+                    sourcePoint,
+                    out var projected,
+                    out _)
+                || !float.IsFinite(projected.X)
+                || !float.IsFinite(projected.Y))
+            {
+                return false;
+            }
+
+            var screen = Point.Round(projected);
+            var matches = new List<ulong>();
+            foreach (var item in renderItems)
+            {
+                if (item.ObjectIndex != objectIndex
+                    || item.Kind != Reference3DRenderKind.FrontFill
+                    || item.FragmentClip is not { Length: > 0 })
+                {
+                    continue;
+                }
+                if (!ProjectedFillMembershipStable(
+                        item.FragmentClip,
+                        screen,
+                        1,
+                        out var contains))
+                {
+                    return false;
+                }
+                if (contains) matches.Add(item.StableFragmentIdentity);
+            }
+            if (matches.Count != 1) return false;
+            fragmentIdentity = matches[0];
+            return true;
+        }
+
         void AssertThreeCrossingCardView(string label)
         {
             AssertMultiCardView(
@@ -2236,6 +3672,81 @@ internal static partial class Benchmark
                 label,
                 minimumSamplesPerObject: 8,
                 retainedSamples: null);
+        }
+
+        void AssertOccludedThreeCardEdges()
+        {
+            const float minimumDepthGap = 90f;
+            var renderItems = threeCardStage.GetReference3DSceneRenderItems();
+            threeCardOccludedEdgeSamples.Clear();
+            foreach (var edge in renderItems.Where(item => item.Kind == Reference3DRenderKind.IntersectionEdge))
+            {
+                var edgeSlot = Array.IndexOf(threeCardObjects, edge.ObjectIndex);
+                if (edgeSlot < 0) continue;
+                foreach (var contour in edge.Contours)
+                {
+                    if (contour.Points.Length < 2) continue;
+                    var start = contour.Points[0];
+                    var end = contour.Points[^1];
+                    foreach (var amount in new[] { 0.25f, 0.5f, 0.75f })
+                    {
+                        var screen = Point.Round(new PointF(
+                            start.X + (end.X - start.X) * amount,
+                            start.Y + (end.Y - start.Y) * amount));
+                        if (!threeCardStage.TryGetReferenceRay(screen, out var ray)
+                            || !TryIntersectCardPlane(
+                                ray,
+                                threeCardTransforms[edgeSlot],
+                                out var edgeDepth,
+                                out _))
+                        {
+                            continue;
+                        }
+
+                        for (var foregroundSlot = 0; foregroundSlot < threeCardObjects.Length; foregroundSlot++)
+                        {
+                            var foregroundObject = threeCardObjects[foregroundSlot];
+                            if (foregroundObject == edge.ObjectIndex
+                                || foregroundObject == edge.SecondaryObjectIndex
+                                || !ProjectedFillContainsMargin(
+                                    threeCardStage.GetReference3DProjectedContours(foregroundObject),
+                                    screen,
+                                    3)
+                                || !TryIntersectCardPlane(
+                                    ray,
+                                    threeCardTransforms[foregroundSlot],
+                                    out var foregroundDepth,
+                                    out _)
+                                || edgeDepth - foregroundDepth < minimumDepthGap)
+                            {
+                                continue;
+                            }
+
+                            threeCardOccludedEdgeSamples.Add((screen, threeCardColors[foregroundSlot]));
+                            break;
+                        }
+                        if (threeCardOccludedEdgeSamples.Count > 0) break;
+                    }
+                    if (threeCardOccludedEdgeSamples.Count > 0) break;
+                }
+                if (threeCardOccludedEdgeSamples.Count > 0) break;
+            }
+
+            if (threeCardOccludedEdgeSamples.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "The oblique three-card fixture exposed no intersection edge behind a third surface.");
+            }
+
+            using var bitmap = RenderGdi(threeCardStage);
+            foreach (var sample in threeCardOccludedEdgeSamples)
+            {
+                AssertPixelNear(
+                    Sample(bitmap, sample.Screen),
+                    sample.ExpectedColor,
+                    "A three-card intersection edge showed through the foreground surface",
+                    tolerance: 20);
+            }
         }
 
         void AssertMultiCardView(
@@ -2250,6 +3761,9 @@ internal static partial class Benchmark
             const float minimumDepthGap = 90f;
             var samples = new List<(Point Screen, int ObjectIndex, Color ExpectedColor, string Depths)>();
             var counts = new int[objects.Count];
+            var intersectionEdges = stage.GetReference3DSceneRenderItems()
+                .Where(item => item.Kind == Reference3DRenderKind.IntersectionEdge)
+                .ToArray();
             for (var y = 28; y < stage.Height - 28; y += 7)
             {
                 for (var x = 28; x < stage.Width - 28; x += 7)
@@ -2284,6 +3798,12 @@ internal static partial class Benchmark
                     if (hits.Count < 2) continue;
                     hits.Sort((left, right) => left.Distance.CompareTo(right.Distance));
                     if (hits[1].Distance - hits[0].Distance < minimumDepthGap) continue;
+                    if (intersectionEdges.Any(edge => edge.Contours.Any(contour =>
+                            CrossingDistanceToPolyline(screen, contour.Points, contour.Closed)
+                                <= edge.EdgeWidth * 0.5f + 2f)))
+                    {
+                        continue;
+                    }
 
                     if (!stage.TryProjectScenePosition(
                             hits[0].Point,
@@ -2579,6 +4099,44 @@ internal static partial class Benchmark
             var dx = first.X - second.X;
             var dy = first.Y - second.Y;
             return MathF.Sqrt(dx * dx + dy * dy);
+        }
+
+        static float CrossingPointDistance(PointF first, PointF second)
+        {
+            var dx = first.X - second.X;
+            var dy = first.Y - second.Y;
+            return MathF.Sqrt(dx * dx + dy * dy);
+        }
+
+        static float CrossingDistanceToPolyline(
+            Point point,
+            IReadOnlyList<PointF> points,
+            bool closed)
+        {
+            if (points.Count == 0) return float.PositiveInfinity;
+            if (points.Count == 1) return CrossingScreenDistance(point, Point.Round(points[0]));
+            var distance = float.PositiveInfinity;
+            var segmentCount = closed ? points.Count : points.Count - 1;
+            for (var segment = 0; segment < segmentCount; segment++)
+            {
+                var start = points[segment];
+                var end = points[(segment + 1) % points.Count];
+                var dx = end.X - start.X;
+                var dy = end.Y - start.Y;
+                var lengthSquared = dx * dx + dy * dy;
+                var amount = lengthSquared <= 0.000001f
+                    ? 0f
+                    : Math.Clamp(
+                        ((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared,
+                        0f,
+                        1f);
+                var nearestX = start.X + dx * amount;
+                var nearestY = start.Y + dy * amount;
+                var offsetX = point.X - nearestX;
+                var offsetY = point.Y - nearestY;
+                distance = Math.Min(distance, MathF.Sqrt(offsetX * offsetX + offsetY * offsetY));
+            }
+            return distance;
         }
 
         void AssertNearClippedProjectiveMaterial()
@@ -2936,6 +4494,81 @@ internal static partial class Benchmark
                 }
             }
 
+            direct2DStage.BindScene(containedStrokeScene);
+            direct2DStage.ConfigureReferenceView(containedStrokeView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            direct2DStage.SetSceneCompositionResult(
+                CompositionResult(containedStrokeTransform, containedStrokeCoverTransform),
+                containedStrokeScene);
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var containedStrokeCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render the contained stroke fragment.");
+            }
+            if (direct2DPixelsAvailable && containedStrokeCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D contained-stroke window could not be captured.");
+            }
+            if (containedStrokeCapture is not null
+                && !HasPixelNearColor(
+                    containedStrokeCapture,
+                    CapturePoint(form, direct2DStage, containedStrokeSample),
+                    containedStrokeExpectedColor,
+                    radius: 1,
+                    tolerance: 28))
+            {
+                throw new InvalidOperationException(
+                    "Direct2D used whole-object depth for a fully covered stroke fragment.");
+            }
+
+            direct2DStage.BindScene(crossingLineScene);
+            direct2DStage.ConfigureReferenceView(crossingLineView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            direct2DStage.SetSceneCompositionResult(
+                CompositionResult(crossingCardATransform, crossingCardBTransform),
+                crossingLineScene);
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var crossingLineCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render the fragmented crossing line.");
+            }
+            if (direct2DPixelsAvailable && crossingLineCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D crossing-line window could not be captured.");
+            }
+            if (crossingLineCapture is not null)
+            {
+                foreach (var sample in crossingLineSamples)
+                {
+                    if (!HasPixelNearColor(
+                            crossingLineCapture,
+                            CapturePoint(form, direct2DStage, sample.Screen),
+                            sample.ExpectedColor,
+                            radius: 1,
+                            tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            $"Direct2D used whole-object depth for a crossing line at {sample.Screen}.");
+                    }
+                }
+            }
+
             if (crossingDirect2DSamples.Count < 4)
             {
                 throw new InvalidOperationException("The crossing-card fixture did not retain its oblique Direct2D samples.");
@@ -2977,6 +4610,31 @@ internal static partial class Benchmark
                             $"The Direct2D crossing-card fragment painted the wrong foreground at {sample.Screen}.");
                     }
                 }
+                if (crossingOccludedStrokeSamples.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        "The crossing-card fixture did not retain an occluded-stroke sample for Direct2D.");
+                }
+                foreach (var sample in crossingOccludedStrokeSamples)
+                {
+                    var capturePoint = CapturePoint(form, direct2DStage, sample.Screen);
+                    if (!HasPixelNearColor(
+                            crossingCapture,
+                            capturePoint,
+                            sample.ExpectedColor,
+                            radius: 0,
+                            tolerance: 28)
+                        || HasPixelNearColor(
+                            crossingCapture,
+                            capturePoint,
+                            crossingEdgeColor,
+                            radius: 0,
+                            tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            $"Direct2D exposed a rear crossing-card boundary at {sample.Screen}.");
+                    }
+                }
                 for (var edgeSample = -4; edgeSample <= 4; edgeSample++)
                 {
                     var crossingX = edgeSample * 200f;
@@ -2995,7 +4653,198 @@ internal static partial class Benchmark
                             $"The Direct2D crossing-card intersection edge was discontinuous at X={crossingX:0.###}.");
                     }
                 }
+
+                foreach (var sample in crossingRotationDirect2DSamples)
+                {
+                    direct2DStage.SetReferenceCameraOrientation(sample.Yaw, sample.Pitch);
+                    direct2DStage.Invalidate();
+                    direct2DStage.Update();
+                    Application.DoEvents();
+                    using var rotationCapture = direct2DPixelsAvailable
+                        ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                        : null;
+                    if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+                    {
+                        throw new InvalidOperationException(
+                            "The real-HWND Direct2D Stage did not render a crossing-card camera rotation frame.");
+                    }
+                    if (direct2DPixelsAvailable && rotationCapture is null)
+                    {
+                        throw new InvalidOperationException(
+                            "A visible Direct2D crossing-card rotation frame could not be captured.");
+                    }
+                    if (rotationCapture is null) continue;
+                    var capturePoint = CapturePoint(form, direct2DStage, sample.Screen);
+                    if (!HasPixelNearColor(
+                            rotationCapture,
+                            capturePoint,
+                            sample.ExpectedColor,
+                            radius: 0,
+                            tolerance: 28)
+                        || HasPixelNearColor(
+                            rotationCapture,
+                            capturePoint,
+                            crossingEdgeColor,
+                            radius: 0,
+                            tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            "Direct2D exposed a rear boundary while rotating the crossing-card camera: "
+                            + $"yaw={sample.Yaw:0.###}, pitch={sample.Pitch:0.###}, point={sample.Screen}.");
+                    }
+                }
             }
+
+            const int crossingIntersectionOrbitFrameCount = 49;
+            foreach (var frame in crossingIntersectionDirect2DFrames)
+            {
+                var progress = frame / (crossingIntersectionOrbitFrameCount - 1f);
+                var yaw = -0.72f + 1.44f * progress;
+                var pitch = -0.28f + 0.12f * MathF.Sin(progress * MathF.PI * 2f);
+                direct2DStage.SetReferenceCameraOrientation(yaw, pitch);
+
+                var projected = new PointF[crossingIntersectionOrbitAnchors.Length];
+                for (var index = 0; index < crossingIntersectionOrbitAnchors.Length; index++)
+                {
+                    if (!direct2DStage.TryProjectScenePosition(
+                            new System.Numerics.Vector3(crossingIntersectionOrbitAnchors[index], 0, 0),
+                            out projected[index],
+                            out _)
+                        || !float.IsFinite(projected[index].X)
+                        || !float.IsFinite(projected[index].Y)
+                        || projected[index].X < 6
+                        || projected[index].X >= direct2DStage.ClientSize.Width - 6
+                        || projected[index].Y < 6
+                        || projected[index].Y >= direct2DStage.ClientSize.Height - 6)
+                    {
+                        throw new InvalidOperationException(
+                            "A Direct2D crossing-card orbit anchor left the fixture bounds: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                            + $"anchor={crossingIntersectionOrbitAnchors[index]:0.###}, "
+                            + $"projected={projected[index]}.");
+                    }
+                }
+
+                var orbitEdges = direct2DStage.GetReference3DSceneRenderItems()
+                    .Where(item => item.Kind == Reference3DRenderKind.IntersectionEdge
+                        && (item.ObjectIndex == crossingCardA
+                            && item.SecondaryObjectIndex == crossingCardB
+                            || item.ObjectIndex == crossingCardB
+                            && item.SecondaryObjectIndex == crossingCardA))
+                    .ToArray();
+                if (orbitEdges.Length == 0
+                    || orbitEdges.Any(item => item.Contours.Length == 0
+                        || item.Contours.Any(contour => contour.Points.Length < 2)))
+                {
+                    throw new InvalidOperationException(
+                        "The Direct2D crossing-card orbit produced no drawable intersection edge: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                        + $"segments={orbitEdges.Length}.");
+                }
+                var orbitContours = orbitEdges.SelectMany(item => item.Contours).ToArray();
+                foreach (var anchor in projected)
+                {
+                    var distance = orbitContours.Min(contour => CrossingDistanceToPolyline(
+                        Point.Round(anchor),
+                        contour.Points,
+                        contour.Closed));
+                    if (distance > 1.25f)
+                    {
+                        throw new InvalidOperationException(
+                            "The Direct2D crossing-card orbit plan had a discontinuous intersection edge: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, "
+                            + $"anchor={anchor}, distance={distance:0.###}.");
+                    }
+                }
+
+                direct2DStage.Invalidate();
+                direct2DStage.Update();
+                Application.DoEvents();
+                using var orbitCapture = direct2DPixelsAvailable
+                    ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                    : null;
+                if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+                {
+                    throw new InvalidOperationException(
+                        "The real-HWND Direct2D Stage did not render a crossing-card intersection orbit frame.");
+                }
+                if (direct2DPixelsAvailable && orbitCapture is null)
+                {
+                    throw new InvalidOperationException(
+                        "A visible Direct2D crossing-card intersection orbit frame could not be captured: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}.");
+                }
+                if (orbitCapture is null) continue;
+
+                var radius = Math.Clamp(
+                    (int)MathF.Ceiling(orbitEdges.Max(item => item.EdgeWidth) * 0.5f) + 1,
+                    2,
+                    4);
+                foreach (var anchor in projected)
+                {
+                    if (!HasPixelNearColor(
+                            orbitCapture,
+                            CapturePoint(form, direct2DStage, anchor),
+                            crossingEdgeColor,
+                            radius,
+                            tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            "Direct2D dropped a crossing-card intersection edge during the camera orbit: "
+                            + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}, anchor={anchor}.");
+                    }
+                }
+            }
+            direct2DStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+
+            direct2DStage.BindScene(thickEdgeScene);
+            direct2DStage.ConfigureReferenceView(thickEdgeView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetSceneCompositionResult(
+                CompositionResult(
+                    thickEdgeIncidentBTransform,
+                    thickEdgeIncidentATransform,
+                    thickEdgeCoverTransform),
+                thickEdgeScene);
+            foreach (var frame in thickEdgeDirect2DFrames)
+            {
+                var progress = frame / (thickEdgeOrbitFrameCount - 1f);
+                var yaw = -0.12f + 0.24f * progress;
+                var pitch = 0.02f * MathF.Sin(progress * MathF.PI * 2f);
+                var samples = AssertThickEdgeGrazingFrame(
+                    direct2DStage,
+                    yaw,
+                    pitch,
+                    $"Direct2D frame={frame}");
+                direct2DStage.Invalidate();
+                direct2DStage.Update();
+                Application.DoEvents();
+                using var thickEdgeCapture = direct2DPixelsAvailable
+                    ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                    : null;
+                if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+                {
+                    throw new InvalidOperationException(
+                        "The real-HWND Direct2D Stage did not render a thick-edge grazing orbit frame.");
+                }
+                if (direct2DPixelsAvailable && thickEdgeCapture is null)
+                {
+                    throw new InvalidOperationException(
+                        "A visible Direct2D thick-edge grazing orbit frame could not be captured: "
+                        + $"frame={frame}, yaw={yaw:0.###}, pitch={pitch:0.###}.");
+                }
+                if (thickEdgeCapture is not null)
+                {
+                    AssertThickEdgeGrazingPixels(
+                        thickEdgeCapture,
+                        samples,
+                        $"Direct2D frame={frame}",
+                        point => CapturePoint(form, direct2DStage, point));
+                }
+            }
+            Console.WriteLine(direct2DPixelsAvailable
+                ? "scene_reference_thick_edge_grazing_direct2d=ok"
+                : "scene_reference_thick_edge_grazing_direct2d=skipped_no_visible_desktop");
 
             direct2DStage.BindScene(grazingScene);
             direct2DStage.ConfigureReferenceView(grazingView, SceneDimension.ThreeD);
