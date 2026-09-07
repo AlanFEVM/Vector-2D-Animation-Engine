@@ -8,6 +8,8 @@ internal sealed partial class MainForm : Form
 {
     private void StageMouseDoubleClick(object? sender, MouseEventArgs e)
     {
+        if (IsLassoTool(_tool) && HandleLassoMouseDoubleClick(e)) return;
+
         if (_tool == ToolMode.Pen)
         {
             if (_traditionalPenPointerDown) FinishTraditionalPenPoint(e.Location);
@@ -104,6 +106,8 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseMove(object? sender, MouseEventArgs e)
     {
+        if (HandleReferenceCameraRightLookMouseMove(e)) return;
+
         if (_brushColorPaletteActive)
         {
             UpdateBrushColorPaletteHover(e.Location);
@@ -112,7 +116,33 @@ internal sealed partial class MainForm : Form
 
         if (_tabletPressurePointerId is not null) return;
 
+        if (IsLassoTool(_tool) && _lassoPointerActive)
+        {
+            UpdateLassoPointer(e.Location);
+            return;
+        }
+
         if (UpdateSpatialTransformKeyboardPointer(e.Location)) return;
+
+        if (_sceneLightGizmoPointerSession is not null)
+        {
+            if (e.Button == MouseButtons.Left) QueueSceneLightGizmoPointer(e.Location);
+            UpdateSceneLightGizmoCursor(e.Location);
+            return;
+        }
+
+        if (_tool == ToolMode.SnapPoint)
+        {
+            if (_snapPointEditSession is not null)
+            {
+                if (e.Button == MouseButtons.Left) UpdateSnapPointPointer(e.Location);
+            }
+            else
+            {
+                UpdateSnapPointHover(e.Location);
+            }
+            return;
+        }
 
         if (_lastMouse is null)
         {
@@ -138,7 +168,7 @@ internal sealed partial class MainForm : Form
         _lastMouse = e.Location;
         if (_spatialTransformPointerSession is not null)
         {
-            if (e.Button == MouseButtons.Left) UpdateSpatialTransformPointer(e.Location);
+            if (e.Button == MouseButtons.Left) QueueSpatialTransformPointer(e.Location);
             UpdateSpatialTransformCursor(e.Location);
             return;
         }
@@ -492,7 +522,11 @@ internal sealed partial class MainForm : Form
             ClearSelection();
         }
 
-        if (_sceneInstanceMoveActive) BeginSceneInstanceTransformPreview();
+        if (_sceneInstanceMoveActive)
+        {
+            _sceneSnapMoveStartPointer = world;
+            BeginSceneInstanceTransformPreview();
+        }
         UpdateInspector();
     }
 
@@ -529,6 +563,7 @@ internal sealed partial class MainForm : Form
         _transformCurrentBounds = _stage.TransformBounds;
         _transformLastPointer = _stage.TransformOverlayScreenToWorld(e.Location);
         if (handle == TransformHandleKind.Focus) return;
+        if (handle == TransformHandleKind.Move) _sceneSnapMoveStartPointer = _transformLastPointer;
         BeginSceneInstanceTransformPreview();
         _transformPivot = TransformPivotFor(handle, _stage.TransformFrame);
         _transformLastAngle = TransformPointerAngle(_transformLastPointer, _transformPivot);
@@ -619,6 +654,36 @@ internal sealed partial class MainForm : Form
     {
         var instances = SelectedSceneInstances();
         if (instances.Count == 0) return;
+        var spatialSession = _spatialTransformEditSession;
+        if (spatialSession is not null && _sceneSnapMoveStartPointer is { } snapStart)
+        {
+            var rawDelta = new Vector3(world.X - snapStart.X, world.Y - snapStart.Y, 0);
+            var delta = ResolveSceneSnapDelta(rawDelta, correction => new Vector3(correction.X, correction.Y, 0));
+            var changed = false;
+            foreach (var instance in instances)
+            {
+                if (!spatialSession.StartStates.TryGetValue(instance.Id, out var start)) continue;
+                var next = start with
+                {
+                    X = VectorUnits.Quantize(start.X + delta.X),
+                    Y = VectorUnits.Quantize(start.Y + delta.Y)
+                };
+                var editFrame = PrepareInstanceStateTimelineEdit(instance);
+                changed |= instance.SetStateAtFrame(editFrame, next);
+            }
+            if (!changed) return;
+            spatialSession.Changed = true;
+            _sceneInstanceTimelineDirty = true;
+            _transformLastPointer = world;
+            if (!PreviewSelectedSceneInstanceStates())
+            {
+                RebuildEditableInstanceComposition();
+                UpdateInspector();
+            }
+            return;
+        }
+
+        _stage.ClearSceneSnapIndicator();
         var dx = world.X - _transformLastPointer.X;
         var dy = world.Y - _transformLastPointer.Y;
         if (Math.Abs(dx) <= 0.0001f && Math.Abs(dy) <= 0.0001f) return;
@@ -671,11 +736,15 @@ internal sealed partial class MainForm : Form
             {
                 var editFrame = PrepareInstanceStateTimelineEdit(selectedInstance);
                 var state = selectedInstance.EvaluateState(editFrame);
-                var origin = RotatePointAround(state.Position, _transformPivot, delta);
+                var operationPivot = DrawingObjectInstanceDefinition.RotationPivotScenePosition(state);
+                var rotatedPivot = RotatePointAround(
+                    new PointF(operationPivot.X, operationPivot.Y),
+                    _transformPivot,
+                    delta);
                 selectedInstance.SetStateAtFrame(editFrame, state with
                 {
-                    X = VectorUnits.Quantize(origin.X),
-                    Y = VectorUnits.Quantize(origin.Y),
+                    X = VectorUnits.Quantize(state.X + rotatedPivot.X - operationPivot.X),
+                    Y = VectorUnits.Quantize(state.Y + rotatedPivot.Y - operationPivot.Y),
                     RotationZ = NormalizeDegrees(state.RotationZ + delta * 57.29578f)
                 });
             }
@@ -758,11 +827,7 @@ internal sealed partial class MainForm : Form
                 };
                 next = oriented
                     ? KeepWorldPointFixed(state, next, pivot)
-                    : next with
-                    {
-                        X = VectorUnits.Quantize(pivot.X + (state.X - pivot.X) * scaleX),
-                        Y = VectorUnits.Quantize(pivot.Y + (state.Y - pivot.Y) * scaleY)
-                    };
+                    : MoveScalePivotWithGroup(state, next, pivot, scaleX, scaleY);
                 selectedInstance.SetStateAtFrame(editFrame, next);
             }
             if (!oriented)
@@ -866,12 +931,16 @@ internal sealed partial class MainForm : Form
 
     private bool RefreshEditedInstanceTimelineTweens()
     {
-        if (IsSceneCompositionContext() || ActiveDrawingObject() is not { } drawingObject) return false;
+        var sceneDefinition = IsSceneCompositionContext() ? ActiveScene() : null;
+        var drawingObject = sceneDefinition is null ? ActiveDrawingObject() : null;
+        if (sceneDefinition is null && drawingObject is null) return false;
 
         var changed = false;
         foreach (var editFrame in _sceneInstanceTimelineEditedFrames.Order())
         {
-            changed |= drawingObject.RefreshTimelineTweenMaterializationsAtEndpointFrame(editFrame);
+            changed |= sceneDefinition is not null
+                ? sceneDefinition.RefreshTimelineTweenMaterializationsAtEndpointFrame(editFrame)
+                : drawingObject!.RefreshTimelineTweenMaterializationsAtEndpointFrame(editFrame);
         }
 
         return changed;
@@ -959,19 +1028,19 @@ internal sealed partial class MainForm : Form
         InstanceFrameState current,
         out Func<PointF, PointF> transform)
     {
-        var startLinear = DrawingObjectInstanceDefinition.CreateLinearTransform(start);
-        if (!Matrix3x2.Invert(startLinear, out var inverseStart))
+        var startTransform = DrawingObjectInstanceDefinition.CreatePlanarTransform(start);
+        if (!Matrix3x2.Invert(startTransform, out var inverseStart))
         {
             transform = static point => point;
             return false;
         }
 
-        var currentLinear = DrawingObjectInstanceDefinition.CreateLinearTransform(current);
+        var currentTransform = DrawingObjectInstanceDefinition.CreatePlanarTransform(current);
         transform = point =>
         {
-            var local = Vector2.Transform(new Vector2(point.X - start.X, point.Y - start.Y), inverseStart);
-            var world = Vector2.Transform(local, currentLinear);
-            return new PointF(world.X + current.X, world.Y + current.Y);
+            var local = Vector2.Transform(new Vector2(point.X, point.Y), inverseStart);
+            var world = Vector2.Transform(local, currentTransform);
+            return new PointF(world.X, world.Y);
         };
         return true;
     }
@@ -1341,8 +1410,7 @@ internal sealed partial class MainForm : Form
         }
 
         transform = Matrix3x2.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y)
-            * DrawingObjectInstanceDefinition.CreateLinearTransform(state)
-            * Matrix3x2.CreateTranslation(state.X, state.Y);
+            * DrawingObjectInstanceDefinition.CreatePlanarTransform(state);
         return Matrix3x2.Invert(transform, out _);
     }
 
@@ -1564,6 +1632,7 @@ internal sealed partial class MainForm : Form
             {
                 if (_undoCapturedForPointerEdit && _undoStack.TryPop(out var undo))
                 {
+                    RestoreCancelledMarqueeHistory(undo);
                     RestoreCanvasMutationSnapshot(undo.Snapshot);
                 }
                 _undoCapturedForPointerEdit = false;
@@ -1796,16 +1865,34 @@ internal sealed partial class MainForm : Form
         InstanceFrameState next,
         PointF fixedWorldPoint)
     {
-        var previousLinear = DrawingObjectInstanceDefinition.CreateLinearTransform(previous);
-        if (!Matrix3x2.Invert(previousLinear, out var inversePrevious)) return next;
+        var previousTransform = DrawingObjectInstanceDefinition.CreatePlanarTransform(previous);
+        if (!Matrix3x2.Invert(previousTransform, out var inversePrevious)) return next;
         var local = Vector2.Transform(
-            new Vector2(fixedWorldPoint.X - previous.X, fixedWorldPoint.Y - previous.Y),
+            new Vector2(fixedWorldPoint.X, fixedWorldPoint.Y),
             inversePrevious);
-        var nextOffset = Vector2.Transform(local, DrawingObjectInstanceDefinition.CreateLinearTransform(next));
+        var mapped = Vector2.Transform(local, DrawingObjectInstanceDefinition.CreatePlanarTransform(next));
         return next with
         {
-            X = VectorUnits.Quantize(fixedWorldPoint.X - nextOffset.X),
-            Y = VectorUnits.Quantize(fixedWorldPoint.Y - nextOffset.Y)
+            X = VectorUnits.Quantize(next.X + fixedWorldPoint.X - mapped.X),
+            Y = VectorUnits.Quantize(next.Y + fixedWorldPoint.Y - mapped.Y)
+        };
+    }
+
+    private static InstanceFrameState MoveScalePivotWithGroup(
+        InstanceFrameState previous,
+        InstanceFrameState next,
+        PointF groupPivot,
+        float scaleX,
+        float scaleY)
+    {
+        var operationPivot = DrawingObjectInstanceDefinition.ScalePivotScenePosition(previous);
+        var target = new PointF(
+            groupPivot.X + (operationPivot.X - groupPivot.X) * scaleX,
+            groupPivot.Y + (operationPivot.Y - groupPivot.Y) * scaleY);
+        return next with
+        {
+            X = VectorUnits.Quantize(previous.X + target.X - operationPivot.X),
+            Y = VectorUnits.Quantize(previous.Y + target.Y - operationPivot.Y)
         };
     }
 
@@ -2067,6 +2154,8 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseUp(object? sender, MouseEventArgs e)
     {
+        if (HandleReferenceCameraRightLookMouseUp(e)) return;
+
         if (_tabletPressurePointerId is not null && e.Button == MouseButtons.Left) return;
         if (_brushColorPaletteActive)
         {
@@ -2074,7 +2163,28 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (IsLassoTool(_tool) && HandleLassoMouseUp(e)) return;
+
         if (HandleSpatialTransformKeyboardMouseUp(e)) return;
+
+        if (_sceneLightGizmoPointerSession is not null)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                ClearPendingSceneLightGizmoPointer();
+                UpdateSceneLightGizmoPointer(e.Location);
+            }
+            CompleteSceneLightGizmoPointer();
+            return;
+        }
+
+        if (_snapPointEditSession is not null)
+        {
+            if (e.Button == MouseButtons.Left) UpdateSnapPointPointer(e.Location);
+            CompleteSnapPointPointer();
+            FinishPointerInteraction();
+            return;
+        }
 
         if (_spacePanPointerActive)
         {
@@ -2090,8 +2200,16 @@ internal sealed partial class MainForm : Form
 
         if (_spatialTransformPointerSession is not null)
         {
-            if (e.Button == MouseButtons.Left) UpdateSpatialTransformPointer(e.Location);
-            CompleteSpatialTransformPointer();
+            if (e.Button == MouseButtons.Left)
+            {
+                ClearPendingSpatialTransformPointer();
+                UpdateSpatialTransformPointer(e.Location);
+                CompleteSpatialTransformPointer();
+            }
+            else if (e.Button == MouseButtons.Right)
+            {
+                CancelSpatialTransformPointer();
+            }
             return;
         }
 
@@ -2202,12 +2320,38 @@ internal sealed partial class MainForm : Form
     private void StageMouseCaptureChanged(object? sender, EventArgs e)
     {
         if (_stage.Capture) return;
+        // WinForms releases capture after MouseUp, between polygon vertices.
+        if (_lassoPointerActive
+            && _tool == ToolMode.PolygonLasso
+            && !_lassoPointerDown)
+        {
+            return;
+        }
         FinishLostPointerCapture();
     }
 
     private void FinishLostPointerCapture()
     {
+        if (ReferenceCameraRightLookSessionActive)
+        {
+            CancelReferenceCameraRightLook();
+            return;
+        }
+
+        if (CancelLassoPointerForLifecycle()) return;
+
         FinalizePendingMarqueeSelectionCancellation();
+        if (_sceneLightGizmoPointerSession is not null)
+        {
+            CompleteSceneLightGizmoPointer();
+            return;
+        }
+        if (_snapPointEditSession is not null)
+        {
+            CompleteSnapPointPointer();
+            FinishPointerInteraction();
+            return;
+        }
         if (_spatialTransformKeyboardActive)
         {
             CancelSpatialTransformKeyboard();
@@ -2312,7 +2456,11 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteractionForFrameChange()
     {
+        CancelReferenceCameraRightLook();
         CancelTemporaryCanvasPan();
+        if (CancelLassoPointerForLifecycle()) return;
+        if (_sceneLightGizmoPointerSession is not null) CancelSceneLightGizmoPointer();
+        if (_snapPointEditSession is not null) CancelSnapPointPointer(restore: true);
         if (_projectedSceneMoveStartRayOrigin is not null) CancelProjectedSceneMovePointer();
         else if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
         else if (_spatialTransformPointerSession is not null) CancelSpatialTransformPointer();
@@ -2346,9 +2494,11 @@ internal sealed partial class MainForm : Form
         _stage.ClearMarquee();
     }
 
-    private bool HasActiveCanvasPointerInteraction()
+    private bool HasActiveCanvasPointerInteraction(bool includeCapture = true)
     {
-        return _stage.Capture
+        return includeCapture && _stage.Capture
+            || ReferenceCameraRightLookSessionActive
+            || _lassoPointerActive
             || _lastMouse is not null
             || _freehandDrawing
             || _tabletPressurePointerId is not null
@@ -2362,9 +2512,11 @@ internal sealed partial class MainForm : Form
             || _fillEdgeBezierEditSession is not null
             || _lineBranchDragSession is not null
             || _drawingTransformSession is not null
+            || _sceneLightGizmoPointerSession is not null
             || _spatialTransformPointerSession is not null
             || _spatialTransformEditSession is not null
             || _sceneInstanceMoveActive
+            || _snapPointEditSession is not null
             || _spacePanPointerActive
             || _viewPanning
             || _viewZooming
@@ -2375,7 +2527,16 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteractionForContextChange()
     {
+        CancelReferenceCameraRightLook();
+        CancelReferenceCameraKeyboardNavigation();
         CancelTemporaryCanvasPan();
+        if (CancelLassoPointerForLifecycle()) return;
+        if (_sceneLightGizmoPointerSession is not null)
+        {
+            CancelSceneLightGizmoPointer();
+            return;
+        }
+        if (_snapPointEditSession is not null) CancelSnapPointPointer(restore: true);
         if (_projectedSceneMoveStartRayOrigin is not null)
         {
             CancelProjectedSceneMovePointer();
@@ -2428,6 +2589,9 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteraction()
     {
+        CancelReferenceCameraRightLook();
+        _sceneSnapMoveStartPointer = null;
+        _stage.ClearSceneSnapIndicator();
         CompleteDistortPointerPreview();
         if (_spatialTransformEditSession is not null
             && _spatialTransformPointerSession is null
@@ -2573,6 +2737,12 @@ internal sealed partial class MainForm : Form
 
     private void StageDragEnter(object? sender, DragEventArgs e)
     {
+        if (TryResolveDroppedExternalSvgAsset(e.Data, out _, out _))
+        {
+            ClearDrawingObjectDragPreview();
+            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
+            return;
+        }
         if (TryResolveDroppedSvgFile(e.Data, out _))
         {
             ClearDrawingObjectDragPreview();
@@ -2602,6 +2772,12 @@ internal sealed partial class MainForm : Form
 
     private void StageDragOver(object? sender, DragEventArgs e)
     {
+        if (TryResolveDroppedExternalSvgAsset(e.Data, out _, out _))
+        {
+            ClearDrawingObjectDragPreview();
+            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
+            return;
+        }
         if (TryResolveDroppedSvgFile(e.Data, out _))
         {
             ClearDrawingObjectDragPreview();
@@ -2715,6 +2891,8 @@ internal sealed partial class MainForm : Form
         var applied = ApplyPendingLineDragPreview();
         applied |= ApplyPendingFillEdgeBezierPreview();
         applied |= ApplyPendingDrawingTransformPreview();
+        applied |= ApplyPendingSceneLightGizmoPointer();
+        applied |= ApplyPendingSpatialTransformPointer();
         applied |= ApplyPendingHoverFeedback();
         applied |= ApplyPendingFreehandPreview();
         if (!applied) _lineDragPreviewTimer.Stop();
@@ -2722,6 +2900,16 @@ internal sealed partial class MainForm : Form
 
     private void StageFrameRendered(object? sender, EventArgs e)
     {
+        if (_playing && _playbackWarmupPending)
+        {
+            // Start the playback clock after the first frame has actually
+            // reached the screen, so its asynchronous preparation and paint
+            // latency cannot create a catch-up jump on the next tick.
+            _playbackWarmupPending = false;
+            _playbackAccumulator = 0;
+            _clock.Restart();
+        }
+        // Render FPS measures completed presentations, including repeated playback frames.
         _rendersThisSample++;
         PostArmedFillEdgeBezierPreparation();
         PostPendingFrameCoalescedWork();
@@ -2945,6 +3133,8 @@ internal sealed partial class MainForm : Form
         return _pendingLineDragWorld is not null
             || _pendingFillEdgeBezierWorld is not null
             || _pendingDrawingTransformWorld is not null
+            || _pendingSceneLightGizmoScreen is not null
+            || _pendingSpatialTransformScreen is not null
             || _pendingHoverScreen is not null
             || _pendingFreehandPreview;
     }
@@ -3000,6 +3190,12 @@ internal sealed partial class MainForm : Form
 
     private void StageDragDrop(object? sender, DragEventArgs e)
     {
+        if (TryResolveDroppedExternalSvgAsset(e.Data, out var externalSvgAsset, out _))
+        {
+            ClearDrawingObjectDragPreview();
+            UseExternalSvgAssetLink(externalSvgAsset.Id, DragEventWorldPosition(e));
+            return;
+        }
         if (TryResolveDroppedSvgFile(e.Data, out var svgFile))
         {
             ClearDrawingObjectDragPreview();

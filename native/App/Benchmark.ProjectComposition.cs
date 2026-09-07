@@ -19,11 +19,18 @@ internal static partial class Benchmark
             && !project.Scenes[0].CanDraw
             && project.Scenes[0].Layers.Count == 1
             && project.Scenes[0].FrameCount == 1
+            && project.Scenes[0].Camera.Projection == CameraProjection.Perspective
             && project.Scenes[0].Timeline.Tracks.Count == 1
             && project.Scenes[0].Timeline.Tracks[0].Duration == 1
             && project.DrawingObjects is not ICollection<DrawingObjectDefinition> { IsReadOnly: false }
             && project.Scenes is not ICollection<SceneDefinition> { IsReadOnly: false },
-            "A new project did not create one layer and one frame for its drawing and scene timelines.");
+            "A new project did not create one layer, one frame, and the preferred perspective camera for its scene timeline.");
+
+        var appendedSceneProject = VectorProject.CreateEmpty();
+        var appendedScene = appendedSceneProject.AddScene("Second perspective scene");
+        AssertTimeline(
+            appendedScene.Camera.Projection == CameraProjection.Perspective,
+            "A scene added to an existing project did not use the preferred perspective camera.");
 
         var scaleZDefaultsProject = VectorProject.CreateEmpty();
         var scaleZContainer = scaleZDefaultsProject.DrawingObjects[0];
@@ -1367,6 +1374,7 @@ internal static partial class Benchmark
 
     private static void RunSceneSpatialPoseCompositionRegression()
     {
+        RunSpatialPivotTransformRegression();
         var project = VectorProject.CreateEmpty();
         var container = project.DrawingObjects[0];
         container.Name = "Spatial pose container";
@@ -1427,6 +1435,8 @@ internal static partial class Benchmark
         planarNested!.RotationZ = -17;
         planarNested.ScaleX = 0.85f;
         planarNested.ScaleY = 1.2f;
+        planarNested.RotationPivot = new Vector3(18, -11, 0);
+        planarNested.ScalePivot = new Vector3(-9, 14, 0);
         spatialNested!.Z = -28;
         spatialNested.RotationX = 22;
         spatialNested.RotationY = -14;
@@ -1434,6 +1444,8 @@ internal static partial class Benchmark
         spatialNested.ScaleX = 1.1f;
         spatialNested.ScaleY = 0.9f;
         spatialNested.ScaleZ = 1.35f;
+        spatialNested.RotationPivot = new Vector3(-24, 16, 7);
+        spatialNested.ScalePivot = new Vector3(12, -19, 5);
 
         var scene = project.Scenes[0];
         scene.Dimension = SceneDimension.TwoD;
@@ -1452,12 +1464,18 @@ internal static partial class Benchmark
         planarRoot.RotationZ = 24;
         planarRoot.ScaleX = 1.25f;
         planarRoot.ScaleY = 0.8f;
+        planarRoot.RotationPivot = new Vector3(36, -20, 0);
+        planarRoot.ScalePivot = new Vector3(-18, 28, 0);
         spatialRoot!.RotationX = -18;
         spatialRoot.RotationY = 27;
         spatialRoot.RotationZ = 13;
         spatialRoot.ScaleX = 1.15f;
         spatialRoot.ScaleY = 0.95f;
         spatialRoot.ScaleZ = 1.6f;
+        spatialRoot.RotationPivot = new Vector3(44, -31, 13);
+        spatialRoot.ScalePivot = new Vector3(-27, 22, -9);
+        zeroThicknessRoot!.RotationPivot = new Vector3(16, 12, 0);
+        zeroThicknessRoot.ScalePivot = new Vector3(-8, 6, 0);
 
         var expectedMetadata = new Dictionary<
             (string RootInstanceId, string InstanceId),
@@ -1535,14 +1553,100 @@ internal static partial class Benchmark
         }
     }
 
+    private static void RunSpatialPivotTransformRegression()
+    {
+        var instance = new DrawingObjectInstanceDefinition
+        {
+            X = 320,
+            Y = -180,
+            Z = 75,
+            RotationX = 21,
+            RotationY = -34,
+            RotationZ = 47,
+            SkewX = 8,
+            SkewY = -6,
+            ScaleX = 1.4f,
+            ScaleY = 0.65f,
+            ScaleZ = 2.25f,
+            RotationPivot = new Vector3(42, -26, 11),
+            ScalePivot = new Vector3(-18, 33, -7)
+        };
+        var state = instance.EvaluateState(0);
+        var skew = Matrix3x2.CreateSkew(
+            state.SkewX * MathF.PI / 180f,
+            state.SkewY * MathF.PI / 180f);
+        var rotation = Matrix4x4.CreateRotationZ(state.RotationZ * MathF.PI / 180f)
+            * Matrix4x4.CreateRotationX(state.RotationX * MathF.PI / 180f)
+            * Matrix4x4.CreateRotationY(state.RotationY * MathF.PI / 180f);
+        var expected = Matrix4x4.CreateTranslation(-state.ScalePivot)
+            * Matrix4x4.CreateScale(state.ScaleX, state.ScaleY, state.ScaleZ)
+            * Matrix4x4.CreateTranslation(state.ScalePivot)
+            * CompositionRegressionLift(skew)
+            * Matrix4x4.CreateTranslation(-state.RotationPivot)
+            * rotation
+            * Matrix4x4.CreateTranslation(state.RotationPivot)
+            * Matrix4x4.CreateTranslation(state.X, state.Y, state.Z);
+        var zeroPivot = state with
+        {
+            RotationPivot = Vector3.Zero,
+            ScalePivot = Vector3.Zero
+        };
+        var legacySpatial = Matrix4x4.CreateScale(
+                zeroPivot.ScaleX,
+                zeroPivot.ScaleY,
+                zeroPivot.ScaleZ)
+            * CompositionRegressionLift(skew)
+            * rotation
+            * Matrix4x4.CreateTranslation(zeroPivot.X, zeroPivot.Y, zeroPivot.Z);
+        var legacyPlanar = Matrix3x2.CreateScale(zeroPivot.ScaleX, zeroPivot.ScaleY)
+            * skew
+            * Matrix3x2.CreateRotation(zeroPivot.RotationZ * MathF.PI / 180f)
+            * Matrix3x2.CreateTranslation(zeroPivot.X, zeroPivot.Y);
+        var changedPivots = state with
+        {
+            RotationPivot = new Vector3(-55, 21, 9),
+            ScalePivot = new Vector3(31, -17, 4)
+        };
+        var compensated = DrawingObjectInstanceDefinition.PreserveSpatialTransformForPivotChange(
+            state,
+            changedPivots);
+        var expectedScalePivotPosition = Vector3.Transform(
+            state.ScalePivot,
+            CompositionRegressionLift(skew)
+            * Matrix4x4.CreateTranslation(-state.RotationPivot)
+            * rotation
+            * Matrix4x4.CreateTranslation(state.RotationPivot)
+            * Matrix4x4.CreateTranslation(state.X, state.Y, state.Z));
+
+        AssertTimeline(
+            CompositionRegressionMatricesNear(
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(state),
+                expected)
+            && DrawingObjectInstanceDefinition.CreateSpatialTransform(zeroPivot) == legacySpatial
+            && DrawingObjectInstanceDefinition.CreatePlanarTransform(zeroPivot) == legacyPlanar
+            && CompositionRegressionMatricesNear(
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(compensated),
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(state))
+            && DrawingObjectInstanceDefinition.RotationPivotScenePosition(state)
+                == state.RotationPivot + new Vector3(state.X, state.Y, state.Z)
+            && Vector3.Distance(
+                DrawingObjectInstanceDefinition.ScalePivotScenePosition(state),
+                expectedScalePivotPosition) <= 0.001f,
+            "Spatial pivot transforms changed the legacy zero-pivot matrix, transform order, or compensation contract.");
+    }
+
     private static Matrix3x2 CompositionRegressionFlatTransform(
         DrawingObjectDefinition drawingObject,
         InstanceFrameState state)
     {
         return Matrix3x2.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y)
+            * Matrix3x2.CreateTranslation(-state.ScalePivot.X, -state.ScalePivot.Y)
             * Matrix3x2.CreateScale(state.ScaleX, state.ScaleY)
+            * Matrix3x2.CreateTranslation(state.ScalePivot.X, state.ScalePivot.Y)
             * Matrix3x2.CreateSkew(state.SkewX * MathF.PI / 180f, state.SkewY * MathF.PI / 180f)
+            * Matrix3x2.CreateTranslation(-state.RotationPivot.X, -state.RotationPivot.Y)
             * Matrix3x2.CreateRotation(state.RotationZ * MathF.PI / 180f)
+            * Matrix3x2.CreateTranslation(state.RotationPivot.X, state.RotationPivot.Y)
             * Matrix3x2.CreateTranslation(state.X, state.Y);
     }
 
@@ -1553,13 +1657,17 @@ internal static partial class Benchmark
         var flatTransform = CompositionRegressionFlatTransform(drawingObject, state);
         if (CompositionRegressionIsPlanar(state)) return CompositionRegressionLift(flatTransform);
         return Matrix4x4.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y, 0)
+            * Matrix4x4.CreateTranslation(-state.ScalePivot)
             * Matrix4x4.CreateScale(state.ScaleX, state.ScaleY, state.ScaleZ)
+            * Matrix4x4.CreateTranslation(state.ScalePivot)
             * CompositionRegressionLift(Matrix3x2.CreateSkew(
                 state.SkewX * MathF.PI / 180f,
                 state.SkewY * MathF.PI / 180f))
+            * Matrix4x4.CreateTranslation(-state.RotationPivot)
             * Matrix4x4.CreateRotationZ(state.RotationZ * MathF.PI / 180f)
             * Matrix4x4.CreateRotationX(state.RotationX * MathF.PI / 180f)
             * Matrix4x4.CreateRotationY(state.RotationY * MathF.PI / 180f)
+            * Matrix4x4.CreateTranslation(state.RotationPivot)
             * Matrix4x4.CreateTranslation(state.X, state.Y, state.Z);
     }
 
@@ -1596,7 +1704,8 @@ internal static partial class Benchmark
 
     private static bool CompositionRegressionIsPlanar(InstanceFrameState state)
     {
-        return state.Z == 0
+        var effectiveZ = state.Z + state.ScalePivot.Z * (1f - state.ScaleZ);
+        return effectiveZ == 0
             && state.RotationX == 0
             && state.RotationY == 0
             && (state.ScaleZ == 0 || state.ScaleZ == 1);
@@ -1852,6 +1961,7 @@ internal static partial class Benchmark
     {
         var project = VectorProject.CreateEmpty();
         project.Name = "Restart Snapshot";
+        project.Scenes[0].Camera.Projection = CameraProjection.Orthographic;
         AssertTimeline(
             project.TrySetPlaybackSettings(30m, loopPlayback: true, playbackStartFrame: 100, playbackEndFrame: 200)
             && project.TrySetPlaybackFps(29.97m)
@@ -1895,12 +2005,18 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException("Editor restart snapshot regression could not create its source project graph.");
         }
+        nested.RotationPivot = new Vector3(18, -12, 4);
+        nested.ScalePivot = new Vector3(-9, 15, 3);
+        sceneInstance.RotationPivot = new Vector3(42, -28, 11);
+        sceneInstance.ScalePivot = new Vector3(-21, 34, -6);
         var nestedRestartState = nested.EvaluateState(5) with
         {
             X = 140,
             Y = 70,
             RotationZ = 35,
             ScaleX = 1.75f,
+            RotationPivot = new Vector3(36, -24, 8),
+            ScalePivot = new Vector3(-18, 30, 6),
             Alpha = 0.65f,
             TintArgb = Color.FromArgb(255, 180, 220, 96).ToArgb(),
             PlaybackFps = 18,
@@ -1913,6 +2029,8 @@ internal static partial class Benchmark
             Y = 240,
             SkewY = 16,
             ScaleY = 0.8f,
+            RotationPivot = new Vector3(84, -56, 22),
+            ScalePivot = new Vector3(-42, 68, -12),
             Alpha = 0.4f,
             TintArgb = Color.FromArgb(255, 96, 160, 240).ToArgb(),
             PlaybackFps = 24,
@@ -1946,14 +2064,19 @@ internal static partial class Benchmark
             || restoredRoot.Instances.Count != 1
             || restoredRoot.Instances[0].Id != nested.Id
             || restoredRoot.Instances[0].DrawingObjectId != child.Id
+            || restoredRoot.Instances[0].EvaluateState(0).RotationPivot != nested.RotationPivot
+            || restoredRoot.Instances[0].EvaluateState(0).ScalePivot != nested.ScalePivot
             || restoredRoot.Instances[0].EvaluateState(5) != nestedRestartState
             || restoredRoot.Scene.ObjectCount != 1
             || restoredRoot.Scene.GetLineEndpointStyle(rootLine, startEndpoint: true) != LineEndpointStyle.Sharp
             || restoredRoot.Scene.GetLineEndpointStyle(rootLine, startEndpoint: false) != LineEndpointStyle.Round
             || restoredScene is null
+            || restoredScene.Camera.Projection != CameraProjection.Orthographic
             || restoredScene.Instances.Count != 1
             || restoredScene.Instances[0].Id != sceneInstance.Id
             || restoredScene.Instances[0].DrawingObjectId != root.Id
+            || restoredScene.Instances[0].EvaluateState(0).RotationPivot != sceneInstance.RotationPivot
+            || restoredScene.Instances[0].EvaluateState(0).ScalePivot != sceneInstance.ScalePivot
             || restoredScene.Instances[0].EvaluateState(6) != sceneRestartState
             || !restoredScene.Timeline.EvaluateTargetExposure(restoredScene.ActiveLayerId, 0).HasContent)
         {
@@ -2139,16 +2262,13 @@ internal static partial class Benchmark
 
     private static void RunProjectVaultPersistenceRegression()
     {
-        var temporaryRoot = Path.Combine(
-            Path.GetTempPath(),
-            "Vector2DAnimationEngine",
-            $"project-vault-regression-{Guid.NewGuid():N}");
+        var temporaryRoot = CreateTemporaryDirectory("project-vault-regression");
         var manifestPath = Path.Combine(temporaryRoot, "Library.v2dProject");
-        Directory.CreateDirectory(temporaryRoot);
         try
         {
             var project = VectorProject.CreateEmpty();
             project.Name = "Library & 资产";
+            project.Scenes[0].Camera.Projection = CameraProjection.Orthographic;
             var playbackChangeCount = 0;
             project.Changed += (_, _) => playbackChangeCount++;
             AssertTimeline(
@@ -2253,13 +2373,19 @@ internal static partial class Benchmark
                 "Project Vault regression could not create its asset graph.");
             nested!.Alpha = 0.75f;
             nested.TintArgb = Color.FromArgb(255, 220, 180, 120).ToArgb();
+            nested.RotationPivot = new Vector3(14, -22, 5);
+            nested.ScalePivot = new Vector3(-8, 17, 3);
             sceneInstance!.Alpha = 0.6f;
             sceneInstance.TintArgb = Color.FromArgb(255, 120, 200, 240).ToArgb();
             sceneInstance.ScaleZ = 2.25f;
+            sceneInstance.RotationPivot = new Vector3(48, -36, 12);
+            sceneInstance.ScalePivot = new Vector3(-24, 30, -9);
             nested!.SetStateAtFrame(6, nested.EvaluateState(6) with
             {
                 X = 140,
                 RotationZ = 32,
+                RotationPivot = new Vector3(28, -44, 10),
+                ScalePivot = new Vector3(-16, 34, 6),
                 Alpha = 0.35f,
                 TintArgb = Color.FromArgb(255, 96, 220, 160).ToArgb(),
                 PlaybackFps = 23.976m,
@@ -2269,6 +2395,8 @@ internal static partial class Benchmark
             {
                 Y = 260,
                 ScaleX = 1.4f,
+                RotationPivot = new Vector3(96, -72, 24),
+                ScalePivot = new Vector3(-48, 60, -18),
                 Alpha = 0.45f,
                 TintArgb = Color.FromArgb(255, 180, 96, 240).ToArgb(),
                 PlaybackFps = 24m,
@@ -2279,8 +2407,8 @@ internal static partial class Benchmark
             var drawingTrackId = root.Scene.Timeline.Tracks[0].Id;
             var savedManifest = ProjectVaultStore.Save(project, manifestPath);
             var svgPath = Path.Combine(temporaryRoot, ".Vault", $"{root.Id}.svg");
-            var drawingTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Drawings", $"{root.Id}.json");
-            var sceneTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Scenes", $"{project.Scenes[0].Id}.json");
+            var drawingTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Drawings", $"{root.Id}.json.br");
+            var sceneTimelinePath = Path.Combine(temporaryRoot, ".TimeLine", "Scenes", $"{project.Scenes[0].Id}.json.br");
             var svg = File.ReadAllText(svgPath);
             AssertTimeline(
                 savedManifest == Path.GetFullPath(manifestPath)
@@ -2331,15 +2459,24 @@ internal static partial class Benchmark
                     key.Frame == 4 && key.Kind == TimelineKeyframeKind.Blank)
                 && restoredRoot.Instances.Single().SceneLayerId == nestedLayerId
                 && NearlyEqual(restoredRoot.Instances.Single().EvaluateState(0).Alpha, 0.75f)
+                && restoredRoot.Instances.Single().EvaluateState(0).RotationPivot == nested.RotationPivot
+                && restoredRoot.Instances.Single().EvaluateState(0).ScalePivot == nested.ScalePivot
                 && restoredRoot.Instances.Single().EvaluateState(0).TintArgb == Color.FromArgb(255, 220, 180, 120).ToArgb()
                 && NearlyEqual(restoredRoot.Instances.Single().EvaluateState(6).Alpha, 0.35f)
+                && restoredRoot.Instances.Single().EvaluateState(6).RotationPivot == new Vector3(28, -44, 10)
+                && restoredRoot.Instances.Single().EvaluateState(6).ScalePivot == new Vector3(-16, 34, 6)
                 && restoredRoot.Instances.Single().EvaluateState(6).TintArgb == Color.FromArgb(255, 96, 220, 160).ToArgb()
                 && restoredRoot.Instances.Single().EvaluateState(6).PlaybackFps == 23.976m
                 && restoredChild.AssetFolderId == folder!.Id
+                && restoredScene.Camera.Projection == CameraProjection.Orthographic
                 && NearlyEqual(restoredScene.Instances.Single().EvaluateState(0).Alpha, 0.6f)
+                && restoredScene.Instances.Single().EvaluateState(0).RotationPivot == sceneInstance.RotationPivot
+                && restoredScene.Instances.Single().EvaluateState(0).ScalePivot == sceneInstance.ScalePivot
                 && NearlyEqual(restoredScene.Instances.Single().EvaluateState(0).ScaleZ, 2.25f)
                 && restoredScene.Instances.Single().EvaluateState(0).TintArgb == Color.FromArgb(255, 120, 200, 240).ToArgb()
                 && NearlyEqual(restoredScene.Instances.Single().EvaluateState(7).Alpha, 0.45f)
+                && restoredScene.Instances.Single().EvaluateState(7).RotationPivot == new Vector3(96, -72, 24)
+                && restoredScene.Instances.Single().EvaluateState(7).ScalePivot == new Vector3(-48, 60, -18)
                 && NearlyEqual(restoredScene.Instances.Single().EvaluateState(7).ScaleZ, 2.25f)
                 && restoredScene.Instances.Single().EvaluateState(7).TintArgb == Color.FromArgb(255, 180, 96, 240).ToArgb()
                 && restoredScene.Instances.Single().EvaluateState(7).HoldFrame == 3,
@@ -2564,14 +2701,7 @@ internal static partial class Benchmark
         }
         finally
         {
-            try
-            {
-                if (Directory.Exists(temporaryRoot)) Directory.Delete(temporaryRoot, recursive: true);
-            }
-            catch
-            {
-                // A later regression run uses a unique directory.
-            }
+            DeleteTemporaryDirectory(temporaryRoot);
         }
 
         Console.WriteLine("project_vault_persistence_regression=ok");
@@ -3088,11 +3218,6 @@ internal static partial class Benchmark
                     "Scene composition did not apply the instance transform equally to fill-edge anchors and controls.");
             }
         }
-    }
-
-    private static void AssertTimeline(bool condition, string message)
-    {
-        if (!condition) throw new InvalidOperationException(message);
     }
 
 }

@@ -6,14 +6,17 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
 {
     private readonly List<DrawingObjectInstanceDefinition> _instances = [];
     private readonly List<string> _assetTagIds = [];
+    private readonly List<DrawingObjectSnapPointDefinition> _snapPoints = [];
     private readonly IReadOnlyList<DrawingObjectInstanceDefinition> _instanceView;
     private readonly IReadOnlyList<string> _assetTagIdView;
+    private readonly IReadOnlyList<DrawingObjectSnapPointDefinition> _snapPointView;
     private readonly LayeredInstanceIndex _instanceIndex;
 
     public DrawingObjectDefinition()
     {
         _instanceView = _instances.AsReadOnly();
         _assetTagIdView = _assetTagIds.AsReadOnly();
+        _snapPointView = _snapPoints.AsReadOnly();
         _instanceIndex = new LayeredInstanceIndex(_instanceView);
         Scene.ConfigureExternalLayerKeyframeContent(
             (layerId, _) => _instanceIndex.Any(layerId));
@@ -25,6 +28,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
     public string Detail { get; set; } = "Reusable symbol";
     public string AssetFolderId { get; internal set; } = "";
     public IReadOnlyList<string> AssetTagIds => _assetTagIdView;
+    public IReadOnlyList<DrawingObjectSnapPointDefinition> SnapPoints => _snapPointView;
     public bool CanDraw => true;
     public PointF Anchor { get; private set; }
     public VectorScene Scene { get; } = new();
@@ -47,6 +51,15 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         _assetTagIds.AddRange(tagIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.Ordinal));
+    }
+
+    internal DrawingObjectSnapPointDefinition[] CreateSnapPointSnapshot() => _snapPoints.ToArray();
+
+    internal void RestoreSnapPointSnapshot(IEnumerable<DrawingObjectSnapPointDefinition> snapPoints)
+    {
+        ArgumentNullException.ThrowIfNull(snapPoints);
+        _snapPoints.Clear();
+        _snapPoints.AddRange(snapPoints);
     }
 
     public void SynchronizeTimelineTracks()
@@ -235,8 +248,35 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         return true;
     }
 
-    internal bool RemoveTimelineTween(int layer, int startFrame, int endFrame) =>
-        Scene.RemoveTimelineTween(layer, startFrame, endFrame);
+    internal bool RemoveTimelineTween(int layer, int startFrame, int endFrame)
+    {
+        if ((uint)layer >= Scene.LayerCount) return false;
+        SynchronizeTimelineTracks();
+        var layerId = Scene.LayerIds[layer];
+        var track = Timeline.FindTrackByTargetId(layerId);
+        var tween = track?.Tweens.FirstOrDefault(item =>
+            item.StartFrame == startFrame
+            && item.EndFrame == endFrame);
+        if (track is null || tween is not { IsValid: true } span) return false;
+
+        var instances = InstancesInLayer(layerId);
+        if (instances.Count == 0)
+        {
+            return Scene.RemoveTimelineTween(layer, startFrame, endFrame);
+        }
+
+        using var batch = Timeline.BeginBatchUpdate();
+        if (!Timeline.RemoveTween(track.Id, startFrame, endFrame)) return false;
+
+        for (var frame = span.StartFrame + 1; frame < span.EndFrame; frame++)
+        {
+            foreach (var instance in instances) instance.RemoveStateKeyframe(frame);
+            Timeline.ClearKeyframe(track.Id, frame);
+        }
+
+        Scene.SynchronizeExternalLayerKeyframeContent();
+        return true;
+    }
 
     internal bool RefreshTimelineTweenMaterializationsAtEndpointFrame(int frame)
     {

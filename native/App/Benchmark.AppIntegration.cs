@@ -125,15 +125,23 @@ internal static partial class Benchmark
         var referenceRendering = HotReloadModuleResolver.Resolve([
             typeof(ReferenceViewDirection),
             typeof(SpatialTransformMode),
+            typeof(SpatialTransformSpace),
+            typeof(SpatialGizmoBasis),
             typeof(SceneCompositionMaskClip),
             typeof(Reference3DProjectedContour)]);
         var timeline = HotReloadModuleResolver.Resolve([typeof(TimelineStrip)]);
         var inspector = HotReloadModuleResolver.Resolve([typeof(MaterialEditorPanel)]);
         var spatialInspector = HotReloadModuleResolver.Resolve([
             typeof(SpatialTransformPanel),
-            typeof(SpatialTransformValues)]);
+            typeof(SpatialTransformValues),
+            typeof(SpatialTransformValueGroup),
+            typeof(SpatialPivotKind),
+            typeof(SpatialPivotKindChangedEventArgs)]);
         var instanceInspector = HotReloadModuleResolver.Resolve([typeof(DrawingObjectInstancePanel)]);
         var themedScroll = HotReloadModuleResolver.Resolve([typeof(ThemedScrollPanel)]);
+        var traditionalPicker = HotReloadModuleResolver.Resolve([
+            typeof(TraditionalColorPlane),
+            typeof(VerticalColorComponentSlider)]);
         var harmonyWheel = HotReloadModuleResolver.Resolve([typeof(HarmonyColorWheel)]);
         var gradientPreset = HotReloadModuleResolver.Resolve([typeof(GradientPresetGrid)]);
         var paletteIcon = HotReloadModuleResolver.Resolve([typeof(SvgIconButton), typeof(SvgIcons)]);
@@ -156,7 +164,10 @@ internal static partial class Benchmark
         var referenceWorkspace = HotReloadModuleResolver.Resolve([
             typeof(ReferenceViewPad),
             typeof(ReferenceViewRequestedEventArgs)]);
-        var engine = HotReloadModuleResolver.Resolve([typeof(VectorScene), typeof(DrawingObjectPlaybackMode)]);
+        var engine = HotReloadModuleResolver.Resolve([
+            typeof(VectorScene),
+            typeof(DrawingObjectPlaybackMode),
+            typeof(InstanceFrameState)]);
         var sceneMaskEngine = HotReloadModuleResolver.Resolve([typeof(SceneLayerKind)]);
         var projectAssetFolder = HotReloadModuleResolver.Resolve([typeof(ProjectAssetFolder)]);
         var projectAssetTags = HotReloadModuleResolver.Resolve([typeof(ProjectAssetTag), typeof(ProjectAssetTagData)]);
@@ -223,6 +234,7 @@ internal static partial class Benchmark
             || spatialInspector.Modules != HotReloadModule.Inspector
             || instanceInspector.Modules != HotReloadModule.Inspector
             || themedScroll.Modules != HotReloadModule.Inspector
+            || traditionalPicker.Modules != HotReloadModule.Inspector
             || harmonyWheel.Modules != HotReloadModule.Inspector
             || gradientPreset.Modules != HotReloadModule.Inspector
             || paletteIcon.Modules != HotReloadModule.Inspector
@@ -236,7 +248,7 @@ internal static partial class Benchmark
             || projectAssetTags.Modules != HotReloadModule.Engine
             || unknown.Modules != HotReloadModule.All
             || merged.Modules != (HotReloadModule.Rendering | HotReloadModule.Engine)
-            || merged.UpdatedTypes.Split(',', StringSplitOptions.RemoveEmptyEntries).Length != 3
+            || merged.UpdatedTypes.Split(',', StringSplitOptions.RemoveEmptyEntries).Length != 4
             || !coordinatorMergedBatch
             || !rendering.RequiresProcessRestart
             || !timeline.RequiresProcessRestart
@@ -260,6 +272,7 @@ internal static partial class Benchmark
             || spatialInspector.RequiresWorkbenchRebuild
             || instanceInspector.RequiresWorkbenchRebuild
             || themedScroll.RequiresWorkbenchRebuild
+            || traditionalPicker.RequiresWorkbenchRebuild
             || harmonyWheel.RequiresWorkbenchRebuild
             || gradientPreset.RequiresWorkbenchRebuild
             || paletteIcon.RequiresWorkbenchRebuild
@@ -273,7 +286,7 @@ internal static partial class Benchmark
             || projectAssetTags.RequiresWorkbenchRebuild)
         {
             throw new InvalidOperationException(
-                    $"Module hot reload routing was not scoped: rendering={rendering.Modules}/{rendering.RequiresWorkbenchRebuild}, worldGrid={worldGridRendering.Modules}/{worldGridRendering.RequiresWorkbenchRebuild}, polarGrid={polarGridRendering.Modules}/{polarGridRendering.RequiresWorkbenchRebuild}, referenceRendering={referenceRendering.Modules}/{referenceRendering.RequiresWorkbenchRebuild}, timeline={timeline.Modules}/{timeline.RequiresWorkbenchRebuild}, inspector={inspector.Modules}/{inspector.RequiresWorkbenchRebuild}, spatialInspector={spatialInspector.Modules}/{spatialInspector.RequiresWorkbenchRebuild}, instanceInspector={instanceInspector.Modules}/{instanceInspector.RequiresWorkbenchRebuild}, themedScroll={themedScroll.Modules}/{themedScroll.RequiresWorkbenchRebuild}, harmonyWheel={harmonyWheel.Modules}/{harmonyWheel.RequiresWorkbenchRebuild}, gradientPreset={gradientPreset.Modules}/{gradientPreset.RequiresWorkbenchRebuild}, paletteIcon={paletteIcon.Modules}/{paletteIcon.RequiresWorkbenchRebuild}, paletteStore={paletteStore.Modules}/{paletteStore.RequiresWorkbenchRebuild}, settingsDialog={settingsDialog.Modules}/{settingsDialog.RequiresWorkbenchRebuild}, releaseNotes={releaseNotes.Modules}/{releaseNotes.RequiresWorkbenchRebuild}, referenceWorkspace={referenceWorkspace.Modules}/{referenceWorkspace.RequiresWorkbenchRebuild}, engine={engine.Modules}/{engine.RequiresWorkbenchRebuild}, sceneMaskEngine={sceneMaskEngine.Modules}/{sceneMaskEngine.RequiresWorkbenchRebuild}, projectAssetFolder={projectAssetFolder.Modules}/{projectAssetFolder.RequiresWorkbenchRebuild}, projectAssetTags={projectAssetTags.Modules}/{projectAssetTags.RequiresWorkbenchRebuild}, unknown={unknown.Modules}, merged={merged.Modules}/{merged.UpdatedTypes}, coordinator={dispatchedBatch}.");
+                    $"Module hot reload routing was not scoped: rendering={rendering.Modules}/{rendering.RequiresWorkbenchRebuild}, worldGrid={worldGridRendering.Modules}/{worldGridRendering.RequiresWorkbenchRebuild}, polarGrid={polarGridRendering.Modules}/{polarGridRendering.RequiresWorkbenchRebuild}, referenceRendering={referenceRendering.Modules}/{referenceRendering.RequiresWorkbenchRebuild}, timeline={timeline.Modules}/{timeline.RequiresWorkbenchRebuild}, inspector={inspector.Modules}/{inspector.RequiresWorkbenchRebuild}, spatialInspector={spatialInspector.Modules}/{spatialInspector.RequiresWorkbenchRebuild}, instanceInspector={instanceInspector.Modules}/{instanceInspector.RequiresWorkbenchRebuild}, themedScroll={themedScroll.Modules}/{themedScroll.RequiresWorkbenchRebuild}, traditionalPicker={traditionalPicker.Modules}/{traditionalPicker.RequiresWorkbenchRebuild}, harmonyWheel={harmonyWheel.Modules}/{harmonyWheel.RequiresWorkbenchRebuild}, gradientPreset={gradientPreset.Modules}/{gradientPreset.RequiresWorkbenchRebuild}, paletteIcon={paletteIcon.Modules}/{paletteIcon.RequiresWorkbenchRebuild}, paletteStore={paletteStore.Modules}/{paletteStore.RequiresWorkbenchRebuild}, settingsDialog={settingsDialog.Modules}/{settingsDialog.RequiresWorkbenchRebuild}, releaseNotes={releaseNotes.Modules}/{releaseNotes.RequiresWorkbenchRebuild}, referenceWorkspace={referenceWorkspace.Modules}/{referenceWorkspace.RequiresWorkbenchRebuild}, engine={engine.Modules}/{engine.RequiresWorkbenchRebuild}, sceneMaskEngine={sceneMaskEngine.Modules}/{sceneMaskEngine.RequiresWorkbenchRebuild}, projectAssetFolder={projectAssetFolder.Modules}/{projectAssetFolder.RequiresWorkbenchRebuild}, projectAssetTags={projectAssetTags.Modules}/{projectAssetTags.RequiresWorkbenchRebuild}, unknown={unknown.Modules}, merged={merged.Modules}/{merged.UpdatedTypes}, coordinator={dispatchedBatch}.");
         }
 
         Console.WriteLine("module_reload_routing_regression=ok");

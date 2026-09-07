@@ -25,6 +25,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private const int MaxLineGeometryCacheEntries = 8_192;
     private const int MaxObjectPathGeometryCacheEntries = 2_048;
     private const int MaxGradientBrushCacheEntries = 1_024;
+    private const int MaxReference3DMaterialBitmapCacheEntries = 512;
+    private const long MaxReference3DMaterialBitmapCacheBytes = 96L * 1024 * 1024;
+    private const int MaxReference3DWorkspaceFrameCacheEntries = 32;
+    private const long MaxReference3DWorkspaceFrameCacheBytes = 128L * 1024 * 1024;
     private const int MaxShapeGradientBitmapCacheEntries = 256;
     private const int MaxShapeGradientBitmapPixels = 262_144;
     private const int MaxShapeGradientMaskGeometryCacheEntries = 1_024;
@@ -39,6 +43,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedFreehandGeometry> _freehandGeometryCache = new();
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedLineGeometry> _lineGeometryCache = new();
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedObjectPathGeometry> _objectPathGeometryCache = new();
+    private readonly Dictionary<PathGeometryContentKey, List<CachedObjectPathGeometry>> _objectPathGeometryContentCache = new();
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedGradientBrush> _gradientBrushCache = new();
     private readonly List<CachedGradientBrush> _transientGradientBrushes = [];
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedShapeGradientBitmap> _shapeGradientBitmapCache = new();
@@ -51,10 +56,16 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<ImportedSvgRasterKey, CachedImportedSvgBitmap> _importedSvgBitmapCache = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private ID2D1Factory? _factory;
-    private ID2D1HwndRenderTarget? _target;
+    private ID2D1RenderTarget? _target;
     private ID2D1Bitmap? _baseFrameBitmap;
+    private readonly List<CachedReference3DWorkspaceFrame> _reference3DWorkspaceFrameCache = [];
+    private CachedReference3DWorkspaceFrame? _currentWorkspaceFrame;
+    private StageControl? _workspaceFrameCacheStage;
+    private long _workspaceFrameCacheRevision = long.MinValue;
+    private long _reference3DWorkspaceFrameCacheBytes;
     private ID2D1Layer? _shapeGradientMaskLayer;
     private ID2D1PathGeometry? _fillEdgeBezierOverlayGeometry;
+    private ID2D1PathGeometry? _collisionTerrainOverlayGeometry;
     private ID2D1StrokeStyle? _roundStrokeStyle;
     private ID2D1StrokeStyle? _previewBoundsStrokeStyle;
     private readonly Dictionary<(CapStyle Start, CapStyle End, bool MiterJoin), ID2D1StrokeStyle> _lineStrokeStyles = new();
@@ -64,13 +75,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private SizeI _baseFrameSize;
     private long _targetGeneration;
     private long _baseFrameTargetGeneration = -1;
-    private long _baseFramePresentationRevision = -1;
-    private VectorScene? _baseFrameEditableScene;
-    private long _baseFrameEditableGeometryRevision = -1;
-    private VectorScene? _baseFrameUnderlayScene;
-    private long _baseFrameUnderlayGeometryRevision = -1;
-    private VectorScene? _baseFrameOnionSkinScene;
-    private long _baseFrameOnionSkinGeometryRevision = -1;
+    private Reference3DBaseFrameRenderState _baseFrameRenderState;
     private RenderStats _baseFrameStats;
     private RenderStats _baseFrameEditableStats;
     private int _consecutiveFailures;
@@ -93,6 +98,16 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private float _fillEdgeBezierOverlayGeometryZoom;
     private int _fillEdgeBezierOverlayGeometryWidth;
     private int _fillEdgeBezierOverlayGeometryHeight;
+    private VectorScene? _collisionTerrainOverlayScene;
+    private long _collisionTerrainOverlayRevision = -1;
+    private int _collisionTerrainOverlayLayer = -1;
+    private int _collisionTerrainOverlayFrame = -1;
+    private float _collisionTerrainOverlayCameraX;
+    private float _collisionTerrainOverlayCameraY;
+    private float _collisionTerrainOverlayZoom;
+    private int _collisionTerrainOverlayWidth;
+    private int _collisionTerrainOverlayHeight;
+    private int[] _collisionTerrainOverlayObjects = [];
 
     private sealed record CachedFreehandGeometry(GdiPointF[] Points, ID2D1PathGeometry Geometry) : IDisposable
     {
@@ -114,11 +129,39 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         public void Dispose() => Geometry.Dispose();
     }
 
-    private sealed record CachedObjectPathGeometry(
-        GdiPointF[][]? PathContoursIdentity,
-        PathBezierNode[][]? PathBezierContoursIdentity,
-        ID2D1PathGeometry Geometry) : IDisposable
+    private readonly record struct PathGeometryContentKey(
+        VectorScene Scene,
+        ulong Hash,
+        int ContourCount,
+        int PointCount,
+        bool UsesBezier);
+
+    private sealed class CachedObjectPathGeometry : IDisposable
     {
+        private bool _disposed;
+
+        public CachedObjectPathGeometry(
+            PathGeometryContentKey contentKey,
+            GdiPointF[][]? pathContoursIdentity,
+            PathBezierNode[][]? pathBezierContoursIdentity,
+            ID2D1PathGeometry geometry)
+        {
+            ContentKey = contentKey;
+            PathContoursIdentity = pathContoursIdentity;
+            PathBezierContoursIdentity = pathBezierContoursIdentity;
+            Geometry = geometry;
+        }
+
+        public PathGeometryContentKey ContentKey { get; }
+
+        public GdiPointF[][]? PathContoursIdentity { get; }
+
+        public PathBezierNode[][]? PathBezierContoursIdentity { get; }
+
+        public ID2D1PathGeometry Geometry { get; }
+
+        public int ReferenceCount { get; private set; } = 1;
+
         public bool Matches(
             GdiPointF[][]? pathContoursIdentity,
             PathBezierNode[][]? pathBezierContoursIdentity)
@@ -127,7 +170,75 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 && ReferenceEquals(PathBezierContoursIdentity, pathBezierContoursIdentity);
         }
 
-        public void Dispose() => Geometry.Dispose();
+        public bool MatchesContent(
+            PathGeometryContentKey contentKey,
+            GdiPointF[][]? pathContours,
+            PathBezierNode[][]? pathBezierContours)
+        {
+            return ContentKey == contentKey
+                && ContoursEqual(PathContoursIdentity, pathContours)
+                && BezierContoursEqual(PathBezierContoursIdentity, pathBezierContours);
+        }
+
+        public void AddReference()
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(CachedObjectPathGeometry));
+            ReferenceCount++;
+        }
+
+        public void ReleaseReference()
+        {
+            if (ReferenceCount <= 0) return;
+            ReferenceCount--;
+            if (ReferenceCount == 0) Dispose();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            Geometry.Dispose();
+        }
+
+        private static bool ContoursEqual(
+            GdiPointF[][]? left,
+            GdiPointF[][]? right)
+        {
+            if (ReferenceEquals(left, right)) return true;
+            if (left is null || right is null || left.Length != right.Length) return false;
+            for (var contourIndex = 0; contourIndex < left.Length; contourIndex++)
+            {
+                var leftContour = left[contourIndex];
+                var rightContour = right[contourIndex];
+                if (leftContour.Length != rightContour.Length) return false;
+                for (var pointIndex = 0; pointIndex < leftContour.Length; pointIndex++)
+                {
+                    if (!leftContour[pointIndex].Equals(rightContour[pointIndex])) return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool BezierContoursEqual(
+            PathBezierNode[][]? left,
+            PathBezierNode[][]? right)
+        {
+            if (ReferenceEquals(left, right)) return true;
+            if (left is null || right is null || left.Length != right.Length) return false;
+            for (var contourIndex = 0; contourIndex < left.Length; contourIndex++)
+            {
+                var leftContour = left[contourIndex];
+                var rightContour = right[contourIndex];
+                if (leftContour.Length != rightContour.Length) return false;
+                for (var nodeIndex = 0; nodeIndex < leftContour.Length; nodeIndex++)
+                {
+                    if (!leftContour[nodeIndex].Equals(rightContour[nodeIndex])) return false;
+                }
+            }
+
+            return true;
+        }
     }
 
     private readonly record struct SceneMembershipStamp(VectorScene? Scene, int ObjectCount);
@@ -354,6 +465,30 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         public void Dispose() => Bitmap.Dispose();
     }
 
+    private readonly record struct Reference3DWorkspaceFrameCacheKey(
+        StageControl Stage,
+        long Revision,
+        int Frame,
+        int ViewportWidth,
+        int ViewportHeight,
+        ulong LayerRenderState);
+
+    private sealed class CachedReference3DWorkspaceFrame(
+        Reference3DWorkspaceFrameCacheKey key,
+        long targetGeneration,
+        RenderStats stats,
+        ID2D1Bitmap bitmap) : IDisposable
+    {
+        public Reference3DWorkspaceFrameCacheKey Key { get; } = key;
+        public long TargetGeneration { get; } = targetGeneration;
+        public RenderStats Stats { get; } = stats;
+        public ID2D1Bitmap Bitmap { get; } = bitmap;
+
+        public long ByteSize => (long)Key.ViewportWidth * Key.ViewportHeight * sizeof(int);
+
+        public void Dispose() => Bitmap.Dispose();
+    }
+
     private sealed record CachedMixingBrushBitmap(
         MixingBrushRegionRaster Raster,
         ID2D1Bitmap Bitmap) : IDisposable
@@ -367,6 +502,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     public double LastCacheMaintenanceMilliseconds { get; private set; }
     public double LastCommandMilliseconds { get; private set; }
     public double LastPresentMilliseconds { get; private set; }
+    public double LastReference3DGridMilliseconds { get; private set; }
+    public double LastReference3DSceneMilliseconds { get; private set; }
+    public double LastReference3DPlanLookupMilliseconds { get; private set; }
+    public double LastReference3DOverlayMilliseconds { get; private set; }
+    public double LastReference3DBaseStoreMilliseconds { get; private set; }
+    public double LastReference3DWorkspaceStoreMilliseconds { get; private set; }
     public int LastLodBitmapSubmissions { get; private set; }
     public int LastLodBitmapBuilds { get; private set; }
     public int LastLodDetailObjectDraws { get; private set; }
@@ -378,6 +519,20 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     public int LastShapeGradientMaskGeometryCacheReuses { get; private set; }
     public int LastPathGradientBrushCacheBuilds { get; private set; }
     public int LastPathGradientBrushCacheReuses { get; private set; }
+    public int LastReference3DProjectiveGradientDomainFills { get; private set; }
+    public int LastReference3DProjectiveAffineApproximationUses { get; private set; }
+    public int LastReference3DProjectiveScreenMaskBuilds { get; private set; }
+    public int LastReference3DMaterialBitmapCacheBuilds { get; private set; }
+    public int LastReference3DMaterialBitmapCacheReuses { get; private set; }
+    public int LastReference3DMaterialBitmapSubmissions { get; private set; }
+    public int LastReference3DStrokeBatchSubmissions { get; private set; }
+    public int LastReference3DStrokeBatchObjects { get; private set; }
+    public int LastReference3DBakedStrokeChecks { get; private set; }
+    public int LastReference3DBakedStrokeSkips { get; private set; }
+    public int LastReference3DLocalPathGeometryCacheBuilds { get; private set; }
+    public int LastReference3DLocalPathGeometryCacheReuses { get; private set; }
+    internal int Reference3DMaterialBitmapCacheEntryCount => _reference3DMaterialBitmapCacheEntryCount;
+    internal long Reference3DMaterialBitmapCacheBytes => _reference3DMaterialBitmapCacheBytes;
     public int LastLineGeometryCacheBuilds { get; private set; }
     public int LastLineGeometryCacheReuses { get; private set; }
     public int LastObjectPathGeometryCacheBuilds { get; private set; }
@@ -386,6 +541,11 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     public int LastBaseFrameCacheBuilds { get; private set; }
     public int LastBaseFrameCacheReuses { get; private set; }
     public double LastBaseFrameCopyMilliseconds { get; private set; }
+    public int LastReference3DWorkspaceFrameCacheBuilds { get; private set; }
+    public int LastReference3DWorkspaceFrameCacheHits { get; private set; }
+    public int LastReference3DWorkspaceFrameCacheEvictions { get; private set; }
+    internal int Reference3DWorkspaceFrameCacheEntryCount => _reference3DWorkspaceFrameCache.Count;
+    internal long Reference3DWorkspaceFrameCacheBytes => _reference3DWorkspaceFrameCacheBytes;
 
     internal bool HasCachedFreehandGeometry(VectorScene scene)
     {
@@ -407,6 +567,18 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         LastShapeGradientMaskGeometryCacheReuses = 0;
         LastPathGradientBrushCacheBuilds = 0;
         LastPathGradientBrushCacheReuses = 0;
+        LastReference3DProjectiveGradientDomainFills = 0;
+        LastReference3DProjectiveAffineApproximationUses = 0;
+        LastReference3DProjectiveScreenMaskBuilds = 0;
+        LastReference3DMaterialBitmapCacheBuilds = 0;
+        LastReference3DMaterialBitmapCacheReuses = 0;
+        LastReference3DMaterialBitmapSubmissions = 0;
+        LastReference3DStrokeBatchSubmissions = 0;
+        LastReference3DStrokeBatchObjects = 0;
+        LastReference3DBakedStrokeChecks = 0;
+        LastReference3DBakedStrokeSkips = 0;
+        LastReference3DLocalPathGeometryCacheBuilds = 0;
+        LastReference3DLocalPathGeometryCacheReuses = 0;
         LastLineGeometryCacheBuilds = 0;
         LastLineGeometryCacheReuses = 0;
         LastObjectPathGeometryCacheBuilds = 0;
@@ -415,22 +587,34 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         LastBaseFrameCacheBuilds = 0;
         LastBaseFrameCacheReuses = 0;
         LastBaseFrameCopyMilliseconds = 0;
+        LastReference3DWorkspaceFrameCacheBuilds = 0;
+        LastReference3DWorkspaceFrameCacheHits = 0;
+        LastReference3DWorkspaceFrameCacheEvictions = 0;
+        LastReference3DGridMilliseconds = 0;
+        LastReference3DSceneMilliseconds = 0;
+        LastReference3DPlanLookupMilliseconds = 0;
+        LastReference3DOverlayMilliseconds = 0;
+        LastReference3DBaseStoreMilliseconds = 0;
+        LastReference3DWorkspaceStoreMilliseconds = 0;
+        ResetReference3DCpuRasterMetrics();
+        ApplyReference3DOpticalSurfaceBitmapCacheInvalidation();
         if (RequiresSoftwareLayerCompositing(stage) || RequiresSoftwareDistortion(stage))
         {
             ClearBaseFrameCache();
             return false;
         }
         ClearTransientGradientBrushes();
+        ClearTransientReference3DMaterialBitmaps();
         ClearTransientShapeGradientBitmaps();
         ClearTransientPathGradientBrushes();
         if (_disabled || stage.Width <= 0 || stage.Height <= 0) return false;
         var drawingStarted = false;
         var editableScene = stage.Scene;
-
         try
         {
             EnsureTarget(stage);
             if (_target is null) return false;
+            PrepareReference3DWorkspaceFrameCache(stage);
             var cacheMaintenanceStarted = Stopwatch.GetTimestamp();
             PrepareFreehandGeometryCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
             if (CacheMembershipChanged(
@@ -443,6 +627,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 PruneObjectPathGeometryCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
                 PruneLodBitmapCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
                 PruneGradientBrushCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
+                PruneReference3DMaterialBitmapCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
                 PruneShapeGradientBitmapCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
                 PruneShapeGradientMaskGeometryCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
                 PrunePathGradientBrushCache(editableScene, stage.UnderlayScene, stage.OnionSkinScene, stage.DragPreviewScene);
@@ -450,7 +635,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             }
             LastCacheMaintenanceMilliseconds = Stopwatch.GetElapsedTime(cacheMaintenanceStarted).TotalMilliseconds;
 
-            if (stage.RendersReferenceProjection) ClearBaseFrameCache();
+            // A workspace pre-render is produced on this renderer's thread and
+            // is therefore safe to reuse here. It must be restored before
+            // BeginDraw so the normal base-frame path can draw one bitmap and
+            // still replay the scene-pass bookkeeping.
+            if (stage.RendersReferenceProjection && !CanReuseBaseFrame(stage))
+            {
+                TryRestoreReference3DWorkspaceFrame(stage, out _);
+            }
 
             _target.BeginDraw();
             drawingStarted = true;
@@ -460,28 +652,77 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             stage.BeginScenePassOrder();
             if (stage.RendersReferenceProjection)
             {
-                var background = ToD2D(stage.BackColor);
-                _target.Clear(in background);
-                DrawGrid(stage);
-                Draw3DReferenceGrid(stage);
-                stats = DrawReference3DScene(stage);
-                if (stage.DragPreviewScene is { } projectedDragPreview)
+                if (CanReuseBaseFrame(stage))
                 {
-                    stage.Scene = projectedDragPreview;
-                    try
+                    DrawBaseFrame();
+                    ReplayBaseScenePassOrder(stage);
+                    stats = _baseFrameStats;
+                    LastBaseFrameCacheReuses = 1;
+                }
+                else
+                {
+                    var background = ToD2D(stage.BackColor);
+                    _target.Clear(in background);
+                    DrawGrid(stage);
+                    var referenceGridStarted = Stopwatch.GetTimestamp();
+                    Draw3DReferenceGrid(stage);
+                    LastReference3DGridMilliseconds +=
+                        Stopwatch.GetElapsedTime(referenceGridStarted).TotalMilliseconds;
+                    var referenceSceneStarted = Stopwatch.GetTimestamp();
+                    stats = DrawReference3DScene(stage);
+                    LastReference3DSceneMilliseconds +=
+                        Stopwatch.GetElapsedTime(referenceSceneStarted).TotalMilliseconds;
+                    if (_reference3DCpuRasterUsedThisFrame
+                        || stage.Reference3DPlaybackActive)
                     {
-                        DrawReference3DCurrentScene(stage);
+                        // A continuously changing playback frame is not reused
+                        // by the next frame. Avoid CopyFromRenderTarget here;
+                        // it forces a GPU synchronization after every draw.
+                        // Stopped playback still uses the workspace pre-render
+                        // cache, and an already cached frame takes the fast path
+                        // above without reaching this branch.
+                        ClearBaseFrameCache();
                     }
-                    finally
+                    else
                     {
-                        stage.Scene = editableScene;
+                        var baseStoreStarted = Stopwatch.GetTimestamp();
+                        StoreBaseFrame(stage, stats, stats);
+                        LastReference3DBaseStoreMilliseconds +=
+                            Stopwatch.GetElapsedTime(baseStoreStarted).TotalMilliseconds;
+                        var workspaceStoreStarted = Stopwatch.GetTimestamp();
+                        StoreReference3DWorkspaceFrame(stage, stats);
+                        LastReference3DWorkspaceStoreMilliseconds +=
+                            Stopwatch.GetElapsedTime(workspaceStoreStarted).TotalMilliseconds;
                     }
                 }
-                DrawReference3DSelection(stage);
-                DrawTransformOverlay(stage);
-                DrawDistortOverlay(stage);
-                DrawMarquee(stage);
-                if (stage.ReferenceDimension == SceneDimension.ThreeD) DrawSpatialTransformGizmo(stage);
+                var referenceOverlayStarted = Stopwatch.GetTimestamp();
+                if (!stage.PlaybackActive)
+                {
+                    if (stage.DragPreviewScene is { } projectedDragPreview)
+                    {
+                        stage.Scene = projectedDragPreview;
+                        try
+                        {
+                            DrawReference3DCurrentScene(stage);
+                        }
+                        finally
+                        {
+                            stage.Scene = editableScene;
+                        }
+                    }
+                    DrawReference3DSelection(stage);
+                    DrawTransformOverlay(stage);
+                    DrawDistortOverlay(stage);
+                    DrawSnapPointOverlay(stage);
+                    DrawMarquee(stage);
+                    if (stage.ReferenceDimension == SceneDimension.ThreeD)
+                    {
+                        DrawSpatialTransformGizmo(stage);
+                        DrawSceneLightGizmo(stage);
+                    }
+                }
+                LastReference3DOverlayMilliseconds +=
+                    Stopwatch.GetElapsedTime(referenceOverlayStarted).TotalMilliseconds;
                 LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
                 var presentStarted = Stopwatch.GetTimestamp();
                 var gridResult = _target.EndDraw();
@@ -520,7 +761,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 var underlayLimit = objectDrawLimit;
                 var forceEditableObjectRenderer = stage.SelectionFillDragFrontActive
                     || stage.FillEdgeBezierPointerEditing
-                        && UsesObjectRenderer(stage, editableScene, stage.Zoom);
+                        && UsesObjectRenderer(stage, editableScene, stage.Zoom)
+                    || stage.RequiresObjectRendererForDragPreview(editableScene);
                 if (underlay is not null
                     && UsesObjectRenderer(stage, underlay, stage.Zoom)
                     && (forceEditableObjectRenderer || UsesObjectRenderer(stage, editableScene, stage.Zoom)))
@@ -558,7 +800,17 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     editableLimit,
                     forceObjectRenderer: forceEditableObjectRenderer);
                 stats = RenderStats.Combine(RenderStats.Combine(onionSkinStats, underlayStats), editableStats);
-                StoreBaseFrame(stage, stats, editableStats);
+                if (stage.PlaybackActive)
+                {
+                    // Playback never reuses this mutable frame. Copying the
+                    // render target would force a GPU/CPU synchronization on
+                    // every animation frame.
+                    ClearBaseFrameCache();
+                }
+                else
+                {
+                    StoreBaseFrame(stage, stats, editableStats);
+                }
             }
 
             if (stage.DragPreviewScene is { } dragPreview)
@@ -572,23 +824,38 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 {
                     stage.Scene = editableScene;
                 }
+                // The terrain belongs to the editable scene and is an editor-only
+                // overlay. The transient preview scene intentionally contains no
+                // terrain object, so complex terrain is not copied or rendered twice.
+                if (!stage.PlaybackActive) DrawCollisionTerrainOverlay(stage, editableScene);
+            }
+            else if (!stage.PlaybackActive)
+            {
+                // Collision terrain is editor-only data. Keep it out of the
+                // scene pass, but show the authored surface in the same
+                // transient overlay used by the fracture preview.
+                DrawCollisionTerrainOverlay(stage, editableScene);
             }
 
             if (editableStats.TileLod) LastLodDetailObjectDraws = DrawLodDetailObjects(stage);
-            if (!stage.MarqueeLodPreviewActive) DrawActiveMaskOutline(stage);
-            DrawSelection(stage);
-            DrawFillEdgeBezierOverlay(stage);
-            DrawPenAnchorGuides(stage);
-            DrawDrawingPreview(stage);
-            DrawPenDirectionHandles(stage);
-            DrawFreehandPreview(stage);
-            DrawFillPreview(stage);
-            DrawFillAnimation(stage);
-            DrawGradientOverlay(stage);
-            DrawMarquee(stage);
-            DrawBrushTipCursor(stage);
-            DrawBrushColorPalette(stage);
-            DrawFillToolCursor(stage);
+            if (!stage.PlaybackActive)
+            {
+                if (!stage.MarqueeLodPreviewActive) DrawActiveMaskOutline(stage);
+                DrawSelection(stage);
+                DrawFillEdgeBezierOverlay(stage);
+                DrawSnapPointOverlay(stage);
+                DrawPenAnchorGuides(stage);
+                DrawDrawingPreview(stage);
+                DrawPenDirectionHandles(stage);
+                DrawFreehandPreview(stage);
+                DrawFillPreview(stage);
+                DrawFillAnimation(stage);
+                DrawGradientOverlay(stage);
+                DrawMarquee(stage);
+                DrawBrushTipCursor(stage);
+                DrawBrushColorPalette(stage);
+                DrawFillToolCursor(stage);
+            }
 
             LastCommandMilliseconds = Stopwatch.GetElapsedTime(commandStarted).TotalMilliseconds;
             var framePresentStarted = Stopwatch.GetTimestamp();
@@ -651,40 +918,21 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private bool CanReuseBaseFrame(StageControl stage)
     {
-        return _baseFrameBitmap is not null
+        return (_baseFrameBitmap is not null || _currentWorkspaceFrame is not null)
             && ReferenceEquals(_baseFrameStage, stage)
-            && _baseFramePresentationRevision == stage.BasePresentationRevision
-            && BaseFrameSceneMatches(
-                _baseFrameEditableScene,
-                _baseFrameEditableGeometryRevision,
-                stage.Scene)
-            && BaseFrameSceneMatches(
-                _baseFrameUnderlayScene,
-                _baseFrameUnderlayGeometryRevision,
-                stage.UnderlayScene)
-            && BaseFrameSceneMatches(
-                _baseFrameOnionSkinScene,
-                _baseFrameOnionSkinGeometryRevision,
-                stage.OnionSkinScene)
+            && _baseFrameRenderState == stage.CreateReference3DBaseFrameRenderState()
             && _baseFrameTargetGeneration == _targetGeneration
             && _baseFrameSize.Width == _targetSize.Width
             && _baseFrameSize.Height == _targetSize.Height;
     }
 
-    private static bool BaseFrameSceneMatches(
-        VectorScene? cachedScene,
-        long cachedGeometryRevision,
-        VectorScene? scene)
-    {
-        return ReferenceEquals(cachedScene, scene)
-            && cachedGeometryRevision == (scene?.GeometryRevision ?? -1);
-    }
-
     private void DrawBaseFrame()
     {
+        var bitmap = _currentWorkspaceFrame?.Bitmap ?? _baseFrameBitmap;
+        if (bitmap is null) return;
         var bounds = Rect(0, 0, _targetSize.Width, _targetSize.Height);
         _target!.DrawBitmap(
-            _baseFrameBitmap!,
+            bitmap,
             bounds,
             1,
             BitmapInterpolationMode.NearestNeighbor,
@@ -701,6 +949,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private void StoreBaseFrame(StageControl stage, RenderStats stats, RenderStats editableStats)
     {
         if (_target is null) return;
+
+        _currentWorkspaceFrame = null;
 
         try
         {
@@ -737,13 +987,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             _baseFrameStage = stage;
             _baseFrameSize = _targetSize;
             _baseFrameTargetGeneration = _targetGeneration;
-            _baseFramePresentationRevision = stage.BasePresentationRevision;
-            _baseFrameEditableScene = stage.Scene;
-            _baseFrameEditableGeometryRevision = stage.Scene.GeometryRevision;
-            _baseFrameUnderlayScene = stage.UnderlayScene;
-            _baseFrameUnderlayGeometryRevision = stage.UnderlayScene?.GeometryRevision ?? -1;
-            _baseFrameOnionSkinScene = stage.OnionSkinScene;
-            _baseFrameOnionSkinGeometryRevision = stage.OnionSkinScene?.GeometryRevision ?? -1;
+            _baseFrameRenderState = stage.CreateReference3DBaseFrameRenderState();
             _baseFrameStats = stats;
             _baseFrameEditableStats = editableStats;
             LastBaseFrameCacheBuilds = 1;
@@ -758,18 +1002,152 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         _baseFrameBitmap?.Dispose();
         _baseFrameBitmap = null;
+        _currentWorkspaceFrame = null;
         _baseFrameStage = null;
         _baseFrameSize = default;
         _baseFrameTargetGeneration = -1;
-        _baseFramePresentationRevision = -1;
-        _baseFrameEditableScene = null;
-        _baseFrameEditableGeometryRevision = -1;
-        _baseFrameUnderlayScene = null;
-        _baseFrameUnderlayGeometryRevision = -1;
-        _baseFrameOnionSkinScene = null;
-        _baseFrameOnionSkinGeometryRevision = -1;
+        _baseFrameRenderState = default;
         _baseFrameStats = default;
         _baseFrameEditableStats = default;
+    }
+
+    private void PrepareReference3DWorkspaceFrameCache(StageControl stage)
+    {
+        if (!stage.RendersReferenceProjection)
+        {
+            if (_workspaceFrameCacheStage is not null) ClearReference3DWorkspaceFrameCache();
+            return;
+        }
+
+        var revision = stage.Reference3DWorkspaceFrameCacheRevision;
+        if (ReferenceEquals(_workspaceFrameCacheStage, stage)
+            && _workspaceFrameCacheRevision == revision)
+        {
+            return;
+        }
+
+        ClearReference3DWorkspaceFrameCache();
+        _workspaceFrameCacheStage = stage;
+        _workspaceFrameCacheRevision = revision;
+    }
+
+    private Reference3DWorkspaceFrameCacheKey CreateReference3DWorkspaceFrameCacheKey(
+        StageControl stage)
+    {
+        return new Reference3DWorkspaceFrameCacheKey(
+            stage,
+            stage.Reference3DWorkspaceFrameCacheRevision,
+            stage.Frame,
+            _targetSize.Width,
+            _targetSize.Height,
+            stage.Reference3DWorkspaceFrameLayerRenderState);
+    }
+
+    private bool TryRestoreReference3DWorkspaceFrame(
+        StageControl stage,
+        out RenderStats stats)
+    {
+        stats = default;
+        if (!stage.RendersReferenceProjection || _target is null) return false;
+
+        var key = CreateReference3DWorkspaceFrameCacheKey(stage);
+        for (var index = 0; index < _reference3DWorkspaceFrameCache.Count; index++)
+        {
+            var cached = _reference3DWorkspaceFrameCache[index];
+            if (cached.Key != key
+                || cached.TargetGeneration != _targetGeneration)
+            {
+                continue;
+            }
+
+            _reference3DWorkspaceFrameCache.RemoveAt(index);
+            _reference3DWorkspaceFrameCache.Add(cached);
+            _currentWorkspaceFrame = cached;
+            _baseFrameBitmap?.Dispose();
+            _baseFrameBitmap = null;
+            _baseFrameStage = stage;
+            _baseFrameSize = _targetSize;
+            _baseFrameTargetGeneration = _targetGeneration;
+            _baseFrameRenderState = stage.CreateReference3DBaseFrameRenderState();
+            _baseFrameStats = cached.Stats;
+            _baseFrameEditableStats = cached.Stats;
+            LastReference3DWorkspaceFrameCacheHits = 1;
+            stats = cached.Stats;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void StoreReference3DWorkspaceFrame(StageControl stage, RenderStats stats)
+    {
+        if (!stage.RendersReferenceProjection
+            || _target is null
+            || _baseFrameBitmap is null
+            || _baseFrameTargetGeneration != _targetGeneration
+            || _baseFrameSize.Width != _targetSize.Width
+            || _baseFrameSize.Height != _targetSize.Height)
+        {
+            return;
+        }
+
+        var key = CreateReference3DWorkspaceFrameCacheKey(stage);
+        for (var index = _reference3DWorkspaceFrameCache.Count - 1; index >= 0; index--)
+        {
+            var existing = _reference3DWorkspaceFrameCache[index];
+            if (existing.Key != key) continue;
+            _reference3DWorkspaceFrameCache.RemoveAt(index);
+            _reference3DWorkspaceFrameCacheBytes -= existing.ByteSize;
+            existing.Dispose();
+        }
+
+        var byteSize = (long)_targetSize.Width * _targetSize.Height * sizeof(int);
+        if (byteSize <= 0 || byteSize > MaxReference3DWorkspaceFrameCacheBytes) return;
+
+        // StoreBaseFrame has already captured this frame into a target-bound
+        // bitmap. Transfer that bitmap into the workspace cache instead of
+        // issuing a second full-surface GPU copy for the same pixels.
+        var bitmap = _baseFrameBitmap;
+        if (bitmap is null) return;
+        try
+        {
+            var cached = new CachedReference3DWorkspaceFrame(
+                key,
+                _targetGeneration,
+                stats,
+                bitmap);
+            while (_reference3DWorkspaceFrameCache.Count >= MaxReference3DWorkspaceFrameCacheEntries
+                || _reference3DWorkspaceFrameCache.Count > 0
+                    && _reference3DWorkspaceFrameCacheBytes + byteSize
+                        > MaxReference3DWorkspaceFrameCacheBytes)
+            {
+                var oldest = _reference3DWorkspaceFrameCache[0];
+                _reference3DWorkspaceFrameCache.RemoveAt(0);
+                _reference3DWorkspaceFrameCacheBytes -= oldest.ByteSize;
+                oldest.Dispose();
+                LastReference3DWorkspaceFrameCacheEvictions++;
+            }
+
+            _reference3DWorkspaceFrameCache.Add(cached);
+            _reference3DWorkspaceFrameCacheBytes += byteSize;
+            _baseFrameBitmap = null;
+            _currentWorkspaceFrame = cached;
+            LastReference3DWorkspaceFrameCacheBuilds = 1;
+        }
+        catch
+        {
+            // The base-frame cache still owns the bitmap when insertion fails.
+        }
+    }
+
+    private void ClearReference3DWorkspaceFrameCache()
+    {
+        foreach (var cached in _reference3DWorkspaceFrameCache) cached.Dispose();
+        _reference3DWorkspaceFrameCache.Clear();
+        _reference3DWorkspaceFrameCacheBytes = 0;
+        _currentWorkspaceFrame = null;
+        _workspaceFrameCacheStage = null;
+        _workspaceFrameCacheRevision = long.MinValue;
     }
 
     public void Resize(System.Drawing.Size clientSize)
@@ -780,9 +1158,17 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         try
         {
             ClearBaseFrameCache();
+            ClearReference3DWorkspaceFrameCache();
+            DisposeWorkspacePreRenderTarget();
             _shapeGradientMaskLayer?.Dispose();
             _shapeGradientMaskLayer = null;
-            _target.Resize(next);
+            if (_target is not ID2D1HwndRenderTarget hwndTarget)
+            {
+                ResetTarget();
+                return;
+            }
+
+            hwndTarget.Resize(next);
             _targetSize = next;
         }
         catch (Exception ex)
@@ -826,6 +1212,18 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         LastShapeGradientMaskGeometryCacheReuses = 0;
         LastPathGradientBrushCacheBuilds = 0;
         LastPathGradientBrushCacheReuses = 0;
+        LastReference3DProjectiveGradientDomainFills = 0;
+        LastReference3DProjectiveAffineApproximationUses = 0;
+        LastReference3DProjectiveScreenMaskBuilds = 0;
+        LastReference3DMaterialBitmapCacheBuilds = 0;
+        LastReference3DMaterialBitmapCacheReuses = 0;
+        LastReference3DMaterialBitmapSubmissions = 0;
+        LastReference3DStrokeBatchSubmissions = 0;
+        LastReference3DStrokeBatchObjects = 0;
+        LastReference3DBakedStrokeChecks = 0;
+        LastReference3DBakedStrokeSkips = 0;
+        LastReference3DLocalPathGeometryCacheBuilds = 0;
+        LastReference3DLocalPathGeometryCacheReuses = 0;
         LastLineGeometryCacheBuilds = 0;
         LastLineGeometryCacheReuses = 0;
         LastObjectPathGeometryCacheBuilds = 0;
@@ -834,6 +1232,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         LastBaseFrameCacheBuilds = 0;
         LastBaseFrameCacheReuses = 0;
         LastBaseFrameCopyMilliseconds = 0;
+        LastReference3DWorkspaceFrameCacheBuilds = 0;
+        LastReference3DWorkspaceFrameCacheHits = 0;
+        LastReference3DWorkspaceFrameCacheEvictions = 0;
+        ResetReference3DCpuRasterMetrics();
     }
 
     public void Dispose()
@@ -944,6 +1346,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         return scene.ObjectCount > 0
             && (stage.HasSceneCompositionMaskClips(scene)
                 || SceneRenderOrder.RequiresObjectRenderer(scene)
+                || stage.RequiresObjectRendererForDragPreview(scene)
                 || scene.ObjectCount < 5000
                 || scene.HasDisplayLayerEffects
                 || EffectivePixelZoom(zoom) >= 0.18f);
@@ -1154,6 +1557,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         if (!stage.TryGetActiveMaskLayer(out var maskLayer)) return;
         var scene = stage.Scene;
+        if (scene.IsCollisionTerrainLayer(maskLayer)) return;
         var maskObjects = Enumerable.Range(0, scene.ObjectCount)
             .Where(index => scene.ObjectLayer[index] == maskLayer
                 && scene.IsObjectActive(index, stage.Frame)
@@ -1166,6 +1570,82 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         _target!.FillGeometry(geometry, BrushFor(GdiColor.FromArgb(48, 112, 205, 209).ToArgb()));
         _target.DrawGeometry(geometry, BrushFor(GdiColor.FromArgb(110, 104, 231, 232).ToArgb()), 4f);
         _target.DrawGeometry(geometry, BrushFor(GdiColor.FromArgb(244, 159, 242, 242).ToArgb()), 1.4f);
+    }
+
+    private void DrawCollisionTerrainOverlay(StageControl stage, VectorScene scene)
+    {
+        var terrainFrame = stage.DragPreviewScene?.RandomFracturePreviewTerrainFrame ?? stage.Frame;
+        var terrainLayers = scene.GetCollisionTerrainLayers()
+            .Where(scene.IsLayerEffectivelyVisible)
+            .ToArray();
+        if (terrainLayers.Length == 0)
+        {
+            ClearCollisionTerrainOverlayGeometry();
+            return;
+        }
+
+        var terrainLayerSet = terrainLayers.ToHashSet();
+        var terrainObjects = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index => terrainLayerSet.Contains(scene.ObjectLayer[index])
+                && scene.IsObjectActive(index, terrainFrame)
+                && SceneRenderOrder.HasFill(scene.ShapeKind[index]))
+            .ToArray();
+        if (terrainObjects.Length == 0)
+        {
+            ClearCollisionTerrainOverlayGeometry();
+            return;
+        }
+
+        var geometry = GetCollisionTerrainOverlayGeometry(
+            stage,
+            scene,
+            terrainLayers[0],
+            terrainFrame,
+            terrainObjects);
+        if (geometry is null) return;
+        _target!.FillGeometry(geometry, BrushFor(GdiColor.FromArgb(62, 236, 181, 72).ToArgb()));
+        _target.DrawGeometry(geometry, BrushFor(GdiColor.FromArgb(190, 255, 205, 92).ToArgb()), 3f);
+        _target.DrawGeometry(geometry, BrushFor(GdiColor.FromArgb(244, 255, 239, 185).ToArgb()), 1.2f);
+    }
+
+    private ID2D1PathGeometry? GetCollisionTerrainOverlayGeometry(
+        StageControl stage,
+        VectorScene scene,
+        int terrainLayer,
+        int terrainFrame,
+        int[] terrainObjects)
+    {
+        if (_collisionTerrainOverlayGeometry is not null
+            && ReferenceEquals(_collisionTerrainOverlayScene, scene)
+            && _collisionTerrainOverlayRevision == scene.GeometryRevision
+            && _collisionTerrainOverlayLayer == terrainLayer
+            && _collisionTerrainOverlayFrame == terrainFrame
+            && _collisionTerrainOverlayCameraX == stage.CameraX
+            && _collisionTerrainOverlayCameraY == stage.CameraY
+            && _collisionTerrainOverlayZoom == stage.Zoom
+            && _collisionTerrainOverlayWidth == stage.Width
+            && _collisionTerrainOverlayHeight == stage.Height
+            && _collisionTerrainOverlayObjects.SequenceEqual(terrainObjects))
+        {
+            return _collisionTerrainOverlayGeometry;
+        }
+
+        ClearCollisionTerrainOverlayGeometry();
+        var geometry = CreateMaskGeometry(stage, scene, terrainObjects);
+        if (geometry is null) return null;
+
+        _collisionTerrainOverlayGeometry = geometry;
+        _collisionTerrainOverlayScene = scene;
+        _collisionTerrainOverlayRevision = scene.GeometryRevision;
+        _collisionTerrainOverlayLayer = terrainLayer;
+        _collisionTerrainOverlayFrame = terrainFrame;
+        _collisionTerrainOverlayCameraX = stage.CameraX;
+        _collisionTerrainOverlayCameraY = stage.CameraY;
+        _collisionTerrainOverlayZoom = stage.Zoom;
+        _collisionTerrainOverlayWidth = stage.Width;
+        _collisionTerrainOverlayHeight = stage.Height;
+        _collisionTerrainOverlayObjects = terrainObjects.ToArray();
+        return geometry;
     }
 
     private void DrawLayerObjects(StageControl stage, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)
@@ -2468,35 +2948,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private void Draw3DReferenceGrid(StageControl stage)
     {
-        if (stage.ReferenceWorldGridOpacity <= 0.001f) return;
-        var horizon = stage.Height * 0.42f;
-        _target!.DrawLine(new Vector2(0, horizon), new Vector2(stage.Width, horizon), BrushFor(GdiColor.FromArgb(GridAlpha(stage.ReferenceWorldGridOpacity, 40), 112, 204, 255).ToArgb()), 1);
-
-        var step = InfiniteGridStep(stage);
-        var lineRadius = InfiniteGridLineRadius(stage);
-        var centerX = SnapToGrid(stage.ReferenceTargetX, step);
-        var centerY = SnapToGrid(stage.ReferenceTargetY, step);
-        var minX = centerX - lineRadius * step;
-        var maxX = centerX + lineRadius * step;
-        var minY = centerY - lineRadius * step;
-        var maxY = centerY + lineRadius * step;
-        var grid = BrushFor(GdiColor.FromArgb(GridAlpha(stage.ReferenceWorldGridOpacity, 76), 72, 84, 92).ToArgb());
-        var center = BrushFor(GdiColor.FromArgb(GridAlpha(stage.ReferenceWorldGridOpacity, 130), 150, 164, 174).ToArgb());
-        var xAxis = BrushFor(GdiColor.FromArgb(GridAlpha(stage.ReferenceWorldGridOpacity, 220), 255, 92, 92).ToArgb());
-        var yAxis = BrushFor(GdiColor.FromArgb(GridAlpha(stage.ReferenceWorldGridOpacity, 220), 122, 224, 92).ToArgb());
-        var zAxis = BrushFor(GdiColor.FromArgb(GridAlpha(stage.ReferenceWorldGridOpacity, 220), 92, 172, 255).ToArgb());
-
-        for (var offset = -lineRadius; offset <= lineRadius; offset++)
-        {
-            var y = centerY + offset * step;
-            var x = centerX + offset * step;
-            DrawProjectedLine(stage, new Vector3(minX, y, 0), new Vector3(maxX, y, 0), Math.Abs(y) < 0.001f ? center : grid, Math.Abs(y) < 0.001f ? 1.4f : 1f);
-            DrawProjectedLine(stage, new Vector3(x, minY, 0), new Vector3(x, maxY, 0), Math.Abs(x) < 0.001f ? center : grid, Math.Abs(x) < 0.001f ? 1.4f : 1f);
-        }
-
-        DrawProjectedLine(stage, new Vector3(minX, 0, 0), new Vector3(maxX, 0, 0), xAxis, 2);
-        DrawProjectedLine(stage, new Vector3(0, minY, 0), new Vector3(0, maxY, 0), yAxis, 2);
-        DrawProjectedLine(stage, new Vector3(0, 0, -5000), new Vector3(0, 0, 5000), zAxis, 2);
+        DrawBatched3DReferenceGrid(stage);
     }
 
     private static int InfiniteGridLineRadius(StageControl stage)
@@ -3196,6 +3648,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private void DrawMarquee(StageControl stage)
     {
+        DrawLassoPreview(stage);
         if (!stage.MarqueeVisible || stage.MarqueeOverlayActive) return;
         var left = Math.Min(stage.MarqueeStart.X, stage.MarqueeEnd.X);
         var top = Math.Min(stage.MarqueeStart.Y, stage.MarqueeEnd.Y);
@@ -3421,11 +3874,25 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             }
 
             _objectPathGeometryCache.Remove(key);
-            cached.Dispose();
+            ReleaseObjectPathGeometry(cached);
         }
 
         if (pathIdentity is null && pathBezierIdentity is null) return null;
-        if (_objectPathGeometryCache.Count >= MaxObjectPathGeometryCacheEntries)
+        var contentKey = CreatePathGeometryContentKey(scene, pathIdentity, pathBezierIdentity);
+        if (_objectPathGeometryContentCache.TryGetValue(contentKey, out var sharedEntries))
+        {
+            foreach (var shared in sharedEntries)
+            {
+                if (!shared.MatchesContent(contentKey, pathIdentity, pathBezierIdentity)) continue;
+                shared.AddReference();
+                _objectPathGeometryCache[key] = shared;
+                LastObjectPathGeometryCacheReuses++;
+                return shared.Geometry;
+            }
+        }
+
+        if (_objectPathGeometryCache.Count >= MaxObjectPathGeometryCacheEntries
+            || _objectPathGeometryContentCache.Count >= MaxObjectPathGeometryCacheEntries)
         {
             ClearObjectPathGeometryCache();
         }
@@ -3447,12 +3914,80 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             return null;
         }
 
-        _objectPathGeometryCache[key] = new CachedObjectPathGeometry(
+        var created = new CachedObjectPathGeometry(
+            contentKey,
             pathIdentity,
             pathBezierIdentity,
             geometry);
+        _objectPathGeometryCache[key] = created;
+        if (!_objectPathGeometryContentCache.TryGetValue(contentKey, out sharedEntries))
+        {
+            sharedEntries = [];
+            _objectPathGeometryContentCache.Add(contentKey, sharedEntries);
+        }
+        sharedEntries.Add(created);
         LastObjectPathGeometryCacheBuilds++;
         return geometry;
+    }
+
+    private static PathGeometryContentKey CreatePathGeometryContentKey(
+        VectorScene scene,
+        GdiPointF[][]? pathContours,
+        PathBezierNode[][]? pathBezierContours)
+    {
+        const ulong offset = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+        var hash = offset;
+        var contourCount = 0;
+        var pointCount = 0;
+        var usesBezier = pathBezierContours is { Length: > 0 };
+        if (usesBezier)
+        {
+            contourCount = pathBezierContours!.Length;
+            foreach (var contour in pathBezierContours)
+            {
+                AddInt(contour.Length);
+                pointCount += contour.Length;
+                foreach (var node in contour)
+                {
+                    AddPoint(node.Anchor);
+                    AddPoint(node.IncomingControl);
+                    AddPoint(node.OutgoingControl);
+                }
+            }
+        }
+        else if (pathContours is { Length: > 0 })
+        {
+            contourCount = pathContours.Length;
+            foreach (var contour in pathContours)
+            {
+                AddInt(contour.Length);
+                pointCount += contour.Length;
+                foreach (var point in contour) AddPoint(point);
+            }
+        }
+
+        AddInt(contourCount);
+        AddInt(pointCount);
+        AddInt(usesBezier ? 1 : 0);
+        return new PathGeometryContentKey(scene, hash, contourCount, pointCount, usesBezier);
+
+        void AddPoint(GdiPointF point)
+        {
+            AddInt(BitConverter.SingleToInt32Bits(point.X));
+            AddInt(BitConverter.SingleToInt32Bits(point.Y));
+        }
+
+        void AddInt(int value)
+        {
+            unchecked
+            {
+                hash ^= (uint)value;
+                hash *= prime;
+                hash ^= (uint)(value >> 16);
+                hash *= prime;
+            }
+        }
     }
 
     private static Matrix3x2 ObjectLocalToScreenTransform(

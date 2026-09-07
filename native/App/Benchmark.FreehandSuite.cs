@@ -6,12 +6,15 @@ internal static partial class Benchmark
 {
     public static void RunFreehandStress()
     {
+        RunMarqueeUndoTopologyRegression();
         RunLinkedFillBoundaryRegression();
         RunShapeToolRegression();
         RunPencilSmoothingRegression();
         RunPencilBezierRegression();
         RunRenderOrderRegression();
         RunDrawingTopologyRegression();
+        RunRandomFractureGeometryRegression();
+        RunSnapPointToolRegression();
         RunBezierOperationPerformanceRegression();
         RunTraditionalBrushContourRegression();
         RunBrushGradientRegression();
@@ -285,6 +288,7 @@ internal static partial class Benchmark
         RunDrawingObjectStackShortcutRegression();
         RunSceneInstanceStackShortcutRegression();
         RunConvertSelectionToSymbolShortcutRegression();
+        RunSpatialComponentShortcutRegression();
         RunMixedClipboardAndSceneDeleteShortcutRegression();
 
         var edgeScene = new VectorScene();
@@ -382,26 +386,13 @@ internal static partial class Benchmark
                 "Drawing-object stack shortcut focus routing did not preserve canvas/timeline access while protecting editors, interactive controls, material edits, and pointer interactions.");
         }
 
-        const System.Reflection.BindingFlags instanceFlags =
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var sceneField = typeof(MainForm).GetField("_scene", instanceFlags)
-            ?? throw new InvalidOperationException("Object-stack shortcut regression could not find the drawing scene.");
-        var hierarchyField = typeof(MainForm).GetField("_hierarchyPanel", instanceFlags)
-            ?? throw new InvalidOperationException("Object-stack shortcut regression could not find the Hierarchy panel.");
-        var processCmdKey = typeof(MainForm).GetMethod(
-                "ProcessCmdKey",
-                instanceFlags,
-                binder: null,
-                types: [typeof(Message).MakeByRefType(), typeof(Keys)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Object-stack shortcut regression could not find ProcessCmdKey.");
-        var undoLastEdit = typeof(MainForm).GetMethod(
-                "UndoLastEdit",
-                instanceFlags,
-                binder: null,
-                types: Type.EmptyTypes,
-                modifiers: null)
-            ?? throw new InvalidOperationException("Object-stack shortcut regression could not find UndoLastEdit.");
+        var sceneField = RequireField(typeof(MainForm), "_scene");
+        var hierarchyField = RequireField(typeof(MainForm), "_hierarchyPanel");
+        var processCmdKey = RequireMethod(
+            typeof(MainForm),
+            "ProcessCmdKey",
+            [typeof(Message).MakeByRefType(), typeof(Keys)]);
+        var undoLastEdit = RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes);
 
         using var form = new MainForm
         {
@@ -579,33 +570,17 @@ internal static partial class Benchmark
 
     private static void RunConvertSelectionToSymbolShortcutRegression()
     {
-        const System.Reflection.BindingFlags instanceFlags =
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var projectField = typeof(MainForm).GetField("_project", instanceFlags)
-            ?? throw new InvalidOperationException("Convert-to-symbol shortcut regression could not find the project.");
-        var sceneField = typeof(MainForm).GetField("_scene", instanceFlags)
-            ?? throw new InvalidOperationException("Convert-to-symbol shortcut regression could not find the drawing scene.");
-        var setSelection = typeof(MainForm).GetMethod(
-                "SetSelection",
-                instanceFlags,
-                binder: null,
-                types: [typeof(IEnumerable<int>), typeof(bool)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Convert-to-symbol shortcut regression could not select drawing objects.");
-        var processCmdKey = typeof(MainForm).GetMethod(
-                "ProcessCmdKey",
-                instanceFlags,
-                binder: null,
-                types: [typeof(Message).MakeByRefType(), typeof(Keys)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Convert-to-symbol shortcut regression could not find ProcessCmdKey.");
-        var undoLastEdit = typeof(MainForm).GetMethod(
-                "UndoLastEdit",
-                instanceFlags,
-                binder: null,
-                types: Type.EmptyTypes,
-                modifiers: null)
-            ?? throw new InvalidOperationException("Convert-to-symbol shortcut regression could not find UndoLastEdit.");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var sceneField = RequireField(typeof(MainForm), "_scene");
+        var setSelection = RequireMethod(
+            typeof(MainForm),
+            "SetSelection",
+            [typeof(IEnumerable<int>), typeof(bool), typeof(bool), typeof(bool)]);
+        var processCmdKey = RequireMethod(
+            typeof(MainForm),
+            "ProcessCmdKey",
+            [typeof(Message).MakeByRefType(), typeof(Keys)]);
+        var undoLastEdit = RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes);
 
         using var form = new MainForm
         {
@@ -638,7 +613,7 @@ internal static partial class Benchmark
             Color.Transparent,
             8,
             ShapeKind.Ellipse);
-        setSelection.Invoke(form, [new[] { first, second }, false]);
+        setSelection.Invoke(form, [new[] { first, second }, false, false, true]);
         form.Show();
         form.Activate();
         Application.DoEvents();
@@ -671,48 +646,22 @@ internal static partial class Benchmark
 
     private static void RunMixedClipboardAndSceneDeleteShortcutRegression()
     {
-        const System.Reflection.BindingFlags instanceFlags =
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var projectField = typeof(MainForm).GetField("_project", instanceFlags)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not find the project.");
-        var workspaceTabsField = typeof(MainForm).GetField("_workspaceTabs", instanceFlags)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not find the workspace tabs.");
-        var stageField = typeof(MainForm).GetField("_stage", instanceFlags)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not find the Stage.");
-        var selectedObjectsField = typeof(MainForm).GetField("_selectedObjects", instanceFlags)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not inspect drawing selection.");
-        var selectedInstanceIdsField = typeof(MainForm).GetField("_selectedSceneInstanceIds", instanceFlags)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not inspect instance selection.");
-        var projectDirtyField = typeof(MainForm).GetField("_projectDirty", instanceFlags)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not suppress save prompts.");
-        var setSelection = typeof(MainForm).GetMethod(
-                "SetSelection",
-                instanceFlags,
-                binder: null,
-                types: [typeof(int), typeof(bool)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not select a drawing object.");
-        var setInstanceSelection = typeof(MainForm).GetMethod(
-                "SetSceneInstanceSelection",
-                instanceFlags,
-                binder: null,
-                types: [typeof(DrawingObjectInstanceDefinition), typeof(bool)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not select an instance.");
-        var processCmdKey = typeof(MainForm).GetMethod(
-                "ProcessCmdKey",
-                instanceFlags,
-                binder: null,
-                types: [typeof(Message).MakeByRefType(), typeof(Keys)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not find ProcessCmdKey.");
-        var undoLastEdit = typeof(MainForm).GetMethod(
-                "UndoLastEdit",
-                instanceFlags,
-                binder: null,
-                types: Type.EmptyTypes,
-                modifiers: null)
-            ?? throw new InvalidOperationException("Mixed clipboard regression could not find UndoLastEdit.");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var workspaceTabsField = RequireField(typeof(MainForm), "_workspaceTabs");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var selectedObjectsField = RequireField(typeof(MainForm), "_selectedObjects");
+        var selectedInstanceIdsField = RequireField(typeof(MainForm), "_selectedSceneInstanceIds");
+        var projectDirtyField = RequireField(typeof(MainForm), "_projectDirty");
+        var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        var setInstanceSelection = RequireMethod(
+            typeof(MainForm),
+            "SetSceneInstanceSelection",
+            [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var processCmdKey = RequireMethod(
+            typeof(MainForm),
+            "ProcessCmdKey",
+            [typeof(Message).MakeByRefType(), typeof(Keys)]);
+        var undoLastEdit = RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes);
 
         using var form = new MainForm
         {
@@ -911,58 +860,28 @@ internal static partial class Benchmark
     {
         var moveForward = Keys.Control | Keys.Up;
         var moveBackward = Keys.Control | Keys.Down;
-        const System.Reflection.BindingFlags instanceFlags =
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var projectField = typeof(MainForm).GetField("_project", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find the project.");
-        var workspaceTabsField = typeof(MainForm).GetField("_workspaceTabs", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find the workspace tabs.");
-        var stageField = typeof(MainForm).GetField("_stage", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find the Stage.");
-        var sceneField = typeof(MainForm).GetField("_scene", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find the composed scene.");
-        var compositionResultField = typeof(MainForm).GetField("_sceneCompositionResult", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find the composition result.");
-        var timelineField = typeof(MainForm).GetField("_timeline", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find the timeline.");
-        var selectedIdsField = typeof(MainForm).GetField("_selectedSceneInstanceIds", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not inspect selected instance IDs.");
-        var primaryIdField = typeof(MainForm).GetField("_selectedSceneInstanceId", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not inspect the primary instance ID.");
-        var projectDirtyField = typeof(MainForm).GetField("_projectDirty", instanceFlags)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not suppress save prompts.");
-        var setSceneInstanceSelection = typeof(MainForm).GetMethod(
-                "SetSceneInstanceSelection",
-                instanceFlags,
-                binder: null,
-                types:
-                [
-                    typeof(IEnumerable<DrawingObjectInstanceDefinition>),
-                    typeof(DrawingObjectInstanceDefinition)
-                ],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find multi-instance selection.");
-        var bindSceneEditStage = typeof(MainForm).GetMethod(
-                "BindSceneEditStage",
-                instanceFlags,
-                binder: null,
-                types: [typeof(bool)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not bind Scene Building.");
-        var processCmdKey = typeof(MainForm).GetMethod(
-                "ProcessCmdKey",
-                instanceFlags,
-                binder: null,
-                types: [typeof(Message).MakeByRefType(), typeof(Keys)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find ProcessCmdKey.");
-        var undoLastEdit = typeof(MainForm).GetMethod(
-                "UndoLastEdit",
-                instanceFlags,
-                binder: null,
-                types: Type.EmptyTypes,
-                modifiers: null)
-            ?? throw new InvalidOperationException("Scene-instance stack shortcut regression could not find UndoLastEdit.");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var workspaceTabsField = RequireField(typeof(MainForm), "_workspaceTabs");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var sceneField = RequireField(typeof(MainForm), "_scene");
+        var compositionResultField = RequireField(typeof(MainForm), "_sceneCompositionResult");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var selectedIdsField = RequireField(typeof(MainForm), "_selectedSceneInstanceIds");
+        var primaryIdField = RequireField(typeof(MainForm), "_selectedSceneInstanceId");
+        var projectDirtyField = RequireField(typeof(MainForm), "_projectDirty");
+        var setSceneInstanceSelection = RequireMethod(
+            typeof(MainForm),
+            "SetSceneInstanceSelection",
+            [
+                typeof(IEnumerable<DrawingObjectInstanceDefinition>),
+                typeof(DrawingObjectInstanceDefinition)
+            ]);
+        var bindSceneEditStage = RequireMethod(typeof(MainForm), "BindSceneEditStage", [typeof(bool)]);
+        var processCmdKey = RequireMethod(
+            typeof(MainForm),
+            "ProcessCmdKey",
+            [typeof(Message).MakeByRefType(), typeof(Keys)]);
+        var undoLastEdit = RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes);
 
         using var form = new MainForm
         {
@@ -1217,6 +1136,267 @@ internal static partial class Benchmark
         }
     }
 
+    private static void RunLassoPolygonQueryRegression()
+    {
+        var concaveScene = new VectorScene();
+        concaveScene.CreateEmpty();
+        var concavePolygon = new[]
+        {
+            new PointF(-240, -240),
+            new PointF(240, -240),
+            new PointF(240, 240),
+            new PointF(80, 240),
+            new PointF(80, 80),
+            new PointF(-80, 80),
+            new PointF(-80, 240),
+            new PointF(-240, 240)
+        };
+        var concaveInside = concaveScene.AddObject(
+            0,
+            new PointF(-150, 0),
+            new SizeF(60, 60),
+            0,
+            0,
+            Color.Teal,
+            12,
+            ShapeKind.Rectangle);
+        var concaveNotch = concaveScene.AddObject(
+            0,
+            new PointF(0, 160),
+            new SizeF(40, 40),
+            0,
+            0,
+            Color.Coral,
+            12,
+            ShapeKind.Rectangle);
+        var concaveCrossingLine = concaveScene.AddLineSegment(
+            0,
+            new PointF(-150, 160),
+            new PointF(150, 160),
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.White,
+            12);
+        var concaveObjects = concaveScene.QueryDrawingObjectsInsidePolygon(concavePolygon, 0);
+        var concaveElements = concaveScene.QueryDrawingElementsInsidePolygon(concavePolygon, 0);
+        if (!concaveObjects.ToHashSet().SetEquals([concaveInside])
+            || !concaveScene.IsObjectGeometryInsidePolygon(concaveInside, concavePolygon)
+            || concaveScene.IsObjectGeometryInsidePolygon(concaveNotch, concavePolygon)
+            || concaveScene.IsObjectGeometryInsidePolygon(concaveCrossingLine, concavePolygon)
+            || VectorScene.AreContoursFullyInsidePolygon(
+                [[
+                    new PointF(-150, 120),
+                    new PointF(150, 120),
+                    new PointF(150, 200),
+                    new PointF(-150, 200)
+                ]],
+                concavePolygon,
+                closeContours: true)
+            || concaveElements.Length != 1
+            || concaveElements[0].Key.ObjectIndex != concaveInside
+            || concaveElements[0].Key.Kind != DrawingElementKind.Fill)
+        {
+            throw new InvalidOperationException(
+                "Concave lasso selection used an AABB or endpoint-only test instead of full geometry containment.");
+        }
+
+        var convexScene = new VectorScene();
+        convexScene.CreateEmpty();
+        var convexPolygon = new[]
+        {
+            new PointF(-100, -80),
+            new PointF(100, -80),
+            new PointF(100, 80),
+            new PointF(-100, 80)
+        };
+        var boundaryObject = convexScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(200, 160),
+            0,
+            0,
+            Color.Teal,
+            12,
+            ShapeKind.Rectangle);
+        var containedObject = convexScene.AddObject(
+            0,
+            new PointF(-30, 0),
+            new SizeF(40, 40),
+            0,
+            0,
+            Color.Coral,
+            12,
+            ShapeKind.Rectangle);
+        var partialObject = convexScene.AddObject(
+            0,
+            new PointF(90, 0),
+            new SizeF(30, 40),
+            0,
+            0,
+            Color.Gold,
+            12,
+            ShapeKind.Rectangle);
+        var convexExpectedObjects = new[] { boundaryObject, containedObject };
+        var convexObjects = convexScene.QueryDrawingObjectsInsidePolygon(convexPolygon, 0);
+        var convexElements = convexScene.QueryDrawingElementsInsidePolygon(convexPolygon, 0);
+        var convexExpectedElements = new HashSet<DrawingElementKey>
+        {
+            new(boundaryObject, DrawingElementKind.Fill, 0),
+            new(containedObject, DrawingElementKind.Fill, 0)
+        };
+        var closedConvexPolygon = convexPolygon.Concat([convexPolygon[0]]).ToArray();
+        if (!convexObjects.ToHashSet().SetEquals(convexExpectedObjects)
+            || !convexScene.IsObjectGeometryInsidePolygon(boundaryObject, convexPolygon)
+            || !convexScene.IsObjectGeometryInsidePolygon(containedObject, convexPolygon)
+            || convexScene.IsObjectGeometryInsidePolygon(partialObject, convexPolygon)
+            || !convexElements.Select(hit => hit.Key).ToHashSet().SetEquals(convexExpectedElements)
+            || !convexScene.QueryDrawingObjectsInsidePolygon(closedConvexPolygon, 0)
+                .ToHashSet()
+                .SetEquals(convexExpectedObjects))
+        {
+            throw new InvalidOperationException(
+                "Lasso containment did not include boundary geometry while excluding partially out-of-bounds objects.");
+        }
+
+        var invalidPolygons = new IReadOnlyList<PointF>[]
+        {
+            Array.Empty<PointF>(),
+            new[] { new PointF(-100, -80), new PointF(100, -80) },
+            new[] { new PointF(-100, 0), new PointF(0, 0), new PointF(100, 0) },
+            new[]
+            {
+                new PointF(-100, -80),
+                new PointF(100, -80),
+                new PointF(-100, -80)
+            },
+            new[]
+            {
+                new PointF(-100, -80),
+                new PointF(float.NaN, 0),
+                new PointF(100, 80)
+            },
+            new[]
+            {
+                new PointF(-100, -80),
+                new PointF(float.PositiveInfinity, 0),
+                new PointF(100, 80)
+            }
+        };
+        foreach (var invalidPolygon in invalidPolygons)
+        {
+            if (convexScene.QueryDrawingObjectsInsidePolygon(invalidPolygon, 0).Length != 0
+                || convexScene.QueryDrawingElementsInsidePolygon(invalidPolygon, 0).Length != 0
+                || convexScene.IsObjectGeometryInsidePolygon(boundaryObject, invalidPolygon))
+            {
+                throw new InvalidOperationException("A degenerate lasso polygon produced a geometry selection.");
+            }
+        }
+
+        if (convexScene.QueryDrawingObjectsInsidePolygon(null!, 0).Length != 0
+            || convexScene.QueryDrawingElementsInsidePolygon(null!, 0).Length != 0
+            || convexScene.IsObjectGeometryInsidePolygon(boundaryObject, null!))
+        {
+            throw new InvalidOperationException("A null lasso polygon was not rejected without selecting geometry.");
+        }
+
+        var freehandScene = new VectorScene();
+        freehandScene.CreateEmpty();
+        var freehandPath = Enumerable.Range(0, 25)
+            .Select(index =>
+            {
+                var amount = index / 24f;
+                return new PointF(
+                    -80 + amount * 160,
+                    MathF.Sin(amount * MathF.Tau * 1.5f) * 42);
+            })
+            .ToArray();
+        var freehandObject = freehandScene.AddFreehandStroke(
+            0,
+            freehandPath,
+            VectorUnits.StrokePointsToUnits(2),
+            Color.White,
+            brushStroke: false,
+            64);
+        var freehandPolygon = Enumerable.Range(0, 32)
+            .Select(index =>
+            {
+                var angle = MathF.Tau * index / 32f;
+                return new PointF(MathF.Cos(angle) * 180, MathF.Sin(angle) * 120);
+            })
+            .ToArray();
+        var freehandObjects = freehandScene.QueryDrawingObjectsInsidePolygon(freehandPolygon, 0);
+        var freehandElements = freehandScene.QueryDrawingElementsInsidePolygon(freehandPolygon, 0);
+        if (!freehandObjects.ToHashSet().SetEquals([freehandObject])
+            || !freehandScene.IsObjectGeometryInsidePolygon(freehandObject, freehandPolygon)
+            || freehandElements.Length != 1
+            || freehandElements[0].Key.ObjectIndex != freehandObject
+            || freehandElements[0].Key.Kind != DrawingElementKind.Stroke)
+        {
+            throw new InvalidOperationException(
+                "A multi-point freehand lasso did not preserve a fully enclosed freehand path selection.");
+        }
+
+        var filterScene = new VectorScene();
+        filterScene.CreateEmpty();
+        var selectableObject = filterScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(40, 40),
+            0,
+            0,
+            Color.Teal,
+            12,
+            ShapeKind.Rectangle);
+        var lockedLayer = filterScene.AddLayer("Locked lasso layer");
+        var lockedObject = filterScene.AddObject(
+            lockedLayer,
+            PointF.Empty,
+            new SizeF(40, 40),
+            0,
+            0,
+            Color.Coral,
+            12,
+            ShapeKind.Rectangle);
+        var hiddenLayer = filterScene.AddLayer("Hidden lasso layer");
+        var hiddenObject = filterScene.AddObject(
+            hiddenLayer,
+            PointF.Empty,
+            new SizeF(40, 40),
+            0,
+            0,
+            Color.Gold,
+            12,
+            ShapeKind.Rectangle);
+        filterScene.SetLayerLocked(lockedLayer, true);
+        filterScene.SetLayerVisible(hiddenLayer, false);
+        var filterObjects = filterScene.QueryDrawingObjectsInsidePolygon(convexPolygon, 0);
+        var filterElements = filterScene.QueryDrawingElementsInsidePolygon(convexPolygon, 0);
+        var filterExpectedElements = new HashSet<DrawingElementKey>
+        {
+            new(selectableObject, DrawingElementKind.Fill, 0),
+            new(lockedObject, DrawingElementKind.Fill, 0)
+        };
+        var editableObjects = filterObjects
+            .Where(index => filterScene.IsObjectSelectable(index, 0))
+            .ToArray();
+        var editableElements = filterElements
+            .Where(hit => filterScene.IsObjectSelectable(hit.Key.ObjectIndex, 0))
+            .ToArray();
+        if (!filterObjects.ToHashSet().SetEquals([selectableObject, lockedObject])
+            || !filterElements.Select(hit => hit.Key).ToHashSet().SetEquals(filterExpectedElements)
+            || filterObjects.Contains(hiddenObject)
+            || filterObjects.Any(index => !filterScene.IsObjectGeometryInsidePolygon(index, convexPolygon))
+            || !editableObjects.SequenceEqual([selectableObject])
+            || editableElements.Length != 1
+            || editableElements[0].Key != new DrawingElementKey(selectableObject, DrawingElementKind.Fill, 0))
+        {
+            throw new InvalidOperationException(
+                "Polygon query visibility filtering and caller-side lock filtering did not preserve their API contract.");
+        }
+
+        Console.WriteLine("lasso_polygon_query=ok");
+    }
+
     private static void RunDrawingTopologyRegression()
     {
         RunIncrementalAppendRegression();
@@ -1249,6 +1429,8 @@ internal static partial class Benchmark
         RunOutlinedFillMergeRegression();
         RunFillBoundaryOverlapNormalizationRegression();
         RunMarqueeElementQueryRegression();
+        RunLassoPolygonQueryRegression();
+        RunLassoMaterializationRegression();
         RunMarqueeLineMaterializationRegression();
         RunMarqueeFillMaterializationRegression();
         RunMovedFillIsolationRegression();
@@ -1256,7 +1438,7 @@ internal static partial class Benchmark
         RunLineToFillConversionRegression();
         RunConnectedLineBranchRegression();
         RunLineSegmentMergeRegression();
-        Console.WriteLine("drawing_topology_regressions=37");
+        Console.WriteLine("drawing_topology_regressions=38");
     }
 
     private static void RunTopologyCelOwnershipRegression()

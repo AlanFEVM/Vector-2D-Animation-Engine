@@ -85,9 +85,9 @@
     "semantic_hash": "6153add39b087df5c7706a3e31d7fc9d"
   },
   "native/App/Benchmark.AppIntegration.cs": {
-    "mtime": 1786206531.9652205,
-    "ast_hash": "e88ed02f5d010c5139142a6215a3b535",
-    "semantic_hash": "e88ed02f5d010c5139142a6215a3b535"
+    "mtime": 1786443180.4334772,
+    "ast_hash": "d3c882f47186663303f457a1b191f4bb",
+    "semantic_hash": "d3c882f47186663303f457a1b191f4bb"
   },
   "native/App/Benchmark.AssetTags.cs": {
     "mtime": 1786118372.612108,
@@ -100,14 +100,14 @@
     "semantic_hash": "2447bffc306ec819defd8757a998e6b5"
   },
   "native/App/Benchmark.BrushSuite.cs": {
-    "mtime": 1786183570.6827407,
-    "ast_hash": "919ee62b913a3d5d071892d0cc8cc249",
-    "semantic_hash": "919ee62b913a3d5d071892d0cc8cc249"
+    "mtime": 1786423459.5156894,
+    "ast_hash": "9180afa2c165c275e561abd2b8b7c432",
+    "semantic_hash": "9180afa2c165c275e561abd2b8b7c432"
   },
   "native/App/Benchmark.CameraTransitions.cs": {
-    "mtime": 1786254409.2486234,
-    "ast_hash": "622661e1c4289ca7b4d2bf4ecc454539",
-    "semantic_hash": "622661e1c4289ca7b4d2bf4ecc454539"
+    "mtime": 1786422724.7993064,
+    "ast_hash": "f10db02f1ccd3537918ada6be89601ae",
+    "semantic_hash": "f10db02f1ccd3537918ada6be89601ae"
   },
   "native/App/Benchmark.DragPerformance.cs": {
     "mtime": 1785659070.7568808,
@@ -125,9 +125,9 @@
     "semantic_hash": "7e08be30958ffc31fa446093703614c6"
   },
   "native/App/Benchmark.FreehandSuite.cs": {
-    "mtime": 1786295691.8550186,
-    "ast_hash": "3322f77f4cb54a6efda73ab8f9644e2e",
-    "semantic_hash": "3322f77f4cb54a6efda73ab8f9644e2e"
+    "mtime": 1786438474.545509,
+    "ast_hash": "bd50832936be3a4c88da84357aa86225",
+    "semantic_hash": "bd50832936be3a4c88da84357aa86225"
   },
   "native/App/Benchmark.MixingBrush.cs": {
     "mtime": 1785774171.3687146,
@@ -140,9 +140,9 @@
     "semantic_hash": "32fb18980026a084682a12fcb0f653aa"
   },
   "native/App/Benchmark.ProjectComposition.cs": {
-    "mtime": 1786295586.6370535,
-    "ast_hash": "39eb45db7feb10322b4171e111283a52",
-    "semantic_hash": "39eb45db7feb10322b4171e111283a52"
+    "mtime": 1786443158.836339,
+    "ast_hash": "53f63e943a238a17f11e6b4b58127fa8",
+    "semantic_hash": "53f63e943a238a17f11e6b4b58127fa8"
   },
   "native/App/Benchmark.RegressionHelpers.cs": {
     "mtime": 1786183570.696812,
@@ -150,14 +150,14 @@
     "semantic_hash": "0d208a70728b7cc3e4549c28fdf1dc0b"
   },
   "native/App/Benchmark.StageInteraction.cs": {
-    "mtime": 1786294603.1166227,
-    "ast_hash": "18484a7b7f97edb8ff45950f776054ed",
-    "semantic_hash": "18484a7b7f97edb8ff45950f776054ed"
+    "mtime": 1786452779.6107264,
+    "ast_hash": "850d27473acae52565d3493b3856cb1f",
+    "semantic_hash": "850d27473acae52565d3493b3856cb1f"
   },
   "native/App/Benchmark.StageRenderSuite.cs": {
-    "mtime": 1786294603.1156242,
-    "ast_hash": "a7f825ebfccb034554bf1c97df639f0d",
-    "semantic_hash": "a7f825ebfccb034554bf1c97df639f0d"
+    "mtime": 1786464057.219426,
+    "ast_hash": "5a1e36f2c8b39d3999076affb8c480da",
+    "semantic_hash": "5a1e36f2c8b39d3999076affb8c480da"
   },
   "native/App/Benchmark.StageVisualRegression.cs": {
     "mtime": 1786183570.6506395,
@@ -165,14 +165,14 @@
     "semantic_hash": "5b41b28a3a0f9940bb4c1bca1e3899dc"
   },
   "native/App/Benchmark.TimelineSuite.cs": {
-    "mtime": 1786295726.3934875,
-    "ast_hash": "ac603a70c4f70d36380caac5ef73e3c4",
-    "semantic_hash": "ac603a70c4f70d36380caac5ef73e3c4"
+    "mtime": 1786454829.9321713,
+    "ast_hash": "2250f8664c3c2b072a0f78c2dbb3d993",
+    "semantic_hash": "2250f8664c3c2b072a0f78c2dbb3d993"
   },
   "native/App/Benchmark.TimelineTween.cs": {
-    "mtime": 1786291314.3634684,
-    "ast_hash": "439d0d099eeb0050a3153ba178b783df",
-    "semantic_hash": "439d0d099eeb0050a3153ba178b783df"
+    "mtime": 1786443486.799138,
+    "ast_hash": "bc4ae4366bc5dd069ab2fd63a91958b5",
+    "semantic_hash": "bc4ae4366bc5dd069ab2fd63a91958b5"
   },
   "native/App/Benchmark.TopologyMaterialization.cs": {
     "mtime": 1786183570.6912835,
@@ -200,9 +200,9 @@
     "semantic_hash": "f2be3fe1e10f8d3f1c13dc7a249289a3"
   },
   "native/App/HotReloadModules.cs": {
-    "mtime": 1786255724.8588283,
-    "ast_hash": "8e04a58d57dcdd742982bbd789a9094c",
-    "semantic_hash": "8e04a58d57dcdd742982bbd789a9094c"
+    "mtime": 1786455506.642208,
+    "ast_hash": "7bbd7ef135701ba777d7e7fdf8a255a6",
+    "semantic_hash": "7bbd7ef135701ba777d7e7fdf8a255a6"
   },
   "native/App/LauncherShutdownSignal.cs": {
     "mtime": 1786094702.4968257,
@@ -215,9 +215,9 @@
     "semantic_hash": "bf8c94587acbef88aeed76adf55480cf"
   },
   "native/App/ProjectVaultStore.cs": {
-    "mtime": 1786246773.566201,
-    "ast_hash": "63ae2f30048f56a1df4747859992e505",
-    "semantic_hash": "63ae2f30048f56a1df4747859992e505"
+    "mtime": 1786467798.3306444,
+    "ast_hash": "b44c8aa43bc96a3c508912ee33abfd07",
+    "semantic_hash": "b44c8aa43bc96a3c508912ee33abfd07"
   },
   "native/App/ReleaseNotesCatalog.cs": {
     "mtime": 1785930750.4831073,
@@ -225,9 +225,9 @@
     "semantic_hash": "9d13773cbfac71ea7a7aea21c6a26f1e"
   },
   "native/App/ShortcutProfiles.cs": {
-    "mtime": 1785952307.319588,
-    "ast_hash": "73b6e151a313bb92d890938789f72cad",
-    "semantic_hash": "73b6e151a313bb92d890938789f72cad"
+    "mtime": 1786437585.7257297,
+    "ast_hash": "7a9ef3dff5433f1bf69c6879282fcd6d",
+    "semantic_hash": "7a9ef3dff5433f1bf69c6879282fcd6d"
   },
   "native/App/SingleInstanceLease.cs": {
     "mtime": 1786095473.6560438,
@@ -235,9 +235,9 @@
     "semantic_hash": "e5b4068c1db21d4ea3dad77edeecdd9e"
   },
   "native/App/ToolMode.cs": {
-    "mtime": 1786197423.3950994,
-    "ast_hash": "4f083585a86ab9373891fd04d73d1f28",
-    "semantic_hash": "4f083585a86ab9373891fd04d73d1f28"
+    "mtime": 1786437361.6152601,
+    "ast_hash": "1759cdfc682ea4f6250bed8db0da46eb",
+    "semantic_hash": "1759cdfc682ea4f6250bed8db0da46eb"
   },
   "native/App/ToolShortcutMap.cs": {
     "mtime": 1784966125.1691518,
@@ -285,9 +285,9 @@
     "semantic_hash": "9a803cc8b200a6d0ade19d0d87809afd"
   },
   "native/Engine/DrawingObjectDefinition.cs": {
-    "mtime": 1786246773.5626824,
-    "ast_hash": "56dca84e56108fcbc6da81a19c62ad90",
-    "semantic_hash": "56dca84e56108fcbc6da81a19c62ad90"
+    "mtime": 1786436636.8903067,
+    "ast_hash": "c2fa9222cdec84b59b1fc16938213fbc",
+    "semantic_hash": "c2fa9222cdec84b59b1fc16938213fbc"
   },
   "native/Engine/DrawingObjectSvgCodec.cs": {
     "mtime": 1786246797.860702,
@@ -390,9 +390,9 @@
     "semantic_hash": "b4352610269ac18d83e9aa4c38c44bcb"
   },
   "native/Engine/ProjectRestartSnapshot.cs": {
-    "mtime": 1786246773.5636804,
-    "ast_hash": "06993b476a1e828bbb809d063a646664",
-    "semantic_hash": "06993b476a1e828bbb809d063a646664"
+    "mtime": 1786465067.6115012,
+    "ast_hash": "f30c758447809f66c9654d879a4d9d8e",
+    "semantic_hash": "f30c758447809f66c9654d879a4d9d8e"
   },
   "native/Engine/RenderStats.cs": {
     "mtime": 1783749523.704394,
@@ -400,14 +400,14 @@
     "semantic_hash": "235b95a4b94953f37eb3f9b52ca3f023"
   },
   "native/Engine/SceneCompositionBuilder.cs": {
-    "mtime": 1786286634.1463275,
-    "ast_hash": "8206574277398e5152159d5fd08fa1b9",
-    "semantic_hash": "8206574277398e5152159d5fd08fa1b9"
+    "mtime": 1786448846.5323763,
+    "ast_hash": "f86901f5f9adca474f3553ce21e18940",
+    "semantic_hash": "f86901f5f9adca474f3553ce21e18940"
   },
   "native/Engine/SceneDefinition.cs": {
-    "mtime": 1786294813.640556,
-    "ast_hash": "7f6a03d24fa8bea929e4b88346ad4262",
-    "semantic_hash": "7f6a03d24fa8bea929e4b88346ad4262"
+    "mtime": 1786468880.3056717,
+    "ast_hash": "71885acf6c20061dd2f777bbf129cc52",
+    "semantic_hash": "71885acf6c20061dd2f777bbf129cc52"
   },
   "native/Engine/SceneMaskDefinition.cs": {
     "mtime": 1786196904.507337,
@@ -415,9 +415,9 @@
     "semantic_hash": "b51210267ed72d5e18da722a53d63887"
   },
   "native/Engine/SceneObjectInstanceDefinition.cs": {
-    "mtime": 1785987379.912847,
-    "ast_hash": "ffd2d35e3b74e9c9d5fa1b9367e258f4",
-    "semantic_hash": "ffd2d35e3b74e9c9d5fa1b9367e258f4"
+    "mtime": 1786448780.7375815,
+    "ast_hash": "8ef097ded2d0109fbb218372ccaec174",
+    "semantic_hash": "8ef097ded2d0109fbb218372ccaec174"
   },
   "native/Engine/ShapeKind.cs": {
     "mtime": 1785675271.1846962,
@@ -450,9 +450,9 @@
     "semantic_hash": "c9a1be36da13fc44dff3c51b130fc718"
   },
   "native/Engine/VectorProject.cs": {
-    "mtime": 1786294813.6420655,
-    "ast_hash": "32e6d6985453ef273f53f592dc0cd1fb",
-    "semantic_hash": "32e6d6985453ef273f53f592dc0cd1fb"
+    "mtime": 1786467798.3324635,
+    "ast_hash": "a632d8ac4df9f2dd0cf2bd62d93414ee",
+    "semantic_hash": "a632d8ac4df9f2dd0cf2bd62d93414ee"
   },
   "native/Engine/VectorScene.BooleanGeometry.cs": {
     "mtime": 1786183310.471347,
@@ -470,9 +470,9 @@
     "semantic_hash": "d0dc87e1c15e646ffbaa63a935c5e37b"
   },
   "native/Engine/VectorScene.ElementEditing.cs": {
-    "mtime": 1786212343.3108077,
-    "ast_hash": "de99614003f4bb8c6aca05a302574713",
-    "semantic_hash": "de99614003f4bb8c6aca05a302574713"
+    "mtime": 1786447159.544758,
+    "ast_hash": "e8aefecb878963d5706e4b99c37b8af6",
+    "semantic_hash": "e8aefecb878963d5706e4b99c37b8af6"
   },
   "native/Engine/VectorScene.GeometryUtilities.cs": {
     "mtime": 1786183310.483348,
@@ -530,7 +530,7 @@
     "semantic_hash": "3813dd5e3eef421b2d1ef383ded2ece5"
   },
   "native/Engine/VectorScene.cs": {
-    "mtime": 1786183310.4233513,
+    "mtime": 1786380612.5065298,
     "ast_hash": "c13e789ba92ccd59758cf7121f147e46",
     "semantic_hash": "c13e789ba92ccd59758cf7121f147e46"
   },
@@ -545,14 +545,14 @@
     "semantic_hash": "4224c770329b1f227722a33abc431364"
   },
   "native/Rendering/Direct2DStageRenderer.Caching.cs": {
-    "mtime": 1786183424.1510923,
-    "ast_hash": "302d4301cfa6ec6855bf99e185526093",
-    "semantic_hash": "302d4301cfa6ec6855bf99e185526093"
+    "mtime": 1786460462.437919,
+    "ast_hash": "d5f824a2f0ec42ac04a525003e9d097f",
+    "semantic_hash": "d5f824a2f0ec42ac04a525003e9d097f"
   },
   "native/Rendering/Direct2DStageRenderer.Reference3D.cs": {
-    "mtime": 1786286548.2436123,
-    "ast_hash": "c7df5d0e2cf406ea0536975acb32b024",
-    "semantic_hash": "c7df5d0e2cf406ea0536975acb32b024"
+    "mtime": 1786460462.4358952,
+    "ast_hash": "8054b485fc9c3592955d94c9d58f4217",
+    "semantic_hash": "8054b485fc9c3592955d94c9d58f4217"
   },
   "native/Rendering/Direct2DStageRenderer.Selection.cs": {
     "mtime": 1786291382.9330251,
@@ -560,9 +560,9 @@
     "semantic_hash": "b2c103c71c6f084ac632331831a538a1"
   },
   "native/Rendering/Direct2DStageRenderer.cs": {
-    "mtime": 1786289278.0129845,
-    "ast_hash": "54864c3bde383b8cf903d89da379b083",
-    "semantic_hash": "54864c3bde383b8cf903d89da379b083"
+    "mtime": 1786452014.0893967,
+    "ast_hash": "8241c55e0c2f7f1036132c58e8ded617",
+    "semantic_hash": "8241c55e0c2f7f1036132c58e8ded617"
   },
   "native/Rendering/ImportedSvgRasterizer.cs": {
     "mtime": 1784999417.3511693,
@@ -570,9 +570,9 @@
     "semantic_hash": "4a6cb7d381597aeef53462ac13b6ff42"
   },
   "native/Rendering/LayerBlendCompositor.cs": {
-    "mtime": 1786294718.6778135,
-    "ast_hash": "2d7ba76a3c28893f25046f9a735ea6f8",
-    "semantic_hash": "2d7ba76a3c28893f25046f9a735ea6f8"
+    "mtime": 1786380612.5075295,
+    "ast_hash": "9e5c31a578e0665fd6464662cf786338",
+    "semantic_hash": "9e5c31a578e0665fd6464662cf786338"
   },
   "native/Rendering/MarqueeOverlayWindow.cs": {
     "mtime": 1784461144.8506732,
@@ -590,9 +590,9 @@
     "semantic_hash": "15423f92d4388d4ceb8be85bb6b37cb6"
   },
   "native/Rendering/StageControl.CameraTransitions.cs": {
-    "mtime": 1786254209.0216987,
-    "ast_hash": "09b6d795399052489cecaaf027551158",
-    "semantic_hash": "09b6d795399052489cecaaf027551158"
+    "mtime": 1786426844.200361,
+    "ast_hash": "3be7ddcf21314cb6b5a2923eed1506c9",
+    "semantic_hash": "3be7ddcf21314cb6b5a2923eed1506c9"
   },
   "native/Rendering/StageControl.GdiOverlays.cs": {
     "mtime": 1786291382.9310167,
@@ -600,29 +600,29 @@
     "semantic_hash": "2e2b6f827e997255211189dc250b2520"
   },
   "native/Rendering/StageControl.GdiReference3D.cs": {
-    "mtime": 1786293915.834426,
-    "ast_hash": "5b1bcfad214233ffee05fec1376dd57e",
-    "semantic_hash": "5b1bcfad214233ffee05fec1376dd57e"
+    "mtime": 1786460462.4323745,
+    "ast_hash": "544d068bc167d02b795b882a308c4ff4",
+    "semantic_hash": "544d068bc167d02b795b882a308c4ff4"
   },
   "native/Rendering/StageControl.GdiSceneRendering.cs": {
-    "mtime": 1786254253.443386,
+    "mtime": 1786378794.3056612,
     "ast_hash": "166bb6959899f8f90af3656a37b77b0d",
     "semantic_hash": "166bb6959899f8f90af3656a37b77b0d"
   },
   "native/Rendering/StageControl.Reference3D.Intersections.cs": {
-    "mtime": 1786293796.2648616,
-    "ast_hash": "739c6474b08848a2ff90b20c88ab216f",
-    "semantic_hash": "739c6474b08848a2ff90b20c88ab216f"
+    "mtime": 1786460134.7872422,
+    "ast_hash": "d5983396b849d8f56a5a7418f8eeacae",
+    "semantic_hash": "d5983396b849d8f56a5a7418f8eeacae"
   },
   "native/Rendering/StageControl.Reference3D.Projective.cs": {
-    "mtime": 1786293796.266907,
-    "ast_hash": "2570243f962a22c3e083b2798e927e5d",
-    "semantic_hash": "2570243f962a22c3e083b2798e927e5d"
+    "mtime": 1786441368.1350074,
+    "ast_hash": "8609a91f97960e41a8e1ea5c0f385272",
+    "semantic_hash": "8609a91f97960e41a8e1ea5c0f385272"
   },
   "native/Rendering/StageControl.Reference3D.cs": {
-    "mtime": 1786294181.975303,
-    "ast_hash": "c10d577a8a80d20c7861d8e384e079a7",
-    "semantic_hash": "c10d577a8a80d20c7861d8e384e079a7"
+    "mtime": 1786460390.1213663,
+    "ast_hash": "fef308fb1a59db294aa5226190f17b05",
+    "semantic_hash": "fef308fb1a59db294aa5226190f17b05"
   },
   "native/Rendering/StageControl.SelectionDrag.cs": {
     "mtime": 1785657521.58761,
@@ -630,9 +630,9 @@
     "semantic_hash": "e81adab92bd92debf3200ab217d391c0"
   },
   "native/Rendering/StageControl.cs": {
-    "mtime": 1786291646.9309242,
-    "ast_hash": "8fef9b45c4ecde8322b4226f1377f497",
-    "semantic_hash": "8fef9b45c4ecde8322b4226f1377f497"
+    "mtime": 1786452594.6457503,
+    "ast_hash": "cb9965c064b0b5f74adc943fb98aeeac",
+    "semantic_hash": "cb9965c064b0b5f74adc943fb98aeeac"
   },
   "native/Rendering/WorldGridLayout.cs": {
     "mtime": 1784454569.4363003,
@@ -655,9 +655,9 @@
     "semantic_hash": "0201a8ca271b35090bfcf9d1b4b5d7c8"
   },
   "native/UI/ColorPickerControls.cs": {
-    "mtime": 1784981714.6632154,
-    "ast_hash": "17a7d26d92f0d2fa7072404b234adbbb",
-    "semantic_hash": "17a7d26d92f0d2fa7072404b234adbbb"
+    "mtime": 1786422837.2486572,
+    "ast_hash": "22601d83fec145adcc5b87e1422e672c",
+    "semantic_hash": "22601d83fec145adcc5b87e1422e672c"
   },
   "native/UI/DashDock.cs": {
     "mtime": 1786258784.0747936,
@@ -680,9 +680,9 @@
     "semantic_hash": "4337b4d7c26df430b4d1179a66e984ce"
   },
   "native/UI/HierarchyPanel.cs": {
-    "mtime": 1786170874.4421372,
-    "ast_hash": "fd87b44b606904423a1616ed52f35113",
-    "semantic_hash": "fd87b44b606904423a1616ed52f35113"
+    "mtime": 1786427859.232831,
+    "ast_hash": "5ce8c4bd1628b4c1306d7a45a61423cb",
+    "semantic_hash": "5ce8c4bd1628b4c1306d7a45a61423cb"
   },
   "native/UI/InputFocusDismissalFilter.cs": {
     "mtime": 1784309359.008023,
@@ -700,14 +700,14 @@
     "semantic_hash": "075177d8d8af3696a369a5855b4c8396"
   },
   "native/UI/LibraryVaultPanel.Tags.cs": {
-    "mtime": 1785654097.3167357,
-    "ast_hash": "0191ac8d6605f476b03f4d961d4866ee",
-    "semantic_hash": "0191ac8d6605f476b03f4d961d4866ee"
+    "mtime": 1786433405.8067076,
+    "ast_hash": "6bf69a69fc46ef0e1ab292d4ce11b8d5",
+    "semantic_hash": "6bf69a69fc46ef0e1ab292d4ce11b8d5"
   },
   "native/UI/LibraryVaultPanel.cs": {
-    "mtime": 1786246862.3659415,
-    "ast_hash": "3f4a91130750ce5528d839a8a6d1aaaf",
-    "semantic_hash": "3f4a91130750ce5528d839a8a6d1aaaf"
+    "mtime": 1786433530.3751922,
+    "ast_hash": "9e86e615aea7a777e2568764ad83f96f",
+    "semantic_hash": "9e86e615aea7a777e2568764ad83f96f"
   },
   "native/UI/MainForm.AssetTags.cs": {
     "mtime": 1786246862.368941,
@@ -720,19 +720,19 @@
     "semantic_hash": "a7ae4375795a03a853c4da76e1e72baf"
   },
   "native/UI/MainForm.InspectorAndWorkspace.cs": {
-    "mtime": 1786289278.009472,
-    "ast_hash": "0e370af3d3582462bc084b25ece53704",
-    "semantic_hash": "0e370af3d3582462bc084b25ece53704"
+    "mtime": 1786449850.263049,
+    "ast_hash": "20fb42353ba14b891abd7b3bda4a87cc",
+    "semantic_hash": "20fb42353ba14b891abd7b3bda4a87cc"
   },
   "native/UI/MainForm.SceneSpatial.cs": {
-    "mtime": 1786290289.6073377,
-    "ast_hash": "8077e2c11d5fb46a1475ef8fb08519f8",
-    "semantic_hash": "8077e2c11d5fb46a1475ef8fb08519f8"
+    "mtime": 1786465187.1940022,
+    "ast_hash": "d536f2657a300eabaaaba53bbb640a9f",
+    "semantic_hash": "d536f2657a300eabaaaba53bbb640a9f"
   },
   "native/UI/MainForm.SelectionAndTopology.cs": {
-    "mtime": 1786295586.6350546,
-    "ast_hash": "b6b45d0625c2b6c281dab84036d9dfe2",
-    "semantic_hash": "b6b45d0625c2b6c281dab84036d9dfe2"
+    "mtime": 1786466277.5516815,
+    "ast_hash": "f1aec9980f54b5a153cc22a4d344e15f",
+    "semantic_hash": "f1aec9980f54b5a153cc22a4d344e15f"
   },
   "native/UI/MainForm.SelectionDrag.cs": {
     "mtime": 1785763739.323858,
@@ -740,34 +740,34 @@
     "semantic_hash": "51b0daeeb34eb859e2e2a987b6c0a502"
   },
   "native/UI/MainForm.StagePointerInput.cs": {
-    "mtime": 1786259579.649737,
-    "ast_hash": "1f4430dc15aac6a5f7b2647b982797fa",
-    "semantic_hash": "1f4430dc15aac6a5f7b2647b982797fa"
+    "mtime": 1786465833.4443786,
+    "ast_hash": "a3ef977bf9e326a55d165019288fd83a",
+    "semantic_hash": "a3ef977bf9e326a55d165019288fd83a"
   },
   "native/UI/MainForm.TimelineAndHistory.cs": {
-    "mtime": 1786295245.9727147,
-    "ast_hash": "d4142193046f98918c39bdc2a59603f2",
-    "semantic_hash": "d4142193046f98918c39bdc2a59603f2"
+    "mtime": 1786467887.4970229,
+    "ast_hash": "47ba3637c88b2e25b336dcba967d91bb",
+    "semantic_hash": "47ba3637c88b2e25b336dcba967d91bb"
   },
   "native/UI/MainForm.TransformInteractions.cs": {
-    "mtime": 1786290289.6083493,
-    "ast_hash": "da900a9b33c046b48a53b4b2bc1cff69",
-    "semantic_hash": "da900a9b33c046b48a53b4b2bc1cff69"
+    "mtime": 1786452138.818036,
+    "ast_hash": "5b96a9bcb082b3aeac04976832052848",
+    "semantic_hash": "5b96a9bcb082b3aeac04976832052848"
   },
   "native/UI/MainForm.WorkbenchCommands.cs": {
-    "mtime": 1786295104.714722,
-    "ast_hash": "d935081df112d3f4b8a2fd9cb3d32756",
-    "semantic_hash": "d935081df112d3f4b8a2fd9cb3d32756"
+    "mtime": 1786466081.0485563,
+    "ast_hash": "8eff12f7c2022f1588111d874e851660",
+    "semantic_hash": "8eff12f7c2022f1588111d874e851660"
   },
   "native/UI/MainForm.cs": {
-    "mtime": 1786292836.8898816,
-    "ast_hash": "b9fa26ac0a09d83152815502ee35accf",
-    "semantic_hash": "b9fa26ac0a09d83152815502ee35accf"
+    "mtime": 1786467654.953126,
+    "ast_hash": "513a1defdc291e03db4b990e302fd613",
+    "semantic_hash": "513a1defdc291e03db4b990e302fd613"
   },
   "native/UI/MaterialEditorPanel.cs": {
-    "mtime": 1785514494.4060066,
-    "ast_hash": "0ee25a28ed0eeeb9762fd76a0e0e8c4c",
-    "semantic_hash": "0ee25a28ed0eeeb9762fd76a0e0e8c4c"
+    "mtime": 1786430802.4343944,
+    "ast_hash": "70a75d62467d88cf051907578d5185e6",
+    "semantic_hash": "70a75d62467d88cf051907578d5185e6"
   },
   "native/UI/MaterialPaletteStore.cs": {
     "mtime": 1784034863.1981263,
@@ -845,9 +845,9 @@
     "semantic_hash": "fd722264643211458e3018559f6079e1"
   },
   "native/UI/SpatialTransformPanel.cs": {
-    "mtime": 1786259986.2728834,
-    "ast_hash": "80b79a1d45792b1d513ef3b2c9fffee1",
-    "semantic_hash": "80b79a1d45792b1d513ef3b2c9fffee1"
+    "mtime": 1786449116.916195,
+    "ast_hash": "853003f6ab8baf9259a2a5192b566533",
+    "semantic_hash": "853003f6ab8baf9259a2a5192b566533"
   },
   "native/UI/StartupBannerForm.cs": {
     "mtime": 1784974682.5428212,
@@ -860,9 +860,9 @@
     "semantic_hash": "9494f74fd418685352932a0087510d6e"
   },
   "native/UI/SvgIcons.cs": {
-    "mtime": 1786197535.9328153,
-    "ast_hash": "b138979ec80bf2c98719ee070dd4f320",
-    "semantic_hash": "b138979ec80bf2c98719ee070dd4f320"
+    "mtime": 1786464843.664254,
+    "ast_hash": "46f9eb68b51610db0225073d0cd1399e",
+    "semantic_hash": "46f9eb68b51610db0225073d0cd1399e"
   },
   "native/UI/TextSettingsPanel.cs": {
     "mtime": 1785514749.0120735,
@@ -880,24 +880,24 @@
     "semantic_hash": "3bc3edb145f629dc18493c537ea2f7bc"
   },
   "native/UI/TimelineStrip.Rendering.cs": {
-    "mtime": 1786201033.187487,
-    "ast_hash": "3690ad12d4c3ea262a6a9810a3f700c5",
-    "semantic_hash": "3690ad12d4c3ea262a6a9810a3f700c5"
+    "mtime": 1786465411.7804759,
+    "ast_hash": "efa418e8c4ad4133fce9eb11bdf77de8",
+    "semantic_hash": "efa418e8c4ad4133fce9eb11bdf77de8"
   },
   "native/UI/TimelineStrip.cs": {
-    "mtime": 1786295726.391476,
-    "ast_hash": "b1ca174bba2058cd1619e21879f017b8",
-    "semantic_hash": "b1ca174bba2058cd1619e21879f017b8"
+    "mtime": 1786467878.5714586,
+    "ast_hash": "a0e9f3512adb1e6b1c6e03114c4c8d54",
+    "semantic_hash": "a0e9f3512adb1e6b1c6e03114c4c8d54"
   },
   "native/UI/TweenCurveEditorPanel.cs": {
-    "mtime": 1785840145.8841302,
-    "ast_hash": "1f467a23af92bf8dc802ef310880b3aa",
-    "semantic_hash": "1f467a23af92bf8dc802ef310880b3aa"
+    "mtime": 1786453743.3644443,
+    "ast_hash": "8ec9e0df0e0991417b74b98b968a864e",
+    "semantic_hash": "8ec9e0df0e0991417b74b98b968a864e"
   },
   "native/UI/UiLocalization.cs": {
-    "mtime": 1786295209.4408443,
-    "ast_hash": "cbab2347478519f5af8c4471bcab4d6c",
-    "semantic_hash": "cbab2347478519f5af8c4471bcab4d6c"
+    "mtime": 1786449909.03834,
+    "ast_hash": "e0f87ce73d7a631851bcde5d92bf764a",
+    "semantic_hash": "e0f87ce73d7a631851bcde5d92bf764a"
   },
   "native/UI/UiMotion.cs": {
     "mtime": 1785504902.0080712,
@@ -1285,9 +1285,9 @@
     "semantic_hash": "684e9213e7c0a44e61f9f4cad6fa0cdb"
   },
   "docs/USER_GUIDE.md": {
-    "mtime": 1786295586.6390567,
-    "ast_hash": "4d6315e243e60f1f69b3612ca5f83c0d",
-    "semantic_hash": "4d6315e243e60f1f69b3612ca5f83c0d"
+    "mtime": 1786468476.5378308,
+    "ast_hash": "8e0173b8be103c1d488a6d10a869cac5",
+    "semantic_hash": "8e0173b8be103c1d488a6d10a869cac5"
   },
   "DemoProject/.Vault/51cc425d24904a218cdc90e4eef4367c.svg": {
     "mtime": 1785762024.8826113,
@@ -1298,5 +1298,220 @@
     "mtime": 1785940175.5939474,
     "ast_hash": "279e269cd53cef21021b22172df7fd53",
     "semantic_hash": "279e269cd53cef21021b22172df7fd53"
+  },
+  "native/App/Benchmark.AssetLibraryCategories.cs": {
+    "mtime": 1786438474.5505648,
+    "ast_hash": "6b36af4494be84c626967b2bcc6d6860",
+    "semantic_hash": "6b36af4494be84c626967b2bcc6d6860"
+  },
+  "native/App/Benchmark.CameraNavigation.cs": {
+    "mtime": 1786443090.7888563,
+    "ast_hash": "004ef2d019a662bc552cfd7c3fbaa770",
+    "semantic_hash": "004ef2d019a662bc552cfd7c3fbaa770"
+  },
+  "native/App/Benchmark.HierarchyFocus.cs": {
+    "mtime": 1786428938.576954,
+    "ast_hash": "333773b2baf6f3303fff467519663187",
+    "semantic_hash": "333773b2baf6f3303fff467519663187"
+  },
+  "native/App/Benchmark.SceneComponents.cs": {
+    "mtime": 1786434798.054992,
+    "ast_hash": "56764e69e08461fbad26994a02f39728",
+    "semantic_hash": "56764e69e08461fbad26994a02f39728"
+  },
+  "native/App/Benchmark.SceneOpticsModel.cs": {
+    "mtime": 1786468161.2453694,
+    "ast_hash": "0ac5b4ca76d0539978588ec9c387592c",
+    "semantic_hash": "0ac5b4ca76d0539978588ec9c387592c"
+  },
+  "native/App/Benchmark.SceneOpticsRender.cs": {
+    "mtime": 1786469497.0927858,
+    "ast_hash": "e0a3baba7d0edaa6a256fca6ac962715",
+    "semantic_hash": "e0a3baba7d0edaa6a256fca6ac962715"
+  },
+  "native/App/Benchmark.SnapPoints.cs": {
+    "mtime": 1786458838.6548266,
+    "ast_hash": "69de4583be5e2767a014a1b738572fc9",
+    "semantic_hash": "69de4583be5e2767a014a1b738572fc9"
+  },
+  "native/Engine/DrawingObjectAssetKinds.cs": {
+    "mtime": 1786433218.7524064,
+    "ast_hash": "c199493412a30558870c1048c9e9c858",
+    "semantic_hash": "c199493412a30558870c1048c9e9c858"
+  },
+  "native/Engine/DrawingObjectSnapPointDefinition.cs": {
+    "mtime": 1786436636.889299,
+    "ast_hash": "7a5ed6840c795ada0a9d46e4a120e32f",
+    "semantic_hash": "7a5ed6840c795ada0a9d46e4a120e32f"
+  },
+  "native/Engine/DrawingObjectSnapPointMath.cs": {
+    "mtime": 1786441490.085888,
+    "ast_hash": "adfc659d7a7b5c71f3c830364804f98a",
+    "semantic_hash": "adfc659d7a7b5c71f3c830364804f98a"
+  },
+  "native/Engine/ExternalSvgAssetDefinition.cs": {
+    "mtime": 1786432950.526484,
+    "ast_hash": "13475eec81a8474261c04426ec7de32d",
+    "semantic_hash": "13475eec81a8474261c04426ec7de32d"
+  },
+  "native/Engine/SceneLighting.cs": {
+    "mtime": 1786464879.4525092,
+    "ast_hash": "b5dbaf115f7acf8b4dbf5b405527100d",
+    "semantic_hash": "b5dbaf115f7acf8b4dbf5b405527100d"
+  },
+  "native/Engine/SpatialOpticalMaterial.cs": {
+    "mtime": 1786448731.172724,
+    "ast_hash": "7d42f02f0e4801b4417bbb16249f4fe3",
+    "semantic_hash": "7d42f02f0e4801b4417bbb16249f4fe3"
+  },
+  "native/Engine/VectorProject.ExternalSvgAssets.cs": {
+    "mtime": 1786433118.7810056,
+    "ast_hash": "764aca7467c44a19fe97140e3ee99bc6",
+    "semantic_hash": "764aca7467c44a19fe97140e3ee99bc6"
+  },
+  "native/Engine/VectorProject.Lighting.cs": {
+    "mtime": 1786465052.1004515,
+    "ast_hash": "baf0ee5daabed99c93db4bffc4e0d470",
+    "semantic_hash": "baf0ee5daabed99c93db4bffc4e0d470"
+  },
+  "native/Engine/VectorProject.SpatialComponents.cs": {
+    "mtime": 1786442502.3885903,
+    "ast_hash": "f6d48ec6b1827d4cb4dc64a9f8f4e52c",
+    "semantic_hash": "f6d48ec6b1827d4cb4dc64a9f8f4e52c"
+  },
+  "native/Rendering/Direct2DStageRenderer.LightGizmo.cs": {
+    "mtime": 1786465195.5837152,
+    "ast_hash": "554febbd9c0d0a8ede90eb6fd26828cf",
+    "semantic_hash": "554febbd9c0d0a8ede90eb6fd26828cf"
+  },
+  "native/Rendering/Direct2DStageRenderer.SnapPoints.cs": {
+    "mtime": 1786437548.4720802,
+    "ast_hash": "6296fe67adcd8e85acb86602092246d6",
+    "semantic_hash": "6296fe67adcd8e85acb86602092246d6"
+  },
+  "native/Rendering/SpatialTransformMath.cs": {
+    "mtime": 1786423088.2829933,
+    "ast_hash": "af1c937201fcf48c7e1ab549235a16bd",
+    "semantic_hash": "af1c937201fcf48c7e1ab549235a16bd"
+  },
+  "native/Rendering/StageControl.CameraNavigation.cs": {
+    "mtime": 1786442917.322291,
+    "ast_hash": "65757ae1d907df7486d5f6b99141d669",
+    "semantic_hash": "65757ae1d907df7486d5f6b99141d669"
+  },
+  "native/Rendering/StageControl.Focus.cs": {
+    "mtime": 1786428938.5759406,
+    "ast_hash": "ff066ed380922e36fe3a8695fbdc24c6",
+    "semantic_hash": "ff066ed380922e36fe3a8695fbdc24c6"
+  },
+  "native/Rendering/StageControl.GdiLightGizmo.cs": {
+    "mtime": 1786468088.5706441,
+    "ast_hash": "a575d3ba40625178e2fcb11768b7e83c",
+    "semantic_hash": "a575d3ba40625178e2fcb11768b7e83c"
+  },
+  "native/Rendering/StageControl.Reference3D.LightGizmo.cs": {
+    "mtime": 1786466245.0971818,
+    "ast_hash": "cb4d0563ed70241b8e2c75a3bae88688",
+    "semantic_hash": "cb4d0563ed70241b8e2c75a3bae88688"
+  },
+  "native/Rendering/StageControl.Reference3D.Optics.cs": {
+    "mtime": 1786468880.3066726,
+    "ast_hash": "00d2dc78c72485b514c8a1de8216b2e6",
+    "semantic_hash": "00d2dc78c72485b514c8a1de8216b2e6"
+  },
+  "native/Rendering/StageControl.SnapPoints.cs": {
+    "mtime": 1786437588.7321043,
+    "ast_hash": "0b47ad6308d361261d63a608de9135f7",
+    "semantic_hash": "0b47ad6308d361261d63a608de9135f7"
+  },
+  "native/Rendering/StageControl.SpatialGizmoMotion.cs": {
+    "mtime": 1786451666.9078794,
+    "ast_hash": "ae9c35096be36358be75a841b0c7d365",
+    "semantic_hash": "ae9c35096be36358be75a841b0c7d365"
+  },
+  "native/UI/LibraryVaultPanel.Categories.cs": {
+    "mtime": 1786433631.9221554,
+    "ast_hash": "0ea91443067ef27a31afc30fce49c10f",
+    "semantic_hash": "0ea91443067ef27a31afc30fce49c10f"
+  },
+  "native/UI/MainForm.CameraNavigation.cs": {
+    "mtime": 1786441519.781401,
+    "ast_hash": "a25ae8653eb461bd43c20f86b149e5c2",
+    "semantic_hash": "a25ae8653eb461bd43c20f86b149e5c2"
+  },
+  "native/UI/MainForm.ExternalSvgAssets.cs": {
+    "mtime": 1786433592.4286487,
+    "ast_hash": "e06f484e7637f2142bba451231eafae2",
+    "semantic_hash": "e06f484e7637f2142bba451231eafae2"
+  },
+  "native/UI/MainForm.HierarchyFocus.cs": {
+    "mtime": 1786426745.6746385,
+    "ast_hash": "c68df4113d6f67523f2fda33d7cbe53c",
+    "semantic_hash": "c68df4113d6f67523f2fda33d7cbe53c"
+  },
+  "native/UI/MainForm.Scene3DContextMenu.cs": {
+    "mtime": 1786466157.8124275,
+    "ast_hash": "7f61d45e914a6348beee94fde2b3a39c",
+    "semantic_hash": "7f61d45e914a6348beee94fde2b3a39c"
+  },
+  "native/UI/MainForm.SceneComponents.cs": {
+    "mtime": 1786434985.7398562,
+    "ast_hash": "a2dc6ba688aaf22add4560469907c24e",
+    "semantic_hash": "a2dc6ba688aaf22add4560469907c24e"
+  },
+  "native/UI/MainForm.SceneLightGizmo.cs": {
+    "mtime": 1786467866.3866358,
+    "ast_hash": "95a09cab480e7bc75c8e385d1509cb48",
+    "semantic_hash": "95a09cab480e7bc75c8e385d1509cb48"
+  },
+  "native/UI/MainForm.SceneOptics.History.cs": {
+    "mtime": 1786465661.4257913,
+    "ast_hash": "c7ae03b92b6c715e72456d5b82460d8f",
+    "semantic_hash": "c7ae03b92b6c715e72456d5b82460d8f"
+  },
+  "native/UI/MainForm.SceneOptics.cs": {
+    "mtime": 1786468065.5066624,
+    "ast_hash": "ac5fabb582ea50d9b6f7876351c80a79",
+    "semantic_hash": "ac5fabb582ea50d9b6f7876351c80a79"
+  },
+  "native/UI/MainForm.SnapPoints.cs": {
+    "mtime": 1786458189.8544147,
+    "ast_hash": "bd500406a53aaab97ca113b450e43be4",
+    "semantic_hash": "bd500406a53aaab97ca113b450e43be4"
+  },
+  "native/UI/SceneLightingPanel.cs": {
+    "mtime": 1786468007.7215009,
+    "ast_hash": "79830ae27fcda6b6426c84ac8da7a68b",
+    "semantic_hash": "79830ae27fcda6b6426c84ac8da7a68b"
+  },
+  "native/UI/SpatialMaterialPanel.cs": {
+    "mtime": 1786450567.7782743,
+    "ast_hash": "112cd930c0ada7e49ddf67a30921f2a0",
+    "semantic_hash": "112cd930c0ada7e49ddf67a30921f2a0"
+  },
+  "graphify-out/memory/query_20260811_071939_\u7d20\u6750\u5e93\u5206\u7c7b_3d\u573a\u666ff8\u7ec4\u5408\u4e0e\u5916\u90e8svg\u94fe\u63a5\u901a\u8fc7\u54ea\u4e9b\u4ee3\u7801\u94fe\u8def\u5b9e\u73b0.md": {
+    "mtime": 1786432779.1987305,
+    "ast_hash": "cd5a4b2c3fac4a5f6a7f11e8eb3c8a75",
+    "semantic_hash": "cd5a4b2c3fac4a5f6a7f11e8eb3c8a75"
+  },
+  "graphify-out/memory/query_20260811_084833_how_does_mainform_route_3d_keyboard_input_to_stage.md": {
+    "mtime": 1786438113.0010476,
+    "ast_hash": "597bff24cde91f695ae3e1faedd58ce5",
+    "semantic_hash": "597bff24cde91f695ae3e1faedd58ce5"
+  },
+  "graphify-out/memory/query_20260811_085645_3d_\u64cd\u4f5c\u4e2d\u9009\u5143\u4ef6\u540e\u81ea\u52a8\u5207\u6362\u5230_transform_\u5de5\u5177.md": {
+    "mtime": 1786438605.7099974,
+    "ast_hash": "5c555b72c3db784dac35a5ab6da9de4e",
+    "semantic_hash": "5c555b72c3db784dac35a5ab6da9de4e"
+  },
+  "graphify-out/memory/query_20260811_153828_image__1__\u6211\u653e\u4e86\u4e00\u4e2a\u70b9\u5149\u6e90\u5728\u8fd9\u91cc\u4f46\u662f\u5143\u4ef6\u63a5\u6536\u4e0d\u5230\u4efb\u4f55\u5149\u7167.md": {
+    "mtime": 1786462708.9671164,
+    "ast_hash": "f1ea9d68df44d50858fb7315b6fdd798",
+    "semantic_hash": "f1ea9d68df44d50858fb7315b6fdd798"
+  },
+  "graphify-out/memory/query_20260811_160806_image__1__\u5143\u4ef6\u7684\u80cc\u5149\u9762\u88ab\u9519\u8bef\u5f71\u54cd\u4e86.md": {
+    "mtime": 1786464486.146177,
+    "ast_hash": "5e749b7612ae384d5eaa749798d7f59b",
+    "semantic_hash": "5e749b7612ae384d5eaa749798d7f59b"
   }
 }

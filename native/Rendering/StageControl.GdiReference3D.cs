@@ -5,6 +5,84 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class StageControl
 {
+    // GDI+ has no opacity layer, so translucent physical items are composed here first.
+    private sealed class Reference3DGdiOpacitySurface(Size size) : IDisposable
+    {
+        private readonly Size _size = new(
+            Math.Max(1, size.Width),
+            Math.Max(1, size.Height));
+        private Bitmap? _bitmap;
+        private Graphics? _graphics;
+        private ImageAttributes? _attributes;
+        private ColorMatrix? _opacityMatrix;
+
+        public Graphics Begin(Graphics template)
+        {
+            EnsureSurface();
+            _graphics!.ResetTransform();
+            _graphics.ResetClip();
+            _graphics.CompositingMode = CompositingMode.SourceCopy;
+            _graphics.Clear(Color.Transparent);
+            _graphics.CompositingMode = CompositingMode.SourceOver;
+            _graphics.CompositingQuality = template.CompositingQuality;
+            _graphics.SmoothingMode = template.SmoothingMode;
+            _graphics.PixelOffsetMode = template.PixelOffsetMode;
+            _graphics.InterpolationMode = template.InterpolationMode;
+            using var transform = template.Transform;
+            _graphics.Transform = transform;
+            return _graphics;
+        }
+
+        public void CompositeTo(Graphics destination, float opacity)
+        {
+            if (_bitmap is null) return;
+            opacity = float.IsFinite(opacity) ? Math.Clamp(opacity, 0f, 1f) : 1f;
+            if (opacity <= 0f) return;
+
+            _attributes ??= new ImageAttributes();
+            _opacityMatrix ??= new ColorMatrix();
+            _opacityMatrix.Matrix33 = opacity;
+            _attributes.SetColorMatrix(
+                _opacityMatrix,
+                ColorMatrixFlag.Default,
+                ColorAdjustType.Bitmap);
+            var state = destination.Save();
+            try
+            {
+                destination.ResetTransform();
+                destination.CompositingMode = CompositingMode.SourceOver;
+                destination.InterpolationMode = InterpolationMode.NearestNeighbor;
+                destination.DrawImage(
+                    _bitmap,
+                    new Rectangle(0, 0, _size.Width, _size.Height),
+                    0,
+                    0,
+                    _size.Width,
+                    _size.Height,
+                    GraphicsUnit.Pixel,
+                    _attributes);
+            }
+            finally
+            {
+                destination.Restore(state);
+            }
+        }
+
+        public void Dispose()
+        {
+            _attributes?.Dispose();
+            _graphics?.Dispose();
+            _bitmap?.Dispose();
+        }
+
+        private void EnsureSurface()
+        {
+            if (_bitmap is not null) return;
+            _bitmap = new Bitmap(_size.Width, _size.Height, PixelFormat.Format32bppPArgb);
+            _graphics = Graphics.FromImage(_bitmap);
+        }
+    }
+
     private RenderStats DrawReference3DScene(Graphics graphics)
     {
         var editableScene = Scene;
@@ -39,6 +117,20 @@ internal sealed partial class StageControl
         }
     }
 
+    internal void DrawGdiReference3DPlaybackBackground(Graphics graphics)
+    {
+        ResetLastGdiFrameTelemetry();
+        graphics.ResetTransform();
+        graphics.ResetClip();
+        graphics.Clear(BackColor);
+        graphics.SmoothingMode = SmoothingMode.None;
+        DrawGrid(graphics);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        BeginScenePassOrder();
+        RecordEditableScenePass();
+    }
+
     private RenderStats DrawReference3DCurrentScene(Graphics graphics)
     {
         var visible = 0;
@@ -59,6 +151,7 @@ internal sealed partial class StageControl
         }
 
         var previousSmoothing = graphics.SmoothingMode;
+        using var opacitySurface = new Reference3DGdiOpacitySurface(ClientSize);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         try
         {
@@ -76,7 +169,11 @@ internal sealed partial class StageControl
                         {
                             foreach (var item in GetReference3DCompositeLayerRenderItems(layers))
                             {
-                                if (DrawReference3DSceneItem(layerGraphics, item, maskPaths))
+                                if (DrawReference3DSceneItem(
+                                        layerGraphics,
+                                        item,
+                                        maskPaths,
+                                        opacitySurface))
                                 {
                                     drawnObjects.Add(item.ObjectIndex);
                                 }
@@ -97,7 +194,11 @@ internal sealed partial class StageControl
                 {
                     foreach (var item in GetReference3DSceneRenderItems())
                     {
-                        if (DrawReference3DSceneItem(graphics, item, maskPaths))
+                        if (DrawReference3DSceneItem(
+                                graphics,
+                                item,
+                                maskPaths,
+                                opacitySurface))
                         {
                             drawnObjects.Add(item.ObjectIndex);
                         }
@@ -121,7 +222,8 @@ internal sealed partial class StageControl
     private bool DrawReference3DSceneItem(
         Graphics graphics,
         Reference3DRenderItem item,
-        IDictionary<int, GraphicsPath?> maskPaths)
+        IDictionary<int, GraphicsPath?> maskPaths,
+        Reference3DGdiOpacitySurface opacitySurface)
     {
         if ((uint)item.ObjectIndex >= Scene.ObjectCount
             || IsObjectHiddenForRendering(Scene, item.ObjectIndex))
@@ -129,6 +231,33 @@ internal sealed partial class StageControl
             return false;
         }
 
+        var opacity = float.IsFinite(item.MaterialOpacity)
+            ? Math.Clamp(item.MaterialOpacity, 0f, 1f)
+            : 1f;
+        var physicalSurface = item.Kind is Reference3DRenderKind.Back
+                or Reference3DRenderKind.Side
+                or Reference3DRenderKind.FrontFill
+                or Reference3DRenderKind.FrontStroke;
+        if (physicalSurface && opacity < 0.999999f)
+        {
+            if (opacity <= 0f) return false;
+            var surfaceGraphics = opacitySurface.Begin(graphics);
+            var drawn = DrawReference3DSceneItemClipped(
+                surfaceGraphics,
+                item with { MaterialOpacity = 1f },
+                maskPaths);
+            if (drawn) opacitySurface.CompositeTo(graphics, opacity);
+            return drawn;
+        }
+
+        return DrawReference3DSceneItemClipped(graphics, item, maskPaths);
+    }
+
+    private bool DrawReference3DSceneItemClipped(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        IDictionary<int, GraphicsPath?> maskPaths)
+    {
         if (!TryGetReference3DLayerMaskPath(item.LayerIndex, maskPaths, out var maskPath))
         {
             return false;
@@ -201,13 +330,32 @@ internal sealed partial class StageControl
         Graphics graphics,
         Reference3DRenderItem item)
     {
+        if (item.OpticalSurface is { } opticalSurface
+            && item.Kind is Reference3DRenderKind.Back
+                or Reference3DRenderKind.Side
+                or Reference3DRenderKind.FrontFill
+                or Reference3DRenderKind.FrontStroke)
+        {
+            var surfaceDrawn = false;
+            DrawWithSceneCompositionMaskClips(
+                graphics,
+                item.ObjectIndex,
+                () =>
+                {
+                    DrawReference3DOpticalSurface(graphics, opticalSurface);
+                    surfaceDrawn = true;
+                },
+                reference3D: true);
+            return surfaceDrawn;
+        }
+
         switch (item.Kind)
         {
             case Reference3DRenderKind.FrontFill:
-                DrawReference3DObject(graphics, item.ObjectIndex, SceneRenderPass.Fill);
+                DrawReference3DObject(graphics, item, SceneRenderPass.Fill);
                 return true;
             case Reference3DRenderKind.FrontStroke:
-                DrawReference3DObject(graphics, item.ObjectIndex, SceneRenderPass.Stroke);
+                DrawReference3DObject(graphics, item, SceneRenderPass.Stroke);
                 return true;
             case Reference3DRenderKind.Back:
             case Reference3DRenderKind.Side:
@@ -224,11 +372,41 @@ internal sealed partial class StageControl
                     () => objectDrawn = DrawReference3DObjectOutline(
                         graphics,
                         item.ObjectIndex,
-                        outlineColor),
+                        outlineColor,
+                        item.MaterialOpacity),
                     reference3D: true);
                 return objectDrawn;
             default:
                 return false;
+        }
+    }
+
+    private static void DrawReference3DOpticalSurface(
+        Graphics graphics,
+        Reference3DOpticalSurface surface)
+    {
+        var state = graphics.Save();
+        try
+        {
+            graphics.ResetTransform();
+            graphics.CompositingMode = CompositingMode.SourceOver;
+            graphics.InterpolationMode = surface.PixelWidth == surface.Bounds.Width
+                && surface.PixelHeight == surface.Bounds.Height
+                    ? InterpolationMode.NearestNeighbor
+                    : InterpolationMode.Bilinear;
+            graphics.PixelOffsetMode = PixelOffsetMode.Half;
+            graphics.DrawImage(
+                surface.Bitmap,
+                surface.Bounds,
+                0,
+                0,
+                surface.PixelWidth,
+                surface.PixelHeight,
+                GraphicsUnit.Pixel);
+        }
+        finally
+        {
+            graphics.Restore(state);
         }
     }
 
@@ -293,10 +471,10 @@ internal sealed partial class StageControl
             switch (item.Kind)
             {
                 case Reference3DRenderKind.FrontFill:
-                    DrawReference3DObject(graphics, item.ObjectIndex, SceneRenderPass.Fill);
+                    DrawReference3DObject(graphics, item, SceneRenderPass.Fill);
                     break;
                 case Reference3DRenderKind.FrontStroke:
-                    DrawReference3DObject(graphics, item.ObjectIndex, SceneRenderPass.Stroke);
+                    DrawReference3DObject(graphics, item, SceneRenderPass.Stroke);
                     break;
                 default:
                     DrawReference3DExtrusionSurface(graphics, item);
@@ -320,13 +498,211 @@ internal sealed partial class StageControl
             {
                 using var path = CreateReference3DPath(item.Contours, fillOnly: true);
                 if (path.PointCount == 0) return;
-                using var fill = new SolidBrush(GetReference3DExtrusionColor(item.ObjectIndex));
+                using var fill = new SolidBrush(ApplyReference3DMaterialOpacity(
+                    Color.FromArgb(item.VectorLightingArgb
+                        ?? GetReference3DExtrusionSurfaceColor(item).ToArgb()),
+                    item.MaterialOpacity));
                 FillPathAntialiased(graphics, path, fill);
+                if (item.VectorLightingArgb is null)
+                {
+                    DrawReference3DOpticalFinish(graphics, item, path);
+                }
             },
             reference3D: true);
     }
 
-    private static bool DrawReference3DIntersectionEdge(
+    private void DrawReference3DOpticalFinish(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        GraphicsPath? surfacePath = null)
+    {
+        if (item.VectorLightingArgb is not null) return;
+        var ownsSurfacePath = surfacePath is null;
+        var resolvedSurfacePath = surfacePath
+            ?? CreateReference3DPath(item.Contours, fillOnly: true);
+        if (resolvedSurfacePath.PointCount == 0)
+        {
+            if (ownsSurfacePath) resolvedSurfacePath.Dispose();
+            return;
+        }
+        try
+        {
+            var shade = ApplyReference3DMaterialOpacity(
+                Color.FromArgb(item.OpticalResponse.ShadeArgb),
+                item.MaterialOpacity);
+            if (shade.A > 0)
+            {
+                using var shadeBrush = new SolidBrush(shade);
+                FillPathAntialiased(graphics, resolvedSurfacePath, shadeBrush);
+            }
+            if (item.LocalLightLayers is { Length: > 0 }
+                || item.ShadowLayers is { Length: > 0 })
+            {
+                var opticalClipState = graphics.Save();
+                try
+                {
+                    graphics.SetClip(resolvedSurfacePath, CombineMode.Intersect);
+                    if (item.LocalLightLayers is { Length: > 0 } localLightLayers)
+                    {
+                        foreach (var layer in localLightLayers)
+                        {
+                            using var lightPath = CreateReference3DPath(
+                                layer.Contours,
+                                fillOnly: true);
+                            if (lightPath.PointCount == 0) continue;
+                            if (layer.DiffuseStops.Any(stop => Color.FromArgb(stop.Argb).A > 0))
+                            {
+                                DrawReference3DLocalLightGradient(
+                                    graphics,
+                                    lightPath,
+                                    layer.GradientTransform,
+                                    layer.DiffuseStops,
+                                    item.MaterialOpacity);
+                            }
+                            if (layer.SpecularStops.Any(stop => Color.FromArgb(stop.Argb).A > 0))
+                            {
+                                DrawReference3DLocalLightGradient(
+                                    graphics,
+                                    lightPath,
+                                    layer.GradientTransform,
+                                    layer.SpecularStops,
+                                    item.MaterialOpacity);
+                            }
+                        }
+                    }
+                    if (item.ShadowLayers is { Length: > 0 } shadowLayers)
+                    {
+                        foreach (var shadow in shadowLayers)
+                        {
+                            using var shadowPath = CreateReference3DPath(
+                                shadow.Contours,
+                                fillOnly: true);
+                            if (shadowPath.PointCount == 0) continue;
+                            var shadowColor = ApplyReference3DMaterialOpacity(
+                                Color.FromArgb(shadow.Argb),
+                                item.MaterialOpacity);
+                            if (shadowColor.A == 0) continue;
+                            using var shadowBrush = new SolidBrush(shadowColor);
+                            FillPathAntialiased(graphics, shadowPath, shadowBrush);
+                        }
+                    }
+                }
+                finally
+                {
+                    graphics.Restore(opticalClipState);
+                }
+            }
+            var highlight = ApplyReference3DMaterialOpacity(
+                Color.FromArgb(item.OpticalResponse.HighlightArgb),
+                item.MaterialOpacity);
+            if (highlight.A > 0)
+            {
+                using var highlightBrush = new SolidBrush(highlight);
+                FillPathAntialiased(graphics, resolvedSurfacePath, highlightBrush);
+            }
+        }
+        finally
+        {
+            if (ownsSurfacePath) resolvedSurfacePath.Dispose();
+        }
+    }
+
+    private void DrawReference3DLocalLightGradient(
+        Graphics graphics,
+        GraphicsPath lightPath,
+        System.Numerics.Matrix3x2 transform,
+        IReadOnlyList<GradientStop> stops,
+        float materialOpacity,
+        bool reinforceEdge = true)
+    {
+        if (stops is not GradientStop[] stopArray)
+        {
+            stopArray = stops.ToArray();
+        }
+
+        var brush = Reference3DGdiLocalLightBrush(stopArray, materialOpacity);
+        using var brushTransform = new Matrix(
+            transform.M11,
+            transform.M12,
+            transform.M21,
+            transform.M22,
+            transform.M31,
+            transform.M32);
+        brush.Transform = brushTransform;
+        if (reinforceEdge)
+        {
+            FillPathAntialiased(graphics, lightPath, brush);
+        }
+        else
+        {
+            FillReference3DOpticalOverlay(graphics, lightPath, brush);
+        }
+    }
+
+    private static void FillReference3DOpticalOverlay(
+        Graphics graphics,
+        GraphicsPath path,
+        Brush brush)
+    {
+        var smoothingMode = graphics.SmoothingMode;
+        var pixelOffsetMode = graphics.PixelOffsetMode;
+        try
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.FillPath(brush, path);
+        }
+        finally
+        {
+            graphics.SmoothingMode = smoothingMode;
+            graphics.PixelOffsetMode = pixelOffsetMode;
+        }
+    }
+
+    private PathGradientBrush Reference3DGdiLocalLightBrush(
+        GradientStop[] stops,
+        float materialOpacity)
+    {
+        materialOpacity = float.IsFinite(materialOpacity)
+            ? Math.Clamp(materialOpacity, 0f, 1f)
+            : 1f;
+        var key = new Reference3DGdiLocalLightBrushKey(
+            stops,
+            BitConverter.SingleToInt32Bits(materialOpacity));
+        if (_reference3DGdiLocalLightBrushes.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+        if (_reference3DGdiLocalLightBrushes.Count >= MaximumReference3DGdiLocalLightBrushProfiles)
+        {
+            ClearReference3DGdiLocalLightBrushCache();
+        }
+
+        using var unitPath = new GraphicsPath(FillMode.Winding);
+        const int segments = 48;
+        var boundary = new PointF[segments];
+        for (var index = 0; index < boundary.Length; index++)
+        {
+            var angle = MathF.Tau * index / boundary.Length;
+            boundary[index] = new PointF(MathF.Cos(angle), MathF.Sin(angle));
+        }
+        unitPath.AddPolygon(boundary);
+        cached = new PathGradientBrush(unitPath)
+        {
+            CenterPoint = PointF.Empty,
+            InterpolationColors = Reference3DColorBlend(stops, materialOpacity)
+        };
+        _reference3DGdiLocalLightBrushes.Add(key, cached);
+        return cached;
+    }
+
+    private void ClearReference3DGdiLocalLightBrushCache()
+    {
+        foreach (var brush in _reference3DGdiLocalLightBrushes.Values) brush.Dispose();
+        _reference3DGdiLocalLightBrushes.Clear();
+    }
+
+    private bool DrawReference3DIntersectionEdge(
         Graphics graphics,
         Reference3DRenderItem item)
     {
@@ -338,13 +714,28 @@ internal sealed partial class StageControl
         }
         using var path = CreateReference3DPath(item.Contours, fillOnly: false);
         if (path.PointCount == 0) return false;
-        using var pen = new Pen(Color.FromArgb(item.EdgeArgb), item.EdgeWidth)
+        var edgeColor = Color.FromArgb(
+            item.SolidStrokeOpticalBaseArgb ?? item.EdgeArgb);
+        using var pen = new Pen(
+            ApplyReference3DMaterialOpacity(edgeColor, item.MaterialOpacity),
+            item.EdgeWidth)
         {
             LineJoin = LineJoin.Round,
             StartCap = item.EdgeStartCap ? LineCap.Round : LineCap.Flat,
             EndCap = item.EdgeEndCap ? LineCap.Round : LineCap.Flat
         };
         graphics.DrawPath(pen, path);
+        if (item.OpticalSurfaceContours is { Length: > 0 } opticalContours)
+        {
+            using var opticalPath = CreateReference3DPath(opticalContours, fillOnly: true);
+            if (opticalPath.PointCount > 0)
+            {
+                DrawReference3DStrokeOpticalLayers(
+                    graphics,
+                    item,
+                    opticalPath);
+            }
+        }
         return true;
     }
 
@@ -376,61 +767,403 @@ internal sealed partial class StageControl
         return edgeDrawn;
     }
 
-    private void DrawReference3DObject(Graphics graphics, int objectIndex, SceneRenderPass pass)
+    private void DrawReference3DObject(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        SceneRenderPass pass)
     {
         DrawWithSceneCompositionMaskClips(
             graphics,
-            objectIndex,
-            () => DrawReference3DObjectUnclipped(graphics, objectIndex, pass),
+            item.ObjectIndex,
+            () =>
+            {
+                GraphicsPath? sharedFillPath = null;
+                try
+                {
+                    if (pass == SceneRenderPass.Fill
+                        && item.OpticalSurface is null
+                        && CanReuseReference3DVectorFillPath(item))
+                    {
+                        sharedFillPath = CreateReference3DPath(item.Contours, fillOnly: true);
+                    }
+
+                    DrawReference3DObjectUnclipped(
+                        graphics,
+                        item,
+                        pass,
+                        sharedFillPath);
+                    if (pass == SceneRenderPass.Fill)
+                    {
+                        DrawReference3DOpticalFinish(graphics, item, sharedFillPath);
+                    }
+                    else if (item.OpticalSurfaceContours is { Length: > 0 } opticalContours)
+                    {
+                        using var opticalPath = CreateReference3DPath(
+                            opticalContours,
+                            fillOnly: true);
+                        if (opticalPath.PointCount > 0)
+                        {
+                            DrawReference3DStrokeOpticalLayers(
+                                graphics,
+                                item,
+                                opticalPath);
+                        }
+                    }
+                }
+                finally
+                {
+                    sharedFillPath?.Dispose();
+                }
+            },
             reference3D: true);
     }
 
-    private void DrawReference3DObjectUnclipped(Graphics graphics, int objectIndex, SceneRenderPass pass)
+    private bool CanReuseReference3DVectorFillPath(Reference3DRenderItem item)
     {
+        if (item.Kind != Reference3DRenderKind.FrontFill
+            || item.Contours.Length == 0
+            || (uint)item.ObjectIndex >= Scene.ObjectCount)
+        {
+            return false;
+        }
+        var shape = Scene.ShapeKind[item.ObjectIndex];
+        return shape is not (ShapeKind.ImportedSvg or ShapeKind.MixingStroke)
+            && !Scene.HasGradient(item.ObjectIndex);
+    }
+
+    private void DrawReference3DStrokeOpticalLayers(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        GraphicsPath surfacePath)
+    {
+        var opticalClipState = graphics.Save();
+        try
+        {
+            graphics.SetClip(surfacePath, CombineMode.Intersect);
+            foreach (var layer in item.LocalLightLayers ?? [])
+            {
+                using var lightPath = CreateReference3DPath(layer.Contours, fillOnly: true);
+                if (lightPath.PointCount == 0) continue;
+                if (layer.SolidStrokeStops is { Length: > 0 } solidStrokeStops)
+                {
+                    DrawReference3DLocalLightGradient(
+                        graphics,
+                        lightPath,
+                        layer.GradientTransform,
+                        solidStrokeStops,
+                        item.MaterialOpacity,
+                        reinforceEdge: false);
+                }
+                else
+                {
+                    if (layer.DiffuseStops.Any(stop => Color.FromArgb(stop.Argb).A > 0))
+                    {
+                        DrawReference3DLocalLightGradient(
+                            graphics,
+                            lightPath,
+                            layer.GradientTransform,
+                            layer.DiffuseStops,
+                            item.MaterialOpacity,
+                            reinforceEdge: false);
+                    }
+                    if (layer.SpecularStops.Any(stop => Color.FromArgb(stop.Argb).A > 0))
+                    {
+                        DrawReference3DLocalLightGradient(
+                            graphics,
+                            lightPath,
+                            layer.GradientTransform,
+                            layer.SpecularStops,
+                            item.MaterialOpacity,
+                            reinforceEdge: false);
+                    }
+                }
+            }
+            foreach (var shadow in item.ShadowLayers ?? [])
+            {
+                using var shadowPath = CreateReference3DPath(shadow.Contours, fillOnly: true);
+                if (shadowPath.PointCount == 0) continue;
+                using var shadowBrush = new SolidBrush(ApplyReference3DMaterialOpacity(
+                    Color.FromArgb(shadow.Argb),
+                    item.MaterialOpacity));
+                FillReference3DOpticalOverlay(graphics, shadowPath, shadowBrush);
+            }
+        }
+        finally
+        {
+            graphics.Restore(opticalClipState);
+        }
+    }
+
+    private void DrawReference3DObjectUnclipped(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        SceneRenderPass pass,
+        GraphicsPath? fillPath = null)
+    {
+        var objectIndex = item.ObjectIndex;
         if (IsObjectHiddenForRendering(Scene, objectIndex)) return;
         var shape = Scene.ShapeKind[objectIndex];
         if (shape == ShapeKind.ImportedSvg)
         {
-            if (pass == SceneRenderPass.Fill) DrawReference3DImportedSvg(graphics, objectIndex);
+            if (pass == SceneRenderPass.Fill)
+            {
+                DrawReference3DImportedSvg(graphics, objectIndex, item.MaterialOpacity);
+            }
             return;
         }
         if (shape == ShapeKind.MixingStroke)
         {
-            if (pass == SceneRenderPass.Fill) DrawReference3DMixingStroke(graphics, objectIndex);
+            if (pass == SceneRenderPass.Fill)
+            {
+                DrawReference3DMixingStroke(graphics, objectIndex, item.MaterialOpacity);
+            }
             return;
         }
         if (Scene.HasGradient(objectIndex)
-            && TryDrawReference3DFrontGradient(graphics, objectIndex, shape, pass))
+            && TryDrawReference3DFrontGradient(
+                graphics,
+                item,
+                shape,
+                pass,
+                item.MaterialOpacity))
         {
+            if (pass == SceneRenderPass.Stroke && shape == ShapeKind.Line)
+            {
+                var gradientWidth = GetReference3DStrokeWidth(
+                    objectIndex,
+                    Scene.Stroke[objectIndex]);
+                DrawReference3DLineEndpointJoins(
+                    graphics,
+                    item,
+                    gradientWidth,
+                    Reference3DLineEndpointGradientColor(
+                        objectIndex,
+                        startEndpoint: true,
+                        item.MaterialOpacity,
+                        item.OpticalStrokeGradientStops),
+                    Reference3DLineEndpointGradientColor(
+                        objectIndex,
+                        startEndpoint: false,
+                        item.MaterialOpacity,
+                        item.OpticalStrokeGradientStops));
+            }
             return;
         }
 
-        var contours = GetReference3DProjectedContours(objectIndex);
-        if (contours.Length == 0) return;
-        using var path = CreateReference3DPath(contours, fillOnly: pass == SceneRenderPass.Fill);
-        if (path.PointCount == 0) return;
-        if (pass == SceneRenderPass.Fill)
+        if (item.Contours.Length == 0) return;
+        var ownsPath = fillPath is null;
+        var path = fillPath ?? CreateReference3DPath(
+            item.Contours,
+            fillOnly: pass == SceneRenderPass.Fill);
+        try
         {
-            using var fill = new SolidBrush(Color.FromArgb(Scene.Argb[objectIndex]));
-            FillPathAntialiased(graphics, path, fill);
-            return;
-        }
+            if (path.PointCount == 0) return;
+            if (pass == SceneRenderPass.Fill)
+            {
+                using var fill = new SolidBrush(ApplyReference3DMaterialOpacity(
+                    Color.FromArgb(item.VectorLightingArgb ?? Scene.Argb[objectIndex]),
+                    item.MaterialOpacity));
+                FillPathAntialiased(graphics, path, fill);
+                return;
+            }
 
-        var width = GetReference3DStrokeWidth(objectIndex, Scene.Stroke[objectIndex]);
-        if (width <= 0) return;
-        var color = Scene.StrokeArgb.Length > objectIndex
-            ? Color.FromArgb(Scene.StrokeArgb[objectIndex])
+            var width = GetReference3DStrokeWidth(objectIndex, Scene.Stroke[objectIndex]);
+            if (width <= 0) return;
+            var color = Scene.StrokeArgb.Length > objectIndex
+                ? Color.FromArgb(Scene.StrokeArgb[objectIndex])
+                : Color.FromArgb(238, 242, 241);
+            if (item.SolidStrokeOpticalBaseArgb is int solidStrokeArgb)
+            {
+                color = Color.FromArgb(solidStrokeArgb);
+            }
+            color = ApplyReference3DMaterialOpacity(color, item.MaterialOpacity);
+            if (shape == ShapeKind.Line)
+            {
+                DrawReference3DLineStroke(graphics, item, color, width);
+                DrawReference3DLineEndpointJoins(graphics, item, width, color, color);
+                return;
+            }
+            using var pen = new Pen(color, width)
+            {
+                LineJoin = LineJoin.Round,
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round
+            };
+            graphics.DrawPath(pen, path);
+        }
+        finally
+        {
+            if (ownsPath) path.Dispose();
+        }
+    }
+
+    private void DrawReference3DLineStroke(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        Color color,
+        float width)
+    {
+        var startStyle = Scene.GetLineEndpointStyle(item.ObjectIndex, startEndpoint: true);
+        var endStyle = Scene.GetLineEndpointStyle(item.ObjectIndex, startEndpoint: false);
+        var lineJoin = startStyle == LineEndpointStyle.Sharp
+            || endStyle == LineEndpointStyle.Sharp
+                ? LineJoin.Miter
+                : LineJoin.Round;
+        foreach (var contour in item.Contours)
+        {
+            if (contour.Closed || contour.Points.Length < 2) continue;
+            using var path = CreateReference3DPath([contour], fillOnly: false);
+            if (path.PointCount == 0) continue;
+            using var pen = new Pen(color, width)
+            {
+                LineJoin = lineJoin,
+                MiterLimit = 8,
+                StartCap = contour.HasSourceStart
+                    ? LineCapForEndpoint(startStyle)
+                    : LineCap.Flat,
+                EndCap = contour.HasSourceEnd
+                    ? LineCapForEndpoint(endStyle)
+                    : LineCap.Flat
+            };
+            graphics.DrawPath(pen, path);
+        }
+    }
+
+    private void DrawReference3DLineEndpointJoins(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        float width,
+        Color startColor,
+        Color endColor)
+    {
+        DrawEndpoint(startEndpoint: true, startColor);
+        DrawEndpoint(startEndpoint: false, endColor);
+
+        void DrawEndpoint(bool startEndpoint, Color color)
+        {
+            if (!TryGetReference3DLineEndpointJoin(
+                    item.ObjectIndex,
+                    startEndpoint,
+                    item.Contours,
+                    width,
+                    out var joint,
+                    out var miters,
+                    out _))
+            {
+                return;
+            }
+            using var brush = new SolidBrush(color);
+            foreach (var miter in miters)
+            {
+                graphics.FillPolygon(
+                    brush,
+                    [joint, miter.OuterFirstOffset, miter.OuterMiter, miter.OuterSecondOffset]);
+                graphics.FillPolygon(
+                    brush,
+                    [joint, miter.InnerFirstOffset, miter.InnerMiter, miter.InnerSecondOffset]);
+            }
+        }
+    }
+
+    private static Color ApplyReference3DMaterialOpacity(Color color, float opacity)
+    {
+        if (color.A == 0) return color;
+        var scale = float.IsFinite(opacity) ? Math.Clamp(opacity, 0f, 1f) : 1f;
+        if (scale >= 0.999999f) return color;
+        var alpha = (int)Math.Clamp(Math.Round(color.A * scale), 0, 255);
+        return Color.FromArgb(alpha, color.R, color.G, color.B);
+    }
+
+    private Color Reference3DLineEndpointGradientColor(
+        int objectIndex,
+        bool startEndpoint,
+        float materialOpacity,
+        IReadOnlyList<GradientStop>? opticalStops = null)
+    {
+        var sourceKind = Scene.GetGradientKind(objectIndex);
+        // GDI's affine Line path treats ShapeRadial as linear; its projective path uses the mapping.
+        var renderedKind = sourceKind switch
+        {
+            GradientKind.Radial => GradientKind.Radial,
+            GradientKind.ShapeRadial when !TryGetReference3DFlatToScreenTransform(
+                objectIndex,
+                out _) => GradientKind.ShapeRadial,
+            _ => GradientKind.Linear
+        };
+        var color = SampleReference3DLineEndpointGradient(
+            Scene,
+            objectIndex,
+            startEndpoint,
+            renderedKind,
+            opticalStops);
+        return ApplyReference3DMaterialOpacity(color, materialOpacity);
+    }
+
+    internal static Color SampleReference3DLineEndpointGradient(
+        VectorScene scene,
+        int objectIndex,
+        bool startEndpoint,
+        GradientKind renderedKind,
+        IReadOnlyList<GradientStop>? opticalStops = null)
+    {
+        var fallback = (uint)objectIndex < scene.StrokeArgb.Length
+            ? Color.FromArgb(scene.StrokeArgb[objectIndex])
             : Color.FromArgb(238, 242, 241);
-        using var pen = StrokePen(color, width);
-        graphics.DrawPath(pen, path);
+        if ((uint)objectIndex >= scene.ObjectCount
+            || !scene.HasGradient(objectIndex)
+            || !scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var endpoint))
+        {
+            return fallback;
+        }
+
+        var stops = opticalStops is { Count: > 0 }
+            ? opticalStops
+            : scene.GetGradientStops(objectIndex);
+        if (stops.Count == 0) return fallback;
+        var start = scene.GetGradientStart(objectIndex);
+        var end = scene.GetGradientEnd(objectIndex);
+        var axisX = end.X - start.X;
+        var axisY = end.Y - start.Y;
+        var axisLengthSquared = axisX * axisX + axisY * axisY;
+        if (!float.IsFinite(axisLengthSquared) || axisLengthSquared <= 0.0001f)
+        {
+            return Color.FromArgb(stops[^1].Argb);
+        }
+
+        float position;
+        if (renderedKind == GradientKind.ShapeRadial)
+        {
+            position = GradientPaintUtilities.ShapeRadialPosition(
+                scene.GetShapeGradientMappingContours(objectIndex),
+                start,
+                endpoint);
+        }
+        else if (renderedKind == GradientKind.Radial)
+        {
+            var pointX = endpoint.X - start.X;
+            var pointY = endpoint.Y - start.Y;
+            var pointDistanceSquared = pointX * pointX + pointY * pointY;
+            position = float.IsFinite(pointDistanceSquared)
+                ? MathF.Sqrt(Math.Max(0, pointDistanceSquared)) / MathF.Sqrt(axisLengthSquared)
+                : 1f;
+        }
+        else
+        {
+            position = ((endpoint.X - start.X) * axisX + (endpoint.Y - start.Y) * axisY)
+                / axisLengthSquared;
+        }
+        if (!float.IsFinite(position)) position = 1f;
+        return GradientPaintUtilities.SampleColor(stops, Math.Clamp(position, 0f, 1f));
     }
 
     private bool TryDrawReference3DFrontGradient(
         Graphics graphics,
-        int objectIndex,
+        Reference3DRenderItem item,
         ShapeKind shape,
-        SceneRenderPass pass)
+        SceneRenderPass pass,
+        float materialOpacity)
     {
+        var objectIndex = item.ObjectIndex;
         var gradientPass = pass == SceneRenderPass.Fill && shape != ShapeKind.Line
             || pass == SceneRenderPass.Stroke && shape == ShapeKind.Line;
         if (!gradientPass)
@@ -439,7 +1172,11 @@ internal sealed partial class StageControl
         }
         if (!TryGetReference3DFlatToScreenTransform(objectIndex, out var transform))
         {
-            return TryDrawReference3DProjectiveFrontGradient(graphics, objectIndex, pass);
+            return TryDrawReference3DProjectiveFrontGradient(
+                graphics,
+                item,
+                pass,
+                materialOpacity);
         }
 
         using var path = CreateReference3DSourcePath(
@@ -448,57 +1185,64 @@ internal sealed partial class StageControl
         if (path.PointCount == 0) return false;
         using var screenMask = pass == SceneRenderPass.Fill
             ? CreateReference3DPath(
-                GetReference3DProjectedContours(objectIndex),
+                item.Contours,
                 fillOnly: true)
             : null;
         if (pass == SceneRenderPass.Fill && screenMask!.PointCount == 0) return false;
 
-        using var matrix = new Matrix(
-            transform.M11,
-            transform.M12,
-            transform.M21,
-            transform.M22,
-            transform.M31,
-            transform.M32);
+        using var matrix = Reference3DGdiScreenMatrix(transform);
         var state = graphics.Save();
         try
         {
             if (screenMask is not null) graphics.SetClip(screenMask, CombineMode.Intersect);
             graphics.Transform = matrix;
-            var stops = Scene.GetGradientStops(objectIndex);
+            var sourceStops = pass == SceneRenderPass.Stroke
+                && item.OpticalStrokeGradientStops is { Length: > 0 } opticalStrokeStops
+                ? opticalStrokeStops
+                : pass == SceneRenderPass.Fill
+                    && item.OpticalGradientStops is { Length: > 0 } opticalGradientStops
+                    ? opticalGradientStops
+                : Scene.GetGradientStops(objectIndex);
+            var stops = GradientPaintUtilities.ScaleStopAlpha(sourceStops, materialOpacity);
             if (pass == SceneRenderPass.Stroke)
             {
+                var startStyle = Scene.GetLineEndpointStyle(objectIndex, startEndpoint: true);
+                var endStyle = Scene.GetLineEndpointStyle(objectIndex, startEndpoint: false);
                 using var stroke = CreateReference3DSourceGradientBrush(objectIndex, stops);
                 using var pen = new Pen(
                     stroke,
                     GetReference3DSourceStrokeWidth(objectIndex, Scene.Stroke[objectIndex]))
                 {
-                    LineJoin = LineJoin.Round,
-                    StartCap = LineCap.Round,
-                    EndCap = LineCap.Round
+                    LineJoin = startStyle == LineEndpointStyle.Sharp
+                        || endStyle == LineEndpointStyle.Sharp
+                            ? LineJoin.Miter
+                            : LineJoin.Round,
+                    MiterLimit = 8,
+                    StartCap = LineCapForEndpoint(startStyle),
+                    EndCap = LineCapForEndpoint(endStyle)
                 };
                 graphics.DrawPath(pen, path);
                 return true;
             }
 
             if (Scene.GetGradientKind(objectIndex) == GradientKind.Linear
-                && DrawReference3DSourcePathGradientFill(graphics, path, objectIndex, stops, transform))
+                && DrawReference3DSourcePathGradientFill(graphics, path, objectIndex, stops))
             {
                 return true;
             }
             if (Scene.GetGradientKind(objectIndex) == GradientKind.Radial)
             {
-                DrawReference3DSourceRadialGradientFill(graphics, path, objectIndex, stops, transform);
+                DrawReference3DSourceRadialGradientFill(graphics, path, objectIndex, stops);
                 return true;
             }
             if (Scene.GetGradientKind(objectIndex) == GradientKind.ShapeRadial
-                && DrawReference3DSourceShapeGradientFill(graphics, path, objectIndex, stops, transform))
+                && DrawReference3DSourceShapeGradientFill(graphics, path, objectIndex, stops))
             {
                 return true;
             }
             if (Scene.GetGradientKind(objectIndex) == GradientKind.ShapeRadial)
             {
-                DrawReference3DSourceRadialGradientFill(graphics, path, objectIndex, stops, transform);
+                DrawReference3DSourceRadialGradientFill(graphics, path, objectIndex, stops);
                 return true;
             }
 
@@ -514,11 +1258,15 @@ internal sealed partial class StageControl
 
     private bool TryDrawReference3DProjectiveFrontGradient(
         Graphics graphics,
-        int objectIndex,
-        SceneRenderPass pass)
+        Reference3DRenderItem item,
+        SceneRenderPass pass,
+        float materialOpacity)
     {
+        var objectIndex = item.ObjectIndex;
+        var sourceContours = GetReference3DSourceContours(objectIndex);
         if (!TryGetReference3DProjectiveMesh(
                 objectIndex,
+                sourceContours,
                 usePrimaryContourQuad: false,
                 out var triangles)
             || triangles.Length == 0)
@@ -527,15 +1275,22 @@ internal sealed partial class StageControl
         }
 
         using var path = CreateReference3DSourcePath(
-            GetReference3DSourceContours(objectIndex),
+            sourceContours,
             fillOnly: pass == SceneRenderPass.Fill);
         if (path.PointCount == 0) return false;
         using var screenMask = pass == SceneRenderPass.Fill
-            ? CreateReference3DPath(GetReference3DProjectedContours(objectIndex), fillOnly: true)
+            ? CreateReference3DPath(item.Contours, fillOnly: true)
             : null;
         if (pass == SceneRenderPass.Fill && screenMask!.PointCount == 0) return false;
 
-        var stops = Scene.GetGradientStops(objectIndex);
+        var sourceStops = pass == SceneRenderPass.Stroke
+            && item.OpticalStrokeGradientStops is { Length: > 0 } opticalStrokeStops
+            ? opticalStrokeStops
+            : pass == SceneRenderPass.Fill
+                && item.OpticalGradientStops is { Length: > 0 } opticalGradientStops
+                ? opticalGradientStops
+            : Scene.GetGradientStops(objectIndex);
+        var stops = GradientPaintUtilities.ScaleStopAlpha(sourceStops, materialOpacity);
         GradientPathGradientSegment[] pathGradientSegments = [];
         var pathGradientWidth = 0f;
         var hasPathGradient = pass == SceneRenderPass.Fill
@@ -547,6 +1302,7 @@ internal sealed partial class StageControl
                 out pathGradientWidth);
         GraphicsPath? mappingPath = null;
         Brush? gradient = null;
+        Brush? radialOuter = null;
         try
         {
             if (Scene.GetGradientKind(objectIndex) == GradientKind.ShapeRadial)
@@ -563,6 +1319,12 @@ internal sealed partial class StageControl
                     InterpolationColors = Reference3DColorBlend(stops)
                 };
             }
+            else if (pass == SceneRenderPass.Fill
+                     && Scene.GetGradientKind(objectIndex) == GradientKind.Radial)
+            {
+                radialOuter = new SolidBrush(Color.FromArgb(stops[^1].Argb));
+                gradient = CreateReference3DSourceProjectiveRadialGradientBrush(objectIndex, stops);
+            }
             else
             {
                 gradient = CreateReference3DSourceGradientBrush(objectIndex, stops);
@@ -571,7 +1333,7 @@ internal sealed partial class StageControl
             var outerState = graphics.Save();
             try
             {
-                graphics.ResetTransform();
+                ResetReference3DGdiScreenTransform(graphics);
                 if (screenMask is not null) graphics.SetClip(screenMask, CombineMode.Intersect);
                 var drewTriangle = false;
                 foreach (var triangle in triangles)
@@ -587,42 +1349,44 @@ internal sealed partial class StageControl
                     var triangleState = graphics.Save();
                     try
                     {
-                        graphics.ResetTransform();
+                        ResetReference3DGdiScreenTransform(graphics);
                         graphics.SetClip(trianglePath, CombineMode.Intersect);
-                        using var matrix = new Matrix(
-                            transform.M11,
-                            transform.M12,
-                            transform.M21,
-                            transform.M22,
-                            transform.M31,
-                            transform.M32);
+                        using var matrix = Reference3DGdiScreenMatrix(transform);
                         graphics.Transform = matrix;
                         if (pass == SceneRenderPass.Stroke)
                         {
+                            var startStyle = Scene.GetLineEndpointStyle(objectIndex, startEndpoint: true);
+                            var endStyle = Scene.GetLineEndpointStyle(objectIndex, startEndpoint: false);
                             using var pen = new Pen(
                                 gradient,
                                 GetReference3DSourceStrokeWidth(objectIndex, Scene.Stroke[objectIndex]))
                             {
-                                LineJoin = LineJoin.Round,
-                                StartCap = LineCap.Round,
-                                EndCap = LineCap.Round
+                                LineJoin = startStyle == LineEndpointStyle.Sharp
+                                    || endStyle == LineEndpointStyle.Sharp
+                                        ? LineJoin.Miter
+                                        : LineJoin.Round,
+                                MiterLimit = 8,
+                                StartCap = LineCapForEndpoint(startStyle),
+                                EndCap = LineCapForEndpoint(endStyle)
                             };
                             graphics.DrawPath(pen, path);
                         }
+                        else if (hasPathGradient)
+                        {
+                            DrawReference3DSourcePathGradientSegments(
+                                graphics,
+                                pathGradientSegments,
+                                pathGradientWidth,
+                                triangle);
+                        }
+                        else if (Scene.GetGradientKind(objectIndex) == GradientKind.Radial)
+                        {
+                            FillReference3DSourcePath(graphics, path, radialOuter!, transform);
+                            graphics.FillPath(gradient!, path);
+                        }
                         else
                         {
-                            if (hasPathGradient)
-                            {
-                                DrawReference3DSourcePathGradientSegments(
-                                    graphics,
-                                    pathGradientSegments,
-                                    pathGradientWidth,
-                                    triangle);
-                            }
-                            else
-                            {
-                                FillReference3DSourcePath(graphics, path, gradient, transform);
-                            }
+                            FillReference3DSourcePath(graphics, path, gradient!, transform);
                         }
                         drewTriangle = true;
                     }
@@ -644,8 +1408,34 @@ internal sealed partial class StageControl
         }
         finally
         {
+            radialOuter?.Dispose();
             gradient?.Dispose();
             mappingPath?.Dispose();
+        }
+    }
+
+    private Brush CreateReference3DSourceProjectiveRadialGradientBrush(
+        int objectIndex,
+        IReadOnlyList<GradientStop> stops)
+    {
+        var start = Scene.GetGradientStart(objectIndex);
+        var endColor = Color.FromArgb(stops[^1].Argb);
+        var radius = Reference3DScreenDistance(start, Scene.GetGradientEnd(objectIndex));
+        if (!float.IsFinite(radius) || radius <= 0.0001f) return new SolidBrush(endColor);
+
+        try
+        {
+            using var circle = new GraphicsPath();
+            circle.AddEllipse(start.X - radius, start.Y - radius, radius * 2f, radius * 2f);
+            return new PathGradientBrush(circle)
+            {
+                CenterPoint = start,
+                InterpolationColors = Reference3DProjectiveRadialColorBlend(stops)
+            };
+        }
+        catch (Exception exception) when (exception is ArgumentException or OutOfMemoryException)
+        {
+            return new SolidBrush(endColor);
         }
     }
 
@@ -656,7 +1446,13 @@ internal sealed partial class StageControl
         var start = Scene.GetGradientStart(objectIndex);
         var end = Scene.GetGradientEnd(objectIndex);
         var endColor = Color.FromArgb(stops[^1].Argb);
-        if (Reference3DScreenDistance(start, end) <= 0.0001f) return new SolidBrush(endColor);
+        var axisX = end.X - start.X;
+        var axisY = end.Y - start.Y;
+        var axisLengthSquared = axisX * axisX + axisY * axisY;
+        if (!float.IsFinite(axisLengthSquared) || axisLengthSquared <= 0.00000001f)
+        {
+            return new SolidBrush(endColor);
+        }
 
         if (Scene.GetGradientKind(objectIndex) == GradientKind.Radial)
         {
@@ -677,14 +1473,62 @@ internal sealed partial class StageControl
             }
         }
 
+        var minimum = 0f;
+        var maximum = 1f;
+        foreach (var contour in GetReference3DSourceContours(objectIndex))
+        {
+            foreach (var point in contour.Points)
+            {
+                var position = ((point.X - start.X) * axisX + (point.Y - start.Y) * axisY)
+                    / axisLengthSquared;
+                if (!float.IsFinite(position)) continue;
+                minimum = Math.Min(minimum, position);
+                maximum = Math.Max(maximum, position);
+            }
+        }
+
+        var axisLength = MathF.Sqrt(axisLengthSquared);
+        var sourcePadding = Scene.ShapeKind[objectIndex] == ShapeKind.Line
+            ? GetReference3DSourceStrokeWidth(objectIndex, Scene.Stroke[objectIndex]) * 0.5f
+            : 0f;
+        var paddingPosition = Math.Max(0.0001f, sourcePadding / axisLength);
+        minimum -= paddingPosition;
+        maximum += paddingPosition;
+        var span = maximum - minimum;
+        var extendedStart = new PointF(start.X + axisX * minimum, start.Y + axisY * minimum);
+        var extendedEnd = new PointF(start.X + axisX * maximum, start.Y + axisY * maximum);
+        var colors = new List<Color>(stops.Count + 2)
+        {
+            Color.FromArgb(stops[0].Argb)
+        };
+        var positions = new List<float>(stops.Count + 2) { 0f };
+        foreach (var stop in stops)
+        {
+            var position = Math.Clamp((stop.Position - minimum) / span, 0f, 1f);
+            if (position <= positions[^1] + 0.000001f)
+            {
+                colors[^1] = Color.FromArgb(stop.Argb);
+                continue;
+            }
+            if (position >= 0.999999f) break;
+            colors.Add(Color.FromArgb(stop.Argb));
+            positions.Add(position);
+        }
+        colors.Add(endColor);
+        positions.Add(1f);
+
         var brush = new LinearGradientBrush(
-            start,
-            end,
+            extendedStart,
+            extendedEnd,
             Color.FromArgb(stops[0].Argb),
             endColor)
         {
             WrapMode = WrapMode.TileFlipXY,
-            InterpolationColors = Reference3DColorBlend(stops)
+            InterpolationColors = new ColorBlend
+            {
+                Colors = colors.ToArray(),
+                Positions = positions.ToArray()
+            }
         };
         return brush;
     }
@@ -693,8 +1537,7 @@ internal sealed partial class StageControl
         Graphics graphics,
         GraphicsPath mask,
         int objectIndex,
-        IReadOnlyList<GradientStop> stops,
-        System.Numerics.Matrix3x2 transform)
+        IReadOnlyList<GradientStop> stops)
     {
         if (!TryPrepareReference3DSourcePathGradient(
                 objectIndex,
@@ -716,8 +1559,6 @@ internal sealed partial class StageControl
             graphics.Restore(state);
         }
 
-        using var edge = CreateReference3DSourceGradientBrush(objectIndex, stops);
-        ReinforceReference3DSourcePathEdge(graphics, mask, edge, transform);
         return true;
     }
 
@@ -804,8 +1645,7 @@ internal sealed partial class StageControl
         Graphics graphics,
         GraphicsPath path,
         int objectIndex,
-        IReadOnlyList<GradientStop> stops,
-        System.Numerics.Matrix3x2 transform)
+        IReadOnlyList<GradientStop> stops)
     {
         var center = Scene.GetGradientStart(objectIndex);
         var radius = Math.Max(0.001f, Reference3DScreenDistance(center, Scene.GetGradientEnd(objectIndex)));
@@ -833,15 +1673,13 @@ internal sealed partial class StageControl
         {
             graphics.Restore(state);
         }
-        ReinforceReference3DSourcePathEdge(graphics, path, outer, transform);
     }
 
     private bool DrawReference3DSourceShapeGradientFill(
         Graphics graphics,
         GraphicsPath path,
         int objectIndex,
-        IReadOnlyList<GradientStop> stops,
-        System.Numerics.Matrix3x2 transform)
+        IReadOnlyList<GradientStop> stops)
     {
         try
         {
@@ -857,7 +1695,7 @@ internal sealed partial class StageControl
                 CenterPoint = Scene.GetGradientStart(objectIndex),
                 InterpolationColors = Reference3DColorBlend(stops)
             };
-            FillReference3DSourcePath(graphics, path, brush, transform);
+            graphics.FillPath(brush, path);
             return true;
         }
         catch (Exception exception) when (exception is ArgumentException or OutOfMemoryException)
@@ -882,21 +1720,6 @@ internal sealed partial class StageControl
         graphics.FillPath(brush, path);
     }
 
-    private static void ReinforceReference3DSourcePathEdge(
-        Graphics graphics,
-        GraphicsPath path,
-        Brush brush,
-        System.Numerics.Matrix3x2 transform)
-    {
-        using var edge = new Pen(brush, Reference3DSourcePixelWidth(transform))
-        {
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-        graphics.DrawPath(edge, path);
-    }
-
     private static float Reference3DSourcePixelWidth(System.Numerics.Matrix3x2 transform)
     {
         var scaleX = MathF.Sqrt(transform.M11 * transform.M11 + transform.M12 * transform.M12);
@@ -904,19 +1727,47 @@ internal sealed partial class StageControl
         return 1f / Math.Max(0.0001f, Math.Max(scaleX, scaleY));
     }
 
-    private static ColorBlend Reference3DColorBlend(IReadOnlyList<GradientStop> stops)
+    private static ColorBlend Reference3DColorBlend(
+        IReadOnlyList<GradientStop> stops,
+        float alphaScale = 1f)
     {
+        alphaScale = Math.Clamp(alphaScale, 0f, 1f);
         return new ColorBlend
         {
-            Colors = stops.Select(stop => Color.FromArgb(stop.Argb)).ToArray(),
+            Colors = stops.Select(stop =>
+            {
+                var color = Color.FromArgb(stop.Argb);
+                return Color.FromArgb(
+                    (int)MathF.Round(color.A * alphaScale),
+                    color.R,
+                    color.G,
+                    color.B);
+            }).ToArray(),
             Positions = stops.Select(stop => stop.Position).ToArray()
         };
     }
 
-    private bool DrawReference3DObjectOutline(Graphics graphics, int objectIndex, Color layerColor)
+    private static ColorBlend Reference3DProjectiveRadialColorBlend(
+        IReadOnlyList<GradientStop> stops)
+    {
+        var reversed = stops.Reverse().ToArray();
+        return new ColorBlend
+        {
+            Colors = reversed.Select(stop => Color.FromArgb(stop.Argb)).ToArray(),
+            Positions = reversed.Select(stop => 1f - stop.Position).ToArray()
+        };
+    }
+
+    private bool DrawReference3DObjectOutline(
+        Graphics graphics,
+        int objectIndex,
+        Color layerColor,
+        float materialOpacity = 1f)
     {
         if (IsObjectHiddenForRendering(Scene, objectIndex)) return false;
-        var color = Reference3DOutlineColor(objectIndex, layerColor);
+        var color = ApplyReference3DMaterialOpacity(
+            Reference3DOutlineColor(objectIndex, layerColor),
+            materialOpacity);
         if (color.A == 0) return false;
         var contours = GetReference3DProjectedSolid(objectIndex).SelectionEdges;
         if (contours.Length == 0) return false;
@@ -997,7 +1848,10 @@ internal sealed partial class StageControl
         }
     }
 
-    private void DrawReference3DImportedSvg(Graphics graphics, int objectIndex)
+    private void DrawReference3DImportedSvg(
+        Graphics graphics,
+        int objectIndex,
+        float materialOpacity)
     {
         if (!Scene.TryGetImportedSvgSource(objectIndex, out var source)
             || string.IsNullOrWhiteSpace(source))
@@ -1037,7 +1891,8 @@ internal sealed partial class StageControl
                 Math.Max(1f, Reference3DScreenDistance(topLeft, bottomLeft)));
         }
         var raster = ImportedSvgRasterizer.Rasterize(source, rasterSize.Width, rasterSize.Height);
-        var opacity = Color.FromArgb(Scene.Argb[objectIndex]).A / 255f;
+        var opacity = Color.FromArgb(Scene.Argb[objectIndex]).A / 255f
+            * Math.Clamp(materialOpacity, 0f, 1f);
         if (projective)
         {
             TryDrawReference3DProjectiveImportedSvg(
@@ -1102,7 +1957,7 @@ internal sealed partial class StageControl
         var outerState = graphics.Save();
         try
         {
-            graphics.ResetTransform();
+            ResetReference3DGdiScreenTransform(graphics);
             graphics.SetClip(screenMask, CombineMode.Intersect);
             graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
             var drewTriangle = false;
@@ -1127,15 +1982,9 @@ internal sealed partial class StageControl
                 var triangleState = graphics.Save();
                 try
                 {
-                    graphics.ResetTransform();
+                    ResetReference3DGdiScreenTransform(graphics);
                     graphics.SetClip(trianglePath, CombineMode.Intersect);
-                    using var matrix = new Matrix(
-                        transform.M11,
-                        transform.M12,
-                        transform.M21,
-                        transform.M22,
-                        transform.M31,
-                        transform.M32);
+                    using var matrix = Reference3DGdiScreenMatrix(transform);
                     graphics.Transform = matrix;
                     var textureBounds = GetReference3DProjectiveTextureBounds(
                         triangle,
@@ -1166,14 +2015,19 @@ internal sealed partial class StageControl
         }
     }
 
-    private void DrawReference3DMixingStroke(Graphics graphics, int objectIndex)
+    private void DrawReference3DMixingStroke(
+        Graphics graphics,
+        int objectIndex,
+        float materialOpacity)
     {
         if (!Scene.TryGetMixingBrushWorldRegion(objectIndex, out var region))
         {
             var contours = GetReference3DProjectedContours(objectIndex);
             using var path = CreateReference3DPath(contours, fillOnly: true);
             if (path.PointCount == 0) return;
-            using var fallback = new SolidBrush(Color.FromArgb(Scene.Argb[objectIndex]));
+            using var fallback = new SolidBrush(ApplyReference3DMaterialOpacity(
+                Color.FromArgb(Scene.Argb[objectIndex]),
+                materialOpacity));
             FillPathAntialiased(graphics, path, fallback);
             return;
         }
@@ -1198,10 +2052,12 @@ internal sealed partial class StageControl
             {
                 continue;
             }
-            using var fill = new SolidBrush(AverageColor(
-                region.Vertices[a].Argb,
-                region.Vertices[b].Argb,
-                region.Vertices[c].Argb));
+            using var fill = new SolidBrush(ApplyReference3DMaterialOpacity(
+                AverageColor(
+                    region.Vertices[a].Argb,
+                    region.Vertices[b].Argb,
+                    region.Vertices[c].Argb),
+                materialOpacity));
             graphics.FillPolygon(fill, [vertices[a], vertices[b], vertices[c]]);
         }
     }
@@ -1268,7 +2124,16 @@ internal sealed partial class StageControl
 
     private void DrawSpatialTransformGizmoGdi(Graphics graphics)
     {
-        if (!TryGetSpatialGizmoScreenGeometry(out var geometry)) return;
+        if (!TryGetSpatialGizmoRenderGeometry(
+                out var geometry,
+                out var opacity,
+                out var renderScale)
+            || opacity <= 0.001f)
+        {
+            return;
+        }
+        var dpiScale = SpatialGizmoDpiScale * renderScale;
+        var highlight = ApplySpatialGizmoOpacity(Color.FromArgb(246, 255, 196, 56), opacity);
         var previousSmoothing = graphics.SmoothingMode;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         try
@@ -1279,7 +2144,21 @@ internal sealed partial class StageControl
                 {
                     var ring = geometry.Rings[axis];
                     if (ring.Length < 3) continue;
-                    using var pen = new Pen(SpatialAxisColor(axis), 2.2f)
+                    var highlighted = IsSpatialTransformHandleHighlighted(
+                        (SpatialTransformAxis)(axis + 1));
+                    if (highlighted)
+                    {
+                        using var halo = new Pen(highlight, 6.2f * dpiScale)
+                        {
+                            LineJoin = LineJoin.Round,
+                            StartCap = LineCap.Round,
+                            EndCap = LineCap.Round
+                        };
+                        graphics.DrawPolygon(halo, ring);
+                    }
+                    using var pen = new Pen(
+                        ApplySpatialGizmoOpacity(SpatialAxisColor(axis), opacity),
+                        (highlighted ? 3.4f : 2.2f) * dpiScale)
                     {
                         LineJoin = LineJoin.Round,
                         StartCap = LineCap.Round,
@@ -1297,20 +2176,53 @@ internal sealed partial class StageControl
                     var polygon = geometry.PlaneHandles[plane];
                     if (polygon.Length != 4) continue;
                     var color = SpatialPlaneColor(plane);
-                    using var fill = new SolidBrush(Color.FromArgb(68, color));
-                    using var outline = new Pen(Color.FromArgb(205, color), 1.3f)
+                    var planeAxis = plane switch
+                    {
+                        0 => SpatialTransformAxis.XY,
+                        1 => SpatialTransformAxis.XZ,
+                        _ => SpatialTransformAxis.YZ
+                    };
+                    var highlighted = IsSpatialTransformHandleHighlighted(planeAxis);
+                    using var fill = new SolidBrush(ApplySpatialGizmoOpacity(
+                        Color.FromArgb(highlighted ? 126 : 68, color),
+                        opacity));
+                    using var outline = new Pen(
+                        ApplySpatialGizmoOpacity(
+                            Color.FromArgb(highlighted ? 255 : 205, color),
+                            opacity),
+                        (highlighted ? 2.1f : 1.3f) * dpiScale)
                     {
                         LineJoin = LineJoin.Round
                     };
                     graphics.FillPolygon(fill, polygon);
+                    if (highlighted)
+                    {
+                        using var halo = new Pen(highlight, 4.6f * dpiScale)
+                        {
+                            LineJoin = LineJoin.Round
+                        };
+                        graphics.DrawPolygon(halo, polygon);
+                    }
                     graphics.DrawPolygon(outline, polygon);
                 }
             }
 
             for (var axis = 0; axis < 3; axis++)
             {
-                var color = SpatialAxisColor(axis);
-                using var pen = new Pen(color, 2.4f)
+                var axisKind = (SpatialTransformAxis)(axis + 1);
+                var highlighted = IsSpatialTransformHandleHighlighted(axisKind);
+                var color = ApplySpatialGizmoOpacity(SpatialAxisColor(axis), opacity);
+                if (highlighted)
+                {
+                    using var halo = new Pen(highlight, 6.4f * dpiScale)
+                    {
+                        LineJoin = LineJoin.Round,
+                        StartCap = LineCap.Round,
+                        EndCap = LineCap.Round
+                    };
+                    graphics.DrawLine(halo, geometry.Origin, geometry.Endpoints[axis]);
+                }
+                using var pen = new Pen(color, (highlighted ? 3.5f : 2.4f) * dpiScale)
                 {
                     LineJoin = LineJoin.Round,
                     StartCap = LineCap.Round,
@@ -1319,20 +2231,63 @@ internal sealed partial class StageControl
                 graphics.DrawLine(pen, geometry.Origin, geometry.Endpoints[axis]);
                 if (_spatialTransformGizmoMode == SpatialTransformMode.Scale)
                 {
+                    var halfSize = 4f * dpiScale;
                     using var fill = new SolidBrush(color);
                     var endpoint = geometry.Endpoints[axis];
-                    graphics.FillRectangle(fill, endpoint.X - 4, endpoint.Y - 4, 8, 8);
+                    if (highlighted)
+                    {
+                        var haloHalfSize = 6.5f * dpiScale;
+                        using var haloFill = new SolidBrush(highlight);
+                        graphics.FillRectangle(
+                            haloFill,
+                            endpoint.X - haloHalfSize,
+                            endpoint.Y - haloHalfSize,
+                            haloHalfSize * 2,
+                            haloHalfSize * 2);
+                    }
+                    graphics.FillRectangle(
+                        fill,
+                        endpoint.X - halfSize,
+                        endpoint.Y - halfSize,
+                        halfSize * 2,
+                        halfSize * 2);
                 }
                 else
                 {
-                    DrawSpatialArrowHead(graphics, geometry.Origin, geometry.Endpoints[axis], color);
+                    DrawSpatialArrowHead(
+                        graphics,
+                        geometry.Origin,
+                        geometry.Endpoints[axis],
+                        color,
+                        dpiScale,
+                        highlighted ? highlight : null);
                 }
             }
 
             if (_spatialTransformGizmoMode == SpatialTransformMode.Scale)
             {
-                using var center = new SolidBrush(Color.FromArgb(238, 235, 241, 242));
-                graphics.FillRectangle(center, geometry.Origin.X - 4, geometry.Origin.Y - 4, 8, 8);
+                var highlighted = IsSpatialTransformHandleHighlighted(SpatialTransformAxis.Uniform);
+                var halfSize = 4f * dpiScale;
+                if (highlighted)
+                {
+                    var haloHalfSize = 6.5f * dpiScale;
+                    using var halo = new SolidBrush(highlight);
+                    graphics.FillRectangle(
+                        halo,
+                        geometry.Origin.X - haloHalfSize,
+                        geometry.Origin.Y - haloHalfSize,
+                        haloHalfSize * 2,
+                        haloHalfSize * 2);
+                }
+                using var center = new SolidBrush(ApplySpatialGizmoOpacity(
+                    Color.FromArgb(238, 235, 241, 242),
+                    opacity));
+                graphics.FillRectangle(
+                    center,
+                    geometry.Origin.X - halfSize,
+                    geometry.Origin.Y - halfSize,
+                    halfSize * 2,
+                    halfSize * 2);
             }
         }
         finally
@@ -1341,7 +2296,13 @@ internal sealed partial class StageControl
         }
     }
 
-    private static void DrawSpatialArrowHead(Graphics graphics, PointF origin, PointF endpoint, Color color)
+    private static void DrawSpatialArrowHead(
+        Graphics graphics,
+        PointF origin,
+        PointF endpoint,
+        Color color,
+        float dpiScale,
+        Color? highlight)
     {
         var dx = endpoint.X - origin.X;
         var dy = endpoint.Y - origin.Y;
@@ -1351,14 +2312,29 @@ internal sealed partial class StageControl
         dy /= length;
         var perpendicularX = -dy;
         var perpendicularY = dx;
-        var basePoint = new PointF(endpoint.X - dx * 10f, endpoint.Y - dy * 10f);
-        using var fill = new SolidBrush(color);
-        graphics.FillPolygon(fill,
+        var basePoint = new PointF(
+            endpoint.X - dx * 10f * dpiScale,
+            endpoint.Y - dy * 10f * dpiScale);
+        PointF[] points =
         [
             endpoint,
-            new PointF(basePoint.X + perpendicularX * 4.5f, basePoint.Y + perpendicularY * 4.5f),
-            new PointF(basePoint.X - perpendicularX * 4.5f, basePoint.Y - perpendicularY * 4.5f)
-        ]);
+            new PointF(
+                basePoint.X + perpendicularX * 4.5f * dpiScale,
+                basePoint.Y + perpendicularY * 4.5f * dpiScale),
+            new PointF(
+                basePoint.X - perpendicularX * 4.5f * dpiScale,
+                basePoint.Y - perpendicularY * 4.5f * dpiScale)
+        ];
+        if (highlight is { } haloColor)
+        {
+            using var halo = new Pen(haloColor, 4f * dpiScale)
+            {
+                LineJoin = LineJoin.Round
+            };
+            graphics.DrawPolygon(halo, points);
+        }
+        using var fill = new SolidBrush(color);
+        graphics.FillPolygon(fill, points);
     }
 
     private Color Reference3DOutlineColor(int objectIndex, Color layerColor)
@@ -1391,6 +2367,12 @@ internal sealed partial class StageControl
         1 => Color.FromArgb(245, 82, 205, 122),
         _ => Color.FromArgb(245, 82, 155, 245)
     };
+
+    private static Color ApplySpatialGizmoOpacity(Color color, float opacity)
+    {
+        var alpha = (int)MathF.Round(color.A * Math.Clamp(opacity, 0f, 1f));
+        return Color.FromArgb(alpha, color.R, color.G, color.B);
+    }
 
     private static Color SpatialPlaneColor(int plane) => SpatialAxisColor(plane switch
     {

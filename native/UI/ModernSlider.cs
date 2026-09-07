@@ -165,6 +165,7 @@ internal sealed class ModernSlider : Control
 
         var enabled = Enabled;
         var highContrast = SystemInformation.HighContrast;
+        var controlBackground = Theme.EffectiveBackground(this);
         var railColor = highContrast
             ? enabled ? SystemColors.ControlDark : SystemColors.Control
             : enabled
@@ -180,6 +181,13 @@ internal sealed class ModernSlider : Control
             : enabled
                 ? Theme.Mix(Theme.Accent, Theme.Text, 0.10f + _hoverProgress * 0.08f)
                 : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.58f);
+
+        if (!highContrast)
+        {
+            railColor = Theme.ReadableUiColor(controlBackground, railColor);
+            fillColor = Theme.ReadableUiColor(railColor, fillColor);
+            thumbColor = Theme.ReadableUiColor(railColor, thumbColor);
+        }
 
         DrawTicks(graphics, rail, enabled);
 
@@ -213,7 +221,9 @@ internal sealed class ModernSlider : Control
             var focusPadding = Logical(3);
             var focusBounds = RectangleF.Inflate(thumbBounds, focusPadding, focusPadding);
             using var focusPen = new Pen(
-                highContrast ? SystemColors.Highlight : Color.FromArgb(180, Theme.Accent),
+                highContrast
+                    ? SystemColors.Highlight
+                    : Theme.ReadableUiColor(controlBackground, Theme.Accent),
                 Math.Max(1f, Logical(1)));
             graphics.DrawEllipse(focusPen, focusBounds);
         }
@@ -234,7 +244,9 @@ internal sealed class ModernSlider : Control
         using var thumbBorder = new Pen(
             highContrast
                 ? enabled ? SystemColors.HighlightText : SystemColors.GrayText
-                : enabled ? Theme.Mix(Theme.Accent, Theme.Text, 0.24f) : Theme.Border,
+                : Theme.ReadableUiColor(
+                    thumbColor,
+                    enabled ? Theme.Mix(Theme.Accent, Theme.Text, 0.24f) : Theme.DisabledText),
             Math.Max(1f, Logical(1)));
         graphics.FillEllipse(thumbBrush, thumbBounds);
         graphics.DrawEllipse(thumbBorder, thumbBounds);
@@ -588,7 +600,9 @@ internal sealed class ModernSlider : Control
         using var tickPen = new Pen(
             SystemInformation.HighContrast
                 ? enabled ? SystemColors.WindowText : SystemColors.GrayText
-                : enabled ? Color.FromArgb(126, Theme.Border) : Color.FromArgb(80, Theme.Border),
+                : Theme.ReadableUiColor(
+                    Theme.EffectiveBackground(this),
+                    enabled ? Theme.Border : Theme.DisabledText),
             Math.Max(1f, Logical(1)));
 
         for (long offset = 0; offset <= range; offset += step)

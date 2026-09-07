@@ -61,9 +61,16 @@ internal sealed class AnimatedToolTip : Control
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var alpha = (int)Math.Clamp(235 * EaseOut(_progress), 0, 235);
+        var parentBackground = Theme.EffectiveBackground(this);
+        var tooltipBackground = Theme.Mix(parentBackground, Theme.PanelStrong, alpha / 255f);
+        var borderAlpha = (int)Math.Clamp(220 * _progress, 0, 220);
+        var textAlpha = (int)Math.Clamp(255 * _progress, 0, 255);
         using var bg = new SolidBrush(Color.FromArgb(alpha, Theme.PanelStrong));
-        using var border = new Pen(Color.FromArgb((int)Math.Clamp(190 * _progress, 0, 190), Theme.Accent), 1);
-        using var text = new SolidBrush(Color.FromArgb((int)Math.Clamp(255 * _progress, 0, 255), Theme.Text));
+        using var border = new Pen(
+            Color.FromArgb(borderAlpha, Theme.ReadableUiColor(tooltipBackground, Theme.Accent)),
+            1);
+        using var text = new SolidBrush(
+            Color.FromArgb(textAlpha, Theme.ReadableText(tooltipBackground, Theme.Text)));
         var rect = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
         using var path = RoundedRect(rect, 7);
         g.FillPath(bg, path);

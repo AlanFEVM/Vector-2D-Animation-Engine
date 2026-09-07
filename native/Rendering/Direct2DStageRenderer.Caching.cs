@@ -20,15 +20,26 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 {
     private void ResetTarget()
     {
+        DisposeWorkspacePreRenderTarget();
         ClearBaseFrameCache();
+        ClearReference3DWorkspaceFrameCache();
+        ClearReference3DCpuRasterBuffer();
+        ClearReference3DGridCache();
         ClearFillEdgeBezierOverlayGeometry();
+        ClearCollisionTerrainOverlayGeometry();
+        ClearLassoPreviewGeometry();
         ClearBrushCache();
         ClearMixingBrush();
         ClearMixingBrushBitmapCache();
         ClearLineGeometryCache();
         ClearObjectPathGeometryCache();
+        ClearReference3DLocalPathGeometryCache();
         ClearGradientBrushCache();
         ClearTransientGradientBrushes();
+        ClearReference3DLocalLightBrushCache();
+        ClearReference3DOpticalSurfaceBitmapCache();
+        ClearReference3DMaterialBitmapCache();
+        ClearTransientReference3DMaterialBitmaps();
         ClearShapeGradientBitmapCache();
         ClearTransientShapeGradientBitmaps();
         ClearPathGradientBrushCache();
@@ -55,6 +66,16 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         _fillEdgeBezierOverlayGeometryHeight = 0;
     }
 
+    private void ClearCollisionTerrainOverlayGeometry()
+    {
+        _collisionTerrainOverlayGeometry?.Dispose();
+        _collisionTerrainOverlayGeometry = null;
+        _collisionTerrainOverlayScene = null;
+        _collisionTerrainOverlayRevision = -1;
+        _collisionTerrainOverlayLayer = -1;
+        _collisionTerrainOverlayObjects = [];
+    }
+
     private void RecordFailure()
     {
         _consecutiveFailures++;
@@ -65,6 +86,58 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         foreach (var brush in _brushCache.Values) brush.Dispose();
         _brushCache.Clear();
+    }
+
+    private void ClearTransientReference3DMaterialBitmaps()
+    {
+        foreach (var cached in _transientReference3DMaterialBitmaps) cached.Dispose();
+        _transientReference3DMaterialBitmaps.Clear();
+    }
+
+    private void ClearReference3DMaterialBitmapCache()
+    {
+        foreach (var candidates in _reference3DMaterialBitmapCache.Values)
+        {
+            foreach (var cached in candidates) cached.Dispose();
+        }
+        _reference3DMaterialBitmapCache.Clear();
+        _reference3DMaterialBitmapCacheEntryCount = 0;
+        _reference3DMaterialBitmapCacheBytes = 0;
+    }
+
+    private void PruneReference3DMaterialBitmapCache(
+        VectorScene editableScene,
+        VectorScene? underlayScene,
+        VectorScene? onionSkinScene,
+        VectorScene? dragPreviewScene)
+    {
+        List<Reference3DMaterialBitmapCacheKey>? staleKeys = null;
+        foreach (var key in _reference3DMaterialBitmapCache.Keys)
+        {
+            var scene = key.Scene;
+            var activeScene = ReferenceEquals(scene, editableScene)
+                || ReferenceEquals(scene, underlayScene)
+                || ReferenceEquals(scene, onionSkinScene)
+                || ReferenceEquals(scene, dragPreviewScene);
+            if (activeScene)
+            {
+                continue;
+            }
+
+            (staleKeys ??= []).Add(key);
+        }
+
+        if (staleKeys is null) return;
+        foreach (var key in staleKeys)
+        {
+            if (!_reference3DMaterialBitmapCache.Remove(key, out var candidates)) continue;
+            foreach (var cached in candidates)
+            {
+                _reference3DMaterialBitmapCacheEntryCount--;
+                _reference3DMaterialBitmapCacheBytes -= cached.ByteSize;
+                cached.Dispose();
+            }
+        }
     }
 
     private void ClearMixingBrush()
@@ -160,14 +233,24 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         if (staleKeys is null) return;
         foreach (var key in staleKeys)
         {
-            if (_objectPathGeometryCache.Remove(key, out var cached)) cached.Dispose();
+            if (_objectPathGeometryCache.Remove(key, out var cached)) ReleaseObjectPathGeometry(cached);
         }
     }
 
     private void ClearObjectPathGeometryCache()
     {
-        foreach (var cached in _objectPathGeometryCache.Values) cached.Dispose();
+        foreach (var cached in _objectPathGeometryCache.Values) cached.ReleaseReference();
         _objectPathGeometryCache.Clear();
+        _objectPathGeometryContentCache.Clear();
+    }
+
+    private void ReleaseObjectPathGeometry(CachedObjectPathGeometry cached)
+    {
+        cached.ReleaseReference();
+        if (cached.ReferenceCount > 0) return;
+        if (!_objectPathGeometryContentCache.TryGetValue(cached.ContentKey, out var entries)) return;
+        entries.Remove(cached);
+        if (entries.Count == 0) _objectPathGeometryContentCache.Remove(cached.ContentKey);
     }
 
     private CachedGradientBrush GradientBrush(

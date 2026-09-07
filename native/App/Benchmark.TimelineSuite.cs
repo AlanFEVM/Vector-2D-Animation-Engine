@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 
 namespace VectorAnimationEngine;
 
@@ -130,32 +131,167 @@ internal static partial class Benchmark
         }
 
         RunFixedStepBatchRegression();
+        RunPlaybackSchedulerCoalescingRegression();
+        RunDenseTimelinePlaybackUiRegression();
         RunTimelineExposureRegression();
         RunTimelineTweenRegression();
         RunTimelineShortcutAdvanceRegression();
         RunTimelineUndoPlayheadRegression();
+        RunTimelineFrameSelectionContentRegression();
         RunTimelineFrameCommandRegression();
+        RunTimelineFrameTransformMappingRegression();
+        RunTimelineFrameTransformCommandRegression();
         RunTimelineTrackSynchronizationRegression();
         RunTimelineSnapshotRegression();
+        RunTimelineTabGroupRegression();
         RunVectorSceneTimelineSnapshotRegression();
         RunVectorSceneSnapshotMemoryEstimateRegression();
         RunEditableTextObjectRegression();
         RunVectorSceneCelOwnershipRegression();
+        RunRandomFractureTimelineRegression();
         RunAutoKeyframeMaterializationRegression();
         RunTimelineLayerWorkflowRegression();
         RunTimelineLayerRemovalRegression();
         RunTimelineKeyframePerformanceRegression();
         RunVectorSceneKeyframeBoundaryRegression();
         RunProjectDocumentStructureRegression();
+        RunSnapPointModelRegression();
         RunProjectAssetFolderRegression();
         RunAssetTagRegression();
+        RunAssetLibraryCategoryRegression();
         RunSceneMaskTimelineRegression();
         RunSceneInstanceTimelineRegression();
         RunLayeredInstanceIndexRegression();
         RunSceneCompositionRegression();
+        RunSceneOpticsModelRegression();
+        RunSceneOpticsPersistenceRegression();
         RunEditorRestartSnapshotRegression();
         RunProjectVaultPersistenceRegression();
+        VerifyProjectCompressionRegression();
         Console.WriteLine("timeline_regression=ok");
+    }
+
+    private static void RunTimelineTabGroupRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var drawing = project.DrawingObjects[0];
+        var scene = drawing.Scene;
+        scene.CreateEmpty(2, 16);
+        scene.AddObject(0, PointF.Empty, new SizeF(120, 80), 0, 0, Color.Coral, 20, ShapeKind.Rectangle);
+        scene.AddObject(1, new PointF(200, 0), new SizeF(120, 80), 0, 0, Color.Teal, 20, ShapeKind.Rectangle);
+        var firstTerrain = scene.AddCollisionTerrainLayer();
+        var secondTerrain = scene.AddCollisionTerrainLayer();
+        AssertTimeline(firstTerrain >= 0 && secondTerrain != firstTerrain,
+            "Adding collision terrain reused an existing layer.");
+        scene.RenameLayer(secondTerrain, "Moving platform");
+        AssertTimeline(scene.IsCollisionTerrainLayer(secondTerrain)
+            && scene.GetCollisionTerrainLayers().Length == 2,
+            "Renaming a terrain layer lost its collision identity.");
+
+        var timeline = scene.Timeline;
+        var track = timeline.FindTrackByTargetId(scene.LayerIds[1])!;
+        var group = timeline.CreateTabGroup("Character details and secondary animation");
+        AssertTimeline(timeline.SetTrackTabGroup(track.Id, group), "A track could not join its tab group.");
+        var before = scene.CreateSnapshot();
+        var exposure = timeline.EvaluateExposure(track.Id, 8);
+        var geometryRevision = scene.GeometryRevision;
+        var contentRevision = scene.ActiveContentRevision;
+        var modelChanged = 0;
+        timeline.Changed += (_, _) => modelChanged++;
+        var groupColor = Color.Crimson.ToArgb();
+        var terrainColor = Color.SeaGreen.ToArgb();
+        AssertTimeline(timeline.SetTabGroupColor(group, groupColor)
+            && timeline.SetTabGroupColor(AnimationTimeline.TerrainTabGroupId, terrainColor)
+            && !timeline.SetTabGroupColor(group, groupColor)
+            && !timeline.SetTabGroupColor(AnimationTimeline.AllTabGroupId, groupColor)
+            && !timeline.SetTabGroupColor("missing-group", groupColor),
+            "Tab group color editing failed to preserve valid groups or reject unchanged colors.");
+        using (var strip = new TimelineStrip(drawing) { Size = new Size(760, 240) })
+        {
+            var getRows = RequireMethod(typeof(TimelineStrip), "VisibleTrackIndices", Type.EmptyTypes);
+            string[] Rows() => ((IEnumerable<int>)getRows.Invoke(strip, null)!)
+                .Select(index => timeline.Tracks[index].TargetId).ToArray();
+
+            timeline.SetActiveTabGroup(group);
+            AssertTimeline(Rows().SequenceEqual([track.TargetId]), "Tab group filtering displayed unrelated drawing layers.");
+            strip.SelectSingleLayerTarget(track.TargetId);
+            strip.SelectSingleFrame(track.Id, 3);
+            timeline.SetActiveTabGroup(AnimationTimeline.TerrainTabGroupId);
+            AssertTimeline(Rows().ToHashSet(StringComparer.Ordinal).SetEquals(
+                    [scene.LayerIds[firstTerrain], scene.LayerIds[secondTerrain]])
+                && strip.SelectedFrameCells.All(cell => cell.TrackId != track.Id)
+                && !strip.SelectedLayerTargetIds.Contains(track.TargetId),
+                "Terrain tab filtering retained ordinary layers or hidden frame selections.");
+            timeline.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
+            AssertTimeline(Rows().Length == scene.LayerCount, "All layers tab did not restore the full timeline list.");
+        }
+        AssertTimeline(modelChanged == 0
+            && scene.GeometryRevision == geometryRevision && scene.ActiveContentRevision == contentRevision
+            && scene.LayerVisible.SequenceEqual(before.LayerVisible)
+            && scene.LayerOpacity.SequenceEqual(before.LayerOpacity)
+            && scene.ObjectOrder.Take(scene.ObjectCount).SequenceEqual(before.ObjectOrder.Take(before.ObjectCount))
+            && timeline.EvaluateExposure(track.Id, 8) == exposure,
+            "Switching timeline tab groups changed render data, exposure, or model revisions.");
+
+        timeline.SetActiveTabGroup(group);
+        var snapshot = timeline.CreateSnapshot();
+        AssertTimeline(timeline.SetTabGroupColor(group, null)
+            && timeline.TabGroups.Single(item => item.Id == group).ColorArgb is null,
+            "Resetting a tab group color did not restore its theme default.");
+        AssertTimeline(timeline.RenameTabGroup(group, "Characters") && timeline.RemoveTabGroup(group)
+            && timeline.FindTrack(track.Id)!.TabGroupId == AnimationTimeline.DefaultTabGroupId,
+            "Deleting a tab group did not return its layers to the default group.");
+        timeline.RestoreSnapshot(snapshot);
+        AssertTimeline(timeline.TabGroups.Any(item => item.Id == group && item.ColorArgb == groupColor)
+            && timeline.TabGroups.Single(item => item.Id == AnimationTimeline.TerrainTabGroupId).ColorArgb == terrainColor
+            && timeline.ActiveTabGroupId == group && timeline.FindTrack(track.Id)!.TabGroupId == group,
+            "Timeline snapshots lost group names, active tab, or membership.");
+        var temporaryRoot = CreateTemporaryDirectory("timeline-tab-groups");
+        try
+        {
+            var path = Path.Combine(temporaryRoot, "Groups.v2dProject");
+            ProjectVaultStore.Save(project, path);
+            var loaded = ProjectVaultStore.Load(path).DrawingObjects[0].Scene;
+            AssertTimeline(loaded.Timeline.ActiveTabGroupId == group
+                && loaded.Timeline.TabGroups.Any(item => item.Id == group && item.ColorArgb == groupColor)
+                && loaded.Timeline.TabGroups.Single(item => item.Id == AnimationTimeline.TerrainTabGroupId).ColorArgb == terrainColor
+                && loaded.Timeline.FindTrackByTargetId(track.TargetId)?.TabGroupId == group
+                && loaded.GetCollisionTerrainLayers().Length == 2,
+                "Project Save/Open lost tab groups or renamed terrain layers.");
+        }
+        finally { DeleteTemporaryDirectory(temporaryRoot); }
+
+        var legacy = new AnimationTimeline();
+        legacy.RestoreSnapshot(new AnimationTimelineSnapshot
+        {
+            Tracks = [new AnimationTimelineTrackSnapshot
+            {
+                Id = "legacy-track", TargetId = "legacy-layer", Duration = 8,
+                Keyframes = [new TimelineKeyframe(0, TimelineKeyframeKind.Populated)]
+            }]
+        });
+        AssertTimeline(legacy.Tracks[0].TabGroupId == AnimationTimeline.DefaultTabGroupId,
+            "Legacy timelines without tab metadata did not use the default group.");
+        var oldGroupJson = "{\"Tracks\":[],\"TabGroups\":[{\"Id\":\"old-group\",\"Name\":\"Old group\"}]}";
+        legacy.RestoreSnapshot(System.Text.Json.JsonSerializer.Deserialize<AnimationTimelineSnapshot>(oldGroupJson)!);
+        AssertTimeline(legacy.TabGroups.All(item => item.ColorArgb is null),
+            "Legacy tab groups without color metadata did not retain theme defaults.");
+
+        using var form = new MainForm();
+        var editorTimeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        RequireMethod(typeof(MainForm), "BeginTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        var createdGroup = editorTimeline.Context.Timeline.CreateTabGroup("Undo group");
+        RequireMethod(typeof(MainForm), "CompleteTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+            && editorTimeline.Context.Timeline.TabGroups.All(item => item.Id != createdGroup),
+            "Timeline group editing did not create one reversible editor command.");
+        RequireMethod(typeof(MainForm), "BeginTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        editorTimeline.Context.Timeline.SetTabGroupColor(AnimationTimeline.DefaultTabGroupId, groupColor);
+        RequireMethod(typeof(MainForm), "CompleteTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+            && editorTimeline.Context.Timeline.TabGroups.Single(item => item.Id == AnimationTimeline.DefaultTabGroupId).ColorArgb is null,
+            "Tab group color editing did not undo independently of group creation.");
+        Console.WriteLine("timeline_tab_groups=ok");
     }
 
     private static void RunFixedStepBatchRegression()
@@ -173,17 +309,279 @@ internal static partial class Benchmark
 
         var isolatedRender = MainForm.CalculatePerformanceRateSample(1, 0, 1, playing: false);
         var activeRates = MainForm.CalculatePerformanceRateSample(60, 300, 1, playing: true);
+        var repeatedPlaybackFrameRates = MainForm.CalculatePerformanceRateSample(120, 300, 1, playing: true);
         var pausedRates = MainForm.CalculatePerformanceRateSample(60, 300, 1, playing: false);
-        if (isolatedRender.HasRenderRate
+        if (!isolatedRender.HasRenderRate
+            || Math.Abs(isolatedRender.RenderFps - 1) > 0.001
             || isolatedRender.HasUpdateRate
             || !activeRates.HasRenderRate
             || Math.Abs(activeRates.RenderFps - 60) > 0.001
             || !activeRates.HasUpdateRate
             || Math.Abs(activeRates.UpdatesPerSecond - 300) > 0.001
+            || !repeatedPlaybackFrameRates.HasRenderRate
+            || Math.Abs(repeatedPlaybackFrameRates.RenderFps - 120) > 0.001
             || !pausedRates.HasRenderRate
             || pausedRates.HasUpdateRate)
         {
-            throw new InvalidOperationException("Render FPS and UPS telemetry did not preserve active, isolated, and paused rate semantics.");
+            throw new InvalidOperationException("Render FPS and UPS telemetry did not preserve completed-presentation, active, isolated, and paused rate semantics.");
+        }
+    }
+
+    private static void RunPlaybackSchedulerCoalescingRegression()
+    {
+        AssertTimeline(
+            MainForm.PlaybackSchedulerIntervalMilliseconds == 8,
+            "Playback scheduler cadence can starve WinForms paint and input messages.");
+
+        var gate = new PlaybackUiTickGate();
+        AssertTimeline(gate.TryReserve(), "Playback scheduler did not reserve its first UI tick.");
+        var nestedReservationAccepted = true;
+        gate.ExecuteReserved(() =>
+        {
+            nestedReservationAccepted = gate.TryReserve();
+            AssertTimeline(
+                gate.IsReserved && !nestedReservationAccepted,
+                "Playback scheduler released its single-flight gate before the UI tick completed.");
+        });
+        AssertTimeline(
+            !gate.IsReserved && gate.TryReserve(),
+            "Playback scheduler did not release its UI tick after completion.");
+
+        var releasedAfterFailure = false;
+        try
+        {
+            gate.ExecuteReserved(() => throw new ApplicationException("playback tick probe"));
+        }
+        catch (ApplicationException)
+        {
+            releasedAfterFailure = !gate.IsReserved;
+        }
+        AssertTimeline(
+            releasedAfterFailure && gate.TryReserve(),
+            "Playback scheduler kept its UI tick reserved after a callback failure.");
+        gate.CancelReservation();
+
+        Console.WriteLine($"timeline_playback_scheduler_interval_ms={MainForm.PlaybackSchedulerIntervalMilliseconds}");
+        Console.WriteLine("timeline_playback_tick_gate=ok");
+    }
+
+    private static void RunDenseTimelinePlaybackUiRegression()
+    {
+        const int layerCount = 256;
+        const int visibleFrameCapacity = 60;
+        const int lastPlaybackFrame = 179;
+        var firstVisibleFrame = 0;
+        var viewportShiftCount = 0;
+        for (var frame = 1; frame <= lastPlaybackFrame; frame++)
+        {
+            var nextFirstVisibleFrame = TimelineStrip.ResolveCurrentFrameViewportStart(
+                frame,
+                firstVisibleFrame,
+                visibleFrameCapacity,
+                startFrame: 0,
+                maximumFirstVisibleFrame: 180,
+                playing: true);
+            if (nextFirstVisibleFrame != firstVisibleFrame) viewportShiftCount++;
+            firstVisibleFrame = nextFirstVisibleFrame;
+            AssertTimeline(
+                frame >= firstVisibleFrame && frame < firstVisibleFrame + visibleFrameCapacity,
+                "Dense timeline playback scrolled the current frame outside the visible viewport.");
+        }
+
+        AssertTimeline(
+            viewportShiftCount == 3
+            && TimelineStrip.ResolveCurrentFrameViewportStart(
+                currentFrame: 60,
+                firstVisibleFrame: 0,
+                visibleFrameCapacity,
+                startFrame: 0,
+                maximumFirstVisibleFrame: 180,
+                playing: false) == 1
+            && TimelineStrip.ResolveCurrentFrameViewportStart(
+                currentFrame: 0,
+                firstVisibleFrame: 135,
+                visibleFrameCapacity,
+                startFrame: 0,
+                maximumFirstVisibleFrame: 180,
+                playing: true) == 0,
+            "Timeline playback viewport following did not page forward or preserve manual reveal behavior.");
+
+        var scene = new VectorScene();
+        scene.CreateEmpty(layers: layerCount);
+        _ = scene.GetLayerDepth(0);
+        _ = scene.IsLayerEffectivelyVisible(0);
+        _ = scene.IsLayerEffectivelyLocked(0);
+        _ = scene.IsLayerEffectivelyOutlined(0);
+        var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+        var hierarchyStateChecksum = 0;
+        for (var pass = 0; pass < 4; pass++)
+        {
+            for (var layer = 0; layer < scene.LayerCount; layer++)
+            {
+                hierarchyStateChecksum += scene.GetLayerDepth(layer);
+                if (scene.IsLayerEffectivelyVisible(layer)) hierarchyStateChecksum++;
+                if (scene.IsLayerEffectivelyLocked(layer)) hierarchyStateChecksum++;
+                if (scene.IsLayerEffectivelyOutlined(layer)) hierarchyStateChecksum++;
+            }
+        }
+        var hierarchyQueryAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        GC.KeepAlive(hierarchyStateChecksum);
+        AssertTimeline(
+            hierarchyQueryAllocatedBytes <= 4096,
+            $"Dense timeline layer hierarchy queries allocated {hierarchyQueryAllocatedBytes} bytes during playback-state lookup.");
+        Console.WriteLine($"timeline_dense_layer_query_allocated_bytes={hierarchyQueryAllocatedBytes}");
+
+        using var timelineStrip = new TimelineStrip(scene)
+        {
+            Size = new Size(1280, 420),
+            IsPlaying = true
+        };
+        _ = timelineStrip.Handle;
+        var selectedFrameCells = scene.Timeline.Tracks
+            .Select(track => new TimelineFrameCell(track.Id, 44))
+            .ToArray();
+        timelineStrip.RestoreSelectionSnapshot(new TimelineSelectionSnapshot(
+            selectedFrameCells,
+            selectedFrameCells[0],
+            scene.Timeline.Tracks[0].Id,
+            [],
+            null));
+        AssertTimeline(
+            timelineStrip.SelectedFrameCells.Count == layerCount,
+            "Dense timeline setup did not retain the selected frame across all layers.");
+        AssertDenseTimelineIncrementalPaint(timelineStrip);
+        timelineStrip.CurrentFrame = 0;
+
+        var fullSurfaceInvalidations = 0;
+        timelineStrip.Invalidated += (_, args) =>
+        {
+            if (args.InvalidRect.Width >= timelineStrip.ClientSize.Width
+                && args.InvalidRect.Height >= timelineStrip.ClientSize.Height)
+            {
+                fullSurfaceInvalidations++;
+            }
+        };
+
+        for (var frame = 1; frame <= lastPlaybackFrame; frame++) timelineStrip.CurrentFrame = frame;
+
+        AssertTimeline(
+            fullSurfaceInvalidations <= 3
+            && timelineStrip.SelectedFrameCells.Count == layerCount,
+            "A dense timeline requested a full-surface repaint for each playback frame after auto-scroll: "
+            + $"layers={layerCount}, fullInvalidations={fullSurfaceInvalidations}.");
+        Console.WriteLine($"timeline_dense_playback_layers={layerCount}");
+        Console.WriteLine($"timeline_dense_playback_selected_cells={timelineStrip.SelectedFrameCells.Count}");
+        Console.WriteLine($"timeline_dense_playback_viewport_shifts={viewportShiftCount}");
+        Console.WriteLine($"timeline_dense_playback_full_invalidations={fullSurfaceInvalidations}");
+    }
+
+    private static void AssertDenseTimelineIncrementalPaint(TimelineStrip timelineStrip)
+    {
+        timelineStrip.CurrentFrame = 44;
+        timelineStrip.PerformLayout();
+        var onPaint = RequireMethod(
+            typeof(TimelineStrip),
+            "OnPaint",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        void PaintTimelineSurface(Bitmap target, Region clip)
+        {
+            using var graphics = Graphics.FromImage(target);
+            var clipBounds = Rectangle.Ceiling(clip.GetBounds(graphics));
+            graphics.SetClip(clip, System.Drawing.Drawing2D.CombineMode.Replace);
+            using var paintArgs = new PaintEventArgs(graphics, clipBounds);
+            onPaint.Invoke(timelineStrip, [paintArgs]);
+        }
+
+        using var initialFrame = new Bitmap(timelineStrip.ClientSize.Width, timelineStrip.ClientSize.Height);
+        using (var initialBackground = Graphics.FromImage(initialFrame))
+        {
+            initialBackground.Clear(timelineStrip.BackColor);
+        }
+        using (var fullRegion = new Region(timelineStrip.ClientRectangle))
+        {
+            PaintTimelineSurface(initialFrame, fullRegion);
+        }
+
+        var invalidatedBounds = new List<Rectangle>();
+        InvalidateEventHandler captureInvalidation = (_, args) => invalidatedBounds.Add(args.InvalidRect);
+        timelineStrip.Invalidated += captureInvalidation;
+        timelineStrip.CurrentFrame = 45;
+        timelineStrip.Invalidated -= captureInvalidation;
+        AssertTimeline(invalidatedBounds.Count > 0, "Dense timeline frame advance did not invalidate its changed pixels.");
+
+        using var incrementalFrame = (Bitmap)initialFrame.Clone();
+        using (var invalidRegion = new Region(invalidatedBounds[0]))
+        {
+            for (var index = 1; index < invalidatedBounds.Count; index++)
+            {
+                invalidRegion.Union(invalidatedBounds[index]);
+            }
+            PaintTimelineSurface(incrementalFrame, invalidRegion);
+        }
+
+        using var completeFrame = new Bitmap(timelineStrip.ClientSize.Width, timelineStrip.ClientSize.Height);
+        using (var completeBackground = Graphics.FromImage(completeFrame))
+        {
+            completeBackground.Clear(timelineStrip.BackColor);
+        }
+        using (var fullRegion = new Region(timelineStrip.ClientRectangle))
+        {
+            PaintTimelineSurface(completeFrame, fullRegion);
+        }
+        var pixelCount = checked(completeFrame.Width * completeFrame.Height);
+        var incrementalPixels = System.Buffers.ArrayPool<int>.Shared.Rent(pixelCount);
+        var completePixels = System.Buffers.ArrayPool<int>.Shared.Rent(pixelCount);
+        try
+        {
+            CopyBitmapPixels(incrementalFrame, incrementalPixels);
+            CopyBitmapPixels(completeFrame, completePixels);
+            for (var index = 0; index < pixelCount; index++)
+            {
+                if (incrementalPixels[index] == completePixels[index]) continue;
+                var x = index % completeFrame.Width;
+                var y = index / completeFrame.Width;
+                throw new InvalidOperationException(
+                    "Dense timeline incremental painting left stale pixels after a selected-frame advance: "
+                    + $"x={x}, y={y}, incremental={incrementalPixels[index]:X8}, "
+                    + $"complete={completePixels[index]:X8}, invalidated="
+                    + string.Join(";", invalidatedBounds.Select(bounds => bounds.ToString()))
+                    + ".");
+            }
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<int>.Shared.Return(incrementalPixels);
+            System.Buffers.ArrayPool<int>.Shared.Return(completePixels);
+        }
+
+        Console.WriteLine("timeline_dense_playback_incremental_pixels=ok");
+    }
+
+    private static void CopyBitmapPixels(Bitmap bitmap, int[] destination)
+    {
+        var bounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+        var data = bitmap.LockBits(
+            bounds,
+            System.Drawing.Imaging.ImageLockMode.ReadOnly,
+            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        try
+        {
+            for (var y = 0; y < bitmap.Height; y++)
+            {
+                var sourceRow = data.Stride >= 0
+                    ? IntPtr.Add(data.Scan0, y * data.Stride)
+                    : IntPtr.Add(data.Scan0, (bitmap.Height - 1 - y) * -data.Stride);
+                System.Runtime.InteropServices.Marshal.Copy(
+                    sourceRow,
+                    destination,
+                    y * bitmap.Width,
+                    bitmap.Width);
+            }
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
         }
     }
 
@@ -320,6 +718,35 @@ internal static partial class Benchmark
             && feedbackStyles.All(style => style.DurationMilliseconds is >= 180 and <= 500)
             && feedbackStyles.All(style => style.Color.A == 255),
             "Timeline commands did not retain distinct, bounded UI feedback motions.");
+
+        var reverseCells = new[]
+        {
+            new TimelineFrameCell("track-a", 2),
+            new TimelineFrameCell("track-a", 3),
+            new TimelineFrameCell("track-a", 4),
+            new TimelineFrameCell("track-b", 6),
+            new TimelineFrameCell("track-b", 7)
+        };
+        var reverseClipboard = reverseCells
+            .Select((cell, index) => new TimelineClipboardCell(
+                index,
+                cell.Frame - 2,
+                -1,
+                cell.Frame,
+                index == 2 ? TimelineKeyframeKind.Populated : TimelineKeyframeKind.Blank,
+                new Dictionary<string, InstanceFrameState>()))
+            .ToArray();
+        var reversedClipboard = MainForm.ReverseTimelineClipboardCells(reverseCells, reverseClipboard);
+        AssertTimeline(
+            TimelineStrip.CanReverseFrameSelection(reverseCells)
+            && !TimelineStrip.CanReverseFrameSelection(
+                [new TimelineFrameCell("track-a", 2), new TimelineFrameCell("track-b", 2)])
+            && reversedClipboard.Length == reverseClipboard.Length
+            && reversedClipboard.Select(cell => cell.FrameOffset).SequenceEqual([2, 1, 0, 5, 4])
+            && reversedClipboard[2].Kind == TimelineKeyframeKind.Populated
+            && reversedClipboard[3].SourceFrame == reverseClipboard[3].SourceFrame,
+            "Reverse Frames did not mirror each track's selected range while preserving source cell data.");
+
         var addedLayerFeedback = TimelineStrip.ResolveLayerFeedbackStyle(TimelineLayerFeedbackKind.Add);
         var removedLayerFeedback = TimelineStrip.ResolveLayerFeedbackStyle(TimelineLayerFeedbackKind.Remove);
         AssertTimeline(
@@ -353,16 +780,10 @@ internal static partial class Benchmark
 
     private static void RunTimelineUndoPlayheadRegression()
     {
-        const System.Reflection.BindingFlags privateInstance =
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var shortcut = typeof(MainForm).GetMethod("HandleTimelineShortcut", privateInstance)
-            ?? throw new InvalidOperationException("Timeline undo regression could not find the shortcut handler.");
-        var undo = typeof(MainForm).GetMethod("UndoLastEdit", privateInstance)
-            ?? throw new InvalidOperationException("Timeline undo regression could not find the undo handler.");
-        var frameField = typeof(MainForm).GetField("_frame", privateInstance)
-            ?? throw new InvalidOperationException("Timeline undo regression could not inspect the playhead.");
-        var timelineField = typeof(MainForm).GetField("_timeline", privateInstance)
-            ?? throw new InvalidOperationException("Timeline undo regression could not inspect the timeline.");
+        var shortcut = RequireMethod(typeof(MainForm), "HandleTimelineShortcut");
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var frameField = RequireField(typeof(MainForm), "_frame");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
 
         using var form = new MainForm();
         var timelineStrip = timelineField.GetValue(form) as TimelineStrip
@@ -414,6 +835,808 @@ internal static partial class Benchmark
             && blankRestoredSelection.SequenceEqual(initialSelection)
             && blankRestoredKeyframeCount == initialKeyframeCount,
             "Undoing F7 did not restore the blank keyframe, playhead, and frame selection.");
+
+        RunSceneTweenCurveDeferredCommitRegression(form, timelineStrip, undo);
+    }
+
+    private static void RunTimelineFrameSelectionContentRegression()
+    {
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var selectedObjectsField = RequireField(typeof(MainForm), "_selectedObjects");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var frameField = RequireField(typeof(MainForm), "_frame");
+        var projectDirtyField = RequireField(typeof(MainForm), "_projectDirty");
+        var setProjectDirty = RequireMethod(typeof(MainForm), "SetProjectDirty");
+        var undoStackField = RequireField(typeof(MainForm), "_undoStack");
+        var playbackSettingsField = RequireField(typeof(MainForm), "_playbackSettings");
+
+        using (var form = new MainForm())
+        {
+            var timeline = timelineField.GetValue(form) as TimelineStrip
+                ?? throw new InvalidOperationException("Frame-content selection regression lost the timeline control.");
+            var playbackSettings = playbackSettingsField.GetValue(form) as PlaybackSettingsPanel
+                ?? throw new InvalidOperationException("Frame-content selection regression lost playback settings.");
+            var drawingObject = timeline.Context as DrawingObjectDefinition
+                ?? throw new InvalidOperationException("Frame-content selection regression lost its drawing context.");
+            var scene = drawingObject.Scene;
+            scene.CreateEmpty(layers: 4);
+            scene.EditFrame = 0;
+            var firstCelObject = scene.AddObject(
+                0,
+                new PointF(20, 20),
+                new SizeF(40, 40),
+                0,
+                0,
+                Color.Teal,
+                4,
+                ShapeKind.Rectangle);
+            var heldObject = scene.AddObject(
+                1,
+                new PointF(80, 20),
+                new SizeF(40, 40),
+                0,
+                0,
+                Color.CornflowerBlue,
+                4,
+                ShapeKind.Ellipse);
+            scene.AddObject(
+                2,
+                new PointF(140, 20),
+                new SizeF(40, 40),
+                0,
+                0,
+                Color.Orange,
+                4,
+                ShapeKind.Rectangle);
+            scene.AddObject(
+                3,
+                new PointF(200, 20),
+                new SizeF(40, 40),
+                0,
+                0,
+                Color.MediumPurple,
+                4,
+                ShapeKind.Rectangle);
+            AssertTimeline(
+                scene.InsertTimelineKeyframe(0, 4)
+                && scene.InsertTimelineBlankKeyframe(0, 8)
+                && scene.SetLayerVisible(2, false)
+                && scene.SetLayerLocked(3, true),
+                "Frame-content selection regression could not establish its drawing Cels and layer filters.");
+            var secondCelObject = Enumerable.Range(0, scene.ObjectCount)
+                .Single(index => scene.ObjectLayer[index] == 0 && scene.ObjectKeyframeFrame[index] == 4);
+
+            timeline.RefreshTimeline();
+            playbackSettings.SetFrameRange(0, 8, notifyChanged: false);
+            timeline.StartFrame = 0;
+            timeline.EndFrame = 8;
+            var tracks = scene.LayerIds
+                .Select(layerId => scene.Timeline.FindTrackByTargetId(layerId)
+                    ?? throw new InvalidOperationException("Frame-content selection regression lost a drawing track."))
+                .ToArray();
+            var selectedCells = new[]
+            {
+                new TimelineFrameCell(tracks[0].Id, 0),
+                new TimelineFrameCell(tracks[0].Id, 4),
+                new TimelineFrameCell(tracks[1].Id, 0),
+                new TimelineFrameCell(tracks[1].Id, 3),
+                new TimelineFrameCell(tracks[2].Id, 0),
+                new TimelineFrameCell(tracks[3].Id, 0),
+                new TimelineFrameCell(tracks[0].Id, 8),
+                new TimelineFrameCell(tracks[0].Id, tracks[0].Duration + 1)
+            };
+            var expectedObjects = new[] { firstCelObject, heldObject, secondCelObject };
+            var resolved = MainForm.ResolveTimelineFrameContentSelection(drawingObject, scene, selectedCells);
+            AssertTimeline(
+                resolved.ObjectIndices.ToHashSet().SetEquals(expectedObjects)
+                && resolved.ObjectIndices.Length == expectedObjects.Length
+                && resolved.Instances.Length == 0
+                && !resolved.IncludesLightTrack,
+                "Selected drawing frames did not merge independent Cels, deduplicate held exposure, or filter blank, hidden, locked, and out-of-range content.");
+
+            timeline.SelectSingleLayerTarget(scene.LayerIds[0], notifyActiveLayerChanged: false);
+            setProjectDirty.Invoke(form, new object[] { false });
+            var undoStack = (System.Collections.ICollection)(undoStackField.GetValue(form)
+                ?? throw new InvalidOperationException("Frame-content selection regression lost the undo stack."));
+            var undoCount = undoStack.Count;
+            timeline.SelectFrameCells(selectedCells, selectedCells[0]);
+            var selectedObjects = selectedObjectsField.GetValue(form) as List<int>
+                ?? throw new InvalidOperationException("Frame-content selection regression lost MainForm selection state.");
+            var stage = stageField.GetValue(form) as StageControl
+                ?? throw new InvalidOperationException("Frame-content selection regression lost Stage selection state.");
+            AssertTimeline(
+                selectedObjects.ToHashSet().SetEquals(expectedObjects)
+                && stage.SelectedObjects.ToHashSet().SetEquals(expectedObjects)
+                && undoStack.Count == undoCount
+                && projectDirtyField.GetValue(form) is false,
+                "Multi-frame selection did not synchronize MainForm and Stage without creating undo or dirty state.");
+
+            timeline.SelectSingleFrame(tracks[0].Id, 4);
+            AssertTimeline(
+                frameField.GetValue(form) is 4
+                && selectedObjects.SequenceEqual([secondCelObject])
+                && stage.SelectedObjects.SequenceEqual([secondCelObject]),
+                $"Selecting a frame away from the old playhead did not retain its Cel selection after SetFrame "
+                + $"(frame={frameField.GetValue(form)}, expected={secondCelObject}, "
+                + $"main=[{string.Join(',', selectedObjects)}], stage=[{string.Join(',', stage.SelectedObjects)}]).");
+
+            timeline.SelectSingleFrame(tracks[0].Id, 8);
+            AssertTimeline(
+                selectedObjects.Count == 0 && stage.SelectedObjects.Count == 0,
+                "Selecting a blank exposure did not clear the drawing selection.");
+
+            var firstCell = new TimelineFrameCell(tracks[0].Id, 0);
+            timeline.SelectFrameCells([firstCell], firstCell);
+            AssertTimeline(
+                selectedObjects.SequenceEqual([firstCelObject]),
+                "A selected frame away from the playhead was not retained in the cross-frame selection set.");
+            timeline.ClearSelectionFromEmptyArea();
+            AssertTimeline(
+                selectedObjects.Count == 0 && stage.SelectedObjects.Count == 0,
+                "Clearing the timeline frame selection did not clear the Stage selection.");
+        }
+
+        var nestedProject = VectorProject.CreateEmpty();
+        var container = nestedProject.DrawingObjects[0];
+        var child = nestedProject.AddDrawingObject("Frame selection child");
+        var nestedLayerId = container.Scene.LayerIds[0];
+        AssertTimeline(
+            nestedProject.TryAddDrawingObjectInstance(
+                container.Id,
+                child.Id,
+                PointF.Empty,
+                nestedLayerId,
+                out var nestedInstance)
+            && nestedInstance is not null,
+            "Frame-content selection regression could not create a nested instance.");
+        var nestedTrack = container.Timeline.FindTrackByTargetId(nestedLayerId)
+            ?? throw new InvalidOperationException("Frame-content selection regression lost the nested-instance track.");
+        var nestedSelection = MainForm.ResolveTimelineFrameContentSelection(
+            container,
+            container.Scene,
+            [new TimelineFrameCell(nestedTrack.Id, 0)]);
+        var hiddenNestedState = nestedInstance!.EvaluateState(3) with { Visible = false };
+        nestedInstance.SetStateAtFrame(3, hiddenNestedState);
+        var hiddenNestedSelection = MainForm.ResolveTimelineFrameContentSelection(
+            container,
+            container.Scene,
+            [new TimelineFrameCell(nestedTrack.Id, 3)]);
+        AssertTimeline(
+            nestedSelection.Instances.SequenceEqual([nestedInstance])
+            && hiddenNestedSelection.Instances.Length == 0,
+            "Drawing-frame selection did not include visible nested instances or exclude hidden ones.");
+
+        var sceneProject = VectorProject.CreateEmpty();
+        var sceneDefinition = sceneProject.Scenes[0];
+        var sourceObject = sceneProject.DrawingObjects[0];
+        var sceneLayer = sceneDefinition.Layers[0];
+        AssertTimeline(
+            sceneProject.TryAddSceneInstance(
+                sceneDefinition.Id,
+                sourceObject.Id,
+                PointF.Empty,
+                0,
+                sceneLayer.Id,
+                out var sceneInstance)
+            && sceneInstance is not null,
+            "Frame-content selection regression could not create a Scene Building instance.");
+        var sceneTrack = sceneDefinition.Timeline.FindTrackByTargetId(sceneLayer.Id)
+            ?? throw new InvalidOperationException("Frame-content selection regression lost the scene-layer track.");
+        var sceneSelection = MainForm.ResolveTimelineFrameContentSelection(
+            sceneDefinition,
+            new VectorScene(),
+            [new TimelineFrameCell(sceneTrack.Id, 0)]);
+        sceneInstance!.SetStateAtFrame(3, sceneInstance.EvaluateState(3) with { Visible = false });
+        var hiddenSceneSelection = MainForm.ResolveTimelineFrameContentSelection(
+            sceneDefinition,
+            new VectorScene(),
+            [new TimelineFrameCell(sceneTrack.Id, 3)]);
+        sceneDefinition.Timeline.InsertBlankKeyframe(sceneTrack.Id, 5);
+        var blankSceneSelection = MainForm.ResolveTimelineFrameContentSelection(
+            sceneDefinition,
+            new VectorScene(),
+            [new TimelineFrameCell(sceneTrack.Id, 5)]);
+        AssertTimeline(
+            sceneSelection.Instances.SequenceEqual([sceneInstance])
+            && hiddenSceneSelection.Instances.Length == 0
+            && blankSceneSelection.Instances.Length == 0,
+            "Scene-frame selection did not honor exposure and per-frame instance visibility.");
+
+        AssertTimeline(
+            sceneProject.TryAddSceneLight(sceneDefinition.Id, SceneLightKind.Point, out var sceneLight)
+            && sceneLight is not null,
+            "Frame-content selection regression could not create a scene light.");
+        var lightTrack = sceneDefinition.Timeline.FindTrackByTargetId(sceneLight!.Id)
+            ?? throw new InvalidOperationException("Frame-content selection regression lost the light track.");
+        var lightSelection = MainForm.ResolveTimelineFrameContentSelection(
+            sceneDefinition,
+            new VectorScene(),
+            [new TimelineFrameCell(lightTrack.Id, 0)]);
+        AssertTimeline(
+            lightSelection.IncludesLightTrack
+            && lightSelection.ObjectIndices.Length == 0
+            && lightSelection.Instances.Length == 0,
+            "Light-frame selection was incorrectly converted into drawing or instance selection.");
+
+        var maskProject = VectorProject.CreateEmpty();
+        var maskDefinition = maskProject.Scenes[0];
+        var maskedContentLayer = maskDefinition.Layers[0];
+        AssertTimeline(
+            maskProject.TryAddSceneMaskLayer(
+                maskDefinition.Id,
+                maskedContentLayer.Id,
+                out var maskLayer,
+                "Frame selection mask")
+            && maskLayer is not null,
+            "Frame-content selection regression could not create a Scene Mask.");
+        var maskScene = maskDefinition.FindMaskScene(maskLayer!.Id)
+            ?? throw new InvalidOperationException("Frame-content selection regression lost the mask drawing scene.");
+        maskScene.EditFrame = 0;
+        var maskObject = maskScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(120, 80),
+            0,
+            0,
+            Color.White,
+            0,
+            ShapeKind.Rectangle);
+        maskDefinition.SynchronizeMaskTimelineContent(maskLayer.Id, 0);
+        maskDefinition.SetActiveLayer(maskLayer.Id);
+        var maskTrack = maskDefinition.Timeline.FindTrackByTargetId(maskLayer.Id)
+            ?? throw new InvalidOperationException("Frame-content selection regression lost the outer mask track.");
+        var maskSelection = MainForm.ResolveTimelineFrameContentSelection(
+            maskDefinition,
+            maskScene,
+            [new TimelineFrameCell(maskTrack.Id, 0)]);
+        AssertTimeline(
+            maskSelection.ObjectIndices.SequenceEqual([maskObject])
+            && maskSelection.Instances.Length == 0,
+            "Selecting a Scene Mask frame did not resolve its editable inner drawing content.");
+    }
+
+    private static void RunSceneTweenCurveDeferredCommitRegression(
+        MainForm form,
+        TimelineStrip timelineStrip,
+        System.Reflection.MethodInfo undo)
+    {
+        var project = RequireField(typeof(MainForm), "_project").GetValue(form) as VectorProject
+            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the project.");
+        var workspaceTabs = RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form) as WorkspaceTabs
+            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the workspace tabs.");
+        var panel = RequireField(typeof(MainForm), "_tweenCurveEditorPanel").GetValue(form) as TweenCurveEditorPanel
+            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the curve panel.");
+        var scenePage = RequireField(typeof(MainForm), "_sceneEditPage").GetValue(form) as ThemedScrollPanel
+            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the Scene Building page.");
+        var basicPage = RequireField(typeof(MainForm), "_basicInspectorPage").GetValue(form) as ThemedScrollPanel
+            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the Basic Drawing page.");
+        var sceneUndoStack = RequireField(typeof(MainForm), "_sceneTimelineUndoStack").GetValue(form)
+            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the scene undo stack.");
+        var editor = RequireField(typeof(TweenCurveEditorPanel), "_editor").GetValue(panel) as TweenCurveEditor
+            ?? throw new InvalidOperationException("Tween curve gesture regression could not inspect the curve editor.");
+        var chartBounds = RequireMethod(typeof(TweenCurveEditor), "ChartBounds");
+        var displayAnchors = RequireMethod(typeof(TweenCurveEditor), "DisplayAnchors");
+        var mouseDown = RequireMethod(typeof(TweenCurveEditor), "OnMouseDown");
+        var mouseMove = RequireMethod(typeof(TweenCurveEditor), "OnMouseMove");
+        var mouseUp = RequireMethod(typeof(TweenCurveEditor), "OnMouseUp");
+        var keyDown = RequireMethod(typeof(TweenCurveEditor), "OnKeyDown");
+
+        var sourceObject = project.DrawingObjects[0];
+        sourceObject.Scene.CreateEmpty(1, 9);
+        sourceObject.Scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(80, 60),
+            0,
+            0,
+            Color.White,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        var scene = project.Scenes[0];
+        var layerId = scene.Layers[0].Id;
+        var track = scene.Timeline.FindTrackByTargetId(layerId)
+            ?? throw new InvalidOperationException("Tween curve gesture regression lost the Scene Building track.");
+        scene.Timeline.SetTrackDuration(track.Id, 9);
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, sourceObject.Id, PointF.Empty, 0, layerId, out var instance)
+            && instance is not null,
+            "Tween curve gesture regression could not create a Scene Building instance.");
+        var sceneInstance = instance
+            ?? throw new InvalidOperationException("Tween curve gesture regression lost its Scene Building instance.");
+        var source = sceneInstance.EvaluateState(0) with { X = 100 };
+        var target = source with { X = 900 };
+        var setupReady = sceneInstance.SetStateAtFrame(0, source)
+            && scene.Timeline.InsertKeyframe(track.Id, 8)
+            && sceneInstance.SetStateAtFrame(8, target);
+        var createError = string.Empty;
+        var created = setupReady
+            && scene.TryCreateTimelineTween(layerId, 0, 8, TimelineTweenKind.Classic, out createError);
+        AssertTimeline(
+            created,
+            $"Tween curve gesture regression could not create its classic tween: {createError}");
+        TweenCurveAnchor[] initialAnchors = [new(0, 0), new(0.5f, 0.5f), new(1, 1)];
+        AssertTimeline(
+            scene.ReplaceTimelineTweenCurve(layerId, 0, 8, initialAnchors),
+            "Tween curve gesture regression could not install its editable anchor.");
+
+        if (!form.Visible) form.Show();
+        workspaceTabs.SelectedView = WorkspaceView.SceneEditor;
+        Application.DoEvents();
+        timelineStrip.RefreshTimeline();
+        timelineStrip.SelectSingleFrame(track.Id, 4);
+        Application.DoEvents();
+        AssertTimeline(
+            ReferenceEquals(timelineStrip.Context, scene)
+            && panel.Enabled
+            && panel.Visible
+            && ReferenceEquals(panel.Parent, scenePage.Content),
+            "Selecting a Scene Building tween did not show the existing curve panel in the scene inspector.");
+
+        editor.Size = new Size(320, 160);
+        _ = editor.Handle;
+        var events = new List<string>();
+        TweenCurveAnchor[]? committedAnchors = null;
+        panel.InteractionStarted += (_, _) => events.Add("started");
+        panel.CurveCommitted += (_, e) =>
+        {
+            committedAnchors = e.Anchors;
+            events.Add("committed");
+        };
+        panel.InteractionCompleted += (_, _) => events.Add("completed");
+        panel.InteractionCanceled += (_, _) => events.Add("canceled");
+        var timelineChangedCount = 0;
+        scene.Timeline.Changed += (_, _) => timelineChangedCount++;
+
+        var initialMiddleX = sceneInstance.EvaluateState(4).X;
+        var initialUndoCount = CollectionCount(sceneUndoStack);
+        var initialPoint = CurrentAnchorPoint(1);
+        mouseDown.Invoke(
+            editor,
+            [new MouseEventArgs(MouseButtons.Left, 1, initialPoint.X, initialPoint.Y, 0)]);
+        foreach (var requested in new[]
+                 {
+                     new TweenCurveAnchor(0.56f, 0.42f),
+                     new TweenCurveAnchor(0.63f, 0.31f),
+                     new TweenCurveAnchor(0.70f, 0.20f)
+                 })
+        {
+            var point = CurvePoint(requested);
+            mouseMove.Invoke(
+                editor,
+                [new MouseEventArgs(MouseButtons.Left, 0, point.X, point.Y, 0)]);
+            var modelAnchors = scene.Timeline.EvaluateTween(track.Id, 4)?.CurveAnchors ?? [];
+            AssertTimeline(
+                editor.SelectedAnchor is { } previewAnchor
+                && !initialAnchors.Contains(previewAnchor)
+                && modelAnchors.SequenceEqual(initialAnchors)
+                && Math.Abs(sceneInstance.EvaluateState(4).X - initialMiddleX) <= 0.001f
+                && timelineChangedCount == 0
+                && CollectionCount(sceneUndoStack) == initialUndoCount
+                && events.SequenceEqual(["started"]),
+                "Dragging a tween curve anchor recalculated or committed the Scene Building tween before pointer release.");
+        }
+
+        var committedPoint = CurvePoint(new TweenCurveAnchor(0.70f, 0.20f));
+        mouseUp.Invoke(
+            editor,
+            [new MouseEventArgs(MouseButtons.Left, 1, committedPoint.X, committedPoint.Y, 0)]);
+        var committedTween = scene.Timeline.EvaluateTween(track.Id, 4)
+            ?? throw new InvalidOperationException("Tween curve gesture regression lost the committed tween.");
+        var committedMiddleX = sceneInstance.EvaluateState(4).X;
+        AssertTimeline(
+            committedAnchors is not null
+            && events.SequenceEqual(["started", "committed", "completed"])
+            && committedTween.CurveAnchors.SequenceEqual(committedAnchors)
+            && !committedTween.CurveAnchors.SequenceEqual(initialAnchors)
+            && Math.Abs(committedMiddleX - initialMiddleX) > 1
+            && Math.Abs(committedMiddleX - (source.X + (target.X - source.X) * committedTween.ProgressAt(4))) <= 0.01f
+            && timelineChangedCount == 1
+            && CollectionCount(sceneUndoStack) == initialUndoCount + 1,
+            "Pointer release did not commit and recalculate the Scene Building tween exactly once.");
+
+        events.Clear();
+        committedAnchors = null;
+        var committedModelAnchors = committedTween.CurveAnchors;
+        var cancelStart = CurrentAnchorPoint(1);
+        mouseDown.Invoke(
+            editor,
+            [new MouseEventArgs(MouseButtons.Left, 1, cancelStart.X, cancelStart.Y, 0)]);
+        foreach (var requested in new[]
+                 {
+                     new TweenCurveAnchor(0.58f, 0.45f),
+                     new TweenCurveAnchor(0.52f, 0.60f)
+                 })
+        {
+            var point = CurvePoint(requested);
+            mouseMove.Invoke(
+                editor,
+                [new MouseEventArgs(MouseButtons.Left, 0, point.X, point.Y, 0)]);
+        }
+        keyDown.Invoke(editor, [new KeyEventArgs(Keys.Escape)]);
+        AssertTimeline(
+            committedAnchors is null
+            && events.SequenceEqual(["started", "canceled"])
+            && editor.SelectedAnchor is { } restoredAnchor
+            && restoredAnchor == committedModelAnchors[1]
+            && scene.Timeline.EvaluateTween(track.Id, 4)?.CurveAnchors.SequenceEqual(committedModelAnchors) == true
+            && Math.Abs(sceneInstance.EvaluateState(4).X - committedMiddleX) <= 0.001f
+            && timelineChangedCount == 1
+            && CollectionCount(sceneUndoStack) == initialUndoCount + 1,
+            "Canceling a tween curve gesture committed model changes or failed to restore the editor preview.");
+
+        AssertTimeline(
+            undo.Invoke(form, null) is true
+            && scene.Timeline.EvaluateTween(track.Id, 4)?.CurveAnchors.SequenceEqual(initialAnchors) == true
+            && Math.Abs(scene.Instances.Single(item => item.Id == sceneInstance.Id).EvaluateState(4).X - initialMiddleX) <= 0.001f
+            && CollectionCount(sceneUndoStack) == initialUndoCount,
+            "Undoing a tween curve gesture did not restore its curve and materialized Scene Building state as one unit.");
+        timelineStrip.ClearSelectionFromEmptyArea();
+        Application.DoEvents();
+        AssertTimeline(!panel.Visible, "Clearing the tween selection did not hide the Scene Building curve panel.");
+
+        AssertTimeline(
+            sourceObject.Scene.InsertTimelineKeyframe(0, 8),
+            "Tween curve gesture regression could not create a Basic Drawing endpoint.");
+        var drawingTarget = Enumerable.Range(0, sourceObject.Scene.ObjectCount)
+            .Single(index => sourceObject.Scene.ObjectKeyframeFrame[index] == 8);
+        sourceObject.Scene.X[drawingTarget] = 200;
+        AssertTimeline(
+            sourceObject.TryCreateTimelineTween(0, 0, 8, TimelineTweenKind.Classic, out var drawingTweenError)
+            && sourceObject.ReplaceTimelineTweenCurve(0, 0, 8, initialAnchors),
+            $"Tween curve gesture regression could not create its Basic Drawing tween: {drawingTweenError}");
+        workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
+        Application.DoEvents();
+        var drawingTrack = sourceObject.Timeline.FindTrackByTargetId(sourceObject.Scene.LayerIds[0])
+            ?? throw new InvalidOperationException("Tween curve gesture regression lost the Basic Drawing track.");
+        timelineStrip.RefreshTimeline();
+        timelineStrip.SelectSingleFrame(drawingTrack.Id, 4);
+        Application.DoEvents();
+        AssertTimeline(
+            ReferenceEquals(timelineStrip.Context, sourceObject)
+            && panel.Enabled
+            && panel.Visible
+            && ReferenceEquals(panel.Parent, basicPage.Content),
+            "Returning to Basic Drawing did not reattach the shared tween curve panel to its original inspector.");
+
+        RunSceneLightTweenCurveDeferredCommitRegression(form, timelineStrip, undo);
+
+        int CollectionCount(object collection) =>
+            (int)(collection.GetType().GetProperty("Count")?.GetValue(collection) ?? -1);
+
+        Point CurrentAnchorPoint(int index)
+        {
+            var anchors = displayAnchors.Invoke(editor, null) as TweenCurveAnchor[]
+                ?? throw new InvalidOperationException("Tween curve gesture regression could not read display anchors.");
+            return CurvePoint(anchors[index]);
+        }
+
+        Point CurvePoint(TweenCurveAnchor anchor)
+        {
+            var chart = (Rectangle)(chartBounds.Invoke(editor, null)
+                ?? throw new InvalidOperationException("Tween curve gesture regression could not read chart bounds."));
+            return new Point(
+                (int)Math.Round(chart.Left + anchor.Time * chart.Width),
+                (int)Math.Round(chart.Bottom - anchor.Value * chart.Height));
+        }
+    }
+
+    private static void RunSceneLightTweenCurveDeferredCommitRegression(
+        MainForm form,
+        TimelineStrip timelineStrip,
+        System.Reflection.MethodInfo undo)
+    {
+        var project = RequireField(typeof(MainForm), "_project").GetValue(form) as VectorProject
+            ?? throw new InvalidOperationException("Light tween curve regression could not inspect the project.");
+        var workspaceTabs = RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form) as WorkspaceTabs
+            ?? throw new InvalidOperationException("Light tween curve regression could not inspect the workspace tabs.");
+        var panel = RequireField(typeof(MainForm), "_tweenCurveEditorPanel").GetValue(form) as TweenCurveEditorPanel
+            ?? throw new InvalidOperationException("Light tween curve regression could not inspect the curve panel.");
+        var sceneUndoStack = RequireField(typeof(MainForm), "_sceneTimelineUndoStack").GetValue(form)
+            ?? throw new InvalidOperationException("Light tween curve regression could not inspect the scene undo stack.");
+        var editor = RequireField(typeof(TweenCurveEditorPanel), "_editor").GetValue(panel) as TweenCurveEditor
+            ?? throw new InvalidOperationException("Light tween curve regression could not inspect the curve editor.");
+        var chartBounds = RequireMethod(typeof(TweenCurveEditor), "ChartBounds");
+        var displayAnchors = RequireMethod(typeof(TweenCurveEditor), "DisplayAnchors");
+        var mouseDown = RequireMethod(typeof(TweenCurveEditor), "OnMouseDown");
+        var mouseMove = RequireMethod(typeof(TweenCurveEditor), "OnMouseMove");
+        var mouseUp = RequireMethod(typeof(TweenCurveEditor), "OnMouseUp");
+        var keyDown = RequireMethod(typeof(TweenCurveEditor), "OnKeyDown");
+        var beginOpticsEdit = RequireMethod(typeof(MainForm), "BeginSceneOpticsEdit");
+        var applyResolvedLightEdit = RequireMethod(typeof(MainForm), "ApplyResolvedSceneLightEdit");
+        var cancelOpticsEdit = RequireMethod(typeof(MainForm), "CancelSceneOpticsEdit");
+        var completeOpticsEdit = RequireMethod(typeof(MainForm), "CompleteSceneOpticsEdit");
+        var saveProjectTo = RequireMethod(typeof(MainForm), "SaveProjectTo");
+        var manifestPathField = RequireField(typeof(MainForm), "_projectManifestPath");
+        var projectDirtyField = RequireField(typeof(MainForm), "_projectDirty");
+        var opticsSnapshotField = RequireField(typeof(MainForm), "_sceneOpticsEditSnapshot");
+        var opticsSavedSnapshotField = RequireField(typeof(MainForm), "_sceneOpticsSavedSnapshot");
+        var pendingMaterializationsField = RequireField(
+            typeof(MainForm),
+            "_pendingSceneLightTweenMaterializations");
+
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            scene.Dimension == SceneDimension.ThreeD
+            || project.TrySetSceneDimension(scene.Id, SceneDimension.ThreeD),
+            "Light tween curve regression could not enable the 3D scene.");
+        AssertTimeline(
+            project.TryAddSceneLight(scene.Id, SceneLightKind.Point, out var addedLight)
+            && addedLight is not null,
+            "Light tween curve regression could not create a point light.");
+        var light = addedLight
+            ?? throw new InvalidOperationException("Light tween curve regression lost its point light.");
+        var start = light.Settings with
+        {
+            Intensity = 1.25f,
+            Range = 5000,
+            Position = new Vector3(120, -60, 240)
+        };
+        var end = start with
+        {
+            Intensity = 5.75f,
+            Range = 15000,
+            Position = new Vector3(900, 420, -180),
+            RotationDegrees = new Vector3(15, 210, -20)
+        };
+        const int endFrame = 8;
+        TweenCurveAnchor[] initialAnchors = [new(0, 0), new(0.5f, 0.5f), new(1, 1)];
+        var setupError = string.Empty;
+        AssertTimeline(
+            project.TryUpdateSceneLightAtFrame(scene.Id, light.Id, light.Name, start, 0)
+            && scene.InsertLightTimelineKeyframe(light.Id, endFrame)
+            && project.TryUpdateSceneLightAtFrame(scene.Id, light.Id, light.Name, end, endFrame)
+            && scene.TryCreateTimelineTween(
+                light.Id,
+                0,
+                endFrame,
+                TimelineTweenKind.Classic,
+                out setupError)
+            && scene.ReplaceTimelineTweenCurve(light.Id, 0, endFrame, initialAnchors),
+            $"Light tween curve regression could not create its Classic tween: {setupError}");
+        var track = scene.Timeline.FindTrackByTargetId(light.Id)
+            ?? throw new InvalidOperationException("Light tween curve regression lost the light track.");
+
+        workspaceTabs.SelectedView = WorkspaceView.SceneEditor;
+        Application.DoEvents();
+        timelineStrip.RefreshTimeline();
+        timelineStrip.SelectSingleFrame(track.Id, 4);
+        Application.DoEvents();
+        AssertTimeline(
+            ReferenceEquals(timelineStrip.Context, scene)
+            && panel.Enabled
+            && panel.Visible,
+            "Selecting a light tween did not expose the Scene Building curve editor.");
+
+        editor.Size = new Size(320, 160);
+        _ = editor.Handle;
+        var events = new List<string>();
+        TweenCurveAnchor[]? committedAnchors = null;
+        panel.InteractionStarted += (_, _) => events.Add("started");
+        panel.CurveCommitted += (_, e) =>
+        {
+            committedAnchors = e.Anchors;
+            events.Add("committed");
+        };
+        panel.InteractionCompleted += (_, _) => events.Add("completed");
+        panel.InteractionCanceled += (_, _) => events.Add("canceled");
+        var timelineChangedCount = 0;
+        scene.Timeline.Changed += (_, _) => timelineChangedCount++;
+        var initialMaterialized = light.EvaluateSettings(4);
+        var initialUndoCount = CollectionCount(sceneUndoStack);
+
+        var cancelStart = CurrentAnchorPoint(1);
+        mouseDown.Invoke(
+            editor,
+            [new MouseEventArgs(MouseButtons.Left, 1, cancelStart.X, cancelStart.Y, 0)]);
+        foreach (var requested in new[]
+                 {
+                     new TweenCurveAnchor(0.58f, 0.42f),
+                     new TweenCurveAnchor(0.66f, 0.28f)
+                 })
+        {
+            var point = CurvePoint(requested);
+            mouseMove.Invoke(
+                editor,
+                [new MouseEventArgs(MouseButtons.Left, 0, point.X, point.Y, 0)]);
+            AssertTimeline(
+                scene.Timeline.EvaluateTween(track.Id, 4)?.CurveAnchors.SequenceEqual(initialAnchors) == true
+                && light.EvaluateSettings(4) == initialMaterialized
+                && timelineChangedCount == 0
+                && CollectionCount(sceneUndoStack) == initialUndoCount,
+                "Dragging a light tween curve eagerly committed or materialized the span.");
+        }
+        keyDown.Invoke(editor, [new KeyEventArgs(Keys.Escape)]);
+        AssertTimeline(
+            committedAnchors is null
+            && events.SequenceEqual(["started", "canceled"])
+            && scene.Timeline.EvaluateTween(track.Id, 4)?.CurveAnchors.SequenceEqual(initialAnchors) == true
+            && light.EvaluateSettings(4) == initialMaterialized
+            && timelineChangedCount == 0
+            && CollectionCount(sceneUndoStack) == initialUndoCount,
+            "Canceling a light tween curve gesture changed the model or materialized light frames.");
+
+        events.Clear();
+        var commitStart = CurrentAnchorPoint(1);
+        var requestedCommit = new TweenCurveAnchor(0.72f, 0.18f);
+        var commitPoint = CurvePoint(requestedCommit);
+        mouseDown.Invoke(
+            editor,
+            [new MouseEventArgs(MouseButtons.Left, 1, commitStart.X, commitStart.Y, 0)]);
+        mouseMove.Invoke(
+            editor,
+            [new MouseEventArgs(MouseButtons.Left, 0, commitPoint.X, commitPoint.Y, 0)]);
+        AssertTimeline(
+            scene.Timeline.EvaluateTween(track.Id, 4)?.CurveAnchors.SequenceEqual(initialAnchors) == true
+            && light.EvaluateSettings(4) == initialMaterialized,
+            "A light tween curve changed before pointer release.");
+        mouseUp.Invoke(
+            editor,
+            [new MouseEventArgs(MouseButtons.Left, 1, commitPoint.X, commitPoint.Y, 0)]);
+        var committedTween = scene.Timeline.EvaluateTween(track.Id, 4)
+            ?? throw new InvalidOperationException("Light tween curve regression lost the committed tween.");
+        var committedMaterialized = light.EvaluateSettings(4);
+        AssertTimeline(
+            committedAnchors is not null
+            && events.SequenceEqual(["started", "committed", "completed"])
+            && committedTween.CurveAnchors.SequenceEqual(committedAnchors)
+            && !committedTween.CurveAnchors.SequenceEqual(initialAnchors)
+            && committedMaterialized == SceneLightSettings.Interpolate(
+                light.Kind,
+                start,
+                end,
+                committedTween.ProgressAt(4))
+            && committedMaterialized != initialMaterialized
+            && timelineChangedCount == 1
+            && CollectionCount(sceneUndoStack) == initialUndoCount + 1,
+            "Pointer release did not commit and materialize the light tween exactly once.");
+        AssertTimeline(
+            undo.Invoke(form, null) is true
+            && scene.Timeline.EvaluateTween(track.Id, 4)?.CurveAnchors.SequenceEqual(initialAnchors) == true
+            && scene.FindLight(light.Id)?.EvaluateSettings(4) == initialMaterialized
+            && CollectionCount(sceneUndoStack) == initialUndoCount,
+            "Undoing a light tween curve did not restore its curve and materialized settings as one unit.");
+        light = scene.FindLight(light.Id)
+            ?? throw new InvalidOperationException("Light tween curve undo lost the point light.");
+
+        var temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            "Vector2DAnimationEngine",
+            $"active-light-save-regression-{Guid.NewGuid():N}");
+        var manifestPath = Path.Combine(temporaryRoot, "ActiveLightSave.v2dProject");
+        var originalManifestPath = (string?)manifestPathField.GetValue(form) ?? string.Empty;
+        try
+        {
+            var editedStart = start with
+            {
+                Intensity = start.Intensity + 2.25f,
+                Position = start.Position + new Vector3(360, -140, 90)
+            };
+            var tween = scene.Timeline.FindTrackByTargetId(light.Id)?.EvaluateTween(4)
+                ?? throw new InvalidOperationException("Light save regression lost the easing curve.");
+            var expectedSavedIntermediate = SceneLightSettings.Interpolate(
+                light.Kind,
+                editedStart,
+                end,
+                tween.ProgressAt(4));
+            var materializedBeforePreview = light.EvaluateSettings(4);
+
+            beginOpticsEdit.Invoke(form, null);
+            AssertTimeline(
+                applyResolvedLightEdit.Invoke(
+                    form,
+                    [scene, light, light.Name, editedStart, 0, start]) is true
+                && scene.TryEvaluateLightSettings(light.Id, 4, out var previewed)
+                && previewed == expectedSavedIntermediate
+                && light.EvaluateSettings(4) == materializedBeforePreview,
+                "An active light endpoint edit did not remain deferred before Save Project.");
+
+            AssertTimeline(
+                saveProjectTo.Invoke(form, [manifestPath]) is true
+                && opticsSnapshotField.GetValue(form) is not null
+                && opticsSavedSnapshotField.GetValue(form) is not null
+                && projectDirtyField.GetValue(form) is false
+                && CollectionCount(pendingMaterializationsField.GetValue(form)!) == 0
+                && light.EvaluateSettings(4) == expectedSavedIntermediate,
+                "Save Project did not flush the active deferred light tween without ending its edit session.");
+
+            var restored = ProjectVaultStore.Load(manifestPath);
+            var restoredScene = restored.Scenes.Single(candidate => candidate.Id == scene.Id);
+            var restoredLight = restoredScene.FindLight(light.Id)
+                ?? throw new InvalidOperationException("The saved project lost the edited light.");
+            var restoredLightTrack = restoredScene.Timeline.FindTrackByTargetId(light.Id)
+                ?? throw new InvalidOperationException("The saved project lost the edited light track.");
+            AssertTimeline(
+                restoredScene.RemoveTimelineTween(light.Id, 0, endFrame)
+                && restoredLightTrack.Keyframes.All(keyframe =>
+                    keyframe.Frame == 0 || keyframe.Frame == endFrame)
+                && restoredLight.StateKeyframes.All(keyframe =>
+                    keyframe.Frame == 0 || keyframe.Frame == endFrame)
+                && restoredLight.EvaluateSettings(4) == editedStart,
+                "Reloading and removing the saved light tween did not restore its endpoint-only state.");
+
+            var undoCountBeforeCompletion = CollectionCount(sceneUndoStack);
+            completeOpticsEdit.Invoke(form, null);
+            AssertTimeline(
+                opticsSnapshotField.GetValue(form) is null
+                && opticsSavedSnapshotField.GetValue(form) is null
+                && projectDirtyField.GetValue(form) is false
+                && CollectionCount(sceneUndoStack) == undoCountBeforeCompletion + 1,
+                "Completing an edit immediately after Save Project lost its undo or marked the saved state dirty.");
+
+            light = scene.FindLight(light.Id)
+                ?? throw new InvalidOperationException("The saved light disappeared before cancel validation.");
+            var canceledStart = editedStart with
+            {
+                Intensity = editedStart.Intensity + 1.5f,
+                Position = editedStart.Position + new Vector3(-220, 180, 60)
+            };
+            beginOpticsEdit.Invoke(form, null);
+            AssertTimeline(
+                applyResolvedLightEdit.Invoke(
+                    form,
+                    [scene, light, light.Name, canceledStart, 0, editedStart]) is true
+                && saveProjectTo.Invoke(form, [manifestPath]) is true
+                && projectDirtyField.GetValue(form) is false,
+                "The light cancel-after-save regression could not save its second endpoint state.");
+            cancelOpticsEdit.Invoke(form, null);
+            light = scene.FindLight(light.Id)
+                ?? throw new InvalidOperationException("Canceling the saved light edit lost the point light.");
+            var canceledDiskProject = ProjectVaultStore.Load(manifestPath);
+            var canceledDiskScene = canceledDiskProject.Scenes.Single(candidate => candidate.Id == scene.Id);
+            var canceledDiskLight = canceledDiskScene.FindLight(light.Id)
+                ?? throw new InvalidOperationException("The cancel-after-save project lost the point light.");
+            var canceledDiskLightTrack = canceledDiskScene.Timeline.FindTrackByTargetId(light.Id)
+                ?? throw new InvalidOperationException("The cancel-after-save project lost the point-light track.");
+            AssertTimeline(
+                opticsSnapshotField.GetValue(form) is null
+                && opticsSavedSnapshotField.GetValue(form) is null
+                && projectDirtyField.GetValue(form) is true
+                && light.EvaluateSettings(0) == editedStart
+                && canceledDiskLight.EvaluateSettings(0) == canceledStart
+                && canceledDiskScene.RemoveTimelineTween(light.Id, 0, endFrame)
+                && canceledDiskLightTrack.Keyframes.All(keyframe =>
+                    keyframe.Frame == 0 || keyframe.Frame == endFrame)
+                && canceledDiskLight.StateKeyframes.All(keyframe =>
+                    keyframe.Frame == 0 || keyframe.Frame == endFrame)
+                && canceledDiskLight.EvaluateSettings(4) == canceledStart,
+                "Canceling after Save Project failed to mark the disk-divergent restored state dirty.");
+            Console.WriteLine("scene_light_tween_curve_deferred_commit=ok");
+            Console.WriteLine("scene_light_active_edit_save_materialization=ok");
+            Console.WriteLine("scene_light_active_edit_save_checkpoint=ok");
+        }
+        finally
+        {
+            if (opticsSnapshotField.GetValue(form) is not null) cancelOpticsEdit.Invoke(form, null);
+            manifestPathField.SetValue(form, originalManifestPath);
+            try
+            {
+                if (Directory.Exists(temporaryRoot)) Directory.Delete(temporaryRoot, recursive: true);
+            }
+            catch
+            {
+                // Each regression run uses an isolated temporary directory.
+            }
+        }
+
+        int CollectionCount(object collection) =>
+            (int)(collection.GetType().GetProperty("Count")?.GetValue(collection) ?? -1);
+
+        Point CurrentAnchorPoint(int index)
+        {
+            var anchors = displayAnchors.Invoke(editor, null) as TweenCurveAnchor[]
+                ?? throw new InvalidOperationException("Light tween curve regression could not read display anchors.");
+            return CurvePoint(anchors[index]);
+        }
+
+        Point CurvePoint(TweenCurveAnchor anchor)
+        {
+            var chart = (Rectangle)(chartBounds.Invoke(editor, null)
+                ?? throw new InvalidOperationException("Light tween curve regression could not read chart bounds."));
+            return new Point(
+                (int)Math.Round(chart.Left + anchor.Time * chart.Width),
+                (int)Math.Round(chart.Bottom - anchor.Value * chart.Height));
+        }
     }
 
     private static void RunTimelineFrameCommandRegression()
@@ -492,6 +1715,55 @@ internal static partial class Benchmark
             timelineStrip.FrameHeight == 21
             && TimelineStrip.RowHeightFor(TimelineFrameHeightPreset.Medium) == 21,
             "Medium timeline frame height did not retain the default row metric.");
+
+        var frameContextMenu = RequireField(typeof(TimelineStrip), "_frameContextMenu").GetValue(timelineStrip)
+            as ContextMenuStrip
+            ?? throw new InvalidOperationException("Timeline frame command regression could not find the frame context menu.");
+        var frameContextOpening = RequireMethod(typeof(TimelineStrip), "HandleFrameContextMenuOpening");
+        var setFrameSelection = RequireMethod(typeof(TimelineStrip), "SetFrameSelection");
+        var reverseMenuItem = frameContextMenu.Items
+            .Cast<ToolStripItem>()
+            .SingleOrDefault(item => item.Text is "Reverse Frames" or "翻转帧")
+            ?? throw new InvalidOperationException("Timeline frame context menu did not expose Reverse Frames.");
+        var originalLanguage = UiLocalization.CurrentLanguage;
+        try
+        {
+            UiLocalization.SetLanguage(UiLanguage.English);
+            timelineStrip.SelectSingleFrame(emptyTrack.Id, 2);
+            frameContextOpening.Invoke(
+                timelineStrip,
+                new object?[] { frameContextMenu, new System.ComponentModel.CancelEventArgs() });
+            var singleFrameEnabled = reverseMenuItem.Enabled;
+
+            setFrameSelection.Invoke(
+                timelineStrip,
+                new object?[]
+                {
+                    new[]
+                    {
+                        new TimelineFrameCell(emptyTrack.Id, 2),
+                        new TimelineFrameCell(emptyTrack.Id, 3)
+                    },
+                    new TimelineFrameCell(emptyTrack.Id, 2)
+                });
+            frameContextOpening.Invoke(
+                timelineStrip,
+                new object?[] { frameContextMenu, new System.ComponentModel.CancelEventArgs() });
+            var multipleFramesEnabled = reverseMenuItem.Enabled;
+
+            UiLocalization.SetLanguage(UiLanguage.SimplifiedChinese);
+            AssertTimeline(
+                !singleFrameEnabled
+                && multipleFramesEnabled
+                && reverseMenuItem.Text == "翻转帧"
+                && UiLocalization.T("Reverse Frames") == "翻转帧",
+                "Timeline frame context menu did not gate Reverse Frames by selection size or localize it to Simplified Chinese.");
+        }
+        finally
+        {
+            UiLocalization.SetLanguage(originalLanguage);
+        }
+
         var dragGrid = new Rectangle(10, 20, 100, 60);
         AssertTimeline(
             TimelineStrip.ResolveFrameSelectionDragOffset(
@@ -536,7 +1808,7 @@ internal static partial class Benchmark
 
         var layeredScene = new VectorScene();
         layeredScene.CreateEmpty(5, 20);
-        using var layeredTimelineStrip = new TimelineStrip(layeredScene) { Size = new Size(760, 192) };
+        using var layeredTimelineStrip = new TimelineStrip(layeredScene) { Size = new Size(760, 222) };
         var targetTrack = layeredScene.Timeline.Tracks[3];
         layeredTimelineStrip.SelectSingleFrame(targetTrack.Id, 9);
         AssertTimeline(
@@ -598,6 +1870,331 @@ internal static partial class Benchmark
             && resizeTimelineStrip.ActiveTrackId == latestResizeTrack.Id
             && resizeTimelineStrip.SelectedFrameCells.SequenceEqual([new TimelineFrameCell(latestResizeTrack.Id, 6)]),
             "Refreshing during a timeline height resize did not restore the latest layer tracks and selection state.");
+    }
+
+    private static void RunTimelineFrameTransformMappingRegression()
+    {
+        var original = new TimelineFrameSelectionBounds(2, 4, 1, 2);
+        var moved = TimelineStrip.ResolveFrameTransformTargetBounds(
+            original,
+            TimelineFrameTransformMode.Move,
+            pointerFrame: 8,
+            pointerTrackPosition: 4,
+            moveStartFrame: 2,
+            moveStartTrackPosition: 1,
+            minimumFrame: 0,
+            maximumFrame: 20,
+            minimumTrackPosition: 0,
+            maximumTrackPosition: 6);
+        var clampedToStart = TimelineStrip.ResolveFrameTransformTargetBounds(
+            original,
+            TimelineFrameTransformMode.Move,
+            pointerFrame: -100,
+            pointerTrackPosition: -100,
+            moveStartFrame: 2,
+            moveStartTrackPosition: 1,
+            minimumFrame: 0,
+            maximumFrame: 20,
+            minimumTrackPosition: 0,
+            maximumTrackPosition: 6);
+        var clampedToEnd = TimelineStrip.ResolveFrameTransformTargetBounds(
+            original,
+            TimelineFrameTransformMode.Move,
+            pointerFrame: 100,
+            pointerTrackPosition: 100,
+            moveStartFrame: 2,
+            moveStartTrackPosition: 1,
+            minimumFrame: 0,
+            maximumFrame: 20,
+            minimumTrackPosition: 0,
+            maximumTrackPosition: 6);
+        AssertTimeline(
+            moved == new TimelineFrameSelectionBounds(8, 10, 4, 5)
+            && clampedToStart == new TimelineFrameSelectionBounds(0, 2, 0, 1)
+            && clampedToEnd == new TimelineFrameSelectionBounds(18, 20, 5, 6),
+            "Timeline frame transform movement did not preserve selection size or clamp to the available grid bounds.");
+
+        var horizontalScale = TimelineStrip.ResolveFrameTransformTargetBounds(
+            original,
+            TimelineFrameTransformMode.ScaleLeft,
+            pointerFrame: 0,
+            pointerTrackPosition: 1,
+            moveStartFrame: 0,
+            moveStartTrackPosition: 0,
+            minimumFrame: 0,
+            maximumFrame: 20,
+            minimumTrackPosition: 0,
+            maximumTrackPosition: 6);
+        var verticalScale = TimelineStrip.ResolveFrameTransformTargetBounds(
+            original,
+            TimelineFrameTransformMode.ScaleBottom,
+            pointerFrame: 4,
+            pointerTrackPosition: 5,
+            moveStartFrame: 0,
+            moveStartTrackPosition: 0,
+            minimumFrame: 0,
+            maximumFrame: 20,
+            minimumTrackPosition: 0,
+            maximumTrackPosition: 6);
+        var cornerScale = TimelineStrip.ResolveFrameTransformTargetBounds(
+            original,
+            TimelineFrameTransformMode.ScaleTopLeft,
+            pointerFrame: 0,
+            pointerTrackPosition: 0,
+            moveStartFrame: 0,
+            moveStartTrackPosition: 0,
+            minimumFrame: 0,
+            maximumFrame: 20,
+            minimumTrackPosition: 0,
+            maximumTrackPosition: 6);
+        AssertTimeline(
+            horizontalScale == new TimelineFrameSelectionBounds(0, 4, 1, 2)
+            && verticalScale == new TimelineFrameSelectionBounds(2, 4, 1, 5)
+            && cornerScale == new TimelineFrameSelectionBounds(0, 4, 0, 2),
+            "Timeline frame transform edge and corner scaling did not resize the expected axes.");
+
+        var visibleTrackIds = new[] { "track-a", "track-b", "track-c" };
+        var moveOriginal = new TimelineFrameSelectionBounds(2, 4, 0, 1);
+        var sourceCells = Enumerable.Range(moveOriginal.FirstTrackPosition, moveOriginal.TrackCount)
+            .SelectMany(trackPosition => Enumerable.Range(moveOriginal.FirstFrame, moveOriginal.FrameCount)
+                .Select(frame => new TimelineFrameCell(visibleTrackIds[trackPosition], frame)))
+            .ToArray();
+        var movePairs = TimelineStrip.ResolveFrameTransformCells(
+            sourceCells,
+            visibleTrackIds,
+            moveOriginal,
+            new TimelineFrameSelectionBounds(5, 7, 1, 2),
+            TimelineFrameTransformMode.Move);
+        var expectedMovedCells = new HashSet<TimelineFrameCell>(
+        [
+            new("track-b", 5), new("track-b", 6), new("track-b", 7),
+            new("track-c", 5), new("track-c", 6), new("track-c", 7)
+        ]);
+        AssertTimeline(
+            movePairs.Count == sourceCells.Length
+            && movePairs.Select(pair => pair.Destination).ToHashSet().SetEquals(expectedMovedCells)
+            && movePairs.All(pair => pair.Destination.Frame == pair.Source.Frame + 3),
+            "Timeline frame transform movement did not preserve every source cell's relative offset.");
+
+        var expandedTarget = new TimelineFrameSelectionBounds(2, 8, 0, 2);
+        var expandedPairs = TimelineStrip.ResolveFrameTransformCells(
+            sourceCells,
+            visibleTrackIds,
+            moveOriginal,
+            expandedTarget,
+            TimelineFrameTransformMode.ScaleBottomRight);
+        var expandedDestinations = expandedPairs.Select(pair => pair.Destination).ToHashSet();
+        var expectedExpandedDestinations = Enumerable.Range(expandedTarget.FirstTrackPosition, expandedTarget.TrackCount)
+            .SelectMany(trackPosition => Enumerable.Range(expandedTarget.FirstFrame, expandedTarget.FrameCount)
+                .Select(frame => new TimelineFrameCell(visibleTrackIds[trackPosition], frame)))
+            .ToHashSet();
+        AssertTimeline(
+            expandedPairs.Count == expectedExpandedDestinations.Count
+            && expandedDestinations.SetEquals(expectedExpandedDestinations)
+            && expandedPairs.Select(pair => pair.Source).ToHashSet().SetEquals(sourceCells),
+            "Timeline frame transform enlargement did not fill the target rectangle from the selected source cells.");
+
+        var compressedOriginal = new TimelineFrameSelectionBounds(2, 8, 0, 2);
+        var compressedSourceCells = Enumerable.Range(compressedOriginal.FirstTrackPosition, compressedOriginal.TrackCount)
+            .SelectMany(trackPosition => Enumerable.Range(compressedOriginal.FirstFrame, compressedOriginal.FrameCount)
+                .Select(frame => new TimelineFrameCell(visibleTrackIds[trackPosition], frame)))
+            .ToArray();
+        var compressedTarget = new TimelineFrameSelectionBounds(2, 4, 0, 1);
+        var compressedPairs = TimelineStrip.ResolveFrameTransformCells(
+            compressedSourceCells,
+            visibleTrackIds,
+            compressedOriginal,
+            compressedTarget,
+            TimelineFrameTransformMode.ScaleBottomRight);
+        var compressedDestinations = compressedPairs.Select(pair => pair.Destination).ToHashSet();
+        AssertTimeline(
+            compressedPairs.Count == compressedTarget.FrameCount * compressedTarget.TrackCount
+            && compressedDestinations.Count == compressedPairs.Count
+            && compressedDestinations.All(cell => cell.Frame is >= 2 and <= 4)
+            && compressedDestinations.All(cell => cell.TrackId is "track-a" or "track-b"),
+            "Timeline frame transform compression did not resolve source collisions to unique target cells.");
+    }
+
+    private static void RunTimelineFrameTransformCommandRegression()
+    {
+        var transform = RequireMethod(typeof(MainForm), "TransformTimelineFrames");
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var workspaceTabsField = RequireField(typeof(MainForm), "_workspaceTabs");
+        var undoStackField = RequireField(typeof(MainForm), "_undoStack");
+
+        using var form = new MainForm();
+        var workspaceTabs = workspaceTabsField.GetValue(form) as WorkspaceTabs
+            ?? throw new InvalidOperationException("Timeline transform regression did not find the workspace tabs.");
+        workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
+        Application.DoEvents();
+        var timelineStrip = timelineField.GetValue(form) as TimelineStrip
+            ?? throw new InvalidOperationException("Timeline transform regression did not find the timeline control.");
+        var scene = timelineStrip.Context switch
+        {
+            VectorScene vectorScene => vectorScene,
+            DrawingObjectDefinition objectDefinition => objectDefinition.Scene,
+            _ => null
+        } ?? throw new InvalidOperationException("Timeline transform regression did not bind a drawing scene.");
+        scene.CreateEmpty(layers: 1);
+        scene.EditFrame = 0;
+        var objectIndex = scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(20, 20),
+            0,
+            0,
+            Color.Teal,
+            6,
+            ShapeKind.Rectangle);
+        var track = scene.Timeline.FindTrackByTargetId(scene.LayerIds[0])
+            ?? throw new InvalidOperationException("Timeline transform regression lost its drawing track.");
+        scene.Timeline.SetTrackDuration(track.Id, 8);
+        timelineStrip.RefreshTimeline();
+        var sourceCell = new TimelineFrameCell(track.Id, 0);
+        var destinationCell = new TimelineFrameCell(track.Id, 2);
+        timelineStrip.SelectFrameCells([sourceCell], sourceCell);
+        var initialUndoCount = ((System.Collections.ICollection)(undoStackField.GetValue(form)
+            ?? throw new InvalidOperationException("Timeline transform regression lost the undo stack."))).Count;
+        var timelineChangedCount = 0;
+        scene.Timeline.Changed += (_, _) => timelineChangedCount++;
+
+        var transformed = transform.Invoke(
+            form,
+            [new TimelineFrameTransformRequestedEventArgs(
+                TimelineFrameTransformMode.Move,
+                [new TimelineFrameTransformCell(sourceCell, destinationCell)])]) is true;
+        var movedObject = objectIndex < scene.ObjectCount && scene.IsObjectActive(objectIndex, 2);
+        var sourceIsBlank = !scene.Timeline.EvaluateExposure(track.Id, 0).HasContent;
+        var destinationHasContent = scene.Timeline.EvaluateExposure(track.Id, 2).HasContent;
+        var movedSelection = timelineStrip.SelectedFrameCells.SequenceEqual([destinationCell]);
+        var undoCountAfterTransform = ((System.Collections.ICollection)undoStackField.GetValue(form)!).Count;
+        AssertTimeline(
+            transformed
+            && movedObject
+            && sourceIsBlank
+            && destinationHasContent
+            && movedSelection
+            && timelineChangedCount == 1
+            && undoCountAfterTransform == initialUndoCount + 1,
+            "Timeline frame transform did not commit its drawing Cel, selection, notification, and undo state as one operation.");
+
+        var undone = undo.Invoke(form, null) is true;
+        var restoredObject = objectIndex < scene.ObjectCount && scene.IsObjectActive(objectIndex, 0);
+        var restoredSource = scene.Timeline.EvaluateExposure(track.Id, 0).HasContent;
+        var restoredDestination = !scene.Timeline.EvaluateExposure(track.Id, 2).IsKeyframe;
+        AssertTimeline(
+            undone
+            && restoredObject
+            && restoredSource
+            && restoredDestination
+            && timelineStrip.SelectedFrameCells.SequenceEqual([sourceCell]),
+            "Undoing a timeline frame transform did not restore the source Cel, remove the destination, and recover selection.");
+
+        var drawingObject = timelineStrip.Context as DrawingObjectDefinition
+            ?? throw new InvalidOperationException("Timeline transform regression did not bind the drawing-object timeline context.");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var project = projectField.GetValue(form) as VectorProject
+            ?? throw new InvalidOperationException("Timeline transform regression did not find the project.");
+        scene.CreateEmpty(layers: 2);
+        drawingObject.SynchronizeTimelineTracks();
+        var sourceLayerId = scene.LayerIds[0];
+        var targetLayerId = scene.LayerIds[1];
+        var sourceTrack = scene.Timeline.FindTrackByTargetId(sourceLayerId)
+            ?? throw new InvalidOperationException("Timeline cross-layer transform regression lost its source track.");
+        var targetTrack = scene.Timeline.FindTrackByTargetId(targetLayerId)
+            ?? throw new InvalidOperationException("Timeline cross-layer transform regression lost its target track.");
+        scene.Timeline.SetTrackDuration(sourceTrack.Id, 4);
+        scene.Timeline.SetTrackDuration(targetTrack.Id, 4);
+        scene.EditFrame = 0;
+        scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(20, 20),
+            0,
+            0,
+            Color.Teal,
+            6,
+            ShapeKind.Rectangle);
+        scene.AddObject(
+            1,
+            new PointF(320, 0),
+            new SizeF(20, 20),
+            0,
+            0,
+            Color.Coral,
+            6,
+            ShapeKind.Ellipse);
+        AssertTimeline(
+            scene.InsertTimelineKeyframe(1, 2),
+            "Timeline cross-layer transform regression could not establish the destination Cel.");
+        timelineStrip.RefreshTimeline();
+        var celSourceCell = new TimelineFrameCell(sourceTrack.Id, 0);
+        var celDestinationCell = new TimelineFrameCell(targetTrack.Id, 2);
+        timelineStrip.SelectFrameCells([celSourceCell], celSourceCell);
+        var celTransformed = transform.Invoke(
+            form,
+            [new TimelineFrameTransformRequestedEventArgs(
+                TimelineFrameTransformMode.Move,
+                [new TimelineFrameTransformCell(celSourceCell, celDestinationCell)])]) is true;
+        var activeDestinationObjects = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index => scene.IsObjectActive(index, 2))
+            .ToArray();
+        AssertTimeline(
+            celTransformed
+            && !scene.Timeline.EvaluateExposure(sourceTrack.Id, 0).HasContent
+            && activeDestinationObjects.Length == 1
+            && scene.Argb[activeDestinationObjects[0]] == Color.Teal.ToArgb()
+            && scene.TimelineObjectCountForKeyframe(1, 2) == 1,
+            "Cross-layer timeline frame movement did not overwrite the destination drawing Cel.");
+
+        var child = project.AddDrawingObject("Timeline transform child");
+        DrawingObjectInstanceDefinition? sourceInstance = null;
+        DrawingObjectInstanceDefinition? targetInstance = null;
+        var instancesAdded = project.TryAddDrawingObjectInstance(
+                drawingObject.Id,
+                child.Id,
+                PointF.Empty,
+                sourceLayerId,
+                out sourceInstance)
+            && sourceInstance is not null
+            && project.TryAddDrawingObjectInstance(
+                drawingObject.Id,
+                child.Id,
+                PointF.Empty,
+                targetLayerId,
+                out targetInstance)
+            && targetInstance is not null;
+        AssertTimeline(
+            instancesAdded,
+            "Timeline cross-layer transform regression could not create source and target instances.");
+        var sourceInstanceState = sourceInstance!.EvaluateState(0) with { X = 120, Y = 30 };
+        var targetInstanceState = targetInstance!.EvaluateState(0) with { X = 820, Y = 40 };
+        var targetFrameState = targetInstanceState with { X = 920, Y = 50 };
+        AssertTimeline(
+            sourceInstance.SetStateAtFrame(0, sourceInstanceState)
+            && targetInstance.SetStateAtFrame(0, targetInstanceState)
+            && targetTrack.EvaluateExposure(2).IsKeyframe
+            && targetTrack.EvaluateExposure(2).HasContent
+            && targetInstance.SetStateAtFrame(2, targetFrameState),
+            "Timeline cross-layer transform regression could not establish distinct instance states.");
+        timelineStrip.RefreshTimeline();
+        var crossLayerSourceCell = new TimelineFrameCell(sourceTrack.Id, 0);
+        var crossLayerDestinationCell = new TimelineFrameCell(targetTrack.Id, 2);
+        timelineStrip.SelectFrameCells([crossLayerSourceCell], crossLayerSourceCell);
+        var crossLayerTransformed = transform.Invoke(
+            form,
+            [new TimelineFrameTransformRequestedEventArgs(
+                TimelineFrameTransformMode.Move,
+                [new TimelineFrameTransformCell(crossLayerSourceCell, crossLayerDestinationCell)])]) is true;
+        var movedTargetState = targetInstance.EvaluateState(2);
+        AssertTimeline(
+            crossLayerTransformed
+            && !scene.Timeline.EvaluateExposure(sourceTrack.Id, 0).HasContent
+            && scene.Timeline.EvaluateExposure(targetTrack.Id, 2).HasContent
+            && NearlyEqual(movedTargetState.X, sourceInstanceState.X)
+            && NearlyEqual(movedTargetState.Y, sourceInstanceState.Y),
+            "Cross-layer timeline frame movement did not overwrite the target instance state with the source frame.");
     }
 
     private static void RunTimelineTrackSynchronizationRegression()

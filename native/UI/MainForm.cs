@@ -24,13 +24,23 @@ internal sealed class EditorRestartRequestedEventArgs(EditorRestartState state) 
     public EditorRestartState State { get; } = state;
 }
 
+internal readonly record struct TimelineClipboardInstanceState(
+    string InstanceId,
+    string DrawingObjectId,
+    InstanceFrameState State);
+
 internal sealed record TimelineClipboardCell(
     int TrackOffset,
     int FrameOffset,
     int SourceLayer,
     int SourceFrame,
     TimelineKeyframeKind Kind,
-    IReadOnlyDictionary<string, InstanceFrameState> InstanceStates);
+    IReadOnlyDictionary<string, InstanceFrameState> InstanceStates,
+    SceneLightKind? LightKind = null,
+    SceneLightSettings? LightSettings = null)
+{
+    public IReadOnlyList<TimelineClipboardInstanceState> InstanceStateEntries { get; init; } = [];
+}
 
 internal sealed class TimelineFrameClipboard
 {
@@ -73,6 +83,8 @@ internal sealed partial class MainForm : Form
     private const int ResizeGripSize = 7;
     private const int WmNcHitTest = 0x0084;
     private const int WmNcLeftButtonDown = 0x00A1;
+    private const int WmDisplayChange = 0x007E;
+    private const int WmSettingChange = 0x001A;
     private const int HtClient = 1;
     private const int HtCaption = 2;
     private const int HtLeft = 10;
@@ -150,7 +162,7 @@ internal sealed partial class MainForm : Form
     private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
     private readonly ToolMode[] _lineTools = [ToolMode.Line, ToolMode.Pen, ToolMode.SimplePen, ToolMode.Pencil];
     private readonly ToolMode[] _brushTools = [ToolMode.Brush, ToolMode.PressureBrush, ToolMode.MixingBrush];
-    private readonly ToolPairGroup _selectionToolGroup = new([ToolMode.Select, ToolMode.Transform, ToolMode.Transform3D, ToolMode.Distort]);
+    private readonly ToolPairGroup _selectionToolGroup = new([ToolMode.Select, ToolMode.PolygonLasso, ToolMode.FreehandLasso, ToolMode.Transform, ToolMode.Transform3D, ToolMode.Distort]);
     private readonly ToolPairGroup _paintToolGroup = new([ToolMode.Fill, ToolMode.InkBottle]);
     private readonly Dictionary<ToolMode, Button> _shapeFlyoutButtons = new();
     private readonly Dictionary<ToolMode, Button> _lineFlyoutButtons = new();
@@ -175,14 +187,19 @@ internal sealed partial class MainForm : Form
     private readonly FlowLayoutPanel _drawingObjectTabs = new();
     private readonly DrawSnappingStrip _drawSnappingStrip;
     private readonly TimelineStrip _timeline;
-    private readonly Size _timelinePanelMinimumSize;
+    private Size _timelinePanelMinimumSize;
     private TimelineFrameClipboard? _timelineClipboard;
     private readonly StatusStrip _statusBar = new();
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS --");
     private readonly ToolStripStatusLabel _animationFpsStatus = StatusLabel("UPS --/300  Animation FPS 30");
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
     private readonly ToolStripStatusLabel _devReloadStatus = StatusLabel("Module Reload On");
+    private Panel? _topBar;
+    private Label? _topPlaybackFpsLabel;
+    private WindowChromeButton? _restartWindowButton;
+    private WindowChromeButton? _minimizeWindowButton;
     private WindowChromeButton? _maximizeButton;
+    private WindowChromeButton? _closeWindowButton;
     private Label? _projectTitleLabel;
     private SvgIconButton? _propertiesPanelButton;
     private SvgIconButton? _timelinePanelButton;
@@ -408,6 +425,7 @@ internal sealed partial class MainForm : Form
     private bool _hasRenderRateSample;
     private bool _hasUpdateRateSample;
     private double _playbackAccumulator;
+    private bool _playbackWarmupPending;
     private int _updatesThisSample;
     private int _rendersThisSample;
     private bool _syncingFrame;
@@ -498,7 +516,10 @@ internal sealed partial class MainForm : Form
     private double _vaultDrawerAnimationDurationMilliseconds = VaultDrawerAnimationMilliseconds;
     private bool _inspectorPanelOpen = true;
     private bool _timelinePanelOpen = true;
+    private int _timelinePanelPreferredHeight = TimelinePanelDefaultHeight;
     private int _timelinePanelExpandedHeight = TimelinePanelDefaultHeight;
+    private int _vaultDrawerExpandedWidth = VaultDrawerExpandedWidth;
+    private int _inspectorPanelExpandedWidth = InspectorPanelExpandedWidth;
     private int _inspectorPanelAnimationFromWidth = InspectorPanelExpandedWidth;
     private int _inspectorPanelAnimationToWidth = InspectorPanelExpandedWidth;
     private int _timelinePanelAnimationFromHeight = TimelinePanelDefaultHeight;
@@ -544,11 +565,14 @@ internal sealed partial class MainForm : Form
         VectorSceneSnapshot Snapshot,
         DrawingObjectDefinition? DrawingObject = null,
         DrawingObjectInstanceDefinition[]? InstanceSnapshot = null,
+        DrawingObjectSnapPointDefinition[]? SnapPointSnapshot = null,
         int? PlayheadFrame = null,
         TimelineSelectionSnapshot? TimelineSelection = null,
         string? DrawingObjectName = null,
         string? CreatedDrawingObjectId = null,
-        long MemoryBytes = 0);
+        long MemoryBytes = 0,
+        MarqueeMaterializationSession? MarqueeSession = null,
+        VectorSceneSnapshot? MarqueeSnapshot = null);
 
     private sealed record SceneTimelineUndoEntry(
         SceneDefinition Scene,
@@ -556,7 +580,10 @@ internal sealed partial class MainForm : Form
         SceneLayerSnapshot? LayerSnapshot = null,
         DrawingObjectInstanceDefinition[]? InstanceSnapshot = null,
         int? PlayheadFrame = null,
-        TimelineSelectionSnapshot? TimelineSelection = null);
+        TimelineSelectionSnapshot? TimelineSelection = null,
+        string? CreatedDrawingObjectId = null,
+        SceneLightDefinition[]? LightSnapshot = null,
+        string? SelectedLightId = null);
 
     private sealed class OnionSkinRangeEditSession
     {
@@ -567,12 +594,12 @@ internal sealed partial class MainForm : Form
 
     private sealed class TweenCurveEditSession
     {
-        public required VectorScene Scene { get; init; }
-        public required VectorSceneSnapshot Snapshot { get; init; }
+        public required TweenCurveEditTarget Target { get; init; }
         public required TimelineSelectionSnapshot TimelineSelection { get; init; }
-        public required TimelineTweenSelection TweenSelection { get; init; }
-        public DrawingObjectDefinition? DrawingObject { get; init; }
+        public VectorSceneSnapshot? DrawingSnapshot { get; init; }
+        public AnimationTimelineSnapshot? SceneTimelineSnapshot { get; init; }
         public DrawingObjectInstanceDefinition[]? InstanceSnapshot { get; init; }
+        public SceneLightDefinition[]? LightSnapshot { get; init; }
         public bool Changed { get; set; }
     }
 
@@ -751,6 +778,7 @@ internal sealed partial class MainForm : Form
         _drawingObjectUnderlayStage.CreateEmpty();
         Text = "Vector 2D Animation Engine";
         FormBorderStyle = FormBorderStyle.None;
+        AutoScaleMode = AutoScaleMode.Dpi;
         Width = 1480;
         Height = 920;
         MinimumSize = new Size(1120, 720);
@@ -769,6 +797,7 @@ internal sealed partial class MainForm : Form
         Theme.StyleTextBox(_textEditor);
         _textEditor.BorderStyle = BorderStyle.FixedSingle;
         BuildStageContextMenu();
+        BuildScene3DContextMenu();
         _timeline = new TimelineStrip(_scene) { Dock = DockStyle.Bottom, Height = TimelinePanelDefaultHeight };
         _timelinePanelMinimumSize = _timeline.MinimumSize;
         _timeline.PlaybackFps = _playbackSettings.Fps;
@@ -804,6 +833,7 @@ internal sealed partial class MainForm : Form
         UiLocalization.Watch(this);
         UiLocalization.Watch(_mainMenu);
         UiLocalization.Watch(_stageContextMenu);
+        UiLocalization.Watch(_scene3DContextMenu);
         if (_restartState is null) CreateNewProject();
         else RestoreRestartState(_restartState);
         _timer.Tick += (_, _) => Tick();
@@ -939,11 +969,13 @@ internal sealed partial class MainForm : Form
             _convertLineToFillMenuItem.Enabled = targetCount > 0;
             _convertLineToFillMenuItem.Text = targetCount > 1 ? "Convert Lines to Fill" : "Convert Line to Fill";
         };
+        BuildRandomFractureContextMenu();
     }
 
     private void BuildUi()
     {
         var top = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = Theme.Top };
+        _topBar = top;
         PaintBottomBorder(top);
         Controls.Add(top);
         RegisterWindowDrag(top);
@@ -1008,31 +1040,34 @@ internal sealed partial class MainForm : Form
             TextAlign = ContentAlignment.MiddleRight,
             AccessibleName = "Animation frame rate"
         };
+        _topPlaybackFpsLabel = playbackFpsLabel;
         Theme.StyleNumeric(_topPlaybackFps);
         top.Controls.Add(playbackFpsLabel);
         top.Controls.Add(_topPlaybackFps);
         var restart = CreateWindowButton(WindowChromeButtonKind.Restart, "Restart editor");
+        _restartWindowButton = restart;
         restart.Click += (_, _) => RequestEditorRestart();
         restart.MouseEnter += (_, _) => _toolTip.ShowFor(restart, RestartEditorToolTip());
         restart.MouseLeave += (_, _) => _toolTip.HideTip();
         var minimize = CreateWindowButton(WindowChromeButtonKind.Minimize, "Minimize");
+        _minimizeWindowButton = minimize;
         minimize.Click += (_, _) => WindowState = FormWindowState.Minimized;
         _maximizeButton = CreateWindowButton(WindowChromeButtonKind.Maximize, "Maximize");
         _maximizeButton.Click += (_, _) => ToggleMaximized();
         var close = CreateWindowButton(WindowChromeButtonKind.Close, "Close");
+        _closeWindowButton = close;
         close.Click += (_, _) => Close();
         top.Controls.Add(restart);
         top.Controls.Add(minimize);
         top.Controls.Add(_maximizeButton);
         top.Controls.Add(close);
-        top.Resize += (_, _) =>
+        top.Resize += (_, _) => LayoutTopBar();
+        Resize += (_, _) =>
         {
-            PositionWindowChromeButtons(top, restart, minimize, _maximizeButton, close);
-            PositionTopPlaybackFpsControls(top, restart, playbackFpsLabel, _topPlaybackFps);
+            UpdateWindowChromeState();
+            ApplyResponsiveWorkbenchLayout();
         };
-        Resize += (_, _) => UpdateWindowChromeState();
-        PositionWindowChromeButtons(top, restart, minimize, _maximizeButton, close);
-        PositionTopPlaybackFpsControls(top, restart, playbackFpsLabel, _topPlaybackFps);
+        LayoutTopBar();
         UpdateWindowChromeState();
 
         var body = new Panel { Dock = DockStyle.Fill, BackColor = Theme.App };
@@ -1074,7 +1109,7 @@ internal sealed partial class MainForm : Form
         {
             Left = 0,
             Top = _workspaceHeader.Height,
-            Width = VaultDrawerExpandedWidth,
+            Width = _vaultDrawerExpandedWidth,
             BackColor = Theme.Panel,
             Padding = Padding.Empty,
             Visible = false
@@ -1085,14 +1120,14 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.SetBounds(
             0,
             0,
-            VaultDrawerExpandedWidth,
+            _vaultDrawerExpandedWidth,
             Math.Max(0, vaultDrawer.ClientSize.Height));
         _libraryVaultPanel.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
         vaultDrawer.Controls.Add(_libraryVaultPanel);
         body.Controls.Add(vaultDrawer);
 
         _inspectorHost.Dock = DockStyle.Right;
-        _inspectorHost.Width = InspectorPanelExpandedWidth;
+        _inspectorHost.Width = _inspectorPanelExpandedWidth;
         _inspectorHost.BackColor = Theme.Panel;
         _inspectorHost.Padding = new Padding(12, 12, 12, 10);
         // The active inspector page owns scrolling. A second auto-scroll host resets the child page during refresh.
@@ -1168,6 +1203,8 @@ internal sealed partial class MainForm : Form
             zoomIn.Left = right - zoomIn.Width;
             zoomOut.Left = zoomIn.Left - actionGap - zoomOut.Width;
             _zoom.Visible = _zoom.Right + actionGap <= zoomOut.Left;
+            _atoms.Visible = _atoms.Right + actionGap <= zoomOut.Left;
+            _draw.Visible = _draw.Right + actionGap <= (_atoms.Visible ? _atoms.Left : zoomOut.Left);
         }
         metrics.Resize += (_, _) => LayoutMetricActions();
         _sceneDimensionButton.VisibleChanged += (_, _) => LayoutMetricActions();
@@ -1202,6 +1239,7 @@ internal sealed partial class MainForm : Form
         AddToolPairGroup(tools, stagePanel, _paintToolGroup);
         AddTool(tools, SvgIconKind.Eyedropper, ToolMode.Eyedropper, "Eyedropper Tool");
         AddTool(tools, SvgIconKind.Gradient, ToolMode.Gradient, "Gradient Tool");
+        AddTool(tools, SvgIconKind.Snap, ToolMode.SnapPoint, "Snap Point Tool");
         AddTool(tools, SvgIconKind.Eraser, ToolMode.Eraser, "Eraser Tool");
 
         var vaultButton = new SvgIconButton(SvgIconKind.Vault)
@@ -1218,7 +1256,7 @@ internal sealed partial class MainForm : Form
         tools.Controls.Add(vaultButton);
         stagePanel.Controls.Add(tools);
         tools.BringToFront();
-        AttachSceneSpatialControls(stagePanel);
+        AttachSceneSpatialControls(stagePanel, metrics);
         stagePanel.Resize += (_, _) => LayoutToolPalette();
         LayoutToolPalette();
         vaultDrawer.BringToFront();
@@ -1228,7 +1266,7 @@ internal sealed partial class MainForm : Form
             var height = Math.Max(0, body.ClientSize.Height - top);
             if (vaultDrawer.Top != top || vaultDrawer.Height != height)
             {
-                vaultDrawer.SetBounds(0, top, VaultDrawerExpandedWidth, height);
+                vaultDrawer.SetBounds(0, top, _vaultDrawerExpandedWidth, height);
                 _libraryVaultPanel.Height = vaultDrawer.ClientSize.Height;
                 ApplyVaultDrawerClip();
             }
@@ -1245,8 +1283,10 @@ internal sealed partial class MainForm : Form
             if (_timelinePanelOpen
                 && !_workspacePanelAnimationTimer.Enabled
                 && _timeline.Visible
-                && _timeline.Height > 0)
+                && _timeline.Height > 0
+                && !_applyingResponsiveWorkbenchLayout)
             {
+                _timelinePanelPreferredHeight = _timeline.Height;
                 _timelinePanelExpandedHeight = _timeline.Height;
             }
         };
@@ -1568,6 +1608,7 @@ internal sealed partial class MainForm : Form
             settings.AccentSaturationPercent,
             settings.AccentBrightnessPercent);
         UiLocalization.SetLanguage(settings.Language);
+        RefreshSceneOpticsText();
         UpdateSceneDimensionButton();
         AppLog.Info(
             $"Application settings changed: shortcuts={settings.ActiveShortcutProfileId}, "
@@ -1783,7 +1824,7 @@ internal sealed partial class MainForm : Form
         if (_inspectorPanelOpen) _inspectorHost.Visible = true;
         if (_timelinePanelOpen) _timeline.Visible = true;
         _inspectorPanelAnimationFromWidth = _inspectorHost.Width;
-        _inspectorPanelAnimationToWidth = _inspectorPanelOpen ? InspectorPanelExpandedWidth : 0;
+        _inspectorPanelAnimationToWidth = _inspectorPanelOpen ? _inspectorPanelExpandedWidth : 0;
         _timelinePanelAnimationFromHeight = _timeline.Height;
         _timelinePanelAnimationToHeight = _timelinePanelOpen
             ? Math.Max(_timelinePanelMinimumSize.Height, _timelinePanelExpandedHeight)
@@ -1795,7 +1836,7 @@ internal sealed partial class MainForm : Form
         _workspacePanelAnimationStartedTimestamp = Stopwatch.GetTimestamp();
         var inspectorDistance = Math.Abs(
             _inspectorPanelAnimationToWidth - _inspectorPanelAnimationFromWidth)
-            / (double)InspectorPanelExpandedWidth;
+            / (double)Math.Max(1, _inspectorPanelExpandedWidth);
         var timelineDistance = Math.Abs(
             _timelinePanelAnimationToHeight - _timelinePanelAnimationFromHeight)
             / (double)Math.Max(1, _timelinePanelExpandedHeight);
@@ -1858,7 +1899,7 @@ internal sealed partial class MainForm : Form
     private void CompleteWorkspacePanelAnimation()
     {
         _workspacePanelAnimationTimer.Stop();
-        _inspectorHost.Width = _inspectorPanelOpen ? InspectorPanelExpandedWidth : 0;
+        _inspectorHost.Width = _inspectorPanelOpen ? _inspectorPanelExpandedWidth : 0;
         _timeline.Height = _timelinePanelOpen
             ? Math.Max(_timelinePanelMinimumSize.Height, _timelinePanelExpandedHeight)
             : 0;
@@ -1907,12 +1948,12 @@ internal sealed partial class MainForm : Form
         }
 
         _vaultDrawerAnimationFromWidth = _vaultDrawerVisibleWidth;
-        _vaultDrawerAnimationToWidth = _vaultDrawerOpen ? VaultDrawerExpandedWidth : 0;
+        _vaultDrawerAnimationToWidth = _vaultDrawerOpen ? _vaultDrawerExpandedWidth : 0;
         _vaultDrawerAnimationStartedTimestamp = Stopwatch.GetTimestamp();
         var distance = Math.Abs(_vaultDrawerAnimationToWidth - _vaultDrawerAnimationFromWidth);
         _vaultDrawerAnimationDurationMilliseconds = Math.Max(
             48,
-            VaultDrawerAnimationMilliseconds * distance / VaultDrawerExpandedWidth);
+            VaultDrawerAnimationMilliseconds * distance / Math.Max(1, _vaultDrawerExpandedWidth));
         if (!UiMotion.AnimationsEnabled || distance == 0)
         {
             CompleteVaultDrawerAnimation();
@@ -1957,7 +1998,7 @@ internal sealed partial class MainForm : Form
     private void CompleteVaultDrawerAnimation()
     {
         if (_vaultDrawer is null) return;
-        _vaultDrawerVisibleWidth = _vaultDrawerOpen ? VaultDrawerExpandedWidth : 0;
+        _vaultDrawerVisibleWidth = _vaultDrawerOpen ? _vaultDrawerExpandedWidth : 0;
         ApplyVaultDrawerClip();
         PositionVaultToolStrip();
         if (!_vaultDrawerOpen)
@@ -1973,9 +2014,9 @@ internal sealed partial class MainForm : Form
     private void ApplyVaultDrawerClip()
     {
         if (_vaultDrawer is null) return;
-        var visibleWidth = Math.Clamp(_vaultDrawerVisibleWidth, 0, VaultDrawerExpandedWidth);
+        var visibleWidth = Math.Clamp(_vaultDrawerVisibleWidth, 0, _vaultDrawerExpandedWidth);
         Region? nextRegion = null;
-        if (visibleWidth < VaultDrawerExpandedWidth)
+        if (visibleWidth < _vaultDrawerExpandedWidth)
         {
             nextRegion = new Region();
             nextRegion.MakeEmpty();
@@ -1994,7 +2035,7 @@ internal sealed partial class MainForm : Form
     {
         if (_vaultButton?.Parent is not Control tools) return;
         var visibleWidth = _vaultDrawer is { Visible: true }
-            ? Math.Clamp(_vaultDrawerVisibleWidth, 0, VaultDrawerExpandedWidth)
+            ? Math.Clamp(_vaultDrawerVisibleWidth, 0, _vaultDrawerExpandedWidth)
             : 0;
         var left = visibleWidth + 8;
         if (tools.Left != left) tools.Left = left;
@@ -2043,11 +2084,14 @@ internal sealed partial class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        InitializeResolutionAwareWindow();
         ApplyMaximizedBounds();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        CancelReferenceCameraRightLook();
+        CancelReferenceCameraKeyboardNavigation();
         if (!CommitTextEdit())
         {
             e.Cancel = true;
@@ -2060,6 +2104,8 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        CancelRandomFracturePreview();
+        StopPlayback();
         base.OnFormClosing(e);
     }
 
@@ -2067,6 +2113,8 @@ internal sealed partial class MainForm : Form
     {
         if (disposing)
         {
+            CancelRandomFracturePreview();
+            StopPlaybackCompositionPreload();
             PersistTimelineFrameWidth();
             PersistTimelineFrameHeight();
             _shapeFlyoutHideTimer.Dispose();
@@ -2077,8 +2125,10 @@ internal sealed partial class MainForm : Form
             _workspacePanelAnimationTimer.Dispose();
             _lineDragPreviewTimer.Dispose();
             _instanceAppearancePreviewTimer.Dispose();
+            _referenceCameraKeyboardTimer.Dispose();
             _timer.Dispose();
             _stageContextMenu.Dispose();
+            DisposeScene3DContextMenu();
             _mainMenu.Dispose();
             _workspaceColorFlyout.Dispose();
             _toolTip.Dispose();
@@ -2115,6 +2165,13 @@ internal sealed partial class MainForm : Form
             else if (right) m.Result = (IntPtr)HtRight;
             else if (top) m.Result = (IntPtr)HtTop;
             else if (bottom) m.Result = (IntPtr)HtBottom;
+            return;
+        }
+
+        if (m.Msg is WmDisplayChange or WmSettingChange)
+        {
+            base.WndProc(ref m);
+            QueueResolutionAwareLayoutRefresh();
             return;
         }
 
@@ -2260,8 +2317,8 @@ internal sealed partial class MainForm : Form
         _sceneWorkflowControls.Controls.Add(_playbackSettings, 0, 1);
         _sceneEditPage.Content.Controls.Add(_hierarchyPanel);
         _sceneEditPage.Content.Controls.Add(_sceneWorkflowControls);
-        AttachSpatialTransformInspector();
         _sceneWorkflowControls.SendToBack();
+        BuildSceneOpticsInspectorPanels();
 
         _animationPage.Dock = DockStyle.Fill;
         _animationPage.BackColor = Theme.Panel;
@@ -2472,6 +2529,7 @@ internal sealed partial class MainForm : Form
         {
             return;
         }
+
         scene.Camera.Projection = e.Projection;
         scene.Camera.Depth = depth;
         MarkProjectDirty();
@@ -2496,6 +2554,7 @@ internal sealed partial class MainForm : Form
             : SceneDimension.TwoD;
         FinishPointerInteractionForContextChange();
         _sceneViewDimensions[scene.Id] = dimension;
+        _project.TrySetSceneDimension(scene.Id, dimension);
         _stage.ConfigureReferenceView(scene, dimension, ReferenceCameraMotion.Animated);
         if (dimension == SceneDimension.ThreeD && _tool is ToolMode.Transform or ToolMode.Distort)
         {
@@ -2508,9 +2567,11 @@ internal sealed partial class MainForm : Form
         if (_selectionToolGroup.Contains(_tool)) _selectionToolGroup.ActiveTool = _tool;
         UpdateSceneDimensionButton();
         UpdateSpatialTransformPanelState();
+        RefreshSceneOpticsInspector();
         RefreshToolButtons();
         ApplyToolCursor();
         UpdateTransformOverlay();
+        _stage.Focus();
         AppLog.Info($"Switched scene view: {scene.Name}, {dimension}");
     }
 
@@ -2829,7 +2890,29 @@ internal sealed partial class MainForm : Form
         bool refreshScenePanels = true,
         bool reuseCachedComposition = false)
     {
+        RebuildSceneCompositionCore(
+            refreshScenePanels,
+            reuseCachedComposition,
+            preserveWorkspaceFrameCache: false);
+    }
+
+    private void RebuildSceneCompositionPreservingWorkspaceFrameCache(
+        bool refreshScenePanels = true,
+        bool reuseCachedComposition = false)
+    {
+        RebuildSceneCompositionCore(
+            refreshScenePanels,
+            reuseCachedComposition,
+            preserveWorkspaceFrameCache: true);
+    }
+
+    private void RebuildSceneCompositionCore(
+        bool refreshScenePanels,
+        bool reuseCachedComposition,
+        bool preserveWorkspaceFrameCache)
+    {
         if (!IsSceneBuildingContext()) return;
+        RestoreEditableCompositionScene();
         var sceneDefinition = ActiveScene();
         _lastSceneCompositionReused = reuseCachedComposition && CanReuseSceneComposition(sceneDefinition);
         if (!_lastSceneCompositionReused)
@@ -2842,8 +2925,13 @@ internal sealed partial class MainForm : Form
                 _playbackSettings.Fps);
             CaptureSceneCompositionCache(sceneDefinition);
         }
-        _stage.SetSceneCompositionResult(_sceneCompositionResult, _sceneEditStage);
-        _stage.SetSceneCompositionMaskClips(BuildSceneCompositionMaskClips(sceneDefinition));
+        _stage.SetSceneCompositionResult(
+            _sceneCompositionResult,
+            _sceneEditStage,
+            preserveWorkspaceFrameCache: _playing || preserveWorkspaceFrameCache);
+        _stage.SetSceneCompositionMaskClips(
+            BuildSceneCompositionMaskClips(sceneDefinition),
+            preserveWorkspaceFrameCache: _playing || preserveWorkspaceFrameCache);
         if (IsSceneMaskEditing())
         {
             _stage.BindUnderlayScene(_sceneEditStage);

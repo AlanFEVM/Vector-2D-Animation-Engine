@@ -8,6 +8,18 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class StageControl : Control
 {
+    private GraphicsPath? _collisionTerrainOverlayPath;
+    private VectorScene? _collisionTerrainOverlayScene;
+    private long _collisionTerrainOverlayRevision = -1;
+    private int _collisionTerrainOverlayLayer = -1;
+    private int _collisionTerrainOverlayFrame = -1;
+    private float _collisionTerrainOverlayCameraX;
+    private float _collisionTerrainOverlayCameraY;
+    private float _collisionTerrainOverlayZoom;
+    private int _collisionTerrainOverlayWidth;
+    private int _collisionTerrainOverlayHeight;
+    private int[] _collisionTerrainOverlayObjects = [];
+
     private RenderStats DrawOverviewTiles(Graphics g)
     {
         var scene = Scene;
@@ -178,6 +190,7 @@ internal sealed partial class StageControl : Control
     private void DrawActiveMaskOutline(Graphics graphics)
     {
         if (!TryGetActiveMaskLayer(out var maskLayer)) return;
+        if (Scene.IsCollisionTerrainLayer(maskLayer)) return;
         var maskObjects = Enumerable.Range(0, Scene.ObjectCount)
             .Where(index => Scene.ObjectLayer[index] == maskLayer
                 && Scene.IsObjectActive(index, Frame)
@@ -193,6 +206,98 @@ internal sealed partial class StageControl : Control
         graphics.FillPath(fill, path);
         graphics.DrawPath(glow, path);
         graphics.DrawPath(outline, path);
+    }
+
+    private void DrawCollisionTerrainOverlay(Graphics graphics, VectorScene scene)
+    {
+        var terrainFrame = DragPreviewScene?.RandomFracturePreviewTerrainFrame ?? Frame;
+        var terrainLayers = scene.GetCollisionTerrainLayers()
+            .Where(scene.IsLayerEffectivelyVisible)
+            .ToArray();
+        if (terrainLayers.Length == 0)
+        {
+            ClearCollisionTerrainOverlayPath();
+            return;
+        }
+
+        var terrainLayerSet = terrainLayers.ToHashSet();
+        var terrainObjects = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index => terrainLayerSet.Contains(scene.ObjectLayer[index])
+                && scene.IsObjectActive(index, terrainFrame)
+                && SceneRenderOrder.HasFill(scene.ShapeKind[index]))
+            .ToArray();
+        if (terrainObjects.Length == 0)
+        {
+            ClearCollisionTerrainOverlayPath();
+            return;
+        }
+
+        var path = GetCollisionTerrainOverlayPath(
+            scene,
+            terrainLayers[0],
+            terrainFrame,
+            terrainObjects);
+        if (path is null || path.PointCount == 0) return;
+        using var fill = new SolidBrush(Color.FromArgb(62, 236, 181, 72));
+        using var glow = new Pen(Color.FromArgb(190, 255, 205, 92), 3f);
+        using var outline = new Pen(Color.FromArgb(244, 255, 239, 185), 1.2f);
+        graphics.FillPath(fill, path);
+        graphics.DrawPath(glow, path);
+        graphics.DrawPath(outline, path);
+    }
+
+    private GraphicsPath? GetCollisionTerrainOverlayPath(
+        VectorScene scene,
+        int terrainLayer,
+        int terrainFrame,
+        int[] terrainObjects)
+    {
+        if (_collisionTerrainOverlayPath is not null
+            && ReferenceEquals(_collisionTerrainOverlayScene, scene)
+            && _collisionTerrainOverlayRevision == scene.GeometryRevision
+            && _collisionTerrainOverlayLayer == terrainLayer
+            && _collisionTerrainOverlayFrame == terrainFrame
+            && _collisionTerrainOverlayCameraX == CameraX
+            && _collisionTerrainOverlayCameraY == CameraY
+            && _collisionTerrainOverlayZoom == Zoom
+            && _collisionTerrainOverlayWidth == Width
+            && _collisionTerrainOverlayHeight == Height
+            && _collisionTerrainOverlayObjects.SequenceEqual(terrainObjects))
+        {
+            return _collisionTerrainOverlayPath;
+        }
+
+        ClearCollisionTerrainOverlayPath();
+        var path = CreateMaskPath(scene, terrainObjects);
+        if (path.PointCount == 0)
+        {
+            path.Dispose();
+            return null;
+        }
+
+        _collisionTerrainOverlayPath = path;
+        _collisionTerrainOverlayScene = scene;
+        _collisionTerrainOverlayRevision = scene.GeometryRevision;
+        _collisionTerrainOverlayLayer = terrainLayer;
+        _collisionTerrainOverlayFrame = terrainFrame;
+        _collisionTerrainOverlayCameraX = CameraX;
+        _collisionTerrainOverlayCameraY = CameraY;
+        _collisionTerrainOverlayZoom = Zoom;
+        _collisionTerrainOverlayWidth = Width;
+        _collisionTerrainOverlayHeight = Height;
+        _collisionTerrainOverlayObjects = terrainObjects.ToArray();
+        return path;
+    }
+
+    private void ClearCollisionTerrainOverlayPath()
+    {
+        _collisionTerrainOverlayPath?.Dispose();
+        _collisionTerrainOverlayPath = null;
+        _collisionTerrainOverlayScene = null;
+        _collisionTerrainOverlayRevision = -1;
+        _collisionTerrainOverlayLayer = -1;
+        _collisionTerrainOverlayFrame = -1;
+        _collisionTerrainOverlayObjects = [];
     }
 
     private void DrawLayerObjects(Graphics graphics, VectorScene scene, int layer, IReadOnlyList<int> objects, int start)

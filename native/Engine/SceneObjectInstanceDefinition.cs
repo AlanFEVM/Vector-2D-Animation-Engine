@@ -35,6 +35,10 @@ internal readonly record struct InstanceFrameState(
 
     public DistortWarp? Distortion { get; init; }
 
+    public Vector3 RotationPivot { get; init; }
+
+    public Vector3 ScalePivot { get; init; }
+
     public PointF Position => new(X, Y);
 
     // Zero-initialized structs come from project files written before appearance fields existed.
@@ -74,6 +78,7 @@ internal class DrawingObjectInstanceDefinition
     private DrawingObjectPlaybackMode _playbackMode = DrawingObjectPlaybackMode.PlayOnce;
     private float _alpha = 1f;
     private int _tintArgb = unchecked((int)0xffffffff);
+    private SpatialOpticalMaterial? _opticalMaterialOverride;
 
     public DrawingObjectInstanceDefinition()
     {
@@ -96,6 +101,8 @@ internal class DrawingObjectInstanceDefinition
     public float ScaleX { get; set; } = 1;
     public float ScaleY { get; set; } = 1;
     public float ScaleZ { get; set; } = 1;
+    public Vector3 RotationPivot { get; set; }
+    public Vector3 ScalePivot { get; set; }
     public DistortWarp? Distortion { get; set; }
     public float Alpha
     {
@@ -106,6 +113,15 @@ internal class DrawingObjectInstanceDefinition
     {
         get => _tintArgb;
         set => _tintArgb = value | unchecked((int)0xff000000);
+    }
+    public SpatialOpticalMaterial? OpticalMaterialOverride
+    {
+        get => _opticalMaterialOverride;
+        set
+        {
+            if (value is { IsValid: false }) throw new ArgumentOutOfRangeException(nameof(value));
+            _opticalMaterialOverride = value;
+        }
     }
     public decimal PlaybackFps
     {
@@ -147,9 +163,12 @@ internal class DrawingObjectInstanceDefinition
             ScaleX = ScaleX,
             ScaleY = ScaleY,
             ScaleZ = ScaleZ,
+            RotationPivot = RotationPivot,
+            ScalePivot = ScalePivot,
             Distortion = Distortion?.DeepClone(),
             Alpha = Alpha,
             TintArgb = TintArgb,
+            OpticalMaterialOverride = OpticalMaterialOverride,
             PlaybackFps = PlaybackFps,
             PlaybackMode = PlaybackMode,
             HoldFrame = HoldFrame
@@ -342,6 +361,88 @@ internal class DrawingObjectInstanceDefinition
             * Matrix3x2.CreateRotation(state.RotationZ * MathF.PI / 180f);
     }
 
+    internal static Matrix3x2 CreatePlanarTransform(InstanceFrameState state)
+    {
+        var translation = Matrix3x2.CreateTranslation(state.X, state.Y);
+        var scalePivot = new Vector2(state.ScalePivot.X, state.ScalePivot.Y);
+        var rotationPivot = new Vector2(state.RotationPivot.X, state.RotationPivot.Y);
+        if (scalePivot == Vector2.Zero && rotationPivot == Vector2.Zero)
+        {
+            return CreateLinearTransform(state) * translation;
+        }
+
+        return Matrix3x2.CreateTranslation(-scalePivot)
+            * Matrix3x2.CreateScale(state.ScaleX, state.ScaleY)
+            * Matrix3x2.CreateTranslation(scalePivot)
+            * Matrix3x2.CreateSkew(state.SkewX * MathF.PI / 180f, state.SkewY * MathF.PI / 180f)
+            * Matrix3x2.CreateTranslation(-rotationPivot)
+            * Matrix3x2.CreateRotation(state.RotationZ * MathF.PI / 180f)
+            * Matrix3x2.CreateTranslation(rotationPivot)
+            * translation;
+    }
+
+    internal static Matrix4x4 CreateSpatialLinearTransform(InstanceFrameState state)
+    {
+        return Matrix4x4.CreateScale(state.ScaleX, state.ScaleY, state.ScaleZ)
+            * Lift(Matrix3x2.CreateSkew(
+                state.SkewX * MathF.PI / 180f,
+                state.SkewY * MathF.PI / 180f))
+            * CreateSpatialRotation(state);
+    }
+
+    internal static Matrix4x4 CreateSpatialTransform(InstanceFrameState state)
+    {
+        var translation = Matrix4x4.CreateTranslation(state.X, state.Y, state.Z);
+        if (state.ScalePivot == Vector3.Zero && state.RotationPivot == Vector3.Zero)
+        {
+            return CreateSpatialLinearTransform(state) * translation;
+        }
+
+        return Matrix4x4.CreateTranslation(-state.ScalePivot)
+            * Matrix4x4.CreateScale(state.ScaleX, state.ScaleY, state.ScaleZ)
+            * Matrix4x4.CreateTranslation(state.ScalePivot)
+            * Lift(Matrix3x2.CreateSkew(
+                state.SkewX * MathF.PI / 180f,
+                state.SkewY * MathF.PI / 180f))
+            * Matrix4x4.CreateTranslation(-state.RotationPivot)
+            * CreateSpatialRotation(state)
+            * Matrix4x4.CreateTranslation(state.RotationPivot)
+            * translation;
+    }
+
+    internal static Vector3 RotationPivotScenePosition(InstanceFrameState state)
+    {
+        return state.RotationPivot + new Vector3(state.X, state.Y, state.Z);
+    }
+
+    internal static Vector3 ScalePivotScenePosition(InstanceFrameState state)
+    {
+        var postScaleTransform = Lift(Matrix3x2.CreateSkew(
+                state.SkewX * MathF.PI / 180f,
+                state.SkewY * MathF.PI / 180f))
+            * Matrix4x4.CreateTranslation(-state.RotationPivot)
+            * CreateSpatialRotation(state)
+            * Matrix4x4.CreateTranslation(state.RotationPivot)
+            * Matrix4x4.CreateTranslation(state.X, state.Y, state.Z);
+        return Vector3.Transform(state.ScalePivot, postScaleTransform);
+    }
+
+    internal static InstanceFrameState PreserveSpatialTransformForPivotChange(
+        InstanceFrameState previous,
+        InstanceFrameState next)
+    {
+        var previousTranslation = CreateSpatialTransform(previous).Translation;
+        var nextTranslation = CreateSpatialTransform(next).Translation;
+        var compensation = previousTranslation - nextTranslation;
+        if (!Finite(compensation)) return previous;
+        return next with
+        {
+            X = next.X + compensation.X,
+            Y = next.Y + compensation.Y,
+            Z = next.Z + compensation.Z
+        };
+    }
+
     internal static InstanceFrameState InterpolateState(
         InstanceFrameState source,
         InstanceFrameState target,
@@ -363,6 +464,8 @@ internal class DrawingObjectInstanceDefinition
             ScaleX = Lerp(source.ScaleX, target.ScaleX, progress),
             ScaleY = Lerp(source.ScaleY, target.ScaleY, progress),
             ScaleZ = Lerp(source.ScaleZ, target.ScaleZ, progress),
+            RotationPivot = Vector3.Lerp(source.RotationPivot, target.RotationPivot, progress),
+            ScalePivot = Vector3.Lerp(source.ScalePivot, target.ScalePivot, progress),
             Alpha = Lerp(source.Alpha, target.Alpha, progress),
             TintArgb = LerpArgb(source.TintArgb, target.TintArgb, progress),
             Distortion = source.Distortion?.DeepClone()
@@ -412,6 +515,8 @@ internal class DrawingObjectInstanceDefinition
         {
             Alpha = Alpha,
             TintArgb = TintArgb,
+            RotationPivot = RotationPivot,
+            ScalePivot = ScalePivot,
             Distortion = Distortion?.DeepClone()
         };
     }
@@ -430,6 +535,8 @@ internal class DrawingObjectInstanceDefinition
         ScaleX = state.ScaleX;
         ScaleY = state.ScaleY;
         ScaleZ = state.ScaleZ;
+        RotationPivot = state.RotationPivot;
+        ScalePivot = state.ScalePivot;
         Distortion = state.Distortion?.DeepClone();
         Alpha = state.Alpha;
         TintArgb = state.TintArgb;
@@ -452,6 +559,8 @@ internal class DrawingObjectInstanceDefinition
             || !float.IsFinite(state.ScaleX)
             || !float.IsFinite(state.ScaleY)
             || !float.IsFinite(state.ScaleZ)
+            || !Finite(state.RotationPivot)
+            || !Finite(state.ScalePivot)
             || !float.IsFinite(state.Alpha)
             || state.Distortion is { IsValid: false })
         {
@@ -482,6 +591,27 @@ internal class DrawingObjectInstanceDefinition
         var y = state.Y + offset.Y;
         compensated = state with { X = x, Y = y };
         return float.IsFinite(x) && float.IsFinite(y);
+    }
+
+    private static Matrix4x4 CreateSpatialRotation(InstanceFrameState state)
+    {
+        return Matrix4x4.CreateRotationZ(state.RotationZ * MathF.PI / 180f)
+            * Matrix4x4.CreateRotationX(state.RotationX * MathF.PI / 180f)
+            * Matrix4x4.CreateRotationY(state.RotationY * MathF.PI / 180f);
+    }
+
+    private static Matrix4x4 Lift(Matrix3x2 transform)
+    {
+        return new Matrix4x4(
+            transform.M11, transform.M12, 0, 0,
+            transform.M21, transform.M22, 0, 0,
+            0, 0, 1, 0,
+            transform.M31, transform.M32, 0, 1);
+    }
+
+    private static bool Finite(Vector3 value)
+    {
+        return float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
     }
 
     private int LowerBoundStateKeyframe(int frame)

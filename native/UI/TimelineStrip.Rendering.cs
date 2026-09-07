@@ -5,7 +5,7 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class TimelineStrip : Control
 {
-    private void DrawShell(Graphics graphics, TimelineLayout layout)
+    private void DrawShell(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
         using var headerBrush = new SolidBrush(Theme.Panel);
         using var gutterBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(28, 31, 34), Theme.PanelStrong));
@@ -13,8 +13,17 @@ internal sealed partial class TimelineStrip : Control
         using var softPen = new Pen(ThemeNeutral(Color.FromArgb(48, 54, 58), Theme.Border));
         using var titleFont = Theme.UiFont(10, FontStyle.Bold);
 
-        graphics.FillRectangle(headerBrush, layout.HeaderBounds);
-        graphics.FillRectangle(gutterBrush, layout.GutterBounds);
+        var headerPaintBounds = Rectangle.Intersect(layout.HeaderBounds, clipBounds);
+        var gutterPaintBounds = Rectangle.Intersect(layout.GutterBounds, clipBounds);
+        if (headerPaintBounds.Width > 0 && headerPaintBounds.Height > 0)
+        {
+            FillAlignedRectangle(graphics, headerBrush, headerPaintBounds);
+        }
+        if (gutterPaintBounds.Width > 0 && gutterPaintBounds.Height > 0)
+        {
+            FillAlignedRectangle(graphics, gutterBrush, gutterPaintBounds);
+        }
+        graphics.DrawLine(borderPen, 0, ToolbarHeaderHeight - 1, Width, ToolbarHeaderHeight - 1);
         graphics.DrawLine(borderPen, 0, HeaderHeight - 1, Width, HeaderHeight - 1);
         graphics.DrawLine(borderPen, layout.TrackLeft - 1, 0, layout.TrackLeft - 1, layout.ScrollTop);
         graphics.DrawLine(softPen, 0, layout.RowTop - 1, Width, layout.RowTop - 1);
@@ -27,11 +36,11 @@ internal sealed partial class TimelineStrip : Control
         var titleRight = Math.Max(42, addLayerBounds.Left - 6);
         TextRenderer.DrawText(
             graphics,
-            UiLocalization.T("Timeline"),
-            titleFont,
-            Rectangle.FromLTRB(10, 1, titleRight, HeaderHeight - 1),
-            Theme.Text,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                UiLocalization.T("Timeline"),
+                titleFont,
+                Rectangle.FromLTRB(10, 1, titleRight, ToolbarHeaderHeight - 1),
+                Theme.ReadableText(Theme.Panel, Theme.Text),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
         DrawHeaderButton(
             graphics,
@@ -49,27 +58,10 @@ internal sealed partial class TimelineStrip : Control
             SvgIconKind.Add,
             _hoveredHeaderCommand == HeaderCommand.AddLayer);
 
-        var frameWidthControlsBounds = FrameWidthControlsBounds(layout, Rectangle.Empty);
-        var frameHeightControlsBounds = FrameHeightControlsBounds(
-            layout,
-            frameWidthControlsBounds);
-        var onionControlsBounds = OnionSkinControlsBounds(
-            layout,
-            frameHeightControlsBounds.IsEmpty
-                ? frameWidthControlsBounds
-                : frameHeightControlsBounds);
-        var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
-        var firstControlsLeft = new[]
-        {
-            frameWidthControlsBounds.IsEmpty ? layout.TrackRight : frameWidthControlsBounds.Left,
-            frameHeightControlsBounds.IsEmpty ? layout.TrackRight : frameHeightControlsBounds.Left,
-            onionControlsBounds.IsEmpty ? layout.TrackRight : onionControlsBounds.Left
-        }.Min();
-        var summaryRight = firstControlsLeft - 8;
+        var frameStatusBounds = HeaderFrameStatusBounds(layout);
+        var summaryRight = frameStatusBounds.Right;
         var name = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
-        var summaryLeft = autoKeyframeBounds.IsEmpty
-            ? layout.TrackLeft + ScaleTimelineMetric(8)
-            : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
+        var summaryLeft = frameStatusBounds.Left;
         var summaryWidth = Math.Max(0, summaryRight - summaryLeft);
         var timeText = FormatCursorTimeSeconds(CurrentFrame, PlaybackFps);
         var timeWidth = TextRenderer.MeasureText(
@@ -92,8 +84,8 @@ internal sealed partial class TimelineStrip : Control
                 graphics,
                 frameSummary,
                 Font,
-                Rectangle.FromLTRB(summaryLeft, 1, frameSummaryRight, HeaderHeight - 1),
-                Theme.Muted,
+                Rectangle.FromLTRB(summaryLeft, 1, frameSummaryRight, ToolbarHeaderHeight - 1),
+                Theme.ReadableText(Theme.Panel, Theme.Muted),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         }
         if (showTime)
@@ -102,10 +94,34 @@ internal sealed partial class TimelineStrip : Control
                 graphics,
                 timeText,
                 Font,
-                Rectangle.FromLTRB(timeLeft, 1, summaryRight, HeaderHeight - 1),
-                ThemeNeutral(Color.FromArgb(224, 133, 190, 218), Theme.AccentLabel),
+                Rectangle.FromLTRB(timeLeft, 1, summaryRight, ToolbarHeaderHeight - 1),
+                Theme.ReadableText(Theme.Panel, Theme.AccentLabel),
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
+
+        DrawTabGroupBar(graphics, layout, clipBounds);
+    }
+
+    private Rectangle HeaderFrameStatusBounds(TimelineLayout layout)
+    {
+        var frameWidthControlsBounds = FrameWidthControlsBounds(layout, Rectangle.Empty);
+        var frameHeightControlsBounds = FrameHeightControlsBounds(layout, frameWidthControlsBounds);
+        var onionControlsBounds = OnionSkinControlsBounds(
+            layout,
+            frameHeightControlsBounds.IsEmpty
+                ? frameWidthControlsBounds
+                : frameHeightControlsBounds);
+        var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
+        var firstControlsLeft = Math.Min(
+            frameWidthControlsBounds.IsEmpty ? layout.TrackRight : frameWidthControlsBounds.Left,
+            Math.Min(
+                frameHeightControlsBounds.IsEmpty ? layout.TrackRight : frameHeightControlsBounds.Left,
+                onionControlsBounds.IsEmpty ? layout.TrackRight : onionControlsBounds.Left));
+        var left = autoKeyframeBounds.IsEmpty
+            ? layout.TrackLeft + ScaleTimelineMetric(8)
+            : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
+        var right = Math.Max(left, firstControlsLeft - ScaleTimelineMetric(8));
+        return Rectangle.FromLTRB(left, 0, right, ToolbarHeaderHeight);
     }
 
     internal static double CursorTimeSeconds(int frame, decimal playbackFps)
@@ -125,7 +141,7 @@ internal sealed partial class TimelineStrip : Control
         var left = Math.Max(0, (Width - width) / 2);
         var color = _draggingHeightResize
             ? Theme.Accent
-            : ThemeNeutral(Color.FromArgb(194, 174, 212, 215), Theme.Muted);
+            : Theme.ReadableUiColor(Theme.Panel, Theme.Muted);
         using var line = new Pen(color, 1.2f);
         graphics.DrawLine(line, left, y, left + width, y);
         for (var x = left + 4; x < left + width - 2; x += 6)
@@ -144,52 +160,60 @@ internal sealed partial class TimelineStrip : Control
         using var hoverBrush = new SolidBrush(Color.FromArgb(34, Theme.Accent));
         using var gridPen = new Pen(ThemeNeutral(Color.FromArgb(64, 72, 77), Theme.BorderHover));
         using var minorPen = new Pen(ThemeNeutral(Color.FromArgb(48, 55, 59), Theme.Border));
-        using var headerIconPen = new Pen(Theme.Muted, 1.1f);
-        using var activeHeaderIconPen = new Pen(Theme.Text, 1.2f);
         using var rulerFont = Theme.UiFont(7.5f);
 
-        graphics.FillRectangle(rulerBrush, layout.RulerBounds);
-        DrawMasterControlCell(
-            graphics,
-            new Rectangle(0, HeaderHeight, VisibilityColumnWidth, RulerHeight),
-            HeaderCommand.AllVisibility);
-        DrawMasterControlCell(
-            graphics,
-            new Rectangle(VisibilityColumnWidth, HeaderHeight, LockColumnWidth, RulerHeight),
-            HeaderCommand.AllLocks);
-        DrawMasterControlCell(
-            graphics,
-            new Rectangle(LockColumnRight, HeaderHeight, OutlineColumnWidth, RulerHeight),
-            HeaderCommand.AllOutlines);
+        var rulerPaintBounds = Rectangle.Intersect(layout.RulerBounds, clipBounds);
+        if (rulerPaintBounds.Width > 0 && rulerPaintBounds.Height > 0)
+        {
+            FillAlignedRectangle(graphics, rulerBrush, rulerPaintBounds);
+        }
+        var layerHeaderBounds = Rectangle.FromLTRB(0, HeaderHeight, layout.TrackLeft, layout.RowTop);
+        if (clipBounds.IntersectsWith(layerHeaderBounds))
+        {
+            using var headerIconPen = new Pen(Theme.ReadableUiColor(Theme.Top, Theme.Muted), 1.1f);
+            using var activeHeaderIconPen = new Pen(Theme.ReadableUiColor(Theme.Top, Theme.Text), 1.2f);
+            DrawMasterControlCell(
+                graphics,
+                new Rectangle(0, HeaderHeight, VisibilityColumnWidth, RulerHeight),
+                HeaderCommand.AllVisibility);
+            DrawMasterControlCell(
+                graphics,
+                new Rectangle(VisibilityColumnWidth, HeaderHeight, LockColumnWidth, RulerHeight),
+                HeaderCommand.AllLocks);
+            DrawMasterControlCell(
+                graphics,
+                new Rectangle(LockColumnRight, HeaderHeight, OutlineColumnWidth, RulerHeight),
+                HeaderCommand.AllOutlines);
 
-        var allLayersVisible = AreAllLayersVisible();
-        var allLayersLocked = AreAllLayersLocked();
-        var allLayersOutlined = AreAllLayersOutlined();
-        DrawVisibilityIcon(
-            graphics,
-            allLayersVisible,
-            14,
-            HeaderHeight + RulerHeight / 2f,
-            allLayersVisible ? headerIconPen : activeHeaderIconPen);
-        DrawLockIcon(
-            graphics,
-            allLayersLocked,
-            VisibilityColumnWidth + LockColumnWidth / 2,
-            HeaderHeight + RulerHeight / 2,
-            headerIconPen,
-            headerIconPen);
-        DrawOutlineSwatch(
-            graphics,
-            new Rectangle(LockColumnRight, HeaderHeight, OutlineColumnWidth, RulerHeight),
-            allLayersOutlined ? Theme.Accent : Theme.Muted,
-            outlined: allLayersOutlined);
-        TextRenderer.DrawText(
-            graphics,
-            UiLocalization.T("Layer"),
-            Font,
-            new Rectangle(LayerControlsWidth + 7, HeaderHeight, Math.Max(20, layout.TrackLeft - LayerControlsWidth - 19), RulerHeight),
-            Theme.Muted,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            var allLayersVisible = AreAllLayersVisible();
+            var allLayersLocked = AreAllLayersLocked();
+            var allLayersOutlined = AreAllLayersOutlined();
+            DrawVisibilityIcon(
+                graphics,
+                allLayersVisible,
+                14,
+                HeaderHeight + RulerHeight / 2f,
+                allLayersVisible ? headerIconPen : activeHeaderIconPen);
+            DrawLockIcon(
+                graphics,
+                allLayersLocked,
+                VisibilityColumnWidth + LockColumnWidth / 2,
+                HeaderHeight + RulerHeight / 2,
+                headerIconPen,
+                headerIconPen);
+            DrawOutlineSwatch(
+                graphics,
+                new Rectangle(LockColumnRight, HeaderHeight, OutlineColumnWidth, RulerHeight),
+                allLayersOutlined ? Theme.Accent : Theme.Muted,
+                outlined: allLayersOutlined);
+            TextRenderer.DrawText(
+                graphics,
+                UiLocalization.T("Layer"),
+                Font,
+                new Rectangle(LayerControlsWidth + 7, HeaderHeight, Math.Max(20, layout.TrackLeft - LayerControlsWidth - 19), RulerHeight),
+                Theme.ReadableText(Theme.Top, Theme.Muted),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
 
         var state = graphics.Save();
         graphics.SetClip(Rectangle.FromLTRB(layout.TrackLeft, HeaderHeight, layout.TrackRight, layout.RowTop), CombineMode.Intersect);
@@ -203,9 +227,19 @@ internal sealed partial class TimelineStrip : Control
             var inTimelineRange = frame <= EndFrame;
             var inSelectableRange = frame <= MaximumSelectableFrame(layout);
             var major = frame == StartFrame || frame % 5 == 0;
+            var textBackground = Theme.Top;
             if (inTimelineRange && major) graphics.FillRectangle(majorBrush, bounds);
+            if (inTimelineRange && major) textBackground = Theme.PanelStrong;
             if (inSelectableRange && frame == _hoverFrame && frame != CurrentFrame) graphics.FillRectangle(hoverBrush, bounds);
+            if (inSelectableRange && frame == _hoverFrame && frame != CurrentFrame)
+            {
+                textBackground = Theme.Mix(textBackground, Theme.Accent, 34f / 255f);
+            }
             if (inTimelineRange && frame == CurrentFrame) graphics.FillRectangle(selectedBrush, bounds);
+            if (inTimelineRange && frame == CurrentFrame)
+            {
+                textBackground = Theme.Mix(Theme.Top, Theme.Danger, 0.22f);
+            }
 
             graphics.DrawLine(inSelectableRange && major ? gridPen : minorPen, x, major ? HeaderHeight + 5 : HeaderHeight + 17, x, layout.RowTop - 1);
             if (!major) continue;
@@ -215,10 +249,10 @@ internal sealed partial class TimelineStrip : Control
                 rulerFont,
                 new Rectangle(x + 2, HeaderHeight + 1, _frameCellWidth * 2 - 2, RulerHeight - 4),
                 inTimelineRange && frame == CurrentFrame
-                    ? ThemeNeutral(Color.White, Theme.Danger)
+                    ? Theme.ReadableText(textBackground, Theme.Danger)
                     : inTimelineRange
-                        ? Theme.Muted
-                        : Color.FromArgb(118, Theme.Muted),
+                        ? Theme.ReadableText(textBackground, Theme.Muted)
+                        : Theme.ReadableText(textBackground, Theme.DisabledText),
                 TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding);
         }
 
@@ -429,6 +463,7 @@ internal sealed partial class TimelineStrip : Control
         var visibleRows = VisibleTrackCapacity(layout);
         var activeTrack = GetActiveTrackIndex();
         var rowCount = Math.Min(visibleRows, Math.Max(0, visibleTracks.Count - _firstVisibleTrack));
+        var paintLayerGutter = clipBounds.Left < layout.TrackLeft;
 
         if (rowCount == 0)
         {
@@ -437,7 +472,7 @@ internal sealed partial class TimelineStrip : Control
                 UiLocalization.T("No timeline tracks"),
                 Font,
                 layout.GridBounds,
-                Theme.Muted,
+                Theme.ReadableText(BackColor, Theme.Muted),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             return;
         }
@@ -470,45 +505,62 @@ internal sealed partial class TimelineStrip : Control
                     new Rectangle(3, y + 3, Math.Max(1, layout.TrackRight - 6), _rowHeight));
             }
             var active = trackIndex == activeTrack;
-            var selectedLayer = IsTrackSelected(trackIndex);
-            graphics.FillRectangle(active ? activeRowBrush : visibleRow % 2 == 0 ? rowBrush : alternateRowBrush, rowBounds);
-            var layerItemBounds = new Rectangle(0, y, Math.Max(0, layout.TrackLeft), _rowHeight);
-            using (var layerItemBrush = new SolidBrush(LayerItemBackgroundColor(
-                       GetTrackColor(trackIndex),
-                       active,
-                       selectedLayer,
-                       visibleRow % 2 != 0)))
-            {
-                graphics.FillRectangle(layerItemBrush, layerItemBounds);
-            }
-            if (selectedLayer && !active)
-            {
-                graphics.FillRectangle(selectedLayerRowBrush, 3, y + 1, Math.Max(0, layout.TrackLeft - 3), _rowHeight - 2);
-            }
-            if (active) graphics.FillRectangle(activeEdgeBrush, 0, y, 3, _rowHeight);
-
+            FillAlignedRectangle(
+                graphics,
+                active ? activeRowBrush : visibleRow % 2 == 0 ? rowBrush : alternateRowBrush,
+                rowBounds);
             var visible = IsTrackVisible(trackIndex);
-            var locked = IsTrackLocked(trackIndex);
-            var outlined = IsTrackOutlined(trackIndex);
-            DrawVisibilityIcon(graphics, visible, 14, y + _rowHeight / 2f, visible ? eyePen : hiddenEyePen);
-            DrawLockIcon(graphics, locked, VisibilityColumnWidth + LockColumnWidth / 2, y + _rowHeight / 2, lockPen, unlockedLockPen);
-            DrawOutlineSwatch(
-                graphics,
-                new Rectangle(LockColumnRight, y, OutlineColumnWidth, _rowHeight),
-                GetTrackColor(trackIndex),
-                outlined);
-            var layerDepth = GetTrackDisplayDepth(trackIndex);
-            var labelLeft = GetTrackLabelLeft(trackIndex);
-            DrawLayerHierarchyGuide(graphics, layerDepth, y, labelLeft);
-            if (IsTrackCollapsible(trackIndex)) DrawLayerGroupDisclosure(graphics, LayerGroupDisclosureBounds(trackIndex, y), IsTrackCollapsed(trackIndex));
-            DrawLayerKindGlyph(graphics, GetTrackLayerKind(trackIndex), labelLeft, y + _rowHeight / 2);
-            TextRenderer.DrawText(
-                graphics,
-                UiLocalization.T(GetTrackName(trackIndex)),
-                Font,
-                new Rectangle(labelLeft + 15, y, Math.Max(16, layout.TrackLeft - labelLeft - VerticalScrollWidth - 20), _rowHeight),
-                !visible || locked ? Theme.Muted : active ? Theme.Text : Theme.Muted,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            if (paintLayerGutter)
+            {
+                var selectedLayer = IsTrackSelected(trackIndex);
+                var layerItemBackground = LayerItemBackgroundColor(
+                    GetTrackColor(trackIndex),
+                    active,
+                    selectedLayer,
+                    visibleRow % 2 != 0);
+                var layerItemBounds = new Rectangle(0, y, Math.Max(0, layout.TrackLeft), _rowHeight);
+                using (var layerItemBrush = new SolidBrush(layerItemBackground))
+                {
+                    graphics.FillRectangle(layerItemBrush, layerItemBounds);
+                }
+                if (selectedLayer && !active)
+                {
+                    graphics.FillRectangle(selectedLayerRowBrush, 3, y + 1, Math.Max(0, layout.TrackLeft - 3), _rowHeight - 2);
+                }
+                if (active) graphics.FillRectangle(activeEdgeBrush, 0, y, 3, _rowHeight);
+
+                var locked = IsTrackLocked(trackIndex);
+                var textBackground = selectedLayer && !active
+                    ? Theme.Mix(
+                        layerItemBackground,
+                        Theme.IsLight ? Theme.Accent : Color.FromArgb(92, 139, 174),
+                        Theme.IsLight ? 34f / 255f : 38f / 255f)
+                    : layerItemBackground;
+                var preferredTextColor = !visible || locked ? Theme.Muted : active ? Theme.Text : Theme.Muted;
+                var outlined = IsTrackOutlined(trackIndex);
+                if (!IsSceneLightTrack(trackIndex))
+                {
+                    DrawVisibilityIcon(graphics, visible, 14, y + _rowHeight / 2f, visible ? eyePen : hiddenEyePen);
+                    DrawLockIcon(graphics, locked, VisibilityColumnWidth + LockColumnWidth / 2, y + _rowHeight / 2, lockPen, unlockedLockPen);
+                    DrawOutlineSwatch(
+                        graphics,
+                        new Rectangle(LockColumnRight, y, OutlineColumnWidth, _rowHeight),
+                        GetTrackColor(trackIndex),
+                        outlined);
+                }
+                var layerDepth = GetTrackDisplayDepth(trackIndex);
+                var labelLeft = GetTrackLabelLeft(trackIndex);
+                DrawLayerHierarchyGuide(graphics, layerDepth, y, labelLeft, textBackground);
+                if (IsTrackCollapsible(trackIndex)) DrawLayerGroupDisclosure(graphics, LayerGroupDisclosureBounds(trackIndex, y), IsTrackCollapsed(trackIndex));
+                DrawTrackKindGlyph(graphics, trackIndex, labelLeft, y + _rowHeight / 2, textBackground);
+                TextRenderer.DrawText(
+                    graphics,
+                    UiLocalization.T(GetTrackName(trackIndex)),
+                    Font,
+                    new Rectangle(labelLeft + 15, y, Math.Max(16, layout.TrackLeft - labelLeft - VerticalScrollWidth - 20), _rowHeight),
+                    Theme.ReadableText(textBackground, preferredTextColor),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            }
 
             DrawTrackCells(
                 graphics,
@@ -554,7 +606,8 @@ internal sealed partial class TimelineStrip : Control
                 visibleTracks,
                 rowCount,
                 selectionBrush,
-                selectionPen);
+                selectionPen,
+                clipBounds);
         }
         else
         {
@@ -624,13 +677,13 @@ internal sealed partial class TimelineStrip : Control
         graphics.FillRectangle(fill, bounds);
         graphics.FillRectangle(colorBar, bounds.X, bounds.Y, 4, bounds.Height);
         graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
-        DrawLayerKindGlyph(graphics, GetTrackLayerKind(sourceTrack), bounds.X + 10, bounds.Top + bounds.Height / 2);
+        DrawTrackKindGlyph(graphics, sourceTrack, bounds.X + 10, bounds.Top + bounds.Height / 2, Theme.PanelStrong);
         TextRenderer.DrawText(
             graphics,
             UiLocalization.T(GetTrackName(sourceTrack)),
             Font,
             new Rectangle(bounds.X + 26, bounds.Y, Math.Max(16, bounds.Width - 31), bounds.Height),
-            Theme.Text,
+            Theme.ReadableText(Theme.PanelStrong, Theme.Text),
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
     }
 
@@ -667,6 +720,7 @@ internal sealed partial class TimelineStrip : Control
             var frame = _firstVisibleFrame + column;
             var x = layout.TrackLeft + column * _frameCellWidth;
             var cellBounds = new Rectangle(x, y, _frameCellWidth, _rowHeight);
+            if (!graphics.IsVisible(cellBounds)) continue;
             var inTimelineRange = frame <= EndFrame;
             var inSelectableRange = frame <= maximumSelectableFrame;
             var selected = false;
@@ -769,38 +823,145 @@ internal sealed partial class TimelineStrip : Control
         IReadOnlyList<int> visibleTracks,
         int rowCount,
         Brush selectionBrush,
-        Pen selectionPen)
+        Pen selectionPen,
+        Rectangle clipBounds)
     {
         if (_selectedFrameCells.Count == 0 || rowCount == 0) return;
 
-        var columns = VisibleFrameDrawCount(layout);
-        var selectedCells = new List<Point>();
-        for (var visibleRow = 0; visibleRow < rowCount; visibleRow++)
-        {
-            var trackIndex = visibleTracks[_firstVisibleTrack + visibleRow];
-            var trackId = _timeline.Tracks[trackIndex].Id;
-            for (var column = 0; column < columns; column++)
-            {
-                var frame = _firstVisibleFrame + column;
-                if (frame > MaximumSelectableFrame(layout)
-                    || !_selectedFrameCells.Contains(new TimelineFrameCell(trackId, frame)))
-                {
-                    continue;
-                }
+        var hasTransformPreview = _draggingFrameTransform && _frameTransformPreviewCells.Length > 0;
+        IEnumerable<TimelineFrameCell> previewCells = hasTransformPreview
+            ? _frameTransformPreviewCells
+            : _selectedFrameCells;
+        if (!TryResolveVisibleFrameSelectionBounds(previewCells, out var selection)) return;
 
-                selectedCells.Add(new Point(column, visibleRow));
+        var transformBounds = GetFrameSelectionTransformBounds(layout, selection);
+        var visualBounds = Rectangle.Inflate(transformBounds, ScaleTimelineMetric(6), ScaleTimelineMetric(6));
+        if (!graphics.IsVisible(visualBounds)) return;
+
+        IReadOnlySet<TimelineFrameCell> previewCellSet = hasTransformPreview
+            ? _frameTransformPreviewCells.ToHashSet()
+            : _selectedFrameCells;
+
+        void DrawCells(IReadOnlySet<TimelineFrameCell> selected, Brush fill, Pen pen)
+        {
+            var columns = VisibleFrameDrawCount(layout);
+            var maximumSelectableFrame = MaximumSelectableFrame(layout);
+            var visibleCellCapacity = Math.Min(selected.Count, rowCount * columns);
+            var visibleCellPoints = new List<Point>(visibleCellCapacity);
+            if (selected.Count <= rowCount * columns)
+            {
+                foreach (var cell in selected)
+                {
+                    var trackPosition = VisibleTrackPosition(TrackIndexForId(cell.TrackId));
+                    var visibleRow = trackPosition - _firstVisibleTrack;
+                    var column = cell.Frame - _firstVisibleFrame;
+                    if (visibleRow < 0
+                        || visibleRow >= rowCount
+                        || column < 0
+                        || column >= columns
+                        || cell.Frame > maximumSelectableFrame)
+                    {
+                        continue;
+                    }
+
+                    var cellBounds = new Rectangle(
+                        layout.TrackLeft + column * _frameCellWidth,
+                        layout.RowTop + visibleRow * _rowHeight,
+                        _frameCellWidth,
+                        _rowHeight);
+                    if (!graphics.IsVisible(cellBounds)) continue;
+                    visibleCellPoints.Add(new Point(column, visibleRow));
+                }
+            }
+            else
+            {
+                var (firstColumn, lastColumnExclusive) = VisibleFramePaintRange(layout, clipBounds);
+                for (var visibleRow = 0; visibleRow < rowCount; visibleRow++)
+                {
+                    var trackIndex = visibleTracks[_firstVisibleTrack + visibleRow];
+                    var trackId = _timeline.Tracks[trackIndex].Id;
+                    for (var column = firstColumn; column < lastColumnExclusive; column++)
+                    {
+                        var frame = _firstVisibleFrame + column;
+                        var cellBounds = new Rectangle(
+                            layout.TrackLeft + column * _frameCellWidth,
+                            layout.RowTop + visibleRow * _rowHeight,
+                            _frameCellWidth,
+                            _rowHeight);
+                        if (frame > maximumSelectableFrame
+                            || !graphics.IsVisible(cellBounds)
+                            || !selected.Contains(new TimelineFrameCell(trackId, frame)))
+                        {
+                            continue;
+                        }
+
+                        visibleCellPoints.Add(new Point(column, visibleRow));
+                    }
+                }
+            }
+
+            foreach (var block in CoalesceFrameSelectionCells(visibleCellPoints))
+            {
+                var bounds = new Rectangle(
+                    layout.TrackLeft + block.X * _frameCellWidth + 1,
+                    layout.RowTop + block.Y * _rowHeight + 1,
+                    Math.Max(1, block.Width * _frameCellWidth - 2),
+                    Math.Max(1, block.Height * _rowHeight - 2));
+                graphics.FillRectangle(fill, bounds);
+                graphics.DrawRectangle(pen, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
             }
         }
 
-        foreach (var block in CoalesceFrameSelectionCells(selectedCells))
+        if (_draggingFrameTransform)
         {
-            var bounds = new Rectangle(
-                layout.TrackLeft + block.X * _frameCellWidth + 1,
-                layout.RowTop + block.Y * _rowHeight + 1,
-                Math.Max(1, block.Width * _frameCellWidth - 2),
-                Math.Max(1, block.Height * _rowHeight - 2));
-            graphics.FillRectangle(selectionBrush, bounds);
-            graphics.DrawRectangle(selectionPen, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+            using var sourceGhostBrush = new SolidBrush(Color.FromArgb(28, Theme.Accent));
+            using var sourceGhostPen = new Pen(Color.FromArgb(150, Theme.Muted), 1f) { DashStyle = DashStyle.Dash };
+            DrawCells(_selectedFrameCells, sourceGhostBrush, sourceGhostPen);
+        }
+        DrawCells(previewCellSet, selectionBrush, selectionPen);
+
+        using (var transformPen = new Pen(Color.FromArgb(235, Theme.AccentLabel), Math.Max(1.25f, DeviceDpi / 72f))
+        {
+            DashStyle = DashStyle.Dash
+        })
+        {
+            graphics.DrawRectangle(
+                transformPen,
+                transformBounds.X,
+                transformBounds.Y,
+                Math.Max(0, transformBounds.Width - 1),
+                Math.Max(0, transformBounds.Height - 1));
+        }
+        DrawFrameTransformHandles(graphics, transformBounds, selection);
+    }
+
+    private void DrawFrameTransformHandles(
+        Graphics graphics,
+        Rectangle bounds,
+        TimelineFrameSelectionBounds selection)
+    {
+        var horizontalResizable = selection.FrameCount > 1;
+        var verticalResizable = selection.TrackCount > 1;
+        foreach (var mode in FrameTransformHandleModes)
+        {
+            var isHorizontal = mode is TimelineFrameTransformMode.ScaleLeft
+                or TimelineFrameTransformMode.ScaleRight
+                or TimelineFrameTransformMode.ScaleTopLeft
+                or TimelineFrameTransformMode.ScaleTopRight
+                or TimelineFrameTransformMode.ScaleBottomRight
+                or TimelineFrameTransformMode.ScaleBottomLeft;
+            var isVertical = mode is TimelineFrameTransformMode.ScaleTopLeft
+                or TimelineFrameTransformMode.ScaleTopRight
+                or TimelineFrameTransformMode.ScaleBottomRight
+                or TimelineFrameTransformMode.ScaleBottomLeft;
+            if (isHorizontal && !horizontalResizable || isVertical && !verticalResizable) continue;
+
+            var handleBounds = FrameTransformHandleBounds(bounds, mode);
+            var hovered = !_draggingFrameTransform && _hoveredFrameTransformHandle == mode;
+            using var fill = new SolidBrush(hovered ? Theme.AccentLabel : Theme.PanelStrong);
+            using var border = new Pen(hovered ? Theme.Text : Theme.Accent, Math.Max(1f, DeviceDpi / 96f));
+            graphics.FillRectangle(fill, handleBounds);
+            graphics.DrawRectangle(border, handleBounds.X, handleBounds.Y, handleBounds.Width - 1, handleBounds.Height - 1);
         }
     }
 
@@ -934,6 +1095,10 @@ internal sealed partial class TimelineStrip : Control
                 TimelineFeedbackMotion.Sweep,
                 Color.FromArgb(79, 179, 162),
                 320),
+            TimelineCommand.ReverseFrames => new TimelineFeedbackStyle(
+                TimelineFeedbackMotion.Reverse,
+                Color.FromArgb(226, 168, 78),
+                340),
             TimelineCommand.InsertFrames => new TimelineFeedbackStyle(
                 TimelineFeedbackMotion.Expand,
                 Color.FromArgb(94, 205, 190),
@@ -1046,6 +1211,18 @@ internal sealed partial class TimelineStrip : Control
                 using var edge = new Pen(WithOpacity(style.Color, fade), 1.4f);
                 graphics.FillRectangle(fill, sweep);
                 graphics.DrawLine(edge, sweep.Right, sweep.Top, sweep.Right, sweep.Bottom);
+                break;
+            }
+            case TimelineFeedbackMotion.Reverse:
+            {
+                var halfWidth = Math.Max(2f, bounds.Width * (0.16f + eased * 0.34f));
+                using var arrow = new Pen(WithOpacity(style.Color, fade), 1.45f)
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.ArrowAnchor
+                };
+                graphics.DrawLine(arrow, centerX - halfWidth, centerY - 2f, centerX + halfWidth, centerY - 2f);
+                graphics.DrawLine(arrow, centerX + halfWidth, centerY + 2f, centerX - halfWidth, centerY + 2f);
                 break;
             }
             case TimelineFeedbackMotion.Expand:
@@ -1361,7 +1538,8 @@ internal sealed partial class TimelineStrip : Control
         graphics.FillRectangle(layerColor, LayerControlsWidth + 3, ghost.Top + 2, 4, Math.Max(1, ghost.Height - 4));
         if (ghost.Height >= 9)
         {
-            var textColor = Theme.Mix(feedbackBackground, Theme.Text, fade);
+            var readableText = Theme.ReadableText(feedbackBackground, Theme.Text);
+            var textColor = Theme.Mix(feedbackBackground, readableText, fade);
             TextRenderer.DrawText(
                 graphics,
                 snapshot.Name,
@@ -1428,15 +1606,12 @@ internal sealed partial class TimelineStrip : Control
         using var fillBrush = new SolidBrush(playhead);
         if (_isPlaying) graphics.DrawLine(glowPen, centerX, HeaderHeight, centerX, layout.RowBottom);
         graphics.DrawLine(linePen, centerX, HeaderHeight, centerX, layout.RowBottom);
-        var handle = new[]
-        {
-            new PointF(centerX - 5, HeaderHeight),
-            new PointF(centerX + 5, HeaderHeight),
-            new PointF(centerX + 5, HeaderHeight + 8),
-            new PointF(centerX, HeaderHeight + 13),
-            new PointF(centerX - 5, HeaderHeight + 8)
-        };
-        graphics.FillPolygon(fillBrush, handle);
+        _playheadHandlePoints[0] = new PointF(centerX - 5, HeaderHeight);
+        _playheadHandlePoints[1] = new PointF(centerX + 5, HeaderHeight);
+        _playheadHandlePoints[2] = new PointF(centerX + 5, HeaderHeight + 8);
+        _playheadHandlePoints[3] = new PointF(centerX, HeaderHeight + 13);
+        _playheadHandlePoints[4] = new PointF(centerX - 5, HeaderHeight + 8);
+        graphics.FillPolygon(fillBrush, _playheadHandlePoints);
     }
 
     private void DrawHorizontalScroll(Graphics graphics, TimelineLayout layout)
@@ -1466,6 +1641,15 @@ internal sealed partial class TimelineStrip : Control
         using var thumbBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(75, 85, 90), Theme.BorderHover));
         graphics.FillRectangle(backgroundBrush, scroll.Bounds);
         graphics.FillRectangle(thumbBrush, scroll.Thumb);
+    }
+
+    private static void FillAlignedRectangle(Graphics graphics, Brush brush, Rectangle bounds)
+    {
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        var smoothingMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.None;
+        graphics.FillRectangle(brush, bounds);
+        graphics.SmoothingMode = smoothingMode;
     }
 
     private static void DrawHorizontalArrow(Graphics graphics, Rectangle bounds, bool pointsLeft, Brush brush)

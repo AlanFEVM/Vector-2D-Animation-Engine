@@ -946,17 +946,44 @@ internal sealed partial class VectorScene
             includeWholeObjectSelections: true);
     }
 
+    public MarqueeMaterializationResult MaterializeLassoSelectionParts(
+        IReadOnlyList<PointF> worldPolygon,
+        int frame)
+    {
+        var identity = Enumerable.Range(0, ObjectCount).ToArray();
+        if (!TryNormalizeLassoPolygon(worldPolygon, out var polygon, out var bounds))
+        {
+            return new MarqueeMaterializationResult(
+                false,
+                false,
+                Array.Empty<int>(),
+                identity);
+        }
+
+        return MaterializeMarqueeParts(
+            bounds,
+            frame,
+            includeLines: true,
+            includeFills: true,
+            includeWholeObjectSelections: true,
+            selectionPolygon: polygon);
+    }
+
     private MarqueeMaterializationResult MaterializeMarqueeParts(
         RectangleF worldBounds,
         int frame,
         bool includeLines,
         bool includeFills,
-        bool includeWholeObjectSelections)
+        bool includeWholeObjectSelections,
+        PointF[]? selectionPolygon = null)
     {
         var oldObjectCount = ObjectCount;
         var identity = Enumerable.Range(0, oldObjectCount).ToArray();
-        var bounds = NormalizeToDrawingUnits(worldBounds);
-        var canMaterializeParts = bounds.Width >= DrawingTopologyRules.MinStrokeSegmentUnits
+        var bounds = selectionPolygon is null
+            ? NormalizeToDrawingUnits(worldBounds)
+            : Normalize(worldBounds);
+        var canMaterializeParts = selectionPolygon is not null
+            || bounds.Width >= DrawingTopologyRules.MinStrokeSegmentUnits
             && bounds.Height >= DrawingTopologyRules.MinStrokeSegmentUnits;
         if (!canMaterializeParts && !includeWholeObjectSelections)
         {
@@ -998,8 +1025,17 @@ internal sealed partial class VectorScene
             var selectedWholeObjects = new List<int>();
             foreach (var source in candidates)
             {
-                if ((uint)source >= oldObjectCount || !IsObjectActive(source, frame)) continue;
+                if ((uint)source >= oldObjectCount || !IsObjectSelectable(source, frame)) continue;
                 var shape = ShapeKind[source];
+                if (selectionPolygon is not null && _objectDistortions.ContainsKey(source))
+                {
+                    if (includeWholeObjectSelections
+                        && IsObjectGeometryInsidePolygonCore(source, selectionPolygon))
+                    {
+                        selectedWholeObjects.Add(source);
+                    }
+                    continue;
+                }
                 if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
                 {
                     if (TryGetMixingBrushLocalRegion(source, out var mixingRegion))
@@ -1009,7 +1045,11 @@ internal sealed partial class VectorScene
                         for (var partIndex = 0; partIndex < componentCount; partIndex++)
                         {
                             if (!mixingRegion.TryGetConnectedComponent(partIndex, out var component)
-                                || !component.IntersectsBounds(bounds, point => LocalToWorld(source, point.X, point.Y))) continue;
+                                || !MixingComponentIntersectsSelection(
+                                    source,
+                                    component,
+                                    bounds,
+                                    selectionPolygon)) continue;
                             selected[partIndex] = true;
                         }
                         if (!selected.Any(value => value)) continue;
@@ -1044,29 +1084,36 @@ internal sealed partial class VectorScene
                                 selected[partIndex]));
                         }
                     }
-                    else if (includeWholeObjectSelections && MixingStrokeIntersectsBounds(source, bounds))
+                    else if (includeWholeObjectSelections
+                        && MixingStrokeIntersectsSelection(source, bounds, selectionPolygon))
                     {
                         selectedWholeObjects.Add(source);
                     }
+                    continue;
+                }
+                if (selectionPolygon is not null
+                    && IsObjectGeometryInsidePolygonCore(source, selectionPolygon))
+                {
+                    if (includeWholeObjectSelections) selectedWholeObjects.Add(source);
                     continue;
                 }
                 if (!canMaterializeParts) continue;
                 if (IsWholeObjectShape(shape)) continue;
                 if (shape == VectorAnimationEngine.ShapeKind.Line)
                 {
-                    if (includeLines) AddLineMarqueeParts(source, bounds, additions, remove);
+                    if (includeLines) AddLineMarqueeParts(source, bounds, additions, remove, selectionPolygon);
                     continue;
                 }
 
                 if (shape == VectorAnimationEngine.ShapeKind.Freeform)
                 {
-                    if (includeLines) TryAddFreehandMarqueeParts(source, bounds, additions, remove);
+                    if (includeLines) TryAddFreehandMarqueeParts(source, bounds, additions, remove, selectionPolygon);
                     continue;
                 }
 
                 if (includeFills && !IsFreehandShape(shape))
                 {
-                    AddFillMarqueeParts(source, bounds, activeCandidates, additions, remove);
+                    AddFillMarqueeParts(source, bounds, activeCandidates, additions, remove, selectionPolygon);
                 }
             }
 
@@ -1138,6 +1185,7 @@ internal sealed partial class VectorScene
         LastFillMergeTotalMilliseconds = 0;
         if ((uint)objectIndex >= ObjectCount) return objectIndex;
         if (!IsFillShape(ShapeKind[objectIndex])) return objectIndex;
+        if (IsCollisionTerrainLayer(ObjectLayer[objectIndex])) return objectIndex;
         if (FillAutoMergeProtected[objectIndex]) return objectIndex;
         if (HasGradient(objectIndex)) return objectIndex;
         if (!IsObjectActive(objectIndex, frame)) return objectIndex;
@@ -1152,7 +1200,7 @@ internal sealed partial class VectorScene
             mergeBounds.Inflate(mergeDistance, mergeDistance);
             foreach (var other in QueryObjects(mergeBounds, frame))
             {
-                if (other == current) continue;
+                if (other == current || IsCollisionTerrainLayer(ObjectLayer[other])) continue;
                 if (ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]) continue;
                 if (!TryBuildSameColorFillMerge(current, other, connectNearby, mergeBounds, out var mergedPath)) continue;
                 if (!TryGetEditableFillBezierContours(current, out var currentBezierContours)
@@ -1260,6 +1308,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)objectIndex >= ObjectCount
             || !IsMatchingShapeGradientFill(this, objectIndex)
+            || IsCollisionTerrainLayer(ObjectLayer[objectIndex])
             || FillAutoMergeProtected[objectIndex]
             || !IsObjectActive(objectIndex, frame))
         {
@@ -1277,6 +1326,7 @@ internal sealed partial class VectorScene
                 if (other == current
                     || ObjectLayer[other] != ObjectLayer[current]
                     || ObjectKeyframeFrame[other] != ObjectKeyframeFrame[current]
+                    || IsCollisionTerrainLayer(ObjectLayer[other])
                     || FillAutoMergeProtected[other]
                     || !MatchingShapeGradientMaterial(this, current, this, other)
                     || !TryBuildIntersectingFillUnion(current, other, mergeBounds, out var mergedPath))
@@ -1330,7 +1380,9 @@ internal sealed partial class VectorScene
     {
         ArgumentNullException.ThrowIfNull(objectIndices);
         var sourceKeys = objectIndices
-            .Where(index => (uint)index < ObjectCount && IsFillShape(ShapeKind[index]))
+            .Where(index => (uint)index < ObjectCount
+                && IsFillShape(ShapeKind[index])
+                && !IsCollisionTerrainLayer(ObjectLayer[index]))
             .Select(index => (
                 Layer: ObjectLayer[index],
                 Keyframe: ObjectKeyframeFrame[index],
@@ -1398,7 +1450,8 @@ internal sealed partial class VectorScene
         var matches = new HashSet<int>();
         foreach (var addition in additionIndices)
         {
-            if (!IsMatchingShapeGradientFill(additions, addition)) continue;
+            if (!IsMatchingShapeGradientFill(additions, addition)
+                || IsCollisionTerrainLayer(additions.ObjectLayer[addition])) continue;
             var bounds = additions.GetObjectWorldBounds(addition);
             var additionPaths = ToClipperPaths(additions.FillWorldContours(addition));
             if (additionPaths.Count == 0) continue;
@@ -1406,6 +1459,7 @@ internal sealed partial class VectorScene
             {
                 if (!IsObjectActive(candidate, frame)
                     || ObjectLayer[candidate] != additions.ObjectLayer[addition]
+                    || IsCollisionTerrainLayer(ObjectLayer[candidate])
                     || !MatchingShapeGradientMaterial(this, candidate, additions, addition))
                 {
                     continue;
@@ -1555,7 +1609,9 @@ internal sealed partial class VectorScene
     {
         ArgumentNullException.ThrowIfNull(objectIndices);
         var sourceKeys = objectIndices
-            .Where(index => (uint)index < ObjectCount && IsFillShape(ShapeKind[index]))
+            .Where(index => (uint)index < ObjectCount
+                && IsFillShape(ShapeKind[index])
+                && !IsCollisionTerrainLayer(ObjectLayer[index]))
             .Select(index => (
                 Layer: ObjectLayer[index],
                 Keyframe: ObjectKeyframeFrame[index],
@@ -1607,11 +1663,15 @@ internal sealed partial class VectorScene
         var mergedShapeGradients = mergeMatchingShapeGradients
             ? MergeMatchingShapeGradientFillsAroundNewObjects(objectIndices, frame)
             : objectIndices
-                .Where(index => (uint)index < ObjectCount && HasFill(index))
+                .Where(index => (uint)index < ObjectCount
+                    && HasFill(index)
+                    && !IsCollisionTerrainLayer(ObjectLayer[index]))
                 .Distinct()
                 .ToArray();
         var newObjects = mergedShapeGradients
-            .Where(index => (uint)index < ObjectCount && HasFill(index))
+            .Where(index => (uint)index < ObjectCount
+                && HasFill(index)
+                && !IsCollisionTerrainLayer(ObjectLayer[index]))
             .Distinct()
             .ToArray();
         if (newObjects.Length == 0) return Array.Empty<int>();
@@ -1638,6 +1698,7 @@ internal sealed partial class VectorScene
                     .Where(source => !newObjectSet.Contains(source)
                         && ObjectLayer[source] == group.Key.Layer
                         && ObjectKeyframeFrame[source] == group.Key.Keyframe
+                        && !IsCollisionTerrainLayer(ObjectLayer[source])
                         && HasFill(source))
                     .ToArray();
                 var groupPlans = new FillOverwritePlan?[candidates.Length];
@@ -1755,7 +1816,9 @@ internal sealed partial class VectorScene
     {
         ArgumentNullException.ThrowIfNull(objectIndices);
         var retained = objectIndices
-            .Where(index => (uint)index < ObjectCount && IsFillShape(ShapeKind[index]))
+            .Where(index => (uint)index < ObjectCount
+                && IsFillShape(ShapeKind[index])
+                && !IsCollisionTerrainLayer(ObjectLayer[index]))
             .Distinct()
             .ToArray();
         if (retained.Length == 0) return retained;
@@ -1783,7 +1846,9 @@ internal sealed partial class VectorScene
         ArgumentNullException.ThrowIfNull(objectIndices);
         if (ObjectCount > maximumSceneObjects) return false;
         var additions = objectIndices
-            .Where(index => (uint)index < ObjectCount && HasFill(index))
+            .Where(index => (uint)index < ObjectCount
+                && HasFill(index)
+                && !IsCollisionTerrainLayer(ObjectLayer[index]))
             .Distinct()
             .ToArray();
         if (additions.Length == 0) return false;
@@ -1801,6 +1866,7 @@ internal sealed partial class VectorScene
                 if (additionSet.Contains(candidate)
                     || ObjectLayer[candidate] != ObjectLayer[addition]
                     || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[addition]
+                    || IsCollisionTerrainLayer(ObjectLayer[candidate])
                     || !HasFill(candidate)
                     || !candidates.Add(candidate))
                 {
@@ -1823,7 +1889,9 @@ internal sealed partial class VectorScene
         out FillOverwritePlan plan)
     {
         plan = null!;
-        if ((uint)source >= ObjectCount || !HasFill(source)) return false;
+        if ((uint)source >= ObjectCount
+            || !HasFill(source)
+            || IsCollisionTerrainLayer(ObjectLayer[source])) return false;
 
         var sourceBounds = GetObjectWorldBounds(source);
         var remainingContours = FillWorldContours(source);
@@ -1831,6 +1899,7 @@ internal sealed partial class VectorScene
         List<FillRegion>? remainingRegions = null;
         foreach (var cutter in cutters)
         {
+            if (IsCollisionTerrainLayer(ObjectLayer[cutter.ObjectIndex])) continue;
             if (!sourceBounds.IntersectsWith(cutter.Bounds)) continue;
             // Solid fills with the same material are unioned later. A gradient fill
             // remains independent, so it covers every older fill material.
@@ -2345,9 +2414,15 @@ internal sealed partial class VectorScene
         RectangleF bounds,
         IReadOnlyList<int> activeCandidates,
         List<MarqueeMaterializedAddition> additions,
-        bool[] remove)
+        bool[] remove,
+        PointF[]? selectionPolygon = null)
     {
-        if (!TrySplitFillByMarquee(source, bounds, out var insideContours, out var outsideContours)) return;
+        if (!TrySplitFillByMarquee(
+                source,
+                bounds,
+                out var insideContours,
+                out var outsideContours,
+                selectionPolygon)) return;
 
         var layer = ObjectLayer[source];
         var keyframeFrame = ObjectKeyframeFrame[source];
@@ -2356,10 +2431,20 @@ internal sealed partial class VectorScene
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
         var gradientPaint = CaptureGradientPaint(source);
         var atoms = AtomCount[source];
-        var hasInsideBezierContours = TryBuildMarqueeBezierContours(source, bounds, insideContours, out var insideBezierContours);
-        var hasOutsideBezierContours = TryBuildMarqueeBezierContours(source, bounds, outsideContours, out var outsideBezierContours);
+        var hasInsideBezierContours = TryBuildMarqueeBezierContours(
+            source,
+            bounds,
+            insideContours,
+            out var insideBezierContours,
+            selectionPolygon);
+        var hasOutsideBezierContours = TryBuildMarqueeBezierContours(
+            source,
+            bounds,
+            outsideContours,
+            out var outsideBezierContours,
+            selectionPolygon);
         var boundaryParts = Stroke[source] > 0
-            ? BuildMarqueeBoundaryParts(source, bounds, activeCandidates)
+            ? BuildMarqueeBoundaryParts(source, bounds, activeCandidates, selectionPolygon)
             : new List<(BoundaryStrokePart Part, bool Selected)>();
         var replacementCount = boundaryParts.Count + 2;
         var subOrders = ReplacementSubOrders(source, replacementCount);
@@ -2420,7 +2505,8 @@ internal sealed partial class VectorScene
     private List<(BoundaryStrokePart Part, bool Selected)> BuildMarqueeBoundaryParts(
         int source,
         RectangleF bounds,
-        IReadOnlyList<int> activeCandidates)
+        IReadOnlyList<int> activeCandidates,
+        PointF[]? selectionPolygon = null)
     {
         var result = new List<(BoundaryStrokePart Part, bool Selected)>();
         if (TryGetPathBezierWorldContours(source, out var exactContours))
@@ -2433,7 +2519,9 @@ internal sealed partial class VectorScene
                     exact.Control1,
                     exact.Control2,
                     exact.End);
-                var curveSplits = CubicRectSplits(curve, bounds);
+                var curveSplits = selectionPolygon is null
+                    ? CubicRectSplits(curve, bounds)
+                    : CubicPolygonSplits(curve, selectionPolygon);
                 foreach (var segment in BuildCurveParts(
                              curve.Start,
                              curve.Control1,
@@ -2460,7 +2548,7 @@ internal sealed partial class VectorScene
                             curveSplits[segment.PartIndex + 1].T,
                             SampleCubicSegment(segmentCurve),
                             segmentCurve),
-                        PointInRectangle(midpoint, bounds)));
+                        IsSelectionPointInside(midpoint, bounds, selectionPolygon)));
                 }
             }
 
@@ -2471,7 +2559,9 @@ internal sealed partial class VectorScene
         {
             if (boundary.Curve is { } curve)
             {
-                var curveSplits = CubicRectSplits(curve, bounds);
+                var curveSplits = selectionPolygon is null
+                    ? CubicRectSplits(curve, bounds)
+                    : CubicPolygonSplits(curve, selectionPolygon);
                 var segments = BuildCurveParts(
                     curve.Start,
                     curve.Control1,
@@ -2502,13 +2592,15 @@ internal sealed partial class VectorScene
                         segment.Control2,
                         segment.End,
                         0.5f);
-                    result.Add((part, PointInRectangle(midpoint, bounds)));
+                    result.Add((part, IsSelectionPointInside(midpoint, bounds, selectionPolygon)));
                 }
 
                 continue;
             }
 
-            var polylineSplits = PolylineRectSplitParameters(boundary.Points, bounds);
+            var polylineSplits = selectionPolygon is null
+                ? PolylineRectSplitParameters(boundary.Points, bounds)
+                : PolylinePolygonSplitParameters(boundary.Points, selectionPolygon);
             foreach (var part in BuildPolylinePathParts(boundary.Points, polylineSplits))
             {
                 var midpoint = PolylinePointAt(part.Points, 0.5f);
@@ -2519,7 +2611,7 @@ internal sealed partial class VectorScene
                         boundary.StartT + (boundary.EndT - boundary.StartT) * part.StartT,
                         boundary.StartT + (boundary.EndT - boundary.StartT) * part.EndT,
                         part.Points),
-                    PointInRectangle(midpoint, bounds)));
+                    IsSelectionPointInside(midpoint, bounds, selectionPolygon)));
             }
         }
 
@@ -2530,7 +2622,8 @@ internal sealed partial class VectorScene
         int source,
         RectangleF bounds,
         PointF[][] clippedContours,
-        out PathBezierNode[][] bezierContours)
+        out PathBezierNode[][] bezierContours,
+        PointF[]? selectionPolygon = null)
     {
         bezierContours = [];
         if (!TryGetPathBezierWorldContours(source, out var exactContours) || clippedContours.Length == 0)
@@ -2546,7 +2639,9 @@ internal sealed partial class VectorScene
                 exact.Control1,
                 exact.Control2,
                 exact.End);
-            var splits = CubicRectSplits(curve, bounds);
+            var splits = selectionPolygon is null
+                ? CubicRectSplits(curve, bounds)
+                : CubicPolygonSplits(curve, selectionPolygon);
             foreach (var part in BuildCurveParts(
                          curve.Start,
                          curve.Control1,
@@ -2761,23 +2856,229 @@ internal sealed partial class VectorScene
         return true;
     }
 
-    private bool TrySplitFillByMarquee(int index, RectangleF bounds, out PointF[][] insideContours, out PointF[][] outsideContours)
+    private static bool IsSelectionPointInside(
+        PointF point,
+        RectangleF bounds,
+        PointF[]? selectionPolygon)
+    {
+        return selectionPolygon is null
+            ? PointInRectangle(point, bounds)
+            : PointInPolygonOrOnBoundary(point, selectionPolygon);
+    }
+
+    private List<DrawingTopologySplit> CubicPolygonSplits(
+        CubicBoundarySegment curve,
+        PointF[] polygon)
+    {
+        var samples = SampleCubicSegmentWithParameters(curve);
+        var splits = new List<DrawingTopologySplit>
+        {
+            new(0, curve.Start),
+            new(1, curve.End)
+        };
+        for (var sampleIndex = 0; sampleIndex < samples.Length - 1; sampleIndex++)
+        {
+            var first = samples[sampleIndex];
+            var second = samples[sampleIndex + 1];
+            for (var edgeIndex = 0; edgeIndex < polygon.Length; edgeIndex++)
+            {
+                var edgeStart = polygon[edgeIndex];
+                var edgeEnd = polygon[(edgeIndex + 1) % polygon.Length];
+                var count = SegmentIntersectionParameters(
+                    first.Point,
+                    second.Point,
+                    edgeStart,
+                    edgeEnd,
+                    out var localT,
+                    out var secondLocalT);
+                if (count <= 0) continue;
+                AddSplit(first, second, localT);
+                if (count > 1) AddSplit(first, second, secondLocalT);
+            }
+        }
+
+        return NormalizeStrokeSplits(splits);
+
+        void AddSplit(CurveSample firstSample, CurveSample secondSample, float localT)
+        {
+            var clamped = Math.Clamp(localT, 0, 1);
+            var globalT = firstSample.T + (secondSample.T - firstSample.T) * clamped;
+            if (globalT <= 0.0001f || globalT >= 0.9999f) return;
+            splits.Add(new DrawingTopologySplit(globalT, Lerp(firstSample.Point, secondSample.Point, clamped)));
+        }
+    }
+
+    private static List<float> PolylinePolygonSplitParameters(
+        PointF[] points,
+        PointF[] polygon)
+    {
+        var splits = new List<float> { 0, 1 };
+        var segmentCount = points.Length - 1;
+        if (segmentCount <= 0) return splits;
+
+        for (var segmentIndex = 0; segmentIndex < segmentCount; segmentIndex++)
+        {
+            var start = points[segmentIndex];
+            var end = points[segmentIndex + 1];
+            for (var edgeIndex = 0; edgeIndex < polygon.Length; edgeIndex++)
+            {
+                var edgeStart = polygon[edgeIndex];
+                var edgeEnd = polygon[(edgeIndex + 1) % polygon.Length];
+                var count = SegmentIntersectionParameters(
+                    start,
+                    end,
+                    edgeStart,
+                    edgeEnd,
+                    out var localT,
+                    out var secondLocalT);
+                if (count <= 0) continue;
+                AddSplit(segmentIndex, localT);
+                if (count > 1) AddSplit(segmentIndex, secondLocalT);
+            }
+        }
+
+        splits.Sort();
+        var write = 1;
+        for (var read = 1; read < splits.Count; read++)
+        {
+            if (splits[read] - splits[write - 1] <= 0.0001f) continue;
+            splits[write++] = splits[read];
+        }
+
+        if (write < splits.Count) splits.RemoveRange(write, splits.Count - write);
+        return splits;
+
+        void AddSplit(int currentSegment, float segmentParameter)
+        {
+            var parameter = (currentSegment + Math.Clamp(segmentParameter, 0, 1)) / segmentCount;
+            if (parameter <= 0.0001f || parameter >= 0.9999f) return;
+            splits.Add(parameter);
+        }
+    }
+
+    private bool MixingComponentIntersectsSelection(
+        int source,
+        MixingBrushRegionData component,
+        RectangleF bounds,
+        PointF[]? selectionPolygon)
+    {
+        if (selectionPolygon is null)
+        {
+            return component.IntersectsBounds(
+                bounds,
+                point => LocalToWorld(source, point.X, point.Y));
+        }
+
+        var localContours = component.GetBoundaryContours();
+        if (localContours.Length == 0) return false;
+        var worldContours = localContours
+            .Select(contour => contour
+                .Select(point => LocalToWorld(source, point.X, point.Y))
+                .ToArray())
+            .ToArray();
+        return ContoursIntersectPolygon(worldContours, selectionPolygon);
+    }
+
+    private bool MixingStrokeIntersectsSelection(
+        int source,
+        RectangleF bounds,
+        PointF[]? selectionPolygon)
+    {
+        if (selectionPolygon is null) return MixingStrokeIntersectsBounds(source, bounds);
+        if (!_mixingStrokeLocalSamples.TryGetValue(source, out var samples)) return false;
+
+        foreach (var sample in samples)
+        {
+            if (((uint)sample.Argb >> 24) == 0
+                || !float.IsFinite(sample.Point.X)
+                || !float.IsFinite(sample.Point.Y)
+                || !float.IsFinite(sample.Diameter)
+                || sample.Diameter <= 0)
+            {
+                continue;
+            }
+
+            var center = LocalToWorld(source, sample.Point.X, sample.Point.Y);
+            var radius = sample.Diameter * 0.5f;
+            if (PointInPolygonOrOnBoundary(center, selectionPolygon)
+                || selectionPolygon.Any(point => Distance(point, center) <= radius)
+                || PolygonBoundaryDistance(center, selectionPolygon) <= radius)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContoursIntersectPolygon(
+        PointF[][] contours,
+        PointF[] polygon)
+    {
+        foreach (var contour in contours)
+        {
+            if (contour.Length == 0) continue;
+            if (contour.Any(point => PointInPolygonOrOnBoundary(point, polygon))) return true;
+            for (var edgeIndex = 0; edgeIndex < contour.Length; edgeIndex++)
+            {
+                var start = contour[edgeIndex];
+                var end = contour[(edgeIndex + 1) % contour.Length];
+                for (var polygonEdge = 0; polygonEdge < polygon.Length; polygonEdge++)
+                {
+                    if (SegmentIntersectionParameters(
+                            start,
+                            end,
+                            polygon[polygonEdge],
+                            polygon[(polygonEdge + 1) % polygon.Length],
+                            out _,
+                            out _) > 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return polygon.Any(point => PointInCompoundPolygon(point, contours));
+    }
+
+    private static float PolygonBoundaryDistance(PointF point, PointF[] polygon)
+    {
+        var distance = float.MaxValue;
+        for (var index = 0; index < polygon.Length; index++)
+        {
+            distance = Math.Min(
+                distance,
+                DistanceToSegment(point, polygon[index], polygon[(index + 1) % polygon.Length]));
+        }
+
+        return distance;
+    }
+
+    private bool TrySplitFillByMarquee(
+        int index,
+        RectangleF bounds,
+        out PointF[][] insideContours,
+        out PointF[][] outsideContours,
+        PointF[]? selectionPolygon = null)
     {
         insideContours = Array.Empty<PointF[]>();
         outsideContours = Array.Empty<PointF[]>();
         try
         {
             var source = ToClipperPaths(FillWorldContours(index));
-            var marquee = ToClipperPaths(new[]
-            {
-                new[]
+            var marquee = selectionPolygon is null
+                ? ToClipperPaths(new[]
                 {
-                    new PointF(bounds.Left, bounds.Top),
-                    new PointF(bounds.Right, bounds.Top),
-                    new PointF(bounds.Right, bounds.Bottom),
-                    new PointF(bounds.Left, bounds.Bottom)
-                }
-            });
+                    new[]
+                    {
+                        new PointF(bounds.Left, bounds.Top),
+                        new PointF(bounds.Right, bounds.Top),
+                        new PointF(bounds.Right, bounds.Bottom),
+                        new PointF(bounds.Left, bounds.Bottom)
+                    }
+                })
+                : ToClipperPaths(new[] { selectionPolygon });
             if (source.Count == 0 || marquee.Count != 1) return false;
 
             var intersection = new Clipper64();
@@ -2806,19 +3107,23 @@ internal sealed partial class VectorScene
         int source,
         RectangleF bounds,
         List<MarqueeMaterializedAddition> additions,
-        bool[] remove)
+        bool[] remove,
+        PointF[]? selectionPolygon = null)
     {
         var curve = LineCurve(source);
-        var splits = LineRectSplitParameters(source, bounds);
+        var splits = selectionPolygon is null
+            ? LineRectSplitParameters(source, bounds)
+            : CubicPolygonSplits(curve, selectionPolygon).Select(split => split.T).ToList();
         if (splits.Count <= 2) return;
 
         var segments = BuildCurveParts(curve.Start, curve.Control1, curve.Control2, curve.End, splits);
         if (segments.Count <= 1) return;
 
         var selected = segments
-            .Select(segment => PointInRectangle(
+            .Select(segment => IsSelectionPointInside(
                 CubicPoint(segment.Start, segment.Control1, segment.Control2, segment.End, 0.5f),
-                bounds))
+                bounds,
+                selectionPolygon))
             .ToArray();
         if (!selected.Any(value => value)) return;
 
@@ -2855,7 +3160,8 @@ internal sealed partial class VectorScene
         int source,
         RectangleF bounds,
         List<MarqueeMaterializedAddition> additions,
-        bool[] remove)
+        bool[] remove,
+        PointF[]? selectionPolygon = null)
     {
         if ((uint)source >= ObjectCount
             || ShapeKind[source] != VectorAnimationEngine.ShapeKind.Freeform
@@ -2866,7 +3172,7 @@ internal sealed partial class VectorScene
 
         if (!_freehandBezierLocalNodes.ContainsKey(source))
         {
-            return TryAddLegacyFreehandMarqueeParts(source, bounds, additions, remove);
+            return TryAddLegacyFreehandMarqueeParts(source, bounds, additions, remove, selectionPolygon);
         }
 
         if (!TryGetFreehandBezierWorldNodes(source, out var nodes) || nodes.Length < 2) return false;
@@ -2881,7 +3187,9 @@ internal sealed partial class VectorScene
                 current.OutgoingControl,
                 next.IncomingControl,
                 next.Anchor);
-            var splits = CubicRectSplits(curve, bounds);
+            var splits = selectionPolygon is null
+                ? CubicRectSplits(curve, bounds)
+                : CubicPolygonSplits(curve, selectionPolygon);
             for (var splitIndex = 0; splitIndex < splits.Count - 1; splitIndex++)
             {
                 var startT = splits[splitIndex].T;
@@ -2895,14 +3203,15 @@ internal sealed partial class VectorScene
                     segmentIndex,
                     endT,
                     CubicPoint(curve.Start, curve.Control1, curve.Control2, curve.End, endT));
-                var selected = PointInRectangle(
+                var selected = IsSelectionPointInside(
                     CubicPoint(
                         curve.Start,
                         curve.Control1,
                         curve.Control2,
                         curve.End,
                         (startT + endT) * 0.5f),
-                    bounds);
+                    bounds,
+                    selectionPolygon);
                 if (intervals.Count > 0
                     && intervals[^1].Selected == selected
                     && Math.Abs(intervals[^1].End.PathT - start.PathT) <= 0.0001f)
@@ -2962,16 +3271,22 @@ internal sealed partial class VectorScene
         int source,
         RectangleF bounds,
         List<MarqueeMaterializedAddition> additions,
-        bool[] remove)
+        bool[] remove,
+        PointF[]? selectionPolygon = null)
     {
         if (!TryGetFreehandWorldPoints(source, out var points) || points.Length < 2) return false;
-        var splits = PolylineRectSplitParameters(points, bounds);
+        var splits = selectionPolygon is null
+            ? PolylineRectSplitParameters(points, bounds)
+            : PolylinePolygonSplitParameters(points, selectionPolygon);
         if (splits.Count <= 2) return false;
 
         var runs = BuildPolylinePathParts(points, splits);
         if (runs.Count <= 1) return false;
         var selected = runs
-            .Select(run => PointInRectangle(PolylinePointAt(run.Points, 0.5f), bounds))
+            .Select(run => IsSelectionPointInside(
+                PolylinePointAt(run.Points, 0.5f),
+                bounds,
+                selectionPolygon))
             .ToArray();
         if (!selected.Any(value => value) || !selected.Any(value => !value)) return false;
 

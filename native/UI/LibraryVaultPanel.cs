@@ -99,12 +99,20 @@ internal sealed partial class LibraryVaultPanel : UserControl
         VaultItem Item,
         DrawingObjectDefinition? DrawingObject,
         bool IsProjectObject,
-        ProjectAssetFolder? Folder = null) : ITreeNodeTrailingColorSource, ITreeNodeLeadingIconSource
+        ProjectAssetFolder? Folder = null,
+        ExternalSvgAssetDefinition? ExternalSvgAsset = null,
+        bool ExternalSvgMissing = false) : ITreeNodeTrailingColorSource, ITreeNodeLeadingIconSource
     {
         public IReadOnlyList<Color> TrailingColors { get; set; } = [];
-        public SvgIconKind LeadingIcon => Folder is not null ? SvgIconKind.Folder : SvgIconKind.Objects;
+        public SvgIconKind LeadingIcon => ExternalSvgAsset is not null
+            ? ExternalSvgMissing ? SvgIconKind.Warning : SvgIconKind.Vault
+            : Folder is not null ? SvgIconKind.Folder : SvgIconKind.Objects;
     }
-    private readonly record struct ProjectRowsFingerprint(int ObjectCount, int FolderCount, int Hash);
+    private readonly record struct ProjectRowsFingerprint(
+        int ObjectCount,
+        int FolderCount,
+        int ExternalSvgAssetCount,
+        int Hash);
 
     private enum VaultSource
     {
@@ -169,7 +177,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
         _hoverTimer.Tick += (_, _) => ShowPendingPreview();
         VisibleChanged += (_, _) =>
         {
-            if (!Visible) HidePreview(clearContent: true);
+            if (!Visible)
+            {
+                HidePreview(clearContent: true);
+                return;
+            }
+            _projectRowsDirty = true;
+            RefreshProjectObjects();
         };
         UiLocalization.Watch(this);
     }
@@ -192,6 +206,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _activeDrawingObjectId = "";
             _selectedProjectDrawingObjectId = "";
             _selectedAssetFolderId = "";
+            _selectedExternalSvgAssetId = "";
+            SelectAssetCategory(AssetCategory.BasicSymbols, refresh: false);
             _projectRowsDirty = true;
         }
 
@@ -202,13 +218,25 @@ internal sealed partial class LibraryVaultPanel : UserControl
     public void SetActiveDrawingObject(string? drawingObjectId)
     {
         var next = drawingObjectId ?? "";
-        if (string.Equals(_activeDrawingObjectId, next, StringComparison.Ordinal)) return;
+        var drawingObject = _project?.DrawingObjects.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, next, StringComparison.Ordinal));
+        var category = CategoryForDrawingObject(drawingObject);
+        if (string.Equals(_activeDrawingObjectId, next, StringComparison.Ordinal)
+            && _activeAssetCategory == category)
+        {
+            return;
+        }
+        SelectAssetCategory(category, refresh: false);
         _activeDrawingObjectId = next;
         _selectedProjectDrawingObjectId = next;
         _selectedAssetFolderId = "";
         HidePreview(clearContent: true);
-        SynchronizeProjectObjectSelection();
-        UpdateActionButtons();
+        if (_projectRowsDirty) RefreshProjectObjects();
+        else
+        {
+            SynchronizeProjectObjectSelection();
+            UpdateActionButtons();
+        }
     }
 
     public void SelectAssetFolder(string? folderId)
@@ -275,12 +303,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 4,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
@@ -319,7 +348,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         header.Controls.Add(_vaultSummary, 1, 0);
         _newFolderButton.Dock = DockStyle.Fill;
         _newFolderButton.Margin = new Padding(1, 3, 1, 3);
-        _newFolderButton.Click += (_, _) => RequestNewAssetFolder();
+        _newFolderButton.Click += (_, _) => RequestPrimaryAssetCreation();
         header.Controls.Add(_newFolderButton, 2, 0);
         Theme.StyleToolbarButton(_newFolderButton);
         _toolTip.SetToolTip(_newFolderButton, "New Folder");
@@ -335,13 +364,14 @@ internal sealed partial class LibraryVaultPanel : UserControl
         Theme.StyleToolbarButton(_openButton);
         _toolTip.SetToolTip(_openButton, "Open selected symbol");
         layout.Controls.Add(header, 0, 0);
-        layout.Controls.Add(BuildAssetFilterBar(), 0, 1);
+        layout.Controls.Add(BuildAssetCategoryBar(), 0, 1);
+        layout.Controls.Add(BuildAssetFilterBar(), 0, 2);
 
         _contentHost.Dock = DockStyle.Fill;
         _contentHost.BackColor = Theme.Border;
         _contentHost.Margin = Padding.Empty;
         _contentHost.Padding = new Padding(0, 1, 0, 0);
-        layout.Controls.Add(_contentHost, 0, 2);
+        layout.Controls.Add(_contentHost, 0, 3);
         ConfigureContentLists();
 
         ActivateSource(VaultSource.Project, refresh: false);
@@ -416,6 +446,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         var newFolder = new ToolStripMenuItem("New Folder");
         newFolder.Click += (_, _) => RequestNewAssetFolder();
+        var folderSeparator = new ToolStripSeparator();
         var rename = new ToolStripMenuItem("Rename");
         rename.Click += (_, _) => RaiseSelectedProjectRenameRequest();
         var duplicate = new ToolStripMenuItem("Duplicate");
@@ -432,32 +463,41 @@ internal sealed partial class LibraryVaultPanel : UserControl
         manageTags.Click += (_, _) => RaiseSelectedAssetTagsRequest();
         var delete = new ToolStripMenuItem("Delete");
         delete.Click += (_, _) => RaiseProjectObjectAssetRequest(DrawingObjectDeleteRequested);
+        var deleteSeparator = new ToolStripSeparator();
         _projectObjectMenu.Items.AddRange(new ToolStripItem[]
         {
             newFolder,
-            new ToolStripSeparator(),
+            folderSeparator,
             rename,
             duplicate,
             setTags,
             manageTags,
-            new ToolStripSeparator(),
+            deleteSeparator,
             delete
         });
+        AppendExternalSvgContextMenuItems(_projectObjectMenu.Items);
         _projectObjectMenu.Opening += (_, e) =>
         {
             HidePreview();
             var selected = SelectedProjectRow();
             var drawingObjectSelected = selected?.DrawingObject is not null;
             var folderSelected = selected?.Folder is not null;
+            var externalSvgSelected = selected?.ExternalSvgAsset is not null;
+            newFolder.Visible = !externalSvgSelected && _activeAssetCategory != AssetCategory.ExternalSvg;
+            folderSeparator.Visible = newFolder.Visible;
+            rename.Visible = !externalSvgSelected;
             rename.Enabled = drawingObjectSelected || folderSelected;
+            duplicate.Visible = !externalSvgSelected;
             duplicate.Enabled = rename.Enabled;
             setTags.Visible = drawingObjectSelected;
             setTags.Enabled = drawingObjectSelected && (_project?.AssetTags.Count ?? 0) > 0;
             PopulateAssetTagAssignmentMenu(setTags, selected?.DrawingObject);
             manageTags.Visible = drawingObjectSelected;
             manageTags.Enabled = drawingObjectSelected;
+            deleteSeparator.Visible = drawingObjectSelected;
             delete.Visible = drawingObjectSelected;
             delete.Enabled = drawingObjectSelected && (_project?.DrawingObjects.Count ?? 0) > 1;
+            UpdateExternalSvgContextMenu(selected);
         };
         _projectObjects.ContextMenuStrip = _projectObjectMenu;
         _projectObjects.MouseDown += (_, e) =>
@@ -486,6 +526,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
                 if (Theme.IsTreeExpandGlyphHit(_projectObjects, e.Node, e.Location)) return;
                 if (e.Node.IsExpanded) e.Node.Collapse(ignoreChildren: true);
                 else e.Node.Expand();
+                return;
+            }
+            if (e.Node.Tag is VaultRow { ExternalSvgAsset: not null })
+            {
+                RaiseSelectedExternalSvgAssetRequest(
+                    ExternalSvgAssetUseRequested,
+                    requireAvailable: true);
                 return;
             }
             OpenSelectedVaultItem();
@@ -589,6 +636,16 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         if (node?.Tag is not VaultRow row || _project is null) return;
         HidePreview();
+        if (row.ExternalSvgAsset is { } externalSvgAsset)
+        {
+            if (row.ExternalSvgMissing) return;
+            var externalSvgData = new DataObject();
+            externalSvgData.SetData(
+                typeof(ExternalSvgAssetDragData),
+                new ExternalSvgAssetDragData(_project.Id, externalSvgAsset.Id));
+            _projectObjects.DoDragDrop(externalSvgData, DragDropEffects.Copy);
+            return;
+        }
         var data = new DataObject();
         if (row.Folder is not null)
         {
@@ -790,6 +847,14 @@ internal sealed partial class LibraryVaultPanel : UserControl
         var row = SelectedVaultRow();
         if (row is null) return;
 
+        if (row.ExternalSvgAsset is not null)
+        {
+            RaiseSelectedExternalSvgAssetRequest(
+                ExternalSvgAssetUseRequested,
+                requireAvailable: true);
+            return;
+        }
+
         if (row.DrawingObject is not null)
         {
             DrawingObjectOpenRequested?.Invoke(this, new DrawingObjectOpenRequestedEventArgs(row.DrawingObject.Id));
@@ -870,13 +935,22 @@ internal sealed partial class LibraryVaultPanel : UserControl
             PrepareAssetFilterCache();
             if (_project is not null)
             {
-                AddProjectFolderBranches("", _projectObjects.Nodes, expandedFolderIds);
-                AddProjectDrawingObjectNodes("", _projectObjects.Nodes, includeAll: false);
+                if (_activeAssetCategory == AssetCategory.ExternalSvg)
+                {
+                    AddExternalSvgAssetNodes(_projectObjects.Nodes);
+                }
+                else
+                {
+                    AddProjectFolderBranches("", _projectObjects.Nodes, expandedFolderIds);
+                    AddProjectDrawingObjectNodes("", _projectObjects.Nodes, includeAll: false);
+                }
             }
 
             if (_projectObjects.Nodes.Count == 0)
             {
-                var emptyText = AssetFilterActive ? "No matching assets" : "No symbols";
+                var emptyText = AssetSearchText.Length > 0 || AssetFilterActive
+                    ? "No matching assets"
+                    : ActiveAssetCategoryEmptyText();
                 _projectObjects.Nodes.Add(new TreeNode(emptyText) { ForeColor = Theme.Muted });
             }
             SynchronizeProjectObjectSelection();
@@ -925,7 +999,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         if (_project is null) return;
         foreach (var drawingObject in _project.DrawingObjects.Where(candidate =>
-                     string.Equals(candidate.AssetFolderId, folderId, StringComparison.Ordinal)))
+                     string.Equals(candidate.AssetFolderId, folderId, StringComparison.Ordinal)
+                     && DrawingObjectMatchesActiveCategory(candidate)))
         {
             if (!includeAll && !AssetMatchesFilter(drawingObject)) continue;
             var item = drawingObject.ToVaultItem();
@@ -970,9 +1045,20 @@ internal sealed partial class LibraryVaultPanel : UserControl
             hash.Add(folder.ParentFolderId, StringComparer.Ordinal);
         }
 
+        foreach (var externalSvgAsset in _project.ExternalSvgAssets)
+        {
+            hash.Add(externalSvgAsset.Id, StringComparer.Ordinal);
+            hash.Add(externalSvgAsset.Name, StringComparer.Ordinal);
+            hash.Add(externalSvgAsset.SourcePath, StringComparer.Ordinal);
+            hash.Add(externalSvgAsset.ProjectRelativePath, StringComparer.Ordinal);
+            hash.Add(externalSvgAsset.LastKnownSha256, StringComparer.Ordinal);
+            hash.Add(externalSvgAsset.CreatedAt);
+        }
+
         return new ProjectRowsFingerprint(
             _project.DrawingObjects.Count,
             _project.AssetFolders.Count,
+            _project.ExternalSvgAssets.Count,
             hash.ToHashCode());
     }
 
@@ -989,6 +1075,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
                 : _activeDrawingObjectId;
             foreach (var node in EnumerateProjectNodes())
             {
+                if (_activeAssetCategory == AssetCategory.ExternalSvg
+                    && node.Tag is VaultRow { ExternalSvgAsset: { } externalSvgAsset }
+                    && string.Equals(externalSvgAsset.Id, _selectedExternalSvgAssetId, StringComparison.Ordinal))
+                {
+                    selectedNode = node;
+                    break;
+                }
                 if (_selectedAssetFolderId.Length > 0
                     && node.Tag is VaultRow { Folder: { } folder }
                     && string.Equals(folder.Id, _selectedAssetFolderId, StringComparison.Ordinal))
@@ -1056,8 +1149,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
 
     private void UpdateVaultSummary()
     {
-        var projectCount = _project?.DrawingObjects.Count ?? 0;
-        _vaultSummary.Text = $"({projectCount})";
+        _vaultSummary.Text = $"({ActiveAssetCategoryCount()})";
     }
 
     private void VaultSelectionChanged(ListView source)
@@ -1085,6 +1177,12 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         if (_syncingSelection) return;
         var row = SelectedProjectRow();
+        if (_activeAssetCategory == AssetCategory.ExternalSvg)
+        {
+            _selectedExternalSvgAssetId = row?.ExternalSvgAsset?.Id ?? "";
+            UpdateActionButtons();
+            return;
+        }
         _selectedAssetFolderId = row?.Folder?.Id ?? "";
         _selectedProjectDrawingObjectId = row?.DrawingObject?.Id ?? "";
         UpdateActionButtons();
@@ -1104,7 +1202,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         var row = SelectedVaultRow();
         var projectSelected = row is { DrawingObject: not null, IsProjectObject: true };
-        SetActionState(_openButton, visible: true, enabled: projectSelected);
+        var externalSvgAvailable = ExternalSvgRowCanBeUsed(row);
+        SetActionState(_openButton, visible: true, enabled: projectSelected || externalSvgAvailable);
         UpdateAssetTagActions(projectSelected);
     }
 

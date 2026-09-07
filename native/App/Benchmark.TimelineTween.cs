@@ -421,9 +421,120 @@ internal static partial class Benchmark
             "Classic tween accepted a frame containing multiple drawing objects.");
 
         RunTimelineTweenInstanceRegression();
+        RunTimelineTweenDeletionRegression();
+        RunSceneBuildingTimelineTweenRegression();
         RunTimelineTweenGradientRegression();
         RunTimelineTweenComplexTopologyRegression();
         RunTimelineTweenCurveRegression();
+    }
+
+    private static void RunTimelineTweenDeletionRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(1, 5);
+        scene.AddObject(
+            0,
+            new PointF(40, 50),
+            new SizeF(80, 60),
+            0,
+            8,
+            Color.Red,
+            Color.Black,
+            6,
+            ShapeKind.Rectangle);
+        AssertTimeline(
+            scene.InsertTimelineKeyframe(0, 4),
+            "Classic tween deletion setup could not create its end keyframe.");
+        var target = Enumerable.Range(0, scene.ObjectCount)
+            .Single(index => scene.ObjectKeyframeFrame[index] == 4);
+        scene.X[target] = 360;
+        scene.Y[target] = 280;
+        scene.Width[target] = 180;
+        scene.Height[target] = 140;
+        scene.Angle[target] = 0.75f;
+        scene.Argb[target] = Color.Blue.ToArgb();
+
+        var before = scene.CreateSnapshot();
+        var beforeTrack = before.Timeline!.Tracks.Single(track =>
+            string.Equals(track.TargetId, scene.LayerIds[0], StringComparison.Ordinal));
+        AssertTimeline(
+            scene.TryCreateTimelineTween(0, 0, 4, TimelineTweenKind.Classic, out var classicError)
+            && Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ObjectKeyframeFrame[index] == 2),
+            $"Classic tween deletion setup could not create its materialized span: {classicError}");
+        var classicTrack = scene.Timeline.FindTrackByTargetId(scene.LayerIds[0])
+            ?? throw new InvalidOperationException("Classic tween deletion setup lost its timeline track.");
+        AssertTimeline(
+            scene.RemoveTimelineTween(0, 0, 4)
+            && classicTrack.Tweens.Count == 0
+            && classicTrack.Keyframes.SequenceEqual(beforeTrack.Keyframes)
+            && scene.ObjectCount == before.ObjectCount
+            && scene.ObjectLayer.Take(scene.ObjectCount).SequenceEqual(before.ObjectLayer)
+            && scene.ObjectKeyframeFrame.Take(scene.ObjectCount).SequenceEqual(before.ObjectKeyframeFrame)
+            && scene.X.Take(scene.ObjectCount).SequenceEqual(before.X)
+            && scene.Y.Take(scene.ObjectCount).SequenceEqual(before.Y)
+            && scene.Width.Take(scene.ObjectCount).SequenceEqual(before.Width)
+            && scene.Height.Take(scene.ObjectCount).SequenceEqual(before.Height)
+            && scene.Angle.Take(scene.ObjectCount).SequenceEqual(before.Angle)
+            && scene.Argb.Take(scene.ObjectCount).SequenceEqual(before.Argb)
+            && scene.StrokeArgb.Take(scene.ObjectCount).SequenceEqual(before.StrokeArgb),
+            "Removing a classic tween did not restore its endpoint-only VectorScene state.");
+        var classicObjectCount = scene.ObjectCount;
+        var classicKeyframes = classicTrack.Keyframes.ToArray();
+        AssertTimeline(
+            !scene.RemoveTimelineTween(0, 0, 4)
+            && scene.ObjectCount == classicObjectCount
+            && classicTrack.Keyframes.SequenceEqual(classicKeyframes),
+            "Removing a missing classic tween changed the VectorScene state.");
+
+        var shapeScene = new VectorScene();
+        shapeScene.CreateEmpty(1, 5);
+        shapeScene.AddObject(
+            0,
+            new PointF(20, 30),
+            new SizeF(90, 70),
+            0,
+            6,
+            Color.Yellow,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        AssertTimeline(
+            shapeScene.InsertTimelineKeyframe(0, 4),
+            "Shape tween deletion setup could not create its end keyframe.");
+        var shapeTarget = Enumerable.Range(0, shapeScene.ObjectCount)
+            .Single(index => shapeScene.ObjectKeyframeFrame[index] == 4);
+        shapeScene.X[shapeTarget] = 320;
+        shapeScene.Y[shapeTarget] = 220;
+        shapeScene.Width[shapeTarget] = 170;
+        shapeScene.Height[shapeTarget] = 130;
+        shapeScene.ShapeKind[shapeTarget] = ShapeKind.Ellipse;
+        shapeScene.Argb[shapeTarget] = Color.Green.ToArgb();
+
+        var shapeBefore = shapeScene.CreateSnapshot();
+        var shapeBeforeTrack = shapeBefore.Timeline!.Tracks.Single(track =>
+            string.Equals(track.TargetId, shapeScene.LayerIds[0], StringComparison.Ordinal));
+        AssertTimeline(
+            shapeScene.TryCreateTimelineTween(0, 0, 4, TimelineTweenKind.Shape, out var shapeError)
+            && Enumerable.Range(0, shapeScene.ObjectCount).Any(index =>
+                shapeScene.ObjectKeyframeFrame[index] == 2),
+            $"Shape tween deletion setup could not create its materialized span: {shapeError}");
+        var shapeTrack = shapeScene.Timeline.FindTrackByTargetId(shapeScene.LayerIds[0])
+            ?? throw new InvalidOperationException("Shape tween deletion setup lost its timeline track.");
+        AssertTimeline(
+            shapeScene.RemoveTimelineTween(0, 0, 4)
+            && shapeTrack.Tweens.Count == 0
+            && shapeTrack.Keyframes.SequenceEqual(shapeBeforeTrack.Keyframes)
+            && shapeScene.ObjectCount == shapeBefore.ObjectCount
+            && shapeScene.ObjectLayer.Take(shapeScene.ObjectCount).SequenceEqual(shapeBefore.ObjectLayer)
+            && shapeScene.ObjectKeyframeFrame.Take(shapeScene.ObjectCount)
+                .SequenceEqual(shapeBefore.ObjectKeyframeFrame)
+            && shapeScene.ShapeKind.Take(shapeScene.ObjectCount).SequenceEqual(shapeBefore.ShapeKind)
+            && shapeScene.X.Take(shapeScene.ObjectCount).SequenceEqual(shapeBefore.X)
+            && shapeScene.Y.Take(shapeScene.ObjectCount).SequenceEqual(shapeBefore.Y)
+            && shapeScene.Width.Take(shapeScene.ObjectCount).SequenceEqual(shapeBefore.Width)
+            && shapeScene.Height.Take(shapeScene.ObjectCount).SequenceEqual(shapeBefore.Height)
+            && shapeScene.Argb.Take(shapeScene.ObjectCount).SequenceEqual(shapeBefore.Argb),
+            "Removing a shape tween did not restore its endpoint-only VectorScene state.");
     }
 
     private static void RunShapeTweenLineMatchingRegression()
@@ -767,6 +878,8 @@ internal static partial class Benchmark
             ScaleX = 1,
             ScaleY = 1.5f,
             ScaleZ = 1,
+            RotationPivot = new System.Numerics.Vector3(350, -40, 10),
+            ScalePivot = new System.Numerics.Vector3(-100, 20, 5),
             Alpha = 0.25f,
             TintArgb = Color.Red.ToArgb(),
             PlaybackMode = DrawingObjectPlaybackMode.HoldFrame,
@@ -789,6 +902,8 @@ internal static partial class Benchmark
             ScaleX = 3,
             ScaleY = 2.5f,
             ScaleZ = 2,
+            RotationPivot = new System.Numerics.Vector3(10, 80, 70),
+            ScalePivot = new System.Numerics.Vector3(100, 60, 45),
             Alpha = 0.75f,
             TintArgb = Color.Blue.ToArgb(),
             PlaybackMode = DrawingObjectPlaybackMode.Loop
@@ -817,6 +932,12 @@ internal static partial class Benchmark
             && Math.Abs(middle.ScaleX - 2) <= 0.01f
             && Math.Abs(middle.ScaleY - 2) <= 0.01f
             && Math.Abs(middle.ScaleZ - 1.5f) <= 0.01f
+            && System.Numerics.Vector3.Distance(
+                middle.RotationPivot,
+                new System.Numerics.Vector3(180, 20, 40)) <= 0.01f
+            && System.Numerics.Vector3.Distance(
+                middle.ScalePivot,
+                new System.Numerics.Vector3(0, 40, 25)) <= 0.01f
             && Math.Abs(middle.Alpha - 0.5f) <= 0.001f
             && middle.TintArgb == Color.FromArgb(255, 128, 0, 128).ToArgb()
             && middle.PlaybackMode == DrawingObjectPlaybackMode.HoldFrame,
@@ -899,21 +1020,25 @@ internal static partial class Benchmark
         var compositionBounds = composition.ObjectCount == 1
             ? composition.GetObjectWorldBounds(0)
             : RectangleF.Empty;
+        var shiftedExpectedCenter = System.Numerics.Vector2.Transform(
+            System.Numerics.Vector2.Zero,
+            DrawingObjectInstanceDefinition.CreatePlanarTransform(shiftedExpected));
         AssertTimeline(
             composition.ObjectCount == 1
             && compositionResult.TryGetOwner(0, out var owner)
             && string.Equals(owner.InstanceId, instance.Id, StringComparison.Ordinal)
-            && Math.Abs(compositionBounds.Left + compositionBounds.Width * 0.5f - shiftedExpected.X) <= 1
-            && Math.Abs(compositionBounds.Top + compositionBounds.Height * 0.5f - shiftedExpected.Y) <= 1,
+            && Math.Abs(compositionBounds.Left + compositionBounds.Width * 0.5f - shiftedExpectedCenter.X) <= 1
+            && Math.Abs(compositionBounds.Top + compositionBounds.Height * 0.5f - shiftedExpectedCenter.Y) <= 1,
             "Scene composition did not render the materialized nested instance tween state.");
 
         AssertTimeline(
             host.RemoveTimelineTween(0, 0, 9)
             && track.EvaluateTween(4) is null
-            && instance.StateKeyframes.Any(keyframe =>
-                keyframe.Frame == 4
-                && Math.Abs(keyframe.State.X - shiftedExpected.X) <= 0.01f),
-            "Removing a nested instance tween discarded its materialized intermediate state.");
+            && track.Keyframes.All(keyframe => keyframe.Frame is 0 or 9)
+            && !instance.StateKeyframes.Any(keyframe => keyframe.Frame > 0 && keyframe.Frame < 9)
+            && Math.Abs(instance.EvaluateState(4).X - source.X) <= 0.01f
+            && Math.Abs(instance.EvaluateState(9).X - target.X) <= 0.01f,
+            "Removing a nested instance tween did not restore its endpoint-only state.");
 
         var mixedHost = project.AddDrawingObject("Mixed tween host");
         mixedHost.Scene.CreateEmpty(1, 5);
@@ -940,6 +1065,199 @@ internal static partial class Benchmark
             && multipleHost.Scene.InsertTimelineKeyframe(0, 4)
             && !multipleHost.CanCreateTimelineTween(0, 0, 4, TimelineTweenKind.Classic, out _),
             "A layer containing multiple nested instances was incorrectly eligible for a classic tween.");
+    }
+
+    private static void RunSceneBuildingTimelineTweenRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var sourceObject = project.DrawingObjects[0];
+        sourceObject.Scene.CreateEmpty(1, 9);
+        sourceObject.Scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(80, 60),
+            0,
+            0,
+            Color.White,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+
+        var scene = project.Scenes[0];
+        var layerId = scene.Layers[0].Id;
+        var track = scene.Timeline.FindTrackByTargetId(layerId)
+            ?? throw new InvalidOperationException("Scene Building tween regression lost its timeline track.");
+        scene.Timeline.SetTrackDuration(track.Id, 9);
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, sourceObject.Id, PointF.Empty, 0, layerId, out var instance)
+            && instance is not null,
+            "Scene Building tween setup could not create its scene instance.");
+
+        var source = instance!.EvaluateState(0) with
+        {
+            X = 0,
+            Y = 20,
+            Z = 1,
+            RotationX = 170,
+            RotationY = 20,
+            RotationZ = 350,
+            ScaleX = 1,
+            ScaleY = 1.5f,
+            ScaleZ = 0.5f,
+            RotationPivot = new System.Numerics.Vector3(350, -40, 10),
+            ScalePivot = new System.Numerics.Vector3(-100, 20, 5),
+            Alpha = 0.25f,
+            TintArgb = Color.Red.ToArgb()
+        };
+        AssertTimeline(
+            instance.SetStateAtFrame(0, source)
+            && scene.Timeline.InsertKeyframe(track.Id, 8),
+            "Scene Building tween setup could not create its endpoint keyframes.");
+        var target = source with
+        {
+            X = 800,
+            Y = 220,
+            Z = 5,
+            RotationX = -170,
+            RotationY = 100,
+            RotationZ = 10,
+            ScaleX = 3,
+            ScaleY = 2.5f,
+            ScaleZ = 2.5f,
+            RotationPivot = new System.Numerics.Vector3(10, 80, 70),
+            ScalePivot = new System.Numerics.Vector3(100, 60, 45),
+            Alpha = 0.75f,
+            TintArgb = Color.Blue.ToArgb()
+        };
+        var endpointSet = instance.SetStateAtFrame(8, target);
+        var canCreate = scene.CanCreateTimelineTween(
+            layerId,
+            0,
+            8,
+            TimelineTweenKind.Classic,
+            out var canCreateError);
+        AssertTimeline(
+            endpointSet && canCreate,
+            $"A single Scene Building instance was not eligible for a classic tween: {canCreateError}");
+        AssertTimeline(
+            !scene.CanCreateTimelineTween(layerId, 0, 8, TimelineTweenKind.Shape, out _),
+            "A Scene Building instance was incorrectly eligible for a shape tween.");
+        AssertTimeline(
+            scene.TryCreateTimelineTween(layerId, 0, 8, TimelineTweenKind.Classic, out var createError),
+            $"Scene Building could not create a classic tween: {createError}");
+
+        var middle = instance.EvaluateState(4);
+        AssertTimeline(
+            Math.Abs(middle.X - 400) <= 0.01f
+            && Math.Abs(middle.Y - 120) <= 0.01f
+            && Math.Abs(middle.Z - 3) <= 0.01f
+            && Math.Abs(middle.RotationX - 180) <= 0.01f
+            && Math.Abs(middle.RotationY - 60) <= 0.01f
+            && Math.Abs(middle.RotationZ - 360) <= 0.01f
+            && Math.Abs(middle.ScaleX - 2) <= 0.01f
+            && Math.Abs(middle.ScaleY - 2) <= 0.01f
+            && Math.Abs(middle.ScaleZ - 1.5f) <= 0.01f
+            && System.Numerics.Vector3.Distance(
+                middle.RotationPivot,
+                new System.Numerics.Vector3(180, 20, 40)) <= 0.01f
+            && System.Numerics.Vector3.Distance(
+                middle.ScalePivot,
+                new System.Numerics.Vector3(0, 40, 25)) <= 0.01f
+            && Math.Abs(middle.Alpha - 0.5f) <= 0.001f
+            && middle.TintArgb == Color.FromArgb(255, 128, 0, 128).ToArgb()
+            && track.EvaluateTween(4) is { Kind: TimelineTweenKind.Classic },
+            "Scene Building classic tween did not interpolate its spatial and appearance state.");
+
+        var composition = new VectorScene();
+        var compositionResult = SceneCompositionBuilder.Build(composition, scene, project.DrawingObjects, 4);
+        var compositionBounds = composition.ObjectCount == 1
+            ? composition.GetObjectWorldBounds(0)
+            : RectangleF.Empty;
+        var expectedCenter = System.Numerics.Vector2.Transform(
+            System.Numerics.Vector2.Zero,
+            DrawingObjectInstanceDefinition.CreatePlanarTransform(middle));
+        AssertTimeline(
+            composition.ObjectCount == 1
+            && compositionResult.TryGetOwner(0, out var owner)
+            && string.Equals(owner.InstanceId, instance.Id, StringComparison.Ordinal)
+            && Math.Abs(compositionBounds.Left + compositionBounds.Width * 0.5f - expectedCenter.X) <= 1
+            && Math.Abs(compositionBounds.Top + compositionBounds.Height * 0.5f - expectedCenter.Y) <= 1,
+            "Scene composition did not render the materialized Scene Building tween state.");
+
+        var anchors = new TweenCurveAnchor[]
+        {
+            new(0, 0),
+            new(0.5f, 0.2f),
+            new(1, 1)
+        };
+        AssertTimeline(
+            scene.ReplaceTimelineTweenCurve(layerId, 0, 8, anchors)
+            && Math.Abs(instance.EvaluateState(4).X - 160) <= 0.01f,
+            "A custom curve did not rematerialize the Scene Building tween.");
+
+        target = target with { X = 1000, TintArgb = Color.Lime.ToArgb() };
+        AssertTimeline(
+            instance.SetStateAtFrame(8, target)
+            && scene.RefreshTimelineTweenMaterializationsAtEndpointFrame(8)
+            && Math.Abs(instance.EvaluateState(4).X - 200) <= 0.01f,
+            "Editing a Scene Building tween endpoint did not refresh its intermediate states.");
+
+        AssertTimeline(
+            scene.Timeline.InsertFrame(track.Id, 4),
+            "Scene Building tween frame insertion did not change the timeline.");
+        scene.InsertInstanceStateFrames(layerId, 4, 1);
+        AssertTimeline(
+            scene.RefreshInstanceTimelineTweenMaterializationsInLayer(layerId),
+            "Scene Building tween frame insertion did not rematerialize its shifted span.");
+        var shiftedTween = track.EvaluateTween(4)
+            ?? throw new InvalidOperationException("Scene Building tween lost its shifted metadata.");
+        var shiftedExpected = DrawingObjectInstanceDefinition.InterpolateState(
+            source,
+            target,
+            shiftedTween.ProgressAt(4));
+        AssertTimeline(
+            shiftedTween.EndFrame == 9
+            && Math.Abs(instance.EvaluateState(4).X - shiftedExpected.X) <= 0.01f,
+            "Scene Building tween did not recompute its timing after a frame insertion.");
+
+        AssertTimeline(
+            scene.RemoveTimelineTween(layerId, 0, 9)
+            && track.EvaluateTween(4) is null
+            && track.Keyframes.All(keyframe => keyframe.Frame is 0 or 9)
+            && !instance.StateKeyframes.Any(keyframe => keyframe.Frame > 0 && keyframe.Frame < 9)
+            && Math.Abs(instance.EvaluateState(4).X - source.X) <= 0.01f
+            && Math.Abs(instance.EvaluateState(9).X - target.X) <= 0.01f,
+            "Removing a Scene Building tween did not restore its endpoint-only state.");
+
+        var multipleProject = VectorProject.CreateEmpty();
+        var multipleScene = multipleProject.Scenes[0];
+        var multipleLayerId = multipleScene.Layers[0].Id;
+        var multipleTrack = multipleScene.Timeline.FindTrackByTargetId(multipleLayerId)
+            ?? throw new InvalidOperationException("Multiple Scene Building instance regression lost its track.");
+        multipleScene.Timeline.SetTrackDuration(multipleTrack.Id, 5);
+        AssertTimeline(
+            multipleProject.TryAddSceneInstance(
+                multipleScene.Id,
+                multipleProject.DrawingObjects[0].Id,
+                PointF.Empty,
+                0,
+                multipleLayerId,
+                out _)
+            && multipleProject.TryAddSceneInstance(
+                multipleScene.Id,
+                multipleProject.DrawingObjects[0].Id,
+                new PointF(40, 0),
+                0,
+                multipleLayerId,
+                out _)
+            && multipleScene.Timeline.InsertKeyframe(multipleTrack.Id, 4)
+            && !multipleScene.CanCreateTimelineTween(
+                multipleLayerId,
+                0,
+                4,
+                TimelineTweenKind.Classic,
+                out _),
+            "A Scene Building layer containing multiple instances was incorrectly eligible for a classic tween.");
     }
 
     private static void RunTimelineTweenCurveRegression()
@@ -1082,11 +1400,15 @@ internal static partial class Benchmark
         AssertTimeline(
             curveScene.RemoveTimelineTween(0, 0, 8)
             && track.EvaluateTween(4) is null
+            && track.Keyframes.All(keyframe => keyframe.Frame is 0 or 8)
+            && !Enumerable.Range(0, curveScene.ObjectCount).Any(index =>
+                curveScene.ObjectKeyframeFrame[index] > 0
+                && curveScene.ObjectKeyframeFrame[index] < 8)
             && Enumerable.Range(0, curveScene.ObjectCount).Any(index =>
-                curveScene.ObjectKeyframeFrame[index] == 4
+                curveScene.ObjectKeyframeFrame[index] == 0
                 && curveScene.IsObjectActive(index, 4)
-                && Math.Abs(curveScene.X[index] - 160) <= 1),
-            "Removing a tween discarded or changed its materialized intermediate frame.");
+                && Math.Abs(curveScene.X[index]) <= 1),
+            "Removing a tween did not restore its endpoint-only held exposure.");
     }
 
     private static void RunTimelineTweenGradientRegression()

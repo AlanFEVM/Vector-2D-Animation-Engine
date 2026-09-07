@@ -690,16 +690,7 @@ internal sealed partial class StageControl : Control
     private long _distortRasterCacheBytes;
     private Bitmap? _gdiBaseFrameBitmap;
     private Size _gdiBaseFrameSize;
-    private long _gdiBaseFramePresentationRevision = -1;
-    private VectorScene? _gdiBaseFrameEditableScene;
-    private long _gdiBaseFrameEditableGeometryRevision = -1;
-    private long _gdiBaseFrameEditableSummaryRevision = -1;
-    private VectorScene? _gdiBaseFrameUnderlayScene;
-    private long _gdiBaseFrameUnderlayGeometryRevision = -1;
-    private long _gdiBaseFrameUnderlaySummaryRevision = -1;
-    private VectorScene? _gdiBaseFrameOnionSkinScene;
-    private long _gdiBaseFrameOnionSkinGeometryRevision = -1;
-    private long _gdiBaseFrameOnionSkinSummaryRevision = -1;
+    private Reference3DBaseFrameRenderState _gdiBaseFrameRenderState;
     private RenderStats _gdiBaseFrameStats;
     private RenderStats _gdiBaseFrameEditableStats;
     private LayerBlendCompositor? _layerBlendCompositor;
@@ -774,6 +765,7 @@ internal sealed partial class StageControl : Control
     private bool _marqueeSceneInvalidationPending;
     private bool _zoomLodPreviewActive;
     private long _basePresentationRevision;
+    private long _reference3DWorkspaceFrameCacheRevision;
     private bool _basePresentationInvalidationPending;
     private int _frame;
     private int _interactiveInputDepth;
@@ -787,6 +779,7 @@ internal sealed partial class StageControl : Control
     private bool _interactiveSynchronousPresentDeferred;
     private int _currentInteractiveRequestCount;
     private int _currentInteractiveCoalescedCount;
+    private int _reference3DPlaybackPresentPosted;
 
     private readonly record struct DistortRasterCacheKey(
         VectorScene Scene,
@@ -903,8 +896,28 @@ internal sealed partial class StageControl : Control
             ClearSelectionDragPreviewCore(invalidate: false);
             ClearSelectionFillDragFront(invalidate: false);
             _frame = value;
-            Invalidate();
+            RequestStageFrame(
+                basePresentationChanged: true,
+                preserveReference3DWorkspaceFrameCache: true);
         }
+    }
+
+    internal void SetReference3DPlaybackFrame(int value)
+    {
+        if (_frame == value) return;
+        ClearSelectionDragPreviewCore(invalidate: false);
+        ClearSelectionFillDragFront(invalidate: false);
+        _frame = value;
+        RequestStageFrame(
+            // A preloaded playback composition has already invalidated the
+            // render-plan state when it was installed. Re-invalidating it here
+            // adds measurable UI-thread work for every animation frame. Keep
+            // the full invalidation for the fallback path, where no prepared
+            // raster frame is available.
+            basePresentationChanged: !Reference3DPlaybackActive
+                || Reference3DPlaybackRasterFrame is null,
+            preserveReference3DWorkspaceFrameCache: true,
+            requestPaint: true);
     }
     public int SelectedObject
     {
@@ -1039,6 +1052,18 @@ internal sealed partial class StageControl : Control
     internal double LastDirect2DCacheMaintenanceMilliseconds => _direct2DRenderer.LastCacheMaintenanceMilliseconds;
     internal double LastDirect2DCommandMilliseconds => _direct2DRenderer.LastCommandMilliseconds;
     internal double LastDirect2DPresentMilliseconds => _direct2DRenderer.LastPresentMilliseconds;
+    internal double LastDirect2DReference3DGridMilliseconds =>
+        _direct2DRenderer.LastReference3DGridMilliseconds;
+    internal double LastDirect2DReference3DSceneMilliseconds =>
+        _direct2DRenderer.LastReference3DSceneMilliseconds;
+    internal double LastDirect2DReference3DPlanLookupMilliseconds =>
+        _direct2DRenderer.LastReference3DPlanLookupMilliseconds;
+    internal double LastDirect2DReference3DOverlayMilliseconds =>
+        _direct2DRenderer.LastReference3DOverlayMilliseconds;
+    internal double LastDirect2DReference3DBaseStoreMilliseconds =>
+        _direct2DRenderer.LastReference3DBaseStoreMilliseconds;
+    internal double LastDirect2DReference3DWorkspaceStoreMilliseconds =>
+        _direct2DRenderer.LastReference3DWorkspaceStoreMilliseconds;
     internal int LastDirect2DLodBitmapSubmissions => _direct2DRenderer.LastLodBitmapSubmissions;
     internal int LastDirect2DLodBitmapBuilds => _direct2DRenderer.LastLodBitmapBuilds;
     internal int LastDirect2DLodDetailObjectDraws => _direct2DRenderer.LastLodDetailObjectDraws;
@@ -1050,6 +1075,82 @@ internal sealed partial class StageControl : Control
     internal int LastDirect2DShapeGradientMaskGeometryCacheReuses => _direct2DRenderer.LastShapeGradientMaskGeometryCacheReuses;
     internal int LastDirect2DPathGradientBrushCacheBuilds => _direct2DRenderer.LastPathGradientBrushCacheBuilds;
     internal int LastDirect2DPathGradientBrushCacheReuses => _direct2DRenderer.LastPathGradientBrushCacheReuses;
+    internal int LastDirect2DReference3DProjectiveGradientDomainFills =>
+        _direct2DRenderer.LastReference3DProjectiveGradientDomainFills;
+    internal int LastDirect2DReference3DMaterialBitmapCacheBuilds =>
+        _direct2DRenderer.LastReference3DMaterialBitmapCacheBuilds;
+    internal int LastDirect2DReference3DMaterialBitmapCacheReuses =>
+        _direct2DRenderer.LastReference3DMaterialBitmapCacheReuses;
+    internal int LastDirect2DReference3DMaterialBitmapSubmissions =>
+        _direct2DRenderer.LastReference3DMaterialBitmapSubmissions;
+    internal int LastDirect2DReference3DStrokeBatchSubmissions =>
+        _direct2DRenderer.LastReference3DStrokeBatchSubmissions;
+    internal int LastDirect2DReference3DStrokeBatchObjects =>
+        _direct2DRenderer.LastReference3DStrokeBatchObjects;
+    internal int LastDirect2DReference3DProjectiveAffineApproximationUses =>
+        _direct2DRenderer.LastReference3DProjectiveAffineApproximationUses;
+    internal int LastDirect2DReference3DProjectiveScreenMaskBuilds =>
+        _direct2DRenderer.LastReference3DProjectiveScreenMaskBuilds;
+    internal int LastDirect2DReference3DCpuRasterWorkers =>
+        _direct2DRenderer.LastReference3DCpuRasterWorkers;
+    internal int LastDirect2DReference3DCpuRasterTiles =>
+        _direct2DRenderer.LastReference3DCpuRasterTiles;
+    internal int LastDirect2DReference3DCpuRasterCommands =>
+        _direct2DRenderer.LastReference3DCpuRasterCommands;
+    internal double LastDirect2DReference3DCpuRasterMilliseconds =>
+        _direct2DRenderer.LastReference3DCpuRasterMilliseconds;
+    internal double LastDirect2DReference3DCpuRasterUploadMilliseconds =>
+        _direct2DRenderer.LastReference3DCpuRasterUploadMilliseconds;
+    internal int LastDirect2DReference3DCpuRasterBitmapBuilds =>
+        _direct2DRenderer.LastReference3DCpuRasterBitmapBuilds;
+    internal int LastDirect2DReference3DCpuRasterBitmapReuses =>
+        _direct2DRenderer.LastReference3DCpuRasterBitmapReuses;
+    internal int LastDirect2DReference3DCpuRasterPreparationWorkers =>
+        _direct2DRenderer.LastReference3DCpuRasterPreparationWorkers;
+    internal double LastDirect2DReference3DCpuRasterPreparationMilliseconds =>
+        _direct2DRenderer.LastReference3DCpuRasterPreparationMilliseconds;
+    internal double LastDirect2DReference3DPlaybackBackgroundMilliseconds =>
+        _direct2DRenderer.LastReference3DPlaybackBackgroundMilliseconds;
+    internal double LastDirect2DReference3DPlaybackBackgroundReadbackMilliseconds =>
+        _direct2DRenderer.LastReference3DPlaybackBackgroundReadbackMilliseconds;
+    internal double LastDirect2DReference3DPlaybackBitmapWriteMilliseconds =>
+        _direct2DRenderer.LastReference3DPlaybackBitmapWriteMilliseconds;
+    internal double LastDirect2DReference3DPlaybackBlitMilliseconds =>
+        _direct2DRenderer.LastReference3DPlaybackBlitMilliseconds;
+    internal double LastDirect2DReference3DPlaybackRasterMilliseconds =>
+        _direct2DRenderer.LastReference3DPlaybackRasterMilliseconds;
+    internal float LastDirect2DReference3DCpuRasterScale =>
+        _direct2DRenderer.LastReference3DCpuRasterScale;
+    internal string LastDirect2DReference3DCpuRasterFallbackReason =>
+        _direct2DRenderer.LastReference3DCpuRasterFallbackReason;
+    internal string LastDirect2DReference3DPlaybackGdiStatus =>
+        _direct2DRenderer.LastReference3DPlaybackGdiStatus;
+    internal string LastDirect2DReference3DPlaybackGdiRasterFailure =>
+        _direct2DRenderer.LastReference3DPlaybackGdiRasterFailure;
+    internal int LastDirect2DReference3DPlaybackPresentedFrame =>
+        _direct2DRenderer.LastReference3DPlaybackPresentedFrame;
+    internal string LastDirect2DReference3DPlaybackRasterFrameMatchFailure =>
+        _direct2DRenderer.LastReference3DPlaybackRasterFrameMatchFailure;
+    internal long Direct2DReference3DPlaybackRasterFrameMatchCount =>
+        _direct2DRenderer.Reference3DPlaybackRasterFrameMatchCount;
+    internal long Direct2DReference3DPlaybackRasterFrameMismatchCount =>
+        _direct2DRenderer.Reference3DPlaybackRasterFrameMismatchCount;
+    internal string Direct2DReference3DPlaybackRasterFrameLastMismatch =>
+        _direct2DRenderer.Reference3DPlaybackRasterFrameLastMismatch;
+    internal long Direct2DReference3DPlaybackRasterFrameSetCount =>
+        _direct2DRenderer.Reference3DPlaybackRasterFrameSetCount;
+    internal string Direct2DReference3DPlaybackRasterFrameLastSetType =>
+        _direct2DRenderer.Reference3DPlaybackRasterFrameLastSetType;
+    internal bool Direct2DReference3DPlaybackRasterFrameLastSetCast =>
+        _direct2DRenderer.Reference3DPlaybackRasterFrameLastSetCast;
+    internal int LastDirect2DReference3DLocalPathGeometryCacheBuilds =>
+        _direct2DRenderer.LastReference3DLocalPathGeometryCacheBuilds;
+    internal int LastDirect2DReference3DLocalPathGeometryCacheReuses =>
+        _direct2DRenderer.LastReference3DLocalPathGeometryCacheReuses;
+    internal int Direct2DReference3DMaterialBitmapCacheEntryCount =>
+        _direct2DRenderer.Reference3DMaterialBitmapCacheEntryCount;
+    internal long Direct2DReference3DMaterialBitmapCacheBytes =>
+        _direct2DRenderer.Reference3DMaterialBitmapCacheBytes;
     internal int LastDirect2DLineGeometryCacheBuilds => _direct2DRenderer.LastLineGeometryCacheBuilds;
     internal int LastDirect2DLineGeometryCacheReuses => _direct2DRenderer.LastLineGeometryCacheReuses;
     internal int LastDirect2DObjectPathGeometryCacheBuilds => _direct2DRenderer.LastObjectPathGeometryCacheBuilds;
@@ -1058,10 +1159,88 @@ internal sealed partial class StageControl : Control
     internal int LastDirect2DBaseFrameCacheBuilds => _direct2DRenderer.LastBaseFrameCacheBuilds;
     internal int LastDirect2DBaseFrameCacheReuses => _direct2DRenderer.LastBaseFrameCacheReuses;
     internal double LastDirect2DBaseFrameCopyMilliseconds => _direct2DRenderer.LastBaseFrameCopyMilliseconds;
+    internal int LastDirect2DWorkspaceFrameCacheBuilds =>
+        _direct2DRenderer.LastReference3DWorkspaceFrameCacheBuilds;
+    internal int LastDirect2DWorkspaceFrameCacheHits =>
+        _direct2DRenderer.LastReference3DWorkspaceFrameCacheHits;
+    internal int LastDirect2DWorkspaceFrameCacheEvictions =>
+        _direct2DRenderer.LastReference3DWorkspaceFrameCacheEvictions;
+    internal int Direct2DWorkspaceFrameCacheEntryCount =>
+        _direct2DRenderer.Reference3DWorkspaceFrameCacheEntryCount;
+    internal long Direct2DWorkspaceFrameCacheBytes =>
+        _direct2DRenderer.Reference3DWorkspaceFrameCacheBytes;
     internal bool SelectionHighlightAnimating => _selectionHighlightTimer.Enabled;
     internal float SelectionHighlightPulse => 0.5f + 0.5f * MathF.Sin(_selectionHighlightPhase * MathF.Tau);
     internal double LastFrameRenderMilliseconds => _lastFrameRenderMilliseconds;
     internal long BasePresentationRevision => _basePresentationRevision;
+    internal bool Reference3DPlaybackActive { get; private set; }
+    internal bool PlaybackActive { get; private set; }
+    internal object? Reference3DPlaybackRasterPreparation { get; private set; }
+    internal object? Reference3DPlaybackRasterFrame { get; private set; }
+
+    internal void SetReference3DPlaybackActive(bool active)
+    {
+        if (Reference3DPlaybackActive == active && PlaybackActive == active) return;
+        Reference3DPlaybackActive = active;
+        PlaybackActive = active;
+        if (!active)
+        {
+            Reference3DPlaybackRasterPreparation = null;
+            SetReference3DPlaybackRasterFrame(null);
+            // Playback composition frames bypass per-frame editor cache
+            // invalidation because their raster result is already complete.
+            // Restore the normal cache contract once editing resumes.
+            InvalidateReference3DRenderPlanCache();
+        }
+        _direct2DRenderer.SetReference3DPlaybackRasterActive(this, active);
+        if (!active) Interlocked.Exchange(ref _reference3DPlaybackPresentPosted, 0);
+    }
+
+    internal void RequestReference3DPlaybackPresent()
+    {
+        if (!Reference3DPlaybackActive
+            || _disposingResources
+            || !IsHandleCreated
+            || IsDisposed)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _reference3DPlaybackPresentPosted, 1) != 0) return;
+        try
+        {
+            BeginInvoke(new Action(() =>
+            {
+                Interlocked.Exchange(ref _reference3DPlaybackPresentPosted, 0);
+                if (!Reference3DPlaybackActive || _disposingResources || IsDisposed) return;
+                // A completed worker frame only needs a paint message. It
+                // must not invalidate the render-plan cache or advance any
+                // presentation revision on the UI thread.
+                base.Invalidate();
+            }));
+        }
+        catch (ObjectDisposedException)
+        {
+            Interlocked.Exchange(ref _reference3DPlaybackPresentPosted, 0);
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref _reference3DPlaybackPresentPosted, 0);
+        }
+    }
+
+    internal void SetReference3DPlaybackRasterPreparation(object? preparation)
+    {
+        Reference3DPlaybackRasterPreparation = preparation;
+    }
+
+    internal void SetReference3DPlaybackRasterFrame(object? frame)
+    {
+        Reference3DPlaybackRasterFrame = frame;
+        _direct2DRenderer.SetReference3DPlaybackRasterFrame(frame);
+    }
+
+    internal long Reference3DWorkspaceFrameCacheRevision => _reference3DWorkspaceFrameCacheRevision;
     internal bool HasDistortPreview => _distortPreviewScene is not null
         && _distortPreviewOverrides.Count > 0;
     internal int DistortPreviewRasterBuildCount { get; private set; }
@@ -1128,10 +1307,20 @@ internal sealed partial class StageControl : Control
         _fillAnimationTimer.Tick += (_, _) => TickFillAnimation();
         _selectionHighlightTimer.Tick += (_, _) => TickSelectionHighlight();
         _zoomLodPreviewTimer.Tick += (_, _) => EndZoomLodPreview(invalidate: true);
+        _reference3DOpticalPreviewTimer.Tick += (_, _) =>
+            EndReference3DOpticalInteractionPreview();
         InitializeReferenceCameraTransitions();
+        InitializeSpatialTransformGizmoMotion();
     }
 
     public new void Invalidate() => RequestStageFrame(basePresentationChanged: true);
+
+    internal void InvalidatePreservingWorkspaceFrameCache()
+    {
+        RequestStageFrame(
+            basePresentationChanged: true,
+            preserveReference3DWorkspaceFrameCache: true);
+    }
 
     internal void InvalidateOverlay() => RequestStageFrame(basePresentationChanged: false);
 
@@ -1140,9 +1329,19 @@ internal sealed partial class StageControl : Control
         if (_interactiveInputDepth > 0) _interactiveSynchronousPresentDeferred = true;
     }
 
-    private void RequestStageFrame(bool basePresentationChanged)
+    private void RequestStageFrame(
+        bool basePresentationChanged,
+        bool preserveReference3DWorkspaceFrameCache = false,
+        bool requestPaint = true)
     {
         if (basePresentationChanged) InvalidateReference3DRenderPlanCache();
+        if (basePresentationChanged && !preserveReference3DWorkspaceFrameCache)
+        {
+            unchecked
+            {
+                _reference3DWorkspaceFrameCacheRevision++;
+            }
+        }
         if (basePresentationChanged && !_basePresentationInvalidationPending)
         {
             _basePresentationRevision++;
@@ -1162,7 +1361,7 @@ internal sealed partial class StageControl : Control
             }
         }
 
-        base.Invalidate();
+        if (requestPaint) base.Invalidate();
     }
 
     private void BeginInteractiveInput(bool pointerDown)
@@ -1336,7 +1535,10 @@ internal sealed partial class StageControl : Control
         _selectedObjects = Array.Empty<int>();
         UpdateSelectionHighlightAnimation();
         ClearDrawingPreview();
+        ClearSnapPointOverlay();
+        ClearSceneSnapIndicator();
         ClearFreehandPreview();
+        ClearLassoPreviewForLifecycle();
         ClearMarquee();
         ClearFillPreview();
         ClearFillAnimation();
@@ -1348,13 +1550,17 @@ internal sealed partial class StageControl : Control
 
     public void BindUnderlayScene(VectorScene? scene)
     {
-        UnderlayScene = scene is { ObjectCount: > 0 } ? scene : null;
+        var next = scene is { ObjectCount: > 0 } ? scene : null;
+        if (ReferenceEquals(UnderlayScene, next)) return;
+        UnderlayScene = next;
         Invalidate();
     }
 
     public void BindOnionSkinScene(VectorScene? scene)
     {
-        OnionSkinScene = scene is { ObjectCount: > 0 } ? scene : null;
+        var next = scene is { ObjectCount: > 0 } ? scene : null;
+        if (ReferenceEquals(OnionSkinScene, next)) return;
+        OnionSkinScene = next;
         Invalidate();
     }
 
@@ -1379,6 +1585,11 @@ internal sealed partial class StageControl : Control
     internal bool IsHiddenByDragPreview(VectorScene scene, int objectIndex)
     {
         return ReferenceEquals(scene, _dragPreviewSourceScene) && _dragPreviewHiddenObjects.Contains(objectIndex);
+    }
+
+    internal bool RequiresObjectRendererForDragPreview(VectorScene scene)
+    {
+        return ReferenceEquals(scene, _dragPreviewSourceScene) && _dragPreviewHiddenObjects.Count > 0;
     }
 
     internal bool IsObjectHiddenForRendering(VectorScene scene, int objectIndex)
@@ -1620,6 +1831,7 @@ internal sealed partial class StageControl : Control
         ReferenceCameraMotion motion = ReferenceCameraMotion.Immediate)
     {
         var nextDimension = viewDimension ?? scene?.Dimension ?? SceneDimension.TwoD;
+        SetReference3DSceneDefinition(scene);
         ConfigureReferenceViewCore(scene, nextDimension, motion);
     }
 
@@ -1627,30 +1839,54 @@ internal sealed partial class StageControl : Control
     {
         CompleteReferenceCameraTransitionForDirectInput();
         _referenceYaw = NormalizeRadians(_referenceYaw + dx * 0.01f);
-        _referencePitch = Math.Clamp(_referencePitch + dy * 0.01f, -1.5f, 1.5f);
+        _referencePitch = Math.Clamp(
+            _referencePitch + dy * 0.01f,
+            -ReferenceMaximumPitch,
+            ReferenceMaximumPitch);
         Invalidate();
     }
 
     public void DollyReferenceCamera(float wheelDelta)
     {
-        if (wheelDelta == 0) return;
+        if (!float.IsFinite(wheelDelta) || wheelDelta == 0) return;
         CompleteReferenceCameraTransitionForDirectInput();
-        var factor = wheelDelta > 0 ? 0.9f : 1.1f;
-        _referenceDistance = Math.Clamp(_referenceDistance * factor, 2000, 80000);
+        PulseReference3DOpticalInteractionPreview();
+        var factor = MathF.Pow(ReferenceWheelDollyBase, wheelDelta / 120f);
+        if (!float.IsFinite(factor) || factor <= 0) return;
+        if (ReferenceDimension == SceneDimension.ThreeD
+            && EffectiveReferenceProjection == CameraProjection.Perspective)
+        {
+            _referenceDistance = Math.Clamp(_referenceDistance * factor, 2000, 80000);
+        }
+        else
+        {
+            _referenceZoomScale = Math.Clamp(_referenceZoomScale / factor, 0.25f, 8f);
+        }
         Invalidate();
     }
 
     public void DollyReferenceCameraByPixels(float dy)
     {
+        if (!float.IsFinite(dy)) return;
         CompleteReferenceCameraTransitionForDirectInput();
-        var factor = Math.Clamp(Math.Exp(dy * 0.012), 0.2, 5.0);
-        _referenceDistance = Math.Clamp(_referenceDistance * (float)factor, 2000, 80000);
+        var factor = MathF.Exp(dy * ReferencePixelDollyExponent);
+        if (!float.IsFinite(factor) || factor <= 0) return;
+        if (ReferenceDimension == SceneDimension.ThreeD
+            && EffectiveReferenceProjection == CameraProjection.Perspective)
+        {
+            _referenceDistance = Math.Clamp(_referenceDistance * factor, 2000, 80000);
+        }
+        else
+        {
+            _referenceZoomScale = Math.Clamp(_referenceZoomScale / factor, 0.25f, 8f);
+        }
         Invalidate();
     }
 
     public void ZoomReferenceCamera(float factor)
     {
         CompleteReferenceCameraTransitionForDirectInput();
+        PulseReference3DOpticalInteractionPreview();
         _referenceZoomScale = Math.Clamp(_referenceZoomScale * factor, 0.25f, 8f);
         Invalidate();
     }
@@ -1667,11 +1903,7 @@ internal sealed partial class StageControl : Control
         var upX = -pitchSin * yawSin;
         var upY = pitchCos;
         var upZ = -pitchSin * yawCos;
-        var distanceScale = Math.Clamp(
-            _referenceDistance / ReferencePerspectiveFocalLength,
-            0.25f,
-            8f);
-        var worldPerPixel = distanceScale / Math.Max(0.002f, 0.035f * _referenceZoomScale);
+        var worldPerPixel = ReferenceWorldUnitsPerPixel();
         var horizontal = -dx * worldPerPixel;
         var vertical = dy * worldPerPixel;
 
@@ -1721,7 +1953,10 @@ internal sealed partial class StageControl : Control
         CameraY = Math.Clamp(state.CameraY, -5_000_000, 5_000_000);
         Zoom = Math.Clamp(state.Zoom, 0.02f, 64f);
         _referenceYaw = NormalizeRadians(state.ReferenceYaw);
-        _referencePitch = Math.Clamp(state.ReferencePitch, -1.5f, 1.5f);
+        _referencePitch = Math.Clamp(
+            state.ReferencePitch,
+            -ReferenceMaximumPitch,
+            ReferenceMaximumPitch);
         _referenceDistance = Math.Clamp(state.ReferenceDistance, 2000, 80000);
         _referenceZoomScale = Math.Clamp(state.ReferenceZoomScale, 0.25f, 8f);
         _referenceTargetX = Math.Clamp(state.ReferenceTargetX, -5_000_000, 5_000_000);
@@ -2627,7 +2862,14 @@ internal sealed partial class StageControl : Control
         _paintInProgress = true;
         try
         {
-            if (_direct2DRenderer.TryRender(this, out var stats))
+            if (_direct2DRenderer.TryRenderReference3DPlaybackGdi(this, e.Graphics, out var fastStats))
+            {
+                LastStats = fastStats;
+                LastFrameUsedDirect2D = false;
+                _paintFailureLogged = false;
+                rendered = true;
+            }
+            else if (_direct2DRenderer.TryRender(this, out var stats))
             {
                 if (!HasSoftwareDistortionForCurrentFrame())
                 {
@@ -2755,9 +2997,9 @@ internal sealed partial class StageControl : Control
 
     private bool ShouldCacheGdiBaseFrame()
     {
-        return !RendersReferenceProjection
+        return !PlaybackActive
             && !HasDistortPreview
-            && HasSoftwareDistortionForCurrentFrame();
+            && (RendersReferenceProjection || HasSoftwareDistortionForCurrentFrame());
     }
 
     private bool HasSoftwareDistortionForCurrentFrame()
@@ -2774,7 +3016,9 @@ internal sealed partial class StageControl : Control
         {
             EnsureGdiBaseFrameBitmap();
             using var baseGraphics = Graphics.FromImage(_gdiBaseFrameBitmap!);
-            var editableStats = DrawGdiBase2D(baseGraphics);
+            var editableStats = RendersReferenceProjection
+                ? DrawGdiReferenceBase(baseGraphics)
+                : DrawGdiBase2D(baseGraphics);
             StoreGdiBaseFrame(editableStats);
             LastGdiBaseFrameCacheBuilds = 1;
         }
@@ -2800,40 +3044,15 @@ internal sealed partial class StageControl : Control
         LastGdiBaseFrameCopyMilliseconds = Stopwatch.GetElapsedTime(copyStarted).TotalMilliseconds;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-        DrawGdiDynamic2D(graphics, _gdiBaseFrameEditableStats);
+        if (RendersReferenceProjection) DrawGdiReferenceDynamic(graphics);
+        else DrawGdiDynamic2D(graphics, _gdiBaseFrameEditableStats);
     }
 
     private bool CanReuseGdiBaseFrame()
     {
         return _gdiBaseFrameBitmap is not null
             && _gdiBaseFrameSize == ClientSize
-            && _gdiBaseFramePresentationRevision == BasePresentationRevision
-            && GdiBaseFrameSceneMatches(
-                _gdiBaseFrameEditableScene,
-                _gdiBaseFrameEditableGeometryRevision,
-                _gdiBaseFrameEditableSummaryRevision,
-                Scene)
-            && GdiBaseFrameSceneMatches(
-                _gdiBaseFrameUnderlayScene,
-                _gdiBaseFrameUnderlayGeometryRevision,
-                _gdiBaseFrameUnderlaySummaryRevision,
-                UnderlayScene)
-            && GdiBaseFrameSceneMatches(
-                _gdiBaseFrameOnionSkinScene,
-                _gdiBaseFrameOnionSkinGeometryRevision,
-                _gdiBaseFrameOnionSkinSummaryRevision,
-                OnionSkinScene);
-    }
-
-    private static bool GdiBaseFrameSceneMatches(
-        VectorScene? cachedScene,
-        long cachedGeometryRevision,
-        long cachedSummaryRevision,
-        VectorScene? scene)
-    {
-        return ReferenceEquals(cachedScene, scene)
-            && cachedGeometryRevision == (scene?.GeometryRevision ?? -1)
-            && cachedSummaryRevision == (scene?.SummaryRevision ?? -1);
+            && _gdiBaseFrameRenderState == CreateReference3DBaseFrameRenderState();
     }
 
     private void EnsureGdiBaseFrameBitmap()
@@ -2849,16 +3068,7 @@ internal sealed partial class StageControl : Control
 
     private void StoreGdiBaseFrame(RenderStats editableStats)
     {
-        _gdiBaseFramePresentationRevision = BasePresentationRevision;
-        _gdiBaseFrameEditableScene = Scene;
-        _gdiBaseFrameEditableGeometryRevision = Scene.GeometryRevision;
-        _gdiBaseFrameEditableSummaryRevision = Scene.SummaryRevision;
-        _gdiBaseFrameUnderlayScene = UnderlayScene;
-        _gdiBaseFrameUnderlayGeometryRevision = UnderlayScene?.GeometryRevision ?? -1;
-        _gdiBaseFrameUnderlaySummaryRevision = UnderlayScene?.SummaryRevision ?? -1;
-        _gdiBaseFrameOnionSkinScene = OnionSkinScene;
-        _gdiBaseFrameOnionSkinGeometryRevision = OnionSkinScene?.GeometryRevision ?? -1;
-        _gdiBaseFrameOnionSkinSummaryRevision = OnionSkinScene?.SummaryRevision ?? -1;
+        _gdiBaseFrameRenderState = CreateReference3DBaseFrameRenderState();
         _gdiBaseFrameStats = LastStats;
         _gdiBaseFrameEditableStats = editableStats;
     }
@@ -2876,16 +3086,7 @@ internal sealed partial class StageControl : Control
         _gdiBaseFrameBitmap?.Dispose();
         _gdiBaseFrameBitmap = null;
         _gdiBaseFrameSize = default;
-        _gdiBaseFramePresentationRevision = -1;
-        _gdiBaseFrameEditableScene = null;
-        _gdiBaseFrameEditableGeometryRevision = -1;
-        _gdiBaseFrameEditableSummaryRevision = -1;
-        _gdiBaseFrameUnderlayScene = null;
-        _gdiBaseFrameUnderlayGeometryRevision = -1;
-        _gdiBaseFrameUnderlaySummaryRevision = -1;
-        _gdiBaseFrameOnionSkinScene = null;
-        _gdiBaseFrameOnionSkinGeometryRevision = -1;
-        _gdiBaseFrameOnionSkinSummaryRevision = -1;
+        _gdiBaseFrameRenderState = default;
         _gdiBaseFrameStats = default;
         _gdiBaseFrameEditableStats = default;
     }
@@ -2915,6 +3116,13 @@ internal sealed partial class StageControl : Control
 
     private void DrawGdi(Graphics g)
     {
+        if (RendersReferenceProjection)
+        {
+            DrawGdiReferenceBase(g);
+            DrawGdiReferenceDynamic(g);
+            return;
+        }
+
         ResetLastGdiFrameTelemetry();
         g.Clear(BackColor);
         g.SmoothingMode = SmoothingMode.None;
@@ -2923,32 +3131,50 @@ internal sealed partial class StageControl : Control
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         BeginScenePassOrder();
 
-        if (RendersReferenceProjection)
-        {
-            LastStats = DrawReference3DScene(g);
-            if (DragPreviewScene is { } dragPreview)
-            {
-                var editableScene = Scene;
-                Scene = dragPreview;
-                try
-                {
-                    DrawReference3DCurrentScene(g);
-                }
-                finally
-                {
-                    Scene = editableScene;
-                }
-            }
-            DrawReference3DSelection(g);
-            DrawTransformOverlay(g);
-            DrawDistortOverlay(g);
-            DrawMarquee(g);
-            if (ReferenceDimension == SceneDimension.ThreeD) DrawSpatialTransformGizmoGdi(g);
-            return;
-        }
-
         var editableStats = DrawGdiBase2D(g, backgroundAlreadyDrawn: true);
         DrawGdiDynamic2D(g, editableStats);
+    }
+
+    private RenderStats DrawGdiReferenceBase(Graphics g)
+    {
+        ResetLastGdiFrameTelemetry();
+        g.Clear(BackColor);
+        g.SmoothingMode = SmoothingMode.None;
+        DrawGrid(g);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        BeginScenePassOrder();
+        LastStats = DrawReference3DScene(g);
+        return LastStats;
+    }
+
+    private void DrawGdiReferenceDynamic(Graphics g)
+    {
+        if (PlaybackActive) return;
+
+        if (DragPreviewScene is { } dragPreview)
+        {
+            var editableScene = Scene;
+            Scene = dragPreview;
+            try
+            {
+                DrawReference3DCurrentScene(g);
+            }
+            finally
+            {
+                Scene = editableScene;
+            }
+        }
+        DrawReference3DSelection(g);
+        DrawTransformOverlay(g);
+        DrawDistortOverlay(g);
+        DrawSnapPointOverlay(g);
+        DrawMarquee(g);
+        if (ReferenceDimension == SceneDimension.ThreeD)
+        {
+            DrawSpatialTransformGizmoGdi(g);
+            DrawSceneLightGizmoGdi(g);
+        }
     }
 
     private RenderStats DrawGdiBase2D(Graphics g, bool backgroundAlreadyDrawn = false)
@@ -2970,7 +3196,8 @@ internal sealed partial class StageControl : Control
         var underlay = UnderlayScene;
         var underlayLimit = objectDrawLimit;
         var forceEditableObjectRenderer = SelectionFillDragFrontActive
-            || FillEdgeBezierPointerEditing && UsesObjectRenderer(editableScene);
+            || FillEdgeBezierPointerEditing && UsesObjectRenderer(editableScene)
+            || RequiresObjectRendererForDragPreview(editableScene);
         if (underlay is not null
             && UsesObjectRenderer(underlay)
             && (forceEditableObjectRenderer || UsesObjectRenderer(editableScene)))
@@ -3015,22 +3242,35 @@ internal sealed partial class StageControl : Control
         if (DragPreviewScene is { } dragPreview)
         {
             DrawSceneGdi(g, dragPreview, Math.Min(objectDrawLimit, 80_000));
+            // Collision terrain is owned by the editable scene and is shown only
+            // as an editor overlay while the transient fracture scene is active.
+            if (!PlaybackActive) DrawCollisionTerrainOverlay(g, Scene);
+        }
+        else if (!PlaybackActive)
+        {
+            // Collision terrain is editor-only data. Keep it out of the
+            // ordinary scene pass while exposing the authored surface here.
+            DrawCollisionTerrainOverlay(g, Scene);
         }
         if (editableStats.TileLod) DrawLodDetailObjects(g);
-        if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
-        DrawSelection(g);
-        DrawFillEdgeBezierOverlay(g);
-        DrawPenAnchorGuides(g);
-        DrawDrawingPreview(g);
-        DrawPenDirectionHandles(g);
-        DrawFreehandPreview(g);
-        DrawFillPreview(g);
-        DrawFillAnimation(g);
-        DrawGradientOverlay(g);
-        DrawMarquee(g);
-        DrawBrushTipCursor(g);
-        DrawBrushColorPalette(g);
-        DrawFillToolCursor(g);
+        if (!PlaybackActive)
+        {
+            if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
+            DrawSelection(g);
+            DrawFillEdgeBezierOverlay(g);
+            DrawSnapPointOverlay(g);
+            DrawPenAnchorGuides(g);
+            DrawDrawingPreview(g);
+            DrawPenDirectionHandles(g);
+            DrawFreehandPreview(g);
+            DrawFillPreview(g);
+            DrawFillAnimation(g);
+            DrawGradientOverlay(g);
+            DrawMarquee(g);
+            DrawBrushTipCursor(g);
+            DrawBrushColorPalette(g);
+            DrawFillToolCursor(g);
+        }
     }
 
     private RenderStats DrawSceneGdi(
@@ -3165,7 +3405,9 @@ internal sealed partial class StageControl : Control
         else
         {
             CompleteReferenceCameraTransition(invalidate: false);
+            CompleteSpatialTransformGizmoMotion(invalidate: false);
             _marqueeOverlay.Hide();
+            ClearLassoPreviewForLifecycle();
         }
         UpdateSelectionHighlightAnimation();
     }
@@ -3173,15 +3415,19 @@ internal sealed partial class StageControl : Control
     protected override void OnHandleDestroyed(EventArgs e)
     {
         CompleteReferenceCameraTransition(invalidate: false);
+        CompleteSpatialTransformGizmoMotion(invalidate: false);
         ResetFrameSchedulerState();
         _zoomLodPreviewTimer.Stop();
+        _reference3DOpticalPreviewTimer.Stop();
         _marqueeOverlay.Hide();
+        ClearLassoPreviewForLifecycle();
         _handledPenPointers.Clear();
         if (!_disposingResources) _selectionHighlightTimer.Stop();
         try
         {
             _direct2DRenderer.ReleaseTarget();
             ClearGdiBaseFrameCache();
+            ClearCollisionTerrainOverlayPath();
         }
         catch (Exception ex)
         {
@@ -3195,19 +3441,25 @@ internal sealed partial class StageControl : Control
         if (disposing)
         {
             _disposingResources = true;
+            InvalidateReference3DRenderPlanCache();
             ResetFrameSchedulerState();
             ResetFillEdgeBezierOverlay(invalidate: false);
             _fillAnimationTimer.Dispose();
             _selectionHighlightTimer.Dispose();
             _zoomLodPreviewTimer.Dispose();
+            _reference3DOpticalPreviewTimer.Dispose();
             DisposeReferenceCameraTransitions();
+            DisposeSpatialTransformGizmoMotion();
             _direct2DRenderer.Dispose();
             ClearGdiBaseFrameCache();
+            ClearCollisionTerrainOverlayPath();
             _layerBlendCompositor?.Dispose();
             _layerBlendCompositor = null;
             _mixingBrushRasterCache.Dispose();
             ClearDistortPreviewCore(invalidate: false);
             ImportedSvgRasterizer.ClearCache();
+            ClearLassoPreviewForLifecycle();
+            _lassoPreviewGdiPath.Dispose();
             _marqueeOverlay.Dispose();
             foreach (var item in _brushCache.Values) item.Dispose();
             _brushCache.Clear();

@@ -13,7 +13,7 @@ internal sealed class StartupBannerForm : Form
     {
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoSize = false;
-        BackColor = Theme.IsLight ? Theme.App : Color.FromArgb(15, 18, 21);
+        BackColor = Theme.App;
         ClientSize = new Size(520, 228);
         DoubleBuffered = true;
         FormBorderStyle = FormBorderStyle.None;
@@ -59,14 +59,15 @@ internal sealed class StartupBannerForm : Form
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.Clear(BackColor);
 
-        using var border = new Pen(Theme.IsLight ? Theme.BorderHover : Color.FromArgb(74, 91, 106, 110));
+        var background = Theme.EffectiveBackground(this, BackColor);
+        using var border = new Pen(Theme.ReadableUiColor(background, Theme.BorderHover));
         graphics.DrawRectangle(border, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
 
-        using var accent = new SolidBrush(Theme.Accent);
-        using var muted = new SolidBrush(Theme.Muted);
-        using var text = new SolidBrush(Theme.Text);
-        using var accentLine = new Pen(Color.FromArgb(180, Theme.Accent), 2f);
-        using var dimLine = new Pen(Color.FromArgb(92, Theme.Muted), 1f);
+        using var accent = new SolidBrush(Theme.ReadableUiColor(background, Theme.Accent));
+        using var muted = new SolidBrush(Theme.ReadableText(background, Theme.Muted));
+        using var text = new SolidBrush(Theme.ReadableText(background, Theme.Text));
+        using var accentLine = new Pen(Theme.ReadableUiColor(background, Theme.Accent), 2f);
+        using var dimLine = new Pen(Theme.ReadableUiColor(background, Theme.Muted), 1f);
 
         graphics.FillRectangle(accent, 32, 40, 8, 86);
         graphics.DrawString("V2", Theme.UiFont(24, FontStyle.Bold), text, 58, 42);

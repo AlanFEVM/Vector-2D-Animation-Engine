@@ -201,13 +201,15 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
             && int.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb))
         {
             _hex.BackColor = Theme.Field;
+            _hex.ForeColor = Theme.ReadableText(_hex.BackColor, Theme.Text);
             SetColor(Color.FromArgb((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff));
             return true;
         }
 
-        _hex.BackColor = Theme.Mix(Theme.Field, Theme.Danger, 0.22f);
-        _hex.SelectAll();
-        _hex.Focus();
+            _hex.BackColor = Theme.Mix(Theme.Field, Theme.Danger, 0.22f);
+            _hex.ForeColor = Theme.ReadableText(_hex.BackColor, Theme.DangerText);
+            _hex.SelectAll();
+            _hex.Focus();
         return false;
     }
 
@@ -228,6 +230,7 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
             var hex = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
             if (!string.Equals(_hex.Text, hex, StringComparison.Ordinal)) _hex.Text = hex;
             _hex.BackColor = Theme.Field;
+            _hex.ForeColor = Theme.ReadableText(_hex.BackColor, Theme.Text);
             _originalPreview.BackColor = _initialColor;
             _currentPreview.BackColor = color;
             _presets.SelectedColor = color;

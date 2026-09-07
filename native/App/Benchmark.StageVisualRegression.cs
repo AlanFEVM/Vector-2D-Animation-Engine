@@ -4,6 +4,367 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunWorkspacePreRenderTargetRegression()
+    {
+        const int initialWidth = 640;
+        const int initialHeight = 420;
+        var initialSize = new Size(initialWidth, initialHeight);
+        var resizedSize = new Size(480, 300);
+        var background = Color.FromArgb(255, 17, 19, 21);
+        var targetColor = Color.FromArgb(255, 48, 196, 112);
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var objectIndex = scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(6_000, 4_000),
+            0,
+            0,
+            targetColor,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var frameOneComposition = CreateComposition(System.Numerics.Matrix4x4.Identity);
+        var frameTwoComposition = CreateComposition(
+            System.Numerics.Matrix4x4.CreateTranslation(500, 0, 0));
+        var screenBounds = SystemInformation.VirtualScreen;
+
+        using var form = new Form
+        {
+            ShowInTaskbar = false,
+            TopMost = true,
+            FormBorderStyle = FormBorderStyle.None,
+            AutoScaleMode = AutoScaleMode.None,
+            StartPosition = FormStartPosition.Manual,
+            ClientSize = initialSize,
+            Location = new Point(
+                Math.Max(screenBounds.Left, screenBounds.Right - initialWidth),
+                Math.Max(screenBounds.Top, screenBounds.Bottom - initialHeight))
+        };
+        using var stage = new StageControl(scene)
+        {
+            Dock = DockStyle.Fill,
+            BackColor = background,
+            WorldGridOpacity = 0
+        };
+        stage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+        stage.SetReferenceCameraOrientation(0, 0);
+        stage.SetSceneCompositionResult(
+            frameOneComposition,
+            scene,
+            preserveWorkspaceFrameCache: true);
+        form.Controls.Add(stage);
+        form.Show();
+        form.Activate();
+        form.BringToFront();
+        Application.DoEvents();
+
+        var renderer = RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)
+            ?? throw new InvalidOperationException("The workspace pre-render renderer field was null.");
+        var mainTargetField = RequireField(renderer.GetType(), "_target");
+        var workspaceTargetField = RequireField(renderer.GetType(), "_workspacePreRenderTarget");
+        var workspaceBitmapField = RequireField(renderer.GetType(), "_workspacePreRenderBitmap");
+
+        using (var warmUpCapture = PresentStage())
+        {
+            AssertDirect2DFrame("warm-up");
+        }
+        var mainTarget = mainTargetField.GetValue(renderer);
+        if (mainTarget is null)
+        {
+            throw new InvalidOperationException("The real HWND warm-up did not create a Direct2D main target.");
+        }
+
+        stage.Frame = 1;
+        using var frameOneBaseline = PresentStage();
+        AssertDirect2DFrame("frame 1 baseline");
+        var frameOneCenter = ProjectObjectCenter();
+        AssertPresentedColor(frameOneBaseline, frameOneCenter, "frame 1 baseline");
+
+        stage.SetSceneCompositionResult(
+            frameTwoComposition,
+            scene,
+            preserveWorkspaceFrameCache: true);
+        stage.Frame = 2;
+        using var frameTwoBaseline = PresentStage();
+        AssertDirect2DFrame("frame 2 baseline");
+        var frameTwoCenter = ProjectObjectCenter();
+        AssertPresentedColor(frameTwoBaseline, frameTwoCenter, "frame 2 baseline");
+
+        // Start a new workspace-cache revision so the next two calls must
+        // populate the pre-render path instead of finding the normal-frame copy.
+        stage.Invalidate();
+        stage.SetSceneCompositionResult(
+            frameOneComposition,
+            scene,
+            preserveWorkspaceFrameCache: true);
+        stage.Frame = 1;
+        var frameOneTarget = PreRenderFrame(1, frameOneComposition, "frame 1");
+        using var frameOneCached = PresentStage();
+        AssertDirect2DFrame("frame 1 cached");
+        AssertPresentedColor(frameOneCached, frameOneCenter, "frame 1 cached");
+        AssertPresentedSamplesMatch(
+            frameOneBaseline,
+            frameOneCached,
+            frameOneCenter,
+            "frame 1 pre-render");
+
+        stage.SetSceneCompositionResult(
+            frameTwoComposition,
+            scene,
+            preserveWorkspaceFrameCache: true);
+        stage.Frame = 2;
+        var frameTwoTarget = PreRenderFrame(2, frameTwoComposition, "frame 2");
+        if (!ReferenceEquals(frameOneTarget, frameTwoTarget))
+        {
+            throw new InvalidOperationException(
+                "Different pre-rendered frames did not reuse the same compatible workspace target.");
+        }
+        if (stage.Direct2DWorkspaceFrameCacheEntryCount != 2)
+        {
+            throw new InvalidOperationException(
+                $"Pre-rendered frame cache lost one of two frame entries: "
+                + $"entries={stage.Direct2DWorkspaceFrameCacheEntryCount}.");
+        }
+        using var frameTwoCached = PresentStage();
+        AssertDirect2DFrame("frame 2 cached");
+        AssertPresentedColor(frameTwoCached, frameTwoCenter, "frame 2 cached");
+        AssertPresentedSamplesMatch(
+            frameTwoBaseline,
+            frameTwoCached,
+            frameTwoCenter,
+            "frame 2 pre-render");
+
+        form.ClientSize = resizedSize;
+        Application.DoEvents();
+        if (stage.ClientSize != resizedSize)
+        {
+            throw new InvalidOperationException(
+                $"The Stage did not follow its resized window: actual={stage.ClientSize}, expected={resizedSize}.");
+        }
+        if (workspaceTargetField.GetValue(renderer) is not null)
+        {
+            throw new InvalidOperationException(
+                "Resizing the Stage retained a target-bound workspace pre-render target.");
+        }
+        mainTarget = mainTargetField.GetValue(renderer)
+            ?? throw new InvalidOperationException(
+                "Resizing the Stage lost its Direct2D main target before the next pre-render.");
+
+        using var resizedBaseline = PresentStage();
+        AssertDirect2DFrame("resized baseline");
+        var resizedCenter = ProjectObjectCenter();
+        AssertPresentedColor(resizedBaseline, resizedCenter, "resized baseline");
+
+        stage.Frame = 3;
+        using var resizedFrameBaseline = PresentStage();
+        AssertDirect2DFrame("resized frame baseline");
+        var resizedFrameCenter = ProjectObjectCenter();
+        AssertPresentedColor(resizedFrameBaseline, resizedFrameCenter, "resized frame baseline");
+
+        stage.Invalidate();
+        var resizedTarget = PreRenderFrame(3, frameTwoComposition, "resized frame");
+        if (ReferenceEquals(frameOneTarget, resizedTarget)
+            || stage.Direct2DWorkspaceFrameCacheEntryCount != 1
+            || stage.Direct2DWorkspaceFrameCacheBytes
+                != (long)resizedSize.Width * resizedSize.Height * sizeof(int))
+        {
+            throw new InvalidOperationException(
+                "The resized workspace pre-render target or cache did not adopt the new viewport dimensions: "
+                + $"targetReused={ReferenceEquals(frameOneTarget, resizedTarget)}, "
+                + $"entries={stage.Direct2DWorkspaceFrameCacheEntryCount}, "
+                + $"bytes={stage.Direct2DWorkspaceFrameCacheBytes}, "
+                + $"expectedBytes={(long)resizedSize.Width * resizedSize.Height * sizeof(int)}.");
+        }
+        using var resizedCached = PresentStage();
+        AssertDirect2DFrame("resized frame cached");
+        AssertPresentedColor(resizedCached, resizedFrameCenter, "resized frame cached");
+        AssertPresentedSamplesMatch(
+            resizedFrameBaseline,
+            resizedCached,
+            resizedFrameCenter,
+            "resized frame pre-render");
+
+        var freshColor = Color.FromArgb(255, 224, 84, 52);
+        scene.SetLinearGradient(
+            objectIndex,
+            freshColor,
+            freshColor,
+            new PointF(-3_000, 0),
+            new PointF(3_000, 0));
+        stage.Invalidate();
+        stage.Frame = 4;
+        var freshCenter = ProjectObjectCenter();
+        _ = PreRenderFrame(4, frameTwoComposition, "fresh fill");
+        using var freshCached = PresentStage();
+        AssertDirect2DFrame("fresh fill cached");
+        AssertPresentedColor(freshCached, freshCenter, "fresh fill cached", freshColor);
+        stage.Invalidate();
+        using var freshUncached = PresentStage();
+        AssertDirect2DFrame("fresh fill invalidated");
+        AssertPresentedColor(freshUncached, freshCenter, "fresh fill invalidated", freshColor);
+        AssertPresentedSamplesMatch(
+            freshCached,
+            freshUncached,
+            freshCenter,
+            "fresh fill invalidation");
+
+        stage.Dispose();
+        if (workspaceTargetField.GetValue(renderer) is not null
+            || workspaceBitmapField.GetValue(renderer) is not null
+            || mainTargetField.GetValue(renderer) is not null)
+        {
+            throw new InvalidOperationException(
+                "Stage.Dispose did not release the Direct2D main and workspace render targets.");
+        }
+        form.Close();
+
+        Console.WriteLine("workspace_prerender_target=ok");
+        Console.WriteLine($"workspace_prerender_initial_size={initialSize.Width}x{initialSize.Height}");
+        Console.WriteLine($"workspace_prerender_resized_size={resizedSize.Width}x{resizedSize.Height}");
+
+        SceneCompositionResult CreateComposition(System.Numerics.Matrix4x4 transform)
+        {
+            return new SceneCompositionResult(
+                [new SceneCompositionObjectOwner("workspace-frame", "regression")],
+                [new SceneCompositionObjectPose(transform)]);
+        }
+
+        object PreRenderFrame(int frame, SceneCompositionResult composition, string label)
+        {
+            var priorBuilds = stage.LastDirect2DWorkspaceFrameCacheBuilds;
+            if (!stage.TryPreRenderReference3DFrame(frame, scene, composition)
+                || stage.LastDirect2DWorkspaceFrameCacheBuilds <= priorBuilds)
+            {
+                throw new InvalidOperationException(
+                    $"The {label} workspace pre-render did not build a cache entry: "
+                    + $"builds={stage.LastDirect2DWorkspaceFrameCacheBuilds}, prior={priorBuilds}.");
+            }
+
+            var main = mainTargetField.GetValue(renderer);
+            var workspace = workspaceTargetField.GetValue(renderer);
+            var workspaceBitmap = workspaceBitmapField.GetValue(renderer);
+            if (main is null
+                || workspace is null
+                || workspaceBitmap is null
+                || ReferenceEquals(main, workspace)
+                || !ReferenceEquals(main, mainTarget))
+            {
+                throw new InvalidOperationException(
+                    $"The {label} pre-render did not restore the original Direct2D target domain: "
+                    + $"mainNull={main is null}, workspaceNull={workspace is null}, "
+                    + $"workspaceBitmapNull={workspaceBitmap is null}, "
+                    + $"sameTarget={ReferenceEquals(main, workspace)}, "
+                    + $"mainChanged={!ReferenceEquals(main, mainTarget)}.");
+            }
+            return workspace;
+        }
+
+        PointF ProjectObjectCenter()
+        {
+            if (!stage.TryProjectScenePoint(objectIndex, PointF.Empty, out var center, out _))
+            {
+                throw new InvalidOperationException("The workspace pre-render fixture object could not be projected.");
+            }
+            return center;
+        }
+
+        Bitmap PresentStage()
+        {
+            stage.InvalidateOverlay();
+            stage.Update();
+            Application.DoEvents();
+            return CapturePresentedStage();
+        }
+
+        Bitmap CapturePresentedStage()
+        {
+            for (var attempt = 0; attempt < 8; attempt++)
+            {
+                form.Activate();
+                form.BringToFront();
+                stage.Update();
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(20);
+                Application.DoEvents();
+
+                var captureBounds = stage.RectangleToScreen(stage.ClientRectangle);
+                Bitmap? capture = null;
+                try
+                {
+                    capture = new Bitmap(captureBounds.Width, captureBounds.Height);
+                    using var graphics = Graphics.FromImage(capture);
+                    graphics.CopyFromScreen(
+                        captureBounds.Location,
+                        Point.Empty,
+                        captureBounds.Size,
+                        CopyPixelOperation.SourceCopy);
+                    return capture;
+                }
+                catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+                    or System.Runtime.InteropServices.ExternalException
+                    or ArgumentException)
+                {
+                    capture?.Dispose();
+                }
+            }
+
+            throw new InvalidOperationException(
+                "The real HWND workspace pre-render Stage could not be captured from the desktop.");
+        }
+
+        void AssertDirect2DFrame(string label)
+        {
+            if (!stage.LastFrameUsedDirect2D
+                || !stage.GpuAccelerationActive
+                || mainTargetField.GetValue(renderer) is null)
+            {
+                throw new InvalidOperationException(
+                    $"The {label} workspace pre-render presentation did not use the Direct2D main target.");
+            }
+        }
+
+        void AssertPresentedColor(
+            Bitmap bitmap,
+            PointF center,
+            string label,
+            Color? expectedColor = null)
+        {
+            var actual = SampleBitmap(bitmap, center);
+            var expected = expectedColor ?? targetColor;
+            if (PixelRgbNear(actual, background, 12)
+                || !PixelRgbNear(actual, expected, 64))
+            {
+                throw new InvalidOperationException(
+                    $"The {label} presentation lost representative scene content: "
+                    + $"actual={actual.ToArgb():X8}, expected={expected.ToArgb():X8}.");
+            }
+        }
+
+        static void AssertPresentedSamplesMatch(
+            Bitmap baseline,
+            Bitmap cached,
+            PointF center,
+            string label)
+        {
+            var expected = SampleBitmap(baseline, center);
+            var actual = SampleBitmap(cached, center);
+            if (!PixelRgbNear(actual, expected, 12))
+            {
+                throw new InvalidOperationException(
+                    $"The {label} cached presentation changed its representative pixel: "
+                    + $"actual={actual.ToArgb():X8}, baseline={expected.ToArgb():X8}.");
+            }
+        }
+
+        static bool PixelRgbNear(Color actual, Color expected, int tolerance)
+        {
+            return Math.Abs(actual.R - expected.R) <= tolerance
+                && Math.Abs(actual.G - expected.G) <= tolerance
+                && Math.Abs(actual.B - expected.B) <= tolerance;
+        }
+    }
+
     private static void RunWorkspacePanelAnimationRegression()
     {
         var start = MainForm.ResolveWorkspacePanelAnimationValue(324, 0, 0);
@@ -20,6 +381,61 @@ internal static partial class Benchmark
             && reversedMidpoint > midpoint
             && reversedMidpoint < 324,
             "Workspace panel animation did not preserve bounded easing or mid-animation reversal.");
+
+        RunResponsiveWorkbenchLayoutRegression();
+    }
+
+    private static void RunResponsiveWorkbenchLayoutRegression()
+    {
+        var desktop = MainForm.CalculateResponsiveWindowMetrics(
+            new Rectangle(0, 0, 1920, 1040),
+            96,
+            new Size(1480, 920),
+            192);
+        var laptop = MainForm.CalculateResponsiveWindowMetrics(
+            new Rectangle(0, 0, 1366, 728),
+            96,
+            new Size(1318, 680),
+            192);
+        var compact = MainForm.CalculateResponsiveWindowMetrics(
+            new Rectangle(0, 0, 1024, 728),
+            96,
+            new Size(976, 680),
+            192);
+        var small = MainForm.CalculateResponsiveWindowMetrics(
+            new Rectangle(0, 0, 800, 560),
+            96,
+            new Size(752, 520),
+            192);
+        var highDpi = MainForm.CalculateResponsiveWindowMetrics(
+            new Rectangle(0, 0, 2560, 1440),
+            144,
+            new Size(1920, 1080),
+            288);
+
+        AssertTimeline(
+            desktop.InitialSize == new Size(1480, 920)
+            && desktop.MinimumSize == new Size(1120, 720)
+            && desktop.InspectorWidth == 324
+            && desktop.VaultWidth == 306
+            && desktop.TimelineHeight == 192
+            && laptop.InitialSize.Width <= 1366
+            && laptop.InitialSize.Height <= 728
+            && laptop.InspectorWidth < desktop.InspectorWidth
+            && laptop.TimelineHeight < desktop.TimelineHeight
+            && compact.MinimumSize.Width <= compact.InitialSize.Width
+            && compact.MinimumSize.Height <= compact.InitialSize.Height
+            && compact.InspectorWidth <= laptop.InspectorWidth
+            && compact.InspectorWidth >= 272
+            && small.InitialSize.Width <= 800
+            && small.InitialSize.Height <= 560
+            && small.MinimumSize.Width <= small.InitialSize.Width
+            && small.MinimumSize.Height <= small.InitialSize.Height
+            && small.TimelineHeight >= 118
+            && highDpi.InspectorWidth >= 366
+            && highDpi.TimelineHeight >= 177,
+            $"Responsive workbench metrics were not bounded across resolutions: " +
+            $"desktop={desktop}, laptop={laptop}, compact={compact}, small={small}, highDpi={highDpi}.");
     }
 
     private static void RunWorldGridRegression()
@@ -1373,24 +1789,12 @@ internal static partial class Benchmark
                 $"Shared Fill/Line interaction exceeded its budget: lineToFillP95={lineToFillMeasurement.P95Milliseconds:0.000} ms, fillToLineP95={fillToLineMeasurement.P95Milliseconds:0.000} ms.");
         }
 
-        Console.WriteLine($"bezier_add_drawing_avg_ms={addMeasurement.AverageMilliseconds:0.000}");
-        Console.WriteLine($"bezier_add_drawing_p95_ms={addMeasurement.P95Milliseconds:0.000}");
-        Console.WriteLine($"bezier_add_drawing_allocated_bytes_per_op={addMeasurement.AllocatedBytesPerOperation:0.0}");
-        Console.WriteLine($"bezier_fill_edge_update_avg_ms={fillEdgeMeasurement.AverageMilliseconds:0.000}");
-        Console.WriteLine($"bezier_fill_edge_update_p95_ms={fillEdgeMeasurement.P95Milliseconds:0.000}");
-        Console.WriteLine($"bezier_fill_edge_update_allocated_bytes_per_op={fillEdgeMeasurement.AllocatedBytesPerOperation:0.0}");
-        Console.WriteLine($"dense_fill_edge_preview_avg_ms={denseFillEdgeMeasurement.AverageMilliseconds:0.000}");
-        Console.WriteLine($"dense_fill_edge_preview_p95_ms={denseFillEdgeMeasurement.P95Milliseconds:0.000}");
-        Console.WriteLine($"dense_fill_edge_preview_allocated_bytes_per_op={denseFillEdgeMeasurement.AllocatedBytesPerOperation:0.0}");
-        Console.WriteLine($"bezier_fill_partition_avg_ms={partitionMeasurement.AverageMilliseconds:0.000}");
-        Console.WriteLine($"bezier_fill_partition_p95_ms={partitionMeasurement.P95Milliseconds:0.000}");
-        Console.WriteLine($"bezier_fill_partition_allocated_bytes_per_op={partitionMeasurement.AllocatedBytesPerOperation:0.0}");
-        Console.WriteLine($"bezier_line_to_fill_avg_ms={lineToFillMeasurement.AverageMilliseconds:0.000}");
-        Console.WriteLine($"bezier_line_to_fill_p95_ms={lineToFillMeasurement.P95Milliseconds:0.000}");
-        Console.WriteLine($"bezier_line_to_fill_allocated_bytes_per_op={lineToFillMeasurement.AllocatedBytesPerOperation:0.0}");
-        Console.WriteLine($"bezier_fill_to_line_avg_ms={fillToLineMeasurement.AverageMilliseconds:0.000}");
-        Console.WriteLine($"bezier_fill_to_line_p95_ms={fillToLineMeasurement.P95Milliseconds:0.000}");
-        Console.WriteLine($"bezier_fill_to_line_allocated_bytes_per_op={fillToLineMeasurement.AllocatedBytesPerOperation:0.0}");
+        WriteMeasurement("bezier_add_drawing", addMeasurement);
+        WriteMeasurement("bezier_fill_edge_update", fillEdgeMeasurement);
+        WriteMeasurement("dense_fill_edge_preview", denseFillEdgeMeasurement);
+        WriteMeasurement("bezier_fill_partition", partitionMeasurement);
+        WriteMeasurement("bezier_line_to_fill", lineToFillMeasurement);
+        WriteMeasurement("bezier_fill_to_line", fillToLineMeasurement);
 
         static void AddCurve(VectorScene scene, int iteration)
         {
@@ -1472,6 +1876,16 @@ internal static partial class Benchmark
             {
                 throw new InvalidOperationException($"{operation} did not preserve one shared cubic formula.");
             }
+        }
+
+        static void WriteMeasurement(
+            string prefix,
+            (double AverageMilliseconds, double P95Milliseconds, double AllocatedBytesPerOperation) measurement)
+        {
+            Console.WriteLine($"{prefix}_avg_ms={measurement.AverageMilliseconds:0.000}");
+            Console.WriteLine($"{prefix}_p95_ms={measurement.P95Milliseconds:0.000}");
+            Console.WriteLine(
+                $"{prefix}_allocated_bytes_per_op={measurement.AllocatedBytesPerOperation:0.0}");
         }
 
         static (double AverageMilliseconds, double P95Milliseconds, double AllocatedBytesPerOperation) Measure(

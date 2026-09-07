@@ -952,6 +952,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawMarquee(Graphics g)
     {
+        DrawLassoPreview(g);
         if (!MarqueeVisible || MarqueeOverlayActive) return;
         var rect = Rectangle.FromLTRB(
             Math.Min(MarqueeStart.X, MarqueeEnd.X),

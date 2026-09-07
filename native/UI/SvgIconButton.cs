@@ -44,18 +44,24 @@ internal class SvgIconButton : Button
         var role = Theme.ButtonRoleFor(this);
         var toolbar = role == ButtonVisualRole.Toolbar;
         var borderless = role is ButtonVisualRole.Toolbar or ButtonVisualRole.Segmented;
-        var foreground = SystemInformation.HighContrast
-            ? Enabled ? ForeColor : SystemColors.GrayText
-            : Enabled ? ForeColor : Theme.DisabledText;
         var parentBack = Parent?.BackColor ?? Theme.Top;
         using var background = new SolidBrush(BackColor);
+        var fillsButton = !borderless || active || hover > 0.01f || Capture;
+        var actualBackground = fillsButton ? BackColor : parentBack;
+        var foreground = SystemInformation.HighContrast
+            ? Enabled ? ForeColor : SystemColors.GrayText
+            : Enabled
+                ? Theme.ReadableText(actualBackground, ForeColor)
+                : Theme.ReadableText(actualBackground, Theme.DisabledText);
         var borderColor = SystemInformation.HighContrast
             ? active ? SystemColors.HighlightText : SystemColors.ControlText
-            : active ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, hover * 0.42f);
+            : Theme.ReadableUiColor(
+                actualBackground,
+                active ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, hover * 0.42f));
         var borderWidth = Math.Max(1f, DeviceDpi / 96f);
         using var border = new Pen(borderColor, borderWidth);
         e.Graphics.Clear(parentBack);
-        if (!borderless || active || hover > 0.01f || Capture)
+        if (fillsButton)
         {
             e.Graphics.FillRectangle(background, ClientRectangle);
         }
@@ -117,8 +123,10 @@ internal class SvgIconButton : Button
             ControlPaint.DrawFocusRectangle(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -focusInset, -focusInset),
-                SystemInformation.HighContrast ? SystemColors.HighlightText : Theme.AccentLabel,
-                BackColor);
+                SystemInformation.HighContrast
+                    ? SystemColors.HighlightText
+                    : Theme.ReadableUiColor(actualBackground, Theme.AccentLabel),
+                actualBackground);
         }
     }
 
@@ -289,16 +297,22 @@ internal sealed class SvgToggleButton : CheckBox
         {
             back = Enabled && Checked ? SystemColors.Highlight : SystemColors.Control;
         }
+        var fillsButton = Checked || _hoverProgress > 0.01f || Capture;
+        var actualBackground = fillsButton ? back : parentBack;
         var fore = SystemInformation.HighContrast
             ? Enabled ? Checked ? SystemColors.HighlightText : SystemColors.ControlText : SystemColors.GrayText
-            : Enabled ? Checked ? Theme.AccentLabel : Theme.Text : Theme.DisabledText;
+            : Enabled
+                ? Theme.ReadableText(actualBackground, Checked ? Theme.AccentLabel : Theme.Text)
+                : Theme.ReadableText(actualBackground, Theme.DisabledText);
         using var background = new SolidBrush(back);
         var borderColor = SystemInformation.HighContrast
             ? Checked ? SystemColors.HighlightText : SystemColors.ControlText
-            : Checked ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, _hoverProgress * 0.45f);
+            : Theme.ReadableUiColor(
+                actualBackground,
+                Checked ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, _hoverProgress * 0.45f));
         using var border = new Pen(borderColor);
         e.Graphics.Clear(parentBack);
-        if (Checked || _hoverProgress > 0.01f || Capture)
+        if (fillsButton)
         {
             e.Graphics.FillRectangle(background, ClientRectangle);
         }
@@ -317,8 +331,10 @@ internal sealed class SvgToggleButton : CheckBox
             ControlPaint.DrawFocusRectangle(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -3, -3),
-                SystemInformation.HighContrast ? SystemColors.HighlightText : Theme.AccentLabel,
-                back);
+                SystemInformation.HighContrast
+                    ? SystemColors.HighlightText
+                    : Theme.ReadableUiColor(actualBackground, Theme.AccentLabel),
+                actualBackground);
         }
     }
 

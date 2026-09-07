@@ -135,17 +135,19 @@ internal sealed partial class LibraryVaultPanel
 
     private string AssetSearchText => _assetSearchBox.Text.Trim();
 
-    private bool AssetFilterActive => AssetSearchText.Length > 0 || SelectedAssetTagFilterId.Length > 0;
+    private bool AssetFilterActive => AssetSearchText.Length > 0
+        || _activeAssetCategory != AssetCategory.ExternalSvg && SelectedAssetTagFilterId.Length > 0;
 
     private bool AssetMatchesFilter(DrawingObjectDefinition drawingObject)
     {
-        return !AssetFilterActive
-            || _assetFilterMatchingDrawingObjectIds?.Contains(drawingObject.Id) == true;
+        return DrawingObjectMatchesActiveCategory(drawingObject)
+            && (!AssetFilterActive
+                || _assetFilterMatchingDrawingObjectIds?.Contains(drawingObject.Id) == true);
     }
 
     private bool AssetMatchesFilterCore(DrawingObjectDefinition drawingObject)
     {
-        if (_project is null) return false;
+        if (_project is null || !DrawingObjectMatchesActiveCategory(drawingObject)) return false;
         var selectedTagId = SelectedAssetTagFilterId;
         if (selectedTagId.Length > 0
             && !drawingObject.AssetTagIds.Contains(selectedTagId, StringComparer.Ordinal))
@@ -319,7 +321,8 @@ internal sealed partial class LibraryVaultPanel
 
     private void UpdateAssetTagActions(bool projectAssetSelected)
     {
-        _manageTagsButton.Enabled = projectAssetSelected;
+        _manageTagsButton.Enabled = _activeAssetCategory != AssetCategory.ExternalSvg
+            && projectAssetSelected;
     }
 
     private static bool ContainsSearch(string? value, string search) =>

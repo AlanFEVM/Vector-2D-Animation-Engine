@@ -34,6 +34,26 @@ internal sealed partial class VectorScene
             : [new GradientStop(0, GradientStartArgb[objectIndex]), new GradientStop(1, GradientEndArgb[objectIndex])];
     }
 
+    // Renderers never mutate the returned array. Keeping the backing profile
+    // avoids copying the same multi-stop material once per render item.
+    internal bool TryGetGradientStopsForRendering(
+        int objectIndex,
+        out GradientStop[] stops)
+    {
+        if (!HasGradient(objectIndex))
+        {
+            stops = [];
+            return false;
+        }
+
+        if (_gradientStops.TryGetValue(objectIndex, out stops!)) return true;
+        stops = [
+            new GradientStop(0, GradientStartArgb[objectIndex]),
+            new GradientStop(1, GradientEndArgb[objectIndex])
+        ];
+        return true;
+    }
+
     public bool HasGradientPath(int objectIndex) => HasGradient(objectIndex)
         && GradientKinds[objectIndex] == GradientKind.Linear
         && _gradientPathLocalPoints.TryGetValue(objectIndex, out var points)
@@ -50,7 +70,7 @@ internal sealed partial class VectorScene
         points = new PointF[localPoints.Length];
         for (var index = 0; index < localPoints.Length; index++)
         {
-            points[index] = new PointF(X[objectIndex] + localPoints[index].X, Y[objectIndex] + localPoints[index].Y);
+            points[index] = LocalToWorld(objectIndex, localPoints[index].X, localPoints[index].Y);
         }
 
         return true;
@@ -112,9 +132,7 @@ internal sealed partial class VectorScene
         }
 
         _gradientPathLocalPoints[objectIndex] = points
-            .Select(point => new PointF(
-                VectorUnits.Quantize(point.X - X[objectIndex]),
-                VectorUnits.Quantize(point.Y - Y[objectIndex])))
+            .Select(point => VectorUnits.Quantize(WorldToLocal(objectIndex, point)))
             .ToArray();
     }
 
@@ -237,17 +255,21 @@ internal sealed partial class VectorScene
 
     private GradientPaintData? CaptureGradientPaint(int objectIndex)
     {
-        return HasGradient(objectIndex)
-            ? new GradientPaintData(
-                GradientKinds[objectIndex],
-                GetGradientStops(objectIndex),
-                GetGradientStart(objectIndex),
-                GetGradientEnd(objectIndex),
-                TryGetGradientPathWorldPoints(objectIndex, out var path) ? path : Array.Empty<PointF>(),
-                TryGetShapeGradientMappingWorldContours(objectIndex, out var mappingContours)
-                    ? mappingContours
-                    : Array.Empty<PointF[]>())
-            : null;
+        if (!HasGradient(objectIndex)) return null;
+
+        var path = TryGetGradientPathWorldPoints(objectIndex, out var capturedPath)
+            ? capturedPath
+            : Array.Empty<PointF>();
+        var mappingContours = GradientKinds[objectIndex] == GradientKind.ShapeRadial
+            ? CloneContours(GetShapeGradientMappingContours(objectIndex))
+            : Array.Empty<PointF[]>();
+        return new GradientPaintData(
+            GradientKinds[objectIndex],
+            GetGradientStops(objectIndex),
+            GetGradientStart(objectIndex),
+            GetGradientEnd(objectIndex),
+            path,
+            mappingContours);
     }
 
     private void ApplyGradientPaint(int objectIndex, GradientPaintData? gradientPaint)

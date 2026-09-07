@@ -18,6 +18,7 @@ internal sealed partial class StageControl
 {
     private const int Reference3DProjectiveMeshMaximumDepth = 4;
     private const float Reference3DProjectiveMeshErrorPixels = 0.3f;
+    private const float Reference3DProjectiveAffineApproximationErrorPixels = 0.45f;
     private const float Reference3DProjectiveTriangleAreaEpsilon = 0.01f;
 
     internal bool TryGetReference3DProjectiveMesh(
@@ -25,9 +26,35 @@ internal sealed partial class StageControl
         bool usePrimaryContourQuad,
         out Reference3DProjectiveTriangle[] triangles)
     {
+        return TryGetReference3DProjectiveMesh(
+            objectIndex,
+            GetReference3DSourceContours(objectIndex),
+            usePrimaryContourQuad,
+            out triangles);
+    }
+
+    internal bool TryGetReference3DProjectiveMesh(
+        int objectIndex,
+        IReadOnlyList<Reference3DSourceContour> sourceContours,
+        bool usePrimaryContourQuad,
+        out Reference3DProjectiveTriangle[] triangles)
+    {
         triangles = [];
         if ((uint)objectIndex >= Scene.ObjectCount) return false;
-        var contours = GetReference3DSourceContours(objectIndex);
+        var sourceContourArray = sourceContours as Reference3DSourceContour[]
+            ?? sourceContours.ToArray();
+        var cacheKey = (
+            Scene,
+            objectIndex,
+            usePrimaryContourQuad,
+            sourceContourArray);
+        if (_reference3DProjectiveMeshCache.TryGetValue(cacheKey, out var cached))
+        {
+            triangles = cached;
+            return cached.Length > 0;
+        }
+
+        var contours = sourceContourArray;
         if (Scene.ShapeKind[objectIndex] == ShapeKind.Line && Scene.Stroke[objectIndex] > 0)
         {
             var strokeContours = GetReference3DStrokeOutlineSourceContours(objectIndex);
@@ -190,6 +217,162 @@ internal sealed partial class StageControl
 
         if (!AppendCell(0, 0, gridSize, gridSize, 0) || result.Count == 0) return false;
         triangles = result.ToArray();
+        _reference3DProjectiveMeshCache[cacheKey] = triangles;
+        return true;
+    }
+
+    internal static bool TryGetReference3DProjectiveAffineTransform(
+        IReadOnlyList<Reference3DProjectiveTriangle> triangles,
+        out Matrix3x2 transform)
+    {
+        return TryGetReference3DProjectiveAffineTransform(
+            triangles,
+            out transform,
+            out _);
+    }
+
+    internal static bool TryGetReference3DProjectiveAffineTransform(
+        IReadOnlyList<Reference3DProjectiveTriangle> triangles,
+        out Matrix3x2 transform,
+        out float maximumErrorPixels)
+    {
+        return TryGetReference3DProjectiveAffineTransform(
+            triangles,
+            Reference3DProjectiveAffineApproximationErrorPixels,
+            out transform,
+            out maximumErrorPixels);
+    }
+
+    internal static bool TryGetReference3DProjectiveAffineTransform(
+        IReadOnlyList<Reference3DProjectiveTriangle> triangles,
+        float maximumAllowedErrorPixels,
+        out Matrix3x2 transform,
+        out float maximumErrorPixels)
+    {
+        transform = default;
+        maximumErrorPixels = float.PositiveInfinity;
+        if (!float.IsFinite(maximumAllowedErrorPixels)
+            || maximumAllowedErrorPixels <= 0f
+            || triangles.Count < 2
+            || !Reference3DProjectiveMeshCoversFullDomain(triangles))
+        {
+            return false;
+        }
+
+        Reference3DProjectiveVertex? topLeft = null;
+        Reference3DProjectiveVertex? topRight = null;
+        Reference3DProjectiveVertex? bottomRight = null;
+        Reference3DProjectiveVertex? bottomLeft = null;
+        foreach (var triangle in triangles)
+        {
+            ConsiderCorner(triangle.A);
+            ConsiderCorner(triangle.B);
+            ConsiderCorner(triangle.C);
+        }
+
+        if (topLeft is not { } left
+            || topRight is not { } right
+            || bottomRight is not { } farRight
+            || bottomLeft is not { } farLeft
+            || !TryGetReference3DAffineTransform(
+                left.Flat,
+                right.Flat,
+                farRight.Flat,
+                left.Screen,
+                right.Screen,
+                farRight.Screen,
+                out var affineTransform))
+        {
+            return false;
+        }
+
+        var maximumErrorSquared = 0f;
+        foreach (var triangle in triangles)
+        {
+            maximumErrorSquared = Math.Max(
+                maximumErrorSquared,
+                AffineErrorSquared(triangle.A));
+            maximumErrorSquared = Math.Max(
+                maximumErrorSquared,
+                AffineErrorSquared(triangle.B));
+            maximumErrorSquared = Math.Max(
+                maximumErrorSquared,
+                AffineErrorSquared(triangle.C));
+        }
+
+        maximumErrorPixels = float.IsFinite(maximumErrorSquared)
+            ? MathF.Sqrt(maximumErrorSquared)
+            : float.PositiveInfinity;
+        var accepted = float.IsFinite(maximumErrorSquared)
+            && maximumErrorSquared <= maximumAllowedErrorPixels * maximumAllowedErrorPixels;
+        if (accepted) transform = affineTransform;
+        return accepted;
+
+        void ConsiderCorner(Reference3DProjectiveVertex vertex)
+        {
+            const float epsilon = 0.00001f;
+            if (Math.Abs(vertex.U) <= epsilon && Math.Abs(vertex.V) <= epsilon)
+            {
+                topLeft ??= vertex;
+            }
+            else if (Math.Abs(vertex.U - 1f) <= epsilon && Math.Abs(vertex.V) <= epsilon)
+            {
+                topRight ??= vertex;
+            }
+            else if (Math.Abs(vertex.U - 1f) <= epsilon && Math.Abs(vertex.V - 1f) <= epsilon)
+            {
+                bottomRight ??= vertex;
+            }
+            else if (Math.Abs(vertex.U) <= epsilon && Math.Abs(vertex.V - 1f) <= epsilon)
+            {
+                bottomLeft ??= vertex;
+            }
+        }
+
+        float AffineErrorSquared(Reference3DProjectiveVertex vertex)
+        {
+            var projected = Vector2.Transform(
+                new Vector2(vertex.Flat.X, vertex.Flat.Y),
+                affineTransform);
+            var dx = projected.X - vertex.Screen.X;
+            var dy = projected.Y - vertex.Screen.Y;
+            return dx * dx + dy * dy;
+        }
+    }
+
+    internal static bool TryGetReference3DSourceDomainBounds(
+        IReadOnlyList<Reference3DSourceContour> contours,
+        out RectangleF bounds)
+    {
+        bounds = RectangleF.Empty;
+        var pointCount = 0;
+        var left = float.PositiveInfinity;
+        var top = float.PositiveInfinity;
+        var right = float.NegativeInfinity;
+        var bottom = float.NegativeInfinity;
+        foreach (var contour in contours)
+        {
+            foreach (var point in contour.Points)
+            {
+                pointCount++;
+                left = Math.Min(left, point.X);
+                top = Math.Min(top, point.Y);
+                right = Math.Max(right, point.X);
+                bottom = Math.Max(bottom, point.Y);
+            }
+        }
+        if (pointCount < 3) return false;
+        if (!float.IsFinite(left)
+            || !float.IsFinite(top)
+            || !float.IsFinite(right)
+            || !float.IsFinite(bottom)
+            || right - left <= 0.0001f
+            || bottom - top <= 0.0001f)
+        {
+            return false;
+        }
+
+        bounds = RectangleF.FromLTRB(left, top, right, bottom);
         return true;
     }
 
@@ -334,26 +517,15 @@ internal sealed partial class StageControl
             return false;
         }
 
-        var points = contours.SelectMany(contour => contour.Points).ToArray();
-        if (points.Length < 3) return false;
-        var left = points.Min(point => point.X);
-        var top = points.Min(point => point.Y);
-        var right = points.Max(point => point.X);
-        var bottom = points.Max(point => point.Y);
-        if (!float.IsFinite(left)
-            || !float.IsFinite(top)
-            || !float.IsFinite(right)
-            || !float.IsFinite(bottom)
-            || right - left <= 0.0001f
-            || bottom - top <= 0.0001f)
+        if (!TryGetReference3DSourceDomainBounds(contours, out var bounds))
         {
             return false;
         }
 
-        topLeft = new PointF(left, top);
-        topRight = new PointF(right, top);
-        bottomRight = new PointF(right, bottom);
-        bottomLeft = new PointF(left, bottom);
+        topLeft = new PointF(bounds.Left, bounds.Top);
+        topRight = new PointF(bounds.Right, bounds.Top);
+        bottomRight = new PointF(bounds.Right, bounds.Bottom);
+        bottomLeft = new PointF(bounds.Left, bounds.Bottom);
         return true;
     }
 

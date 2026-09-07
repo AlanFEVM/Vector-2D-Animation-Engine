@@ -2,6 +2,238 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "0.2.1",
+      "releaseDate": "2026-09-07",
+      "showInApplication": true,
+      "locales": {
+        "en": {
+          "title": "Version 0.2.1",
+          "summary": "Version 0.2.1 improves dense-scene responsiveness and adds terrain-aware fracture animation, lasso selection, timeline tab groups, refined 3D controls, improved material lighting, and lossless project compression.",
+          "sections": [
+            {
+              "heading": "Performance and stability",
+              "items": [
+                "Timeline and scene panels now refresh incrementally, avoiding unnecessary list rebuilds when changing workspaces, frames, or stable scene composition state.",
+                "Reference 3D playback can reuse bounded frame caches and prepare nearby frames while the Stage is idle; camera, lighting, and project changes invalidate affected cached frames automatically.",
+                "Dense scenes can prepare render work in parallel, while selection, transform, and topology interactions reuse cached geometry and overlays during pointer movement to keep the editor responsive."
+              ]
+            },
+            {
+              "heading": "Fracture animation, collision, and terrain",
+              "items": [
+                "Random Fracture can be started from the Stage context menu for a selected closed fill or Path, previewed before committing, and written into timeline keyframes as a fragment animation.",
+                "Collision terrain is stored in dedicated terrain Mask layers. Multiple terrain layers can be named and edited independently, and their polygon regions, holes, overlaps, and visibility participate in collision without changing ordinary content rendering.",
+                "Terrain layers support their own keyframes and Shape tweens. Fracture simulation reads every visible terrain layer at each frame, so moved, deformed, hidden, or blank terrain keys affect generated motion; after changing terrain, generate the fracture animation again to update an existing result."
+              ]
+            },
+            {
+              "heading": "Lasso and polygon selection",
+              "items": [
+                "Polygon Lasso creates a selection boundary point by point, while Freehand Lasso follows a dragged outline. Both support Shift to add to the current selection and Escape or right-click to cancel.",
+                "In Basic Drawing, lasso selection can target fills, segments, and strokes inside the actual boundary, including local regions that can then be moved or edited without selecting the whole object.",
+                "Scene Building\u0027s 2D Front view also supports lasso selection; side and top reference views retain their projected selection tools."
+              ]
+            },
+            {
+              "heading": "3D navigation and scene operation",
+              "items": [
+                "3D navigation now separates middle-button orbiting from right-button look-around: the latter keeps the camera position fixed. Shift plus middle-button dragging pans on the view target plane, and arrow-key movement follows the current camera direction with smooth acceleration.",
+                "Orthographic and perspective projection can be switched directly, with Numpad views, Home reset, and F focus transitions. Camera changes continue smoothly into the current view and manual input can take over immediately.",
+                "Blender-inspired transform controls provide Global and Local axes, plane handles for constrained movement, and a shared gizmo for multiple selected instances."
+              ]
+            },
+            {
+              "heading": "Timeline tab groups",
+              "items": [
+                "Timeline tabs can filter the visible layer list into Layers, Terrain, All, or user-created groups. Switching a tab changes only the Timeline view and does not change Stage rendering, visibility, masks, or playback.",
+                "Create, rename, delete, and assign layers to custom groups from the Timeline controls and layer context menu. Group edits support Undo, while group membership and the active tab are saved with the project. Multi-frame selections can also be moved or stretched from the Timeline transform box.",
+                "Built-in and custom tabs can use custom colors for identification, except All, which keeps the theme default. Tab colors do not change layer colors, materials, or rendered output."
+              ]
+            },
+            {
+              "heading": "Scene lighting response",
+              "items": [
+                "Direct light now uses a GGX microfacet distribution with Smith visibility and Schlick Fresnel. Roughness controls highlight spread, while metallic and transmission reduce diffuse response; dielectric F0 follows the material\u0027s index of refraction and reflectivity.",
+                "Area lights use a deterministic 3x3 stratified midpoint sample pattern with weights that sum to one. Point-sized areas still use the point-light path, and changing shadow softness does not change unobstructed sampling or distance falloff.",
+                "Solid and gradient pixels use linear-space lighting that retains the material\u0027s base-color contribution and alpha, including colored metal reflections and grazing-angle Fresnel response. This remains a 2.5D lighting model without Blender Cycles path tracing, indirect global illumination, or true refraction."
+              ]
+            },
+            {
+              "heading": "Project saving and compatibility",
+              "items": [
+                "New saves use lossless Brotli compression for drawing data and timelines, reducing project storage while preserving geometry precision.",
+                "The current reader remains compatible with project format versions 1 through 3, while newly saved format 4 projects require an editor that supports format 4."
+              ]
+            }
+          ]
+        },
+        "zh-CN": {
+          "title": "版本 0.2.1",
+          "summary": "0.2.1 改善密集场景的交互响应，新增地形碰撞破碎动画、套索选择和时间轴图层组，完善 3D 操作与材质光照，并支持工程无损压缩。",
+          "sections": [
+            {
+              "heading": "性能优化",
+              "items": [
+                "时间轴和场景面板现在采用增量刷新；切换工作区、帧或稳定的场景组合状态时，不再重复重建不受影响的列表。",
+                "Reference 3D 播放可以复用有界的帧缓存，并在舞台空闲时准备邻近帧；镜头、灯光或工程发生变化时会自动使受影响的缓存帧失效。",
+                "密集场景可以并行准备渲染工作；选择、变形和拓扑编辑在指针移动期间会复用缓存几何与覆盖层，保持交互响应。"
+              ]
+            },
+            {
+              "heading": "破碎动画、碰撞与地形",
+              "items": [
+                "选中封闭填色或 Path 后，可以从舞台右键菜单启动 Random Fracture，先预览破碎结果，再将碎片动画写入时间轴关键帧。",
+                "碰撞地形保存在专用的 Terrain Mask 图层中。可以创建多个地形层并分别命名、编辑；其中的多边形区域、孔洞、重叠区域和可见状态会参与碰撞，但不会改变普通内容的渲染。",
+                "地形层支持独立关键帧和形状补间。破碎模拟会在每一帧读取所有可见地形层，因此地形的移动、变形、隐藏或空白关键帧都会影响生成的碎片运动；修改地形后需要重新生成已有的破碎动画。"
+              ]
+            },
+            {
+              "heading": "套索与多边形选择",
+              "items": [
+                "新增 Polygon Lasso 和 Freehand Lasso：前者逐点绘制直线边界，后者拖动绘制自由边界；两者都支持 Shift 追加选择，也可用 Escape 或右键取消。",
+                "在 Basic Drawing 中，套索可以沿真实边界选择填色、线段和描边中的局部区域，随后单独移动或编辑，而不必选择整个对象。",
+                "Scene Building 的 2D 前视图也支持套索；侧视和顶视参考视图保留投影选择工具。"
+              ]
+            },
+            {
+              "heading": "3D 导航与场景操作",
+              "items": [
+                "3D 导航区分鼠标中键绕目标旋转和鼠标右键固定位置环视；按住 Shift 加鼠标中键可在目标平面上平移，方向键会沿当前镜头方向平滑移动并支持加速。",
+                "现在可以直接切换正交与透视投影，并使用小键盘固定视图、Home 重置和 F 聚焦；镜头切换会从当前视图平滑过渡，手动输入可以立即接管。",
+                "借鉴 Blender 操作习惯的变换控件提供全局与局部坐标轴、沿指定平面移动的手柄，以及多个选中实例共用的 gizmo。"
+              ]
+            },
+            {
+              "heading": "时间轴图层组",
+              "items": [
+                "时间轴标签可以把图层列表筛选为 Layers、Terrain、All 或用户创建的分组；切换标签只改变时间轴显示，不会改变舞台渲染、可见性、遮罩关系或动画播放。",
+                "可以通过时间轴控件和图层右键菜单创建、重命名、删除自定义组并分配图层；分组编辑支持撤销，分组归属和当前标签随工程保存。多帧选区还可以通过时间轴变换框整体移动或拉伸。",
+                "内置和自定义标签都可以设置识别颜色，但 All 保持主题默认外观；标签颜色不会改变图层颜色、材质或最终渲染。"
+              ]
+            },
+            {
+              "heading": "场景光照响应",
+              "items": [
+                "直接光照现在使用 GGX 微表面分布、Smith 遮蔽项和 Schlick Fresnel；粗糙度控制高光扩散，金属度和透光率会减少漫反射，介质基础反射由折射率和反射率共同决定。",
+                "区域光使用确定性的 3x3 均匀分层中点采样，样本权重总和为 1；尺寸极小的区域会继续使用点光路径，调整阴影柔和度不会改变无遮挡时的采样或距离衰减。",
+                "纯色和渐变像素都会在线性颜色空间中计算光照，让元件本色参与受光计算并保留原有 Alpha，同时呈现金属反射色和掠射角 Fresnel 响应。当前仍是 2.5D 光照模型，不包含 Blender Cycles 路径追踪、间接全局光照或真实折射。"
+              ]
+            },
+            {
+              "heading": "工程保存与兼容性",
+              "items": [
+                "新保存的绘制数据与时间轴使用无损 Brotli 压缩，在保留几何精度的同时减少工程存储空间。",
+                "当前读取器继续兼容工程格式 1 至 3；新保存的格式 4 工程需要使用支持格式 4 的新版编辑器打开。"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "version": "0.2.0",
+      "releaseDate": "2026-08-13",
+      "showInApplication": true,
+      "locales": {
+        "en": {
+          "title": "3D Scene Building",
+          "summary": "Core 3D scene-building workflows are now in place, together with foundational lighting features.",
+          "sections": [
+            {
+              "heading": "3D Components",
+              "items": [
+                "In a 3D scene, multiple components can be assembled and converted into a reusable 3D vector component. This is not intended to be a modeling tool."
+              ]
+            },
+            {
+              "heading": "3D Transform Controls",
+              "items": [
+                "3D Transform lets you freely adjust a component\u0027s position, rotation, and scale in 3D space. Use G, R, and S for Move, Rotate, and Scale respectively, in a workflow similar to Blender."
+              ]
+            },
+            {
+              "heading": "3D Camera Navigation",
+              "items": [
+                "Use the arrow keys to navigate through a 3D scene."
+              ]
+            },
+            {
+              "heading": "3D Lighting",
+              "items": [
+                "3D lighting now supports Point, Area, Ambient, and Directional lights. Lighting is blended with each component\u0027s base color."
+              ]
+            },
+            {
+              "heading": "Tweening in 3D",
+              "items": [
+                "Light layers and 3D components can now use tweens. In principle, these features are sufficient to produce a complete animation, although the current limitations of the 3D spatial tools still make the workflow complex. Future releases will improve this experience."
+              ]
+            },
+            {
+              "heading": "Component Snap Points",
+              "items": [
+                "Add snap points to a component, then hold Shift in 3D mode to quickly snap one component to a corresponding point on another."
+              ]
+            },
+            {
+              "heading": "UI Scaling Across Resolutions",
+              "items": [
+                "The UI now adapts its size to different screen resolutions, improving layout and usability across display configurations."
+              ]
+            }
+          ]
+        },
+        "zh-CN": {
+          "title": "3D布景",
+          "summary": "目前已完成3D场景搭建功能以及基础的灯光功能",
+          "sections": [
+            {
+              "heading": "3D元件",
+              "items": [
+                "3D场景下可将元件进行拼接后转换为3D矢量元件。但这并不是建模工具（喂"
+              ]
+            },
+            {
+              "heading": "3D Transform 控制器",
+              "items": [
+                "Transfrom 允许你自由修改元件在3D空间中的位置，缩放，旋转，使用GRS模式（分别对应位置，旋转，缩放）这个操作类似Blender"
+              ]
+            },
+            {
+              "heading": "3D镜头控制",
+              "items": [
+                "按下方向键可在3D场景中进行漫游"
+              ]
+            },
+            {
+              "heading": "3D 灯光",
+              "items": [
+                "更新3D灯光功能，添加点光源，区域光，环境光，直线光四种不同类型的光，光会与元件固有色进行混合。"
+              ]
+            },
+            {
+              "heading": "3D补间的使用",
+              "items": [
+                "灯光图层可添加补间，3D元件也可也添加补间，理论上已经可以达到完成一部动画的需求，但由于目前3D空间工具的局限性操作起来依旧复杂。这个问题在以后的版本会得到优化。"
+              ]
+            },
+            {
+              "heading": "吸附顶点工具",
+              "items": [
+                "在元件上添加吸附顶点，在3D模式下可按下shift让元件和元件之间快速吸附到对应的顶点上。"
+              ]
+            },
+            {
+              "heading": "多分辨率 UI 适配",
+              "items": [
+                "UI 现在会根据不同屏幕分辨率调整界面尺寸，以改善不同显示环境下的布局与可用性。"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "version": "0.1.13",
       "releaseDate": "2026-08-07",
       "showInApplication": true,

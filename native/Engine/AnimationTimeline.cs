@@ -44,17 +44,25 @@ internal sealed class AnimationTimelineTrack
         string targetId,
         int duration,
         IEnumerable<TimelineKeyframe>? keyframes = null,
-        IEnumerable<TimelineTween>? tweens = null)
+        IEnumerable<TimelineTween>? tweens = null,
+        string? tabGroupId = null,
+        bool isCollisionTerrain = false)
     {
         Id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("N") : id;
         TargetId = targetId;
         Duration = Math.Max(1, duration);
+        TabGroupId = string.IsNullOrWhiteSpace(tabGroupId)
+            ? AnimationTimeline.DefaultTabGroupId
+            : tabGroupId;
+        IsCollisionTerrain = isCollisionTerrain;
         if (keyframes is not null) RestoreKeyframes(keyframes);
         if (tweens is not null) RestoreTweens(tweens);
     }
 
     public string Id { get; }
     public string TargetId { get; }
+    public string TabGroupId { get; internal set; } = AnimationTimeline.DefaultTabGroupId;
+    public bool IsCollisionTerrain { get; internal set; }
     public int Duration { get; private set; }
     public IReadOnlyList<TimelineKeyframe> Keyframes => _keyframes;
     public IReadOnlyList<TimelineTween> Tweens => _tweens;
@@ -341,6 +349,8 @@ internal sealed class AnimationTimelineTrack
         {
             Id = Id,
             TargetId = TargetId,
+            TabGroupId = TabGroupId,
+            IsCollisionTerrain = IsCollisionTerrain,
             Duration = Duration,
             Keyframes = _keyframes.ToArray(),
             Tweens = _tweens.ToArray()
@@ -551,7 +561,7 @@ internal sealed class AnimationTimelineTrack
     }
 }
 
-internal sealed class AnimationTimeline
+internal sealed partial class AnimationTimeline
 {
     public const int DefaultDuration = 240;
 
@@ -635,11 +645,13 @@ internal sealed class AnimationTimeline
 
     public void Clear()
     {
-        if (_tracks.Count == 0) return;
+        var hadTracks = _tracks.Count > 0;
         _tracks.Clear();
         _tracksById.Clear();
         _tracksByTargetId.Clear();
-        OnChanged();
+        var groupsChanged = ResetTabGroups();
+        if (hadTracks) OnChanged();
+        if (groupsChanged) OnTabGroupsChanged();
     }
 
     public void SynchronizeTracks(
@@ -671,7 +683,9 @@ internal sealed class AnimationTimeline
     {
         return new AnimationTimelineSnapshot
         {
-            Tracks = _tracks.Select(track => track.CreateSnapshot()).ToArray()
+            Tracks = _tracks.Select(track => track.CreateSnapshot()).ToArray(),
+            TabGroups = _tabGroups.ToArray(),
+            ActiveTabGroupId = _activeTabGroupId
         };
     }
 
@@ -679,20 +693,31 @@ internal sealed class AnimationTimeline
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         _tracks.Clear();
+        _tracksById.Clear();
+        _tracksByTargetId.Clear();
+        RestoreTabGroups(snapshot);
 
         var trackIds = new HashSet<string>(StringComparer.Ordinal);
         var targetIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var item in snapshot.Tracks)
+        foreach (var item in snapshot.Tracks ?? [])
         {
-            if (string.IsNullOrWhiteSpace(item.TargetId) || !targetIds.Add(item.TargetId)) continue;
+            if (item is null || string.IsNullOrWhiteSpace(item.TargetId) || !targetIds.Add(item.TargetId)) continue;
             var id = !string.IsNullOrWhiteSpace(item.Id) && trackIds.Add(item.Id)
                 ? item.Id
                 : NewUniqueId(trackIds);
-            _tracks.Add(new AnimationTimelineTrack(id, item.TargetId, item.Duration, item.Keyframes, item.Tweens));
+            _tracks.Add(new AnimationTimelineTrack(
+                id,
+                item.TargetId,
+                item.Duration,
+                item.Keyframes,
+                item.Tweens,
+                NormalizeTrackTabGroupId(item.TabGroupId),
+                item.IsCollisionTerrain));
         }
 
         RebuildLookups();
         OnChanged();
+        OnTabGroupsChanged();
     }
 
     private bool InsertKeyframe(string trackId, int frame, TimelineKeyframeKind kind)
@@ -777,6 +802,7 @@ internal sealed class AnimationTimeline
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
         var synchronized = new List<AnimationTimelineTrack>(targets.Count);
         var changed = targets.Count != _tracks.Count;
+        var tabGroupsChanged = false;
 
         for (var i = 0; i < targets.Count; i++)
         {
@@ -789,10 +815,16 @@ internal sealed class AnimationTimeline
                 continue;
             }
 
-            track = new AnimationTimelineTrack(Guid.NewGuid().ToString("N"), target.TargetId, target.Duration);
+            var tabGroupId = NewTrackTabGroupId();
+            track = new AnimationTimelineTrack(
+                Guid.NewGuid().ToString("N"),
+                target.TargetId,
+                target.Duration,
+                tabGroupId: tabGroupId);
             if (populateNewTracks) track.InsertKeyframe(0, TimelineKeyframeKind.Populated);
             synchronized.Add(track);
             changed = true;
+            tabGroupsChanged |= !string.Equals(tabGroupId, DefaultTabGroupId, StringComparison.Ordinal);
         }
 
         if (!changed) return;
@@ -800,6 +832,7 @@ internal sealed class AnimationTimeline
         _tracks.AddRange(synchronized);
         RebuildLookups();
         OnChanged();
+        if (tabGroupsChanged) OnTabGroupsChanged();
     }
 
     private void RebuildLookups()
@@ -859,12 +892,16 @@ internal sealed class AnimationTimeline
 internal sealed class AnimationTimelineSnapshot
 {
     public AnimationTimelineTrackSnapshot[] Tracks { get; init; } = [];
+    public TimelineTabGroup[] TabGroups { get; init; } = [];
+    public string ActiveTabGroupId { get; init; } = AnimationTimeline.DefaultTabGroupId;
 }
 
 internal sealed class AnimationTimelineTrackSnapshot
 {
     public string Id { get; init; } = "";
     public string TargetId { get; init; } = "";
+    public string TabGroupId { get; init; } = AnimationTimeline.DefaultTabGroupId;
+    public bool IsCollisionTerrain { get; init; }
     public int Duration { get; init; } = AnimationTimeline.DefaultDuration;
     public TimelineKeyframe[] Keyframes { get; init; } = [];
     public TimelineTween[] Tweens { get; init; } = [];

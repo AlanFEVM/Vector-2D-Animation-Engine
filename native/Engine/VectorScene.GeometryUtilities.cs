@@ -934,9 +934,22 @@ internal sealed partial class VectorScene
 
     internal bool HasFill(int objectIndex)
     {
-        return (uint)objectIndex < ObjectCount
-            && IsFillShape(ShapeKind[objectIndex])
-            && Color.FromArgb(Argb[objectIndex]).A > 0;
+        if ((uint)objectIndex >= ObjectCount
+            || !IsFillShape(ShapeKind[objectIndex]))
+        {
+            return false;
+        }
+
+        if (Color.FromArgb(Argb[objectIndex]).A > 0) return true;
+        if (!HasGradient(objectIndex)) return false;
+
+        if (_gradientStops.TryGetValue(objectIndex, out var stops))
+        {
+            return stops.Any(stop => (uint)stop.Argb >> 24 > 0);
+        }
+
+        return (uint)GradientStartArgb[objectIndex] >> 24 > 0
+            || (uint)GradientEndArgb[objectIndex] >> 24 > 0;
     }
 
     private bool HasStroke(int objectIndex)

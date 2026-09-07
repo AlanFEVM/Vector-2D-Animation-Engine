@@ -1155,7 +1155,24 @@ internal sealed partial class VectorScene
         if ((uint)layer >= LayerCount) return false;
         SynchronizeTimelineTracks();
         var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
-        return track is not null && Timeline.RemoveTween(track.Id, startFrame, endFrame);
+        var tween = track?.Tweens.FirstOrDefault(item =>
+            item.StartFrame == startFrame
+            && item.EndFrame == endFrame);
+        if (track is null || tween is not { IsValid: true } span) return false;
+
+        using var batch = Timeline.BeginBatchUpdate();
+        if (!Timeline.RemoveTween(track.Id, startFrame, endFrame)) return false;
+
+        for (var frame = span.StartFrame + 1; frame < span.EndFrame; frame++)
+        {
+            RemoveObjectsForKeyframe(layer, frame);
+            Timeline.ClearKeyframe(track.Id, frame);
+        }
+
+        RefreshLegacyExposureBounds(layer);
+        RebuildGeometryIndex();
+        RebuildSummaries();
+        return true;
     }
 
     private void RefreshTimelineTweenMaterializations(bool[]? affectedLayers = null)

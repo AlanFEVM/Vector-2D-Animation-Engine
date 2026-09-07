@@ -66,9 +66,14 @@ internal sealed class WindowChromeButton : Control
     {
         var g = e.Graphics;
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        g.Clear(GetBackColor());
+        var background = GetBackColor();
+        g.Clear(background);
 
-        using var pen = new Pen(Kind == WindowChromeButtonKind.Close && _hovered ? Color.White : Theme.Text, 1.7f)
+        var preferredColor = Kind == WindowChromeButtonKind.Close && _hovered ? Color.White : Theme.Text;
+        var iconColor = SystemInformation.HighContrast
+            ? SystemColors.HighlightText
+            : Theme.ReadableUiColor(background, preferredColor);
+        using var pen = new Pen(iconColor, 1.7f)
         {
             StartCap = System.Drawing.Drawing2D.LineCap.Round,
             EndCap = System.Drawing.Drawing2D.LineCap.Round

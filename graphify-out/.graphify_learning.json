@@ -1,5 +1,219 @@
 {
-  "generated_at": "2026-08-10T04:13:20.784123+00:00",
-  "nodes": {},
+  "generated_at": "2026-09-04T07:35:28.082508+00:00",
+  "nodes": {
+    "frame": {
+      "code_fingerprint": "",
+      "label": "Frame",
+      "last": "2026-09-04T07:29:56.431316+00:00",
+      "provenance": [
+        {
+          "date": "2026-09-04T07:29:56.431316+00:00",
+          "outcome": "useful",
+          "q": "下方状态栏目中的渲染FPS显示不正确"
+        },
+        {
+          "date": "2026-08-25T09:14:22.219304+00:00",
+          "outcome": "useful",
+          "q": "优化删除补间的功能：补间删除后不要留下一堆关键帧，而是回到创建补间之前的样子。"
+        }
+      ],
+      "score": 1.794872359,
+      "source_file": "",
+      "status": "preferred",
+      "uses": 2
+    },
+    "graphify_out_memory_query_20260811_071939_3d_f8_svg_symbol": {
+      "code_fingerprint": "7a2fac7839bfe75889652acabaf1560b4318ddd5ef675b5b57b6678424bf5869",
+      "label": "Symbol",
+      "last": "2026-08-11T07:19:39.198226+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-11T07:19:39.198226+00:00",
+          "outcome": "useful",
+          "q": "素材库分类、3D场景F8组合与外部SVG链接通过哪些代码链路实现？"
+        }
+      ],
+      "score": 0.574203456,
+      "source_file": "graphify-out/memory/query_20260811_071939_素材库分类_3d场景f8组合与外部svg链接通过哪些代码链路实现.md",
+      "status": "tentative",
+      "uses": 1
+    },
+    "graphify_out_memory_query_20260811_071939_3d_f8_svg_vault": {
+      "code_fingerprint": "7a2fac7839bfe75889652acabaf1560b4318ddd5ef675b5b57b6678424bf5869",
+      "label": "Vault",
+      "last": "2026-08-11T07:19:39.198226+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-11T07:19:39.198226+00:00",
+          "outcome": "useful",
+          "q": "素材库分类、3D场景F8组合与外部SVG链接通过哪些代码链路实现？"
+        }
+      ],
+      "score": 0.574203456,
+      "source_file": "graphify-out/memory/query_20260811_071939_素材库分类_3d场景f8组合与外部svg链接通过哪些代码链路实现.md",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_app_toolmode_vectoranimationengine_toolmode": {
+      "code_fingerprint": "a6733a66cf41ddf8861cd1f7fb525b451e5751d1bcd100b2d1a8968edbb68060",
+      "label": "ToolMode",
+      "last": "2026-08-11T08:56:45.709997+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-11T08:56:45.709997+00:00",
+          "outcome": "useful",
+          "q": "3D 操作中选元件后自动切换到 transform 工具。"
+        }
+      ],
+      "score": 0.575098827,
+      "source_file": "native/App/ToolMode.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_engine_sceneobjectinstancedefinition_vectoranimationengine_drawingobjectinstancedefinition": {
+      "code_fingerprint": "08e811ac6064ecf325c795d641e423f51e3f916864335c52b21acabb6cf92898",
+      "label": "DrawingObjectInstanceDefinition",
+      "last": "2026-08-28T07:22:16.606571+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-28T07:22:16.606571+00:00",
+          "outcome": "useful",
+          "q": "帧移动跨图层有问题（注意目前所有的帧移动以覆盖进行处理）"
+        }
+      ],
+      "score": 0.850487132,
+      "source_file": "native/Engine/SceneObjectInstanceDefinition.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_engine_vectorscene_layersandtimeline_vectoranimationengine_vectorscene_copytimelineframefrom": {
+      "code_fingerprint": "77cc7c9361fe4b09d3543fe76d06d070b2bc257b322c10b7a66f9e4a8c592560",
+      "label": ".CopyTimelineFrameFrom()",
+      "last": "2026-08-28T07:22:16.606571+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-28T07:22:16.606571+00:00",
+          "outcome": "useful",
+          "q": "帧移动跨图层有问题（注意目前所有的帧移动以覆盖进行处理）"
+        }
+      ],
+      "score": 0.850487132,
+      "source_file": "native/Engine/VectorScene.LayersAndTimeline.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_engine_vectorscene_layersandtimeline_vectoranimationengine_vectorscene_synchronizeallkeyframecontentkinds": {
+      "code_fingerprint": "77cc7c9361fe4b09d3543fe76d06d070b2bc257b322c10b7a66f9e4a8c592560",
+      "label": ".SynchronizeAllKeyframeContentKinds()",
+      "last": "2026-08-25T09:14:22.219304+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-25T09:14:22.219304+00:00",
+          "outcome": "useful",
+          "q": "优化删除补间的功能：补间删除后不要留下一堆关键帧，而是回到创建补间之前的样子。"
+        }
+      ],
+      "score": 0.794961045,
+      "source_file": "native/Engine/VectorScene.LayersAndTimeline.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_rendering_direct2dstagerenderer_reference3d": {
+      "code_fingerprint": "68997c32881cd66b8dcc3dc7cbb44b830501362d56b82e24bb2b91a1c0827706",
+      "label": "Direct2DStageRenderer.Reference3D.cs",
+      "last": "2026-08-12T12:32:13.045497+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-12T12:32:13.045497+00:00",
+          "outcome": "useful",
+          "q": "3D场景下渲染径向渐变不正确"
+        }
+      ],
+      "score": 0.590579233,
+      "source_file": "native/Rendering/Direct2DStageRenderer.Reference3D.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_rendering_stagecontrol_vectoranimationengine_stagecontrol_elapsedmilliseconds": {
+      "code_fingerprint": "b8eaf5e7a012ed96e530f599eac47ad02684b45a483ce8f598ab5eac8af91bcb",
+      "label": ".ElapsedMilliseconds()",
+      "last": "2026-09-04T07:29:56.431316+00:00",
+      "provenance": [
+        {
+          "date": "2026-09-04T07:29:56.431316+00:00",
+          "outcome": "useful",
+          "q": "下方状态栏目中的渲染FPS显示不正确"
+        }
+      ],
+      "score": 0.999911314,
+      "source_file": "native/Rendering/StageControl.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_ui_mainform_scenespatial_vectoranimationengine_mainform_handlespatialtransformshortcut": {
+      "code_fingerprint": "99e51ae29b61f34661dd0021a1f5fbd092a014a293dd89397019fa5c59e355b8",
+      "label": ".HandleSpatialTransformShortcut()",
+      "last": "2026-08-11T08:48:33.000047+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-11T08:48:33.000047+00:00",
+          "outcome": "useful",
+          "q": "How does MainForm route 3D keyboard input to StageControl reference camera movement, and which shortcuts conflict with arrow keys or WASD?"
+        }
+      ],
+      "score": 0.575023057,
+      "source_file": "native/UI/MainForm.SceneSpatial.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_ui_mainform_timelineandhistory_vectoranimationengine_mainform_applyclipboardinstancestates": {
+      "code_fingerprint": "bbb6b8d73ed9b3dd5b90d3878e73a916a25cfea2baa55d062cd4ab79b7245772",
+      "label": ".ApplyClipboardInstanceStates()",
+      "last": "2026-08-28T07:22:16.606571+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-28T07:22:16.606571+00:00",
+          "outcome": "useful",
+          "q": "帧移动跨图层有问题（注意目前所有的帧移动以覆盖进行处理）"
+        }
+      ],
+      "score": 0.850487132,
+      "source_file": "native/UI/MainForm.TimelineAndHistory.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_ui_mainform_vectoranimationengine_timelineclipboardcell": {
+      "code_fingerprint": "3c8e728785a72f7405637ac44e8b7bbf6dd13a083ea6af05fba885836c8e6acd",
+      "label": "TimelineClipboardCell",
+      "last": "2026-08-28T07:22:16.606571+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-28T07:22:16.606571+00:00",
+          "outcome": "useful",
+          "q": "帧移动跨图层有问题（注意目前所有的帧移动以覆盖进行处理）"
+        }
+      ],
+      "score": 0.850487132,
+      "source_file": "native/UI/MainForm.cs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "native_ui_mainform_workbenchcommands_vectoranimationengine_mainform_activatetool": {
+      "code_fingerprint": "3f7dbedffe810cacdc30e8e8315b36961697d6b32642e7775230870c784bbb42",
+      "label": ".ActivateTool()",
+      "last": "2026-08-11T08:56:45.709997+00:00",
+      "provenance": [
+        {
+          "date": "2026-08-11T08:56:45.709997+00:00",
+          "outcome": "useful",
+          "q": "3D 操作中选元件后自动切换到 transform 工具。"
+        }
+      ],
+      "score": 0.575098827,
+      "source_file": "native/UI/MainForm.WorkbenchCommands.cs",
+      "status": "tentative",
+      "uses": 1
+    }
+  },
   "version": 1
 }

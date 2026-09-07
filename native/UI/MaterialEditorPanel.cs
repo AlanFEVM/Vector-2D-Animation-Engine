@@ -132,7 +132,8 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly Panel _channelsPanel = new();
     private readonly Panel _hexPanel = new();
     private readonly TextBox _hexText = new();
-    private readonly HarmonyColorWheel _colorWheel = new();
+    private readonly TraditionalColorPlane _traditionalPlane = new();
+    private readonly VerticalColorComponentSlider _primaryComponent = new();
     private readonly ComboBox _harmonyRule = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ColorPaletteGrid _harmonyGrid = new();
     private readonly ColorPaletteGrid _builtInGrid = new();
@@ -422,9 +423,10 @@ internal sealed class MaterialEditorPanel : UserControl
         Controls.Add(content);
         _content = content;
 
+        // TODO: Replace this basic shading editor with the full material system.
         content.Controls.Add(new Label
         {
-            Text = "Materials",
+            Text = "Basic Shading",
             Dock = DockStyle.Fill,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
@@ -494,17 +496,18 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1,
             Margin = Padding.Empty
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
-        for (var i = 0; i < 3; i++) row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3f));
+        for (var i = 0; i < 4; i++) row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
 
         row.Controls.Add(CreateFieldLabel("Mode"), 0, 0);
         AddModeButton(row, ColorMode.Rgb, "RGB", 1);
         AddModeButton(row, ColorMode.Hsv, "HSV", 2);
         AddModeButton(row, ColorMode.Hsl, "HSL", 3);
+        AddModeButton(row, ColorMode.Lab, "Lab", 4);
         content.Controls.Add(row, 0, 5);
     }
 
@@ -515,11 +518,13 @@ internal sealed class MaterialEditorPanel : UserControl
             Text = text,
             Dock = DockStyle.Fill,
             Height = Theme.ControlHeightCompact,
-            Margin = new Padding(column == 1 ? 0 : 1, 3, column == 3 ? 0 : 1, 3)
+            Margin = new Padding(column == 1 ? 0 : 1, 3, column == row.ColumnCount - 1 ? 0 : 1, 3),
+            AccessibleName = text
         };
         button.AccessibleRole = AccessibleRole.RadioButton;
         Theme.StyleSegmentedButton(button);
         button.Click += (_, _) => SetColorMode(mode);
+        if (mode == ColorMode.Lab) _toolTip.SetToolTip(button, UiLocalization.T("Edit color in CIELAB (D65)"));
         _modeButtons.Add(mode, button);
         row.Controls.Add(button, column, 0);
     }
@@ -539,26 +544,30 @@ internal sealed class MaterialEditorPanel : UserControl
             Dock = DockStyle.Top,
             Height = 108,
             BackColor = Theme.Panel,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             Margin = Padding.Empty
         };
         picker.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
+        picker.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 24));
         picker.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        void UpdatePickerColumns()
-        {
-            picker.ColumnStyles[0].Width = picker.ClientSize.Width < 256 ? 88 : 104;
-        }
-        picker.SizeChanged += (_, _) => UpdatePickerColumns();
-        UpdatePickerColumns();
-        _colorWheel.Dock = DockStyle.Fill;
-        _colorWheel.Margin = new Padding(0, 1, 8, 1);
-        _colorWheel.ColorChanged += (_, _) => ColorWheelChanged();
-        _colorWheel.InteractionStarted += (_, _) => BeginColorContinuousEdit();
-        _colorWheel.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
-        _colorWheel.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
-        _toolTip.SetToolTip(_colorWheel, "Drag the ring to adjust the primary hue");
-        picker.Controls.Add(_colorWheel, 0, 0);
+        _traditionalPlane.Dock = DockStyle.Fill;
+        _traditionalPlane.Margin = new Padding(0, 1, 4, 1);
+        _traditionalPlane.ColorAt = TraditionalPlaneColor;
+        _traditionalPlane.ValueChanged += (_, _) => TraditionalPlaneChanged();
+        _traditionalPlane.InteractionStarted += (_, _) => BeginColorContinuousEdit();
+        _traditionalPlane.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
+        _traditionalPlane.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
+        picker.Controls.Add(_traditionalPlane, 0, 0);
+
+        _primaryComponent.Dock = DockStyle.Fill;
+        _primaryComponent.Margin = new Padding(0, 1, 6, 1);
+        _primaryComponent.GradientColor = TraditionalPrimaryGradient;
+        _primaryComponent.ValueChanged += (_, _) => TraditionalPrimaryChanged();
+        _primaryComponent.InteractionStarted += (_, _) => BeginColorContinuousEdit();
+        _primaryComponent.InteractionCompleted += (_, _) => CompleteColorContinuousEdit();
+        _primaryComponent.InteractionCanceled += (_, _) => CancelColorContinuousEdit();
+        picker.Controls.Add(_primaryComponent, 1, 0);
 
         var harmony = new TableLayoutPanel
         {
@@ -590,10 +599,23 @@ internal sealed class MaterialEditorPanel : UserControl
         _harmonyRule.Items.AddRange(HarmonyRules.Select(rule => (object)rule.Label).ToArray());
         _harmonyRule.SelectedIndex = 0;
         Theme.StyleComboBox(_harmonyRule);
+        _harmonyRule.Font = Theme.UiFont(8.8f);
+        _harmonyRule.DropDownWidth = 176;
         _harmonyRule.SelectedIndexChanged += (_, _) => HarmonyRuleChanged();
         _toolTip.SetToolTip(_harmonyRule, "Choose a color harmony rule");
         ruleRow.Controls.Add(_harmonyRule, 1, 0);
         harmony.Controls.Add(ruleRow, 0, 0);
+
+        void UpdatePickerLayout()
+        {
+            var narrow = picker.ClientSize.Width < 256;
+            var showHarmonyLabel = picker.ClientSize.Width >= 360;
+            picker.ColumnStyles[0].Width = narrow ? 88 : 104;
+            ruleRow.ColumnStyles[0].Width = showHarmonyLabel ? 62 : 0;
+            harmonyLabel.Visible = showHarmonyLabel;
+        }
+        picker.SizeChanged += (_, _) => UpdatePickerLayout();
+        UpdatePickerLayout();
 
         _harmonyGrid.Dock = DockStyle.Fill;
         _harmonyGrid.Margin = new Padding(0, 1, 0, 0);
@@ -603,7 +625,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _harmonyGrid.HoveredColorChanged += (_, e) => _toolTip.SetToolTip(_harmonyGrid, ToHex(e.Color));
         _harmonyGrid.HoverCleared += (_, _) => _toolTip.SetToolTip(_harmonyGrid, string.Empty);
         harmony.Controls.Add(_harmonyGrid, 0, 1);
-        picker.Controls.Add(harmony, 1, 0);
+        picker.Controls.Add(harmony, 2, 0);
         host.Controls.Add(picker);
 
         var componentHost = new Panel
@@ -628,7 +650,7 @@ internal sealed class MaterialEditorPanel : UserControl
             RowCount = 5,
             Margin = Padding.Empty
         };
-        channels.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
+        channels.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
         channels.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         channels.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
         for (var i = 0; i < 4; i++) channels.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
@@ -674,6 +696,7 @@ internal sealed class MaterialEditorPanel : UserControl
         label.BackColor = Theme.Panel;
         label.TextAlign = ContentAlignment.MiddleLeft;
         label.Font = Theme.UiFont(8.5f, FontStyle.Bold);
+        label.AutoEllipsis = true;
         channels.Controls.Add(label, 0, index);
 
         var slider = _channelSliders[index];
@@ -1568,39 +1591,64 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             ColorMode.Hsv => new[] { "Hue", "Saturation", "Value" },
             ColorMode.Hsl => new[] { "Hue", "Saturation", "Lightness" },
+            ColorMode.Lab => new[] { "L*", "a*", "b*" },
             _ => new[] { "Red", "Green", "Blue" }
         };
-        var maxima = _colorMode is ColorMode.Hsv or ColorMode.Hsl
-            ? new[] { 360, 100, 100 }
-            : new[] { 255, 255, 255 };
+        var accessibleNames = _colorMode == ColorMode.Lab
+            ? new[] { "CIELAB lightness", "CIELAB green-red axis", "CIELAB blue-yellow axis" }
+            : labels.Select(label => $"{_colorMode} {label}").ToArray();
+        var descriptions = _colorMode == ColorMode.Lab
+            ? new[] { "Adjust CIELAB lightness", "Adjust CIELAB green-red axis", "Adjust CIELAB blue-yellow axis" }
+            : labels.Select(label => $"Adjust {label.ToLowerInvariant()}").ToArray();
+        var minima = _colorMode == ColorMode.Lab
+            ? new[] { 0, -128, -128 }
+            : new[] { 0, 0, 0 };
+        var maxima = _colorMode switch
+        {
+            ColorMode.Hsv or ColorMode.Hsl => new[] { 360, 100, 100 },
+            ColorMode.Lab => new[] { 100, 127, 127 },
+            _ => new[] { 255, 255, 255 }
+        };
 
         _updatingComponents = true;
         for (var i = 0; i < 3; i++)
         {
-            _channelLabels[i].Text = labels[i];
-            _channelLabels[i].AccessibleName = labels[i];
-            _channelSliders[i].AccessibleName = $"{_colorMode} {labels[i]}";
-            _toolTip.SetToolTip(_channelLabels[i], labels[i]);
-            _toolTip.SetToolTip(_channelSliders[i], $"Adjust {labels[i].ToLowerInvariant()}");
-            _channelSliders[i].Maximum = maxima[i];
+            _channelLabels[i].Text = UiLocalization.T(labels[i]);
+            _channelLabels[i].AccessibleName = UiLocalization.T(_colorMode == ColorMode.Lab ? accessibleNames[i] : labels[i]);
+            _channelSliders[i].AccessibleName = UiLocalization.T(accessibleNames[i]);
+            _channelValues[i].AccessibleName = UiLocalization.T(accessibleNames[i]);
+            _toolTip.SetToolTip(_channelLabels[i], UiLocalization.T(_colorMode == ColorMode.Lab ? accessibleNames[i] : labels[i]));
+            _toolTip.SetToolTip(_channelSliders[i], UiLocalization.T(descriptions[i]));
+            var sliderScale = _colorMode == ColorMode.Lab ? 10 : 1;
+            _channelSliders[i].Minimum = minima[i] * sliderScale;
+            _channelSliders[i].Maximum = maxima[i] * sliderScale;
+            _channelValues[i].Minimum = minima[i];
             _channelValues[i].Maximum = maxima[i];
+            _channelValues[i].DecimalPlaces = _colorMode == ColorMode.Lab ? 1 : 0;
+            _channelValues[i].Increment = _colorMode == ColorMode.Lab ? 0.1m : 1m;
             _channelValues[i].Suffix = _colorMode is ColorMode.Hsv or ColorMode.Hsl
                 ? i == 0 ? "degrees" : "percent"
                 : string.Empty;
         }
-        _channelLabels[3].Text = "Alpha";
-        _channelLabels[3].AccessibleName = "Alpha";
-        _channelSliders[3].AccessibleName = "Alpha";
-        _toolTip.SetToolTip(_channelLabels[3], "Alpha");
-        _toolTip.SetToolTip(_channelSliders[3], "Adjust alpha");
+        _channelLabels[3].Text = UiLocalization.T("Alpha");
+        _channelLabels[3].AccessibleName = UiLocalization.T("Alpha");
+        _channelSliders[3].AccessibleName = UiLocalization.T("Alpha");
+        _toolTip.SetToolTip(_channelLabels[3], UiLocalization.T("Alpha"));
+        _toolTip.SetToolTip(_channelSliders[3], UiLocalization.T("Adjust alpha"));
+        _channelSliders[3].Minimum = 0;
         _channelSliders[3].Maximum = 255;
+        _channelValues[3].AccessibleName = UiLocalization.T("Alpha");
+        _channelValues[3].Minimum = 0;
         _channelValues[3].Maximum = 255;
+        _channelValues[3].DecimalPlaces = 0;
+        _channelValues[3].Increment = 1;
         _channelValues[3].Suffix = string.Empty;
+        ConfigureTraditionalPickerMode(labels);
         _updatingComponents = false;
     }
 
     private void UpdateEditorFromColor(
-        bool refreshColorWheel = true,
+        bool refreshTraditionalPicker = true,
         bool refreshSelectionIndicators = true)
     {
         var color = EditedColor;
@@ -1622,6 +1670,10 @@ internal sealed class MaterialEditorPanel : UserControl
                     (int)Math.Round(color.GetBrightness() * 100),
                     color.A);
                 break;
+            case ColorMode.Lab:
+                RgbToLab(color, out var lightness, out var greenRed, out var blueYellow);
+                SetLabChannelValues(lightness, greenRed, blueYellow, color.A);
+                break;
             default:
                 SetChannelValues(color.R, color.G, color.B, color.A);
                 break;
@@ -1629,7 +1681,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _hexText.Text = ToHex(color);
         SetHexInvalid(false);
         _updatingComponents = false;
-        if (refreshColorWheel) UpdateColorWheel();
+        if (refreshTraditionalPicker) UpdateTraditionalPicker();
         RefreshHarmonyPalette();
         RefreshChannelGradients();
         if (refreshSelectionIndicators) UpdateColorSelectionIndicators();
@@ -1646,57 +1698,167 @@ internal sealed class MaterialEditorPanel : UserControl
         }
     }
 
+    private void SetLabChannelValues(double lightness, double greenRed, double blueYellow, int alpha)
+    {
+        var values = new[] { lightness, greenRed, blueYellow };
+        for (var i = 0; i < values.Length; i++)
+        {
+            var scaled = (int)Math.Round(values[i] * 10, MidpointRounding.AwayFromZero);
+            _channelSliders[i].Value = Math.Clamp(scaled, _channelSliders[i].Minimum, _channelSliders[i].Maximum);
+            _channelValues[i].Value = Math.Clamp(
+                decimal.Round((decimal)values[i], 1, MidpointRounding.AwayFromZero),
+                _channelValues[i].Minimum,
+                _channelValues[i].Maximum);
+        }
+        _channelSliders[3].Value = alpha;
+        _channelValues[3].Value = alpha;
+    }
+
     private void ChannelSliderChanged(int index)
     {
         if (_updatingComponents) return;
         _updatingComponents = true;
-        _channelValues[index].Value = _channelSliders[index].Value;
+        _channelValues[index].Value = _colorMode == ColorMode.Lab && index < 3
+            ? _channelSliders[index].Value / 10m
+            : _channelSliders[index].Value;
         _updatingComponents = false;
-        ApplyColorComponents();
+        ApplyColorComponents(index);
     }
 
     private void ChannelNumericChanged(int index)
     {
         if (_updatingComponents) return;
         _updatingComponents = true;
-        _channelSliders[index].Value = (int)_channelValues[index].Value;
+        _channelSliders[index].Value = _colorMode == ColorMode.Lab && index < 3
+            ? (int)Math.Round((double)_channelValues[index].Value * 10, MidpointRounding.AwayFromZero)
+            : (int)_channelValues[index].Value;
         _updatingComponents = false;
-        ApplyColorComponents();
+        ApplyColorComponents(index);
     }
 
-    private void ApplyColorComponents()
+    private void ApplyColorComponents(int changedIndex)
     {
         var alpha = _channelSliders[3].Value;
         var first = _channelSliders[0].Value;
         var second = _channelSliders[1].Value;
         var third = _channelSliders[2].Value;
-        var color = _colorMode switch
-        {
-            ColorMode.Hsv => ColorFromHsv(first, second / 100d, third / 100d, alpha),
-            ColorMode.Hsl => ColorFromHsl(first, second / 100d, third / 100d, alpha),
-            _ => Color.FromArgb(alpha, first, second, third)
-        };
+        var color = changedIndex == 3
+            ? Color.FromArgb(alpha, EditedColor.R, EditedColor.G, EditedColor.B)
+            : ColorFromComponentValues(first, second, third, alpha);
         SetEditedColor(color, addRecentForDiscreteEdit: true);
-        UpdateColorWheel();
+        UpdateTraditionalPicker(changedIndex);
         RefreshHarmonyPalette();
         RefreshChannelGradients();
     }
 
-    private void ColorWheelChanged()
+    private void TraditionalPlaneChanged()
     {
         if (_updatingComponents) return;
-        var color = _colorWheel.Color;
-        if (SetEditedColor(color, addRecentForDiscreteEdit: true))
-        {
-            UpdateEditorFromColor(
-                refreshColorWheel: false,
-                refreshSelectionIndicators: false);
-        }
+        _updatingComponents = true;
+        SetComponentFromAmount(1, _traditionalPlane.XValue);
+        SetComponentFromAmount(2, _traditionalPlane.YValue);
+        _updatingComponents = false;
+        ApplyColorComponents(1);
     }
 
-    private void UpdateColorWheel()
+    private void TraditionalPrimaryChanged()
     {
-        _colorWheel.SetColor(EditedColor);
+        if (_updatingComponents) return;
+        _updatingComponents = true;
+        SetComponentFromAmount(0, _primaryComponent.Value);
+        _updatingComponents = false;
+        ApplyColorComponents(0);
+    }
+
+    private void SetComponentFromAmount(int index, float amount)
+    {
+        var slider = _channelSliders[index];
+        var value = slider.Minimum + (int)Math.Round(
+            (slider.Maximum - slider.Minimum) * Math.Clamp(amount, 0f, 1f),
+            MidpointRounding.AwayFromZero);
+        slider.Value = value;
+        _channelValues[index].Value = _colorMode == ColorMode.Lab
+            ? value / 10m
+            : value;
+    }
+
+    private float ComponentAmount(int index)
+    {
+        var slider = _channelSliders[index];
+        return slider.Maximum <= slider.Minimum
+            ? 0f
+            : (slider.Value - slider.Minimum) / (float)(slider.Maximum - slider.Minimum);
+    }
+
+    private int ComponentValue(int index, float amount)
+    {
+        var slider = _channelSliders[index];
+        return slider.Minimum + (int)Math.Round(
+            (slider.Maximum - slider.Minimum) * Math.Clamp(amount, 0f, 1f),
+            MidpointRounding.AwayFromZero);
+    }
+
+    private Color TraditionalPlaneColor(float horizontal, float vertical)
+    {
+        return ColorFromComponentValues(
+            _channelSliders[0].Value,
+            ComponentValue(1, horizontal),
+            ComponentValue(2, vertical),
+            255);
+    }
+
+    private Color TraditionalPrimaryGradient(float amount)
+    {
+        return _colorMode switch
+        {
+            ColorMode.Hsv => ColorFromHsv(amount * 360, 1, 1, 255),
+            ColorMode.Hsl => ColorFromHsl(amount * 360, 1, 0.5, 255),
+            _ => ColorFromComponentValues(
+                ComponentValue(0, amount),
+                _channelSliders[1].Value,
+                _channelSliders[2].Value,
+                255)
+        };
+    }
+
+    private Color ColorFromComponentValues(int first, int second, int third, int alpha)
+    {
+        return _colorMode switch
+        {
+            ColorMode.Hsv => ColorFromHsv(first, second / 100d, third / 100d, alpha),
+            ColorMode.Hsl => ColorFromHsl(first, second / 100d, third / 100d, alpha),
+            ColorMode.Lab => ColorFromLab(first / 10d, second / 10d, third / 10d, alpha),
+            _ => Color.FromArgb(alpha, first, second, third)
+        };
+    }
+
+    private void UpdateTraditionalPicker(int changedIndex = -1)
+    {
+        _traditionalPlane.SetValues(ComponentAmount(1), ComponentAmount(2));
+        _primaryComponent.SetValue(ComponentAmount(0));
+        if (changedIndex is -1 or 0) _traditionalPlane.RefreshGradient();
+        if (changedIndex is -1 or 1 or 2) _primaryComponent.RefreshGradient();
+    }
+
+    private void ConfigureTraditionalPickerMode(string[] labels)
+    {
+        var modeName = _colorMode switch
+        {
+            ColorMode.Hsv => "HSV",
+            ColorMode.Hsl => "HSL",
+            ColorMode.Lab => "Lab",
+            _ => "RGB"
+        };
+        _traditionalPlane.HorizontalAxisName = UiLocalization.T(labels[1]);
+        _traditionalPlane.VerticalAxisName = UiLocalization.T(labels[2]);
+        _traditionalPlane.AccessibleName = UiLocalization.T($"{modeName} color field");
+        _primaryComponent.AxisName = UiLocalization.T(labels[0]);
+        _primaryComponent.AccessibleName = UiLocalization.T("Primary color component");
+        _primaryComponent.HighAtTop = _colorMode is ColorMode.Rgb or ColorMode.Lab;
+        _toolTip.SetToolTip(
+            _traditionalPlane,
+            $"{UiLocalization.T(labels[1])} / {UiLocalization.T(labels[2])}");
+        _toolTip.SetToolTip(_primaryComponent, UiLocalization.T(labels[0]));
     }
 
     private void HarmonyRuleChanged()
@@ -1708,8 +1870,8 @@ internal sealed class MaterialEditorPanel : UserControl
     private void RefreshHarmonyPalette()
     {
         var index = Math.Clamp(_harmonyRule.SelectedIndex, 0, HarmonyRules.Length - 1);
-        _colorWheel.HarmonyMode = HarmonyRules[index].Mode;
-        _harmonyGrid.SetColors(_colorWheel.HarmonyColors.Select(Opaque));
+        _harmonyGrid.SetColors(
+            HarmonyColorWheel.CreateHarmonyColors(EditedColor, HarmonyRules[index].Mode).Select(Opaque));
         _harmonyGrid.SelectedColor = Opaque(EditedColor);
     }
 
@@ -1781,6 +1943,13 @@ internal sealed class MaterialEditorPanel : UserControl
                 2 => ColorFromHsl(first, second / 100d, amount, 255),
                 _ => Color.FromArgb((int)Math.Round(amount * 255), EditedColor.R, EditedColor.G, EditedColor.B)
             },
+            ColorMode.Lab => index switch
+            {
+                0 => ColorFromLab(amount * 100, second / 10d, third / 10d, 255),
+                1 => ColorFromLab(first / 10d, -128 + amount * 255, third / 10d, 255),
+                2 => ColorFromLab(first / 10d, second / 10d, -128 + amount * 255, 255),
+                _ => Color.FromArgb((int)Math.Round(amount * 255), EditedColor.R, EditedColor.G, EditedColor.B)
+            },
             _ => index switch
             {
                 0 => Color.FromArgb((int)Math.Round(amount * 255), second, third),
@@ -1829,9 +1998,11 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void SetHexInvalid(bool invalid)
     {
-        if (_hexInvalid == invalid) return;
         _hexInvalid = invalid;
-        _hexText.ForeColor = invalid ? Color.FromArgb(255, 150, 150) : Theme.Text;
+        var background = _hexText.BackColor.IsEmpty ? Theme.Field : _hexText.BackColor;
+        _hexText.ForeColor = invalid
+            ? Theme.ReadableText(background, Theme.DangerText)
+            : Theme.ReadableText(background, Theme.Text);
         _toolTip.SetToolTip(_hexText, invalid ? "Use #RRGGBB or #RRGGBBAA" : "Hex color (#RRGGBB or #RRGGBBAA)");
     }
 
@@ -2140,6 +2311,77 @@ internal sealed class MaterialEditorPanel : UserControl
         return Color.FromArgb(alpha, Byte(red + offset), Byte(green + offset), Byte(blue + offset));
     }
 
+    // CIELAB uses the standard sRGB D65 reference white with XYZ normalized to Y = 1.
+    internal static void RgbToLab(Color color, out double lightness, out double greenRed, out double blueYellow)
+    {
+        var red = SrgbToLinear(color.R / 255d);
+        var green = SrgbToLinear(color.G / 255d);
+        var blue = SrgbToLinear(color.B / 255d);
+        var x = (0.4124564 * red + 0.3575761 * green + 0.1804375 * blue) / 0.95047;
+        var y = 0.2126729 * red + 0.7151522 * green + 0.0721750 * blue;
+        var z = (0.0193339 * red + 0.1191920 * green + 0.9503041 * blue) / 1.08883;
+        var fx = LabForward(x);
+        var fy = LabForward(y);
+        var fz = LabForward(z);
+        lightness = Math.Clamp(116 * fy - 16, 0, 100);
+        greenRed = 500 * (fx - fy);
+        blueYellow = 200 * (fy - fz);
+        if (Math.Abs(greenRed) < 0.0001) greenRed = 0;
+        if (Math.Abs(blueYellow) < 0.0001) blueYellow = 0;
+    }
+
+    internal static Color ColorFromLab(double lightness, double greenRed, double blueYellow, int alpha)
+    {
+        if (!double.IsFinite(lightness) || !double.IsFinite(greenRed) || !double.IsFinite(blueYellow))
+        {
+            throw new ArgumentOutOfRangeException(nameof(lightness), "CIELAB components must be finite.");
+        }
+        lightness = Math.Clamp(lightness, 0, 100);
+        greenRed = Math.Clamp(greenRed, -128, 127);
+        blueYellow = Math.Clamp(blueYellow, -128, 127);
+        var fy = (lightness + 16) / 116;
+        var x = 0.95047 * LabInverse(fy + greenRed / 500);
+        var y = LabInverse(fy);
+        var z = 1.08883 * LabInverse(fy - blueYellow / 200);
+        var red = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;
+        var green = -0.969266 * x + 1.8760108 * y + 0.041556 * z;
+        var blue = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z;
+        return Color.FromArgb(
+            alpha,
+            Byte(LinearToSrgb(Math.Clamp(red, 0, 1))),
+            Byte(LinearToSrgb(Math.Clamp(green, 0, 1))),
+            Byte(LinearToSrgb(Math.Clamp(blue, 0, 1))));
+    }
+
+    private static double SrgbToLinear(double value)
+    {
+        return value <= 0.04045
+            ? value / 12.92
+            : Math.Pow((value + 0.055) / 1.055, 2.4);
+    }
+
+    private static double LinearToSrgb(double value)
+    {
+        return value <= 0.0031308
+            ? value * 12.92
+            : 1.055 * Math.Pow(value, 1 / 2.4) - 0.055;
+    }
+
+    private static double LabForward(double value)
+    {
+        const double epsilon = 216d / 24389d;
+        const double kappa = 24389d / 27d;
+        return value > epsilon ? Math.Cbrt(value) : (kappa * value + 16) / 116;
+    }
+
+    private static double LabInverse(double value)
+    {
+        const double epsilon = 216d / 24389d;
+        const double kappa = 24389d / 27d;
+        var cube = value * value * value;
+        return cube > epsilon ? cube : (116 * value - 16) / kappa;
+    }
+
     private static (double Red, double Green, double Blue) HueComponents(double hue, double chroma, double secondary)
     {
         return hue switch
@@ -2159,7 +2401,8 @@ internal sealed class MaterialEditorPanel : UserControl
     {
         Rgb,
         Hsv,
-        Hsl
+        Hsl,
+        Lab
     }
 
     private enum GradientColorTarget

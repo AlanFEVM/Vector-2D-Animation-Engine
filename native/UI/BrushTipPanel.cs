@@ -343,7 +343,7 @@ internal sealed class BrushTipPanel : UserControl
         protected override void OnPaint(PaintEventArgs e)
         {
             using var background = new SolidBrush(Theme.Field);
-            using var border = new Pen(Theme.Border);
+            using var border = new Pen(Theme.ReadableUiColor(Theme.Field, Theme.Border));
             e.Graphics.FillRectangle(background, ClientRectangle);
             e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
             if (BrushShape is null) return;
@@ -357,7 +357,10 @@ internal sealed class BrushTipPanel : UserControl
                     .Select(point => new PointF(center.X + point.X * radius, center.Y + point.Y * radius))
                     .ToArray();
                 if (contour.Length < 3) continue;
-                using var fill = new SolidBrush(Color.FromArgb((int)Math.Clamp(layer.Opacity * 255, 0, 255), Theme.Text));
+                using var fill = new SolidBrush(
+                    Color.FromArgb(
+                        (int)Math.Clamp(layer.Opacity * 255, 0, 255),
+                        Theme.ReadableText(Theme.Field, Theme.Text)));
                 e.Graphics.FillPolygon(fill, contour);
             }
         }

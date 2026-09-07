@@ -74,11 +74,11 @@ internal static class Theme
         Color.FromArgb(22, 25, 28),
         Color.FromArgb(24, 31, 32),
         Color.FromArgb(13, 15, 17),
-        Color.FromArgb(61, 69, 76),
-        Color.FromArgb(91, 103, 110),
+        Color.FromArgb(82, 93, 100),
+        Color.FromArgb(112, 126, 133),
         Color.FromArgb(242, 246, 245),
         Color.FromArgb(190, 202, 202),
-        Color.FromArgb(116, 125, 128),
+        Color.FromArgb(160, 170, 173),
         Color.FromArgb(79, 179, 162),
         Color.FromArgb(39, 83, 77),
         Color.FromArgb(51, 107, 99),
@@ -99,16 +99,16 @@ internal static class Theme
         Color.FromArgb(246, 249, 249),
         Color.FromArgb(238, 248, 246),
         Color.FromArgb(237, 240, 242),
-        Color.FromArgb(198, 206, 211),
-        Color.FromArgb(137, 151, 158),
+        Color.FromArgb(122, 138, 147),
+        Color.FromArgb(116, 132, 140),
         Color.FromArgb(31, 39, 43),
         Color.FromArgb(91, 105, 112),
-        Color.FromArgb(151, 162, 167),
-        Color.FromArgb(22, 132, 113),
+        Color.FromArgb(90, 103, 110),
+        Color.FromArgb(18, 125, 106),
         Color.FromArgb(211, 238, 232),
         Color.FromArgb(190, 229, 221),
         Color.FromArgb(169, 219, 209),
-        Color.FromArgb(231, 235, 237),
+        Color.FromArgb(229, 234, 236),
         Color.FromArgb(255, 255, 255),
         Color.FromArgb(7, 89, 75),
         Color.FromArgb(155, 91, 0),
@@ -157,7 +157,9 @@ internal static class Theme
     public static Color DangerPressedSurface => IsLight
         ? Mix(Panel, Danger, 0.28f)
         : Color.FromArgb(58, 34, 36);
-    public static Color DangerText => IsLight ? Danger : Color.FromArgb(255, 226, 226);
+    public static Color DangerText => IsLight
+        ? ReadableText(DangerSurface, Danger)
+        : Color.FromArgb(255, 226, 226);
 
     private static readonly ConditionalWeakTable<Control, FieldInteractionState> FieldStates = new();
     private static readonly ConditionalWeakTable<Button, ButtonThemeState> StyledButtons = new();
@@ -369,6 +371,7 @@ internal static class Theme
 
     private static Color WithAlpha(Color color, int alpha)
     {
+        if (color.A == alpha) return color;
         return Color.FromArgb(alpha, color.R, color.G, color.B);
     }
 
@@ -417,10 +420,10 @@ internal static class Theme
             && accentSaturationPercent == ApplicationSettings.DefaultAccentSaturationPercent
             && accentBrightnessPercent == ApplicationSettings.DefaultAccentBrightnessPercent)
         {
-            return basePalette;
+            return EnsurePaletteContrast(basePalette);
         }
 
-        return new ThemePalette(
+        return EnsurePaletteContrast(new ThemePalette(
             AdjustColor(basePalette.App, themeShift, themeSaturationPercent, themeBrightnessPercent),
             AdjustColor(basePalette.Top, themeShift, themeSaturationPercent, themeBrightnessPercent),
             AdjustColor(basePalette.Panel, themeShift, themeSaturationPercent, themeBrightnessPercent),
@@ -443,7 +446,66 @@ internal static class Theme
             AdjustColor(basePalette.AccentText, accentShift, accentSaturationPercent, accentBrightnessPercent),
             AdjustColor(basePalette.AccentLabel, accentShift, accentSaturationPercent, accentBrightnessPercent),
             basePalette.Warning,
-            basePalette.Danger);
+            basePalette.Danger));
+    }
+
+    private static ThemePalette EnsurePaletteContrast(ThemePalette palette)
+    {
+        var textBackgrounds = new[]
+        {
+            palette.App,
+            palette.Top,
+            palette.Panel,
+            palette.PanelStrong,
+            palette.Field,
+            palette.FieldHover,
+            palette.FieldFocus,
+            palette.AccentSurface,
+            palette.AccentHoverSurface,
+            palette.AccentPressedSurface
+        };
+        var mutedBackgrounds = new[]
+        {
+            palette.App,
+            palette.Top,
+            palette.Panel,
+            palette.PanelStrong,
+            palette.Stage,
+            palette.AccentSurface,
+            palette.AccentHoverSurface,
+            palette.AccentPressedSurface
+        };
+        var disabledBackgrounds = new[]
+        {
+            palette.App,
+            palette.Top,
+            palette.Panel,
+            palette.PanelStrong,
+            palette.Field,
+            palette.DisabledSurface
+        };
+        return palette with
+        {
+            Text = EnsureTextContrast(palette.Text, 4.5d, textBackgrounds),
+            Muted = EnsureTextContrast(palette.Muted, 4.5d, mutedBackgrounds),
+            DisabledText = EnsureTextContrast(palette.DisabledText, 4.5d, disabledBackgrounds),
+            AccentText = EnsureTextContrast(palette.AccentText, 4.5d, palette.Accent),
+            AccentLabel = EnsureTextContrast(palette.AccentLabel, 4.5d, palette.AccentSurface)
+        };
+    }
+
+    private static Color EnsureTextContrast(Color preferred, double minimumRatio, params Color[] backgrounds)
+    {
+        if (backgrounds.Length == 0 || backgrounds.All(background => ContrastRatio(preferred, background) >= minimumRatio))
+        {
+            return preferred;
+        }
+
+        var light = Color.White;
+        var dark = Color.Black;
+        var lightRatio = backgrounds.Min(background => ContrastRatio(light, background));
+        var darkRatio = backgrounds.Min(background => ContrastRatio(dark, background));
+        return lightRatio >= darkRatio ? light : dark;
     }
 
     internal static Color HueSpectrumColor(float amount)
@@ -549,6 +611,87 @@ internal static class Theme
             (int)Math.Round(from.R + (to.R - from.R) * amount),
             (int)Math.Round(from.G + (to.G - from.G) * amount),
             (int)Math.Round(from.B + (to.B - from.B) * amount));
+    }
+
+    internal static Color ReadableText(Color background, Color preferred)
+    {
+        return ReadableColor(background, preferred, 4.5d);
+    }
+
+    internal static Color ReadableUiColor(Color background, Color preferred)
+    {
+        return ReadableColor(background, preferred, 3d);
+    }
+
+    internal static double ContrastRatio(Color foreground, Color background)
+    {
+        var resolvedBackground = background.A < 255
+            ? CompositeOver(background, App)
+            : background;
+        var resolvedForeground = foreground.A < 255
+            ? CompositeOver(foreground, resolvedBackground)
+            : foreground;
+        var foregroundLuminance = RelativeLuminance(resolvedForeground);
+        var backgroundLuminance = RelativeLuminance(resolvedBackground);
+        var brighter = Math.Max(foregroundLuminance, backgroundLuminance);
+        var darker = Math.Min(foregroundLuminance, backgroundLuminance);
+        return (brighter + 0.05d) / (darker + 0.05d);
+    }
+
+    internal static Color EffectiveBackground(Control? control, Color? fallback = null)
+    {
+        var background = fallback ?? App;
+        if (control is null) return background;
+
+        var ancestors = new List<Control>();
+        for (var current = control; current is not null; current = current.Parent)
+        {
+            ancestors.Add(current);
+        }
+
+        for (var index = ancestors.Count - 1; index >= 0; index--)
+        {
+            var color = ancestors[index].BackColor;
+            if (color.IsEmpty || color.A == 0) continue;
+            background = color.A >= 255 ? color : CompositeOver(color, background);
+        }
+
+        return background;
+    }
+
+    private static Color ReadableColor(Color background, Color preferred, double minimumRatio)
+    {
+        if (preferred.IsEmpty) preferred = Text;
+        if (ContrastRatio(preferred, background) >= minimumRatio) return preferred;
+
+        var light = Color.White;
+        var dark = Color.Black;
+        return ContrastRatio(light, background) >= ContrastRatio(dark, background) ? light : dark;
+    }
+
+    private static Color CompositeOver(Color foreground, Color background)
+    {
+        var alpha = foreground.A / 255d;
+        return Color.FromArgb(
+            255,
+            (int)Math.Round(foreground.R * alpha + background.R * (1d - alpha)),
+            (int)Math.Round(foreground.G * alpha + background.G * (1d - alpha)),
+            (int)Math.Round(foreground.B * alpha + background.B * (1d - alpha)));
+    }
+
+    private static double RelativeLuminance(Color color)
+    {
+        static double LinearChannel(int channel)
+        {
+            var normalized = channel / 255d;
+            return normalized <= 0.03928d
+                ? normalized / 12.92d
+                : Math.Pow((normalized + 0.055d) / 1.055d, 2.4d);
+        }
+
+        return 0.2126d * LinearChannel(color.R)
+            + 0.7152d * LinearChannel(color.G)
+            + 0.0722d * LinearChannel(color.B);
     }
 
     internal static float AdvanceRowMotion(float from, float to, double elapsedMs, double durationMs)
@@ -878,7 +1021,7 @@ internal static class Theme
                 UiLocalization.T(e.ToolTipText),
                 font,
                 bounds,
-                Text,
+                ReadableText(PanelStrong, Text),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
         };
     }
@@ -936,11 +1079,14 @@ internal static class Theme
             textBounds,
             highContrast
                 ? box.Enabled ? selected ? SystemColors.HighlightText : SystemColors.WindowText : SystemColors.GrayText
-                : box.Enabled ? Text : DisabledText,
+                : box.Enabled
+                    ? ReadableText(background, Text)
+                    : ReadableText(background, DisabledText),
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         if (focused && e.Index >= 0)
         {
-            using var focus = new Pen(highContrast ? SystemColors.HighlightText : Accent);
+            using var focus = new Pen(
+                highContrast ? SystemColors.HighlightText : ReadableUiColor(background, Accent));
             var focusBounds = Rectangle.Inflate(e.Bounds, -1, -1);
             e.Graphics.DrawRectangle(focus, focusBounds);
         }
@@ -967,14 +1113,16 @@ internal static class Theme
             UiLocalization.T(list.GetItemText(list.Items[e.Index])),
             list.Font,
             textBounds,
-            list.Enabled ? Text : DisabledText,
+            list.Enabled
+                ? ReadableText(background, Text)
+                : ReadableText(background, DisabledText),
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         if ((e.State & DrawItemState.Focus) != 0 && list.Focused)
         {
             ControlPaint.DrawFocusRectangle(
                 e.Graphics,
                 Rectangle.Inflate(e.Bounds, -2, -2),
-                SystemInformation.HighContrast ? SystemColors.HighlightText : AccentLabel,
+                SystemInformation.HighContrast ? SystemColors.HighlightText : ReadableUiColor(background, AccentLabel),
                 background);
         }
     }
@@ -1033,7 +1181,9 @@ internal static class Theme
                 PointF[] chevron = e.Node.IsExpanded
                     ? [new(centerX - 4, centerY - 2), new(centerX, centerY + 2), new(centerX + 4, centerY - 2)]
                     : [new(centerX - 2, centerY - 4), new(centerX + 2, centerY), new(centerX - 2, centerY + 4)];
-                using var glyph = new Pen(selected || expandHovered ? AccentLabel : Muted, 1.6f)
+                using var glyph = new Pen(
+                    ReadableUiColor(buttonColor, selected || expandHovered ? AccentLabel : Muted),
+                    1.6f)
                 {
                     StartCap = System.Drawing.Drawing2D.LineCap.Round,
                     EndCap = System.Drawing.Drawing2D.LineCap.Round,
@@ -1049,13 +1199,15 @@ internal static class Theme
                 PointF[] points = e.Node.IsExpanded
                     ? [new(centerX - 4, centerY - 2), new(centerX + 4, centerY - 2), new(centerX, centerY + 3)]
                     : [new(centerX - 2, centerY - 4), new(centerX - 2, centerY + 4), new(centerX + 3, centerY)];
-                using var glyph = new SolidBrush(selected ? AccentLabel : Muted);
+                using var glyph = new SolidBrush(
+                    ReadableUiColor(backgroundColor, selected ? AccentLabel : Muted));
                 e.Graphics.FillPolygon(glyph, points);
             }
         }
 
-        var color = e.Node.ForeColor.IsEmpty ? tree.ForeColor : e.Node.ForeColor;
-        if (!tree.Enabled) color = DisabledText;
+        var preferredColor = e.Node.ForeColor.IsEmpty ? tree.ForeColor : e.Node.ForeColor;
+        if (!tree.Enabled) preferredColor = DisabledText;
+        var color = ReadableText(backgroundColor, preferredColor);
         if (e.Node.Tag is ITreeNodeLeadingIconSource iconSource)
         {
             var iconSize = Math.Min(22, Math.Max(12, e.Bounds.Height - 4));
@@ -1064,7 +1216,9 @@ internal static class Theme
                 e.Bounds.Top + Math.Max(0, (e.Bounds.Height - iconSize) / 2),
                 iconSize,
                 iconSize);
-            var iconColor = selected ? AccentLabel : Mix(color, Muted, 0.36f);
+            var iconColor = selected
+                ? ReadableUiColor(backgroundColor, AccentLabel)
+                : ReadableUiColor(backgroundColor, Mix(color, Muted, 0.36f));
             SvgIcons.Draw(e.Graphics, iconSource.LeadingIcon, iconBounds, iconColor);
             contentLeft = iconBounds.Right + 6;
         }
@@ -1109,7 +1263,7 @@ internal static class Theme
             var markerTop = bounds.Top + Math.Max(0, (bounds.Height - markerDiameter) / 2);
             var markerBorderColor = SystemInformation.HighContrast
                 ? SystemColors.WindowText
-                : Mix(backgroundColor, Text, 0.42f);
+                : ReadableUiColor(backgroundColor, Mix(backgroundColor, Text, 0.42f));
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             using var markerBorder = new Pen(markerBorderColor);
             for (var index = 0; index < markerCount; index++)
@@ -1129,7 +1283,7 @@ internal static class Theme
             var focusBounds = new Rectangle(4, row.Top + 1, Math.Max(0, row.Width - 8), Math.Max(0, row.Height - 2));
             if (state?.UseSolidFocusCue == true && !SystemInformation.HighContrast)
             {
-                using var focus = new Pen(Mix(backgroundColor, Accent, 0.72f));
+                using var focus = new Pen(ReadableUiColor(backgroundColor, Mix(backgroundColor, Accent, 0.72f)));
                 e.Graphics.DrawRectangle(
                     focus,
                     focusBounds.X,
@@ -1139,7 +1293,7 @@ internal static class Theme
             }
             else
             {
-                ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, AccentLabel, background.Color);
+                ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, ReadableUiColor(backgroundColor, AccentLabel), background.Color);
             }
         }
     }
@@ -1192,7 +1346,7 @@ internal static class Theme
             UiLocalization.T(e.Header?.Text ?? string.Empty),
             e.Font ?? SystemFonts.MessageBoxFont,
             bounds,
-            Muted,
+            ReadableText(PanelStrong, Muted),
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
 
@@ -1245,14 +1399,20 @@ internal static class Theme
             UiLocalization.T(e.SubItem?.Text ?? string.Empty),
             list.Font,
             bounds,
-            list.Enabled ? Text : DisabledText,
+            list.Enabled
+                ? ReadableText(backgroundColor, item.ForeColor.IsEmpty ? Text : item.ForeColor)
+                : ReadableText(backgroundColor, DisabledText),
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         if (e.ColumnIndex == list.Columns.Count - 1 && item.Focused && list.Focused)
         {
             var focusBounds = Rectangle.Inflate(item.Bounds, -4, -2);
             var graphicsState = e.Graphics.Save();
             e.Graphics.SetClip(list.ClientRectangle, System.Drawing.Drawing2D.CombineMode.Replace);
-            ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, AccentLabel, backgroundColor);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                focusBounds,
+                ReadableUiColor(backgroundColor, AccentLabel),
+                backgroundColor);
             e.Graphics.Restore(graphicsState);
         }
     }

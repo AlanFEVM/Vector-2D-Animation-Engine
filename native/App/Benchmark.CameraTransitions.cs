@@ -7,6 +7,8 @@ internal static partial class Benchmark
     private static void RunReferenceCameraTransitionRegression()
     {
         RunReferenceCameraFrameInterpolationRegression();
+        RunReferenceCameraFocusFrameRegression();
+        RunReferenceCameraFocusTransitionRegression();
         RunReferenceCameraProjectionBlendRegression();
         RunReferenceCamera2DRendererHandoffRegression();
         RunReferenceCameraCompositionTransitionRegression();
@@ -54,6 +56,216 @@ internal static partial class Benchmark
             throw new InvalidOperationException(
                 "Reference camera interpolation did not preserve endpoints, positive logarithmic scaling, "
                 + "projection blending, and the shortest yaw path across +/-PI.");
+        }
+    }
+
+    private static void RunReferenceCameraFocusFrameRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene) { Size = new Size(800, 600) };
+        var definition = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        definition.Camera.Projection = CameraProjection.Orthographic;
+        stage.ConfigureReferenceView(definition, SceneDimension.ThreeD);
+        stage.SetReferenceCameraOrientation(0, 0);
+        var originalDistance = stage.ReferenceDistance;
+        Vector3[] compactPoints =
+        [
+            new(100, -300, 250),
+            new(500, -100, 350)
+        ];
+        if (!stage.FocusReferenceCamera(compactPoints, ReferenceCameraMotion.Immediate)
+            || !CameraTransitionNear(stage.ReferenceZoomScale, 1)
+            || !CameraTransitionNear(stage.ReferenceDistance, originalDistance)
+            || !CameraTransitionNear(stage.ReferenceTargetX, 300)
+            || !CameraTransitionNear(stage.ReferenceTargetY, 200)
+            || !CameraTransitionNear(stage.ReferenceTargetZ, 300))
+        {
+            throw new InvalidOperationException(
+                "Orthographic camera focus did not preserve 100% zoom, distance, and the scene-coordinate target.");
+        }
+        AssertReferenceCameraFocusVisible(stage, compactPoints, "compact orthographic focus");
+
+        Vector3[] widePoints =
+        [
+            new(-20_000, -500, -250),
+            new(20_000, 500, 250)
+        ];
+        if (!stage.FocusReferenceCamera(widePoints, ReferenceCameraMotion.Immediate)
+            || stage.ReferenceZoomScale >= 1
+            || stage.ReferenceZoomScale <= 0)
+        {
+            throw new InvalidOperationException(
+                "Orthographic camera focus did not fit down an object that exceeded the 100% viewport.");
+        }
+        AssertReferenceCameraFocusVisible(stage, widePoints, "wide orthographic focus");
+
+        definition.Camera.Projection = CameraProjection.Perspective;
+        stage.ConfigureReferenceView(definition, SceneDimension.ThreeD);
+        stage.SetReferenceCameraOrientation(0.42f, -0.27f);
+        var yaw = stage.ReferenceYaw;
+        var pitch = stage.ReferencePitch;
+        Vector3[] perspectivePoints =
+        [
+            new(-2_000, -1_000, -500),
+            new(-2_000, 1_000, 500),
+            new(2_000, -1_000, 500),
+            new(2_000, 1_000, -500)
+        ];
+        if (!stage.FocusReferenceCamera(perspectivePoints, ReferenceCameraMotion.Immediate)
+            || !CameraTransitionNear(stage.ReferenceZoomScale, 1)
+            || CameraTransitionAngularDistance(stage.ReferenceYaw, yaw) > 0.0001f
+            || !CameraTransitionNear(stage.ReferencePitch, pitch))
+        {
+            throw new InvalidOperationException(
+                "Perspective camera focus did not preserve orientation while solving a 100% camera distance.");
+        }
+        AssertReferenceCameraFocusVisible(stage, perspectivePoints, "perspective focus");
+
+        Vector3[] enormousPoints =
+        [
+            new(-100_000, 0, 0),
+            new(100_000, 0, 0)
+        ];
+        stage.SetReferenceCameraOrientation(0, 0);
+        if (!stage.FocusReferenceCamera(enormousPoints, ReferenceCameraMotion.Immediate)
+            || !CameraTransitionNear(stage.ReferenceDistance, 80_000, 0.1f)
+            || stage.ReferenceZoomScale >= 1
+            || stage.ReferenceZoomScale <= 0)
+        {
+            throw new InvalidOperationException(
+                "Perspective camera focus did not fit down after reaching the supported camera-distance limit.");
+        }
+        AssertReferenceCameraFocusVisible(stage, enormousPoints, "distance-limited perspective focus");
+
+        var stable = stage.CaptureReferenceCameraFrameForPersistence();
+        if (stage.FocusReferenceCamera([], ReferenceCameraMotion.Immediate)
+            || stage.FocusReferenceCamera([new Vector3(float.NaN, 0, 0)], ReferenceCameraMotion.Immediate)
+            || StageControl.TryResolveReferenceCameraFocusFrame(
+                compactPoints,
+                Size.Empty,
+                CameraProjection.Orthographic,
+                stable,
+                out _))
+        {
+            throw new InvalidOperationException("Invalid camera-focus inputs produced a camera target.");
+        }
+        AssertReferenceCameraFrameNear(
+            stage.CaptureReferenceCameraFrameForPersistence(),
+            stable,
+            "invalid focus input");
+    }
+
+    private static void RunReferenceCameraFocusTransitionRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene) { Size = new Size(960, 640) };
+        var definition = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        definition.Camera.Projection = CameraProjection.Perspective;
+        stage.ConfigureReferenceView(definition, SceneDimension.ThreeD);
+        stage.ResetReferenceCameraView();
+        stage.SetReferenceCameraOrientation(0.58f, -0.31f);
+        var from = stage.CaptureReferenceCameraFrameForPersistence();
+        Vector3[] firstPoints =
+        [
+            new(2_000, -1_500, -300),
+            new(8_000, 2_500, 900)
+        ];
+        if (!stage.FocusReferenceCamera(firstPoints, ReferenceCameraMotion.Animated))
+        {
+            throw new InvalidOperationException("Camera focus did not accept a valid animated target.");
+        }
+        var firstTarget = stage.CaptureReferenceCameraFrameForPersistence();
+        if (!UiMotion.AnimationsEnabled)
+        {
+            if (stage.ReferenceCameraTransitionActive)
+            {
+                throw new InvalidOperationException("Reduced-motion camera focus retained an active transition.");
+            }
+            AssertReferenceCameraFrameNear(firstTarget, stage.CaptureReferenceCameraFrameForPersistence(), "focus target");
+            return;
+        }
+
+        if (!stage.ReferenceCameraTransitionActive
+            || CameraTransitionAngularDistance(firstTarget.Yaw, from.Yaw) > 0.0001f
+            || !CameraTransitionNear(firstTarget.Pitch, from.Pitch)
+            || !stage.AdvanceReferenceCameraTransition(80))
+        {
+            throw new InvalidOperationException(
+                "Animated camera focus did not preserve orientation or expose an intermediate frame.");
+        }
+        var presented = new ReferenceCameraFrame(
+            stage.ReferenceYaw,
+            stage.ReferencePitch,
+            stage.ReferenceDistance,
+            stage.ReferenceZoomScale,
+            stage.ReferenceTargetX,
+            stage.ReferenceTargetY,
+            stage.ReferenceTargetZ,
+            stage.ReferenceProjectionBlend);
+        Vector3[] redirectedPoints =
+        [
+            new(-9_000, -2_000, -500),
+            new(-3_000, 3_000, 700)
+        ];
+        if (!stage.FocusReferenceCamera(redirectedPoints, ReferenceCameraMotion.Animated)
+            || !stage.ReferenceCameraTransitionActive)
+        {
+            throw new InvalidOperationException("Camera focus could not redirect an active transition.");
+        }
+        var redirectedStart = new ReferenceCameraFrame(
+            stage.ReferenceYaw,
+            stage.ReferencePitch,
+            stage.ReferenceDistance,
+            stage.ReferenceZoomScale,
+            stage.ReferenceTargetX,
+            stage.ReferenceTargetY,
+            stage.ReferenceTargetZ,
+            stage.ReferenceProjectionBlend);
+        if (CameraTransitionAngularDistance(redirectedStart.Yaw, presented.Yaw) > 0.01f
+            || Math.Abs(redirectedStart.Pitch - presented.Pitch) > 0.01f
+            || !CameraTransitionBetween(redirectedStart.Distance, presented.Distance, firstTarget.Distance)
+            || !CameraTransitionBetween(redirectedStart.ZoomScale, presented.ZoomScale, firstTarget.ZoomScale)
+            || !CameraTransitionBetween(redirectedStart.TargetX, presented.TargetX, firstTarget.TargetX)
+            || !CameraTransitionBetween(redirectedStart.TargetY, presented.TargetY, firstTarget.TargetY)
+            || !CameraTransitionBetween(redirectedStart.TargetZ, presented.TargetZ, firstTarget.TargetZ)
+            || !CameraTransitionBetween(
+                redirectedStart.ProjectionBlend,
+                presented.ProjectionBlend,
+                firstTarget.ProjectionBlend))
+        {
+            throw new InvalidOperationException(
+                "Redirecting an active camera-focus transition caused a presentation discontinuity.");
+        }
+        var redirectedTarget = stage.CaptureReferenceCameraFrameForPersistence();
+        stage.CompleteReferenceCameraTransition();
+        AssertReferenceCameraFrameNear(
+            stage.CaptureReferenceCameraFrameForPersistence(),
+            redirectedTarget,
+            "focus completion");
+        AssertReferenceCameraFocusVisible(stage, redirectedPoints, "redirected perspective focus");
+    }
+
+    private static void AssertReferenceCameraFocusVisible(
+        StageControl stage,
+        IReadOnlyList<Vector3> scenePoints,
+        string checkpoint)
+    {
+        var padding = Math.Max(16f, Math.Min(stage.Width, stage.Height) * 0.05f);
+        foreach (var point in scenePoints)
+        {
+            if (!stage.TryProjectScenePosition(point, out var screen, out var depth)
+                || depth < StageControl.ReferenceNearPlane
+                || screen.X < padding - 0.5f
+                || screen.X > stage.Width - padding + 0.5f
+                || screen.Y < padding - 0.5f
+                || screen.Y > stage.Height - padding + 0.5f)
+            {
+                throw new InvalidOperationException(
+                    $"Reference camera {checkpoint} left a focus point outside the padded viewport: "
+                    + $"point={point}, screen={screen}, depth={depth:0.###}.");
+            }
         }
     }
 
@@ -250,14 +462,17 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException("The composition-transition regression could not begin a 3D-to-2D handoff.");
         }
+        var spatialSwapFrame = PresentedFrame();
         stage.SetSceneCompositionResult(spatial, scene);
-        if (stage.ReferenceCameraTransitionActive
+        if (stage.ReferenceCameraTransitionActive != UiMotion.AnimationsEnabled
             || !stage.UsesReferenceProjection
-            || !stage.RendersReferenceProjection)
+            || !stage.RendersReferenceProjection
+            || stage.EffectiveReferenceProjection != CameraProjection.Orthographic)
         {
             throw new InvalidOperationException(
-                "Enabling spatial poses did not terminate the stale ordinary-2D camera endpoint.");
+                "Enabling spatial poses disturbed the stable front-reference handoff.");
         }
+        AssertReferenceCameraFrameNear(PresentedFrame(), spatialSwapFrame, "spatial-pose composition swap");
 
         stage.ConfigureReferenceView(definition, SceneDimension.ThreeD);
         stage.SetSceneCompositionResult(spatial, scene);
@@ -266,14 +481,27 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException("The spatial composition did not begin its reference-front handoff.");
         }
+        var identitySwapFrame = PresentedFrame();
         stage.SetSceneCompositionResult(identity, scene);
-        if (stage.ReferenceCameraTransitionActive
-            || stage.UsesReferenceProjection
-            || stage.RendersReferenceProjection)
+        if (stage.ReferenceCameraTransitionActive != UiMotion.AnimationsEnabled
+            || !stage.UsesReferenceProjection
+            || !stage.RendersReferenceProjection
+            || stage.EffectiveReferenceProjection != CameraProjection.Orthographic)
         {
             throw new InvalidOperationException(
-                "Removing spatial poses did not terminate the stale reference-front camera endpoint.");
+                "Removing spatial poses disturbed the stable front-reference handoff.");
         }
+        AssertReferenceCameraFrameNear(PresentedFrame(), identitySwapFrame, "identity-pose composition swap");
+
+        ReferenceCameraFrame PresentedFrame() => new(
+            stage.ReferenceYaw,
+            stage.ReferencePitch,
+            stage.ReferenceDistance,
+            stage.ReferenceZoomScale,
+            stage.ReferenceTargetX,
+            stage.ReferenceTargetY,
+            stage.ReferenceTargetZ,
+            stage.ReferenceProjectionBlend);
     }
 
     private static SceneCompositionResult CameraTransitionCompositionResult(Matrix4x4 transform)
@@ -369,15 +597,17 @@ internal static partial class Benchmark
         stage.ResetReferenceCameraView();
         stage.SetReferenceCameraOrientation(1.1f, 0.2f, ReferenceCameraMotion.Animated);
         var dollyInterruptedAnimation = stage.ReferenceCameraTransitionActive;
+        var dollyFactor = MathF.Pow(StageControl.ReferenceWheelDollyBase, 120f / 120f);
         stage.DollyReferenceCamera(120);
         if ((UiMotion.AnimationsEnabled && !dollyInterruptedAnimation)
             || stage.ReferenceCameraTransitionActive
             || CameraTransitionAngularDistance(stage.ReferenceYaw, 1.1f) > 0.001f
             || !CameraTransitionNear(stage.ReferencePitch, 0.2f)
-            || !CameraTransitionNear(stage.ReferenceDistance, 10_800, 0.1f))
+            || !CameraTransitionNear(stage.ReferenceDistance, 12_000, 0.1f)
+            || !CameraTransitionNear(stage.ReferenceZoomScale, 1f / dollyFactor, 0.0001f))
         {
             throw new InvalidOperationException(
-                "Reference camera Dolly did not finish the active transition before applying its immediate distance change.");
+                "Orthographic reference camera Dolly did not finish the active transition before applying its immediate zoom change.");
         }
 
         stage.ResetReferenceCameraView();
@@ -428,6 +658,16 @@ internal static partial class Benchmark
     private static bool CameraTransitionNear(float actual, float expected, float tolerance = 0.001f)
     {
         return Math.Abs(actual - expected) <= tolerance;
+    }
+
+    private static bool CameraTransitionBetween(
+        float actual,
+        float first,
+        float second,
+        float tolerance = 0.01f)
+    {
+        return actual >= Math.Min(first, second) - tolerance
+            && actual <= Math.Max(first, second) + tolerance;
     }
 
     private static float CameraTransitionScreenDistance(PointF left, PointF right)

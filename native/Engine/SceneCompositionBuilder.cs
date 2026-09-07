@@ -29,23 +29,27 @@ internal sealed class SceneCompositionResult
 {
     private readonly SceneCompositionObjectOwner[] _owners;
     private readonly SceneCompositionObjectPose[] _poses;
+    private readonly SpatialOpticalMaterial[] _materials;
     private IReadOnlyDictionary<int, SceneCompositionObjectOwner>? _ownerView;
 
     public SceneCompositionResult(
         SceneCompositionObjectOwner[]? owners = null,
-        SceneCompositionObjectPose[]? poses = null)
+        SceneCompositionObjectPose[]? poses = null,
+        SpatialOpticalMaterial[]? materials = null)
     {
         _owners = owners ?? [];
         _poses = poses ?? Enumerable.Repeat(SceneCompositionObjectPose.Identity, _owners.Length).ToArray();
-        if (_poses.Length != _owners.Length)
+        _materials = materials ?? Enumerable.Repeat(SpatialOpticalMaterial.Default, _owners.Length).ToArray();
+        if (_poses.Length != _owners.Length || _materials.Length != _owners.Length)
         {
-            throw new ArgumentException("Composition poses must align with composition owners.", nameof(poses));
+            throw new ArgumentException("Composition metadata must align with composition owners.");
         }
     }
 
     public static SceneCompositionResult Empty { get; } = new();
     public IReadOnlyDictionary<int, SceneCompositionObjectOwner> ObjectOwners => _ownerView ??= new IndexedOwnerMap(_owners);
     public IReadOnlyList<SceneCompositionObjectPose> ObjectPoses => _poses;
+    public IReadOnlyList<SpatialOpticalMaterial> ObjectMaterials => _materials;
 
     public bool TryGetOwner(int objectIndex, out SceneCompositionObjectOwner owner)
     {
@@ -68,6 +72,18 @@ internal sealed class SceneCompositionResult
         }
 
         pose = default;
+        return false;
+    }
+
+    public bool TryGetMaterial(int objectIndex, out SpatialOpticalMaterial material)
+    {
+        if ((uint)objectIndex < _materials.Length)
+        {
+            material = _materials[objectIndex];
+            return true;
+        }
+
+        material = SpatialOpticalMaterial.Default;
         return false;
     }
 
@@ -123,6 +139,7 @@ internal static class SceneCompositionBuilder
         float InheritedOpacity,
         float Alpha,
         int TintArgb,
+        SpatialOpticalMaterial OpticalMaterial,
         LayerBlendMode BlendMode,
         bool Outline,
         int OutlineColorArgb,
@@ -131,7 +148,10 @@ internal static class SceneCompositionBuilder
         string GroupId = "",
         string ParentGroupId = "",
         bool PreserveSourceParent = false,
-        DistortWarp[]? Distortions = null);
+        DistortWarp[]? Distortions = null)
+    {
+        public bool IsCollisionTerrain { get; init; }
+    }
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
 
@@ -145,6 +165,7 @@ internal static class SceneCompositionBuilder
         SceneCompositionObjectPose Pose,
         float Alpha,
         int TintArgb,
+        SpatialOpticalMaterial OpticalMaterial,
         SceneCompositionObjectOwner Owner,
         DistortWarp[]? Distortions = null);
 
@@ -178,6 +199,7 @@ internal static class SceneCompositionBuilder
         LineEndpointStyle StartEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle EndEndpointStyle = LineEndpointStyle.Round)
     {
+        public bool UseSourceLocalPathGeometry { get; init; }
         public bool LinearGradientEnabled { get; init; }
         public GradientKind GradientKind { get; init; }
         public int GradientStartArgb { get; init; }
@@ -218,12 +240,12 @@ internal static class SceneCompositionBuilder
 
         var definitionsById = DefinitionsById(drawingObjects);
         var layers = new List<CompositionLayer>();
-        sceneDefinition.SynchronizeTimelineTracks();
+        var timeline = sceneDefinition.Timeline;
         var localFrame = Math.Clamp(frame, 0, Math.Max(0, sceneDefinition.FrameCount - 1));
         foreach (var sceneLayer in sceneDefinition.Layers)
         {
             if (!sceneLayer.Visible
-                || !sceneDefinition.Timeline.EvaluateTargetExposure(sceneLayer.Id, localFrame).HasContent)
+                || !timeline.EvaluateTargetExposure(sceneLayer.Id, localFrame).HasContent)
             {
                 continue;
             }
@@ -389,6 +411,7 @@ internal static class SceneCompositionBuilder
                 layer.InheritedOpacity,
                 layer.Alpha,
                 layer.TintArgb,
+                layer.OpticalMaterial,
                 layer.BlendMode,
                 layer.Outline,
                 layer.OutlineColorArgb,
@@ -397,7 +420,10 @@ internal static class SceneCompositionBuilder
                 layer.GroupId,
                 layer.ParentGroupId,
                 layer.PreserveSourceParent,
-                layer.Distortions);
+                layer.Distortions)
+            {
+                IsCollisionTerrain = layer.IsCollisionTerrain
+            };
         }
 
         return BuildLayers(destination, materializedLayers, Math.Max(AnimationTimeline.DefaultDuration, container.FrameCount));
@@ -641,6 +667,7 @@ internal static class SceneCompositionBuilder
         float inheritedOpacity = 1f,
         float inheritedAlpha = 1f,
         int inheritedTintArgb = unchecked((int)0xffffffff),
+        SpatialOpticalMaterial? inheritedOpticalMaterial = null,
         bool synchronize = true,
         bool inheritedOutline = false,
         int inheritedOutlineColorArgb = 0,
@@ -664,6 +691,9 @@ internal static class SceneCompositionBuilder
                 inheritedDistortions);
             var alpha = Math.Clamp(inheritedAlpha * state.Alpha, 0f, 1f);
             var tintArgb = MultiplyTintArgb(inheritedTintArgb, state.TintArgb);
+            var opticalMaterial = instance.OpticalMaterialOverride
+                ?? inheritedOpticalMaterial
+                ?? SpatialOpticalMaterial.Default;
             var localFrame = DrawingObjectInstanceDefinition.ResolvePlaybackFrame(
                 parentFrame,
                 parentFps,
@@ -705,6 +735,7 @@ internal static class SceneCompositionBuilder
                         1f,
                         1f,
                         unchecked((int)0xffffffff),
+                        SpatialOpticalMaterial.Default,
                         blendMode,
                         outline,
                         outlineColorArgb,
@@ -728,12 +759,16 @@ internal static class SceneCompositionBuilder
                     inheritedOpacity,
                     alpha,
                     tintArgb,
+                    opticalMaterial,
                     hostGroupId.Length > 0 ? LayerBlendMode.Normal : blendMode,
                     outline,
                     outlineColorArgb,
                     new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
                     ParentGroupId: hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId,
-                    Distortions: compositionDistortions));
+                    Distortions: compositionDistortions)
+                {
+                    IsCollisionTerrain = source.IsCollisionTerrainLayer(sourceLayer)
+                });
                 foreach (var childItem in activeChildren)
                 {
                     var childInstance = childItem.Instance!;
@@ -761,6 +796,7 @@ internal static class SceneCompositionBuilder
                         inheritedOpacity * EffectiveLayerOpacity(source, sourceLayer),
                         alpha,
                         tintArgb,
+                        opticalMaterial,
                         synchronize,
                         outline,
                         outlineColorArgb,
@@ -836,13 +872,15 @@ internal static class SceneCompositionBuilder
             InheritedOpacity = 1f,
             Alpha = 1f,
             TintArgb = unchecked((int)0xffffffff),
+            OpticalMaterial = SpatialOpticalMaterial.Default,
             BlendMode = blendMode,
             Outline = outline,
             OutlineColorArgb = outlineColorArgb,
             SyntheticGroup = true,
             GroupId = groupId,
             ParentGroupId = "",
-            PreserveSourceParent = false
+            PreserveSourceParent = false,
+            IsCollisionTerrain = false
         });
 
         for (var index = firstLayer + 1; index < layers.Count; index++)
@@ -924,7 +962,9 @@ internal static class SceneCompositionBuilder
         for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
         {
             var layer = layers[destinationLayer];
-            destination.LayerNames[destinationLayer] = layer.Name;
+            destination.LayerNames[destinationLayer] = layer.IsCollisionTerrain
+                ? VectorScene.CollisionTerrainLayerName
+                : layer.Name;
             destination.LayerKinds[destinationLayer] = layer.SyntheticGroup
                 ? DrawingLayerKind.Folder
                 : layer.Source.GetLayerKind(layer.SourceLayer);
@@ -997,64 +1037,100 @@ internal static class SceneCompositionBuilder
         var setupMilliseconds = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
 
         phaseStarted = Stopwatch.GetTimestamp();
-        var owners = new List<SceneCompositionObjectOwner>(expectedObjectCount);
-        var poses = new List<SceneCompositionObjectPose>(expectedObjectCount);
+        var packedBatch = false;
+        SceneCompositionObjectOwner[]? packedOwners = null;
+        SceneCompositionObjectPose[]? packedPoses = null;
+        SpatialOpticalMaterial[]? packedMaterials = null;
+        List<SceneCompositionObjectOwner>? owners = null;
+        List<SceneCompositionObjectPose>? poses = null;
+        List<SpatialOpticalMaterial>? materials = null;
         destination.BeginDeferredAppend(expectedObjectCount, populatedDestinationLayers);
         try
         {
-            var packedBatch = expectedObjectCount >= 8192 && CanUsePackedBatch(layers, sourceObjectsByLayer);
+            packedBatch = expectedObjectCount >= 8192 && CanUsePackedBatch(layers, sourceObjectsByLayer);
             if (packedBatch)
             {
                 var workItems = BuildWorkItems(layers, sourceObjectsByLayer, expectedObjectCount);
                 var packedObjects = new PackedSceneObject[workItems.Length];
+                var ownersForBuild = new SceneCompositionObjectOwner[workItems.Length];
+                var posesForBuild = new SceneCompositionObjectPose[workItems.Length];
+                var materialsForBuild = new SpatialOpticalMaterial[workItems.Length];
+                packedOwners = ownersForBuild;
+                packedPoses = posesForBuild;
+                packedMaterials = materialsForBuild;
                 ParallelBatch.For(workItems.Length, 4096, (_, start, end) =>
                 {
-                    for (var index = start; index < end; index++) packedObjects[index] = PreparePackedObject(workItems[index]);
+                    for (var index = start; index < end; index++)
+                    {
+                        var workItem = workItems[index];
+                        packedObjects[index] = PreparePackedObject(workItem);
+                        ownersForBuild[index] = workItem.Owner;
+                        posesForBuild[index] = workItem.Pose;
+                        materialsForBuild[index] = workItem.OpticalMaterial;
+                    }
                 });
 
                 var firstObject = destination.AppendPackedObjects(packedObjects);
-                if (firstObject != owners.Count || firstObject != poses.Count)
+                if (firstObject != 0
+                    || firstObject + packedObjects.Length != destination.ObjectCount)
                 {
                     throw new InvalidOperationException("Packed composition metadata lost object-index alignment.");
                 }
-                for (var index = 0; index < workItems.Length; index++)
-                {
-                    owners.Add(workItems[index].Owner);
-                    poses.Add(workItems[index].Pose);
-                }
-            }
-            else if (expectedObjectCount >= 8192)
-            {
-                var workItems = BuildWorkItems(layers, sourceObjectsByLayer, expectedObjectCount);
-                AppendPreparedChunks(destination, workItems, owners, poses);
             }
             else
             {
-                for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
+                var ownersForBuild = new List<SceneCompositionObjectOwner>(expectedObjectCount);
+                var posesForBuild = new List<SceneCompositionObjectPose>(expectedObjectCount);
+                var materialsForBuild = new List<SpatialOpticalMaterial>(expectedObjectCount);
+                owners = ownersForBuild;
+                poses = posesForBuild;
+                materials = materialsForBuild;
+                if (expectedObjectCount >= 8192)
                 {
-                    var layer = layers[destinationLayer];
-                    var pose = CreateObjectPose(
-                        layer.Transform,
-                        layer.SpatialTransform,
-                        layer.SpatialIsPlanar,
-                        layer.ExtrusionVector);
-                    var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
-                    foreach (var sourceObject in sourceObjects)
+                    var workItems = BuildWorkItems(layers, sourceObjectsByLayer, expectedObjectCount);
+                    AppendPreparedChunks(
+                        destination,
+                        workItems,
+                        ownersForBuild,
+                        posesForBuild,
+                        materialsForBuild);
+                }
+                else
+                {
+                    for (var destinationLayer = 0; destinationLayer < layers.Count; destinationLayer++)
                     {
-                        var item = new CompositionWorkItem(
-                            layer.Source,
-                            sourceObject,
-                            destinationLayer,
+                        var layer = layers[destinationLayer];
+                        var pose = CreateObjectPose(
                             layer.Transform,
-                            pose,
-                            layer.Alpha,
-                            layer.TintArgb,
-                            layer.Owner,
-                            layer.Distortions);
-                        var destinationObject = AppendPreparedObject(destination, PrepareObject(item));
-                        if (destinationObject >= 0)
+                            layer.SpatialTransform,
+                            layer.SpatialIsPlanar,
+                            layer.ExtrusionVector);
+                        var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
+                        foreach (var sourceObject in sourceObjects)
                         {
-                            AppendCompositionMetadata(owners, poses, destinationObject, layer.Owner, pose);
+                            var item = new CompositionWorkItem(
+                                layer.Source,
+                                sourceObject,
+                                destinationLayer,
+                                layer.Transform,
+                                pose,
+                                layer.Alpha,
+                                layer.TintArgb,
+                                layer.OpticalMaterial,
+                                layer.Owner,
+                                layer.Distortions);
+                            var destinationObject = AppendPreparedObject(destination, PrepareObject(item));
+                            if (destinationObject >= 0)
+                            {
+                                AppendCompositionMetadata(
+                                    ownersForBuild,
+                                    posesForBuild,
+                                    materialsForBuild,
+                                    destinationObject,
+                                    layer.Owner,
+                                    pose,
+                                    layer.OpticalMaterial);
+                            }
                         }
                     }
                 }
@@ -1068,7 +1144,24 @@ internal static class SceneCompositionBuilder
 
         phaseStarted = Stopwatch.GetTimestamp();
         destination.CompleteDeferredBuild();
-        if (owners.Count != destination.ObjectCount || poses.Count != destination.ObjectCount)
+        if (packedBatch)
+        {
+            if (packedOwners is null
+                || packedPoses is null
+                || packedMaterials is null
+                || packedOwners.Length != destination.ObjectCount
+                || packedPoses.Length != destination.ObjectCount
+                || packedMaterials.Length != destination.ObjectCount)
+            {
+                throw new InvalidOperationException("Composition metadata does not align with destination objects.");
+            }
+        }
+        else if (owners is null
+            || poses is null
+            || materials is null
+            || owners.Count != destination.ObjectCount
+            || poses.Count != destination.ObjectCount
+            || materials.Count != destination.ObjectCount)
         {
             throw new InvalidOperationException("Composition metadata does not align with destination objects.");
         }
@@ -1078,14 +1171,17 @@ internal static class SceneCompositionBuilder
             setupMilliseconds,
             appendMilliseconds,
             finalizeMilliseconds);
-        return new SceneCompositionResult(owners.ToArray(), poses.ToArray());
+        return packedBatch
+            ? new SceneCompositionResult(packedOwners!, packedPoses!, packedMaterials!)
+            : new SceneCompositionResult(owners!.ToArray(), poses!.ToArray(), materials!.ToArray());
     }
 
     private static void AppendPreparedChunks(
         VectorScene destination,
         CompositionWorkItem[] workItems,
         List<SceneCompositionObjectOwner> owners,
-        List<SceneCompositionObjectPose> poses)
+        List<SceneCompositionObjectPose> poses,
+        List<SpatialOpticalMaterial> materials)
     {
         var preparedObjects = new PreparedCompositionObject[Math.Min(PreparedChunkSize, workItems.Length)];
         for (var offset = 0; offset < workItems.Length; offset += preparedObjects.Length)
@@ -1102,7 +1198,14 @@ internal static class SceneCompositionBuilder
                 if (destinationObject >= 0)
                 {
                     var workItem = workItems[offset + index];
-                    AppendCompositionMetadata(owners, poses, destinationObject, workItem.Owner, workItem.Pose);
+                    AppendCompositionMetadata(
+                        owners,
+                        poses,
+                        materials,
+                        destinationObject,
+                        workItem.Owner,
+                        workItem.Pose,
+                        workItem.OpticalMaterial);
                 }
             }
 
@@ -1113,16 +1216,19 @@ internal static class SceneCompositionBuilder
     private static void AppendCompositionMetadata(
         List<SceneCompositionObjectOwner> owners,
         List<SceneCompositionObjectPose> poses,
+        List<SpatialOpticalMaterial> materials,
         int objectIndex,
         SceneCompositionObjectOwner owner,
-        SceneCompositionObjectPose pose)
+        SceneCompositionObjectPose pose,
+        SpatialOpticalMaterial material)
     {
-        if (objectIndex != owners.Count || objectIndex != poses.Count)
+        if (objectIndex != owners.Count || objectIndex != poses.Count || objectIndex != materials.Count)
         {
             throw new InvalidOperationException("Composition metadata lost object-index alignment.");
         }
         owners.Add(owner);
         poses.Add(pose);
+        materials.Add(material);
     }
 
     private static bool CanUsePackedBatch(
@@ -1176,6 +1282,7 @@ internal static class SceneCompositionBuilder
                     pose,
                     layer.Alpha,
                     layer.TintArgb,
+                    layer.OpticalMaterial,
                     layer.Owner,
                     layer.Distortions);
             }
@@ -1218,45 +1325,42 @@ internal static class SceneCompositionBuilder
         }
 
         LastActiveObjectBucketCacheMisses++;
-        var workers = ParallelBatch.WorkerCount(source.ObjectCount, 8192);
-        var batches = new List<int>?[workers][];
-        for (var worker = 0; worker < workers; worker++) batches[worker] = new List<int>?[source.LayerCount];
-
-        ParallelBatch.For(source.ObjectCount, 8192, (worker, start, end) =>
+        // VectorScene already maintains a revisioned active-object index. Use
+        // it instead of scanning every source object for each exposure; the
+        // per-layer sort keeps the composition order contract unchanged.
+        var activeObjects = source.GetActiveObjectIndices(frame);
+        var counts = new int[source.LayerCount];
+        foreach (var objectIndex in activeObjects)
         {
-            var target = batches[worker];
-            for (var index = start; index < end; index++)
-            {
-                var layer = source.ObjectLayer[index];
-                if (source.ObjectKeyframeFrame[index] != activeKeyframes[layer]) continue;
-                (target[layer] ??= new List<int>(32)).Add(index);
-            }
-        }, workers);
+            var layer = source.ObjectLayer[objectIndex];
+            if ((uint)layer < (uint)counts.Length) counts[layer]++;
+        }
 
         var objectsByLayer = new int[source.LayerCount][];
-        Parallel.For(0, source.LayerCount, new ParallelOptions { MaxDegreeOfParallelism = workers }, layer =>
+        for (var layer = 0; layer < objectsByLayer.Length; layer++)
         {
-            var count = 0;
-            for (var worker = 0; worker < workers; worker++) count += batches[worker][layer]?.Count ?? 0;
-            if (count == 0)
-            {
-                objectsByLayer[layer] = [];
-                return;
-            }
+            objectsByLayer[layer] = counts[layer] == 0
+                ? []
+                : new int[counts[layer]];
+        }
 
-            var objects = new int[count];
-            var offset = 0;
-            for (var worker = 0; worker < workers; worker++)
-            {
-                var batch = batches[worker][layer];
-                if (batch is not { Count: > 0 }) continue;
-                batch.CopyTo(objects, offset);
-                offset += batch.Count;
-            }
+        Array.Clear(counts, 0, counts.Length);
+        foreach (var objectIndex in activeObjects)
+        {
+            var layer = source.ObjectLayer[objectIndex];
+            if ((uint)layer >= (uint)objectsByLayer.Length) continue;
+            objectsByLayer[layer][counts[layer]++] = objectIndex;
+        }
 
-            Array.Sort(objects, (a, b) => CompareSourceObjects(source, a, b));
-            objectsByLayer[layer] = objects;
-        });
+        for (var layer = 0; layer < objectsByLayer.Length; layer++)
+        {
+            var objects = objectsByLayer[layer];
+            if (objects.Length > 1)
+            {
+                Array.Sort(objects, (a, b) => CompareSourceObjects(source, a, b));
+            }
+        }
+
         cache.Store(source, activeKeyframes, objectsByLayer);
         return objectsByLayer;
     }
@@ -1264,6 +1368,7 @@ internal static class SceneCompositionBuilder
     private sealed class ActiveObjectBucketCache
     {
         private long _geometryRevision = -1;
+        private long _activeContentRevision = -1;
         private int _objectCount = -1;
         private int _layerCount = -1;
         private int[] _activeKeyframes = [];
@@ -1272,6 +1377,7 @@ internal static class SceneCompositionBuilder
         public bool TryGet(VectorScene source, int[] activeKeyframes, out int[][] objectsByLayer)
         {
             if (_geometryRevision == source.GeometryRevision
+                && _activeContentRevision == source.ActiveContentRevision
                 && _objectCount == source.ObjectCount
                 && _layerCount == source.LayerCount
                 && _activeKeyframes.AsSpan().SequenceEqual(activeKeyframes))
@@ -1287,6 +1393,7 @@ internal static class SceneCompositionBuilder
         public void Store(VectorScene source, int[] activeKeyframes, int[][] objectsByLayer)
         {
             _geometryRevision = source.GeometryRevision;
+            _activeContentRevision = source.ActiveContentRevision;
             _objectCount = source.ObjectCount;
             _layerCount = source.LayerCount;
             _activeKeyframes = (int[])activeKeyframes.Clone();
@@ -1533,6 +1640,47 @@ internal static class SceneCompositionBuilder
                 MixingSamples = mixingSamples,
                 Distortions = distortions
             };
+        }
+
+        if (shape == ShapeKind.Path
+            && identityTransform
+            && distortions.Length == 0
+            && source.TryGetPathLocalContours(sourceObject, out var localContours))
+        {
+            var prepared = new PreparedCompositionObject(
+                PreparedCompositionKind.Path,
+                destinationLayer,
+                shape,
+                new PointF(source.X[sourceObject], source.Y[sourceObject]),
+                new SizeF(source.Width[sourceObject], source.Height[sourceObject]),
+                source.Angle[sourceObject],
+                stroke,
+                fillArgb,
+                strokeArgb,
+                atoms,
+                PointF.Empty,
+                PointF.Empty,
+                PointF.Empty,
+                [],
+                localContours)
+            {
+                UseSourceLocalPathGeometry = true,
+                Distortions = distortions
+            };
+            if (source.TryGetPathBezierLocalContours(sourceObject, out var localBezierContours))
+            {
+                prepared = prepared with { PathBezierContours = localBezierContours };
+            }
+
+            return WithGradient(
+                prepared,
+                source,
+                sourceObject,
+                transform,
+                identityTransform,
+                workItem.Alpha,
+                workItem.TintArgb,
+                preserveSourceGeometry: true);
         }
 
         if (shape == ShapeKind.Path
@@ -1889,21 +2037,46 @@ internal static class SceneCompositionBuilder
                 item.TextObjectData
                     ?? throw new InvalidOperationException("Prepared text composition is missing its editable payload."),
                 item.FillArgb),
-            PreparedCompositionKind.Path => item.PathBezierContours.Length > 0
-                ? destination.AppendPathBezierObjectContours(
-                    item.DestinationLayer,
-                    item.PathBezierContours,
-                    item.Stroke,
-                    Color.FromArgb(item.FillArgb),
-                    Color.FromArgb(item.StrokeArgb),
-                    item.Atoms)
-                : destination.AppendPathObjectContours(
-                    item.DestinationLayer,
-                    item.Contours,
-                    item.Stroke,
-                    Color.FromArgb(item.FillArgb),
-                    Color.FromArgb(item.StrokeArgb),
-                    item.Atoms),
+            PreparedCompositionKind.Path => item.UseSourceLocalPathGeometry
+                ? item.PathBezierContours.Length > 0
+                    ? destination.AppendPathBezierObjectLocalContours(
+                        item.DestinationLayer,
+                        item.Center,
+                        item.Size,
+                        item.Angle,
+                        item.Contours,
+                        item.PathBezierContours,
+                        item.Stroke,
+                        Color.FromArgb(item.FillArgb),
+                        Color.FromArgb(item.StrokeArgb),
+                        item.Atoms,
+                        item.ShapeVertexCount)
+                    : destination.AppendPathObjectLocalContours(
+                        item.DestinationLayer,
+                        item.Center,
+                        item.Size,
+                        item.Angle,
+                        item.Contours,
+                        item.Stroke,
+                        Color.FromArgb(item.FillArgb),
+                        Color.FromArgb(item.StrokeArgb),
+                        item.Atoms,
+                        item.ShapeVertexCount)
+                : item.PathBezierContours.Length > 0
+                    ? destination.AppendPathBezierObjectContours(
+                        item.DestinationLayer,
+                        item.PathBezierContours,
+                        item.Stroke,
+                        Color.FromArgb(item.FillArgb),
+                        Color.FromArgb(item.StrokeArgb),
+                        item.Atoms)
+                    : destination.AppendPathObjectContours(
+                        item.DestinationLayer,
+                        item.Contours,
+                        item.Stroke,
+                        Color.FromArgb(item.FillArgb),
+                        Color.FromArgb(item.StrokeArgb),
+                        item.Atoms),
             PreparedCompositionKind.Freehand => item.FreehandBezierNodes.Length >= 2
                 ? destination.AppendFreehandBezierStroke(
                     item.DestinationLayer,
@@ -1988,7 +2161,8 @@ internal static class SceneCompositionBuilder
         Matrix3x2 transform,
         bool identityTransform,
         float alpha,
-        int tintArgb)
+        int tintArgb,
+        bool preserveSourceGeometry = false)
     {
         item = item with
         {
@@ -2002,18 +2176,26 @@ internal static class SceneCompositionBuilder
             GradientKind = source.GetGradientKind(sourceObject),
             GradientStartArgb = ApplyInstanceAppearance(source.GradientStartArgb[sourceObject], alpha, tintArgb),
             GradientEndArgb = ApplyInstanceAppearance(source.GradientEndArgb[sourceObject], alpha, tintArgb),
-            GradientStart = TransformPoint(source.GetGradientStart(sourceObject), transform, identityTransform),
-            GradientEnd = TransformPoint(source.GetGradientEnd(sourceObject), transform, identityTransform),
+            GradientStart = preserveSourceGeometry
+                ? source.GetGradientStart(sourceObject)
+                : TransformPoint(source.GetGradientStart(sourceObject), transform, identityTransform),
+            GradientEnd = preserveSourceGeometry
+                ? source.GetGradientEnd(sourceObject)
+                : TransformPoint(source.GetGradientEnd(sourceObject), transform, identityTransform),
             GradientStops = source.GetGradientStops(sourceObject)
                 .Select(stop => new GradientStop(stop.Position, ApplyInstanceAppearance(stop.Argb, alpha, tintArgb)))
                 .ToArray(),
             GradientPath = source.TryGetGradientPathWorldPoints(sourceObject, out var gradientPath)
-                ? gradientPath.Select(point => TransformPoint(point, transform, identityTransform)).ToArray()
+                ? preserveSourceGeometry
+                    ? gradientPath
+                    : gradientPath.Select(point => TransformPoint(point, transform, identityTransform)).ToArray()
                 : [],
             ShapeGradientMappingContours = source.TryGetShapeGradientMappingWorldContours(sourceObject, out var mappingContours)
-                ? mappingContours
-                    .Select(contour => contour.Select(point => TransformPoint(point, transform, identityTransform)).ToArray())
-                    .ToArray()
+                ? preserveSourceGeometry
+                    ? mappingContours
+                    : mappingContours
+                        .Select(contour => contour.Select(point => TransformPoint(point, transform, identityTransform)).ToArray())
+                        .ToArray()
                 : []
         };
     }
@@ -2135,8 +2317,7 @@ internal static class SceneCompositionBuilder
         InstanceFrameState state)
     {
         return Matrix3x2.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y)
-            * DrawingObjectInstanceDefinition.CreateLinearTransform(state)
-            * Matrix3x2.CreateTranslation(state.X, state.Y);
+            * DrawingObjectInstanceDefinition.CreatePlanarTransform(state);
     }
 
     private static Matrix4x4 InstanceSpatialMatrix(
@@ -2153,14 +2334,7 @@ internal static class SceneCompositionBuilder
     {
         if (InstanceSpatialIsPlanar(state)) return Lift(InstanceMatrix(drawingObject, state));
         return Matrix4x4.CreateTranslation(-drawingObject.Anchor.X, -drawingObject.Anchor.Y, 0)
-            * Matrix4x4.CreateScale(state.ScaleX, state.ScaleY, state.ScaleZ)
-            * Lift(Matrix3x2.CreateSkew(
-                state.SkewX * MathF.PI / 180f,
-                state.SkewY * MathF.PI / 180f))
-            * Matrix4x4.CreateRotationZ(state.RotationZ * MathF.PI / 180f)
-            * Matrix4x4.CreateRotationX(state.RotationX * MathF.PI / 180f)
-            * Matrix4x4.CreateRotationY(state.RotationY * MathF.PI / 180f)
-            * Matrix4x4.CreateTranslation(state.X, state.Y, state.Z);
+            * DrawingObjectInstanceDefinition.CreateSpatialTransform(state);
     }
 
     private static Vector3 CreateRootExtrusionVector(
@@ -2222,7 +2396,8 @@ internal static class SceneCompositionBuilder
 
     private static bool InstanceSpatialIsPlanar(InstanceFrameState state)
     {
-        return state.Z == 0
+        var effectiveZ = state.Z + state.ScalePivot.Z * (1f - state.ScaleZ);
+        return effectiveZ == 0
             && state.RotationX == 0
             && state.RotationY == 0
             && (state.ScaleZ == 0 || state.ScaleZ == 1);

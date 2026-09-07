@@ -292,11 +292,18 @@ internal sealed class VectorSceneSnapshot
         if (Timeline is { } timeline)
         {
             bytes += ArrayBytes(timeline.Tracks.Length, IntPtr.Size);
+            bytes += ArrayBytes(timeline.TabGroups.Length, IntPtr.Size)
+                + StringBytes(timeline.ActiveTabGroupId);
+            foreach (var group in timeline.TabGroups)
+            {
+                bytes += 40 + StringBytes(group.Id) + StringBytes(group.Name);
+            }
             foreach (var track in timeline.Tracks)
             {
                 bytes += 96
                     + StringBytes(track.Id)
                     + StringBytes(track.TargetId)
+                    + StringBytes(track.TabGroupId)
                     + ArrayBytes(track.Keyframes.Length, 8)
                     + ArrayBytes(track.Tweens?.Length ?? 0, 12);
             }

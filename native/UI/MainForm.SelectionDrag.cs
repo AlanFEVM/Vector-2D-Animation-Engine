@@ -246,6 +246,7 @@ internal sealed partial class MainForm
         {
             if (_undoCapturedForPointerEdit && _undoStack.TryPop(out var undo))
             {
+                RestoreCancelledMarqueeHistory(undo);
                 RestoreCanvasMutationSnapshot(undo.Snapshot);
             }
             _undoCapturedForPointerEdit = false;

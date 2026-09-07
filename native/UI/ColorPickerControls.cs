@@ -141,7 +141,17 @@ internal sealed class ColorComponentSlider : Control
 
         using var surface = CreateSurfacePath(rail);
         DrawGradient(e.Graphics, rail, surface);
-        using (var border = new Pen(_hovered || Focused ? Theme.BorderHover : Theme.Border))
+        if (!Enabled)
+        {
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(150, Theme.DisabledSurface));
+            e.Graphics.FillPath(disabledOverlay, surface);
+        }
+
+        using (var border = new Pen(!Enabled
+                   ? Theme.Border
+                   : _hovered || Focused
+                       ? Theme.BorderHover
+                       : Theme.Border))
         {
             e.Graphics.DrawPath(border, surface);
         }
@@ -151,22 +161,24 @@ internal sealed class ColorComponentSlider : Control
         var thumbSurfaceOffset = _pointerSurfaceActive
             ? ResolvePointerSurfaceOffset(thumbX, _pointerSurfaceX)
             : 0f;
-        using var shadow = new Pen(Color.FromArgb(210, Color.Black), 3f);
-        using var thumb = new Pen(Color.White, 1f);
+        using var shadow = new Pen(
+            Enabled ? Color.FromArgb(210, Color.Black) : Color.FromArgb(190, Theme.PanelStrong),
+            3f);
+        using var thumb = new Pen(Enabled ? Color.White : Theme.DisabledText, 1f);
         e.Graphics.DrawLine(shadow, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
         e.Graphics.DrawLine(thumb, thumbX, rail.Top - 2f - thumbSurfaceOffset, thumbX, rail.Bottom + 2f + thumbSurfaceOffset);
 
-        if (Focused && ShowFocusCues)
+        if (Enabled && Focused && ShowFocusCues)
         {
             var focus = Rectangle.Inflate(rail, 3, 3);
-            ControlPaint.DrawFocusRectangle(e.Graphics, focus, Theme.Accent, BackColor);
+            ControlPaint.DrawFocusRectangle(e.Graphics, focus, Theme.ReadableUiColor(BackColor, Theme.Accent), BackColor);
         }
     }
 
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        _hovered = true;
+        _hovered = Enabled;
         UpdateHoverSurface(PointToClient(System.Windows.Forms.Cursor.Position));
         Invalidate();
     }
@@ -592,7 +604,17 @@ internal sealed class HsvColorPlane : Control
             e.Graphics.FillRectangle(valueGradient, field);
         }
 
-        using (var border = new Pen(Focused ? Theme.BorderHover : Theme.Border))
+        if (!Enabled)
+        {
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(150, Theme.DisabledSurface));
+            e.Graphics.FillRectangle(disabledOverlay, field);
+        }
+
+        using (var border = new Pen(!Enabled
+                   ? Theme.Border
+                   : Focused
+                       ? Theme.BorderHover
+                       : Theme.Border))
         {
             e.Graphics.DrawRectangle(border, field.X, field.Y, field.Width - 1, field.Height - 1);
         }
@@ -600,14 +622,20 @@ internal sealed class HsvColorPlane : Control
         var marker = new PointF(
             field.Left + _saturation * Math.Max(0, field.Width - 1),
             field.Top + (1f - _value) * Math.Max(0, field.Height - 1));
-        using var outer = new Pen(Color.FromArgb(230, Color.Black), 3f);
-        using var inner = new Pen(Color.White, 1.25f);
+        using var outer = new Pen(
+            Enabled ? Color.FromArgb(230, Color.Black) : Theme.PanelStrong,
+            3f);
+        using var inner = new Pen(Enabled ? Color.White : Theme.DisabledText, 1.25f);
         e.Graphics.DrawEllipse(outer, marker.X - 5, marker.Y - 5, 10, 10);
         e.Graphics.DrawEllipse(inner, marker.X - 5, marker.Y - 5, 10, 10);
 
-        if (Focused && ShowFocusCues)
+        if (Enabled && Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(field, 2, 2), Theme.Accent, BackColor);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(field, 2, 2),
+                Theme.ReadableUiColor(BackColor, Theme.Accent),
+                BackColor);
         }
     }
 
@@ -792,6 +820,979 @@ internal sealed class HsvColorPlane : Control
     }
 }
 
+internal sealed class TraditionalColorPlane : Control
+{
+    private readonly System.Windows.Forms.Timer _interactionRefreshTimer = new()
+    {
+        Interval = ColorComponentSlider.InteractionRefreshIntervalMilliseconds
+    };
+    private Func<float, float, Color>? _colorAt;
+    private Bitmap? _gradientBitmap;
+    private int[]? _gradientPixels;
+    private float _xValue;
+    private float _yValue = 1f;
+    private float _interactionStartX;
+    private float _interactionStartY;
+    private string _horizontalAxisName = "Horizontal";
+    private string _verticalAxisName = "Vertical";
+    private bool _gradientDirty = true;
+    private bool _interacting;
+    private bool _hovered;
+
+    public TraditionalColorPlane()
+    {
+        SetStyle(
+            ControlStyles.AllPaintingInWmPaint
+            | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.ResizeRedraw
+            | ControlStyles.Selectable
+            | ControlStyles.UserPaint,
+            true);
+        BackColor = Theme.Panel;
+        ForeColor = Theme.Text;
+        Cursor = Cursors.Cross;
+        TabStop = true;
+        MinimumSize = new Size(80, 80);
+        AccessibleRole = AccessibleRole.Graphic;
+        _interactionRefreshTimer.Tick += (_, _) => TickInteractionRefresh();
+        UpdateAccessibility(updateName: true);
+    }
+
+    public float XValue => _xValue;
+    public float YValue => _yValue;
+
+    public Func<float, float, Color>? ColorAt
+    {
+        get => _colorAt;
+        set
+        {
+            if (ReferenceEquals(_colorAt, value)) return;
+            _colorAt = value;
+            _gradientDirty = true;
+            Invalidate();
+        }
+    }
+
+    [DefaultValue("Horizontal")]
+    public string HorizontalAxisName
+    {
+        get => _horizontalAxisName;
+        set
+        {
+            value ??= string.Empty;
+            if (string.Equals(_horizontalAxisName, value, StringComparison.Ordinal)) return;
+            _horizontalAxisName = value;
+            UpdateAccessibility(updateName: true);
+        }
+    }
+
+    [DefaultValue("Vertical")]
+    public string VerticalAxisName
+    {
+        get => _verticalAxisName;
+        set
+        {
+            value ??= string.Empty;
+            if (string.Equals(_verticalAxisName, value, StringComparison.Ordinal)) return;
+            _verticalAxisName = value;
+            UpdateAccessibility(updateName: true);
+        }
+    }
+
+    public event EventHandler? ValueChanged;
+    public event EventHandler? InteractionStarted;
+    public event EventHandler? InteractionCompleted;
+    public event EventHandler? InteractionCanceled;
+
+    public void SetValues(float x, float y)
+    {
+        SetValuesCore(x, y);
+    }
+
+    public void RefreshGradient()
+    {
+        _gradientDirty = true;
+        Invalidate();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (_interacting) CancelInteraction();
+            _interactionRefreshTimer.Stop();
+            _interactionRefreshTimer.Dispose();
+            _gradientBitmap?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.Clear(BackColor);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var field = FieldBounds();
+        if (field.Width <= 1 || field.Height <= 1) return;
+
+        DrawCheckerboard(e.Graphics, field);
+        EnsureGradientBitmap(field.Size);
+        if (_gradientBitmap is not null)
+        {
+            e.Graphics.DrawImageUnscaled(_gradientBitmap, field.Location);
+        }
+
+        if (!Enabled)
+        {
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(132, Theme.Panel));
+            e.Graphics.FillRectangle(disabledOverlay, field);
+        }
+
+        var borderColor = !Enabled
+            ? Theme.Border
+            : Focused
+                ? Theme.Accent
+                : _hovered
+                    ? Theme.BorderHover
+                    : Theme.Border;
+        using (var border = new Pen(borderColor))
+        {
+            e.Graphics.DrawRectangle(border, field.X, field.Y, field.Width - 1, field.Height - 1);
+        }
+
+        var marker = new PointF(
+            field.Left + _xValue * Math.Max(0, field.Width - 1),
+            field.Top + (1f - _yValue) * Math.Max(0, field.Height - 1));
+        DrawMarker(e.Graphics, marker);
+
+        if (Enabled && Focused && ShowFocusCues)
+        {
+            var focusBounds = Rectangle.Inflate(field, 2, 2);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                focusBounds,
+                Theme.ReadableUiColor(BackColor, Theme.Accent),
+                BackColor);
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        base.OnMouseEnter(e);
+        _hovered = true;
+        Invalidate();
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _hovered = false;
+        Invalidate();
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (!Enabled || e.Button != MouseButtons.Left) return;
+        Focus();
+        BeginInteraction();
+        Capture = true;
+        UpdateInteractionFromPointer(e.Location);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (_interacting && Capture) UpdateInteractionFromPointer(e.Location);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button == MouseButtons.Left && _interacting) CompleteInteraction();
+    }
+
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (!Capture && _interacting) CompleteInteraction();
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        if (!Enabled || !Focused || e.Delta == 0) return;
+        var step = (ModifierKeys & Keys.Control) != 0 ? 0.1f : 0.01f;
+        BeginInteraction();
+        SetValuesAndRaise(_xValue, _yValue + Math.Sign(e.Delta) * step);
+        CompleteInteraction();
+        if (e is HandledMouseEventArgs handled) handled.Handled = true;
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        return (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down
+            or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End or Keys.Escape
+            || base.IsInputKey(keyData);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Escape && _interacting)
+        {
+            CancelInteraction();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (!Enabled || !TryGetKeyboardValues(e.KeyCode, out var nextX, out var nextY))
+        {
+            base.OnKeyDown(e);
+            return;
+        }
+
+        BeginInteraction();
+        SetValuesAndRaise(nextX, nextY);
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (_interacting && IsAdjustmentKey(e.KeyCode)) CompleteInteraction();
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        if (_interacting) CompleteInteraction();
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        if (!Enabled && _interacting) CancelInteraction();
+        Cursor = Enabled ? Cursors.Cross : Cursors.Default;
+        base.OnEnabledChanged(e);
+        Invalidate();
+    }
+
+    private Rectangle FieldBounds()
+    {
+        const int padding = 6;
+        return new Rectangle(
+            padding,
+            padding,
+            Math.Max(0, ClientSize.Width - padding * 2),
+            Math.Max(0, ClientSize.Height - padding * 2));
+    }
+
+    private void EnsureGradientBitmap(Size size)
+    {
+        var width = Math.Max(1, size.Width);
+        var height = Math.Max(1, size.Height);
+        if (_gradientBitmap is null
+            || _gradientBitmap.Width != width
+            || _gradientBitmap.Height != height)
+        {
+            _gradientBitmap?.Dispose();
+            _gradientBitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            _gradientDirty = true;
+        }
+
+        if (!_gradientDirty) return;
+
+        var pixelCount = checked(width * height);
+        if (_gradientPixels is null || _gradientPixels.Length < pixelCount)
+        {
+            _gradientPixels = new int[pixelCount];
+        }
+
+        var colorAt = _colorAt;
+        for (var y = 0; y < height; y++)
+        {
+            var yValue = height <= 1 ? 1f : 1f - y / (float)(height - 1);
+            var rowOffset = y * width;
+            for (var x = 0; x < width; x++)
+            {
+                var xValue = width <= 1 ? 0f : x / (float)(width - 1);
+                _gradientPixels[rowOffset + x] = (colorAt?.Invoke(xValue, yValue) ?? Theme.PanelStrong).ToArgb();
+            }
+        }
+
+        var bounds = new Rectangle(0, 0, width, height);
+        var bitmapData = _gradientBitmap.LockBits(bounds, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            for (var y = 0; y < height; y++)
+            {
+                Marshal.Copy(
+                    _gradientPixels,
+                    y * width,
+                    IntPtr.Add(bitmapData.Scan0, y * bitmapData.Stride),
+                    width);
+            }
+        }
+        finally
+        {
+            _gradientBitmap.UnlockBits(bitmapData);
+        }
+        _gradientDirty = false;
+    }
+
+    private void DrawMarker(Graphics graphics, PointF point)
+    {
+        var radius = _interacting ? 6f : _hovered || Focused ? 5.5f : 5f;
+        var marker = new RectangleF(point.X - radius, point.Y - radius, radius * 2f, radius * 2f);
+        if (!Enabled)
+        {
+            using var disabledOuter = new Pen(Theme.PanelStrong, 3f);
+            using var disabledInner = new Pen(Theme.DisabledText, 1.25f);
+            graphics.DrawEllipse(disabledOuter, marker);
+            graphics.DrawEllipse(disabledInner, marker);
+            return;
+        }
+
+        if (Focused)
+        {
+            var focusMarker = RectangleF.Inflate(marker, 2f, 2f);
+            using var focus = new Pen(SystemInformation.HighContrast ? SystemColors.Highlight : Theme.Accent, 1.4f);
+            graphics.DrawEllipse(focus, focusMarker);
+        }
+
+        using var outer = new Pen(SystemInformation.HighContrast ? SystemColors.WindowText : Color.FromArgb(230, Color.Black), 3.25f);
+        using var inner = new Pen(SystemInformation.HighContrast ? SystemColors.HighlightText : Color.White, 1.25f);
+        graphics.DrawEllipse(outer, marker);
+        graphics.DrawEllipse(inner, marker);
+    }
+
+    private static void DrawCheckerboard(Graphics graphics, Rectangle bounds)
+    {
+        const int square = 5;
+        using var light = new SolidBrush(Color.FromArgb(255, 94, 100, 104));
+        using var dark = new SolidBrush(Color.FromArgb(255, 60, 65, 69));
+        for (var y = bounds.Top; y < bounds.Bottom; y += square)
+        {
+            for (var x = bounds.Left; x < bounds.Right; x += square)
+            {
+                var alternate = ((x - bounds.Left) / square + (y - bounds.Top) / square) % 2 == 0;
+                graphics.FillRectangle(alternate ? light : dark, x, y, Math.Min(square, bounds.Right - x), Math.Min(square, bounds.Bottom - y));
+            }
+        }
+    }
+
+    private void TickInteractionRefresh()
+    {
+        if (!_interacting || !Capture)
+        {
+            _interactionRefreshTimer.Stop();
+            return;
+        }
+
+        UpdateInteractionFromPointer(PointToClient(System.Windows.Forms.Cursor.Position));
+    }
+
+    private void UpdateInteractionFromPointer(Point location)
+    {
+        var field = FieldBounds();
+        if (field.Width <= 1 || field.Height <= 1) return;
+        var x = Math.Clamp((location.X - field.Left) / (float)(field.Width - 1), 0f, 1f);
+        var y = 1f - Math.Clamp((location.Y - field.Top) / (float)(field.Height - 1), 0f, 1f);
+        SetValuesAndRaise(x, y);
+    }
+
+    private bool TryGetKeyboardValues(Keys key, out float x, out float y)
+    {
+        var small = (ModifierKeys & Keys.Control) != 0 ? 0.1f : 0.01f;
+        x = _xValue;
+        y = _yValue;
+        switch (key)
+        {
+            case Keys.Left:
+                x -= small;
+                break;
+            case Keys.Right:
+                x += small;
+                break;
+            case Keys.Down:
+                y -= small;
+                break;
+            case Keys.Up:
+                y += small;
+                break;
+            case Keys.PageDown:
+                y -= 0.1f;
+                break;
+            case Keys.PageUp:
+                y += 0.1f;
+                break;
+            case Keys.Home:
+                x = 0f;
+                y = 0f;
+                break;
+            case Keys.End:
+                x = 1f;
+                y = 1f;
+                break;
+            default:
+                return false;
+        }
+        x = Normalize(x);
+        y = Normalize(y);
+        return true;
+    }
+
+    private static bool IsAdjustmentKey(Keys key)
+    {
+        return key is Keys.Left or Keys.Right or Keys.Up or Keys.Down
+            or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End;
+    }
+
+    private void SetValuesAndRaise(float x, float y)
+    {
+        if (SetValuesCore(x, y)) ValueChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool SetValuesCore(float x, float y)
+    {
+        x = Normalize(x);
+        y = Normalize(y);
+        if (Math.Abs(_xValue - x) < 0.0001f && Math.Abs(_yValue - y) < 0.0001f) return false;
+        _xValue = x;
+        _yValue = y;
+        UpdateAccessibility(updateName: false);
+        Invalidate();
+        return true;
+    }
+
+    private void BeginInteraction()
+    {
+        if (_interacting) return;
+        _interacting = true;
+        _interactionStartX = _xValue;
+        _interactionStartY = _yValue;
+        _interactionRefreshTimer.Start();
+        InteractionStarted?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
+
+    private void CompleteInteraction()
+    {
+        if (!_interacting) return;
+        _interacting = false;
+        _interactionRefreshTimer.Stop();
+        if (Capture) Capture = false;
+        InteractionCompleted?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
+
+    private void CancelInteraction()
+    {
+        if (!_interacting) return;
+        _interacting = false;
+        _interactionRefreshTimer.Stop();
+        if (Capture) Capture = false;
+        if (SetValuesCore(_interactionStartX, _interactionStartY)) ValueChanged?.Invoke(this, EventArgs.Empty);
+        InteractionCanceled?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
+
+    private void UpdateAccessibility(bool updateName)
+    {
+        if (updateName) AccessibleName = $"{_horizontalAxisName} and {_verticalAxisName} color field";
+        AccessibleDescription = $"{_horizontalAxisName}: {MathF.Round(_xValue * 100)}%; {_verticalAxisName}: {MathF.Round(_yValue * 100)}%";
+    }
+
+    private static float Normalize(float value)
+    {
+        return float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : 0f;
+    }
+}
+
+internal sealed class VerticalColorComponentSlider : Control
+{
+    private readonly System.Windows.Forms.Timer _interactionRefreshTimer = new()
+    {
+        Interval = ColorComponentSlider.InteractionRefreshIntervalMilliseconds
+    };
+    private Func<float, Color>? _gradientColor;
+    private Bitmap? _gradientBitmap;
+    private int[]? _gradientScanline;
+    private float _value;
+    private float _interactionStartValue;
+    private string _axisName = "Color component";
+    private bool _highAtTop = true;
+    private bool _gradientDirty = true;
+    private bool _interacting;
+    private bool _hovered;
+
+    public VerticalColorComponentSlider()
+    {
+        SetStyle(
+            ControlStyles.AllPaintingInWmPaint
+            | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.ResizeRedraw
+            | ControlStyles.Selectable
+            | ControlStyles.UserPaint,
+            true);
+        BackColor = Theme.Panel;
+        ForeColor = Theme.Text;
+        Cursor = Cursors.Hand;
+        TabStop = true;
+        MinimumSize = new Size(18, 88);
+        AccessibleRole = AccessibleRole.Slider;
+        _interactionRefreshTimer.Tick += (_, _) => TickInteractionRefresh();
+        UpdateAccessibility(updateName: true);
+    }
+
+    public float Value => _value;
+
+    [DefaultValue(true)]
+    public bool HighAtTop
+    {
+        get => _highAtTop;
+        set
+        {
+            if (_highAtTop == value) return;
+            _highAtTop = value;
+            _gradientDirty = true;
+            Invalidate();
+        }
+    }
+
+    public Func<float, Color>? GradientColor
+    {
+        get => _gradientColor;
+        set
+        {
+            if (ReferenceEquals(_gradientColor, value)) return;
+            _gradientColor = value;
+            _gradientDirty = true;
+            Invalidate();
+        }
+    }
+
+    [DefaultValue("Color component")]
+    public string AxisName
+    {
+        get => _axisName;
+        set
+        {
+            value ??= string.Empty;
+            if (string.Equals(_axisName, value, StringComparison.Ordinal)) return;
+            _axisName = value;
+            UpdateAccessibility(updateName: true);
+        }
+    }
+
+    public event EventHandler? ValueChanged;
+    public event EventHandler? InteractionStarted;
+    public event EventHandler? InteractionCompleted;
+    public event EventHandler? InteractionCanceled;
+
+    public void SetValue(float value)
+    {
+        SetValueCore(value);
+    }
+
+    public void RefreshGradient()
+    {
+        _gradientDirty = true;
+        Invalidate();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (_interacting) CancelInteraction();
+            _interactionRefreshTimer.Stop();
+            _interactionRefreshTimer.Dispose();
+            _gradientBitmap?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.Clear(BackColor);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var rail = RailBounds();
+        if (rail.Width <= 1 || rail.Height <= 1) return;
+
+        DrawCheckerboard(e.Graphics, rail);
+        EnsureGradientBitmap(rail.Size);
+        if (_gradientBitmap is not null)
+        {
+            e.Graphics.DrawImageUnscaled(_gradientBitmap, rail.Location);
+        }
+
+        if (!Enabled)
+        {
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(132, Theme.Panel));
+            e.Graphics.FillRectangle(disabledOverlay, rail);
+        }
+
+        var borderColor = !Enabled
+            ? Theme.Border
+            : Focused
+                ? Theme.Accent
+                : _hovered
+                    ? Theme.BorderHover
+                    : Theme.Border;
+        using (var border = new Pen(borderColor))
+        {
+            e.Graphics.DrawRectangle(border, rail.X, rail.Y, rail.Width - 1, rail.Height - 1);
+        }
+
+        var position = _highAtTop ? 1f - _value : _value;
+        var markerY = rail.Top + position * Math.Max(0, rail.Height - 1);
+        DrawMarker(e.Graphics, rail, markerY);
+
+        if (Enabled && Focused && ShowFocusCues)
+        {
+            var focusBounds = Rectangle.Inflate(rail, 2, 2);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                focusBounds,
+                Theme.ReadableUiColor(BackColor, Theme.Accent),
+                BackColor);
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        base.OnMouseEnter(e);
+        _hovered = true;
+        Invalidate();
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _hovered = false;
+        Invalidate();
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (!Enabled || e.Button != MouseButtons.Left) return;
+        Focus();
+        BeginInteraction();
+        Capture = true;
+        UpdateInteractionFromPointer(e.Location);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (_interacting && Capture) UpdateInteractionFromPointer(e.Location);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button == MouseButtons.Left && _interacting) CompleteInteraction();
+    }
+
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (!Capture && _interacting) CompleteInteraction();
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        if (!Enabled || !Focused || e.Delta == 0) return;
+        var step = (ModifierKeys & Keys.Control) != 0 ? 0.1f : 0.01f;
+        BeginInteraction();
+        SetValueAndRaise(_value + Math.Sign(e.Delta) * step * (_highAtTop ? 1f : -1f));
+        CompleteInteraction();
+        if (e is HandledMouseEventArgs handled) handled.Handled = true;
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        return (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down
+            or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End or Keys.Escape
+            || base.IsInputKey(keyData);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Escape && _interacting)
+        {
+            CancelInteraction();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (!Enabled || !TryGetKeyboardValue(e.KeyCode, out var next))
+        {
+            base.OnKeyDown(e);
+            return;
+        }
+
+        BeginInteraction();
+        SetValueAndRaise(next);
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (_interacting && IsAdjustmentKey(e.KeyCode)) CompleteInteraction();
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        if (_interacting) CompleteInteraction();
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        if (!Enabled && _interacting) CancelInteraction();
+        Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+        base.OnEnabledChanged(e);
+        Invalidate();
+    }
+
+    private Rectangle RailBounds()
+    {
+        const int horizontalPadding = 5;
+        const int verticalPadding = 4;
+        return new Rectangle(
+            horizontalPadding,
+            verticalPadding,
+            Math.Max(0, ClientSize.Width - horizontalPadding * 2),
+            Math.Max(0, ClientSize.Height - verticalPadding * 2));
+    }
+
+    private void EnsureGradientBitmap(Size size)
+    {
+        var width = Math.Max(1, size.Width);
+        var height = Math.Max(1, size.Height);
+        if (_gradientBitmap is null
+            || _gradientBitmap.Width != width
+            || _gradientBitmap.Height != height)
+        {
+            _gradientBitmap?.Dispose();
+            _gradientBitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            _gradientDirty = true;
+        }
+
+        if (!_gradientDirty) return;
+
+        if (_gradientScanline is null || _gradientScanline.Length < width)
+        {
+            _gradientScanline = new int[width];
+        }
+
+        var colorAt = _gradientColor;
+        var bounds = new Rectangle(0, 0, width, height);
+        var bitmapData = _gradientBitmap.LockBits(bounds, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            for (var y = 0; y < height; y++)
+            {
+                var position = height <= 1 ? 0f : y / (float)(height - 1);
+                var value = _highAtTop ? 1f - position : position;
+                var argb = (colorAt?.Invoke(value) ?? Theme.PanelStrong).ToArgb();
+                Array.Fill(_gradientScanline, argb, 0, width);
+                Marshal.Copy(_gradientScanline, 0, IntPtr.Add(bitmapData.Scan0, y * bitmapData.Stride), width);
+            }
+        }
+        finally
+        {
+            _gradientBitmap.UnlockBits(bitmapData);
+        }
+        _gradientDirty = false;
+    }
+
+    private void DrawMarker(Graphics graphics, Rectangle rail, float markerY)
+    {
+        var markerColor = !Enabled
+            ? Theme.DisabledText
+            : SystemInformation.HighContrast
+                ? SystemColors.HighlightText
+                : Focused || _hovered || _interacting
+                    ? Theme.AccentLabel
+                    : Color.White;
+        var outlineColor = !Enabled
+            ? Theme.PanelStrong
+            : SystemInformation.HighContrast
+                ? SystemColors.WindowText
+                : Color.FromArgb(230, Color.Black);
+
+        using (var shadow = new Pen(outlineColor, 3f))
+        using (var line = new Pen(markerColor, 1.25f))
+        {
+            graphics.DrawLine(shadow, rail.Left - 1f, markerY, rail.Right, markerY);
+            graphics.DrawLine(line, rail.Left - 1f, markerY, rail.Right, markerY);
+        }
+
+        var halfHeight = _interacting ? 4f : 3.5f;
+        var left = new[]
+        {
+            new PointF(rail.Left - 4f, markerY - halfHeight),
+            new PointF(rail.Left - 4f, markerY + halfHeight),
+            new PointF(rail.Left, markerY)
+        };
+        var right = new[]
+        {
+            new PointF(rail.Right + 3f, markerY - halfHeight),
+            new PointF(rail.Right + 3f, markerY + halfHeight),
+            new PointF(rail.Right - 1f, markerY)
+        };
+        using var fill = new SolidBrush(markerColor);
+        using var outline = new Pen(outlineColor, 1f);
+        graphics.FillPolygon(fill, left);
+        graphics.FillPolygon(fill, right);
+        graphics.DrawPolygon(outline, left);
+        graphics.DrawPolygon(outline, right);
+    }
+
+    private static void DrawCheckerboard(Graphics graphics, Rectangle bounds)
+    {
+        const int square = 4;
+        using var light = new SolidBrush(Color.FromArgb(255, 94, 100, 104));
+        using var dark = new SolidBrush(Color.FromArgb(255, 60, 65, 69));
+        for (var y = bounds.Top; y < bounds.Bottom; y += square)
+        {
+            for (var x = bounds.Left; x < bounds.Right; x += square)
+            {
+                var alternate = ((x - bounds.Left) / square + (y - bounds.Top) / square) % 2 == 0;
+                graphics.FillRectangle(alternate ? light : dark, x, y, Math.Min(square, bounds.Right - x), Math.Min(square, bounds.Bottom - y));
+            }
+        }
+    }
+
+    private void TickInteractionRefresh()
+    {
+        if (!_interacting || !Capture)
+        {
+            _interactionRefreshTimer.Stop();
+            return;
+        }
+
+        UpdateInteractionFromPointer(PointToClient(System.Windows.Forms.Cursor.Position));
+    }
+
+    private void UpdateInteractionFromPointer(Point location)
+    {
+        var rail = RailBounds();
+        if (rail.Height <= 1) return;
+        var position = Math.Clamp((location.Y - rail.Top) / (float)(rail.Height - 1), 0f, 1f);
+        SetValueAndRaise(_highAtTop ? 1f - position : position);
+    }
+
+    private bool TryGetKeyboardValue(Keys key, out float value)
+    {
+        var small = (ModifierKeys & Keys.Control) != 0 ? 0.1f : 0.01f;
+        var verticalDirection = _highAtTop ? 1f : -1f;
+        value = key switch
+        {
+            Keys.Left => _value - small,
+            Keys.Right => _value + small,
+            Keys.Down => _value - small * verticalDirection,
+            Keys.Up => _value + small * verticalDirection,
+            Keys.PageDown => _value - 0.1f * verticalDirection,
+            Keys.PageUp => _value + 0.1f * verticalDirection,
+            Keys.Home => 0f,
+            Keys.End => 1f,
+            _ => _value
+        };
+        value = Normalize(value);
+        return IsAdjustmentKey(key);
+    }
+
+    private static bool IsAdjustmentKey(Keys key)
+    {
+        return key is Keys.Left or Keys.Right or Keys.Up or Keys.Down
+            or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End;
+    }
+
+    private void SetValueAndRaise(float value)
+    {
+        if (SetValueCore(value)) ValueChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool SetValueCore(float value)
+    {
+        value = Normalize(value);
+        if (Math.Abs(_value - value) < 0.0001f) return false;
+        _value = value;
+        UpdateAccessibility(updateName: false);
+        Invalidate();
+        return true;
+    }
+
+    private void BeginInteraction()
+    {
+        if (_interacting) return;
+        _interacting = true;
+        _interactionStartValue = _value;
+        _interactionRefreshTimer.Start();
+        InteractionStarted?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
+
+    private void CompleteInteraction()
+    {
+        if (!_interacting) return;
+        _interacting = false;
+        _interactionRefreshTimer.Stop();
+        if (Capture) Capture = false;
+        InteractionCompleted?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
+
+    private void CancelInteraction()
+    {
+        if (!_interacting) return;
+        _interacting = false;
+        _interactionRefreshTimer.Stop();
+        if (Capture) Capture = false;
+        if (SetValueCore(_interactionStartValue)) ValueChanged?.Invoke(this, EventArgs.Empty);
+        InteractionCanceled?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
+
+    private void UpdateAccessibility(bool updateName)
+    {
+        if (updateName) AccessibleName = _axisName;
+        AccessibleDescription = $"{_axisName}: {MathF.Round(_value * 100)}%";
+    }
+
+    private static float Normalize(float value)
+    {
+        return float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : 0f;
+    }
+}
+
 internal enum ColorHarmonyMode
 {
     Complementary,
@@ -914,7 +1915,10 @@ internal sealed class HarmonyColorWheel : Control
             center.X + innerRadius,
             center.Y + innerRadius);
         using (var centerBrush = new SolidBrush(Color.FromArgb(255, _color.R, _color.G, _color.B)))
-        using (var centerBorder = new Pen(Focused || _hovered ? Theme.BorderHover : Theme.Border))
+        using (var centerBorder = new Pen(
+                   Theme.ReadableUiColor(
+                       _color,
+                       Focused || _hovered ? Theme.BorderHover : Theme.Border)))
         {
             e.Graphics.FillEllipse(centerBrush, centerBounds);
             e.Graphics.DrawEllipse(centerBorder, centerBounds);
@@ -927,9 +1931,19 @@ internal sealed class HarmonyColorWheel : Control
             DrawHarmonyMarker(e.Graphics, bounds, colors[index], NormalizeHue(_hue + offsets[index]), index == 0);
         }
 
-        if (Focused && ShowFocusCues)
+        if (!Enabled)
         {
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(bounds, 2, 2), Theme.Accent, BackColor);
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(150, Theme.DisabledSurface));
+            e.Graphics.FillEllipse(disabledOverlay, bounds);
+        }
+
+        if (Enabled && Focused && ShowFocusCues)
+        {
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(bounds, 2, 2),
+                Theme.ReadableUiColor(BackColor, Theme.Accent),
+                BackColor);
         }
     }
 
@@ -948,7 +1962,7 @@ internal sealed class HarmonyColorWheel : Control
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        _hovered = true;
+        _hovered = Enabled;
         UpdatePointerCursor(PointToClient(System.Windows.Forms.Cursor.Position));
         Invalidate();
     }
@@ -1008,6 +2022,12 @@ internal sealed class HarmonyColorWheel : Control
             CancelInteraction();
             e.Handled = true;
             e.SuppressKeyPress = true;
+            return;
+        }
+
+        if (!Enabled)
+        {
+            base.OnKeyDown(e);
             return;
         }
 
@@ -1182,8 +2202,12 @@ internal sealed class HarmonyColorWheel : Control
         var size = primary ? 11f : 8f;
         var marker = new RectangleF(point.X - size / 2f, point.Y - size / 2f, size, size);
         using var fill = new SolidBrush(Color.FromArgb(255, color.R, color.G, color.B));
-        using var outer = new Pen(Color.FromArgb(230, Color.Black), primary ? 3f : 2.5f);
-        using var inner = new Pen(primary ? Theme.AccentLabel : Color.White, primary ? 1.5f : 1f);
+        using var outer = new Pen(
+            Theme.ReadableUiColor(color, Color.Black),
+            primary ? 3f : 2.5f);
+        using var inner = new Pen(
+            Theme.ReadableUiColor(color, primary ? Theme.AccentLabel : Color.White),
+            primary ? 1.5f : 1f);
         graphics.FillEllipse(fill, marker);
         graphics.DrawEllipse(outer, marker);
         graphics.DrawEllipse(inner, marker);
@@ -1597,6 +2621,11 @@ internal sealed class GradientPresetGrid : Control
         base.OnPaint(e);
         e.Graphics.Clear(BackColor);
         for (var index = 0; index < _presets.Count; index++) DrawPreset(e.Graphics, index, _presets[index]);
+        if (!Enabled)
+        {
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(132, Theme.DisabledSurface));
+            e.Graphics.FillRectangle(disabledOverlay, ClientRectangle);
+        }
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -1614,7 +2643,7 @@ internal sealed class GradientPresetGrid : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button != MouseButtons.Left) return;
+        if (!Enabled || e.Button != MouseButtons.Left) return;
         var index = HitTest(e.Location);
         if ((uint)index >= (uint)_presets.Count) return;
         Focus();
@@ -1686,13 +2715,17 @@ internal sealed class GradientPresetGrid : Control
         var selected = index == _selectedIndex;
         var focused = Focused && index == _focusIndex;
         var hovered = index == _hoverIndex;
-        using var border = new Pen(selected ? Theme.Accent : hovered || focused ? Theme.Text : Theme.Border, selected ? 2f : 1f);
+        var previewColor = GradientPreviewRenderer.Sample(preset.Stops, 0.5f);
+        var preferredBorder = selected ? Theme.Accent : hovered || focused ? Theme.Text : Theme.Border;
+        using var border = new Pen(
+            Theme.ReadableUiColor(previewColor, preferredBorder),
+            selected ? 2f : 1f);
         graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
         if (preset.Kind is GradientKind.Radial or GradientKind.ShapeRadial)
         {
             var radius = Math.Max(2, Math.Min(4, preview.Height / 3));
             var center = new Rectangle(preview.Left + preview.Width / 2 - radius, preview.Top + preview.Height / 2 - radius, radius * 2, radius * 2);
-            using var marker = new Pen(Color.FromArgb(220, Theme.Text));
+            using var marker = new Pen(Color.FromArgb(220, Theme.ReadableUiColor(previewColor, Theme.Text)));
             graphics.DrawEllipse(marker, center);
         }
     }
@@ -1789,19 +2822,36 @@ internal sealed class GradientStopStrip : Control
         var rail = RailBounds;
         DrawChecker(e.Graphics, rail);
         using (var brush = CreateGradientBrush(rail)) e.Graphics.FillRectangle(brush, rail);
-        using (var border = new Pen(_hovered || Focused ? Theme.BorderHover : Theme.Border)) e.Graphics.DrawRectangle(border, rail);
+        if (!Enabled)
+        {
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(150, Theme.DisabledSurface));
+            e.Graphics.FillRectangle(disabledOverlay, rail);
+        }
+
+        using (var border = new Pen(!Enabled
+                   ? Theme.Border
+                   : _hovered || Focused
+                       ? Theme.BorderHover
+                       : Theme.Border))
+        {
+            e.Graphics.DrawRectangle(border, rail);
+        }
 
         for (var index = 0; index < _stops.Length; index++) DrawStop(e.Graphics, index, StopPoint(index));
-        if (Focused && ShowFocusCues)
+        if (Enabled && Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -2, -2), Theme.Text, BackColor);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(ClientRectangle, -2, -2),
+                Theme.ReadableUiColor(BackColor, Theme.Text),
+                BackColor);
         }
     }
 
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        _hovered = true;
+        _hovered = Enabled;
         Invalidate();
     }
 
@@ -2014,8 +3064,16 @@ internal sealed class GradientStopStrip : Control
             new Point(point.X - 6, point.Y + 1),
             new Point(point.X + 6, point.Y + 1)
         };
-        using var fill = new SolidBrush(Color.FromArgb(_stops[index].Argb));
-        using var outline = new Pen(index == _selectedIndex ? Theme.Accent : Theme.Text, index == _selectedIndex ? 2f : 1f);
+        var color = Color.FromArgb(_stops[index].Argb);
+        using var fill = new SolidBrush(color);
+        var preferredOutline = !Enabled
+            ? Theme.DisabledText
+            : index == _selectedIndex
+                ? Theme.Accent
+                : Theme.Text;
+        using var outline = new Pen(
+            Theme.ReadableUiColor(color, preferredOutline),
+            index == _selectedIndex ? 2f : 1f);
         graphics.FillPolygon(fill, points);
         graphics.DrawPolygon(outline, points);
     }
@@ -2136,8 +3194,20 @@ internal sealed class ColorTargetButton : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        var background = Selected ? Theme.AccentSurface : _hovered ? Theme.PanelHover : Theme.PanelStrong;
-        var borderColor = Selected ? Theme.Accent : _hovered ? Theme.BorderHover : Theme.Border;
+        var background = !Enabled
+            ? Theme.DisabledSurface
+            : Selected
+                ? Theme.AccentSurface
+                : _hovered
+                    ? Theme.PanelHover
+                    : Theme.PanelStrong;
+        var borderColor = !Enabled
+            ? Theme.Border
+            : Selected
+                ? Theme.Accent
+                : _hovered
+                    ? Theme.BorderHover
+                    : Theme.Border;
         using var backgroundBrush = new SolidBrush(background);
         using var border = new Pen(borderColor);
         e.Graphics.FillRectangle(backgroundBrush, ClientRectangle);
@@ -2155,42 +3225,56 @@ internal sealed class ColorTargetButton : Control
         {
             GradientPreviewRenderer.Draw(e.Graphics, swatch, _gradientKind, _gradientStops);
         }
-        using (var swatchBorder = new Pen(Theme.BorderHover)) e.Graphics.DrawRectangle(swatchBorder, swatch);
+        var swatchReferenceColor = _gradientKind == GradientKind.Solid
+            ? SwatchColor
+            : GradientPreviewRenderer.Sample(_gradientStops, 0.5f);
+        var swatchBorderColor = Theme.ReadableUiColor(swatchReferenceColor, Theme.BorderHover);
+        using (var swatchBorder = new Pen(swatchBorderColor)) e.Graphics.DrawRectangle(swatchBorder, swatch);
 
         var textLeft = swatch.Right + 8;
         var textWidth = Math.Max(0, Width - textLeft - 8);
         var titleBounds = new Rectangle(textLeft, 5, textWidth, Math.Max(0, Height / 2 - 3));
+        var titleColor = !Enabled
+            ? Theme.ReadableText(background, Theme.DisabledText)
+            : Theme.ReadableText(background, Selected ? Theme.AccentLabel : Theme.Text);
         TextRenderer.DrawText(
             e.Graphics,
             UiLocalization.T(Text),
             Font,
             titleBounds,
-            Selected ? Theme.AccentLabel : Theme.Text,
+            titleColor,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
         if (!string.IsNullOrWhiteSpace(DetailText))
         {
             var detailBounds = new Rectangle(textLeft, Height / 2 - 1, textWidth, Math.Max(0, Height / 2 - 4));
             using var detailFont = Theme.UiFont(8.2f);
+            var detailColor = !Enabled
+                ? Theme.ReadableText(background, Theme.DisabledText)
+                : Theme.ReadableText(background, Selected ? Theme.AccentLabel : Theme.Muted);
             TextRenderer.DrawText(
                 e.Graphics,
                 UiLocalization.T(DetailText),
                 detailFont,
                 detailBounds,
-                Selected ? Theme.AccentLabel : Theme.Muted,
+                detailColor,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
-        if (Focused && ShowFocusCues)
+        if (Enabled && Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3), Theme.Text, background);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(ClientRectangle, -3, -3),
+                Theme.ReadableUiColor(background, Theme.Text),
+                background);
         }
     }
 
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        _hovered = true;
+        _hovered = Enabled;
         Invalidate();
     }
 
@@ -2201,10 +3285,18 @@ internal sealed class ColorTargetButton : Control
         Invalidate();
     }
 
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        base.OnEnabledChanged(e);
+        if (!Enabled) _hovered = false;
+        Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+        Invalidate();
+    }
+
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button == MouseButtons.Left) Focus();
+        if (Enabled && e.Button == MouseButtons.Left) Focus();
     }
 
     protected override bool IsInputKey(Keys keyData)
@@ -2214,7 +3306,7 @@ internal sealed class ColorTargetButton : Control
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode is Keys.Space or Keys.Enter)
+        if (Enabled && (e.KeyCode is Keys.Space or Keys.Enter))
         {
             OnClick(EventArgs.Empty);
             e.Handled = true;
@@ -2261,6 +3353,7 @@ internal sealed class ColorPaletteGrid : Control
             | ControlStyles.UserPaint,
             true);
         BackColor = Theme.Panel;
+        ForeColor = Theme.Text;
         Cursor = Cursors.Hand;
         TabStop = true;
         AccessibleRole = AccessibleRole.List;
@@ -2338,24 +3431,56 @@ internal sealed class ColorPaletteGrid : Control
     {
         base.OnPaint(e);
         e.Graphics.Clear(BackColor);
-        if (_colors.Count == 0 && !string.IsNullOrWhiteSpace(_emptyText))
+        var isEmpty = _colors.Count == 0 && !string.IsNullOrWhiteSpace(_emptyText);
+        if (!isEmpty)
         {
+            for (var i = 0; i < _colors.Count; i++) DrawSwatch(e.Graphics, i, _colors[i]);
+        }
+
+        if (!Enabled)
+        {
+            using var disabledOverlay = new SolidBrush(Color.FromArgb(132, Theme.DisabledSurface));
+            e.Graphics.FillRectangle(disabledOverlay, ClientRectangle);
+        }
+
+        if (isEmpty)
+        {
+            var emptyBackground = Theme.EffectiveBackground(this);
+            if (!Enabled) emptyBackground = Theme.Mix(emptyBackground, Theme.DisabledSurface, 132f / 255f);
             using var emptyFont = Theme.UiFont(8.5f);
             TextRenderer.DrawText(
                 e.Graphics,
                 UiLocalization.T(_emptyText),
                 emptyFont,
                 ClientRectangle,
-                Theme.DisabledText,
+                Theme.ReadableText(emptyBackground, Enabled ? Theme.Muted : Theme.DisabledText),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-            return;
         }
-        for (var i = 0; i < _colors.Count; i++) DrawSwatch(e.Graphics, i, _colors[i]);
+        if (Enabled && Focused && ShowFocusCues)
+        {
+            var focusBackground = Theme.EffectiveBackground(this);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(ClientRectangle, -1, -1),
+                Theme.ReadableUiColor(focusBackground, Theme.Accent),
+                focusBackground);
+        }
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (!Enabled)
+        {
+            if (_hoverIndex >= 0)
+            {
+                _hoverIndex = -1;
+                Invalidate();
+                HoverCleared?.Invoke(this, EventArgs.Empty);
+            }
+            return;
+        }
+
         var index = HitTest(e.Location);
         if (_hoverIndex == index) return;
         _hoverIndex = index;
@@ -2376,6 +3501,7 @@ internal sealed class ColorPaletteGrid : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        if (!Enabled) return;
         var index = HitTest(e.Location);
         if ((uint)index >= (uint)_colors.Count) return;
         Focus();
@@ -2395,7 +3521,7 @@ internal sealed class ColorPaletteGrid : Control
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (_colors.Count == 0)
+        if (!Enabled || _colors.Count == 0)
         {
             base.OnKeyDown(e);
             return;
@@ -2452,6 +3578,14 @@ internal sealed class ColorPaletteGrid : Control
         Invalidate();
     }
 
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        base.OnEnabledChanged(e);
+        if (!Enabled) _hoverIndex = -1;
+        Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+        Invalidate();
+    }
+
     private void DrawSwatch(Graphics graphics, int index, Color color)
     {
         var bounds = SwatchBounds(index);
@@ -2462,11 +3596,14 @@ internal sealed class ColorPaletteGrid : Control
         var selected = !_selectedColor.IsEmpty && _selectedColor.ToArgb() == color.ToArgb();
         var focused = Focused && index == _focusIndex;
         var hovered = index == _hoverIndex;
-        using var border = new Pen(selected ? Theme.Accent : hovered || focused ? Theme.Text : Theme.Border, selected ? 2f : 1f);
+        var preferredBorder = selected ? Theme.Accent : hovered || focused ? Theme.Text : Theme.Border;
+        using var border = new Pen(
+            Theme.ReadableUiColor(color, preferredBorder),
+            selected ? 2f : 1f);
         graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
         if (selected)
         {
-            using var inner = new Pen(Color.FromArgb(190, Theme.AccentText));
+            using var inner = new Pen(Color.FromArgb(220, Theme.ReadableUiColor(color, Theme.AccentText)));
             var inset = Rectangle.Inflate(bounds, -3, -3);
             graphics.DrawRectangle(inner, inset.X, inset.Y, Math.Max(0, inset.Width - 1), Math.Max(0, inset.Height - 1));
         }

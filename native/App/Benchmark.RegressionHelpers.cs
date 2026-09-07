@@ -1,9 +1,107 @@
-using System.Diagnostics;
+using System.Reflection;
 
 namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private const BindingFlags PrivateInstanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
+
+    private static FieldInfo RequireField(
+        Type type,
+        string name,
+        BindingFlags flags = PrivateInstanceFlags)
+    {
+        return type.GetField(name, flags)
+            ?? throw new InvalidOperationException(
+                $"Required field '{type.FullName ?? type.Name}.{name}' was not found.");
+    }
+
+    private static MethodInfo RequireMethod(
+        Type type,
+        string name,
+        BindingFlags flags = PrivateInstanceFlags)
+    {
+        return type.GetMethod(name, flags)
+            ?? throw new InvalidOperationException(
+                $"Required method '{type.FullName ?? type.Name}.{name}(...)' was not found.");
+    }
+
+    private static MethodInfo RequireMethod(
+        Type type,
+        string name,
+        Type[] parameterTypes,
+        BindingFlags flags = PrivateInstanceFlags)
+    {
+        return type.GetMethod(name, flags, binder: null, parameterTypes, modifiers: null)
+            ?? throw new InvalidOperationException(
+                $"Required method '{type.FullName ?? type.Name}.{name}({string.Join(", ", parameterTypes.Select(parameterType => parameterType.FullName ?? parameterType.Name))})' was not found.");
+    }
+
+    private static PropertyInfo RequireProperty(
+        Type type,
+        string name,
+        BindingFlags flags = PrivateInstanceFlags)
+    {
+        return type.GetProperty(name, flags)
+            ?? throw new InvalidOperationException(
+                $"Required property '{type.FullName ?? type.Name}.{name}' was not found.");
+    }
+
+    private static void ForceFullCollectionForBenchmark()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+    }
+
+    private static Color SampleBitmap(Bitmap bitmap, PointF point)
+    {
+        var x = Math.Clamp((int)MathF.Round(point.X), 0, bitmap.Width - 1);
+        var y = Math.Clamp((int)MathF.Round(point.Y), 0, bitmap.Height - 1);
+        return bitmap.GetPixel(x, y);
+    }
+
+    private static void AssertTimeline(bool condition, string message)
+    {
+        if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private static void ExpectInvalidData(Action action, string message)
+    {
+        try
+        {
+            action();
+        }
+        catch (InvalidDataException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(message);
+    }
+
+    private static string CreateTemporaryDirectory(string prefix)
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            "Vector2DAnimationEngine",
+            $"{prefix}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void DeleteTemporaryDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+            // A later regression run uses a unique directory.
+        }
+    }
+
     private static int ApplyInstanceAppearanceForRegression(int argb, float alpha, int tintArgb)
     {
         static int Multiply(int first, int second) => (first * second + 127) / 255;

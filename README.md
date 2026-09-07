@@ -104,6 +104,8 @@ Use the repository validation entry point so builds and benchmarks share the cro
 
 The repository has no separate test project or CI pipeline. `native/App/Benchmark*.cs` supplies the focused CLI regression harness.
 
+Shared assertions, fixture cleanup, reflection lookup and sampling live in `Benchmark.RegressionHelpers.cs`; feature partials retain their test cases and measurement loops. Use the [benchmark map](.agents/skills/vector2d-validate-change/references/benchmark-map.md) to select suites. `--bench-collision` is a manual project-specific probe, not part of the standard validation suites.
+
 ## Release Packaging
 
 Every formal Windows release is one replaceable EXE:

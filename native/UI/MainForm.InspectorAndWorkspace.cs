@@ -13,6 +13,8 @@ internal sealed partial class MainForm : Form
         var basicInspectorScrollY = CaptureInspectorScrollPosition(_basicInspectorPage);
         var sceneInspectorScrollY = CaptureInspectorScrollPosition(_sceneEditPage);
         var drawingObjectPanelWasVisible = _drawingObjectInstancePanel.Visible;
+        var sceneLightingWasVisible = _sceneLightingPanel.Visible;
+        var spatialMaterialWasVisible = _spatialMaterialPanel.Visible;
         var drawingObjectPanelParent = _drawingObjectInstancePanel.Parent;
         var materialEditorHeight = _materialEditor.Height;
         var materialEditorWasVisible = _materialEditor.Visible;
@@ -45,6 +47,7 @@ internal sealed partial class MainForm : Form
                     && _scene.ShapeKind[validSelection[0]] == ShapeKind.Text)));
         var selectedSceneInstances = SelectedSceneInstances();
         var sceneInstance = SelectedSceneInstance();
+        RefreshSceneOpticsInspector();
         _drawingObjectInstancePanel.Visible = sceneInstance is not null;
         _materialEditor.Visible = sceneInstance is not null || !validSelection.Any(IsImportedSvgObject);
         if (sceneInstance is not null)
@@ -198,6 +201,8 @@ internal sealed partial class MainForm : Form
                 || (textSettingsLayoutChanged
                     && ReferenceEquals(textSettingsParent, _basicInspectorPage.Content));
             var sceneLayoutChanged = drawingParameterPanelsMoved
+                || sceneLightingWasVisible != _sceneLightingPanel.Visible
+                || spatialMaterialWasVisible != _spatialMaterialPanel.Visible
                 || (drawingObjectLayoutChanged
                     && ReferenceEquals(drawingObjectPanelParent, _sceneEditPage.Content))
                 || (materialEditorLayoutChanged
@@ -829,6 +834,7 @@ internal sealed partial class MainForm : Form
                 UpdatePencilSettingsPanelPresentation();
                 UpdateShapeSettingsPanelPresentation();
                 UpdateInspector();
+                RefreshSceneOpticsText();
             }
 
             if (plan.Includes(HotReloadModule.Shell))
@@ -985,6 +991,7 @@ internal sealed partial class MainForm : Form
             _animationPage.Visible = false;
             UpdateSceneSpatialControlsVisibility();
             UpdateSpatialTransformPanelState();
+            RefreshSceneOpticsInspector();
         }
         finally
         {
@@ -1077,7 +1084,6 @@ internal sealed partial class MainForm : Form
         Control[] frontToBack =
         [
             _hierarchyPanel,
-            _spatialTransformPanel,
             _sceneWorkflowControls,
             _drawingObjectInstancePanel,
             _shapeSettingsPanel,
@@ -1107,7 +1113,7 @@ internal sealed partial class MainForm : Form
     private static bool IsBasicDrawingOnlyTool(ToolMode tool)
     {
         return IsDrawingTool(tool)
-            || tool is ToolMode.Text or ToolMode.Fill or ToolMode.InkBottle or ToolMode.Eyedropper or ToolMode.Gradient or ToolMode.Eraser;
+            || tool is ToolMode.Text or ToolMode.Fill or ToolMode.InkBottle or ToolMode.Eyedropper or ToolMode.Gradient or ToolMode.SnapPoint or ToolMode.Eraser;
     }
 
     internal static bool IsToolVisibleInWorkspace(WorkspaceView view, ToolMode tool)
@@ -1127,10 +1133,10 @@ internal sealed partial class MainForm : Form
         if (!IsToolVisibleInWorkspace(workspace, tool)) return false;
         if (workspace != WorkspaceView.SceneEditor) return true;
         return IsSceneReferenceView()
-            ? IsScene3DView()
+                ? IsScene3DView()
                 ? tool is ToolMode.Select or ToolMode.Transform3D or ToolMode.Hand
                 : IsScene2DFrontView()
-                    ? tool is ToolMode.Select or ToolMode.Transform or ToolMode.Distort or ToolMode.Hand
+                    ? tool is ToolMode.Select or ToolMode.PolygonLasso or ToolMode.FreehandLasso or ToolMode.Transform or ToolMode.Distort or ToolMode.Hand
                     : tool is ToolMode.Select or ToolMode.Hand
             : tool != ToolMode.Transform3D;
     }
@@ -1369,12 +1375,15 @@ internal sealed partial class MainForm : Form
             ToolMode.InkBottle => SvgIconKind.InkBottle,
             ToolMode.Eyedropper => SvgIconKind.Eyedropper,
             ToolMode.Gradient => SvgIconKind.Gradient,
+            ToolMode.SnapPoint => SvgIconKind.Snap,
             ToolMode.Eraser => SvgIconKind.Eraser,
             ToolMode.Transform3D => SvgIconKind.Transform3D,
             ToolMode.Transform => SvgIconKind.Transform,
             ToolMode.Distort => SvgIconKind.Distort,
             ToolMode.Hand => SvgIconKind.Pan,
             ToolMode.Select => SvgIconKind.Select,
+            ToolMode.PolygonLasso => SvgIconKind.PolygonLasso,
+            ToolMode.FreehandLasso => SvgIconKind.FreehandLasso,
             _ => SvgIconKind.Rectangle
         };
     }
@@ -1409,6 +1418,8 @@ internal sealed partial class MainForm : Form
             ToolMode.Transform => "Free Transform Tool",
             ToolMode.Transform3D => "3D Transform Tool",
             ToolMode.Distort => "Distort Tool",
+            ToolMode.PolygonLasso => "Polygon Lasso Tool",
+            ToolMode.FreehandLasso => "Freehand Lasso Tool",
             ToolMode.Fill => "Fill Tool",
             ToolMode.InkBottle => "Ink Bottle Tool",
             _ => "Select Tool"
@@ -1466,7 +1477,6 @@ internal sealed partial class MainForm : Form
             button.Enabled = enabled;
             if (tool == _tool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
-            if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
         }
 
         RefreshToolPairGroup(_selectionToolGroup, workspace, drawingToolsBlocked);
@@ -1485,7 +1495,6 @@ internal sealed partial class MainForm : Form
             _shapeToolButton.AccessibleName = ShapeToolName(_activeShapeTool);
             if (IsShapeTool(_tool)) Theme.StyleActiveButton(_shapeToolButton);
             else Theme.StyleButton(_shapeToolButton);
-            if (!enabled) _shapeToolButton.ForeColor = Color.FromArgb(120, Theme.Text);
             _shapeToolButton.Invalidate();
             if (!visible) HideShapeToolFlyout();
         }
@@ -1498,7 +1507,6 @@ internal sealed partial class MainForm : Form
             button.Enabled = enabled;
             if (tool == _activeShapeTool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
-            if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
         }
 
         if (_lineToolButton is not null)
@@ -1514,7 +1522,6 @@ internal sealed partial class MainForm : Form
             _lineToolButton.AccessibleName = LineToolName(_activeLineTool);
             if (IsLineTool(_tool)) Theme.StyleActiveButton(_lineToolButton);
             else Theme.StyleButton(_lineToolButton);
-            if (!enabled) _lineToolButton.ForeColor = Color.FromArgb(120, Theme.Text);
             _lineToolButton.Invalidate();
             if (!visible) HideLineToolFlyout();
         }
@@ -1527,7 +1534,6 @@ internal sealed partial class MainForm : Form
             button.Enabled = enabled;
             if (tool == _activeLineTool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
-            if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
         }
 
         if (_brushToolButton is not null)
@@ -1543,7 +1549,6 @@ internal sealed partial class MainForm : Form
             _brushToolButton.AccessibleName = BrushToolName(_activeBrushTool);
             if (IsBrushTool(_tool)) Theme.StyleActiveButton(_brushToolButton);
             else Theme.StyleButton(_brushToolButton);
-            if (!enabled) _brushToolButton.ForeColor = Color.FromArgb(120, Theme.Text);
             _brushToolButton.Invalidate();
             if (!visible) HideBrushToolFlyout();
         }
@@ -1556,7 +1561,6 @@ internal sealed partial class MainForm : Form
             button.Enabled = enabled;
             if (tool == _activeBrushTool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
-            if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
         }
 
         var activeDrawingObject = ActiveDrawingObject();
@@ -1567,6 +1571,7 @@ internal sealed partial class MainForm : Form
         }
 
         LayoutToolPalette();
+        UpdateSnapPointOverlay();
     }
 
     private void RefreshToolPairGroup(
@@ -1587,7 +1592,6 @@ internal sealed partial class MainForm : Form
             group.ParentButton.AccessibleName = ToolPairName(group.ActiveTool);
             if (group.Contains(_tool)) Theme.StyleActiveButton(group.ParentButton);
             else Theme.StyleButton(group.ParentButton);
-            if (!groupEnabled) group.ParentButton.ForeColor = Color.FromArgb(120, Theme.Text);
             group.ParentButton.Invalidate();
             if (!groupVisible) HideToolPairFlyout(group);
         }
@@ -1600,7 +1604,6 @@ internal sealed partial class MainForm : Form
             button.Enabled = enabled;
             if (tool == group.ActiveTool) Theme.StyleActiveButton(button);
             else Theme.StyleButton(button);
-            if (!enabled) button.ForeColor = Color.FromArgb(120, Theme.Text);
         }
     }
 

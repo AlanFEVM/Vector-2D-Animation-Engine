@@ -9,20 +9,25 @@ namespace VectorAnimationEngine;
 internal static class DrawingObjectSvgCodec
 {
     private const int MinimumReadableFormatVersion = 1;
-    private const int CurrentFormatVersion = 4;
+    private const int CurrentFormatVersion = 5;
     private const string MetadataId = "v2d-metadata";
     private const string SvgVersion = "1.1";
     private const string StageViewBox = "-24000 -14000 48000 28000";
-    private const string MetadataEncoding = "base64-json";
+    private const string LegacyMetadataEncoding = "base64-json";
+    private const string CompressedMetadataEncoding = "base64-brotli-json";
     private const int MaxLayersPerAsset = 100_000;
     private const int MaxObjectsPerAsset = 250_000;
     private const long MaxPointsPerAsset = 2_000_000;
     private const int MaxImportedSvgSourceCharacters = 8 * 1024 * 1024;
     private const long MaxImportedSvgSourceCharactersPerAsset = 8L * 1024 * 1024;
     private const int MaxImportedSvgNameCharacters = 80;
+    private const int MaxTimelineTabGroupNameLength = 80;
     private const int MaxDistortionWarpsPerObject = 256;
     private const long MaxSvgFileBytes = 128L * 1024 * 1024;
     private const long MaxSvgCharacters = 128L * 1024 * 1024;
+    private const int MaxMetadataDecodedBytes = 96 * 1024 * 1024;
+    private const int MaxMetadataEncodedBytes = 96 * 1024 * 1024;
+    private const int MaxMetadataBase64Characters = 128 * 1024 * 1024;
     private static readonly XNamespace SvgNamespace = "http://www.w3.org/2000/svg";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -43,7 +48,23 @@ internal static class DrawingObjectSvgCodec
             DrawingObjectId = drawingObjectId,
             Snapshot = snapshot
         };
-        var metadata = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(envelope, JsonOptions));
+        var json = JsonSerializer.SerializeToUtf8Bytes(envelope, JsonOptions);
+        if (json.Length > MaxMetadataDecodedBytes)
+        {
+            throw new InvalidDataException("The symbol SVG metadata exceeds the supported decoded size limit.");
+        }
+
+        var compressed = ProjectPayloadCompression.Compress(json);
+        if (compressed.Length > MaxMetadataEncodedBytes)
+        {
+            throw new InvalidDataException("The symbol SVG metadata exceeds the supported encoded size limit.");
+        }
+
+        var metadata = Convert.ToBase64String(compressed);
+        if (metadata.Length > MaxMetadataBase64Characters)
+        {
+            throw new InvalidDataException("The symbol SVG metadata exceeds the supported Base64 size limit.");
+        }
         var root = new XElement(
             SvgNamespace + "svg",
             new XAttribute("version", SvgVersion),
@@ -55,7 +76,7 @@ internal static class DrawingObjectSvgCodec
                 SvgNamespace + "metadata",
                 new XAttribute("id", MetadataId),
                 new XAttribute("data-v2d-format-version", CurrentFormatVersion),
-                new XAttribute("data-encoding", MetadataEncoding),
+                new XAttribute("data-encoding", CompressedMetadataEncoding),
                 metadata));
 
         AddPreview(root, snapshot);
@@ -129,7 +150,7 @@ internal static class DrawingObjectSvgCodec
                 || metadataVersion != rootVersion
                 || !string.Equals(
                     (string?)metadataElement.Attribute("data-encoding"),
-                    MetadataEncoding,
+                    MetadataEncodingForVersion(rootVersion),
                     StringComparison.Ordinal))
             {
                 throw new InvalidDataException("The symbol SVG metadata format is unsupported.");
@@ -137,7 +158,25 @@ internal static class DrawingObjectSvgCodec
 
             var encoded = metadataElement.Value.Trim();
             if (encoded.Length == 0) throw new InvalidDataException("The symbol SVG metadata is empty.");
-            var json = Convert.FromBase64String(encoded);
+            if (encoded.Length > MaxMetadataBase64Characters)
+            {
+                throw new InvalidDataException("The symbol SVG metadata exceeds the supported Base64 size limit.");
+            }
+
+            var payload = Convert.FromBase64String(encoded);
+            if (payload.Length > MaxMetadataEncodedBytes)
+            {
+                throw new InvalidDataException("The symbol SVG metadata exceeds the supported encoded size limit.");
+            }
+
+            var json = rootVersion == CurrentFormatVersion
+                ? ProjectPayloadCompression.Decompress(payload, MaxMetadataDecodedBytes)
+                : payload;
+            if (json.Length > MaxMetadataDecodedBytes)
+            {
+                throw new InvalidDataException("The symbol SVG metadata exceeds the supported decoded size limit.");
+            }
+
             var envelope = JsonSerializer.Deserialize<MetadataEnvelope>(json, JsonOptions);
             if (envelope is null
                 || envelope.Version != rootVersion
@@ -629,6 +668,9 @@ internal static class DrawingObjectSvgCodec
     private static bool IsReadableFormatVersion(int version) =>
         version >= MinimumReadableFormatVersion && version <= CurrentFormatVersion;
 
+    private static string MetadataEncodingForVersion(int version) =>
+        version == CurrentFormatVersion ? CompressedMetadataEncoding : LegacyMetadataEncoding;
+
     private static void ValidateSnapshot(VectorSceneSnapshot snapshot, int formatVersion)
     {
         if (snapshot.LayerCount <= 0 || snapshot.LayerCount > MaxLayersPerAsset
@@ -1083,17 +1125,22 @@ internal static class DrawingObjectSvgCodec
     {
         if (timeline is null) return;
         if (timeline.Tracks is null) throw new InvalidDataException("Timeline metadata is missing tracks.");
+        var tabGroupIds = ValidateTimelineTabGroups(timeline);
         var trackIds = new HashSet<string>(StringComparer.Ordinal);
         var targetIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var track in timeline.Tracks)
         {
+            var tabGroupId = string.IsNullOrWhiteSpace(track?.TabGroupId)
+                ? AnimationTimeline.DefaultTabGroupId
+                : track.TabGroupId;
             if (track is null
                 || string.IsNullOrWhiteSpace(track.Id)
                 || string.IsNullOrWhiteSpace(track.TargetId)
                 || !trackIds.Add(track.Id)
                 || !targetIds.Add(track.TargetId)
                 || track.Duration <= 0
-                || track.Keyframes is null)
+                || track.Keyframes is null
+                || !tabGroupIds.Contains(tabGroupId))
             {
                 throw new InvalidDataException("Timeline track metadata is invalid.");
             }
@@ -1131,6 +1178,56 @@ internal static class DrawingObjectSvgCodec
                 previousTweenEnd = tween.EndFrame;
             }
         }
+    }
+
+    private static HashSet<string> ValidateTimelineTabGroups(AnimationTimelineSnapshot timeline)
+    {
+        var groupIds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            AnimationTimeline.DefaultTabGroupId,
+            AnimationTimeline.TerrainTabGroupId
+        };
+        var declaredGroupIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in timeline.TabGroups ?? [])
+        {
+            if (group is null
+                || string.IsNullOrWhiteSpace(group.Id)
+                || string.Equals(group.Id, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)
+                || !IsSafeTimelineTabGroupId(group.Id)
+                || string.IsNullOrWhiteSpace(group.Name)
+                || group.Name.Length > MaxTimelineTabGroupNameLength
+                || !declaredGroupIds.Add(group.Id))
+            {
+                throw new InvalidDataException("Timeline tab-group metadata is invalid.");
+            }
+
+            if (string.Equals(group.Id, AnimationTimeline.DefaultTabGroupId, StringComparison.Ordinal)
+                || string.Equals(group.Id, AnimationTimeline.TerrainTabGroupId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            groupIds.Add(group.Id);
+        }
+
+        var activeGroupId = string.IsNullOrWhiteSpace(timeline.ActiveTabGroupId)
+            ? AnimationTimeline.DefaultTabGroupId
+            : timeline.ActiveTabGroupId;
+        if (!string.Equals(activeGroupId, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)
+            && !groupIds.Contains(activeGroupId))
+        {
+            throw new InvalidDataException("Timeline active tab-group metadata is invalid.");
+        }
+
+        return groupIds;
+    }
+
+    private static bool IsSafeTimelineTabGroupId(string id)
+    {
+        return id is not "." and not ".."
+            && id.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+            && !id.Contains(Path.DirectorySeparatorChar)
+            && !id.Contains(Path.AltDirectorySeparatorChar);
     }
 
     private static long CountPoints(IReadOnlyDictionary<int, PointF[]> values) =>

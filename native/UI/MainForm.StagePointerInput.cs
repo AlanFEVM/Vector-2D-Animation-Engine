@@ -135,9 +135,12 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseDown(object? sender, MouseEventArgs e)
     {
+        if (HandleReferenceCameraRightLookMouseDown(e)) return;
+        CancelReferenceCameraKeyboardNavigation();
         _pendingHoverScreen = null;
         if (_tabletPressurePointerId is not null && e.Button == MouseButtons.Left) return;
         if (IsTextEditActive() && !CommitTextEdit()) return;
+        _stage.Focus();
         FlushDeferredPresentationOverlaysForPointerHitTest();
         if (_brushColorPaletteActive)
         {
@@ -146,6 +149,18 @@ internal sealed partial class MainForm : Form
         }
 
         if (HandleSpatialTransformKeyboardMouseDown(e)) return;
+
+        if (_spatialTransformPointerSession is not null)
+        {
+            if (e.Button == MouseButtons.Right) CancelSpatialTransformPointer();
+            return;
+        }
+
+        if (_sceneLightGizmoPointerSession is not null)
+        {
+            if (e.Button == MouseButtons.Right) CancelSceneLightGizmoPointer();
+            return;
+        }
 
         if (_spacePanHeld && e.Button == MouseButtons.Left && BeginTemporaryCanvasPanPointer(e.Location)) return;
 
@@ -161,6 +176,8 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (IsLassoTool(_tool) && BeginLassoPointer(e)) return;
+
         if (TryBeginProjectedScenePointer(e)) return;
 
         if (IsSceneCompositionContext())
@@ -170,6 +187,12 @@ internal sealed partial class MainForm : Form
         }
 
         if (TryBeginNestedDrawingObjectPointer(e)) return;
+
+        if (_tool == ToolMode.SnapPoint)
+        {
+            BeginSnapPointPointer(e);
+            return;
+        }
 
         if (_tool == ToolMode.Pen)
         {

@@ -12,8 +12,11 @@ internal sealed partial class MainForm : Form
     private readonly ReferenceViewPad _referenceViewPad = new();
     private readonly SpatialTransformPanel _spatialTransformPanel = new();
     private SpatialTransformMode _spatialTransformMode;
+    private SpatialTransformSpace _spatialTransformSpace;
+    private SpatialPivotKind _spatialPivotKind;
     private SpatialTransformEditSession? _spatialTransformEditSession;
     private SpatialTransformPointerSession? _spatialTransformPointerSession;
+    private Point? _pendingSpatialTransformScreen;
     private bool _spatialTransformKeyboardActive;
     private SpatialTransformAxis _spatialTransformKeyboardAxis;
     private Vector3? _projectedSceneMoveStartRayOrigin;
@@ -35,8 +38,10 @@ internal sealed partial class MainForm : Form
     private sealed class SpatialTransformPointerSession
     {
         public required SpatialTransformHandleHit Handle { get; init; }
+        public required SpatialPivotKind PivotKind { get; init; }
         public required Point StartScreen { get; init; }
         public required Vector3 Origin { get; init; }
+        public required SpatialGizmoBasis Basis { get; init; }
         public required Vector3 Axis { get; init; }
         public required Vector2 ScreenAxis { get; init; }
         public required float ScreenAxisLength { get; init; }
@@ -44,11 +49,24 @@ internal sealed partial class MainForm : Form
         public required float AxisWorldLength { get; init; }
         public required bool ScreenAxisProjectionOnly { get; init; }
         public Vector3? AxisDragPlaneNormal { get; init; }
-        public required float ScreenStartAngle { get; init; }
         public required Vector3 PlaneNormal { get; init; }
         public Vector3? PlaneStartPoint { get; init; }
-        public Vector3? RotationStartVector { get; init; }
+        public PointF[] RotationRing { get; init; } = [];
+        public Vector3? RotationPreviousVector { get; set; }
+        public float RotationPreviousScreenParameter { get; set; }
+        public bool RotationScreenParameterValid { get; set; }
+        public bool RotationUsedScreenFallback { get; set; }
+        public float RotationAccumulatedRadians { get; set; }
+        public float PreviousRawRotationRadians;
+        public float EffectiveRotationRadians;
+        public Vector3 PreviousRawMoveDelta;
+        public Vector3 EffectiveMoveDelta;
+        public float PreviousRawScaleFactor = 1f;
+        public float EffectiveScaleFactor = 1f;
+        public float PreviousRawThicknessDelta;
+        public float EffectiveThicknessDelta;
         public bool KeyboardDriven { get; init; }
+        public bool PointerUpdateApplied { get; set; }
     }
 
     private bool IsSceneReferenceView()
@@ -68,8 +86,33 @@ internal sealed partial class MainForm : Form
         return IsSceneReferenceView() && IsScene2DFrontView();
     }
 
-    private void AttachSceneSpatialControls(Panel stagePanel)
+    private void AttachSceneSpatialControls(Panel stagePanel, Control metrics)
     {
+        _spatialTransformPanel.Dock = DockStyle.None;
+        _spatialTransformPanel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _spatialTransformPanel.Size = new Size(300, _spatialTransformPanel.PreferredPanelHeight);
+        _spatialTransformPanel.Visible = false;
+        PaintFullBorder(_spatialTransformPanel);
+        stagePanel.Controls.Add(_spatialTransformPanel);
+
+        void LayoutSpatialTransformPanel()
+        {
+            var margin = Math.Max(8, (int)MathF.Round(12f * stagePanel.DeviceDpi / 96f));
+            var stageBounds = _stage.Bounds;
+            var topBoundary = metrics.Visible ? metrics.Bottom : stageBounds.Top;
+            var location = new Point(
+                Math.Max(stageBounds.Left + margin, stageBounds.Right - _spatialTransformPanel.Width - margin),
+                Math.Max(stageBounds.Top + margin, topBoundary + margin));
+            _spatialTransformPanel.SetFloatingTargetLocation(location);
+        }
+
+        stagePanel.Resize += (_, _) => LayoutSpatialTransformPanel();
+        _stage.LocationChanged += (_, _) => LayoutSpatialTransformPanel();
+        _stage.SizeChanged += (_, _) => LayoutSpatialTransformPanel();
+        metrics.LocationChanged += (_, _) => LayoutSpatialTransformPanel();
+        metrics.SizeChanged += (_, _) => LayoutSpatialTransformPanel();
+        metrics.VisibleChanged += (_, _) => LayoutSpatialTransformPanel();
+
         _referenceViewPad.Visible = false;
         _referenceViewPad.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
         stagePanel.Controls.Add(_referenceViewPad);
@@ -97,27 +140,22 @@ internal sealed partial class MainForm : Form
             ApplyToolCursor();
             UpdateStatusBar();
         };
-        LayoutReferenceViewPad();
-        _referenceViewPad.BringToFront();
-    }
-
-    private void AttachSpatialTransformInspector()
-    {
-        _spatialTransformPanel.Dock = DockStyle.Top;
-        _spatialTransformPanel.Height = _spatialTransformPanel.PreferredPanelHeight;
-        _spatialTransformPanel.Visible = false;
-        _sceneEditPage.Content.Controls.Add(_spatialTransformPanel);
-        ArrangeSceneInspectorSections();
-
         _spatialTransformPanel.ModeChanged += (_, e) => SetSpatialTransformMode(e.Mode, activateTool: true);
+        _spatialTransformPanel.SpaceChanged += (_, e) => SetSpatialTransformSpace(e.Space);
+        _spatialTransformPanel.PivotKindChanged += (_, e) => SetSpatialPivotKind(e.Kind, activateTool: true);
         _spatialTransformPanel.InteractionStarted += (_, _) =>
         {
             if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
             BeginSpatialTransformEdit();
         };
-        _spatialTransformPanel.ValuesChanged += (_, e) => ApplySpatialTransformValues(e.Values);
+        _spatialTransformPanel.ValuesChanged += (_, e) => ApplySpatialTransformValues(e.Values, e.Group);
         _spatialTransformPanel.InteractionCompleted += (_, _) => CompleteSpatialTransformEdit();
         _spatialTransformPanel.InteractionCanceled += (_, _) => CancelSpatialTransformEdit();
+
+        LayoutSpatialTransformPanel();
+        LayoutReferenceViewPad();
+        _spatialTransformPanel.BringToFront();
+        _referenceViewPad.BringToFront();
     }
 
     private void UpdateSceneSpatialControlsVisibility()
@@ -131,14 +169,22 @@ internal sealed partial class MainForm : Form
 
     private void UpdateSpatialTransformPanelState()
     {
-        var visible = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+        var spatialContextAvailable = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
             && IsScene3DView()
             && !IsSceneMaskEditing();
-        _spatialTransformPanel.Visible = visible;
+        var instances = spatialContextAvailable ? SelectedSceneInstances() : [];
+        var floatingVisible = spatialContextAvailable && instances.Count > 0;
         _spatialTransformPanel.SetMode(_spatialTransformMode);
-        var instances = visible ? SelectedSceneInstances() : [];
+        _spatialTransformPanel.SetPivotKind(_spatialPivotKind);
+        _spatialTransformPanel.SetSpace(
+            _spatialTransformSpace,
+            enabled: _spatialPivotKind == SpatialPivotKind.None
+                && _spatialTransformMode != SpatialTransformMode.Scale);
         var state = instances.Count == 1 ? instances[0].EvaluateState(_frame) : (InstanceFrameState?)null;
-        _spatialTransformPanel.SetState(state, enabled: visible && instances.Count == 1 && !_playing);
+        _spatialTransformPanel.SetState(
+            state,
+            enabled: floatingVisible && instances.Count == 1 && !_playing);
+        _spatialTransformPanel.SetFloatingVisibility(floatingVisible, animate: spatialContextAvailable);
         ArrangeSceneInspectorSections();
     }
 
@@ -146,16 +192,27 @@ internal sealed partial class MainForm : Form
     {
         var controls = _sceneEditPage.Content.Controls;
         if (!controls.Contains(_hierarchyPanel)
-            || !controls.Contains(_spatialTransformPanel)
             || !controls.Contains(_sceneWorkflowControls))
         {
             return;
         }
 
-        // Docking is evaluated from back to front: workflow, optional Transform, then hierarchy fill.
-        controls.SetChildIndex(_hierarchyPanel, 0);
-        controls.SetChildIndex(_spatialTransformPanel, 1);
-        controls.SetChildIndex(_sceneWorkflowControls, 2);
+        // Docking is evaluated from back to front, ending with the selection panels at the top.
+        Control[] frontToBack =
+        [
+            _hierarchyPanel,
+            _sceneWorkflowControls,
+            _sceneLightingPanel,
+            _spatialMaterialPanel,
+            _drawingObjectInstancePanel,
+            _tweenCurveEditorPanel
+        ];
+        var childIndex = 0;
+        foreach (var control in frontToBack)
+        {
+            if (!ReferenceEquals(control.Parent, _sceneEditPage.Content)) continue;
+            controls.SetChildIndex(control, childIndex++);
+        }
     }
 
     private void HandleSceneLayerEditingContextChanged()
@@ -246,8 +303,14 @@ internal sealed partial class MainForm : Form
         if (!Enum.IsDefined(mode)) return;
         if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
         else if (_spatialTransformPointerSession is not null) CompleteSpatialTransformPointer();
+        else ClearPendingSpatialTransformPointer();
+        _spatialPivotKind = SpatialPivotKind.None;
         _spatialTransformMode = mode;
         _spatialTransformPanel.SetMode(mode);
+        _spatialTransformPanel.SetPivotKind(SpatialPivotKind.None);
+        _spatialTransformPanel.SetSpace(
+            _spatialTransformSpace,
+            enabled: mode != SpatialTransformMode.Scale);
         if (activateTool && IsScene3DView() && _tool != ToolMode.Transform3D)
         {
             ActivateTool(ToolMode.Transform3D);
@@ -255,9 +318,42 @@ internal sealed partial class MainForm : Form
         UpdateSpatialTransformPresentation();
     }
 
+    private void SetSpatialPivotKind(SpatialPivotKind kind, bool activateTool)
+    {
+        if (!Enum.IsDefined(kind)) return;
+        if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
+        else if (_spatialTransformPointerSession is not null) CompleteSpatialTransformPointer();
+        else ClearPendingSpatialTransformPointer();
+        _spatialPivotKind = kind;
+        _spatialTransformPanel.SetPivotKind(kind);
+        _spatialTransformPanel.SetSpace(
+            _spatialTransformSpace,
+            enabled: kind == SpatialPivotKind.None
+                && _spatialTransformMode != SpatialTransformMode.Scale);
+        if (activateTool && kind != SpatialPivotKind.None && IsScene3DView() && _tool != ToolMode.Transform3D)
+        {
+            ActivateTool(ToolMode.Transform3D);
+        }
+        UpdateSpatialTransformPresentation();
+    }
+
+    private void SetSpatialTransformSpace(SpatialTransformSpace space)
+    {
+        if (!Enum.IsDefined(space)
+            || _spatialTransformMode == SpatialTransformMode.Scale
+            || _spatialPivotKind != SpatialPivotKind.None) return;
+        if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
+        else if (_spatialTransformPointerSession is not null) CompleteSpatialTransformPointer();
+        else ClearPendingSpatialTransformPointer();
+        _spatialTransformSpace = space;
+        _spatialTransformPanel.SetSpace(space, enabled: true);
+        UpdateSpatialTransformPresentation();
+    }
+
     private void BeginSpatialTransformEdit(bool allowScene2D = false)
     {
-        if (_spatialTransformEditSession is not null
+        if (_playing
+            || _spatialTransformEditSession is not null
             || !IsScene3DView()
                 && !(allowScene2D
                     && IsSceneCompositionContext()
@@ -279,6 +375,7 @@ internal sealed partial class MainForm : Form
             startStates[instance.Id] = instance.EvaluateState(editFrame);
         }
 
+        ClearSceneSnapQueryCache();
         _spatialTransformEditSession = new SpatialTransformEditSession
         {
             Scene = scene,
@@ -292,7 +389,9 @@ internal sealed partial class MainForm : Form
         };
     }
 
-    private void ApplySpatialTransformValues(SpatialTransformValues values)
+    private void ApplySpatialTransformValues(
+        SpatialTransformValues values,
+        SpatialTransformValueGroup group)
     {
         var session = _spatialTransformEditSession;
         var instance = SelectedSceneInstance();
@@ -304,20 +403,40 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        var editFrame = PrepareInstanceStateTimelineEdit(instance);
-        var state = instance.EvaluateState(editFrame);
-        var next = state with
+        if (!session.EditFrames.TryGetValue(instance.Id, out var requestedEditFrame)) return;
+        var state = instance.EvaluateState(requestedEditFrame);
+        var next = group switch
         {
-            X = VectorUnits.Quantize(values.X),
-            Y = VectorUnits.Quantize(values.Y),
-            Z = VectorUnits.Quantize(values.Z),
-            RotationX = NormalizeDegrees(values.RotationX),
-            RotationY = NormalizeDegrees(values.RotationY),
-            RotationZ = NormalizeDegrees(values.RotationZ),
-            ScaleX = Math.Clamp(values.ScaleX, 0.01f, 1000f),
-            ScaleY = Math.Clamp(values.ScaleY, 0.01f, 1000f),
-            ScaleZ = Math.Clamp(VectorUnits.Quantize(values.ScaleZ), 0f, SpatialThicknessLimit)
+            SpatialTransformValueGroup.Position => state with
+            {
+                X = VectorUnits.Quantize(values.X),
+                Y = VectorUnits.Quantize(values.Y),
+                Z = VectorUnits.Quantize(values.Z)
+            },
+            SpatialTransformValueGroup.Rotation => state with
+            {
+                RotationX = NormalizeDegrees(values.RotationX),
+                RotationY = NormalizeDegrees(values.RotationY),
+                RotationZ = NormalizeDegrees(values.RotationZ)
+            },
+            SpatialTransformValueGroup.Scale => state with
+            {
+                ScaleX = Math.Clamp(values.ScaleX, 0.01f, 1000f),
+                ScaleY = Math.Clamp(values.ScaleY, 0.01f, 1000f),
+                ScaleZ = Math.Clamp(VectorUnits.Quantize(values.ScaleZ), 0f, SpatialThicknessLimit)
+            },
+            SpatialTransformValueGroup.RotationPivot =>
+                DrawingObjectInstanceDefinition.PreserveSpatialTransformForPivotChange(
+                    state,
+                    state with { RotationPivot = QuantizeSpatialPivot(values.RotationPivot) }),
+            SpatialTransformValueGroup.ScalePivot =>
+                DrawingObjectInstanceDefinition.PreserveSpatialTransformForPivotChange(
+                    state,
+                    state with { ScalePivot = QuantizeSpatialPivot(values.ScalePivot) }),
+            _ => state
         };
+        if (next.Equals(state)) return;
+        var editFrame = PrepareInstanceStateTimelineEdit(instance);
         if (!instance.SetStateAtFrame(editFrame, next)) return;
 
         session.Changed = true;
@@ -327,12 +446,15 @@ internal sealed partial class MainForm : Form
 
     private void CompleteSpatialTransformEdit()
     {
+        ClearPendingSpatialTransformPointer();
         ClearSpatialTransformKeyboardTracking();
         var session = _spatialTransformEditSession;
         _spatialTransformEditSession = null;
+        ClearSceneSnapQueryCache();
         if (session is null) return;
 
         var changed = session.Changed || _sceneInstanceTimelineDirty;
+        if (changed) RefreshEditedInstanceTimelineTweens();
         _sceneInstanceTimelineDirty = false;
         ClearInstanceTimelineEditTracking();
         if (!changed)
@@ -362,9 +484,11 @@ internal sealed partial class MainForm : Form
 
     private void CancelSpatialTransformEdit()
     {
+        ClearPendingSpatialTransformPointer();
         ClearSpatialTransformKeyboardTracking();
         var session = _spatialTransformEditSession;
         _spatialTransformEditSession = null;
+        ClearSceneSnapQueryCache();
         if (session is null) return;
 
         RestoreSpatialTransformEditSession(session);
@@ -405,10 +529,17 @@ internal sealed partial class MainForm : Form
     private bool TryBeginProjectedScenePointer(MouseEventArgs e)
     {
         if (!IsSceneReferenceView() || e.Button != MouseButtons.Left) return false;
+        if (TryBeginSceneLightGizmoPointer(e.Location)) return true;
         if (_tool == ToolMode.Transform3D && IsScene3DView())
         {
             var handle = _stage.HitTestSpatialTransformGizmo(e.Location);
             if (handle.IsValid && TryBeginSpatialTransformPointer(e.Location, handle)) return true;
+        }
+        if (_stage.HitTestSceneLightMarker(e.Location) is { Length: > 0 } lightId)
+        {
+            SelectSceneOpticsLight(lightId);
+            UpdateInspector();
+            return true;
         }
 
         if (_tool is ToolMode.Transform or ToolMode.Distort
@@ -424,10 +555,15 @@ internal sealed partial class MainForm : Form
         {
             hitInstance = instance;
             SetSceneInstanceSelection(instance, additive: IsShiftPressed());
+            if (IsScene3DView() && _tool == ToolMode.Select)
+            {
+                ActivateTool(ToolMode.Transform3D);
+            }
         }
         else if (!IsShiftPressed())
         {
             ClearSelection();
+            ClearSceneOpticsLightSelection();
         }
 
         if (hitInstance is not null
@@ -484,13 +620,24 @@ internal sealed partial class MainForm : Form
         var delta = ConstrainProjectedSceneMoveDelta(
             _stage.Reference2DViewDirection,
             ray.Origin - startOrigin);
+        delta = ResolveSceneSnapDelta(
+            delta,
+            correction => ConstrainProjectedSceneMoveDelta(
+                _stage.Reference2DViewDirection,
+                correction));
         var identity = delta.LengthSquared() <= 0.000001f;
 
         ApplySpatialPointerStates((start, _) => start with
         {
-            X = identity ? start.X : VectorUnits.Quantize(start.X + delta.X),
-            Y = identity ? start.Y : VectorUnits.Quantize(start.Y + delta.Y),
-            Z = identity ? start.Z : VectorUnits.Quantize(start.Z + delta.Z)
+            X = identity || !HasSpatialComponentDelta(delta.X)
+                ? start.X
+                : VectorUnits.Quantize(start.X + delta.X),
+            Y = identity || !HasSpatialComponentDelta(delta.Y)
+                ? start.Y
+                : VectorUnits.Quantize(start.Y + delta.Y),
+            Z = identity || !HasSpatialComponentDelta(delta.Z)
+                ? start.Z
+                : VectorUnits.Quantize(start.Z + delta.Z)
         });
         _stage.Cursor = Cursors.SizeAll;
         return true;
@@ -514,6 +661,7 @@ internal sealed partial class MainForm : Form
         if (_projectedSceneMoveStartRayOrigin is null) return;
         _projectedSceneMoveStartRayOrigin = null;
         _sceneInstanceMoveActive = false;
+        _stage.ClearSceneSnapIndicator();
         CompleteSpatialTransformEdit();
         _lastMouse = null;
         _startScreen = null;
@@ -526,6 +674,7 @@ internal sealed partial class MainForm : Form
         if (_projectedSceneMoveStartRayOrigin is null) return;
         _projectedSceneMoveStartRayOrigin = null;
         _sceneInstanceMoveActive = false;
+        _stage.ClearSceneSnapIndicator();
         CancelSpatialTransformEdit();
         _lastMouse = null;
         _startScreen = null;
@@ -573,7 +722,12 @@ internal sealed partial class MainForm : Form
         SpatialTransformHandleHit handle,
         bool keyboardDriven = false)
     {
-        if (!handle.IsValid || SelectedSceneInstances().Count == 0) return false;
+        var selectedCount = SelectedSceneInstances().Count;
+        if (!handle.IsValid
+            || selectedCount == 0
+            || _spatialPivotKind != SpatialPivotKind.None && selectedCount != 1) return false;
+        _stage.CompleteSpatialTransformGizmoMotion();
+        ClearPendingSpatialTransformPointer();
         BeginSpatialTransformEdit();
         if (_spatialTransformEditSession is null
             || !_stage.TryGetSpatialGizmoScreenGeometry(out var geometry))
@@ -582,8 +736,8 @@ internal sealed partial class MainForm : Form
         }
 
         var origin = _stage.SpatialTransformGizmoOrigin;
-        var axis = SpatialAxisVector(handle.Axis);
-        var planeNormal = SpatialPlaneNormal(handle.Axis);
+        var axis = geometry.Basis.Axis(handle.Axis);
+        var planeNormal = geometry.Basis.PlaneNormal(handle.Axis);
         Vector3? planeStartPoint = null;
         if (IsSpatialPlaneAxis(handle.Axis))
         {
@@ -638,11 +792,26 @@ internal sealed partial class MainForm : Form
             && TryGetRotationPlaneVector(screen, origin, axis, out var startVector)
             ? startVector
             : (Vector3?)null;
+        var rotationRing = handle.Mode == SpatialTransformMode.Rotate
+            && handle.Axis is SpatialTransformAxis.X or SpatialTransformAxis.Y or SpatialTransformAxis.Z
+                ? geometry.Rings[(int)handle.Axis - 1]
+                : [];
+        var rotationScreenParameterValid = TryResolveSpatialRingParameter(
+            rotationRing,
+            screen,
+            out var rotationScreenParameter);
+        if (!rotationScreenParameterValid)
+        {
+            rotationScreenParameter = ScreenAngle(screen, geometry.Origin);
+            rotationScreenParameterValid = handle.Mode == SpatialTransformMode.Rotate;
+        }
         _spatialTransformPointerSession = new SpatialTransformPointerSession
         {
             Handle = handle,
+            PivotKind = _spatialPivotKind,
             StartScreen = screen,
             Origin = origin,
+            Basis = geometry.Basis,
             Axis = axis,
             ScreenAxis = screenAxis,
             ScreenAxisLength = screenAxisLength,
@@ -650,18 +819,56 @@ internal sealed partial class MainForm : Form
             AxisWorldLength = axisWorldLength,
             ScreenAxisProjectionOnly = screenAxisProjectionOnly,
             AxisDragPlaneNormal = axisDragPlaneNormal,
-            ScreenStartAngle = ScreenAngle(screen, geometry.Origin),
             PlaneNormal = planeNormal,
             PlaneStartPoint = planeStartPoint,
-            RotationStartVector = rotationStartVector,
+            RotationRing = rotationRing,
+            RotationPreviousVector = rotationStartVector,
+            RotationPreviousScreenParameter = rotationScreenParameter,
+            RotationScreenParameterValid = rotationScreenParameterValid,
             KeyboardDriven = keyboardDriven
         };
+        _stage.SetSpatialTransformActive(handle);
+        _stage.BeginReference3DOpticalInteractionPreview();
         if (!keyboardDriven) _stage.Capture = true;
         _lastMouse = screen;
         _startScreen = screen;
         _startWorld = null;
         _stage.Cursor = Cursors.SizeAll;
         return true;
+    }
+
+    private void QueueSpatialTransformPointer(Point screen)
+    {
+        var pointer = _spatialTransformPointerSession;
+        if (pointer is null || pointer.KeyboardDriven)
+        {
+            return;
+        }
+
+        _pendingSpatialTransformScreen = screen;
+        if (!pointer.PointerUpdateApplied) ApplyPendingSpatialTransformPointer();
+        _lineDragPreviewTimer.Start();
+    }
+
+    private bool ApplyPendingSpatialTransformPointer()
+    {
+        if (_pendingSpatialTransformScreen is not { } screen) return false;
+        _pendingSpatialTransformScreen = null;
+        var pointer = _spatialTransformPointerSession;
+        if (pointer is null || pointer.KeyboardDriven)
+        {
+            return false;
+        }
+
+        pointer.PointerUpdateApplied = true;
+        UpdateSpatialTransformPointer(screen);
+        return true;
+    }
+
+    private void ClearPendingSpatialTransformPointer()
+    {
+        _pendingSpatialTransformScreen = null;
+        if (!HasPendingFrameCoalescedWork()) _lineDragPreviewTimer.Stop();
     }
 
     private void UpdateSpatialTransformPointer(Point screen)
@@ -680,48 +887,90 @@ internal sealed partial class MainForm : Form
                     {
                         return;
                     }
-                    var identity = planeDelta.LengthSquared() <= 0.000001f;
-                    ApplySpatialPointerStates((start, _) => start with
+                    planeDelta = ApplySpatialPrecisionDelta(
+                        ref pointer.PreviousRawMoveDelta,
+                        ref pointer.EffectiveMoveDelta,
+                        planeDelta,
+                        IsShiftPressed());
+                    if (pointer.PivotKind == SpatialPivotKind.None)
                     {
-                        X = identity ? start.X : VectorUnits.Quantize(start.X + planeDelta.X),
-                        Y = identity ? start.Y : VectorUnits.Quantize(start.Y + planeDelta.Y),
-                        Z = identity ? start.Z : VectorUnits.Quantize(start.Z + planeDelta.Z)
-                    });
+                        planeDelta = ResolveSceneSnapDelta(
+                            planeDelta,
+                            correction => correction
+                                - pointer.PlaneNormal * Vector3.Dot(correction, pointer.PlaneNormal),
+                            snapRequested: IsControlPressed());
+                    }
+                    else
+                    {
+                        _stage.ClearSceneSnapIndicator();
+                    }
+                    ApplySpatialMoveDelta(pointer, planeDelta);
                     break;
                 }
 
                 if (!TryResolveSpatialAxisDelta(pointer, screen, out var delta)) return;
-                var axisIdentity = Math.Abs(delta) <= 0.0001f;
-                ApplySpatialPointerStates((start, _) => start with
+                var axisDelta = pointer.Axis * delta;
+                axisDelta = ApplySpatialPrecisionDelta(
+                    ref pointer.PreviousRawMoveDelta,
+                    ref pointer.EffectiveMoveDelta,
+                    axisDelta,
+                    IsShiftPressed());
+                if (pointer.PivotKind == SpatialPivotKind.None)
                 {
-                    X = axisIdentity ? start.X : VectorUnits.Quantize(start.X + pointer.Axis.X * delta),
-                    Y = axisIdentity ? start.Y : VectorUnits.Quantize(start.Y + pointer.Axis.Y * delta),
-                    Z = axisIdentity ? start.Z : VectorUnits.Quantize(start.Z + pointer.Axis.Z * delta)
-                });
+                    axisDelta = ResolveSceneSnapDelta(
+                        axisDelta,
+                        correction => pointer.Axis * Vector3.Dot(correction, pointer.Axis),
+                        snapRequested: IsControlPressed());
+                }
+                else
+                {
+                    _stage.ClearSceneSnapIndicator();
+                }
+                ApplySpatialMoveDelta(pointer, axisDelta);
                 break;
             }
             case SpatialTransformMode.Rotate:
             {
-                var radians = ResolveSpatialRotation(pointer, screen);
+                var rawRadians = ResolveSpatialRotation(pointer, screen);
+                var radians = ApplySpatialPrecisionDelta(
+                    ref pointer.PreviousRawRotationRadians,
+                    ref pointer.EffectiveRotationRadians,
+                    rawRadians,
+                    IsShiftPressed());
                 if (Math.Abs(radians) <= 0.0001f)
                 {
                     ApplySpatialPointerStates((start, _) => start);
                     return;
                 }
-                var degrees = radians * 180f / MathF.PI;
                 var rotation = Matrix4x4.CreateFromAxisAngle(pointer.Axis, radians);
                 ApplySpatialPointerStates((start, _) =>
                 {
-                    var startPosition = new Vector3(start.X, start.Y, start.Z);
-                    var position = pointer.Origin + Vector3.Transform(startPosition - pointer.Origin, rotation);
+                    var targetRotation = SpatialTransformMath.CreateRotation(start) * rotation;
+                    if (!SpatialTransformMath.TryDecomposeRotation(
+                            targetRotation,
+                            new Vector3(start.RotationX, start.RotationY, start.RotationZ),
+                            out var euler))
+                    {
+                        return start;
+                    }
+                    var operationPivot = DrawingObjectInstanceDefinition.RotationPivotScenePosition(start);
+                    var targetPivot = pointer.Origin
+                        + Vector3.Transform(operationPivot - pointer.Origin, rotation);
+                    var positionDelta = targetPivot - operationPivot;
                     return start with
                     {
-                        X = VectorUnits.Quantize(position.X),
-                        Y = VectorUnits.Quantize(position.Y),
-                        Z = VectorUnits.Quantize(position.Z),
-                        RotationX = NormalizeDegrees(start.RotationX + pointer.Axis.X * degrees),
-                        RotationY = NormalizeDegrees(start.RotationY + pointer.Axis.Y * degrees),
-                        RotationZ = NormalizeDegrees(start.RotationZ + pointer.Axis.Z * degrees)
+                        X = !HasSpatialComponentDelta(positionDelta.X)
+                            ? start.X
+                            : VectorUnits.Quantize(start.X + positionDelta.X),
+                        Y = !HasSpatialComponentDelta(positionDelta.Y)
+                            ? start.Y
+                            : VectorUnits.Quantize(start.Y + positionDelta.Y),
+                        Z = !HasSpatialComponentDelta(positionDelta.Z)
+                            ? start.Z
+                            : VectorUnits.Quantize(start.Z + positionDelta.Z),
+                        RotationX = NormalizeDegrees(euler.X),
+                        RotationY = NormalizeDegrees(euler.Y),
+                        RotationZ = NormalizeDegrees(euler.Z)
                     };
                 });
                 break;
@@ -730,7 +979,12 @@ internal sealed partial class MainForm : Form
             {
                 if (pointer.Handle.Axis == SpatialTransformAxis.Z)
                 {
-                    var thicknessDelta = ResolveSpatialScreenAxisDelta(pointer, screen);
+                    var rawThicknessDelta = ResolveSpatialScreenAxisDelta(pointer, screen);
+                    var thicknessDelta = ApplySpatialPrecisionDelta(
+                        ref pointer.PreviousRawThicknessDelta,
+                        ref pointer.EffectiveThicknessDelta,
+                        rawThicknessDelta,
+                        IsShiftPressed());
                     var identity = Math.Abs(thicknessDelta) <= 0.0001f;
                     ApplySpatialPointerStates((start, _) => start with
                     {
@@ -741,7 +995,12 @@ internal sealed partial class MainForm : Form
                     break;
                 }
 
-                var factor = ResolveSpatialScale(pointer, screen);
+                var rawFactor = ResolveSpatialScale(pointer, screen);
+                var factor = ApplySpatialPrecisionDelta(
+                    ref pointer.PreviousRawScaleFactor,
+                    ref pointer.EffectiveScaleFactor,
+                    rawFactor,
+                    IsShiftPressed());
                 var identityFactor = Math.Abs(factor - 1f) <= 0.0001f;
                 ApplySpatialPointerStates((start, _) => identityFactor
                     ? start
@@ -749,6 +1008,71 @@ internal sealed partial class MainForm : Form
                 break;
             }
         }
+    }
+
+    private void ApplySpatialMoveDelta(SpatialTransformPointerSession pointer, Vector3 worldDelta)
+    {
+        var identity = worldDelta.LengthSquared() <= 0.000001f;
+        if (pointer.PivotKind == SpatialPivotKind.None)
+        {
+            ApplySpatialPointerStates((start, _) => start with
+            {
+                X = identity || !HasSpatialComponentDelta(worldDelta.X)
+                    ? start.X
+                    : VectorUnits.Quantize(start.X + worldDelta.X),
+                Y = identity || !HasSpatialComponentDelta(worldDelta.Y)
+                    ? start.Y
+                    : VectorUnits.Quantize(start.Y + worldDelta.Y),
+                Z = identity || !HasSpatialComponentDelta(worldDelta.Z)
+                    ? start.Z
+                    : VectorUnits.Quantize(start.Z + worldDelta.Z)
+            });
+            return;
+        }
+
+        ApplySpatialPointerStates((start, _) =>
+            identity || !TryMoveSpatialPivot(start, pointer.PivotKind, worldDelta, out var next)
+                ? start
+                : next);
+    }
+
+    internal static bool TryMoveSpatialPivot(
+        InstanceFrameState start,
+        SpatialPivotKind kind,
+        Vector3 worldDelta,
+        out InstanceFrameState next)
+    {
+        next = start;
+        if (kind == SpatialPivotKind.None || !Finite(worldDelta)) return false;
+
+        Matrix4x4 mapping;
+        if (kind == SpatialPivotKind.Rotation)
+        {
+            mapping = SpatialTransformMath.CreateRotation(start);
+        }
+        else
+        {
+            mapping = DrawingObjectInstanceDefinition.CreateSpatialLinearTransform(start);
+            if (!Matrix4x4.Invert(mapping, out _))
+            {
+                mapping = DrawingObjectInstanceDefinition.CreateSpatialLinearTransform(
+                    start with { ScaleZ = 1f });
+            }
+        }
+        if (!Matrix4x4.Invert(mapping, out var inverse)) return false;
+
+        var localDelta = Vector3.TransformNormal(worldDelta, inverse);
+        if (kind == SpatialPivotKind.Scale && Math.Abs(start.ScaleZ) <= 0.000001f)
+        {
+            localDelta.Z = 0;
+        }
+        if (!Finite(localDelta) || localDelta.LengthSquared() <= 0.000001f) return false;
+
+        var candidate = kind == SpatialPivotKind.Rotation
+            ? start with { RotationPivot = QuantizeSpatialPivot(start.RotationPivot + localDelta) }
+            : start with { ScalePivot = QuantizeSpatialPivot(start.ScalePivot + localDelta) };
+        next = DrawingObjectInstanceDefinition.PreserveSpatialTransformForPivotChange(start, candidate);
+        return next != start;
     }
 
     private void ApplySpatialPointerStates(Func<InstanceFrameState, string, InstanceFrameState> transform)
@@ -784,21 +1108,30 @@ internal sealed partial class MainForm : Form
     {
         factor = Math.Clamp(factor, 0.01f, 1000f);
         var uniform = pointer.Handle.Axis == SpatialTransformAxis.Uniform;
-        var axis = uniform ? Vector3.One : pointer.Axis;
-        var position = new Vector3(start.X, start.Y, start.Z);
-        var offset = position - pointer.Origin;
-        var scaledOffset = new Vector3(
-            axis.X == 0 ? offset.X : offset.X * factor,
-            axis.Y == 0 ? offset.Y : offset.Y * factor,
-            axis.Z == 0 ? offset.Z : offset.Z * factor);
+        var operationPivot = DrawingObjectInstanceDefinition.ScalePivotScenePosition(start);
+        var offset = operationPivot - pointer.Origin;
+        var targetPivot = uniform
+            ? pointer.Origin + offset * factor
+            : operationPivot + pointer.Axis * Vector3.Dot(offset, pointer.Axis) * (factor - 1f);
+        var positionDelta = targetPivot - operationPivot;
         return start with
         {
-            X = VectorUnits.Quantize(pointer.Origin.X + scaledOffset.X),
-            Y = VectorUnits.Quantize(pointer.Origin.Y + scaledOffset.Y),
-            Z = VectorUnits.Quantize(pointer.Origin.Z + scaledOffset.Z),
-            ScaleX = axis.X == 0 ? start.ScaleX : Math.Clamp(start.ScaleX * factor, 0.01f, 1000f),
-            ScaleY = axis.Y == 0 ? start.ScaleY : Math.Clamp(start.ScaleY * factor, 0.01f, 1000f),
-            ScaleZ = axis.Z == 0
+            X = !HasSpatialComponentDelta(positionDelta.X)
+                ? start.X
+                : VectorUnits.Quantize(start.X + positionDelta.X),
+            Y = !HasSpatialComponentDelta(positionDelta.Y)
+                ? start.Y
+                : VectorUnits.Quantize(start.Y + positionDelta.Y),
+            Z = !HasSpatialComponentDelta(positionDelta.Z)
+                ? start.Z
+                : VectorUnits.Quantize(start.Z + positionDelta.Z),
+            ScaleX = !uniform && pointer.Handle.Axis != SpatialTransformAxis.X
+                ? start.ScaleX
+                : Math.Clamp(start.ScaleX * factor, 0.01f, 1000f),
+            ScaleY = !uniform && pointer.Handle.Axis != SpatialTransformAxis.Y
+                ? start.ScaleY
+                : Math.Clamp(start.ScaleY * factor, 0.01f, 1000f),
+            ScaleZ = !uniform && pointer.Handle.Axis != SpatialTransformAxis.Z
                 ? start.ScaleZ
                 : Math.Clamp(VectorUnits.Quantize(start.ScaleZ * factor), 0f, SpatialThicknessLimit)
         };
@@ -849,16 +1182,89 @@ internal sealed partial class MainForm : Form
 
     private float ResolveSpatialRotation(SpatialTransformPointerSession pointer, Point screen)
     {
-        if (pointer.RotationStartVector is { } start
-            && TryGetRotationPlaneVector(screen, pointer.Origin, pointer.Axis, out var current))
+        if (TryGetRotationPlaneVector(screen, pointer.Origin, pointer.Axis, out var current))
         {
-            return MathF.Atan2(
-                Vector3.Dot(pointer.Axis, Vector3.Cross(start, current)),
-                Vector3.Dot(start, current));
+            if (pointer.RotationPreviousVector is { } previous
+                && !pointer.RotationUsedScreenFallback)
+            {
+                pointer.RotationAccumulatedRadians += MathF.Atan2(
+                    Vector3.Dot(pointer.Axis, Vector3.Cross(previous, current)),
+                    Vector3.Dot(previous, current));
+            }
+            else if (pointer.RotationPreviousVector is null
+                && pointer.RotationScreenParameterValid
+                && TryResolveSpatialRingParameter(pointer.RotationRing, screen, out var initialParameter))
+            {
+                pointer.RotationAccumulatedRadians += NormalizeAngle(
+                    initialParameter - pointer.RotationPreviousScreenParameter);
+            }
+            pointer.RotationPreviousVector = current;
+            pointer.RotationUsedScreenFallback = false;
+            if (TryResolveSpatialRingParameter(pointer.RotationRing, screen, out var parameter))
+            {
+                pointer.RotationPreviousScreenParameter = parameter;
+                pointer.RotationScreenParameterValid = true;
+            }
+            return pointer.RotationAccumulatedRadians;
         }
 
-        if (!_stage.TryProjectScenePosition(pointer.Origin, out var origin, out _)) return 0;
-        return NormalizeAngle(ScreenAngle(screen, origin) - pointer.ScreenStartAngle);
+        float screenParameter;
+        if (!TryResolveSpatialRingParameter(pointer.RotationRing, screen, out screenParameter))
+        {
+            if (!_stage.TryProjectScenePosition(pointer.Origin, out var origin, out _))
+            {
+                return pointer.RotationAccumulatedRadians;
+            }
+            screenParameter = ScreenAngle(screen, origin);
+        }
+        if (pointer.RotationScreenParameterValid)
+        {
+            pointer.RotationAccumulatedRadians += NormalizeAngle(
+                screenParameter - pointer.RotationPreviousScreenParameter);
+        }
+        pointer.RotationPreviousScreenParameter = screenParameter;
+        pointer.RotationScreenParameterValid = true;
+        pointer.RotationUsedScreenFallback = true;
+        return pointer.RotationAccumulatedRadians;
+    }
+
+    private static bool TryResolveSpatialRingParameter(
+        IReadOnlyList<PointF> ring,
+        Point screen,
+        out float parameter)
+    {
+        parameter = 0;
+        if (ring.Count < 3) return false;
+
+        var bestDistanceSquared = float.MaxValue;
+        var bestSegment = 0;
+        var bestAmount = 0f;
+        for (var index = 0; index < ring.Count; index++)
+        {
+            var start = ring[index];
+            var end = ring[(index + 1) % ring.Count];
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var lengthSquared = dx * dx + dy * dy;
+            var amount = lengthSquared <= 0.000001f
+                ? 0f
+                : Math.Clamp(
+                    ((screen.X - start.X) * dx + (screen.Y - start.Y) * dy) / lengthSquared,
+                    0f,
+                    1f);
+            var projectedX = start.X + dx * amount;
+            var projectedY = start.Y + dy * amount;
+            var distanceX = screen.X - projectedX;
+            var distanceY = screen.Y - projectedY;
+            var distanceSquared = distanceX * distanceX + distanceY * distanceY;
+            if (distanceSquared >= bestDistanceSquared) continue;
+            bestDistanceSquared = distanceSquared;
+            bestSegment = index;
+            bestAmount = amount;
+        }
+
+        parameter = (bestSegment + bestAmount) * MathF.Tau / ring.Count;
+        return float.IsFinite(parameter);
     }
 
     private static float ResolveSpatialScale(SpatialTransformPointerSession pointer, Point screen)
@@ -867,7 +1273,7 @@ internal sealed partial class MainForm : Form
         var pixels = pointer.Handle.Axis == SpatialTransformAxis.Uniform
             ? delta.X - delta.Y
             : Vector2.Dot(delta, pointer.ScreenAxis);
-        return Math.Clamp(1f + pixels / Math.Max(24f, pointer.ScreenAxisLength), 0.01f, 1000f);
+        return 1f + pixels / Math.Max(24f, pointer.ScreenAxisLength);
     }
 
     private bool TryResolveSpatialPlaneDelta(
@@ -946,7 +1352,7 @@ internal sealed partial class MainForm : Form
         vector = default;
         if (!_stage.TryGetReferenceRay(screen, out var ray)) return false;
         var denominator = Vector3.Dot(ray.Direction, axis);
-        if (Math.Abs(denominator) <= 0.00001f) return false;
+        if (Math.Abs(denominator) < StageControl.SpatialGizmoMinimumPlaneRayDot) return false;
         var distance = Vector3.Dot(origin - ray.Origin, axis) / denominator;
         var intersection = ray.Origin + ray.Direction * distance;
         var offset = intersection - origin;
@@ -955,37 +1361,47 @@ internal sealed partial class MainForm : Form
         return true;
     }
 
-    private static Vector3 SpatialAxisVector(SpatialTransformAxis axis)
-    {
-        return axis switch
-        {
-            SpatialTransformAxis.X => Vector3.UnitX,
-            SpatialTransformAxis.Y => Vector3.UnitY,
-            SpatialTransformAxis.Z => Vector3.UnitZ,
-            SpatialTransformAxis.Uniform => Vector3.One,
-            _ => Vector3.Zero
-        };
-    }
-
     private static bool IsSpatialPlaneAxis(SpatialTransformAxis axis)
     {
         return axis is SpatialTransformAxis.XY or SpatialTransformAxis.XZ or SpatialTransformAxis.YZ;
     }
 
-    private static Vector3 SpatialPlaneNormal(SpatialTransformAxis axis)
-    {
-        return axis switch
-        {
-            SpatialTransformAxis.XY => Vector3.UnitZ,
-            SpatialTransformAxis.XZ => Vector3.UnitY,
-            SpatialTransformAxis.YZ => Vector3.UnitX,
-            _ => Vector3.Zero
-        };
-    }
-
     private static float ScreenAngle(Point point, PointF origin)
     {
         return MathF.Atan2(point.Y - origin.Y, point.X - origin.X);
+    }
+
+    internal static Vector3 ApplySpatialPrecisionDelta(
+        ref Vector3 previousRaw,
+        ref Vector3 effective,
+        Vector3 raw,
+        bool precision)
+    {
+        if (!Finite(raw)) return effective;
+        var increment = raw - previousRaw;
+        var offset = effective - previousRaw;
+        previousRaw = raw;
+        if (!Finite(increment)) return effective;
+        // Preserve the raw anchor on ordinary drags, even after large excursions.
+        effective = precision ? effective + increment * 0.1f : raw + offset;
+        if (!Finite(effective)) effective = raw;
+        return effective;
+    }
+
+    internal static float ApplySpatialPrecisionDelta(
+        ref float previousRaw,
+        ref float effective,
+        float raw,
+        bool precision)
+    {
+        if (!float.IsFinite(raw)) return effective;
+        var increment = raw - previousRaw;
+        var offset = effective - previousRaw;
+        previousRaw = raw;
+        if (!float.IsFinite(increment)) return effective;
+        effective = precision ? effective + increment * 0.1f : raw + offset;
+        if (!float.IsFinite(effective)) effective = raw;
+        return effective;
     }
 
     private void RefreshSpatialTransformPreview()
@@ -1008,6 +1424,8 @@ internal sealed partial class MainForm : Form
         {
             _spatialTransformPointerSession = null;
         }
+        _stage.SetSpatialTransformActive(SpatialTransformHandleHit.None);
+        _stage.EndReference3DOpticalInteractionPreview();
         _lastMouse = null;
         _startScreen = null;
     }
@@ -1048,6 +1466,8 @@ internal sealed partial class MainForm : Form
         {
             _spatialTransformPointerSession = null;
         }
+        _stage.SetSpatialTransformActive(SpatialTransformHandleHit.None);
+        _stage.EndReference3DOpticalInteractionPreview();
         _lastMouse = null;
         _startScreen = null;
         if (commit) CompleteSpatialTransformEdit();
@@ -1131,13 +1551,23 @@ internal sealed partial class MainForm : Form
     private void CompleteSpatialTransformPointer()
     {
         var pointer = _spatialTransformPointerSession;
-        if (pointer is null) return;
+        if (pointer is null)
+        {
+            ClearPendingSpatialTransformPointer();
+            return;
+        }
         if (pointer.KeyboardDriven)
         {
+            ClearPendingSpatialTransformPointer();
             CompleteSpatialTransformKeyboard();
             return;
         }
+        ApplyPendingSpatialTransformPointer();
+        ClearPendingSpatialTransformPointer();
         _spatialTransformPointerSession = null;
+        _stage.SetSpatialTransformActive(SpatialTransformHandleHit.None);
+        _stage.EndReference3DOpticalInteractionPreview();
+        _stage.ClearSceneSnapIndicator();
         CompleteSpatialTransformEdit();
         _lastMouse = null;
         _startScreen = null;
@@ -1147,6 +1577,7 @@ internal sealed partial class MainForm : Form
 
     private void CancelSpatialTransformPointer()
     {
+        ClearPendingSpatialTransformPointer();
         var pointer = _spatialTransformPointerSession;
         if (pointer is null) return;
         if (pointer.KeyboardDriven)
@@ -1155,6 +1586,9 @@ internal sealed partial class MainForm : Form
             return;
         }
         _spatialTransformPointerSession = null;
+        _stage.SetSpatialTransformActive(SpatialTransformHandleHit.None);
+        _stage.EndReference3DOpticalInteractionPreview();
+        _stage.ClearSceneSnapIndicator();
         CancelSpatialTransformEdit();
         _lastMouse = null;
         _startScreen = null;
@@ -1165,25 +1599,80 @@ internal sealed partial class MainForm : Form
     private void UpdateSpatialTransformPresentation()
     {
         CancelSpatialTransformKeyboardIfSelectionChanged();
-        if (!IsScene3DView() || _tool != ToolMode.Transform3D || SelectedSceneInstances().Count == 0)
+        var transformContextAvailable = IsScene3DView() && _tool == ToolMode.Transform3D;
+        var instances = SelectedSceneInstances();
+        if (!transformContextAvailable || instances.Count == 0)
         {
-            _stage.ClearSpatialTransformGizmo();
+            _stage.ClearSpatialTransformGizmo(
+                transformContextAvailable
+                    ? SpatialGizmoMotion.Animated
+                    : SpatialGizmoMotion.Immediate);
             if (!IsSceneReferenceView()) _stage.ClearReference3DSelection();
             return;
         }
 
         if (_selectedSceneInstanceObjectIndices.Length == 0) RefreshSelectedSceneInstanceObjectIndices();
-        var states = SelectedSceneInstances().Select(instance => instance.EvaluateState(_frame)).ToArray();
+        var states = instances.Select(instance => instance.EvaluateState(_frame)).ToArray();
         if (states.Length == 0)
         {
-            _stage.ClearSpatialTransformGizmo();
+            _stage.ClearSpatialTransformGizmo(SpatialGizmoMotion.Animated);
             return;
         }
+        if (_spatialPivotKind != SpatialPivotKind.None && states.Length != 1)
+        {
+            _stage.ClearSpatialTransformGizmo(SpatialGizmoMotion.Immediate);
+            return;
+        }
+        var displayMode = _spatialPivotKind == SpatialPivotKind.None
+            ? _spatialTransformMode
+            : SpatialTransformMode.Move;
+        var origins = states.Select(state => _spatialPivotKind switch
+        {
+            SpatialPivotKind.Rotation => DrawingObjectInstanceDefinition.RotationPivotScenePosition(state),
+            SpatialPivotKind.Scale => DrawingObjectInstanceDefinition.ScalePivotScenePosition(state),
+            _ when _spatialTransformMode == SpatialTransformMode.Rotate =>
+                DrawingObjectInstanceDefinition.RotationPivotScenePosition(state),
+            _ when _spatialTransformMode == SpatialTransformMode.Scale =>
+                DrawingObjectInstanceDefinition.ScalePivotScenePosition(state),
+            _ => new Vector3(state.X, state.Y, state.Z)
+        }).ToArray();
         var origin = new Vector3(
-            states.Average(state => state.X),
-            states.Average(state => state.Y),
-            states.Average(state => state.Z));
-        _stage.SetSpatialTransformGizmo(origin, _spatialTransformMode, _selectedSceneInstanceObjectIndices);
+            origins.Average(point => point.X),
+            origins.Average(point => point.Y),
+            origins.Average(point => point.Z));
+        var effectiveSpace = _spatialPivotKind != SpatialPivotKind.None
+            || _spatialTransformMode == SpatialTransformMode.Scale
+            ? SpatialTransformSpace.Local
+            : _spatialTransformSpace;
+        var primary = SelectedSceneInstance();
+        var basis = _spatialTransformPointerSession?.Basis
+            ?? (effectiveSpace == SpatialTransformSpace.Local && primary is not null
+                ? SpatialTransformMath.CreateBasis(primary.EvaluateState(_frame))
+                : SpatialGizmoBasis.Identity);
+        _stage.SetSpatialTransformGizmo(
+            origin,
+            displayMode,
+            _selectedSceneInstanceObjectIndices,
+            basis,
+            SpatialGizmoMotion.Animated);
+    }
+
+    private static Vector3 QuantizeSpatialPivot(Vector3 value)
+    {
+        return new Vector3(
+            VectorUnits.Quantize(value.X),
+            VectorUnits.Quantize(value.Y),
+            VectorUnits.Quantize(value.Z));
+    }
+
+    private static bool HasSpatialComponentDelta(float value)
+    {
+        return Math.Abs(value) > 0.000001f;
+    }
+
+    private static bool Finite(Vector3 value)
+    {
+        return float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
     }
 
     private void CancelSpatialTransformKeyboardIfSelectionChanged()
@@ -1221,6 +1710,7 @@ internal sealed partial class MainForm : Form
     {
         if (CanMoveProjectedSceneInstances() && _tool == ToolMode.Select)
         {
+            _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
             _stage.ClearBrushTipCursor();
             _stage.ClearFillToolCursor();
             ClearFillHoverPreview();
@@ -1231,16 +1721,37 @@ internal sealed partial class MainForm : Form
             return true;
         }
 
-        if (!IsScene3DView() || _tool != ToolMode.Transform3D) return false;
+        if (!IsScene3DView() || _tool != ToolMode.Transform3D)
+        {
+            _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
+            return false;
+        }
         _stage.ClearBrushTipCursor();
         _stage.ClearFillToolCursor();
         ClearFillHoverPreview();
+        var hit = _stage.HitTestSpatialTransformGizmo(screen);
+        if (_spatialTransformPointerSession is null) _stage.SetSpatialTransformHover(hit);
         _stage.Cursor = _spatialTransformKeyboardActive
             || _spatialTransformPointerSession is not null
-            || _stage.HitTestSpatialTransformGizmo(screen).IsValid
+            || hit.IsValid
                 ? Cursors.SizeAll
                 : Cursors.Default;
         return true;
+    }
+
+    private bool FocusSelectedSceneInstance()
+    {
+        if (!IsScene3DView() || SelectedSceneInstances().Count == 0) return false;
+        if (_selectedSceneInstanceObjectIndices.Length == 0) RefreshSelectedSceneInstanceObjectIndices();
+        if (!_stage.TryGetReference3DFocusPoints(
+                _selectedSceneInstanceObjectIndices,
+                out var scenePoints))
+        {
+            return false;
+        }
+
+        _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
+        return _stage.FocusReferenceCamera(scenePoints, ReferenceCameraMotion.Animated);
     }
 
     private bool HandleSpatialTransformShortcut(Keys keyData)

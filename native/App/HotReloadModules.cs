@@ -62,7 +62,10 @@ internal static class HotReloadModuleResolver
         nameof(DrawingObjectInstancePanel),
         nameof(TextSettingsPanel),
         nameof(MaterialEditorPanel),
+        nameof(SceneLightingPanel),
+        nameof(SpatialMaterialPanel),
         nameof(SpatialTransformPanel),
+        nameof(InstanceFrameState),
         nameof(SceneEditorPanel),
         nameof(LibraryVaultPanel),
         nameof(HierarchyPanel),
@@ -82,6 +85,9 @@ internal static class HotReloadModuleResolver
         nameof(DrawingObjectInstanceDefinition),
         nameof(SceneObjectInstanceDefinition),
         nameof(SceneDefinition),
+        nameof(SceneLightDefinition),
+        nameof(SceneLightSettings),
+        nameof(SpatialOpticalMaterial),
         nameof(SceneLayerDefinition),
         nameof(SceneLayerSnapshot),
         nameof(SceneLayerSnapshotItem),
@@ -142,11 +148,21 @@ internal static class HotReloadModuleResolver
 
         if (typeName is nameof(ReferenceViewDirection)
             or nameof(SpatialTransformMode)
+            or nameof(SpatialTransformSpace)
+            or nameof(SpatialGizmoBasis)
             or nameof(SpatialTransformAxis)
             or nameof(SpatialTransformHandleHit)
             or nameof(SpatialRay)
             or nameof(SceneCompositionMaskClip)
-            or nameof(Reference3DProjectedContour))
+            or nameof(Reference3DProjectedContour)
+            or nameof(Reference3DOpticalResponse)
+            or nameof(Reference3DOpticalSurface)
+            or nameof(Reference3DLinearLightStop)
+            or nameof(Reference3DShadowLayer)
+            or nameof(Reference3DLocalLightLayer)
+            or nameof(SceneLightGizmoHandleKind)
+            or nameof(SceneLightGizmoHandleHit)
+            or nameof(SceneLightGizmoScreenGeometry))
         {
             return HotReloadModule.Rendering;
         }
@@ -167,6 +183,11 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(MaterialEditorPanel)
+            or nameof(SceneLightingPanel)
+            or nameof(SpatialMaterialPanel)
+            or nameof(SceneLightEditorState)
+            or nameof(SceneLightChangedEventArgs)
+            or nameof(SpatialMaterialChangedEventArgs)
             or nameof(TweenCurveEditorPanel)
             or nameof(TweenCurveEditor)
             or nameof(TextSettingsPanel)
@@ -175,6 +196,8 @@ internal static class HotReloadModuleResolver
             or nameof(ThemedScrollPanel)
             or nameof(ColorComponentSlider)
             or nameof(HsvColorPlane)
+            or nameof(TraditionalColorPlane)
+            or nameof(VerticalColorComponentSlider)
             or nameof(HarmonyColorWheel)
             or nameof(ColorTargetButton)
             or nameof(ColorPaletteGrid)
@@ -192,7 +215,11 @@ internal static class HotReloadModuleResolver
             or nameof(SpatialTransformPanel)
             or nameof(SpatialTransformValues)
             or nameof(SpatialTransformValuesChangedEventArgs)
+            or nameof(SpatialTransformValueGroup)
             or nameof(SpatialTransformModeChangedEventArgs)
+            or nameof(SpatialTransformSpaceChangedEventArgs)
+            or nameof(SpatialPivotKind)
+            or nameof(SpatialPivotKindChangedEventArgs)
             or nameof(DrawSettings)
             or nameof(ModernSlider)
             or nameof(ModernNumericUpDown)
@@ -251,9 +278,14 @@ internal static class HotReloadModuleResolver
             or nameof(VectorUnits)
             or nameof(DrawingTopologyRules)
             or nameof(DrawingObjectDefinition)
+            or nameof(InstanceFrameState)
             or nameof(DrawingObjectInstanceDefinition)
             or nameof(DrawingObjectPlaybackMode)
             or nameof(SceneDefinition)
+            or nameof(SceneLightDefinition)
+            or nameof(SceneLightSettings)
+            or nameof(SceneLightKind)
+            or nameof(SpatialOpticalMaterial)
             or nameof(SceneLayerDefinition)
             or nameof(SceneLayerSnapshot)
             or nameof(SceneLayerSnapshotItem)

@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace VectorAnimationEngine;
 
 // This snapshot is an internal handoff format for a development-process restart,
@@ -12,6 +14,7 @@ internal sealed class ProjectRestartSnapshot
     public int PlaybackEndFrame { get; init; } = 239;
     public ProjectAssetTagRestartSnapshot[] AssetTags { get; init; } = [];
     public ProjectAssetFolderRestartSnapshot[] AssetFolders { get; init; } = [];
+    public ExternalSvgAssetRestartSnapshot[] ExternalSvgAssets { get; init; } = [];
     public DrawingObjectRestartSnapshot[] DrawingObjects { get; init; } = [];
     public SceneRestartSnapshot[] Scenes { get; init; } = [];
 }
@@ -31,6 +34,16 @@ internal sealed class ProjectAssetFolderRestartSnapshot
     public DateTime CreatedAt { get; init; } = DateTime.Now;
 }
 
+internal sealed class ExternalSvgAssetRestartSnapshot
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "SVG";
+    public string SourcePath { get; init; } = "";
+    public string ProjectRelativePath { get; init; } = "";
+    public string LastKnownSha256 { get; init; } = "";
+    public DateTime CreatedAt { get; init; } = DateTime.Now;
+}
+
 internal sealed class DrawingObjectRestartSnapshot
 {
     public string Id { get; init; } = "";
@@ -41,9 +54,18 @@ internal sealed class DrawingObjectRestartSnapshot
     public string[] AssetTagIds { get; init; } = [];
     public float AnchorX { get; init; }
     public float AnchorY { get; init; }
+    public DrawingObjectSnapPointRestartSnapshot[] SnapPoints { get; init; } = [];
     public DateTime CreatedAt { get; init; } = DateTime.Now;
     public VectorSceneSnapshot Scene { get; init; } = new();
     public InstanceRestartSnapshot[] Instances { get; init; } = [];
+}
+
+internal sealed class DrawingObjectSnapPointRestartSnapshot
+{
+    public string Id { get; init; } = "";
+    public float X { get; init; }
+    public float Y { get; init; }
+    public float Z { get; init; }
 }
 
 internal sealed class SceneRestartSnapshot
@@ -53,10 +75,29 @@ internal sealed class SceneRestartSnapshot
     public string Detail { get; init; } = "Scene composition context";
     public SceneDimension Dimension { get; init; } = SceneDimension.TwoD;
     public SceneCameraDefinition Camera { get; init; } = new();
+    public SceneLightRestartSnapshot[]? Lights { get; init; }
     public DateTime CreatedAt { get; init; } = DateTime.Now;
     public SceneLayerSnapshot Layers { get; init; } = new();
     public InstanceRestartSnapshot[] Instances { get; init; } = [];
     public AnimationTimelineSnapshot Timeline { get; init; } = new();
+}
+
+internal sealed class SceneLightRestartSnapshot
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "Light";
+    public SceneLightKind Kind { get; init; }
+    public bool Enabled { get; init; } = true;
+    public int ColorArgb { get; init; } = unchecked((int)0xffffffff);
+    public float Intensity { get; init; } = 1f;
+    public float Range { get; init; }
+    public Vector3 Position { get; init; }
+    public Vector3 RotationDegrees { get; init; }
+    public Vector2 AreaSize { get; init; }
+    public bool CastsShadows { get; init; }
+    public float ShadowStrength { get; init; } = 1f;
+    public float ShadowSoftness { get; init; }
+    public SceneLightStateKeyframe[]? StateKeyframes { get; init; }
 }
 
 internal sealed class InstanceRestartSnapshot
@@ -77,9 +118,12 @@ internal sealed class InstanceRestartSnapshot
     public float ScaleX { get; init; } = 1;
     public float ScaleY { get; init; } = 1;
     public float ScaleZ { get; init; } = 1;
+    public Vector3 RotationPivot { get; init; }
+    public Vector3 ScalePivot { get; init; }
     public DistortWarp? Distortion { get; init; }
     public float Alpha { get; init; } = 1;
     public int TintArgb { get; init; } = unchecked((int)0xffffffff);
+    public SpatialOpticalMaterial? OpticalMaterialOverride { get; init; }
     public decimal PlaybackFps { get; init; } = 30m;
     public DrawingObjectPlaybackMode PlaybackMode { get; init; } = DrawingObjectPlaybackMode.PlayOnce;
     public int HoldFrame { get; init; }

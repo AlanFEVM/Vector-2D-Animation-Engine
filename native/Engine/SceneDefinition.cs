@@ -35,17 +35,24 @@ internal sealed record SceneLayerSnapshotItem(
 
 internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 {
+    internal const int MaximumLights = 256;
+
     private readonly AnimationTimeline _timeline = new();
     private readonly List<SceneLayerDefinition> _layers = [];
     private readonly List<DrawingObjectInstanceDefinition> _instances = [];
+    private readonly List<SceneLightDefinition> _lights = [];
     private readonly IReadOnlyList<SceneLayerDefinition> _layerView;
     private readonly IReadOnlyList<DrawingObjectInstanceDefinition> _instanceView;
+    private readonly IReadOnlyList<SceneLightDefinition> _lightView;
     private readonly LayeredInstanceIndex _instanceIndex;
+    private SceneDimension _dimension = SceneDimension.TwoD;
+    private bool _lightsInitialized;
 
     public SceneDefinition(int initialFrameCount = AnimationTimeline.DefaultDuration)
     {
         _layerView = _layers.AsReadOnly();
         _instanceView = _instances.AsReadOnly();
+        _lightView = _lights.AsReadOnly();
         _instanceIndex = new LayeredInstanceIndex(_instanceView);
         var firstLayer = new SceneLayerDefinition { Name = "Layer 0001" };
         _layers.Add(firstLayer);
@@ -57,10 +64,23 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     public string Name { get; set; } = "Scene";
     public string Detail { get; set; } = "Scene composition context";
     public bool CanDraw => false;
-    public SceneDimension Dimension { get; set; } = SceneDimension.TwoD;
+    public SceneDimension Dimension
+    {
+        get => _dimension;
+        set
+        {
+            var enteringThreeDimensions = _dimension != SceneDimension.ThreeD
+                && value == SceneDimension.ThreeD;
+            _dimension = value;
+            if (enteringThreeDimensions && !_lightsInitialized) EnsureDefaultLighting();
+        }
+    }
     public SceneCameraDefinition Camera { get; set; } = new();
     public IReadOnlyList<SceneLayerDefinition> Layers => _layerView;
     public IReadOnlyList<DrawingObjectInstanceDefinition> Instances => _instanceView;
+    public IReadOnlyList<SceneLightDefinition> Lights => _lightView;
+    internal bool LightingInitialized => _lightsInitialized;
+    internal long LightingRevision { get; private set; }
     public string ActiveLayerId { get; private set; } = "";
     public DateTime CreatedAt { get; init; } = DateTime.Now;
 
@@ -74,15 +94,28 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     }
 
     public int FrameCount => _timeline.Tracks.Count == 0 ? AnimationTimeline.DefaultDuration : _timeline.Duration;
-    public IReadOnlyList<string> TimelineTargetIds => Layers.Select(layer => layer.Id).ToArray();
+    public IReadOnlyList<string> TimelineTargetIds => Layers
+        .Select(layer => layer.Id)
+        .Concat(Lights.Select(light => light.Id))
+        .ToArray();
 
     public void SynchronizeTimelineTracks()
     {
         NormalizeLayers();
         using var batchUpdate = _timeline.BeginBatchUpdate();
-        _timeline.SynchronizeTracks(Layers.Select(layer => layer.Id), FrameCount, populateNewTracks: false);
+        _timeline.SynchronizeTracks(TimelineTargetIds, FrameCount, populateNewTracks: false);
         foreach (var track in _timeline.Tracks)
         {
+            if (FindLight(track.TargetId) is not null)
+            {
+                if (track.Keyframes.Count == 0
+                    || track.Keyframes[0].Frame > 0)
+                {
+                    _timeline.InsertKeyframe(track.Id, 0);
+                }
+                continue;
+            }
+
             if (track.Keyframes.Count == 0 || track.Keyframes[0].Frame > 0)
             {
                 _timeline.InsertBlankKeyframe(track.Id, 0);
@@ -129,6 +162,329 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         return _instanceIndex.Get(layerId);
     }
 
+    public SceneLightDefinition? FindLight(string lightId)
+    {
+        if (string.IsNullOrWhiteSpace(lightId)) return null;
+        foreach (var light in _lights)
+        {
+            if (string.Equals(light.Id, lightId, StringComparison.Ordinal)) return light;
+        }
+        return null;
+    }
+
+    public bool TryEvaluateLightSettings(
+        string lightId,
+        int frame,
+        out SceneLightSettings settings)
+    {
+        settings = default;
+        var light = FindLight(lightId);
+        if (light is null || frame < 0) return false;
+
+        var track = _timeline.FindTrackByTargetId(light.Id);
+        if (track is null)
+        {
+            SynchronizeTimelineTracks();
+            track = _timeline.FindTrackByTargetId(light.Id);
+        }
+        var exposure = track?.EvaluateExposure(frame) ?? TimelineExposure.None(frame);
+        if (!exposure.HasContent || exposure.SourceKeyframeFrame < 0) return false;
+
+        var tween = track?.EvaluateTween(frame);
+        settings = tween is { Kind: TimelineTweenKind.Classic }
+            ? SceneLightSettings.Interpolate(
+                light.Kind,
+                light.EvaluateSettings(tween.Value.StartFrame),
+                light.EvaluateSettings(tween.Value.EndFrame),
+                tween.Value.ProgressAt(frame))
+            : light.EvaluateSettings(exposure.SourceKeyframeFrame);
+        return true;
+    }
+
+    internal bool AddLight(SceneLightDefinition light)
+    {
+        ArgumentNullException.ThrowIfNull(light);
+        if (_lights.Count >= MaximumLights
+            || _lights.Any(candidate => string.Equals(candidate.Id, light.Id, StringComparison.Ordinal))
+            || _layers.Any(layer => string.Equals(layer.Id, light.Id, StringComparison.Ordinal))
+            || _instances.Any(instance => string.Equals(instance.Id, light.Id, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+        _lights.Add(light);
+        _lightsInitialized = true;
+        MarkLightingChanged();
+        SynchronizeTimelineTracks();
+        return true;
+    }
+
+    internal bool UpdateLight(string lightId, string? name, SceneLightSettings settings)
+    {
+        return UpdateLightAtFrame(lightId, name, settings, 0);
+    }
+
+    internal bool UpdateLightAtFrame(
+        string lightId,
+        string? name,
+        SceneLightSettings settings,
+        int frame)
+    {
+        return UpdateLightAtFrameCore(
+            lightId,
+            name,
+            settings,
+            frame,
+            refreshTweenMaterializations: true);
+    }
+
+    internal bool PreviewLightAtFrame(
+        string lightId,
+        string? name,
+        SceneLightSettings settings,
+        int frame)
+    {
+        return UpdateLightAtFrameCore(
+            lightId,
+            name,
+            settings,
+            frame,
+            refreshTweenMaterializations: false);
+    }
+
+    internal bool RefreshLightTimelineTweenMaterializationsAtEndpoint(
+        string lightId,
+        int endpointFrame)
+    {
+        if (string.IsNullOrWhiteSpace(lightId) || endpointFrame < 0) return false;
+        SynchronizeTimelineTracks();
+        var changed = RefreshLightTimelineTweenMaterializations(
+            lightFilter: lightId,
+            endpointFrame: endpointFrame);
+        if (changed) MarkLightingChanged();
+        return changed;
+    }
+
+    private bool UpdateLightAtFrameCore(
+        string lightId,
+        string? name,
+        SceneLightSettings settings,
+        int frame,
+        bool refreshTweenMaterializations)
+    {
+        if (frame < 0
+            || frame == int.MaxValue
+            || !SceneLightDefinition.TryNormalizeName(name, out var normalizedName))
+        {
+            return false;
+        }
+
+        var light = FindLight(lightId);
+        if (light is null || !settings.IsValid(light.Kind)) return false;
+        var nameChanged = !string.Equals(light.Name, normalizedName, StringComparison.Ordinal);
+        var settingsChanged = light.EvaluateSettings(frame) != settings;
+        if (!nameChanged && !settingsChanged) return false;
+
+        if (settingsChanged)
+        {
+            SynchronizeTimelineTracks();
+            var track = _timeline.FindTrackByTargetId(light.Id);
+            if (track is null) return false;
+            using var batch = _timeline.BeginBatchUpdate();
+            _timeline.InsertKeyframe(track.Id, frame);
+        }
+
+        var changed = light.TryApplyAtFrame(normalizedName, settings, frame);
+        if (changed) MarkLightingChanged();
+        if (changed && settingsChanged && refreshTweenMaterializations)
+        {
+            RefreshLightTimelineTweenMaterializations(lightFilter: light.Id, endpointFrame: frame);
+        }
+        return changed;
+    }
+
+    internal bool RemoveLight(string lightId)
+    {
+        if (string.IsNullOrWhiteSpace(lightId)) return false;
+        var removed = _lights.RemoveAll(candidate =>
+            string.Equals(candidate.Id, lightId, StringComparison.Ordinal)) == 1;
+        if (removed)
+        {
+            _lightsInitialized = true;
+            MarkLightingChanged();
+            SynchronizeTimelineTracks();
+        }
+        return removed;
+    }
+
+    internal void RestoreLights(
+        IEnumerable<SceneLightDefinition>? lights,
+        bool lightsWerePresent)
+    {
+        _lights.Clear();
+        if (lights is not null)
+        {
+            foreach (var light in lights)
+            {
+                if (_lights.Count >= MaximumLights
+                    || _lights.Any(candidate => string.Equals(candidate.Id, light.Id, StringComparison.Ordinal))
+                    || _layers.Any(layer => string.Equals(layer.Id, light.Id, StringComparison.Ordinal))
+                    || _instances.Any(instance => string.Equals(instance.Id, light.Id, StringComparison.Ordinal)))
+                {
+                    throw new InvalidOperationException("The scene light snapshot is invalid.");
+                }
+                _lights.Add(light.Clone());
+            }
+        }
+
+        _lightsInitialized = lightsWerePresent;
+        MarkLightingChanged();
+        if (!_lightsInitialized && Dimension == SceneDimension.ThreeD) EnsureDefaultLighting();
+        else SynchronizeTimelineTracks();
+    }
+
+    private void EnsureDefaultLighting()
+    {
+        if (_lightsInitialized) return;
+        _lights.Clear();
+        _lights.Add(SceneLightDefinition.CreateDefaultDirectional());
+        _lights.Add(SceneLightDefinition.CreateDefaultAmbient());
+        _lightsInitialized = true;
+        MarkLightingChanged();
+        SynchronizeTimelineTracks();
+    }
+
+    internal bool InsertLightTimelineFrame(string lightId, int frame, int count = 1)
+    {
+        var light = FindLight(lightId);
+        if (light is null || frame < 0 || count <= 0) return false;
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(light.Id);
+        if (track is null || !_timeline.InsertFrame(track.Id, frame, count)) return false;
+        light.InsertStateFrames(frame, count);
+        RefreshLightTimelineTweenMaterializations(lightFilter: light.Id);
+        MarkLightingChanged();
+        return true;
+    }
+
+    internal bool RemoveLightTimelineFrame(string lightId, int frame, int count = 1)
+    {
+        var light = FindLight(lightId);
+        if (light is null || frame < 0 || count <= 0) return false;
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(light.Id);
+        if (track is null) return false;
+        var previousDuration = track.Duration;
+        if (!_timeline.RemoveFrame(track.Id, frame, count)) return false;
+        light.RemoveStateFrames(frame, previousDuration - track.Duration);
+        RefreshLightTimelineTweenMaterializations(lightFilter: light.Id);
+        MarkLightingChanged();
+        return true;
+    }
+
+    internal bool InsertLightTimelineKeyframe(string lightId, int frame)
+    {
+        var light = FindLight(lightId);
+        if (light is null || frame < 0 || frame == int.MaxValue) return false;
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(light.Id);
+        if (track is null) return false;
+
+        var settings = TryEvaluateLightSettings(light.Id, frame, out var evaluated)
+            ? evaluated
+            : light.EvaluateSettings(frame);
+        using var batch = _timeline.BeginBatchUpdate();
+        var changed = RemoveLightTimelineTweenCrossing(track, frame);
+        changed |= _timeline.InsertKeyframe(track.Id, frame);
+        changed |= light.SetSettingsAtFrame(frame, settings);
+        if (changed) MarkLightingChanged();
+        return changed;
+    }
+
+    internal bool InsertLightTimelineBlankKeyframe(string lightId, int frame)
+    {
+        var light = FindLight(lightId);
+        if (light is null || frame < 0 || frame == int.MaxValue) return false;
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(light.Id);
+        if (track is null) return false;
+
+        using var batch = _timeline.BeginBatchUpdate();
+        var changed = RemoveLightTimelineTweenCrossing(track, frame);
+        changed |= _timeline.InsertBlankKeyframe(track.Id, frame);
+        changed |= light.RemoveStateKeyframe(frame);
+        if (changed) MarkLightingChanged();
+        return changed;
+    }
+
+    internal bool ClearLightTimelineKeyframe(string lightId, int frame)
+    {
+        var light = FindLight(lightId);
+        if (light is null || frame < 0) return false;
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(light.Id);
+        if (track is null) return false;
+
+        using var batch = _timeline.BeginBatchUpdate();
+        var changed = RemoveLightTimelineTweenCrossing(track, frame);
+        changed |= _timeline.ClearKeyframe(track.Id, frame);
+        changed |= light.RemoveStateKeyframe(frame);
+        if (changed) MarkLightingChanged();
+        return changed;
+    }
+
+    internal bool CopyLightTimeline(string sourceLightId, string destinationLightId)
+    {
+        var source = FindLight(sourceLightId);
+        var destination = FindLight(destinationLightId);
+        if (source is null
+            || destination is null
+            || ReferenceEquals(source, destination)
+            || source.Kind != destination.Kind)
+        {
+            return false;
+        }
+
+        SynchronizeTimelineTracks();
+        var snapshot = _timeline.CreateSnapshot();
+        var sourceTrack = snapshot.Tracks.FirstOrDefault(track =>
+            string.Equals(track.TargetId, source.Id, StringComparison.Ordinal));
+        var destinationIndex = Array.FindIndex(snapshot.Tracks, track =>
+            string.Equals(track.TargetId, destination.Id, StringComparison.Ordinal));
+        if (sourceTrack is null || destinationIndex < 0) return false;
+
+        var destinationTrack = snapshot.Tracks[destinationIndex];
+        snapshot.Tracks[destinationIndex] = new AnimationTimelineTrackSnapshot
+        {
+            Id = destinationTrack.Id,
+            TargetId = destination.Id,
+            TabGroupId = destinationTrack.TabGroupId,
+            IsCollisionTerrain = destinationTrack.IsCollisionTerrain,
+            Duration = sourceTrack.Duration,
+            Keyframes = sourceTrack.Keyframes.ToArray(),
+            Tweens = sourceTrack.Tweens.Select(tween => new TimelineTween(
+                tween.StartFrame,
+                tween.EndFrame,
+                tween.Kind)
+            {
+                CurveAnchors = tween.CurveAnchors
+            }).ToArray()
+        };
+        _timeline.RestoreSnapshot(snapshot);
+        destination.RestoreStateKeyframes(source.StateKeyframes);
+        SynchronizeTimelineTracks();
+        MarkLightingChanged();
+        return true;
+    }
+
+    private bool RemoveLightTimelineTweenCrossing(AnimationTimelineTrack track, int frame)
+    {
+        var tween = track.EvaluateTween(frame);
+        return tween is { } span
+            && frame > span.StartFrame
+            && frame < span.EndFrame
+            && _timeline.RemoveTween(track.Id, span.StartFrame, span.EndFrame);
+    }
+
     internal TimelineKeyframeKind ResolveKeyframeKindForLayerContent(
         string layerId,
         TimelineKeyframeKind requestedKind)
@@ -141,6 +497,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         TimelineKeyframeKind requestedKind,
         int frame)
     {
+        if (FindLight(layerId) is not null) return requestedKind;
         if (FindLayer(layerId)?.Kind == SceneLayerKind.Mask)
         {
             return frame < 0
@@ -602,6 +959,472 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         SynchronizeTimelineTracks();
     }
 
+    internal bool CanCreateTimelineTween(
+        string layerId,
+        int startFrame,
+        int endFrame,
+        TimelineTweenKind kind,
+        out string error)
+    {
+        if (FindLight(layerId) is not null)
+        {
+            return TryResolveLightTimelineTween(
+                layerId,
+                startFrame,
+                endFrame,
+                kind,
+                out _,
+                out _,
+                out error);
+        }
+
+        return TryResolveInstanceTimelineTween(
+            layerId,
+            startFrame,
+            endFrame,
+            kind,
+            out _,
+            out _,
+            out error);
+    }
+
+    internal bool TryCreateTimelineTween(
+        string layerId,
+        int startFrame,
+        int endFrame,
+        TimelineTweenKind kind,
+        out string error)
+    {
+        if (FindLight(layerId) is not null)
+        {
+            return TryCreateLightTimelineTween(layerId, startFrame, endFrame, kind, out error);
+        }
+
+        if (!TryResolveInstanceTimelineTween(
+                layerId,
+                startFrame,
+                endFrame,
+                kind,
+                out var track,
+                out var instance,
+                out error))
+        {
+            return false;
+        }
+
+        startFrame = Math.Max(0, startFrame);
+        endFrame = Math.Min(track.Duration - 1, endFrame);
+        var source = instance.EvaluateState(startFrame);
+        var target = instance.EvaluateState(endFrame);
+        var timelineSnapshot = _timeline.CreateSnapshot();
+        var instanceSnapshot = CreateInstanceSnapshot();
+        try
+        {
+            using var batch = _timeline.BeginBatchUpdate();
+            for (var frame = startFrame + 1; frame < endFrame; frame++)
+            {
+                if (!_timeline.InsertKeyframe(track.Id, frame))
+                {
+                    throw new InvalidOperationException("The tween span could not create an intermediate keyframe.");
+                }
+
+                instance.SetStateAtFrame(
+                    frame,
+                    DrawingObjectInstanceDefinition.InterpolateState(
+                        source,
+                        target,
+                        (float)(frame - startFrame) / (endFrame - startFrame)));
+            }
+
+            if (!_timeline.TryCreateTween(track.Id, startFrame, endFrame, kind, out var validation))
+            {
+                throw new InvalidOperationException($"The tween span is invalid ({validation}).");
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            RestoreInstanceSnapshot(instanceSnapshot);
+            _timeline.RestoreSnapshot(timelineSnapshot);
+            SynchronizeTimelineTracks();
+            error = exception.Message;
+            return false;
+        }
+    }
+
+    internal bool ReplaceTimelineTweenCurve(
+        string layerId,
+        int startFrame,
+        int endFrame,
+        IEnumerable<TweenCurveAnchor> anchors)
+    {
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(layerId);
+        var light = FindLight(layerId);
+        if ((light is null && FindLayer(layerId)?.Kind != SceneLayerKind.Content)
+            || track is null
+            || !_timeline.ReplaceTweenCurve(track.Id, startFrame, endFrame, anchors))
+        {
+            return false;
+        }
+
+        if (light is not null)
+        {
+            RefreshLightTimelineTweenMaterializations(lightFilter: light.Id);
+            MarkLightingChanged();
+        }
+        else RefreshInstanceTimelineTweenMaterializations(layerFilter: layerId);
+        return true;
+    }
+
+    internal bool RemoveTimelineTween(string layerId, int startFrame, int endFrame)
+    {
+        SynchronizeTimelineTracks();
+        var track = _timeline.FindTrackByTargetId(layerId);
+        var tween = track?.Tweens.FirstOrDefault(item =>
+            item.StartFrame == startFrame
+            && item.EndFrame == endFrame);
+        if ((FindLayer(layerId)?.Kind != SceneLayerKind.Content && FindLight(layerId) is null)
+            || track is null
+            || tween is not { IsValid: true } span)
+        {
+            return false;
+        }
+
+        var light = FindLight(layerId);
+        IReadOnlyList<DrawingObjectInstanceDefinition> instances =
+            light is null ? InstancesInLayer(layerId) : [];
+        using var batch = _timeline.BeginBatchUpdate();
+        if (!_timeline.RemoveTween(track.Id, startFrame, endFrame)) return false;
+
+        for (var frame = span.StartFrame + 1; frame < span.EndFrame; frame++)
+        {
+            if (light is not null) light.RemoveStateKeyframe(frame);
+            else foreach (var instance in instances) instance.RemoveStateKeyframe(frame);
+            _timeline.ClearKeyframe(track.Id, frame);
+        }
+
+        if (light is not null) MarkLightingChanged();
+        return true;
+    }
+
+    internal bool RefreshTimelineTweenMaterializationsAtEndpointFrame(int frame)
+    {
+        var instanceChanged = RefreshInstanceTimelineTweenMaterializations(endpointFrame: frame);
+        var lightChanged = RefreshLightTimelineTweenMaterializations(endpointFrame: frame);
+        if (lightChanged) MarkLightingChanged();
+        return instanceChanged || lightChanged;
+    }
+
+    internal bool RefreshInstanceTimelineTweenMaterializationsInLayer(string layerId)
+    {
+        if (FindLight(layerId) is not null)
+        {
+            var changed = RefreshLightTimelineTweenMaterializations(lightFilter: layerId);
+            if (changed) MarkLightingChanged();
+            return changed;
+        }
+
+        return RefreshInstanceTimelineTweenMaterializations(layerFilter: layerId);
+    }
+
+    private bool TryCreateLightTimelineTween(
+        string lightId,
+        int startFrame,
+        int endFrame,
+        TimelineTweenKind kind,
+        out string error)
+    {
+        if (!TryResolveLightTimelineTween(
+                lightId,
+                startFrame,
+                endFrame,
+                kind,
+                out var track,
+                out var light,
+                out error))
+        {
+            return false;
+        }
+
+        startFrame = Math.Max(0, startFrame);
+        endFrame = Math.Min(track.Duration - 1, endFrame);
+        var source = light.EvaluateSettings(startFrame);
+        var target = light.EvaluateSettings(endFrame);
+        var timelineSnapshot = _timeline.CreateSnapshot();
+        var lightSnapshot = light.Clone();
+        try
+        {
+            using var batch = _timeline.BeginBatchUpdate();
+            for (var frame = startFrame + 1; frame < endFrame; frame++)
+            {
+                if (!_timeline.InsertKeyframe(track.Id, frame))
+                {
+                    throw new InvalidOperationException("The tween span could not create an intermediate keyframe.");
+                }
+
+                light.SetSettingsAtFrame(
+                    frame,
+                    SceneLightSettings.Interpolate(
+                        light.Kind,
+                        source,
+                        target,
+                        (float)(frame - startFrame) / (endFrame - startFrame)));
+            }
+
+            if (!_timeline.TryCreateTween(track.Id, startFrame, endFrame, kind, out var validation))
+            {
+                throw new InvalidOperationException($"The tween span is invalid ({validation}).");
+            }
+
+            MarkLightingChanged();
+            return true;
+        }
+        catch (Exception exception)
+        {
+            light.RestoreFrom(lightSnapshot);
+            _timeline.RestoreSnapshot(timelineSnapshot);
+            SynchronizeTimelineTracks();
+            error = exception.Message;
+            return false;
+        }
+    }
+
+    private bool TryResolveLightTimelineTween(
+        string lightId,
+        int startFrame,
+        int endFrame,
+        TimelineTweenKind kind,
+        out AnimationTimelineTrack track,
+        out SceneLightDefinition light,
+        out string error)
+    {
+        track = null!;
+        light = null!;
+        error = string.Empty;
+        var resolvedLight = FindLight(lightId);
+        if (resolvedLight is null)
+        {
+            error = "Select a light layer.";
+            return false;
+        }
+        light = resolvedLight;
+
+        if (kind != TimelineTweenKind.Classic)
+        {
+            error = "Light layers support Classic tweens only.";
+            return false;
+        }
+
+        SynchronizeTimelineTracks();
+        var resolvedTrack = _timeline.FindTrackByTargetId(light.Id);
+        if (resolvedTrack is null)
+        {
+            error = "The selected light has no timeline track.";
+            return false;
+        }
+        track = resolvedTrack;
+
+        startFrame = Math.Max(0, startFrame);
+        endFrame = Math.Min(track.Duration - 1, endFrame);
+        if (endFrame <= startFrame)
+        {
+            error = "Select a span containing a start and end frame.";
+            return false;
+        }
+
+        var startExposure = track.EvaluateExposure(startFrame);
+        var endExposure = track.EvaluateExposure(endFrame);
+        if (!startExposure.IsKeyframe || !endExposure.IsKeyframe
+            || !startExposure.HasContent || !endExposure.HasContent)
+        {
+            error = "Both ends of the span must be populated keyframes.";
+            return false;
+        }
+
+        if (track.Keyframes.Any(keyframe =>
+                keyframe.Frame > startFrame
+                && keyframe.Frame < endFrame))
+        {
+            error = "Remove intermediate keyframes before creating a tween.";
+            return false;
+        }
+
+        if (!track.CanCreateTween(startFrame, endFrame, kind, out var validation))
+        {
+            error = $"The tween span is invalid ({validation}).";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryResolveInstanceTimelineTween(
+        string layerId,
+        int startFrame,
+        int endFrame,
+        TimelineTweenKind kind,
+        out AnimationTimelineTrack track,
+        out DrawingObjectInstanceDefinition instance,
+        out string error)
+    {
+        track = null!;
+        instance = null!;
+        error = string.Empty;
+        if (FindLayer(layerId)?.Kind != SceneLayerKind.Content)
+        {
+            error = "Select a drawing layer.";
+            return false;
+        }
+
+        SynchronizeTimelineTracks();
+        var resolvedTrack = _timeline.FindTrackByTargetId(layerId);
+        if (resolvedTrack is null)
+        {
+            error = "The selected layer has no timeline track.";
+            return false;
+        }
+        track = resolvedTrack;
+
+        startFrame = Math.Max(0, startFrame);
+        endFrame = Math.Min(track.Duration - 1, endFrame);
+        if (endFrame <= startFrame)
+        {
+            error = "Select a span containing a start and end frame.";
+            return false;
+        }
+
+        var startExposure = track.EvaluateExposure(startFrame);
+        var endExposure = track.EvaluateExposure(endFrame);
+        if (!startExposure.IsKeyframe || !endExposure.IsKeyframe
+            || !startExposure.HasContent || !endExposure.HasContent)
+        {
+            error = "Both ends of the span must be populated keyframes.";
+            return false;
+        }
+
+        if (track.Keyframes.Any(keyframe =>
+                keyframe.Frame > startFrame
+                && keyframe.Frame < endFrame))
+        {
+            error = "Remove intermediate keyframes before creating a tween.";
+            return false;
+        }
+
+        if (!track.CanCreateTween(startFrame, endFrame, kind, out var validation))
+        {
+            error = $"The tween span is invalid ({validation}).";
+            return false;
+        }
+
+        if (kind == TimelineTweenKind.Shape)
+        {
+            error = "Shape tweens do not support symbol instances.";
+            return false;
+        }
+
+        var instances = InstancesInLayer(layerId);
+        if (instances.Count != 1)
+        {
+            error = "Classic tweens require exactly one symbol instance on an instance layer.";
+            return false;
+        }
+
+        instance = instances[0];
+        return true;
+    }
+
+    private bool RefreshInstanceTimelineTweenMaterializations(
+        string? layerFilter = null,
+        int? endpointFrame = null)
+    {
+        var changed = false;
+        foreach (var layer in Layers)
+        {
+            if (layer.Kind != SceneLayerKind.Content
+                || layerFilter is not null
+                    && !string.Equals(layer.Id, layerFilter, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var track = _timeline.FindTrackByTargetId(layer.Id);
+            var instances = InstancesInLayer(layer.Id);
+            if (track is null || instances.Count != 1) continue;
+            foreach (var tween in track.Tweens)
+            {
+                if (tween.Kind != TimelineTweenKind.Classic
+                    || endpointFrame is { } endpoint
+                        && tween.StartFrame != endpoint
+                        && tween.EndFrame != endpoint)
+                {
+                    continue;
+                }
+
+                var instance = instances[0];
+                var source = instance.EvaluateState(tween.StartFrame);
+                var target = instance.EvaluateState(tween.EndFrame);
+                for (var frame = tween.StartFrame + 1; frame < tween.EndFrame; frame++)
+                {
+                    changed |= instance.SetStateAtFrame(
+                        frame,
+                        DrawingObjectInstanceDefinition.InterpolateState(
+                            source,
+                            target,
+                            tween.ProgressAt(frame)));
+                }
+            }
+        }
+
+        return changed;
+    }
+
+    private bool RefreshLightTimelineTweenMaterializations(
+        string? lightFilter = null,
+        int? endpointFrame = null)
+    {
+        var changed = false;
+        foreach (var light in Lights)
+        {
+            if (lightFilter is not null
+                && !string.Equals(light.Id, lightFilter, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var track = _timeline.FindTrackByTargetId(light.Id);
+            if (track is null) continue;
+            foreach (var tween in track.Tweens)
+            {
+                if (tween.Kind != TimelineTweenKind.Classic
+                    || endpointFrame is { } endpoint
+                        && tween.StartFrame != endpoint
+                        && tween.EndFrame != endpoint)
+                {
+                    continue;
+                }
+
+                var source = light.EvaluateSettings(tween.StartFrame);
+                var target = light.EvaluateSettings(tween.EndFrame);
+                for (var frame = tween.StartFrame + 1; frame < tween.EndFrame; frame++)
+                {
+                    var exposure = track.EvaluateExposure(frame);
+                    if (!exposure.IsKeyframe || !exposure.HasContent) continue;
+                    changed |= light.SetSettingsAtFrame(
+                        frame,
+                        SceneLightSettings.Interpolate(
+                            light.Kind,
+                            source,
+                            target,
+                            tween.ProgressAt(frame)));
+                }
+            }
+        }
+
+        return changed;
+    }
+
     internal bool RemoveLayers(VectorProject project, IEnumerable<string> layerIds)
     {
         ArgumentNullException.ThrowIfNull(project);
@@ -906,6 +1729,14 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
                 maskScene.Timeline.SetTrackDuration(track.Id, frameCount);
             }
             maskScene.EditFrame = Math.Clamp(maskScene.EditFrame, 0, frameCount - 1);
+        }
+    }
+
+    private void MarkLightingChanged()
+    {
+        unchecked
+        {
+            LightingRevision++;
         }
     }
 

@@ -6,6 +6,8 @@ internal enum SvgIconKind
 {
     Menu,
     Select,
+    PolygonLasso,
+    FreehandLasso,
     Transform,
     Transform3D,
     Distort,
@@ -45,6 +47,11 @@ internal enum SvgIconKind
     PolarGrid,
     PropertiesPanel,
     TimelinePanel,
+    Light,
+    DirectionalLight,
+    PointLight,
+    AreaLight,
+    AmbientLight,
     Folder,
     FolderPlus,
     Open,
@@ -66,6 +73,37 @@ internal enum SvgIconKind
 
 internal static class SvgIcons
 {
+    public static Bitmap CreateBitmap(
+        SvgIconKind kind,
+        Size size,
+        Color color,
+        float dpi = 96f)
+    {
+        if (size.Width <= 0 || size.Height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(size));
+
+        var normalizedDpi = float.IsFinite(dpi) && dpi > 0f
+            ? Math.Clamp(dpi, 48f, 960f)
+            : 96f;
+        var bitmap = new Bitmap(
+            size.Width,
+            size.Height,
+            System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        try
+        {
+            bitmap.SetResolution(normalizedDpi, normalizedDpi);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.Transparent);
+            Draw(graphics, kind, new Rectangle(Point.Empty, size), color);
+            return bitmap;
+        }
+        catch
+        {
+            bitmap.Dispose();
+            throw;
+        }
+    }
+
     public static void Draw(Graphics g, SvgIconKind kind, Rectangle bounds, Color color)
     {
         var oldMode = g.SmoothingMode;
@@ -91,6 +129,33 @@ internal static class SvgIcons
                 var pointer = new[] { P(r, 4, 2), P(r, 13, 21), P(r, 15, 13), P(r, 22, 12) };
                 g.FillPolygon(fill, pointer);
                 DrawPolygon(g, pen, pointer);
+                break;
+            }
+            case SvgIconKind.PolygonLasso:
+            {
+                var polygon = new[]
+                {
+                    P(r, 5, 7), P(r, 12, 3), P(r, 20, 7), P(r, 19, 16),
+                    P(r, 12, 21), P(r, 5, 17), P(r, 5, 7)
+                };
+                g.DrawLines(pen, polygon);
+                g.DrawLine(pen, P(r, 5, 7), P(r, 2, 4));
+                g.DrawLine(thinPen, P(r, 2, 4), P(r, 3, 9));
+                FillHandle(g, solidFill, r, 5, 7);
+                FillHandle(g, solidFill, r, 12, 3);
+                FillHandle(g, solidFill, r, 20, 7);
+                break;
+            }
+            case SvgIconKind.FreehandLasso:
+            {
+                using var lasso = new GraphicsPath();
+                lasso.StartFigure();
+                lasso.AddBezier(P(r, 5, 8), P(r, 7, 3), P(r, 17, 3), P(r, 20, 8));
+                lasso.AddBezier(P(r, 20, 8), P(r, 23, 13), P(r, 18, 21), P(r, 11, 19));
+                lasso.AddBezier(P(r, 11, 19), P(r, 5, 18), P(r, 2, 13), P(r, 5, 8));
+                g.DrawPath(pen, lasso);
+                g.DrawLine(pen, P(r, 5, 8), P(r, 2, 5));
+                g.DrawLine(thinPen, P(r, 2, 5), P(r, 3, 10));
                 break;
             }
             case SvgIconKind.Transform:
@@ -446,6 +511,52 @@ internal static class SvgIcons
                 g.DrawLine(pen, P(r, 10, 6), P(r, 10, 12));
                 g.FillEllipse(fill, Rect(r, 8, 5, 4, 4));
                 break;
+            case SvgIconKind.Light:
+                g.FillEllipse(fill, Rect(r, 6, 3, 12, 12));
+                g.DrawEllipse(pen, Rect(r, 6, 3, 12, 12));
+                g.DrawLine(thinPen, P(r, 9, 14), P(r, 9, 17));
+                g.DrawLine(thinPen, P(r, 15, 14), P(r, 15, 17));
+                g.DrawLine(pen, P(r, 9, 17), P(r, 15, 17));
+                g.DrawLine(pen, P(r, 10, 20), P(r, 14, 20));
+                DrawLightRays(g, thinPen, r, 12, 9, 9, 0, 8);
+                break;
+            case SvgIconKind.DirectionalLight:
+                g.FillEllipse(fill, Rect(r, 3, 3, 8, 8));
+                g.DrawEllipse(pen, Rect(r, 3, 3, 8, 8));
+                g.DrawLine(pen, P(r, 10, 10), P(r, 20, 20));
+                DrawChevron(g, pen, P(r, 20, 20), 1);
+                g.DrawLine(thinPen, P(r, 13, 7), P(r, 21, 15));
+                g.DrawLine(thinPen, P(r, 7, 13), P(r, 15, 21));
+                break;
+            case SvgIconKind.PointLight:
+                g.FillEllipse(fill, Rect(r, 7, 7, 10, 10));
+                g.DrawEllipse(pen, Rect(r, 7, 7, 10, 10));
+                g.FillEllipse(solidFill, Rect(r, 10, 10, 4, 4));
+                DrawLightRays(g, pen, r, 12, 12, 9, 0, 8);
+                break;
+            case SvgIconKind.AreaLight:
+            {
+                var panel = new[]
+                {
+                    P(r, 5, 6), P(r, 19, 4), P(r, 19, 15), P(r, 5, 17)
+                };
+                g.FillPolygon(fill, panel);
+                DrawPolygon(g, pen, panel);
+                g.DrawLine(thinPen, P(r, 8, 9), P(r, 16, 8));
+                g.DrawLine(thinPen, P(r, 8, 13), P(r, 16, 12));
+                g.DrawLine(pen, P(r, 8, 18), P(r, 8, 22));
+                g.DrawLine(pen, P(r, 12, 17), P(r, 12, 21));
+                g.DrawLine(pen, P(r, 16, 16), P(r, 16, 20));
+                break;
+            }
+            case SvgIconKind.AmbientLight:
+                g.FillEllipse(fill, Rect(r, 8, 8, 8, 8));
+                g.DrawEllipse(pen, Rect(r, 8, 8, 8, 8));
+                g.DrawArc(thinPen, Rect(r, 4, 4, 16, 16), 205, 250);
+                g.DrawArc(pen, Rect(r, 2, 2, 20, 20), 25, 250);
+                DrawChevron(g, thinPen, P(r, 19, 7), 1);
+                DrawChevron(g, pen, P(r, 5, 18), 3);
+                break;
             case SvgIconKind.Objects:
                 DrawRectangle(g, thinPen, Rect(r, 5, 5, 8, 8));
                 g.DrawEllipse(pen, Rect(r, 11, 11, 8, 8));
@@ -497,6 +608,8 @@ internal static class SvgIcons
     private static bool IsPrimaryToolIcon(SvgIconKind kind)
     {
         return kind is SvgIconKind.Select
+            or SvgIconKind.PolygonLasso
+            or SvgIconKind.FreehandLasso
             or SvgIconKind.Transform
             or SvgIconKind.Transform3D
             or SvgIconKind.Distort
@@ -575,6 +688,27 @@ internal static class SvgIcons
             };
             var y = 5 + index * 5;
             g.DrawLine(pen, P(r, x, y), P(r, x + width, y));
+        }
+    }
+
+    private static void DrawLightRays(
+        Graphics graphics,
+        Pen pen,
+        RectangleF bounds,
+        float centerX,
+        float centerY,
+        float radius,
+        float startAngleDegrees,
+        int count)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            var angle = (startAngleDegrees + index * 360f / count) * MathF.PI / 180f;
+            var innerRadius = radius - 3f;
+            graphics.DrawLine(
+                pen,
+                P(bounds, centerX + MathF.Cos(angle) * innerRadius, centerY + MathF.Sin(angle) * innerRadius),
+                P(bounds, centerX + MathF.Cos(angle) * radius, centerY + MathF.Sin(angle) * radius));
         }
     }
 

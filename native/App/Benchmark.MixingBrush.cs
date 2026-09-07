@@ -1542,9 +1542,7 @@ internal static partial class Benchmark
 
         // Keep this allocation-heavy persistence check from perturbing later
         // interaction-budget measurements in the same benchmark process.
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
+        ForceFullCollectionForBenchmark();
     }
 
     private static void RunMixingBrushDirect2DRegression()
@@ -1570,6 +1568,7 @@ internal static partial class Benchmark
         }
 
         var screenBounds = SystemInformation.VirtualScreen;
+        var captureSentinel = Color.Fuchsia;
         using var form = new Form
         {
             ShowInTaskbar = false,
@@ -1579,7 +1578,9 @@ internal static partial class Benchmark
             Location = new Point(
                 Math.Max(screenBounds.Left, screenBounds.Right - 360),
                 Math.Max(screenBounds.Top, screenBounds.Bottom - 280)),
-            ClientSize = new Size(320, 240)
+            ClientSize = new Size(320, 240),
+            BackColor = captureSentinel,
+            Padding = new Padding(4)
         };
         using var stage = new StageControl(scene)
         {
@@ -1594,6 +1595,48 @@ internal static partial class Benchmark
         stage.Invalidate();
         stage.Update();
         Application.DoEvents();
+
+        var visibleDesktop = false;
+        for (var attempt = 0; attempt < 8 && !visibleDesktop; attempt++)
+        {
+            form.BringToFront();
+            stage.Invalidate();
+            stage.Update();
+            Application.DoEvents();
+            Thread.Sleep(20);
+            Application.DoEvents();
+
+            try
+            {
+                using var probe = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+                using var graphics = Graphics.FromImage(probe);
+                graphics.CopyFromScreen(
+                    form.PointToScreen(Point.Empty),
+                    Point.Empty,
+                    form.ClientSize,
+                    CopyPixelOperation.SourceCopy);
+                visibleDesktop = new[]
+                    {
+                        new Point(1, 1),
+                        new Point(probe.Width - 2, 1),
+                        new Point(1, probe.Height - 2),
+                        new Point(probe.Width - 2, probe.Height - 2)
+                    }
+                    .All(point => ColorDistance(probe.GetPixel(point.X, point.Y), captureSentinel) <= 12);
+            }
+            catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+                or System.Runtime.InteropServices.ExternalException
+                or ArgumentException)
+            {
+                visibleDesktop = false;
+            }
+        }
+        if (!visibleDesktop)
+        {
+            form.Close();
+            Console.WriteLine("mixing_brush_region_direct2d=skipped_no_visible_desktop");
+            return;
+        }
 
         using var capture = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height);
         using (var graphics = Graphics.FromImage(capture))

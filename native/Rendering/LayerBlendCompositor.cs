@@ -156,9 +156,7 @@ internal sealed class LayerBlendCompositor : IDisposable
             var layer = siblings[siblingIndex];
             if (!LayerIsVisible(scene, layer)) continue;
             var isFolder = scene.GetLayerKind(layer) == DrawingLayerKind.Folder;
-            if (isFolder
-                && BlendModeFor(scene, layer) == LayerBlendMode.Normal
-                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            if (isFolder && BlendModeFor(scene, layer) == LayerBlendMode.Normal)
             {
                 AppendChildrenBatched(
                     scene,
@@ -207,8 +205,7 @@ internal sealed class LayerBlendCompositor : IDisposable
             }
 
             if (!shouldDrawLayer(layer)) continue;
-            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal
-                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal)
             {
                 pendingLayers.Add(layer);
                 continue;
@@ -292,9 +289,7 @@ internal sealed class LayerBlendCompositor : IDisposable
             var layer = siblings[siblingIndex];
             if (!LayerIsVisible(scene, layer)) continue;
             var isFolder = scene.GetLayerKind(layer) == DrawingLayerKind.Folder;
-            if (isFolder
-                && BlendModeFor(scene, layer) == LayerBlendMode.Normal
-                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            if (isFolder && BlendModeFor(scene, layer) == LayerBlendMode.Normal)
             {
                 AppendSpatialLayerBatches(
                     scene,
@@ -323,8 +318,7 @@ internal sealed class LayerBlendCompositor : IDisposable
             }
 
             if (!shouldDrawLayer(layer)) continue;
-            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal
-                && Math.Abs(OpacityFor(scene, layer) - 1f) <= 0.000001f)
+            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal)
             {
                 pendingLayers.Add(layer);
                 continue;

@@ -902,6 +902,10 @@ internal sealed partial class VectorScene
         }
 
         var targetLayer = ResolveObjectLayer(layer);
+        if (IsCollisionTerrainLayer(targetLayer))
+        {
+            colorArgb = NormalizeCollisionTerrainObjectArgb(colorArgb);
+        }
         var keyframeFrame = _deferredAppendKeyframes is { } deferred
             ? deferred[targetLayer]
             : EnsureWritableKeyframe(targetLayer, EditFrame);
@@ -946,7 +950,7 @@ internal sealed partial class VectorScene
         AtomCount[index] = Math.Max(3, atoms);
         Argb[index] = colorArgb;
         StrokeArgb[index] = strokeColorArgb;
-        FillAutoMergeProtected[index] = false;
+        FillAutoMergeProtected[index] = IsCollisionTerrainLayer(targetLayer);
         LinearGradientEnabled[index] = false;
         GradientKinds[index] = GradientKind.Solid;
         GradientStartArgb[index] = colorArgb;
@@ -990,6 +994,9 @@ internal sealed partial class VectorScene
                 var item = objects[offset];
                 var index = firstObject + offset;
                 var layer = ResolveObjectLayer(item.Layer);
+                var objectArgb = IsCollisionTerrainLayer(layer)
+                    ? NormalizeCollisionTerrainObjectArgb(item.Argb)
+                    : item.Argb;
                 ObjectLayer[index] = (ushort)layer;
                 ObjectKeyframeFrame[index] = deferredKeyframes[layer];
                 ObjectOrder[index] = firstOrder + offset + 1L;
@@ -1009,16 +1016,16 @@ internal sealed partial class VectorScene
                 ShapeKind[index] = item.Shape;
                 ShapeVertexCounts[index] = NormalizeShapeVertexCount(item.Shape, item.ShapeVertexCount);
                 AtomCount[index] = Math.Max(3, item.Atoms);
-                Argb[index] = item.Argb;
+                Argb[index] = objectArgb;
                 StrokeArgb[index] = item.StrokeArgb;
-                FillAutoMergeProtected[index] = false;
+                FillAutoMergeProtected[index] = IsCollisionTerrainLayer(layer);
                 var gradientKind = item.GradientKind == GradientKind.Solid && item.LinearGradientEnabled
                     ? GradientKind.Linear
                     : item.GradientKind;
                 LinearGradientEnabled[index] = gradientKind != GradientKind.Solid && SupportsGradient(item.Shape);
                 GradientKinds[index] = LinearGradientEnabled[index] ? gradientKind : GradientKind.Solid;
-                GradientStartArgb[index] = LinearGradientEnabled[index] ? item.GradientStartArgb : item.Argb;
-                GradientEndArgb[index] = LinearGradientEnabled[index] ? item.GradientEndArgb : item.Argb;
+                GradientStartArgb[index] = LinearGradientEnabled[index] ? item.GradientStartArgb : objectArgb;
+                GradientEndArgb[index] = LinearGradientEnabled[index] ? item.GradientEndArgb : objectArgb;
                 GradientStartX[index] = LinearGradientEnabled[index] ? VectorUnits.Quantize(item.GradientStart.X) : X[index] - Width[index] * 0.5f;
                 GradientStartY[index] = LinearGradientEnabled[index] ? VectorUnits.Quantize(item.GradientStart.Y) : Y[index];
                 GradientEndX[index] = LinearGradientEnabled[index] ? VectorUnits.Quantize(item.GradientEnd.X) : X[index] + Width[index] * 0.5f;

@@ -90,12 +90,8 @@ internal static partial class Benchmark
             effectsTagId,
             "Editor restart JSON");
 
-        var temporaryRoot = Path.Combine(
-            Path.GetTempPath(),
-            "Vector2DAnimationEngine",
-            $"asset-tag-regression-{Guid.NewGuid():N}");
+        var temporaryRoot = CreateTemporaryDirectory("asset-tag-regression");
         var manifestPath = Path.Combine(temporaryRoot, "AssetTags.v2dProject");
-        Directory.CreateDirectory(temporaryRoot);
         try
         {
             ProjectVaultStore.Save(project, manifestPath);
@@ -109,14 +105,7 @@ internal static partial class Benchmark
         }
         finally
         {
-            try
-            {
-                if (Directory.Exists(temporaryRoot)) Directory.Delete(temporaryRoot, recursive: true);
-            }
-            catch
-            {
-                // Each regression run uses an isolated temporary directory.
-            }
+            DeleteTemporaryDirectory(temporaryRoot);
         }
 
         var coralTint = TimelineStrip.LayerItemBackgroundColor(Color.Coral, active: false, selected: false, alternate: false);

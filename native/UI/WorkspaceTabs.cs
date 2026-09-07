@@ -261,13 +261,16 @@ internal sealed class WorkspaceTabs : UserControl
     {
         base.OnPaint(e);
         EnsureLocalizedAccessibility();
-        using var pen = new Pen(Theme.Border);
+        using var pen = new Pen(Theme.ReadableUiColor(BackColor, Theme.Border));
         if (_placement == WorkspaceTabPlacement.Top)
         {
             e.Graphics.DrawLine(pen, 0, Height - 1, Width, Height - 1);
             if (_indicatorInitialized)
             {
-                using var accent = new SolidBrush(SystemInformation.HighContrast ? SystemColors.Highlight : Theme.Accent);
+                using var accent = new SolidBrush(
+                    SystemInformation.HighContrast
+                        ? SystemColors.Highlight
+                        : Theme.ReadableUiColor(BackColor, Theme.Accent));
                 var x = (int)Math.Round(_indicatorPosition);
                 var width = Math.Max(0, (int)Math.Round(_indicatorExtent));
                 e.Graphics.FillRectangle(accent, x, Height - 4, width, 3);
@@ -278,7 +281,10 @@ internal sealed class WorkspaceTabs : UserControl
             e.Graphics.DrawLine(pen, Width - 1, 0, Width - 1, Height);
             if (_indicatorInitialized)
             {
-                using var accent = new SolidBrush(SystemInformation.HighContrast ? SystemColors.Highlight : Theme.Accent);
+                using var accent = new SolidBrush(
+                    SystemInformation.HighContrast
+                        ? SystemColors.Highlight
+                        : Theme.ReadableUiColor(BackColor, Theme.Accent));
                 var y = (int)Math.Round(_indicatorPosition);
                 var height = Math.Max(0, (int)Math.Round(_indicatorExtent));
                 e.Graphics.FillRectangle(accent, Width - 4, y, 3, height);

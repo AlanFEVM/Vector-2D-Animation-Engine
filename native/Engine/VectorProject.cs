@@ -26,6 +26,8 @@ internal sealed class SceneCameraDefinition
 
 internal sealed partial class VectorProject
 {
+    internal const int MaximumSnapPointsPerDrawingObject = 1024;
+    internal const float MaximumSnapPointCoordinate = 5_000_000;
     private readonly List<SceneDefinition> _scenes = [];
     private readonly List<DrawingObjectDefinition> _drawingObjects = [];
     private readonly List<ProjectAssetFolder> _assetFolders = [];
@@ -110,7 +112,7 @@ internal sealed partial class VectorProject
             Dimension = SceneDimension.TwoD,
             Camera = new SceneCameraDefinition
             {
-                Projection = CameraProjection.Orthographic,
+                Projection = CameraProjection.Perspective,
                 Depth = 1000
             }
         };
@@ -313,6 +315,88 @@ internal sealed partial class VectorProject
         return true;
     }
 
+    public bool TryAddDrawingObjectSnapPoint(
+        string drawingObjectId,
+        float x,
+        float y,
+        float z,
+        out DrawingObjectSnapPointDefinition snapPoint)
+    {
+        snapPoint = default;
+        var drawingObject = FindDrawingObject(drawingObjectId);
+        if (drawingObject is null
+            || drawingObject.SnapPoints.Count >= MaximumSnapPointsPerDrawingObject
+            || !TryNormalizeSnapPointPosition(x, y, z, out var normalized))
+        {
+            return false;
+        }
+
+        snapPoint = new DrawingObjectSnapPointDefinition(
+            Guid.NewGuid().ToString("N"),
+            normalized.X,
+            normalized.Y,
+            normalized.Z);
+        drawingObject.RestoreSnapPointSnapshot(
+            drawingObject.SnapPoints.Append(snapPoint).ToArray());
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryMoveDrawingObjectSnapPoint(
+        string drawingObjectId,
+        string snapPointId,
+        float x,
+        float y,
+        float z)
+    {
+        var drawingObject = FindDrawingObject(drawingObjectId);
+        if (drawingObject is null
+            || string.IsNullOrWhiteSpace(snapPointId)
+            || !TryNormalizeSnapPointPosition(x, y, z, out var normalized))
+        {
+            return false;
+        }
+
+        var points = drawingObject.SnapPoints.ToArray();
+        var index = Array.FindIndex(points, point =>
+            string.Equals(point.Id, snapPointId, StringComparison.Ordinal));
+        if (index < 0) return false;
+        var next = points[index] with { X = normalized.X, Y = normalized.Y, Z = normalized.Z };
+        if (points[index] == next) return true;
+        points[index] = next;
+        drawingObject.RestoreSnapPointSnapshot(points);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool TryRemoveDrawingObjectSnapPoint(string drawingObjectId, string snapPointId)
+    {
+        var drawingObject = FindDrawingObject(drawingObjectId);
+        if (drawingObject is null || string.IsNullOrWhiteSpace(snapPointId)) return false;
+        var points = drawingObject.SnapPoints
+            .Where(point => !string.Equals(point.Id, snapPointId, StringComparison.Ordinal))
+            .ToArray();
+        if (points.Length == drawingObject.SnapPoints.Count) return false;
+        drawingObject.RestoreSnapPointSnapshot(points);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    private static bool TryNormalizeSnapPointPosition(
+        float x,
+        float y,
+        float z,
+        out (float X, float Y, float Z) normalized)
+    {
+        normalized = default;
+        if (!float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(z)) return false;
+        normalized = (
+            Math.Clamp(VectorUnits.Quantize(x), -MaximumSnapPointCoordinate, MaximumSnapPointCoordinate),
+            Math.Clamp(VectorUnits.Quantize(y), -MaximumSnapPointCoordinate, MaximumSnapPointCoordinate),
+            Math.Clamp(VectorUnits.Quantize(z), -MaximumSnapPointCoordinate, MaximumSnapPointCoordinate));
+        return true;
+    }
+
     public bool TryDuplicateDrawingObject(string drawingObjectId, out DrawingObjectDefinition? duplicate)
     {
         duplicate = null;
@@ -458,6 +542,10 @@ internal sealed partial class VectorProject
         };
         duplicate.SetAnchor(source.Anchor);
         duplicate.ReplaceAssetTagIds(source.AssetTagIds);
+        duplicate.RestoreSnapPointSnapshot(source.SnapPoints.Select(point => point with
+        {
+            Id = Guid.NewGuid().ToString("N")
+        }));
         duplicate.Scene.RestoreSnapshot(sceneSnapshot);
         _drawingObjects.Add(duplicate);
         return duplicate;
@@ -481,10 +569,14 @@ internal sealed partial class VectorProject
         {
             duplicate.Timeline.RestoreSnapshot(new AnimationTimelineSnapshot
             {
+                TabGroups = sourceTimeline.TabGroups.ToArray(),
+                ActiveTabGroupId = sourceTimeline.ActiveTabGroupId,
                 Tracks = sourceTimeline.Tracks.Select(track => new AnimationTimelineTrackSnapshot
                 {
                     Id = track.Id,
                     TargetId = instanceIdMap.GetValueOrDefault(track.TargetId, track.TargetId),
+                    TabGroupId = track.TabGroupId,
+                    IsCollisionTerrain = track.IsCollisionTerrain,
                     Duration = track.Duration,
                     Keyframes = track.Keyframes.ToArray(),
                     Tweens = track.Tweens.ToArray()
@@ -944,6 +1036,7 @@ internal sealed partial class VectorProject
                     CreatedAt = folder.CreatedAt
                 })
                 .ToArray(),
+            ExternalSvgAssets = CreateExternalSvgAssetRestartSnapshots(),
             DrawingObjects = _drawingObjects
                 .Select(drawingObject => new DrawingObjectRestartSnapshot
                 {
@@ -955,6 +1048,13 @@ internal sealed partial class VectorProject
                     AssetTagIds = drawingObject.AssetTagIds.ToArray(),
                     AnchorX = drawingObject.Anchor.X,
                     AnchorY = drawingObject.Anchor.Y,
+                    SnapPoints = drawingObject.SnapPoints.Select(point => new DrawingObjectSnapPointRestartSnapshot
+                    {
+                        Id = point.Id,
+                        X = point.X,
+                        Y = point.Y,
+                        Z = point.Z
+                    }).ToArray(),
                     CreatedAt = drawingObject.CreatedAt,
                     Scene = drawingObject.Scene.CreateSnapshot(),
                     Instances = drawingObject.Instances.Select(CreateInstanceRestartSnapshot).ToArray()
@@ -968,6 +1068,7 @@ internal sealed partial class VectorProject
                     Detail = scene.Detail,
                     Dimension = scene.Dimension,
                     Camera = CloneCamera(scene.Camera),
+                    Lights = scene.Lights.Select(CreateLightRestartSnapshot).ToArray(),
                     CreatedAt = scene.CreatedAt,
                     Layers = scene.CreateLayerSnapshot(),
                     Instances = scene.Instances.Select(CreateInstanceRestartSnapshot).ToArray(),
@@ -1037,8 +1138,10 @@ internal sealed partial class VectorProject
                     Math.Clamp(item.AnchorY, -5_000_000, 5_000_000)));
             }
             drawingObject.ReplaceAssetTagIds((item.AssetTagIds ?? []).Where(assetTagIds.Contains));
+            drawingObject.RestoreSnapPointSnapshot(CreateRestartSnapPoints(item));
             project._drawingObjects.Add(drawingObject);
         }
+        project.RestoreExternalSvgAssets(snapshot.ExternalSvgAssets ?? []);
 
         for (var index = 0; index < drawingSnapshots.Length; index++)
         {
@@ -1047,7 +1150,7 @@ internal sealed partial class VectorProject
 
         foreach (var item in sceneSnapshots)
         {
-            project._scenes.Add(new SceneDefinition
+            var scene = new SceneDefinition
             {
                 Id = item.Id,
                 Name = item.Name,
@@ -1055,7 +1158,9 @@ internal sealed partial class VectorProject
                 Dimension = item.Dimension,
                 Camera = CloneCamera(item.Camera),
                 CreatedAt = item.CreatedAt
-            });
+            };
+            scene.RestoreLights(CreateRestartLights(item), item.Lights is not null);
+            project._scenes.Add(scene);
         }
 
         for (var index = 0; index < sceneSnapshots.Length; index++)
@@ -1103,8 +1208,12 @@ internal sealed partial class VectorProject
                     ScaleX = restored.ScaleX,
                     ScaleY = restored.ScaleY,
                     ScaleZ = restored.ScaleZ,
+                    RotationPivot = restored.RotationPivot,
+                    ScalePivot = restored.ScalePivot,
+                    Distortion = restored.Distortion?.DeepClone(),
                     Alpha = restored.Alpha,
                     TintArgb = restored.TintArgb,
+                    OpticalMaterialOverride = restored.OpticalMaterialOverride,
                     PlaybackFps = restored.PlaybackFps,
                     PlaybackMode = restored.PlaybackMode,
                     HoldFrame = restored.HoldFrame
@@ -1112,6 +1221,7 @@ internal sealed partial class VectorProject
                 sceneInstance.RestoreStateKeyframes(restored.StateKeyframes);
                 scene.AddInstance(project, sceneInstance);
             }
+            ValidateRestoredSceneLightIds(scene);
         }
 
         for (var index = 0; index < drawingSnapshots.Length; index++)
@@ -1128,9 +1238,49 @@ internal sealed partial class VectorProject
         {
             project._scenes[index].Timeline.RestoreSnapshot(sceneSnapshots[index].Timeline);
             project._scenes[index].SynchronizeTimelineTracks();
+            ValidateRestoredSceneLightTimeline(project._scenes[index]);
         }
 
         return project;
+    }
+
+    private static DrawingObjectSnapPointDefinition[] CreateRestartSnapPoints(
+        DrawingObjectRestartSnapshot drawingObject)
+    {
+        var snapshots = drawingObject.SnapPoints ?? [];
+        if (snapshots.Length > MaximumSnapPointsPerDrawingObject)
+        {
+            throw new InvalidOperationException(
+                $"The editor restart snapshot contains too many snap points for symbol '{drawingObject.Id}'.");
+        }
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var points = new DrawingObjectSnapPointDefinition[snapshots.Length];
+        for (var index = 0; index < snapshots.Length; index++)
+        {
+            var point = snapshots[index];
+            if (point is null
+                || !IsValidRestartId(point.Id)
+                || !ids.Add(point.Id)
+                || !float.IsFinite(point.X)
+                || !float.IsFinite(point.Y)
+                || !float.IsFinite(point.Z)
+                || Math.Abs(point.X) > MaximumSnapPointCoordinate
+                || Math.Abs(point.Y) > MaximumSnapPointCoordinate
+                || Math.Abs(point.Z) > MaximumSnapPointCoordinate)
+            {
+                throw new InvalidOperationException(
+                    $"The editor restart snapshot contains an invalid snap point for symbol '{drawingObject.Id}'.");
+            }
+
+            points[index] = new DrawingObjectSnapPointDefinition(
+                point.Id,
+                point.X,
+                point.Y,
+                point.Z);
+        }
+
+        return points;
     }
 
     private static InstanceRestartSnapshot CreateInstanceRestartSnapshot(DrawingObjectInstanceDefinition instance)
@@ -1153,9 +1303,12 @@ internal sealed partial class VectorProject
             ScaleX = instance.ScaleX,
             ScaleY = instance.ScaleY,
             ScaleZ = instance.ScaleZ,
+            RotationPivot = instance.RotationPivot,
+            ScalePivot = instance.ScalePivot,
             Distortion = instance.Distortion?.DeepClone(),
             Alpha = instance.Alpha,
             TintArgb = instance.TintArgb,
+            OpticalMaterialOverride = instance.OpticalMaterialOverride,
             PlaybackFps = instance.PlaybackFps,
             PlaybackMode = instance.PlaybackMode,
             HoldFrame = instance.HoldFrame,
@@ -1166,7 +1319,12 @@ internal sealed partial class VectorProject
     private static bool TryCreateRestartInstance(InstanceRestartSnapshot snapshot, out DrawingObjectInstanceDefinition instance)
     {
         instance = null!;
-        if (!IsValidRestartId(snapshot.Id) || !IsValidRestartId(snapshot.DrawingObjectId)) return false;
+        if (!IsValidRestartId(snapshot.Id)
+            || !IsValidRestartId(snapshot.DrawingObjectId)
+            || snapshot.OpticalMaterialOverride is { IsValid: false })
+        {
+            return false;
+        }
         instance = new DrawingObjectInstanceDefinition
         {
             Id = snapshot.Id,
@@ -1185,9 +1343,12 @@ internal sealed partial class VectorProject
             ScaleX = snapshot.ScaleX,
             ScaleY = snapshot.ScaleY,
             ScaleZ = snapshot.ScaleZ,
+            RotationPivot = snapshot.RotationPivot,
+            ScalePivot = snapshot.ScalePivot,
             Distortion = snapshot.Distortion?.DeepClone(),
             Alpha = snapshot.Alpha,
             TintArgb = snapshot.TintArgb,
+            OpticalMaterialOverride = snapshot.OpticalMaterialOverride,
             PlaybackFps = snapshot.PlaybackFps,
             PlaybackMode = snapshot.PlaybackMode,
             HoldFrame = snapshot.HoldFrame
@@ -1210,6 +1371,124 @@ internal sealed partial class VectorProject
             OrthographicSize = source.OrthographicSize,
             FieldOfViewDegrees = source.FieldOfViewDegrees
         };
+    }
+
+    private static SceneLightRestartSnapshot CreateLightRestartSnapshot(SceneLightDefinition light)
+    {
+        var settings = light.Settings;
+        return new SceneLightRestartSnapshot
+        {
+            Id = light.Id,
+            Name = light.Name,
+            Kind = light.Kind,
+            Enabled = settings.Enabled,
+            ColorArgb = settings.ColorArgb,
+            Intensity = settings.Intensity,
+            Range = settings.Range,
+            Position = settings.Position,
+            RotationDegrees = settings.RotationDegrees,
+            AreaSize = settings.AreaSize,
+            CastsShadows = settings.CastsShadows,
+            ShadowStrength = settings.ShadowStrength,
+            ShadowSoftness = settings.ShadowSoftness,
+            StateKeyframes = light.StateKeyframes.ToArray()
+        };
+    }
+
+    private static SceneLightDefinition[]? CreateRestartLights(SceneRestartSnapshot scene)
+    {
+        if (scene.Lights is null) return null;
+        if (scene.Lights.Length > SceneDefinition.MaximumLights)
+        {
+            throw new InvalidOperationException($"The editor restart snapshot has too many lights in scene '{scene.Id}'.");
+        }
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var lights = new SceneLightDefinition[scene.Lights.Length];
+        for (var index = 0; index < scene.Lights.Length; index++)
+        {
+            var snapshot = scene.Lights[index];
+            if (snapshot is null)
+            {
+                throw new InvalidOperationException($"The editor restart snapshot has an invalid light in scene '{scene.Id}'.");
+            }
+            var settings = new SceneLightSettings(
+                snapshot.Enabled,
+                snapshot.ColorArgb,
+                snapshot.Intensity,
+                snapshot.Range,
+                snapshot.Position,
+                snapshot.RotationDegrees,
+                snapshot.AreaSize,
+                snapshot.CastsShadows,
+                snapshot.ShadowStrength,
+                snapshot.ShadowSoftness);
+            if (!IsValidRestartId(snapshot.Id)
+                || !ids.Add(snapshot.Id)
+                || string.IsNullOrWhiteSpace(snapshot.Name)
+                || snapshot.Name.Length > SceneLightDefinition.MaximumNameLength
+                || !Enum.IsDefined(snapshot.Kind)
+                || !settings.IsValid(snapshot.Kind))
+            {
+                throw new InvalidOperationException($"The editor restart snapshot has an invalid light in scene '{scene.Id}'.");
+            }
+            var previousFrame = 0;
+            foreach (var keyframe in snapshot.StateKeyframes ?? [])
+            {
+                if (keyframe.Frame <= previousFrame || !keyframe.Settings.IsValid(snapshot.Kind))
+                {
+                    throw new InvalidOperationException(
+                        $"The editor restart snapshot has an invalid light state keyframe in scene '{scene.Id}'.");
+                }
+                previousFrame = keyframe.Frame;
+            }
+
+            var light = new SceneLightDefinition(snapshot.Id, snapshot.Name, snapshot.Kind, settings);
+            light.RestoreStateKeyframes(snapshot.StateKeyframes);
+            lights[index] = light;
+        }
+        return lights;
+    }
+
+    private static void ValidateRestoredSceneLightIds(SceneDefinition scene)
+    {
+        var reservedIds = scene.Layers
+            .Select(layer => layer.Id)
+            .Concat(scene.Instances.Select(instance => instance.Id))
+            .ToHashSet(StringComparer.Ordinal);
+        if (scene.Lights.Any(light => reservedIds.Contains(light.Id)))
+        {
+            throw new InvalidOperationException(
+                $"The editor restart snapshot has a light ID collision in scene '{scene.Id}'.");
+        }
+    }
+
+    private static void ValidateRestoredSceneLightTimeline(SceneDefinition scene)
+    {
+        foreach (var light in scene.Lights)
+        {
+            var track = scene.Timeline.FindTrackByTargetId(light.Id);
+            if (track is null
+                || track.Keyframes.Count == 0
+                || track.Keyframes[0].Frame != 0
+                || track.Tweens.Any(tween => tween.Kind != TimelineTweenKind.Classic))
+            {
+                throw new InvalidOperationException(
+                    $"The editor restart snapshot has an invalid light timeline in scene '{scene.Id}'.");
+            }
+
+            var populatedFrames = track.Keyframes
+                .Where(keyframe => keyframe.Kind == TimelineKeyframeKind.Populated)
+                .Select(keyframe => keyframe.Frame)
+                .ToHashSet();
+            if (light.StateKeyframes.Any(keyframe =>
+                    keyframe.Frame >= track.Duration
+                    || !populatedFrames.Contains(keyframe.Frame)))
+            {
+                throw new InvalidOperationException(
+                    $"The editor restart snapshot has an orphaned light state keyframe in scene '{scene.Id}'.");
+            }
+        }
     }
 
     private static bool IsValidRestartId(string? id) => !string.IsNullOrWhiteSpace(id);
@@ -1389,9 +1668,12 @@ internal sealed partial class VectorProject
             ScaleX = source.ScaleX,
             ScaleY = source.ScaleY,
             ScaleZ = source.ScaleZ,
+            RotationPivot = source.RotationPivot,
+            ScalePivot = source.ScalePivot,
             Distortion = source.Distortion?.DeepClone(),
             Alpha = source.Alpha,
             TintArgb = source.TintArgb,
+            OpticalMaterialOverride = source.OpticalMaterialOverride,
             PlaybackFps = source.PlaybackFps,
             PlaybackMode = source.PlaybackMode,
             HoldFrame = source.HoldFrame

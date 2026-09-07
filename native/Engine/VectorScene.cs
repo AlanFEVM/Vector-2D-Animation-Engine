@@ -59,6 +59,7 @@ internal sealed partial class VectorScene : ITimelineContext
     public long VirtualAtomCount { get; private set; }
     public long GeometryRevision { get; private set; }
     public long SummaryRevision { get; private set; }
+    internal long ActiveContentRevision { get; private set; }
     internal long GeometryIndexBuildCount { get; private set; }
     internal double LastFillMergePlanMilliseconds { get; private set; }
     internal double LastFillMergeSnapshotMilliseconds { get; private set; }

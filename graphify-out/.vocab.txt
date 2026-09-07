@@ -2,14 +2,17 @@ abort
 above
 absorption
 accent
+accept
 acceptance
 accessibility
 accessible
 accumulator
 acquire
+across
 action
 actions
 activate
+activation
 active
 acyclic
 adaptive
@@ -39,6 +42,8 @@ along
 alpha
 already
 alt
+ambient
+amount
 analysis
 analyze
 ancestors
@@ -59,6 +64,7 @@ app
 appearance
 append
 appends
+applicable
 application
 apply
 approach
@@ -97,17 +103,21 @@ atomically
 atoms
 attach
 attribute
+authored
 authoring
 authoritative
 auto
 automatic
 auxiliary
+availability
 available
 average
 aware
+axes
 axis
 back
 background
+backside
 backup
 backward
 baked
@@ -119,6 +129,7 @@ base
 based
 baseline
 basic
+basis
 batch
 batched
 batcher
@@ -127,10 +138,10 @@ batching
 battle
 before
 begin
-behavior
 benchmark
 best
 better
+between
 beyond
 bezier
 bilinear
@@ -215,6 +226,8 @@ captured
 carried
 carries
 catalog
+categories
+category
 cel
 cell
 cells
@@ -247,6 +260,7 @@ circle
 circular
 clamp
 classic
+classify
 clear
 cleared
 cli
@@ -293,6 +307,7 @@ committed
 compact
 compaction
 compare
+comparer
 compatibility
 compatible
 compensate
@@ -318,6 +333,7 @@ configure
 configured
 confirm
 conflict
+conflicts
 connected
 connection
 consider
@@ -345,6 +361,7 @@ controls
 convention
 conversion
 convert
+convex
 coons
 cooperative
 coordinate
@@ -357,6 +374,7 @@ copy
 core
 corner
 corners
+correction
 cost
 count
 counts
@@ -366,6 +384,7 @@ covering
 covers
 create
 created
+creation
 cross
 crossing
 crossings
@@ -391,6 +410,7 @@ data
 date
 debug
 decimal
+decompose
 dedicated
 deep
 default
@@ -436,8 +456,10 @@ dictionaries
 dictionary
 difference
 dimension
+dimensional
 direct
 direction
+directional
 directory
 dirty
 disable
@@ -454,6 +476,7 @@ dispose
 dissolve
 distance
 distances
+distinct
 distort
 distorted
 distortion
@@ -464,6 +487,7 @@ dock
 document
 documentation
 dodge
+does
 dolly
 domain
 dominant
@@ -522,6 +546,7 @@ end
 endings
 endpoint
 endpoints
+energy
 enforcement
 engine
 enqueue
@@ -534,6 +559,7 @@ enumerate
 enumerator
 envelope
 equal
+equality
 equalize
 equals
 equatable
@@ -549,6 +575,7 @@ evaluate
 evaluation
 event
 events
+every
 evict
 exact
 exceeded
@@ -564,6 +591,7 @@ exists
 exit
 expand
 expanded
+expect
 expected
 expired
 expiry
@@ -580,8 +608,10 @@ extract
 extraction
 extrema
 extremum
+extruded
 extrusion
 eyedropper
+facing
 factor
 factors
 factory
@@ -614,6 +644,7 @@ first
 fit
 fitted
 fixed
+fixture
 flags
 flash
 flat
@@ -621,6 +652,7 @@ flatten
 flattened
 flip
 float
+floating
 floor
 flow
 flush
@@ -633,6 +665,7 @@ folders
 follow
 follows
 font
+footprint
 for
 forbidden
 fore
@@ -648,6 +681,7 @@ fragment
 fragments
 frame
 frames
+free
 freeform
 freehand
 frequency
@@ -670,6 +704,7 @@ gestures
 get
 ghost
 gizmo
+gizmos
 global
 glow
 glyph
@@ -716,6 +751,7 @@ hidden
 hide
 hierarchy
 highlight
+highlighted
 history
 hit
 hold
@@ -738,6 +774,7 @@ iconic
 icons
 identity
 ids
+illuminate
 illustration
 image
 immediate
@@ -767,7 +804,6 @@ insertion
 inside
 inspector
 install
-installation
 installed
 installer
 instance
@@ -799,6 +835,7 @@ invalidation
 invariants
 inverse
 invoke
+ior
 island
 isolation
 item
@@ -819,6 +856,7 @@ kind
 kinds
 known
 koch
+lab
 label
 labeled
 labels
@@ -834,6 +872,7 @@ layers
 layout
 lazy
 leading
+leakage
 lease
 leave
 left
@@ -847,6 +886,8 @@ lifecycle
 lift
 light
 lighten
+lighting
+lights
 like
 limit
 limitations
@@ -867,6 +908,7 @@ locales
 localization
 localized
 locate
+location
 locator
 lock
 locked
@@ -892,11 +934,13 @@ managed
 management
 manager
 manifest
+manifests
 map
 mapped
 mapping
 mark
 marker
+markers
 marking
 marquee
 marshal
@@ -913,6 +957,7 @@ materializations
 materialize
 materialized
 materials
+math
 mathematics
 matrices
 matrix
@@ -932,7 +977,9 @@ merger
 merging
 mesh
 message
+messages
 metadata
+method
 metric
 metrics
 microsoft
@@ -941,6 +988,7 @@ milliseconds
 minimal
 minimum
 mirrored
+missing
 miter
 miters
 mix
@@ -1001,17 +1049,22 @@ note
 notes
 notify
 now
+nudge
 number
 numeric
 object
 objects
 obsolete
+occluder
+occlusion
 occupancy
 official
+offscreen
 offset
 offsets
 old
 once
+one
 onion
 only
 opacity
@@ -1022,6 +1075,7 @@ opening
 operation
 opposite
 optical
+optics
 optimization
 option
 optional
@@ -1031,8 +1085,10 @@ ordered
 orders
 ordinals
 ordinary
+orient
 orientation
 oriented
+origin
 original
 other
 out
@@ -1049,6 +1105,7 @@ overlapping
 overlaps
 overlay
 overlays
+override
 overview
 overwrite
 owned
@@ -1100,6 +1157,7 @@ pen
 pencil
 pending
 pens
+per
 percent
 performance
 perimeter
@@ -1108,6 +1166,7 @@ persistence
 persistent
 perspective
 phase
+physical
 picker
 piece
 pieces
@@ -1126,6 +1185,7 @@ plain
 plan
 planar
 plane
+planes
 planning
 plans
 play
@@ -1164,6 +1224,7 @@ present
 presentation
 presented
 preservation
+preserve
 preset
 presets
 press
@@ -1183,6 +1244,7 @@ proc
 process
 processor
 produced
+produces
 professional
 profile
 profiles
@@ -1199,6 +1261,7 @@ properly
 property
 props
 provenance
+provider
 provisioning
 prune
 ptr
@@ -1210,6 +1273,7 @@ quantize
 queries
 query
 queue
+queued
 quote
 radial
 radians
@@ -1226,6 +1290,7 @@ rate
 ratio
 raw
 ray
+rays
 read
 readable
 ready
@@ -1235,9 +1300,12 @@ reason
 rebuild
 recalculated
 receiver
+receivers
+receives
 recent
 recenter
 recolor
+recomposes
 reconcile
 reconciliation
 record
@@ -1265,6 +1333,7 @@ regressions
 regular
 reinforce
 reject
+rejection
 relation
 relative
 release
@@ -1314,10 +1383,12 @@ responsive
 restart
 restarting
 restore
+restored
 result
 resume
 retarget
 return
+reusable
 reuse
 reverse
 revision
@@ -1385,6 +1456,7 @@ selection
 selector
 self
 send
+sensitive
 separator
 sequence
 sequential
@@ -1400,17 +1472,21 @@ settle
 settled
 seven
 sha
+shade
 shader
 shading
+shadow
+shadows
 shape
 shapes
+share
 shared
 shares
+sharp
 shear
 shell
 shift
 shortcut
-shortcuts
 should
 shoulder
 show
@@ -1419,8 +1495,10 @@ shutdown
 siblings
 side
 sidecar
+sided
 sides
 signal
+signature
 signed
 simple
 simplified
@@ -1429,10 +1507,12 @@ simulation
 single
 sink
 size
+sized
 skew
 skewed
 skill
 skin
+slab
 slice
 slider
 slope
@@ -1467,6 +1547,7 @@ spiral
 split
 splits
 spring
+square
 squared
 srgb
 sta
@@ -1511,6 +1592,7 @@ styles
 sub
 subcurve
 subset
+substitution
 subtract
 subtree
 success
@@ -1530,6 +1612,7 @@ swatch
 sweep
 switch
 symbol
+symbols
 sync
 synchronization
 synchronize
@@ -1558,9 +1641,9 @@ text
 texture
 theme
 themed
-then
 thickness
 thread
+three
 through
 thumb
 tick
@@ -1603,6 +1686,7 @@ transitions
 translate
 translated
 translation
+treated
 tree
 triangle
 triangles
@@ -1641,6 +1725,7 @@ upper
 uri
 usability
 use
+used
 user
 uses
 ushort
@@ -1665,6 +1750,7 @@ vertex
 vertical
 view
 viewport
+views
 virtual
 visibility
 visible

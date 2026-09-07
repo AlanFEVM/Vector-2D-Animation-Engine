@@ -566,10 +566,17 @@ internal static class ShortcutProfiles
             or (Keys.Control | Keys.NumPad3)
             or (Keys.Control | Keys.NumPad7)
             or Keys.Home
+            or Keys.F
             or (Keys.Control | Keys.A)
             or (Keys.Shift | Keys.F2)
             or Keys.Left
-            or Keys.Right;
+            or Keys.Right
+            or Keys.Up
+            or Keys.Down
+            or (Keys.Shift | Keys.Left)
+            or (Keys.Shift | Keys.Right)
+            or (Keys.Shift | Keys.Up)
+            or (Keys.Shift | Keys.Down);
     }
 
     internal static ShortcutProfileRecord CloneProfile(ShortcutProfileRecord profile)

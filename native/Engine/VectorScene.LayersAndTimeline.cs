@@ -7,6 +7,19 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class VectorScene
 {
+    public const string CollisionTerrainLayerName = "Collision Terrain";
+    private const float CollisionTerrainLayerOpacity = 0.35f;
+    private static readonly Color CollisionTerrainObjectColor = Color.FromArgb(255, 236, 181, 72);
+
+    internal static int NormalizeCollisionTerrainObjectArgb(int colorArgb)
+    {
+        // The layer opacity supplies the editor translucency. Keep the stored
+        // fill opaque so collision extraction is independent of the paint UI.
+        var color = Color.FromArgb(colorArgb);
+        if (color.A == 0) return CollisionTerrainObjectColor.ToArgb();
+        return Color.FromArgb(255, color.R, color.G, color.B).ToArgb();
+    }
+
     public bool IsLayerActive(int layer, int frame)
     {
         return layer >= 0
@@ -35,8 +48,7 @@ internal sealed partial class VectorScene
         if ((uint)layer >= LayerCount) return 0;
         var depth = 0;
         var current = layer;
-        var visited = new HashSet<int>();
-        while (visited.Add(current))
+        for (var hop = 0; hop < LayerCount; hop++)
         {
             var parent = GetLayerParentIndex(current);
             if (parent < 0) break;
@@ -51,8 +63,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount) return false;
         var current = layer;
-        var visited = new HashSet<int>();
-        while (visited.Add(current))
+        for (var hop = 0; hop < LayerCount; hop++)
         {
             if (!LayerVisible[current]) return false;
             var parent = GetLayerParentIndex(current);
@@ -67,8 +78,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount) return false;
         var current = layer;
-        var visited = new HashSet<int>();
-        while (visited.Add(current))
+        for (var hop = 0; hop < LayerCount; hop++)
         {
             if (current < LayerLocked.Length && LayerLocked[current]) return true;
             var parent = GetLayerParentIndex(current);
@@ -89,6 +99,7 @@ internal sealed partial class VectorScene
     public bool ShouldRenderLayerContent(int layer)
     {
         if ((uint)layer >= LayerCount) return false;
+        if (IsCollisionTerrainLayer(layer)) return false;
         return GetLayerKind(layer) switch
         {
             DrawingLayerKind.Folder => false,
@@ -343,6 +354,15 @@ internal sealed partial class VectorScene
                 else Timeline.InsertBlankKeyframe(track.Id, 0);
             }
         }
+
+        foreach (var layer in Enumerable.Range(0, LayerCount))
+        {
+            if (!IsLegacyCollisionTerrainLayer(layer)) continue;
+            var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+            if (track is null || track.IsCollisionTerrain) continue;
+            track.IsCollisionTerrain = true;
+            Timeline.SetTrackTabGroup(track.Id, AnimationTimeline.TerrainTabGroupId);
+        }
     }
 
     public int AddLayer(string? name = null) => InsertLayer(DrawingLayerKind.Drawing, LayerCount, name);
@@ -371,6 +391,113 @@ internal sealed partial class VectorScene
         LayerMaskIds[contentLayer + 1] = LayerIds[maskLayer];
         ActiveLayer = maskLayer;
         return maskLayer;
+    }
+
+    public bool TryGetCollisionTerrainLayer(out int layer)
+    {
+        layer = FindCollisionTerrainLayer();
+        return layer >= 0;
+    }
+
+    public int[] GetCollisionTerrainLayers()
+    {
+        if (LayerCount == 0) return [];
+
+        var result = new List<int>();
+        for (var candidate = 0; candidate < LayerCount; candidate++)
+        {
+            if (IsCollisionTerrainLayer(candidate)) result.Add(candidate);
+        }
+
+        return result.ToArray();
+    }
+
+    public int FindCollisionTerrainLayer()
+    {
+        var layers = GetCollisionTerrainLayers();
+        return layers.Length > 0 ? layers[0] : -1;
+    }
+
+    internal bool IsCollisionTerrainLayer(int layer)
+    {
+        if ((uint)layer >= LayerCount
+            || GetLayerKind(layer) != DrawingLayerKind.Mask
+            || !string.IsNullOrWhiteSpace(LayerMaskIds[layer]))
+        {
+            return false;
+        }
+
+        var layerId = LayerIds[layer];
+        for (var maskIndex = 0; maskIndex < LayerMaskIds.Length; maskIndex++)
+        {
+            if (string.Equals(LayerMaskIds[maskIndex], layerId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        var track = Timeline.FindTrackByTargetId(layerId);
+        return track?.IsCollisionTerrain == true
+            || string.Equals(LayerNames[layer], CollisionTerrainLayerName, StringComparison.Ordinal);
+    }
+
+    private bool IsLegacyCollisionTerrainLayer(int layer)
+    {
+        return (uint)layer < LayerCount
+            && GetLayerKind(layer) == DrawingLayerKind.Mask
+            && string.Equals(LayerNames[layer], CollisionTerrainLayerName, StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(LayerMaskIds[layer]);
+    }
+
+    public int AddCollisionTerrainLayer(string? name = null)
+    {
+        if (LayerCount >= ushort.MaxValue) return -1;
+        var layerName = string.IsNullOrWhiteSpace(name)
+            ? GetUniqueCollisionTerrainLayerName()
+            : name.Trim();
+        var layer = InsertLayer(DrawingLayerKind.Mask, LayerCount, layerName);
+        PrepareCollisionTerrainLayer(layer, layerName);
+        ActiveLayer = layer;
+        return layer;
+    }
+
+    private string GetUniqueCollisionTerrainLayerName()
+    {
+        var existingNames = LayerNames.ToHashSet(StringComparer.Ordinal);
+        if (!existingNames.Contains(CollisionTerrainLayerName)) return CollisionTerrainLayerName;
+
+        for (var suffix = 2; suffix <= LayerCount + 1; suffix++)
+        {
+            var candidate = $"{CollisionTerrainLayerName} {suffix}";
+            if (!existingNames.Contains(candidate)) return candidate;
+        }
+
+        return $"{CollisionTerrainLayerName} {Guid.NewGuid():N}";
+    }
+
+    private void PrepareCollisionTerrainLayer(int layer, string? name = null)
+    {
+        if ((uint)layer >= LayerCount || GetLayerKind(layer) != DrawingLayerKind.Mask) return;
+
+        if (!string.IsNullOrWhiteSpace(name)) LayerNames[layer] = name.Trim();
+        LayerParentIds[layer] = string.Empty;
+        LayerMaskIds[layer] = string.Empty;
+        LayerOpacity[layer] = CollisionTerrainLayerOpacity;
+        LayerVisible[layer] = true;
+        LayerLocked[layer] = false;
+
+        var frame = Math.Max(0, EditFrame);
+        var track = Timeline.FindTrackByTargetId(LayerIds[layer]);
+        if (track is not null)
+        {
+            track.IsCollisionTerrain = true;
+            Timeline.SetTrackTabGroup(track.Id, AnimationTimeline.TerrainTabGroupId);
+            if (frame >= track.Duration) Timeline.SetTrackDuration(track.Id, frame + 1);
+            Timeline.InsertKeyframe(track.Id, frame);
+            RefreshLegacyExposureBounds(layer);
+        }
+
+        InvalidateQueryActiveKeyframes();
     }
 
     private int InsertLayer(DrawingLayerKind kind, int index, string? name)
@@ -503,8 +630,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)layer >= LayerCount) return false;
         var current = layer;
-        var visited = new HashSet<int>();
-        while (current >= 0 && visited.Add(current))
+        for (var hop = 0; hop < LayerCount && current >= 0; hop++)
         {
             if (current < LayerOutline.Length && LayerOutline[current]) return true;
             current = GetLayerParentIndex(current);
@@ -1438,7 +1564,10 @@ internal sealed partial class VectorScene
         using var batchUpdate = Timeline.BeginBatchUpdate();
         var additionalTargetIds = AdditionalTimelineTargetIds();
         var additionalTargetSet = additionalTargetIds.ToHashSet(StringComparer.Ordinal);
-        var preservedAdditionalTracks = Timeline.CreateSnapshot().Tracks
+        var previousTimelineSnapshot = Timeline.CreateSnapshot();
+        var previousTracksByTargetId = previousTimelineSnapshot.Tracks
+            .ToDictionary(track => track.TargetId, track => track, StringComparer.Ordinal);
+        var preservedAdditionalTracks = previousTimelineSnapshot.Tracks
             .Where(track => additionalTargetSet.Contains(track.TargetId))
             .ToDictionary(track => track.TargetId, track => track, StringComparer.Ordinal);
 
@@ -1469,9 +1598,22 @@ internal sealed partial class VectorScene
             RefreshLegacyExposureBounds(layer);
         }
 
-        if (additionalTargetIds.Length == 0) return;
-
-        var layerTracks = Timeline.CreateSnapshot().Tracks;
+        var layerTracks = Timeline.CreateSnapshot().Tracks
+            .Select(track =>
+            {
+                if (!previousTracksByTargetId.TryGetValue(track.TargetId, out var previous)) return track;
+                return new AnimationTimelineTrackSnapshot
+                {
+                    Id = track.Id,
+                    TargetId = track.TargetId,
+                    TabGroupId = previous.TabGroupId,
+                    IsCollisionTerrain = previous.IsCollisionTerrain,
+                    Duration = track.Duration,
+                    Keyframes = track.Keyframes,
+                    Tweens = track.Tweens
+                };
+            })
+            .ToArray();
         var additionalTracks = additionalTargetIds
             .Select(targetId => preservedAdditionalTracks.GetValueOrDefault(targetId) ?? new AnimationTimelineTrackSnapshot
             {
@@ -1483,8 +1625,11 @@ internal sealed partial class VectorScene
             });
         Timeline.RestoreSnapshot(new AnimationTimelineSnapshot
         {
-            Tracks = layerTracks.Concat(additionalTracks).ToArray()
+            Tracks = layerTracks.Concat(additionalTracks).ToArray(),
+            TabGroups = previousTimelineSnapshot.TabGroups,
+            ActiveTabGroupId = previousTimelineSnapshot.ActiveTabGroupId
         });
+        SynchronizeTimelineTracks();
     }
 
     private static string[] CreateStableIds(int count, IEnumerable<string>? reservedIds = null)

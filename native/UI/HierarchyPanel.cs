@@ -72,6 +72,10 @@ internal sealed class HierarchyPanel : UserControl
         _tree.Dock = DockStyle.Fill;
         Theme.StyleTreeView(_tree);
         _tree.AfterSelect += (_, e) => RaiseSelection(e.Node);
+        _tree.NodeMouseDoubleClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) RaiseFocusRequest(e.Node);
+        };
         Controls.Add(_tree);
 
         _tree.BringToFront();
@@ -79,6 +83,7 @@ internal sealed class HierarchyPanel : UserControl
     }
 
     public event EventHandler<HierarchySelectionChangedEventArgs>? HierarchySelectionChanged;
+    public event EventHandler<HierarchySelectionChangedEventArgs>? HierarchyFocusRequested;
 
     public TreeNode? SelectedNode => _tree.SelectedNode;
 
@@ -404,6 +409,23 @@ internal sealed class HierarchyPanel : UserControl
     {
         if (node?.Tag is not HierarchyNodeTag tag) return;
         HierarchySelectionChanged?.Invoke(this, new HierarchySelectionChangedEventArgs(tag.Kind, tag.Index, node.Text));
+    }
+
+    private void RaiseFocusRequest(TreeNode? node)
+    {
+        if (_scene is null
+            || node?.Tag is not HierarchyNodeTag tag
+            || tag.Index < 0
+            || tag.Kind is not (HierarchyNodeKind.Layer or HierarchyNodeKind.Object)
+            || tag.Kind == HierarchyNodeKind.Layer && tag.Index >= _scene.LayerCount
+            || tag.Kind == HierarchyNodeKind.Object && tag.Index >= _scene.ObjectCount)
+        {
+            return;
+        }
+
+        HierarchyFocusRequested?.Invoke(
+            this,
+            new HierarchySelectionChangedEventArgs(tag.Kind, tag.Index, node.Text));
     }
 
     private void SelectFirstNode(Predicate<TreeNode> match)

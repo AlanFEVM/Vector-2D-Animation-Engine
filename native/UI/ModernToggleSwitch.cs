@@ -114,6 +114,7 @@ internal sealed class ModernToggleSwitch : CheckBox
             Padding.Top,
             Math.Max(textLeft, ClientSize.Width - Padding.Right),
             Math.Max(Padding.Top, ClientSize.Height - Padding.Bottom));
+        var controlBackground = Theme.EffectiveBackground(this);
         if (!string.IsNullOrEmpty(Text))
         {
             TextRenderer.DrawText(
@@ -121,7 +122,7 @@ internal sealed class ModernToggleSwitch : CheckBox
                 Text,
                 Font,
                 textBounds,
-                colors.Text,
+                Theme.ReadableText(controlBackground, colors.Text),
                 TextFormatFlags.Left |
                 TextFormatFlags.VerticalCenter |
                 TextFormatFlags.EndEllipsis |
@@ -134,7 +135,11 @@ internal sealed class ModernToggleSwitch : CheckBox
             var focusBounds = Rectangle.Inflate(ClientRectangle, -ScaleLogical(1), -ScaleLogical(1));
             if (focusBounds.Width > 0 && focusBounds.Height > 0)
             {
-                ControlPaint.DrawFocusRectangle(graphics, focusBounds, colors.Text, Parent?.BackColor ?? BackColor);
+                ControlPaint.DrawFocusRectangle(
+                    graphics,
+                    focusBounds,
+                    Theme.ReadableUiColor(controlBackground, colors.Text),
+                    controlBackground);
             }
         }
     }
@@ -403,9 +408,9 @@ internal sealed class ModernToggleSwitch : CheckBox
                 Theme.DisabledSurface,
                 Theme.DisabledSurface,
                 Theme.Border,
-                Theme.Muted,
+                Theme.DisabledText,
                 Color.FromArgb(35, Color.Black),
-                Theme.Muted);
+                Theme.DisabledText);
     }
 
     private static float Approach(float value, float target, float blend)

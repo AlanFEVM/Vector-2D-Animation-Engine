@@ -172,6 +172,22 @@ internal sealed partial class VectorScene
     {
         if (!_objectDistortions.TryGetValue(objectIndex, out var distortions))
         {
+            // Path objects keep both a sampled polygon and the authoring Bezier
+            // nodes. Prefer the nodes here so fracture and terrain extraction
+            // cannot silently fall back to ShapeBoundary's rectangle when a
+            // legacy or partially materialized path is missing its polygon.
+            if ((uint)objectIndex < ObjectCount
+                && ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Path
+                && TryGetPathBezierWorldContours(objectIndex, out var bezierContours))
+            {
+                var sampledContours = bezierContours
+                    .Where(contour => contour is { Length: >= 3 })
+                    .Select(contour => ClosePolyline(SamplePathBezierContour(contour)))
+                    .Where(contour => contour.Length >= 4)
+                    .ToArray();
+                if (sampledContours.Length > 0) return sampledContours;
+            }
+
             return ShapeBoundaryContours(objectIndex);
         }
         return GetDistortedObjectBoundaryContours(objectIndex, distortions);

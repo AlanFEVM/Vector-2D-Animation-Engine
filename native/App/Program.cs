@@ -13,7 +13,8 @@ internal static class Program
             ["--bench-freehand"] = new("Running freehand benchmark", Benchmark.RunFreehandStress),
             ["--bench-pressure"] = new("Running pressure brush benchmark", Benchmark.RunPressureBrushRegression),
             ["--bench-timeline"] = new("Running timeline regression benchmark", Benchmark.RunTimelineRegression),
-            ["--bench-render"] = new("Running stage renderer regression benchmark", Benchmark.RunStageRendererRegression)
+            ["--bench-render"] = new("Running stage renderer regression benchmark", Benchmark.RunStageRendererRegression),
+            ["--bench-collision"] = new("Running collision-project performance benchmark", Benchmark.RunCollisionProjectPerformance)
         };
 
     [STAThread]
@@ -55,7 +56,9 @@ internal static class Program
 
         try
         {
-            ApplicationConfiguration.Initialize();
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
             var settings = ApplicationSettingsStore.Load();
             Theme.ConfigureColorAdjustments(
                 settings.ColorTheme,

@@ -99,6 +99,16 @@ internal static partial class Benchmark
             throw new InvalidOperationException(
                 "An empty non-Normal layer split an otherwise continuous spatial batch.");
         }
+        batchScene.LayerOpacity[0] = 0.5f;
+        var batchesWithNormalOpacity = LayerBlendCompositor.GetSpatialLayerBatches(
+            batchScene,
+            layer => layer != batchMiddleLayer);
+        if (batchesWithNormalOpacity.Length != 1
+            || !batchesWithNormalOpacity[0].SequenceEqual([batchBottomLayer, 0]))
+        {
+            throw new InvalidOperationException(
+                "Normal opacity split an otherwise continuous spatial batch.");
+        }
         var batchesWithBlendContent = LayerBlendCompositor.GetSpatialLayerBatches(
             batchScene,
             _ => true);
@@ -130,6 +140,94 @@ internal static partial class Benchmark
                 stageBitmap.GetPixel(lowerOnlyPoint.X, lowerOnlyPoint.Y),
                 Color.CornflowerBlue,
                 "Stage lower-layer preservation");
+        }
+
+        AssertProjectedNormalOpacity(useParentFolder: false);
+        AssertProjectedNormalOpacity(useParentFolder: true);
+
+        void AssertProjectedNormalOpacity(bool useParentFolder)
+        {
+            var projectedScene = new VectorScene();
+            projectedScene.CreateEmpty();
+            var projectedBackdropLayer = projectedScene.AddLayer("Projected opacity backdrop");
+            var projectedSource = Color.FromArgb(255, 208, 74, 54);
+            var projectedBackdrop = Color.FromArgb(255, 48, 132, 206);
+            var projectedSourceObject = projectedScene.AddObject(
+                0,
+                PointF.Empty,
+                new SizeF(2_800, 2_000),
+                0,
+                0,
+                projectedSource,
+                Color.Transparent,
+                12,
+                ShapeKind.Rectangle);
+            projectedScene.AddObject(
+                projectedBackdropLayer,
+                PointF.Empty,
+                new SizeF(3_600, 2_800),
+                0,
+                0,
+                projectedBackdrop,
+                Color.Transparent,
+                12,
+                ShapeKind.Rectangle);
+            if (useParentFolder) projectedScene.ActiveLayer = 0;
+            var opacityLayer = useParentFolder
+                ? projectedScene.AddFolderLayer("Projected opacity folder")
+                : projectedScene.ObjectLayer[projectedSourceObject];
+            projectedScene.LayerOpacity[opacityLayer] = 0.5f;
+
+            using var projectedStage = new StageControl(projectedScene)
+            {
+                ClientSize = new Size(320, 240),
+                BackColor = Color.FromArgb(255, 18, 20, 24),
+                WorldGridOpacity = 0
+            };
+            projectedStage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+            projectedStage.SetReferenceCameraOrientation(0, 0);
+            var projectedItems = projectedStage.GetReference3DSceneRenderItems();
+            if (projectedScene.HasNonNormalLayerBlendModes
+                || !projectedStage.TryProjectScenePosition(
+                    System.Numerics.Vector3.Zero,
+                    out var projectedCenter,
+                    out _)
+                || !projectedItems.Any(item => item.ObjectIndex == projectedSourceObject)
+                || projectedItems.Any(item => item.ObjectIndex == projectedSourceObject
+                    && Math.Abs(item.MaterialOpacity - 0.5f) > 0.000001f))
+            {
+                throw new InvalidOperationException(
+                    "Projected Normal opacity did not remain in the global material render plan.");
+            }
+
+            var projectedDrawGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException(
+                    "The projected Normal-opacity GDI entry point could not be located.");
+            using (var bitmap = new Bitmap(projectedStage.ClientSize.Width, projectedStage.ClientSize.Height))
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                projectedDrawGdi.Invoke(projectedStage, [graphics]);
+                AssertColorNear(
+                    bitmap.GetPixel(
+                        Math.Clamp((int)MathF.Round(projectedCenter.X), 0, bitmap.Width - 1),
+                        Math.Clamp((int)MathF.Round(projectedCenter.Y), 0, bitmap.Height - 1)),
+                    LayerBlendCompositor.CompositeColorForRegression(
+                        projectedBackdrop,
+                        projectedSource,
+                        LayerBlendMode.Normal,
+                        opacity: 0.5f),
+                    useParentFolder ? "Projected parent-folder opacity" : "Projected Normal layer opacity");
+            }
+
+            projectedScene.LayerOpacity[opacityLayer] = 0f;
+            if (projectedStage.GetReference3DSceneRenderItems().Any(item =>
+                    item.ObjectIndex == projectedSourceObject))
+            {
+                throw new InvalidOperationException(
+                    "A zero-opacity projected layer retained render, occlusion, or hit-test items.");
+            }
         }
 
         static void AssertColorNear(Color actual, Color expected, string mode)
@@ -195,7 +293,7 @@ internal static partial class Benchmark
         using (var projectedBitmap = RenderGdi())
         {
             AssertPixelNear(
-                Sample(projectedBitmap, projectedCenter),
+                SampleBitmap(projectedBitmap, projectedCenter),
                 targetColor,
                 "The GDI reference projection did not draw flat 2D scene content");
         }
@@ -225,11 +323,11 @@ internal static partial class Benchmark
         using (var flatBitmap = RenderGdi())
         {
             AssertPixelNear(
-                Sample(flatBitmap, stage.WorldToScreen(insideMask.X, insideMask.Y)),
+                SampleBitmap(flatBitmap, stage.WorldToScreen(insideMask.X, insideMask.Y)),
                 targetColor,
                 "The 2D scene mask removed content inside its clipping area");
             AssertPixelNear(
-                Sample(flatBitmap, stage.WorldToScreen(outsideMask.X, outsideMask.Y)),
+                SampleBitmap(flatBitmap, stage.WorldToScreen(outsideMask.X, outsideMask.Y)),
                 background,
                 "The 2D scene mask leaked content outside its clipping area");
         }
@@ -249,11 +347,11 @@ internal static partial class Benchmark
         using (var spatialBitmap = RenderGdi())
         {
             AssertPixelNear(
-                Sample(spatialBitmap, projectedInsideMask),
+                SampleBitmap(spatialBitmap, projectedInsideMask),
                 targetColor,
                 "The 3D reference scene mask removed content inside its clipping area");
             AssertPixelNear(
-                Sample(spatialBitmap, projectedOutsideMask),
+                SampleBitmap(spatialBitmap, projectedOutsideMask),
                 background,
                 "The 3D reference scene mask leaked content outside its clipping area");
         }
@@ -341,7 +439,7 @@ internal static partial class Benchmark
             using (var flatBitmap = RenderGdi())
             {
                 AssertPixelNear(
-                    Sample(flatBitmap, stage.WorldToScreen(0, 0)),
+                    SampleBitmap(flatBitmap, stage.WorldToScreen(0, 0)),
                     background,
                     $"The {label} scene mask did not produce an empty 2D clip");
             }
@@ -353,7 +451,7 @@ internal static partial class Benchmark
             }
             using var spatialBitmap = RenderGdi();
             AssertPixelNear(
-                Sample(spatialBitmap, center),
+                SampleBitmap(spatialBitmap, center),
                 background,
                 $"The {label} scene mask did not produce an empty 3D clip");
         }
@@ -431,13 +529,6 @@ internal static partial class Benchmark
             return scene;
         }
 
-        static Color Sample(Bitmap bitmap, PointF point)
-        {
-            return bitmap.GetPixel(
-                Math.Clamp((int)MathF.Round(point.X), 0, bitmap.Width - 1),
-                Math.Clamp((int)MathF.Round(point.Y), 0, bitmap.Height - 1));
-        }
-
         static void AssertPixelNear(Color actual, Color expected, string message)
         {
             if (Math.Abs(actual.A - expected.A) <= 1
@@ -482,16 +573,30 @@ internal static partial class Benchmark
         stage.SetSceneCompositionResult(
             CompositionResult(System.Numerics.Matrix4x4.Identity),
             scene);
-        if (stage.UsesReferenceProjection)
+        if (!stage.UsesReferenceProjection
+            || !stage.RendersReferenceProjection
+            || stage.EffectiveReferenceProjection != CameraProjection.Orthographic
+            || Math.Abs(stage.EffectiveReferenceYaw) > 0.0001f
+            || Math.Abs(stage.EffectiveReferencePitch) > 0.0001f
+            || Math.Abs(stage.ReferenceYaw - 0.83f) > 0.0001f
+            || Math.Abs(stage.ReferencePitch + 0.41f) > 0.0001f)
         {
-            throw new InvalidOperationException("An identity composition pose unexpectedly replaced the ordinary 2D renderer.");
+            throw new InvalidOperationException(
+                "An identity Scene Building composition did not retain the stable front-facing 2D orthographic view.");
+        }
+        if (!stage.TryProjectScenePosition(
+                System.Numerics.Vector3.Zero,
+                out var planarCenter,
+                out _))
+        {
+            throw new InvalidOperationException("The identity composition center could not be projected in the 2D front view.");
         }
         using (var planarBitmap = RenderGdi(stage))
         {
             AssertPixelNear(
-                Sample(planarBitmap, stage.WorldToScreen(0, 0)),
+                SampleBitmap(planarBitmap, planarCenter),
                 planarColor,
-                "The identity composition pose changed the ordinary 2D presentation");
+                "The identity composition pose changed the stable 2D spatial presentation");
         }
 
         var spatialPose = System.Numerics.Matrix4x4.CreateRotationX(MathF.PI / 3f);
@@ -529,9 +634,124 @@ internal static partial class Benchmark
         using (var spatialBitmap = RenderGdi(stage))
         {
             AssertPixelNear(
-                Sample(spatialBitmap, projectedCenter),
+                SampleBitmap(spatialBitmap, projectedCenter),
                 planarColor,
                 "The 2D front view did not render the spatial pose");
+        }
+
+        var gdiCacheScene = new VectorScene();
+        gdiCacheScene.CreateEmpty();
+        var gdiCacheObject = gdiCacheScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(3_200, 2_000),
+            0,
+            80,
+            Color.CornflowerBlue,
+            Color.White,
+            12,
+            ShapeKind.Rectangle);
+        using (var gdiCacheStage = CreateStage(gdiCacheScene))
+        using (var gdiCacheBitmap = new Bitmap(stageWidth, stageHeight))
+        using (var gdiCacheGraphics = Graphics.FromImage(gdiCacheBitmap))
+        {
+            gdiCacheStage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+            gdiCacheStage.SetReferenceCameraOrientation(0.54f, -0.27f);
+            var drawBufferedGdi = typeof(StageControl).GetMethod(
+                "DrawBufferedGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException(
+                    "The reference-3D buffered GDI regression entry point could not be located.");
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            var gdiCachedPlanBuilds = gdiCacheStage.Reference3DRenderPlanBuildCount;
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 1
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 0)
+            {
+                throw new InvalidOperationException(
+                    "The initial reference-3D GDI frame did not populate its base-frame cache.");
+            }
+
+            gdiCacheStage.SetReference3DSelection([gdiCacheObject]);
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 0
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 1
+                || gdiCacheStage.Reference3DRenderPlanBuildCount != gdiCachedPlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "A reference-3D GDI selection overlay rebuilt the stable base frame or render plan.");
+            }
+
+            gdiCacheStage.SetSpatialTransformGizmo(
+                System.Numerics.Vector3.Zero,
+                SpatialTransformMode.Move,
+                [gdiCacheObject]);
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 0
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 1
+                || gdiCacheStage.Reference3DRenderPlanBuildCount != gdiCachedPlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "A reference-3D GDI Gizmo overlay rebuilt the stable base frame or render plan.");
+            }
+
+            gdiCacheScene.SetLayerVisible(0, false);
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            var hiddenPlanBuilds = gdiCacheStage.Reference3DRenderPlanBuildCount;
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 1
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 0
+                || hiddenPlanBuilds <= gdiCachedPlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "An in-place GDI layer visibility change reused a stale reference-3D base frame.");
+            }
+
+            gdiCacheScene.SetLayerVisible(0, true);
+            gdiCacheScene.LayerOpacity[0] = 0.5f;
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 1
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 0
+                || gdiCacheStage.Reference3DRenderPlanBuildCount <= hiddenPlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "An in-place GDI layer opacity change reused a stale reference-3D base frame.");
+            }
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 0
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 1)
+            {
+                throw new InvalidOperationException(
+                    "An unchanged GDI opacity frame did not reuse its rebuilt reference base.");
+            }
+
+            gdiCacheScene.LayerBlendModes[0] = LayerBlendMode.Dissolve;
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            var dissolvePlanBuilds = gdiCacheStage.Reference3DRenderPlanBuildCount;
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 1
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 0)
+            {
+                throw new InvalidOperationException(
+                    "Enabling GDI Dissolve did not rebuild the reference base frame.");
+            }
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 0
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 1)
+            {
+                throw new InvalidOperationException(
+                    "An unchanged GDI Dissolve frame did not reuse its reference base.");
+            }
+            if (!gdiCacheScene.RenameLayer(0, "Renamed dissolve layer"))
+            {
+                throw new InvalidOperationException(
+                    "The GDI Dissolve cache fixture could not rename its layer.");
+            }
+            drawBufferedGdi.Invoke(gdiCacheStage, [gdiCacheGraphics]);
+            if (gdiCacheStage.LastGdiBaseFrameCacheBuilds != 1
+                || gdiCacheStage.LastGdiBaseFrameCacheReuses != 0
+                || gdiCacheStage.Reference3DRenderPlanBuildCount <= dissolvePlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "Renaming a Dissolve layer reused a stale reference-3D base frame.");
+            }
         }
 
         var gradientStops = new[]
@@ -556,7 +776,7 @@ internal static partial class Benchmark
             GradientKind.Radial,
             PointF.Empty,
             new PointF(1_600, 0),
-            [new PointF(800, 0), new PointF(0, 800)],
+            [PointF.Empty, new PointF(800, 0), new PointF(1_900, 900)],
             path: null);
         AssertProjectedFillGradient(
             scene,
@@ -614,6 +834,17 @@ internal static partial class Benchmark
             new PointF(1_400, 0),
             trajectorySamples,
             trajectoryPath);
+        trajectoryScene.SetGradientPaint(
+            trajectoryObject,
+            GradientKind.Linear,
+            [
+                new GradientStop(0, Color.FromArgb(255, 232, 62, 70)),
+                new GradientStop(0.5f, Color.FromArgb(255, 246, 194, 54)),
+                new GradientStop(1, Color.FromArgb(255, 8, 10, 14))
+            ],
+            new PointF(-1_400, 0),
+            new PointF(1_400, 0));
+        trajectoryScene.SetGradientPath(trajectoryObject, trajectoryPath);
 
         var lineScene = new VectorScene();
         lineScene.CreateEmpty();
@@ -636,10 +867,18 @@ internal static partial class Benchmark
         lineStage.SetSceneCompositionResult(
             CompositionResult(System.Numerics.Matrix4x4.Identity),
             lineScene);
+        if (!lineStage.TryProjectScenePoint(
+                lineObject,
+                lineSample,
+                out var planarLineSample,
+                out _))
+        {
+            throw new InvalidOperationException("The planar line-gradient sample could not be projected.");
+        }
         Color planarLineColor;
         using (var planarLineBitmap = RenderGdi(lineStage))
         {
-            planarLineColor = Sample(planarLineBitmap, lineStage.WorldToScreen(lineSample.X, lineSample.Y));
+            planarLineColor = SampleBitmap(planarLineBitmap, planarLineSample);
         }
         lineStage.SetSceneCompositionResult(CompositionResult(spatialPose), lineScene);
         if (!lineStage.TryProjectScenePoint(lineObject, lineSample, out var projectedLineSample, out _))
@@ -649,12 +888,13 @@ internal static partial class Benchmark
         using (var spatialLineBitmap = RenderGdi(lineStage))
         {
             AssertPixelNear(
-                Sample(spatialLineBitmap, projectedLineSample),
+                SampleBitmap(spatialLineBitmap, projectedLineSample),
                 planarLineColor,
                 "The 2D front view changed a linear-gradient line stroke",
                 tolerance: 10);
         }
         var linePerspectiveView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(linePerspectiveView);
         linePerspectiveView.Camera.Projection = CameraProjection.Perspective;
         lineStage.ConfigureReferenceView(linePerspectiveView, SceneDimension.ThreeD);
         lineStage.ResetReferenceCameraView();
@@ -671,7 +911,7 @@ internal static partial class Benchmark
         using (var perspectiveLineBitmap = RenderGdi(lineStage))
         {
             AssertPixelNear(
-                Sample(perspectiveLineBitmap, perspectiveLineSample),
+                SampleBitmap(perspectiveLineBitmap, perspectiveLineSample),
                 planarLineColor,
                 "Perspective changed a linear-gradient line stroke",
                 tolerance: 14);
@@ -720,7 +960,7 @@ internal static partial class Benchmark
         using (var blendBitmap = RenderGdi(blendStage))
         {
             AssertPixelNear(
-                Sample(blendBitmap, blendCenter),
+                SampleBitmap(blendBitmap, blendCenter),
                 expectedBlend,
                 "The 2D front view changed the projected layer blend",
                 tolerance: 2);
@@ -772,7 +1012,7 @@ internal static partial class Benchmark
         using (var depthBitmap = RenderGdi(depthStage))
         {
             AssertPixelNear(
-                Sample(depthBitmap, depthCenter),
+                SampleBitmap(depthBitmap, depthCenter),
                 nearColor,
                 "The farther spatial object painted over the nearer object");
         }
@@ -780,6 +1020,86 @@ internal static partial class Benchmark
             || depthHit != nearObject)
         {
             throw new InvalidOperationException("Projected hit testing did not select the nearest painted object.");
+        }
+
+        var transparentStrokeScene = new VectorScene();
+        transparentStrokeScene.CreateEmpty();
+        var transparentBackdrop = transparentStrokeScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(5_000, 4_000),
+            0,
+            0,
+            Color.FromArgb(255, 42, 162, 104),
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var transparentOutline = transparentStrokeScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(2_400, 1_800),
+            0,
+            180,
+            Color.Transparent,
+            Color.FromArgb(255, 236, 78, 92),
+            12,
+            ShapeKind.Rectangle);
+        using (var transparentStrokeStage = CreateStage(transparentStrokeScene))
+        {
+            transparentStrokeStage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+            transparentStrokeStage.SetReferenceCameraOrientation(0.38f, -0.19f);
+            transparentStrokeStage.SetSceneCompositionResult(
+                CompositionResult(
+                    System.Numerics.Matrix4x4.Identity,
+                    System.Numerics.Matrix4x4.CreateRotationY(0.68f)),
+                transparentStrokeScene);
+            var transparentItems = transparentStrokeStage.GetReference3DSceneRenderItems();
+            if (transparentItems.Any(item => item.ObjectIndex == transparentOutline
+                    && item.Kind == Reference3DRenderKind.FrontFill)
+                || !transparentItems.Any(item => item.ObjectIndex == transparentOutline
+                    && item.Kind == Reference3DRenderKind.FrontStroke
+                    && item.OcclusionContours is { Length: > 0 })
+                || transparentItems.Any(item => item.Kind == Reference3DRenderKind.IntersectionEdge
+                    && (item.ObjectIndex == transparentOutline
+                        || item.SecondaryObjectIndex == transparentOutline)))
+            {
+                throw new InvalidOperationException(
+                    "A transparent fill retained a solid surface or synthetic intersection edge.");
+            }
+            if (!transparentStrokeStage.TryProjectScenePoint(
+                    transparentBackdrop,
+                    PointF.Empty,
+                    out var transparentInterior,
+                    out _)
+                || !transparentStrokeStage.TryProjectScenePoint(
+                    transparentOutline,
+                    new PointF(1_200, 0),
+                    out var transparentBoundary,
+                    out _))
+            {
+                throw new InvalidOperationException(
+                    "The transparent-fill hit-test samples could not be projected.");
+            }
+            using var transparentBitmap = RenderGdi(transparentStrokeStage);
+            AssertPixelNear(
+                SampleBitmap(transparentBitmap, transparentInterior),
+                Color.FromArgb(255, 42, 162, 104),
+                "A transparent fill occluded the surface behind its interior",
+                tolerance: 2);
+            if (!transparentStrokeStage.TryHitTestProjectedObject(
+                    Point.Round(transparentInterior),
+                    1f,
+                    out var transparentInteriorHit)
+                || transparentInteriorHit != transparentBackdrop
+                || !transparentStrokeStage.TryHitTestProjectedObject(
+                    Point.Round(transparentBoundary),
+                    1f,
+                    out var transparentBoundaryHit)
+                || transparentBoundaryHit != transparentOutline)
+            {
+                throw new InvalidOperationException(
+                    "Transparent-fill hit testing did not pass through the interior and retain the visible stroke.");
+            }
         }
 
         depthStage.SetSceneCompositionResult(
@@ -847,7 +1167,7 @@ internal static partial class Benchmark
         using (var crossLayerDepthBitmap = RenderGdi(crossLayerStage))
         {
             AssertPixelNear(
-                Sample(crossLayerDepthBitmap, crossLayerDepthCenter),
+                SampleBitmap(crossLayerDepthBitmap, crossLayerDepthCenter),
                 nearColor,
                 "A farther top-layer object painted over a nearer bottom-layer object");
         }
@@ -883,7 +1203,7 @@ internal static partial class Benchmark
         using (var reversedCrossLayerDepthBitmap = RenderGdi(crossLayerStage))
         {
             AssertPixelNear(
-                Sample(reversedCrossLayerDepthBitmap, crossLayerDepthCenter),
+                SampleBitmap(reversedCrossLayerDepthBitmap, crossLayerDepthCenter),
                 farColor,
                 "Reversing spatial depth did not change the nearest painted object");
         }
@@ -919,7 +1239,7 @@ internal static partial class Benchmark
         using (var coplanarCrossLayerBitmap = RenderGdi(crossLayerStage))
         {
             AssertPixelNear(
-                Sample(coplanarCrossLayerBitmap, crossLayerDepthCenter),
+                SampleBitmap(coplanarCrossLayerBitmap, crossLayerDepthCenter),
                 farColor,
                 "A bottom-layer coplanar object painted over the overlapping top-layer object");
         }
@@ -932,6 +1252,8 @@ internal static partial class Benchmark
             throw new InvalidOperationException(
                 "Projected hit testing did not use layer order for coplanar overlapping objects.");
         }
+
+        RunSceneBuildingZTweenDepthRegression();
 
         var stableOrderScene = new VectorScene();
         stableOrderScene.CreateEmpty();
@@ -1210,7 +1532,7 @@ internal static partial class Benchmark
         using (var strokeOverlapBitmap = RenderGdi(strokeOverlapStage))
         {
             AssertPixelNear(
-                Sample(strokeOverlapBitmap, strokeOverlapSample),
+                SampleBitmap(strokeOverlapBitmap, strokeOverlapSample),
                 strokeOverlapTopColor,
                 "A bottom-layer coplanar stroke painted over the overlapping top-layer stroke",
                 tolerance: 3);
@@ -1224,6 +1546,762 @@ internal static partial class Benchmark
             throw new InvalidOperationException(
                 "Projected hit testing did not select the top layer in the visible stroke overlap.");
         }
+
+        var curveProjectionScene = new VectorScene();
+        curveProjectionScene.CreateEmpty();
+        var curveStart = new PointF(-1_600, 0);
+        var curveControl1 = new PointF(-800, -1_800);
+        var curveControl2 = new PointF(800, -1_800);
+        var curveEnd = new PointF(1_600, 0);
+        var curveProjectionObject = curveProjectionScene.AddCubicCurveSegment(
+            0,
+            curveStart,
+            curveControl1,
+            curveControl2,
+            curveEnd,
+            120,
+            Color.Transparent,
+            Color.White,
+            12);
+        var thinProjectionObject = curveProjectionScene.AddLineSegment(
+            0,
+            new PointF(-1_000, 2_400),
+            new PointF(1_000, 2_400),
+            1,
+            Color.Transparent,
+            Color.White,
+            12);
+        using var curveProjectionStage = CreateStage(curveProjectionScene);
+        var curveProjectionView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(curveProjectionView);
+        curveProjectionView.Camera.Projection = CameraProjection.Perspective;
+        curveProjectionStage.ConfigureReferenceView(curveProjectionView, SceneDimension.ThreeD);
+        curveProjectionStage.ResetReferenceCameraView();
+        curveProjectionStage.SetReferenceCameraOrientation(0, 0);
+        curveProjectionStage.SetSceneCompositionResult(
+            CompositionResult(
+                System.Numerics.Matrix4x4.Identity,
+                System.Numerics.Matrix4x4.Identity),
+            curveProjectionScene);
+
+        var curveCenterlines = curveProjectionStage.GetReference3DProjectedContours(
+            curveProjectionObject);
+        if (curveCenterlines.Length != 1
+            || curveCenterlines[0].Closed
+            || curveCenterlines[0].Points.Length < 16
+            || curveCenterlines[0].Points.Any(point =>
+                !float.IsFinite(point.X) || !float.IsFinite(point.Y)))
+        {
+            throw new InvalidOperationException(
+                "A fully visible cubic stroke was split into per-sample projected contours: "
+                + string.Join(", ", curveCenterlines.Select(contour =>
+                    $"closed={contour.Closed}/points={contour.Points.Length}")));
+        }
+
+        var curveProjectionItems = curveProjectionStage.GetReference3DSceneRenderItems();
+        var curveProjectionItem = curveProjectionItems.Single(item =>
+            item.ObjectIndex == curveProjectionObject
+            && item.Kind == Reference3DRenderKind.FrontStroke);
+        if (curveProjectionItem.Contours.Length != 1
+            || curveProjectionItem.OcclusionContours is not { Length: > 0 }
+            || curveProjectionItem.OcclusionContours.Any(contour =>
+                !contour.Closed || contour.Points.Length < 3))
+        {
+            throw new InvalidOperationException(
+                "A continuous cubic stroke did not retain one centerline and closed screen occupancy.");
+        }
+
+        var curveMidpoint = new PointF(0, -1_350);
+        if (!curveProjectionStage.TryProjectScenePoint(
+                curveProjectionObject,
+                curveMidpoint,
+                out var projectedCurveMidpoint,
+                out _)
+            || !curveProjectionStage.TryProjectScenePoint(
+                curveProjectionObject,
+                PointF.Empty,
+                out var projectedCurveChordMidpoint,
+                out _)
+            || !curveProjectionStage.TryProjectScenePoint(
+                curveProjectionObject,
+                curveStart,
+                out var projectedCurveStart,
+                out _)
+            || !ProjectedFillContainsMargin(
+                curveProjectionItem.OcclusionContours,
+                Point.Round(projectedCurveMidpoint),
+                0)
+            || !ProjectedFillContainsMargin(
+                curveProjectionItem.OcclusionContours,
+                Point.Round(projectedCurveStart),
+                0)
+            || ProjectedFillContainsMargin(
+                curveProjectionItem.OcclusionContours,
+                Point.Round(projectedCurveChordMidpoint),
+                0))
+        {
+            throw new InvalidOperationException(
+                "The cubic screen occupancy lost its round cap or incorrectly closed across the curve chord.");
+        }
+
+        var thinProjectionItem = curveProjectionItems.Single(item =>
+            item.ObjectIndex == thinProjectionObject
+            && item.Kind == Reference3DRenderKind.FrontStroke);
+        var thinProjectedWidth = curveProjectionStage.GetReference3DStrokeWidth(
+            thinProjectionObject,
+            curveProjectionScene.Stroke[thinProjectionObject]);
+        var thinOccupancyPoints = thinProjectionItem.OcclusionContours?
+            .SelectMany(contour => contour.Points)
+            .ToArray() ?? [];
+        var thinOccupancyHeight = thinOccupancyPoints.Length == 0
+            ? 0
+            : thinOccupancyPoints.Max(point => point.Y)
+                - thinOccupancyPoints.Min(point => point.Y);
+        if (Math.Abs(thinProjectedWidth - 0.75f) > 0.0001f
+            || Math.Abs(thinOccupancyHeight - thinProjectedWidth) > 0.02f)
+        {
+            throw new InvalidOperationException(
+                "The thin projected stroke used different renderer and occupancy widths: "
+                + $"render={thinProjectedWidth:0.###}, occupancy={thinOccupancyHeight:0.###}.");
+        }
+
+        var clippedCurveScene = new VectorScene();
+        clippedCurveScene.CreateEmpty();
+        var clippedCurveObject = clippedCurveScene.AddCubicCurveSegment(
+            0,
+            new PointF(0, -1_200),
+            new PointF(3_000, -600),
+            new PointF(3_000, 600),
+            new PointF(0, 1_200),
+            120,
+            Color.Transparent,
+            Color.White,
+            12);
+        using var clippedCurveStage = CreateStage(clippedCurveScene);
+        clippedCurveStage.ConfigureReferenceView(curveProjectionView, SceneDimension.ThreeD);
+        clippedCurveStage.ResetReferenceCameraView();
+        clippedCurveStage.SetReferenceCameraOrientation(0, 0);
+        clippedCurveStage.SetSceneCompositionResult(
+            CompositionResult(
+                System.Numerics.Matrix4x4.CreateRotationY(MathF.PI * 0.5f)
+                * System.Numerics.Matrix4x4.CreateTranslation(0, 0, -11_000)),
+            clippedCurveScene);
+        var clippedCurveRuns = clippedCurveStage.GetReference3DProjectedContours(clippedCurveObject);
+        if (clippedCurveRuns.Length != 2
+            || clippedCurveRuns.Any(contour =>
+                contour.Closed
+                || contour.Points.Length < 2
+                || contour.AverageDepth < StageControl.ReferenceNearPlane
+                || contour.Points.Any(point =>
+                    !float.IsFinite(point.X) || !float.IsFinite(point.Y)))
+            || !clippedCurveRuns[0].HasSourceStart
+            || clippedCurveRuns[0].HasSourceEnd
+            || clippedCurveRuns[1].HasSourceStart
+            || !clippedCurveRuns[1].HasSourceEnd)
+        {
+            throw new InvalidOperationException(
+                "A cubic crossing behind the reference near plane did not split into two finite visible runs: "
+                + string.Join(", ", clippedCurveRuns.Select(contour =>
+                    $"closed={contour.Closed}/points={contour.Points.Length}/depth={contour.AverageDepth:0.###}")));
+        }
+        var clippedRunGap = CrossingScreenDistance(
+            Point.Round(clippedCurveRuns[0].Points[^1]),
+            Point.Round(clippedCurveRuns[1].Points[0]));
+        var clippedCurveItem = clippedCurveStage.GetReference3DSceneRenderItems().Single(item =>
+            item.ObjectIndex == clippedCurveObject
+            && item.Kind == Reference3DRenderKind.FrontStroke);
+        if (clippedRunGap <= 1
+            || clippedCurveItem.Contours.Length != 2
+            || clippedCurveItem.OcclusionContours is not { Length: 2 })
+        {
+            throw new InvalidOperationException(
+                "Near-plane clipping reconnected the cubic's hidden interval: "
+                + $"gap={clippedRunGap:0.###}, centerlines={clippedCurveItem.Contours.Length}, "
+                + $"occupancy={clippedCurveItem.OcclusionContours?.Length ?? 0}.");
+        }
+        var clippedProjectedWidth = clippedCurveStage.GetReference3DStrokeWidth(
+            clippedCurveObject,
+            clippedCurveScene.Stroke[clippedCurveObject]);
+        var firstArtificialCapSample = ProjectedEndpointExteriorSample(
+            clippedCurveRuns[0].Points[^1],
+            clippedCurveRuns[0].Points[^2],
+            clippedProjectedWidth * 0.35f);
+        var secondArtificialCapSample = ProjectedEndpointExteriorSample(
+            clippedCurveRuns[1].Points[0],
+            clippedCurveRuns[1].Points[1],
+            clippedProjectedWidth * 0.35f);
+        if (ProjectedFillContainsMargin(
+                clippedCurveItem.OcclusionContours!,
+                Point.Round(firstArtificialCapSample),
+                0)
+            || ProjectedFillContainsMargin(
+                clippedCurveItem.OcclusionContours!,
+                Point.Round(secondArtificialCapSample),
+                0))
+        {
+            throw new InvalidOperationException(
+                "Near-plane clipping added a round cap to an artificial projected Line endpoint.");
+        }
+        Console.WriteLine(
+            "scene_reference_curve_projection="
+            + $"points={curveCenterlines[0].Points.Length},runs={clippedCurveRuns.Length},"
+            + $"thin_width={thinProjectedWidth:0.###}");
+
+        var lineJoinScene = new VectorScene();
+        lineJoinScene.CreateEmpty();
+        var lineJoinColor = Color.FromArgb(255, 238, 242, 241);
+        var lineJoinPoint = new PointF(0, -800);
+        const float lineJoinStroke = 260f;
+        var lineJoinFirst = lineJoinScene.AddLineSegment(
+            0,
+            new PointF(-900, 1_800),
+            lineJoinPoint,
+            lineJoinStroke,
+            Color.Transparent,
+            lineJoinColor,
+            12,
+            LineEndpointStyle.Round,
+            LineEndpointStyle.Sharp);
+        var lineJoinSecond = lineJoinScene.AddLineSegment(
+            0,
+            lineJoinPoint,
+            new PointF(900, 1_800),
+            lineJoinStroke,
+            Color.Transparent,
+            lineJoinColor,
+            12,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Round);
+        using var lineJoinStage = CreateStage(lineJoinScene);
+        lineJoinStage.ConfigureReferenceView(curveProjectionView, SceneDimension.ThreeD);
+        lineJoinStage.ResetReferenceCameraView();
+        lineJoinStage.SetReferenceCameraOrientation(0.32f, -0.18f);
+        lineJoinStage.SetSceneCompositionResult(
+            CompositionResult(
+                System.Numerics.Matrix4x4.Identity,
+                System.Numerics.Matrix4x4.Identity),
+            lineJoinScene);
+        var sharpJoinItems = lineJoinStage.GetReference3DSceneRenderItems();
+        var sharpJoinStrokes = sharpJoinItems
+            .Where(item => item.Kind == Reference3DRenderKind.FrontStroke
+                && item.ObjectIndex is var objectIndex
+                && (objectIndex == lineJoinFirst || objectIndex == lineJoinSecond))
+            .ToArray();
+        if (sharpJoinStrokes.Length != 2
+            || sharpJoinStrokes[0].SharedShellOwnerObjectIndex < 0
+            || sharpJoinStrokes[0].SharedShellOwnerObjectIndex
+                != sharpJoinStrokes[1].SharedShellOwnerObjectIndex
+            || sharpJoinStrokes.Any(item => item.FragmentClip is { Length: > 0 }))
+        {
+            throw new InvalidOperationException(
+                "A connected Sharp Line was partitioned against its own shared extrusion shell.");
+        }
+        var sharpJoinOwner = sharpJoinItems.Single(item =>
+            item.ObjectIndex == lineJoinFirst
+            && item.Kind == Reference3DRenderKind.FrontStroke);
+        var projectedJoinWidth = lineJoinStage.GetReference3DStrokeWidth(
+            lineJoinFirst,
+            lineJoinStroke);
+        if (!lineJoinStage.TryGetReference3DLineEndpointJoin(
+                lineJoinFirst,
+                startEndpoint: false,
+                sharpJoinOwner.Contours,
+                projectedJoinWidth,
+                out var projectedJoinPoint,
+                out var projectedJoinMiters,
+                out _)
+            || projectedJoinMiters.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "Two projected Sharp Line endpoints did not produce a shared miter join.");
+        }
+        var projectedJoinTip = projectedJoinMiters
+            .SelectMany(miter => new[] { miter.OuterMiter, miter.InnerMiter })
+            .OrderByDescending(point => CrossingScreenDistance(
+                Point.Round(projectedJoinPoint),
+                Point.Round(point)))
+            .First();
+        var sharpJoinSample = new PointF(
+            projectedJoinPoint.X + (projectedJoinTip.X - projectedJoinPoint.X) * 0.72f,
+            projectedJoinPoint.Y + (projectedJoinTip.Y - projectedJoinPoint.Y) * 0.72f);
+        if (sharpJoinOwner.OcclusionContours is not { Length: > 0 }
+            || !ProjectedFillContainsMargin(
+                sharpJoinOwner.OcclusionContours,
+                Point.Round(sharpJoinSample),
+                0))
+        {
+            throw new InvalidOperationException(
+                "The projected Sharp Line miter was missing from stroke occupancy.");
+        }
+        using (var sharpJoinBitmap = RenderGdi(lineJoinStage))
+        {
+            AssertPixelNear(
+                SampleBitmap(sharpJoinBitmap, sharpJoinSample),
+                lineJoinColor,
+                "The GDI 3D renderer omitted a shared Sharp Line miter",
+                tolerance: 10);
+        }
+
+        var lineJoinGradientStart = Color.FromArgb(255, 228, 58, 72);
+        var lineJoinGradientEnd = Color.FromArgb(255, 42, 132, 232);
+        var lineJoinGradientStops = new[]
+        {
+            new GradientStop(0, lineJoinGradientStart),
+            new GradientStop(1, lineJoinGradientEnd)
+        };
+        lineJoinScene.SetGradientPaint(
+            lineJoinFirst,
+            GradientKind.Linear,
+            lineJoinGradientStops,
+            new PointF(-900, 1_800),
+            lineJoinPoint);
+        // Simulate legacy/stale path metadata on a Line; normal Line editing no longer creates it.
+        lineJoinScene.ShapeKind[lineJoinFirst] = ShapeKind.Path;
+        lineJoinScene.SetOrderedGradientPath(
+            lineJoinFirst,
+            [lineJoinPoint, new PointF(-900, 1_800)]);
+        lineJoinScene.ShapeKind[lineJoinFirst] = ShapeKind.Line;
+        lineJoinScene.SetGradientPaint(
+            lineJoinSecond,
+            GradientKind.Linear,
+            lineJoinGradientStops,
+            new PointF(900, 1_800),
+            lineJoinPoint);
+        lineJoinScene.ShapeKind[lineJoinSecond] = ShapeKind.Path;
+        lineJoinScene.SetOrderedGradientPath(
+            lineJoinSecond,
+            [lineJoinPoint, new PointF(900, 1_800)]);
+        lineJoinScene.ShapeKind[lineJoinSecond] = ShapeKind.Line;
+        lineJoinStage.Invalidate();
+        var axisEndpointColor = StageControl.SampleReference3DLineEndpointGradient(
+            lineJoinScene,
+            lineJoinFirst,
+            startEndpoint: false,
+            GradientKind.Linear);
+        var conflictingPathColor = MixingBrushPaintSampler.SampleObjectFill(
+            lineJoinScene,
+            lineJoinFirst,
+            lineJoinPoint);
+        if (axisEndpointColor.ToArgb() != lineJoinGradientEnd.ToArgb()
+            || conflictingPathColor.ToArgb() != lineJoinGradientStart.ToArgb())
+        {
+            throw new InvalidOperationException(
+                "The projected Line miter gradient fixture did not separate its axis and path colors: "
+                + $"axis={axisEndpointColor.ToArgb():X8}, path={conflictingPathColor.ToArgb():X8}.");
+        }
+        using (var gradientJoinBitmap = RenderGdi(lineJoinStage))
+        {
+            AssertPixelNear(
+                SampleBitmap(gradientJoinBitmap, sharpJoinSample),
+                lineJoinGradientEnd,
+                "The GDI Sharp Line miter followed GradientPath instead of the rendered gradient axis",
+                tolerance: 12);
+        }
+
+        var styleGeometryRevision = lineJoinScene.GeometryRevision;
+        var sharpPlanBuilds = lineJoinStage.Reference3DRenderPlanBuildCount;
+        if (!lineJoinScene.SetLineEndpointStyle(
+                lineJoinFirst,
+                startEndpoint: false,
+                LineEndpointStyle.Round)
+            || !lineJoinScene.SetLineEndpointStyle(
+                lineJoinSecond,
+                startEndpoint: true,
+                LineEndpointStyle.Round)
+            || lineJoinScene.GeometryRevision <= styleGeometryRevision)
+        {
+            throw new InvalidOperationException(
+                "Changing a Line endpoint style did not invalidate projected stroke geometry.");
+        }
+        var roundJoinItems = lineJoinStage.GetReference3DSceneRenderItems();
+        var roundJoinOwner = roundJoinItems.Single(item =>
+            item.ObjectIndex == lineJoinFirst
+            && item.Kind == Reference3DRenderKind.FrontStroke);
+        if (lineJoinStage.Reference3DRenderPlanBuildCount <= sharpPlanBuilds
+            || roundJoinOwner.OcclusionContours is not { Length: > 0 }
+            || ProjectedFillContainsMargin(
+                roundJoinOwner.OcclusionContours,
+                Point.Round(sharpJoinSample),
+                0))
+        {
+            throw new InvalidOperationException(
+                "Switching a projected Line junction to Round retained stale Sharp occupancy.");
+        }
+        using (var roundJoinBitmap = RenderGdi(lineJoinStage))
+        {
+            AssertPixelNear(
+                SampleBitmap(roundJoinBitmap, sharpJoinSample),
+                background,
+                "The GDI 3D renderer retained a Sharp miter after switching to Round",
+                tolerance: 10);
+        }
+        Console.WriteLine("scene_reference_line_endpoint_joins=sharp_round_ok");
+
+        var poseJoinScene = new VectorScene();
+        poseJoinScene.CreateEmpty();
+        var poseJoinPoint = PointF.Empty;
+        const float poseJoinStroke = 220f;
+        var poseJoinFirst = poseJoinScene.AddLineSegment(
+            0,
+            new PointF(-1_000, 1_200),
+            poseJoinPoint,
+            poseJoinStroke,
+            Color.Transparent,
+            lineJoinColor,
+            12,
+            LineEndpointStyle.Round,
+            LineEndpointStyle.Sharp);
+        var poseJoinSecond = poseJoinScene.AddLineSegment(
+            0,
+            poseJoinPoint,
+            new PointF(1_000, 1_200),
+            poseJoinStroke,
+            Color.Transparent,
+            lineJoinColor,
+            12,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Round);
+        using var poseJoinStage = CreateStage(poseJoinScene);
+        var poseJoinView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(poseJoinView);
+        poseJoinView.Camera.Projection = CameraProjection.Orthographic;
+        poseJoinStage.ConfigureReferenceView(poseJoinView, SceneDimension.ThreeD);
+        poseJoinStage.ResetReferenceCameraView();
+        poseJoinStage.SetReferenceCameraOrientation(0, 0);
+        poseJoinStage.SetSceneCompositionResult(
+            CompositionResult(
+                System.Numerics.Matrix4x4.Identity,
+                System.Numerics.Matrix4x4.CreateTranslation(0, 0, 900)),
+            poseJoinScene);
+        if (!poseJoinStage.TryProjectScenePoint(
+                poseJoinFirst,
+                poseJoinPoint,
+                out var poseFirstJoint,
+                out var poseFirstDepth)
+            || !poseJoinStage.TryProjectScenePoint(
+                poseJoinSecond,
+                poseJoinPoint,
+                out var poseSecondJoint,
+                out var poseSecondDepth))
+        {
+            throw new InvalidOperationException(
+                "The different-pose Line junction fixture could not project both endpoints.");
+        }
+        var poseJointDx = poseFirstJoint.X - poseSecondJoint.X;
+        var poseJointDy = poseFirstJoint.Y - poseSecondJoint.Y;
+        var poseJointScreenDistance = MathF.Sqrt(
+            poseJointDx * poseJointDx + poseJointDy * poseJointDy);
+        var poseJoinItems = poseJoinStage.GetReference3DLayerRenderItems(
+            [poseJoinFirst, poseJoinSecond]);
+        var poseFirstStrokeItem = poseJoinItems.Single(item =>
+            item.ObjectIndex == poseJoinFirst
+            && item.Kind == Reference3DRenderKind.FrontStroke);
+        var poseProjectedWidth = poseJoinStage.GetReference3DStrokeWidth(
+            poseJoinFirst,
+            poseJoinStroke);
+        if (poseJointScreenDistance > 0.01f
+            || Math.Abs(poseFirstDepth - poseSecondDepth) <= 100f
+            || poseJoinStage.TryGetReference3DLineEndpointJoin(
+                poseJoinFirst,
+                startEndpoint: false,
+                poseFirstStrokeItem.Contours,
+                poseProjectedWidth,
+                out _,
+                out _,
+                out _)
+            || poseJoinItems.Any(item => item.SharedShellObjectIndices is not null))
+        {
+            throw new InvalidOperationException(
+                "Screen-overlapping Sharp Line endpoints with different 3D poses were joined: "
+                + $"screenDistance={poseJointScreenDistance:0.###}, "
+                + $"depths={poseFirstDepth:0.###}/{poseSecondDepth:0.###}.");
+        }
+        Console.WriteLine("scene_reference_line_endpoint_pose_isolation=ok");
+
+        var lineComponentScene = new VectorScene();
+        lineComponentScene.CreateEmpty();
+        var componentFirstJoint = new PointF(-600, -500);
+        var componentSecondJoint = new PointF(600, -500);
+        var componentFirstOuter = new PointF(-1_800, 900);
+        var componentThirdOuter = new PointF(1_800, 900);
+        const float componentStroke = 240f;
+        var componentFirst = lineComponentScene.AddLineSegment(
+            0,
+            componentFirstOuter,
+            componentFirstJoint,
+            componentStroke,
+            Color.Transparent,
+            lineJoinColor,
+            12,
+            LineEndpointStyle.Round,
+            LineEndpointStyle.Sharp);
+        var componentSecond = lineComponentScene.AddLineSegment(
+            0,
+            componentFirstJoint,
+            componentSecondJoint,
+            componentStroke,
+            Color.Transparent,
+            lineJoinColor,
+            12,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Sharp);
+        var componentThird = lineComponentScene.AddLineSegment(
+            0,
+            componentSecondJoint,
+            componentThirdOuter,
+            componentStroke,
+            Color.Transparent,
+            lineJoinColor,
+            12,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Round);
+        var componentMembers = new[]
+        {
+            componentFirst,
+            componentSecond,
+            componentThird
+        };
+        var componentExtrusion = new System.Numerics.Vector3(0, 0, 1_400);
+        var componentPose = new SceneCompositionObjectPose(
+            System.Numerics.Matrix4x4.Identity,
+            componentExtrusion);
+        using var lineComponentStage = CreateStage(lineComponentScene);
+        var lineComponentView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(lineComponentView);
+        lineComponentView.Camera.Projection = CameraProjection.Perspective;
+        lineComponentStage.ConfigureReferenceView(lineComponentView, SceneDimension.ThreeD);
+        lineComponentStage.ResetReferenceCameraView();
+        lineComponentStage.SetReferenceCameraOrientation(0.58f, -0.31f);
+        lineComponentStage.SetSceneCompositionResult(
+            new SceneCompositionResult(
+                new SceneCompositionObjectOwner[componentMembers.Length],
+                [componentPose, componentPose, componentPose]),
+            lineComponentScene);
+        var componentItems = lineComponentStage.GetReference3DLayerRenderItems(componentMembers);
+        var componentBackItems = componentItems
+            .Where(item => item.Kind == Reference3DRenderKind.Back)
+            .ToArray();
+        var componentSideItems = componentItems
+            .Where(item => item.Kind == Reference3DRenderKind.Side)
+            .ToArray();
+        if (componentBackItems.Length != 1
+            || componentBackItems[0].ObjectIndex != componentFirst
+            || componentBackItems[0].Contours.Length != 1
+            || componentSideItems.Length == 0
+            || componentItems.Count(item => item.Kind == Reference3DRenderKind.FrontStroke) != 3
+            || componentBackItems.Concat(componentSideItems).Any(item =>
+                item.ObjectIndex != componentFirst
+                || item.SharedShellObjectIndices is not { } members
+                || !members.SequenceEqual(componentMembers)
+                || !item.Plane.IsValid
+                || !float.IsFinite(item.AverageDepth)
+                || item.Contours.SelectMany(contour => contour.Points).Any(point =>
+                    !float.IsFinite(point.X) || !float.IsFinite(point.Y)))
+            || componentMembers.Any(objectIndex =>
+            {
+                var memberSolid = lineComponentStage.GetReference3DProjectedSolid(objectIndex);
+                return !memberSolid.HasExtrusion
+                    || memberSolid.BackContours.Length == 0
+                    || memberSolid.SideSurfaces.Length == 0
+                    || memberSolid.SelectionEdges.Length == 0;
+            }))
+        {
+            throw new InvalidOperationException(
+                "Connected Sharp Lines did not produce one finite shared extrusion shell with per-Line fronts: "
+                + $"back={componentBackItems.Length}/contours="
+                + string.Join(",", componentBackItems.Select(item => item.Contours.Length))
+                + $", sides={componentSideItems.Length}, fronts="
+                + componentItems.Count(item => item.Kind == Reference3DRenderKind.FrontStroke)
+                + $", shellCount={componentBackItems.Length + componentSideItems.Length}, shells=["
+                + string.Join(",", componentBackItems.Concat(componentSideItems).Take(8).Select(item =>
+                    $"{item.Kind}:{item.ObjectIndex}:"
+                    + $"{string.Join('/', item.SharedShellObjectIndices ?? [])}:"
+                    + $"plane={item.Plane.IsValid}:depth={item.AverageDepth:0.###}"))
+                + "], solids=["
+                + string.Join(",", componentMembers.Select(objectIndex =>
+                {
+                    var memberSolid = lineComponentStage.GetReference3DProjectedSolid(objectIndex);
+                    return $"{objectIndex}:{memberSolid.HasExtrusion}:"
+                        + $"{memberSolid.BackContours.Length}/{memberSolid.SideSurfaces.Length}/"
+                        + memberSolid.SelectionEdges.Length;
+                }))
+                + "].");
+        }
+
+        var componentFirstMidpoint = Midpoint(componentFirstOuter, componentFirstJoint);
+        var componentSecondMidpoint = Midpoint(componentFirstJoint, componentSecondJoint);
+        var componentThirdMidpoint = Midpoint(componentSecondJoint, componentThirdOuter);
+        var componentBackZ = componentExtrusion.Z * 0.5f;
+        if (!lineComponentStage.TryProjectScenePosition(
+                new System.Numerics.Vector3(
+                    componentFirstMidpoint.X,
+                    componentFirstMidpoint.Y,
+                    componentBackZ),
+                out var componentFirstBackSample,
+                out _)
+            || !lineComponentStage.TryProjectScenePosition(
+                new System.Numerics.Vector3(
+                    componentSecondMidpoint.X,
+                    componentSecondMidpoint.Y,
+                    componentBackZ),
+                out var componentSecondBackSample,
+                out _)
+            || !lineComponentStage.TryProjectScenePosition(
+                new System.Numerics.Vector3(
+                    componentThirdMidpoint.X,
+                    componentThirdMidpoint.Y,
+                    componentBackZ),
+                out var componentThirdBackSample,
+                out _)
+            || !lineComponentStage.TryProjectScenePoint(
+                componentFirst,
+                componentFirstJoint,
+                out var componentFirstJointScreen,
+                out _))
+        {
+            throw new InvalidOperationException(
+                "The shared Sharp Line shell fixture could not project its member samples.");
+        }
+        var componentBackItem = componentBackItems[0];
+        var componentFirstBackContained = ProjectedFillContainsMargin(
+            componentBackItem.Contours,
+            Point.Round(componentFirstBackSample),
+            0);
+        var componentSecondBackContained = ProjectedFillContainsMargin(
+            componentBackItem.Contours,
+            Point.Round(componentSecondBackSample),
+            0);
+        var componentThirdBackContained = ProjectedFillContainsMargin(
+            componentBackItem.Contours,
+            Point.Round(componentThirdBackSample),
+            0);
+        var componentFirstResolved = lineComponentStage.TryResolveReference3DSharedShellHit(
+            Point.Round(componentFirstBackSample),
+            componentBackItem,
+            out var componentFirstHit);
+        var componentSecondResolved = lineComponentStage.TryResolveReference3DSharedShellHit(
+            Point.Round(componentSecondBackSample),
+            componentBackItem,
+            out var componentSecondHit);
+        var componentThirdResolved = lineComponentStage.TryResolveReference3DSharedShellHit(
+            Point.Round(componentThirdBackSample),
+            componentBackItem,
+            out var componentThirdHit);
+        var componentJointResolved = lineComponentStage.TryResolveReference3DSharedShellHit(
+            Point.Round(componentFirstJointScreen),
+            componentBackItem,
+            out var componentJointHit);
+        if (!componentFirstBackContained
+            || !componentSecondBackContained
+            || !componentThirdBackContained
+            || !componentFirstResolved
+            || componentFirstHit != componentFirst
+            || !componentSecondResolved
+            || componentSecondHit != componentSecond
+            || !componentThirdResolved
+            || componentThirdHit != componentThird
+            || !componentJointResolved
+            || (componentJointHit != componentFirst && componentJointHit != componentSecond))
+        {
+            throw new InvalidOperationException(
+                "Shared Line extrusion hit resolution collapsed member identity onto its shell owner: "
+                + $"hits={componentFirstHit}/{componentSecondHit}/{componentThirdHit}/{componentJointHit}, "
+                + $"contained={componentFirstBackContained}/{componentSecondBackContained}/"
+                + $"{componentThirdBackContained}, "
+                + $"samples={componentFirstBackSample}/{componentSecondBackSample}/"
+                + $"{componentThirdBackSample}/{componentFirstJointScreen}.");
+        }
+
+        var transparentPreview = new VectorScene();
+        transparentPreview.CreateEmpty();
+        transparentPreview.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(10, 10),
+            0,
+            0,
+            Color.Transparent,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        lineComponentStage.BindDragPreviewScene(
+            transparentPreview,
+            lineComponentScene,
+            hiddenSourceObjects: [componentFirst]);
+        var hiddenOwnerItems = lineComponentStage.GetReference3DLayerRenderItems(componentMembers);
+        var hiddenOwnerBack = hiddenOwnerItems.Single(item =>
+            item.Kind == Reference3DRenderKind.Back);
+        var remainingAfterOwnerHide = new[] { componentSecond, componentThird };
+        if (hiddenOwnerItems.Any(item => item.ObjectIndex == componentFirst)
+            || hiddenOwnerBack.ObjectIndex != componentSecond
+            || hiddenOwnerItems
+                .Where(item => item.Kind is Reference3DRenderKind.Back or Reference3DRenderKind.Side)
+                .Any(item => item.SharedShellObjectIndices is not { } members
+                    || !members.SequenceEqual(remainingAfterOwnerHide))
+            || ProjectedFillContainsMargin(
+                hiddenOwnerBack.Contours,
+                Point.Round(componentFirstBackSample),
+                0)
+            || !ProjectedFillContainsMargin(
+                hiddenOwnerBack.Contours,
+                Point.Round(componentSecondBackSample),
+                0))
+        {
+            throw new InvalidOperationException(
+                "Hiding the prior Sharp Line shell owner removed visible extrusion or retained hidden geometry.");
+        }
+        using (var hiddenOwnerBitmap = RenderGdi(lineComponentStage))
+        {
+            AssertPixelNear(
+                SampleBitmap(hiddenOwnerBitmap, componentFirstBackSample),
+                background,
+                "The GDI shared Line shell retained a hidden owner arm",
+                tolerance: 10);
+        }
+
+        lineComponentStage.BindDragPreviewScene(
+            transparentPreview,
+            lineComponentScene,
+            hiddenSourceObjects: [componentThird]);
+        var hiddenMemberItems = lineComponentStage.GetReference3DLayerRenderItems(componentMembers);
+        var hiddenMemberBack = hiddenMemberItems.Single(item =>
+            item.Kind == Reference3DRenderKind.Back);
+        var remainingAfterMemberHide = new[] { componentFirst, componentSecond };
+        if (hiddenMemberItems.Any(item => item.ObjectIndex == componentThird)
+            || hiddenMemberBack.ObjectIndex != componentFirst
+            || hiddenMemberItems
+                .Where(item => item.Kind is Reference3DRenderKind.Back or Reference3DRenderKind.Side)
+                .Any(item => item.SharedShellObjectIndices is not { } members
+                    || !members.SequenceEqual(remainingAfterMemberHide))
+            || ProjectedFillContainsMargin(
+                hiddenMemberBack.Contours,
+                Point.Round(componentThirdBackSample),
+                0)
+            || !ProjectedFillContainsMargin(
+                hiddenMemberBack.Contours,
+                Point.Round(componentFirstBackSample),
+                0))
+        {
+            throw new InvalidOperationException(
+                "Hiding a non-owner Sharp Line retained its arm in the shared extrusion shell.");
+        }
+        lineComponentStage.BindDragPreviewScene(null);
+        Console.WriteLine("scene_reference_line_component_shell=union_visibility_hit_ok");
+
+        static PointF ProjectedEndpointExteriorSample(PointF endpoint, PointF interior, float distance)
+        {
+            var dx = endpoint.X - interior.X;
+            var dy = endpoint.Y - interior.Y;
+            var length = MathF.Sqrt(dx * dx + dy * dy);
+            if (length <= 0.0001f) return endpoint;
+            return new PointF(
+                endpoint.X + dx / length * distance,
+                endpoint.Y + dy / length * distance);
+        }
+
+        static PointF Midpoint(PointF first, PointF second) => new(
+            (first.X + second.X) * 0.5f,
+            (first.Y + second.Y) * 0.5f);
 
         var outlineScene = new VectorScene();
         outlineScene.CreateEmpty();
@@ -1313,7 +2391,7 @@ internal static partial class Benchmark
         using (var blendDepthBitmap = RenderGdi(blendDepthStage))
         {
             AssertPixelNear(
-                Sample(blendDepthBitmap, blendDepthCenter),
+                SampleBitmap(blendDepthBitmap, blendDepthCenter),
                 farColor,
                 "A nearer bottom blend layer painted over the top display layer");
         }
@@ -1364,6 +2442,7 @@ internal static partial class Benchmark
         var containedStrokeCoverTransform = System.Numerics.Matrix4x4.CreateRotationX(0.72f);
         using var containedStrokeStage = CreateStage(containedStrokeScene);
         var containedStrokeView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(containedStrokeView);
         containedStrokeView.Camera.Projection = CameraProjection.Perspective;
         containedStrokeStage.ConfigureReferenceView(containedStrokeView, SceneDimension.ThreeD);
         containedStrokeStage.ResetReferenceCameraView();
@@ -1508,7 +2587,7 @@ internal static partial class Benchmark
         using (var containedStrokeBitmap = RenderGdi(containedStrokeStage))
         {
             AssertPixelNear(
-                Sample(containedStrokeBitmap, containedStrokeSample),
+                SampleBitmap(containedStrokeBitmap, containedStrokeSample),
                 containedStrokeExpectedColor,
                 "A contained 3D stroke used whole-object depth instead of local cover depth",
                 tolerance: 20);
@@ -1548,6 +2627,7 @@ internal static partial class Benchmark
             shapeKind: ShapeKind.Rectangle);
         using var crossingLineStage = CreateStage(crossingLineScene);
         var crossingLineView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(crossingLineView);
         crossingLineView.Camera.Projection = CameraProjection.Perspective;
         crossingLineStage.ConfigureReferenceView(crossingLineView, SceneDimension.ThreeD);
         crossingLineStage.ResetReferenceCameraView();
@@ -1609,7 +2689,7 @@ internal static partial class Benchmark
             foreach (var sample in crossingLineSamples)
             {
                 AssertPixelNear(
-                    Sample(crossingLineBitmap, sample.Screen),
+                    SampleBitmap(crossingLineBitmap, sample.Screen),
                     sample.ExpectedColor,
                     "A crossing 3D line segment used one whole-object depth across its cover plane",
                     tolerance: 20);
@@ -1682,6 +2762,7 @@ internal static partial class Benchmark
             CompositionResult(crossingCardATransform, crossingCardBTransform),
             crossingScene);
         var crossingView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(crossingView);
         crossingView.Camera.Projection = CameraProjection.Orthographic;
         crossingStage.ConfigureReferenceView(crossingView, SceneDimension.ThreeD);
         crossingStage.ResetReferenceCameraView();
@@ -1721,8 +2802,185 @@ internal static partial class Benchmark
             throw new InvalidOperationException("Changing crossing-card yaw and pitch did not change its perspective projection.");
         }
         AssertCrossingCardView("perspective-oblique");
+        AssertCrossingCardOpacity(useParentFolder: false);
+        AssertCrossingCardOpacity(useParentFolder: true);
         AssertCrossingCardRotationTrajectory();
         AssertCrossingIntersectionEdgeOrbit();
+        RunCrossingIntersectionEdgeOpticalLightingRegression();
+        VectorScene? closedBezierIntersectionScene = null;
+        var closedBezierDirect2DSamples = new List<(Point Screen, Color ExpectedColor)>();
+        RunClosedBezierSurfaceIntersectionRegression();
+        RunDisconnectedOverlapGapRegression();
+
+        void RunCrossingIntersectionEdgeOpticalLightingRegression()
+        {
+            var edgePoint = new PointF();
+            var frontLight = new SceneLightDefinition(
+                "intersection-edge-front-light",
+                "Intersection edge front light",
+                SceneLightKind.Directional,
+                new SceneLightSettings(
+                    true,
+                    Color.FromArgb(255, 255, 56, 36).ToArgb(),
+                    1f,
+                    0f,
+                    System.Numerics.Vector3.Zero,
+                    new System.Numerics.Vector3(0, 180, 0),
+                    System.Numerics.Vector2.Zero,
+                    false,
+                    0f,
+                    0f));
+            var backLight = new SceneLightDefinition(
+                "intersection-edge-back-light",
+                "Intersection edge back light",
+                SceneLightKind.Directional,
+                frontLight.Settings with
+                {
+                    ColorArgb = Color.FromArgb(255, 36, 120, 255).ToArgb(),
+                    RotationDegrees = System.Numerics.Vector3.Zero
+                });
+
+            if (!crossingStage.TryProjectScenePosition(
+                    System.Numerics.Vector3.Zero,
+                    out edgePoint,
+                    out _))
+            {
+                throw new InvalidOperationException(
+                    "The intersection-edge optical fixture could not project its sample point.");
+            }
+
+            var noLightView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            noLightView.Camera.Projection = CameraProjection.Perspective;
+            noLightView.RestoreLights([], lightsWerePresent: true);
+            var noLightEdge = ConfigureEdgeLighting(noLightView);
+            if (noLightEdge.SolidStrokeOpticalBaseArgb is not null
+                || noLightEdge.LocalLightLayers is { Length: > 0 }
+                || noLightEdge.OpticalSurfaceContours is not { Length: > 0 })
+            {
+                throw new InvalidOperationException(
+                    "An unlit intersection edge did not preserve its vector fallback state.");
+            }
+            using var noLightBitmap = RenderGdi(crossingStage);
+            var noLightPixel = SampleBitmap(noLightBitmap, edgePoint);
+            if (!PixelRgbNear(noLightPixel, crossingEdgeColor, 18))
+            {
+                throw new InvalidOperationException(
+                    "An unlit intersection edge changed its original color: "
+                    + $"actual={noLightPixel.ToArgb():X8}, expected={crossingEdgeColor.ToArgb():X8}.");
+            }
+
+            var frontView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            frontView.Camera.Projection = CameraProjection.Perspective;
+            frontView.RestoreLights([frontLight], lightsWerePresent: true);
+            var frontEdge = ConfigureEdgeLighting(frontView);
+            if (frontEdge.OpticalSurfaceContours is not { Length: > 0 }
+                || frontEdge.SolidStrokeOpticalBaseArgb is null
+                || frontEdge.LocalLightLayers is not { Length: > 0 })
+            {
+                throw new InvalidOperationException(
+                    "A front-lit intersection edge did not receive vector optical state.");
+            }
+            using var frontBitmap = RenderGdi(crossingStage);
+            var frontPixel = SampleBitmap(frontBitmap, edgePoint);
+            if (PixelRgbNear(frontPixel, noLightPixel, 18))
+            {
+                throw new InvalidOperationException(
+                    "Front lighting did not change the automatic intersection-edge pixel: "
+                    + $"unlit={noLightPixel.ToArgb():X8}, lit={frontPixel.ToArgb():X8}.");
+            }
+
+            var backView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            backView.Camera.Projection = CameraProjection.Perspective;
+            backView.RestoreLights([backLight], lightsWerePresent: true);
+            var backEdge = ConfigureEdgeLighting(backView);
+            if (backEdge.LocalLightLayers is { Length: > 0 })
+            {
+                throw new InvalidOperationException(
+                    "Back lighting incorrectly crossed the Primary intersection surface.");
+            }
+            using var backBitmap = RenderGdi(crossingStage);
+            var backPixel = SampleBitmap(backBitmap, edgePoint);
+            if (PixelRgbNear(backPixel, frontPixel, 18))
+            {
+                throw new InvalidOperationException(
+                    "Back lighting produced the same automatic intersection-edge color as front lighting: "
+                    + $"front={frontPixel.ToArgb():X8}, back={backPixel.ToArgb():X8}.");
+            }
+
+            var oppositeYaw = 0.43f + MathF.PI;
+            const float oppositePitch = 0.24f;
+            var oppositeNoLightEdge = ConfigureEdgeLighting(
+                noLightView,
+                oppositeYaw,
+                oppositePitch);
+            if (oppositeNoLightEdge.LocalLightLayers is { Length: > 0 }
+                || !crossingStage.TryProjectScenePosition(
+                    System.Numerics.Vector3.Zero,
+                    out var oppositeEdgePoint,
+                    out _))
+            {
+                throw new InvalidOperationException(
+                    "The opposite-side intersection-edge fixture did not preserve its unlit state.");
+            }
+            using var oppositeNoLightBitmap = RenderGdi(crossingStage);
+            var oppositeNoLightPixel = SampleBitmap(oppositeNoLightBitmap, oppositeEdgePoint);
+
+            var oppositeBackEdge = ConfigureEdgeLighting(
+                backView,
+                oppositeYaw,
+                oppositePitch);
+            if (oppositeBackEdge.LocalLightLayers is not { Length: > 0 } oppositeBackLayers
+                || oppositeBackLayers.Any(layer => layer.SolidStrokeStops is not { Length: > 0 }))
+            {
+                throw new InvalidOperationException(
+                    "A directional light on the visible side did not illuminate the opposite-side intersection edge.");
+            }
+            using var oppositeBackBitmap = RenderGdi(crossingStage);
+            var oppositeBackPixel = SampleBitmap(oppositeBackBitmap, oppositeEdgePoint);
+            if (PixelRgbNear(oppositeBackPixel, oppositeNoLightPixel, 18))
+            {
+                throw new InvalidOperationException(
+                    "Opposite-side directional lighting did not change the automatic intersection-edge pixel: "
+                    + $"unlit={oppositeNoLightPixel.ToArgb():X8}, lit={oppositeBackPixel.ToArgb():X8}.");
+            }
+
+            var oppositeFrontEdge = ConfigureEdgeLighting(
+                frontView,
+                oppositeYaw,
+                oppositePitch);
+            if (oppositeFrontEdge.LocalLightLayers is { Length: > 0 })
+            {
+                throw new InvalidOperationException(
+                    "A directional light behind the visible side leaked onto the opposite-side intersection edge.");
+            }
+
+            crossingStage.ConfigureReferenceView(crossingView, SceneDimension.ThreeD);
+            crossingStage.ResetReferenceCameraView();
+            crossingStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            crossingStage.SetSceneCompositionResult(
+                CompositionResult(crossingCardATransform, crossingCardBTransform),
+                crossingScene);
+            Console.WriteLine("scene_reference_intersection_edge_optics=ok");
+
+            Reference3DRenderItem ConfigureEdgeLighting(
+                SceneDefinition view,
+                float yaw = 0.43f,
+                float pitch = -0.24f)
+            {
+                crossingStage.ConfigureReferenceView(view, SceneDimension.ThreeD);
+                crossingStage.ResetReferenceCameraView();
+                crossingStage.SetReferenceCameraOrientation(yaw, pitch);
+                crossingStage.SetSceneCompositionResult(
+                    CompositionResult(crossingCardATransform, crossingCardBTransform),
+                    crossingScene);
+                return crossingStage.GetReference3DSceneRenderItems().Single(item =>
+                    item.Kind == Reference3DRenderKind.IntersectionEdge
+                    && (item.ObjectIndex == crossingCardA
+                        && item.SecondaryObjectIndex == crossingCardB
+                        || item.ObjectIndex == crossingCardB
+                        && item.SecondaryObjectIndex == crossingCardA));
+            }
+        }
 
         var blendedCrossingScene = new VectorScene();
         blendedCrossingScene.RestoreSnapshot(crossingScene.CreateSnapshot());
@@ -1778,7 +3036,7 @@ internal static partial class Benchmark
             foreach (var sample in crossingDirect2DSamples)
             {
                 AssertPixelNear(
-                    Sample(blendedBitmap, sample.Screen),
+                    SampleBitmap(blendedBitmap, sample.Screen),
                     sample.ExpectedColor,
                     "An unrelated blend layer changed the crossing-card foreground",
                     tolerance: 12);
@@ -1839,6 +3097,7 @@ internal static partial class Benchmark
             * System.Numerics.Matrix4x4.CreateTranslation(grazingPivotX, 0, 0);
         using var grazingStage = CreateStage(grazingScene);
         var grazingView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(grazingView);
         grazingView.Camera.Projection = CameraProjection.Orthographic;
         grazingStage.ConfigureReferenceView(grazingView, SceneDimension.ThreeD);
         grazingStage.ResetReferenceCameraView();
@@ -1884,7 +3143,7 @@ internal static partial class Benchmark
         var grazingEdgeColor = Color.FromArgb(grazingEdge.EdgeArgb);
         using (var grazingBitmap = RenderGdi(grazingStage))
         {
-            var grazingActual = Sample(grazingBitmap, grazingEdgeSample);
+            var grazingActual = SampleBitmap(grazingBitmap, grazingEdgeSample);
             if (!PixelRgbNear(grazingActual, grazingEdgeColor, 12))
             {
                 throw new InvalidOperationException(
@@ -1951,6 +3210,7 @@ internal static partial class Benchmark
             shapeKind: ShapeKind.Rectangle);
         using var thickEdgeStage = CreateStage(thickEdgeScene);
         var thickEdgeView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(thickEdgeView);
         thickEdgeView.Camera.Projection = CameraProjection.Perspective;
         thickEdgeStage.ConfigureReferenceView(thickEdgeView, SceneDimension.ThreeD);
         thickEdgeStage.ResetReferenceCameraView();
@@ -2018,6 +3278,7 @@ internal static partial class Benchmark
             CompositionResult(threeCardTransforms),
             threeCardScene);
         var threeCardView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(threeCardView);
         threeCardView.Camera.Projection = CameraProjection.Orthographic;
         threeCardStage.ConfigureReferenceView(threeCardView, SceneDimension.ThreeD);
         threeCardStage.ResetReferenceCameraView();
@@ -2035,10 +3296,10 @@ internal static partial class Benchmark
         AssertThreeCrossingCardView("perspective-oblique");
         AssertOccludedThreeCardEdges();
         var coldPlanBuilds = threeCardStage.Reference3DRenderPlanBuildCount - coldPlanBuildsBefore;
-        if (coldPlanBuilds is < 1 or > 2)
+        if (coldPlanBuilds != 1)
         {
             throw new InvalidOperationException(
-                $"The stable three-card render built {coldPlanBuilds} reference plans; expected one display plan and at most one hit-test plan.");
+                $"The stable three-card render built {coldPlanBuilds} reference plans; expected one shared display and hit-test plan.");
         }
 
         var threeCardFragmentProbeCandidates = new[] { 450f, 700f }
@@ -2303,6 +3564,7 @@ internal static partial class Benchmark
             CompositionResult(cyclicCardTransforms),
             cyclicCardScene);
         var cyclicCardView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(cyclicCardView);
         cyclicCardView.Camera.Projection = CameraProjection.Orthographic;
         cyclicCardStage.ConfigureReferenceView(cyclicCardView, SceneDimension.ThreeD);
         cyclicCardStage.ResetReferenceCameraView();
@@ -2325,7 +3587,6 @@ internal static partial class Benchmark
             "orthographic-finite-cycle",
             minimumSamplesPerObject: 2,
             retainedSamples: cyclicDirect2DSamples);
-        AssertPerspectiveImportedSvgMaterial();
         AssertNearClippedProjectiveMaterial();
 
         var fixedStrokeProject = new VectorProject();
@@ -2373,6 +3634,7 @@ internal static partial class Benchmark
         }
         using var fixedStrokeStage = CreateStage(fixedStrokeScene);
         var fixedStrokeView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(fixedStrokeView);
         fixedStrokeView.Camera.Projection = CameraProjection.Orthographic;
         fixedStrokeStage.ConfigureReferenceView(fixedStrokeView, SceneDimension.ThreeD);
         fixedStrokeStage.ResetReferenceCameraView();
@@ -2454,6 +3716,7 @@ internal static partial class Benchmark
         using (var fixedLineStage = CreateStage(fixedLineScene))
         {
             var fixedLineView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(fixedLineView);
             fixedLineView.Camera.Projection = CameraProjection.Perspective;
             fixedLineStage.ConfigureReferenceView(fixedLineView, SceneDimension.ThreeD);
             fixedLineStage.ResetReferenceCameraView();
@@ -2524,6 +3787,8 @@ internal static partial class Benchmark
         if (!solid.HasExtrusion
             || solid.BackContours.Length == 0
             || solid.SideSurfaces.Length == 0
+            || solid.SidePlanes.Length != solid.SideSurfaces.Length
+            || solid.SidePlaneKeys.Length != solid.SideSurfaces.Length
             || solid.BackContours.Concat(solid.SideSurfaces)
                 .SelectMany(contour => contour.Points)
                 .Any(point => !float.IsFinite(point.X) || !float.IsFinite(point.Y)))
@@ -2561,15 +3826,25 @@ internal static partial class Benchmark
         var extrusionSideItems = extrusionItems
             .Where(item => item.Kind == Reference3DRenderKind.Side)
             .ToArray();
-        if (!extrusionFrontItem.PlaneKey.IsValid
+        if (!extrusionFrontItem.Plane.IsValid
+            || !extrusionFrontItem.PlaneKey.IsValid
             || extrusionFrontItems.Any(item =>
-                !item.PlaneKey.IsValid || item.PlaneKey != extrusionFrontItem.PlaneKey)
+                !item.Plane.IsValid
+                || !item.PlaneKey.IsValid
+                || item.PlaneKey != extrusionFrontItem.PlaneKey)
+            || !extrusionBackItem.Plane.IsValid
             || !extrusionBackItem.PlaneKey.IsValid
             || extrusionFrontItem.PlaneKey.NormalX != -extrusionBackItem.PlaneKey.NormalX
             || extrusionFrontItem.PlaneKey.NormalY != -extrusionBackItem.PlaneKey.NormalY
             || extrusionFrontItem.PlaneKey.NormalZ != -extrusionBackItem.PlaneKey.NormalZ
+            || System.Numerics.Vector3.Dot(
+                    extrusionFrontItem.Plane.Normal,
+                    extrusionBackItem.SurfacePoint - extrusionFrontItem.SurfacePoint) >= 0
+            || System.Numerics.Vector3.Dot(
+                    extrusionBackItem.Plane.Normal,
+                    extrusionBackItem.SurfacePoint - extrusionFrontItem.SurfacePoint) <= 0
             || extrusionSideItems.Length == 0
-            || extrusionSideItems.Any(item => !item.PlaneKey.IsValid))
+            || extrusionSideItems.Any(item => !item.Plane.IsValid || !item.PlaneKey.IsValid))
         {
             throw new InvalidOperationException(
                 "Extruded reference surfaces did not expose valid outward-facing plane keys: "
@@ -2601,6 +3876,52 @@ internal static partial class Benchmark
         if (extrusionStage.GetReference3DExtrusionColor(extrusionObject).ToArgb() != extrusionStroke.ToArgb())
         {
             throw new InvalidOperationException("Scale Z extrusion did not use the object's visible outline color.");
+        }
+        if (extrusionStage.GetReference3DExtrusionSurfaceColor(extrusionBackItem).ToArgb()
+                != extrusionFill.ToArgb()
+            || extrusionSideItems.Any(item =>
+                extrusionStage.GetReference3DExtrusionSurfaceColor(item).ToArgb()
+                    != extrusionStroke.ToArgb()))
+        {
+            throw new InvalidOperationException(
+                "Scale Z extrusion did not keep the fill color on its back face and the outline color on its side walls.");
+        }
+
+        var backFaceTransform = System.Numerics.Matrix4x4.CreateRotationY(MathF.PI);
+        var backFaceExtrusion = System.Numerics.Vector3.Transform(
+            new System.Numerics.Vector3(0, 0, 1_800),
+            backFaceTransform);
+        using (var backFaceStage = CreateStage(extrusionScene))
+        {
+            var backFaceView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(backFaceView);
+            backFaceView.Camera.Projection = CameraProjection.Perspective;
+            backFaceStage.ConfigureReferenceView(backFaceView, SceneDimension.ThreeD);
+            backFaceStage.ResetReferenceCameraView();
+            backFaceStage.SetReferenceCameraOrientation(0.72f, -0.36f);
+            backFaceStage.SetSceneCompositionResult(
+                PoseResult(backFaceTransform, backFaceExtrusion),
+                extrusionScene);
+            var backFaceItems = backFaceStage.GetReference3DLayerRenderItems([extrusionObject]);
+            var backFaceSample = FindVisibleExtrusionSurfaceSample(
+                backFaceStage,
+                backFaceItems,
+                Reference3DRenderKind.Back);
+            var backFaceSideSample = FindVisibleExtrusionSurfaceSample(
+                backFaceStage,
+                backFaceItems,
+                Reference3DRenderKind.Side);
+            using var backFaceBitmap = RenderGdi(backFaceStage);
+            AssertPixelNear(
+                SampleBitmap(backFaceBitmap, backFaceSample),
+                extrusionFill,
+                "The GDI extrusion back face used the outline color instead of the fill color",
+                tolerance: 4);
+            AssertPixelNear(
+                SampleBitmap(backFaceBitmap, backFaceSideSample),
+                extrusionStroke,
+                "The GDI extrusion side wall stopped using the outline color",
+                tolerance: 4);
         }
 
         var side = solid.SideSurfaces
@@ -2663,6 +3984,229 @@ internal static partial class Benchmark
             }
         }
 
+        var extrusionOcclusionBoxColor = Color.FromArgb(255, 40, 142, 224);
+        var extrusionOcclusionCardColor = Color.FromArgb(255, 52, 204, 116);
+        var extrusionOcclusionScene = new VectorScene();
+        extrusionOcclusionScene.CreateEmpty();
+        var extrusionOcclusionBox = extrusionOcclusionScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(3_600, 2_200),
+            angle: 0,
+            stroke: 0,
+            color: extrusionOcclusionBoxColor,
+            strokeColor: Color.Transparent,
+            atoms: 12,
+            shapeKind: ShapeKind.Rectangle);
+        var extrusionOcclusionCard = extrusionOcclusionScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(5_200, 3_600),
+            angle: 0,
+            stroke: 0,
+            color: extrusionOcclusionCardColor,
+            strokeColor: Color.Transparent,
+            atoms: 12,
+            shapeKind: ShapeKind.Rectangle);
+        var extrusionOcclusionResult = new SceneCompositionResult(
+            new SceneCompositionObjectOwner[2],
+            [
+                new SceneCompositionObjectPose(
+                    System.Numerics.Matrix4x4.Identity,
+                    new System.Numerics.Vector3(0, 0, 2_400)),
+                new SceneCompositionObjectPose(System.Numerics.Matrix4x4.Identity)
+            ]);
+        var extrusionOcclusionView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(extrusionOcclusionView);
+        extrusionOcclusionView.Camera.Projection = CameraProjection.Perspective;
+        using var extrusionOcclusionStage = CreateStage(extrusionOcclusionScene);
+        extrusionOcclusionStage.ConfigureReferenceView(
+            extrusionOcclusionView,
+            SceneDimension.ThreeD);
+        extrusionOcclusionStage.ResetReferenceCameraView();
+        extrusionOcclusionStage.SetReferenceCameraOrientation(0.72f, -0.36f);
+        extrusionOcclusionStage.SetSceneCompositionResult(
+            extrusionOcclusionResult,
+            extrusionOcclusionScene);
+
+        var extrusionOcclusionSourceItems = extrusionOcclusionStage
+            .GetReference3DLayerRenderItems([extrusionOcclusionBox, extrusionOcclusionCard]);
+        var extrusionOcclusionBoxSurfaces = extrusionOcclusionSourceItems
+            .Where(item => item.ObjectIndex == extrusionOcclusionBox
+                && item.Kind is Reference3DRenderKind.Back
+                    or Reference3DRenderKind.Side
+                    or Reference3DRenderKind.FrontFill)
+            .ToArray();
+        var extrusionOcclusionCardSurface = extrusionOcclusionSourceItems.Single(item =>
+            item.ObjectIndex == extrusionOcclusionCard
+            && item.Kind == Reference3DRenderKind.FrontFill);
+        if (extrusionOcclusionBoxSurfaces.Length < 6
+            || extrusionOcclusionBoxSurfaces.Any(item =>
+                !item.Plane.IsValid || !item.PlaneKey.IsValid)
+            || !extrusionOcclusionCardSurface.Plane.IsValid)
+        {
+            throw new InvalidOperationException(
+                "The perspective extrusion fixture did not expose exact back, side, and card planes.");
+        }
+
+        var extrusionOcclusionSamples =
+            new List<(Point Screen, int ObjectIndex, Color ExpectedColor)>();
+        var extrusionOcclusionSideSlot = -1;
+        foreach (var sideItem in extrusionOcclusionBoxSurfaces.Where(item =>
+                     item.Kind == Reference3DRenderKind.Side))
+        {
+            var boxSamples = new List<(Point Screen, int ObjectIndex, Color ExpectedColor)>();
+            var cardSamples = new List<(Point Screen, int ObjectIndex, Color ExpectedColor)>();
+            for (var y = 8; y < extrusionOcclusionStage.Height - 8; y += 2)
+            {
+                for (var x = 8; x < extrusionOcclusionStage.Width - 8; x += 2)
+                {
+                    var screen = new Point(x, y);
+                    if (!ProjectedFillContainsMargin(sideItem.Contours, screen, 2)
+                        || !ProjectedFillContainsMargin(
+                            extrusionOcclusionCardSurface.Contours,
+                            screen,
+                            2)
+                        || !extrusionOcclusionStage.TryGetReferenceRay(screen, out var ray)
+                        || !TryIntersectReferenceSurface(
+                            ray,
+                            sideItem.Plane,
+                            out var sideDistance)
+                        || !TryIntersectReferenceSurface(
+                            ray,
+                            extrusionOcclusionCardSurface.Plane,
+                            out var cardDistance)
+                        || Math.Abs(sideDistance - cardDistance) < 80f
+                        || extrusionOcclusionBoxSurfaces.Any(boxSurface =>
+                            !ProjectedFillMembershipStable(
+                                boxSurface.Contours,
+                                screen,
+                                2,
+                                out _)))
+                    {
+                        continue;
+                    }
+
+                    var nearestBoxDistance = float.PositiveInfinity;
+                    var nearestBoxSurface = default(Reference3DRenderItem);
+                    foreach (var boxSurface in extrusionOcclusionBoxSurfaces)
+                    {
+                        if (!ProjectedFillContainsMargin(boxSurface.Contours, screen, 0)
+                            || !TryIntersectReferenceSurface(
+                                ray,
+                                boxSurface.Plane,
+                                out var boxDistance)
+                            || boxDistance >= nearestBoxDistance)
+                        {
+                            continue;
+                        }
+                        nearestBoxDistance = boxDistance;
+                        nearestBoxSurface = boxSurface;
+                    }
+                    if (nearestBoxSurface.Kind != Reference3DRenderKind.Side
+                        || nearestBoxSurface.SurfaceSlot != sideItem.SurfaceSlot)
+                    {
+                        continue;
+                    }
+
+                    var destination = sideDistance < cardDistance ? boxSamples : cardSamples;
+                    if (destination.Count >= 2
+                        || destination.Any(sample =>
+                            CrossingScreenDistance(sample.Screen, screen) < 14f))
+                    {
+                        continue;
+                    }
+                    var expectedObject = sideDistance < cardDistance
+                        ? extrusionOcclusionBox
+                        : extrusionOcclusionCard;
+                    destination.Add((
+                        screen,
+                        expectedObject,
+                        expectedObject == extrusionOcclusionBox
+                            ? extrusionOcclusionBoxColor
+                            : extrusionOcclusionCardColor));
+                }
+            }
+            if (boxSamples.Count != 2 || cardSamples.Count != 2) continue;
+            extrusionOcclusionSideSlot = sideItem.SurfaceSlot;
+            extrusionOcclusionSamples.AddRange(boxSamples);
+            extrusionOcclusionSamples.AddRange(cardSamples);
+            break;
+        }
+        if (extrusionOcclusionSideSlot < 0 || extrusionOcclusionSamples.Count != 4)
+        {
+            throw new InvalidOperationException(
+                "The perspective extrusion fixture did not expose both local depth halves on one side wall.");
+        }
+
+        var extrusionOcclusionItems = extrusionOcclusionStage.GetReference3DSceneRenderItems();
+        var extrusionOcclusionSideFragments = extrusionOcclusionItems
+            .Where(item => item.ObjectIndex == extrusionOcclusionBox
+                && item.Kind == Reference3DRenderKind.Side
+                && item.SurfaceSlot == extrusionOcclusionSideSlot)
+            .ToArray();
+        if (extrusionOcclusionSideFragments.Length < 2
+            || extrusionOcclusionSideFragments.Any(item =>
+                !item.Plane.IsValid
+                || !item.PlaneKey.IsValid
+                || item.FragmentClip is not { Length: > 0 }
+                || item.StableFragmentIdentity == 0)
+            || extrusionOcclusionSideFragments
+                .Select(item => item.StableFragmentIdentity)
+                .Distinct()
+                .Count() < 2)
+        {
+            throw new InvalidOperationException(
+                "A perspective extrusion side wall was not split into stable local-depth fragments.");
+        }
+
+        using (var extrusionOcclusionBitmap = RenderGdi(extrusionOcclusionStage))
+        {
+            foreach (var sample in extrusionOcclusionSamples)
+            {
+                var coveringItems = extrusionOcclusionItems.Where(item =>
+                        item.Kind is Reference3DRenderKind.Back
+                            or Reference3DRenderKind.Side
+                            or Reference3DRenderKind.FrontFill
+                        && ProjectedFillContainsMargin(item.Contours, sample.Screen, 0)
+                        && (item.FragmentClip is not { Length: > 0 }
+                            || ProjectedFillContainsMargin(
+                                item.FragmentClip,
+                                sample.Screen,
+                                0)))
+                    .ToArray();
+                if (coveringItems.Length == 0
+                    || coveringItems[^1].ObjectIndex != sample.ObjectIndex)
+                {
+                    throw new InvalidOperationException(
+                        "The perspective extrusion render plan did not place the local foreground last: "
+                        + $"screen={sample.Screen}, expected={sample.ObjectIndex}, "
+                        + "order=["
+                        + string.Join(",", coveringItems.Select(item =>
+                            $"{item.ObjectIndex}/{item.Kind}/{item.SurfaceSlot}/{item.FragmentSlot}"))
+                        + "].");
+                }
+                AssertPixelNear(
+                    SampleBitmap(extrusionOcclusionBitmap, sample.Screen),
+                    sample.ExpectedColor,
+                    "A perspective extrusion side/card overlap painted the wrong foreground",
+                    tolerance: 12);
+                if (!extrusionOcclusionStage.TryHitTestProjectedObject(
+                        sample.Screen,
+                        1f,
+                        out var extrusionOcclusionHit)
+                    || extrusionOcclusionHit != sample.ObjectIndex)
+                {
+                    throw new InvalidOperationException(
+                        "Perspective extrusion hit testing disagreed with the visible local-depth fragment: "
+                        + $"screen={sample.Screen}, expected={sample.ObjectIndex}, hit={extrusionOcclusionHit}.");
+                }
+            }
+        }
+        Console.WriteLine("scene_reference_extrusion_occlusion=ok");
+        RunDistantExtrusionOrderingRegression();
+        AssertPerspectiveImportedSvgMaterial();
+
         const int denseIntersectionPlaneCount = 14;
         var denseIntersectionScene = new VectorScene();
         denseIntersectionScene.CreateEmpty();
@@ -2694,6 +4238,7 @@ internal static partial class Benchmark
         }
         using var denseIntersectionStage = CreateStage(denseIntersectionScene);
         var denseIntersectionView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(denseIntersectionView);
         denseIntersectionView.Camera.Projection = CameraProjection.Perspective;
         denseIntersectionStage.ConfigureReferenceView(denseIntersectionView, SceneDimension.ThreeD);
         denseIntersectionStage.ResetReferenceCameraView();
@@ -2763,8 +4308,12 @@ internal static partial class Benchmark
 
         Console.WriteLine("scene_reference_projection_2d_spatial_pose=ok");
         Console.WriteLine("scene_reference_projection_2d_gradients_and_blend=ok");
+        Console.WriteLine("scene_reference_normal_and_folder_opacity=ok");
+        Console.WriteLine("scene_reference_transparent_fill_occlusion=ok");
+        Console.WriteLine("scene_reference_gdi_base_frame_cache=ok");
         Console.WriteLine("scene_reference_depth_order_and_hit_test=ok");
         Console.WriteLine("scene_reference_intersecting_planes=ok");
+        Console.WriteLine("scene_reference_closed_bezier_intersection=ok");
         Console.WriteLine("scene_reference_stroke_occlusion_fragments=ok");
         Console.WriteLine("scene_reference_grazing_intersection_edges=ok");
         Console.WriteLine("scene_reference_thick_edge_grazing_orbit=ok");
@@ -2778,6 +4327,768 @@ internal static partial class Benchmark
         Console.WriteLine("scene_reference_extrusion_and_selection=ok");
         Console.WriteLine("scene_reference_render_plan_cache=ok");
         Console.WriteLine($"scene_reference_render_plan_cache_allocated_bytes={referencePlanCacheAllocatedBytes}");
+
+        void RunClosedBezierSurfaceIntersectionRegression()
+        {
+            const float radiusX = 1_800f;
+            const float radiusY = 1_200f;
+            const float kappa = 0.5522848f;
+            var handleX = radiusX * kappa;
+            var handleY = radiusY * kappa;
+            var ellipse = new[]
+            {
+                new PathBezierNode(
+                    new PointF(0, -radiusY),
+                    new PointF(-handleX, -radiusY),
+                    new PointF(handleX, -radiusY)),
+                new PathBezierNode(
+                    new PointF(radiusX, 0),
+                    new PointF(radiusX, -handleY),
+                    new PointF(radiusX, handleY)),
+                new PathBezierNode(
+                    new PointF(0, radiusY),
+                    new PointF(handleX, radiusY),
+                    new PointF(-handleX, radiusY)),
+                new PathBezierNode(
+                    new PointF(-radiusX, 0),
+                    new PointF(-radiusX, handleY),
+                    new PointF(-radiusX, -handleY))
+            };
+
+            var scene = new VectorScene();
+            scene.CreateEmpty();
+            var bottomLayer = scene.AddLayer("Closed Bezier bottom");
+            var firstObject = scene.AppendPathBezierObjectContours(
+                0,
+                [ellipse],
+                0,
+                crossingCardAColor,
+                Color.Transparent,
+                48);
+            var secondObject = scene.AppendPathBezierObjectContours(
+                bottomLayer,
+                [ellipse],
+                0,
+                crossingCardBColor,
+                Color.Transparent,
+                48);
+            scene.CompleteDeferredBuild();
+            if (firstObject < 0
+                || secondObject < 0
+                || !scene.TryGetPathBezierWorldContours(firstObject, out var firstBezier)
+                || !scene.TryGetPathBezierWorldContours(secondObject, out var secondBezier)
+                || firstBezier is not [{ Length: 4 }]
+                || secondBezier is not [{ Length: 4 }])
+            {
+                throw new InvalidOperationException(
+                    "The closed-Bezier intersection fixture did not retain its exact cubic contours.");
+            }
+
+            using var stage = CreateStage(scene);
+            var view = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(view);
+            view.Camera.Projection = CameraProjection.Perspective;
+            stage.ConfigureReferenceView(view, SceneDimension.ThreeD);
+            stage.ResetReferenceCameraView();
+            stage.SetSceneCompositionResult(
+                CompositionResult(crossingCardATransform, crossingCardBTransform),
+                scene);
+
+            for (var warmup = 0; warmup < 3; warmup++)
+            {
+                stage.SetReferenceCameraOrientation(0.40f + warmup * 0.003f, -0.22f);
+                _ = stage.GetReference3DSceneRenderItems();
+            }
+
+            const int samples = 9;
+            const long allocatedByteBudget = 800_000;
+            var elapsedTicks = new long[samples];
+            var allocatedBytes = new long[samples];
+            var measuredPlanBuildsBefore = stage.Reference3DRenderPlanBuildCount;
+            for (var sample = 0; sample < samples; sample++)
+            {
+                stage.SetReferenceCameraOrientation(
+                    0.43f + sample * 0.0017f,
+                    -0.24f + sample * 0.0009f);
+                var planBuildsBefore = stage.Reference3DRenderPlanBuildCount;
+                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                var started = Stopwatch.GetTimestamp();
+                _ = stage.GetReference3DSceneRenderItems();
+                elapsedTicks[sample] = Stopwatch.GetTimestamp() - started;
+                allocatedBytes[sample] = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                if (stage.Reference3DRenderPlanBuildCount != planBuildsBefore + 1)
+                {
+                    throw new InvalidOperationException(
+                        "A closed-Bezier performance sample reused a warm render plan: "
+                        + $"sample={sample}, builds={stage.Reference3DRenderPlanBuildCount - planBuildsBefore}.");
+                }
+            }
+            if (stage.Reference3DRenderPlanBuildCount - measuredPlanBuildsBefore != samples)
+            {
+                throw new InvalidOperationException(
+                    "The closed-Bezier performance fixture did not measure nine cold render plans.");
+            }
+            Array.Sort(elapsedTicks);
+            Array.Sort(allocatedBytes);
+            var medianMilliseconds = elapsedTicks[samples / 2] * 1_000d / Stopwatch.Frequency;
+            var medianAllocatedBytes = allocatedBytes[samples / 2];
+            var maximumAllocatedBytes = allocatedBytes[^1];
+            var medianTimeBudgetMet = medianMilliseconds <= RenderCollectBudgetMilliseconds;
+
+            using var extrudedCurveStage = CreateStage(scene);
+            extrudedCurveStage.ConfigureReferenceView(view, SceneDimension.ThreeD);
+            extrudedCurveStage.ResetReferenceCameraView();
+            var firstExtrusion = System.Numerics.Vector3.TransformNormal(
+                System.Numerics.Vector3.UnitZ,
+                crossingCardATransform) * 1_600f;
+            var secondExtrusion = System.Numerics.Vector3.TransformNormal(
+                System.Numerics.Vector3.UnitZ,
+                crossingCardBTransform) * 1_600f;
+            extrudedCurveStage.SetSceneCompositionResult(
+                new SceneCompositionResult(
+                    new SceneCompositionObjectOwner[2],
+                    [
+                        new SceneCompositionObjectPose(crossingCardATransform, firstExtrusion),
+                        new SceneCompositionObjectPose(crossingCardBTransform, secondExtrusion)
+                    ]),
+                scene);
+            extrudedCurveStage.SetReferenceCameraOrientation(0.41f, -0.23f);
+            _ = extrudedCurveStage.GetReference3DSceneRenderItems();
+            extrudedCurveStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            var extrudedAllocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            var extrudedStarted = Stopwatch.GetTimestamp();
+            var extrudedItems = extrudedCurveStage.GetReference3DSceneRenderItems();
+            var extrudedElapsedMilliseconds = (Stopwatch.GetTimestamp() - extrudedStarted)
+                * 1_000d / Stopwatch.Frequency;
+            var extrudedAllocatedBytes = GC.GetAllocatedBytesForCurrentThread()
+                - extrudedAllocatedBefore;
+            const double extrudedCpuBudgetMilliseconds = 250d;
+            const long extrudedAllocatedByteBudget = 32_000_000;
+            Console.WriteLine(
+                "scene_reference_extruded_bezier_intersection_metrics="
+                + $"items={extrudedItems.Length},elapsed_ms={extrudedElapsedMilliseconds:0.000},"
+                + $"cpu_budget_ms={extrudedCpuBudgetMilliseconds:0.000},"
+                + $"allocated_bytes={extrudedAllocatedBytes},"
+                + $"allocated_budget_bytes={extrudedAllocatedByteBudget}");
+            Console.WriteLine(
+                "scene_reference_extruded_bezier_intersection_cpu_budget_met="
+                + (extrudedElapsedMilliseconds <= extrudedCpuBudgetMilliseconds)
+                    .ToString()
+                    .ToLowerInvariant());
+            Console.WriteLine(
+                "scene_reference_extruded_bezier_intersection_allocation_budget_met="
+                + (extrudedAllocatedBytes <= extrudedAllocatedByteBudget)
+                    .ToString()
+                    .ToLowerInvariant());
+
+            stage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            var projectedFirst = stage.GetReference3DProjectedContours(firstObject);
+            var projectedSecond = stage.GetReference3DProjectedContours(secondObject);
+            var items = stage.GetReference3DSceneRenderItems();
+            var firstFragments = items.Where(item => item.ObjectIndex == firstObject
+                && item.Kind == Reference3DRenderKind.FrontFill
+                && item.FragmentClip is { Length: > 0 }).ToArray();
+            var secondFragments = items.Where(item => item.ObjectIndex == secondObject
+                && item.Kind == Reference3DRenderKind.FrontFill
+                && item.FragmentClip is { Length: > 0 }).ToArray();
+            var intersectionEdges = items.Where(item =>
+                item.Kind == Reference3DRenderKind.IntersectionEdge
+                && Math.Min(item.ObjectIndex, item.SecondaryObjectIndex) == firstObject
+                && Math.Max(item.ObjectIndex, item.SecondaryObjectIndex) == secondObject).ToArray();
+            var fragments = firstFragments.Concat(secondFragments).ToArray();
+            var fragmentGeometryValid = fragments.All(item =>
+                item.StableFragmentIdentity != 0
+                && item.FragmentClip is { Length: > 0 } clip
+                && clip.All(contour =>
+                    contour.Closed
+                    && contour.Points.Length >= 3
+                    && contour.Points.All(point =>
+                        float.IsFinite(point.X) && float.IsFinite(point.Y))));
+            var fragmentIdentitiesValid = firstFragments
+                    .Select(item => item.StableFragmentIdentity)
+                    .Distinct()
+                    .Count() == 2
+                && secondFragments
+                    .Select(item => item.StableFragmentIdentity)
+                    .Distinct()
+                    .Count() == 2;
+            var edgeGeometryValid = intersectionEdges is [{ } edge]
+                && float.IsFinite(edge.AverageDepth)
+                && float.IsFinite(edge.EdgeWidth)
+                && edge.EdgeWidth > 0
+                && edge.Contours is [{ Closed: false } edgeContour]
+                && edgeContour.Points.Length >= 2
+                && edgeContour.Points.All(point =>
+                    float.IsFinite(point.X) && float.IsFinite(point.Y));
+            if (projectedFirst is not [{ Closed: true }]
+                || projectedSecond is not [{ Closed: true }]
+                || projectedFirst[0].Points.Length < 16
+                || projectedSecond[0].Points.Length != projectedFirst[0].Points.Length
+                || projectedFirst[0].Points.Any(point =>
+                    !float.IsFinite(point.X) || !float.IsFinite(point.Y))
+                || projectedSecond[0].Points.Any(point =>
+                    !float.IsFinite(point.X) || !float.IsFinite(point.Y))
+                || firstFragments.Length != 2
+                || secondFragments.Length != 2
+                || !fragmentGeometryValid
+                || !fragmentIdentitiesValid
+                || !edgeGeometryValid)
+            {
+                throw new InvalidOperationException(
+                    "Closed-Bezier surface intersection topology was incomplete: "
+                    + $"points={projectedFirst.FirstOrDefault().Points?.Length ?? 0}, "
+                    + $"fragments={firstFragments.Length}/{secondFragments.Length}, "
+                    + $"edges={intersectionEdges.Length}, fragmentGeometry={fragmentGeometryValid}, "
+                    + $"fragmentIdentities={fragmentIdentitiesValid}, edgeGeometry={edgeGeometryValid}.");
+            }
+
+            var visualSamples = new List<(Point Screen, int ObjectIndex, Color Color)>();
+            for (var y = 16; y < stage.Height - 16; y += 6)
+            {
+                for (var x = 16; x < stage.Width - 16; x += 6)
+                {
+                    var screen = new Point(x, y);
+                    if (!ProjectedFillContainsMargin(projectedFirst, screen, 6)
+                        || !ProjectedFillContainsMargin(projectedSecond, screen, 6)
+                        || !stage.TryGetReferenceRay(screen, out var ray)
+                        || !TryIntersectCardPlane(ray, crossingCardATransform, out var firstDepth, out _)
+                        || !TryIntersectCardPlane(ray, crossingCardBTransform, out var secondDepth, out _)
+                        || Math.Abs(firstDepth - secondDepth) < 120f)
+                    {
+                        continue;
+                    }
+
+                    var expectedObject = firstDepth < secondDepth ? firstObject : secondObject;
+                    if (visualSamples.Count(candidate => candidate.ObjectIndex == expectedObject) >= 2
+                        || visualSamples.Any(candidate =>
+                            candidate.ObjectIndex == expectedObject
+                            && CrossingScreenDistance(candidate.Screen, screen) < 18f))
+                    {
+                        continue;
+                    }
+                    visualSamples.Add((
+                        screen,
+                        expectedObject,
+                        expectedObject == firstObject ? crossingCardAColor : crossingCardBColor));
+                }
+            }
+            if (visualSamples.Count(sample => sample.ObjectIndex == firstObject) != 2
+                || visualSamples.Count(sample => sample.ObjectIndex == secondObject) != 2)
+            {
+                throw new InvalidOperationException(
+                    "The closed-Bezier intersection fixture did not expose both local depth halves.");
+            }
+
+            using var bitmap = RenderGdi(stage);
+            foreach (var sample in visualSamples)
+            {
+                AssertPixelNear(
+                    SampleBitmap(bitmap, sample.Screen),
+                    sample.Color,
+                    "A closed-Bezier intersection painted the wrong foreground surface",
+                    tolerance: 12);
+                if (!stage.TryHitTestProjectedObject(sample.Screen, 1f, out var hit)
+                    || hit != sample.ObjectIndex)
+                {
+                    throw new InvalidOperationException(
+                        "Closed-Bezier hit testing disagreed with the visible foreground surface: "
+                        + $"point={sample.Screen}, expected={sample.ObjectIndex}, hit={hit}.");
+                }
+            }
+
+            closedBezierIntersectionScene = scene;
+            closedBezierDirect2DSamples.Clear();
+            closedBezierDirect2DSamples.AddRange(visualSamples.Select(sample => (
+                sample.Screen,
+                sample.Color)));
+
+            Console.WriteLine(
+                "scene_reference_closed_bezier_intersection_metrics="
+                + $"points={projectedFirst[0].Points.Length},"
+                + $"fragments={fragments.Length},edges={intersectionEdges.Length},"
+                + $"median_ms={medianMilliseconds:0.000},"
+                + $"budget_ms={RenderCollectBudgetMilliseconds:0.000},"
+                + $"median_allocated_bytes={medianAllocatedBytes},"
+                + $"max_allocated_bytes={maximumAllocatedBytes},"
+                + $"budget_bytes={allocatedByteBudget},"
+                + $"bytes_per_projected_point={maximumAllocatedBytes / (projectedFirst[0].Points.Length * 2d):0.0}");
+            Console.WriteLine(
+                "scene_reference_closed_bezier_intersection_cpu_budget_met="
+                + medianTimeBudgetMet.ToString().ToLowerInvariant());
+            Console.WriteLine(
+                "scene_reference_closed_bezier_intersection_budget_met="
+                + (maximumAllocatedBytes <= allocatedByteBudget).ToString().ToLowerInvariant());
+        }
+
+        void RunDisconnectedOverlapGapRegression()
+        {
+            const float islandCenterX = 1_300f;
+            const float islandHalfWidth = 420f;
+            const float islandHalfHeight = 460f;
+            const float planeTilt = 0.62f;
+            var firstColor = Color.FromArgb(255, 226, 68, 74);
+            var secondColor = Color.FromArgb(255, 42, 204, 116);
+            var islandContours = new[]
+            {
+                new[]
+                {
+                    new PointF(-islandCenterX - islandHalfWidth, -islandHalfHeight),
+                    new PointF(-islandCenterX + islandHalfWidth, -islandHalfHeight),
+                    new PointF(-islandCenterX + islandHalfWidth, islandHalfHeight),
+                    new PointF(-islandCenterX - islandHalfWidth, islandHalfHeight)
+                },
+                new[]
+                {
+                    new PointF(islandCenterX - islandHalfWidth, -islandHalfHeight),
+                    new PointF(islandCenterX + islandHalfWidth, -islandHalfHeight),
+                    new PointF(islandCenterX + islandHalfWidth, islandHalfHeight),
+                    new PointF(islandCenterX - islandHalfWidth, islandHalfHeight)
+                }
+            };
+
+            var scene = new VectorScene();
+            scene.CreateEmpty();
+            var bottomLayer = scene.AddLayer("Disconnected overlap bottom");
+            var firstObject = scene.AppendPathObjectContours(
+                0,
+                islandContours,
+                0,
+                firstColor,
+                Color.Transparent,
+                16);
+            var secondObject = scene.AppendPathObjectContours(
+                bottomLayer,
+                islandContours,
+                0,
+                secondColor,
+                Color.Transparent,
+                16);
+            scene.CompleteDeferredBuild();
+            if (firstObject < 0
+                || secondObject < 0
+                || !scene.TryGetPathWorldContours(firstObject, out var firstWorldContours)
+                || !scene.TryGetPathWorldContours(secondObject, out var secondWorldContours)
+                || firstWorldContours.Length != 2
+                || secondWorldContours.Length != 2)
+            {
+                throw new InvalidOperationException(
+                    "The disconnected-overlap fixture did not retain two filled islands per object.");
+            }
+
+            var firstTransform = System.Numerics.Matrix4x4.CreateRotationY(planeTilt);
+            var secondTransform = System.Numerics.Matrix4x4.CreateRotationY(-planeTilt);
+            using var stage = CreateStage(scene);
+            var view = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(view);
+            view.Camera.Projection = CameraProjection.Perspective;
+            stage.ConfigureReferenceView(view, SceneDimension.ThreeD);
+            stage.ResetReferenceCameraView();
+            stage.SetReferenceCameraOrientation(0, 0);
+            stage.SetSceneCompositionResult(
+                CompositionResult(firstTransform, secondTransform),
+                scene);
+
+            var firstProjected = stage.GetReference3DProjectedContours(firstObject);
+            var secondProjected = stage.GetReference3DProjectedContours(secondObject);
+            if (stage.EffectiveReferenceProjection != CameraProjection.Perspective
+                || firstProjected.Length != 2
+                || secondProjected.Length != 2
+                || !stage.TryProjectScenePosition(
+                    System.Numerics.Vector3.Zero,
+                    out var projectedGap,
+                    out _))
+            {
+                throw new InvalidOperationException(
+                    "The disconnected-overlap fixture did not project both islands and their central gap.");
+            }
+
+            var gapScreen = Point.Round(projectedGap);
+            var firstGapDepth = 0f;
+            var secondGapDepth = 0f;
+            if (ProjectedFillContainsMargin(firstProjected, gapScreen, 0)
+                || ProjectedFillContainsMargin(secondProjected, gapScreen, 0)
+                || !stage.TryGetReferenceRay(gapScreen, out var gapRay)
+                || !TryIntersectCardPlane(gapRay, firstTransform, out firstGapDepth, out _)
+                || !TryIntersectCardPlane(gapRay, secondTransform, out secondGapDepth, out _)
+                || Math.Abs(firstGapDepth - secondGapDepth) > 1f)
+            {
+                throw new InvalidOperationException(
+                    "The projected plane-equality line did not remain inside the empty gap: "
+                    + $"screen={gapScreen}, depths={firstGapDepth:0.###}/{secondGapDepth:0.###}.");
+            }
+
+            var samples = new List<(Point Screen, int ExpectedObject, Color ExpectedColor)>();
+            for (var y = 12; y < stage.Height - 12 && samples.Count < 2; y += 3)
+            {
+                for (var x = 12; x < stage.Width - 12 && samples.Count < 2; x += 3)
+                {
+                    var screen = new Point(x, y);
+                    if (Math.Abs(screen.X - gapScreen.X) < 12
+                        || !ProjectedFillContainsMargin(firstProjected, screen, 6)
+                        || !ProjectedFillContainsMargin(secondProjected, screen, 6)
+                        || !stage.TryGetReferenceRay(screen, out var ray)
+                        || !TryIntersectCardPlane(ray, firstTransform, out var firstDepth, out _)
+                        || !TryIntersectCardPlane(ray, secondTransform, out var secondDepth, out _)
+                        || Math.Abs(firstDepth - secondDepth) < 80f)
+                    {
+                        continue;
+                    }
+
+                    var firstIsFront = firstDepth < secondDepth;
+                    var expectedObject = firstIsFront ? firstObject : secondObject;
+                    if (samples.Any(sample => sample.ExpectedObject == expectedObject)) continue;
+                    samples.Add((
+                        screen,
+                        expectedObject,
+                        firstIsFront ? firstColor : secondColor));
+                }
+            }
+            if (samples.Select(sample => sample.ExpectedObject).Distinct().Count() != 2
+                || !samples.Any(sample => sample.Screen.X < gapScreen.X - 8)
+                || !samples.Any(sample => sample.Screen.X > gapScreen.X + 8))
+            {
+                throw new InvalidOperationException(
+                    "The perspective disconnected-overlap islands did not expose opposite local depth orders.");
+            }
+
+            var items = stage.GetReference3DSceneRenderItems();
+            if (items.Any(item => item.Kind == Reference3DRenderKind.IntersectionEdge
+                    && Math.Min(item.ObjectIndex, item.SecondaryObjectIndex)
+                        == Math.Min(firstObject, secondObject)
+                    && Math.Max(item.ObjectIndex, item.SecondaryObjectIndex)
+                        == Math.Max(firstObject, secondObject)))
+            {
+                throw new InvalidOperationException(
+                    "An equality line crossing only the empty gap generated a visible IntersectionEdge.");
+            }
+
+            var separatedByCut = false;
+            foreach (var objectIndex in new[] { firstObject, secondObject })
+            {
+                var identities = new ulong[samples.Count];
+                for (var sampleIndex = 0; sampleIndex < samples.Count; sampleIndex++)
+                {
+                    var sample = samples[sampleIndex];
+                    var covering = items.Where(item => item.ObjectIndex == objectIndex
+                            && item.Kind == Reference3DRenderKind.FrontFill
+                            && ProjectedFillContainsMargin(item.Contours, sample.Screen, 0)
+                            && (item.FragmentClip is not { Length: > 0 }
+                                || ProjectedFillContainsMargin(
+                                    item.FragmentClip,
+                                    sample.Screen,
+                                    0)))
+                        .ToArray();
+                    if (covering.Length != 1)
+                    {
+                        throw new InvalidOperationException(
+                            "A disconnected-overlap sample did not map to exactly one fill fragment: "
+                            + $"object={objectIndex}, screen={sample.Screen}, count={covering.Length}.");
+                    }
+                    identities[sampleIndex] = covering[0].StableFragmentIdentity;
+                }
+                separatedByCut |= identities.All(identity => identity != 0)
+                    && identities.Distinct().Count() == samples.Count;
+            }
+            if (!separatedByCut)
+            {
+                throw new InvalidOperationException(
+                    "The disconnected overlap islands were not separated by stable equality-line fragments.");
+            }
+
+            using var bitmap = RenderGdi(stage);
+            foreach (var sample in samples)
+            {
+                AssertPixelNear(
+                    SampleBitmap(bitmap, sample.Screen),
+                    sample.ExpectedColor,
+                    "A disconnected overlap island painted the wrong local foreground",
+                    tolerance: 12);
+                if (!stage.TryHitTestProjectedObject(
+                        sample.Screen,
+                        1f,
+                        out var hit)
+                    || hit != sample.ExpectedObject)
+                {
+                    throw new InvalidOperationException(
+                        "Disconnected-overlap hit testing disagreed with the visible island: "
+                        + $"screen={sample.Screen}, expected={sample.ExpectedObject}, hit={hit}.");
+                }
+            }
+            Console.WriteLine("scene_reference_disconnected_overlap_gap=ok");
+        }
+
+        void RunDistantExtrusionOrderingRegression()
+        {
+            var fillColor = Color.FromArgb(255, 52, 132, 218);
+            var extrusionColor = Color.FromArgb(255, 214, 66, 152);
+            var solidSize = new SizeF(2_800, 1_800);
+            var extrusionVector = new System.Numerics.Vector3(0, 0, 1_600);
+
+            var baselineScene = new VectorScene();
+            baselineScene.CreateEmpty();
+            var baselineObject = AddSolid(baselineScene, PointF.Empty);
+            using var baselineStage = CreateStage(baselineScene);
+            var view = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(view);
+            view.Camera.Projection = CameraProjection.Perspective;
+            ConfigureStage(baselineStage, view);
+            baselineStage.SetSceneCompositionResult(
+                new SceneCompositionResult(
+                    new SceneCompositionObjectOwner[1],
+                    [new SceneCompositionObjectPose(
+                        System.Numerics.Matrix4x4.Identity,
+                        extrusionVector)]),
+                baselineScene);
+            var baselineItems = baselineStage.GetReference3DSceneRenderItems();
+            var baselineOrder = SurfaceOrder(baselineItems, baselineObject);
+            if (!baselineOrder.Any(entry => entry.Kind == Reference3DRenderKind.Back)
+                || !baselineOrder.Any(entry => entry.Kind == Reference3DRenderKind.Side)
+                || !baselineOrder.Any(entry => entry.Kind == Reference3DRenderKind.FrontFill))
+            {
+                throw new InvalidOperationException(
+                    "The distant-extrusion baseline did not expose Back, Side, and FrontFill surfaces.");
+            }
+
+            using var baselineBitmap = RenderGdi(baselineStage);
+            var samples = new List<(Point Screen, Color Color)>();
+            for (var y = 12; y < baselineStage.Height - 12 && samples.Count < 4; y += 6)
+            {
+                for (var x = 12; x < baselineStage.Width - 12 && samples.Count < 4; x += 6)
+                {
+                    var screen = new Point(x, y);
+                    var color = SampleBitmap(baselineBitmap, screen);
+                    if (PixelRgbNear(color, background, 8)
+                        || !baselineStage.TryHitTestProjectedObject(screen, 1f, out var hit)
+                        || hit != baselineObject
+                        || samples.Any(sample =>
+                            CrossingScreenDistance(sample.Screen, screen) < 28f))
+                    {
+                        continue;
+                    }
+                    samples.Add((screen, color));
+                }
+            }
+            if (samples.Count < 3)
+            {
+                throw new InvalidOperationException(
+                    "The distant-extrusion baseline exposed too few stable foreground samples.");
+            }
+
+            var expandedScene = new VectorScene();
+            expandedScene.CreateEmpty();
+            var expandedOriginal = AddSolid(expandedScene, PointF.Empty);
+            var distantObject = AddSolid(expandedScene, new PointF(10_000, 0));
+            using var expandedStage = CreateStage(expandedScene);
+            ConfigureStage(expandedStage, view);
+            expandedStage.SetSceneCompositionResult(
+                new SceneCompositionResult(
+                    new SceneCompositionObjectOwner[2],
+                    [
+                        new SceneCompositionObjectPose(
+                            System.Numerics.Matrix4x4.Identity,
+                            extrusionVector),
+                        new SceneCompositionObjectPose(
+                            System.Numerics.Matrix4x4.Identity,
+                            extrusionVector)
+                    ]),
+                expandedScene);
+            var expandedItems = expandedStage.GetReference3DSceneRenderItems();
+            var expandedOrder = SurfaceOrder(expandedItems, expandedOriginal);
+            var distantOrder = SurfaceOrder(expandedItems, distantObject);
+            if (distantOrder.Length == 0
+                || !TryGetBounds(
+                    expandedItems.Where(item => item.ObjectIndex == expandedOriginal),
+                    out var originalBounds)
+                || !TryGetBounds(
+                    expandedItems.Where(item => item.ObjectIndex == distantObject),
+                    out var distantBounds)
+                || RectangleF.Intersect(originalBounds, distantBounds) is { Width: > 0, Height: > 0 })
+            {
+                throw new InvalidOperationException(
+                    "The distant-extrusion fixture did not retain two non-overlapping projected solids.");
+            }
+            if (!expandedOrder.SequenceEqual(baselineOrder))
+            {
+                throw new InvalidOperationException(
+                    "Adding a distant extrusion changed the original solid's Back/Side/Front order: "
+                    + $"baseline=[{FormatOrder(baselineOrder)}], "
+                    + $"expanded=[{FormatOrder(expandedOrder)}].");
+            }
+
+            using var expandedBitmap = RenderGdi(expandedStage);
+            foreach (var sample in samples)
+            {
+                AssertPixelNear(
+                    SampleBitmap(expandedBitmap, sample.Screen),
+                    sample.Color,
+                    "A distant non-overlapping extrusion changed the original solid foreground",
+                    tolerance: 8);
+                if (!expandedStage.TryHitTestProjectedObject(
+                        sample.Screen,
+                        1f,
+                        out var hit)
+                    || hit != expandedOriginal)
+                {
+                    throw new InvalidOperationException(
+                        "A distant extrusion changed the original solid's projected hit: "
+                        + $"screen={sample.Screen}, expected={expandedOriginal}, hit={hit}.");
+                }
+            }
+            Console.WriteLine("scene_reference_distant_extrusion_order_stability=ok");
+
+            int AddSolid(VectorScene target, PointF center)
+            {
+                return target.AddObject(
+                    0,
+                    center,
+                    solidSize,
+                    angle: 0,
+                    stroke: 84,
+                    color: fillColor,
+                    strokeColor: extrusionColor,
+                    atoms: 24,
+                    shapeKind: ShapeKind.Rectangle);
+            }
+
+            static void ConfigureStage(StageControl target, SceneDefinition targetView)
+            {
+                target.ConfigureReferenceView(targetView, SceneDimension.ThreeD);
+                if (target.EffectiveReferenceProjection != CameraProjection.Perspective)
+                {
+                    throw new InvalidOperationException(
+                        "The distant-extrusion occlusion regression did not enter perspective projection.");
+                }
+                target.ResetReferenceCameraView();
+                target.SetReferenceCameraOrientation(0.68f, -0.34f);
+            }
+
+            static (
+                Reference3DRenderKind Kind,
+                int SurfaceSlot,
+                ulong StableFragmentIdentity,
+                int FragmentSlot)[] SurfaceOrder(
+                    IEnumerable<Reference3DRenderItem> source,
+                    int objectIndex)
+            {
+                return source.Where(item => item.ObjectIndex == objectIndex
+                        && item.Kind is Reference3DRenderKind.Back
+                            or Reference3DRenderKind.Side
+                            or Reference3DRenderKind.FrontFill)
+                    .Select(item => (
+                        item.Kind,
+                        item.SurfaceSlot,
+                        item.StableFragmentIdentity,
+                        item.FragmentSlot))
+                    .ToArray();
+            }
+
+            static bool TryGetBounds(
+                IEnumerable<Reference3DRenderItem> source,
+                out RectangleF bounds)
+            {
+                var points = source.SelectMany(item => item.Contours)
+                    .SelectMany(contour => contour.Points)
+                    .Where(point => float.IsFinite(point.X) && float.IsFinite(point.Y))
+                    .ToArray();
+                if (points.Length == 0)
+                {
+                    bounds = RectangleF.Empty;
+                    return false;
+                }
+                bounds = RectangleF.FromLTRB(
+                    points.Min(point => point.X),
+                    points.Min(point => point.Y),
+                    points.Max(point => point.X),
+                    points.Max(point => point.Y));
+                return bounds.Width > 0 && bounds.Height > 0;
+            }
+
+            static string FormatOrder((
+                Reference3DRenderKind Kind,
+                int SurfaceSlot,
+                ulong StableFragmentIdentity,
+                int FragmentSlot)[] order)
+            {
+                return string.Join(',', order.Select(entry =>
+                    $"{entry.Kind}/{entry.SurfaceSlot}/{entry.StableFragmentIdentity}/{entry.FragmentSlot}"));
+            }
+        }
+
+        void AssertCrossingCardOpacity(bool useParentFolder)
+        {
+            var opacityScene = new VectorScene();
+            opacityScene.RestoreSnapshot(crossingScene.CreateSnapshot());
+            var sourceLayer = (int)opacityScene.ObjectLayer[crossingCardA];
+            var opacityLayer = sourceLayer;
+            if (useParentFolder)
+            {
+                opacityScene.ActiveLayer = sourceLayer;
+                opacityLayer = opacityScene.AddFolderLayer("Crossing opacity folder");
+            }
+            opacityScene.LayerOpacity[opacityLayer] = 0.5f;
+
+            using var opacityStage = CreateStage(opacityScene);
+            var opacityView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(opacityView);
+            opacityView.Camera.Projection = CameraProjection.Perspective;
+            opacityStage.ConfigureReferenceView(opacityView, SceneDimension.ThreeD);
+            opacityStage.ResetReferenceCameraView();
+            opacityStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            opacityStage.SetSceneCompositionResult(
+                CompositionResult(crossingCardATransform, crossingCardBTransform),
+                opacityScene);
+
+            var opacityItems = opacityStage.GetReference3DSceneRenderItems();
+            var crossingEdges = opacityItems.Count(item =>
+                item.Kind == Reference3DRenderKind.IntersectionEdge
+                && item.ObjectIndex is 0 or 1
+                && item.SecondaryObjectIndex is 0 or 1);
+            if (opacityScene.HasNonNormalLayerBlendModes
+                || crossingEdges == 0
+                || new[] { crossingCardA, crossingCardB }.Any(objectIndex =>
+                    opacityItems.Count(item => item.ObjectIndex == objectIndex
+                        && item.Kind == Reference3DRenderKind.FrontFill
+                        && item.FragmentClip is { Length: > 0 }) < 2)
+                || opacityItems.Any(item => item.ObjectIndex == crossingCardA
+                    && item.Kind != Reference3DRenderKind.IntersectionEdge
+                    && Math.Abs(item.MaterialOpacity - 0.5f) > 0.000001f)
+                || opacityItems.Any(item => item.ObjectIndex == crossingCardB
+                    && item.Kind != Reference3DRenderKind.IntersectionEdge
+                    && Math.Abs(item.MaterialOpacity - 1f) > 0.000001f))
+            {
+                throw new InvalidOperationException(
+                    "Normal layer or folder opacity broke the global crossing-surface render plan.");
+            }
+
+            var transparentFrontColor = LayerBlendCompositor.CompositeColorForRegression(
+                crossingCardBColor,
+                crossingCardAColor,
+                LayerBlendMode.Normal,
+                opacity: 0.5f);
+            using var opacityBitmap = RenderGdi(opacityStage);
+            foreach (var sample in crossingDirect2DSamples)
+            {
+                var expected = sample.ObjectIndex == crossingCardA
+                    ? transparentFrontColor
+                    : crossingCardBColor;
+                AssertPixelNear(
+                    SampleBitmap(opacityBitmap, sample.Screen),
+                    expected,
+                    useParentFolder
+                        ? "Parent-folder opacity broke crossing-surface depth"
+                        : "Normal layer opacity broke crossing-surface depth",
+                    tolerance: 18);
+                if (!opacityStage.TryHitTestProjectedObject(
+                        sample.Screen,
+                        1f,
+                        out var hit)
+                    || hit != sample.ObjectIndex)
+                {
+                    throw new InvalidOperationException(
+                        "Normal opacity changed the foreground object selected by spatial hit testing.");
+                }
+            }
+        }
 
         void AssertCrossingCardView(string label)
         {
@@ -2844,7 +5155,7 @@ internal static partial class Benchmark
             foreach (var sample in samples)
             {
                 AssertPixelNear(
-                    Sample(bitmap, sample.Screen),
+                    SampleBitmap(bitmap, sample.Screen),
                     sample.ExpectedColor,
                     $"The {label} crossing-card projection painted the wrong foreground object",
                     tolerance: 12);
@@ -2867,7 +5178,7 @@ internal static partial class Benchmark
                 crossingOccludedStrokeSamples.AddRange(FindOccludedCrossingCardStrokeSamples());
                 foreach (var sample in crossingOccludedStrokeSamples)
                 {
-                    var actual = Sample(bitmap, sample.Screen);
+                    var actual = SampleBitmap(bitmap, sample.Screen);
                     if (!PixelRgbNear(actual, sample.ExpectedColor, 20))
                     {
                         var diagnosticItems = crossingStage.GetReference3DSceneRenderItems()
@@ -2969,7 +5280,7 @@ internal static partial class Benchmark
                     using var bitmap = RenderGdi(crossingStage);
                     foreach (var sample in samples)
                     {
-                        var actual = Sample(bitmap, sample.Screen);
+                        var actual = SampleBitmap(bitmap, sample.Screen);
                         if (!PixelRgbNear(actual, sample.ExpectedColor, 20))
                         {
                             var diagnosticItems = crossingStage.GetReference3DSceneRenderItems()
@@ -3134,7 +5445,9 @@ internal static partial class Benchmark
         {
             const int frameCount = 33;
             var anchors = new[] { -700f, 0f, 700f };
-            var perspectiveView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            var perspectiveView = new SceneDefinition();
+            ConfigureNeutralReferenceLighting(perspectiveView);
+            perspectiveView.Dimension = SceneDimension.ThreeD;
             perspectiveView.Camera.Projection = CameraProjection.Perspective;
             grazingStage.ConfigureReferenceView(perspectiveView, SceneDimension.ThreeD);
             grazingStage.ResetReferenceCameraView();
@@ -3605,7 +5918,7 @@ internal static partial class Benchmark
             foreach (var sample in samples)
             {
                 var point = mapPoint is null ? sample.Point : mapPoint(sample.Point);
-                var actual = Sample(bitmap, point);
+                var actual = SampleBitmap(bitmap, point);
                 if (!PixelRgbNear(actual, sample.Expected, 28)
                     || PixelRgbNear(actual, sample.Forbidden, 18))
                 {
@@ -3742,7 +6055,7 @@ internal static partial class Benchmark
             foreach (var sample in threeCardOccludedEdgeSamples)
             {
                 AssertPixelNear(
-                    Sample(bitmap, sample.Screen),
+                    SampleBitmap(bitmap, sample.Screen),
                     sample.ExpectedColor,
                     "A three-card intersection edge showed through the foreground surface",
                     tolerance: 20);
@@ -3835,7 +6148,7 @@ internal static partial class Benchmark
             var renderItems = stage.GetReference3DSceneRenderItems();
             foreach (var sample in samples)
             {
-                var actual = Sample(bitmap, sample.Screen);
+                var actual = SampleBitmap(bitmap, sample.Screen);
                 if (!PixelRgbNear(actual, sample.ExpectedColor, 12))
                 {
                     var coveringOrder = renderItems
@@ -3970,6 +6283,39 @@ internal static partial class Benchmark
             return true;
         }
 
+        static Point FindVisibleExtrusionSurfaceSample(
+            StageControl stage,
+            IReadOnlyList<Reference3DRenderItem> items,
+            Reference3DRenderKind targetKind)
+        {
+            for (var y = 8; y < stage.Height - 8; y += 2)
+            {
+                for (var x = 8; x < stage.Width - 8; x += 2)
+                {
+                    var screen = new Point(x, y);
+                    Reference3DRenderKind? visibleKind = null;
+                    foreach (var item in items)
+                    {
+                        if (item.Kind is not (Reference3DRenderKind.Back
+                            or Reference3DRenderKind.Side
+                            or Reference3DRenderKind.FrontFill)
+                            || !ProjectedFillContainsMargin(item.Contours, screen, 3)
+                            || item.FragmentClip is { Length: > 0 }
+                            && !ProjectedFillContainsMargin(item.FragmentClip, screen, 3))
+                        {
+                            continue;
+                        }
+                        visibleKind = item.Kind;
+                    }
+
+                    if (visibleKind == targetKind) return screen;
+                }
+            }
+
+            throw new InvalidOperationException(
+                $"The extrusion color fixture exposed no stable {targetKind} pixel.");
+        }
+
         static bool ProjectedFillMembershipStable(
             IReadOnlyList<Reference3DProjectedContour> contours,
             Point point,
@@ -3995,6 +6341,24 @@ internal static partial class Benchmark
                 }
             }
             return true;
+        }
+
+        static bool TryIntersectReferenceSurface(
+            SpatialRay ray,
+            Reference3DSurfacePlane plane,
+            out float distance)
+        {
+            distance = 0;
+            if (!plane.IsValid) return false;
+            var denominator = System.Numerics.Vector3.Dot(ray.Direction, plane.Normal);
+            if (!float.IsFinite(denominator) || Math.Abs(denominator) <= 0.000001f)
+            {
+                return false;
+            }
+            distance = (plane.Distance
+                    - System.Numerics.Vector3.Dot(plane.Normal, ray.Origin))
+                / denominator;
+            return float.IsFinite(distance) && distance > 0;
         }
 
         bool TryIntersectCrossingCard(
@@ -4159,6 +6523,7 @@ internal static partial class Benchmark
             nearScene.Argb[nearObject] = Color.White.ToArgb();
             using var nearStage = CreateStage(nearScene);
             var perspectiveView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(perspectiveView);
             perspectiveView.Camera.Projection = CameraProjection.Perspective;
             nearStage.ConfigureReferenceView(perspectiveView, SceneDimension.ThreeD);
             nearStage.ResetReferenceCameraView();
@@ -4297,6 +6662,7 @@ internal static partial class Benchmark
                 128).ToArgb();
             using var materialStage = CreateStage(materialScene);
             var perspectiveView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(perspectiveView);
             perspectiveView.Camera.Projection = CameraProjection.Perspective;
             materialStage.ConfigureReferenceView(perspectiveView, SceneDimension.ThreeD);
             materialStage.ResetReferenceCameraView();
@@ -4338,7 +6704,7 @@ internal static partial class Benchmark
                         LayerBlendMode.Normal);
                     materialExpectedSamples.Add((sourcePoint, expected, sample.Label));
                     AssertPixelNear(
-                        Sample(bitmap, projected),
+                        SampleBitmap(bitmap, projected),
                         expected,
                         $"Perspective SVG {sample.Label} lost its source-space material position",
                         tolerance: 24);
@@ -4358,7 +6724,7 @@ internal static partial class Benchmark
                 }
                 materialExpectedSamples.Add((outsideSource, background, "outside contour"));
                 AssertPixelNear(
-                    Sample(bitmap, outsideProjected),
+                    SampleBitmap(bitmap, outsideProjected),
                     background,
                     "Perspective SVG material escaped its projected outer contour",
                     tolerance: 4);
@@ -4400,6 +6766,107 @@ internal static partial class Benchmark
                 throw new InvalidOperationException(
                     "The real-HWND Direct2D Stage did not render the perspective SVG material mesh.");
             }
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            var direct2DReferencePlanBuilds = direct2DStage.Reference3DRenderPlanBuildCount;
+            if (direct2DStage.LastDirect2DBaseFrameCacheBuilds != 1
+                || direct2DStage.LastDirect2DBaseFrameCacheReuses != 0)
+            {
+                throw new InvalidOperationException(
+                    "The initial Direct2D reference-3D frame did not populate its base-frame cache.");
+            }
+            direct2DStage.SetReference3DSelection([materialObject]);
+            direct2DStage.Update();
+            Application.DoEvents();
+            if (direct2DStage.LastDirect2DBaseFrameCacheBuilds != 0
+                || direct2DStage.LastDirect2DBaseFrameCacheReuses != 1
+                || direct2DStage.Reference3DRenderPlanBuildCount != direct2DReferencePlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "A Direct2D reference-3D selection overlay rebuilt the stable base frame or render plan.");
+            }
+            direct2DStage.SetSpatialTransformGizmo(
+                System.Numerics.Vector3.Zero,
+                SpatialTransformMode.Move,
+                [materialObject]);
+            direct2DStage.Update();
+            Application.DoEvents();
+            if (direct2DStage.LastDirect2DBaseFrameCacheBuilds != 0
+                || direct2DStage.LastDirect2DBaseFrameCacheReuses != 1
+                || direct2DStage.Reference3DRenderPlanBuildCount != direct2DReferencePlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "A Direct2D reference-3D Gizmo overlay rebuilt the stable base frame or render plan.");
+            }
+            var lightGizmoFixture = SceneLightDefinition.CreateDefaultDirectional();
+            direct2DStage.SetSceneLightGizmo(lightGizmoFixture.Kind, lightGizmoFixture.Settings);
+            direct2DStage.Update();
+            Application.DoEvents();
+            if (!direct2DStage.TryGetSceneLightGizmoScreenGeometry(out var direct2DLightGizmoGeometry)
+                || direct2DStage.LastDirect2DBaseFrameCacheBuilds != 0
+                || direct2DStage.LastDirect2DBaseFrameCacheReuses != 1
+                || direct2DStage.Reference3DRenderPlanBuildCount != direct2DReferencePlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "A Direct2D light-Gizmo overlay rebuilt the stable base frame or had no screen geometry.");
+            }
+            using var lightGizmoCapture = materialCapture is not null
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (materialCapture is not null && lightGizmoCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D window could not capture the light-Gizmo overlay.");
+            }
+            if (lightGizmoCapture is not null
+                && !HasPixelNearColor(
+                    lightGizmoCapture,
+                    CapturePoint(form, direct2DStage, direct2DLightGizmoGeometry.IntensityHandle),
+                    StageControl.SceneLightGizmoIntensityColor,
+                    radius: 5,
+                    tolerance: 18))
+            {
+                throw new InvalidOperationException(
+                    "The Direct2D reference-3D overlay did not paint the light-Gizmo intensity handle.");
+            }
+            direct2DStage.ClearSceneLightGizmo();
+            Console.WriteLine(materialCapture is not null
+                ? "scene_light_gizmo_direct2d_pixels=ok"
+                : "scene_light_gizmo_direct2d_pixels=skipped_no_visible_desktop");
+            direct2DStage.ClearSpatialTransformGizmo();
+            direct2DStage.ClearReference3DSelection();
+            materialScene.SetLayerVisible(0, false);
+            direct2DStage.SetReference3DSelection([materialObject]);
+            direct2DStage.Update();
+            Application.DoEvents();
+            var hiddenDirect2DPlanBuilds = direct2DStage.Reference3DRenderPlanBuildCount;
+            if (!direct2DStage.LastFrameUsedDirect2D
+                || direct2DStage.LastDirect2DBaseFrameCacheBuilds != 1
+                || direct2DStage.LastDirect2DBaseFrameCacheReuses != 0
+                || hiddenDirect2DPlanBuilds <= direct2DReferencePlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "An in-place Direct2D layer visibility change reused a stale reference-3D base frame.");
+            }
+
+            materialScene.SetLayerVisible(0, true);
+            materialScene.LayerOpacity[0] = 0.5f;
+            direct2DStage.ClearReference3DSelection();
+            direct2DStage.Update();
+            Application.DoEvents();
+            if (!direct2DStage.LastFrameUsedDirect2D
+                || direct2DStage.LastDirect2DBaseFrameCacheBuilds != 1
+                || direct2DStage.LastDirect2DBaseFrameCacheReuses != 0
+                || direct2DStage.Reference3DRenderPlanBuildCount <= hiddenDirect2DPlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "Normal opacity fell back from Direct2D or reused a stale reference-3D base frame.");
+            }
+            materialScene.LayerOpacity[0] = 1f;
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
             var direct2DPixelsAvailable = materialCapture is not null;
             if (materialCapture is not null)
             {
@@ -4423,14 +6890,281 @@ internal static partial class Benchmark
                 }
             }
 
+            if (!lineJoinScene.SetLineEndpointStyle(
+                    lineJoinFirst,
+                    startEndpoint: false,
+                    LineEndpointStyle.Sharp)
+                || !lineJoinScene.SetLineEndpointStyle(
+                    lineJoinSecond,
+                    startEndpoint: true,
+                    LineEndpointStyle.Sharp))
+            {
+                throw new InvalidOperationException(
+                    "The Direct2D Line endpoint fixture could not restore its Sharp junction.");
+            }
+            direct2DStage.BindScene(lineJoinScene);
+            direct2DStage.ConfigureReferenceView(curveProjectionView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0.32f, -0.18f);
+            direct2DStage.SetSceneCompositionResult(
+                CompositionResult(
+                    System.Numerics.Matrix4x4.Identity,
+                    System.Numerics.Matrix4x4.Identity),
+                lineJoinScene);
+            var direct2DLineItems = direct2DStage.GetReference3DSceneRenderItems();
+            var direct2DLineOwner = direct2DLineItems.Single(item =>
+                item.ObjectIndex == lineJoinFirst
+                && item.Kind == Reference3DRenderKind.FrontStroke);
+            var direct2DLineWidth = direct2DStage.GetReference3DStrokeWidth(
+                lineJoinFirst,
+                lineJoinStroke);
+            if (!direct2DStage.TryGetReference3DLineEndpointJoin(
+                    lineJoinFirst,
+                    startEndpoint: false,
+                    direct2DLineOwner.Contours,
+                    direct2DLineWidth,
+                    out var direct2DLineJoint,
+                    out var direct2DLineMiters,
+                    out _)
+                || direct2DLineMiters.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Line fixture did not produce a Sharp miter.");
+            }
+            var direct2DLineTip = direct2DLineMiters
+                .SelectMany(miter => new[] { miter.OuterMiter, miter.InnerMiter })
+                .OrderByDescending(point => CrossingScreenDistance(
+                    Point.Round(direct2DLineJoint),
+                    Point.Round(point)))
+                .First();
+            var direct2DLineSample = new PointF(
+                direct2DLineJoint.X + (direct2DLineTip.X - direct2DLineJoint.X) * 0.72f,
+                direct2DLineJoint.Y + (direct2DLineTip.Y - direct2DLineJoint.Y) * 0.72f);
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var sharpLineCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render the Sharp Line endpoint fixture.");
+            }
+            if (direct2DPixelsAvailable && sharpLineCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D window could not capture the Sharp Line endpoint fixture.");
+            }
+            if (sharpLineCapture is not null
+                && !HasPixelNearColor(
+                    sharpLineCapture,
+                    CapturePoint(form, direct2DStage, direct2DLineSample),
+                    lineJoinGradientEnd,
+                    radius: 2,
+                    tolerance: 28))
+            {
+                throw new InvalidOperationException(
+                    "The Direct2D Sharp Line miter followed GradientPath instead of the rendered gradient axis.");
+            }
+
+            if (!lineJoinScene.SetLineEndpointStyle(
+                    lineJoinFirst,
+                    startEndpoint: false,
+                    LineEndpointStyle.Round)
+                || !lineJoinScene.SetLineEndpointStyle(
+                    lineJoinSecond,
+                    startEndpoint: true,
+                    LineEndpointStyle.Round))
+            {
+                throw new InvalidOperationException(
+                    "The Direct2D Line endpoint fixture could not switch its junction to Round.");
+            }
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var roundLineCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render the Round Line endpoint fixture.");
+            }
+            if (direct2DPixelsAvailable && roundLineCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D window could not capture the Round Line endpoint fixture.");
+            }
+            if (roundLineCapture is not null
+                && !PixelRgbNear(
+                    SampleBitmap(
+                        roundLineCapture,
+                        CapturePoint(form, direct2DStage, direct2DLineSample)),
+                    background,
+                    tolerance: 16))
+            {
+                throw new InvalidOperationException(
+                    "The Direct2D Round Line junction retained a stale Sharp miter pixel.");
+            }
+            Console.WriteLine(direct2DPixelsAvailable
+                ? "scene_reference_line_endpoint_direct2d_pixels=ok"
+                : "scene_reference_line_endpoint_direct2d_pixels=skipped_no_visible_desktop");
+
+            scene.SetGradientPaint(
+                planarObject,
+                GradientKind.Linear,
+                gradientStops,
+                new PointF(-1_600, 0),
+                new PointF(1_600, 0));
+            scene.ClearGradientPath(planarObject);
+            direct2DStage.BindScene(scene);
+            direct2DStage.ConfigureReferenceView(perspectiveView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0, 0);
+            direct2DStage.SetSceneCompositionResult(CompositionResult(spatialPose), scene);
+            var perspectiveGradientItems = direct2DStage.GetReference3DSceneRenderItems()
+                .Where(item => item.ObjectIndex == planarObject
+                    && item.Kind == Reference3DRenderKind.FrontFill)
+                .ToArray();
+            var opticalViewport = new Rectangle(Point.Empty, direct2DStage.ClientSize);
+            if (perspectiveGradientItems.Length == 0
+                || perspectiveGradientItems.Any(item =>
+                    item.OpticalSurface is not { } surface
+                    || surface.Bounds.Width <= 0
+                    || surface.Bounds.Height <= 0
+                    || !opticalViewport.IntersectsWith(surface.Bounds)
+                    || surface.PremultipliedPixels.Length
+                        != surface.PixelWidth * surface.PixelHeight
+                    || surface.Bitmap.Width != surface.PixelWidth
+                    || surface.Bitmap.Height != surface.PixelHeight))
+            {
+                throw new InvalidOperationException(
+                    "A perspective fill gradient did not build a bounded shared optical surface.");
+            }
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            if (!direct2DStage.LastFrameUsedDirect2D
+                || direct2DStage.LastDirect2DReference3DProjectiveGradientDomainFills != 0)
+            {
+                throw new InvalidOperationException(
+                    "A perspective fill gradient did not present through the shared Direct2D optical surface.");
+            }
+
+            direct2DStage.BindScene(extrusionScene);
+            var backFaceView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(backFaceView);
+            backFaceView.Camera.Projection = CameraProjection.Perspective;
+            direct2DStage.ConfigureReferenceView(backFaceView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0.72f, -0.36f);
+            direct2DStage.SetSceneCompositionResult(
+                PoseResult(backFaceTransform, backFaceExtrusion),
+                extrusionScene);
+            var direct2DExtrusionItems = direct2DStage.GetReference3DLayerRenderItems([extrusionObject]);
+            var direct2DBackSample = FindVisibleExtrusionSurfaceSample(
+                direct2DStage,
+                direct2DExtrusionItems,
+                Reference3DRenderKind.Back);
+            var direct2DSideSample = FindVisibleExtrusionSurfaceSample(
+                direct2DStage,
+                direct2DExtrusionItems,
+                Reference3DRenderKind.Side);
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var extrusionColorCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render the extrusion back-face fixture.");
+            }
+            if (direct2DPixelsAvailable && extrusionColorCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D window could not capture the extrusion back-face colors.");
+            }
+            if (extrusionColorCapture is not null
+                && (!HasPixelNearColor(
+                        extrusionColorCapture,
+                        CapturePoint(form, direct2DStage, direct2DBackSample),
+                        extrusionFill,
+                        radius: 2,
+                        tolerance: 28)
+                    || !HasPixelNearColor(
+                        extrusionColorCapture,
+                        CapturePoint(form, direct2DStage, direct2DSideSample),
+                        extrusionStroke,
+                        radius: 2,
+                        tolerance: 28)))
+            {
+                throw new InvalidOperationException(
+                    "Direct2D did not keep the fill color on the extrusion back face and the outline color on its side wall.");
+            }
+
+            direct2DStage.BindScene(extrusionOcclusionScene);
+            direct2DStage.ConfigureReferenceView(
+                extrusionOcclusionView,
+                SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0.72f, -0.36f);
+            direct2DStage.SetSceneCompositionResult(
+                extrusionOcclusionResult,
+                extrusionOcclusionScene);
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var extrusionOcclusionCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render perspective extrusion fragments.");
+            }
+            if (direct2DPixelsAvailable && extrusionOcclusionCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D perspective extrusion window could not be captured.");
+            }
+            if (extrusionOcclusionCapture is not null)
+            {
+                foreach (var sample in extrusionOcclusionSamples)
+                {
+                    if (!HasPixelNearColor(
+                            extrusionOcclusionCapture,
+                            CapturePoint(form, direct2DStage, sample.Screen),
+                            sample.ExpectedColor,
+                            radius: 2,
+                            tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            "A Direct2D perspective extrusion fragment painted the wrong foreground: "
+                            + $"screen={sample.Screen}, expected={sample.ExpectedColor.ToArgb():X8}.");
+                    }
+                }
+            }
+            Console.WriteLine(direct2DPixelsAvailable
+                ? "scene_reference_extrusion_occlusion_direct2d=ok"
+                : "scene_reference_extrusion_occlusion_direct2d=skipped_no_visible_desktop");
+
             trajectoryStage.ConfigureReferenceView(perspectiveView, SceneDimension.ThreeD);
             trajectoryStage.ResetReferenceCameraView();
             trajectoryStage.SetReferenceCameraOrientation(0, 0);
             trajectoryStage.SetSceneCompositionResult(CompositionResult(spatialPose), trajectoryScene);
-            var trajectoryExpectedSamples = new List<(PointF Source, Color Expected)>();
+            var trajectoryEdgeSamples = new[]
+            {
+                new PointF(-1_592, -700),
+                new PointF(-1_580, -700),
+                new PointF(-1_568, -700)
+            };
+            var trajectoryExpectedSamples = new List<(PointF Source, Color Expected, bool Edge)>();
             using (var trajectoryBitmap = RenderGdi(trajectoryStage))
             {
-                foreach (var sourcePoint in trajectorySamples)
+                foreach (var sourcePoint in trajectorySamples.Concat(trajectoryEdgeSamples))
                 {
                     if (!trajectoryStage.TryProjectScenePoint(
                             trajectoryObject,
@@ -4440,7 +7174,10 @@ internal static partial class Benchmark
                     {
                         throw new InvalidOperationException("A perspective trajectory-gradient sample could not be projected.");
                     }
-                    trajectoryExpectedSamples.Add((sourcePoint, Sample(trajectoryBitmap, projected)));
+                    trajectoryExpectedSamples.Add((
+                        sourcePoint,
+                        SampleBitmap(trajectoryBitmap, projected),
+                        trajectoryEdgeSamples.Contains(sourcePoint)));
                 }
             }
 
@@ -4482,13 +7219,13 @@ internal static partial class Benchmark
                             trajectoryCapture,
                             capturePoint,
                             sample.Expected,
-                            radius: 2,
-                            tolerance: 32))
+                            radius: sample.Edge ? 0 : 2,
+                            tolerance: sample.Edge ? 64 : 32))
                     {
                         throw new InvalidOperationException(
                             "The Direct2D perspective trajectory gradient disagreed with its GDI material sample: "
                             + $"source={sample.Source}, projected={projected}, capture={capturePoint}, "
-                            + $"actual={Sample(trajectoryCapture, capturePoint).ToArgb():X8}, "
+                            + $"actual={SampleBitmap(trajectoryCapture, capturePoint).ToArgb():X8}, "
                             + $"expected={sample.Expected.ToArgb():X8}.");
                     }
                 }
@@ -4573,6 +7310,54 @@ internal static partial class Benchmark
             {
                 throw new InvalidOperationException("The crossing-card fixture did not retain its oblique Direct2D samples.");
             }
+            var closedBezierScene = closedBezierIntersectionScene
+                ?? throw new InvalidOperationException(
+                    "The closed-Bezier fixture did not retain its Direct2D scene.");
+            if (closedBezierDirect2DSamples.Count != 4)
+            {
+                throw new InvalidOperationException(
+                    "The closed-Bezier fixture did not retain four Direct2D samples.");
+            }
+            direct2DStage.BindScene(closedBezierScene);
+            direct2DStage.ConfigureReferenceView(crossingView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0.43f, -0.24f);
+            direct2DStage.SetSceneCompositionResult(
+                CompositionResult(crossingCardATransform, crossingCardBTransform),
+                closedBezierScene);
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var closedBezierCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render closed-Bezier surface fragments.");
+            }
+            if (direct2DPixelsAvailable && closedBezierCapture is null)
+            {
+                throw new InvalidOperationException(
+                    "The visible Direct2D closed-Bezier window could not be captured.");
+            }
+            if (closedBezierCapture is not null)
+            {
+                foreach (var sample in closedBezierDirect2DSamples)
+                {
+                    if (!HasPixelNearColor(
+                            closedBezierCapture,
+                            CapturePoint(form, direct2DStage, sample.Screen),
+                            sample.ExpectedColor,
+                            radius: 2,
+                            tolerance: 28))
+                    {
+                        throw new InvalidOperationException(
+                            $"The Direct2D closed-Bezier fragment painted the wrong foreground at {sample.Screen}.");
+                    }
+                }
+            }
+
             direct2DStage.BindScene(crossingScene);
             direct2DStage.ConfigureReferenceView(crossingView, SceneDimension.ThreeD);
             direct2DStage.ResetReferenceCameraView();
@@ -4871,7 +7656,7 @@ internal static partial class Benchmark
             }
             var grazingCapturePoint = CapturePoint(form, direct2DStage, grazingEdgeSample);
             if (grazingCapture is not null
-                && !PixelRgbNear(Sample(grazingCapture, grazingCapturePoint), grazingEdgeColor, 16))
+                && !PixelRgbNear(SampleBitmap(grazingCapture, grazingCapturePoint), grazingEdgeColor, 16))
             {
                 throw new InvalidOperationException(
                     "Direct2D did not paint the successful singleton-fragment intersection edge.");
@@ -4915,9 +7700,268 @@ internal static partial class Benchmark
                     }
                 }
             }
+            var direct2DOpticsScene = new VectorScene();
+            direct2DOpticsScene.CreateEmpty();
+            var direct2DOpticsReceiver = direct2DOpticsScene.AddObject(
+                0,
+                PointF.Empty,
+                new SizeF(2400, 1800),
+                angle: 0,
+                stroke: 0,
+                color: Color.FromArgb(255, 112, 156, 202),
+                strokeColor: Color.Transparent,
+                atoms: 12,
+                shapeKind: ShapeKind.Rectangle);
+            var direct2DOpticsView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            direct2DOpticsView.RestoreLights(
+            [
+                new SceneLightDefinition(
+                    Guid.NewGuid().ToString("N"),
+                    "Direct2D point fixture",
+                    SceneLightKind.Point,
+                    new SceneLightSettings(
+                        true,
+                        Color.White.ToArgb(),
+                        3f,
+                        1500f,
+                        new System.Numerics.Vector3(0, 0, -1000),
+                        System.Numerics.Vector3.Zero,
+                        System.Numerics.Vector2.Zero,
+                        false,
+                        0,
+                        0))
+            ],
+            lightsWerePresent: true);
+            direct2DStage.BindScene(direct2DOpticsScene);
+            direct2DStage.ConfigureReferenceView(direct2DOpticsView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0, 0);
+            direct2DStage.SetSceneCompositionResult(
+                CompositionResult(System.Numerics.Matrix4x4.Identity),
+                direct2DOpticsScene);
+            var direct2DOpticsField = direct2DStage.GetReference3DSceneRenderItems()
+                .Where(item => item.ObjectIndex == direct2DOpticsReceiver
+                    && item.Kind == Reference3DRenderKind.FrontFill)
+                .SelectMany(item => item.LocalLightLayers ?? [])
+                .FirstOrDefault();
+            if (direct2DOpticsField.LinearStops is not { Length: >= 9 })
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D point-light fixture did not build a continuous field.");
+            }
+            direct2DStage.Invalidate();
+            direct2DStage.Update();
+            Application.DoEvents();
+            using var direct2DOpticsCapture = direct2DPixelsAvailable
+                ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                : null;
+            if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+            {
+                throw new InvalidOperationException(
+                    "The real-HWND Direct2D Stage did not render the continuous point-light fixture.");
+            }
+            if (direct2DOpticsCapture is not null)
+            {
+                var transform = direct2DOpticsField.GradientTransform;
+                var radialColors = new HashSet<int>();
+                for (var index = 0; index <= 48; index++)
+                {
+                    var radius = 0.4f + index / 48f * 0.3f;
+                    var screen = new PointF(
+                        transform.M21 * radius + transform.M31,
+                        transform.M22 * radius + transform.M32);
+                    var sample = Point.Round(CapturePoint(form, direct2DStage, screen));
+                    if ((uint)sample.X < direct2DOpticsCapture.Width
+                        && (uint)sample.Y < direct2DOpticsCapture.Height)
+                    {
+                        radialColors.Add(direct2DOpticsCapture.GetPixel(sample.X, sample.Y).ToArgb());
+                    }
+                }
+                if (radialColors.Count < 12)
+                {
+                    throw new InvalidOperationException(
+                        $"The Direct2D point-light radius retained visible color bands: unique={radialColors.Count}.");
+                }
+            }
+            var direct2DStrokeScene = new VectorScene();
+            direct2DStrokeScene.CreateEmpty();
+            var direct2DStrokeObject = direct2DStrokeScene.AddObject(
+                0,
+                PointF.Empty,
+                new SizeF(7_200, 5_400),
+                angle: 0,
+                stroke: VectorUnits.MinimumStrokeUnits,
+                color: Color.FromArgb(255, 210, 216, 216),
+                strokeColor: Color.FromArgb(255, 24, 28, 32),
+                atoms: 24,
+                shapeKind: ShapeKind.Rectangle);
+            var direct2DStrokeView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            direct2DStrokeView.Camera.Projection = CameraProjection.Perspective;
+            direct2DStrokeView.RestoreLights(
+            [
+                new SceneLightDefinition(
+                    "direct2d-thin-stroke-ambient",
+                    "Direct2D thin stroke ambient",
+                    SceneLightKind.Ambient,
+                    new SceneLightSettings(
+                        true,
+                        Color.White.ToArgb(),
+                        1f,
+                        0,
+                        System.Numerics.Vector3.Zero,
+                        System.Numerics.Vector3.Zero,
+                        System.Numerics.Vector2.Zero,
+                        false,
+                        0,
+                        0)),
+                new SceneLightDefinition(
+                    "direct2d-thin-stroke-point",
+                    "Direct2D thin stroke point",
+                    SceneLightKind.Point,
+                    new SceneLightSettings(
+                        true,
+                        Color.FromArgb(255, 88, 220, 190).ToArgb(),
+                        3f,
+                        12_000,
+                        new System.Numerics.Vector3(0, 0, 2_000),
+                        System.Numerics.Vector3.Zero,
+                        System.Numerics.Vector2.Zero,
+                        false,
+                        0,
+                        0))
+            ],
+            lightsWerePresent: true);
+            direct2DStage.BindScene(direct2DStrokeScene);
+            direct2DStage.ConfigureReferenceView(direct2DStrokeView, SceneDimension.ThreeD);
+            direct2DStage.ResetReferenceCameraView();
+            direct2DStage.SetReferenceCameraOrientation(0.16f, -0.1f);
+            direct2DStage.SetSceneCompositionResult(
+                new SceneCompositionResult(
+                    [new SceneCompositionObjectOwner("direct2d-thin-stroke", "fixture")],
+                    [new SceneCompositionObjectPose(
+                        System.Numerics.Matrix4x4.Identity,
+                        new System.Numerics.Vector3(0, 0, 450))],
+                    [SpatialOpticalMaterial.Default with { Reflectivity = 0.2f }]),
+                direct2DStrokeScene);
+            direct2DStage.BeginReference3DOpticalInteractionPreview();
+            try
+            {
+                var direct2DStrokeItems = direct2DStage.GetReference3DSceneRenderItems();
+                var direct2DStrokeItem = direct2DStrokeItems.Single(item =>
+                    item.ObjectIndex == direct2DStrokeObject
+                    && item.Kind == Reference3DRenderKind.FrontStroke);
+                var direct2DStrokeFill = direct2DStrokeItems.Single(item =>
+                    item.ObjectIndex == direct2DStrokeObject
+                    && item.Kind == Reference3DRenderKind.FrontFill);
+                if (direct2DStage.LastReference3DOpticalRasterLod != 2
+                    || direct2DStrokeFill.OpticalSurface is null
+                    || direct2DStrokeItem.OpticalSurface is not null
+                    || direct2DStrokeItem.SolidStrokeOpticalBaseArgb is null)
+                {
+                    throw new InvalidOperationException(
+                        "The real-HWND thin-stroke fixture did not keep its lit stroke vector-based "
+                        + "while its fill used the reduced optical preview.");
+                }
+
+                direct2DStage.Invalidate();
+                direct2DStage.Update();
+                Application.DoEvents();
+                using var direct2DStrokeCapture = direct2DPixelsAvailable
+                    ? CapturePresentedStage(form, direct2DStage, Color.Fuchsia)
+                    : null;
+                if (!direct2DStage.LastFrameUsedDirect2D || !direct2DStage.GpuAccelerationActive)
+                {
+                    throw new InvalidOperationException(
+                        "The real-HWND Direct2D Stage did not render the thin lit stroke fixture.");
+                }
+                if (direct2DStrokeCapture is not null)
+                {
+                    foreach (var contour in direct2DStrokeItem.Contours.Where(contour => contour.Closed))
+                    {
+                        var maximumGap = 0;
+                        var currentGap = 0;
+                        for (var pointIndex = 0; pointIndex < contour.Points.Length; pointIndex++)
+                        {
+                            var start = contour.Points[pointIndex];
+                            var end = contour.Points[(pointIndex + 1) % contour.Points.Length];
+                            var dx = end.X - start.X;
+                            var dy = end.Y - start.Y;
+                            var length = MathF.Sqrt(dx * dx + dy * dy);
+                            var samples = Math.Max(2, (int)MathF.Ceiling(length));
+                            for (var sampleIndex = 0; sampleIndex <= samples; sampleIndex++)
+                            {
+                                var amount = sampleIndex / (float)samples;
+                                var capturePoint = CapturePoint(
+                                    form,
+                                    direct2DStage,
+                                    new PointF(
+                                        start.X + dx * amount,
+                                        start.Y + dy * amount));
+                                var centerX = (int)MathF.Round(capturePoint.X);
+                                var centerY = (int)MathF.Round(capturePoint.Y);
+                                var foundStroke = false;
+                                for (var y = Math.Max(0, centerY - 1);
+                                     y <= Math.Min(direct2DStrokeCapture.Height - 1, centerY + 1)
+                                     && !foundStroke;
+                                     y++)
+                                {
+                                    for (var x = Math.Max(0, centerX - 1);
+                                         x <= Math.Min(direct2DStrokeCapture.Width - 1, centerX + 1);
+                                         x++)
+                                    {
+                                        var pixel = direct2DStrokeCapture.GetPixel(x, y);
+                                        if (pixel.R <= 8 && pixel.G <= 8 && pixel.B <= 8)
+                                        {
+                                            throw new InvalidOperationException(
+                                                "The real-HWND Direct2D thin stroke rendered a hard black pixel: "
+                                                + $"at=({x},{y}), actual={pixel.ToArgb():X8}.");
+                                        }
+                                        if (Math.Abs(pixel.R - background.R) > 5
+                                            || Math.Abs(pixel.G - background.G) > 5
+                                            || Math.Abs(pixel.B - background.B) > 5)
+                                        {
+                                            foundStroke = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (foundStroke) currentGap = 0;
+                                else
+                                {
+                                    currentGap++;
+                                    maximumGap = Math.Max(maximumGap, currentGap);
+                                }
+                            }
+                        }
+                        if (maximumGap > 3)
+                        {
+                            throw new InvalidOperationException(
+                                "The real-HWND Direct2D preview broke a thin lit 3D stroke into hard segments: "
+                                + $"maximum_gap={maximumGap}px.");
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                direct2DStage.EndReference3DOpticalInteractionPreview();
+            }
+            Console.WriteLine(direct2DPixelsAvailable
+                ? "scene_optics_continuous_direct2d_pixels=ok"
+                : "scene_optics_continuous_direct2d_pixels=skipped_no_visible_desktop");
+            Console.WriteLine(direct2DPixelsAvailable
+                ? "scene_optics_thin_stroke_direct2d_pixels=ok"
+                : "scene_optics_thin_stroke_direct2d_pixels=skipped_no_visible_desktop");
             Console.WriteLine(direct2DPixelsAvailable
                 ? "scene_reference_projective_direct2d_pixels=ok"
                 : "scene_reference_projective_direct2d_pixels=skipped_no_visible_desktop");
+            Console.WriteLine(direct2DPixelsAvailable
+                ? "scene_reference_closed_bezier_direct2d_pixels=ok"
+                : "scene_reference_closed_bezier_direct2d_pixels=skipped_no_visible_desktop");
+            Console.WriteLine(direct2DPixelsAvailable
+                ? "scene_reference_extrusion_back_color_direct2d_pixels=ok"
+                : "scene_reference_extrusion_back_color_direct2d_pixels=skipped_no_visible_desktop");
+            Console.WriteLine("scene_reference_direct2d_base_frame_cache=ok");
             form.Close();
         }
 
@@ -4962,9 +8006,16 @@ internal static partial class Benchmark
                 for (var index = 0; index < samplePoints.Count; index++)
                 {
                     var samplePoint = samplePoints[index];
-                    expected[index] = Sample(
-                        planarGradientBitmap,
-                        gradientStage.WorldToScreen(samplePoint.X, samplePoint.Y));
+                    if (!gradientStage.TryProjectScenePoint(
+                            gradientObject,
+                            samplePoint,
+                            out var planarSample,
+                            out _))
+                    {
+                        throw new InvalidOperationException(
+                            $"The planar {label} gradient sample {index} could not be projected.");
+                    }
+                    expected[index] = SampleBitmap(planarGradientBitmap, planarSample);
                 }
             }
 
@@ -4983,7 +8034,7 @@ internal static partial class Benchmark
                             $"The {label} gradient sample {index} could not be projected.");
                     }
                     AssertPixelNear(
-                        Sample(spatialGradientBitmap, projectedSample),
+                        SampleBitmap(spatialGradientBitmap, projectedSample),
                         expected[index],
                         $"The 2D front view changed the {label} fill gradient sample {index}",
                         tolerance: 10);
@@ -4991,6 +8042,7 @@ internal static partial class Benchmark
             }
 
             var perspectiveView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+            ConfigureNeutralReferenceLighting(perspectiveView);
             perspectiveView.Camera.Projection = CameraProjection.Perspective;
             gradientStage.ConfigureReferenceView(perspectiveView, SceneDimension.ThreeD);
             gradientStage.ResetReferenceCameraView();
@@ -5010,7 +8062,7 @@ internal static partial class Benchmark
                             $"The perspective {label} gradient sample {index} could not be projected.");
                     }
                     AssertPixelNear(
-                        Sample(perspectiveGradientBitmap, perspectiveSample),
+                        SampleBitmap(perspectiveGradientBitmap, perspectiveSample),
                         expected[index],
                         $"Perspective changed the {label} fill gradient sample {index}",
                         tolerance: path is { Length: > 1 } || kind == GradientKind.ShapeRadial ? 22 : 16);
@@ -5018,6 +8070,192 @@ internal static partial class Benchmark
             }
             gradientStage.ConfigureReferenceView(null, SceneDimension.TwoD);
             gradientStage.SetSceneCompositionResult(CompositionResult(spatialPose), gradientScene);
+        }
+
+        void RunSceneBuildingZTweenDepthRegression()
+        {
+            var project = VectorProject.CreateEmpty();
+            var moverSource = project.DrawingObjects[0];
+            var staticSource = project.AddDrawingObject("Static Z reference");
+            var moverColor = Color.FromArgb(255, 224, 74, 82);
+            var staticColor = Color.FromArgb(255, 48, 190, 126);
+            ConfigureSource(moverSource, moverColor);
+            ConfigureSource(staticSource, staticColor);
+
+            var definition = project.Scenes[0];
+            definition.Dimension = SceneDimension.TwoD;
+            var moverLayerId = definition.Layers[0].Id;
+            if (!project.TryAddSceneLayer(definition.Id, out var staticLayer)
+                || staticLayer is null
+                || !project.TryAddSceneInstance(
+                    definition.Id,
+                    moverSource.Id,
+                    PointF.Empty,
+                    1_000,
+                    moverLayerId,
+                    out var mover)
+                || mover is null
+                || !project.TryAddSceneInstance(
+                    definition.Id,
+                    staticSource.Id,
+                    PointF.Empty,
+                    0,
+                    staticLayer.Id,
+                    out var stationary)
+                || stationary is null)
+            {
+                throw new InvalidOperationException(
+                    "The Scene Building Z-tween depth fixture could not create its layered instances.");
+            }
+
+            var moverTrack = definition.Timeline.FindTrackByTargetId(moverLayerId)
+                ?? throw new InvalidOperationException("The Z-tween mover layer lost its timeline track.");
+            var staticTrack = definition.Timeline.FindTrackByTargetId(staticLayer.Id)
+                ?? throw new InvalidOperationException("The Z-tween static layer lost its timeline track.");
+            var tweenError = string.Empty;
+            if (!definition.Timeline.SetTrackDuration(moverTrack.Id, 3)
+                || !definition.Timeline.SetTrackDuration(staticTrack.Id, 3)
+                || !definition.Timeline.InsertKeyframe(moverTrack.Id, 2)
+                || !mover.SetStateAtFrame(2, mover.EvaluateState(0) with { Z = -1_000 })
+                || !definition.TryCreateTimelineTween(
+                    moverLayerId,
+                    0,
+                    2,
+                    TimelineTweenKind.Classic,
+                    out tweenError))
+            {
+                throw new InvalidOperationException(
+                    $"The Scene Building Z-axis classic tween could not be created: {tweenError}");
+            }
+            if (Math.Abs(mover.EvaluateState(1).Z) > 0.0001f)
+            {
+                throw new InvalidOperationException("The Z-axis classic tween did not pass through the planar midpoint.");
+            }
+
+            for (var sourceFrame = 0; sourceFrame <= 2; sourceFrame++)
+            {
+                var composition = new VectorScene();
+                var result = SceneCompositionBuilder.Build(
+                    composition,
+                    definition,
+                    project.DrawingObjects,
+                    sourceFrame);
+                var moverObject = FindCompositionObject(result, composition, mover.Id);
+                var staticObject = FindCompositionObject(result, composition, stationary.Id);
+                var expectedMoverZ = sourceFrame switch
+                {
+                    0 => 1_000f,
+                    1 => 0f,
+                    _ => -1_000f
+                };
+                if (!result.TryGetPose(moverObject, out var moverPose)
+                    || Math.Abs(moverPose.FlatToScene.M43 - expectedMoverZ) > 0.0001f)
+                {
+                    throw new InvalidOperationException(
+                        $"The Z-tween frame {sourceFrame} composed the mover at the wrong depth.");
+                }
+                if (sourceFrame == 1
+                    && result.ObjectPoses.Any(pose => pose.FlatToScene != System.Numerics.Matrix4x4.Identity))
+                {
+                    throw new InvalidOperationException(
+                        "The planar Z-tween midpoint retained a non-identity composition pose.");
+                }
+
+                using var tweenStage = new StageControl(composition)
+                {
+                    ClientSize = new Size(stageWidth, stageHeight),
+                    BackColor = background,
+                    WorldGridOpacity = 0
+                };
+                tweenStage.ConfigureReferenceView(definition, SceneDimension.TwoD);
+                tweenStage.SetSceneCompositionResult(result, composition);
+                if (!tweenStage.UsesReferenceProjection
+                    || !tweenStage.RendersReferenceProjection
+                    || tweenStage.EffectiveReferenceProjection != CameraProjection.Orthographic
+                    || !tweenStage.TryProjectScenePosition(
+                        System.Numerics.Vector3.Zero,
+                        out var center,
+                        out _))
+                {
+                    throw new InvalidOperationException(
+                        $"The Z-tween frame {sourceFrame} left the stable 2D orthographic spatial pipeline.");
+                }
+
+                var depthPlan = tweenStage.GetReference3DSceneRenderItems();
+                var moverDepths = depthPlan
+                    .Where(item => item.ObjectIndex == moverObject
+                        && item.Kind == Reference3DRenderKind.FrontFill)
+                    .Select(item => item.AverageDepth)
+                    .ToArray();
+                var staticDepths = depthPlan
+                    .Where(item => item.ObjectIndex == staticObject
+                        && item.Kind == Reference3DRenderKind.FrontFill)
+                    .Select(item => item.AverageDepth)
+                    .ToArray();
+                if (moverDepths.Length == 0
+                    || staticDepths.Length == 0
+                    || moverDepths.Any(depth => !float.IsFinite(depth))
+                    || staticDepths.Any(depth => !float.IsFinite(depth))
+                    || moverDepths.Any(moverDepth => staticDepths.Any(staticDepth =>
+                        Math.Abs((moverDepth - staticDepth) - expectedMoverZ) > 0.01f)))
+                {
+                    throw new InvalidOperationException(
+                        $"The Z-tween frame {sourceFrame} render plan lost its signed depth: "
+                        + $"expectedDelta={expectedMoverZ:0.###}, "
+                        + $"mover=[{string.Join(',', moverDepths.Select(depth => depth.ToString("0.###")))}], "
+                        + $"static=[{string.Join(',', staticDepths.Select(depth => depth.ToString("0.###")))}].");
+                }
+
+                var expectedObject = sourceFrame == 0 ? staticObject : moverObject;
+                var expectedColor = sourceFrame == 0 ? staticColor : moverColor;
+                using var bitmap = RenderGdi(tweenStage);
+                AssertPixelNear(
+                    SampleBitmap(bitmap, center),
+                    expectedColor,
+                    $"The Z-tween frame {sourceFrame} painted the wrong depth winner");
+                if (!tweenStage.TryHitTestProjectedObject(
+                        Point.Round(center),
+                        1f,
+                        out var hit)
+                    || hit != expectedObject)
+                {
+                    throw new InvalidOperationException(
+                        $"The Z-tween frame {sourceFrame} hit test did not select its nearest painted object.");
+                }
+            }
+
+            static void ConfigureSource(DrawingObjectDefinition source, Color color)
+            {
+                source.Scene.CreateEmpty(frameCount: 1);
+                source.Scene.AddObject(
+                    0,
+                    PointF.Empty,
+                    new SizeF(2_400, 2_000),
+                    0,
+                    0,
+                    color,
+                    Color.Transparent,
+                    12,
+                    ShapeKind.Rectangle);
+            }
+
+            static int FindCompositionObject(
+                SceneCompositionResult result,
+                VectorScene composition,
+                string rootInstanceId)
+            {
+                for (var objectIndex = 0; objectIndex < composition.ObjectCount; objectIndex++)
+                {
+                    if (!result.TryGetOwner(objectIndex, out var owner)) continue;
+                    var root = string.IsNullOrWhiteSpace(owner.RootInstanceId)
+                        ? owner.InstanceId
+                        : owner.RootInstanceId;
+                    if (string.Equals(root, rootInstanceId, StringComparison.Ordinal)) return objectIndex;
+                }
+
+                throw new InvalidOperationException(
+                    $"The Z-tween composition lost instance '{rootInstanceId}'.");
+            }
         }
 
         StageControl CreateStage(VectorScene source)
@@ -5125,13 +8363,6 @@ internal static partial class Benchmark
                 [new SceneCompositionObjectPose(transform, extrusionVector)]);
         }
 
-        static Color Sample(Bitmap bitmap, PointF point)
-        {
-            return bitmap.GetPixel(
-                Math.Clamp((int)MathF.Round(point.X), 0, bitmap.Width - 1),
-                Math.Clamp((int)MathF.Round(point.Y), 0, bitmap.Height - 1));
-        }
-
         static bool HasPixelNearColor(
             Bitmap bitmap,
             PointF point,
@@ -5171,10 +8402,23 @@ internal static partial class Benchmark
         }
     }
 
+    private static void ConfigureNeutralReferenceLighting(SceneDefinition definition)
+    {
+        var ambient = SceneLightDefinition.CreateDefaultAmbient();
+        _ = ambient.TryApply(
+            ambient.Name,
+            ambient.Settings with { Intensity = 1f });
+        definition.RestoreLights([ambient], lightsWerePresent: true);
+    }
+
     public static void RunStageRendererRegression()
     {
         RunLayerBlendRegression();
         RunSceneReferenceRenderRegression();
+        RunWorkspacePreRenderTargetRegression();
+        RunSceneOpticsRenderRegression();
+        RunSnapPointSceneRegression();
+        RunSnapPointOverlayRegression();
         RunImportedSvgRasterizerRegression();
         RunImportedSvgBreakApartRegression();
         RunSelectionHighlightStyleRegression();
@@ -5267,6 +8511,8 @@ internal static partial class Benchmark
                 + $"builds={stage.LastDirect2DBaseFrameCacheBuilds}, reuses={stage.LastDirect2DBaseFrameCacheReuses}.");
         }
 
+        var direct2DExtrusionFill = Color.CornflowerBlue;
+        var direct2DExtrusionStroke = Color.DeepPink;
         var direct2DExtrusionScene = new VectorScene();
         direct2DExtrusionScene.CreateEmpty();
         var direct2DExtrusionObject = direct2DExtrusionScene.AddObject(
@@ -5275,20 +8521,31 @@ internal static partial class Benchmark
             new SizeF(3_600, 2_200),
             angle: 0,
             stroke: 120,
-            color: Color.CornflowerBlue,
-            strokeColor: Color.DeepPink,
+            color: direct2DExtrusionFill,
+            strokeColor: direct2DExtrusionStroke,
             atoms: 120,
             shapeKind: ShapeKind.Rectangle);
         stage.BindScene(direct2DExtrusionScene);
-        stage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+        var direct2DExtrusionView = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        ConfigureNeutralReferenceLighting(direct2DExtrusionView);
+        direct2DExtrusionView.Camera.Projection = CameraProjection.Perspective;
+        stage.ConfigureReferenceView(direct2DExtrusionView, SceneDimension.ThreeD);
+        stage.ResetReferenceCameraView();
         stage.SetReferenceCameraOrientation(0.72f, -0.36f);
+        var direct2DBackTransform = System.Numerics.Matrix4x4.CreateRotationY(MathF.PI);
+        var direct2DBackExtrusion = System.Numerics.Vector3.Transform(
+            new System.Numerics.Vector3(0, 0, 1_800),
+            direct2DBackTransform);
         stage.SetSceneCompositionResult(
             new SceneCompositionResult(
                 new SceneCompositionObjectOwner[1],
                 [new SceneCompositionObjectPose(
-                    System.Numerics.Matrix4x4.Identity,
-                    new System.Numerics.Vector3(0, 0, 1_800))]),
+                    direct2DBackTransform,
+                    direct2DBackExtrusion)]),
             direct2DExtrusionScene);
+        stage.Invalidate();
+        stage.Update();
+        Application.DoEvents();
         stage.SetReference3DSelection([direct2DExtrusionObject]);
         stage.Invalidate();
         stage.Update();

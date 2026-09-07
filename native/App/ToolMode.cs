@@ -3,6 +3,8 @@ namespace VectorAnimationEngine;
 internal enum ToolMode
 {
     Select,
+    PolygonLasso,
+    FreehandLasso,
     Transform,
     Transform3D,
     Distort,
@@ -24,6 +26,7 @@ internal enum ToolMode
     InkBottle,
     Eyedropper,
     Gradient,
+    SnapPoint,
     Eraser
 }
 

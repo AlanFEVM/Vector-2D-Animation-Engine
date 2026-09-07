@@ -6,9 +6,13 @@ internal static partial class Benchmark
 {
     private static void RunSceneToolPaletteVisibilityRegression()
     {
+        RunReferenceCameraKeyboardNavigationFixtureRegression();
+        RunReferenceCameraRightLookPointerRegression();
+        RunSpatialTransformMathRegression();
         RunSceneMaskSelectionRegression();
         RunReferenceWheelDollyDirectionRegression();
         RunReferenceCameraTransitionRegression();
+        RunHierarchyFocusRegression();
         var basicVisibleTools = Enum.GetValues<ToolMode>()
             .Where(tool => MainForm.IsToolVisibleInWorkspace(WorkspaceView.BasicDrawing, tool))
             .ToHashSet();
@@ -17,7 +21,15 @@ internal static partial class Benchmark
             .ToHashSet();
         if (!basicVisibleTools.SetEquals(Enum.GetValues<ToolMode>().Where(tool => tool != ToolMode.Transform3D))
             || !sceneVisibleTools.SetEquals(
-                [ToolMode.Select, ToolMode.Transform, ToolMode.Transform3D, ToolMode.Distort, ToolMode.Hand])
+                [
+                    ToolMode.Select,
+                    ToolMode.PolygonLasso,
+                    ToolMode.FreehandLasso,
+                    ToolMode.Transform,
+                    ToolMode.Transform3D,
+                    ToolMode.Distort,
+                    ToolMode.Hand
+                ])
             || !MainForm.AllowsPressureBrushPointerInput(WorkspaceView.BasicDrawing, sceneMaskEditing: false)
             || !MainForm.AllowsPressureBrushPointerInput(WorkspaceView.SceneEditor, sceneMaskEditing: true)
             || MainForm.AllowsPressureBrushPointerInput(WorkspaceView.SceneEditor, sceneMaskEditing: false)
@@ -29,144 +41,65 @@ internal static partial class Benchmark
                 "Workspace tool visibility did not preserve all Basic Drawing tools while limiting Scene Building to scene-edit tools.");
         }
 
-        const System.Reflection.BindingFlags privateInstance =
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var toolPaletteField = typeof(MainForm).GetField("_toolPalette", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the tool palette.");
-        var workspaceTabsField = typeof(MainForm).GetField("_workspaceTabs", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the workspace tabs.");
-        var vaultButtonField = typeof(MainForm).GetField("_vaultButton", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the Vault button.");
-        var shapeFlyoutField = typeof(MainForm).GetField("_shapeToolFlyout", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the shape flyout.");
-        var selectionGroupField = typeof(MainForm).GetField("_selectionToolGroup", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the selection group.");
-        var paintGroupField = typeof(MainForm).GetField("_paintToolGroup", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the paint group.");
-        var toolField = typeof(MainForm).GetField("_tool", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect the active tool.");
-        var settingsField = typeof(MainForm).GetField("_applicationSettings", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not configure shortcuts.");
-        var drawSettingsField = typeof(MainForm).GetField("_drawSettings", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect draw settings.");
-        var projectField = typeof(MainForm).GetField("_project", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect the project.");
-        var sceneField = typeof(MainForm).GetField("_scene", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect the drawing scene.");
-        var stageField = typeof(MainForm).GetField("_stage", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect the Stage.");
-        var zoomMetricField = typeof(MainForm).GetField("_zoom", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the zoom metric.");
-        var sceneDimensionButtonField = typeof(MainForm).GetField("_sceneDimensionButton", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the dimension button.");
-        var sceneProjectionButtonField = typeof(MainForm).GetField("_sceneProjectionButton", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the projection button.");
-        var sceneEditorPanelField = typeof(MainForm).GetField("_sceneEditorPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the Scene editor panel.");
-        var cameraProjectionField = typeof(SceneEditorPanel).GetField("_cameraProjection", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the camera projection selector.");
-        var referenceViewPadField = typeof(MainForm).GetField("_referenceViewPad", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the reference-view pad.");
-        var spatialTransformPanelField = typeof(MainForm).GetField("_spatialTransformPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the spatial Transform panel.");
-        var sceneWorkflowControlsField = typeof(MainForm).GetField("_sceneWorkflowControls", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the Scene workflow controls.");
-        var hierarchyPanelField = typeof(MainForm).GetField("_hierarchyPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the hierarchy panel.");
-        var basicInspectorPageField = typeof(MainForm).GetField("_basicInspectorPage", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the Basic Drawing inspector page.");
-        var sceneInspectorPageField = typeof(MainForm).GetField("_sceneEditPage", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the Scene inspector page.");
-        var materialEditorField = typeof(MainForm).GetField("_materialEditor", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the material editor.");
-        var brushTipPanelField = typeof(MainForm).GetField("_brushTipPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the brush-tip panel.");
-        var mixingBrushPanelField = typeof(MainForm).GetField("_mixingBrushSettingsPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the mixing-brush panel.");
-        var textSettingsPanelField = typeof(MainForm).GetField("_textSettingsPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the text-settings panel.");
-        var drawSettingsPanelField = typeof(MainForm).GetField("_drawSettingsPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the drawing-settings panel.");
-        var shapeSettingsPanelField = typeof(MainForm).GetField("_shapeSettingsPanel", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the shape-settings panel.");
-        var eraserOptionsStripField = typeof(MainForm).GetField("_eraserOptionsStrip", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not find the eraser options.");
-        var projectDirtyField = typeof(MainForm).GetField("_projectDirty", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not suppress save prompts.");
-        var sceneInstanceMoveActiveField = typeof(MainForm).GetField("_sceneInstanceMoveActive", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect projected movement.");
-        var spatialTransformEditSessionField = typeof(MainForm).GetField("_spatialTransformEditSession", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect spatial edit cleanup.");
-        var sceneTimelineUndoStackField = typeof(MainForm).GetField("_sceneTimelineUndoStack", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect Scene undo state.");
-        var showShapeFlyout = typeof(MainForm).GetMethod("ShowShapeToolFlyout", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not open the shape flyout.");
-        var showToolPairFlyout = typeof(MainForm).GetMethod("ShowToolPairFlyout", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not open a paired-tool flyout.");
-        var hideToolFlyouts = typeof(MainForm).GetMethod("HideToolFlyouts", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not close tool flyouts.");
-        var refreshToolButtons = typeof(MainForm).GetMethod("RefreshToolButtons", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not refresh tool buttons.");
-        var tryActivateShortcut = typeof(MainForm).GetMethod("TryActivateConfiguredToolShortcut", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not invoke configured shortcuts.");
-        var handleSpatialTransformShortcut = typeof(MainForm).GetMethod("HandleSpatialTransformShortcut", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not invoke 3D Transform shortcuts.");
-        var handleSceneLayerEditingContextChanged = typeof(MainForm).GetMethod(
-            "HandleSceneLayerEditingContextChanged",
-            privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not switch Scene Mask editing context.");
-        var addTimelineMaskLayer = typeof(MainForm).GetMethod("AddTimelineMaskLayer", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not invoke Scene Mask creation.");
-        var undoLastEdit = typeof(MainForm).GetMethod("UndoLastEdit", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not undo Scene Mask creation.");
-        var invalidateSceneCompositionCache = typeof(MainForm).GetMethod(
-            "InvalidateSceneCompositionCache",
-            privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not invalidate Scene composition.");
-        var rebuildSceneComposition = typeof(MainForm).GetMethod("RebuildSceneComposition", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not rebuild Scene composition.");
-        var stageMouseDown = typeof(MainForm).GetMethod("StageMouseDown", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not begin projected input.");
-        var stageMouseMove = typeof(MainForm).GetMethod("StageMouseMove", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not update projected input.");
-        var stageMouseUp = typeof(MainForm).GetMethod("StageMouseUp", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not complete projected input.");
-        var activateTool = typeof(MainForm).GetMethod(
-            "ActivateTool",
-            privateInstance,
-            binder: null,
-            types: [typeof(ToolMode)],
-            modifiers: null)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not activate a drawing tool.");
-        var setSceneInstanceSelection = typeof(MainForm).GetMethod(
+        var toolPaletteField = RequireField(typeof(MainForm), "_toolPalette");
+        var workspaceTabsField = RequireField(typeof(MainForm), "_workspaceTabs");
+        var vaultButtonField = RequireField(typeof(MainForm), "_vaultButton");
+        var shapeFlyoutField = RequireField(typeof(MainForm), "_shapeToolFlyout");
+        var selectionGroupField = RequireField(typeof(MainForm), "_selectionToolGroup");
+        var paintGroupField = RequireField(typeof(MainForm), "_paintToolGroup");
+        var toolField = RequireField(typeof(MainForm), "_tool");
+        var settingsField = RequireField(typeof(MainForm), "_applicationSettings");
+        var drawSettingsField = RequireField(typeof(MainForm), "_drawSettings");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var sceneField = RequireField(typeof(MainForm), "_scene");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var zoomMetricField = RequireField(typeof(MainForm), "_zoom");
+        var sceneDimensionButtonField = RequireField(typeof(MainForm), "_sceneDimensionButton");
+        var sceneProjectionButtonField = RequireField(typeof(MainForm), "_sceneProjectionButton");
+        var sceneEditorPanelField = RequireField(typeof(MainForm), "_sceneEditorPanel");
+        var cameraProjectionField = RequireField(typeof(SceneEditorPanel), "_cameraProjection");
+        var referenceViewPadField = RequireField(typeof(MainForm), "_referenceViewPad");
+        var spatialTransformPanelField = RequireField(typeof(MainForm), "_spatialTransformPanel");
+        var sceneWorkflowControlsField = RequireField(typeof(MainForm), "_sceneWorkflowControls");
+        var hierarchyPanelField = RequireField(typeof(MainForm), "_hierarchyPanel");
+        var basicInspectorPageField = RequireField(typeof(MainForm), "_basicInspectorPage");
+        var sceneInspectorPageField = RequireField(typeof(MainForm), "_sceneEditPage");
+        var materialEditorField = RequireField(typeof(MainForm), "_materialEditor");
+        var brushTipPanelField = RequireField(typeof(MainForm), "_brushTipPanel");
+        var mixingBrushPanelField = RequireField(typeof(MainForm), "_mixingBrushSettingsPanel");
+        var textSettingsPanelField = RequireField(typeof(MainForm), "_textSettingsPanel");
+        var drawSettingsPanelField = RequireField(typeof(MainForm), "_drawSettingsPanel");
+        var shapeSettingsPanelField = RequireField(typeof(MainForm), "_shapeSettingsPanel");
+        var eraserOptionsStripField = RequireField(typeof(MainForm), "_eraserOptionsStrip");
+        var projectDirtyField = RequireField(typeof(MainForm), "_projectDirty");
+        var sceneInstanceMoveActiveField = RequireField(typeof(MainForm), "_sceneInstanceMoveActive");
+        var spatialTransformEditSessionField = RequireField(typeof(MainForm), "_spatialTransformEditSession");
+        var sceneTimelineUndoStackField = RequireField(typeof(MainForm), "_sceneTimelineUndoStack");
+        var showShapeFlyout = RequireMethod(typeof(MainForm), "ShowShapeToolFlyout");
+        var showToolPairFlyout = RequireMethod(typeof(MainForm), "ShowToolPairFlyout");
+        var hideToolFlyouts = RequireMethod(typeof(MainForm), "HideToolFlyouts");
+        var refreshToolButtons = RequireMethod(typeof(MainForm), "RefreshToolButtons");
+        var tryActivateShortcut = RequireMethod(typeof(MainForm), "TryActivateConfiguredToolShortcut");
+        var handleSpatialTransformShortcut = RequireMethod(typeof(MainForm), "HandleSpatialTransformShortcut");
+        var handleSceneLayerEditingContextChanged = RequireMethod(typeof(MainForm), "HandleSceneLayerEditingContextChanged");
+        var addTimelineMaskLayer = RequireMethod(typeof(MainForm), "AddTimelineMaskLayer");
+        var undoLastEdit = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var invalidateSceneCompositionCache = RequireMethod(typeof(MainForm), "InvalidateSceneCompositionCache");
+        var rebuildSceneComposition = RequireMethod(typeof(MainForm), "RebuildSceneComposition");
+        var stageMouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var stageMouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var stageMouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var setSceneInstanceSelection = RequireMethod(
+            typeof(MainForm),
             "SetSceneInstanceSelection",
-            privateInstance,
-            binder: null,
-            types: [typeof(DrawingObjectInstanceDefinition), typeof(bool)],
-            modifiers: null)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not select a Scene instance.");
-        var setSelection = typeof(MainForm).GetMethod(
-            "SetSelection",
-            privateInstance,
-            binder: null,
-            types: [typeof(int), typeof(bool)],
-            modifiers: null)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not select a Mask object.");
-        var applyTextSettingsChange = typeof(MainForm).GetMethod("ApplyTextSettingsChange", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not apply Mask text settings.");
-        var copySelectedObjects = typeof(MainForm).GetMethod("CopySelectedObjects", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not copy a Mask object.");
-        var pasteCopiedObjects = typeof(MainForm).GetMethod("PasteCopiedObjects", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not paste a Mask object.");
-        var deleteSelectedObject = typeof(MainForm).GetMethod("DeleteSelectedObject", privateInstance)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not delete a Mask object.");
-        var importSvgFile = typeof(MainForm).GetMethod(
-            "ImportSvgFile",
-            privateInstance,
-            binder: null,
-            types: [typeof(string), typeof(PointF?)],
-            modifiers: null)
-            ?? throw new InvalidOperationException("Scene tool-palette regression could not import an SVG into a Mask.");
+            [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        var applyTextSettingsChange = RequireMethod(typeof(MainForm), "ApplyTextSettingsChange");
+        var copySelectedObjects = RequireMethod(typeof(MainForm), "CopySelectedObjects");
+        var pasteCopiedObjects = RequireMethod(typeof(MainForm), "PasteCopiedObjects");
+        var deleteSelectedObject = RequireMethod(typeof(MainForm), "DeleteSelectedObject");
+        var importSvgFile = RequireMethod(typeof(MainForm), "ImportSvgFile", [typeof(string), typeof(PointF?)]);
 
         using var form = new MainForm
         {
@@ -189,8 +122,12 @@ internal static partial class Benchmark
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the selection group.");
             var paintGroup = paintGroupField.GetValue(form)
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the paint group.");
-            var flyoutProperty = selectionGroup.GetType().GetProperty("Flyout")
-                ?? throw new InvalidOperationException("Scene tool-palette regression could not inspect paired-tool flyouts.");
+            var flyoutProperty = RequireProperty(
+                selectionGroup.GetType(),
+                "Flyout",
+                System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Static);
             var selectionFlyout = flyoutProperty.GetValue(selectionGroup) as FlowLayoutPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the selection flyout.");
             var paintFlyout = flyoutProperty.GetValue(paintGroup) as FlowLayoutPanel
@@ -218,7 +155,9 @@ internal static partial class Benchmark
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the Scene editor panel.");
             var cameraProjection = cameraProjectionField.GetValue(sceneEditorPanel) as ComboBox
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the camera projection selector.");
-            var zoomOutButton = projectionButton.Parent?.Controls
+            var stageMetrics = projectionButton.Parent
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the Stage metrics bar.");
+            var zoomOutButton = stageMetrics.Controls
                 .OfType<SvgIconButton>()
                 .SingleOrDefault(button => button.Icon == SvgIconKind.ZoomOut)
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the zoom-out button.");
@@ -269,7 +208,12 @@ internal static partial class Benchmark
                 .Select(control => (ToolMode)control.Tag!)
                 .ToArray();
             static bool IsSelectionTool(ToolMode tool) =>
-                tool is ToolMode.Select or ToolMode.Transform or ToolMode.Transform3D or ToolMode.Distort;
+                tool is ToolMode.Select
+                    or ToolMode.PolygonLasso
+                    or ToolMode.FreehandLasso
+                    or ToolMode.Transform
+                    or ToolMode.Transform3D
+                    or ToolMode.Distort;
             static bool IsShapeTool(ToolMode tool) =>
                 tool is ToolMode.Rectangle or ToolMode.Ellipse or ToolMode.Triangle or ToolMode.Polygon or ToolMode.Star;
             static bool IsLineTool(ToolMode tool) =>
@@ -277,7 +221,7 @@ internal static partial class Benchmark
             static bool IsBrushTool(ToolMode tool) =>
                 tool is ToolMode.Brush or ToolMode.PressureBrush or ToolMode.MixingBrush;
             static bool HasFullDrawingPalette(IReadOnlyCollection<ToolMode> tools) =>
-                tools.Count == 9
+                tools.Count == 10
                 && tools.Count(IsSelectionTool) == 1
                 && tools.Count(IsShapeTool) == 1
                 && tools.Count(IsLineTool) == 1
@@ -286,6 +230,7 @@ internal static partial class Benchmark
                 && tools.Count(tool => tool is ToolMode.Fill or ToolMode.InkBottle) == 1
                 && tools.Contains(ToolMode.Eyedropper)
                 && tools.Contains(ToolMode.Gradient)
+                && tools.Contains(ToolMode.SnapPoint)
                 && tools.Contains(ToolMode.Eraser);
             static bool HasScenePalette(IReadOnlyCollection<ToolMode> tools) =>
                 tools.Count == 1 && IsSelectionTool(tools.Single());
@@ -329,9 +274,13 @@ internal static partial class Benchmark
                 || !vaultButton.Visible
                 || !projectionButton.Visible
                 || !projectionButton.Enabled
-                || projectionButton.Text != UiLocalization.T("Orthographic")
-                || projectionScene.Camera.Projection != CameraProjection.Orthographic
-                || cameraProjection.SelectedIndex != 0
+                || projectionButton.Text != UiLocalization.T("Perspective")
+                || projectionScene.Camera.Projection != CameraProjection.Perspective
+                || stage.ReferenceDimension != SceneDimension.TwoD
+                || !stage.UsesSpatialFrontProjection
+                || !stage.UsesReferenceProjection
+                || stage.EffectiveReferenceProjection != CameraProjection.Orthographic
+                || cameraProjection.SelectedIndex != 1
                 || projectionButton.Right >= dimensionButton.Left
                 || shapeFlyout.Visible
                 || !palette.AutoSize
@@ -339,28 +288,44 @@ internal static partial class Benchmark
                 || scenePaletteSize.Height >= basicPaletteSize.Height)
             {
                 throw new InvalidOperationException(
-                    "Scene Building 2D did not hide drawing-only tools, close flyouts, or shrink the tool palette.");
+                    "Scene Building 2D did not hide drawing-only tools, close flyouts, or shrink the tool palette: "
+                    + $"workspace={workspaceTabs.SelectedView}, "
+                    + $"tools=[{string.Join(',', VisiblePaletteTools())}], "
+                    + $"vault={vaultButton.Visible}, projectionVisible={projectionButton.Visible}, "
+                    + $"projectionEnabled={projectionButton.Enabled}, projectionText={projectionButton.Text}, "
+                    + $"savedProjection={projectionScene.Camera.Projection}, "
+                    + $"referenceDimension={stage.ReferenceDimension}, "
+                    + $"usesReferenceProjection={stage.UsesReferenceProjection}, "
+                    + $"inspectorProjection={cameraProjection.SelectedIndex}, "
+                    + $"projectionRight={projectionButton.Right}, dimensionLeft={dimensionButton.Left}, "
+                    + $"flyout={shapeFlyout.Visible}, autoSize={palette.AutoSize}, "
+                    + $"wrap={palette.WrapContents}, sceneHeight={scenePaletteSize.Height}, "
+                    + $"basicHeight={basicPaletteSize.Height}.");
             }
 
             projectionButton.PerformClick();
             Application.DoEvents();
             if (dimensionButton.Text != "2D"
-                || projectionScene.Camera.Projection != CameraProjection.Perspective
+                || projectionScene.Camera.Projection != CameraProjection.Orthographic
                 || projectionScene.Camera.Depth < 1000
-                || projectionButton.Text != UiLocalization.T("Perspective")
-                || cameraProjection.SelectedIndex != 1)
-            {
-                throw new InvalidOperationException(
-                    "The 2D Scene projection shortcut did not update the saved camera mode and inspector together.");
-            }
-            projectionButton.PerformClick();
-            Application.DoEvents();
-            if (projectionScene.Camera.Projection != CameraProjection.Orthographic
                 || projectionButton.Text != UiLocalization.T("Orthographic")
                 || cameraProjection.SelectedIndex != 0)
             {
                 throw new InvalidOperationException(
-                    "The 2D Scene projection shortcut did not restore orthographic mode across the camera and inspector.");
+                    "The 2D Scene projection shortcut did not switch the saved camera mode and inspector to orthographic together.");
+            }
+            projectionButton.PerformClick();
+            Application.DoEvents();
+            if (projectionScene.Camera.Projection != CameraProjection.Perspective
+                || projectionButton.Text != UiLocalization.T("Perspective")
+                || stage.ReferenceDimension != SceneDimension.TwoD
+                || !stage.UsesSpatialFrontProjection
+                || !stage.UsesReferenceProjection
+                || stage.EffectiveReferenceProjection != CameraProjection.Orthographic
+                || cameraProjection.SelectedIndex != 1)
+            {
+                throw new InvalidOperationException(
+                    "The 2D Scene projection shortcut did not restore the preferred perspective mode across the camera and inspector.");
             }
 
             if (TryShortcut(Keys.R)
@@ -393,25 +358,46 @@ internal static partial class Benchmark
             showToolPairFlyout.Invoke(form, [selectionGroup]);
             Application.DoEvents();
             if (!selectionFlyout.Visible
-                || selectionFlyout.Controls.Cast<Control>().Count(control => control.Visible) != 3)
+                || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
+                    [
+                        ToolMode.Select,
+                        ToolMode.PolygonLasso,
+                        ToolMode.FreehandLasso,
+                        ToolMode.Transform,
+                        ToolMode.Distort
+                    ]))
             {
                 throw new InvalidOperationException(
-                    "Scene Building did not retain Select, Free Transform, and Distort in the selection flyout.");
+                    "Scene Building did not retain Select, both Lasso tools, Free Transform, and Distort in the selection flyout.");
             }
 
             dimensionButton.PerformClick();
             Application.DoEvents();
             showToolPairFlyout.Invoke(form, [selectionGroup]);
             Application.DoEvents();
+            var spatialTransformHost = spatialTransformPanel.Parent
+                ?? throw new InvalidOperationException("Scene Building 3D did not attach the Transform floating panel.");
+            var spatialTransformExpectedMargin = Math.Max(
+                8,
+                (int)MathF.Round(12f * spatialTransformHost.DeviceDpi / 96f));
+            var spatialTransformRightInset = spatialTransformHost.ClientSize.Width - spatialTransformPanel.Right;
+            var spatialTransformTopInset = spatialTransformPanel.Top - stageMetrics.Bottom;
             if (dimensionButton.Text != "3D"
                 || !HasScenePalette(VisiblePaletteTools())
                 || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
                     [ToolMode.Select, ToolMode.Transform3D])
-                || !spatialTransformPanel.Visible
+                || spatialTransformPanel.Visible
+                || spatialTransformPanel.FloatingVisibilityRequested
+                || spatialTransformPanel.FloatingMotionActive
                 || referenceViewPad.Visible
-                || !ReferenceEquals(spatialTransformPanel.Parent, hierarchyPanel.Parent)
-                || spatialTransformPanel.Top < sceneWorkflowControls.Bottom
-                || spatialTransformPanel.Bottom > hierarchyPanel.Top
+                || !ReferenceEquals(spatialTransformHost, stage.Parent)
+                || sceneInspectorPage.Content.Controls.Contains(spatialTransformPanel)
+                || spatialTransformPanel.Dock != DockStyle.None
+                || (spatialTransformPanel.Anchor & (AnchorStyles.Top | AnchorStyles.Right))
+                    != (AnchorStyles.Top | AnchorStyles.Right)
+                || spatialTransformPanel.Location != spatialTransformPanel.FloatingTargetLocation
+                || Math.Abs(spatialTransformTopInset - spatialTransformExpectedMargin) > 1
+                || Math.Abs(spatialTransformRightInset - spatialTransformExpectedMargin) > 1
                 || TryShortcut(Keys.B)
                 || !TryShortcut(Keys.Q)
                 || toolField.GetValue(form) is not ToolMode.Transform3D
@@ -424,14 +410,15 @@ internal static partial class Benchmark
                 || transform3DButton.Tag is not ToolMode.Transform3D)
             {
                 throw new InvalidOperationException(
-                    "Scene Building 3D did not expose only Select/3D Transform or synchronize its Transform panel and shortcuts.");
+                    "Scene Building 3D did not keep the Transform panel hidden until selection or synchronize its tools and shortcuts.");
             }
 
             if (!projectionButton.Visible
                 || !projectionButton.Enabled
-                || projectionButton.Text != UiLocalization.T("Orthographic")
-                || projectionScene.Camera.Projection != CameraProjection.Orthographic
-                || cameraProjection.SelectedIndex != 0
+                || projectionButton.Text != UiLocalization.T("Perspective")
+                || projectionScene.Camera.Projection != CameraProjection.Perspective
+                || stage.EffectiveReferenceProjection != CameraProjection.Perspective
+                || cameraProjection.SelectedIndex != 1
                 || projectionButton.Right >= dimensionButton.Left
                 || dimensionButton.Left - projectionButton.Right > 12)
             {
@@ -441,35 +428,46 @@ internal static partial class Benchmark
 
             projectionButton.PerformClick();
             Application.DoEvents();
-            if (projectionScene.Camera.Projection != CameraProjection.Perspective
-                || projectionButton.Text != UiLocalization.T("Perspective")
-                || cameraProjection.SelectedIndex != 1)
+            if (projectionScene.Camera.Projection != CameraProjection.Orthographic
+                || projectionButton.Text != UiLocalization.T("Orthographic")
+                || stage.EffectiveReferenceProjection != CameraProjection.Orthographic
+                || cameraProjection.SelectedIndex != 0)
             {
                 throw new InvalidOperationException(
-                    "The projection shortcut did not switch the scene, button, and inspector to perspective together.");
+                    "The projection shortcut did not switch the scene, button, and inspector to orthographic together: "
+                    + $"scene={projectionScene.Camera.Projection}, button={projectionButton.Text}, "
+                    + $"stage={stage.EffectiveReferenceProjection}, inspector={cameraProjection.SelectedIndex}.");
             }
 
             projectionButton.PerformClick();
             Application.DoEvents();
-            if (projectionScene.Camera.Projection != CameraProjection.Orthographic
-                || projectionButton.Text != UiLocalization.T("Orthographic")
-                || cameraProjection.SelectedIndex != 0)
+            if (projectionScene.Camera.Projection != CameraProjection.Perspective
+                || projectionButton.Text != UiLocalization.T("Perspective")
+                || stage.EffectiveReferenceProjection != CameraProjection.Perspective
+                || cameraProjection.SelectedIndex != 1)
             {
                 throw new InvalidOperationException(
-                    "The projection shortcut did not restore orthographic mode across the scene, button, and inspector.");
+                    "The projection shortcut did not restore perspective mode across the scene, button, and inspector.");
             }
             Console.WriteLine("scene_projection_shortcut=ok");
 
             var regularFormSize = form.Size;
             form.Size = form.MinimumSize;
             Application.DoEvents();
+            spatialTransformRightInset = spatialTransformHost.ClientSize.Width - spatialTransformPanel.Right;
+            spatialTransformTopInset = spatialTransformPanel.Top - stageMetrics.Bottom;
             if (!projectionButton.Visible
                 || projectionButton.Right >= dimensionButton.Left
                 || zoomOutButton.Right >= projectionButton.Left
-                || zoomMetric.Visible && zoomMetric.Right + 6 > zoomOutButton.Left)
+                || zoomMetric.Visible && zoomMetric.Right + 6 > zoomOutButton.Left
+                || !ReferenceEquals(spatialTransformPanel.Parent, stage.Parent)
+                || spatialTransformPanel.Left < stage.Left + 8
+                || Math.Abs(spatialTransformTopInset - spatialTransformExpectedMargin) > 1
+                || spatialTransformPanel.Bottom > stage.Bottom - 8
+                || Math.Abs(spatialTransformRightInset - spatialTransformExpectedMargin) > 1)
             {
                 throw new InvalidOperationException(
-                    "The minimum-width Scene toolbar overlapped its projection, dimension, zoom, or metric controls.");
+                    "The minimum-width Scene toolbar or Transform floating panel overlapped or left the Stage bounds.");
             }
             form.Size = regularFormSize;
             Application.DoEvents();
@@ -481,11 +479,22 @@ internal static partial class Benchmark
             if (dimensionButton.Text != "2D"
                 || !projectionButton.Visible
                 || !projectionButton.Enabled
+                || projectionScene.Camera.Projection != CameraProjection.Perspective
+                || stage.ReferenceDimension != SceneDimension.TwoD
+                || !stage.UsesSpatialFrontProjection
+                || !stage.UsesReferenceProjection
+                || stage.EffectiveReferenceProjection != CameraProjection.Orthographic
                 || toolField.GetValue(form) is not ToolMode.Transform
                 || spatialTransformPanel.Visible
                 || !referenceViewPad.Visible
                 || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [ToolMode.Select, ToolMode.Transform, ToolMode.Distort])
+                    [
+                        ToolMode.Select,
+                        ToolMode.PolygonLasso,
+                        ToolMode.FreehandLasso,
+                        ToolMode.Transform,
+                        ToolMode.Distort
+                    ])
                 || selectionGroup.GetType().GetProperty("ParentButton")?.GetValue(selectionGroup) is not Button transform2DButton
                 || transform2DButton.Tag is ToolMode.Transform3D)
             {
@@ -499,17 +508,55 @@ internal static partial class Benchmark
             Application.DoEvents();
             var sideViewTools = VisibleFlyoutTools(selectionFlyout);
             var sideViewTransformShortcutActivated = TryShortcut(Keys.Q);
+            activateTool.Invoke(form, [ToolMode.PolygonLasso]);
+            var sideViewPolygonLassoActivated = toolField.GetValue(form) is ToolMode.PolygonLasso;
+            activateTool.Invoke(form, [ToolMode.FreehandLasso]);
+            var sideViewFreehandLassoActivated = toolField.GetValue(form) is ToolMode.FreehandLasso;
             if (!sideViewTools.SequenceEqual([ToolMode.Select])
-                || sideViewTransformShortcutActivated)
+                || sideViewTransformShortcutActivated
+                || sideViewPolygonLassoActivated
+                || sideViewFreehandLassoActivated
+                || projectionScene.Camera.Projection != CameraProjection.Perspective
+                || stage.EffectiveReferenceProjection != CameraProjection.Orthographic)
             {
                 throw new InvalidOperationException(
-                    "A 2D side reference view exposed a transform tool that cannot operate in that projection: "
+                    "A 2D side reference view exposed a transform or lasso tool that cannot operate in that projection: "
                     + $"tools=[{string.Join(',', sideViewTools)}], shortcut={sideViewTransformShortcutActivated}, "
+                    + $"polygonLasso={sideViewPolygonLassoActivated}, freehandLasso={sideViewFreehandLassoActivated}, "
                     + $"dimension={stage.ReferenceDimension}, direction={stage.Reference2DViewDirection}, "
                     + $"projection={stage.UsesReferenceProjection}, active={toolField.GetValue(form)}.");
             }
+
+            stage.SetReferenceViewDirection(ReferenceViewDirection.Top);
+            refreshToolButtons.Invoke(form, null);
+            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            Application.DoEvents();
+            var topViewTools = VisibleFlyoutTools(selectionFlyout);
+            activateTool.Invoke(form, [ToolMode.PolygonLasso]);
+            if (!topViewTools.SequenceEqual([ToolMode.Select])
+                || toolField.GetValue(form) is ToolMode.PolygonLasso)
+            {
+                throw new InvalidOperationException(
+                    "A 2D top reference view exposed or activated a lasso tool: "
+                    + $"tools=[{string.Join(',', topViewTools)}], active={toolField.GetValue(form)}.");
+            }
+
             stage.SetReferenceViewDirection(ReferenceViewDirection.Front);
             refreshToolButtons.Invoke(form, null);
+            showToolPairFlyout.Invoke(form, [selectionGroup]);
+            Application.DoEvents();
+            if (!VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
+                    [
+                        ToolMode.Select,
+                        ToolMode.PolygonLasso,
+                        ToolMode.FreehandLasso,
+                        ToolMode.Transform,
+                        ToolMode.Distort
+                    ]))
+            {
+                throw new InvalidOperationException(
+                    "Returning to the 2D Front view did not restore the lasso and transform tools.");
+            }
 
             dimensionButton.PerformClick();
             Application.DoEvents();
@@ -548,6 +595,14 @@ internal static partial class Benchmark
             sourceSceneInstance.RotationY = 25;
             invalidateSceneCompositionCache.Invoke(form, null);
             rebuildSceneComposition.Invoke(form, [false, false]);
+            var hierarchyFocusScene = sceneField.GetValue(form) as VectorScene
+                ?? throw new InvalidOperationException("Hierarchy focus regression lost the composed Scene.");
+            RunHierarchyFocusMainFormRegression(
+                form,
+                stage,
+                hierarchyPanel,
+                hierarchyFocusScene,
+                SceneUndoCount);
             sourceSceneInstance = RunSpatialTransformKeyboardRegression(
                 form,
                 stage,
@@ -562,7 +617,13 @@ internal static partial class Benchmark
             Application.DoEvents();
             if (!stage.UsesReferenceProjection
                 || !VisibleFlyoutTools(selectionFlyout).ToHashSet().SetEquals(
-                    [ToolMode.Select, ToolMode.Transform, ToolMode.Distort])
+                    [
+                        ToolMode.Select,
+                        ToolMode.PolygonLasso,
+                        ToolMode.FreehandLasso,
+                        ToolMode.Transform,
+                        ToolMode.Distort
+                    ])
                 || !stage.TransformBoundsVisible)
             {
                 throw new InvalidOperationException(
@@ -676,6 +737,7 @@ internal static partial class Benchmark
                 || !projectionButton.Visible
                 || !projectionButton.Enabled
                 || !stage.UsesSpatialFrontProjection
+                || stage.EffectiveReferenceProjection != CameraProjection.Orthographic
                 || projectedObject < 0
                 || !stage.TryProjectScenePoint(projectedObject, projectedCenterSource, out var projectedCenter, out _))
             {
@@ -804,7 +866,14 @@ internal static partial class Benchmark
                 || projectionButton.Enabled
                 || referenceViewPad.Visible
                 || spatialTransformPanel.Visible
-                || maskSelectionTools.Contains(ToolMode.Transform3D)
+                || !maskSelectionTools.ToHashSet().SetEquals(
+                    [
+                        ToolMode.Select,
+                        ToolMode.PolygonLasso,
+                        ToolMode.FreehandLasso,
+                        ToolMode.Transform,
+                        ToolMode.Distort
+                    ])
                 || !maskBrushShortcut
                 || maskActiveTool is not ToolMode.Brush
                 || drawingParameterPanels.Any(panel => !ReferenceEquals(panel.Parent, sceneInspectorPage.Content))
@@ -979,13 +1048,14 @@ internal static partial class Benchmark
                 || dimensionButton.Text != "3D"
                 || !projectionButton.Visible
                 || !projectionButton.Enabled
-                || !spatialTransformPanel.Visible
+                || spatialTransformPanel.Visible
+                || spatialTransformPanel.FloatingVisibilityRequested
                 || referenceViewPad.Visible
                 || eraserOptionsStrip.Visible
                 || drawingParameterPanels.Any(panel => !ReferenceEquals(panel.Parent, basicInspectorPage.Content)))
             {
                 throw new InvalidOperationException(
-                    "Leaving Scene Mask editing did not restore the saved 3D Scene view and spatial controls.");
+                    "Leaving Scene Mask editing did not restore the saved 3D Scene view with selection-only spatial controls.");
             }
 
             workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
@@ -1024,7 +1094,7 @@ internal static partial class Benchmark
                     && !IsSelectionTool(tool))
                 .ToArray();
             if (!HasFullDrawingPalette(VisiblePaletteTools())
-                || lockedTools.Length != 8
+                || lockedTools.Length != 9
                 || lockedTools.Any(control => control.Enabled))
             {
                 throw new InvalidOperationException(
@@ -1043,95 +1113,849 @@ internal static partial class Benchmark
         }
     }
 
+    private static void RunReferenceCameraRightLookPointerRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            Size = new Size(1280, 800)
+        };
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var workspace = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var dimension = (Button)RequireField(typeof(MainForm), "_sceneDimensionButton").GetValue(form)!;
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var menu = (AnimatedContextMenuStrip)RequireField(typeof(MainForm), "_scene3DContextMenu").GetValue(form)!;
+        var dirty = RequireField(typeof(MainForm), "_projectDirty");
+        var undo = RequireField(typeof(MainForm), "_sceneTimelineUndoStack").GetValue(form)!;
+        var rightLookSession = RequireProperty(typeof(MainForm), "ReferenceCameraRightLookSessionActive");
+        var command = RequireMethod(typeof(MainForm), "ProcessCmdKey");
+        var formClosing = RequireMethod(typeof(MainForm), "OnFormClosing");
+        var stageMouseMove = RequireMethod(
+            typeof(Control),
+            "OnMouseMove",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        var menuOpenings = 0;
+        menu.Opening += (_, _) => menuOpenings++;
+        const uint WM_MOUSEMOVE = 0x0200;
+        const uint WM_LBUTTONDOWN = 0x0201;
+        const uint WM_LBUTTONUP = 0x0202;
+        const uint WM_RBUTTONDOWN = 0x0204;
+        const uint WM_RBUTTONUP = 0x0205;
+        form.Show();
+        Application.DoEvents();
+        workspace.SelectedView = WorkspaceView.SceneEditor;
+        if (stage.ReferenceDimension != SceneDimension.ThreeD) dimension.PerformClick();
+        project.Scenes[0].Camera.Projection = CameraProjection.Perspective;
+        stage.ConfigureReferenceView(project.Scenes[0], SceneDimension.ThreeD);
+        stage.ResetReferenceCameraView();
+        stage.SetReferenceCameraOrientation(0, 0);
+        stage.Focus();
+        Application.DoEvents();
+        dirty.SetValue(form, false);
+        var undoBefore = UndoCount();
+        var start = new Point(stage.Width / 2, stage.Height / 2);
+        var target = new Point(start.X + 80, start.Y - 35);
+        var initialView = stage.CaptureViewState();
+        var initialEye = Eye();
+
+        if (!form.BeginReferenceCameraKeyboardNavigation(Keys.Up))
+            throw new InvalidOperationException("The right-look fixture could not prepare keyboard handoff.");
+        SendMouse(WM_RBUTTONDOWN, start, MouseButtons.Right);
+        if (!stage.Capture || menuOpenings != 0 || stage.CaptureViewState() != initialView
+            || form.ReferenceCameraKeyboardNavigationActive)
+            throw new InvalidOperationException("Right press did not defer its menu without moving the camera.");
+        SendMouse(WM_MOUSEMOVE, new Point(start.X + 1, start.Y), MouseButtons.Right);
+        SendMouse(WM_MOUSEMOVE, target, MouseButtons.Right);
+        if (stage.CaptureViewState() == initialView
+            || Math.Abs(stage.ReferenceYaw - 0.8f) > 0.0001f
+            || System.Numerics.Vector3.Distance(initialEye, Eye()) > 0.05f
+            || !stage.Reference3DOpticalInteractionPreviewActive)
+            throw new InvalidOperationException("Right drag did not look around the fixed camera position.");
+        var beforeWheel = stage.CaptureViewState();
+        RequireMethod(typeof(Control), "OnMouseWheel").Invoke(
+            stage, [new MouseEventArgs(MouseButtons.None, 0, target.X, target.Y, 120)]);
+        if (stage.CaptureViewState() != beforeWheel
+            || form.BeginReferenceCameraKeyboardNavigation(Keys.Up))
+            throw new InvalidOperationException("Wheel or keyboard navigation moved the eye during right-look navigation.");
+        var beforeRelease = stage.CaptureViewState();
+        SendMouse(WM_RBUTTONUP, new Point(target.X + 12, target.Y));
+        if (stage.Capture || stage.Reference3DOpticalInteractionPreviewActive
+            || stage.CaptureViewState() == beforeRelease || menuOpenings != 0
+            || System.Numerics.Vector3.Distance(initialEye, Eye()) > 0.05f)
+            throw new InvalidOperationException("Right release lost its final look sample or opened a drag menu.");
+
+        var eyeAfterRelease = Eye();
+        SendMouse(WM_RBUTTONDOWN, start, MouseButtons.Right);
+        SendMouse(WM_MOUSEMOVE, target, MouseButtons.Right);
+        if (!stage.Capture || !stage.Reference3DOpticalInteractionPreviewActive)
+            throw new InvalidOperationException("The second-button fixture could not start a right-look gesture.");
+        SendMouse(WM_LBUTTONDOWN, target, MouseButtons.Left | MouseButtons.Right);
+        SendMouse(WM_LBUTTONUP, target, MouseButtons.Right);
+        if (stage.Capture || stage.Reference3DOpticalInteractionPreviewActive
+            || rightLookSession.GetValue(form) is true
+            || menuOpenings != 0
+            || System.Numerics.Vector3.Distance(eyeAfterRelease, Eye()) > 0.05f)
+        {
+            throw new InvalidOperationException(
+                "A second mouse button did not cleanly end right-button look navigation without moving the eye.");
+        }
+        SendMouse(WM_RBUTTONUP, target);
+        if (stage.Capture || stage.Reference3DOpticalInteractionPreviewActive
+            || rightLookSession.GetValue(form) is true || menuOpenings != 0)
+        {
+            throw new InvalidOperationException("A right release after second-button cleanup opened a drag menu.");
+        }
+
+        var beforeClick = stage.CaptureViewState();
+        var hiddenLocation = form.Location;
+        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
+        form.Location = new Point(
+            workingArea.Left + Math.Max(0, (workingArea.Width - form.Width) / 2),
+            workingArea.Top + Math.Max(0, (workingArea.Height - form.Height) / 2));
+        form.BringToFront();
+        Application.DoEvents();
+        SendMouse(WM_RBUTTONDOWN, start, MouseButtons.Right);
+        SendMouse(WM_RBUTTONUP, start);
+        if (menuOpenings != 1 || !menu.Visible || stage.Capture || stage.CaptureViewState() != beforeClick)
+            throw new InvalidOperationException("A stationary right click did not show the 3D context menu.");
+        menu.Close(ToolStripDropDownCloseReason.AppClicked);
+        Application.DoEvents();
+        if (menu.Visible)
+            throw new InvalidOperationException("The right-look fixture could not close its visible context menu.");
+        form.Location = hiddenLocation;
+        Application.DoEvents();
+        stage.Focus();
+
+        SendMouse(WM_RBUTTONDOWN, start, MouseButtons.Right);
+        stage.Capture = false;
+        SendMouse(WM_RBUTTONUP, start);
+        if (menuOpenings != 1)
+            throw new InvalidOperationException("Losing capture on a pending right click opened a delayed menu.");
+
+        AssertCleanup("capture loss", () => stage.Capture = false);
+        AssertCleanup("Escape", () =>
+        {
+            object[] args = [Message.Create(form.Handle, 0x0100, IntPtr.Zero, IntPtr.Zero), Keys.Escape];
+            if (command.Invoke(form, args) is not true)
+                throw new InvalidOperationException("Escape did not handle an active right-look gesture.");
+        });
+        AssertCleanup("frame change", () =>
+            RequireMethod(typeof(MainForm), "FinishPointerInteractionForFrameChange").Invoke(form, null));
+        AssertCleanup("context change", () =>
+            RequireMethod(typeof(MainForm), "FinishPointerInteractionForContextChange").Invoke(form, null));
+        AssertCleanup("view shortcut", () =>
+        {
+            object[] args = [Message.Create(form.Handle, 0x0100, IntPtr.Zero, IntPtr.Zero), Keys.NumPad1];
+            command.Invoke(form, args);
+            stage.CompleteReferenceCameraTransition();
+        });
+        if (dirty.GetValue(form) is not false)
+            throw new InvalidOperationException("Right-look navigation unexpectedly marked the project dirty before close.");
+        FormClosingEventHandler cancelClosing = (_, e) => e.Cancel = true;
+        form.FormClosing += cancelClosing;
+        try
+        {
+            SendMouse(WM_RBUTTONDOWN, start, MouseButtons.Right);
+            SendMouse(WM_MOUSEMOVE, target, MouseButtons.Right);
+            if (rightLookSession.GetValue(form) is not true
+                || !stage.Capture
+                || !stage.Reference3DOpticalInteractionPreviewActive)
+            {
+                throw new InvalidOperationException("The close-cancellation fixture could not start a right-look gesture.");
+            }
+
+            var closeArgs = new FormClosingEventArgs(CloseReason.UserClosing, cancel: false);
+            formClosing.Invoke(form, [closeArgs]);
+            if (!closeArgs.Cancel
+                || rightLookSession.GetValue(form) is not false
+                || stage.Capture
+                || stage.Reference3DOpticalInteractionPreviewActive)
+            {
+                throw new InvalidOperationException(
+                    "Canceling FormClosing did not clear the right-look session, capture, or optical preview.");
+            }
+        }
+        finally
+        {
+            form.FormClosing -= cancelClosing;
+        }
+        AssertCleanup("deactivation", () =>
+            RequireMethod(typeof(Form), "OnDeactivate").Invoke(form, [EventArgs.Empty]));
+        AssertCleanup("focus loss", () => dimension.Focus());
+        if (UndoCount() != undoBefore || dirty.GetValue(form) is not false)
+            throw new InvalidOperationException("Right-look navigation modified project history or dirty state.");
+
+        SendMouse(WM_RBUTTONDOWN, start, MouseButtons.Right);
+        SendMouse(WM_MOUSEMOVE, target, MouseButtons.Right);
+        workspace.SelectedView = WorkspaceView.BasicDrawing;
+        if (stage.Capture || stage.Reference3DOpticalInteractionPreviewActive || menuOpenings != 1)
+            throw new InvalidOperationException("Leaving Scene Building retained a right-look pointer session.");
+        Console.WriteLine("reference_camera_right_look_pointer=ok");
+
+        int UndoCount() => (int)undo.GetType().GetProperty("Count")!.GetValue(undo)!;
+
+        System.Numerics.Vector3 Eye()
+        {
+            if (!stage.TryGetReferenceRay(start, out var ray))
+                throw new InvalidOperationException("The right-look fixture could not resolve a camera ray.");
+            return ray.Origin;
+        }
+
+        void SendMouse(uint message, Point point, MouseButtons heldButtons = MouseButtons.None)
+        {
+            if (message == WM_MOUSEMOVE)
+            {
+                // WinForms may derive WM_MOUSEMOVE button state from thread input rather than
+                // synthetic wParam flags. Keep down/up on the real Stage HWND, but provide the
+                // held-button event state explicitly so this fixture does not depend on the
+                // user's physical mouse state.
+                stageMouseMove.Invoke(stage, [new MouseEventArgs(heldButtons, 0, point.X, point.Y, 0)]);
+                Application.DoEvents();
+                return;
+            }
+            var wParam = 0;
+            if ((heldButtons & MouseButtons.Left) != 0) wParam |= 0x0001;
+            if ((heldButtons & MouseButtons.Right) != 0) wParam |= 0x0002;
+            var coordinates = (point.X & 0xffff) | ((point.Y & 0xffff) << 16);
+            SendLassoMouseMessage(stage.Handle, message, (nint)wParam, coordinates);
+            Application.DoEvents();
+        }
+
+        void AssertCleanup(string reason, Action finish)
+        {
+            SendMouse(WM_RBUTTONDOWN, start, MouseButtons.Right);
+            SendMouse(WM_MOUSEMOVE, target, MouseButtons.Right);
+            if (!stage.Capture) throw new InvalidOperationException($"{reason} could not start a right-look gesture.");
+            finish();
+            if (stage.Capture || stage.Reference3DOpticalInteractionPreviewActive || menuOpenings != 1)
+                throw new InvalidOperationException($"{reason} did not end right-look navigation without a menu.");
+            var finishedView = stage.CaptureViewState();
+            SendMouse(WM_MOUSEMOVE, new Point(target.X + 25, target.Y), MouseButtons.Right);
+            SendMouse(WM_RBUTTONUP, target);
+            if (stage.CaptureViewState() != finishedView || menuOpenings != 1)
+                throw new InvalidOperationException($"{reason} left a pending right-look gesture after cleanup.");
+        }
+    }
+
+    private static void RunSpatialTransformMathRegression()
+    {
+        static InstanceFrameState State(float x, float y, float z) => new(
+            true,
+            0,
+            0,
+            0,
+            x,
+            y,
+            z,
+            0,
+            0,
+            1,
+            1,
+            1,
+            30m,
+            DrawingObjectPlaybackMode.PlayOnce,
+            0);
+
+        var precisionRaw = 0f;
+        var precisionEffective = 0f;
+        var fullDelta = MainForm.ApplySpatialPrecisionDelta(
+            ref precisionRaw,
+            ref precisionEffective,
+            100f,
+            precision: false);
+        var fineDelta = MainForm.ApplySpatialPrecisionDelta(
+            ref precisionRaw,
+            ref precisionEffective,
+            110f,
+            precision: true);
+        var resumedDelta = MainForm.ApplySpatialPrecisionDelta(
+            ref precisionRaw,
+            ref precisionEffective,
+            120f,
+            precision: false);
+        var finePathReturnedDelta = MainForm.ApplySpatialPrecisionDelta(
+            ref precisionRaw,
+            ref precisionEffective,
+            0f,
+            precision: false);
+        var nonFineRaw = 0f;
+        var nonFineEffective = 0f;
+        MainForm.ApplySpatialPrecisionDelta(
+            ref nonFineRaw,
+            ref nonFineEffective,
+            100f,
+            precision: false);
+        var nonFineReturnedDelta = MainForm.ApplySpatialPrecisionDelta(
+            ref nonFineRaw,
+            ref nonFineEffective,
+            0f,
+            precision: false);
+        var scaleRaw = 1f;
+        var scaleEffective = 1f;
+        var scaleFull = MainForm.ApplySpatialPrecisionDelta(
+            ref scaleRaw,
+            ref scaleEffective,
+            1.5f,
+            precision: false);
+        var scaleReturned = MainForm.ApplySpatialPrecisionDelta(
+            ref scaleRaw,
+            ref scaleEffective,
+            1f,
+            precision: false);
+        var moveRaw = System.Numerics.Vector3.Zero;
+        var moveEffective = System.Numerics.Vector3.Zero;
+        var moveFine = MainForm.ApplySpatialPrecisionDelta(
+            ref moveRaw,
+            ref moveEffective,
+            new System.Numerics.Vector3(50, -20, 8),
+            precision: true);
+        var largeRaw = System.Numerics.Vector3.Zero;
+        var largeEffective = System.Numerics.Vector3.Zero;
+        foreach (var value in new[] { 1_000_000f, 0.01f, 0f })
+        {
+            MainForm.ApplySpatialPrecisionDelta(
+                ref largeRaw,
+                ref largeEffective,
+                new System.Numerics.Vector3(value),
+                precision: false);
+        }
+        if (Math.Abs(fullDelta - 100f) > 0.0001f
+            || Math.Abs(fineDelta - 101f) > 0.0001f
+            || Math.Abs(resumedDelta - 111f) > 0.0001f
+            || Math.Abs(finePathReturnedDelta + 9f) > 0.0001f
+            || Math.Abs(nonFineReturnedDelta) > 0.0001f
+            || Math.Abs(scaleFull - 1.5f) > 0.0001f
+            || Math.Abs(scaleReturned - 1f) > 0.0001f
+            || largeEffective != System.Numerics.Vector3.Zero
+            || System.Numerics.Vector3.Distance(
+                moveFine,
+                new System.Numerics.Vector3(5, -2, 0.8f)) > 0.0001f)
+        {
+            throw new InvalidOperationException(
+                "Spatial Shift precision did not apply 10% to each incremental delta or return a non-fine drag to zero.");
+        }
+        Console.WriteLine("scene_3d_transform_precision_incremental=ok");
+
+        static void AssertRotationEquivalent(
+            System.Numerics.Matrix4x4 expected,
+            System.Numerics.Matrix4x4 actual,
+            string checkpoint)
+        {
+            foreach (var axis in new[]
+                     {
+                         System.Numerics.Vector3.UnitX,
+                         System.Numerics.Vector3.UnitY,
+                         System.Numerics.Vector3.UnitZ
+                     })
+            {
+                var left = System.Numerics.Vector3.TransformNormal(axis, expected);
+                var right = System.Numerics.Vector3.TransformNormal(axis, actual);
+                if (System.Numerics.Vector3.Distance(left, right) > 0.0006f)
+                {
+                    throw new InvalidOperationException(
+                        $"Spatial rotation {checkpoint} changed orientation during Euler decomposition.");
+                }
+            }
+        }
+
+        static float DistanceToSegment(PointF point, PointF start, PointF end)
+        {
+            var dx = end.X - start.X;
+            var dy = end.Y - start.Y;
+            var lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared <= 0.000001f)
+            {
+                return MathF.Sqrt(
+                    (point.X - start.X) * (point.X - start.X)
+                    + (point.Y - start.Y) * (point.Y - start.Y));
+            }
+            var amount = Math.Clamp(
+                ((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared,
+                0f,
+                1f);
+            var distanceX = point.X - (start.X + dx * amount);
+            var distanceY = point.Y - (start.Y + dy * amount);
+            return MathF.Sqrt(distanceX * distanceX + distanceY * distanceY);
+        }
+
+        static float DistanceToRing(PointF point, IReadOnlyList<PointF> ring)
+        {
+            var minimum = float.MaxValue;
+            for (var index = 0; index < ring.Count; index++)
+            {
+                minimum = Math.Min(
+                    minimum,
+                    DistanceToSegment(point, ring[index], ring[(index + 1) % ring.Count]));
+            }
+            return minimum;
+        }
+
+        static float PointDistance(PointF first, PointF second)
+        {
+            var dx = first.X - second.X;
+            var dy = first.Y - second.Y;
+            return MathF.Sqrt(dx * dx + dy * dy);
+        }
+
+        var floatingSpringPosition = 1f;
+        var floatingSpringVelocity = 0f;
+        var floatingSpringOvershot = false;
+        var floatingSpringSettled = false;
+        for (var step = 0; step < 240 && !floatingSpringSettled; step++)
+        {
+            floatingSpringSettled = SpatialTransformPanel.StepFloatingSpring(
+                ref floatingSpringPosition,
+                ref floatingSpringVelocity,
+                target: 0f,
+                deltaSeconds: 1f / 60f);
+            floatingSpringOvershot |= floatingSpringPosition < 0;
+        }
+        if (!floatingSpringSettled
+            || !floatingSpringOvershot
+            || floatingSpringPosition != 0
+            || floatingSpringVelocity != 0)
+        {
+            throw new InvalidOperationException(
+                "The Transform floating-panel spring did not overshoot elastically and settle exactly.");
+        }
+
+        var basisState = State(37, -54, 123);
+        var localBasis = SpatialTransformMath.CreateBasis(basisState);
+        if (!localBasis.IsValid
+            || Math.Abs(System.Numerics.Vector3.Dot(
+                System.Numerics.Vector3.Cross(localBasis.X, localBasis.Y),
+                localBasis.Z) - 1f) > 0.001f
+            || localBasis == SpatialGizmoBasis.Identity)
+        {
+            throw new InvalidOperationException("Spatial local coordinates did not produce a finite right-handed basis.");
+        }
+
+        var pivotState = State(19, -27, 41) with
+        {
+            X = 240,
+            Y = -130,
+            Z = 70,
+            ScaleX = 1.5f,
+            ScaleY = 0.75f,
+            ScaleZ = 2,
+            RotationPivot = new System.Numerics.Vector3(32, -18, 7),
+            ScalePivot = new System.Numerics.Vector3(-14, 26, -5)
+        };
+        var rotationLocalDelta = new System.Numerics.Vector3(12, -8, 4);
+        var rotationWorldDelta = System.Numerics.Vector3.TransformNormal(
+            rotationLocalDelta,
+            SpatialTransformMath.CreateRotation(pivotState));
+        var rotationPivotStart = DrawingObjectInstanceDefinition.RotationPivotScenePosition(pivotState);
+        if (!MainForm.TryMoveSpatialPivot(
+                pivotState,
+                SpatialPivotKind.Rotation,
+                rotationWorldDelta,
+                out var movedRotationPivot)
+            || System.Numerics.Vector3.Distance(
+                DrawingObjectInstanceDefinition.RotationPivotScenePosition(movedRotationPivot),
+                rotationPivotStart + rotationWorldDelta) > 0.01f
+            || !CompositionRegressionMatricesNear(
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(movedRotationPivot),
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(pivotState)))
+        {
+            throw new InvalidOperationException(
+                "Moving the rotation pivot did not preserve the instance transform or follow the requested world delta.");
+        }
+
+        var zeroThicknessPivotState = pivotState with { ScaleZ = 0 };
+        var scaleLocalDelta = new System.Numerics.Vector3(9, -6, 0);
+        var invertibleScaleMapping = DrawingObjectInstanceDefinition.CreateSpatialLinearTransform(
+            zeroThicknessPivotState with { ScaleZ = 1 });
+        var scaleWorldDelta = System.Numerics.Vector3.TransformNormal(scaleLocalDelta, invertibleScaleMapping);
+        if (!MainForm.TryMoveSpatialPivot(
+                zeroThicknessPivotState,
+                SpatialPivotKind.Scale,
+                scaleWorldDelta,
+                out var movedScalePivot)
+            || movedScalePivot.ScalePivot.Z != zeroThicknessPivotState.ScalePivot.Z
+            || movedScalePivot.ScalePivot == zeroThicknessPivotState.ScalePivot
+            || !CompositionRegressionMatricesNear(
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(movedScalePivot),
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(zeroThicknessPivotState)))
+        {
+            throw new InvalidOperationException(
+                "Moving a zero-thickness scale pivot did not preserve the transform or isolate its singular Z component.");
+        }
+
+        foreach (var singularState in new[]
+                 {
+                     State(89.999f, 28, -41),
+                     State(90, 28, -41),
+                     State(-89.999f, -67, 32),
+                     State(-90, -67, 32)
+                 })
+        {
+            var expected = SpatialTransformMath.CreateRotation(singularState);
+            if (!SpatialTransformMath.TryDecomposeRotation(
+                    expected,
+                    new System.Numerics.Vector3(
+                        singularState.RotationX,
+                        singularState.RotationY,
+                        singularState.RotationZ),
+                    out var euler))
+            {
+                throw new InvalidOperationException("Spatial rotation could not decompose a gimbal singularity.");
+            }
+            AssertRotationEquivalent(
+                expected,
+                SpatialTransformMath.CreateRotation(euler.X, euler.Y, euler.Z),
+                $"singularity {singularState.RotationX:0.###}");
+        }
+
+        var reference = new System.Numerics.Vector3(89.999f, 15, -22);
+        var accumulated = SpatialTransformMath.CreateRotation(reference.X, reference.Y, reference.Z);
+        var worldRotations = new[]
+        {
+            (System.Numerics.Vector3.UnitY, 0.37f),
+            (System.Numerics.Vector3.UnitZ, -0.81f),
+            (System.Numerics.Vector3.UnitX, 1.14f),
+            (System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(1, 1, 0)), 0.29f)
+        };
+        foreach (var (axis, radians) in worldRotations)
+        {
+            accumulated *= System.Numerics.Matrix4x4.CreateFromAxisAngle(axis, radians);
+            if (!SpatialTransformMath.TryDecomposeRotation(accumulated, reference, out reference))
+            {
+                throw new InvalidOperationException("Spatial mixed-axis rotation could not be decomposed continuously.");
+            }
+            AssertRotationEquivalent(
+                accumulated,
+                SpatialTransformMath.CreateRotation(reference.X, reference.Y, reference.Z),
+                "mixed-axis sequence");
+        }
+
+        var springPosition = 0f;
+        var springVelocity = 0f;
+        var springOvershot = false;
+        var springSettled = false;
+        for (var step = 0; step < 240; step++)
+        {
+            springSettled = StageControl.StepSpatialTransformGizmoSpring(
+                ref springPosition,
+                ref springVelocity,
+                1f,
+                1f / 60f);
+            springOvershot |= springPosition > 1f;
+            if (springSettled) break;
+        }
+        if (!springSettled
+            || !springOvershot
+            || springPosition != 1f
+            || springVelocity != 0f)
+        {
+            throw new InvalidOperationException(
+                "The spatial gizmo spring did not overshoot and settle exactly at its target.");
+        }
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene)
+        {
+            Size = new Size(960, 640),
+            BackColor = Color.FromArgb(24, 28, 30),
+            WorldGridOpacity = 0
+        };
+        var definition = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        stage.ConfigureReferenceView(definition, SceneDimension.ThreeD);
+        stage.ResetReferenceCameraView();
+        stage.SetSpatialTransformGizmo(
+            System.Numerics.Vector3.Zero,
+            SpatialTransformMode.Rotate,
+            basis: localBasis);
+        if (!stage.TryGetSpatialGizmoScreenGeometry(out var geometry)
+            || geometry.Basis != localBasis)
+        {
+            throw new InvalidOperationException("Spatial gizmo geometry did not retain the shared local basis.");
+        }
+
+        for (var axisIndex = 0; axisIndex < geometry.Rings.Length; axisIndex++)
+        {
+            var ring = geometry.Rings[axisIndex];
+            var bestPoint = PointF.Empty;
+            var bestSeparation = float.NegativeInfinity;
+            foreach (var point in ring)
+            {
+                var separation = float.MaxValue;
+                for (var other = 0; other < geometry.Rings.Length; other++)
+                {
+                    if (other == axisIndex) continue;
+                    separation = Math.Min(separation, DistanceToRing(point, geometry.Rings[other]));
+                }
+                if (separation <= bestSeparation) continue;
+                bestSeparation = separation;
+                bestPoint = point;
+            }
+            if (bestSeparation > 3f
+                && stage.HitTestSpatialTransformGizmo(Point.Round(bestPoint)).Axis
+                    != (SpatialTransformAxis)(axisIndex + 1))
+            {
+                throw new InvalidOperationException("Spatial rotation-ring hit testing did not choose the nearest ring.");
+            }
+        }
+
+        var drawGdi = RequireMethod(
+            typeof(StageControl),
+            "DrawGdi",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        using var normalGizmo = new Bitmap(stage.Width, stage.Height);
+        using (var graphics = Graphics.FromImage(normalGizmo)) drawGdi.Invoke(stage, [graphics]);
+
+        var hover = new SpatialTransformHandleHit(SpatialTransformMode.Rotate, SpatialTransformAxis.X);
+        stage.SetSpatialTransformHover(hover);
+        using var hoveredGizmo = new Bitmap(stage.Width, stage.Height);
+        using (var graphics = Graphics.FromImage(hoveredGizmo)) drawGdi.Invoke(stage, [graphics]);
+        var amberPixels = 0;
+        for (var y = 0; y < hoveredGizmo.Height; y++)
+        {
+            for (var x = 0; x < hoveredGizmo.Width; x++)
+            {
+                var before = normalGizmo.GetPixel(x, y);
+                var after = hoveredGizmo.GetPixel(x, y);
+                if (after.R >= 225
+                    && after.G is >= 135 and <= 225
+                    && after.B <= 115
+                    && Math.Abs(after.R - before.R)
+                        + Math.Abs(after.G - before.G)
+                        + Math.Abs(after.B - before.B) >= 35)
+                {
+                    amberPixels++;
+                }
+            }
+        }
+        if (amberPixels < 4)
+        {
+            throw new InvalidOperationException("Spatial gizmo hover did not produce a visible GDI amber halo.");
+        }
+
+        var active = new SpatialTransformHandleHit(SpatialTransformMode.Rotate, SpatialTransformAxis.Y);
+        stage.SetSpatialTransformActive(active);
+        if (stage.SpatialTransformHighlightedHandle != active)
+        {
+            throw new InvalidOperationException("Spatial active-handle highlight did not override hover.");
+        }
+        stage.SetSpatialTransformActive(SpatialTransformHandleHit.None);
+        if (stage.SpatialTransformHighlightedHandle != hover)
+        {
+            throw new InvalidOperationException("Spatial hover highlight did not resume after active drag.");
+        }
+        stage.ClearSpatialTransformGizmo();
+        if (stage.SpatialTransformHighlightedHandle.IsValid
+            || stage.SpatialTransformHoveredHandle.IsValid
+            || stage.SpatialTransformActiveHandle.IsValid
+            || !MainForm.BlocksModelCommandDuringPointerInteraction(Keys.F)
+            || !ShortcutProfiles.HasContextualFixedShortcutConflict(Keys.F))
+        {
+            throw new InvalidOperationException("Spatial handle or F-focus shortcut lifecycle did not clear deterministically.");
+        }
+
+        var motionGeneration = stage.SpatialTransformGizmoMotionGeneration;
+        stage.SetSpatialTransformGizmo(
+            System.Numerics.Vector3.Zero,
+            SpatialTransformMode.Move,
+            basis: localBasis,
+            motion: SpatialGizmoMotion.Animated);
+        if (stage.SpatialTransformGizmoMotionGeneration <= motionGeneration
+            || !stage.SpatialTransformGizmoVisible
+            || !stage.SpatialTransformGizmoPresented
+            || !stage.TryGetSpatialGizmoScreenGeometry(out var canonicalMotionGeometry))
+        {
+            throw new InvalidOperationException("The animated spatial gizmo did not establish its logical presentation state.");
+        }
+
+        if (UiMotion.AnimationsEnabled)
+        {
+            if (!stage.SpatialTransformGizmoMotionActive
+                || stage.SpatialTransformGizmoMotionPosition != 0
+                || !stage.TryGetSpatialGizmoRenderGeometry(
+                    out var initialRenderGeometry,
+                    out var initialOpacity,
+                    out var initialScale)
+                || initialOpacity != 0
+                || initialScale >= 1
+                || PointDistance(initialRenderGeometry.Origin, initialRenderGeometry.Endpoints[0])
+                    >= PointDistance(canonicalMotionGeometry.Origin, canonicalMotionGeometry.Endpoints[0])
+                || !stage.HitTestSpatialTransformGizmo(
+                    Point.Round(initialRenderGeometry.Endpoints[0])).IsValid)
+            {
+                throw new InvalidOperationException("The spatial gizmo entry motion did not start from its compact hidden pose.");
+            }
+
+            stage.AdvanceSpatialTransformGizmoMotion(32);
+            if (!stage.TryGetSpatialGizmoRenderGeometry(
+                    out _,
+                    out var partialOpacity,
+                    out var partialScale)
+                || partialOpacity is <= 0 or >= 1
+                || partialScale is <= 0.68f or >= 1f)
+            {
+                throw new InvalidOperationException("The spatial gizmo entry motion did not expose a visible intermediate pose.");
+            }
+
+            using var animatedGizmo = new Bitmap(stage.Width, stage.Height);
+            using (var graphics = Graphics.FromImage(animatedGizmo)) drawGdi.Invoke(stage, [graphics]);
+            var animatedPixels = 0;
+            for (var y = 0; y < animatedGizmo.Height && animatedPixels < 4; y++)
+            {
+                for (var x = 0; x < animatedGizmo.Width && animatedPixels < 4; x++)
+                {
+                    if (animatedGizmo.GetPixel(x, y).ToArgb() != stage.BackColor.ToArgb()) animatedPixels++;
+                }
+            }
+            if (animatedPixels < 4)
+            {
+                throw new InvalidOperationException("The animated spatial gizmo produced a blank GDI presentation.");
+            }
+
+            var entryPosition = stage.SpatialTransformGizmoMotionPosition;
+            var entryGeneration = stage.SpatialTransformGizmoMotionGeneration;
+            stage.SetSpatialTransformGizmo(
+                new System.Numerics.Vector3(25, -10, 5),
+                SpatialTransformMode.Scale,
+                basis: localBasis,
+                motion: SpatialGizmoMotion.Animated);
+            if (stage.SpatialTransformGizmoMotionPosition != entryPosition
+                || stage.SpatialTransformGizmoMotionGeneration != entryGeneration)
+            {
+                throw new InvalidOperationException("Updating spatial gizmo geometry restarted its entry motion.");
+            }
+
+            stage.CompleteSpatialTransformGizmoMotion();
+            if (stage.SpatialTransformGizmoMotionActive
+                || stage.SpatialTransformGizmoMotionPosition != 1
+                || stage.SpatialTransformGizmoRenderScale != 1
+                || stage.SpatialTransformGizmoRenderOpacity != 1)
+            {
+                throw new InvalidOperationException("The spatial gizmo did not settle at its exact final render pose.");
+            }
+
+            stage.ClearSpatialTransformGizmo(SpatialGizmoMotion.Animated);
+            if (stage.SpatialTransformGizmoVisible
+                || !stage.SpatialTransformGizmoPresented
+                || !stage.SpatialTransformGizmoMotionActive
+                || stage.TryGetSpatialGizmoScreenGeometry(out _)
+                || stage.HitTestSpatialTransformGizmo(Point.Round(canonicalMotionGeometry.Endpoints[0])).IsValid
+                || !stage.TryGetSpatialGizmoRenderGeometry(out _, out _, out _))
+            {
+                throw new InvalidOperationException(
+                    "Spatial gizmo exit motion did not separate interaction state from its render snapshot.");
+            }
+
+            stage.AdvanceSpatialTransformGizmoMotion(32);
+            var reversingPosition = stage.SpatialTransformGizmoMotionPosition;
+            var reversingGeneration = stage.SpatialTransformGizmoMotionGeneration;
+            stage.SetSpatialTransformGizmo(
+                System.Numerics.Vector3.Zero,
+                SpatialTransformMode.Move,
+                basis: localBasis,
+                motion: SpatialGizmoMotion.Animated);
+            if (stage.SpatialTransformGizmoMotionPosition != reversingPosition
+                || stage.SpatialTransformGizmoMotionGeneration <= reversingGeneration
+                || !stage.SpatialTransformGizmoMotionActive)
+            {
+                throw new InvalidOperationException("Reversing spatial gizmo exit motion introduced a visual jump.");
+            }
+            stage.CompleteSpatialTransformGizmoMotion();
+        }
+        else if (stage.SpatialTransformGizmoMotionActive
+            || stage.SpatialTransformGizmoMotionPosition != 1
+            || stage.SpatialTransformGizmoRenderScale != 1)
+        {
+            throw new InvalidOperationException("Reduced-motion spatial gizmo presentation did not settle immediately.");
+        }
+
+        stage.ClearSpatialTransformGizmo(SpatialGizmoMotion.Animated);
+        stage.CompleteSpatialTransformGizmoMotion();
+        if (stage.SpatialTransformGizmoPresented
+            || stage.SpatialTransformGizmoMotionActive
+            || stage.TryGetSpatialGizmoRenderGeometry(out _, out _, out _))
+        {
+            throw new InvalidOperationException("The spatial gizmo retained a render snapshot after exit completion.");
+        }
+    }
+
     private static DrawingObjectInstanceDefinition RunSpatialTransformKeyboardRegression(
         MainForm form,
         StageControl stage,
         SceneDefinition scene,
         string instanceId)
     {
-        const System.Reflection.BindingFlags privateInstance =
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var keyboardActiveField = typeof(MainForm).GetField("_spatialTransformKeyboardActive", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not inspect modal state.");
-        var keyboardAxisField = typeof(MainForm).GetField("_spatialTransformKeyboardAxis", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not inspect the constrained axis.");
-        var pointerSessionField = typeof(MainForm).GetField("_spatialTransformPointerSession", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not inspect pointer state.");
-        var editSessionField = typeof(MainForm).GetField("_spatialTransformEditSession", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not inspect edit state.");
-        var undoStackField = typeof(MainForm).GetField("_sceneTimelineUndoStack", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not inspect Scene undo state.");
-        var processCmdKey = typeof(MainForm).GetMethod(
-                "ProcessCmdKey",
-                privateInstance,
-                binder: null,
-                types: [typeof(Message).MakeByRefType(), typeof(Keys)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not invoke ProcessCmdKey.");
-        var setSceneInstanceSelection = typeof(MainForm).GetMethod(
-                "SetSceneInstanceSelection",
-                privateInstance,
-                binder: null,
-                types: [typeof(DrawingObjectInstanceDefinition), typeof(bool)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not select a Scene instance.");
-        var clearSelection = typeof(MainForm).GetMethod(
-                "ClearSelection",
-                privateInstance,
-                binder: null,
-                types: [typeof(bool)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not clear Scene selection.");
-        var stageMouseDown = typeof(MainForm).GetMethod("StageMouseDown", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not invoke Stage mouse down.");
-        var stageMouseMove = typeof(MainForm).GetMethod("StageMouseMove", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not invoke Stage mouse move.");
-        var stageMouseUp = typeof(MainForm).GetMethod("StageMouseUp", privateInstance)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not invoke Stage mouse up.");
-        var activateTool = typeof(MainForm).GetMethod(
-                "ActivateTool",
-                privateInstance,
-                binder: null,
-                types: [typeof(ToolMode)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not switch tools.");
-        var setSpatialTransformMode = typeof(MainForm).GetMethod(
-                "SetSpatialTransformMode",
-                privateInstance,
-                binder: null,
-                types: [typeof(SpatialTransformMode), typeof(bool)],
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial pointer regression could not switch gizmo modes.");
-        var finishFrameInteraction = typeof(MainForm).GetMethod(
-                "FinishPointerInteractionForFrameChange",
-                privateInstance,
-                binder: null,
-                types: Type.EmptyTypes,
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not simulate a frame switch.");
-        var finishContextInteraction = typeof(MainForm).GetMethod(
-                "FinishPointerInteractionForContextChange",
-                privateInstance,
-                binder: null,
-                types: Type.EmptyTypes,
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not simulate a Scene context switch.");
-        var undoLastEdit = typeof(MainForm).GetMethod(
-                "UndoLastEdit",
-                privateInstance,
-                binder: null,
-                types: Type.EmptyTypes,
-                modifiers: null)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not undo a committed transform.");
-        var onDeactivate = typeof(Form).GetMethod(
-                "OnDeactivate",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("Spatial keyboard regression could not raise form deactivation.");
+        var keyboardActiveField = RequireField(typeof(MainForm), "_spatialTransformKeyboardActive");
+        var keyboardAxisField = RequireField(typeof(MainForm), "_spatialTransformKeyboardAxis");
+        var pointerSessionField = RequireField(typeof(MainForm), "_spatialTransformPointerSession");
+        var editSessionField = RequireField(typeof(MainForm), "_spatialTransformEditSession");
+        var playingField = RequireField(typeof(MainForm), "_playing");
+        var toolField = RequireField(typeof(MainForm), "_tool");
+        var undoStackField = RequireField(typeof(MainForm), "_sceneTimelineUndoStack");
+        var processCmdKey = RequireMethod(
+            typeof(MainForm),
+            "ProcessCmdKey",
+            [typeof(Message).MakeByRefType(), typeof(Keys)]);
+        var setSceneInstanceSelection = RequireMethod(
+            typeof(MainForm),
+            "SetSceneInstanceSelection",
+            [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var clearSelection = RequireMethod(typeof(MainForm), "ClearSelection", [typeof(bool)]);
+        var stageMouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var stageMouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var stageMouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var tickLineDragPreview = RequireMethod(typeof(MainForm), "TickLineDragPreview");
+        var pendingSpatialTransformScreenField = RequireField(typeof(MainForm), "_pendingSpatialTransformScreen");
+        var lineDragPreviewTimerField = RequireField(typeof(MainForm), "_lineDragPreviewTimer");
+        var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var setSpatialTransformMode = RequireMethod(
+            typeof(MainForm),
+            "SetSpatialTransformMode",
+            [typeof(SpatialTransformMode), typeof(bool)]);
+        var setSpatialPivotKind = RequireMethod(
+            typeof(MainForm),
+            "SetSpatialPivotKind",
+            [typeof(SpatialPivotKind), typeof(bool)]);
+        var beginSpatialTransformEdit = RequireMethod(typeof(MainForm), "BeginSpatialTransformEdit", [typeof(bool)]);
+        var togglePlayback = RequireMethod(typeof(MainForm), "TogglePlayback", Type.EmptyTypes);
+        var spatialTransformPanelField = RequireField(typeof(MainForm), "_spatialTransformPanel");
+        var rotationPivotModeField = RequireField(typeof(SpatialTransformPanel), "_rotationPivotMode");
+        var scalePivotModeField = RequireField(typeof(SpatialTransformPanel), "_scalePivotMode");
+        var resetRotationPivotField = RequireField(typeof(SpatialTransformPanel), "_resetRotationPivot");
+        var finishFrameInteraction = RequireMethod(
+            typeof(MainForm),
+            "FinishPointerInteractionForFrameChange",
+            Type.EmptyTypes);
+        var finishContextInteraction = RequireMethod(
+            typeof(MainForm),
+            "FinishPointerInteractionForContextChange",
+            Type.EmptyTypes);
+        var finishLostPointerCapture = RequireMethod(typeof(MainForm), "FinishLostPointerCapture", Type.EmptyTypes);
+        var undoLastEdit = RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes);
+        var onDeactivate = RequireMethod(
+            typeof(Form),
+            "OnDeactivate",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 
         DrawingObjectInstanceDefinition CurrentInstance() => scene.Instances.FirstOrDefault(instance =>
                 string.Equals(instance.Id, instanceId, StringComparison.Ordinal))
             ?? throw new InvalidOperationException("Spatial keyboard regression lost its Scene instance.");
         InstanceFrameState CurrentState() => CurrentInstance().EvaluateState(0);
+        var lineDragPreviewTimer = lineDragPreviewTimerField.GetValue(form) as System.Windows.Forms.Timer
+            ?? throw new InvalidOperationException("Spatial pointer regression lost the shared frame timer.");
+        var spatialTransformPanel = spatialTransformPanelField.GetValue(form) as SpatialTransformPanel
+            ?? throw new InvalidOperationException("Spatial pivot regression lost the Transform panel.");
+        var rotationPivotMode = rotationPivotModeField.GetValue(spatialTransformPanel) as Button
+            ?? throw new InvalidOperationException("Spatial pivot regression lost the rotation-pivot button.");
+        var scalePivotMode = scalePivotModeField.GetValue(spatialTransformPanel) as Button
+            ?? throw new InvalidOperationException("Spatial pivot regression lost the scale-pivot button.");
+        var resetRotationPivot = resetRotationPivotField.GetValue(spatialTransformPanel) as Button
+            ?? throw new InvalidOperationException("Spatial pivot regression lost the reset button.");
+        if (lineDragPreviewTimer.Interval != 16)
+        {
+            throw new InvalidOperationException("Spatial pointer updates were not limited to the 16 ms frame cadence.");
+        }
         int UndoCount()
         {
             var stack = undoStackField.GetValue(form)
@@ -1152,9 +1976,14 @@ internal static partial class Benchmark
         void MovePointer(Point point) => stageMouseMove.Invoke(
             form,
             [stage, new MouseEventArgs(MouseButtons.None, 0, point.X, point.Y, 0)]);
-        void DragPointer(Point point) => stageMouseMove.Invoke(
+        void QueueDragPointer(Point point) => stageMouseMove.Invoke(
             form,
             [stage, new MouseEventArgs(MouseButtons.Left, 0, point.X, point.Y, 0)]);
+        void DragPointer(Point point)
+        {
+            QueueDragPointer(point);
+            tickLineDragPreview.Invoke(form, null);
+        }
         void PressPointer(MouseButtons button, Point point) => stageMouseDown.Invoke(
             form,
             [stage, new MouseEventArgs(button, 1, point.X, point.Y, 0)]);
@@ -1167,6 +1996,39 @@ internal static partial class Benchmark
             stage.Select();
             stage.Focus();
             Application.DoEvents();
+            stage.CompleteSpatialTransformGizmoMotion();
+        }
+        void WaitForFloatingMotion(string checkpoint)
+        {
+            var started = Stopwatch.GetTimestamp();
+            while ((spatialTransformPanel.FloatingMotionActive
+                    || stage.SpatialTransformGizmoMotionActive)
+                && Stopwatch.GetElapsedTime(started).TotalMilliseconds < 2_000)
+            {
+                Application.DoEvents();
+                Thread.Sleep(2);
+            }
+            Application.DoEvents();
+            if (spatialTransformPanel.FloatingMotionActive
+                || stage.SpatialTransformGizmoMotionActive)
+            {
+                throw new InvalidOperationException(
+                    $"The Transform panel or gizmo did not settle after {checkpoint}.");
+            }
+        }
+        Point FindEmptyProjectedPointerTarget()
+        {
+            for (var y = 8; y < stage.Height - 8; y += 8)
+            {
+                for (var x = 8; x < stage.Width - 8; x += 8)
+                {
+                    var point = new Point(x, y);
+                    if (!stage.TryHitTestProjectedObject(point, 2f, out _)) return point;
+                }
+            }
+
+            throw new InvalidOperationException(
+                "Spatial selection regression could not find an empty Stage point.");
         }
         static bool SameTransform(InstanceFrameState left, InstanceFrameState right)
         {
@@ -1179,7 +2041,9 @@ internal static partial class Benchmark
                 && Math.Abs(left.RotationZ - right.RotationZ) <= epsilon
                 && Math.Abs(left.ScaleX - right.ScaleX) <= epsilon
                 && Math.Abs(left.ScaleY - right.ScaleY) <= epsilon
-                && Math.Abs(left.ScaleZ - right.ScaleZ) <= epsilon;
+                && Math.Abs(left.ScaleZ - right.ScaleZ) <= epsilon
+                && System.Numerics.Vector3.Distance(left.RotationPivot, right.RotationPivot) <= epsilon
+                && System.Numerics.Vector3.Distance(left.ScalePivot, right.ScalePivot) <= epsilon;
         }
         bool ModalActive() => keyboardActiveField.GetValue(form) is true;
         SpatialTransformAxis ModalAxis() => keyboardAxisField.GetValue(form) is SpatialTransformAxis axis
@@ -1224,6 +2088,134 @@ internal static partial class Benchmark
             }
         }
 
+        SelectInstance();
+        var selectedState = CurrentState();
+        if (!stage.TryProjectScenePosition(
+                new System.Numerics.Vector3(selectedState.X, selectedState.Y, selectedState.Z),
+                out var projectedInstanceCenter,
+                out _)
+            || !stage.TryHitTestProjectedObject(Point.Round(projectedInstanceCenter), 2f, out _))
+        {
+            throw new InvalidOperationException(
+                "Spatial selection regression could not hit the selected Scene instance center.");
+        }
+        var projectedInstancePoint = Point.Round(projectedInstanceCenter);
+        var emptyStagePoint = FindEmptyProjectedPointerTarget();
+        clearSelection.Invoke(form, [false]);
+        activateTool.Invoke(form, [ToolMode.Select]);
+        PressPointer(MouseButtons.Left, emptyStagePoint);
+        ReleasePointer(MouseButtons.Left, emptyStagePoint);
+        Application.DoEvents();
+        WaitForFloatingMotion("clearing the 3D selection");
+        if (toolField.GetValue(form) is not ToolMode.Select
+            || stage.Reference3DSelectedObjects.Count != 0
+            || spatialTransformPanel.FloatingVisibilityRequested
+            || spatialTransformPanel.Visible
+            || spatialTransformPanel.Location != spatialTransformPanel.FloatingTargetLocation
+            || stage.SpatialTransformGizmoPresented)
+        {
+            throw new InvalidOperationException(
+                "Clicking empty 3D Stage space switched tools, retained a selection, or left the Transform panel visible.");
+        }
+
+        var showMotionGeneration = spatialTransformPanel.FloatingMotionGeneration;
+        var gizmoShowMotionGeneration = stage.SpatialTransformGizmoMotionGeneration;
+        PressPointer(MouseButtons.Left, projectedInstancePoint);
+        ReleasePointer(MouseButtons.Left, projectedInstancePoint);
+        Application.DoEvents();
+        if (toolField.GetValue(form) is not ToolMode.Transform3D
+            || stage.Reference3DSelectedObjects.Count == 0
+            || !spatialTransformPanel.FloatingVisibilityRequested
+            || !spatialTransformPanel.Visible
+            || spatialTransformPanel.FloatingMotionGeneration <= showMotionGeneration
+            || (UiMotion.AnimationsEnabled && !spatialTransformPanel.FloatingMotionActive)
+            || stage.SpatialTransformGizmoMotionGeneration <= gizmoShowMotionGeneration
+            || !stage.SpatialTransformGizmoPresented
+            || (UiMotion.AnimationsEnabled && !stage.SpatialTransformGizmoMotionActive)
+            || !stage.TryGetSpatialGizmoScreenGeometry(out _)
+            || pointerSessionField.GetValue(form) is not null
+            || editSessionField.GetValue(form) is not null)
+        {
+            throw new InvalidOperationException(
+                "Selecting a Scene instance in 3D did not activate the idle 3D Transform tool and gizmo.");
+        }
+        if (UiMotion.AnimationsEnabled)
+        {
+            var motionRenderPlanBuilds = stage.Reference3DRenderPlanBuildCount;
+            stage.AdvanceSpatialTransformGizmoMotion(32);
+            stage.Update();
+            Application.DoEvents();
+            if (!stage.LastFrameUsedDirect2D
+                || !stage.GpuAccelerationActive
+                || !stage.SpatialTransformGizmoMotionActive
+                || stage.Reference3DRenderPlanBuildCount != motionRenderPlanBuilds)
+            {
+                throw new InvalidOperationException(
+                    "The animated spatial gizmo did not render as a Direct2D overlay without rebuilding the 3D plan.");
+            }
+        }
+        WaitForFloatingMotion("selecting a 3D instance");
+        if (!spatialTransformPanel.Visible
+            || spatialTransformPanel.Location != spatialTransformPanel.FloatingTargetLocation
+            || stage.SpatialTransformGizmoMotionActive
+            || stage.SpatialTransformGizmoMotionPosition != 1
+            || stage.SpatialTransformGizmoRenderScale != 1)
+        {
+            throw new InvalidOperationException(
+                "The Transform floating panel did not finish at its Stage anchor after selection.");
+        }
+
+        var hideMotionGeneration = spatialTransformPanel.FloatingMotionGeneration;
+        var gizmoHideMotionGeneration = stage.SpatialTransformGizmoMotionGeneration;
+        PressPointer(MouseButtons.Left, emptyStagePoint);
+        ReleasePointer(MouseButtons.Left, emptyStagePoint);
+        Application.DoEvents();
+        var gizmoExitPresented = stage.TryGetSpatialGizmoRenderGeometry(
+            out var gizmoExitGeometry,
+            out _,
+            out _);
+        if (spatialTransformPanel.FloatingVisibilityRequested
+            || spatialTransformPanel.FloatingMotionGeneration <= hideMotionGeneration
+            || stage.SpatialTransformGizmoVisible
+            || stage.SpatialTransformGizmoMotionGeneration <= gizmoHideMotionGeneration
+            || (UiMotion.AnimationsEnabled
+                && (!spatialTransformPanel.Visible
+                    || !spatialTransformPanel.FloatingMotionActive
+                    || !stage.SpatialTransformGizmoPresented
+                    || !stage.SpatialTransformGizmoMotionActive
+                    || !gizmoExitPresented
+                    || stage.HitTestSpatialTransformGizmo(
+                        Point.Round(gizmoExitGeometry.Endpoints[0])).IsValid))
+            || (!UiMotion.AnimationsEnabled && stage.SpatialTransformGizmoPresented))
+        {
+            throw new InvalidOperationException(
+                "Canceling the 3D selection did not begin the Transform panel exit motion.");
+        }
+        WaitForFloatingMotion("canceling the selected 3D instance");
+        if (spatialTransformPanel.Visible
+            || spatialTransformPanel.Location != spatialTransformPanel.FloatingTargetLocation
+            || stage.SpatialTransformGizmoPresented
+            || stage.TryGetSpatialGizmoRenderGeometry(out _, out _, out _))
+        {
+            throw new InvalidOperationException(
+                "The Transform floating panel did not hide cleanly after selection was canceled.");
+        }
+
+        PressPointer(MouseButtons.Left, projectedInstancePoint);
+        ReleasePointer(MouseButtons.Left, projectedInstancePoint);
+        Application.DoEvents();
+        WaitForFloatingMotion("restoring the 3D selection");
+        if (!spatialTransformPanel.Visible
+            || !spatialTransformPanel.FloatingVisibilityRequested
+            || toolField.GetValue(form) is not ToolMode.Transform3D)
+        {
+            throw new InvalidOperationException(
+                "Restoring the 3D selection did not restore the Transform panel and 3D Transform tool.");
+        }
+        Console.WriteLine("scene_3d_selection_auto_transform=ok");
+        Console.WriteLine("scene_3d_transform_panel_motion=ok");
+        Console.WriteLine("scene_3d_transform_gizmo_motion=ok");
+
         if (MainForm.ApplySpatialThicknessDelta(0, 250) <= 0
             || MainForm.ApplySpatialThicknessDelta(0, 0.6f) != 1
             || MainForm.ApplySpatialThicknessDelta(25, -100) != 0
@@ -1231,6 +2223,22 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException("Scale Z thickness did not clamp and grow additively in vector units.");
         }
+
+        SelectInstance();
+        var focusUndoStart = UndoCount();
+        if (!stage.TryGetReference3DFocusPoints(stage.Reference3DSelectedObjects.ToArray(), out var focusPoints)
+            || focusPoints.Length == 0
+            || !InvokeKey(Keys.F))
+        {
+            throw new InvalidOperationException("The 3D F shortcut did not focus the selected Scene instance.");
+        }
+        stage.CompleteReferenceCameraTransition();
+        AssertReferenceCameraFocusVisible(stage, focusPoints, "selected-instance F focus");
+        if (UndoCount() != focusUndoStart)
+        {
+            throw new InvalidOperationException("Focusing the 3D camera created a model undo entry.");
+        }
+        stage.ResetReferenceCameraView(ReferenceCameraMotion.Immediate);
 
         var savedCursorPosition = Cursor.Position;
         try
@@ -1263,6 +2271,15 @@ internal static partial class Benchmark
             {
                 throw new InvalidOperationException(
                     "G did not enter a zero-thickness 3D transform session that waits for an axis.");
+            }
+
+            var modalCamera = stage.CaptureReferenceCameraFrameForPersistence();
+            if (!InvokeKey(Keys.Left)
+                || stage.CaptureReferenceCameraFrameForPersistence() != modalCamera
+                || !SameTransform(CurrentState(), initial))
+            {
+                throw new InvalidOperationException(
+                    "A camera arrow changed the camera or model during an active 3D Transform keyboard session.");
             }
 
             var waitingEdit = editSessionField.GetValue(form);
@@ -1377,7 +2394,19 @@ internal static partial class Benchmark
             }
 
             SelectInstance();
-            var rotateStart = CurrentState();
+            var pivotTransformStart = CurrentState();
+            var rotateStart = DrawingObjectInstanceDefinition.PreserveSpatialTransformForPivotChange(
+                pivotTransformStart,
+                pivotTransformStart with
+                {
+                    RotationPivot = new System.Numerics.Vector3(64, -38, 17),
+                    ScalePivot = new System.Numerics.Vector3(-26, 44, -9)
+                });
+            if (!CurrentInstance().SetStateAtFrame(0, rotateStart))
+            {
+                throw new InvalidOperationException("Spatial transform regression could not install nonzero pivots.");
+            }
+            SelectInstance();
             var undoBeforeRotate = UndoCount();
             if (!InvokeKey(Keys.R) || !InvokeKey(Keys.Z) || ModalAxis() != SpatialTransformAxis.Z)
             {
@@ -1391,7 +2420,11 @@ internal static partial class Benchmark
             }
             MovePointer(Point.Round(rotateRing[0]));
             MovePointer(Point.Round(rotateRing[rotateRing.Length / 4]));
-            if (Math.Abs(CurrentState().RotationZ - rotateStart.RotationZ) <= 0.001f
+            var rotatePreview = CurrentState();
+            if (Math.Abs(rotatePreview.RotationZ - rotateStart.RotationZ) <= 0.001f
+                || rotatePreview.X != rotateStart.X
+                || rotatePreview.Y != rotateStart.Y
+                || rotatePreview.Z != rotateStart.Z
                 || !InvokeKey(Keys.Escape)
                 || ModalActive()
                 || !SameTransform(CurrentState(), rotateStart)
@@ -1432,6 +2465,30 @@ internal static partial class Benchmark
             if (undoLastEdit.Invoke(form, null) is not true || !SameTransform(CurrentState(), thicknessStart))
             {
                 throw new InvalidOperationException("Undo did not restore zero thickness after an S Z commit.");
+            }
+
+            SelectInstance();
+            var scalePivotStart = CurrentState();
+            var undoBeforeScalePivot = UndoCount();
+            if (!InvokeKey(Keys.S) || !InvokeKey(Keys.X) || ModalAxis() != SpatialTransformAxis.X)
+            {
+                throw new InvalidOperationException("S X could not begin a pivot-aware scale gesture.");
+            }
+            var scalePivotGeometry = GizmoGeometry();
+            MovePointer(Point.Round(scalePivotGeometry.Origin));
+            MovePointer(AxisDragTarget(scalePivotGeometry, SpatialTransformAxis.X));
+            var scalePivotPreview = CurrentState();
+            if (Math.Abs(scalePivotPreview.ScaleX - scalePivotStart.ScaleX) <= 0.001f
+                || scalePivotPreview.X != scalePivotStart.X
+                || scalePivotPreview.Y != scalePivotStart.Y
+                || scalePivotPreview.Z != scalePivotStart.Z
+                || !InvokeKey(Keys.Escape)
+                || ModalActive()
+                || !SameTransform(CurrentState(), scalePivotStart)
+                || UndoCount() != undoBeforeScalePivot)
+            {
+                throw new InvalidOperationException(
+                    "Single-instance scaling did not remain fixed at its nonzero scale pivot or cancel cleanly.");
             }
 
             SelectInstance();
@@ -1559,24 +2616,49 @@ internal static partial class Benchmark
                 throw new InvalidOperationException("The visible X gizmo axis was not hit-testable.");
             }
             PressPointer(MouseButtons.Left, axisStart);
+            lineDragPreviewTimer.Start();
             var physicalX = new List<float>();
             for (var step = 1; step <= 3; step++)
             {
                 var target = Point.Round(new PointF(
                     axisEndpoint.X + axisVector.X * step * 18f,
                     axisEndpoint.Y + axisVector.Y * step * 18f));
-                DragPointer(target);
+                QueueDragPointer(target);
                 physicalX.Add(CurrentState().X);
             }
-            var axisFinish = Point.Round(new PointF(
+            var axisPending = Point.Round(new PointF(
                 axisEndpoint.X + axisVector.X * 54f,
                 axisEndpoint.Y + axisVector.Y * 54f));
+            if (pendingSpatialTransformScreenField.GetValue(form) is not Point pendingScreen
+                || pendingScreen != axisPending)
+            {
+                throw new InvalidOperationException(
+                    "Spatial pointer moves did not coalesce to the latest pending screen position.");
+            }
+            tickLineDragPreview.Invoke(form, null);
+            physicalX.Add(CurrentState().X);
+            QueueDragPointer(axisPending);
+            if (pendingSpatialTransformScreenField.GetValue(form) is not Point mouseUpPending
+                || mouseUpPending != axisPending)
+            {
+                throw new InvalidOperationException(
+                    "The spatial pointer fixture did not retain a stale update before MouseUp.");
+            }
+            var axisFinish = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 72f,
+                axisEndpoint.Y + axisVector.Y * 72f));
             ReleasePointer(MouseButtons.Left, axisFinish);
+            physicalX.Add(CurrentState().X);
             var physicalDirection = Math.Sign(physicalX[0] - physicalStart.X);
             if (physicalDirection == 0
+                || Math.Abs(physicalX[1] - physicalX[0]) > 0.001f
+                || Math.Abs(physicalX[2] - physicalX[0]) > 0.001f
                 || physicalX.Zip(physicalX.Skip(1), (left, right) =>
-                        (right - left) * physicalDirection > 0.001f)
+                        (right - left) * physicalDirection >= -0.001f)
                     .Any(monotonic => !monotonic)
+                || (physicalX[^2] - physicalX[0]) * physicalDirection <= 0.001f
+                || (physicalX[^1] - physicalX[^2]) * physicalDirection <= 0.001f
+                || pendingSpatialTransformScreenField.GetValue(form) is not null
                 || UndoCount() != physicalUndoStart + 1)
             {
                 throw new InvalidOperationException(
@@ -1586,6 +2668,175 @@ internal static partial class Benchmark
             if (undoLastEdit.Invoke(form, null) is not true || !SameTransform(CurrentState(), physicalStart))
             {
                 throw new InvalidOperationException("Undo did not restore the physical axis drag.");
+            }
+
+            SelectInstance();
+            physicalGeometry = GizmoGeometry();
+            axisEndpoint = physicalGeometry.Endpoints[(int)SpatialTransformAxis.X - 1];
+            axisVector = System.Numerics.Vector2.Normalize(new System.Numerics.Vector2(
+                axisEndpoint.X - physicalGeometry.Origin.X,
+                axisEndpoint.Y - physicalGeometry.Origin.Y));
+            axisStart = Point.Round(axisEndpoint);
+            var captureStart = CurrentState();
+            var captureUndoStart = UndoCount();
+            PressPointer(MouseButtons.Left, axisStart);
+            var captureFirst = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 18f,
+                axisEndpoint.Y + axisVector.Y * 18f));
+            var capturePending = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 54f,
+                axisEndpoint.Y + axisVector.Y * 54f));
+            QueueDragPointer(captureFirst);
+            var captureFirstState = CurrentState();
+            QueueDragPointer(capturePending);
+            if (pendingSpatialTransformScreenField.GetValue(form) is not Point captureQueued
+                || captureQueued != capturePending
+                || !SameTransform(CurrentState(), captureFirstState))
+            {
+                throw new InvalidOperationException("The capture-loss fixture did not retain its final queued position.");
+            }
+            finishLostPointerCapture.Invoke(form, null);
+            var captureFinalState = CurrentState();
+            var captureDirection = Math.Sign(captureFirstState.X - captureStart.X);
+            if (captureDirection == 0
+                || (captureFinalState.X - captureFirstState.X) * captureDirection <= 0.001f
+                || pointerSessionField.GetValue(form) is not null
+                || editSessionField.GetValue(form) is not null
+                || pendingSpatialTransformScreenField.GetValue(form) is not null
+                || UndoCount() != captureUndoStart + 1)
+            {
+                throw new InvalidOperationException(
+                    "Capture loss discarded the final coalesced spatial pointer update or broke single-undo commit semantics.");
+            }
+            if (undoLastEdit.Invoke(form, null) is not true || !SameTransform(CurrentState(), captureStart))
+            {
+                throw new InvalidOperationException("Undo did not restore the capture-loss spatial drag.");
+            }
+
+            SelectInstance();
+            physicalGeometry = GizmoGeometry();
+            axisEndpoint = physicalGeometry.Endpoints[(int)SpatialTransformAxis.X - 1];
+            axisVector = System.Numerics.Vector2.Normalize(new System.Numerics.Vector2(
+                axisEndpoint.X - physicalGeometry.Origin.X,
+                axisEndpoint.Y - physicalGeometry.Origin.Y));
+            axisStart = Point.Round(axisEndpoint);
+            var nonLeftReleaseStart = CurrentState();
+            var nonLeftReleaseUndoStart = UndoCount();
+            PressPointer(MouseButtons.Left, axisStart);
+            var nonLeftReleaseFirst = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 18f,
+                axisEndpoint.Y + axisVector.Y * 18f));
+            var nonLeftReleasePending = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 54f,
+                axisEndpoint.Y + axisVector.Y * 54f));
+            QueueDragPointer(nonLeftReleaseFirst);
+            var nonLeftReleaseFirstState = CurrentState();
+            QueueDragPointer(nonLeftReleasePending);
+            ReleasePointer(MouseButtons.Right, axisStart);
+            var nonLeftReleaseFinalState = CurrentState();
+            var nonLeftReleaseDirection = Math.Sign(nonLeftReleaseFirstState.X - nonLeftReleaseStart.X);
+            if (nonLeftReleaseDirection == 0
+                || pointerSessionField.GetValue(form) is not null
+                || pendingSpatialTransformScreenField.GetValue(form) is not null
+                || !SameTransform(nonLeftReleaseFinalState, nonLeftReleaseStart)
+                || UndoCount() != nonLeftReleaseUndoStart)
+            {
+                throw new InvalidOperationException(
+                    "A right MouseUp did not cancel and restore the active spatial drag without an undo entry.");
+            }
+
+            SelectInstance();
+            physicalGeometry = GizmoGeometry();
+            axisEndpoint = physicalGeometry.Endpoints[(int)SpatialTransformAxis.X - 1];
+            axisVector = System.Numerics.Vector2.Normalize(new System.Numerics.Vector2(
+                axisEndpoint.X - physicalGeometry.Origin.X,
+                axisEndpoint.Y - physicalGeometry.Origin.Y));
+            axisStart = Point.Round(axisEndpoint);
+            var rightDownCancelStart = CurrentState();
+            var rightDownCancelUndoStart = UndoCount();
+            PressPointer(MouseButtons.Left, axisStart);
+            var rightDownCancelTarget = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 36f,
+                axisEndpoint.Y + axisVector.Y * 36f));
+            QueueDragPointer(rightDownCancelTarget);
+            if (SameTransform(CurrentState(), rightDownCancelStart))
+            {
+                throw new InvalidOperationException("The right-button spatial cancellation fixture did not establish a preview.");
+            }
+            PressPointer(MouseButtons.Right, rightDownCancelTarget);
+            if (pointerSessionField.GetValue(form) is not null
+                || editSessionField.GetValue(form) is not null
+                || !SameTransform(CurrentState(), rightDownCancelStart)
+                || UndoCount() != rightDownCancelUndoStart)
+            {
+                throw new InvalidOperationException(
+                    "Right MouseDown did not cancel and restore an active spatial gizmo drag without an undo entry.");
+            }
+            Console.WriteLine("scene_3d_spatial_pointer_right_cancel=ok");
+
+            SelectInstance();
+            physicalGeometry = GizmoGeometry();
+            axisEndpoint = physicalGeometry.Endpoints[(int)SpatialTransformAxis.X - 1];
+            axisVector = System.Numerics.Vector2.Normalize(new System.Numerics.Vector2(
+                axisEndpoint.X - physicalGeometry.Origin.X,
+                axisEndpoint.Y - physicalGeometry.Origin.Y));
+            axisStart = Point.Round(axisEndpoint);
+            var modeSwitchStart = CurrentState();
+            var modeSwitchUndoStart = UndoCount();
+            PressPointer(MouseButtons.Left, axisStart);
+            var modeSwitchFirst = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 18f,
+                axisEndpoint.Y + axisVector.Y * 18f));
+            var modeSwitchPending = Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 54f,
+                axisEndpoint.Y + axisVector.Y * 54f));
+            QueueDragPointer(modeSwitchFirst);
+            var modeSwitchFirstState = CurrentState();
+            QueueDragPointer(modeSwitchPending);
+            setSpatialTransformMode.Invoke(form, [SpatialTransformMode.Rotate, true]);
+            var modeSwitchFinalState = CurrentState();
+            var modeSwitchDirection = Math.Sign(modeSwitchFirstState.X - modeSwitchStart.X);
+            if (modeSwitchDirection == 0
+                || (modeSwitchFinalState.X - modeSwitchFirstState.X) * modeSwitchDirection <= 0.001f
+                || pointerSessionField.GetValue(form) is not null
+                || editSessionField.GetValue(form) is not null
+                || pendingSpatialTransformScreenField.GetValue(form) is not null
+                || UndoCount() != modeSwitchUndoStart + 1)
+            {
+                throw new InvalidOperationException(
+                    "Changing spatial modes discarded the final coalesced pointer update or broke commit semantics.");
+            }
+            if (undoLastEdit.Invoke(form, null) is not true || !SameTransform(CurrentState(), modeSwitchStart))
+            {
+                throw new InvalidOperationException("Undo did not restore the mode-switch spatial drag.");
+            }
+            setSpatialTransformMode.Invoke(form, [SpatialTransformMode.Move, true]);
+
+            SelectInstance();
+            physicalGeometry = GizmoGeometry();
+            axisEndpoint = physicalGeometry.Endpoints[(int)SpatialTransformAxis.X - 1];
+            axisVector = System.Numerics.Vector2.Normalize(new System.Numerics.Vector2(
+                axisEndpoint.X - physicalGeometry.Origin.X,
+                axisEndpoint.Y - physicalGeometry.Origin.Y));
+            axisStart = Point.Round(axisEndpoint);
+            var frameCancelStart = CurrentState();
+            var frameCancelUndoStart = UndoCount();
+            PressPointer(MouseButtons.Left, axisStart);
+            QueueDragPointer(Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 18f,
+                axisEndpoint.Y + axisVector.Y * 18f)));
+            QueueDragPointer(Point.Round(new PointF(
+                axisEndpoint.X + axisVector.X * 54f,
+                axisEndpoint.Y + axisVector.Y * 54f)));
+            finishFrameInteraction.Invoke(form, null);
+            if (!SameTransform(CurrentState(), frameCancelStart)
+                || pointerSessionField.GetValue(form) is not null
+                || editSessionField.GetValue(form) is not null
+                || pendingSpatialTransformScreenField.GetValue(form) is not null
+                || UndoCount() != frameCancelUndoStart)
+            {
+                throw new InvalidOperationException(
+                    "A frame switch did not discard queued spatial pointer work and restore the edit snapshot.");
             }
 
             SelectInstance();
@@ -1650,6 +2901,11 @@ internal static partial class Benchmark
                 var planeStart = CurrentState();
                 var planeUndoStart = UndoCount();
                 PressPointer(MouseButtons.Left, planeCenter);
+                if (pointerSessionField.GetValue(form) is null)
+                {
+                    throw new InvalidOperationException(
+                        $"The {planeAxis} Transform handle was occluded before its pointer session began.");
+                }
                 var planeTarget = new Point(planeCenter.X + 21, planeCenter.Y + 14);
                 DragPointer(planeTarget);
                 var moved = CurrentState();
@@ -1704,8 +2960,192 @@ internal static partial class Benchmark
         }
 
         SelectInstance();
+        var pivotEditStart = CurrentState();
+        var pivotEditTransform = DrawingObjectInstanceDefinition.CreateSpatialTransform(pivotEditStart);
+        var pivotEditUndoStart = UndoCount();
+        rotationPivotMode.PerformClick();
+        Application.DoEvents();
+        var expectedRotationPivotOrigin = DrawingObjectInstanceDefinition.RotationPivotScenePosition(pivotEditStart);
+        if (spatialTransformPanel.PivotKind != SpatialPivotKind.Rotation
+            || stage.SpatialTransformGizmoMode != SpatialTransformMode.Move
+            || System.Numerics.Vector3.Distance(
+                stage.SpatialTransformGizmoOrigin,
+                expectedRotationPivotOrigin) > 0.001f)
+        {
+            throw new InvalidOperationException(
+                "Rotation-pivot mode did not expose a move gizmo at the selected instance pivot.");
+        }
+        var pivotGeometry = GizmoGeometry();
+        var pivotEndpoint = pivotGeometry.Endpoints[(int)SpatialTransformAxis.X - 1];
+        var pivotAxis = new System.Numerics.Vector2(
+            pivotEndpoint.X - pivotGeometry.Origin.X,
+            pivotEndpoint.Y - pivotGeometry.Origin.Y);
+        if (pivotAxis.LengthSquared() <= 16f)
+        {
+            throw new InvalidOperationException("The rotation-pivot X axis collapsed in the visible gizmo.");
+        }
+        pivotAxis = System.Numerics.Vector2.Normalize(pivotAxis);
+        var pivotPress = Point.Round(pivotEndpoint);
+        var pivotTarget = Point.Round(new PointF(
+            pivotEndpoint.X + pivotAxis.X * 42,
+            pivotEndpoint.Y + pivotAxis.Y * 42));
+        PressPointer(MouseButtons.Left, pivotPress);
+        DragPointer(pivotTarget);
+        var pivotMoved = CurrentState();
+        ReleasePointer(MouseButtons.Left, pivotTarget);
+        if (pivotMoved.RotationPivot == pivotEditStart.RotationPivot
+            || !CompositionRegressionMatricesNear(
+                DrawingObjectInstanceDefinition.CreateSpatialTransform(pivotMoved),
+                pivotEditTransform)
+            || UndoCount() != pivotEditUndoStart + 1)
+        {
+            throw new InvalidOperationException(
+                "Dragging the rotation pivot moved visible content or failed single-undo commit semantics.");
+        }
+        if (undoLastEdit.Invoke(form, null) is not true || !SameTransform(CurrentState(), pivotEditStart))
+        {
+            throw new InvalidOperationException("Undo did not restore the rotation-pivot drag.");
+        }
+
+        SelectInstance();
+        var resetUndoStart = UndoCount();
+        spatialTransformPanel.SetState(CurrentState(), enabled: true);
+        if (!resetRotationPivot.Enabled)
+        {
+            throw new InvalidOperationException("Rotation-pivot reset was disabled for one selected 3D instance.");
+        }
+        resetRotationPivot.PerformClick();
+        Application.DoEvents();
+        var resetState = CurrentState();
+        var resetTransform = DrawingObjectInstanceDefinition.CreateSpatialTransform(resetState);
+        var resetTransformPreserved = CompositionRegressionMatricesNear(resetTransform, pivotEditTransform);
+        if (resetState.RotationPivot != System.Numerics.Vector3.Zero
+            || !resetTransformPreserved
+            || UndoCount() != resetUndoStart + 1)
+        {
+            throw new InvalidOperationException(
+                "Resetting the rotation pivot did not preserve visible content as one undoable edit: "
+                + $"pivot={resetState.RotationPivot}, position=({resetState.X:0.###},{resetState.Y:0.###},{resetState.Z:0.###}), "
+                + $"matrixPreserved={resetTransformPreserved}, undo={resetUndoStart}->{UndoCount()}.");
+        }
+        resetRotationPivot.PerformClick();
+        Application.DoEvents();
+        if (UndoCount() != resetUndoStart + 1)
+        {
+            throw new InvalidOperationException("Resetting an already-zero rotation pivot created an empty undo edit.");
+        }
+        if (undoLastEdit.Invoke(form, null) is not true || !SameTransform(CurrentState(), pivotEditStart))
+        {
+            throw new InvalidOperationException("Undo did not restore the reset rotation pivot.");
+        }
+
+        SelectInstance();
+        var scalePivotCancelStart = CurrentState();
+        var scalePivotCancelUndoStart = UndoCount();
+        spatialTransformPanel.SetState(scalePivotCancelStart, enabled: true);
+        if (!scalePivotMode.Enabled)
+        {
+            throw new InvalidOperationException("Scale-pivot mode was disabled for one selected 3D instance.");
+        }
+        scalePivotMode.PerformClick();
+        Application.DoEvents();
+        if (spatialTransformPanel.PivotKind != SpatialPivotKind.Scale
+            || stage.SpatialTransformGizmoMode != SpatialTransformMode.Move
+            || System.Numerics.Vector3.Distance(
+                stage.SpatialTransformGizmoOrigin,
+                DrawingObjectInstanceDefinition.ScalePivotScenePosition(scalePivotCancelStart)) > 0.001f)
+        {
+            throw new InvalidOperationException(
+                "Scale-pivot mode did not expose a move gizmo at the selected instance pivot.");
+        }
+        pivotGeometry = GizmoGeometry();
+        pivotEndpoint = pivotGeometry.Endpoints[(int)SpatialTransformAxis.Y - 1];
+        pivotAxis = new System.Numerics.Vector2(
+            pivotEndpoint.X - pivotGeometry.Origin.X,
+            pivotEndpoint.Y - pivotGeometry.Origin.Y);
+        if (pivotAxis.LengthSquared() <= 16f)
+        {
+            throw new InvalidOperationException("The scale-pivot Y axis collapsed in the visible gizmo.");
+        }
+        pivotAxis = System.Numerics.Vector2.Normalize(pivotAxis);
+        pivotPress = Point.Round(pivotEndpoint);
+        pivotTarget = Point.Round(new PointF(
+            pivotEndpoint.X + pivotAxis.X * 36,
+            pivotEndpoint.Y + pivotAxis.Y * 36));
+        PressPointer(MouseButtons.Left, pivotPress);
+        DragPointer(pivotTarget);
+        if (CurrentState().ScalePivot == scalePivotCancelStart.ScalePivot)
+        {
+            throw new InvalidOperationException("Dragging the scale pivot did not update its preview state.");
+        }
+        finishFrameInteraction.Invoke(form, null);
+        if (!SameTransform(CurrentState(), scalePivotCancelStart)
+            || pointerSessionField.GetValue(form) is not null
+            || editSessionField.GetValue(form) is not null
+            || UndoCount() != scalePivotCancelUndoStart)
+        {
+            throw new InvalidOperationException(
+                "Canceling a scale-pivot drag did not restore its state without an undo entry.");
+        }
+
+        SelectInstance();
+        var playbackCancelStart = CurrentState();
+        var playbackCancelUndoStart = UndoCount();
+        pivotGeometry = GizmoGeometry();
+        pivotEndpoint = pivotGeometry.Endpoints[(int)SpatialTransformAxis.Y - 1];
+        pivotAxis = new System.Numerics.Vector2(
+            pivotEndpoint.X - pivotGeometry.Origin.X,
+            pivotEndpoint.Y - pivotGeometry.Origin.Y);
+        if (pivotAxis.LengthSquared() <= 16f)
+        {
+            throw new InvalidOperationException("The playback-cancel scale-pivot axis collapsed in the visible gizmo.");
+        }
+        pivotAxis = System.Numerics.Vector2.Normalize(pivotAxis);
+        pivotPress = Point.Round(pivotEndpoint);
+        pivotTarget = Point.Round(new PointF(
+            pivotEndpoint.X + pivotAxis.X * 36,
+            pivotEndpoint.Y + pivotAxis.Y * 36));
+        PressPointer(MouseButtons.Left, pivotPress);
+        DragPointer(pivotTarget);
+        if (CurrentState().ScalePivot == playbackCancelStart.ScalePivot)
+        {
+            throw new InvalidOperationException("Playback cancellation regression could not start a scale-pivot drag.");
+        }
+        var playbackMotionGeneration = spatialTransformPanel.FloatingMotionGeneration;
+        togglePlayback.Invoke(form, null);
+        if (playingField.GetValue(form) is not true
+            || !SameTransform(CurrentState(), playbackCancelStart)
+            || pointerSessionField.GetValue(form) is not null
+            || editSessionField.GetValue(form) is not null
+            || !spatialTransformPanel.Visible
+            || rotationPivotMode.Enabled
+            || scalePivotMode.Enabled
+            || spatialTransformPanel.FloatingMotionGeneration != playbackMotionGeneration
+            || UndoCount() != playbackCancelUndoStart)
+        {
+            throw new InvalidOperationException(
+                "Starting playback did not cancel and restore the active pivot edit without an undo entry.");
+        }
+        beginSpatialTransformEdit.Invoke(form, [false]);
+        if (editSessionField.GetValue(form) is not null)
+        {
+            throw new InvalidOperationException("Playback allowed a new spatial pivot edit session to begin.");
+        }
+        togglePlayback.Invoke(form, null);
+        if (playingField.GetValue(form) is not false
+            || !rotationPivotMode.Enabled
+            || !scalePivotMode.Enabled
+            || spatialTransformPanel.FloatingMotionGeneration != playbackMotionGeneration)
+        {
+            throw new InvalidOperationException(
+                "Spatial pivot regression could not stop playback or restore the Transform panel state.");
+        }
+        setSpatialPivotKind.Invoke(form, [SpatialPivotKind.None, false]);
+
+        SelectInstance();
         Console.WriteLine("scene_3d_spatial_keyboard_transform=ok");
         Console.WriteLine("scene_3d_spatial_pointer_planes=ok");
+        Console.WriteLine("scene_3d_spatial_pivot_edit=ok");
         return CurrentInstance();
     }
 
@@ -1715,7 +3155,9 @@ internal static partial class Benchmark
         scene.CreateEmpty();
         using var stage = new StageControl(scene);
         stage.Size = new Size(800, 600);
-        stage.ConfigureReferenceView(null, SceneDimension.ThreeD);
+        var perspectiveScene = new SceneDefinition { Dimension = SceneDimension.ThreeD };
+        perspectiveScene.Camera.Projection = CameraProjection.Perspective;
+        stage.ConfigureReferenceView(perspectiveScene, SceneDimension.ThreeD);
         var initialDistance = stage.ReferenceDistance;
         var initialZoom = stage.ReferenceZoomScale;
 
@@ -1743,8 +3185,6 @@ internal static partial class Benchmark
                 "The 3D mouse wheel did not preserve the expected camera-distance direction, clamps, and zoom scale.");
         }
 
-        var perspectiveScene = new SceneDefinition { Dimension = SceneDimension.ThreeD };
-        perspectiveScene.Camera.Projection = CameraProjection.Perspective;
         stage.ConfigureReferenceView(perspectiveScene, SceneDimension.ThreeD);
         stage.ResetReferenceCameraView();
         stage.SetReferenceCameraOrientation(0, 0);
@@ -1798,10 +3238,10 @@ internal static partial class Benchmark
                 new System.Numerics.Vector2(rayHit.X, rayHit.Y),
                 new System.Numerics.Vector2(projectedScenePoint.X, projectedScenePoint.Y)) > 25f
             || Math.Abs(gizmoSpan - 72f) > 1f
-            || Math.Abs(closerOrthographicSpan - initialOrthographicSpan) > 0.01f)
+            || closerOrthographicSpan <= initialOrthographicSpan)
         {
             throw new InvalidOperationException(
-                "The 3D reference camera did not preserve perspective Dolly scaling, depth foreshortening, pick rays, and orthographic size.");
+                "The 3D reference camera did not preserve perspective Dolly scaling, depth foreshortening, pick rays, and orthographic zoom direction.");
         }
         Console.WriteLine("scene_reference_wheel_dolly_direction=ok");
         Console.WriteLine("scene_reference_perspective_dolly_scale=ok");
@@ -1966,6 +3406,10 @@ internal static partial class Benchmark
             && MainForm.HasActiveDistortHandle(TransformHandleKind.None, visualHandleActive: true)
             && MainForm.HasActiveDistortHandle(TransformHandleKind.Move, visualHandleActive: false),
             "Selection tools did not preserve marquee priority or the integrated fill-edge Bezier policy.");
+
+        RunLassoPreviewStateRegression();
+        RunLassoMixedSelectionPointerRegression();
+        RunLassoPartialSymbolPointerRegression();
 
         var source = TransformOverlayFrame.FromBounds(new RectangleF(-100, -60, 200, 120));
         var identity = DistortEnvelope.FromBounds(source.Bounds);
@@ -2356,71 +3800,571 @@ internal static partial class Benchmark
         Console.WriteLine("distort_envelope_regression=ok");
     }
 
-    private static void RunDistortPointerRegression()
+    private static void RunLassoPreviewStateRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene) { Size = new Size(320, 240) };
+        var input = new List<Point>
+        {
+            new(24, 32),
+            new(180, 36),
+            new(164, 168),
+            new(32, 152)
+        };
+        var expected = input.ToArray();
+
+        stage.SetLassoPreview(input, closed: false);
+        var firstSnapshot = stage.LassoPreviewPoints;
+        input[0] = new Point(280, 220);
+        if (!stage.LassoPreviewVisible
+            || stage.LassoPreviewClosed
+            || ReferenceEquals(firstSnapshot, input)
+            || !firstSnapshot.SequenceEqual(expected))
+        {
+            throw new InvalidOperationException(
+                "Lasso preview did not copy its input points or preserve the open preview state.");
+        }
+
+        stage.SetLassoPreview(expected, closed: false);
+        if (!ReferenceEquals(firstSnapshot, stage.LassoPreviewPoints)
+            || !stage.LassoPreviewPoints.SequenceEqual(expected)
+            || stage.LassoPreviewClosed)
+        {
+            throw new InvalidOperationException(
+                "An unchanged lasso preview input caused an unnecessary state replacement.");
+        }
+
+        stage.SetLassoPreview(expected, closed: true);
+        if (!stage.LassoPreviewVisible
+            || !stage.LassoPreviewClosed
+            || !stage.LassoPreviewPoints.SequenceEqual(expected))
+        {
+            throw new InvalidOperationException("Lasso preview did not transition to its closed state.");
+        }
+
+        stage.ClearLassoPreview();
+        if (stage.LassoPreviewVisible
+            || stage.LassoPreviewClosed
+            || stage.LassoPreviewPoints.Count != 0)
+        {
+            throw new InvalidOperationException("Clearing the lasso preview left stale points or visibility state.");
+        }
+
+        var incrementalPoints = new List<Point> { new(40, 48) };
+        stage.SetIncrementalLassoPreview(incrementalPoints, cursor: null, closed: false);
+        var incrementalSnapshot = stage.LassoPreviewPoints;
+        if (stage.LassoPreviewVisible || incrementalSnapshot.Count != 1)
+        {
+            throw new InvalidOperationException("A one-point incremental lasso preview became visible.");
+        }
+
+        incrementalPoints.Add(new Point(132, 52));
+        stage.SetIncrementalLassoPreview(
+            incrementalPoints,
+            cursor: new Point(148, 128),
+            closed: true);
+        if (!stage.LassoPreviewVisible
+            || !stage.LassoPreviewClosed
+            || !ReferenceEquals(incrementalSnapshot, stage.LassoPreviewPoints)
+            || !stage.LassoPreviewPoints.SequenceEqual(
+                [incrementalPoints[0], incrementalPoints[1], new Point(148, 128)]))
+        {
+            throw new InvalidOperationException(
+                "Incremental lasso preview replaced its point view or failed to close with a transient cursor point.");
+        }
+
+        stage.SetIncrementalLassoPreview(
+            incrementalPoints,
+            cursor: new Point(156, 136),
+            closed: true);
+        if (!ReferenceEquals(incrementalSnapshot, stage.LassoPreviewPoints)
+            || stage.LassoPreviewPoints.Count != 3
+            || stage.LassoPreviewPoints[0] != incrementalPoints[0]
+            || stage.LassoPreviewPoints[1] != incrementalPoints[1]
+            || stage.LassoPreviewPoints[2] != new Point(156, 136))
+        {
+            throw new InvalidOperationException(
+                "Updating the incremental lasso cursor did not replace only the transient endpoint.");
+        }
+
+        stage.ClearLassoPreview();
+
+        Console.WriteLine("lasso_preview_state=ok");
+    }
+
+    private static void RunLassoMixedSelectionPointerRegression()
     {
         const System.Reflection.BindingFlags privateInstance =
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var sceneField = typeof(MainForm).GetField("_scene", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the scene.");
-        var projectField = typeof(MainForm).GetField("_project", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the project.");
-        var stageField = typeof(MainForm).GetField("_stage", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the Stage.");
-        var visualHandleActiveField = typeof(MainForm).GetField("_distortVisualHandleActive", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the visual handle state.");
-        var currentEnvelopeField = typeof(MainForm).GetField("_distortCurrentEnvelope", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the current envelope.");
-        var startEnvelopeField = typeof(MainForm).GetField("_distortStartEnvelope", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the start envelope.");
-        var startPointerField = typeof(MainForm).GetField("_drawingTransformStartPointer", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the start pointer.");
-        var pendingPointerField = typeof(MainForm).GetField("_pendingDrawingTransformWorld", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect the queued pointer.");
-        var setSelection = typeof(MainForm).GetMethod(
-            "SetSelection",
-            privateInstance,
-            binder: null,
-            types: [typeof(int), typeof(bool)],
-            modifiers: null)
-            ?? throw new InvalidOperationException("Distort pointer regression could not select an object.");
-        var activateTool = typeof(MainForm).GetMethod(
-            "ActivateTool",
-            privateInstance,
-            binder: null,
-            types: [typeof(ToolMode)],
-            modifiers: null)
-            ?? throw new InvalidOperationException("Distort pointer regression could not activate the tool.");
-        var updateOverlay = typeof(MainForm).GetMethod("UpdateTransformOverlay", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not update the overlay.");
-        var updateSelectionHighlightAnimation = typeof(StageControl).GetMethod(
-            "UpdateSelectionHighlightAnimation",
-            privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not update selection animation.");
-        var setInstanceSelection = typeof(MainForm).GetMethod(
+        var sceneField = RequireField(typeof(MainForm), "_scene");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var selectedObjectsField = RequireField(typeof(MainForm), "_selectedObjects");
+        var selectedObjectField = RequireField(typeof(MainForm), "_selectedObject");
+        var selectedElementsField = RequireField(typeof(MainForm), "_selectedElements");
+        var selectedElementField = RequireField(typeof(MainForm), "_selectedElement");
+        var lassoPointerActiveField = RequireField(typeof(MainForm), "_lassoPointerActive");
+        var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.Show();
+        Application.DoEvents();
+        var project = (VectorProject)typeof(MainForm).GetField("_project", privateInstance)!.GetValue(form)!;
+        var symbol = project.AddDrawingObject("Lasso symbol editor regression");
+        if (typeof(MainForm).GetMethod("OpenDrawingObjectEditor", privateInstance)!
+                .Invoke(form, [symbol.Id]) is not true)
+            throw new InvalidOperationException("Lasso regression could not open the symbol editor.");
+        Application.DoEvents();
+        var scene = sceneField.GetValue(form) as VectorScene
+            ?? throw new InvalidOperationException("Lasso pointer regression did not find the drawing scene.");
+        var stage = stageField.GetValue(form) as StageControl
+            ?? throw new InvalidOperationException("Lasso pointer regression did not find the Stage.");
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        if (!ReferenceEquals(scene, symbol.Scene) || !ReferenceEquals(stage.Scene, symbol.Scene))
+            throw new InvalidOperationException("Lasso regression is not bound to the opened symbol.");
+
+        scene.CreateEmpty();
+        var wholeObject = scene.AddObject(
+            0,
+            new PointF(2_500, -1_500),
+            new SizeF(800, 800),
+            0,
+            50,
+            Color.Teal,
+            Color.Coral,
+            8,
+            ShapeKind.Rectangle);
+        var splitStroke = AddTopologyLine(
+            scene,
+            0,
+            new PointF(500, 0),
+            new PointF(5_000, 0));
+        AddTopologyLine(
+            scene,
+            0,
+            new PointF(-4_000, -4_000),
+            new PointF(-4_000, 4_000));
+        scene.CompleteDeferredBuild();
+
+        activateTool.Invoke(form, [ToolMode.FreehandLasso]);
+        Application.DoEvents();
+        Point ScreenPoint(PointF world) => Point.Round(stage.WorldToScreen(world.X, world.Y));
+        var lasso = new[]
+        {
+            ScreenPoint(new PointF(-100, -3_000)),
+            ScreenPoint(new PointF(5_200, -3_000)),
+            ScreenPoint(new PointF(5_200, 1_000)),
+            ScreenPoint(new PointF(-100, 1_000))
+        };
+        mouseDown.Invoke(
+            form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, lasso[0].X, lasso[0].Y, 0)]);
+        for (var index = 1; index < lasso.Length; index++)
+        {
+            mouseMove.Invoke(
+                form,
+                [stage, new MouseEventArgs(MouseButtons.Left, 0, lasso[index].X, lasso[index].Y, 0)]);
+            Application.DoEvents();
+        }
+        mouseUp.Invoke(
+            form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, lasso[0].X, lasso[0].Y, 0)]);
+        Application.DoEvents();
+
+        var selectedObjects = selectedObjectsField.GetValue(form) as IReadOnlyList<int>
+            ?? throw new InvalidOperationException("Lasso pointer regression did not expose selected objects.");
+        var selectedElements = selectedElementsField.GetValue(form) as IReadOnlyList<DrawingElementHit>
+            ?? throw new InvalidOperationException("Lasso pointer regression did not expose selected elements.");
+        var expectedElement = new DrawingElementKey(splitStroke, DrawingElementKind.Stroke, 0);
+        var expectedFill = new DrawingElementKey(wholeObject, DrawingElementKind.Fill, 0);
+        var expectedElements = scene.GetBoundaryParts(wholeObject, 0)
+            .Select(part => new DrawingElementKey(wholeObject, DrawingElementKind.BoundaryStroke, part.PartIndex))
+            .Append(expectedFill)
+            .Append(expectedElement)
+            .ToHashSet();
+        if (selectedObjects.Count != 2
+            || !selectedObjects.ToHashSet().SetEquals([wholeObject, splitStroke])
+            || !selectedElements.Select(hit => hit.Key).ToHashSet().SetEquals(expectedElements)
+            || !stage.SelectedElements.Select(hit => hit.Key).ToHashSet().SetEquals(expectedElements)
+            || stage.GetSelectedFillPartContours(
+                selectedElements.Single(hit => hit.Key == expectedFill)).Length == 0
+            || selectedObjectField.GetValue(form) is not int primaryObject
+            || primaryObject != splitStroke
+            || selectedElementField.GetValue(form) is not DrawingElementHit primaryElement
+            || primaryElement.Key != expectedElement
+            || scene.ObjectCount != 3
+            || lassoPointerActiveField.GetValue(form) is not false
+            || stage.LassoPreviewVisible)
+        {
+            throw new InvalidOperationException(
+                "Lasso selection did not retain the enclosed fill, its boundary, and a stroke together.");
+        }
+
+        var dragStart = ScreenPoint(new PointF(2_500, -1_500));
+        var dragEnd = new Point(dragStart.X + 40, dragStart.Y + 32);
+        var dragStartWorld = stage.ScreenToWorld(dragStart);
+        var dragEndWorld = stage.ScreenToWorld(dragEnd);
+        var offset = new PointF(dragEndWorld.X - dragStartWorld.X, dragEndWorld.Y - dragStartWorld.Y);
+        activateTool.Invoke(form, [ToolMode.Select]);
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, dragStart.X, dragStart.Y, 0)]);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, dragEnd.X, dragEnd.Y, 0)]);
+        mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, dragEnd.X, dragEnd.Y, 0)]);
+        var movedStroke = scene.HitTestElement(new PointF(2_500 + offset.X, offset.Y), 0, toleranceWorld: 1);
+        var movedBoundary = scene.HitTestElement(new PointF(2_500 + offset.X, -1_900 + offset.Y), 0, toleranceWorld: 1);
+        if (Math.Abs(scene.X[wholeObject] - (2_500 + offset.X)) > 1
+            || Math.Abs(scene.Y[wholeObject] - (-1_500 + offset.Y)) > 1
+            || !movedStroke.IsValid || !selectedObjects.Contains(movedStroke.Key.ObjectIndex)
+            || !movedBoundary.IsValid || !selectedObjects.Contains(movedBoundary.Key.ObjectIndex)
+            || selectedObjects.Count != expectedElements.Count)
+        {
+            throw new InvalidOperationException("Dragging a lasso selection lost its fill, boundary, or stroke.");
+        }
+
+        var undoLastEdit = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        if (undoLastEdit.Invoke(form, null) is not true
+            || scene.ObjectCount != 3
+            || scene.X[wholeObject] != 2_500 || scene.Y[wholeObject] != -1_500
+            || scene.Stroke[wholeObject] != 50
+            || scene.StrokeArgb[wholeObject] != Color.Coral.ToArgb())
+        {
+            throw new InvalidOperationException("Undo did not restore the lasso selection's original fill and stroke topology.");
+        }
+
+        Console.WriteLine("lasso_mixed_selection_pointer=ok");
+
+        var commandKey = RequireMethod(typeof(MainForm), "HandleLassoCommandKey");
+        var lassoPointsField = RequireField(typeof(MainForm), "_lassoScreenPoints");
+        var lassoDownField = RequireField(typeof(MainForm), "_lassoPointerDown");
+        var clearSelection = RequireMethod(typeof(MainForm), "ClearSelection");
+        var points = (IReadOnlyList<Point>)lassoPointsField.GetValue(form)!;
+        const uint mouseDownMessage = 0x0201;
+        const uint mouseUpMessage = 0x0202;
+        void SendMouse(uint message, Point point, bool pressed = false)
+        {
+            var coordinates = (point.X & 0xffff) | ((point.Y & 0xffff) << 16);
+            SendLassoMouseMessage(stage.Handle, message, pressed ? 1 : 0, coordinates);
+            Application.DoEvents();
+        }
+        void ClickVertex(Point point, int expectedCount)
+        {
+            SendMouse(mouseDownMessage, point, pressed: true);
+            if (!stage.Capture || lassoDownField.GetValue(form) is not true)
+                throw new InvalidOperationException("A polygon vertex press did not capture the Stage.");
+            SendMouse(mouseUpMessage, point);
+            if (stage.Capture || lassoDownField.GetValue(form) is not false
+                || lassoPointerActiveField.GetValue(form) is not true || points.Count != expectedCount)
+                throw new InvalidOperationException("Native mouse-up discarded polygon vertices when WinForms released capture.");
+        }
+        void AssertEnded(string context)
+        {
+            if (lassoPointerActiveField.GetValue(form) is not false
+                || points.Count != 0 || stage.LassoPreviewVisible || stage.Capture)
+                throw new InvalidOperationException(
+                    $"Polygon lasso {context} left stale state: active={lassoPointerActiveField.GetValue(form)}, "
+                    + $"points={points.Count}, preview={stage.LassoPreviewVisible}, capture={stage.Capture}.");
+        }
+
+        scene.CreateEmpty();
+        var polygonFill = scene.AddObject(
+            0, PointF.Empty, new SizeF(1_000, 1_000), 0, 0, Color.Teal, 8, ShapeKind.Rectangle);
+        var vertices = new[]
+        {
+            ScreenPoint(new PointF(-2_000, -2_000)),
+            ScreenPoint(new PointF(2_000, -2_000)),
+            ScreenPoint(new PointF(2_000, 2_000)),
+            ScreenPoint(new PointF(-2_000, 2_000))
+        };
+        var expectedPolygonFill = new DrawingElementKey(polygonFill, DrawingElementKind.Fill, 0);
+        foreach (var completion in new[] { "enter", "start", "double-click" })
+        {
+            clearSelection.Invoke(form, [false]);
+            activateTool.Invoke(form, [ToolMode.PolygonLasso]);
+            for (var index = 0; index < vertices.Length; index++) ClickVertex(vertices[index], index + 1);
+            var cursor = new Point(vertices[^1].X + 14, vertices[^1].Y + 9);
+            SendMouse(0x0200, cursor);
+            if (!stage.LassoPreviewVisible || stage.LassoPreviewPoints[^1] != cursor)
+                throw new InvalidOperationException("Polygon lasso stopped previewing between clicks.");
+            if (completion == "enter") commandKey.Invoke(form, [Keys.Enter]);
+            else if (completion == "start")
+            {
+                SendMouse(mouseDownMessage, vertices[0], pressed: true);
+                SendMouse(mouseUpMessage, vertices[0]);
+            }
+            else
+            {
+                SendMouse(mouseDownMessage, vertices[^1], pressed: true);
+                // Native double-click recognition needs a visible desktop; route the Stage event explicitly.
+                typeof(Control).GetMethod("OnMouseDoubleClick", privateInstance)!.Invoke(stage,
+                    [new MouseEventArgs(MouseButtons.Left, 2, vertices[^1].X, vertices[^1].Y, 0)]);
+                SendMouse(mouseUpMessage, vertices[^1]);
+            }
+            AssertEnded(completion);
+            if (stage.SelectedElements.Count != 1 || stage.SelectedElement.Key != expectedPolygonFill
+                || stage.GetSelectedFillPartContours().Length == 0)
+                throw new InvalidOperationException($"Polygon lasso {completion} did not select the enclosed fill.");
+        }
+
+        foreach (var cancellation in new[] { "escape", "right", "capture", "tool", "frame", "context", "deactivate" })
+        {
+            activateTool.Invoke(form, [ToolMode.PolygonLasso]);
+            ClickVertex(vertices[0], 1);
+            ClickVertex(vertices[1], 2);
+            if (cancellation == "escape") commandKey.Invoke(form, [Keys.Escape]);
+            else if (cancellation == "right")
+            {
+                SendMouse(0x0204, vertices[1]);
+                SendMouse(0x0205, vertices[1]);
+            }
+            else if (cancellation == "capture")
+            {
+                SendMouse(mouseDownMessage, vertices[2], pressed: true);
+                stage.Capture = false;
+                SendMouse(mouseUpMessage, vertices[2]);
+            }
+            else if (cancellation == "tool") activateTool.Invoke(form, [ToolMode.Select]);
+            else
+            {
+                var method = cancellation switch
+                {
+                    "frame" => "FinishPointerInteractionForFrameChange",
+                    "context" => "FinishPointerInteractionForContextChange",
+                    _ => "OnDeactivate"
+                };
+                typeof(MainForm).GetMethod(method, privateInstance)!.Invoke(
+                    form, cancellation == "deactivate" ? [EventArgs.Empty] : null);
+            }
+            AssertEnded(cancellation);
+            if (stage.SelectedElement.Key != expectedPolygonFill)
+                throw new InvalidOperationException($"Polygon lasso {cancellation} changed the previous selection.");
+        }
+        Console.WriteLine("polygon_lasso_native_pointer=ok");
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static extern nint SendLassoMouseMessage(nint window, uint message, nint wParam, nint lParam);
+
+    private static void RunLassoPartialSymbolPointerRegression()
+    {
+        const System.Reflection.BindingFlags privateInstance =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        object Field(MainForm form, string name) => typeof(MainForm).GetField(name, privateInstance)!.GetValue(form)!;
+        object? Call(MainForm form, string name, params object?[] arguments) =>
+            typeof(MainForm).GetMethod(name, privateInstance)!.Invoke(form, arguments);
+        var activateTool = typeof(MainForm).GetMethod("ActivateTool", privateInstance, null, [typeof(ToolMode)], null)!;
+
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.Show();
+        Application.DoEvents();
+        var project = (VectorProject)Field(form, "_project");
+        var symbol = project.AddDrawingObject("Lasso partial symbol regression");
+        if (Call(form, "OpenDrawingObjectEditor", symbol.Id) is not true)
+            throw new InvalidOperationException("Partial lasso regression could not open the symbol editor.");
+        Application.DoEvents();
+        var stage = (StageControl)Field(form, "_stage");
+        var scene = (VectorScene)Field(form, "_scene");
+        stage.RestoreViewState(stage.CaptureViewState() with { Zoom = 7.21f });
+        var center = new Point(stage.Width / 2, stage.Height / 2 + 20);
+        void SendMouse(uint message, Point point, bool pressed = false)
+        {
+            if (message == 0x0200)
+            {
+                // WinForms reads physical button state for WM_MOUSEMOVE, ignoring synthetic wParam.
+                typeof(Control).GetMethod("OnMouseMove", privateInstance)!.Invoke(stage,
+                    [new MouseEventArgs(pressed ? MouseButtons.Left : MouseButtons.None, 0, point.X, point.Y, 0)]);
+            }
+            else
+            {
+                SendLassoMouseMessage(stage.Handle, message, pressed ? 1 : 0,
+                    (point.X & 0xffff) | ((point.Y & 0xffff) << 16));
+            }
+            Application.DoEvents();
+        }
+        void ActivateSelectionTool(ToolMode tool)
+        {
+            var group = Field(form, "_selectionToolGroup");
+            var groupType = group.GetType();
+            ((Button)groupType.GetProperty("ParentButton")!.GetValue(group)!).PerformClick();
+            var buttons = (Dictionary<ToolMode, Button>)groupType.GetProperty("FlyoutButtons")!.GetValue(group)!;
+            buttons[tool].PerformClick();
+            Application.DoEvents();
+            if (!Equals(Field(form, "_tool"), tool))
+                throw new InvalidOperationException($"The selection flyout did not activate {tool}.");
+        }
+        var polygon = new[]
+        {
+            new Point(center.X, center.Y - 65),
+            new Point(center.X + 75, center.Y),
+            new Point(center.X, center.Y + 65),
+            new Point(center.X - 75, center.Y)
+        };
+        void SelectPartialFill(ToolMode tool, Point[]? path = null, bool additive = false)
+        {
+            var selectionPolygon = path ?? polygon;
+            ActivateSelectionTool(tool);
+            SendMouse(0x0201, selectionPolygon[0], pressed: true);
+            if (additive)
+                typeof(MainForm).GetField("_lassoAdditiveSelection", privateInstance)!.SetValue(form, true);
+            if (tool == ToolMode.FreehandLasso)
+            {
+                foreach (var point in selectionPolygon.Skip(1)) SendMouse(0x0200, point, pressed: true);
+                SendMouse(0x0202, selectionPolygon[0]);
+            }
+            else
+            {
+                SendMouse(0x0202, selectionPolygon[0]);
+                foreach (var point in selectionPolygon.Skip(1).Append(selectionPolygon[0]))
+                {
+                    SendMouse(0x0201, point, pressed: true);
+                    SendMouse(0x0202, point);
+                }
+            }
+        }
+
+        activateTool.Invoke(form, [ToolMode.Rectangle]);
+        SendMouse(0x0201, new Point(center.X - 140, center.Y - 100), pressed: true);
+        SendMouse(0x0200, new Point(center.X + 140, center.Y + 100), pressed: true);
+        SendMouse(0x0202, new Point(center.X + 140, center.Y + 100));
+        if (!ReferenceEquals(stage.Scene, symbol.Scene) || scene.ObjectCount != 1)
+            throw new InvalidOperationException("The symbol's native drawing gesture did not create a rectangle.");
+        Call(form, "ClearSelection", false);
+        var originalShape = scene.ShapeKind[0];
+        var originalBounds = scene.GetObjectWorldBounds(0);
+        var originalArgb = scene.Argb[0];
+        var originalStrokeArgb = scene.StrokeArgb[0];
+        var originalStroke = scene.Stroke[0];
+        var originalFillPartCount = scene.GetFillParts(0, 0).Length;
+        var centerWorld = stage.ScreenToWorld(center);
+        var cornerWorld = stage.ScreenToWorld(new Point(center.X + 65, center.Y + 55));
+        var outerWorld = stage.ScreenToWorld(new Point(center.X + 110, center.Y));
+        foreach (var tool in new[] { ToolMode.FreehandLasso, ToolMode.PolygonLasso })
+        {
+            SelectPartialFill(tool);
+            var selected = (IReadOnlyList<int>)Field(form, "_selectedObjects");
+            var fill = selected.Where(index => scene.HasFill(index) && scene.FillContainsPoint(index, centerWorld))
+                .SingleOrDefault(-1);
+            if (fill < 0 || scene.ObjectCount <= 1
+                || scene.FillContainsPoint(fill, cornerWorld)
+                || scene.FillContainsPoint(fill, outerWorld)
+                || !Enumerable.Range(0, scene.ObjectCount).Any(index =>
+                    !selected.Contains(index) && scene.FillContainsPoint(index, cornerWorld))
+                || !stage.SelectedObjects.Contains(fill)
+                || stage.LassoPreviewVisible || stage.Capture)
+                throw new InvalidOperationException($"{tool} did not select the actual interior polygon of a drawn symbol fill.");
+
+            Call(form, "CancelStageSelection");
+            if (scene.ObjectCount != 1 || scene.ShapeKind[0] != originalShape
+                || scene.GetObjectWorldBounds(0) != originalBounds || stage.SelectedObjects.Count != 0)
+                throw new InvalidOperationException($"Cancelling {tool} left the symbol's fill cut into pieces.");
+
+            SelectPartialFill(tool);
+            ActivateSelectionTool(ToolMode.Select);
+            var destination = new Point(center.X + 240, center.Y);
+            SendMouse(0x0201, center, pressed: true);
+            SendMouse(0x0200, destination, pressed: true);
+            SendMouse(0x0202, destination);
+            var destinationWorld = stage.ScreenToWorld(destination);
+            if (Enumerable.Range(0, scene.ObjectCount).Any(index => scene.FillContainsPoint(index, centerWorld))
+                || !Enumerable.Range(0, scene.ObjectCount).Any(index => scene.FillContainsPoint(index, destinationWorld))
+                || !Enumerable.Range(0, scene.ObjectCount).Any(index => scene.FillContainsPoint(index, outerWorld)))
+                throw new InvalidOperationException($"Moving {tool}'s partial fill did not leave its unselected content in place. "
+                    + $"Selection: {string.Join(',', stage.SelectedObjects)}; "
+                    + string.Join("; ", Enumerable.Range(0, scene.ObjectCount).Select(index =>
+                        $"{index}:{scene.ShapeKind[index]} bounds={scene.GetObjectWorldBounds(index)} "
+                        + $"center={scene.FillContainsPoint(index, centerWorld)} "
+                        + $"destination={scene.FillContainsPoint(index, destinationWorld)} "
+                        + $"outer={scene.FillContainsPoint(index, outerWorld)}")));
+
+            if (Call(form, "UndoLastEdit") is not true
+                || scene.ObjectCount != 1
+                || scene.ShapeKind[0] != originalShape
+                || scene.GetObjectWorldBounds(0) != originalBounds
+                || scene.Argb[0] != originalArgb
+                || scene.StrokeArgb[0] != originalStrokeArgb
+                || scene.Stroke[0] != originalStroke
+                || scene.GetFillParts(0, 0).Length != originalFillPartCount
+                || !Enumerable.Range(0, scene.ObjectCount).Any(index => scene.FillContainsPoint(index, centerWorld))
+                || Enumerable.Range(0, scene.ObjectCount).Any(index => scene.FillContainsPoint(index, destinationWorld)))
+                throw new InvalidOperationException($"Undo did not restore the original topology before {tool} selection.");
+            Call(form, "ClearSelection", false);
+
+            SelectPartialFill(tool);
+            var shiftedPolygon = polygon.Select(point => new Point(point.X + 50, point.Y)).ToArray();
+            SelectPartialFill(tool, shiftedPolygon, additive: true);
+            var combined = (IReadOnlyList<int>)Field(form, "_selectedObjects");
+            bool SelectedAt(Point point) => combined.Any(index =>
+                scene.HasFill(index) && scene.FillContainsPoint(index, stage.ScreenToWorld(point)));
+            if (!SelectedAt(new Point(center.X - 50, center.Y))
+                || !SelectedAt(new Point(center.X + 100, center.Y))
+                || SelectedAt(new Point(center.X + 110, center.Y + 55)))
+                throw new InvalidOperationException($"Shift {tool} did not preserve exactly the two overlapping fill selections.");
+            Call(form, "CancelStageSelection");
+            if (scene.ObjectCount != 1 || scene.ShapeKind[0] != originalShape)
+                throw new InvalidOperationException($"Cancelling additive {tool} left temporary fill fragments.");
+        }
+        var concavePolygon = new[]
+        {
+            new Point(center.X - 100, center.Y - 70), new Point(center.X - 50, center.Y - 70),
+            new Point(center.X - 50, center.Y + 35), new Point(center.X + 50, center.Y + 35),
+            new Point(center.X + 50, center.Y - 70), new Point(center.X + 100, center.Y - 70),
+            new Point(center.X + 100, center.Y + 70), new Point(center.X - 100, center.Y + 70)
+        };
+        foreach (var tool in new[] { ToolMode.FreehandLasso, ToolMode.PolygonLasso })
+        foreach (var wholeObject in new[] { false, true })
+        {
+            scene.CreateEmpty();
+            var line = scene.AddLineSegment(0,
+                stage.ScreenToWorld(new Point(center.X - 140, center.Y)),
+                stage.ScreenToWorld(new Point(center.X + 140, center.Y)),
+                8, Color.Transparent, Color.Coral, 12);
+            var hit = scene.HitTestElement(centerWorld, 0, 0);
+            var selectionType = wholeObject ? typeof(int) : typeof(DrawingElementHit);
+            typeof(MainForm).GetMethod("SetSelection", privateInstance, null, [selectionType, typeof(bool)], null)!
+                .Invoke(form, [wholeObject ? (object)line : hit, false]);
+            SelectPartialFill(tool, concavePolygon, additive: true);
+            if (scene.ObjectCount < 5 || stage.SelectedObjects.Count != scene.ObjectCount
+                || stage.SelectedElements.Select(element => element.Key.ObjectIndex).Distinct().Count() != scene.ObjectCount)
+                throw new InvalidOperationException($"Shift {tool} lost an already selected line after concave splitting (whole={wholeObject}).");
+            Call(form, "CancelStageSelection");
+            if (scene.ObjectCount != 1 || scene.ShapeKind[0] != ShapeKind.Line)
+                throw new InvalidOperationException($"Cancelling Shift {tool} did not restore the original line.");
+        }
+        Console.WriteLine("lasso_partial_symbol_native_pointer=ok");
+    }
+
+    private static void RunDistortPointerRegression()
+    {
+        var sceneField = RequireField(typeof(MainForm), "_scene");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var visualHandleActiveField = RequireField(typeof(MainForm), "_distortVisualHandleActive");
+        var currentEnvelopeField = RequireField(typeof(MainForm), "_distortCurrentEnvelope");
+        var startEnvelopeField = RequireField(typeof(MainForm), "_distortStartEnvelope");
+        var startPointerField = RequireField(typeof(MainForm), "_drawingTransformStartPointer");
+        var pendingPointerField = RequireField(typeof(MainForm), "_pendingDrawingTransformWorld");
+        var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var updateOverlay = RequireMethod(typeof(MainForm), "UpdateTransformOverlay");
+        var updateSelectionHighlightAnimation = RequireMethod(
+            typeof(StageControl),
+            "UpdateSelectionHighlightAnimation");
+        var setInstanceSelection = RequireMethod(
+            typeof(MainForm),
             "SetSceneInstanceSelection",
-            privateInstance,
-            binder: null,
-            types: [typeof(DrawingObjectInstanceDefinition), typeof(bool)],
-            modifiers: null)
-            ?? throw new InvalidOperationException("Distort pointer regression could not select an instance.");
-        var rebuildUnderlay = typeof(MainForm).GetMethod("RebuildDrawingObjectUnderlay", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not rebuild the instance underlay.");
-        var mouseDown = typeof(MainForm).GetMethod("StageMouseDown", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not begin input.");
-        var mouseMove = typeof(MainForm).GetMethod("StageMouseMove", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not update input.");
-        var mouseUp = typeof(MainForm).GetMethod("StageMouseUp", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not finish input.");
-        var applyDistortPointer = typeof(MainForm).GetMethod("ApplyDistortFromPointer", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not drive the preview path.");
-        var drawGdi = typeof(StageControl).GetMethod("DrawGdi", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not render the preview.");
-        var drawBufferedGdi = typeof(StageControl).GetMethod("DrawBufferedGdi", privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not render the cached GDI frame.");
-        var basePresentationPendingField = typeof(StageControl).GetField(
-            "_basePresentationInvalidationPending",
-            privateInstance)
-            ?? throw new InvalidOperationException("Distort pointer regression could not inspect GDI cache invalidation.");
+            [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var rebuildUnderlay = RequireMethod(typeof(MainForm), "RebuildDrawingObjectUnderlay");
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var applyDistortPointer = RequireMethod(typeof(MainForm), "ApplyDistortFromPointer");
+        var drawGdi = RequireMethod(typeof(StageControl), "DrawGdi");
+        var drawBufferedGdi = RequireMethod(typeof(StageControl), "DrawBufferedGdi");
+        var basePresentationPendingField = RequireField(
+            typeof(StageControl),
+            "_basePresentationInvalidationPending");
 
         using var form = new MainForm { Size = new Size(1280, 800) };
         form.CreateControl();
@@ -3615,10 +5559,10 @@ internal static partial class Benchmark
         using (var gdiBitmap = new Bitmap(fallbackStage.ClientSize.Width, fallbackStage.ClientSize.Height))
         using (var gdiGraphics = Graphics.FromImage(gdiBitmap))
         {
-            var drawGdi = typeof(StageControl).GetMethod(
+            var drawGdi = RequireMethod(
+                typeof(StageControl),
                 "DrawGdi",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-                ?? throw new InvalidOperationException("The GDI marquee fallback entry point could not be located.");
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
             drawGdi.Invoke(fallbackStage, [gdiGraphics]);
             if (fallbackStage.MarqueeOverlayActive
                 || !fallbackStage.MarqueeLodPreviewActive

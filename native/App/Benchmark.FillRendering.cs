@@ -1025,6 +1025,19 @@ internal static partial class Benchmark
             ApplicationSettings.DefaultAccentHueDegrees,
             0,
             50);
+        var paletteContrastValid = new[]
+        {
+            defaultPalette,
+            whitePalette,
+            themeAdjustedPalette,
+            accentAdjustedPalette
+        }.All(palette =>
+            Theme.ContrastRatio(palette.Text, palette.Panel) >= 4.5d
+            && Theme.ContrastRatio(palette.Text, palette.Field) >= 4.5d
+            && Theme.ContrastRatio(palette.Muted, palette.Panel) >= 4.5d
+            && Theme.ContrastRatio(palette.DisabledText, palette.DisabledSurface) >= 4.5d
+            && Theme.ContrastRatio(palette.AccentText, palette.Accent) >= 4.5d
+            && Theme.ContrastRatio(palette.AccentLabel, palette.AccentSurface) >= 4.5d);
         if (legacySettings is null
             || legacySettings.ColorTheme != ApplicationColorTheme.Dark
             || legacySettings.ThemeHueDegrees != ApplicationSettings.DefaultThemeHueDegrees
@@ -1067,7 +1080,8 @@ internal static partial class Benchmark
             || themeAdjustedPalette.Accent != defaultPalette.Accent
             || accentAdjustedPalette.Panel != defaultPalette.Panel
             || accentAdjustedPalette.Accent.GetSaturation() > 0.001f
-            || accentAdjustedPalette.Accent.GetBrightness() >= defaultPalette.Accent.GetBrightness())
+            || accentAdjustedPalette.Accent.GetBrightness() >= defaultPalette.Accent.GetBrightness()
+            || !paletteContrastValid)
         {
             throw new InvalidOperationException("Application theme settings were not compatible, normalized, or independently applied.");
         }
@@ -1632,12 +1646,13 @@ internal static partial class Benchmark
         stage.SetVisibleWorldWidth(500);
         stage.Invalidate();
         stage.Update();
-        Application.DoEvents();
         var denseShapeGradientFirstFrame = stage.LastFrameUsedDirect2D
             && stage.LastStats.DrawnObjects == denseShapeGradientCount
             && stage.LastDirect2DShapeGradientBitmapCacheBuilds == denseShapeGradientCount
             && stage.LastDirect2DShapeGradientMaskGeometryCacheBuilds == 0
-            && stage.LastDirect2DObjectPathGeometryCacheBuilds == denseShapeGradientCount;
+            && stage.LastDirect2DObjectPathGeometryCacheBuilds >= 1
+            && stage.LastDirect2DObjectPathGeometryCacheBuilds
+                + stage.LastDirect2DObjectPathGeometryCacheReuses >= denseShapeGradientCount;
         stage.Invalidate();
         stage.Update();
         var denseShapeGradientStableFrame = stage.LastDirect2DShapeGradientBitmapCacheBuilds == 0

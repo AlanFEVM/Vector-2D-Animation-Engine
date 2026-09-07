@@ -529,6 +529,8 @@ internal sealed partial class MainForm : Form
 
     private void BeginGlobalViewDrag(MouseEventArgs e, bool referencePan = false)
     {
+        CancelLassoPointerForLifecycle();
+        _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
         _stage.Capture = true;
         _lastMouse = e.Location;
         _startScreen = null;
@@ -544,10 +546,16 @@ internal sealed partial class MainForm : Form
         _marqueeStart = null;
         _pointerHitWasAlreadySelected = false;
         var isReferenceView = IsSceneReferenceView();
-        _viewReferencePanning = isReferenceView && (referencePan || IsShiftPressed());
-        _viewReferenceZooming = isReferenceView && !referencePan && !IsShiftPressed() && IsControlPressed();
-        _viewOrbiting = IsScene3DView() && !_viewReferencePanning && !_viewReferenceZooming;
-        _viewZooming = !isReferenceView && IsControlPressed();
+        var isScene3DView = IsScene3DView();
+        var shiftPressed = IsShiftPressed();
+        var controlPressed = IsControlPressed();
+        _viewReferenceZooming = isReferenceView && !referencePan && !shiftPressed && controlPressed;
+        _viewReferencePanning = isReferenceView
+            && !_viewReferenceZooming
+            && (referencePan || shiftPressed || !isScene3DView);
+        _viewOrbiting = isScene3DView && !_viewReferencePanning && !_viewReferenceZooming;
+        if (isScene3DView) _stage.BeginReference3DOpticalInteractionPreview();
+        _viewZooming = !isReferenceView && controlPressed;
         _viewPanning = !isReferenceView && !_viewZooming;
         CancelTraditionalPenPath();
         CancelPenCurve();
@@ -564,6 +572,7 @@ internal sealed partial class MainForm : Form
         _viewOrbiting = false;
         _viewReferencePanning = false;
         _viewReferenceZooming = false;
+        _stage.EndReference3DOpticalInteractionPreview();
         _stage.Capture = false;
         RefreshInteractionCursorAtPointer();
     }
@@ -574,7 +583,8 @@ internal sealed partial class MainForm : Form
         _spacePanKeyDown = true;
         var pointer = _stage.PointToClient(Cursor.Position);
         var pointerOverStage = _stage.ClientRectangle.Contains(pointer);
-        var pointerInteractionActive = _lastMouse is not null
+        var pointerInteractionActive = _lassoPointerActive
+            || _lastMouse is not null
             || _freehandDrawing
             || _marqueeSelecting
             || _traditionalPenPointerDown
@@ -939,14 +949,46 @@ internal sealed partial class MainForm : Form
         out RectangleF bounds)
     {
         bounds = RectangleF.Empty;
+        if (!TryGetSceneMaskSelectionVisibleContours(
+                compositionScene,
+                objectIndex,
+                maskClips,
+                out var contours))
+        {
+            return false;
+        }
+
+        var left = float.MaxValue;
+        var top = float.MaxValue;
+        var right = float.MinValue;
+        var bottom = float.MinValue;
+        foreach (var point in contours.SelectMany(contour => contour))
+        {
+            left = Math.Min(left, point.X);
+            top = Math.Min(top, point.Y);
+            right = Math.Max(right, point.X);
+            bottom = Math.Max(bottom, point.Y);
+        }
+        if (left == float.MaxValue || right <= left || bottom <= top) return false;
+        bounds = RectangleF.FromLTRB(left, top, right, bottom);
+        return !bounds.IsEmpty;
+    }
+
+    private static bool TryGetSceneMaskSelectionVisibleContours(
+        VectorScene compositionScene,
+        int objectIndex,
+        IReadOnlyList<SceneCompositionMaskClip> maskClips,
+        out PointF[][] contours)
+    {
+        contours = [];
         var relevantClips = maskClips
             .Where(clip => ReferenceEquals(clip.TargetScene, compositionScene)
                 && clip.TargetObjectIndices.Contains(objectIndex))
             .ToArray();
         if (relevantClips.Length == 0)
         {
-            bounds = compositionScene.GetObjectWorldBounds(objectIndex);
-            return !bounds.IsEmpty;
+            contours = SceneMaskSelectionObjectContours(compositionScene, objectIndex);
+            return contours.Length > 0;
         }
 
         try
@@ -962,7 +1004,8 @@ internal sealed partial class MainForm : Form
                 if (visible.Count == 0) return false;
             }
 
-            return TryGetSceneMaskSelectionClipperBounds(visible, out bounds);
+            contours = SceneMaskSelectionFromClipperPaths(visible);
+            return contours.Length > 0;
         }
         catch (Exception exception) when (exception is
             ClipperLibException or OverflowException or ArgumentException or InvalidOperationException)
@@ -1075,28 +1118,17 @@ internal sealed partial class MainForm : Form
         return result;
     }
 
-    private static bool TryGetSceneMaskSelectionClipperBounds(Paths64 paths, out RectangleF bounds)
+    private static PointF[][] SceneMaskSelectionFromClipperPaths(Paths64 paths)
     {
-        bounds = RectangleF.Empty;
-        if (paths.Count == 0) return false;
-        var left = long.MaxValue;
-        var top = long.MaxValue;
-        var right = long.MinValue;
-        var bottom = long.MinValue;
-        foreach (var point in paths.SelectMany(path => path))
-        {
-            left = Math.Min(left, point.X);
-            top = Math.Min(top, point.Y);
-            right = Math.Max(right, point.X);
-            bottom = Math.Max(bottom, point.Y);
-        }
-        if (left == long.MaxValue || right <= left || bottom <= top) return false;
-        bounds = RectangleF.FromLTRB(
-            (float)(left / SceneMaskSelectionClipperScale),
-            (float)(top / SceneMaskSelectionClipperScale),
-            (float)(right / SceneMaskSelectionClipperScale),
-            (float)(bottom / SceneMaskSelectionClipperScale));
-        return !bounds.IsEmpty;
+        return paths
+            .Where(path => path.Count >= 3)
+            .Select(path => path
+                .Select(point => new PointF(
+                    (float)(point.X / SceneMaskSelectionClipperScale),
+                    (float)(point.Y / SceneMaskSelectionClipperScale)))
+                .ToArray())
+            .Where(contour => contour.Length >= 3)
+            .ToArray();
     }
 
     private static bool SceneMaskSelectionPointInContours(
@@ -1192,8 +1224,8 @@ internal sealed partial class MainForm : Form
         if (_selectedSceneInstanceObjectIndices.Length == 0) RefreshSelectedSceneInstanceObjectIndices();
 
         var state = instances[0].EvaluateState(_frame);
-        var linear = DrawingObjectInstanceDefinition.CreateLinearTransform(state);
-        if (!Matrix3x2.Invert(linear, out var inverse)) return false;
+        var transform = DrawingObjectInstanceDefinition.CreatePlanarTransform(state);
+        if (!Matrix3x2.Invert(transform, out var inverse)) return false;
 
         var compositionScene = ActiveInstanceCompositionScene();
         var minimum = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
@@ -1215,7 +1247,7 @@ internal sealed partial class MainForm : Form
 
             foreach (var point in contours.SelectMany(contour => contour))
             {
-                var local = Vector2.Transform(new Vector2(point.X - state.X, point.Y - state.Y), inverse);
+                var local = Vector2.Transform(new Vector2(point.X, point.Y), inverse);
                 minimum = Vector2.Min(minimum, local);
                 maximum = Vector2.Max(maximum, local);
             }
@@ -1231,9 +1263,9 @@ internal sealed partial class MainForm : Form
             return false;
         }
 
-        var origin = Vector2.Transform(minimum, linear) + new Vector2(state.X, state.Y);
-        var right = Vector2.Transform(new Vector2(maximum.X, minimum.Y), linear) + new Vector2(state.X, state.Y);
-        var bottom = Vector2.Transform(new Vector2(minimum.X, maximum.Y), linear) + new Vector2(state.X, state.Y);
+        var origin = Vector2.Transform(minimum, transform);
+        var right = Vector2.Transform(new Vector2(maximum.X, minimum.Y), transform);
+        var bottom = Vector2.Transform(new Vector2(minimum.X, maximum.Y), transform);
         frame = new TransformOverlayFrame(
             new PointF(origin.X, origin.Y),
             new PointF(right.X - origin.X, right.Y - origin.Y),
@@ -1299,10 +1331,12 @@ internal sealed partial class MainForm : Form
     private void SetSceneInstanceSelection(DrawingObjectInstanceDefinition instance, bool additive = false)
     {
         ArgumentNullException.ThrowIfNull(instance);
+        ClearSceneOpticsLightSelection();
         if (!string.Equals(_selectedSceneInstanceId, instance.Id, StringComparison.Ordinal)) _transformFocus = null;
         if (!additive) _selectedSceneInstanceIds.Clear();
         _selectedSceneInstanceIds.Add(instance.Id);
         _selectedSceneInstanceId = instance.Id;
+        _timeline.SelectSingleLayerTarget(instance.SceneLayerId, notifyActiveLayerChanged: false);
         if (!additive)
         {
             _selectedObjects.Clear();
@@ -1325,7 +1359,8 @@ internal sealed partial class MainForm : Form
     private void SetSceneInstanceSelectionCore(
         IEnumerable<DrawingObjectInstanceDefinition> instances,
         DrawingObjectInstanceDefinition? primary,
-        bool preserveDrawingSelection)
+        bool preserveDrawingSelection,
+        bool syncTimelineLayer = true)
     {
         var selected = instances
             .Where(instance => instance is not null)
@@ -1337,6 +1372,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        ClearSceneOpticsLightSelection();
         _selectedSceneInstanceIds.Clear();
         foreach (var instance in selected) _selectedSceneInstanceIds.Add(instance.Id);
         var nextPrimary = primary is not null && _selectedSceneInstanceIds.Contains(primary.Id)
@@ -1344,6 +1380,7 @@ internal sealed partial class MainForm : Form
             : selected[^1];
         if (!string.Equals(_selectedSceneInstanceId, nextPrimary.Id, StringComparison.Ordinal)) _transformFocus = null;
         _selectedSceneInstanceId = nextPrimary.Id;
+        _timeline.SelectSingleLayerTarget(nextPrimary.SceneLayerId, notifyActiveLayerChanged: false);
         if (!preserveDrawingSelection)
         {
             _selectedObjects.Clear();
@@ -1351,7 +1388,7 @@ internal sealed partial class MainForm : Form
             _selectedObject = -1;
             _selectedElement = DrawingElementHit.None;
         }
-        SyncSelectionToStage();
+        SyncSelectionToStage(syncTimelineLayer: syncTimelineLayer);
         RefreshSelectedSceneInstanceObjectIndices();
         UpdateSceneInstanceSelectionOverlay();
     }
@@ -1391,6 +1428,11 @@ internal sealed partial class MainForm : Form
 
     private void ClearSceneInstanceSelection()
     {
+        var gizmoMotion = IsScene3DView()
+            && _tool == ToolMode.Transform3D
+            && _stage.SpatialTransformGizmoVisible
+                ? SpatialGizmoMotion.Animated
+                : SpatialGizmoMotion.Immediate;
         if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
         _selectedSceneInstanceId = "";
         _selectedSceneInstanceIds.Clear();
@@ -1399,7 +1441,7 @@ internal sealed partial class MainForm : Form
         _transformFocus = null;
         _stage.SetDrawingObjectSelectionOverlay(RectangleF.Empty);
         _stage.ClearReference3DSelection();
-        _stage.ClearSpatialTransformGizmo();
+        _stage.ClearSpatialTransformGizmo(gizmoMotion);
     }
 
     private void UpdateSceneInstanceSelectionOverlay()
@@ -1423,6 +1465,7 @@ internal sealed partial class MainForm : Form
         _selectedObjects.Clear();
         _selectedElements.Clear();
         _selectedObject = _scene.IsObjectSelectable(objectIndex, _frame) ? objectIndex : -1;
+        if (_selectedObject >= 0) ClearSceneOpticsLightSelection();
         _selectedElement = DrawingElementHit.None;
         if (_selectedObject >= 0) _selectedObjects.Add(_selectedObject);
         SyncSelectionToStage(deferPresentation);
@@ -1440,6 +1483,7 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        ClearSceneOpticsLightSelection();
         if (IsWholeObjectOnlyObject(hit.Key.ObjectIndex))
         {
             SetSelection(hit.Key.ObjectIndex, deferPresentation);
@@ -1502,7 +1546,11 @@ internal sealed partial class MainForm : Form
         SetMixedSelection(objects, retainedInstances, retainedPrimaryInstance);
     }
 
-    private void SetSelection(IEnumerable<int> objectIndices, bool deferPresentation = false)
+    private void SetSelection(
+        IEnumerable<int> objectIndices,
+        bool deferPresentation = false,
+        bool allowInactiveObjects = false,
+        bool syncTimelineLayer = true)
     {
         ClearSceneInstanceSelection();
         _transformFocus = null;
@@ -1512,12 +1560,17 @@ internal sealed partial class MainForm : Form
         var seen = new HashSet<int>();
         foreach (var index in objectIndices)
         {
-            if (!_scene.IsObjectSelectable(index, _frame) || !seen.Add(index)) continue;
+            if ((uint)index >= _scene.ObjectCount
+                || !allowInactiveObjects && !_scene.IsObjectSelectable(index, _frame)
+                || !seen.Add(index))
+            {
+                continue;
+            }
             _selectedObjects.Add(index);
         }
 
         _selectedObject = _selectedObjects.Count > 0 ? _selectedObjects[_selectedObjects.Count - 1] : -1;
-        SyncSelectionToStage(deferPresentation);
+        SyncSelectionToStage(deferPresentation, syncTimelineLayer);
     }
 
     private bool SelectAllObjectsInCurrentFrame()
@@ -1622,14 +1675,16 @@ internal sealed partial class MainForm : Form
                 && !_scene.TryGetMixingBrushLocalRegion(objectIndex, out _);
     }
 
-    private void SyncSelectionToStage(bool deferPresentation = false)
+    private void SyncSelectionToStage(
+        bool deferPresentation = false,
+        bool syncTimelineLayer = true)
     {
         var selectionChanged = _stage.SetSelectionState(
             _selectedObjects,
             _selectedObject,
             _selectedElements,
             _selectedElement);
-        if (!IsSceneBuildingContext())
+        if (syncTimelineLayer && !IsSceneBuildingContext())
         {
             SyncTimelineLayerToPrimarySelection(_scene, _timeline, _selectedObject);
         }
@@ -1793,8 +1848,14 @@ internal sealed partial class MainForm : Form
         _marqueeMaterializationSession = null;
         if (session is null || !ReferenceEquals(session.Scene, _scene)) return false;
 
-        if (_undoStack.TryPeek(out var undo) && ReferenceEquals(undo.Snapshot, session.Snapshot)) _undoStack.Pop();
-        _scene.RestoreSnapshot(session.Snapshot);
+        var snapshot = session.Snapshot;
+        if (_undoStack.TryPeek(out var undo) && ReferenceEquals(undo.Snapshot, session.Snapshot))
+        {
+            _undoStack.Pop();
+            _undoSequenceByEntry.Remove(undo);
+            snapshot = ResolveUndoSnapshotAndConsumeMarqueeHistory(undo);
+        }
+        _scene.RestoreSnapshot(snapshot);
         _scene.EditFrame = _frame;
         _geometryDirty = false;
         _stage.ClearHoveredLineElement();
@@ -2098,6 +2159,16 @@ internal sealed partial class MainForm : Form
     private void ShowStageContextMenu(Point screen)
     {
         _stageContextMenuLocation = screen;
+        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+            && IsSceneCompositionContext()
+            && IsScene3DView()
+            && !IsSceneMaskEditing())
+        {
+            PrepareScene3DContextMenu(screen);
+            _scene3DContextMenu.Show(_stage, screen);
+            return;
+        }
+
         _stageContextMenu.Show(_stage, screen);
     }
 

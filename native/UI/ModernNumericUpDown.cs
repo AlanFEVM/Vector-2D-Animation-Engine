@@ -740,7 +740,7 @@ internal sealed class ModernNumericUpDown : UserControl
         if (BackColor != background) BackColor = background;
         var foreground = SystemInformation.HighContrast
             ? Enabled ? SystemColors.WindowText : SystemColors.GrayText
-            : Enabled ? Theme.Text : Theme.DisabledText;
+            : Theme.ReadableText(background, Enabled ? Theme.Text : Theme.DisabledText);
         if (ForeColor != foreground) ForeColor = foreground;
         if (_editor.BackColor != background) _editor.BackColor = background;
         if (_editor.ForeColor != foreground) _editor.ForeColor = foreground;
@@ -911,7 +911,8 @@ internal sealed class ModernNumericUpDown : UserControl
                             ? Theme.PanelHover
                             : Theme.PanelStrong;
             using var fill = new SolidBrush(background);
-            using var border = new Pen(highContrast ? SystemColors.WindowText : Theme.Border);
+            using var border = new Pen(
+                highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(background, Theme.Border));
             e.Graphics.FillRectangle(fill, ClientRectangle);
             e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
 
@@ -921,7 +922,7 @@ internal sealed class ModernNumericUpDown : UserControl
             var sign = Direction > 0 ? 1f : -1f;
             var foreground = highContrast
                 ? Enabled ? _pressed || _hovered ? SystemColors.HighlightText : SystemColors.ControlText : SystemColors.GrayText
-                : Enabled ? Theme.Text : Theme.DisabledText;
+                : Theme.ReadableText(background, Enabled ? Theme.Text : Theme.DisabledText);
             using var chevron = new Pen(foreground, Math.Max(1f, DeviceDpi / 96f))
             {
                 LineJoin = LineJoin.Round

@@ -4,6 +4,130 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunMarqueeUndoTopologyRegression()
+    {
+        foreach (var line in new[] { false, true })
+        {
+            using var form = new MainForm();
+            var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+            var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+            scene.CreateEmpty(2);
+            stage.ClientSize = new Size(640, 420);
+            stage.RestoreViewState(stage.CaptureViewState() with { Zoom = 1f });
+            Call("ResetCanvasUndoHistory");
+            var source = line
+                ? scene.AddLineSegment(0, new PointF(-3_000, 0), new PointF(3_000, 0),
+                    25, Color.Transparent, Color.Teal, 8)
+                : scene.AddObject(0, PointF.Empty, new SizeF(6_000, 4_000),
+                    0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+            if (!line)
+                scene.SetLinearGradient(source, Color.Teal, Color.Gold,
+                    new PointF(-3_000, 0), new PointF(3_000, 0));
+            scene.AddObject(0, new PointF(10_000, 0), new SizeF(1_000, 1_000),
+                0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+            scene.AddObject(0, new PointF(11_000, 0), new SizeF(1_000, 1_000),
+                0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+            scene.InsertTimelineBlankKeyframe(1, 10);
+            scene.EditFrame = 10;
+            scene.AddObject(1, PointF.Empty, new SizeF(6_000, 4_000),
+                0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+            scene.EditFrame = 0;
+            var original = scene.CreateSnapshot();
+
+            SelectPart();
+            AssertTimeline(Call("UndoLastEdit") is true, "Marquee selection was not undoable.");
+            AssertRestored(original, "selection undo");
+
+            SelectPart();
+            MovePart(7_000);
+            var firstMove = scene.CreateSnapshot();
+            MovePart(1_000);
+            AssertTimeline(Call("UndoLastEdit") is true, "Second partial move was not undoable.");
+            AssertRestored(firstMove, "second move undo must retain the first separation");
+            AssertTimeline(Call("UndoLastEdit") is true, "First partial move was not undoable.");
+            AssertRestored(original, "first move undo must restore unsplit topology");
+            AssertTimeline(Call("UndoLastEdit") is false, "Temporary selection left an extra undo step.");
+
+            SelectPart();
+            CancelMaterialChange();
+            Call("CancelStageSelection");
+            AssertRestored(original, "cancel after material rollback");
+
+            SelectPart();
+            CancelMaterialChange();
+            MovePart(7_000);
+            AssertTimeline(Call("UndoLastEdit") is true, "Move after material cancellation was not undoable.");
+            AssertRestored(original, "move undo after material rollback");
+
+            SelectPart();
+            SelectPart(additive: true);
+            MovePart(7_000);
+            AssertTimeline(Call("UndoLastEdit") is true, "Additive marquee move was not undoable.");
+            AssertRestored(original, "additive selection undo");
+            AssertTimeline(Call("UndoLastEdit") is false, "Additive selection left temporary undo steps.");
+
+            object? Call(string name, params object?[] args) =>
+                RequireMethod(typeof(MainForm), name).Invoke(form, args);
+
+            int Selected() => ((IEnumerable<int>)RequireField(typeof(MainForm), "_selectedObjects")
+                .GetValue(form)!).First(index => scene.ShapeKind[index] == (line ? ShapeKind.Line : ShapeKind.Path));
+
+            void SelectPart(bool additive = false)
+            {
+                var selected = ((IEnumerable<int>)RequireField(typeof(MainForm), "_selectedObjects")
+                    .GetValue(form)!).ToArray();
+                RequireField(typeof(MainForm), "_additiveSelection").SetValue(form, additive);
+                RequireField(typeof(MainForm), "_marqueeSelectionBase").SetValue(form, additive ? selected : Array.Empty<int>());
+                RequireField(typeof(MainForm), "_marqueeStart").SetValue(form,
+                    Point.Round(stage.WorldToScreen(additive ? 0 : -1_000, -3_000)));
+                Call("CompleteMarqueeSelection", Point.Round(stage.WorldToScreen(additive ? 2_000 : 1_000, 3_000)));
+                AssertTimeline(scene.ObjectCount > original.ObjectCount, "Marquee fixture did not split its source.");
+                _ = Selected();
+            }
+
+            void MovePart(float dx)
+            {
+                var selected = Selected();
+                Call("CaptureUndoSnapshot", new[] { selected }, null);
+                scene.X[selected] += dx;
+            }
+
+            void CancelMaterialChange()
+            {
+                var selected = Selected();
+                Call("BeginMaterialContinuousEdit");
+                Call("PushMaterialUndoSnapshot", scene.CreateSnapshot());
+                if (line) scene.StrokeArgb[selected] = Color.Coral.ToArgb();
+                else scene.Argb[selected] = Color.Coral.ToArgb();
+                Call("CancelMaterialContinuousEdit");
+            }
+
+            void AssertRestored(VectorSceneSnapshot expected, string label)
+            {
+                var actual = scene.CreateSnapshot();
+                AssertTimeline(actual.ObjectCount == expected.ObjectCount
+                    && actual.ShapeKind.SequenceEqual(expected.ShapeKind)
+                    && actual.X.SequenceEqual(expected.X) && actual.Y.SequenceEqual(expected.Y)
+                    && actual.Width.SequenceEqual(expected.Width) && actual.Height.SequenceEqual(expected.Height)
+                    && actual.Argb.SequenceEqual(expected.Argb) && actual.StrokeArgb.SequenceEqual(expected.StrokeArgb)
+                    && actual.Stroke.SequenceEqual(expected.Stroke)
+                    && actual.ObjectLayer.SequenceEqual(expected.ObjectLayer)
+                    && actual.ObjectKeyframeFrame.SequenceEqual(expected.ObjectKeyframeFrame)
+                    && actual.ObjectOrder.SequenceEqual(expected.ObjectOrder)
+                    && actual.ObjectSubOrder.SequenceEqual(expected.ObjectSubOrder)
+                    && actual.LinearGradientEnabled.SequenceEqual(expected.LinearGradientEnabled)
+                    && actual.GradientStartArgb.SequenceEqual(expected.GradientStartArgb)
+                    && actual.GradientEndArgb.SequenceEqual(expected.GradientEndArgb)
+                    && actual.GradientStartX.SequenceEqual(expected.GradientStartX)
+                    && actual.GradientEndX.SequenceEqual(expected.GradientEndX)
+                    && actual.LineEndpointStyles.SequenceEqual(expected.LineEndpointStyles)
+                    && actual.LineEndEndpointStyles.SequenceEqual(expected.LineEndEndpointStyles),
+                    $"Marquee {(line ? "line" : "fill")} {label} changed geometry, material, layer, cel, or stack order.");
+            }
+        }
+        Console.WriteLine("marquee_undo_topology=ok");
+    }
+
     private static void RunLineToFillConversionRegression()
     {
         var scene = new VectorScene();
@@ -2984,6 +3108,204 @@ internal static partial class Benchmark
                 ? 0
                 : Math.Abs((point.X - start.X) * dy - (point.Y - start.Y) * dx) / length;
         }
+    }
+
+    private static void RunLassoMaterializationRegression()
+    {
+        var lasso = new[] { new PointF(-140, -80), new PointF(140, -80), new PointF(140, -20), new PointF(20, -20), new PointF(20, 80), new PointF(-140, 80) };
+        var fillScene = new VectorScene();
+        fillScene.CreateEmpty();
+        var source = fillScene.AddObject(0, PointF.Empty, new SizeF(240, 160), 0, VectorUnits.StrokePointsToUnits(2), Color.Teal, Color.White, 12, ShapeKind.Rectangle);
+        var sourceMetadata = (
+            Layer: fillScene.ObjectLayer[source],
+            Frame: fillScene.ObjectKeyframeFrame[source],
+            Order: fillScene.ObjectOrder[source],
+            Stroke: fillScene.Stroke[source],
+            FillArgb: fillScene.Argb[source],
+            StrokeArgb: fillScene.StrokeArgb[source]);
+        var sourceArea = PathArea(fillScene, new[] { source });
+        var materialized = fillScene.MaterializeLassoSelectionParts(lasso, 0);
+        var selectedPaths = materialized.SelectedObjects
+            .Where(index => (uint)index < fillScene.ObjectCount && fillScene.ShapeKind[index] == ShapeKind.Path)
+            .ToArray();
+        var selectedFill = selectedPaths.FirstOrDefault(
+            index => fillScene.FillContainsPoint(index, PointF.Empty),
+            -1);
+        var replacementLines = Enumerable.Range(0, fillScene.ObjectCount)
+            .Where(index => fillScene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        var afterArea = PathArea(
+            fillScene,
+            Enumerable.Range(0, fillScene.ObjectCount)
+                .Where(index => fillScene.ShapeKind[index] == ShapeKind.Path));
+        var notch = new PointF(80, 40);
+        if (!materialized.Success
+            || !materialized.Changed
+            || selectedFill < 0
+            || selectedPaths.Length == 0
+            || selectedPaths.Any(index => fillScene.FillContainsPoint(index, notch))
+            || Math.Abs(afterArea - sourceArea) > Math.Max(1d, sourceArea * 0.001d)
+            || replacementLines.Length == 0
+            || !materialized.SelectedObjects.Any(index => replacementLines.Contains(index))
+            || replacementLines.Any(index => fillScene.ObjectLayer[index] != sourceMetadata.Layer
+                || fillScene.ObjectKeyframeFrame[index] != sourceMetadata.Frame
+                || fillScene.ObjectOrder[index] != sourceMetadata.Order
+                || fillScene.Stroke[index] != sourceMetadata.Stroke
+                || fillScene.Argb[index] != sourceMetadata.FillArgb
+                || fillScene.StrokeArgb[index] != sourceMetadata.StrokeArgb))
+        {
+            throw new InvalidOperationException(
+                $"Concave lasso materialization lost fill area or outlined boundary geometry: "
+                + $"success={materialized.Success}, changed={materialized.Changed}, selectedFill={selectedFill}, "
+                + $"paths={selectedPaths.Length}, lines={replacementLines.Length}, area={sourceArea:0.###}->{afterArea:0.###}.");
+        }
+        var curveScene = new VectorScene();
+        curveScene.CreateEmpty();
+        var curve = curveScene.AddCubicCurveSegment(
+            0,
+            new PointF(-220, 0),
+            new PointF(-100, 70),
+            new PointF(40, 70),
+            new PointF(220, 0),
+            VectorUnits.StrokePointsToUnits(3),
+            Color.Transparent,
+            Color.Coral,
+            15,
+            LineEndpointStyle.Sharp,
+            LineEndpointStyle.Round);
+        curveScene.ObjectSubOrder[curve] = 0.375;
+        var gradientStops = new[]
+        {
+            new GradientStop(0, Color.Coral),
+            new GradientStop(0.5f, Color.Gold),
+            new GradientStop(1, Color.MediumPurple)
+        };
+        var gradientStart = new PointF(-220, 0);
+        var gradientEnd = new PointF(220, 0);
+        curveScene.SetGradientPaint(curve, GradientKind.Linear, gradientStops, gradientStart, gradientEnd);
+        var curveMetadata = (
+            Layer: curveScene.ObjectLayer[curve],
+            Frame: curveScene.ObjectKeyframeFrame[curve],
+            Order: curveScene.ObjectOrder[curve],
+            SubOrder: curveScene.ObjectSubOrder[curve],
+            Stroke: curveScene.Stroke[curve],
+            Argb: curveScene.Argb[curve],
+            StrokeArgb: curveScene.StrokeArgb[curve]);
+        var curveLasso = new[] { new PointF(-150, -100), new PointF(30, -100), new PointF(30, 100), new PointF(-150, 100) };
+        var curveMaterialized = curveScene.MaterializeLassoSelectionParts(curveLasso, 0);
+        var curveParts = Enumerable.Range(0, curveScene.ObjectCount)
+            .Where(index => curveScene.ShapeKind[index] == ShapeKind.Line)
+            .OrderBy(index => curveScene.ObjectSubOrder[index])
+            .ToArray();
+        var selectedCurveParts = curveMaterialized.SelectedObjects
+            .Where(index => (uint)index < curveScene.ObjectCount && curveScene.ShapeKind[index] == ShapeKind.Line)
+            .ToArray();
+        var hasCurvedSelectedPart = selectedCurveParts.Any(index =>
+            curveScene.TryGetLineCubic(index, out var start, out var control1, out var control2, out var end)
+            && (Math.Abs((control1.X - start.X) * (end.Y - start.Y)
+                - (control1.Y - start.Y) * (end.X - start.X)) > 0.1f
+                || Math.Abs((control2.X - start.X) * (end.Y - start.Y)
+                    - (control2.Y - start.Y) * (end.X - start.X)) > 0.1f));
+        if (!curveMaterialized.Success
+            || !curveMaterialized.Changed
+            || curveParts.Length < 3
+            || selectedCurveParts.Length != 1
+            || !hasCurvedSelectedPart
+            || curveParts.Any(index => curveScene.ObjectLayer[index] != curveMetadata.Layer
+                || curveScene.ObjectKeyframeFrame[index] != curveMetadata.Frame
+                || curveScene.ObjectOrder[index] != curveMetadata.Order
+                || curveScene.Stroke[index] != curveMetadata.Stroke
+                || curveScene.Argb[index] != curveMetadata.Argb
+                || curveScene.StrokeArgb[index] != curveMetadata.StrokeArgb
+                || curveScene.GetGradientKind(index) != GradientKind.Linear
+                || !curveScene.GetGradientStops(index).SequenceEqual(gradientStops)
+                || !PointsNear(curveScene.GetGradientStart(index), gradientStart)
+                || !PointsNear(curveScene.GetGradientEnd(index), gradientEnd))
+            || curveParts.Select(index => curveScene.ObjectSubOrder[index]).Distinct().Count() != curveParts.Length
+            || !curveParts.Any(index => Math.Abs(curveScene.ObjectSubOrder[index] - curveMetadata.SubOrder) < 0.0001)
+            || curveScene.GetLineEndpointStyle(curveParts[0], true) != LineEndpointStyle.Sharp
+            || curveScene.GetLineEndpointStyle(curveParts[^1], false) != LineEndpointStyle.Round)
+        {
+            throw new InvalidOperationException(
+                $"Lasso line materialization did not preserve an editable cubic stroke: "
+                + $"success={curveMaterialized.Success}, changed={curveMaterialized.Changed}, "
+                + $"parts={curveParts.Length}, selected={selectedCurveParts.Length}, curved={hasCurvedSelectedPart}.");
+        }
+        var enclosedScene = new VectorScene();
+        enclosedScene.CreateEmpty();
+        enclosedScene.AddObject(0, PointF.Empty, new SizeF(240, 160), 0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+        var enclosedBefore = enclosedScene.CreateSnapshot();
+        var enclosedGeometryRevision = enclosedScene.GeometryRevision;
+        var enclosedSummaryRevision = enclosedScene.SummaryRevision;
+        var enclosedResult = enclosedScene.MaterializeLassoSelectionParts(
+            new[]
+            {
+                new PointF(-400, -300),
+                new PointF(400, -300),
+                new PointF(400, 300),
+                new PointF(-400, 300)
+            },
+            0);
+        if (!enclosedResult.Success
+            || enclosedResult.Changed
+            || !SnapshotUnchanged(enclosedScene, enclosedBefore, enclosedGeometryRevision, enclosedSummaryRevision))
+        {
+            throw new InvalidOperationException("A fully enclosed lasso unexpectedly materialized the whole object.");
+        }
+        var lockedScene = new VectorScene();
+        lockedScene.CreateEmpty();
+        lockedScene.AddObject(0, PointF.Empty, new SizeF(240, 160), 0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+        if (!lockedScene.SetLayerLocked(0, true)) throw new InvalidOperationException("Lasso lock setup failed.");
+        var lockedBefore = lockedScene.CreateSnapshot();
+        var lockedGeometryRevision = lockedScene.GeometryRevision;
+        var lockedSummaryRevision = lockedScene.SummaryRevision;
+        var lockedResult = lockedScene.MaterializeLassoSelectionParts(lasso, 0);
+        if (!lockedResult.Success
+            || lockedResult.Changed
+            || !SnapshotUnchanged(lockedScene, lockedBefore, lockedGeometryRevision, lockedSummaryRevision))
+        {
+            throw new InvalidOperationException("Lasso materialization mutated a locked layer.");
+        }
+        var blankScene = new VectorScene();
+        blankScene.CreateEmpty(frameCount: 4);
+        blankScene.AddObject(0, PointF.Empty, new SizeF(240, 160), 0, 0, Color.Teal, Color.Transparent, 8, ShapeKind.Rectangle);
+        if (!blankScene.InsertTimelineBlankKeyframe(0, 2)) throw new InvalidOperationException("Lasso blank-frame setup failed.");
+        blankScene.EditFrame = 2;
+        var blankBefore = blankScene.CreateSnapshot();
+        var blankGeometryRevision = blankScene.GeometryRevision;
+        var blankSummaryRevision = blankScene.SummaryRevision;
+        var blankResult = blankScene.MaterializeLassoSelectionParts(lasso, 2);
+        if (!blankResult.Success
+            || blankResult.Changed
+            || !SnapshotUnchanged(blankScene, blankBefore, blankGeometryRevision, blankSummaryRevision))
+        {
+            throw new InvalidOperationException("Lasso materialization mutated content on a blank frame.");
+        }
+        Console.WriteLine("lasso_materialization_regression=ok");
+        static double PolygonArea(IReadOnlyList<PointF> points)
+        {
+            if (points.Count < 3) return 0;
+            var area = 0d;
+            for (var index = 0; index < points.Count; index++)
+            {
+                var next = (index + 1) % points.Count;
+                area += (double)points[index].X * points[next].Y - (double)points[next].X * points[index].Y;
+            }
+            return Math.Abs(area) * 0.5d;
+        }
+
+        static double PathArea(VectorScene scene, IEnumerable<int> paths) =>
+            paths.Sum(index => scene.GetObjectBoundaryContours(index).Sum(PolygonArea));
+        static bool SnapshotUnchanged(VectorScene scene, VectorSceneSnapshot snapshot, long geometryRevision, long summaryRevision) =>
+            scene.ObjectCount == snapshot.ObjectCount && scene.VirtualAtomCount == snapshot.VirtualAtomCount
+            && scene.GeometryRevision == geometryRevision && scene.SummaryRevision == summaryRevision
+            && scene.ObjectLayer.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.ObjectLayer) && scene.ObjectKeyframeFrame.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.ObjectKeyframeFrame)
+            && scene.ObjectOrder.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.ObjectOrder) && scene.ObjectSubOrder.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.ObjectSubOrder)
+            && scene.ShapeKind.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.ShapeKind) && scene.Argb.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.Argb)
+            && scene.StrokeArgb.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.StrokeArgb) && scene.Stroke.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.Stroke)
+            && scene.X.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.X) && scene.Y.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.Y)
+            && scene.Width.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.Width) && scene.Height.AsSpan(0, scene.ObjectCount).SequenceEqual(snapshot.Height)
+            && scene.LayerLocked.SequenceEqual(snapshot.LayerLocked);
     }
 
     private static int AddTopologyFill(VectorScene scene, int layer, float stroke)

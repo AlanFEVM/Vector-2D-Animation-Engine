@@ -3,7 +3,7 @@ using System.Drawing.Drawing2D;
 
 namespace VectorAnimationEngine;
 
-internal sealed class TweenCurveChangedEventArgs(TweenCurveAnchor[] anchors) : EventArgs
+internal sealed class TweenCurveCommittedEventArgs(TweenCurveAnchor[] anchors) : EventArgs
 {
     public TweenCurveAnchor[] Anchors { get; } = anchors.ToArray();
 }
@@ -53,11 +53,7 @@ internal sealed class TweenCurveEditorPanel : Panel
 
         _editor.Dock = DockStyle.Fill;
         _editor.Margin = new Padding(0, 4, 0, 5);
-        _editor.CurveChanged += (_, e) =>
-        {
-            RefreshSummary();
-            CurveChanged?.Invoke(this, e);
-        };
+        _editor.CurveCommitted += (_, e) => CurveCommitted?.Invoke(this, e);
         _editor.SelectedAnchorChanged += (_, _) => RefreshAnchorActions();
         _editor.InteractionStarted += (_, _) => InteractionStarted?.Invoke(this, EventArgs.Empty);
         _editor.InteractionCompleted += (_, _) => InteractionCompleted?.Invoke(this, EventArgs.Empty);
@@ -90,7 +86,7 @@ internal sealed class TweenCurveEditorPanel : Panel
 
     public int PreferredPanelHeight => 252;
 
-    public event EventHandler<TweenCurveChangedEventArgs>? CurveChanged;
+    public event EventHandler<TweenCurveCommittedEventArgs>? CurveCommitted;
     public event EventHandler? InteractionStarted;
     public event EventHandler? InteractionCompleted;
     public event EventHandler? InteractionCanceled;
@@ -189,6 +185,7 @@ internal sealed class TweenCurveEditor : Control
     private readonly Stopwatch _motionClock = Stopwatch.StartNew();
     private readonly List<AnimatedAnchor> _visuals = [];
     private readonly List<DeletedAnchorGhost> _ghosts = [];
+    private readonly HashSet<Keys> _keyboardInteractionKeys = [];
     private TweenCurveAnchor[] _anchors = [new(0, 0), new(1, 1)];
     private TweenCurveAnchor[]? _interactionStart;
     private TimelineTweenKind _kind = TimelineTweenKind.Classic;
@@ -223,7 +220,7 @@ internal sealed class TweenCurveEditor : Control
         : null;
     public bool CanDeleteSelectedAnchor => _selectedAnchor > 0 && _selectedAnchor < _anchors.Length - 1;
 
-    public event EventHandler<TweenCurveChangedEventArgs>? CurveChanged;
+    public event EventHandler<TweenCurveCommittedEventArgs>? CurveCommitted;
     public event EventHandler? SelectedAnchorChanged;
     public event EventHandler? InteractionStarted;
     public event EventHandler? InteractionCompleted;
@@ -279,7 +276,6 @@ internal sealed class TweenCurveEditor : Control
             _anchors = _anchors.Where((_, index) => index != removedIndex).ToArray();
             _visuals.RemoveAt(removedIndex);
             _selectedAnchor = Math.Clamp(removedIndex - 1, 0, _anchors.Length - 1);
-            CurveChanged?.Invoke(this, new TweenCurveChangedEventArgs(_anchors));
             SelectedAnchorChanged?.Invoke(this, EventArgs.Empty);
             StartMotion();
             Invalidate();
@@ -290,12 +286,17 @@ internal sealed class TweenCurveEditor : Control
     {
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        e.Graphics.Clear(Theme.Field);
+        var chartBackground = Theme.Field;
+        e.Graphics.Clear(chartBackground);
         var chart = ChartBounds();
         if (chart.Width <= 2 || chart.Height <= 2) return;
 
-        using var gridPen = new Pen(Color.FromArgb(80, Theme.Border), Math.Max(1f, DeviceDpi / 144f));
-        using var referencePen = new Pen(Color.FromArgb(100, Theme.Muted), Math.Max(1f, DeviceDpi / 144f))
+        using var gridPen = new Pen(
+            Theme.ReadableUiColor(chartBackground, Theme.Border),
+            Math.Max(1f, DeviceDpi / 144f));
+        using var referencePen = new Pen(
+            Theme.ReadableUiColor(chartBackground, Theme.Muted),
+            Math.Max(1f, DeviceDpi / 144f))
         {
             DashStyle = DashStyle.Dash
         };
@@ -310,13 +311,14 @@ internal sealed class TweenCurveEditor : Control
 
         var displayAnchors = DisplayAnchors();
         using var curvePath = BuildCurvePath(chart, displayAnchors);
-        using var curveGlow = new Pen(Color.FromArgb(48, Theme.Accent), DpiScale(5f))
+        var curveColor = Theme.ReadableUiColor(chartBackground, Theme.Accent);
+        using var curveGlow = new Pen(Color.FromArgb(48, curveColor), DpiScale(5f))
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
             LineJoin = LineJoin.Round
         };
-        using var curvePen = new Pen(Theme.Accent, DpiScale(2f))
+        using var curvePen = new Pen(curveColor, DpiScale(2f))
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
@@ -331,11 +333,17 @@ internal sealed class TweenCurveEditor : Control
             DrawAnchor(e.Graphics, chart, _visuals[index].Position, index, _visuals[index].Scale, _visuals[index].Alpha, ghost: false);
         }
 
-        using var border = new Pen(Focused ? Theme.Accent : Theme.Border, Math.Max(1f, DeviceDpi / 96f));
+        using var border = new Pen(
+            Theme.ReadableUiColor(chartBackground, Focused ? Theme.Accent : Theme.Border),
+            Math.Max(1f, DeviceDpi / 96f));
         e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
         if (Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3), Theme.AccentLabel, Theme.Field);
+            ControlPaint.DrawFocusRectangle(
+                e.Graphics,
+                Rectangle.Inflate(ClientRectangle, -3, -3),
+                Theme.ReadableUiColor(chartBackground, Theme.AccentLabel),
+                chartBackground);
         }
     }
 
@@ -344,13 +352,13 @@ internal sealed class TweenCurveEditor : Control
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
         Focus();
+        if (_keyboardInteractionKeys.Count > 0) CompleteInteraction();
         var hit = HitTestAnchor(e.Location);
         SelectAnchor(hit);
         if (hit <= 0 || hit >= _anchors.Length - 1) return;
         _draggedAnchor = hit;
-        _interactionStart = _anchors.ToArray();
+        BeginInteraction();
         Capture = true;
-        InteractionStarted?.Invoke(this, EventArgs.Empty);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -362,7 +370,6 @@ internal sealed class TweenCurveEditor : Control
             if (_anchors[_draggedAnchor] == next) return;
             _anchors[_draggedAnchor] = next;
             _visuals[_draggedAnchor].Target = next;
-            CurveChanged?.Invoke(this, new TweenCurveChangedEventArgs(_anchors));
             SelectedAnchorChanged?.Invoke(this, EventArgs.Empty);
             StartMotion();
             Invalidate();
@@ -383,10 +390,9 @@ internal sealed class TweenCurveEditor : Control
         base.OnMouseUp(e);
         if (e.Button != MouseButtons.Left || _draggedAnchor < 0) return;
         _draggedAnchor = -1;
-        _interactionStart = null;
         Capture = false;
         Cursor = Cursors.Cross;
-        InteractionCompleted?.Invoke(this, EventArgs.Empty);
+        CompleteInteraction();
     }
 
     protected override void OnMouseDoubleClick(MouseEventArgs e)
@@ -409,7 +415,7 @@ internal sealed class TweenCurveEditor : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.KeyCode == Keys.Escape && _draggedAnchor >= 0)
+        if (e.KeyCode == Keys.Escape && _interactionStart is not null)
         {
             CancelInteraction();
             e.Handled = true;
@@ -418,6 +424,8 @@ internal sealed class TweenCurveEditor : Control
         }
         if (e.KeyCode is Keys.Delete or Keys.Back)
         {
+            if (_draggedAnchor >= 0) return;
+            if (_keyboardInteractionKeys.Count > 0) CompleteInteraction();
             DeleteSelectedAnchor();
             e.Handled = true;
             e.SuppressKeyPress = true;
@@ -425,13 +433,17 @@ internal sealed class TweenCurveEditor : Control
         }
         if (e.KeyCode == Keys.Insert)
         {
+            if (_draggedAnchor >= 0) return;
+            if (_keyboardInteractionKeys.Count > 0) CompleteInteraction();
             AddAnchor();
             e.Handled = true;
             e.SuppressKeyPress = true;
             return;
         }
-        if (!CanDeleteSelectedAnchor || e.KeyCode is not (Keys.Left or Keys.Right or Keys.Up or Keys.Down)) return;
+        if (!CanDeleteSelectedAnchor || !IsNudgeKey(e.KeyCode) || _draggedAnchor >= 0) return;
 
+        _keyboardInteractionKeys.Add(e.KeyCode);
+        BeginInteraction();
         var step = e.Shift ? 0.05f : 0.01f;
         var current = _anchors[_selectedAnchor];
         var point = e.KeyCode switch
@@ -441,9 +453,23 @@ internal sealed class TweenCurveEditor : Control
             Keys.Up => current with { Value = current.Value + step },
             _ => current with { Value = current.Value - step }
         };
-        RunDiscreteInteraction(() => UpdateAnchor(_selectedAnchor, point));
+        UpdateAnchor(_selectedAnchor, point);
         e.Handled = true;
         e.SuppressKeyPress = true;
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (!IsNudgeKey(e.KeyCode) || !_keyboardInteractionKeys.Remove(e.KeyCode)) return;
+        if (_keyboardInteractionKeys.Count == 0) CompleteInteraction();
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        return IsNudgeKey(keyData & Keys.KeyCode) || base.IsInputKey(keyData);
     }
 
     protected override void OnGotFocus(EventArgs e)
@@ -455,6 +481,7 @@ internal sealed class TweenCurveEditor : Control
     protected override void OnLostFocus(EventArgs e)
     {
         base.OnLostFocus(e);
+        if (_keyboardInteractionKeys.Count > 0) CancelInteraction();
         Invalidate();
     }
 
@@ -491,7 +518,6 @@ internal sealed class TweenCurveEditor : Control
             }
             _visuals.Insert(insertion, visual);
             _selectedAnchor = insertion;
-            CurveChanged?.Invoke(this, new TweenCurveChangedEventArgs(_anchors));
             SelectedAnchorChanged?.Invoke(this, EventArgs.Empty);
             StartMotion();
             Invalidate();
@@ -510,7 +536,6 @@ internal sealed class TweenCurveEditor : Control
         if (_anchors[index] == anchor) return;
         _anchors[index] = anchor;
         _visuals[index].Target = anchor;
-        CurveChanged?.Invoke(this, new TweenCurveChangedEventArgs(_anchors));
         SelectedAnchorChanged?.Invoke(this, EventArgs.Empty);
         StartMotion();
         Invalidate();
@@ -532,10 +557,29 @@ internal sealed class TweenCurveEditor : Control
 
     private void RunDiscreteInteraction(Action mutation)
     {
+        BeginInteraction();
+        mutation();
+        CompleteInteraction();
+    }
+
+    private void BeginInteraction()
+    {
+        if (_interactionStart is not null) return;
         _interactionStart = _anchors.ToArray();
         InteractionStarted?.Invoke(this, EventArgs.Empty);
-        mutation();
+    }
+
+    private void CompleteInteraction()
+    {
+        var original = _interactionStart;
+        if (original is null) return;
         _interactionStart = null;
+        _keyboardInteractionKeys.Clear();
+        if (!original.SequenceEqual(_anchors))
+        {
+            // Owners apply the final value while their interaction/undo session is still active.
+            CurveCommitted?.Invoke(this, new TweenCurveCommittedEventArgs(_anchors));
+        }
         InteractionCompleted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -544,6 +588,7 @@ internal sealed class TweenCurveEditor : Control
         var original = _interactionStart;
         _draggedAnchor = -1;
         _interactionStart = null;
+        _keyboardInteractionKeys.Clear();
         Capture = false;
         if (original is not null)
         {
@@ -554,6 +599,9 @@ internal sealed class TweenCurveEditor : Control
         SelectedAnchorChanged?.Invoke(this, EventArgs.Empty);
         Invalidate();
     }
+
+    private static bool IsNudgeKey(Keys key) =>
+        key is Keys.Left or Keys.Right or Keys.Up or Keys.Down;
 
     private void SelectAnchor(int index)
     {
@@ -599,16 +647,23 @@ internal sealed class TweenCurveEditor : Control
         var bounds = new RectangleF(center.X - radius, center.Y - radius, radius * 2, radius * 2);
         var selected = index == _selectedAnchor;
         var endpoint = index == 0 || index == _anchors.Length - 1;
-        var fillColor = ghost
+        var preferredFillColor = ghost
             ? Theme.Danger
             : selected ? Theme.AccentLabel : endpoint ? Theme.Muted : Theme.Accent;
+        var fillColor = Theme.ReadableUiColor(Theme.Field, preferredFillColor);
         using var fill = new SolidBrush(Color.FromArgb((int)(alpha * 255), fillColor));
-        using var outline = new Pen(Color.FromArgb((int)(alpha * 245), selected ? Theme.Text : Theme.PanelStrong), DpiScale(selected ? 2f : 1.2f));
+        using var outline = new Pen(
+            Color.FromArgb(
+                (int)(alpha * 245),
+                Theme.ReadableUiColor(fillColor, selected ? Theme.Text : Theme.PanelStrong)),
+            DpiScale(selected ? 2f : 1.2f));
         graphics.FillEllipse(fill, bounds);
         graphics.DrawEllipse(outline, bounds);
         if (!ghost && index == _hoveredAnchor && !selected)
         {
-            using var hover = new Pen(Color.FromArgb((int)(alpha * 180), Theme.AccentLabel), DpiScale(1f));
+            using var hover = new Pen(
+                Color.FromArgb((int)(alpha * 180), Theme.ReadableUiColor(Theme.Field, Theme.AccentLabel)),
+                DpiScale(1f));
             graphics.DrawEllipse(hover, RectangleF.Inflate(bounds, DpiScale(2.5f), DpiScale(2.5f)));
         }
     }

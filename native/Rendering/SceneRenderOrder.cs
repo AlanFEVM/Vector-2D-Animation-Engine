@@ -123,6 +123,15 @@ internal sealed class SceneRenderOrderBuffer
         scene.PopulateActiveKeyframeFrames(frame, _activeKeyframes);
         SummaryMatchesActiveContent = HasSummaryMatchingActiveContent(scene, frame);
 
+        var activeObjects = scene.GetActiveObjectIndices(frame);
+        if (ShouldUseActiveObjectIndex(scene, activeObjects.Length))
+        {
+            CollectActiveObjects(scene, activeObjects, bounds);
+            LastCollectBatchCount = 1;
+            SortLayers(scene, parallel: false, workers: 1);
+            return;
+        }
+
         VisibleCount = 0;
         ScannedCount = 0;
         VisibleAtoms = 0;
@@ -175,6 +184,46 @@ internal sealed class SceneRenderOrderBuffer
         SortLayers(scene, parallel: true, workers);
     }
 
+    private static bool ShouldUseActiveObjectIndex(VectorScene scene, int activeObjectCount)
+    {
+        if (activeObjectCount <= 4_096) return true;
+        return activeObjectCount * 4L <= Math.Max(1, scene.ObjectCount) * 3L;
+    }
+
+    private void CollectActiveObjects(
+        VectorScene scene,
+        ReadOnlySpan<int> activeObjects,
+        RectangleF bounds)
+    {
+        VisibleCount = 0;
+        ScannedCount = activeObjects.Length;
+        VisibleAtoms = 0;
+        VisibleBoundsArea = 0;
+        var left = bounds.Left;
+        var right = bounds.Right;
+        var top = bounds.Top;
+        var bottom = bounds.Bottom;
+        for (var activeIndex = 0; activeIndex < activeObjects.Length; activeIndex++)
+        {
+            var index = activeObjects[activeIndex];
+            var layer = scene.ObjectLayer[index];
+            if (!scene.ShouldRenderLayerContent(layer)) continue;
+            var objectBounds = scene.GetObjectWorldBounds(index);
+            if (objectBounds.Right < left
+                || objectBounds.Left > right
+                || objectBounds.Bottom < top
+                || objectBounds.Top > bottom)
+            {
+                continue;
+            }
+
+            (_layers[layer] ??= new List<int>(64)).Add(index);
+            VisibleCount++;
+            VisibleAtoms += scene.AtomCount[index];
+            VisibleBoundsArea += VisibleArea(objectBounds, left, right, top, bottom);
+        }
+    }
+
     private void CollectSequential(
         VectorScene scene,
         int minX,
@@ -196,6 +245,7 @@ internal sealed class SceneRenderOrderBuffer
                 var index = scene.CellObjects[p];
                 if ((uint)index >= scene.ObjectCount) continue;
                 var layer = scene.ObjectLayer[index];
+                if (!scene.ShouldRenderLayerContent(layer)) continue;
                 if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
                 var objectBounds = scene.GetObjectWorldBounds(index);
                 if (objectBounds.Right < left
@@ -216,6 +266,7 @@ internal sealed class SceneRenderOrderBuffer
             {
                 if ((uint)index >= scene.ObjectCount) continue;
                 var layer = scene.ObjectLayer[index];
+                if (!scene.ShouldRenderLayerContent(layer)) continue;
                 if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
                 var objectBounds = scene.GetObjectWorldBounds(index);
                 if (objectBounds.Right < left
@@ -250,6 +301,7 @@ internal sealed class SceneRenderOrderBuffer
             var index = scene.CellObjects[p];
             if ((uint)index >= scene.ObjectCount) continue;
             var layer = scene.ObjectLayer[index];
+            if (!scene.ShouldRenderLayerContent(layer)) continue;
             if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
             var objectBounds = scene.GetObjectWorldBounds(index);
             if (objectBounds.Right < left
@@ -267,6 +319,7 @@ internal sealed class SceneRenderOrderBuffer
         {
             if ((uint)index >= scene.ObjectCount) continue;
             var layer = scene.ObjectLayer[index];
+            if (!scene.ShouldRenderLayerContent(layer)) continue;
             if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
             var objectBounds = scene.GetObjectWorldBounds(index);
             if (objectBounds.Right < left
@@ -332,6 +385,7 @@ internal sealed class SceneRenderOrderBuffer
         for (var objectIndex = 0; objectIndex < scene.ObjectCount; objectIndex++)
         {
             var layer = scene.ObjectLayer[objectIndex];
+            if (!scene.ShouldRenderLayerContent(layer)) continue;
             if ((uint)layer >= _activeKeyframes.Length
                 || scene.ObjectKeyframeFrame[objectIndex] != _activeKeyframes[layer])
             {

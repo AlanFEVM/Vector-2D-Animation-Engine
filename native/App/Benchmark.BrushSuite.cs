@@ -6,6 +6,9 @@ internal static partial class Benchmark
 {
     private static void RunColorHarmonyRegression()
     {
+        RunLabColorRegression();
+        RunTraditionalColorPickerRegression();
+
         var red = Color.FromArgb(255, 255, 0, 0);
         var complementary = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.Complementary);
         var analogous = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.Analogous);
@@ -63,6 +66,310 @@ internal static partial class Benchmark
         }
 
         Console.WriteLine("color_harmony_regression=ok");
+    }
+
+    private static void RunLabColorRegression()
+    {
+        var references = new[]
+        {
+            (Color: Color.Black, Lightness: 0d, GreenRed: 0d, BlueYellow: 0d),
+            (Color: Color.White, Lightness: 100d, GreenRed: 0d, BlueYellow: 0d),
+            (Color: Color.Red, Lightness: 53.2408d, GreenRed: 80.0925d, BlueYellow: 67.2032d),
+            (Color: Color.Lime, Lightness: 87.7347d, GreenRed: -86.1827d, BlueYellow: 83.1793d),
+            (Color: Color.Blue, Lightness: 32.297d, GreenRed: 79.1875d, BlueYellow: -107.8602d)
+        };
+        foreach (var reference in references)
+        {
+            MaterialEditorPanel.RgbToLab(reference.Color, out var lightness, out var greenRed, out var blueYellow);
+            if (Math.Abs(lightness - reference.Lightness) > 0.0005
+                || Math.Abs(greenRed - reference.GreenRed) > 0.0005
+                || Math.Abs(blueYellow - reference.BlueYellow) > 0.0005)
+            {
+                throw new InvalidOperationException(
+                    $"sRGB to CIELAB D65 conversion drifted for {reference.Color}: " +
+                    $"L*={lightness:F4}, a*={greenRed:F4}, b*={blueYellow:F4}.");
+            }
+        }
+
+        var roundTripColors = new[]
+        {
+            Color.FromArgb(17, 12, 34, 56),
+            Color.FromArgb(255, 79, 179, 162),
+            Color.FromArgb(128, 238, 242, 241),
+            Color.FromArgb(73, 255, 0, 255)
+        };
+        foreach (var source in roundTripColors)
+        {
+            AssertLabRoundTrip(source);
+        }
+        for (var red = 0; red <= 255; red += 17)
+        for (var green = 0; green <= 255; green += 17)
+        for (var blue = 0; blue <= 255; blue += 17)
+        {
+            AssertLabRoundTrip(Color.FromArgb((red + green + blue) & 0xFF, red, green, blue));
+        }
+
+        var neutral = MaterialEditorPanel.ColorFromLab(50, 0, 0, 91);
+        var violet = MaterialEditorPanel.ColorFromLab(75, 20, -30, 201);
+        var clippedWarm = MaterialEditorPanel.ColorFromLab(50, 127, 127, 99);
+        var clippedCool = MaterialEditorPanel.ColorFromLab(50, -128, -128, 99);
+        if (neutral.A != 91
+            || neutral.R is < 118 or > 120
+            || Math.Abs(neutral.G - neutral.R) > 1
+            || Math.Abs(neutral.B - neutral.R) > 1
+            || violet.A != 201 || violet.R != 194 || violet.G != 175 || violet.B != 240
+            || clippedWarm.A != 99 || clippedWarm.R != 255 || clippedWarm.G != 0 || clippedWarm.B != 0
+            || clippedCool.A != 99 || clippedCool.R != 0 || clippedCool.G != 169 || clippedCool.B != 255)
+        {
+            throw new InvalidOperationException("CIELAB inverse conversion, sRGB gamut clipping, or alpha preservation was invalid.");
+        }
+
+        Console.WriteLine("lab_color_regression=ok");
+    }
+
+    private static void RunTraditionalColorPickerRegression()
+    {
+        var planeSamples = 0;
+        var planeValueChanges = 0;
+        var planeStarted = 0;
+        var planeCompleted = 0;
+        var planeCanceled = 0;
+        using var plane = new TraditionalColorPlane
+        {
+            Size = new Size(104, 108),
+            HorizontalAxisName = "Horizontal",
+            VerticalAxisName = "Vertical",
+            ColorAt = (x, y) =>
+            {
+                planeSamples++;
+                return Color.FromArgb(
+                    255,
+                    (int)MathF.Round(x * 255),
+                    (int)MathF.Round(y * 255),
+                    0);
+            }
+        };
+        plane.AccessibleName = "Localized color field";
+        plane.ValueChanged += (_, _) => planeValueChanges++;
+        plane.InteractionStarted += (_, _) => planeStarted++;
+        plane.InteractionCompleted += (_, _) => planeCompleted++;
+        plane.InteractionCanceled += (_, _) => planeCanceled++;
+        plane.CreateControl();
+        using var planeBitmap = new Bitmap(plane.Width, plane.Height);
+        plane.DrawToBitmap(planeBitmap, plane.ClientRectangle);
+        var initialPlaneSamples = planeSamples;
+        var highCorner = planeBitmap.GetPixel(plane.Width - 8, 7);
+        var lowCorner = planeBitmap.GetPixel(7, plane.Height - 8);
+        plane.SetValues(0.2f, 0.8f);
+        plane.DrawToBitmap(planeBitmap, plane.ClientRectangle);
+        if (initialPlaneSamples <= 0
+            || highCorner.R < 240 || highCorner.G < 240
+            || lowCorner.R > 15 || lowCorner.G > 15
+            || planeSamples != initialPlaneSamples
+            || planeValueChanges != 0
+            || plane.AccessibleName != "Localized color field")
+        {
+            throw new InvalidOperationException("Traditional color plane orientation, marker-only repaint caching, or accessibility state was invalid.");
+        }
+
+        plane.RefreshGradient();
+        plane.DrawToBitmap(planeBitmap, plane.ClientRectangle);
+        if (planeSamples <= initialPlaneSamples)
+        {
+            throw new InvalidOperationException("Traditional color plane did not rebuild its cached bitmap after gradient invalidation.");
+        }
+
+        SendControlKey(plane, "OnKeyDown", Keys.Right);
+        SendControlKey(plane, "OnKeyUp", Keys.Right);
+        var cancelPlaneY = plane.YValue;
+        SendControlKey(plane, "OnKeyDown", Keys.Down);
+        SendControlKey(plane, "OnKeyDown", Keys.Escape);
+        if (planeStarted != 2
+            || planeCompleted != 1
+            || planeCanceled != 1
+            || Math.Abs(plane.YValue - cancelPlaneY) > 0.0001f)
+        {
+            throw new InvalidOperationException("Traditional color plane keyboard completion or Escape cancellation lifecycle was invalid.");
+        }
+
+        var componentSamples = 0;
+        var componentValueChanges = 0;
+        var componentStarted = 0;
+        var componentCompleted = 0;
+        var componentCanceled = 0;
+        using var component = new VerticalColorComponentSlider
+        {
+            Size = new Size(24, 108),
+            AxisName = "Primary",
+            GradientColor = amount =>
+            {
+                componentSamples++;
+                return Color.FromArgb(255, (int)MathF.Round(amount * 255), 0, 0);
+            }
+        };
+        component.AccessibleName = "Localized primary component";
+        component.ValueChanged += (_, _) => componentValueChanges++;
+        component.InteractionStarted += (_, _) => componentStarted++;
+        component.InteractionCompleted += (_, _) => componentCompleted++;
+        component.InteractionCanceled += (_, _) => componentCanceled++;
+        component.CreateControl();
+        using var componentBitmap = new Bitmap(component.Width, component.Height);
+        component.DrawToBitmap(componentBitmap, component.ClientRectangle);
+        var initialComponentSamples = componentSamples;
+        var highAtTop = componentBitmap.GetPixel(12, 5).R;
+        var lowAtBottom = componentBitmap.GetPixel(12, 102).R;
+        component.SetValue(0.35f);
+        component.DrawToBitmap(componentBitmap, component.ClientRectangle);
+        if (initialComponentSamples <= 0
+            || highAtTop < 240 || lowAtBottom > 15
+            || componentSamples != initialComponentSamples
+            || componentValueChanges != 0
+            || component.AccessibleName != "Localized primary component")
+        {
+            throw new InvalidOperationException("Traditional primary-component orientation, marker-only repaint caching, or accessibility state was invalid.");
+        }
+
+        component.RefreshGradient();
+        component.DrawToBitmap(componentBitmap, component.ClientRectangle);
+        var refreshedComponentSamples = componentSamples;
+        component.HighAtTop = false;
+        component.DrawToBitmap(componentBitmap, component.ClientRectangle);
+        var lowAtTop = componentBitmap.GetPixel(12, 5).R;
+        var highAtBottom = componentBitmap.GetPixel(12, 102).R;
+        if (refreshedComponentSamples <= initialComponentSamples
+            || componentSamples <= refreshedComponentSamples
+            || lowAtTop > 15 || highAtBottom < 240)
+        {
+            throw new InvalidOperationException("Traditional primary-component gradient invalidation or low-at-top direction was invalid.");
+        }
+
+        component.SetValue(0.4f);
+        SendControlKey(component, "OnKeyDown", Keys.Up);
+        SendControlKey(component, "OnKeyUp", Keys.Up);
+        var cancelComponentValue = component.Value;
+        SendControlKey(component, "OnKeyDown", Keys.Down);
+        SendControlKey(component, "OnKeyDown", Keys.Escape);
+        if (componentStarted != 2
+            || componentCompleted != 1
+            || componentCanceled != 1
+            || Math.Abs(component.Value - cancelComponentValue) > 0.0001f)
+        {
+            throw new InvalidOperationException("Traditional primary-component keyboard completion or Escape cancellation lifecycle was invalid.");
+        }
+
+        using var material = new MaterialEditorPanel();
+        var materialChanges = 0;
+        var materialInteractionsStarted = 0;
+        var materialInteractionsCompleted = 0;
+        var materialInteractionsCanceled = 0;
+        material.MaterialChanged += (_, _) => materialChanges++;
+        material.ContinuousEditStarted += (_, _) => materialInteractionsStarted++;
+        material.ContinuousEditCompleted += (_, _) => materialInteractionsCompleted++;
+        material.ContinuousEditCanceled += (_, _) => materialInteractionsCanceled++;
+        var setMode = typeof(MaterialEditorPanel).GetMethod(
+            "SetColorMode",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        var planeField = typeof(MaterialEditorPanel).GetField(
+            "_traditionalPlane",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        var componentField = typeof(MaterialEditorPanel).GetField(
+            "_primaryComponent",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        if (setMode is null
+            || planeField?.GetValue(material) is not TraditionalColorPlane materialPlane
+            || componentField?.GetValue(material) is not VerticalColorComponentSlider materialComponent)
+        {
+            throw new InvalidOperationException("Traditional material color-picker controls were not connected.");
+        }
+
+        var modeType = setMode.GetParameters()[0].ParameterType;
+        foreach (var (name, source, highAtTopExpected) in new[]
+                 {
+                     ("Rgb", Color.FromArgb(73, 10, 20, 30), true),
+                     ("Hsv", Color.FromArgb(73, 128, 0, 0), false),
+                     ("Hsl", Color.FromArgb(73, 128, 0, 0), false),
+                     ("Lab", Color.FromArgb(73, 128, 128, 128), true)
+                 })
+        {
+            material.SetMaterial(source, Color.White, 2f, source.A / 255f);
+            var changesBeforeMode = materialChanges;
+            var interactionsBeforeMode = materialInteractionsStarted;
+            setMode.Invoke(material, [Enum.Parse(modeType, name)]);
+            if (material.Fill.ToArgb() != source.ToArgb()
+                || materialChanges != changesBeforeMode
+                || materialComponent.HighAtTop != highAtTopExpected)
+            {
+                throw new InvalidOperationException($"Traditional color-picker mode {name} changed material color, raised an edit, or used the wrong primary direction.");
+            }
+
+            var expectedAfterPlane = name switch
+            {
+                "Rgb" => Color.FromArgb(source.A, source.R, 255, 255),
+                "Hsv" => Color.FromArgb(source.A, 255, 0, 0),
+                "Hsl" => Color.FromArgb(source.A, 255, 255, 255),
+                _ => ExpectedLabPlaneMaximum(source)
+            };
+            SendControlKey(materialPlane, "OnKeyDown", Keys.End);
+            SendControlKey(materialPlane, "OnKeyUp", Keys.End);
+            if (material.Fill.ToArgb() != expectedAfterPlane.ToArgb())
+            {
+                throw new InvalidOperationException(
+                    $"Traditional color-picker mode {name} mapped its two-dimensional maximum to {material.Fill.ToArgb():X8} instead of {expectedAfterPlane.ToArgb():X8}.");
+            }
+
+            var expectedInteractions = 1;
+            if (name == "Rgb")
+            {
+                SendControlKey(materialComponent, "OnKeyDown", Keys.End);
+                SendControlKey(materialComponent, "OnKeyUp", Keys.End);
+                expectedInteractions++;
+                if (material.Fill.ToArgb() != Color.FromArgb(source.A, 255, 255, 255).ToArgb())
+                {
+                    throw new InvalidOperationException("Traditional RGB primary-component input did not map R to its maximum.");
+                }
+            }
+
+            if (material.Fill.A != source.A
+                || materialChanges <= changesBeforeMode
+                || materialInteractionsStarted - interactionsBeforeMode != expectedInteractions
+                || materialInteractionsCompleted != materialInteractionsStarted
+                || materialInteractionsCanceled != 0)
+            {
+                throw new InvalidOperationException($"Traditional color-picker mode {name} did not preserve alpha or emit one completed continuous lifecycle per gesture.");
+            }
+        }
+
+        Console.WriteLine("traditional_color_picker_regression=ok");
+    }
+
+    private static Color ExpectedLabPlaneMaximum(Color source)
+    {
+        MaterialEditorPanel.RgbToLab(source, out var lightness, out _, out _);
+        var roundedLightness = Math.Round(lightness * 10, MidpointRounding.AwayFromZero) / 10;
+        return MaterialEditorPanel.ColorFromLab(roundedLightness, 127, 127, source.A);
+    }
+
+    private static void SendControlKey(Control control, string methodName, Keys key)
+    {
+        var method = control.GetType().GetMethod(
+            methodName,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        if (method is null) throw new InvalidOperationException($"Missing {control.GetType().Name}.{methodName} regression hook.");
+        method.Invoke(control, [new KeyEventArgs(key)]);
+    }
+
+    private static void AssertLabRoundTrip(Color source)
+    {
+        MaterialEditorPanel.RgbToLab(source, out var lightness, out var greenRed, out var blueYellow);
+        var roundTrip = MaterialEditorPanel.ColorFromLab(lightness, greenRed, blueYellow, source.A);
+        if (roundTrip.A != source.A
+            || Math.Abs(roundTrip.R - source.R) > 1
+            || Math.Abs(roundTrip.G - source.G) > 1
+            || Math.Abs(roundTrip.B - source.B) > 1)
+        {
+            throw new InvalidOperationException(
+                $"CIELAB round trip changed ARGB {source.ToArgb():X8} to {roundTrip.ToArgb():X8}.");
+        }
     }
 
     private static void RunGradientPresetRegression()

@@ -83,9 +83,7 @@ internal static partial class Benchmark
                 $"The first visible Fill/Line drag exceeded its budget: fill={fillResult.TotalMilliseconds:0.000} ms, line={lineResult.TotalMilliseconds:0.000} ms.");
         }
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
+        ForceFullCollectionForBenchmark();
 
         (VectorSceneSnapshot Snapshot, double TotalMilliseconds, double SnapshotMilliseconds, double MaterializeMilliseconds) MeasureDrag(
             DrawingElementHit hit,

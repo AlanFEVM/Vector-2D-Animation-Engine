@@ -113,6 +113,94 @@ internal sealed partial class VectorScene
         return index;
     }
 
+    internal int AppendPathObjectLocalContours(
+        int layer,
+        PointF center,
+        SizeF size,
+        float angle,
+        PointF[][] localContours,
+        float stroke,
+        Color color,
+        Color strokeColor,
+        uint atoms,
+        int shapeVertexCount = 0)
+    {
+        if (!HasValidLocalPathContours(localContours)) return -1;
+
+        var index = AppendObject(
+            layer,
+            center,
+            size,
+            angle,
+            stroke,
+            color,
+            strokeColor,
+            atoms,
+            VectorAnimationEngine.ShapeKind.Path,
+            shapeVertexCount);
+        // Composition sources keep these arrays immutable after authoring. Reuse
+        // them here so rebuilding a frame does not copy every fragment vertex.
+        _pathLocalContours[index] = localContours;
+        _pathBezierLocalContours.Remove(index);
+        return index;
+    }
+
+    internal int AppendPathBezierObjectLocalContours(
+        int layer,
+        PointF center,
+        SizeF size,
+        float angle,
+        PointF[][] sampledLocalContours,
+        PathBezierNode[][] localContours,
+        float stroke,
+        Color color,
+        Color strokeColor,
+        uint atoms,
+        int shapeVertexCount = 0)
+    {
+        if (!HasValidLocalPathContours(sampledLocalContours)
+            || !HasValidLocalBezierContours(localContours))
+        {
+            return -1;
+        }
+
+        var index = AppendObject(
+            layer,
+            center,
+            size,
+            angle,
+            stroke,
+            color,
+            strokeColor,
+            atoms,
+            VectorAnimationEngine.ShapeKind.Path,
+            shapeVertexCount);
+        // The sampled contour drives hit testing and the exact contour drives
+        // editable/rendered Bezier geometry. Both are stable source data.
+        _pathLocalContours[index] = sampledLocalContours;
+        _pathBezierLocalContours[index] = localContours;
+        return index;
+    }
+
+    private static bool HasValidLocalPathContours(PointF[][]? contours)
+    {
+        return contours is { Length: > 0 }
+            && contours.All(contour => contour is { Length: >= 3 }
+                && contour.All(point => float.IsFinite(point.X) && float.IsFinite(point.Y)));
+    }
+
+    private static bool HasValidLocalBezierContours(PathBezierNode[][]? contours)
+    {
+        return contours is { Length: > 0 }
+            && contours.All(contour => contour is { Length: >= 2 }
+                && contour.All(node => float.IsFinite(node.Anchor.X)
+                    && float.IsFinite(node.Anchor.Y)
+                    && float.IsFinite(node.IncomingControl.X)
+                    && float.IsFinite(node.IncomingControl.Y)
+                    && float.IsFinite(node.OutgoingControl.X)
+                    && float.IsFinite(node.OutgoingControl.Y)));
+    }
+
     internal int AppendPathBezierObjectContours(
         int layer,
         IReadOnlyList<PathBezierNode[]> worldContours,

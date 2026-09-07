@@ -3295,6 +3295,7 @@ internal sealed partial class VectorScene
         var styles = startEndpoint ? LineEndpointStyles : LineEndEndpointStyles;
         if (styles[objectIndex] == normalized) return false;
         styles[objectIndex] = normalized;
+        GeometryRevision++;
         return true;
     }
 

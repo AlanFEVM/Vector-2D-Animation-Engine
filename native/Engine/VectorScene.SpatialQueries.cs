@@ -558,8 +558,17 @@ internal sealed partial class VectorScene
 
     private void InvalidateQueryActiveKeyframes()
     {
+        unchecked
+        {
+            ActiveContentRevision++;
+        }
         _queryActiveFrame = int.MinValue;
         InvalidateInteractiveQueryCaches();
+        lock (_randomFractureCacheGate)
+        {
+            _randomFracturePlanCache = null;
+            _randomFractureTerrainCache = null;
+        }
     }
 
     public int[] QueryDrawingObjects(RectangleF worldBounds, int frame, int limit = 100_000)
@@ -1097,6 +1106,7 @@ internal sealed partial class VectorScene
 
         for (var i = 0; i < ObjectCount; i++)
         {
+            if (!ShouldRenderLayerContent(ObjectLayer[i])) continue;
             var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
             var color = Color.FromArgb(useFillColorForStrokeShapes
                 ? Argb[i]
@@ -1152,6 +1162,7 @@ internal sealed partial class VectorScene
             {
                 for (var i = start; i < end; i++)
                 {
+                    if (!ShouldRenderLayerContent(ObjectLayer[i])) continue;
                     var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
                     var color = Color.FromArgb(useFillColorForStrokeShapes
                         ? Argb[i]
@@ -1249,6 +1260,7 @@ internal sealed partial class VectorScene
 
     private void AddObjectToSummariesIncremental(int objectIndex, Color color)
     {
+        if (!ShouldRenderLayerContent(ObjectLayer[objectIndex])) return;
         if (IsFreehandShape(ShapeKind[objectIndex]))
         {
             AddObjectToSummaryRange(
