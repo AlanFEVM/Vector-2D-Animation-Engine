@@ -96,6 +96,14 @@ internal sealed partial class StageControl : Control
     {
         var scene = Scene;
         var bounds = VisibleWorldBounds();
+        if (scene.HasSymbolFilters)
+        {
+            var padding = LayerFilterBounds.GetPadding(scene, ActiveViewZoom);
+            bounds.Inflate(
+                Math.Max(padding.Left, padding.Right) / WorldLengthToScreen(1),
+                Math.Max(padding.Top, padding.Bottom) / WorldLengthToScreen(1));
+            drawLimit = int.MaxValue;
+        }
         _renderOrder.Collect(scene, bounds, Frame);
 
         return DrawCollectedObjects(g, drawLimit);
@@ -104,7 +112,7 @@ internal sealed partial class StageControl : Control
     private RenderStats DrawCollectedObjects(Graphics g, int drawLimit)
     {
         var scene = Scene;
-        if (scene.HasNonNormalLayerBlendModes)
+        if (scene.RequiresIsolatedLayerCompositing)
         {
             return DrawCollectedObjectsComposited(g, scene, drawLimit);
         }
@@ -146,9 +154,12 @@ internal sealed partial class StageControl : Control
     private LayerBlendCompositor LayerCompositor()
     {
         var size = new Size(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
-        if (_layerBlendCompositor is not null && _layerBlendCompositor.Size == size) return _layerBlendCompositor;
+        var padding = LayerFilterBounds.GetPadding(Scene, ActiveViewZoom);
+        if (_layerBlendCompositor is not null && _layerBlendCompositor.Size == size
+            && _layerBlendCompositor.Padding == padding
+            && _layerBlendCompositor.FilterPixelScale == ActiveViewZoom) return _layerBlendCompositor;
         _layerBlendCompositor?.Dispose();
-        _layerBlendCompositor = new LayerBlendCompositor(size);
+        _layerBlendCompositor = new LayerBlendCompositor(size, padding, ActiveViewZoom);
         return _layerBlendCompositor;
     }
 
@@ -191,12 +202,27 @@ internal sealed partial class StageControl : Control
     {
         if (!TryGetActiveMaskLayer(out var maskLayer)) return;
         if (Scene.IsCollisionTerrainLayer(maskLayer)) return;
-        var maskObjects = Enumerable.Range(0, Scene.ObjectCount)
-            .Where(index => Scene.ObjectLayer[index] == maskLayer
-                && Scene.IsObjectActive(index, Frame)
-                && SceneRenderOrder.HasFill(Scene.ShapeKind[index]))
-            .ToArray();
-        if (maskObjects.Length == 0) return;
+        var activeObjects = Scene.GetActiveObjectIndices(Frame);
+        var maskObjects = new int[activeObjects.Length];
+        var maskObjectCount = 0;
+        for (var activeIndex = 0; activeIndex < activeObjects.Length; activeIndex++)
+        {
+            var objectIndex = activeObjects[activeIndex];
+            if (Scene.ObjectLayer[objectIndex] != maskLayer
+                || !SceneRenderOrder.HasFill(Scene.ShapeKind[objectIndex]))
+            {
+                continue;
+            }
+
+            maskObjects[maskObjectCount++] = objectIndex;
+        }
+
+        if (maskObjectCount == 0) return;
+        Array.Sort(maskObjects, 0, maskObjectCount);
+        if (maskObjectCount != maskObjects.Length)
+        {
+            Array.Resize(ref maskObjects, maskObjectCount);
+        }
 
         using var path = CreateMaskPath(Scene, maskObjects);
         if (path.PointCount == 0) return;
@@ -220,16 +246,36 @@ internal sealed partial class StageControl : Control
             return;
         }
 
-        var terrainLayerSet = terrainLayers.ToHashSet();
-        var terrainObjects = Enumerable.Range(0, scene.ObjectCount)
-            .Where(index => terrainLayerSet.Contains(scene.ObjectLayer[index])
-                && scene.IsObjectActive(index, terrainFrame)
-                && SceneRenderOrder.HasFill(scene.ShapeKind[index]))
-            .ToArray();
-        if (terrainObjects.Length == 0)
+        // Active object indices are already cached by frame and revisions.
+        // Filter that span instead of rescanning every object and allocating
+        // LINQ/HashSet helpers on every paint.
+        var activeObjects = scene.GetActiveObjectIndices(terrainFrame);
+        var terrainObjects = new int[activeObjects.Length];
+        var terrainObjectCount = 0;
+        for (var activeIndex = 0; activeIndex < activeObjects.Length; activeIndex++)
+        {
+            var objectIndex = activeObjects[activeIndex];
+            if (Array.IndexOf(terrainLayers, scene.ObjectLayer[objectIndex]) < 0
+                || !SceneRenderOrder.HasFill(scene.ShapeKind[objectIndex]))
+            {
+                continue;
+            }
+
+            terrainObjects[terrainObjectCount++] = objectIndex;
+        }
+
+        if (terrainObjectCount == 0)
         {
             ClearCollisionTerrainOverlayPath();
             return;
+        }
+
+        // Preserve the previous object-index order for stable geometry/cache
+        // keys even though active indices are grouped by layer/keyframe.
+        Array.Sort(terrainObjects, 0, terrainObjectCount);
+        if (terrainObjectCount != terrainObjects.Length)
+        {
+            Array.Resize(ref terrainObjects, terrainObjectCount);
         }
 
         var path = GetCollisionTerrainOverlayPath(
@@ -1185,6 +1231,7 @@ internal sealed partial class StageControl : Control
         float opacity)
     {
         var raster = ImportedSvgRasterizer.Rasterize(source, screenWidth, screenHeight);
+        using var bitmap = raster.AcquireBitmap();
         var state = graphics.Save();
         try
         {
@@ -1198,7 +1245,7 @@ internal sealed partial class StageControl : Control
                 screenHeight);
             if (opacity >= 0.999f)
             {
-                graphics.DrawImage(raster.Bitmap, destination);
+                graphics.DrawImage(bitmap.Bitmap, destination);
                 return;
             }
 
@@ -1212,7 +1259,7 @@ internal sealed partial class StageControl : Control
                 new PointF(destination.Left, destination.Bottom)
             };
             graphics.DrawImage(
-                raster.Bitmap,
+                bitmap.Bitmap,
                 destinationPoints,
                 new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
                 GraphicsUnit.Pixel,

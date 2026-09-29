@@ -160,7 +160,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateSceneSpatialControlsVisibility()
     {
-        var sceneWorkspace = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor;
+        var sceneWorkspace = IsSceneWorkspaceSelected;
         _referenceViewPad.Visible = sceneWorkspace
             && IsSceneCompositionContext()
             && ActiveSceneViewDimension() == SceneDimension.TwoD;
@@ -169,7 +169,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateSpatialTransformPanelState()
     {
-        var spatialContextAvailable = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+        var spatialContextAvailable = IsSceneWorkspaceSelected
             && IsScene3DView()
             && !IsSceneMaskEditing();
         var instances = spatialContextAvailable ? SelectedSceneInstances() : [];
@@ -528,7 +528,10 @@ internal sealed partial class MainForm : Form
 
     private bool TryBeginProjectedScenePointer(MouseEventArgs e)
     {
-        if (!IsSceneReferenceView() || e.Button != MouseButtons.Left) return false;
+        if (e.Button != MouseButtons.Left) return false;
+        if (TryBeginShotFramingGizmoPointer(e.Location)) return true;
+        if (IsShotDirectorContext()) return true;
+        if (!IsSceneReferenceView()) return false;
         if (TryBeginSceneLightGizmoPointer(e.Location)) return true;
         if (_tool == ToolMode.Transform3D && IsScene3DView())
         {
@@ -1354,6 +1357,7 @@ internal sealed partial class MainForm : Form
         var denominator = Vector3.Dot(ray.Direction, axis);
         if (Math.Abs(denominator) < StageControl.SpatialGizmoMinimumPlaneRayDot) return false;
         var distance = Vector3.Dot(origin - ray.Origin, axis) / denominator;
+        if (!float.IsFinite(distance) || distance < 0f) return false;
         var intersection = ray.Origin + ray.Direction * distance;
         var offset = intersection - origin;
         if (offset.LengthSquared() <= 0.000001f) return false;

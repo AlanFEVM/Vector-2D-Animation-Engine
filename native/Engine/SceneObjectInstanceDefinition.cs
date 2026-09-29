@@ -35,6 +35,8 @@ internal readonly record struct InstanceFrameState(
 
     public DistortWarp? Distortion { get; init; }
 
+    public SymbolFilters Filters { get; init; }
+
     public Vector3 RotationPivot { get; init; }
 
     public Vector3 ScalePivot { get; init; }
@@ -79,6 +81,7 @@ internal class DrawingObjectInstanceDefinition
     private float _alpha = 1f;
     private int _tintArgb = unchecked((int)0xffffffff);
     private SpatialOpticalMaterial? _opticalMaterialOverride;
+    private SymbolFilters _filters;
 
     public DrawingObjectInstanceDefinition()
     {
@@ -104,6 +107,15 @@ internal class DrawingObjectInstanceDefinition
     public Vector3 RotationPivot { get; set; }
     public Vector3 ScalePivot { get; set; }
     public DistortWarp? Distortion { get; set; }
+    public SymbolFilters Filters
+    {
+        get => _filters;
+        set
+        {
+            if (!value.IsValid) throw new ArgumentOutOfRangeException(nameof(value));
+            _filters = value;
+        }
+    }
     public float Alpha
     {
         get => _alpha;
@@ -168,6 +180,7 @@ internal class DrawingObjectInstanceDefinition
             Distortion = Distortion?.DeepClone(),
             Alpha = Alpha,
             TintArgb = TintArgb,
+            Filters = Filters,
             OpticalMaterialOverride = OpticalMaterialOverride,
             PlaybackFps = PlaybackFps,
             PlaybackMode = PlaybackMode,
@@ -515,6 +528,7 @@ internal class DrawingObjectInstanceDefinition
         {
             Alpha = Alpha,
             TintArgb = TintArgb,
+            Filters = Filters,
             RotationPivot = RotationPivot,
             ScalePivot = ScalePivot,
             Distortion = Distortion?.DeepClone()
@@ -540,6 +554,7 @@ internal class DrawingObjectInstanceDefinition
         Distortion = state.Distortion?.DeepClone();
         Alpha = state.Alpha;
         TintArgb = state.TintArgb;
+        Filters = state.Filters;
         PlaybackFps = state.PlaybackFps;
         PlaybackMode = state.PlaybackMode;
         HoldFrame = state.HoldFrame;
@@ -562,6 +577,7 @@ internal class DrawingObjectInstanceDefinition
             || !Finite(state.RotationPivot)
             || !Finite(state.ScalePivot)
             || !float.IsFinite(state.Alpha)
+            || !state.Filters.IsValid
             || state.Distortion is { IsValid: false })
         {
             return false;

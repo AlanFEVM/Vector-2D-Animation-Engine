@@ -5,6 +5,7 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class StageControl
 {
+    private Point _reference3DGdiViewportOffset;
     // GDI+ has no opacity layer, so translucent physical items are composed here first.
     private sealed class Reference3DGdiOpacitySurface(Size size) : IDisposable
     {
@@ -85,6 +86,7 @@ internal sealed partial class StageControl
 
     private RenderStats DrawReference3DScene(Graphics graphics)
     {
+        Reference3DGpuOpticsEnabled = false;
         var editableScene = Scene;
         var onionSkinStats = default(RenderStats);
         var underlayStats = default(RenderStats);
@@ -151,33 +153,38 @@ internal sealed partial class StageControl
         }
 
         var previousSmoothing = graphics.SmoothingMode;
-        using var opacitySurface = new Reference3DGdiOpacitySurface(ClientSize);
+        using var opacitySurface = new Reference3DGdiOpacitySurface(
+            Scene.HasSymbolFilters ? LayerCompositor().SurfaceSize : ClientSize);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         try
         {
-            if (Scene.HasNonNormalLayerBlendModes)
+            if (Scene.RequiresIsolatedLayerCompositing)
             {
                 var maskPaths = new Dictionary<int, GraphicsPath?>();
                 var drawnObjects = new HashSet<int>();
                 try
                 {
-                    LayerCompositor().CompositeBatchesTo(
+                    var compositor = LayerCompositor();
+                    compositor.CompositeBatchesTo(
                         graphics,
                         Scene,
                         layer => objectsByLayer[layer].Length > 0,
                         (layerGraphics, layers) =>
                         {
-                            foreach (var item in GetReference3DCompositeLayerRenderItems(layers))
+                            var previousOffset = _reference3DGdiViewportOffset;
+                            _reference3DGdiViewportOffset = new Point(compositor.Padding.Left, compositor.Padding.Top);
+                            try
                             {
-                                if (DrawReference3DSceneItem(
-                                        layerGraphics,
-                                        item,
-                                        maskPaths,
-                                        opacitySurface))
+                                foreach (var item in GetReference3DCompositeLayerRenderItems(layers))
                                 {
-                                    drawnObjects.Add(item.ObjectIndex);
+                                    if (DrawReference3DSceneItem(
+                                            layerGraphics, item, maskPaths, opacitySurface))
+                                    {
+                                        drawnObjects.Add(item.ObjectIndex);
+                                    }
                                 }
                             }
+                            finally { _reference3DGdiViewportOffset = previousOffset; }
                         });
                     drawn = drawnObjects.Count;
                 }
@@ -381,14 +388,14 @@ internal sealed partial class StageControl
         }
     }
 
-    private static void DrawReference3DOpticalSurface(
+    private void DrawReference3DOpticalSurface(
         Graphics graphics,
         Reference3DOpticalSurface surface)
     {
         var state = graphics.Save();
         try
         {
-            graphics.ResetTransform();
+            ResetReference3DGdiScreenTransform(graphics);
             graphics.CompositingMode = CompositingMode.SourceOver;
             graphics.InterpolationMode = surface.PixelWidth == surface.Bounds.Width
                 && surface.PixelHeight == surface.Bounds.Height
@@ -1878,7 +1885,7 @@ internal sealed partial class StageControl
         SizeF rasterSize;
         if (projective)
         {
-            rasterSize = EstimateReference3DProjectiveTextureSize(triangles);
+            rasterSize = EstimateReference3DProjectiveSvgTextureSize(triangles);
         }
         else
         {
@@ -1904,6 +1911,7 @@ internal sealed partial class StageControl
             return;
         }
 
+        using var bitmap = raster.AcquireBitmap();
         var destination = new[] { topLeft, topRight, bottomLeft };
         var state = graphics.Save();
         try
@@ -1912,7 +1920,7 @@ internal sealed partial class StageControl
             if (opacity >= 0.999f)
             {
                 graphics.DrawImage(
-                    raster.Bitmap,
+                    bitmap.Bitmap,
                     destination,
                     new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
                     GraphicsUnit.Pixel);
@@ -1925,7 +1933,7 @@ internal sealed partial class StageControl
                 ColorMatrixFlag.Default,
                 ColorAdjustType.Bitmap);
             graphics.DrawImage(
-                raster.Bitmap,
+                bitmap.Bitmap,
                 destination,
                 new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
                 GraphicsUnit.Pixel,
@@ -1942,78 +1950,8 @@ internal sealed partial class StageControl
         int objectIndex,
         ImportedSvgRaster raster,
         IReadOnlyList<Reference3DProjectiveTriangle> triangles,
-        float opacity)
-    {
-        using var screenMask = CreateReference3DPath(
-            GetReference3DProjectedContours(objectIndex),
-            fillOnly: true);
-        if (screenMask.PointCount == 0) return false;
-
-        using var attributes = opacity < 0.999f ? new ImageAttributes() : null;
-        attributes?.SetColorMatrix(
-            new ColorMatrix { Matrix33 = Math.Clamp(opacity, 0f, 1f) },
-            ColorMatrixFlag.Default,
-            ColorAdjustType.Bitmap);
-        var outerState = graphics.Save();
-        try
-        {
-            ResetReference3DGdiScreenTransform(graphics);
-            graphics.SetClip(screenMask, CombineMode.Intersect);
-            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            var drewTriangle = false;
-            foreach (var triangle in triangles)
-            {
-                if (!TryGetReference3DTextureToScreenTransform(
-                        triangle,
-                        raster.PixelWidth,
-                        raster.PixelHeight,
-                        out var transform))
-                {
-                    continue;
-                }
-
-                using var trianglePath = new GraphicsPath();
-                trianglePath.AddPolygon(
-                [
-                    triangle.A.Screen,
-                    triangle.B.Screen,
-                    triangle.C.Screen
-                ]);
-                var triangleState = graphics.Save();
-                try
-                {
-                    ResetReference3DGdiScreenTransform(graphics);
-                    graphics.SetClip(trianglePath, CombineMode.Intersect);
-                    using var matrix = Reference3DGdiScreenMatrix(transform);
-                    graphics.Transform = matrix;
-                    var textureBounds = GetReference3DProjectiveTextureBounds(
-                        triangle,
-                        raster.PixelWidth,
-                        raster.PixelHeight);
-                    if (textureBounds.Width <= 0 || textureBounds.Height <= 0) continue;
-                    graphics.DrawImage(
-                        raster.Bitmap,
-                        textureBounds,
-                        textureBounds.X,
-                        textureBounds.Y,
-                        textureBounds.Width,
-                        textureBounds.Height,
-                        GraphicsUnit.Pixel,
-                        attributes);
-                    drewTriangle = true;
-                }
-                finally
-                {
-                    graphics.Restore(triangleState);
-                }
-            }
-            return drewTriangle;
-        }
-        finally
-        {
-            graphics.Restore(outerState);
-        }
-    }
+        float opacity) => TryDrawBoundedReference3DProjectiveSvg(
+            graphics, objectIndex, raster, triangles, opacity);
 
     private void DrawReference3DMixingStroke(
         Graphics graphics,

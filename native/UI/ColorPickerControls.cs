@@ -405,17 +405,7 @@ internal sealed class ColorComponentSlider : Control
 
     private static void DrawCheckerboard(Graphics graphics, Rectangle bounds)
     {
-        const int square = 4;
-        using var light = new SolidBrush(Color.FromArgb(255, 94, 100, 104));
-        using var dark = new SolidBrush(Color.FromArgb(255, 60, 65, 69));
-        for (var y = bounds.Top; y < bounds.Bottom; y += square)
-        {
-            for (var x = bounds.Left; x < bounds.Right; x += square)
-            {
-                var alternate = ((x - bounds.Left) / square + (y - bounds.Top) / square) % 2 == 0;
-                graphics.FillRectangle(alternate ? light : dark, x, y, Math.Min(square, bounds.Right - x), Math.Min(square, bounds.Bottom - y));
-            }
-        }
+        UiDrawingHelpers.DrawCheckerboard(graphics, bounds, 4, Color.FromArgb(255, 94, 100, 104), Color.FromArgb(255, 60, 65, 69));
     }
 
     private Rectangle RailBounds()
@@ -1177,17 +1167,7 @@ internal sealed class TraditionalColorPlane : Control
 
     private static void DrawCheckerboard(Graphics graphics, Rectangle bounds)
     {
-        const int square = 5;
-        using var light = new SolidBrush(Color.FromArgb(255, 94, 100, 104));
-        using var dark = new SolidBrush(Color.FromArgb(255, 60, 65, 69));
-        for (var y = bounds.Top; y < bounds.Bottom; y += square)
-        {
-            for (var x = bounds.Left; x < bounds.Right; x += square)
-            {
-                var alternate = ((x - bounds.Left) / square + (y - bounds.Top) / square) % 2 == 0;
-                graphics.FillRectangle(alternate ? light : dark, x, y, Math.Min(square, bounds.Right - x), Math.Min(square, bounds.Bottom - y));
-            }
-        }
+        UiDrawingHelpers.DrawCheckerboard(graphics, bounds, 5, Color.FromArgb(255, 94, 100, 104), Color.FromArgb(255, 60, 65, 69));
     }
 
     private void TickInteractionRefresh()
@@ -2557,15 +2537,7 @@ internal static class GradientPreviewRenderer
         return normalized.ToArray();
     }
 
-    private static Color Lerp(Color start, Color end, float amount)
-    {
-        amount = Math.Clamp(amount, 0f, 1f);
-        return Color.FromArgb(
-            (int)MathF.Round(start.A + (end.A - start.A) * amount),
-            (int)MathF.Round(start.R + (end.R - start.R) * amount),
-            (int)MathF.Round(start.G + (end.G - start.G) * amount),
-            (int)MathF.Round(start.B + (end.B - start.B) * amount));
-    }
+    private static Color Lerp(Color start, Color end, float amount) => UiDrawingHelpers.Lerp(start, end, amount);
 }
 
 internal sealed class GradientPresetGrid : Control
@@ -3093,29 +3065,11 @@ internal sealed class GradientStopStrip : Control
         return normalized.ToArray();
     }
 
-    private static Color Lerp(Color start, Color end, float amount)
-    {
-        amount = Math.Clamp(amount, 0f, 1f);
-        return Color.FromArgb(
-            (int)MathF.Round(start.A + (end.A - start.A) * amount),
-            (int)MathF.Round(start.R + (end.R - start.R) * amount),
-            (int)MathF.Round(start.G + (end.G - start.G) * amount),
-            (int)MathF.Round(start.B + (end.B - start.B) * amount));
-    }
+    private static Color Lerp(Color start, Color end, float amount) => UiDrawingHelpers.Lerp(start, end, amount);
 
     private static void DrawChecker(Graphics graphics, Rectangle bounds)
     {
-        const int checker = 5;
-        using var light = new SolidBrush(Color.FromArgb(220, 220, 220));
-        using var dark = new SolidBrush(Color.FromArgb(150, 150, 150));
-        for (var y = bounds.Top; y < bounds.Bottom; y += checker)
-        {
-            for (var x = bounds.Left; x < bounds.Right; x += checker)
-            {
-                var brush = ((x - bounds.Left) / checker + (y - bounds.Top) / checker) % 2 == 0 ? light : dark;
-                graphics.FillRectangle(brush, x, y, Math.Min(checker, bounds.Right - x), Math.Min(checker, bounds.Bottom - y));
-            }
-        }
+        UiDrawingHelpers.DrawCheckerboard(graphics, bounds, 5, Color.FromArgb(220, 220, 220), Color.FromArgb(150, 150, 150));
     }
 }
 
@@ -3319,17 +3273,7 @@ internal sealed class ColorTargetButton : Control
 
     private static void DrawChecker(Graphics graphics, Rectangle bounds)
     {
-        const int checker = 5;
-        using var light = new SolidBrush(Color.FromArgb(220, 220, 220));
-        using var dark = new SolidBrush(Color.FromArgb(150, 150, 150));
-        for (var y = bounds.Top; y < bounds.Bottom; y += checker)
-        {
-            for (var x = bounds.Left; x < bounds.Right; x += checker)
-            {
-                var brush = ((x - bounds.Left) / checker + (y - bounds.Top) / checker) % 2 == 0 ? light : dark;
-                graphics.FillRectangle(brush, x, y, Math.Min(checker, bounds.Right - x), Math.Min(checker, bounds.Bottom - y));
-            }
-        }
+        UiDrawingHelpers.DrawCheckerboard(graphics, bounds, 5, Color.FromArgb(220, 220, 220), Color.FromArgb(150, 150, 150));
     }
 }
 
@@ -3633,16 +3577,6 @@ internal sealed class ColorPaletteGrid : Control
 
     private static void DrawChecker(Graphics graphics, Rectangle bounds)
     {
-        const int checker = 6;
-        using var light = new SolidBrush(Color.FromArgb(205, 205, 205));
-        using var dark = new SolidBrush(Color.FromArgb(135, 135, 135));
-        for (var y = bounds.Top; y < bounds.Bottom; y += checker)
-        {
-            for (var x = bounds.Left; x < bounds.Right; x += checker)
-            {
-                var brush = ((x - bounds.Left) / checker + (y - bounds.Top) / checker) % 2 == 0 ? light : dark;
-                graphics.FillRectangle(brush, x, y, Math.Min(checker, bounds.Right - x), Math.Min(checker, bounds.Bottom - y));
-            }
-        }
+        UiDrawingHelpers.DrawCheckerboard(graphics, bounds, 6, Color.FromArgb(205, 205, 205), Color.FromArgb(135, 135, 135));
     }
 }

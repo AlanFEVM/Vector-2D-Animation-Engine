@@ -54,6 +54,35 @@ internal sealed class AnimatedToolTip : Control
         if (!_timer.Enabled) _timer.Start();
     }
 
+    /// <summary>Shows a multiline canvas hint near the pointer without restarting its animation.</summary>
+    public void ShowAt(Control anchor, Point point, string message)
+    {
+        if (anchor.FindForm() is not { } form) return;
+        if (Parent != form) Parent = form;
+        var scale = Math.Max(1f, anchor.DeviceDpi / 96f);
+        var maxWidth = Math.Max(40, Math.Min((int)(440 * scale), anchor.ClientSize.Width - 24));
+        var textChanged = _message != message;
+        _message = message;
+        var textSize = TextRenderer.MeasureText(message, Font, new Size(maxWidth - 24, 0),
+            TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
+        Size = new Size(Math.Min(maxWidth, Math.Max(92, textSize.Width + 24)), textSize.Height + 20);
+        var location = form.PointToClient(anchor.PointToScreen(
+            new Point(point.X + (int)(20 * scale), point.Y + (int)(24 * scale))));
+        var viewport = form.RectangleToClient(anchor.RectangleToScreen(anchor.ClientRectangle));
+        if (location.X + Width > viewport.Right - 8) location.X -= Width + (int)(40 * scale);
+        if (location.Y + Height > viewport.Bottom - 8) location.Y -= Height + (int)(48 * scale);
+        _targetLocation = new Point(
+            Math.Clamp(location.X, viewport.Left + 8, Math.Max(viewport.Left + 8, viewport.Right - Width - 8)),
+            Math.Clamp(location.Y, viewport.Top + 8, Math.Max(viewport.Top + 8, viewport.Bottom - Height - 8)));
+        Location = _targetLocation;
+        _targetVisible = true;
+        Visible = true;
+        AccessibleName = message;
+        BringToFront();
+        if (textChanged) Invalidate();
+        if (_progress < 1f && !_timer.Enabled) _timer.Start();
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         if (_progress <= 0.01f || string.IsNullOrWhiteSpace(_message)) return;

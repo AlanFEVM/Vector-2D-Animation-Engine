@@ -248,6 +248,21 @@ internal static class DrawingObjectSvgCodec
                 : snapshot.ObjectKeyframeFrame.Min();
     }
 
+    /// <summary>
+    /// Builds the paint-ready SVG element for one snapshot object. Exposed so
+    /// <see cref="DrawingObjectSvgExport"/> can reuse the exact same geometry and
+    /// paint emission as the stored preview instead of duplicating it.
+    /// </summary>
+    internal static XElement? CreateExportElement(VectorSceneSnapshot snapshot, int index) =>
+        CreatePreviewElement(snapshot, index);
+
+    /// <summary>
+    /// Builds the gradient definition for one snapshot object, or null when the
+    /// object does not use a supported gradient.
+    /// </summary>
+    internal static XElement? CreateExportGradient(VectorSceneSnapshot snapshot, int index) =>
+        CreateGradient(snapshot, index);
+
     private static XElement? CreatePreviewElement(VectorSceneSnapshot snapshot, int index)
     {
         var shape = snapshot.ShapeKind[index];

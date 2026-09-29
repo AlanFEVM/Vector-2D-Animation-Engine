@@ -1,5 +1,8 @@
 namespace VectorAnimationEngine;
 
+/// <summary>Captured scene onion-skin settings, used for undo and restart snapshots.</summary>
+internal readonly record struct SceneOnionSkinState(bool Enabled, int PreviousFrames, int NextFrames);
+
 internal sealed class SceneLayerDefinition
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
@@ -33,7 +36,7 @@ internal sealed record SceneLayerSnapshotItem(
     public VectorSceneSnapshot? MaskScene { get; init; }
 }
 
-internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
+internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDefinition
 {
     internal const int MaximumLights = 256;
 
@@ -53,6 +56,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         _layerView = _layers.AsReadOnly();
         _instanceView = _instances.AsReadOnly();
         _lightView = _lights.AsReadOnly();
+        _shotView = _shots.AsReadOnly();
         _instanceIndex = new LayeredInstanceIndex(_instanceView);
         var firstLayer = new SceneLayerDefinition { Name = "Layer 0001" };
         _layers.Add(firstLayer);
@@ -83,6 +87,9 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     internal long LightingRevision { get; private set; }
     public string ActiveLayerId { get; private set; } = "";
     public DateTime CreatedAt { get; init; } = DateTime.Now;
+    public bool OnionSkinEnabled { get; private set; }
+    public int OnionSkinPreviousFrames { get; private set; } = VectorScene.DefaultOnionSkinPreviousFrames;
+    public int OnionSkinNextFrames { get; private set; } = VectorScene.DefaultOnionSkinNextFrames;
 
     public AnimationTimeline Timeline
     {
@@ -97,16 +104,19 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
     public IReadOnlyList<string> TimelineTargetIds => Layers
         .Select(layer => layer.Id)
         .Concat(Lights.Select(light => light.Id))
+        .Concat(_shots.Select(shot => shot.Id))
         .ToArray();
 
     public void SynchronizeTimelineTracks()
     {
         NormalizeLayers();
+        NormalizeShots();
         using var batchUpdate = _timeline.BeginBatchUpdate();
         _timeline.SynchronizeTracks(TimelineTargetIds, FrameCount, populateNewTracks: false);
         foreach (var track in _timeline.Tracks)
         {
-            if (FindLight(track.TargetId) is not null)
+            if (FindLight(track.TargetId) is not null
+                || FindShot(track.TargetId) is not null)
             {
                 if (track.Keyframes.Count == 0
                     || track.Keyframes[0].Frame > 0)
@@ -698,6 +708,58 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         if (FindLayer(layerId) is not null) ActiveLayerId = layerId;
     }
 
+    /// <summary>
+    /// True when a scene onion-skin preview should be built: the feature is on,
+    /// at least one neighbouring frame is requested, and a visible content layer
+    /// exists to draw those neighbours from.
+    /// </summary>
+    public bool HasOnionSkinPreviewEnabled =>
+        OnionSkinEnabled
+        && (OnionSkinPreviousFrames > 0 || OnionSkinNextFrames > 0)
+        && HasVisibleContentLayer();
+
+    public SceneOnionSkinState CreateOnionSkinState() =>
+        new(OnionSkinEnabled, OnionSkinPreviousFrames, OnionSkinNextFrames);
+
+    public void RestoreOnionSkinState(SceneOnionSkinState state)
+    {
+        OnionSkinEnabled = state.Enabled;
+        OnionSkinPreviousFrames = NormalizeOnionSkinFrames(state.PreviousFrames);
+        OnionSkinNextFrames = NormalizeOnionSkinFrames(state.NextFrames);
+    }
+
+    public bool ToggleOnionSkin() => SetOnionSkinEnabled(!OnionSkinEnabled);
+
+    public bool SetOnionSkinEnabled(bool enabled)
+    {
+        if (OnionSkinEnabled == enabled) return false;
+        OnionSkinEnabled = enabled;
+        return true;
+    }
+
+    public bool SetOnionSkinRange(int previousFrames, int nextFrames)
+    {
+        var previous = NormalizeOnionSkinFrames(previousFrames);
+        var next = NormalizeOnionSkinFrames(nextFrames);
+        if (OnionSkinPreviousFrames == previous && OnionSkinNextFrames == next) return false;
+        OnionSkinPreviousFrames = previous;
+        OnionSkinNextFrames = next;
+        return true;
+    }
+
+    private static int NormalizeOnionSkinFrames(int frames) =>
+        Math.Clamp(frames, 0, VectorScene.MaximumOnionSkinFrames);
+
+    private bool HasVisibleContentLayer()
+    {
+        foreach (var layer in _layers)
+        {
+            if (layer.Kind == SceneLayerKind.Content && layer.Visible) return true;
+        }
+
+        return false;
+    }
+
     public bool IsLayerVisible(string layerId) => FindLayer(layerId)?.Visible == true;
 
     public void ToggleLayer(string layerId)
@@ -812,6 +874,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 
         ActiveLayerId = snapshot.ActiveLayerId;
         NormalizeLayers();
+        NormalizeShots();
     }
 
     internal SceneLayerDefinition AddLayer(VectorProject project, string? name = null)
@@ -978,6 +1041,18 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
                 out error);
         }
 
+        if (FindShot(layerId) is not null)
+        {
+            return TryResolveShotTimelineTween(
+                layerId,
+                startFrame,
+                endFrame,
+                kind,
+                out _,
+                out _,
+                out error);
+        }
+
         return TryResolveInstanceTimelineTween(
             layerId,
             startFrame,
@@ -998,6 +1073,11 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         if (FindLight(layerId) is not null)
         {
             return TryCreateLightTimelineTween(layerId, startFrame, endFrame, kind, out error);
+        }
+
+        if (FindShot(layerId) is not null)
+        {
+            return TryCreateShotTimelineTween(layerId, startFrame, endFrame, kind, out error);
         }
 
         if (!TryResolveInstanceTimelineTween(
@@ -1021,20 +1101,8 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         try
         {
             using var batch = _timeline.BeginBatchUpdate();
-            for (var frame = startFrame + 1; frame < endFrame; frame++)
-            {
-                if (!_timeline.InsertKeyframe(track.Id, frame))
-                {
-                    throw new InvalidOperationException("The tween span could not create an intermediate keyframe.");
-                }
-
-                instance.SetStateAtFrame(
-                    frame,
-                    DrawingObjectInstanceDefinition.InterpolateState(
-                        source,
-                        target,
-                        (float)(frame - startFrame) / (endFrame - startFrame)));
-            }
+            InstanceTimelineMaterialization.InsertLinearFrames(
+                _timeline, track.Id, instance, startFrame, endFrame, source, target);
 
             if (!_timeline.TryCreateTween(track.Id, startFrame, endFrame, kind, out var validation))
             {
@@ -1062,7 +1130,8 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         SynchronizeTimelineTracks();
         var track = _timeline.FindTrackByTargetId(layerId);
         var light = FindLight(layerId);
-        if ((light is null && FindLayer(layerId)?.Kind != SceneLayerKind.Content)
+        var shot = FindShot(layerId);
+        if ((light is null && shot is null && FindLayer(layerId)?.Kind != SceneLayerKind.Content)
             || track is null
             || !_timeline.ReplaceTweenCurve(track.Id, startFrame, endFrame, anchors))
         {
@@ -1073,6 +1142,11 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         {
             RefreshLightTimelineTweenMaterializations(lightFilter: light.Id);
             MarkLightingChanged();
+        }
+        else if (shot is not null)
+        {
+            RefreshShotTimelineTweenMaterializations(shotFilter: shot.Id);
+            MarkShotsChanged();
         }
         else RefreshInstanceTimelineTweenMaterializations(layerFilter: layerId);
         return true;
@@ -1085,7 +1159,8 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
         var tween = track?.Tweens.FirstOrDefault(item =>
             item.StartFrame == startFrame
             && item.EndFrame == endFrame);
-        if ((FindLayer(layerId)?.Kind != SceneLayerKind.Content && FindLight(layerId) is null)
+        var shot = FindShot(layerId);
+        if ((FindLayer(layerId)?.Kind != SceneLayerKind.Content && FindLight(layerId) is null && shot is null)
             || track is null
             || tween is not { IsValid: true } span)
         {
@@ -1094,18 +1169,20 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
 
         var light = FindLight(layerId);
         IReadOnlyList<DrawingObjectInstanceDefinition> instances =
-            light is null ? InstancesInLayer(layerId) : [];
+            light is null && shot is null ? InstancesInLayer(layerId) : [];
         using var batch = _timeline.BeginBatchUpdate();
         if (!_timeline.RemoveTween(track.Id, startFrame, endFrame)) return false;
 
         for (var frame = span.StartFrame + 1; frame < span.EndFrame; frame++)
         {
             if (light is not null) light.RemoveStateKeyframe(frame);
+            else if (shot is not null) shot.RemoveStateKeyframe(frame);
             else foreach (var instance in instances) instance.RemoveStateKeyframe(frame);
             _timeline.ClearKeyframe(track.Id, frame);
         }
 
         if (light is not null) MarkLightingChanged();
+        if (shot is not null) MarkShotsChanged();
         return true;
     }
 
@@ -1362,18 +1439,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
                     continue;
                 }
 
-                var instance = instances[0];
-                var source = instance.EvaluateState(tween.StartFrame);
-                var target = instance.EvaluateState(tween.EndFrame);
-                for (var frame = tween.StartFrame + 1; frame < tween.EndFrame; frame++)
-                {
-                    changed |= instance.SetStateAtFrame(
-                        frame,
-                        DrawingObjectInstanceDefinition.InterpolateState(
-                            source,
-                            target,
-                            tween.ProgressAt(frame)));
-                }
+                changed |= InstanceTimelineMaterialization.RefreshFrames(instances[0], tween);
             }
         }
 
@@ -1457,6 +1523,7 @@ internal sealed class SceneDefinition : ITimelineContext, ICompositionDefinition
             _instanceIndex.Invalidate();
         }
         _layers.RemoveAll(layer => removedIds.Contains(layer.Id));
+        PruneShotLayerReferences(removedIds);
         foreach (var contentLayer in _layers.Where(layer => layer.Kind == SceneLayerKind.Content))
         {
             if (removedIds.Contains(contentLayer.MaskLayerId)) contentLayer.MaskLayerId = "";

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Vector 2D Animation Engine</title>
+  <desc>A vector V built from Bezier nodes with a play arrow.</desc>
+  <g id="background">
+    <rect id="background-panel" x="24" y="24" width="464" height="464" rx="104" fill="#1B2026"/>
+    <rect id="background-outline" x="24.5" y="24.5" width="463" height="463" rx="103.5" fill="none" stroke="#343B42"/>
+  </g>
+  <g id="vector-mark">
+    <path id="vector-v" d="M136 166 L219 326 Q238 363 257 326 L342 170" fill="none" stroke="#49D8BF" stroke-width="52" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g id="play-control">
+    <path id="play-arrow" d="M322 122 L408 173 L322 224 Z" fill="#FF725E" stroke="#FF725E" stroke-width="12" stroke-linejoin="round"/>
+  </g>
+  <g id="vector-anchors">
+    <circle id="anchor-start" cx="136" cy="166" r="13" fill="#1B2026" stroke="#F3F7F8" stroke-width="7"/>
+    <circle id="anchor-curve" cx="238" cy="344.5" r="13" fill="#1B2026" stroke="#F3F7F8" stroke-width="7"/>
+  </g>
+</svg>

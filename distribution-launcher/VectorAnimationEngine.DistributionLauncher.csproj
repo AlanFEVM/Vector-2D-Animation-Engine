@@ -10,8 +10,11 @@
     <AssemblyName>VectorAnimationEngine</AssemblyName>
     <RootNamespace>VectorAnimationEngine.DistributionLauncher</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\assets\branding\vector2d-icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="$(ApplicationIcon)"
+                      LogicalName="$(RootNamespace).Application.ico" />
     <EmbeddedResource Include="$(EmbeddedPayloadPath)"
                       Condition="'$(EmbeddedPayloadPath)' != '' and Exists('$(EmbeddedPayloadPath)')"
                       LogicalName="VectorAnimationEngine.EmbeddedPayload.zip" />

@@ -174,7 +174,7 @@ internal sealed class SceneLightingPanel : UserControl
         _toolTip.SetToolTip(_reset, UiLocalization.T("Reset light"));
         RefreshKindItems();
         RefreshAddMenuText();
-        RefreshListItems();
+        RefreshListItems(refreshText: true);
         Invalidate(true);
     }
 
@@ -626,16 +626,43 @@ internal sealed class SceneLightingPanel : UserControl
         _shadowSoftness.Enabled = editable && shadows;
     }
 
-    private void RefreshListItems()
+    private void RefreshListItems(bool refreshText = false)
     {
         var previousUpdating = _updating;
         _updating = true;
+        var topIndex = _lights.TopIndex;
+        var topId = topIndex >= 0 && topIndex < _lights.Items.Count
+            ? (_lights.Items[topIndex] as LightListItem)?.State.Id : null;
+        var preserveScroll = (_lights.SelectedItem as LightListItem)?.State.Id == _selectedLightId;
         try
         {
             _lights.BeginUpdate();
-            _lights.Items.Clear();
-            foreach (var state in _states) _lights.Items.Add(new LightListItem(state));
-            _lights.SelectedIndex = _states.FindIndex(item => string.Equals(item.Id, _selectedLightId, StringComparison.Ordinal));
+            for (var index = 0; index < _states.Count; index++)
+            {
+                var state = _states[index];
+                if (index >= _lights.Items.Count)
+                {
+                    _lights.Items.Add(new LightListItem(state));
+                }
+                else if (_lights.Items[index] is LightListItem item && item.State.Id == state.Id)
+                {
+                    var presentationChanged = item.State.Name != state.Name
+                        || item.State.Kind != state.Kind || item.State.Enabled != state.Enabled;
+                    item.State = state;
+                    // Update native list text only when its visible/accessibility text changes.
+                    if (refreshText || presentationChanged) _lights.Items[index] = item;
+                }
+                else _lights.Items[index] = new LightListItem(state);
+            }
+            while (_lights.Items.Count > _states.Count) _lights.Items.RemoveAt(_lights.Items.Count - 1);
+            var selectedIndex = _states.FindIndex(item => string.Equals(item.Id, _selectedLightId, StringComparison.Ordinal));
+            if (_lights.SelectedIndex != selectedIndex) _lights.SelectedIndex = selectedIndex;
+            var preservedTop = _states.FindIndex(item => string.Equals(item.Id, topId, StringComparison.Ordinal));
+            if (preserveScroll && _lights.Items.Count > 0)
+            {
+                var nextTop = preservedTop >= 0 ? preservedTop : Math.Min(topIndex, _lights.Items.Count - 1);
+                if (nextTop >= 0 && _lights.TopIndex != nextTop) _lights.TopIndex = nextTop;
+            }
         }
         finally
         {
@@ -909,8 +936,10 @@ internal sealed class SceneLightingPanel : UserControl
         public override string ToString() => LightKindLabel(Kind);
     }
 
-    private sealed record LightListItem(SceneLightEditorState State)
+    private sealed class LightListItem(SceneLightEditorState state)
     {
+        public SceneLightEditorState State { get; set; } = state;
+
         public override string ToString() =>
             $"[{UiLocalization.T(State.Enabled ? "On" : "Off")}] {State.Name} - {LightKindLabel(State.Kind)}";
     }

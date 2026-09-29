@@ -2833,8 +2833,8 @@ internal static partial class Benchmark
             && MainForm.RestoreDrawingObjectOriginalSize(direct, 10)
             && NearlyEqual(direct.EvaluateState(10).ScaleX, 1)
             && NearlyEqual(direct.EvaluateState(10).ScaleY, 1)
-            && NearlyEqual(direct.EvaluateState(10).RotationZ, 25)
-            && NearlyEqual(direct.EvaluateState(10).SkewX, 12)
+            && NearlyEqual(direct.EvaluateState(10).RotationZ, 0)
+            && NearlyEqual(direct.EvaluateState(10).SkewX, 0)
             && NearlyEqual(direct.EvaluateState(10).Alpha, 0.5f)
             && direct.EvaluateState(10).TintArgb == Color.FromArgb(255, 128, 200, 64).ToArgb()
             && direct.EvaluateState(10).PlaybackFps == 15

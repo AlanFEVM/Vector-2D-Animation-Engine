@@ -31,6 +31,7 @@ internal sealed class DrawSnappingStrip : UserControl
         AccessibleName = "Angle snap degrees"
     };
     private bool _updating;
+    private UiLanguage? _helpLanguage;
 
     public DrawSnappingStrip(DrawSettings settings)
     {
@@ -47,6 +48,11 @@ internal sealed class DrawSnappingStrip : UserControl
         Theme.StyleToolTip(_toolTip);
 
         BuildUi();
+        foreach (var control in new Control[] { _snap, _snapGrid, _snapObjects, _alignment, _angleSnap, _gridSize, _angleStep })
+        {
+            control.MouseEnter += (_, _) => RefreshHelp();
+            control.Enter += (_, _) => RefreshHelp();
+        }
         ReadSettings();
         _settings.Changed += HandleSettingsChanged;
     }
@@ -110,6 +116,7 @@ internal sealed class DrawSnappingStrip : UserControl
             _angleSnap.Checked = _settings.AngleSnapEnabled;
             _gridSize.Value = (decimal)_settings.GridSize;
             _angleStep.Value = (decimal)_settings.AngleSnapDegrees;
+            RefreshHelp();
         }
         finally
         {
@@ -155,6 +162,39 @@ internal sealed class DrawSnappingStrip : UserControl
     }
 
     private void HandleSettingsChanged(object? sender, EventArgs e) => ReadSettings();
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (_helpLanguage != UiLocalization.CurrentLanguage) RefreshHelp();
+    }
+
+    private void RefreshHelp()
+    {
+        _helpLanguage = UiLocalization.CurrentLanguage;
+        SetToggleHelp(_snap, "Enable or pause snapping. Your individual snap options are kept.", false);
+        SetToggleHelp(_snapGrid, "Place points on the grid. Set the spacing with the vu field.", true);
+        SetToggleHelp(_snapObjects, "Snap to nearby object points while drawing or moving.", true);
+        SetToggleHelp(_alignment, "Use alignment guides while drawing.", true);
+        SetToggleHelp(_angleSnap, "Constrain angles to the step in the degrees field.", true);
+        SetHelp(_gridSize, UiLocalization.T("Grid spacing in vector units (vu). Smaller values give a finer grid."));
+        SetHelp(_angleStep, UiLocalization.T("Angle step in degrees. For example, 15 gives 15, 30, 45 degrees."));
+    }
+
+    private void SetToggleHelp(SvgToggleButton control, string purpose, bool requiresSnap)
+    {
+        var message = UiLocalization.T(purpose) + Environment.NewLine
+            + UiLocalization.T(control.Checked ? "On" : "Off");
+        if (requiresSnap && !_settings.SnapEnabled)
+            message += Environment.NewLine + UiLocalization.T("Turn on Snap first to use this option.");
+        SetHelp(control, message);
+    }
+
+    private void SetHelp(Control control, string description)
+    {
+        if (control.AccessibleDescription != description) control.AccessibleDescription = description;
+        if (_toolTip.GetToolTip(control) != description) _toolTip.SetToolTip(control, description);
+    }
 
     private static SvgToggleButton Toggle(string name, SvgIconKind icon) => new(icon, name);
 }

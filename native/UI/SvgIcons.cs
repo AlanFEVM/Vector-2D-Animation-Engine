@@ -48,6 +48,7 @@ internal enum SvgIconKind
     PropertiesPanel,
     TimelinePanel,
     Light,
+    Camera,
     DirectionalLight,
     PointLight,
     AreaLight,
@@ -418,6 +419,15 @@ internal static class SvgIcons
                 g.DrawLine(thinPen, P(r, 12, 6), P(r, 12, 18));
                 g.DrawLine(thinPen, P(r, 6, 12), P(r, 18, 12));
                 g.FillEllipse(solidFill, Rect(r, 10, 10, 4, 4));
+                break;
+            case SvgIconKind.Camera:
+                // Shot camera: body, viewfinder bump, lens and flash.
+                DrawRectangle(g, pen, Rect(r, 3, 8, 18, 11));
+                g.DrawLine(pen, P(r, 8, 8), P(r, 10, 4));
+                g.DrawLine(pen, P(r, 10, 4), P(r, 15, 4));
+                g.DrawLine(pen, P(r, 15, 4), P(r, 17, 8));
+                g.DrawEllipse(pen, Rect(r, 8, 11, 8, 8));
+                g.FillEllipse(solidFill, Rect(r, 16, 10, 2, 2));
                 break;
             case SvgIconKind.Close:
                 g.DrawLine(pen, P(r, 5, 5), P(r, 19, 19));

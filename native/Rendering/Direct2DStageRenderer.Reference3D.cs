@@ -53,6 +53,7 @@ internal sealed partial class Direct2DStageRenderer
         ulong GeometryHash,
         bool UsesLocalPathGeometry);
 
+
     private sealed class CachedReference3DLocalPathGeometry(
         Reference3DLocalPathGeometryKey key,
         GdiPointF[][]? polygonContours,
@@ -661,6 +662,7 @@ internal sealed partial class Direct2DStageRenderer
         StageControl stage,
         Reference3DRenderItem item)
     {
+        if (TryDrawGpuOpticalSurface(stage, item)) return true;
         if (item.OpticalSurface is { } opticalSurface
             && item.Kind is Reference3DRenderKind.Back
                 or Reference3DRenderKind.Side
@@ -2751,6 +2753,19 @@ internal sealed partial class Direct2DStageRenderer
         ID2D1Geometry? screenMask,
         Func<Reference3DProjectiveTriangle, bool> drawTriangle)
     {
+        if (triangles.Count == 0) return false;
+
+        var hasPotentiallyVisibleTriangle = false;
+        foreach (var triangle in triangles)
+        {
+            if (!IsReference3DProjectiveTriangleOutsideViewport(triangle))
+            {
+                hasPotentiallyVisibleTriangle = true;
+                break;
+            }
+        }
+        if (!hasPotentiallyVisibleTriangle) return true;
+
         using var outerLayer = screenMask is null ? null : _target!.CreateLayer();
         using var triangleLayer = _target!.CreateLayer();
         var old = _target.Transform;
@@ -2777,6 +2792,8 @@ internal sealed partial class Direct2DStageRenderer
             var drewTriangle = false;
             foreach (var triangle in triangles)
             {
+                if (IsReference3DProjectiveTriangleOutsideViewport(triangle)) continue;
+
                 using var triangleGeometry = CreateReference3DTriangle(
                     triangle.A.Screen,
                     triangle.B.Screen,
@@ -2811,6 +2828,38 @@ internal sealed partial class Direct2DStageRenderer
             if (outerPushed) _target.PopLayer();
             _target.Transform = old;
         }
+    }
+
+    private bool IsReference3DProjectiveTriangleOutsideViewport(
+        Reference3DProjectiveTriangle triangle)
+    {
+        var ax = triangle.A.Screen.X;
+        var ay = triangle.A.Screen.Y;
+        var bx = triangle.B.Screen.X;
+        var by = triangle.B.Screen.Y;
+        var cx = triangle.C.Screen.X;
+        var cy = triangle.C.Screen.Y;
+        if (!float.IsFinite(ax)
+            || !float.IsFinite(ay)
+            || !float.IsFinite(bx)
+            || !float.IsFinite(by)
+            || !float.IsFinite(cx)
+            || !float.IsFinite(cy))
+        {
+            return false;
+        }
+
+        const float padding = 1f;
+        var minX = MathF.Min(ax, MathF.Min(bx, cx));
+        var minY = MathF.Min(ay, MathF.Min(by, cy));
+        var maxX = MathF.Max(ax, MathF.Max(bx, cx));
+        var maxY = MathF.Max(ay, MathF.Max(by, cy));
+        var viewportRight = _targetSize.Width + padding;
+        var viewportBottom = _targetSize.Height + padding;
+        return maxX < -padding
+            || minX > viewportRight
+            || maxY < -padding
+            || minY > viewportBottom;
     }
 
     private bool DrawReference3DSourcePathGradientFill(
@@ -3000,6 +3049,7 @@ internal sealed partial class Direct2DStageRenderer
         return null;
     }
 
+
     private ID2D1PathGeometry? CreateReference3DSourceGeometry(
         IReadOnlyList<Reference3DSourceContour> contours,
         bool fillOnly)
@@ -3183,7 +3233,7 @@ internal sealed partial class Direct2DStageRenderer
         GdiSizeF rasterSize;
         if (projective)
         {
-            rasterSize = StageControl.EstimateReference3DProjectiveTextureSize(triangles);
+            rasterSize = stage.EstimateReference3DProjectiveSvgTextureSize(triangles);
         }
         else
         {
@@ -3205,6 +3255,9 @@ internal sealed partial class Direct2DStageRenderer
                 fillOnly: true);
             if (screenMask is not null)
             {
+                if (stage.Reference3DGpuOpticsEnabled && stage.Reference3DPlaybackActive
+                    && TryDrawGpuProjectiveBitmap(stage, bitmap, triangles, screenMask,
+                        raster.PixelWidth, raster.PixelHeight, opacity)) return;
                 DrawReference3DProjectiveTriangles(
                     triangles,
                     screenMask,

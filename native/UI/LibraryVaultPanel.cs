@@ -36,6 +36,21 @@ internal sealed class DrawingObjectAssetTagsRequestedEventArgs(string drawingObj
     public string DrawingObjectId { get; } = drawingObjectId;
 }
 
+internal sealed class DrawingObjectSvgExportRequestedEventArgs(string drawingObjectId) : EventArgs
+{
+    public string DrawingObjectId { get; } = drawingObjectId;
+}
+
+internal sealed class DrawingObjectSymbolExportRequestedEventArgs(string drawingObjectId) : EventArgs
+{
+    public string DrawingObjectId { get; } = drawingObjectId;
+}
+
+internal sealed class DrawingObjectSymbolImportRequestedEventArgs(string[] fileNames) : EventArgs
+{
+    public IReadOnlyList<string> FileNames { get; } = fileNames;
+}
+
 internal sealed class DrawingObjectAssetTagAssignmentRequestedEventArgs(
     string drawingObjectId,
     string tagId,
@@ -125,6 +140,9 @@ internal sealed partial class LibraryVaultPanel : UserControl
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectRenameRequested;
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDuplicateRequested;
     public event EventHandler<DrawingObjectAssetRequestedEventArgs>? DrawingObjectDeleteRequested;
+    public event EventHandler<DrawingObjectSvgExportRequestedEventArgs>? DrawingObjectSvgExportRequested;
+    public event EventHandler<DrawingObjectSymbolExportRequestedEventArgs>? DrawingObjectSymbolExportRequested;
+    public event EventHandler<DrawingObjectSymbolImportRequestedEventArgs>? DrawingObjectSymbolImportRequested;
     public event EventHandler<ProjectAssetFolderCreateRequestedEventArgs>? AssetFolderCreateRequested;
     public event EventHandler<ProjectAssetFolderRequestedEventArgs>? AssetFolderRenameRequested;
     public event EventHandler<ProjectAssetFolderRequestedEventArgs>? AssetFolderDuplicateRequested;
@@ -451,6 +469,16 @@ internal sealed partial class LibraryVaultPanel : UserControl
         rename.Click += (_, _) => RaiseSelectedProjectRenameRequest();
         var duplicate = new ToolStripMenuItem("Duplicate");
         duplicate.Click += (_, _) => RaiseSelectedProjectDuplicateRequest();
+        var exportSvg = new ToolStripMenuItem("Export SVG...")
+        {
+            AccessibleName = "Export the selected symbol as an SVG file"
+        };
+        exportSvg.Click += (_, _) => RaiseSelectedDrawingObjectSvgExportRequest();
+        var exportSymbol = new ToolStripMenuItem("Export Symbol File...")
+        {
+            AccessibleName = "Export the selected symbol as a re-importable symbol file"
+        };
+        exportSymbol.Click += (_, _) => RaiseSelectedDrawingObjectSymbolExportRequest();
         var setTags = new ToolStripMenuItem("Set Tags")
         {
             AccessibleName = "Set tags from existing project tags"
@@ -470,6 +498,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
             folderSeparator,
             rename,
             duplicate,
+            exportSvg,
+            exportSymbol,
             setTags,
             manageTags,
             deleteSeparator,
@@ -489,6 +519,10 @@ internal sealed partial class LibraryVaultPanel : UserControl
             rename.Enabled = drawingObjectSelected || folderSelected;
             duplicate.Visible = !externalSvgSelected;
             duplicate.Enabled = rename.Enabled;
+            exportSvg.Visible = !externalSvgSelected;
+            exportSvg.Enabled = drawingObjectSelected;
+            exportSymbol.Visible = !externalSvgSelected;
+            exportSymbol.Enabled = drawingObjectSelected;
             setTags.Visible = drawingObjectSelected;
             setTags.Enabled = drawingObjectSelected && (_project?.AssetTags.Count ?? 0) > 0;
             PopulateAssetTagAssignmentMenu(setTags, selected?.DrawingObject);
@@ -538,8 +572,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
             OpenSelectedVaultItem();
         };
         _projectObjects.ItemDrag += (_, e) => BeginProjectItemDrag(e.Item as TreeNode);
-        _projectObjects.DragEnter += (_, e) => e.Effect = ResolveProjectTreeDropEffect(e.Data);
-        _projectObjects.DragOver += (_, e) => e.Effect = ResolveProjectTreeDropEffect(e.Data);
+        _projectObjects.DragEnter += (_, e) => e.Effect = ResolveProjectTreeDropEffect(e.Data) & e.AllowedEffect;
+        _projectObjects.DragOver += (_, e) => e.Effect = ResolveProjectTreeDropEffect(e.Data) & e.AllowedEffect;
         _projectObjects.DragDrop += (_, e) => CompleteProjectTreeDrop(e);
         _projectObjects.MouseMove += (_, e) => UpdateProjectHoverTarget(e.Location);
         _projectObjects.MouseLeave += (_, _) => HidePreview();
@@ -577,8 +611,25 @@ internal sealed partial class LibraryVaultPanel : UserControl
         RaiseProjectObjectAssetRequest(DrawingObjectDuplicateRequested);
     }
 
-    private void RequestNewAssetFolder()
+    private void RaiseSelectedDrawingObjectSvgExportRequest()
     {
+        var drawingObject = SelectedProjectDrawingObject();
+        if (drawingObject is null) return;
+        DrawingObjectSvgExportRequested?.Invoke(
+            this,
+            new DrawingObjectSvgExportRequestedEventArgs(drawingObject.Id));
+    }
+
+    private void RaiseSelectedDrawingObjectSymbolExportRequest()
+    {
+        var drawingObject = SelectedProjectDrawingObject();
+        if (drawingObject is null) return;
+        DrawingObjectSymbolExportRequested?.Invoke(
+            this,
+            new DrawingObjectSymbolExportRequestedEventArgs(drawingObject.Id));
+    }
+
+    private void RequestNewAssetFolder()    {
         var row = SelectedProjectRow();
         var parentFolderId = row?.Folder?.Id ?? row?.DrawingObject?.AssetFolderId ?? "";
         AssetFolderCreateRequested?.Invoke(this, new ProjectAssetFolderCreateRequestedEventArgs(parentFolderId));
@@ -677,12 +728,31 @@ internal sealed partial class LibraryVaultPanel : UserControl
         {
             return DragDropEffects.Move;
         }
-        return DragDropEffects.None;
+        return TryResolveDroppedSymbolFiles(data, out _) ? DragDropEffects.Copy : DragDropEffects.None;
+    }
+
+    internal static bool TryResolveDroppedSymbolFiles(IDataObject? data, out string[] fileNames)
+    {
+        fileNames = [];
+        if (data?.GetDataPresent(DataFormats.FileDrop) != true
+            || data.GetData(DataFormats.FileDrop) is not string[] files
+            || files.Length == 0
+            || files.Any(file => string.IsNullOrWhiteSpace(file)
+                || !string.Equals(Path.GetExtension(file), DrawingObjectSymbolPackage.FileExtension, StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(file)))
+        {
+            return false;
+        }
+
+        fileNames = files.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return true;
     }
 
     private void CompleteProjectTreeDrop(DragEventArgs e)
     {
         if (_project is null) return;
+        e.Effect = ResolveProjectTreeDropEffect(e.Data) & e.AllowedEffect;
+        if (e.Effect == DragDropEffects.None) return;
         var targetFolderId = ProjectTreeDropFolderId(new Point(e.X, e.Y));
         if (e.Data?.GetData(typeof(ProjectAssetFolderDragData)) is ProjectAssetFolderDragData folder
             && string.Equals(folder.ProjectId, _project.Id, StringComparison.Ordinal))
@@ -698,6 +768,12 @@ internal sealed partial class LibraryVaultPanel : UserControl
             DrawingObjectMoveRequested?.Invoke(
                 this,
                 new ProjectAssetMoveRequestedEventArgs(drawingObject.DrawingObjectId, targetFolderId));
+            return;
+        }
+        if (TryResolveDroppedSymbolFiles(e.Data, out var fileNames))
+        {
+            HidePreview();
+            DrawingObjectSymbolImportRequested?.Invoke(this, new DrawingObjectSymbolImportRequestedEventArgs(fileNames));
         }
     }
 

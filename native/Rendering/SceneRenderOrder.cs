@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
 namespace VectorAnimationEngine;
 
 internal enum SceneRenderPass : byte
@@ -107,6 +110,20 @@ internal sealed class SceneRenderOrderBuffer
     private long _summaryMatchSummaryRevision = -1;
     private int[] _summaryMatchKeyframes = [];
     private bool _summaryMatchValue;
+    private float[] _worldBoundsLeft = [];
+    private float[] _worldBoundsTop = [];
+    private float[] _worldBoundsRight = [];
+    private float[] _worldBoundsBottom = [];
+    private VectorScene? _worldBoundsScene;
+    private long _worldBoundsGeometryRevision = -1;
+    private long _worldBoundsContentRevision = -1;
+    private int _worldBoundsFrame = int.MinValue;
+    private int _worldBoundsObjectCount = -1;
+    private long[] _layerSortKeys = [];
+    private int[] _layerSortItems = [];
+    private long[] _radixKeys = [];
+    private int[] _radixItems = [];
+    private int[]? _radixCounts;
 
     public int VisibleCount { get; private set; }
     public int ScannedCount { get; private set; }
@@ -115,9 +132,17 @@ internal sealed class SceneRenderOrderBuffer
     public bool SummaryMatchesActiveContent { get; private set; }
     public int LastCollectBatchCount { get; private set; } = 1;
 
+    internal static double DiagnosticBoundsMs;
+    internal static double DiagnosticCollectPhaseMs;
+    internal static double DiagnosticSortPhaseMs;
+
     public void Collect(VectorScene scene, RectangleF bounds, int frame)
     {
+        var phaseStarted = Stopwatch.GetTimestamp();
         EnsureLayerCapacity(scene.LayerCount);
+        EnsureWorldBounds(scene, frame);
+        DiagnosticBoundsMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+        phaseStarted = Stopwatch.GetTimestamp();
         foreach (var layer in _layers) layer?.Clear();
         if (_activeKeyframes.Length < scene.LayerCount) Array.Resize(ref _activeKeyframes, scene.LayerCount);
         scene.PopulateActiveKeyframeFrames(frame, _activeKeyframes);
@@ -128,7 +153,10 @@ internal sealed class SceneRenderOrderBuffer
         {
             CollectActiveObjects(scene, activeObjects, bounds);
             LastCollectBatchCount = 1;
+            DiagnosticCollectPhaseMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+            var singleSortStarted = Stopwatch.GetTimestamp();
             SortLayers(scene, parallel: false, workers: 1);
+            DiagnosticSortPhaseMs = Stopwatch.GetElapsedTime(singleSortStarted).TotalMilliseconds;
             return;
         }
 
@@ -155,7 +183,10 @@ internal sealed class SceneRenderOrderBuffer
         {
             LastCollectBatchCount = 1;
             CollectSequential(scene, minX, minY, columns, cellSlots, left, right, top, bottom);
+            DiagnosticCollectPhaseMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+            var sequentialSortStarted = Stopwatch.GetTimestamp();
             SortLayers(scene, parallel: false, workers: 1);
+            DiagnosticSortPhaseMs = Stopwatch.GetElapsedTime(sequentialSortStarted).TotalMilliseconds;
             return;
         }
 
@@ -181,7 +212,58 @@ internal sealed class SceneRenderOrderBuffer
             VisibleBoundsArea += _collectBatches[worker].VisibleBoundsArea;
         }
 
+        DiagnosticCollectPhaseMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+        var parallelSortStarted = Stopwatch.GetTimestamp();
         SortLayers(scene, parallel: true, workers);
+        DiagnosticSortPhaseMs = Stopwatch.GetElapsedTime(parallelSortStarted).TotalMilliseconds;
+    }
+
+    private void EnsureWorldBounds(VectorScene scene, int frame)
+    {
+        // World bounds depend only on the geometry revision, the materialized
+        // active-content revision and the frame, never on the camera. Camera
+        // panning therefore keeps the cached boxes for the whole frame.
+        if (ReferenceEquals(_worldBoundsScene, scene)
+            && _worldBoundsGeometryRevision == scene.GeometryRevision
+            && _worldBoundsContentRevision == scene.ActiveContentRevision
+            && _worldBoundsFrame == frame
+            && _worldBoundsObjectCount == scene.ObjectCount)
+        {
+            return;
+        }
+
+        var count = scene.ObjectCount;
+        if (_worldBoundsLeft.Length < count)
+        {
+            Array.Resize(ref _worldBoundsLeft, count);
+            Array.Resize(ref _worldBoundsTop, count);
+            Array.Resize(ref _worldBoundsRight, count);
+            Array.Resize(ref _worldBoundsBottom, count);
+        }
+
+        for (var index = 0; index < count; index++)
+        {
+            var bounds = scene.GetObjectWorldBounds(index);
+            _worldBoundsLeft[index] = bounds.Left;
+            _worldBoundsTop[index] = bounds.Top;
+            _worldBoundsRight[index] = bounds.Right;
+            _worldBoundsBottom[index] = bounds.Bottom;
+        }
+
+        _worldBoundsScene = scene;
+        _worldBoundsGeometryRevision = scene.GeometryRevision;
+        _worldBoundsContentRevision = scene.ActiveContentRevision;
+        _worldBoundsFrame = frame;
+        _worldBoundsObjectCount = count;
+    }
+
+    private RectangleF CachedWorldBounds(int index)
+    {
+        return RectangleF.FromLTRB(
+            _worldBoundsLeft[index],
+            _worldBoundsTop[index],
+            _worldBoundsRight[index],
+            _worldBoundsBottom[index]);
     }
 
     private static bool ShouldUseActiveObjectIndex(VectorScene scene, int activeObjectCount)
@@ -247,7 +329,7 @@ internal sealed class SceneRenderOrderBuffer
                 var layer = scene.ObjectLayer[index];
                 if (!scene.ShouldRenderLayerContent(layer)) continue;
                 if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
-                var objectBounds = scene.GetObjectWorldBounds(index);
+                var objectBounds = CachedWorldBounds(index);
                 if (objectBounds.Right < left
                     || objectBounds.Left > right
                     || objectBounds.Bottom < top
@@ -268,7 +350,7 @@ internal sealed class SceneRenderOrderBuffer
                 var layer = scene.ObjectLayer[index];
                 if (!scene.ShouldRenderLayerContent(layer)) continue;
                 if (scene.ObjectKeyframeFrame[index] != _activeKeyframes[layer]) continue;
-                var objectBounds = scene.GetObjectWorldBounds(index);
+                var objectBounds = CachedWorldBounds(index);
                 if (objectBounds.Right < left
                     || objectBounds.Left > right
                     || objectBounds.Bottom < top
@@ -398,31 +480,197 @@ internal sealed class SceneRenderOrderBuffer
 
     private void SortLayers(VectorScene scene, bool parallel, int workers)
     {
-        if (!parallel)
+        // A single renderable layer makes the parallel fan-out costlier than the
+        // merge itself, so the merge and the sort stay on the calling thread.
+        if (!parallel || scene.LayerCount <= 1)
         {
-            foreach (var layer in _layers)
+            for (var layerIndex = 0; layerIndex < scene.LayerCount; layerIndex++)
             {
-                if (layer is { Count: > 1 }) layer.Sort((a, b) => CompareObjects(scene, a, b));
+                var target = parallel
+                    ? MergeCollectBatches(layerIndex, workers)
+                    : (_layers.Length > layerIndex ? _layers[layerIndex] : null);
+                SortLayerInPlace(scene, target, useSharedSortBuffers: true);
             }
+
             return;
         }
 
+        // Layers sort on parallel workers, so they cannot share the reusable
+        // sort buffers and allocate their own instead.
         Parallel.For(0, scene.LayerCount, new ParallelOptions { MaxDegreeOfParallelism = workers }, layerIndex =>
         {
-            List<int>? target = null;
-            for (var worker = 0; worker < workers; worker++)
-            {
-                var source = _collectBatches[worker].Layers[layerIndex];
-                if (source is not { Count: > 0 }) continue;
-                target ??= _layers[layerIndex] ??= new List<int>(Math.Max(64, source.Count));
-                target.AddRange(source);
-            }
-
-            if (target is { Count: > 1 }) target.Sort((a, b) => CompareObjects(scene, a, b));
+            SortLayerInPlace(scene, MergeCollectBatches(layerIndex, workers), useSharedSortBuffers: false);
         });
     }
 
-    private static int CompareObjects(VectorScene scene, int a, int b)
+    private List<int>? MergeCollectBatches(int layerIndex, int workers)
+    {
+        List<int>? target = null;
+        for (var worker = 0; worker < workers; worker++)
+        {
+            var source = _collectBatches[worker].Layers[layerIndex];
+            if (source is not { Count: > 0 }) continue;
+            if (target is null)
+            {
+                // Reserve the merged size up front; growing while appending every
+                // worker batch otherwise re-copies the whole layer several times.
+                var mergedCount = 0;
+                for (var remaining = worker; remaining < workers; remaining++)
+                {
+                    mergedCount += _collectBatches[remaining].Layers[layerIndex]?.Count ?? 0;
+                }
+
+                target = _layers[layerIndex] ??= new List<int>(Math.Max(64, mergedCount));
+            }
+
+            target.AddRange(source);
+        }
+
+        return target;
+    }
+
+    private void SortLayerInPlace(VectorScene scene, List<int>? layer, bool useSharedSortBuffers)
+    {
+        if (layer is not { Count: > 1 }) return;
+        // Collect() walks the spatial grid, which already yields render order for
+        // documents that were never re-stacked in the frame. Verify that in one
+        // linear pass so the O(n log n) comparison sort (and its delegate calls)
+        // only runs when the order actually changed.
+        if (IsOrderedForRendering(scene, layer)) return;
+        if (TrySortLayerByOrderKey(scene, layer, useSharedSortBuffers)) return;
+        layer.Sort((a, b) => CompareObjects(scene, a, b));
+    }
+
+    private bool TrySortLayerByOrderKey(VectorScene scene, List<int> layer, bool useSharedSortBuffers)
+    {
+        var count = layer.Count;
+        var objects = CollectionsMarshal.AsSpan(layer);
+        var keys = scene.ObjectOrder;
+        long[] sortKeys;
+        int[] sortItems;
+        if (useSharedSortBuffers)
+        {
+            if (_layerSortKeys.Length < count) Array.Resize(ref _layerSortKeys, count);
+            if (_layerSortItems.Length < count) Array.Resize(ref _layerSortItems, count);
+            sortKeys = _layerSortKeys;
+            sortItems = _layerSortItems;
+        }
+        else
+        {
+            sortKeys = new long[count];
+            sortItems = new int[count];
+        }
+
+        for (var index = 0; index < count; index++)
+        {
+            var objectIndex = objects[index];
+            sortItems[index] = objectIndex;
+            sortKeys[index] = keys[objectIndex];
+        }
+
+        // ObjectOrder is allocated from a monotonic counter, so unique keys make
+        // the ordering exactly equal to the ObjectOrder/ObjectSubOrder/index
+        // comparison. Duplicate keys fall back to the comparing sort, which keeps
+        // the original sub-order and index tie-breaking.
+        var maximumKey = 0L;
+        var minimumKey = long.MaxValue;
+        for (var index = 0; index < count; index++)
+        {
+            var key = sortKeys[index];
+            if (key < minimumKey) minimumKey = key;
+            if (key > maximumKey) maximumKey = key;
+        }
+
+        if (useSharedSortBuffers && minimumKey >= 0 && maximumKey <= uint.MaxValue)
+        {
+            RadixSortLayerKeys(sortKeys, sortItems, count);
+        }
+        else
+        {
+            Array.Sort(sortKeys, sortItems, 0, count);
+        }
+
+        for (var index = 1; index < count; index++)
+        {
+            if (sortKeys[index - 1] == sortKeys[index]) return false;
+        }
+
+        for (var index = 0; index < count; index++) objects[index] = sortItems[index];
+        return true;
+    }
+
+    /// <summary>
+    /// Two-pass 16-bit least-significant-digit radix sort. Object order keys stay
+    /// inside the non-negative 32-bit range, so this orders a layer in linear time
+    /// without the delegate and comparison overhead of a comparison sort.
+    /// </summary>
+    private void RadixSortLayerKeys(long[] keys, int[] items, int count)
+    {
+        if (_radixKeys.Length < count) Array.Resize(ref _radixKeys, count);
+        if (_radixItems.Length < count) Array.Resize(ref _radixItems, count);
+        // The bucket table is only needed once a layer actually reaches the radix
+        // path, so it is allocated lazily instead of reserving 256 KB per buffer.
+        var counts = _radixCounts ??= new int[65536];
+        var sourceKeys = keys;
+        var sourceItems = items;
+        var targetKeys = _radixKeys;
+        var targetItems = _radixItems;
+        for (var pass = 0; pass < 2; pass++)
+        {
+            var shift = pass * 16;
+            Array.Clear(counts);
+            for (var index = 0; index < count; index++)
+            {
+                counts[(int)((sourceKeys[index] >>> shift) & 0xFFFF)]++;
+            }
+
+            var total = 0;
+            for (var bucket = 0; bucket < counts.Length; bucket++)
+            {
+                var bucketCount = counts[bucket];
+                counts[bucket] = total;
+                total += bucketCount;
+            }
+
+            for (var index = 0; index < count; index++)
+            {
+                var bucket = (int)((sourceKeys[index] >>> shift) & 0xFFFF);
+                var destination = counts[bucket]++;
+                targetKeys[destination] = sourceKeys[index];
+                targetItems[destination] = sourceItems[index];
+            }
+
+            (sourceKeys, targetKeys) = (targetKeys, sourceKeys);
+            (sourceItems, targetItems) = (targetItems, sourceItems);
+        }
+
+        if (!ReferenceEquals(sourceKeys, keys))
+        {
+            Array.Copy(sourceKeys, keys, count);
+            Array.Copy(sourceItems, items, count);
+        }
+    }
+
+    private static bool IsOrderedForRendering(VectorScene scene, List<int> layer)
+    {
+        var objects = CollectionsMarshal.AsSpan(layer);
+        var orders = scene.ObjectOrder;
+        var subOrders = scene.ObjectSubOrder;
+        var previous = objects[0];
+        for (var index = 1; index < objects.Length; index++)
+        {
+            var current = objects[index];
+            var comparison = orders[previous].CompareTo(orders[current]);
+            if (comparison == 0) comparison = subOrders[previous].CompareTo(subOrders[current]);
+            if (comparison == 0) comparison = previous.CompareTo(current);
+            if (comparison > 0) return false;
+            previous = current;
+        }
+
+        return true;
+    }
+
+    internal static int CompareObjects(VectorScene scene, int a, int b)
     {
         var comparison = scene.ObjectOrder[a].CompareTo(scene.ObjectOrder[b]);
         if (comparison != 0) return comparison;
@@ -526,7 +774,10 @@ internal sealed class SceneRenderOrderBuffer
 
         public void Add(int layer, int objectIndex, uint atoms, double visibleBoundsArea)
         {
-            (Layers[layer] ??= new List<int>(32)).Add(objectIndex);
+            // Collect() partitions the spatial cells across workers, so a single
+            // worker batch can hold thousands of objects per layer. Start from a
+            // reasonable capacity so appending does not repeatedly re-copy it.
+            (Layers[layer] ??= new List<int>(256)).Add(objectIndex);
             VisibleCount++;
             VisibleAtoms += atoms;
             VisibleBoundsArea += visibleBoundsArea;

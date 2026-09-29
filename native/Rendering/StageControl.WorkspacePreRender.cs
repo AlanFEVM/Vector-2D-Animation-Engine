@@ -68,6 +68,7 @@ internal sealed partial class StageControl
                 _sceneCompositionHasSpatialPoses = overrideComposition?.ObjectPoses.Any(
                     pose => pose.FlatToScene != System.Numerics.Matrix4x4.Identity) == true;
                 _sceneCompositionMaskClips = overrideMaskClips?.ToArray() ?? [];
+                ClearSceneCompositionMaskClipIndex();
             }
 
             _frame = Math.Max(0, frame);
@@ -83,6 +84,7 @@ internal sealed partial class StageControl
             _sceneCompositionResultScene = previousCompositionScene;
             _sceneCompositionHasSpatialPoses = previousHasSpatialPoses;
             _sceneCompositionMaskClips = previousMaskClips;
+            ClearSceneCompositionMaskClipIndex();
         }
     }
 }

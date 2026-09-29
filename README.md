@@ -37,12 +37,14 @@ winget install --id Microsoft.DotNet.SDK.8 --exact --silent --accept-package-agr
 
 The app starts with an empty project, one Symbol, and one visible layer. Stress content is generated only through `Run Stress Scene`.
 
+Codex and other MCP clients can connect to the running editor after enabling **Settings → Codex / MCP**. The default Streamable HTTP address is `http://127.0.0.1:43521/mcp/`; state, tools, settings, playback and project commands are discoverable through MCP. Write access is a separate setting. See the [connection instructions and tool catalogue](docs/USER_GUIDE.md#codex--mcp-接口).
+
 ## Product Overview
 
 ### Workspaces And Content Model
 
 - `Basic Drawing` edits reusable Symbols, drawing layers, Cels, vector geometry, text, materials, and nested Symbol instances.
-- `Scene Building` assembles Symbol instances without copying source geometry and includes animation timing controls for FPS, loop state, playback range, and keyframe workflows.
+- `Scene & Animation` assembles Symbol instances without copying source geometry and includes animation timing controls for FPS, loop state, playback range, and keyframe workflows.
 - Symbol and scene timelines use stable layer tracks. A Symbol layer can contain local Cel geometry and nested instances; a scene layer can contain multiple scene instances.
 
 ### Drawing And Editing
@@ -51,7 +53,7 @@ The app starts with an empty project, one Symbol, and one visible layer. Stress 
 - Pencil produces editable open Bezier strokes with `0-100%` smoothing. Fill and stroke topology supports intersections, partial marquee materialization, editable anchors, and connected boundary updates.
 - Mixing Brush computes Optical or Pigment color in real time and commits a baked vertex-color triangle region. Repeated topmost regions on the same layer and Cel can merge; hit testing, marquee selection, transforms, deletion, and Fill erasing operate on actual painted connected islands. Legacy trajectory payloads remain load/render compatible.
 - Free Transform supports corner and edge scaling, four-corner rotation, edge skew, and a movable focus. Holding `Shift` while dragging any scale handle preserves the current aspect ratio.
-- Stage `Ctrl+A` selects only current-frame visible, unlocked content. Basic Drawing prioritizes local objects and falls back to visible nested instances; Scene Building selects visible editable scene instances.
+- Stage `Ctrl+A` selects only current-frame visible, unlocked content. Basic Drawing prioritizes local objects and falls back to visible nested instances; Scene & Animation selects visible editable scene instances.
 
 ### Layers, Materials, And Timeline
 

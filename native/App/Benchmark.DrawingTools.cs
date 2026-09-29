@@ -557,6 +557,7 @@ internal static partial class Benchmark
 
     private static void RunTransformGeometryRegression()
     {
+        RunInstanceSkewPreviewRegression();
         var overlayFrame = new TransformOverlayFrame(
             new PointF(20, 30),
             new PointF(80, 60),

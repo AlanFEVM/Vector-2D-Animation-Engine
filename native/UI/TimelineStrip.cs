@@ -195,6 +195,9 @@ internal sealed partial class TimelineStrip : Control
     private string? _activeTrackId;
     private bool _draggingPlayhead;
     private bool _draggingFrameSelection;
+    private TimelineFrameCell? _frameSelectionDragEnd;
+    private bool _frameSelectionNotificationPending;
+    private bool _frameSelectionFramePending;
     private bool _draggingFrameTransform;
     private bool _draggingLayer;
     private bool _draggingHorizontalScroll;
@@ -674,13 +677,16 @@ internal sealed partial class TimelineStrip : Control
     internal void RestoreSelectionSnapshot(TimelineSelectionSnapshot snapshot)
     {
         var activeTrack = TrackIndexForId(snapshot.ActiveTrackId ?? "");
-        if (activeTrack >= 0) SetActiveTrack(activeTrack);
+        if (IsTrackEditableInCurrentPresentation(activeTrack)) SetActiveTrack(activeTrack);
 
         _selectedLayerTrackIds.Clear();
         foreach (var trackId in snapshot.SelectedLayerTrackIds)
         {
             var trackIndex = TrackIndexForId(trackId);
-            if (trackIndex >= 0 && IsTrackSelectableRow(trackIndex)) _selectedLayerTrackIds.Add(trackId);
+            if (IsTrackEditableInCurrentPresentation(trackIndex) && IsTrackSelectableRow(trackIndex))
+            {
+                _selectedLayerTrackIds.Add(trackId);
+            }
         }
         _layerSelectionAnchorTrackId = snapshot.LayerAnchorTrackId is { } layerAnchor
             && _selectedLayerTrackIds.Contains(layerAnchor)
@@ -688,10 +694,11 @@ internal sealed partial class TimelineStrip : Control
                 : null;
 
         var cells = snapshot.FrameCells
-            .Where(cell => TrackIndexForId(cell.TrackId) >= 0 && cell.Frame >= StartFrame)
+            .Where(cell => IsTrackEditableInCurrentPresentation(TrackIndexForId(cell.TrackId))
+                && cell.Frame >= StartFrame)
             .ToArray();
         var anchor = snapshot.FrameAnchor is { } frameAnchor
-            && TrackIndexForId(frameAnchor.TrackId) >= 0
+            && IsTrackEditableInCurrentPresentation(TrackIndexForId(frameAnchor.TrackId))
             && frameAnchor.Frame >= StartFrame
                 ? frameAnchor
                 : (TimelineFrameCell?)null;
@@ -722,7 +729,8 @@ internal sealed partial class TimelineStrip : Control
             _currentFrame = next;
             if (EnsureCurrentFrameVisibleCore()) Invalidate();
             else InvalidateFrameTransition(previousFrame, next);
-            CurrentFrameChanged?.Invoke(this, EventArgs.Empty);
+            if (_draggingFrameSelection) _frameSelectionFramePending = true;
+            else CurrentFrameChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -871,6 +879,7 @@ internal sealed partial class TimelineStrip : Control
         for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++)
         {
             if (!IsTrackSelectableRow(trackIndex)
+                || !IsTrackEditableInCurrentPresentation(trackIndex)
                 || !string.Equals(_timeline.Tracks[trackIndex].TargetId, targetId, StringComparison.Ordinal))
             {
                 continue;
@@ -900,7 +909,7 @@ internal sealed partial class TimelineStrip : Control
     public void SelectSingleFrame(string trackId, int frame)
     {
         var trackIndex = TrackIndexForId(trackId);
-        if (trackIndex < 0) return;
+        if (!IsTrackEditableInCurrentPresentation(trackIndex)) return;
         SelectLayerTrack(trackIndex, Keys.None);
         var next = Math.Max(frame, StartFrame);
         var cell = new TimelineFrameCell(trackId, next);
@@ -913,7 +922,8 @@ internal sealed partial class TimelineStrip : Control
         TimelineFrameCell? anchor = null)
     {
         var validCells = cells
-            .Where(cell => TrackIndexForId(cell.TrackId) >= 0 && cell.Frame >= StartFrame)
+            .Where(cell => IsTrackEditableInCurrentPresentation(TrackIndexForId(cell.TrackId))
+                && cell.Frame >= StartFrame)
             .Distinct()
             .ToArray();
         if (validCells.Length == 0) return;
@@ -953,8 +963,11 @@ internal sealed partial class TimelineStrip : Control
     public void RefreshOnionSkinControls()
     {
         var drawingScene = DrawingScene();
-        var available = drawingScene is not null;
-        var enabled = drawingScene?.OnionSkinEnabled == true;
+        var sceneDefinition = drawingScene is null ? _sceneDefinition : null;
+        var available = !_shotFilterActive && (drawingScene is not null || sceneDefinition is not null);
+        var enabled = drawingScene?.OnionSkinEnabled ?? sceneDefinition?.OnionSkinEnabled == true;
+        var previousFrames = drawingScene?.OnionSkinPreviousFrames ?? sceneDefinition?.OnionSkinPreviousFrames ?? 0;
+        var nextFrames = drawingScene?.OnionSkinNextFrames ?? sceneDefinition?.OnionSkinNextFrames ?? 0;
 
         _updatingOnionSkinControls = true;
         try
@@ -962,16 +975,9 @@ internal sealed partial class TimelineStrip : Control
             if (_onionSkinToggle.Enabled != available) _onionSkinToggle.Enabled = available;
             if (available)
             {
-                var activeScene = drawingScene!;
                 if (_onionSkinToggle.Checked != enabled) _onionSkinToggle.Checked = enabled;
-                if (_onionPreviousFrames.Value != activeScene.OnionSkinPreviousFrames)
-                {
-                    _onionPreviousFrames.Value = activeScene.OnionSkinPreviousFrames;
-                }
-                if (_onionNextFrames.Value != activeScene.OnionSkinNextFrames)
-                {
-                    _onionNextFrames.Value = activeScene.OnionSkinNextFrames;
-                }
+                if (_onionPreviousFrames.Value != previousFrames) _onionPreviousFrames.Value = previousFrames;
+                if (_onionNextFrames.Value != nextFrames) _onionNextFrames.Value = nextFrames;
             }
         }
         finally
@@ -1151,6 +1157,16 @@ internal sealed partial class TimelineStrip : Control
         {
             if (e.X < layout.TrackLeft)
             {
+                if (_shotFilterActive)
+                {
+                    if (IsTrackEditableInCurrentPresentation(trackIndex))
+                    {
+                        SelectLayerTrack(trackIndex, ModifierKeys);
+                    }
+
+                    return;
+                }
+
                 if (e.X < VisibilityColumnWidth)
                 {
                     if (IsTrackLayer(trackIndex))
@@ -1194,6 +1210,7 @@ internal sealed partial class TimelineStrip : Control
             SelectLayerTrack(trackIndex, Keys.None);
             BeginFrameSelection(trackIndex, FrameFromX(e.X, layout), ModifierKeys);
             _draggingFrameSelection = true;
+            _frameSelectionDragEnd = new TimelineFrameCell(_timeline.Tracks[trackIndex].Id, FrameFromX(e.X, layout));
             _frameSelectionPointer = e.Location;
             Capture = true;
             return;
@@ -1215,6 +1232,7 @@ internal sealed partial class TimelineStrip : Control
     {
         base.OnMouseDoubleClick(e);
         if (e.Button != MouseButtons.Left) return;
+        if (_shotFilterActive) return;
         var layout = CreateLayout();
         if (e.X >= LockColumnRight && e.X < LayerControlsWidth && TryGetTrackIndex(e.Location, layout, out var trackIndex))
         {
@@ -1372,6 +1390,13 @@ internal sealed partial class TimelineStrip : Control
         }
         if (e.KeyCode == Keys.Apps || e.Shift && e.KeyCode == Keys.F10)
         {
+            if (_shotFilterActive)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+
             var layout = CreateLayout();
             var activeTrack = GetActiveTrackIndex();
             var visiblePosition = VisibleTrackPosition(activeTrack);
@@ -1412,6 +1437,13 @@ internal sealed partial class TimelineStrip : Control
         }
         if (e.Shift && e.KeyCode == Keys.F2 && GetActiveTrackIndex() >= 0 && SelectedLayerCount <= 1)
         {
+            if (_shotFilterActive)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+
             LayerRenameRequested?.Invoke(this, EventArgs.Empty);
             e.Handled = true;
             e.SuppressKeyPress = true;
@@ -1543,6 +1575,15 @@ internal sealed partial class TimelineStrip : Control
     private void UpdateLayerControlToolTip(Point location, TimelineLayout layout)
     {
         if (_hoveredTabGroupId is not null) return;
+        if (_shotFilterActive)
+        {
+            SetLayerControlToolTip(
+                location.X < layout.TrackLeft && location.Y >= layout.RowTop
+                    ? UiLocalization.T("Camera track")
+                    : "");
+            return;
+        }
+
         var headerCommand = HeaderCommandAt(location, layout);
         if (headerCommand != HeaderCommand.None)
         {
@@ -1646,6 +1687,7 @@ internal sealed partial class TimelineStrip : Control
     {
         base.OnMouseUp(e);
         if (e.Button != MouseButtons.Left) return;
+        if (_draggingFrameSelection) UpdateFrameSelectionFromPointer(e.Location);
         CommitLayerDrag();
         EndMouseDrag(canceled: false);
     }
@@ -1675,6 +1717,21 @@ internal sealed partial class TimelineStrip : Control
     private bool TryHandleHeaderClick(Point point, TimelineLayout layout)
     {
         if (TryHandleTabGroupClick(point)) return true;
+        if (_shotFilterActive)
+        {
+            if (point.Y < HeaderHeight
+                && (AddLayerButtonBounds(layout).Contains(point)
+                    || SoloButtonBounds(layout).Contains(point)
+                    || AllButtonBounds(layout).Contains(point)))
+            {
+                return true;
+            }
+
+            return point.Y >= HeaderHeight
+                && point.Y < layout.RowTop
+                && point.X < layout.TrackLeft;
+        }
+
         if (AddLayerButtonBounds(layout).Contains(point))
         {
             AddLayerRequested?.Invoke(this, EventArgs.Empty);
@@ -2120,6 +2177,11 @@ internal sealed partial class TimelineStrip : Control
 
         if (_draggingFrameTransform && !canceled) CommitFrameTransform();
 
+        var selectionNotificationPending = _frameSelectionNotificationPending;
+        var selectionFramePending = _frameSelectionFramePending;
+        _frameSelectionNotificationPending = false;
+        _frameSelectionFramePending = false;
+        _frameSelectionDragEnd = null;
         _draggingPlayhead = false;
         _draggingFrameSelection = false;
         _frameSelectionAutoScrollTimer.Stop();
@@ -2153,6 +2215,14 @@ internal sealed partial class TimelineStrip : Control
             InvalidateFrameSelectionTransformBounds(CreateLayout(), frameTransformOldVisualBounds);
         }
         if (Capture) Capture = false;
+        // Set the document frame before resolving selected content at that frame.
+        // Capture loss retains the last preview, just as an ordinary selection drag does.
+        if (selectionFramePending) CurrentFrameChanged?.Invoke(this, EventArgs.Empty);
+        if (selectionNotificationPending)
+        {
+            UpdateSelectedTweenFromFrameSelection();
+            FrameSelectionChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private bool TryBeginFrameTransform(Point location, TimelineLayout layout)
@@ -2684,6 +2754,7 @@ internal sealed partial class TimelineStrip : Control
         {
             if (location.X < layout.TrackLeft)
             {
+                if (_shotFilterActive) return;
                 PrepareLayerTrackAction(trackIndex);
                 _layerContextMenu.Show(this, location);
             }
@@ -2709,9 +2780,21 @@ internal sealed partial class TimelineStrip : Control
 
     private void HandleLayerContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        if (_shotFilterActive)
+        {
+            e.Cancel = true;
+            return;
+        }
+
         var hasTrack = GetActiveTrackIndex() >= 0;
         var activeTrack = GetActiveTrackIndex();
         var isLayerTrack = hasTrack && IsTrackLayer(activeTrack);
+        if (_shotFilterActive && hasTrack && !IsSceneShotTrack(activeTrack))
+        {
+            hasTrack = false;
+            activeTrack = -1;
+            isLayerTrack = false;
+        }
         var hasLayerContext = hasTrack && isLayerTrack;
         var selectedLayerCount = SelectedLayerCount;
         var hasSingleLayerSelection = selectedLayerCount == 1;
@@ -2762,7 +2845,7 @@ internal sealed partial class TimelineStrip : Control
 
     private void HandleFrameContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        var hasTrack = GetActiveTrackIndex() >= 0;
+        var hasTrack = IsTrackEditableInCurrentPresentation(GetActiveTrackIndex());
         var commandCells = CommandCells();
         var hasFrames = commandCells.Count > 0;
         var canCreateClassicTween = hasTrack
@@ -2947,7 +3030,15 @@ internal sealed partial class TimelineStrip : Control
     private void UpdateFrameSelection(int trackIndex, int frame)
     {
         if (_selectionAnchor is not { } anchor || trackIndex < 0 || trackIndex >= TrackCount) return;
-        SelectFrameRange(anchor, new TimelineFrameCell(_timeline.Tracks[trackIndex].Id, frame));
+        var end = new TimelineFrameCell(_timeline.Tracks[trackIndex].Id, frame);
+        if (_draggingFrameSelection && _frameSelectionDragEnd == end) return;
+        SelectFrameRange(anchor, end);
+        if (_draggingFrameSelection)
+        {
+            _frameSelectionDragEnd = end;
+            // Paint both the live range and its playhead before deferred subscribers run.
+            if (IsHandleCreated) Update();
+        }
     }
 
     private void HandleFrameSelectionPointerMove(Point location, TimelineLayout layout)
@@ -3079,15 +3170,21 @@ internal sealed partial class TimelineStrip : Control
 
     private void SetFrameSelection(IEnumerable<TimelineFrameCell> cells, TimelineFrameCell? anchor)
     {
-        _selectedFrameCells.Clear();
+        var nextSelection = new HashSet<TimelineFrameCell>();
         foreach (var cell in cells)
         {
             if (TrackIndexForId(cell.TrackId) < 0 || cell.Frame < StartFrame) continue;
-            _selectedFrameCells.Add(cell);
+            nextSelection.Add(cell);
         }
 
+        var selectionChanged = !_selectedFrameCells.SetEquals(nextSelection);
+        var anchorChanged = _selectionAnchor != anchor;
+        if (!selectionChanged && !anchorChanged) return;
+
+        _selectedFrameCells.Clear();
+        _selectedFrameCells.UnionWith(nextSelection);
         _selectionAnchor = anchor;
-        NotifyFrameSelectionChanged();
+        NotifyFrameSelectionChanged(selectionChanged);
     }
 
     private IReadOnlyList<TimelineFrameCell> CommandCells()
@@ -3095,7 +3192,7 @@ internal sealed partial class TimelineStrip : Control
         var selected = SelectedCells();
         if (selected.Count > 0) return selected;
         var activeTrack = GetActiveTrackIndex();
-        return activeTrack < 0
+        return !IsTrackEditableInCurrentPresentation(activeTrack)
             ? []
             : [new TimelineFrameCell(_timeline.Tracks[activeTrack].Id, CurrentFrame)];
     }
@@ -3103,7 +3200,13 @@ internal sealed partial class TimelineStrip : Control
     private IReadOnlyList<TimelineFrameCell> SelectedCells()
     {
         return _selectedFrameCells
-            .Where(cell => VisibleTrackPosition(TrackIndexForId(cell.TrackId)) >= 0 && cell.Frame >= StartFrame)
+            .Where(cell =>
+            {
+                var trackIndex = TrackIndexForId(cell.TrackId);
+                return IsTrackEditableInCurrentPresentation(trackIndex)
+                    && VisibleTrackPosition(trackIndex) >= 0
+                    && cell.Frame >= StartFrame;
+            })
             .OrderBy(cell => TrackIndexForId(cell.TrackId))
             .ThenBy(cell => cell.Frame)
             .ToArray();
@@ -3163,17 +3266,28 @@ internal sealed partial class TimelineStrip : Control
         return _trackIndicesByIdCache.GetValueOrDefault(trackId, -1);
     }
 
-    private void NotifyFrameSelectionChanged()
+    private void NotifyFrameSelectionChanged(bool visualStateChanged = true)
     {
-        UpdateSelectedTweenFromFrameSelection();
-        Invalidate();
+        if (!_draggingFrameSelection) UpdateSelectedTweenFromFrameSelection();
+        if (visualStateChanged)
+        {
+            Invalidate();
+        }
+        if (_draggingFrameSelection)
+        {
+            _frameSelectionNotificationPending = true;
+            return;
+        }
         FrameSelectionChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private IReadOnlyList<int> SelectedLayerTrackIndices()
     {
         return VisibleTrackIndices()
-            .Where(trackIndex => IsTrackLayer(trackIndex) && IsTrackSelected(trackIndex))
+            .Where(trackIndex => (_shotFilterActive
+                    ? IsTrackSelectableRow(trackIndex)
+                    : IsTrackLayer(trackIndex))
+                && IsTrackSelected(trackIndex))
             .ToArray();
     }
 
@@ -3267,7 +3381,12 @@ internal sealed partial class TimelineStrip : Control
         _selectedLayerTrackIds.Clear();
         foreach (var trackIndex in VisibleTrackIndices())
         {
-            if (IsTrackLayer(trackIndex)) _selectedLayerTrackIds.Add(_timeline.Tracks[trackIndex].Id);
+            if (_shotFilterActive
+                ? IsTrackSelectableRow(trackIndex)
+                : IsTrackLayer(trackIndex))
+            {
+                _selectedLayerTrackIds.Add(_timeline.Tracks[trackIndex].Id);
+            }
         }
 
         var active = GetActiveTrackIndex();
@@ -3312,7 +3431,7 @@ internal sealed partial class TimelineStrip : Control
             var layerIndex = GetTrackLayerIndex(trackIndex);
             if (layerIndex >= 0) drawingScene.ActiveLayer = layerIndex;
         }
-        else if (_sceneDefinition is not null)
+        else if (_sceneDefinition is not null && !IsSceneShotTrack(trackIndex))
         {
             _sceneDefinition.SetActiveLayer(track.TargetId);
         }
@@ -3354,7 +3473,8 @@ internal sealed partial class TimelineStrip : Control
                     instance.Id,
                     _timeline.Tracks[rememberedIndex].TargetId,
                     StringComparison.Ordinal)) == true
-                || IsSceneLightTrack(rememberedIndex)))
+                || IsSceneLightTrack(rememberedIndex)
+                || IsSceneShotTrack(rememberedIndex)))
         {
             return IsTrackActiveInCurrentTabGroup(rememberedIndex) ? rememberedIndex : -1;
         }
@@ -3414,6 +3534,8 @@ internal sealed partial class TimelineStrip : Control
             if (layer is not null) return layer.Name;
             var light = _sceneDefinition.FindLight(targetId);
             if (light is not null) return light.Name;
+            var shot = _sceneDefinition.FindShot(targetId);
+            if (shot is not null) return shot.Name;
         }
 
         return $"Track {trackIndex + 1}";
@@ -3475,6 +3597,7 @@ internal sealed partial class TimelineStrip : Control
 
     private int GetTrackLabelLeft(int trackIndex)
     {
+        if (_shotFilterActive) return ScaleTimelineMetric(30);
         return LayerControlsWidth + 23 + GetTrackDisplayDepth(trackIndex) * 12;
     }
 
@@ -3505,7 +3628,11 @@ internal sealed partial class TimelineStrip : Control
         {
             for (var trackIndex = 0; trackIndex < TrackCount; trackIndex++)
             {
-                if (IsTrackInActiveTabGroup(trackIndex)) _visibleTrackIndicesCache.Add(trackIndex);
+                if ((_shotFilterActive || IsTrackInActiveTabGroup(trackIndex))
+                    && IsTrackVisibleInActiveShot(trackIndex))
+                {
+                    _visibleTrackIndicesCache.Add(trackIndex);
+                }
             }
 
             UpdateVisibleTrackPositions();
@@ -3567,7 +3694,12 @@ internal sealed partial class TimelineStrip : Control
             if (displayedTracks[trackIndex]) continue;
             var layer = _trackLayerIndicesCache[trackIndex];
             if (layer >= 0 && IsLayerHiddenByCollapsedGroup(drawingScene, layer)) continue;
-            if (layer < 0 && IsTrackInActiveTabGroup(trackIndex)) _visibleTrackIndicesCache.Add(trackIndex);
+            if (layer < 0
+                && IsTrackInActiveTabGroup(trackIndex)
+                && IsTrackVisibleInActiveShot(trackIndex))
+            {
+                _visibleTrackIndicesCache.Add(trackIndex);
+            }
         }
         UpdateVisibleTrackPositions();
     }
@@ -3804,6 +3936,16 @@ internal sealed partial class TimelineStrip : Control
 
     private void DrawTrackKindGlyph(Graphics graphics, int trackIndex, int x, int centerY, Color background)
     {
+        if (IsSceneShotTrack(trackIndex))
+        {
+            SvgIcons.Draw(
+                graphics,
+                SvgIconKind.Camera,
+                new Rectangle(x - 1, centerY - 7, 14, 14),
+                Theme.ReadableUiColor(background, Theme.Mix(Theme.Text, GetTrackColor(trackIndex), 0.6f)));
+            return;
+        }
+
         if (_sceneDefinition is not null
             && trackIndex >= 0
             && trackIndex < TrackCount
@@ -3879,6 +4021,7 @@ internal sealed partial class TimelineStrip : Control
 
         if (_sceneDefinition is not null)
         {
+            if (_sceneDefinition.FindShot(targetId) is not null) return true;
             if (_sceneDefinition.FindLight(targetId) is { } light)
             {
                 return _sceneDefinition.TryEvaluateLightSettings(light.Id, _currentFrame, out var settings)
@@ -3907,6 +4050,7 @@ internal sealed partial class TimelineStrip : Control
                 _sceneDefinition.TryEvaluateLightSettings(light.Id, _currentFrame, out var settings)
                     ? settings.ColorArgb
                     : light.Settings.ColorArgb);
+        if (_sceneDefinition?.FindShot(targetId) is { } shot) return Color.FromArgb(shot.ColorArgb);
         return Theme.Muted;
     }
 
@@ -3951,13 +4095,22 @@ internal sealed partial class TimelineStrip : Control
         return _sceneDefinition.FindLight(_timeline.Tracks[trackIndex].TargetId) is not null;
     }
 
+    /// <summary>Shot columns carry the shot's framed viewport and behave like light columns.</summary>
+    private bool IsSceneShotTrack(int trackIndex)
+    {
+        if (trackIndex < 0 || trackIndex >= TrackCount || _sceneDefinition is null) return false;
+        return _sceneDefinition.FindShot(_timeline.Tracks[trackIndex].TargetId) is not null;
+    }
+
     private bool IsTrackSelectableRow(int trackIndex) =>
-        IsTrackLayer(trackIndex) || IsSceneLightTrack(trackIndex);
+        IsTrackLayer(trackIndex) || IsSceneLightTrack(trackIndex) || IsSceneShotTrack(trackIndex);
 
     private bool IsTrackExplicitlyVisible(int trackIndex)
     {
         if (trackIndex < 0 || trackIndex >= TrackCount) return false;
         var targetId = _timeline.Tracks[trackIndex].TargetId;
+        // Shot columns have no visibility toggle; they are always presented while shown.
+        if (IsSceneShotTrack(trackIndex)) return true;
 
         var drawingScene = DrawingScene();
         var layerIndex = drawingScene is null ? -1 : GetTrackLayerIndex(trackIndex);
@@ -3995,6 +4148,7 @@ internal sealed partial class TimelineStrip : Control
     private bool SetTrackVisibility(int trackIndex, bool visible)
     {
         if (trackIndex < 0 || trackIndex >= TrackCount) return false;
+        if (IsSceneShotTrack(trackIndex) || IsSceneLightTrack(trackIndex)) return false;
         var targetId = _timeline.Tracks[trackIndex].TargetId;
         var drawingScene = DrawingScene();
         var layerIndex = drawingScene is null ? -1 : GetTrackLayerIndex(trackIndex);
@@ -4014,7 +4168,14 @@ internal sealed partial class TimelineStrip : Control
     private void SoloActiveTrack()
     {
         var trackIndex = GetActiveTrackIndex();
-        if (trackIndex < 0 || trackIndex >= TrackCount || IsSceneLightTrack(trackIndex)) return;
+        if (trackIndex < 0
+            || trackIndex >= TrackCount
+            || IsSceneLightTrack(trackIndex)
+            || IsSceneShotTrack(trackIndex))
+        {
+            return;
+        }
+
         var targetId = _timeline.Tracks[trackIndex].TargetId;
 
         var drawingScene = DrawingScene();
@@ -4392,6 +4553,7 @@ internal sealed partial class TimelineStrip : Control
 
     private HeaderCommand HeaderCommandAt(Point point, TimelineLayout layout)
     {
+        if (_shotFilterActive) return HeaderCommand.None;
         if (AddLayerButtonBounds(layout).Contains(point)) return HeaderCommand.AddLayer;
         if (SoloButtonBounds(layout).Contains(point)) return HeaderCommand.Solo;
         if (AllButtonBounds(layout).Contains(point)) return HeaderCommand.All;
@@ -4407,7 +4569,10 @@ internal sealed partial class TimelineStrip : Control
 
     private bool IsOnionSkinControlsAvailable()
     {
-        return DrawingScene() is not null;
+        if (_shotFilterActive) return false;
+        // Drawing timelines expose onion skin through their own scene; the scene
+        // composition timeline carries the equivalent state on the scene definition.
+        return DrawingScene() is not null || _sceneDefinition is not null;
     }
 
     private static Label CreateHeaderLabel(string text, string accessibleName)
@@ -4649,7 +4814,12 @@ internal sealed partial class TimelineStrip : Control
     }
 
     private bool IsAutoKeyframeAvailable() =>
-        DrawingScene() is not null || IsSceneLightTrack(GetActiveTrackIndex());
+        DrawingScene() is not null
+        || IsSceneLightTrack(GetActiveTrackIndex())
+        || IsSceneShotTrack(GetActiveTrackIndex())
+        // Scene composition tracks materialize keyframes before instance, light,
+        // mask and tween edits, so the toggle is meaningful there as well.
+        || _sceneDefinition is not null;
 
     private static void SetControlVisible(Control control, bool visible)
     {

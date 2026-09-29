@@ -189,24 +189,27 @@ internal sealed partial class StageControl
         }
 
         const int antialiasPadding = 2;
+        var filterPadding = LayerFilterBounds.GetPadding(Scene, ActiveViewZoom);
+        var viewport = Rectangle.FromLTRB(-filterPadding.Left, -filterPadding.Top,
+            ClientSize.Width + filterPadding.Right, ClientSize.Height + filterPadding.Bottom);
         var requested = Rectangle.FromLTRB(
             (int)Math.Clamp(
                 Math.Floor(surfaceBounds.Left) - antialiasPadding,
-                0d,
-                ClientSize.Width),
+                viewport.Left,
+                viewport.Right),
             (int)Math.Clamp(
                 Math.Floor(surfaceBounds.Top) - antialiasPadding,
-                0d,
-                ClientSize.Height),
+                viewport.Top,
+                viewport.Bottom),
             (int)Math.Clamp(
                 Math.Ceiling(surfaceBounds.Right) + antialiasPadding + 1d,
-                0d,
-                ClientSize.Width),
+                viewport.Left,
+                viewport.Right),
             (int)Math.Clamp(
                 Math.Ceiling(surfaceBounds.Bottom) + antialiasPadding + 1d,
-                0d,
-                ClientSize.Height));
-        bounds = Rectangle.Intersect(requested, new Rectangle(Point.Empty, ClientSize));
+                viewport.Top,
+                viewport.Bottom));
+        bounds = Rectangle.Intersect(requested, viewport);
         return bounds.Width > 0 && bounds.Height > 0;
 
         static bool TryGetBounds(
@@ -583,6 +586,7 @@ internal sealed partial class StageControl
         if (_reference3DGdiRasterLayout is not { } layout)
         {
             graphics.ResetTransform();
+            graphics.TranslateTransform(_reference3DGdiViewportOffset.X, _reference3DGdiViewportOffset.Y);
             return;
         }
         using var transform = new Matrix(
@@ -604,8 +608,8 @@ internal sealed partial class StageControl
                 transform.M12,
                 transform.M21,
                 transform.M22,
-                transform.M31,
-                transform.M32);
+                transform.M31 + _reference3DGdiViewportOffset.X,
+                transform.M32 + _reference3DGdiViewportOffset.Y);
         }
         return new Matrix(
             transform.M11 * layout.ScaleX,

@@ -148,11 +148,17 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (HandleSpatialTransformKeyboardMouseDown(e)) return;
+        if (!IsShotDirectorContext() && HandleSpatialTransformKeyboardMouseDown(e)) return;
 
         if (_spatialTransformPointerSession is not null)
         {
             if (e.Button == MouseButtons.Right) CancelSpatialTransformPointer();
+            return;
+        }
+
+        if (_shotFramingPointerSession is not null)
+        {
+            if (e.Button == MouseButtons.Right) CancelShotFramingPointer();
             return;
         }
 
@@ -173,6 +179,14 @@ internal sealed partial class MainForm : Form
         if (MouseButtonDown(e, MouseButtons.Middle))
         {
             BeginGlobalViewDrag(e);
+            return;
+        }
+
+        if (IsShotDirectorContext())
+        {
+            if (e.Button == MouseButtons.Left && TryBeginShotFramingGizmoPointer(e.Location)) return;
+            // The director stage is a camera viewport. Navigation above remains available, while
+            // every other click is consumed so scene instances cannot be selected or edited.
             return;
         }
 

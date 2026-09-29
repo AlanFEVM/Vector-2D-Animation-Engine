@@ -570,6 +570,11 @@ internal sealed partial class Direct2DStageRenderer
         out RenderStats stats)
     {
         stats = default;
+        if (stage.Reference3DGpuOpticsEnabled)
+        {
+            LastReference3DPlaybackGdiStatus = "gpu_optics";
+            return false;
+        }
         if (Environment.GetEnvironmentVariable("VECTOR_DISABLE_PLAYBACK_GDI_PRESENT") == "1")
         {
             LastReference3DPlaybackGdiStatus = "disabled_by_environment";
@@ -605,9 +610,9 @@ internal sealed partial class Direct2DStageRenderer
             LastReference3DPlaybackGdiStatus = "composition_mask";
             return false;
         }
-        if (stage.Scene.HasNonNormalLayerBlendModes)
+        if (stage.Scene.RequiresIsolatedLayerCompositing)
         {
-            LastReference3DPlaybackGdiStatus = "non_normal_blend";
+            LastReference3DPlaybackGdiStatus = stage.Scene.HasSymbolFilters ? "symbol_filters" : "non_normal_blend";
             return false;
         }
         if (stage.SceneHasDistortionsForRendering(stage.Scene))
@@ -996,7 +1001,15 @@ internal sealed partial class Direct2DStageRenderer
                 objectIndices.Add(renderItems[itemIndex].ObjectIndex);
             }
 
-            if (preparedCount < Reference3DCpuRasterMinimumCommands)
+            // Playback uses immutable frame snapshots and presents the result
+            // through the dedicated GDI surface. Even a small scene benefits
+            // from this path because it avoids rebuilding the full Direct2D
+            // reference plan on the UI thread. Keep the conservative command
+            // threshold for stopped/editor rendering.
+            var minimumCommands = stage.Reference3DPlaybackActive
+                ? 1
+                : Reference3DCpuRasterMinimumCommands;
+            if (preparedCount < minimumCommands)
             {
                 LastReference3DCpuRasterFallbackReason = "too_few_commands";
                 return false;
@@ -1175,20 +1188,28 @@ internal sealed partial class Direct2DStageRenderer
         StageControl stage,
         IReadOnlyList<Reference3DRenderItem> renderItems)
     {
+        if (stage.Reference3DGpuOpticsEnabled && renderItems.Any(item => item.GpuOpticalSurface is not null))
+        {
+            LastReference3DCpuRasterFallbackReason = "gpu_optics";
+            return false;
+        }
         if (Environment.GetEnvironmentVariable("VECTOR_DISABLE_CPU_RASTER") == "1")
         {
             LastReference3DCpuRasterFallbackReason = "disabled_by_environment";
             return false;
         }
-        if (renderItems.Count < Reference3DCpuRasterMinimumCommands
-            || stage.Scene.HasNonNormalLayerBlendModes
+        var minimumCommands = stage.Reference3DPlaybackActive
+            ? 1
+            : Reference3DCpuRasterMinimumCommands;
+        if (renderItems.Count < minimumCommands
+            || stage.Scene.RequiresIsolatedLayerCompositing
             || stage.SceneHasDistortionsForRendering(stage.Scene)
             || stage.HasSceneCompositionMaskClips(stage.Scene))
         {
-            LastReference3DCpuRasterFallbackReason = renderItems.Count < Reference3DCpuRasterMinimumCommands
+            LastReference3DCpuRasterFallbackReason = renderItems.Count < minimumCommands
                 ? "too_few_items"
-                : stage.Scene.HasNonNormalLayerBlendModes
-                    ? "non_normal_blend"
+                : stage.Scene.RequiresIsolatedLayerCompositing
+                    ? stage.Scene.HasSymbolFilters ? "symbol_filters" : "non_normal_blend"
                     : stage.SceneHasDistortionsForRendering(stage.Scene)
                         ? "distortion"
                         : "composition_mask";
@@ -1244,7 +1265,6 @@ internal sealed partial class Direct2DStageRenderer
             if (shape is ShapeKind.Line
                 or ShapeKind.Freeform
                 or ShapeKind.BrushStroke
-                or ShapeKind.ImportedSvg
                 or ShapeKind.Text
                 or ShapeKind.MixingStroke)
             {

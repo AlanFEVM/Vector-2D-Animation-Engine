@@ -242,6 +242,8 @@ internal sealed partial class MainForm
                 PositionVaultToolStrip();
             }
 
+            RefreshShotDirectorWidth();
+
             LayoutTopBar();
         }
         finally

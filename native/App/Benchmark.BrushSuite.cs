@@ -8,6 +8,8 @@ internal static partial class Benchmark
     {
         RunLabColorRegression();
         RunTraditionalColorPickerRegression();
+        RunSharedColorPickerRegression();
+        RunSharedUiDrawingRegression();
 
         var red = Color.FromArgb(255, 255, 0, 0);
         var complementary = HarmonyColorWheel.CreateHarmonyColors(red, ColorHarmonyMode.Complementary);
@@ -125,6 +127,124 @@ internal static partial class Benchmark
         }
 
         Console.WriteLine("lab_color_regression=ok");
+    }
+
+    private static void RunSharedUiDrawingRegression()
+    {
+        foreach (var sample in new[]
+        {
+            (Type: typeof(ColorComponentSlider), Method: "DrawCheckerboard", Square: 4, Light: Color.FromArgb(94, 100, 104), Dark: Color.FromArgb(60, 65, 69)),
+            (Type: typeof(TraditionalColorPlane), Method: "DrawCheckerboard", Square: 5, Light: Color.FromArgb(94, 100, 104), Dark: Color.FromArgb(60, 65, 69)),
+            (Type: typeof(GradientStopStrip), Method: "DrawChecker", Square: 5, Light: Color.FromArgb(220, 220, 220), Dark: Color.FromArgb(150, 150, 150)),
+            (Type: typeof(ColorTargetButton), Method: "DrawChecker", Square: 5, Light: Color.FromArgb(220, 220, 220), Dark: Color.FromArgb(150, 150, 150)),
+            (Type: typeof(ColorPaletteGrid), Method: "DrawChecker", Square: 6, Light: Color.FromArgb(205, 205, 205), Dark: Color.FromArgb(135, 135, 135))
+        })
+        foreach (var bounds in new[] { new Rectangle(3, 2, 13, 11), new Rectangle(3, 2, 2, 1), Rectangle.Empty })
+        {
+            using var bitmap = new Bitmap(20, 16);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Magenta);
+                RequireMethod(sample.Type, sample.Method,
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(null, [graphics, bounds]);
+            }
+            for (var y = 0; y < bitmap.Height; y++)
+            for (var x = 0; x < bitmap.Width; x++)
+            {
+                var expected = !bounds.Contains(x, y) ? Color.Magenta
+                    : ((x - bounds.Left) / sample.Square + (y - bounds.Top) / sample.Square) % 2 == 0
+                        ? sample.Light : sample.Dark;
+                AssertTimeline(bitmap.GetPixel(x, y).ToArgb() == expected.ToArgb(),
+                    "Shared checkerboard changed a control's colors, origin, cell size or clipping.");
+            }
+        }
+        var start = Color.FromArgb(0, 1, 2, 3);
+        var end = Color.FromArgb(255, 254, 253, 252);
+        AssertTimeline(UiDrawingHelpers.Lerp(start, end, -1).ToArgb() == start.ToArgb()
+            && UiDrawingHelpers.Lerp(start, end, 2).ToArgb() == end.ToArgb()
+            && UiDrawingHelpers.Lerp(start, end, 0.5f).ToArgb() == Color.FromArgb(128, 128, 128, 128).ToArgb(),
+            "Shared ARGB interpolation changed clamping or midpoint rounding.");
+        long timestamp = 0;
+        AssertTimeline(UiMotion.GetTimeScale(ref timestamp, 16) == 1f && timestamp != 0,
+            "Shared animation timing changed the first tick.");
+        timestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+        AssertTimeline(UiMotion.GetTimeScale(ref timestamp, 16) == 4f,
+            "Shared animation timing changed the long-frame clamp.");
+        Console.WriteLine("shared_ui_drawing_regression=ok");
+    }
+
+    private static void RunSharedColorPickerRegression()
+    {
+        for (var red = 0; red <= 255; red += 17)
+        for (var green = 0; green <= 255; green += 17)
+        for (var blue = 0; blue <= 255; blue += 17)
+        {
+            var source = Color.FromArgb(red, green, blue);
+            ColorPickerSupport.ColorToHsv(source, out var hue, out var saturation, out var value);
+            AssertTimeline(ColorPickerSupport.HsvToColor(hue, saturation, value).ToArgb() == source.ToArgb(),
+                "Shared picker HSV conversion changed an RGB round trip.");
+        }
+        foreach (var hue in new[] { -720f, -360f, 0f, 360f, 720f })
+        {
+            AssertTimeline(ColorPickerSupport.HsvToColor(hue, 2f, 2f).ToArgb() == Color.Red.ToArgb(),
+                "Shared picker hue wrapping or saturation/value clamping changed.");
+        }
+        foreach (var text in new[] { "#12abEF", "12ABEF", "  #12abef  " })
+        {
+            AssertTimeline(ColorPickerSupport.TryParseRgb(text, out var color)
+                && color.ToArgb() == Color.FromArgb(0x12, 0xab, 0xef).ToArgb(),
+                "Shared picker rejected a previously supported RGB hex value.");
+        }
+        foreach (var text in new[] { "", "#123", "#12345678", "GG0000", "##123456" })
+        {
+            AssertTimeline(!ColorPickerSupport.TryParseRgb(text, out _),
+                "Shared picker accepted an unsupported RGB hex value.");
+        }
+
+        using var dialog = new ProfessionalColorPickerDialog(Color.FromArgb(17, 12, 34, 56));
+        using var workspace = new WorkspaceColorPickerPanel();
+        workspace.SetInitialColor(Color.FromArgb(17, 12, 34, 56));
+        var dialogChanges = 0;
+        var workspaceChanges = 0;
+        dialog.ColorChanged += (_, _) => dialogChanges++;
+        workspace.ColorChanged += (_, _) => workspaceChanges++;
+        var opaqueInitial = Color.FromArgb(12, 34, 56);
+        AssertTimeline(dialog.Color.ToArgb() == opaqueInitial.ToArgb()
+            && workspace.Color.ToArgb() == opaqueInitial.ToArgb(),
+            "Picker initialization no longer preserves opaque RGB.");
+        foreach (var host in new Control[] { dialog, workspace })
+        {
+            var redInput = (ModernNumericUpDown)RequireField(host.GetType(), "_red").GetValue(host)!;
+            var expectedMargin = host == dialog ? new Padding(0, 4, 8, 4) : new Padding(0, 5, 4, 5);
+            AssertTimeline(redInput.Minimum == 0 && redInput.Maximum == 255
+                && redInput.Increment == 1 && redInput.DecimalPlaces == 0
+                && redInput.Dock == DockStyle.Fill && redInput.Margin == expectedMargin,
+                "Shared channel input changed host-specific layout or numeric bounds.");
+            redInput.Value = 99;
+            redInput.Value = 99;
+        }
+        AssertTimeline(dialogChanges == 1 && workspaceChanges == 1
+            && dialog.Color.ToArgb() == Color.FromArgb(99, 34, 56).ToArgb()
+            && workspace.Color.ToArgb() == dialog.Color.ToArgb(),
+            "RGB edits changed picker color or duplicate event suppression.");
+
+        var dialogHex = (TextBox)RequireField(dialog.GetType(), "_hex").GetValue(dialog)!;
+        var workspaceHex = (TextBox)RequireField(workspace.GetType(), "_hex").GetValue(workspace)!;
+        dialogHex.Text = "#ABCDEF";
+        workspaceHex.Text = "#ABCDEF";
+        AssertTimeline(dialogChanges == 1 && workspaceChanges == 2,
+            "Dialog validation and flyout live preview timing were incorrectly unified.");
+        AssertTimeline((bool)RequireMethod(dialog.GetType(), "TryCommitHex").Invoke(dialog, null)!
+            && dialogChanges == 2 && dialog.Color.ToArgb() == workspace.Color.ToArgb(),
+            "Dialog hex validation failed to commit exactly one color change.");
+        workspaceHex.Text = "#GG0000";
+        AssertTimeline(workspaceChanges == 2 && workspace.Color.ToArgb() == dialog.Color.ToArgb(),
+            "Invalid flyout hex changed the current color.");
+        workspace.RestoreInitialColor();
+        AssertTimeline(workspaceChanges == 2 && workspace.Color.ToArgb() == opaqueInitial.ToArgb(),
+            "Flyout cancellation changed its silent initial-color restoration contract.");
+        Console.WriteLine("shared_color_picker_regression=ok");
     }
 
     private static void RunTraditionalColorPickerRegression()

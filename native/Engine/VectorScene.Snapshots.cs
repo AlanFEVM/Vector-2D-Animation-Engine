@@ -31,6 +31,7 @@ internal sealed partial class VectorScene
             LayerVisible = LayerVisible.ToArray(),
             LayerOpacity = LayerOpacity.ToArray(),
             LayerBlendModes = LayerBlendModes.ToArray(),
+            LayerSymbolFilters = new Dictionary<string, SymbolFilters>(_layerSymbolFilters, StringComparer.Ordinal),
             LayerColorArgb = LayerColorArgb.ToArray(),
             LayerOutline = LayerOutline.ToArray(),
             OnionSkinEnabled = OnionSkinEnabled,
@@ -120,6 +121,7 @@ internal sealed partial class VectorScene
         ActiveLayer = Math.Clamp(snapshot.ActiveLayer, 0, Math.Max(0, snapshot.LayerCount - 1));
         MaxHalfExtent = snapshot.MaxHalfExtent;
         LayerIds = NormalizeStableIds(snapshot.LayerIds, LayerCount);
+        RestoreLayerSymbolFilters(snapshot);
         LayerNames = snapshot.LayerNames.ToArray();
         LayerKinds = NormalizeLayerKinds(snapshot.LayerKinds, LayerCount);
         LayerParentIds = NormalizeLayerParentIds(snapshot.LayerParentIds, LayerIds, LayerKinds);

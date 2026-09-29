@@ -16,7 +16,8 @@ internal sealed partial class StageControl
 
     private Reference3DRenderItem[] BuildReference3DLayerRenderItemsParallel(
         IReadOnlyList<int> layers,
-        bool substituteOutlineItems)
+        bool substituteOutlineItems,
+        bool deferStrokeOcclusion)
     {
         if (layers.Count == 0)
         {
@@ -66,7 +67,8 @@ internal sealed partial class StageControl
                             layerResults[index] = BuildReference3DLayerRenderBatch(
                                 layers[index],
                                 objects,
-                                substituteOutlineItems);
+                                substituteOutlineItems,
+                                deferStrokeOcclusion);
                         }
                     }
                 });
@@ -80,7 +82,8 @@ internal sealed partial class StageControl
                     layerResults[index] = BuildReference3DLayerRenderBatch(
                         layers[index],
                         objects,
-                        substituteOutlineItems);
+                        substituteOutlineItems,
+                        deferStrokeOcclusion);
                 }
             }
         }
@@ -102,7 +105,8 @@ internal sealed partial class StageControl
     private Reference3DRenderItem[] BuildReference3DLayerRenderBatch(
         int layer,
         IReadOnlyList<int> objects,
-        bool substituteOutlineItems)
+        bool substituteOutlineItems,
+        bool deferStrokeOcclusion)
     {
         if (substituteOutlineItems && !Scene.GetEffectiveLayerOutlineColor(layer).IsEmpty)
         {
@@ -115,16 +119,21 @@ internal sealed partial class StageControl
                 (uint)objectIndex < Scene.ObjectCount
                 && Scene.ShapeKind[objectIndex] != ShapeKind.Line))
         {
-            return BuildReference3DObjectRenderBatch(objectArray);
+            return BuildReference3DObjectRenderBatch(objectArray, deferStrokeOcclusion);
         }
 
-        return GetReference3DLayerRenderItems(objects);
+        return GetReference3DLayerRenderItems(objects, deferStrokeOcclusion);
     }
 
-    private Reference3DRenderItem[] BuildReference3DObjectRenderBatch(int[] objects)
+    private Reference3DRenderItem[] BuildReference3DObjectRenderBatch(
+        int[] objects,
+        bool deferStrokeOcclusion)
     {
         var workers = ParallelBatch.WorkerCount(objects.Length, 24);
-        if (workers <= 1) return GetReference3DLayerRenderItems(objects);
+        if (workers <= 1)
+        {
+            return GetReference3DLayerRenderItems(objects, deferStrokeOcclusion);
+        }
 
         var chunks = new Reference3DRenderItem[workers][];
         ParallelBatch.For(
@@ -133,7 +142,8 @@ internal sealed partial class StageControl
             (worker, start, end) =>
             {
                 chunks[worker] = GetReference3DLayerRenderItems(
-                    new ArraySegment<int>(objects, start, end - start));
+                    new ArraySegment<int>(objects, start, end - start),
+                    deferStrokeOcclusion);
             });
 
         var result = new List<Reference3DRenderItem>(objects.Length * 2);

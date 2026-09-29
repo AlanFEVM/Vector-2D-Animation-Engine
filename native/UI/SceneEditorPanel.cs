@@ -98,7 +98,7 @@ internal sealed class SceneEditorPanel : UserControl
 
         var title = new Label
         {
-            Text = "Scene Building",
+            Text = "Scene & Animation",
             Dock = DockStyle.Fill,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,

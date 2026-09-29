@@ -522,8 +522,18 @@ internal static class ShortcutProfiles
         return string.Join(" / ", keys.Select(FormatGesture));
     }
 
+    public static int GetWorkspaceShortcutIndex(Keys keyData)
+    {
+        if ((keyData & Keys.Modifiers) != Keys.Control) return -1;
+        var keyCode = keyData & Keys.KeyCode;
+        return keyCode is >= Keys.D1 and <= Keys.D9
+            ? (int)keyCode - (int)Keys.D1
+            : -1;
+    }
+
     public static bool IsReservedGesture(Keys keyData)
     {
+        if (GetWorkspaceShortcutIndex(keyData) >= 0) return true;
         return keyData is Keys.F1
             or Keys.F2
             or (Keys.Alt | Keys.F4)

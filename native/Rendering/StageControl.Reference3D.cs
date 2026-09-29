@@ -150,6 +150,10 @@ internal readonly record struct Reference3DLocalLightLayer(
     public GradientStop[]? SolidStrokeStops { get; init; }
 }
 
+internal readonly record struct Reference3DGpuOpticalSurface(
+    Rectangle Bounds,
+    SpatialOpticalMaterial Material);
+
 internal sealed class Reference3DOpticalSurface : IDisposable
 {
     private readonly int _pixelWidth;
@@ -279,6 +283,8 @@ internal readonly record struct Reference3DRenderItem(
 
     public Reference3DOpticalSurface? OpticalSurface { get; init; }
 
+    public Reference3DGpuOpticalSurface? GpuOpticalSurface { get; init; }
+
     public int? VectorLightingArgb { get; init; }
 
     public GradientStop[]? OpticalGradientStops { get; init; }
@@ -325,7 +331,8 @@ internal readonly record struct Reference3DPlaybackPreparationState(
     string FontName,
     float FontSize,
     FontStyle FontStyle,
-    GraphicsUnit FontUnit);
+    GraphicsUnit FontUnit,
+    bool UseGpuOptics);
 
 internal sealed partial class StageControl
 {
@@ -357,6 +364,8 @@ internal sealed partial class StageControl
     private bool _sceneCompositionHasSpatialPoses;
     private SceneDefinition? _referenceSceneDefinition;
     private SceneCompositionMaskClip[] _sceneCompositionMaskClips = [];
+    private readonly Dictionary<int, SceneCompositionMaskClip[]> _sceneCompositionMaskClipIndex = [];
+    private VectorScene? _sceneCompositionMaskClipIndexScene;
     private ReferenceViewDirection _reference2DViewDirection = ReferenceViewDirection.Front;
     private int[] _reference3DSelectedObjects = [];
     private bool _spatialTransformGizmoVisible;
@@ -400,6 +409,7 @@ internal sealed partial class StageControl
     {
         Interval = Reference3DOpticalPreviewIdleMilliseconds
     };
+    private bool _reference3DGpuOpticsEnabled;
 
     private readonly record struct Reference3DRenderPlanCacheKey(
         VectorScene Scene,
@@ -428,6 +438,7 @@ internal sealed partial class StageControl
         ulong LayerRenderState,
         ulong OpticsState,
         int OpticalRasterLod,
+        bool GpuOpticsEnabled,
         long Epoch,
         bool SubstituteOutlineItems);
 
@@ -519,7 +530,9 @@ internal sealed partial class StageControl
             Font.Name,
             Font.Size,
             Font.Style,
-            Font.Unit);
+            Font.Unit,
+            _direct2DRenderer.ExplicitGpuDeviceActive
+                && ReferenceDimension == SceneDimension.ThreeD);
 
     internal void ConfigureReference3DPlaybackPreparation(
         VectorScene scene,
@@ -567,7 +580,7 @@ internal sealed partial class StageControl
         _sceneCompositionResultScene = scene;
         _sceneCompositionHasSpatialPoses = composition.ObjectPoses.Any(
             pose => pose.FlatToScene != Matrix4x4.Identity);
-        _sceneCompositionMaskClips = [];
+        ClearSceneCompositionMaskClipIndex();
         _reference3DSelectedObjects = [];
         InvalidateReference3DRenderPlanCache();
     }
@@ -641,10 +654,26 @@ internal sealed partial class StageControl
     internal bool Reference3DOpticalInteractionPreviewActive =>
         _reference3DOpticalInteractionPreviewActive;
 
+    internal bool Reference3DGpuOpticsEnabled
+    {
+        get => _reference3DGpuOpticsEnabled;
+        set
+        {
+            if (_reference3DGpuOpticsEnabled == value) return;
+            _reference3DGpuOpticsEnabled = value;
+            InvalidateReference3DRenderPlanCache();
+            Invalidate();
+        }
+    }
+
     private int Reference3DOpticalRasterStartLod =>
-        _reference3DOpticalInteractionPreviewActive || ReferenceCameraTransitionActive
-            ? MaximumReference3DOpticalRasterLod
-            : 0;
+        Reference3DGpuOpticsEnabled
+            ? 0
+            : _reference3DOpticalInteractionPreviewActive
+                || ReferenceCameraTransitionActive
+                || Reference3DPlaybackActive
+                ? MaximumReference3DOpticalRasterLod
+                : 0;
 
     internal void BeginReference3DOpticalInteractionPreview()
     {
@@ -750,6 +779,7 @@ internal sealed partial class StageControl
             .Where(clip => clip.TargetObjectIndices.Count > 0)
             .ToArray()
             ?? [];
+        ClearSceneCompositionMaskClipIndex();
         RequestStageFrame(
             basePresentationChanged: true,
             preserveReference3DWorkspaceFrameCache: preserveWorkspaceFrameCache);
@@ -758,10 +788,44 @@ internal sealed partial class StageControl
     internal IReadOnlyList<SceneCompositionMaskClip> GetSceneCompositionMaskClips(int objectIndex)
     {
         if ((uint)objectIndex >= Scene.ObjectCount || _sceneCompositionMaskClips.Length == 0) return [];
-        return _sceneCompositionMaskClips
-            .Where(clip => ReferenceEquals(clip.TargetScene, Scene)
-                && clip.TargetObjectIndices.Contains(objectIndex))
-            .ToArray();
+        EnsureSceneCompositionMaskClipIndex();
+        return _sceneCompositionMaskClipIndex.TryGetValue(objectIndex, out var clips)
+            ? clips
+            : [];
+    }
+
+    private void EnsureSceneCompositionMaskClipIndex()
+    {
+        if (ReferenceEquals(_sceneCompositionMaskClipIndexScene, Scene)) return;
+
+        _sceneCompositionMaskClipIndex.Clear();
+        _sceneCompositionMaskClipIndexScene = Scene;
+        var grouped = new Dictionary<int, List<SceneCompositionMaskClip>>();
+        foreach (var clip in _sceneCompositionMaskClips)
+        {
+            if (!ReferenceEquals(clip.TargetScene, Scene)) continue;
+            foreach (var objectIndex in clip.TargetObjectIndices)
+            {
+                if (!grouped.TryGetValue(objectIndex, out var clips))
+                {
+                    clips = [];
+                    grouped[objectIndex] = clips;
+                }
+
+                clips.Add(clip);
+            }
+        }
+
+        foreach (var pair in grouped)
+        {
+            _sceneCompositionMaskClipIndex[pair.Key] = pair.Value.ToArray();
+        }
+    }
+
+    private void ClearSceneCompositionMaskClipIndex()
+    {
+        _sceneCompositionMaskClipIndex.Clear();
+        _sceneCompositionMaskClipIndexScene = null;
     }
 
     internal bool HasSceneCompositionMaskClips(VectorScene scene)
@@ -1469,7 +1533,9 @@ internal sealed partial class StageControl
         };
     }
 
-    internal Reference3DRenderItem[] GetReference3DLayerRenderItems(IReadOnlyList<int> objectIndices)
+    internal Reference3DRenderItem[] GetReference3DLayerRenderItems(
+        IReadOnlyList<int> objectIndices,
+        bool deferStrokeOcclusion = false)
     {
         var items = new List<Reference3DRenderItem>(objectIndices.Count * 4);
         var visibleLineObjects = objectIndices
@@ -1637,7 +1703,7 @@ internal sealed partial class StageControl
                     Plane = frontPlane,
                     SurfacePoint = frontSurfacePoint,
                     HasSurfacePoint = Finite(frontSurfacePoint),
-                    OcclusionContours = hasFill
+                    OcclusionContours = hasFill || deferStrokeOcclusion
                         ? null
                         : GetReference3DProjectedStrokeOcclusionContours(
                             objectIndex,
@@ -2148,6 +2214,15 @@ internal sealed partial class StageControl
 
     internal Reference3DRenderItem[] GetReference3DSceneRenderItems()
     {
+        if (Reference3DPlaybackActive
+            && _direct2DRenderer.TryGetPreparedPlaybackRenderItems(
+                this,
+                Reference3DPlaybackRasterPreparation,
+                out var preparedItems))
+        {
+            return preparedItems;
+        }
+
         return GetReference3DRenderPlan(substituteOutlineItems: true, layers: null);
     }
 
@@ -2172,7 +2247,7 @@ internal sealed partial class StageControl
 
         var itemBuildStarted = Stopwatch.GetTimestamp();
         var items = layers is null
-            ? Scene.HasNonNormalLayerBlendModes
+            ? Scene.RequiresIsolatedLayerCompositing
                 ? BuildReference3DCompositedRenderItems(substituteOutlineItems)
                 : BuildReference3DSceneRenderItems(substituteOutlineItems)
             : BuildReference3DCompositeLayerRenderItems(layers, substituteOutlineItems);
@@ -2261,6 +2336,7 @@ internal sealed partial class StageControl
             layerRenderState,
             opticsContentHash,
             Reference3DOpticalRasterStartLod,
+            Reference3DGpuOpticsEnabled,
             _reference3DRenderPlanEpoch,
             substituteOutlineItems);
     }
@@ -2388,11 +2464,19 @@ internal sealed partial class StageControl
             .Reverse()
             .ToArray();
         var result = new List<Reference3DRenderItem>(Scene.ObjectCount * 4);
-        result.AddRange(BuildReference3DLayerRenderItemsParallel(layers, substituteOutlineItems));
+        result.AddRange(BuildReference3DLayerRenderItemsParallel(
+            layers,
+            substituteOutlineItems,
+            deferStrokeOcclusion: true));
 
         var pathCache = new Reference3DIntersectionPathCache();
         var intersectionStarted = Stopwatch.GetTimestamp();
-        var intersectionItems = CanSkipReference3DIntersectionBuild(result)
+        var canSkipIntersection = CanSkipReference3DIntersectionBuild(result);
+        if (!canSkipIntersection || UsesSceneOpticsProjection)
+        {
+            MaterializeReference3DStrokeOcclusionContours(result);
+        }
+        var intersectionItems = canSkipIntersection
             ? result.ToArray()
             : BuildReference3DIntersectionRenderItems(result, pathCache);
         LastReference3DIntersectionMilliseconds =
@@ -2416,10 +2500,18 @@ internal sealed partial class StageControl
         bool substituteOutlineItems)
     {
         var result = new List<Reference3DRenderItem>();
-        result.AddRange(BuildReference3DLayerRenderItemsParallel(layers, substituteOutlineItems));
+        result.AddRange(BuildReference3DLayerRenderItemsParallel(
+            layers,
+            substituteOutlineItems,
+            deferStrokeOcclusion: true));
         var pathCache = new Reference3DIntersectionPathCache();
         var intersectionStarted = Stopwatch.GetTimestamp();
-        var intersectionItems = CanSkipReference3DIntersectionBuild(result)
+        var canSkipIntersection = CanSkipReference3DIntersectionBuild(result);
+        if (!canSkipIntersection || UsesSceneOpticsProjection)
+        {
+            MaterializeReference3DStrokeOcclusionContours(result);
+        }
+        var intersectionItems = canSkipIntersection
             ? result.ToArray()
             : BuildReference3DIntersectionRenderItems(result, pathCache);
         LastReference3DIntersectionMilliseconds =
@@ -2429,6 +2521,37 @@ internal sealed partial class StageControl
         LastReference3DSortMilliseconds =
             Stopwatch.GetElapsedTime(sortStarted).TotalMilliseconds;
         return sorted;
+    }
+
+    private void MaterializeReference3DStrokeOcclusionContours(
+        IList<Reference3DRenderItem> items)
+    {
+        Dictionary<(int ObjectIndex, int SurfaceSlot), Reference3DProjectedContour[]>? cache = null;
+        for (var itemIndex = 0; itemIndex < items.Count; itemIndex++)
+        {
+            var item = items[itemIndex];
+            if (item.Kind != Reference3DRenderKind.FrontStroke
+                || item.OcclusionContours is not null
+                || (uint)item.ObjectIndex >= Scene.ObjectCount
+                || HasVisibleReference3DFill(
+                    item.ObjectIndex,
+                    Scene.ShapeKind[item.ObjectIndex]))
+            {
+                continue;
+            }
+
+            cache ??= [];
+            var key = (item.ObjectIndex, item.SurfaceSlot);
+            if (!cache.TryGetValue(key, out var contours))
+            {
+                contours = GetReference3DProjectedStrokeOcclusionContours(
+                    item.ObjectIndex,
+                    item.Contours);
+                cache.Add(key, contours);
+            }
+
+            items[itemIndex] = item with { OcclusionContours = contours };
+        }
     }
 
     private static bool CanSkipReference3DIntersectionBuild(
@@ -2641,11 +2764,11 @@ internal sealed partial class StageControl
         var hasPlane = false;
         foreach (var item in items)
         {
+            // Stroke footprints affect overlap geometry, but cannot create a depth order on one plane.
             if (item.Kind is not (Reference3DRenderKind.FrontFill
                 or Reference3DRenderKind.FrontStroke)
                 || !item.PlaneKey.IsValid
                 || item.FragmentClip is { Length: > 0 }
-                || item.OcclusionContours is { Length: > 0 }
                 || item.SecondaryObjectIndex >= 0)
             {
                 return false;
@@ -3942,7 +4065,7 @@ internal sealed partial class StageControl
         _sceneCompositionResult = null;
         _sceneCompositionResultScene = null;
         _sceneCompositionHasSpatialPoses = false;
-        _sceneCompositionMaskClips = [];
+        ClearSceneCompositionMaskClipIndex();
         _reference2DViewDirection = ReferenceViewDirection.Front;
         _reference3DSelectedObjects = [];
         _reference3DSourceContourCache.Clear();

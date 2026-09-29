@@ -209,6 +209,28 @@ internal static partial class Benchmark
             freshCenter,
             "fresh fill invalidation");
 
+        // Keep the displayed frame unchanged while idle pre-rendering fills
+        // the LRU. Evicting that frame must release the presentation reference
+        // before another HWND paint can use its disposed GPU bitmap.
+        var currentWorkspaceFrame = RequireField(renderer.GetType(), "_currentWorkspaceFrame");
+        if (currentWorkspaceFrame.GetValue(renderer) is null)
+        {
+            throw new InvalidOperationException("The eviction fixture has no displayed workspace frame.");
+        }
+        for (var frame = 10; frame < 44; frame++)
+        {
+            _ = PreRenderFrame(frame, frameTwoComposition, $"eviction frame {frame}");
+        }
+        if (currentWorkspaceFrame.GetValue(renderer) is not null)
+        {
+            throw new InvalidOperationException(
+                "Pre-render eviction retained a displayed reference to a disposed workspace bitmap.");
+        }
+        using var afterEviction = PresentStage();
+        AssertDirect2DFrame("after current-frame eviction");
+        AssertPresentedSamplesMatch(
+            freshUncached, afterEviction, freshCenter, "current-frame eviction");
+
         stage.Dispose();
         if (workspaceTargetField.GetValue(renderer) is not null
             || workspaceBitmapField.GetValue(renderer) is not null

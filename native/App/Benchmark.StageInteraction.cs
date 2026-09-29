@@ -4952,6 +4952,7 @@ internal static partial class Benchmark
             AssertTimeline(
                 dtdRejected && malformedRejected,
                 "Imported SVG validation accepted DTD or malformed XML content.");
+            RunImportedSvgConcurrencyRegression(source);
             Console.WriteLine("imported_svg_file_drop_regression=ok");
             Console.WriteLine("imported_svg_zoom_alignment_regression=ok");
             Console.WriteLine("imported_svg_target_size_regression=ok");

@@ -717,7 +717,7 @@ internal sealed partial class StageControl : Control
     private float? _pendingVisibleWorldWidth;
     private float _referenceYaw = -0.72f;
     private float _referencePitch = 0.76f;
-    private float _referenceDistance = 12000;
+    private float _referenceDistance = DefaultReferenceDistance;
     private float _referenceZoomScale = 1;
     private float _referenceTargetX;
     private float _referenceTargetY;
@@ -853,6 +853,15 @@ internal sealed partial class StageControl : Control
     public float ReferencePitch => _referencePitch;
     public float ReferenceDistance => _referenceDistance;
     public float ReferenceZoomScale => _referenceZoomScale;
+
+    /// <summary>
+    /// Scale of the camera that actually presents the current view, as a multiple of 100%.
+    /// Basic Drawing and the 2D Front scene view are driven by the 2D drawing camera
+    /// (<see cref="Zoom"/>); every reference-projected view (3D scenes, side/top directions and the
+    /// Shots workspace) is driven by the reference camera. Reporting the wrong one would show a zoom
+    /// that does not match what the operator sees, because the three workspaces zoom independently.
+    /// </summary>
+    public float ActiveViewZoom => UsesReferenceProjection ? _referenceZoomScale : Zoom;
     public float ReferenceTargetX => _referenceTargetX;
     public float ReferenceTargetY => _referenceTargetY;
     public float ReferenceTargetZ => _referenceTargetZ;
@@ -1887,7 +1896,17 @@ internal sealed partial class StageControl : Control
     {
         CompleteReferenceCameraTransitionForDirectInput();
         PulseReference3DOpticalInteractionPreview();
+        // Zoom only changes the projection scale. It must not touch the orbit target: the target is
+        // subtracted from every world point before projection, so translating it would slide the whole
+        // scene across the screen. Doing that on each wheel tick made zooming drift instead of scale,
+        // and the drift depended on the current lens, so the gesture felt unstable and did not reverse.
+        var previousZoom = _referenceZoomScale;
         _referenceZoomScale = Math.Clamp(_referenceZoomScale * factor, 0.25f, 8f);
+        if (Math.Abs(previousZoom - _referenceZoomScale) < 0.0000001f)
+        {
+            return;
+        }
+
         Invalidate();
     }
 
@@ -2882,7 +2901,8 @@ internal sealed partial class StageControl : Control
             }
             else
             {
-                DrawBufferedGdi(e.Graphics);
+                if (!_direct2DRenderer.TryPresentSoftwareFrame(this, DrawGdiFrame))
+                    DrawBufferedGdi(e.Graphics);
                 LastFrameUsedDirect2D = false;
                 _paintFailureLogged = false;
             }
@@ -2972,27 +2992,32 @@ internal sealed partial class StageControl : Control
     private void DrawBufferedGdi(Graphics target)
     {
         if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
-        ResetLastGdiFrameTelemetry();
         using var buffer = BufferedGraphicsManager.Current.Allocate(target, ClientRectangle);
+        DrawGdiFrame(buffer.Graphics);
+        buffer.Render(target);
+    }
+
+    private void DrawGdiFrame(Graphics graphics)
+    {
+        ResetLastGdiFrameTelemetry();
         if (ShouldCacheGdiBaseFrame())
         {
             try
             {
-                DrawCachedGdi2D(buffer.Graphics);
+                DrawCachedGdi2D(graphics);
             }
             catch (Exception ex) when (ex is ArgumentException or ExternalException or OutOfMemoryException)
             {
                 ClearGdiBaseFrameCache();
-                DrawGdi(buffer.Graphics);
+                DrawGdi(graphics);
             }
         }
         else
         {
             ClearGdiBaseFrameCache();
             if (!HasSoftwareDistortionForCurrentFrame()) ClearDistortRasterCache();
-            DrawGdi(buffer.Graphics);
+            DrawGdi(graphics);
         }
-        buffer.Render(target);
     }
 
     private bool ShouldCacheGdiBaseFrame()
@@ -3170,6 +3195,7 @@ internal sealed partial class StageControl : Control
         DrawDistortOverlay(g);
         DrawSnapPointOverlay(g);
         DrawMarquee(g);
+        DrawShotFramingGizmoGdi(g);
         if (ReferenceDimension == SceneDimension.ThreeD)
         {
             DrawSpatialTransformGizmoGdi(g);
@@ -3267,6 +3293,7 @@ internal sealed partial class StageControl : Control
             DrawFillAnimation(g);
             DrawGradientOverlay(g);
             DrawMarquee(g);
+            DrawShotFramingGizmoGdi(g);
             DrawBrushTipCursor(g);
             DrawBrushColorPalette(g);
             DrawFillToolCursor(g);
@@ -3284,7 +3311,7 @@ internal sealed partial class StageControl : Control
         try
         {
             var pixelZoom = EffectivePixelZoom();
-            if (forceObjectRenderer)
+            if (forceObjectRenderer || scene.HasSymbolFilters)
             {
                 return DrawObjects(graphics, int.MaxValue);
             }

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg version="1.1" data-v2d-drawing-object-id="dd2c3f534e43461583128ac55766551c" data-v2d-frame="0" viewBox="-646.50006 -538.50006 1855 1307" width="74.2" height="52.28" xmlns="http://www.w3.org/2000/svg">
+  <title>Symbol 001</title>
+  <defs />
+  <g id="v2d-export">
+    <g id="v2d-layer-0" data-v2d-layer-name="Layer 0000">
+      <path d="M -634,-526 C -195 -526 243 -526 682,-526" id="v2d-object-3" data-v2d-object-index="3" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M 682,-526 C 682 -243 682 39 682,322" id="v2d-object-7" data-v2d-object-index="7" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M 682,322.0001 C 243 322 -195 322 -634,321.9999" id="v2d-object-8" data-v2d-object-index="8" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M -634,322 C -634 39 -634 -243 -634,-526" id="v2d-object-4" data-v2d-object-index="4" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M 682,-10 C 853,-10 1025,-10 1196,-10 C 1196,245 1196,501 1196,756 C 855,756 513,756 172,756 C 172,611 172,467 172,322 C -97,322 -365,322 -634,322 C -634,39 -634,-243 -634,-526 C -195,-526 243,-526 682,-526 C 682,-354 682,-182 682,-10 Z" fill-rule="evenodd" id="v2d-object-0" data-v2d-object-index="0" fill="#4FB3A2" stroke="none" />
+      <path d="M 172,-10 C 513 -10 855 -10 1196,-10" id="v2d-object-5" data-v2d-object-index="5" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M 1196,-10 C 1196 245 1196 501 1196,756" id="v2d-object-1" data-v2d-object-index="1" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M 1196,756.00006 C 855 756 513 756 172,755.99994" id="v2d-object-2" data-v2d-object-index="2" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M 172.00002,756 C 172 501 172 245 171.99998,-10" id="v2d-object-6" data-v2d-object-index="6" fill="none" stroke="#EEF2F1" stroke-width="25" stroke-linejoin="round" stroke-linecap="round" />
+    </g>
+  </g>
+</svg>

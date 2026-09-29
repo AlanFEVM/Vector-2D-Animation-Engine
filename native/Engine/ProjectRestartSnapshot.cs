@@ -80,6 +80,10 @@ internal sealed class SceneRestartSnapshot
     public SceneLayerSnapshot Layers { get; init; } = new();
     public InstanceRestartSnapshot[] Instances { get; init; } = [];
     public AnimationTimelineSnapshot Timeline { get; init; } = new();
+    public SceneShotSnapshot[] Shots { get; init; } = [];
+    public bool OnionSkinEnabled { get; init; }
+    public int OnionSkinPreviousFrames { get; init; } = VectorScene.DefaultOnionSkinPreviousFrames;
+    public int OnionSkinNextFrames { get; init; } = VectorScene.DefaultOnionSkinNextFrames;
 }
 
 internal sealed class SceneLightRestartSnapshot
@@ -123,6 +127,7 @@ internal sealed class InstanceRestartSnapshot
     public DistortWarp? Distortion { get; init; }
     public float Alpha { get; init; } = 1;
     public int TintArgb { get; init; } = unchecked((int)0xffffffff);
+    public SymbolFilters Filters { get; init; }
     public SpatialOpticalMaterial? OpticalMaterialOverride { get; init; }
     public decimal PlaybackFps { get; init; } = 30m;
     public DrawingObjectPlaybackMode PlaybackMode { get; init; } = DrawingObjectPlaybackMode.PlayOnce;

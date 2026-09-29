@@ -426,6 +426,7 @@ internal sealed partial class MainForm : Form
 
     private bool DeleteSelectedObject()
     {
+        if (IsShotDirectorContext()) return false;
         if (IsSceneCompositionContext()) return DeleteSelectedSceneInstances();
 
         var container = ActiveDrawingObject();
@@ -490,6 +491,7 @@ internal sealed partial class MainForm : Form
 
     private bool DeleteSelectedSceneInstances()
     {
+        if (IsShotDirectorContext()) return false;
         var scene = ActiveScene();
         var selected = SelectedSceneInstances().ToArray();
         if (scene is null || selected.Length == 0) return false;
@@ -1575,6 +1577,7 @@ internal sealed partial class MainForm : Form
 
     private bool SelectAllObjectsInCurrentFrame()
     {
+        if (IsShotDirectorContext()) return false;
         var objectIndices = Array.Empty<int>();
         if (!IsSceneCompositionContext())
         {
@@ -2158,8 +2161,9 @@ internal sealed partial class MainForm : Form
 
     private void ShowStageContextMenu(Point screen)
     {
+        if (IsShotDirectorContext()) return;
         _stageContextMenuLocation = screen;
-        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+        if (IsSceneWorkspaceSelected
             && IsSceneCompositionContext()
             && IsScene3DView()
             && !IsSceneMaskEditing())
@@ -2175,7 +2179,7 @@ internal sealed partial class MainForm : Form
     private bool TryGetStageContextDrawingElement(Point screen, out DrawingElementHit hit)
     {
         hit = DrawingElementHit.None;
-        if (DrawingToolsBlocked()) return false;
+        if (IsShotDirectorContext() || DrawingToolsBlocked()) return false;
         var candidate = _scene.HitTestElement(
             _stage.ScreenToWorld(screen),
             _frame,
@@ -2188,7 +2192,7 @@ internal sealed partial class MainForm : Form
     private bool TryGetStageContextLineObject(Point screen, out int objectIndex)
     {
         objectIndex = -1;
-        if (DrawingToolsBlocked()) return false;
+        if (IsShotDirectorContext() || DrawingToolsBlocked()) return false;
 
         var world = _stage.ScreenToWorld(screen);
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());

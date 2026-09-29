@@ -36,31 +36,35 @@ internal sealed partial class TimelineStrip : Control
         var titleRight = Math.Max(42, addLayerBounds.Left - 6);
         TextRenderer.DrawText(
             graphics,
-                UiLocalization.T("Timeline"),
+                UiLocalization.T(_shotFilterActive ? "Cameras" : "Timeline"),
                 titleFont,
                 Rectangle.FromLTRB(10, 1, titleRight, ToolbarHeaderHeight - 1),
                 Theme.ReadableText(Theme.Panel, Theme.Text),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
-        DrawHeaderButton(
-            graphics,
-            soloBounds,
-            UiLocalization.T("Solo"),
-            _hoveredHeaderCommand == HeaderCommand.Solo);
-        DrawHeaderButton(
-            graphics,
-            allBounds,
-            UiLocalization.T("All"),
-            _hoveredHeaderCommand == HeaderCommand.All);
-        DrawHeaderIconButton(
-            graphics,
-            addLayerBounds,
-            SvgIconKind.Add,
-            _hoveredHeaderCommand == HeaderCommand.AddLayer);
+        if (!_shotFilterActive)
+        {
+            DrawHeaderButton(
+                graphics,
+                soloBounds,
+                UiLocalization.T("Solo"),
+                _hoveredHeaderCommand == HeaderCommand.Solo);
+            DrawHeaderButton(
+                graphics,
+                allBounds,
+                UiLocalization.T("All"),
+                _hoveredHeaderCommand == HeaderCommand.All);
+            DrawHeaderIconButton(
+                graphics,
+                addLayerBounds,
+                SvgIconKind.Add,
+                _hoveredHeaderCommand == HeaderCommand.AddLayer);
+        }
 
         var frameStatusBounds = HeaderFrameStatusBounds(layout);
         var summaryRight = frameStatusBounds.Right;
-        var name = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
+        var contextName = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
+        var name = ResolveTimelineHeaderLabel(contextName);
         var summaryLeft = frameStatusBounds.Left;
         var summaryWidth = Math.Max(0, summaryRight - summaryLeft);
         var timeText = FormatCursorTimeSeconds(CurrentFrame, PlaybackFps);
@@ -167,9 +171,31 @@ internal sealed partial class TimelineStrip : Control
         {
             FillAlignedRectangle(graphics, rulerBrush, rulerPaintBounds);
         }
+        DrawShotRangeBands(graphics, layout, clipBounds);
         var layerHeaderBounds = Rectangle.FromLTRB(0, HeaderHeight, layout.TrackLeft, layout.RowTop);
         if (clipBounds.IntersectsWith(layerHeaderBounds))
         {
+            if (_shotFilterActive)
+            {
+                SvgIcons.Draw(
+                    graphics,
+                    SvgIconKind.Camera,
+                    new Rectangle(ScaleTimelineMetric(9), HeaderHeight + ScaleTimelineMetric(7), ScaleTimelineMetric(15), ScaleTimelineMetric(15)),
+                    Theme.ReadableUiColor(Theme.Top, Theme.Accent));
+                TextRenderer.DrawText(
+                    graphics,
+                    UiLocalization.T("Camera"),
+                    Font,
+                    new Rectangle(
+                        ScaleTimelineMetric(30),
+                        HeaderHeight,
+                        Math.Max(24, layout.TrackLeft - ScaleTimelineMetric(38)),
+                        RulerHeight),
+                    Theme.ReadableText(Theme.Top, Theme.Text),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            }
+            else
+            {
             using var headerIconPen = new Pen(Theme.ReadableUiColor(Theme.Top, Theme.Muted), 1.1f);
             using var activeHeaderIconPen = new Pen(Theme.ReadableUiColor(Theme.Top, Theme.Text), 1.2f);
             DrawMasterControlCell(
@@ -213,6 +239,7 @@ internal sealed partial class TimelineStrip : Control
                 new Rectangle(LayerControlsWidth + 7, HeaderHeight, Math.Max(20, layout.TrackLeft - LayerControlsWidth - 19), RulerHeight),
                 Theme.ReadableText(Theme.Top, Theme.Muted),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            }
         }
 
         var state = graphics.Save();
@@ -257,6 +284,7 @@ internal sealed partial class TimelineStrip : Control
         }
 
         graphics.DrawLine(gridPen, layout.TrackRight - 1, HeaderHeight, layout.TrackRight - 1, layout.RowTop);
+        DrawShotRangeEdges(graphics, layout, clipBounds);
         DrawOnionSkinRangeHandles(graphics, layout);
         graphics.Restore(state);
     }
@@ -406,12 +434,21 @@ internal sealed partial class TimelineStrip : Control
         previousFrames = 0;
         nextFrames = 0;
         enabled = false;
-        var drawingScene = DrawingScene();
-        if (drawingScene is null) return false;
+        if (_shotFilterActive) return false;
+        if (DrawingScene() is { } drawingScene)
+        {
+            previousFrames = drawingScene.OnionSkinPreviousFrames;
+            nextFrames = drawingScene.OnionSkinNextFrames;
+            enabled = drawingScene.OnionSkinEnabled;
+            return true;
+        }
 
-        previousFrames = drawingScene.OnionSkinPreviousFrames;
-        nextFrames = drawingScene.OnionSkinNextFrames;
-        enabled = drawingScene.OnionSkinEnabled;
+        // The scene composition timeline keeps the same range on its scene
+        // definition, so its ruler handles drag exactly like the drawing ones.
+        if (_sceneDefinition is not { } sceneDefinition) return false;
+        previousFrames = sceneDefinition.OnionSkinPreviousFrames;
+        nextFrames = sceneDefinition.OnionSkinNextFrames;
+        enabled = sceneDefinition.OnionSkinEnabled;
         return true;
     }
 
@@ -538,7 +575,7 @@ internal sealed partial class TimelineStrip : Control
                     : layerItemBackground;
                 var preferredTextColor = !visible || locked ? Theme.Muted : active ? Theme.Text : Theme.Muted;
                 var outlined = IsTrackOutlined(trackIndex);
-                if (!IsSceneLightTrack(trackIndex))
+                if (!IsSceneLightTrack(trackIndex) && !IsSceneShotTrack(trackIndex))
                 {
                     DrawVisibilityIcon(graphics, visible, 14, y + _rowHeight / 2f, visible ? eyePen : hiddenEyePen);
                     DrawLockIcon(graphics, locked, VisibilityColumnWidth + LockColumnWidth / 2, y + _rowHeight / 2, lockPen, unlockedLockPen);
@@ -711,6 +748,23 @@ internal sealed partial class TimelineStrip : Control
     {
         var state = graphics.Save();
         graphics.SetClip(new Rectangle(layout.TrackLeft, y, layout.TrackRight - layout.TrackLeft, _rowHeight), CombineMode.Intersect);
+        var cameraTrack = IsSceneShotTrack(trackIndex);
+        var cameraColor = GetTrackColor(trackIndex);
+        using var cameraExposureBrush = cameraTrack
+            ? new SolidBrush(Color.FromArgb(30, cameraColor.R, cameraColor.G, cameraColor.B))
+            : null;
+        using var cameraLinePen = cameraTrack
+            ? new Pen(Color.FromArgb(130, cameraColor.R, cameraColor.G, cameraColor.B), 1f)
+            : null;
+        using var cameraTweenBrush = cameraTrack
+            ? new SolidBrush(Color.FromArgb(88, cameraColor.R, cameraColor.G, cameraColor.B))
+            : null;
+        using var cameraTweenEdgePen = cameraTrack
+            ? new Pen(Color.FromArgb(210, cameraColor.R, cameraColor.G, cameraColor.B), 1f)
+            : null;
+        using var cameraTweenCenterPen = cameraTrack
+            ? new Pen(Color.FromArgb(150, cameraColor.R, cameraColor.G, cameraColor.B), 1f)
+            : null;
         var (firstColumn, lastColumnExclusive) = VisibleFramePaintRange(layout, clipBounds);
         var maximumSelectableFrame = MaximumSelectableFrame(layout);
         var exposure = TimelineExposure.None(_firstVisibleFrame + firstColumn);
@@ -756,13 +810,15 @@ internal sealed partial class TimelineStrip : Control
                         var tweenInterior = tween is { } span
                             && frame > span.StartFrame
                             && frame < span.EndFrame;
-                        var isKeyframe = exposure.SourceKeyframeFrame == frame && !tweenInterior;
+                        var isKeyframe = cameraTrack
+                            ? ShouldDisplayKeyframeMarker(track, exposure, frame)
+                            : exposure.SourceKeyframeFrame == frame && !tweenInterior;
                         var exposureBounds = new Rectangle(x + 1, y + 2, _frameCellWidth, _rowHeight - 4);
                         var exposureBrush = effectiveKind == TimelineKeyframeKind.Populated
-                            ? populatedExposureBrush
+                            ? cameraTrack ? cameraExposureBrush! : populatedExposureBrush
                             : blankExposureBrush;
                         var exposurePen = effectiveKind == TimelineKeyframeKind.Populated
-                            ? populatedLinePen
+                            ? cameraTrack ? cameraLinePen! : populatedLinePen
                             : blankLinePen;
                         graphics.FillRectangle(exposureBrush, exposureBounds);
                         var continuationStart = isKeyframe
@@ -786,19 +842,58 @@ internal sealed partial class TimelineStrip : Control
 
                         if (isKeyframe)
                         {
-                            DrawKeyframeMarker(graphics, effectiveKind, x + _frameCellWidth / 2f, y + _rowHeight / 2f);
+                            DrawKeyframeMarker(
+                                graphics,
+                                effectiveKind,
+                                x + _frameCellWidth / 2f,
+                                y + _rowHeight / 2f,
+                                cameraTrack,
+                                cameraColor);
                         }
 
                         if (tween is { } tweenSpan)
                         {
-                            graphics.FillRectangle(
-                                tweenSpan.Kind == TimelineTweenKind.Classic
-                                    ? classicTweenBrush
-                                    : shapeTweenBrush,
-                                x + 1,
-                                y + _rowHeight - 5,
-                                _frameCellWidth,
-                                3);
+                            if (cameraTrack && tweenSpan.Kind == TimelineTweenKind.Classic)
+                            {
+                                var bandTop = y + Math.Max(4, _rowHeight / 3);
+                                var bandBottom = y + _rowHeight - Math.Max(4, _rowHeight / 4);
+                                var bandHeight = Math.Max(4, bandBottom - bandTop);
+                                graphics.FillRectangle(
+                                    cameraTweenBrush!,
+                                    x + 1,
+                                    bandTop,
+                                    _frameCellWidth,
+                                    bandHeight);
+                                graphics.DrawLine(
+                                    cameraTweenEdgePen!,
+                                    x + 1,
+                                    bandTop,
+                                    x + _frameCellWidth,
+                                    bandTop);
+                                graphics.DrawLine(
+                                    cameraTweenEdgePen!,
+                                    x + 1,
+                                    bandBottom - 1,
+                                    x + _frameCellWidth,
+                                    bandBottom - 1);
+                                graphics.DrawLine(
+                                    cameraTweenCenterPen!,
+                                    x + 1,
+                                    bandTop + bandHeight / 2f,
+                                    x + _frameCellWidth,
+                                    bandTop + bandHeight / 2f);
+                            }
+                            else
+                            {
+                                graphics.FillRectangle(
+                                    tweenSpan.Kind == TimelineTweenKind.Classic
+                                        ? classicTweenBrush
+                                        : shapeTweenBrush,
+                                    x + 1,
+                                    y + _rowHeight - 5,
+                                    _frameCellWidth,
+                                    3);
+                            }
                         }
                     }
                 }
@@ -987,6 +1082,44 @@ internal sealed partial class TimelineStrip : Control
             layout.RowTop + visibleRow * _rowHeight + 1,
             Math.Max(1, (lastFrame - firstFrame + 1) * _frameCellWidth - 2),
             Math.Max(1, _rowHeight - 2));
+
+        if (IsSceneShotTrack(trackIndex))
+        {
+            var cameraColor = GetTrackColor(trackIndex);
+            var bandTop = bounds.Top + Math.Max(3, bounds.Height / 3);
+            var bandBottom = bounds.Bottom - Math.Max(3, bounds.Height / 4);
+            var bandHeight = Math.Max(4, bandBottom - bandTop);
+            using var cameraFill = new SolidBrush(Color.FromArgb(
+                66,
+                cameraColor.R,
+                cameraColor.G,
+                cameraColor.B));
+            using var cameraEdge = new Pen(Color.FromArgb(
+                238,
+                cameraColor.R,
+                cameraColor.G,
+                cameraColor.B), Math.Max(1.35f, DeviceDpi / 72f));
+            using var cameraCenter = new Pen(Color.FromArgb(
+                188,
+                cameraColor.R,
+                cameraColor.G,
+                cameraColor.B), 1f);
+            graphics.FillRectangle(cameraFill, bounds.Left, bandTop, bounds.Width, bandHeight);
+            graphics.DrawRectangle(
+                cameraEdge,
+                bounds.Left,
+                bandTop,
+                Math.Max(0, bounds.Width - 1),
+                Math.Max(0, bandHeight - 1));
+            graphics.DrawLine(
+                cameraCenter,
+                bounds.Left,
+                bandTop + bandHeight / 2f,
+                bounds.Right - 1,
+                bandTop + bandHeight / 2f);
+            return;
+        }
+
         using var fill = new SolidBrush(Color.FromArgb(30, Theme.Accent));
         using var pen = new Pen(Color.FromArgb(235, Theme.AccentLabel), Math.Max(1.25f, DeviceDpi / 72f));
         graphics.FillRectangle(fill, bounds);
@@ -1038,23 +1171,61 @@ internal sealed partial class TimelineStrip : Control
         return blocks;
     }
 
-    private static void DrawKeyframeMarker(Graphics graphics, TimelineKeyframeKind kind, float centerX, float centerY)
+    private static void DrawKeyframeMarker(
+        Graphics graphics,
+        TimelineKeyframeKind kind,
+        float centerX,
+        float centerY,
+        bool cameraTrack = false,
+        Color? cameraColor = null)
     {
         const float radius = 3.25f;
+        if (cameraTrack)
+        {
+            var markerColor = cameraColor is { } color
+                ? Color.FromArgb(255, color.R, color.G, color.B)
+                : ThemeNeutral(Color.FromArgb(240, 220, 228, 231), Theme.Text);
+            var diamond = new[]
+            {
+                new PointF(centerX, centerY - radius - 0.5f),
+                new PointF(centerX + radius + 0.5f, centerY),
+                new PointF(centerX, centerY + radius + 0.5f),
+                new PointF(centerX - radius - 0.5f, centerY)
+            };
+            using var outlinePen = new Pen(Theme.ReadableUiColor(Theme.Panel, Theme.Text), 1.15f);
+            using var fillBrush = new SolidBrush(
+                kind == TimelineKeyframeKind.Populated
+                    ? markerColor
+                    : ThemeNeutral(Color.FromArgb(31, 35, 38), Theme.Panel));
+            graphics.FillPolygon(fillBrush, diamond);
+            graphics.DrawPolygon(outlinePen, diamond);
+            return;
+        }
+
         var bounds = new RectangleF(centerX - radius, centerY - radius, radius * 2, radius * 2);
-        using var outlinePen = new Pen(ThemeNeutral(Color.FromArgb(232, 220, 228, 231), Theme.Text), 1.1f);
+        using var roundOutlinePen = new Pen(ThemeNeutral(Color.FromArgb(232, 220, 228, 231), Theme.Text), 1.1f);
         if (kind == TimelineKeyframeKind.Populated)
         {
             using var fillBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(240, 220, 228, 231), Theme.Text));
             graphics.FillEllipse(fillBrush, bounds);
-            graphics.DrawEllipse(outlinePen, bounds);
+            graphics.DrawEllipse(roundOutlinePen, bounds);
         }
         else
         {
             using var fillBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(31, 35, 38), Theme.Panel));
             graphics.FillEllipse(fillBrush, bounds);
-            graphics.DrawEllipse(outlinePen, bounds);
+            graphics.DrawEllipse(roundOutlinePen, bounds);
         }
+    }
+
+    internal static bool ShouldDisplayKeyframeMarker(
+        AnimationTimelineTrack track,
+        TimelineExposure exposure,
+        int frame)
+    {
+        if (!exposure.IsKeyframe || exposure.SourceKeyframeFrame != frame) return false;
+        var tween = track.EvaluateTween(frame);
+        return tween is not { } span || frame <= span.StartFrame || frame >= span.EndFrame;
     }
 
     internal static TimelineKeyframeKind ResolveDisplayedKeyframeKind(

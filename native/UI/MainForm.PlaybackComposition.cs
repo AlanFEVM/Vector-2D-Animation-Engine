@@ -10,9 +10,9 @@ internal sealed partial class MainForm
     private const int PlaybackCompositionPrefetchHorizon =
         PlaybackCompositionPrefetchCapacity * 2;
     // Keep composition and raster-command preparation as separate bounded
-    // stages. Running multiple full composition workers duplicates snapshot
-    // restoration and competes with the raster worker for the same CPU.
-    private const int PlaybackCompositionWorkerCount = 1;
+    // stages. Two bounded composition workers keep the playback queue fed
+    // while leaving the UI thread free for input and presentation.
+    private const int PlaybackCompositionWorkerCount = 2;
     private static readonly int PlaybackRasterPreparationWorkerCount =
         ResolvePlaybackRasterPreparationWorkerCount();
     private const int PlaybackRasterPreparationMaximumWorkers = 2;
@@ -92,6 +92,9 @@ internal sealed partial class MainForm
             // timeline binding and would make stopping playback unsafe.
             var snapshot = _project.CreateRestartSnapshot();
             var preparationState = _stage.CaptureReference3DPlaybackPreparationState();
+            var prefetchCapacity = preparationState.UseGpuOptics
+                ? 1
+                : PlaybackCompositionPrefetchCapacity;
             _playbackCompositionPreloader = new PlaybackCompositionPreloader(
                 snapshot,
                 definition.Id,
@@ -100,7 +103,7 @@ internal sealed partial class MainForm
                 _playbackSettings.EndFrame,
                 _playbackSettings.LoopPlayback,
                 _playbackSettings.Fps,
-                PlaybackCompositionPrefetchCapacity,
+                prefetchCapacity,
                 preparationState);
             _playbackCompositionPreloader.Start();
             // Keep the editable current frame visible until the asynchronous
@@ -706,24 +709,28 @@ internal sealed partial class MainForm
                     PreparedPlaybackComposition? prepared = null;
                     try
                     {
-                        object? rasterPreparation;
-                        using (var workerLimit = ParallelBatch.PushWorkerLimit(
-                                   PlaybackRasterPreparationMaximumWorkers))
+                        object? rasterPreparation = null;
+                        object? rasterFrame = null;
+                        if (!_preparationState.UseGpuOptics)
                         {
-                            preparationStage.ConfigureReference3DPlaybackPreparation(
-                                pending.Scene,
-                                pending.Composition,
-                                pending.Frame,
-                                _preparationState);
-                            rasterPreparation = Environment.GetEnvironmentVariable(
-                                    "VECTOR_DISABLE_PLAYBACK_RASTER_PREPARATION") == "1"
+                            using (var workerLimit = ParallelBatch.PushWorkerLimit(
+                                       PlaybackRasterPreparationMaximumWorkers))
+                            {
+                                preparationStage.ConfigureReference3DPlaybackPreparation(
+                                    pending.Scene,
+                                    pending.Composition,
+                                    pending.Frame,
+                                    _preparationState);
+                                rasterPreparation = Environment.GetEnvironmentVariable(
+                                        "VECTOR_DISABLE_PLAYBACK_RASTER_PREPARATION") == "1"
+                                    ? null
+                                    : preparationStage.PrepareReference3DPlaybackRaster();
+                            }
+                            rasterFrame = rasterPreparation is null
                                 ? null
-                                : preparationStage.PrepareReference3DPlaybackRaster();
+                                : preparationStage.PrepareReference3DPlaybackRasterFrame(
+                                    rasterPreparation);
                         }
-                        var rasterFrame = rasterPreparation is null
-                            ? null
-                            : preparationStage.PrepareReference3DPlaybackRasterFrame(
-                                rasterPreparation);
                         prepared = new PreparedPlaybackComposition(
                             pending.Scene,
                             pending.Composition,

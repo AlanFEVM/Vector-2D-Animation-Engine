@@ -4,6 +4,7 @@ namespace VectorAnimationEngine.DistributionLauncher;
 
 internal sealed class RuntimeDownloadDialog : Form
 {
+    private readonly Icon _applicationIcon = new(typeof(RuntimeDownloadDialog), "Application.ico");
     private readonly string _root;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Label _status;
@@ -17,6 +18,7 @@ internal sealed class RuntimeDownloadDialog : Form
     {
         _root = root;
         Text = "Vector 2D Animation Engine";
+        Icon = _applicationIcon;
         ClientSize = new Size(520, 154);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterScreen;
@@ -55,6 +57,12 @@ internal sealed class RuntimeDownloadDialog : Form
         _cancel.Click += (_, _) => CancelInstall();
         Controls.AddRange(new Control[] { title, _status, _progress, _cancel });
         Shown += OnShown;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing) _applicationIcon.Dispose();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

@@ -31,6 +31,7 @@ internal static class ProjectVaultStore
     private const int MaxScenes = 100_000;
     private const int MaxSceneMaskLayers = ushort.MaxValue;
     private const int MaxSceneMaskObjects = 1_000_000;
+    private const int MaxSceneShots = SceneDefinition.MaximumShots;
     private const int MaxTimelineTabGroupNameLength = 80;
     private const long MaxProjectBytes = 8L * 1024 * 1024 * 1024;
     private const long MaxSaveJournalBytes = 16L * 1024;
@@ -276,7 +277,11 @@ internal static class ProjectVaultStore
                 CreatedAt = entry.CreatedAt,
                 Layers = timeline.Layers,
                 Instances = timeline.Instances,
-                Timeline = timeline.Timeline
+                Timeline = timeline.Timeline,
+                Shots = timeline.Shots,
+                OnionSkinEnabled = timeline.OnionSkinEnabled,
+                OnionSkinPreviousFrames = timeline.OnionSkinPreviousFrames,
+                OnionSkinNextFrames = timeline.OnionSkinNextFrames
             };
         }
 
@@ -1025,8 +1030,10 @@ internal static class ProjectVaultStore
             var lightIds = ValidateSceneLights(scene.Lights, layerIds, scene.Instances, scene.Id);
             ValidateInstanceLayerReferences(scene.Instances, contentLayerIds, scene.Id);
             ValidateSceneLayerInstanceAssignments(scene.Layers, scene.Instances, scene.Id);
-            ValidateTimeline(scene.Timeline, layerIds.Concat(lightIds));
+            var shotIds = ValidateSceneShots(scene.Shots, scene.Id);
+            ValidateTimeline(scene.Timeline, layerIds.Concat(lightIds).Concat(shotIds));
             ValidateSceneLightTimeline(scene.Timeline, scene.Lights, scene.Id);
+            ValidateSceneShotTimeline(scene.Timeline, scene.Shots, scene.Id);
         }
         ValidateAcyclicDrawingGraph(graph);
     }
@@ -1121,7 +1128,8 @@ internal static class ProjectVaultStore
         if (document is null || document.FormatVersion != TimelineFormatVersion
             || !string.Equals(document.SceneId, expectedSceneId, StringComparison.Ordinal)
             || document.Layers is null || document.Layers.Layers is null
-            || document.Layers.InstanceLayerIds is null || document.Timeline is null || document.Instances is null)
+            || document.Layers.InstanceLayerIds is null || document.Timeline is null || document.Instances is null
+            || document.Shots is null)
         {
             throw new InvalidDataException($"The timeline for scene '{expectedSceneId}' is invalid.");
         }
@@ -1131,8 +1139,97 @@ internal static class ProjectVaultStore
         var lightIds = ValidateSceneLights(document.Lights, layerIds, document.Instances, expectedSceneId);
         ValidateInstanceLayerReferences(document.Instances, contentLayerIds, expectedSceneId);
         ValidateSceneLayerInstanceAssignments(document.Layers, document.Instances, expectedSceneId);
-        ValidateTimeline(document.Timeline, layerIds.Concat(lightIds));
+        var shotIds = ValidateSceneShots(document.Shots, expectedSceneId);
+        ValidateTimeline(document.Timeline, layerIds.Concat(lightIds).Concat(shotIds));
         ValidateSceneLightTimeline(document.Timeline, document.Lights, expectedSceneId);
+        ValidateSceneShotTimeline(document.Timeline, document.Shots, expectedSceneId);
+    }
+
+    private static string[] ValidateSceneShots(
+        IReadOnlyList<SceneShotSnapshot>? shots,
+        string sceneId)
+    {
+        if (shots is null || shots.Count > MaxSceneShots)
+        {
+            throw new InvalidDataException($"Scene '{sceneId}' has invalid shot metadata.");
+        }
+        if (shots.Count == 0) return [];
+
+        ValidateUniqueIds(shots.Select(item => item?.Id), "scene shot");
+        foreach (var shot in shots)
+        {
+            if (shot is null
+                || !IsSafeStableId(shot.Id)
+                || string.IsNullOrWhiteSpace(shot.Name)
+                || shot.Name.Length > SceneShotDefinition.MaximumNameLength
+                || (shot.Detail?.Length ?? 0) > SceneShotDefinition.MaximumDetailLength
+                || shot.StateKeyframes is null
+                || !shot.Settings.IsValid
+                || shot.DurationFrames < SceneShotDefinition.MinimumDurationFrames
+                || shot.DurationFrames > SceneShotDefinition.MaximumDurationFrames)
+            {
+                throw new InvalidDataException($"Scene '{sceneId}' has an invalid shot.");
+            }
+
+            var previousFrame = 0;
+            foreach (var keyframe in shot.StateKeyframes)
+            {
+                if (keyframe.Frame <= previousFrame
+                    || keyframe.Frame < 1
+                    || !keyframe.Settings.IsValid)
+                {
+                    throw new InvalidDataException(
+                        $"Scene '{sceneId}' has an invalid shot framing keyframe.");
+                }
+
+                previousFrame = keyframe.Frame;
+            }
+        }
+
+        return shots.Select(shot => shot.Id).ToArray();
+    }
+
+    /// <summary>A shot framing column must start at frame zero, use Classic spans and own every state keyframe.</summary>
+    private static void ValidateSceneShotTimeline(
+        AnimationTimelineSnapshot timeline,
+        IReadOnlyList<SceneShotSnapshot>? shots,
+        string sceneId)
+    {
+        if (shots is null || shots.Count == 0) return;
+        var tracks = timeline.Tracks.ToDictionary(track => track.TargetId, StringComparer.Ordinal);
+        foreach (var shot in shots)
+        {
+            var stateKeyframes = shot.StateKeyframes ?? [];
+            if (!tracks.TryGetValue(shot.Id, out var track))
+            {
+                if (stateKeyframes.Length > 0)
+                {
+                    throw new InvalidDataException(
+                        $"Scene '{sceneId}' has shot framing animation without a timeline track.");
+                }
+
+                continue;
+            }
+
+            if (track.Keyframes.Length == 0
+                || track.Keyframes[0].Frame != 0
+                || (track.Tweens ?? []).Any(tween => tween.Kind != TimelineTweenKind.Classic))
+            {
+                throw new InvalidDataException($"Scene '{sceneId}' has an invalid shot timeline track.");
+            }
+
+            var populatedFrames = track.Keyframes
+                .Where(keyframe => keyframe.Kind == TimelineKeyframeKind.Populated)
+                .Select(keyframe => keyframe.Frame)
+                .ToHashSet();
+            if (stateKeyframes.Any(keyframe =>
+                    keyframe.Frame >= track.Duration
+                    || !populatedFrames.Contains(keyframe.Frame)))
+            {
+                throw new InvalidDataException(
+                    $"Scene '{sceneId}' has a shot framing keyframe without a populated timeline keyframe.");
+            }
+        }
     }
 
     private static (string[] LayerIds, string[] ContentLayerIds) ValidateSceneLayerSnapshot(
@@ -1429,6 +1526,7 @@ internal static class ProjectVaultStore
                     instance.Alpha, instance.TintArgb,
                     instance.PlaybackFps, instance.PlaybackMode, instance.HoldFrame)
                 || !IsValidDistortion(instance.Distortion)
+                || !instance.Filters.IsValid
                 || instance.OpticalMaterialOverride is { IsValid: false })
             {
                 throw new InvalidDataException($"An instance in {owner} is invalid.");
@@ -1443,7 +1541,8 @@ internal static class ProjectVaultStore
                         state.RotationPivot, state.ScalePivot,
                         state.Alpha, state.TintArgb,
                         state.PlaybackFps, state.PlaybackMode, state.HoldFrame)
-                    || !IsValidDistortion(state.Distortion))
+                    || !IsValidDistortion(state.Distortion)
+                    || !state.Filters.IsValid)
                 {
                     throw new InvalidDataException($"An instance state keyframe in {owner} is invalid.");
                 }
@@ -2352,6 +2451,10 @@ internal static class ProjectVaultStore
         public AnimationTimelineSnapshot Timeline { get; init; } = new();
         public InstanceRestartSnapshot[] Instances { get; init; } = [];
         public SceneLightRestartSnapshot[]? Lights { get; init; }
+        public SceneShotSnapshot[] Shots { get; init; } = [];
+        public bool OnionSkinEnabled { get; init; }
+        public int OnionSkinPreviousFrames { get; init; } = VectorScene.DefaultOnionSkinPreviousFrames;
+        public int OnionSkinNextFrames { get; init; } = VectorScene.DefaultOnionSkinNextFrames;
 
         public static SceneTimelineDocument From(SceneRestartSnapshot scene) => new()
         {
@@ -2360,7 +2463,11 @@ internal static class ProjectVaultStore
             Layers = scene.Layers,
             Timeline = scene.Timeline,
             Instances = scene.Instances,
-            Lights = scene.Lights
+            Lights = scene.Lights,
+            Shots = scene.Shots ?? [],
+            OnionSkinEnabled = scene.OnionSkinEnabled,
+            OnionSkinPreviousFrames = scene.OnionSkinPreviousFrames,
+            OnionSkinNextFrames = scene.OnionSkinNextFrames
         };
     }
 }

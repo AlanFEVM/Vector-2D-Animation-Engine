@@ -654,12 +654,7 @@ internal sealed class ModernSlider : Control
             return;
         }
 
-        var now = Stopwatch.GetTimestamp();
-        var elapsedMilliseconds = _lastMotionTimestamp == 0
-            ? _motionTimer.Interval
-            : Math.Clamp(Stopwatch.GetElapsedTime(_lastMotionTimestamp, now).TotalMilliseconds, 1d, 64d);
-        _lastMotionTimestamp = now;
-        var timeScale = (float)(elapsedMilliseconds / _motionTimer.Interval);
+        var timeScale = UiMotion.GetTimeScale(ref _lastMotionTimestamp, _motionTimer.Interval);
         var hoverBlend = 1f - MathF.Pow(0.70f, timeScale);
         var pressBlend = 1f - MathF.Pow(0.66f, timeScale);
         _hoverProgress += (_hoverTarget - _hoverProgress) * hoverBlend;

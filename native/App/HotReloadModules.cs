@@ -49,7 +49,12 @@ internal static class HotReloadModuleResolver
         nameof(MainForm),
         nameof(StageControl),
         nameof(Direct2DStageRenderer),
+        nameof(ShotFramingHandleKind),
+        nameof(ShotFramingHandleHit),
+        nameof(ShotFramingGizmoGeometry),
+        nameof(ShotCameraWireframeHandle),
         nameof(LayerBlendCompositor),
+        nameof(SymbolFilterGpuRasterizer),
         nameof(TimelineStrip),
         nameof(TweenCurveEditorPanel),
         nameof(TweenCurveEditor),
@@ -60,6 +65,11 @@ internal static class HotReloadModuleResolver
         nameof(WorkspaceColorPickerPanel),
         nameof(LayerBlendModePanel),
         nameof(DrawingObjectInstancePanel),
+        nameof(SymbolFiltersPanel),
+        nameof(SymbolFilters),
+        nameof(SymbolBlurFilter),
+        nameof(SymbolGlowFilter),
+        nameof(SymbolShadowFilter),
         nameof(TextSettingsPanel),
         nameof(MaterialEditorPanel),
         nameof(SceneLightingPanel),
@@ -69,6 +79,7 @@ internal static class HotReloadModuleResolver
         nameof(SceneEditorPanel),
         nameof(LibraryVaultPanel),
         nameof(HierarchyPanel),
+        nameof(ShotDirectorPanel),
         nameof(ReferenceViewPad),
         nameof(WorkspaceTabs),
         nameof(VectorScene),
@@ -83,6 +94,7 @@ internal static class HotReloadModuleResolver
         nameof(ProjectAssetTagData),
         nameof(DrawingObjectDefinition),
         nameof(DrawingObjectInstanceDefinition),
+        nameof(InstanceTimelineMaterialization),
         nameof(SceneObjectInstanceDefinition),
         nameof(SceneDefinition),
         nameof(SceneLightDefinition),
@@ -92,9 +104,15 @@ internal static class HotReloadModuleResolver
         nameof(SceneLayerSnapshot),
         nameof(SceneLayerSnapshotItem),
         nameof(SceneLayerKind),
+        nameof(SceneShotDefinition),
+        nameof(SceneShotAspectRatio),
+        nameof(SceneShotRange),
+        nameof(SceneShotSnapshot),
         nameof(LayerBlendMode),
         nameof(DrawingObjectPlaybackMode),
-        nameof(LineEndpointStyle)
+        nameof(LineEndpointStyle),
+        nameof(CodexBridgeServer),
+        nameof(CodexBridgeProtocol)
     };
 
     public static HotReloadPlan Resolve(Type[]? updatedTypes)
@@ -138,7 +156,15 @@ internal static class HotReloadModuleResolver
     {
         if (typeName is nameof(StageControl)
             or nameof(Direct2DStageRenderer)
+            or nameof(ShotFramingHandleKind)
+            or nameof(ShotFramingHandleHit)
+            or nameof(ShotFramingGizmoGeometry)
+            or nameof(ShotCameraWireframeHandle)
             or nameof(LayerBlendCompositor)
+            or nameof(SymbolFilterRasterizer)
+            or nameof(SymbolFilterGpuRasterizer)
+            or nameof(SymbolFilterPadding)
+            or nameof(LayerFilterBounds)
             or nameof(SceneRenderOrderBuffer)
             or nameof(WorldGridLayout)
             or nameof(PolarGridLayout))
@@ -177,6 +203,15 @@ internal static class HotReloadModuleResolver
             or nameof(SceneEditorPanel)
             or nameof(ReferenceViewPad)
             or nameof(ReferenceViewRequestedEventArgs)
+            or nameof(ShotDirectorPanel)
+            or nameof(ShotDirectorState)
+            or nameof(ShotDirectorItem)
+            or nameof(ShotDirectorLayer)
+            or nameof(ShotDirectorExposure)
+            or nameof(ShotDirectorEventArgs)
+            or nameof(ShotDirectorMoveEventArgs)
+            or nameof(ShotDirectorPropertiesEventArgs)
+            or nameof(ShotDirectorLayerEventArgs)
             or nameof(WorkspaceTabs))
         {
             return HotReloadModule.Workspace;
@@ -192,6 +227,7 @@ internal static class HotReloadModuleResolver
             or nameof(TweenCurveEditor)
             or nameof(TextSettingsPanel)
             or nameof(SvgIcons)
+            or nameof(UiDrawingHelpers)
             or nameof(SvgIconButton)
             or nameof(ThemedScrollPanel)
             or nameof(ColorComponentSlider)
@@ -212,6 +248,8 @@ internal static class HotReloadModuleResolver
             or nameof(ShapeSettingsPanel)
             or nameof(LayerBlendModePanel)
             or nameof(DrawingObjectInstancePanel)
+            or nameof(SymbolFiltersPanel)
+            or nameof(SymbolFiltersChangedEventArgs)
             or nameof(SpatialTransformPanel)
             or nameof(SpatialTransformValues)
             or nameof(SpatialTransformValuesChangedEventArgs)
@@ -232,6 +270,7 @@ internal static class HotReloadModuleResolver
             or nameof(ModernDialogForm)
             or nameof(ModernMessageDialog)
             or nameof(ProfessionalColorPickerDialog)
+            or nameof(ColorPickerSupport)
             or nameof(DashDock)
             or nameof(WorkspaceColorFlyout)
             or nameof(WorkspaceColorPickerPanel)
@@ -239,6 +278,9 @@ internal static class HotReloadModuleResolver
             or nameof(ReleaseNotesDialog)
             or nameof(ReleaseNotesPanel)
             or nameof(SettingsDialog)
+            or nameof(CodexIntegrationPanel)
+            or nameof(CodexBridgeServer)
+            or nameof(CodexBridgeProtocol)
             or nameof(ShortcutProfileEditorPanel)
             or nameof(UiLocalization)
             or nameof(Theme)
@@ -252,6 +294,12 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(VectorScene)
+            or nameof(SymbolFilters)
+            or nameof(SymbolBlurFilter)
+            or nameof(SymbolGlowFilter)
+            or nameof(SymbolEdgeFilter)
+            or nameof(SymbolShadowFilter)
+            or nameof(SymbolFilterValidation)
             or nameof(VectorProject)
             or nameof(ProjectAssetFolder)
             or nameof(ProjectAssetTag)
@@ -280,6 +328,7 @@ internal static class HotReloadModuleResolver
             or nameof(DrawingObjectDefinition)
             or nameof(InstanceFrameState)
             or nameof(DrawingObjectInstanceDefinition)
+            or nameof(InstanceTimelineMaterialization)
             or nameof(DrawingObjectPlaybackMode)
             or nameof(SceneDefinition)
             or nameof(SceneLightDefinition)
@@ -290,6 +339,10 @@ internal static class HotReloadModuleResolver
             or nameof(SceneLayerSnapshot)
             or nameof(SceneLayerSnapshotItem)
             or nameof(SceneLayerKind)
+            or nameof(SceneShotDefinition)
+            or nameof(SceneShotAspectRatio)
+            or nameof(SceneShotRange)
+            or nameof(SceneShotSnapshot)
             or nameof(SceneObjectInstanceDefinition)
             or nameof(ICompositionDefinition))
         {

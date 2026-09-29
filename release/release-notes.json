@@ -2,6 +2,45 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "0.2.6",
+      "releaseDate": "2026-09-30",
+      "showInApplication": true,
+      "locales": {
+        "en": {
+          "title": "Version 0.2.6",
+          "summary": "New camera workflows, symbol effects and asset sharing, with rendering and usability improvements.",
+          "sections": [
+            {
+              "heading": "Highlights",
+              "items": [
+                "Added Shots & Directing with multiple cameras, framing controls and camera keyframe tweens.",
+                "Added symbol filters including blur, glow, shadow and bevel, with GPU acceleration.",
+                "Added standalone SVG export and import/export of editable .V2DSymbol packages.",
+                "Added a local Codex / MCP interface for project editing and animation bundle import.",
+                "Improved 2D/3D playback, lighting and SVG rendering, and refined zoom, color controls and interface feedback."
+              ]
+            }
+          ]
+        },
+        "zh-CN": {
+          "title": "版本 0.2.6",
+          "summary": "新增镜头工作流、元件滤镜与素材共享，优化渲染和操作体验。",
+          "sections": [
+            {
+              "heading": "版本亮点",
+              "items": [
+                "新增「镜头与导演」工作区，支持多相机、可视化构图与镜头关键帧补间。",
+                "新增元件模糊、发光、投影、斜角等滤镜，支持 GPU 加速。",
+                "支持独立 SVG 导出，以及可编辑 .V2DSymbol 元件包的导入与导出。",
+                "新增本地 Codex / MCP 接口，支持工程编辑与动画包导入。",
+                "优化 2D/3D 播放、光照与 SVG 渲染，改善缩放、颜色控件及界面提示。"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "version": "0.2.1",
       "releaseDate": "2026-09-07",
       "showInApplication": true,

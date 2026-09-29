@@ -50,6 +50,13 @@ internal sealed record ApplicationSettings
     public TimelineFrameHeightPreset TimelineFrameHeight { get; init; } = TimelineFrameHeightPreset.Medium;
     public bool TimelineAutoKeyframeEnabled { get; init; } = false;
     public int WorkspaceColorArgb { get; init; } = DefaultWorkspaceColorArgb;
+    /// <summary>Enables the loopback JSON-RPC bridge used by Codex and MCP clients.</summary>
+    public bool CodexIntegrationEnabled { get; init; } = false;
+    public bool CodexIntegrationAllowChanges { get; init; } = false;
+    /// <summary>TCP port for the loopback Codex bridge. Port zero is not persisted.</summary>
+    public int CodexIntegrationPort { get; init; } = 43521;
+    /// <summary>Optional bearer token. An empty value keeps the bridge local-only without a token.</summary>
+    public string CodexIntegrationAuthToken { get; init; } = "";
 }
 
 internal static class ApplicationSettingsStore
@@ -146,8 +153,17 @@ internal static class ApplicationSettingsStore
             AccentBrightnessPercent = NormalizeBrightnessPercent(settings.AccentBrightnessPercent),
             TimelineFrameWidth = Math.Clamp(settings.TimelineFrameWidth, 8, 32),
             TimelineFrameHeight = frameHeight,
-            WorkspaceColorArgb = OpaqueArgb(settings.WorkspaceColorArgb)
+            WorkspaceColorArgb = OpaqueArgb(settings.WorkspaceColorArgb),
+            CodexIntegrationPort = Math.Clamp(settings.CodexIntegrationPort, 1024, 65535),
+            CodexIntegrationAuthToken = NormalizeAuthToken(settings.CodexIntegrationAuthToken)
         };
+    }
+
+    private static string NormalizeAuthToken(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return "";
+        var normalized = token.Trim();
+        return normalized.Length <= 256 ? normalized : normalized[..256];
     }
 
     internal static int NormalizeHueDegrees(int hueDegrees)

@@ -6,7 +6,10 @@ internal enum WorkspaceView
 {
     BasicDrawing,
     SceneEditor,
-    Animation
+    Animation,
+
+    /// <summary>Camera list, independent camera tracks and continuous scene timeline presentation.</summary>
+    ShotDirector
 }
 
 internal enum WorkspaceTabPlacement
@@ -156,8 +159,12 @@ internal sealed class WorkspaceTabs : UserControl
         _gridControls.Controls.Add(_gridOpacityValue, 3, 0);
         Controls.Add(_gridControls);
 
-        AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Shape drawing and direct object editing");
-        AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene Building", "Scene assembly, animation and keyframe workflow");
+        AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Start here: draw and edit a reusable symbol.");
+        AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene & Animation", "Arrange symbols in a scene, then animate them with keyframes.");
+        AddWorkspaceButton(
+            WorkspaceView.ShotDirector,
+            "Shots & Directing",
+            "Set up cameras and frame your shots on the scene timeline.");
 
         _indicatorTimer.Tick += (_, _) => TickIndicator();
         RefreshGridTypePresentation();
@@ -219,6 +226,17 @@ internal sealed class WorkspaceTabs : UserControl
     }
 
     public void SelectView(WorkspaceView view) => SelectView(view, raiseEvent: true);
+
+    public bool TrySelectWorkspaceShortcut(Keys keyData)
+    {
+        var index = ShortcutProfiles.GetWorkspaceShortcutIndex(keyData);
+        if (index < 0) return false;
+
+        // Use visible workspace registration order, not enum values (Animation is a legacy alias).
+        // Unassigned Ctrl+1..9 slots stay reserved for future workspace modules.
+        if (index < _buttons.Count) SelectView(_buttons.Keys.ElementAt(index));
+        return true;
+    }
 
     protected override void OnResize(EventArgs e)
     {
@@ -311,6 +329,7 @@ internal sealed class WorkspaceTabs : UserControl
         Theme.StyleSegmentedButton(button);
         button.Click += (_, _) => SelectView(view, raiseEvent: true);
         button.KeyDown += HandleWorkspaceButtonKeyDown;
+        button.MouseEnter += (_, _) => EnsureLocalizedAccessibility();
         _toolTip.SetToolTip(button, tip);
         _buttons[view] = button;
         _buttonLabels[view] = text;
@@ -571,13 +590,16 @@ internal sealed class WorkspaceTabs : UserControl
     private void RefreshAccessibility()
     {
         _accessibilityLanguage = UiLocalization.CurrentLanguage;
+        var shortcutIndex = 1;
         foreach (var (view, button) in _buttons)
         {
             button.AccessibleName = UiLocalization.T(_buttonLabels[view]);
-            var description = UiLocalization.T(_buttonDescriptions[view]);
+            var description = UiLocalization.T(_buttonDescriptions[view])
+                + Environment.NewLine + "Ctrl+" + shortcutIndex++;
             button.AccessibleDescription = view == _selectedView
                 ? $"{UiLocalization.T("Selected: ")}{description}"
                 : description;
+            _toolTip.SetToolTip(button, button.AccessibleDescription);
         }
 
         var gridType = _worldGridType switch

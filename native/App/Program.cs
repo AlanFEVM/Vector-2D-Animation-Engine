@@ -14,6 +14,7 @@ internal static class Program
             ["--bench-pressure"] = new("Running pressure brush benchmark", Benchmark.RunPressureBrushRegression),
             ["--bench-timeline"] = new("Running timeline regression benchmark", Benchmark.RunTimelineRegression),
             ["--bench-render"] = new("Running stage renderer regression benchmark", Benchmark.RunStageRendererRegression),
+            ["--bench-gpu-optics"] = new("Running GPU optical parity benchmark", Benchmark.RunGpuOpticsRegression),
             ["--bench-collision"] = new("Running collision-project performance benchmark", Benchmark.RunCollisionProjectPerformance)
         };
 
@@ -108,7 +109,11 @@ internal static class Program
     {
         if (args.Count == 0 || !BenchmarkCommands.TryGetValue(args[0], out var command)) return false;
         AppLog.Info(command.LogMessage);
-        command.Execute();
+        var priorGpu = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        if (!string.Equals(args[0], "--bench-gpu-optics", StringComparison.OrdinalIgnoreCase))
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", "1");
+        try { command.Execute(); }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", priorGpu); }
         return true;
     }
 

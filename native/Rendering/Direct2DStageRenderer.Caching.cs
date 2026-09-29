@@ -20,6 +20,10 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 {
     private void ResetTarget()
     {
+        ClearSoftwareFramePresentation();
+        ClearGpuOpticalSurfaces();
+        _gpuOpticalShader?.Dispose();
+        _gpuOpticalShader = null;
         DisposeWorkspacePreRenderTarget();
         ClearBaseFrameCache();
         ClearReference3DWorkspaceFrameCache();
@@ -48,7 +52,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         ClearImportedSvgBitmapCache();
         _shapeGradientMaskLayer?.Dispose();
         _shapeGradientMaskLayer = null;
-        _target?.Dispose();
+        ClearBatch2DLayerCache();
+        _deviceContext2?.Dispose();
+        _deviceContext2 = null;
+        if (_gpuDevice is null) _target?.Dispose();
+        _gpuDevice?.Dispose();
+        _gpuDevice = null;
         _target = null;
         _targetSize = default;
         _targetHwnd = IntPtr.Zero;

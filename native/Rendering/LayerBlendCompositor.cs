@@ -12,16 +12,24 @@ internal sealed class LayerBlendCompositor : IDisposable
     private readonly List<Bitmap> _surfaces = [];
     private readonly int[] _destinationPixels;
     private readonly int[] _sourcePixels;
+    private readonly SymbolFilterGpuRasterizer _filterAccelerator = new();
+    private readonly Dictionary<Bitmap, Rectangle> _filterBounds = new();
 
-    public LayerBlendCompositor(Size size)
+    public LayerBlendCompositor(Size size, SymbolFilterPadding padding = default, float filterPixelScale = 1f)
     {
-        _width = Math.Max(1, size.Width);
-        _height = Math.Max(1, size.Height);
-        _destinationPixels = new int[_width * _height];
-        _sourcePixels = new int[_width * _height];
+        Size = new Size(Math.Max(1, size.Width), Math.Max(1, size.Height));
+        Padding = padding;
+        FilterPixelScale = filterPixelScale;
+        _width = checked(Size.Width + padding.Left + padding.Right);
+        _height = checked(Size.Height + padding.Top + padding.Bottom);
+        _destinationPixels = new int[checked(_width * _height)];
+        _sourcePixels = new int[checked(_width * _height)];
     }
 
-    public Size Size => new(_width, _height);
+    public Size Size { get; }
+    public Size SurfaceSize => new(_width, _height);
+    public SymbolFilterPadding Padding { get; }
+    public float FilterPixelScale { get; }
 
     public void CompositeTo(Graphics destination, VectorScene scene, Action<Graphics, int> drawLayer)
     {
@@ -34,7 +42,7 @@ internal sealed class LayerBlendCompositor : IDisposable
         {
             var children = BuildLayerTree(scene);
             CompositeChildren(scene, children, scene.LayerCount, root, drawLayer);
-            destination.DrawImageUnscaled(root, 0, 0);
+            destination.DrawImageUnscaled(root, -Padding.Left, -Padding.Top);
         }
         finally
         {
@@ -67,7 +75,7 @@ internal sealed class LayerBlendCompositor : IDisposable
                 shouldDrawLayer,
                 drawLayers);
             FlushLayerBatch(root, pendingLayers, drawLayers, $"root:{scene.LayerCount}");
-            destination.DrawImageUnscaled(root, 0, 0);
+            destination.DrawImageUnscaled(root, -Padding.Left, -Padding.Top);
         }
         finally
         {
@@ -127,6 +135,7 @@ internal sealed class LayerBlendCompositor : IDisposable
                     drawLayer(graphics, layer);
                 }
 
+                ApplyFilters(source, scene.GetLayerSymbolFilters(layer));
                 CompositeSurface(
                     destination,
                     source,
@@ -156,7 +165,8 @@ internal sealed class LayerBlendCompositor : IDisposable
             var layer = siblings[siblingIndex];
             if (!LayerIsVisible(scene, layer)) continue;
             var isFolder = scene.GetLayerKind(layer) == DrawingLayerKind.Folder;
-            if (isFolder && BlendModeFor(scene, layer) == LayerBlendMode.Normal)
+            if (isFolder && BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && !scene.GetLayerSymbolFilters(layer).HasEnabled)
             {
                 AppendChildrenBatched(
                     scene,
@@ -190,6 +200,7 @@ internal sealed class LayerBlendCompositor : IDisposable
                         isolatedPendingLayers,
                         drawLayers,
                         $"folder:{layer}");
+                    ApplyFilters(folderSurface, scene.GetLayerSymbolFilters(layer));
                     CompositeSurface(
                         destination,
                         folderSurface,
@@ -205,7 +216,7 @@ internal sealed class LayerBlendCompositor : IDisposable
             }
 
             if (!shouldDrawLayer(layer)) continue;
-            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal)
+            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal && !scene.GetLayerSymbolFilters(layer).HasEnabled)
             {
                 pendingLayers.Add(layer);
                 continue;
@@ -219,6 +230,8 @@ internal sealed class LayerBlendCompositor : IDisposable
                 ConfigureLayerGraphics(graphics);
                 drawLayers(graphics, [layer]);
 
+                graphics.Flush();
+                ApplyFilters(layerSurface, scene.GetLayerSymbolFilters(layer));
                 CompositeSurface(
                     destination,
                     layerSurface,
@@ -289,7 +302,8 @@ internal sealed class LayerBlendCompositor : IDisposable
             var layer = siblings[siblingIndex];
             if (!LayerIsVisible(scene, layer)) continue;
             var isFolder = scene.GetLayerKind(layer) == DrawingLayerKind.Folder;
-            if (isFolder && BlendModeFor(scene, layer) == LayerBlendMode.Normal)
+            if (isFolder && BlendModeFor(scene, layer) == LayerBlendMode.Normal
+                && !scene.GetLayerSymbolFilters(layer).HasEnabled)
             {
                 AppendSpatialLayerBatches(
                     scene,
@@ -318,7 +332,7 @@ internal sealed class LayerBlendCompositor : IDisposable
             }
 
             if (!shouldDrawLayer(layer)) continue;
-            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal)
+            if (BlendModeFor(scene, layer) == LayerBlendMode.Normal && !scene.GetLayerSymbolFilters(layer).HasEnabled)
             {
                 pendingLayers.Add(layer);
                 continue;
@@ -374,11 +388,18 @@ internal sealed class LayerBlendCompositor : IDisposable
         return children;
     }
 
+    private void ApplyFilters(Bitmap surface, SymbolFilters filters)
+    {
+        var bounds = SymbolFilterRasterizer.Apply(surface, filters, FilterPixelScale, _filterAccelerator);
+        if (bounds.HasValue) _filterBounds[surface] = bounds.Value;
+    }
+
     private Bitmap RentSurface()
     {
         var surface = _availableSurfaces.Count > 0
             ? _availableSurfaces.Pop()
             : CreateSurface();
+        _filterBounds.Remove(surface);
         using var graphics = Graphics.FromImage(surface);
         graphics.CompositingMode = CompositingMode.SourceCopy;
         graphics.Clear(Color.Transparent);
@@ -394,12 +415,13 @@ internal sealed class LayerBlendCompositor : IDisposable
 
     private void ReturnSurface(Bitmap surface) => _availableSurfaces.Push(surface);
 
-    private static void ConfigureLayerGraphics(Graphics graphics)
+    private void ConfigureLayerGraphics(Graphics graphics)
     {
         graphics.CompositingMode = CompositingMode.SourceOver;
         graphics.CompositingQuality = CompositingQuality.HighQuality;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        graphics.TranslateTransform(Padding.Left, Padding.Top);
     }
 
     private static LayerBlendMode BlendModeFor(VectorScene scene, int layer)
@@ -437,6 +459,20 @@ internal sealed class LayerBlendCompositor : IDisposable
         uint dissolveSeed)
     {
         if (opacity <= 0f) return;
+        if (mode == LayerBlendMode.Normal && opacity == 1f)
+        {
+            // Native premultiplied SourceOver avoids three full-surface managed
+            // copies, per-pixel unpremultiplication and a Parallel.For barrier.
+            using var graphics = Graphics.FromImage(destination);
+            graphics.CompositingMode = CompositingMode.SourceOver;
+            graphics.CompositingQuality = CompositingQuality.HighSpeed;
+            if (_filterBounds.TryGetValue(source, out var affected))
+            {
+                if (!affected.IsEmpty) graphics.DrawImage(source, affected.X, affected.Y, affected, GraphicsUnit.Pixel);
+            }
+            else graphics.DrawImageUnscaled(source, 0, 0);
+            return;
+        }
 
         var width = destination.Width;
         var height = destination.Height;
@@ -754,6 +790,8 @@ internal sealed class LayerBlendCompositor : IDisposable
 
     public void Dispose()
     {
+        _filterAccelerator.Dispose();
+        _filterBounds.Clear();
         foreach (var surface in _surfaces) surface.Dispose();
         _surfaces.Clear();
         _availableSurfaces.Clear();

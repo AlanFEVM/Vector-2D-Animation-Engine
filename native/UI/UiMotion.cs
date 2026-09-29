@@ -17,6 +17,17 @@ internal static class UiMotion
     public static bool AnimationsEnabled =>
         SystemInformation.IsMenuAnimationEnabled && !SystemInformation.HighContrast;
 
+    // Preserve one timestamp per tick and the existing elapsed-time limits across controls.
+    internal static float GetTimeScale(ref long lastTimestamp, int intervalMilliseconds)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var elapsedMilliseconds = lastTimestamp == 0
+            ? intervalMilliseconds
+            : Math.Clamp(Stopwatch.GetElapsedTime(lastTimestamp, now).TotalMilliseconds, 1d, 64d);
+        lastTimestamp = now;
+        return (float)(elapsedMilliseconds / intervalMilliseconds);
+    }
+
     public static void ConfigureButton(Button button, Color normal, Color hover, Color pressed, bool active)
     {
         ArgumentNullException.ThrowIfNull(button);
@@ -147,12 +158,8 @@ internal static class UiMotion
                 return false;
             }
 
-            var now = Stopwatch.GetTimestamp();
-            var elapsedMilliseconds = _lastStepTimestamp == 0
-                ? Timer.Interval
-                : Math.Clamp(Stopwatch.GetElapsedTime(_lastStepTimestamp, now).TotalMilliseconds, 1d, 64d);
-            _lastStepTimestamp = now;
-            var blend = 1f - MathF.Pow(0.70f, (float)(elapsedMilliseconds / Timer.Interval));
+            var timeScale = UiMotion.GetTimeScale(ref _lastStepTimestamp, Timer.Interval);
+            var blend = 1f - MathF.Pow(0.70f, timeScale);
             var previousColor = _current;
             var previousHover = _hoverProgress;
             _current = Mix(_current, _target, blend);

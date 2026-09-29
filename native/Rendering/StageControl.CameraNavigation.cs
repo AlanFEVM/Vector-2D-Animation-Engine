@@ -7,6 +7,13 @@ internal sealed partial class StageControl
     internal const float ReferenceWheelDollyBase = 0.9f;
     private const float ReferencePixelDollyExponent = 0.012f;
 
+    /// <summary>
+    /// Framing distance of a reference camera at its default framing (100% zoom). A perspective 3D
+    /// view zooms by changing the distance, so the distance is converted back to a percentage against
+    /// this baseline for the workbench zoom readout.
+    /// </summary>
+    internal const float DefaultReferenceDistance = 12_000f;
+
     private float ReferenceWorldUnitsPerPixel()
     {
         var screenScale = ReferenceProjectionScale * _referenceZoomScale;

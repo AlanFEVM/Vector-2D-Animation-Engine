@@ -66,7 +66,8 @@ internal sealed partial class MainForm : Form
                 drawingObject is not null && selectedSceneInstances.All(instance =>
                     string.Equals(instance.DrawingObjectId, drawingObject.Id, StringComparison.Ordinal)),
                 selectedSceneInstanceStates.Any(state => Math.Abs(state.Alpha - sceneInstanceState.Alpha) > 0.0001f),
-                selectedSceneInstanceStates.Any(state => state.TintArgb != sceneInstanceState.TintArgb));
+                selectedSceneInstanceStates.Any(state => state.TintArgb != sceneInstanceState.TintArgb),
+                selectedSceneInstanceStates.Any(state => state.Filters != sceneInstanceState.Filters));
             var drawingLayer = Array.IndexOf(_scene.LayerIds, sceneInstance.SceneLayerId);
             var layerName = IsSceneCompositionContext()
                 ? ActiveScene()?.FindLayer(sceneInstance.SceneLayerId)?.Name
@@ -927,6 +928,8 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.BindScene(_scene, () => _selectedObject);
         _libraryVaultPanel.SetActiveDrawingObject(ActiveDrawingObject()?.Id);
         if (_vaultDrawerOpen) _libraryVaultPanel.RefreshProjectObjects();
+        UpdateShotDirectorWorkspace();
+        RefreshShotDirector(force: true);
     }
 
     private static void InvalidateControlTree(Control control)
@@ -939,12 +942,22 @@ internal sealed partial class MainForm : Form
     {
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
         if (!CommitTextEdit()) return;
+        if (view != _workspaceTabs.SelectedView)
+        {
+            // Playback owns the reference-projection scene and its background
+            // worker. Stop it before rebinding the Stage to another workspace;
+            // otherwise Basic Drawing can inherit a stale playback state and
+            // never receive a valid paint after the switch.
+            StopPlayback();
+        }
         FinishPointerInteractionForContextChange();
         HideToolFlyouts();
         _toolTip.HideTip();
         if (view != WorkspaceView.BasicDrawing) HideBrushColorPalette();
         var basicDrawing = view == WorkspaceView.BasicDrawing;
         var sceneEdit = view == WorkspaceView.SceneEditor;
+        var shotDirector = view == WorkspaceView.ShotDirector;
+        var sceneWorkspace = sceneEdit || shotDirector;
         var inspector = _basicInspectorPage.Parent;
         SuspendLayout();
         inspector?.SuspendLayout();
@@ -952,22 +965,35 @@ internal sealed partial class MainForm : Form
         _sceneEditPage.SuspendContentLayout();
         try
         {
-            PlaceDrawingObjectInstancePanel(sceneEdit);
+            PlaceDrawingObjectInstancePanel(sceneWorkspace);
             _workspaceHeader.Height = basicDrawing ? 74 : 38;
             _drawingObjectRow.Visible = basicDrawing;
-            _sceneDimensionButton.Visible = sceneEdit;
+            _sceneDimensionButton.Visible = sceneWorkspace;
             _timeline.Visible = true;
+            UpdateShotDirectorWorkspace(view);
             if (basicDrawing)
             {
                 BindActiveDrawingObjectScene(resetView: false);
             }
-            else if (sceneEdit)
+            else if (sceneWorkspace)
             {
                 BindSceneEditStage(resetView: false);
             }
             UpdateSceneDimensionButton();
+            // Pass the scene for every scene workspace so the filter can decide presentation itself:
+            // the Shots workspace shows only camera tracks, while Scene & Animation hides them.
+            ApplyShotTimelineFilter(sceneWorkspace ? ActiveScene() : null);
 
             if (!basicDrawing && !IsSceneMaskEditing() && IsBasicDrawingOnlyTool(_tool))
+            {
+                _tool = ToolMode.Select;
+                CancelTraditionalPenPath();
+                CancelPenCurve();
+                CancelFreehandStroke();
+                _stage.ClearDrawingPreview();
+            }
+
+            if (shotDirector && _tool is not (ToolMode.Select or ToolMode.Hand))
             {
                 _tool = ToolMode.Select;
                 CancelTraditionalPenPath();
@@ -989,6 +1015,9 @@ internal sealed partial class MainForm : Form
             _basicInspectorPage.Visible = basicDrawing;
             _sceneEditPage.Visible = sceneEdit;
             _animationPage.Visible = false;
+            // The director page owns the entire right inspector while active; the shared layer
+            // blend strip belongs to drawing/scene inspection and must not remain above it.
+            _layerBlendModePanel.Visible = !shotDirector;
             UpdateSceneSpatialControlsVisibility();
             UpdateSpatialTransformPanelState();
             RefreshSceneOpticsInspector();
@@ -996,7 +1025,7 @@ internal sealed partial class MainForm : Form
         finally
         {
             _basicInspectorPage.ResumeContentLayout(performLayout: basicDrawing);
-            _sceneEditPage.ResumeContentLayout(performLayout: sceneEdit);
+            _sceneEditPage.ResumeContentLayout(performLayout: sceneWorkspace);
             inspector?.ResumeLayout(performLayout: true);
             ResumeLayout(performLayout: true);
         }
@@ -1119,6 +1148,12 @@ internal sealed partial class MainForm : Form
     internal static bool IsToolVisibleInWorkspace(WorkspaceView view, ToolMode tool)
     {
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
+        // Shots & Directing is a camera-only stage. Camera wireframe handles are routed separately
+        // from the normal scene selection/transform tools, so only navigation tools remain visible.
+        if (view == WorkspaceView.ShotDirector)
+        {
+            return tool is ToolMode.Select or ToolMode.Hand;
+        }
         if (tool == ToolMode.Transform3D) return view == WorkspaceView.SceneEditor;
         return view == WorkspaceView.BasicDrawing || !IsBasicDrawingOnlyTool(tool);
     }
@@ -1131,6 +1166,7 @@ internal sealed partial class MainForm : Form
             return tool != ToolMode.Transform3D;
         }
         if (!IsToolVisibleInWorkspace(workspace, tool)) return false;
+        if (workspace == WorkspaceView.ShotDirector) return true;
         if (workspace != WorkspaceView.SceneEditor) return true;
         return IsSceneReferenceView()
                 ? IsScene3DView()
@@ -1765,7 +1801,7 @@ internal sealed partial class MainForm : Form
     }
 
     internal static bool IsCanvasShortcutBlockingInteractiveControl(Control control)
-        => control is ButtonBase or ListControl or TreeView or ListView or ModernSlider;
+        => control is ButtonBase or ListControl or TreeView or ListView or ModernSlider or ShotDirectorPanel;
 
     private static bool ContainsFocusedButton(Control control)
     {

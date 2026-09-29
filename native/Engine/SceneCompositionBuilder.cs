@@ -151,6 +151,7 @@ internal static class SceneCompositionBuilder
         DistortWarp[]? Distortions = null)
     {
         public bool IsCollisionTerrain { get; init; }
+        public SymbolFilters Filters { get; init; }
     }
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
@@ -366,9 +367,9 @@ internal static class SceneCompositionBuilder
             synchronize: false,
             inheritedOutline: hostOutline,
             inheritedOutlineColorArgb: hostOutline ? container.Scene.LayerColorArgb[hostLayer] : 0);
-        if (layers.Any(layer => layer.Source.HasLayerEffects))
+        if (layers.Any(layer => layer.Source.HasLayerEffects || layer.Filters.HasEnabled))
         {
-            throw new InvalidDataException("Break Apart cannot flatten symbols that use folders, masks, or blend modes.");
+            throw new InvalidDataException("Break Apart cannot flatten symbols that use folders, masks, blend modes, or filters.");
         }
 
         var vectorizedSources = new Dictionary<SourceFrameKey, VectorScene>();
@@ -512,6 +513,78 @@ internal static class SceneCompositionBuilder
             if (preview.ObjectCount > 0) previews.Add((preview, candidate.Opacity, candidate.IsPrevious));
         }
         destination.CombineOnionSkinPreviews(previews);
+    }
+
+    /// <summary>
+    /// Builds the onion-skin preview for a scene composition. Every requested
+    /// neighbouring frame is composed through <see cref="Build"/> and tinted by
+    /// <see cref="VectorScene.CombineOnionSkinPreviews"/>. Neighbouring frames
+    /// that resolve to the same layer exposures as the current frame are skipped
+    /// so a held Cel is not drawn twice.
+    /// </summary>
+    public static void BuildSceneOnionSkin(
+        VectorScene destination,
+        SceneDefinition? sceneDefinition,
+        IReadOnlyList<DrawingObjectDefinition> drawingObjects,
+        int frame,
+        decimal parentFps = 30m)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(drawingObjects);
+        if (sceneDefinition is null || !sceneDefinition.HasOnionSkinPreviewEnabled)
+        {
+            destination.CreateEmpty();
+            return;
+        }
+
+        sceneDefinition.SynchronizeTimelineTracks();
+        var timeline = sceneDefinition.Timeline;
+        var lastFrame = Math.Max(0, sceneDefinition.FrameCount - 1);
+        var currentFrame = Math.Clamp(frame, 0, lastFrame);
+        var previews = new List<(VectorScene Scene, float Opacity, bool? IsPrevious)>();
+        for (var offset = sceneDefinition.OnionSkinPreviousFrames; offset >= 1; offset--)
+        {
+            AddPreview(currentFrame - offset, offset, isPrevious: true);
+        }
+
+        for (var offset = 1; offset <= sceneDefinition.OnionSkinNextFrames; offset++)
+        {
+            AddPreview(currentFrame + offset, offset, isPrevious: false);
+        }
+
+        destination.CombineOnionSkinPreviews(previews);
+        return;
+
+        void AddPreview(int previewFrame, int offset, bool isPrevious)
+        {
+            if (previewFrame < 0 || previewFrame > lastFrame) return;
+            if (!HasDifferentLayerExposure(sceneDefinition, timeline, currentFrame, previewFrame)) return;
+            var preview = new VectorScene();
+            Build(preview, sceneDefinition, drawingObjects, previewFrame, parentFps);
+            if (preview.ObjectCount == 0) return;
+            previews.Add((preview, 0.18f + 0.32f / offset, isPrevious));
+        }
+    }
+
+    private static bool HasDifferentLayerExposure(
+        SceneDefinition sceneDefinition,
+        AnimationTimeline timeline,
+        int currentFrame,
+        int previewFrame)
+    {
+        foreach (var layer in sceneDefinition.Layers)
+        {
+            if (layer.Kind != SceneLayerKind.Content) continue;
+            var current = timeline.EvaluateTargetExposure(layer.Id, currentFrame);
+            var preview = timeline.EvaluateTargetExposure(layer.Id, previewFrame);
+            if (current.HasContent != preview.HasContent
+                || current.SourceKeyframeFrame != preview.SourceKeyframeFrame)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static SceneCompositionResult BuildDrawingObjectChildrenCore(
@@ -699,6 +772,21 @@ internal static class SceneCompositionBuilder
                 parentFps,
                 drawingObject.FrameCount,
                 state);
+            if (state.Filters.HasEnabled && source.LayerCount > 0)
+            {
+                var filterGroupId = Guid.NewGuid().ToString("N");
+                layers.Add(new CompositionLayer(
+                    source, 0, localFrame, $"{path} / Filters", transform, spatialTransform,
+                    spatialIsPlanar, extrusionVector, 1f, 1f, unchecked((int)0xffffffff),
+                    SpatialOpticalMaterial.Default, LayerBlendMode.Normal, inheritedOutline,
+                    inheritedOutlineColorArgb,
+                    new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
+                    SyntheticGroup: true, GroupId: filterGroupId, ParentGroupId: inheritedParentGroupId)
+                {
+                    Filters = state.Filters
+                });
+                inheritedParentGroupId = filterGroupId;
+            }
             for (var sourceLayer = 0; sourceLayer < source.LayerCount; sourceLayer++)
             {
                 if (excludeEffectivelyLockedLayers && source.IsLayerEffectivelyLocked(sourceLayer)) continue;
@@ -800,7 +888,8 @@ internal static class SceneCompositionBuilder
                         synchronize,
                         outline,
                         outlineColorArgb,
-                        hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId,
+                        hostGroupId.Length > 0 ? hostGroupId
+                            : sourceParentGroupId.Length > 0 ? sourceParentGroupId : inheritedParentGroupId,
                         excludeEffectivelyLockedLayers,
                         compositionDistortions);
                 }
@@ -880,6 +969,7 @@ internal static class SceneCompositionBuilder
             GroupId = groupId,
             ParentGroupId = "",
             PreserveSourceParent = false,
+            Filters = default,
             IsCollisionTerrain = false
         });
 
@@ -976,6 +1066,7 @@ internal static class SceneCompositionBuilder
                 ? 1f
                 : Math.Clamp(layer.Source.LayerOpacity[layer.SourceLayer] * layer.InheritedOpacity, 0f, 1f);
             destination.LayerBlendModes[destinationLayer] = layer.BlendMode;
+            destination.SetLayerSymbolFilters(destinationLayer, layer.Filters);
             destination.LayerOutline[destinationLayer] = layer.Outline;
             destination.LayerColorArgb[destinationLayer] = layer.Outline
                 ? layer.OutlineColorArgb
@@ -1524,16 +1615,32 @@ internal static class SceneCompositionBuilder
             var importedAngle = source.Angle[sourceObject];
             if (!identityTransform)
             {
-                var wrapped = WrapImportedSvgTransform(
-                    importedSvgSource,
-                    importedCenter,
-                    importedSize,
-                    importedAngle,
-                    transform);
-                importedSvgSource = wrapped.Source;
-                importedCenter = wrapped.Center;
-                importedSize = wrapped.Size;
-                importedAngle = 0;
+                if (TryPrepareImportedSvgTransform(
+                        importedCenter,
+                        importedSize,
+                        importedAngle,
+                        transform,
+                        out var transformedCenter,
+                        out var transformedSize,
+                        out var transformedAngle))
+                {
+                    importedCenter = transformedCenter;
+                    importedSize = transformedSize;
+                    importedAngle = transformedAngle;
+                }
+                else
+                {
+                    var wrapped = WrapImportedSvgTransform(
+                        importedSvgSource,
+                        importedCenter,
+                        importedSize,
+                        importedAngle,
+                        transform);
+                    importedSvgSource = wrapped.Source;
+                    importedCenter = wrapped.Center;
+                    importedSize = wrapped.Size;
+                    importedAngle = 0;
+                }
             }
             if ((workItem.TintArgb & 0x00ffffff) != 0x00ffffff)
             {
@@ -1929,6 +2036,82 @@ internal static class SceneCompositionBuilder
               <image width="{width:R}" height="{height:R}" preserveAspectRatio="none" href="data:image/svg+xml;base64,{encodedSource}"/>
             </svg>
             """);
+    }
+
+    private static bool TryPrepareImportedSvgTransform(
+        PointF center,
+        SizeF size,
+        float angle,
+        Matrix3x2 parentTransform,
+        out PointF transformedCenter,
+        out SizeF transformedSize,
+        out float transformedAngle)
+    {
+        transformedCenter = PointF.Empty;
+        transformedSize = SizeF.Empty;
+        transformedAngle = 0;
+        if (!IsFinite(parentTransform)
+            || !float.IsFinite(center.X)
+            || !float.IsFinite(center.Y)
+            || !float.IsFinite(size.Width)
+            || !float.IsFinite(size.Height)
+            || size.Width < 1
+            || size.Height < 1
+            || !float.IsFinite(angle))
+        {
+            return false;
+        }
+
+        var determinant = parentTransform.M11 * parentTransform.M22
+            - parentTransform.M12 * parentTransform.M21;
+        if (!float.IsFinite(determinant) || determinant <= 0)
+        {
+            return false;
+        }
+
+        var cosine = MathF.Cos(angle);
+        var sine = MathF.Sin(angle);
+        var widthAxis = Vector2.TransformNormal(
+            new Vector2(cosine * size.Width, sine * size.Width),
+            parentTransform);
+        var heightAxis = Vector2.TransformNormal(
+            new Vector2(-sine * size.Height, cosine * size.Height),
+            parentTransform);
+        var widthLength = widthAxis.Length();
+        var heightLength = heightAxis.Length();
+        var axisDot = Vector2.Dot(widthAxis, heightAxis);
+        var axisProduct = widthLength * heightLength;
+        if (!float.IsFinite(widthLength)
+            || !float.IsFinite(heightLength)
+            || widthLength < 1
+            || heightLength < 1
+            || !float.IsFinite(axisDot)
+            || !float.IsFinite(axisProduct)
+            || MathF.Abs(axisDot) > 0.000001f * axisProduct)
+        {
+            return false;
+        }
+
+        var transformedCenterVector = Vector2.Transform(new Vector2(center.X, center.Y), parentTransform);
+        var candidateAngle = MathF.Atan2(widthAxis.Y, widthAxis.X);
+        if (!float.IsFinite(transformedCenterVector.X)
+            || !float.IsFinite(transformedCenterVector.Y)
+            || !float.IsFinite(candidateAngle))
+        {
+            return false;
+        }
+
+        transformedCenter = VectorUnits.Quantize(new PointF(
+            transformedCenterVector.X,
+            transformedCenterVector.Y));
+        transformedSize = new SizeF(
+            Math.Max(1, VectorUnits.Quantize(widthLength)),
+            Math.Max(1, VectorUnits.Quantize(heightLength)));
+        transformedAngle = candidateAngle;
+        return float.IsFinite(transformedCenter.X)
+            && float.IsFinite(transformedCenter.Y)
+            && float.IsFinite(transformedSize.Width)
+            && float.IsFinite(transformedSize.Height);
     }
 
     private static (string Source, PointF Center, SizeF Size) WrapImportedSvgTransform(

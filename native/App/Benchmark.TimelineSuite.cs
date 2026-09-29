@@ -7,6 +7,7 @@ internal static partial class Benchmark
 {
     public static void RunTimelineRegression()
     {
+        RunSymbolFiltersModelRegression();
         if (Math.Abs(TimelineStrip.CursorTimeSeconds(13, 30) - 13d / 30d) > 0.000001
             || TimelineStrip.FormatCursorTimeSeconds(13, 30) != "0.433 s"
             || TimelineStrip.FormatCursorTimeSeconds(0, 24) != "0.000 s"
@@ -136,17 +137,28 @@ internal static partial class Benchmark
         RunTimelineExposureRegression();
         RunTimelineTweenRegression();
         RunTimelineShortcutAdvanceRegression();
+        RunTimelineTailKeyframeInsertionRegression();
         RunTimelineUndoPlayheadRegression();
+        RunSceneShotTimelineUndoRegression();
         RunTimelineFrameSelectionContentRegression();
+        RunTimelineFrameSelectionDragFeedbackRegression();
         RunTimelineFrameCommandRegression();
         RunTimelineFrameTransformMappingRegression();
         RunTimelineFrameTransformCommandRegression();
         RunTimelineTrackSynchronizationRegression();
         RunTimelineSnapshotRegression();
         RunTimelineTabGroupRegression();
+        RunSceneShotRegression();
+        RunSceneShotTimelineRegression();
+        RunShotFramingGizmoRegression();
+        RunShotCameraKindRegression();
+        RunWorkspaceZoomReadoutRegression();
+        RunShotDirectorWorkspaceRegression();
         RunVectorSceneTimelineSnapshotRegression();
         RunVectorSceneSnapshotMemoryEstimateRegression();
         RunEditableTextObjectRegression();
+        RunDrawingObjectSvgExportRegression();
+        RunSymbolPackageRegression();
         RunVectorSceneCelOwnershipRegression();
         RunRandomFractureTimelineRegression();
         RunAutoKeyframeMaterializationRegression();
@@ -161,8 +173,11 @@ internal static partial class Benchmark
         RunAssetLibraryCategoryRegression();
         RunSceneMaskTimelineRegression();
         RunSceneInstanceTimelineRegression();
+        RunSceneOnionSkinRegression();
+        RunSceneOnionSkinRangeHandleRegression();
         RunLayeredInstanceIndexRegression();
         RunSceneCompositionRegression();
+        RunScenePerformanceRegression();
         RunSceneOpticsModelRegression();
         RunSceneOpticsPersistenceRegression();
         RunEditorRestartSnapshotRegression();
@@ -475,6 +490,81 @@ internal static partial class Benchmark
         Console.WriteLine($"timeline_dense_playback_full_invalidations={fullSurfaceInvalidations}");
     }
 
+    private static void RunTimelineFrameSelectionDragFeedbackRegression()
+    {
+        foreach (var width in new[] { 760, 480 })
+        {
+            var scene = new VectorScene();
+            scene.CreateEmpty(5, 40);
+            using var host = new Form
+            {
+                ShowInTaskbar = false,
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-32000, -32000),
+                ClientSize = new Size(width, 240)
+            };
+            using var strip = new TimelineStrip(scene) { Dock = DockStyle.Fill };
+            host.Controls.Add(strip);
+            host.Show();
+            Application.DoEvents();
+            var layout = RequireMethod(typeof(TimelineStrip), "CreateLayout").Invoke(strip, null)!;
+            var grid = (Rectangle)layout.GetType().GetProperty("GridBounds")!.GetValue(layout)!;
+            Point Cell(int frame, int row) => new(
+                grid.Left + frame * strip.FrameWidth + strip.FrameWidth / 2,
+                grid.Top + row * strip.FrameHeight + strip.FrameHeight / 2);
+            void Mouse(string method, Point point) => RequireMethod(typeof(TimelineStrip), method).Invoke(
+                strip, [new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0)]);
+            using var before = new Bitmap(width, 240);
+            strip.DrawToBitmap(before, strip.ClientRectangle);
+            Mouse("OnMouseDown", Cell(2, 0));
+            var events = new List<string>();
+            strip.CurrentFrameChanged += (_, _) => events.Add("frame");
+            strip.FrameSelectionChanged += (_, _) => events.Add("selection");
+            var invalidations = 0;
+            strip.Invalidated += (_, _) => invalidations++;
+            for (var frame = 3; frame <= 6; frame++) Mouse("OnMouseMove", Cell(frame, 2));
+            AssertTimeline(strip.CurrentFrame == 6 && strip.SelectedFrameCells.Count == 15
+                && events.Count == 0 && invalidations > 0,
+                $"Marquee drag must invalidate its live range without rebuilding the document for each pointer move: frame={strip.CurrentFrame}, cells={strip.SelectedFrameCells.Count}, events={string.Join(',', events)}, invalidations={invalidations}.");
+            invalidations = 0;
+            for (var repeat = 0; repeat < 100; repeat++) strip.UpdateFrameSelectionFromPointer(Cell(6, 2));
+            AssertTimeline(invalidations == 0 && events.Count == 0,
+                "Moving within the same timeline cell repeated selection work or repaint requests.");
+            using var during = new Bitmap(width, 240);
+            strip.DrawToBitmap(during, strip.ClientRectangle);
+            var sample = Cell(4, 1);
+            AssertTimeline(before.GetPixel(sample.X, sample.Y) != during.GetPixel(sample.X, sample.Y),
+                "The selection fill did not become visible before mouse release.");
+            // Mouse-up may carry a newer endpoint than the last mouse-move message.
+            Mouse("OnMouseUp", Cell(8, 2));
+            AssertTimeline(strip.CurrentFrame == 8 && strip.SelectedFrameCells.Count == 21
+                && events.SequenceEqual(new[] { "frame", "selection" }) && !strip.Capture,
+                "Marquee release lost its final pointer or did not publish frame then selection exactly once.");
+            using var after = new Bitmap(width, 240);
+            strip.DrawToBitmap(after, strip.ClientRectangle);
+            var captureDirectory = Environment.GetEnvironmentVariable("VECTOR_BENCH_TIMELINE_CAPTURE_DIRECTORY");
+            if (!string.IsNullOrWhiteSpace(captureDirectory))
+            {
+                Directory.CreateDirectory(captureDirectory);
+                during.Save(Path.Combine(captureDirectory, $"timeline-drag-{width}.png"));
+                after.Save(Path.Combine(captureDirectory, $"timeline-release-{width}.png"));
+            }
+            strip.ClearSelectionFromEmptyArea();
+            Mouse("OnMouseDown", Cell(1, 0));
+            events.Clear();
+            Mouse("OnMouseMove", Cell(5, 1));
+            strip.Capture = false;
+            AssertTimeline(events.SequenceEqual(new[] { "frame", "selection" })
+                && strip.CurrentFrame == 5 && strip.SelectedFrameCells.Count == 10,
+                "Capture loss left the document out of sync with the retained marquee preview.");
+            events.Clear();
+            strip.SelectSingleFrame(scene.Timeline.Tracks[0].Id, 3);
+            AssertTimeline(events.Contains("frame") && events.Contains("selection"),
+                "A completed marquee left ordinary selection notifications deferred.");
+            Console.WriteLine($"timeline_drag_feedback_{width}=ok");
+        }
+    }
+
     private static void AssertDenseTimelineIncrementalPaint(TimelineStrip timelineStrip)
     {
         timelineStrip.CurrentFrame = 44;
@@ -668,6 +758,11 @@ internal static partial class Benchmark
             && !MainForm.TimelineKeyframeInsertionShouldAdvance(timeline, new TimelineFrameCell("missing", 0)),
             "F6/F7 did not distinguish keyframes, held exposure, and space beyond the track end before moving the playhead.");
         AssertTimeline(
+            MainForm.TimelineCellIsAtTrackEnd(timeline, new TimelineFrameCell(track.Id, 19))
+            && !MainForm.TimelineCellIsAtTrackEnd(timeline, new TimelineFrameCell(track.Id, 18))
+            && !MainForm.TimelineCellIsAtTrackEnd(timeline, new TimelineFrameCell(track.Id, 20)),
+            "F6/F7 did not identify the existing final timeline frame independently from frames beyond the track.");
+        AssertTimeline(
             MainForm.ResolveTimelineKeyframeInsertionCell(
                 timeline,
                 track.Id,
@@ -837,6 +932,222 @@ internal static partial class Benchmark
             "Undoing F7 did not restore the blank keyframe, playhead, and frame selection.");
 
         RunSceneTweenCurveDeferredCommitRegression(form, timelineStrip, undo);
+    }
+
+    private static void RunTimelineTailKeyframeInsertionRegression()
+    {
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var shortcut = RequireMethod(typeof(MainForm), "HandleTimelineShortcut");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var frameField = RequireField(typeof(MainForm), "_frame");
+        var applyPlaybackSettings = RequireMethod(
+            typeof(MainForm),
+            "ApplyProjectPlaybackSettingsToCurrentContext",
+            Type.EmptyTypes);
+        var syncTimelineFrameRange = RequireMethod(
+            typeof(MainForm),
+            "SyncTimelineFrameRange",
+            Type.EmptyTypes);
+
+        using var form = new MainForm();
+        var project = projectField.GetValue(form) as VectorProject
+            ?? throw new InvalidOperationException("Timeline tail keyframe regression did not find the project.");
+        var timelineStrip = timelineField.GetValue(form) as TimelineStrip
+            ?? throw new InvalidOperationException("Timeline tail keyframe regression did not find the timeline control.");
+        var drawingObject = timelineStrip.Context as DrawingObjectDefinition
+            ?? throw new InvalidOperationException("Timeline tail keyframe regression did not find the drawing context.");
+        drawingObject.Scene.EditFrame = 0;
+        drawingObject.Scene.AddObject(
+            0,
+            new PointF(20, 20),
+            new SizeF(40, 40),
+            0,
+            0,
+            Color.Teal,
+            4,
+            ShapeKind.Rectangle);
+        var track = timelineStrip.Context.Timeline.Tracks[0];
+        var shortened = false;
+        foreach (var item in timelineStrip.Context.Timeline.Tracks.ToArray())
+        {
+            shortened |= timelineStrip.Context.Timeline.SetTrackDuration(item.Id, 4);
+        }
+        AssertTimeline(
+            shortened && track.Duration == 4,
+            "Timeline tail keyframe regression could not shorten its fixture track.");
+        project.TrySetPlaybackRange(0, 3);
+        applyPlaybackSettings.Invoke(form, null);
+        syncTimelineFrameRange.Invoke(form, null);
+        timelineStrip.RefreshTimeline();
+        timelineStrip.SelectSingleFrame(track.Id, 3);
+
+        var durationBeforeTailInsert = track.Duration;
+        var insertedAtHeldTail = shortcut.Invoke(form, new object[] { Keys.F6 }) is true;
+        var heldTail = track.EvaluateExposure(3);
+        AssertTimeline(
+            insertedAtHeldTail
+            && durationBeforeTailInsert == 4
+            && track.Duration == durationBeforeTailInsert
+            && heldTail.IsKeyframe
+            && heldTail.HasContent
+            && (int)(frameField.GetValue(form) ?? -1) == 3,
+            $"F6 at a held tail frame extended the timeline instead of using the existing final frame: "
+            + $"before={durationBeforeTailInsert}, after={track.Duration}, key={heldTail.IsKeyframe}, "
+            + $"content={heldTail.HasContent}, frame={(int)(frameField.GetValue(form) ?? -1)}.");
+
+        timelineStrip.SelectSingleFrame(track.Id, 3);
+        var insertedAfterTailKey = shortcut.Invoke(form, new object[] { Keys.F6 }) is true;
+        var nextFrame = track.EvaluateExposure(4);
+        AssertTimeline(
+            insertedAfterTailKey
+            && track.Duration == durationBeforeTailInsert + 1
+            && nextFrame.IsKeyframe
+            && nextFrame.HasContent
+            && (int)(frameField.GetValue(form) ?? -1) == 4,
+            "F6 at an existing tail keyframe did not extend one frame and insert the next keyframe.");
+
+        Console.WriteLine("timeline_tail_keyframe_insertion=ok");
+    }
+
+    private static void RunSceneShotTimelineUndoRegression()
+    {
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var workspaceTabsField = RequireField(typeof(MainForm), "_workspaceTabs");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var shortcut = RequireMethod(typeof(MainForm), "HandleTimelineShortcut");
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+
+        using var form = new MainForm();
+        var project = projectField.GetValue(form) as VectorProject
+            ?? throw new InvalidOperationException("Camera timeline undo regression did not find the project.");
+        var scene = project.Scenes[0];
+        var sceneLayerTrack = scene.Timeline.FindTrackByTargetId(scene.Layers[0].Id)
+            ?? throw new InvalidOperationException("Camera timeline undo regression lost the scene layer track.");
+        scene.Timeline.SetTrackDuration(sceneLayerTrack.Id, 12);
+        var shot = scene.AddShot("Undo camera", 12, "", null);
+        scene.SynchronizeTimelineTracks();
+
+        var start = new SceneShotSettings(
+            CameraProjection.Perspective,
+            new Vector3(-80f, 35f, -900f),
+            new Vector3(8f, -12f, 4f),
+            70f,
+            28_000f);
+        var end = new SceneShotSettings(
+            CameraProjection.Perspective,
+            new Vector3(140f, -65f, -520f),
+            new Vector3(22f, 18f, 46f),
+            155f,
+            18_000f);
+        AssertTimeline(
+            scene.UpdateShotAtFrame(shot.Id, 0, start)
+            && scene.InsertShotTimelineKeyframe(shot.Id, 4)
+            && scene.UpdateShotAtFrame(shot.Id, 4, end),
+            "Camera timeline undo regression could not prepare a populated Transform keyframe.");
+
+        var workspaceTabs = workspaceTabsField.GetValue(form) as WorkspaceTabs
+            ?? throw new InvalidOperationException("Camera timeline undo regression did not find workspace tabs.");
+        workspaceTabs.SelectedView = WorkspaceView.SceneEditor;
+        Application.DoEvents();
+        workspaceTabs.SelectedView = WorkspaceView.ShotDirector;
+        Application.DoEvents();
+
+        var timeline = timelineField.GetValue(form) as TimelineStrip
+            ?? throw new InvalidOperationException("Camera timeline undo regression did not find the timeline control.");
+        var track = timeline.Context.Timeline.FindTrackByTargetId(shot.Id)
+            ?? throw new InvalidOperationException("Camera timeline undo regression lost the camera track after binding.");
+        timeline.SelectSingleFrame(track.Id, 4);
+
+        var layersBeforeDirectorCommands = scene.CreateLayerSnapshot();
+        var layerOrderBeforeDirectorCommands = scene.Layers.Select(layer => layer.Id).ToArray();
+        var timelineTracksBeforeDirectorCommands = scene.Timeline.Tracks
+            .Select(item => (item.Id, item.TargetId, item.Duration, Keys: item.Keyframes.ToArray(), Tweens: item.Tweens.ToArray()))
+            .ToArray();
+        void InvokeNoArgs(string name) => RequireMethod(typeof(MainForm), name, Type.EmptyTypes).Invoke(form, null);
+        InvokeNoArgs("AddTimelineLayer");
+        InvokeNoArgs("AddTimelineFolderLayer");
+        InvokeNoArgs("AddTimelineMaskLayer");
+        InvokeNoArgs("MoveTimelineLayerOutOfMask");
+        InvokeNoArgs("RemoveTimelineLayers");
+        InvokeNoArgs("RenameTimelineLayer");
+        InvokeNoArgs("ToggleTimelineLayerLock");
+        InvokeNoArgs("ToggleAllTimelineLayerVisibility");
+        InvokeNoArgs("ToggleAllTimelineLayerLocks");
+        InvokeNoArgs("ToggleTimelineLayerOutline");
+        InvokeNoArgs("ToggleAllTimelineLayerOutlines");
+        InvokeNoArgs("ChooseTimelineLayerColor");
+        RequireMethod(typeof(MainForm), "MoveTimelineLayer", [
+            typeof(string), typeof(string), typeof(TimelineLayerDropPlacement), typeof(bool)
+        ]).Invoke(form, [
+            sceneLayerTrack.Id,
+            track.Id,
+            TimelineLayerDropPlacement.Before,
+            false
+        ]);
+        RequireMethod(typeof(MainForm), "ApplySelectedLayerBlendMode", [typeof(LayerBlendMode)])
+            .Invoke(form, [LayerBlendMode.Multiply]);
+        var layersUnchanged = scene.CreateLayerSnapshot().Layers.SequenceEqual(layersBeforeDirectorCommands.Layers)
+            && scene.Layers.Select(layer => layer.Id).SequenceEqual(layerOrderBeforeDirectorCommands);
+        var currentTimelineTracks = scene.Timeline.Tracks;
+        var timelineUnchanged = currentTimelineTracks.Count == timelineTracksBeforeDirectorCommands.Length
+            && currentTimelineTracks.Select((item, index) => (item, index)).All(pair =>
+            {
+                var before = timelineTracksBeforeDirectorCommands[pair.index];
+                return pair.item.Id == before.Id
+                    && pair.item.TargetId == before.TargetId
+                    && pair.item.Duration == before.Duration
+                    && pair.item.Keyframes.SequenceEqual(before.Keys)
+                    && pair.item.Tweens.SequenceEqual(before.Tweens);
+            });
+        AssertTimeline(
+            layersUnchanged && timelineUnchanged,
+            "Director mode exposed a path that modified ordinary scene layers or their timeline tracks.");
+
+        var cleared = shortcut.Invoke(form, new object[] { Keys.Shift | Keys.F6 }) is true;
+        var clearEvaluated = scene.TryEvaluateShotSettings(shot.Id, 4, out var clearSettings);
+        var undone = undo.Invoke(form, null) is true;
+        var restored = scene.TryEvaluateShotSettings(shot.Id, 4, out var restoredSettings);
+        AssertTimeline(
+            cleared
+            && clearEvaluated
+            && clearSettings == start
+            && undone
+            && restored
+            && restoredSettings == end,
+            "Undoing a camera keyframe clear did not restore the camera Transform and lens state.");
+
+        // Invoke the keyboard route, not just the history implementation.
+        form.ShowInTaskbar = false;
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(-30000, -30000);
+        form.Show();
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var director = (ShotDirectorPanel)RequireField(typeof(MainForm), "_shotDirectorPanel").GetValue(form)!;
+        var button = (Button)RequireField(typeof(ShotDirectorPanel), "_addShotButton").GetValue(director)!;
+        var editor = (TextBox)RequireField(typeof(ShotDirectorPanel), "_nameEditor").GetValue(director)!;
+        var command = RequireMethod(typeof(MainForm), "ProcessCmdKey", [typeof(Message).MakeByRefType(), typeof(Keys)]);
+        foreach (Control focus in new Control[] { stage, button, timeline })
+        {
+            timeline.SelectSingleFrame(track.Id, 4);
+            AssertTimeline(shortcut.Invoke(form, [Keys.Shift | Keys.F6]) is true, "Camera key clear was not handled.");
+            AssertTimeline(focus.Focus(), "Director undo fixture could not focus the requested control.");
+            Application.DoEvents();
+            object[] args = [default(Message), Keys.Control | Keys.Z];
+            AssertTimeline(command.Invoke(form, args) is true
+                && scene.TryEvaluateShotSettings(shot.Id, 4, out var actual) && actual == end,
+                $"Director Ctrl+Z did not restore camera keys with {focus.GetType().Name} focused.");
+        }
+        timeline.SelectSingleFrame(track.Id, 4);
+        shortcut.Invoke(form, [Keys.Shift | Keys.F6]);
+        AssertTimeline(editor.Focus(), "Director undo fixture could not focus the name editor.");
+        command.Invoke(form, [default(Message), Keys.Control | Keys.Z]);
+        AssertTimeline(scene.TryEvaluateShotSettings(shot.Id, 4, out var editorState) && editorState == start,
+            "Director global undo consumed Ctrl+Z belonging to a text editor.");
+        stage.Focus();
+        AssertTimeline(command.Invoke(form, [default(Message), Keys.Control | Keys.Z]) is true
+            && scene.TryEvaluateShotSettings(shot.Id, 4, out var finalState) && finalState == end,
+            "Editor focus consumed the scene undo history.");
+        Console.WriteLine("shot_director_keyboard_undo=ok,focus=stage/button/timeline/editor");
     }
 
     private static void RunTimelineFrameSelectionContentRegression()
@@ -3934,6 +4245,137 @@ internal static partial class Benchmark
             "Moving a scene layer out of its mask did not detach it or restore adjacent layer order.");
     }
 
+    private static void RunSceneOnionSkinRegression()
+    {
+        var project = new VectorProject();
+        var scene = project.Scenes[0];
+        var drawingObject = project.DrawingObjects[0];
+        drawingObject.Scene.AppendObject(
+            0,
+            PointF.Empty,
+            new SizeF(20f, 20f),
+            angle: 0,
+            stroke: 0,
+            color: Color.White,
+            strokeColor: Color.Transparent,
+            atoms: 4,
+            shapeKind: ShapeKind.Rectangle);
+        var layer = scene.Layers[0];
+        var track = scene.Timeline.FindTrackByTargetId(layer.Id)
+            ?? throw new InvalidOperationException("Scene timeline did not create a track for its first layer.");
+
+        AssertTimeline(
+            !scene.OnionSkinEnabled
+            && scene.OnionSkinPreviousFrames == VectorScene.DefaultOnionSkinPreviousFrames
+            && scene.OnionSkinNextFrames == VectorScene.DefaultOnionSkinNextFrames
+            && !scene.HasOnionSkinPreviewEnabled,
+            "A new scene did not start with onion skin disabled at the default range.");
+
+        AssertTimeline(
+            project.TryAddSceneInstance(scene.Id, drawingObject.Id, PointF.Empty, 0, out _)
+            && scene.Timeline.InsertKeyframe(track.Id, 4),
+            "The scene onion-skin fixture could not populate two keyframes.");
+
+        var previewStage = new VectorScene();
+        SceneCompositionBuilder.BuildSceneOnionSkin(
+            previewStage,
+            scene,
+            project.DrawingObjects,
+            frame: 4,
+            parentFps: 30m);
+        AssertTimeline(
+            !scene.HasOnionSkinPreviewEnabled && previewStage.ObjectCount == 0,
+            "A disabled scene onion skin still produced preview objects.");
+
+        AssertTimeline(
+            scene.SetOnionSkinRange(previousFrames: 1, nextFrames: 1) && scene.SetOnionSkinEnabled(true),
+            "The scene onion-skin range or toggle rejected a valid update.");
+
+        SceneCompositionBuilder.BuildSceneOnionSkin(
+            previewStage,
+            scene,
+            project.DrawingObjects,
+            frame: 4,
+            parentFps: 30m);
+        var tintedLayers = 0;
+        for (var layerIndex = 0; layerIndex < previewStage.LayerCount; layerIndex++)
+        {
+            if (previewStage.LayerColorArgb[layerIndex] != layer.ColorArgb) tintedLayers++;
+        }
+
+        AssertTimeline(
+            previewStage.LayerCount == 1 && previewStage.ObjectCount > 0 && tintedLayers == 1,
+            "The scene onion skin did not build exactly one tinted previous-frame preview.");
+
+        // Frame 0 holds the same exposure as frame 1, so nothing may preview there.
+        SceneCompositionBuilder.BuildSceneOnionSkin(
+            previewStage,
+            scene,
+            project.DrawingObjects,
+            frame: 0,
+            parentFps: 30m);
+        AssertTimeline(
+            previewStage.ObjectCount == 0,
+            "A held scene exposure was drawn as an onion-skin neighbour.");
+
+        var previousState = scene.CreateOnionSkinState();
+        AssertTimeline(
+            scene.ToggleOnionSkin() && !scene.OnionSkinEnabled,
+            "Toggling the scene onion skin did not disable it.");
+        scene.RestoreOnionSkinState(previousState);
+        AssertTimeline(
+            scene.OnionSkinEnabled
+            && scene.OnionSkinPreviousFrames == 1
+            && scene.OnionSkinNextFrames == 1,
+            "Restoring the captured scene onion-skin state did not restore the toggle and range.");
+
+        var restoredScene = VectorProject.RestoreRestartSnapshot(project.CreateRestartSnapshot()).Scenes[0];
+        AssertTimeline(
+            restoredScene.OnionSkinEnabled
+            && restoredScene.OnionSkinPreviousFrames == 1
+            && restoredScene.OnionSkinNextFrames == 1,
+            "The editor restart snapshot lost the scene onion-skin settings.");
+
+        Console.WriteLine("scene_onion_skin_regression=ok");
+    }
+
+    private static void RunSceneOnionSkinRangeHandleRegression()
+    {
+        var project = new VectorProject();
+        var scene = project.Scenes[0];
+        AssertTimeline(
+            scene.SetOnionSkinRange(previousFrames: 3, nextFrames: 1) && scene.SetOnionSkinEnabled(true),
+            "The scene onion-skin range fixture could not enable its range.");
+
+        using var strip = new TimelineStrip(new VectorScene());
+        strip.BindSceneDefinition(scene);
+        var rangeMethod = typeof(TimelineStrip).GetMethod(
+                "TryGetOnionSkinRange",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("TimelineStrip.TryGetOnionSkinRange is missing.");
+        object?[] arguments = [0, 0, false];
+        var resolved = (bool)rangeMethod.Invoke(strip, arguments)!;
+        AssertTimeline(
+            resolved
+            && (bool)arguments[2]!
+            && (int)arguments[0]! == 3
+            && (int)arguments[1]! == 1,
+            "The scene timeline did not expose its onion-skin range to the ruler handles.");
+
+        var drawingScene = new VectorScene();
+        drawingScene.CreateEmpty();
+        drawingScene.SetOnionSkinRange(previousFrames: 2, nextFrames: 4);
+        drawingScene.SetOnionSkinEnabled(true);
+        strip.BindScene(drawingScene);
+        arguments = [0, 0, false];
+        resolved = (bool)rangeMethod.Invoke(strip, arguments)!;
+        AssertTimeline(
+            resolved && (int)arguments[0]! == 2 && (int)arguments[1]! == 4,
+            "The drawing timeline lost its onion-skin range after binding a scene definition.");
+
+        Console.WriteLine("scene_onion_skin_range_handle_regression=ok");
+    }
+
     private static void RunSceneInstanceTimelineRegression()
     {
         var project = new VectorProject();
@@ -4118,6 +4560,2488 @@ internal static partial class Benchmark
             && !synchronizedFirst.EvaluateExposure(0).HasContent
             && !synchronizedFirst.EvaluateExposure(12).HasContent,
             "Removing the last instance from a scene layer retained populated keyframes.");
+    }
+
+    private static void RunSceneShotRegression()
+    {
+        RunMinimumShotFrameRegression();
+        RunShotAspectRatioRegression();
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var firstLayer = scene.Layers[0];
+        var secondLayer = scene.AddLayer(project, "Second");
+        var thirdLayer = scene.AddLayer(project, "Third");
+        var fourthLayer = scene.AddLayer(project, "Fourth");
+
+        var background = scene.AddShot("Background", 12, "Establishing view", [firstLayer.Id]);
+        var action = scene.AddShot("Action", 24, "Main beat", [secondLayer.Id, thirdLayer.Id]);
+        var closeUp = scene.AddShot("Close up", 6, null, [fourthLayer.Id]);
+        var sceneFrameCount = scene.FrameCount;
+        AssertTimeline(
+            scene.ShotCount == 3
+            && scene.ShotSequenceLength == sceneFrameCount
+            && scene.GetShotRange(background.Id) == new SceneShotRange(background.Id, "Background", 0, sceneFrameCount - 1)
+            && scene.GetShotRange(action.Id) == new SceneShotRange(action.Id, "Action", 0, sceneFrameCount - 1)
+            && scene.GetShotRange(closeUp.Id) == new SceneShotRange(closeUp.Id, "Close up", 0, sceneFrameCount - 1)
+            && scene.FindShotIndexForFrame(0) == -1
+            && scene.FindShotIdForFrame(sceneFrameCount - 1).Length == 0
+            && scene.FindShotIdForFrame(sceneFrameCount).Length == 0
+            && scene.FindShotIdForLayer(thirdLayer.Id).Length == 0
+            && !scene.IsLayerInShot(fourthLayer.Id)
+            && background.LayerIds.Count == 0
+            && action.LayerIds.Count == 0
+            && closeUp.LayerIds.Count == 0,
+            "Scene cameras did not remain independent from the continuous scene timeline and layers.");
+
+        AssertTimeline(
+            !scene.TryAssignLayersToShot(closeUp.Id, [firstLayer.Id])
+            && !scene.TryRemoveLayerFromShot(closeUp.Id, firstLayer.Id)
+            && scene.ResolveShotLayerIds(closeUp.Id).Length == 0,
+            "Camera selection incorrectly exposed scene-layer ownership commands.");
+
+        AssertTimeline(
+            scene.TryMoveShot(closeUp.Id, 0)
+            && scene.GetShotRange(closeUp.Id) == new SceneShotRange(closeUp.Id, "Close up", 0, sceneFrameCount - 1)
+            && scene.GetShotRangeAt(0).ShotId == closeUp.Id
+            && scene.FindShotIdForFrame(6).Length == 0
+            && scene.ShotSequenceLength == sceneFrameCount,
+            "Reordering cameras changed the continuous scene frame span.");
+
+        AssertTimeline(
+            scene.TryRenameShot(background.Id, "  Opening  ")
+            && scene.FindShot(background.Id)!.Name == "Opening"
+            && scene.TrySetShotDetail(background.Id, "Wide establishing shot")
+            && scene.FindShot(background.Id)!.Detail == "Wide establishing shot"
+            && scene.TrySetShotDuration(background.Id, 20)
+            && scene.GetShotRange(background.Id).FrameCount == sceneFrameCount
+            && scene.TrySetShotDuration(background.Id, 0)
+            && scene.FindShot(background.Id)!.DurationFrames == sceneFrameCount
+            && scene.TrySetShotDuration(background.Id, 20),
+            "Camera name, description or compatibility metadata edits were not applied.");
+
+        AssertTimeline(
+            !scene.TryExtendTimelineToShotSequence()
+            && scene.FrameCount == scene.ShotSequenceLength,
+            "The single scene timeline still exposed the former camera sequence fitting command.");
+
+        var maskCreated = project.TryAddSceneMaskLayer(scene.Id, fourthLayer.Id, out var maskLayer)
+            && maskLayer is not null;
+        AssertTimeline(
+            maskCreated
+            && scene.ResolveShotLayerIds(closeUp.Id).Length == 0
+            && scene.FindShotIdForLayer(maskLayer!.Id).Length == 0,
+            "Adding a mask changed camera ownership or scene-layer resolution.");
+
+        var exposures = MainForm.BuildShotExposures(
+            [
+                new TimelineKeyframe(0, TimelineKeyframeKind.Populated),
+                new TimelineKeyframe(4, TimelineKeyframeKind.Blank),
+                new TimelineKeyframe(8, TimelineKeyframeKind.Populated)
+            ],
+            new SceneShotRange("shot", "Shot", 2, 6));
+        AssertTimeline(
+            exposures.Length == 2
+            && exposures[0] == new ShotDirectorExposure(2, 3, true)
+            && exposures[1] == new ShotDirectorExposure(4, 6, false),
+            "Shot exposure segments did not clip held exposures to the shot span.");
+        var emptyExposures = MainForm.BuildShotExposures([], new SceneShotRange("shot", "Shot", 3, 7));
+        AssertTimeline(
+            emptyExposures.Length == 1
+            && emptyExposures[0] == new ShotDirectorExposure(3, 7, false),
+            "A shot without keyframes did not report a single empty exposure segment.");
+
+        var snapshot = scene.CreateShotSnapshot();
+        AssertTimeline(
+            snapshot.Length == 3
+            && scene.TryRemoveShot(action.Id)
+            && scene.ShotCount == 2
+            && scene.FindShotIdForLayer(secondLayer.Id).Length == 0,
+            "Removing a camera did not preserve the one-scene timeline contract.");
+        scene.RestoreShotSnapshot(snapshot);
+        AssertTimeline(
+            scene.ShotCount == 3
+            && scene.FindShotIdForLayer(secondLayer.Id).Length == 0
+            && scene.GetShotRangeAt(0).ShotId == closeUp.Id
+            && scene.GetShotRangeAt(1).ShotId == background.Id
+            && scene.GetShotRangeAt(2).ShotId == action.Id
+            && scene.GetShotRangeAt(2).FrameCount == scene.FrameCount
+            && scene.ShotSequenceLength == scene.FrameCount
+            && scene.Shots.All(shot => shot.LayerIds.Count == 0),
+            "Restoring the camera snapshot did not rebuild independent cameras over the scene.");
+
+        AssertTimeline(
+            project.TryRemoveSceneLayers(scene.Id, [thirdLayer.Id])
+            && !scene.IsLayerInShot(thirdLayer.Id)
+            && scene.FindShot(action.Id) is not null
+            && scene.Shots.All(shot => shot.LayerIds.Count == 0),
+            "Removing a layer changed camera definitions or left camera ownership metadata.");
+
+        RunSceneShotTimelineFilterRegression();
+        RunSceneShotPersistenceRegression();
+
+        Console.WriteLine("scene_shot_regression=ok");
+    }
+
+    private static void RunShotAspectRatioRegression()
+    {
+        var expected = new[] { 2f, 16f / 9f, 9f / 16f, 4f / 3f, 3f / 2f, 1f, 4f / 5f, 21f / 9f };
+        foreach (var preset in Enum.GetValues<SceneShotAspectRatio>())
+        foreach (var projection in Enum.GetValues<CameraProjection>())
+        {
+            var settings = SceneShotSettings.Default with
+            {
+                AspectRatio = preset, Projection = projection,
+                OrthographicSize = 1080, FocalLength = 5000, Zoom = 100
+            };
+            var world = settings.ResolveWorldFrame(10000, 5000);
+            var flat = settings.ToPreviewFraming().ResolveFrame(10000, 5000);
+            foreach (var extent in new[] { (world.HalfWidth, world.HalfHeight), (flat.HalfWidth, flat.HalfHeight) })
+                AssertTimeline(extent.HalfWidth >= 960 && extent.HalfHeight >= 540
+                    && Math.Abs(extent.HalfWidth / extent.HalfHeight - expected[(int)preset]) < 0.0001f,
+                    $"Camera preset {preset} lost its ratio or minimum size.");
+            var start = SceneShotSettings.Default with { AspectRatio = preset };
+            var frame = start.ToPreviewFraming().ResolveFrame(10000, 5000);
+            var dragged = StageControl.ResolveShotFramingDrag(start, ShotFramingHandleKind.Right,
+                new Vector2(frame.HalfWidth * 2, 0), new Vector2(frame.HalfWidth, 0), 10000, 5000);
+            var resized = dragged.ToPreviewFraming().ResolveFrame(10000, 5000);
+            AssertTimeline(dragged.AspectRatio == preset
+                && Math.Abs(dragged.X - resized.HalfWidth + frame.HalfWidth) < 0.01f
+                && Math.Abs(dragged.X + resized.HalfWidth - frame.HalfWidth * 2) < 0.01f,
+                $"Resizing {preset} lost the ratio or opposite-edge anchor.");
+            var target = start with { AspectRatio = SceneShotAspectRatio.Square1To1 };
+            AssertTimeline(SceneShotSettings.Interpolate(start, target, 0.5f).AspectRatio == preset
+                && SceneShotSettings.Interpolate(start, target, 1f).AspectRatio == target.AspectRatio,
+                "Camera aspect ratio did not switch at the destination keyframe.");
+        }
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<SceneShotSettings>(
+            """{"X":0,"Y":0,"Zoom":1,"RotationDegrees":0}""");
+        AssertTimeline(legacy.AspectRatio == SceneShotAspectRatio.FollowScene,
+            "Legacy camera JSON no longer follows the scene.");
+        AssertTimeline(!(SceneShotSettings.Default with { AspectRatio = (SceneShotAspectRatio)999 }).IsValid,
+            "Invalid serialized aspect ratio was accepted.");
+
+        using var panel = new ShotDirectorPanel();
+        var combo = (ComboBox)RequireField(typeof(ShotDirectorPanel), "_aspectRatioEditor").GetValue(panel)!;
+        var position = (ModernNumericUpDown)RequireField(typeof(ShotDirectorPanel), "_positionX").GetValue(panel)!;
+        var commits = 0;
+        var committed = SceneShotSettings.Default;
+        panel.ShotFramingCommitted += (_, e) => { commits++; committed = e.Settings; };
+        panel.Bind(new ShotDirectorState
+        {
+            IsAvailable = true, ActiveShotId = "ratio",
+            Shots = [new ShotDirectorItem { Id = "ratio", Name = "Ratio", FramingEditable = true }]
+        });
+        AssertTimeline(commits == 0 && combo.Items.Count == expected.Length, "Binding ratio presets committed an edit.");
+        combo.SelectedIndex = 2;
+        AssertTimeline(commits == 1 && committed.AspectRatio == SceneShotAspectRatio.Portrait9To16,
+            "Selecting a ratio did not commit exactly one camera edit.");
+        panel.SetSelectedShotFraming(committed, true);
+        position.Value = 100;
+        AssertTimeline(commits == 2 && committed.AspectRatio == SceneShotAspectRatio.Portrait9To16,
+            "Editing a camera position discarded its aspect ratio.");
+        panel.SetSelectedShotFraming(SceneShotSettings.Default with { AspectRatio = SceneShotAspectRatio.Square1To1 }, false);
+        AssertTimeline(commits == 2 && combo.SelectedIndex == 5 && !combo.Enabled,
+            "Playhead refresh lost the aspect ratio or blank-frame edit guard.");
+        Console.WriteLine("shot_aspect_ratio_regression=ok");
+    }
+
+    private static void RunMinimumShotFrameRegression()
+    {
+        foreach (var size in new[] { new SizeF(1920, 1080), new SizeF(1000, 500), new SizeF(1080, 1920), new SizeF(3840, 2160) })
+        foreach (var projection in new[] { CameraProjection.Perspective, CameraProjection.Orthographic })
+        {
+            var settings = SceneShotSettings.Default with
+            {
+                Projection = projection, OrthographicSize = 0.01f,
+                FocalLength = SceneShotSettings.MaximumFocalLength, Z = -1f,
+                Zoom = SceneShotSettings.MaximumZoom
+            };
+            var frame = settings.ResolveWorldFrame(size.Width, size.Height);
+            var legacy = settings.ResolveFrame(size.Width, size.Height);
+            foreach (var extent in new[] { (frame.HalfWidth, frame.HalfHeight), (legacy.HalfWidth, legacy.HalfHeight) })
+            {
+                AssertTimeline(extent.HalfWidth * 2 >= 1920f && extent.HalfHeight * 2 >= 1080f
+                    && Math.Abs(extent.HalfWidth / extent.HalfHeight - size.Width / size.Height) < 0.0001f,
+                    "Minimum camera framing shrank below 1920 x 1080 vu or changed aspect ratio.");
+            }
+        }
+        var minimum = (SceneShotSettings.Default with { Projection = CameraProjection.Orthographic, OrthographicSize = 1080f })
+            .ResolveWorldFrame(1920, 1080);
+        AssertTimeline(minimum.HalfWidth == 960f && minimum.HalfHeight == 540f,
+            "A 16:9 camera did not reach exactly 1920 x 1080 vu.");
+        var shot = new SceneShotDefinition();
+        shot.RestoreStateKeyframes([new SceneShotStateKeyframe(12, SceneShotSettings.Default with { OrthographicSize = 1f })]);
+        AssertTimeline(shot.StateKeyframes.Count == 1 && shot.EvaluateSettings(12).OrthographicSize == 1080f,
+            "Legacy camera normalization dropped a keyframe instead of applying the new minimum.");
+        Console.WriteLine("minimum_shot_frame=ok,minimum_vu=1920x1080");
+    }
+
+    private static void RunShotFramingGizmoRegression()
+    {
+        RunShotCameraHandleUsabilityRegression();
+        const float canvasWidth = 10000f;
+        const float canvasHeight = 5000f;
+        var start = new SceneShotSettings(0f, 0f, 1f, 0f);
+        var (corners, center) = StageControl.ResolveShotFramingLocalCorners(start, canvasWidth, canvasHeight);
+        AssertTimeline(
+            ShotNear(center, Vector2.Zero)
+            && ShotNear(corners[0], new Vector2(-5000f, 2500f))
+            && ShotNear(corners[1], new Vector2(5000f, 2500f))
+            && ShotNear(corners[2], new Vector2(5000f, -2500f))
+            && ShotNear(corners[3], new Vector2(-5000f, -2500f)),
+            "The shot framing corners did not describe the default framed viewport.");
+
+        var (rotatedCorners, _) = StageControl.ResolveShotFramingLocalCorners(
+            start with { RotationDegrees = 90f },
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            ShotNear(rotatedCorners[0], new Vector2(-2500f, -5000f))
+            && ShotNear(rotatedCorners[1], new Vector2(-2500f, 5000f)),
+            "Rotating the shot framing did not rotate its corners around the frame centre.");
+
+        var (_, _, halfWidth, halfHeight) = (start with { Zoom = 2f }).ResolveFrame(canvasWidth, canvasHeight);
+        AssertTimeline(
+            ShotNear(halfWidth, 2500f) && ShotNear(halfHeight, 1250f),
+            "The framed viewport did not scale with the shot zoom.");
+
+        var moved = StageControl.ResolveShotFramingDrag(
+            start,
+            ShotFramingHandleKind.Body,
+            new Vector2(30f, -12f),
+            Vector2.Zero,
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            ShotNear(moved.X, 30f) && ShotNear(moved.Y, -12f) && ShotNear(moved.Zoom, 1f)
+            && ShotNear(moved.RotationDegrees, 0f),
+            "Moving the shot frame did not translate the framed viewport.");
+
+        // Dragging the right edge keeps the left edge anchored and derives the zoom from the extent.
+        var resized = StageControl.ResolveShotFramingDrag(
+            start,
+            ShotFramingHandleKind.Right,
+            new Vector2(10000f, 0f),
+            new Vector2(5000f, 0f),
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            ShotNear(resized.Zoom, canvasWidth / 15000f)
+            && ShotNear(resized.X, 2500f)
+            && ShotNear(resized.X - canvasWidth / (2f * resized.Zoom), -5000f)
+            && ShotNear(resized.X + canvasWidth / (2f * resized.Zoom), 10000f),
+            "Resizing the shot frame did not keep the opposite edge anchored.");
+
+        var rotatedDrag = StageControl.ResolveShotFramingDrag(
+            start,
+            ShotFramingHandleKind.Rotate,
+            new Vector2(0f, 100f),
+            new Vector2(100f, 0f),
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            ShotNear(rotatedDrag.RotationDegrees, 90f)
+            && ShotNear(rotatedDrag.Zoom, 1f)
+            && ShotNear(rotatedDrag.X, 0f),
+            "Rotating the shot frame did not follow the pointer angle around the frame centre.");
+        AssertTimeline(
+            ShotNear(StageControl.NormalizeShotAngleDeltaDegrees(359f), -1f)
+            && ShotNear(StageControl.NormalizeShotAngleDeltaDegrees(-359f), 1f)
+            && ShotNear(StageControl.NormalizeShotAngleDeltaDegrees(180f), 180f)
+            && ShotNear(StageControl.NormalizeShotAngleDeltaDegrees(-180f), -180f),
+            "Shot rotation angle normalization did not preserve the shortest pointer delta.");
+
+        var perspective3D = new SceneShotSettings(
+            CameraProjection.Perspective,
+            new Vector3(120f, -40f, -800f),
+            new Vector3(12f, -18f, 27f),
+            120f,
+            14_000f);
+        var movedPerspective3D = StageControl.ResolveShotFramingDrag(
+            perspective3D,
+            ShotFramingHandleKind.Body,
+            new Vector2(150f, -80f),
+            new Vector2(120f, -40f),
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            movedPerspective3D.Projection == CameraProjection.Perspective
+            && ShotNear(movedPerspective3D.X, 150f)
+            && ShotNear(movedPerspective3D.Y, -80f)
+            && ShotNear(movedPerspective3D.Z, -800f)
+            && ShotNear(movedPerspective3D.RotationX, 12f)
+            && ShotNear(movedPerspective3D.RotationY, -18f)
+            && ShotNear(movedPerspective3D.RotationDegrees, 27f)
+            && ShotNear(movedPerspective3D.FocalLength, 120f),
+            "Moving a 3D perspective camera changed its depth, tilt, yaw, or focal length.");
+
+        var movedCameraBody = StageControl.ResolveShotCameraHandleDrag(
+            perspective3D,
+            ShotFramingHandleKind.CameraBody,
+            new Vector3(40f, -25f, 180f),
+            0f,
+            0f);
+        var movedCameraZ = StageControl.ResolveShotCameraHandleDrag(
+            perspective3D,
+            ShotFramingHandleKind.CameraPositionZ,
+            Vector3.UnitZ * 120f,
+            0f,
+            0f);
+        var rotatedCamera = StageControl.ResolveShotCameraHandleDrag(
+            perspective3D,
+            ShotFramingHandleKind.CameraRotateX,
+            Vector3.Zero,
+            18f,
+            0f);
+        var lensCamera = StageControl.ResolveShotCameraHandleDrag(
+            perspective3D,
+            ShotFramingHandleKind.CameraLens,
+            Vector3.Zero,
+            0f,
+            20f);
+        AssertTimeline(
+            ShotNear(movedCameraBody.X, 160f)
+            && ShotNear(movedCameraBody.Y, -65f)
+            && ShotNear(movedCameraBody.Z, -620f)
+            && ShotNear(movedCameraZ.Z, -680f)
+            && ShotNear(rotatedCamera.RotationX, 30f)
+            && lensCamera.FocalLength > perspective3D.FocalLength
+            && lensCamera.Zoom > perspective3D.Zoom,
+            "Camera wireframe transform and lens handles did not update the independent 3D camera properties.");
+
+        var orthographic3D = new SceneShotSettings(
+            CameraProjection.Orthographic,
+            new Vector3(120f, -40f, 640f),
+            new Vector3(-9f, 14f, -22f),
+            90f,
+            12_000f);
+        var perspectiveWireframe = StageControl.ResolveShotCameraWireframeWorld(
+            perspective3D,
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            perspectiveWireframe.IsPerspective
+            && perspectiveWireframe.BodyFrontCorners.Length == 4
+            && perspectiveWireframe.BodyBackCorners.Length == 4
+            && perspectiveWireframe.FrameCorners.Length == 4
+            && perspectiveWireframe.NearFrameCorners.Length == 0
+            && perspectiveWireframe.FrameCorners.All(corner =>
+                Vector3.Dot(corner - perspectiveWireframe.LensPoint, Vector3.UnitZ) > 0),
+            "The perspective camera wireframe did not build a four-corner converging frame.");
+
+        var orthographicWireframe = StageControl.ResolveShotCameraWireframeWorld(
+            orthographic3D,
+            canvasWidth,
+            canvasHeight);
+        var orthographicNearEdge = orthographicWireframe.NearFrameCorners[1]
+            - orthographicWireframe.NearFrameCorners[0];
+        var orthographicFarEdge = orthographicWireframe.FrameCorners[1]
+            - orthographicWireframe.FrameCorners[0];
+        var orthographicGuideA = orthographicWireframe.FrameCorners[0]
+            - orthographicWireframe.NearFrameCorners[0];
+        var orthographicGuideB = orthographicWireframe.FrameCorners[1]
+            - orthographicWireframe.NearFrameCorners[1];
+        AssertTimeline(
+            !orthographicWireframe.IsPerspective
+            && orthographicWireframe.NearFrameCorners.Length == 4
+            && Vector3.Distance(orthographicNearEdge, orthographicFarEdge) < 0.01f
+            && Vector3.Distance(orthographicGuideA, orthographicGuideB) < 0.01f,
+            "The orthographic camera wireframe did not preserve parallel frame guides.");
+        var orthographicLens = StageControl.ResolveShotCameraHandleDrag(
+            orthographic3D,
+            ShotFramingHandleKind.CameraLens,
+            Vector3.Zero,
+            0f,
+            12f);
+        AssertTimeline(
+            orthographicLens.OrthographicSize < orthographic3D.OrthographicSize
+            && orthographicLens.Zoom > orthographic3D.Zoom,
+            "The orthographic camera lens handle did not adjust its orthographic size.");
+        var resizedOrthographic3D = StageControl.ResolveShotFramingDrag(
+            orthographic3D,
+            ShotFramingHandleKind.Right,
+            new Vector2(700f, -40f),
+            new Vector2(334f, -40f),
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            resizedOrthographic3D.Projection == CameraProjection.Orthographic
+            && ShotNear(resizedOrthographic3D.Z, 640f)
+            && ShotNear(resizedOrthographic3D.RotationX, -9f)
+            && ShotNear(resizedOrthographic3D.RotationY, 14f)
+            && ShotNear(resizedOrthographic3D.RotationDegrees, -22f)
+            && ShotNear(resizedOrthographic3D.FocalLength, 90f)
+            && !ShotNear(resizedOrthographic3D.OrthographicSize, orthographic3D.OrthographicSize)
+            && resizedOrthographic3D.IsValid,
+            "Resizing an orthographic 3D camera did not preserve its mode and spatial state.");
+
+        var clamped = StageControl.ResolveShotFramingDrag(
+            start,
+            ShotFramingHandleKind.Bottom,
+            new Vector2(0f, 100000f),
+            new Vector2(0f, -250f),
+            canvasWidth,
+            canvasHeight);
+        AssertTimeline(
+            clamped.Zoom >= SceneShotSettings.MinimumZoom
+            && clamped.Zoom <= SceneShotSettings.MaximumZoom
+            && clamped.IsValid,
+            "A degenerate shot frame resize did not clamp the zoom to the supported range.");
+
+        var handles = StageControl.EnumerateShotFramingHandles(new ShotFramingGizmoGeometry(
+            new PointF(0f, 0f),
+            new PointF(100f, 0f),
+            new PointF(100f, 50f),
+            new PointF(0f, 50f),
+            new PointF(50f, -40f),
+            new PointF(50f, 25f),
+            new PointF(50f, 0f))).ToArray();
+        AssertTimeline(
+            handles.Length == 9
+            && handles.Count(handle => handle.Kind == ShotFramingHandleKind.Rotate) == 1
+            && handles.Any(handle => handle.Kind == ShotFramingHandleKind.TopLeft)
+            && handles.Any(handle => handle.Kind == ShotFramingHandleKind.Bottom),
+            "The shot framing gizmo did not expose eight resize handles plus one rotation handle.");
+
+        var inset = StageControl.InsetPolygon(
+            [new PointF(0f, 0f), new PointF(100f, 0f), new PointF(100f, 50f), new PointF(0f, 50f)],
+            new PointF(50f, 25f),
+            10f);
+        AssertTimeline(
+            inset[0].X > 0f && inset[0].Y > 0f
+            && inset[2].X < 100f && inset[2].Y < 50f,
+            "The shot framing border band did not shrink towards the frame centre.");
+
+        AssertTimeline(
+            StageControl.TryCreateQuadTransform(
+                [new PointF(0f, 0f), new PointF(10f, 0f), new PointF(0f, 10f)],
+                [new PointF(0f, 0f), new PointF(20f, 0f), new PointF(0f, 20f)],
+                out var quad)
+            && !StageControl.TryCreateQuadTransform(
+                [new PointF(0f, 0f), new PointF(0f, 0f), new PointF(0f, 0f)],
+                [new PointF(0f, 0f), new PointF(20f, 0f), new PointF(0f, 20f)],
+                out _),
+            "The shot preview quad transform did not validate its source points.");
+        var projected = new[] { new PointF(10f, 10f) };
+        quad.TransformPoints(projected);
+        AssertTimeline(
+            ShotNear(projected[0].X, 20f) && ShotNear(projected[0].Y, 20f),
+            "The shot preview quad transform did not map the framed viewport onto the preview surface.");
+
+        var previewProject = VectorProject.CreateEmpty();
+        using var stage = new StageControl(previewProject.DrawingObjects[0].Scene);
+        stage.SetBounds(0, 0, 320, 180);
+        stage.SetShotFramingGizmo(perspective3D, "Perspective camera");
+        var expectedCameraOrigin = StageControl.ResolveShotCameraWireframeWorld(
+            perspective3D,
+            previewProject.DrawingObjects[0].Scene.StageWidth,
+            previewProject.DrawingObjects[0].Scene.StageHeight).CameraPoint;
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeGeometry(out var perspectiveScreenWireframe)
+            && perspectiveScreenWireframe.IsPerspective
+            && perspectiveScreenWireframe.Segments.Any(segment =>
+                segment.Kind == ShotCameraWireframeSegmentKind.Frustum)
+            && perspectiveScreenWireframe.Segments.Any(segment =>
+                segment.Kind == ShotCameraWireframeSegmentKind.RotationRingZ)
+            && perspectiveScreenWireframe.Handles.Any(handle =>
+                handle.Kind == ShotFramingHandleKind.CameraBody)
+            && perspectiveScreenWireframe.Handles.Any(handle =>
+                handle.Kind == ShotFramingHandleKind.CameraLens),
+            "The 2D Stage did not render the perspective camera frustum and rotation wireframe.");
+        var cameraBodyHandlePoint = PointF.Empty;
+        var cameraLensPoint = PointF.Empty;
+        var cameraPositionXPoint = PointF.Empty;
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeInteractionOrigin(out var interactionOrigin)
+            && ShotNear(interactionOrigin.X, expectedCameraOrigin.X)
+            && ShotNear(interactionOrigin.Y, expectedCameraOrigin.Y)
+            && ShotNear(interactionOrigin.Z, expectedCameraOrigin.Z)
+            && stage.TryGetShotCameraWireframeHandlePoint(
+                ShotFramingHandleKind.CameraBody,
+                out cameraBodyHandlePoint)
+            && ShotNear(
+                cameraBodyHandlePoint.X,
+                stage.WorldToScreen(expectedCameraOrigin.X, expectedCameraOrigin.Y).X)
+            && ShotNear(
+                cameraBodyHandlePoint.Y,
+                stage.WorldToScreen(expectedCameraOrigin.X, expectedCameraOrigin.Y).Y),
+            "The camera handle origin did not match the visible wireframe body anchor.");
+        var perspectiveHandlePoints = perspectiveScreenWireframe.Handles
+            .Select(handle => handle.Point)
+            .ToArray();
+        var minimumHandleSpacing = StageControl.ShotCameraHandleMinimumSpacingPixels
+            * stage.SpatialGizmoDpiScale;
+        var handlesAreSeparated = Enumerable.Range(0, perspectiveHandlePoints.Length)
+            .All(index => Enumerable.Range(index + 1, perspectiveHandlePoints.Length - index - 1)
+                .All(next => ShotPointDistance(perspectiveHandlePoints[index], perspectiveHandlePoints[next])
+                    >= minimumHandleSpacing - 0.01f));
+        AssertTimeline(
+            handlesAreSeparated,
+            "Camera handles overlapped in the 2D Stage and made hit priority ambiguous: "
+            + string.Join(
+                "; ",
+                perspectiveScreenWireframe.Handles.SelectMany(
+                    (handle, index) => perspectiveScreenWireframe.Handles
+                        .Skip(index + 1)
+                        .Where(other => ShotPointDistance(handle.Point, other.Point)
+                            < minimumHandleSpacing - 0.01f)
+                        .Select(other =>
+                            $"{handle.Kind}{Point.Round(handle.Point)} vs "
+                            + $"{other.Kind}{Point.Round(other.Point)}"))));
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(
+                    ShotFramingHandleKind.CameraBody,
+                    out var cameraBodyPoint)
+            && stage.HitTestShotFramingGizmo(Point.Round(cameraBodyPoint)).Kind
+                == ShotFramingHandleKind.CameraBody
+            && stage.TryGetShotCameraWireframeHandlePoint(
+                ShotFramingHandleKind.CameraLens,
+                out cameraLensPoint)
+            && stage.HitTestShotFramingGizmo(Point.Round(cameraLensPoint)).Kind
+                == ShotFramingHandleKind.CameraLens
+            && stage.TryGetShotCameraWireframeHandlePoint(
+                ShotFramingHandleKind.CameraPositionX,
+                out cameraPositionXPoint)
+            && stage.HitTestShotFramingGizmo(Point.Round(cameraPositionXPoint)).Kind
+                == ShotFramingHandleKind.CameraPositionX,
+            "The 2D camera body, lens, or position handle did not round-trip through hit testing.");
+        var cameraPositionXShaftMidpoint = new PointF(
+            (cameraBodyPoint.X + cameraPositionXPoint.X) * 0.5f,
+            (cameraBodyPoint.Y + cameraPositionXPoint.Y) * 0.5f);
+        AssertTimeline(
+            stage.HitTestShotFramingGizmo(Point.Round(cameraPositionXShaftMidpoint)).Kind
+                == ShotFramingHandleKind.CameraPositionX,
+            "The visible camera position shaft was not interactive between its origin and arrow tip.");
+        var bodyFaceCenter = new PointF(
+            perspectiveScreenWireframe.BodyFrontCorners.Average(point => point.X),
+            perspectiveScreenWireframe.BodyFrontCorners.Average(point => point.Y));
+        AssertTimeline(
+            perspectiveScreenWireframe.BodyFrontCorners.Length == 4
+            && stage.HitTestShotFramingGizmo(Point.Round(bodyFaceCenter)).Kind
+                == ShotFramingHandleKind.CameraBody,
+            "The camera body face was not interactive away from its outline.");
+        // Explicit grips now win over crossing rings. Probe a clear piece of the ring rather than
+        // the first segment, which can sit inside an axis grip's hit radius.
+        var rotationRingSegment = perspectiveScreenWireframe.Segments
+            .Where(segment => segment.Kind == ShotCameraWireframeSegmentKind.RotationRingZ)
+            .OrderByDescending(segment => perspectiveScreenWireframe.Handles.Min(handle =>
+                ShotPointDistance(handle.Point, new PointF(
+                    (segment.Start.X + segment.End.X) * 0.5f,
+                    (segment.Start.Y + segment.End.Y) * 0.5f))))
+            .FirstOrDefault();
+        var rotationRingMidpoint = new PointF(
+            (rotationRingSegment.Start.X + rotationRingSegment.End.X) * 0.5f,
+            (rotationRingSegment.Start.Y + rotationRingSegment.End.Y) * 0.5f);
+        AssertTimeline(
+            rotationRingSegment.Kind == ShotCameraWireframeSegmentKind.RotationRingZ
+            && stage.HitTestShotFramingGizmo(Point.Round(rotationRingMidpoint)).Kind
+                == ShotFramingHandleKind.CameraRotateZ,
+            "The camera rotation ring was not interactive between its marker points.");
+        AssertTimeline(
+            StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionX)
+                == StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraRotateX)
+            && StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionY)
+                == StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraRotateY)
+            && StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionZ)
+                == StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraRotateZ)
+            && StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionX)
+                != StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionY),
+            "Camera move and rotation handles did not preserve a consistent X/Y/Z color identity.");
+        var collapsedAxisSettings = perspective3D with { RotationX = 90f, RotationY = 0f };
+        stage.SetShotFramingGizmo(collapsedAxisSettings, "Collapsed axis camera");
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeGeometry(out var collapsedWireframe)
+            && collapsedWireframe.Handles.Count(handle =>
+                handle.Kind is ShotFramingHandleKind.CameraBody
+                    or ShotFramingHandleKind.CameraPositionX
+                    or ShotFramingHandleKind.CameraPositionY
+                    or ShotFramingHandleKind.CameraLens) == 4
+            && collapsedWireframe.Handles
+                .Where(handle => handle.Kind != ShotFramingHandleKind.CameraBody)
+                .All(handle => stage.HitTestShotFramingGizmo(Point.Round(handle.Point)).Kind == handle.Kind),
+            "A camera axis that collapsed in the 2D projection did not receive a stable visible handle.");
+        AssertTimeline(
+            collapsedWireframe.Handles
+                .Where(handle => handle.Kind != ShotFramingHandleKind.CameraBody)
+                .All(handle => float.IsFinite(handle.Anchor.X)
+                    && float.IsFinite(handle.Anchor.Y)
+                    && float.IsFinite(handle.Point.X)
+                    && float.IsFinite(handle.Point.Y)),
+            "A stabilized camera handle lost its finite projected anchor.");
+        stage.SetShotFramingGizmo(orthographic3D, "Orthographic camera");
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeGeometry(out var orthographicScreenWireframe)
+            && !orthographicScreenWireframe.IsPerspective
+            && orthographicScreenWireframe.Segments.Any(segment =>
+                segment.Kind == ShotCameraWireframeSegmentKind.OrthographicGuide)
+            && orthographicScreenWireframe.Handles.Any(handle =>
+                handle.Kind == ShotFramingHandleKind.CameraPositionX)
+            && orthographicScreenWireframe.Handles.Any(handle =>
+                handle.Kind == ShotFramingHandleKind.CameraLens),
+            "The 2D Stage did not render the orthographic camera guide wireframe.");
+        var captured = stage.TryCaptureShotPreview(
+            new SceneShotSettings(0f, 0f, 1f, 0f),
+            new Size(160, 90),
+            out var shotPreview);
+        AssertTimeline(
+            captured && shotPreview is { Width: 160, Height: 90 },
+            "Rendering the shot preview did not produce a bitmap of the requested size.");
+        shotPreview?.Dispose();
+        AssertTimeline(stage.TryCaptureShotPreview(
+            SceneShotSettings.Default with { AspectRatio = SceneShotAspectRatio.Portrait9To16 },
+            new Size(160, 90), out var portraitPreview)
+            && portraitPreview is { Width: 51, Height: 90 },
+            "Portrait shot preview was stretched to the monitor dimensions.");
+        portraitPreview?.Dispose();
+
+        using var preview = new Bitmap(24, 14);
+        using var overlay = new ShotPreviewOverlay();
+        AssertTimeline(!overlay.HasPreview, "The shot overlay presented a preview without one.");
+        overlay.SetPreview(preview, "Shot preview");
+        AssertTimeline(
+            overlay.HasPreview && overlay.PreviewPixelSize.Width > 0 && overlay.PreviewPixelSize.Height > 0,
+            "The shot overlay did not present the rendered shot preview.");
+        // The monitor lives on the Stage, so the right director inspector must not reserve a
+        // preview region; camera properties are the only inspector content.
+        AssertTimeline(
+            !ShotDirectorPanelPresentsPreview(),
+            "The director inspector still reserves a preview region.");
+        overlay.SetPreview(null);
+        AssertTimeline(!overlay.HasPreview, "Clearing the shot preview did not remove it from the overlay.");
+
+        // The optical handle is a screen-space drag, and its axis must track the handle that is
+        // actually drawn. A frozen press-time axis makes the yellow lens diamond run away from the
+        // pointer as soon as the camera itself moves during the same drag.
+        RunShotCameraLensHandleFollowRegression();
+
+        // The camera handles are direct manipulation: the grabbed handle has to end up under the
+        // pointer. This drives real MainForm pointer events, so it covers the projection and drag
+        // mapping together rather than the pure geometry alone.
+        RunAllShotFramesDisplayRegression();
+        RunShotCameraHandleTrackingRegression();
+
+        Console.WriteLine("shot_framing_gizmo_regression=ok");
+    }
+
+    /// <summary>
+    /// Screen direction a one-dimensional handle slid along during a drag, derived from where it
+    /// started, where it landed, and the body it is anchored to.
+    /// </summary>
+    /// <summary>
+    /// Axis a dragged handle is expected to slide along, taken from the control as it is drawn: the
+    /// handle's own direction away from the camera body. Deriving it from the observed travel would be
+    /// circular, and it degenerates exactly when the handle fails to move, which is the failure being
+    /// tested for.
+    /// </summary>
+    private static Vector2 NormalizeHandleAxis(PointF handlePoint, PointF bodyPoint)
+    {
+        var radial = new Vector2(handlePoint.X - bodyPoint.X, handlePoint.Y - bodyPoint.Y);
+        return radial.LengthSquared() > 0.0001f ? Vector2.Normalize(radial) : Vector2.UnitX;
+    }
+    /// <summary>
+    /// Drives a real camera-handle drag through MainForm and asserts the grabbed handle lands under
+    /// the pointer. The body and optical handles are free 2D moves, so they must track the cursor
+    /// exactly; axis handles are one-dimensional, so only their own axis component is asserted.
+    /// </summary>
+    private static void RunAllShotFramesDisplayRegression()
+    {
+        using var form = new MainForm { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30000,-30000), Size = new Size(1400,900) };
+        form.Show();
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var selected = RequireField(typeof(MainForm), "_activeShotId");
+        var update = RequireMethod(typeof(MainForm), "UpdateShotFramingGizmo");
+        var scene = project.Scenes[0];
+        var a = scene.AddShot("Visible A", 12, "");
+        var b = scene.AddShot("Visible B", 12, "");
+        scene.UpdateShotAtFrame(b.Id, 0, SceneShotSettings.Default with { X = 2000 });
+        tabs.SelectedView = WorkspaceView.ShotDirector;
+        selected.SetValue(form, a.Id);
+        update.Invoke(form, null);
+        AssertTimeline(stage.ShotFrameCollectionVisible && stage.ShotFrameDisplays.Count == scene.Shots.Count
+            && stage.ShotFrameDisplays.Count(f => f.Selected) == 1
+            && stage.ShotFrameDisplays.Last().Id == a.Id, "Director did not retain all camera frames or highlight selection last.");
+        foreach (var display in stage.ShotFrameDisplays)
+        {
+            AssertTimeline(stage.TryGetShotCameraWireframeGeometry(display.Settings, out var wire, handlesVisible: false)
+                && wire.Handles.Length == 0 && wire.Segments.All(s => s.Kind < ShotCameraWireframeSegmentKind.RotationRingX),
+                "Display-only camera frames retained manipulation handles or rings.");
+            if (display.Selected && stage.TryGetShotDisplayFrame(display.Settings, out var geometry))
+                AssertTimeline(stage.HitTestShotFramingGizmo(Point.Round(geometry.TopLeft)).IsValid,
+                    "Selected camera frame handles were not interactive.");
+        }
+        AssertTimeline(stage.TryGetShotCameraWireframeGeometry(out var selectedWire) && selectedWire.Handles.Length > 0,
+            "Selected camera did not expose manipulation handles.");
+        stage.SetShotFramingGizmo(stage.ShotFramingGizmoSettings with { X = 100 }, "Drag preview");
+        AssertTimeline(stage.ShotFrameDisplays.Count == scene.Shots.Count && stage.ShotFrameCollectionVisible,
+            "Dragging the selected camera hid the other camera frames.");
+        selected.SetValue(form, b.Id);
+        update.Invoke(form,null);
+        AssertTimeline(stage.ShotFrameDisplays.Last().Id == b.Id && stage.ShotFrameDisplays.Last().Selected,
+            "Camera selection did not move the frame highlight.");
+        selected.SetValue(form, "");
+        RequireField(typeof(MainForm), "_playing").SetValue(form, true);
+        RequireField(typeof(MainForm), "_frame").SetValue(form, 100);
+        update.Invoke(form,null);
+        AssertTimeline(stage.ShotFramingGizmoVisible && stage.ShotFrameDisplays.Count == scene.Shots.Count
+            && stage.ShotFrameDisplays.All(f => !f.Selected), "Playback or no selection hid camera frames.");
+        RequireField(typeof(MainForm), "_playing").SetValue(form, false);
+        tabs.SelectedView = WorkspaceView.SceneEditor;
+        update.Invoke(form,null);
+        AssertTimeline(!stage.ShotFramingGizmoVisible && stage.ShotFrameDisplays.Count == 0,
+            "Camera frames leaked out of the director workspace.");
+        RunShotProjectionCacheRegression(stage);
+        Console.WriteLine("shot_all_frames_display_selected_handles=ok");
+    }
+
+    private static void RunShotProjectionCacheRegression(StageControl stage)
+    {
+        var cache = (System.Collections.IDictionary)RequireField(typeof(StageControl), "_shotWireframeCache").GetValue(stage)!;
+        var outlines = (System.Collections.IDictionary)RequireField(typeof(StageControl), "_shotOutlineCache").GetValue(stage)!;
+        var settings = Enumerable.Range(0, 24).Select(i => SceneShotSettings.Default with { X = i * 250, Y = i * 100 }).ToArray();
+        var originalView = stage.ReferenceDimension;
+        var dimension = typeof(StageControl).GetProperty(nameof(StageControl.ReferenceDimension))!;
+        dimension.SetValue(stage, SceneDimension.ThreeD);
+        void Frame(bool cold)
+        {
+            if (cold) { cache.Clear(); outlines.Clear(); }
+            for (int i = 0; i < settings.Length; i++)
+            {
+                stage.TryGetShotCameraWireframeGeometry(settings[i], out _, i == 0);
+                stage.TryResolveShotFramingGeometry(settings[i], out _);
+            }
+        }
+        Frame(true);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < 30; i++) Frame(true);
+        double coldMs = watch.Elapsed.TotalMilliseconds / 30;
+        long builds = stage.ShotWireframeBuildCount;
+        long allocated = GC.GetAllocatedBytesForCurrentThread();
+        watch.Restart();
+        for (int i = 0; i < 120; i++) Frame(false);
+        double warmMs = watch.Elapsed.TotalMilliseconds / 120;
+        long bytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
+        AssertTimeline(stage.ShotWireframeBuildCount == builds, "Stable 3D camera overlays rebuilt projected geometry.");
+        stage.TryGetShotCameraWireframeGeometry(settings[0], out var before);
+        var yaw = RequireField(typeof(StageControl), "_referenceYaw");
+        float initialYaw = (float)yaw.GetValue(stage)!;
+        yaw.SetValue(stage, initialYaw + 0.25f);
+        stage.TryGetShotCameraWireframeGeometry(settings[0], out var moved);
+        AssertTimeline(stage.ShotWireframeBuildCount == builds + 1 && !before.Segments.SequenceEqual(moved.Segments),
+            "Orbiting reused stale camera overlay geometry.");
+        cache.Clear();
+        stage.TryGetShotCameraWireframeGeometry(settings[0], out var fresh);
+        AssertTimeline(moved.Segments.SequenceEqual(fresh.Segments) && moved.Handles.SequenceEqual(fresh.Handles),
+            "Cached projection differs from a fresh build.");
+        builds = stage.ShotWireframeBuildCount;
+        stage.TryGetShotCameraWireframeGeometry(settings[0] with { FocalLength = 90 }, out _);
+        AssertTimeline(stage.ShotWireframeBuildCount == builds + 1, "Lens editing failed to invalidate camera geometry.");
+        builds = stage.ShotWireframeBuildCount;
+        var originalDock = stage.Dock;
+        var originalBounds = stage.Bounds;
+        stage.Dock = DockStyle.None;
+        stage.Width = originalBounds.Width + 1;
+        stage.TryGetShotCameraWireframeGeometry(settings[0], out _);
+        AssertTimeline(stage.Width != originalBounds.Width && stage.ShotWireframeBuildCount > builds, "Resizing retained stale camera geometry.");
+        stage.Bounds = originalBounds;
+        stage.Dock = originalDock;
+        yaw.SetValue(stage, initialYaw);
+        dimension.SetValue(stage, originalView);
+        Console.WriteLine($"shot_projection_cache_24_cameras_cold_ms={coldMs:F3},warm_ms={warmMs:F3},warm_allocated_bytes={bytes},invalidation=ok");
+    }
+
+    private static void RunShotCameraHandleTrackingRegression()
+    {
+        var workspaceTabsField = RequireField(typeof(MainForm), "_workspaceTabs");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            Size = new Size(1400, 900)
+        };
+        var workspaceTabs = (WorkspaceTabs)workspaceTabsField.GetValue(form)!;
+        var project = (VectorProject)projectField.GetValue(form)!;
+        var stage = (StageControl)stageField.GetValue(form)!;
+        var timeline = (TimelineStrip)timelineField.GetValue(form)!;
+
+        form.Show();
+        Application.DoEvents();
+        workspaceTabs.SelectedView = WorkspaceView.ShotDirector;
+        Application.DoEvents();
+
+        var scene = project.Scenes[0];
+        var shot = scene.AddShot("Tracking camera", 24, "tracking");
+        scene.UpdateShotAtFrame(shot.Id, 0, SceneShotSettings.Default);
+        timeline.SelectSingleLayerTarget(shot.Id);
+        Application.DoEvents();
+        AssertTimeline(stage.ShotFramingGizmoVisible, "Tracking regression could not show the gizmo.");
+        AssertTimeline(
+            stage.RendersReferenceProjection,
+            "The shot director is expected to render with the reference projection.");
+
+        // The optical slider is a screen-space control, so it must slide along its own axis as the lens
+        // changes and stay clear of the body on every view. The old world-space diamond could collapse
+        // onto the body and was then impossible to grab.
+        var lensNear = PointF.Empty;
+        var lensFar = PointF.Empty;
+        var bodyPoint = PointF.Empty;
+        foreach (var (focal, capture) in new (float, Action<PointF>)[]
+                 {
+                     (20f, p => lensNear = p),
+                     (140f, p => lensFar = p)
+                 })
+        {
+            stage.SetShotFramingGizmo(SceneShotSettings.Default with { FocalLength = focal }, "tracking");
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraLens, out var lens),
+                "The optical handle is missing.");
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraBody, out bodyPoint),
+                "The camera body handle is missing.");
+            var lensClearance = MathF.Sqrt(
+                (lens.X - bodyPoint.X) * (lens.X - bodyPoint.X)
+                + (lens.Y - bodyPoint.Y) * (lens.Y - bodyPoint.Y));
+            AssertTimeline(
+                lensClearance >= StageControl.ShotCameraHandleMinimumOffsetPixels - 0.5f,
+                $"The optical slider collapsed onto the body at focal {focal} "
+                + $"(body={bodyPoint} lens={lens} clearance={lensClearance:0.##}).");
+            capture(lens);
+        }
+
+        var lensTravel = MathF.Sqrt(
+            (lensFar.X - lensNear.X) * (lensFar.X - lensNear.X)
+            + (lensFar.Y - lensNear.Y) * (lensFar.Y - lensNear.Y));
+        // Focal 20mm to 140mm is most of the usable range, so the knob must cross a large part of its
+        // travel. A world-space stand-off that barely reacted to the lens would fail this.
+        AssertTimeline(
+            lensTravel > 30f,
+            $"The optical slider barely moved across the lens range ({lensNear} -> {lensFar}).");
+
+        // The slider is logarithmic, so dragging it to a position must reproduce that position's lens
+        // and redraw the handle under the cursor. This is the property that makes it准确快速.
+        foreach (var fraction in new[] { 0.15f, 0.5f, 0.85f })
+        {
+            var probe = SceneShotSettings.Default with { FocalLength = 50f };
+            var expected = StageControl.ResolveShotCameraLensFromSliderFraction(probe, fraction);
+            var resolved = StageControl.ResolveShotCameraLensFromSliderFraction(
+                probe with { FocalLength = expected },
+                fraction);
+            AssertTimeline(
+                Math.Abs(resolved - expected) < 0.01f,
+                $"The lens slider is not idempotent at {fraction}: {expected} -> {resolved}.");
+        }
+
+        var lowFraction = StageControl.ResolveShotCameraLensFromSliderFraction(
+            SceneShotSettings.Default,
+            0.2f);
+        var highFraction = StageControl.ResolveShotCameraLensFromSliderFraction(
+            SceneShotSettings.Default,
+            0.8f);
+        AssertTimeline(
+            lowFraction < highFraction,
+            $"The lens slider is not monotonic ({lowFraction} !< {highFraction}).");
+
+        // The rotation ring marker must sweep with the camera's angle instead of staying pinned. The
+        // form re-pushes the active shot's framing whenever it pumps messages, so the gizmo settings
+        // are applied and read without an intervening message loop.
+        stage.SetShotFramingGizmo(SceneShotSettings.Default with { RotationDegrees = 0f }, "tracking");
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraRotateZ, out var ringZero),
+            "The rotation handle is missing.");
+        stage.SetShotFramingGizmo(SceneShotSettings.Default with { RotationDegrees = 90f }, "tracking");
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraRotateZ, out var ringNinety),
+            "The rotation handle is missing.");
+        AssertTimeline(
+            Math.Abs(ringNinety.Y - ringZero.Y) > 8f || Math.Abs(ringNinety.X - ringZero.X) > 8f,
+            $"The rotation handle did not follow the camera rotation ({ringZero} -> {ringNinety}).");
+
+        // The camera must stay anchored on screen while the reference zoom changes.
+        scene.UpdateShotAtFrame(shot.Id, 0, SceneShotSettings.Default);
+        stage.SetShotFramingGizmo(SceneShotSettings.Default, "tracking");
+        Application.DoEvents();
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraBody, out var beforeZoom),
+            "The camera body handle is missing before zooming.");
+        stage.ZoomReferenceCamera(1.6f);
+        Application.DoEvents();
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraBody, out var afterZoom),
+            "The camera body handle is missing after zooming.");
+        var anchorDrift = MathF.Sqrt(
+            (afterZoom.X - beforeZoom.X) * (afterZoom.X - beforeZoom.X)
+            + (afterZoom.Y - beforeZoom.Y) * (afterZoom.Y - beforeZoom.Y));
+        AssertTimeline(
+            anchorDrift < 2f,
+            $"Zooming moved the camera centre by {anchorDrift:0.##} px; zoom must pivot on the camera centre.");
+        stage.ZoomReferenceCamera(1f / 1.6f);
+        Application.DoEvents();
+
+        RunShotCameraLensZoomInteractionRegression(scene, shot);
+
+        void DragAndMeasure(ShotFramingHandleKind kind, string label, bool expectAxisOnly, Vector2 axis)
+        {
+            scene.UpdateShotAtFrame(shot.Id, 0, SceneShotSettings.Default);
+            stage.SetShotFramingGizmo(SceneShotSettings.Default, "tracking");
+            Application.DoEvents();
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(kind, out var handlePoint),
+                $"{label}: handle is missing.");
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(
+                    ShotFramingHandleKind.CameraBody,
+                    out var bodyPoint),
+                $"{label}: camera body handle is missing.");
+
+            var start = Point.Round(handlePoint);
+            // Axis handles only travel along their own direction, so the drag is aimed along that
+            // direction. Dragging diagonally would ask for travel the control cannot make and would
+            // hide a genuine failure to follow the pointer.
+            var slideAxis = axis.LengthSquared() > 0.0001f
+                ? axis
+                : NormalizeHandleAxis(handlePoint, bodyPoint);
+            var travel = 70f;
+            var target = new Point(
+                (int)MathF.Round(start.X + slideAxis.X * travel),
+                (int)MathF.Round(start.Y + slideAxis.Y * travel));
+            // The handle the operator grabs must be the handle that answers the hit test. The camera
+            // body, the rotation rings, and the optical slider overlap in a flattened projection, so
+            // this also guards the priority that keeps each of them draggable.
+            var hit = stage.HitTestShotFramingGizmo(start);
+            AssertTimeline(
+                hit.Kind == kind,
+                $"{label}: clicking the drawn handle resolved to {hit.Kind} instead of {kind}.");
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
+            mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, target.X, target.Y, 0)]);
+            Application.DoEvents();
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(kind, out var landed),
+                $"{label}: handle disappeared during the drag.");
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, target.X, target.Y, 0)]);
+            Application.DoEvents();
+
+            var offset = new Vector2(landed.X - target.X, landed.Y - target.Y);
+            if (expectAxisOnly)
+            {
+                // Axis handles only consume travel along their own axis; the cross-axis part is
+                // intentionally ignored, so only the along-axis error has to be small.
+                var along = Vector2.Dot(offset, slideAxis);
+                AssertTimeline(
+                    Math.Abs(along) < 2f,
+                    $"{label}: handle lags {along:0.##} px behind the pointer along its axis "
+                    + $"(start={start} target={target} landed={Point.Round(landed)} axis={slideAxis}).");
+                return;
+            }
+
+            AssertTimeline(
+                offset.Length() < 2f,
+                $"{label}: handle missed the pointer by {offset.Length():0.##} px "
+                + $"(start={start} target={target} landed={Point.Round(landed)}).");
+        }
+
+        // The body and the optical slider are direct-manipulation controls and must land under the
+        // pointer: the body is a free 2D move, and the slider is a screen-space control that follows
+        // the cursor along its own axis exactly. The axis handles slide along one world axis, so only
+        // their along-axis component is actionable; the cross-axis remainder is ignored by design.
+        DragAndMeasure(ShotFramingHandleKind.CameraBody, "body", expectAxisOnly: false, Vector2.Zero);
+        DragAndMeasure(ShotFramingHandleKind.CameraLens, "lens", expectAxisOnly: true, Vector2.Zero);
+        DragAndMeasure(
+            ShotFramingHandleKind.CameraPositionX,
+            "posX",
+            expectAxisOnly: true,
+            Vector2.UnitX);
+
+        RunShotCameraGripContinuityRegression(form, stage, scene, shot);
+        RunShotCameraHandleModifierRegression(form, stage, scene, shot);
+
+        Console.WriteLine("shot_camera_handle_tracking_regression=ok");
+    }
+
+    private static void RunShotCameraHandleUsabilityRegression()
+    {
+        var geometry = new ShotCameraWireframeGeometry(PointF.Empty, PointF.Empty, true, false,
+            [new(new PointF(80, 5), new PointF(120, 5), ShotCameraWireframeSegmentKind.RotationRingY)],
+            true, [new(ShotFramingHandleKind.CameraPositionX, new PointF(100, 0), new PointF(100, 0))], [], []);
+        AssertTimeline(
+            StageControl.FindNearestShotCameraHandle(geometry, new Point(100, 4), 11f)
+                == ShotFramingHandleKind.CameraPositionX,
+            "A ring crossing the axis grip stole an explicit endpoint hit.");
+        geometry = geometry with
+        {
+            Segments = [],
+            Handles = [new(ShotFramingHandleKind.CameraRotateX, new PointF(100, 100), new PointF(0, 100))]
+        };
+        AssertTimeline(
+            StageControl.FindNearestShotCameraHandle(geometry, new Point(50, 50), 11f) == ShotFramingHandleKind.None
+            && StageControl.FindNearestShotCameraHandle(geometry, new Point(0, 50), 11f) == ShotFramingHandleKind.None
+            && StageControl.FindNearestShotCameraHandle(geometry, new Point(50, 100), 11f) == ShotFramingHandleKind.CameraRotateX,
+            "Rotation hit testing accepted an invisible spoke or missed the visible leader.");
+        geometry = geometry with
+        {
+            Handles = [new(ShotFramingHandleKind.CameraPositionX, new PointF(100, 100), new PointF(100, 0))]
+        };
+        AssertTimeline(
+            StageControl.FindNearestShotCameraHandle(geometry, new Point(50, 50), 11f) == ShotFramingHandleKind.None
+            && StageControl.FindNearestShotCameraHandle(geometry, new Point(100, 50), 11f) == ShotFramingHandleKind.CameraPositionX
+            && StageControl.FindNearestShotCameraHandle(geometry, new Point(50, 0), 11f) == ShotFramingHandleKind.CameraPositionX,
+            "The stabilized position handle did not follow its drawn shaft and leader.");
+        var start = (SceneShotSettings.Default with
+        {
+            X = 1.25f, Y = 2.75f, Z = -1000.25f, RotationX = 3.25f, RotationY = 7.75f,
+            RotationDegrees = 9.5f, FocalLength = 50.25f, OrthographicSize = 28025f
+        }).Normalized();
+        var raw = start with { X = start.X + 100f };
+        var effective = StageControl.AccumulateShotFramingDrag(start, raw, start, 1f);
+        AssertTimeline(effective == raw, "Ordinary camera movement altered unrelated fractional channels.");
+        AssertTimeline(StageControl.AccumulateShotFramingDrag(raw, raw, effective, 0.1f) == effective,
+            "Pressing Shift without pointer motion moved the camera.");
+        var next = raw with { X = raw.X + 10f };
+        effective = StageControl.AccumulateShotFramingDrag(raw, next, effective, 0.1f);
+        AssertTimeline(ShotNear(effective.X, start.X + 101f), "Precision rescaled prior camera travel.");
+        raw = next;
+        next = raw with { X = raw.X + 10f };
+        effective = StageControl.AccumulateShotFramingDrag(raw, next, effective, 1f);
+        AssertTimeline(ShotNear(effective.X, start.X + 111f), "Releasing Shift lost the accumulated fine adjustment.");
+        var snapped = StageControl.SnapShotFramingSettings(start, effective, ShotFramingHandleKind.CameraPositionX);
+        AssertTimeline(snapped == (effective with { X = MathF.Round(effective.X) }),
+            "An X-axis drag rounded other axes, rotation, or optical settings.");
+        var lens = start with { FocalLength = 61.4f, Zoom = 61.4f / 50f };
+        var snappedLens = StageControl.SnapShotFramingSettings(start, lens, ShotFramingHandleKind.CameraLens);
+        AssertTimeline(snappedLens == (lens with { FocalLength = 61f, Zoom = 61f / 50f }),
+            "A lens drag snapped the camera position, rotation, or inactive projection size.");
+        AssertTimeline(StageControl.SnapShotFramingSettings(start, start, ShotFramingHandleKind.CameraBody) == start,
+            "A click without motion snapped fractional camera coordinates.");
+        Console.WriteLine("shot_camera_handle_usability_regression=ok");
+    }
+
+    private static void RunShotCameraGripContinuityRegression(
+        MainForm form, StageControl stage, SceneDefinition scene, SceneShotDefinition shot)
+    {
+        var begin = RequireMethod(typeof(MainForm), "TryBeginShotFramingGizmoPointer");
+        var update = RequireMethod(typeof(MainForm), "UpdateShotFramingPointer");
+        var cancel = RequireMethod(typeof(MainForm), "CancelShotFramingPointer");
+        var precisionOverride = RequireField(typeof(MainForm), "_shotFramingPrecisionOverride",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        var oldOverride = precisionOverride.GetValue(null);
+        var start = SceneShotSettings.Default;
+        try
+        {
+            SetShiftHeld(false);
+            foreach (var kind in new[] { ShotFramingHandleKind.CameraBody, ShotFramingHandleKind.CameraLens })
+            {
+                scene.UpdateShotAtFrame(shot.Id, 0, start);
+                stage.SetShotFramingGizmo(start, "Grip continuity");
+                AssertTimeline(stage.TryGetShotCameraWireframeHandlePoint(kind, out var grip), "Grip is missing.");
+                var press = Point.Round(new PointF(grip.X + 6f, grip.Y + 2f));
+                AssertTimeline(stage.HitTestShotFramingGizmo(press).Kind == kind, "Offset press missed the grip.");
+                AssertTimeline((bool)begin.Invoke(form, [press])!, "Offset press did not begin a drag.");
+                update.Invoke(form, [press]);
+                AssertTimeline(stage.ShotFramingGizmoSettings == start, "A stationary off-centre grab changed settings.");
+                var target = new Point(press.X + 24, press.Y - 24);
+                update.Invoke(form, [target]);
+                AssertTimeline(stage.TryGetShotCameraWireframeHandlePoint(kind, out var landed), "Dragged grip is missing.");
+                var movement = new Vector2(landed.X - grip.X, landed.Y - grip.Y);
+                var pointerMovement = new Vector2(target.X - press.X, target.Y - press.Y);
+                if (kind == ShotFramingHandleKind.CameraBody)
+                {
+                    AssertTimeline(Vector2.Distance(movement, pointerMovement) < 1.5f,
+                        $"Body grab offset drifted: grip={movement}, pointer={pointerMovement}.");
+                }
+                else
+                {
+                    stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraBody, out var body);
+                    var axis = NormalizeHandleAxis(grip, body);
+                    AssertTimeline(Math.Abs(Vector2.Dot(movement - pointerMovement, axis)) < 1.5f,
+                        "Lens grab offset changed during movement.");
+                }
+                var beforeShift = stage.ShotFramingGizmoSettings;
+                SetShiftHeld(true);
+                update.Invoke(form, [target]);
+                AssertTimeline(stage.ShotFramingGizmoSettings == beforeShift,
+                    "Pressing Shift mid-drag moved a stationary grip.");
+                SetShiftHeld(false);
+                update.Invoke(form, [target]);
+                AssertTimeline(stage.ShotFramingGizmoSettings == beforeShift,
+                    "Releasing Shift mid-drag moved a stationary grip.");
+                cancel.Invoke(form, null);
+                AssertTimeline(scene.TryEvaluateShotSettings(shot.Id, 0, out var restored) && restored == start,
+                    "Cancel did not restore an off-centre camera drag.");
+            }
+        }
+        finally
+        {
+            cancel.Invoke(form, null);
+            precisionOverride.SetValue(null, oldOverride);
+        }
+        Console.WriteLine("shot_camera_grip_continuity_regression=ok");
+    }
+
+    /// <summary>
+    /// Characterizes wheel zoom stability after the shot camera's lens has been changed. Zoom is a
+    /// relative gesture, so the framed camera must not acquire a persistent offset that depends on how
+    /// <summary>
+    /// Wheel zoom must scale the reference projection without translating it, and it must behave the
+    /// same whatever lens the shot camera currently has. Moving the orbit target during a zoom slides
+    /// the whole scene on screen, so the gesture drifts instead of scaling and no longer reverses;
+    /// because the old drift was solved from the framed camera, changing the lens made it worse.
+    /// </summary>
+    private static void RunShotCameraLensZoomInteractionRegression(
+        SceneDefinition scene,
+        SceneShotDefinition shot)
+    {
+        var wheelProject = VectorProject.CreateEmpty();
+        using var wheelStage = new StageControl(wheelProject.DrawingObjects[0].Scene)
+        {
+            ClientSize = new Size(960, 640)
+        };
+        wheelStage.SetShotFramingGizmo(SceneShotSettings.Default, "zoom");
+        AssertTimeline(
+            wheelStage.TryGetShotFramingGizmoGeometry(out var beforeWheel),
+            "The framing geometry is missing before wheel zooming.");
+
+        // The projected scene scale is what zoom actually drives. A world point offset from the origin
+        // must move FURTHER from the view centre as the zoom increases. Captured before the zoom loop
+        // so the comparison is between the unzoomed and zoomed states.
+        var worldProbe = new Vector3(4_000f, 3_000f, 0f);
+        AssertTimeline(
+            wheelStage.TryProjectScenePosition(worldProbe, out var probeBefore, out _),
+            "Could not project a scene probe point before zooming.");
+
+        const float tick = 1.12f;
+        for (var index = 0; index < 6; index++)
+        {
+            wheelStage.ZoomReferenceCamera(tick);
+        }
+
+        AssertTimeline(
+            wheelStage.TryGetShotFramingGizmoGeometry(out var zoomedIn),
+            "The framing geometry is missing after wheel zooming in.");
+        AssertTimeline(
+            ShotNear(wheelStage.ReferenceZoomScale, MathF.Pow(tick, 6f)),
+            $"Wheel zoom did not accumulate the requested factor "
+            + $"(zoom={wheelStage.ReferenceZoomScale:0.####}).");
+
+        AssertTimeline(
+            wheelStage.TryProjectScenePosition(worldProbe, out var probeAfter, out _),
+            "Could not project a scene probe point after zooming.");
+        var radiusBefore = MathF.Sqrt(
+            (probeBefore.X - beforeWheel.Center.X) * (probeBefore.X - beforeWheel.Center.X)
+            + (probeBefore.Y - beforeWheel.Center.Y) * (probeBefore.Y - beforeWheel.Center.Y));
+        var radiusAfter = MathF.Sqrt(
+            (probeAfter.X - zoomedIn.Center.X) * (probeAfter.X - zoomedIn.Center.X)
+            + (probeAfter.Y - zoomedIn.Center.Y) * (probeAfter.Y - zoomedIn.Center.Y));
+        AssertTimeline(
+            radiusAfter > radiusBefore * 1.3f,
+            $"Zooming in did not spread scene content away from the view centre "
+            + $"({radiusBefore:0.#} px -> {radiusAfter:0.#} px).");
+
+        // The framed centre is the camera, which sits at the origin, so zooming about it must leave the
+        // framing centred and simply enlarge it. A run-away target shift would push it off centre.
+        var centerDrift = MathF.Sqrt(
+            (zoomedIn.Center.X - beforeWheel.Center.X) * (zoomedIn.Center.X - beforeWheel.Center.X)
+            + (zoomedIn.Center.Y - beforeWheel.Center.Y) * (zoomedIn.Center.Y - beforeWheel.Center.Y));
+        AssertTimeline(
+            centerDrift < 2f,
+            $"Zooming moved the framing centre by {centerDrift:0.##} px; zoom must scale about the "
+            + "camera centre instead of translating the scene.");
+
+        // The camera handles are deliberately drawn at a fixed screen size, so their span cancels the
+        // zoom and must NOT be used to measure scaling. What must hold is that zoom changes only the
+        // projection scale, and that the framing centre stays put because the camera is at the origin.
+        var widthBefore = MathF.Abs(beforeWheel.TopRight.X - beforeWheel.TopLeft.X);
+        var widthAfter = MathF.Abs(zoomedIn.TopRight.X - zoomedIn.TopLeft.X);
+        AssertTimeline(
+            ShotNear(widthAfter, widthBefore),
+            $"Zooming changed the screen-stable camera handle span ({widthBefore:0.#} -> {widthAfter:0.#}); "
+            + "the handles are meant to keep a constant on-screen size.");
+
+        // Round tripping the same factor must return both the scale and the framing exactly.
+        for (var index = 0; index < 6; index++)
+        {
+            wheelStage.ZoomReferenceCamera(1f / tick);
+        }
+
+        AssertTimeline(
+            ShotNear(wheelStage.ReferenceZoomScale, 1f),
+            $"A wheel round trip did not restore the zoom scale ({wheelStage.ReferenceZoomScale:0.####}).");
+        AssertTimeline(
+            wheelStage.TryGetShotFramingGizmoGeometry(out var afterRoundTrip),
+            "The framing geometry is missing after the wheel round trip.");
+        var roundTripDrift = MathF.Sqrt(
+            (afterRoundTrip.Center.X - beforeWheel.Center.X) * (afterRoundTrip.Center.X - beforeWheel.Center.X)
+            + (afterRoundTrip.Center.Y - beforeWheel.Center.Y) * (afterRoundTrip.Center.Y - beforeWheel.Center.Y));
+        AssertTimeline(
+            roundTripDrift < 2f,
+            $"A wheel round trip drifted the framing centre by {roundTripDrift:0.##} px.");
+
+        // Zoom must be lens-independent: the navigation target is workspace state, not a function of
+        // the shot camera's optics, so no lens may cause a zoom to translate the view.
+        foreach (var focal in new[] { 24f, 50f, 85f, 135f })
+        {
+            var lensProject = VectorProject.CreateEmpty();
+            using var lensStage = new StageControl(lensProject.DrawingObjects[0].Scene)
+            {
+                ClientSize = new Size(960, 640)
+            };
+            lensStage.SetShotFramingGizmo(
+                SceneShotSettings.Default with { FocalLength = focal },
+                "zoom");
+            var targetX = lensStage.ReferenceTargetX;
+            var targetY = lensStage.ReferenceTargetY;
+            var targetZ = lensStage.ReferenceTargetZ;
+            lensStage.ZoomReferenceCamera(tick);
+            AssertTimeline(
+                ShotNear(lensStage.ReferenceTargetX, targetX)
+                && ShotNear(lensStage.ReferenceTargetY, targetY)
+                && ShotNear(lensStage.ReferenceTargetZ, targetZ),
+                $"Wheel zoom at focal {focal} translated the reference target from "
+                + $"({targetX:0.#},{targetY:0.#},{targetZ:0.#}) to "
+                + $"({lensStage.ReferenceTargetX:0.#},{lensStage.ReferenceTargetY:0.#},{lensStage.ReferenceTargetZ:0.#}); "
+                + "zoom must not move the view target.");
+        }
+
+        _ = scene;
+        _ = shot;
+    }
+
+    /// <summary>
+    /// The yellow shot framing frame is a separate control from the camera wireframe, and it is drawn
+    /// from the camera's projected world plane. Its corner and edge handles must therefore follow the
+    /// pointer, and the framed centre must stay put as the transform focus so the shot does not slide
+    /// sideways while it is resized.
+    /// </summary>
+    private static void RunShotFramingFrameFollowRegression(
+        SceneDefinition scene,
+        SceneShotDefinition shot,
+        StageControl stage,
+        MainForm form)
+    {
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+
+        var start = SceneShotSettings.Default;
+        var mutates = new[]
+        {
+            (ShotFramingHandleKind.Right, "right edge", new Size(60, 0)),
+            (ShotFramingHandleKind.Bottom, "bottom edge", new Size(0, 40)),
+            (ShotFramingHandleKind.TopLeft, "top-left corner", new Size(60, 40))
+        };
+
+        foreach (var (kind, label, travel) in mutates)
+        {
+            scene.UpdateShotAtFrame(shot.Id, 0, start);
+            stage.SetShotFramingGizmo(start, "frame follow");
+            Application.DoEvents();
+
+            AssertTimeline(
+                stage.TryGetShotFramingGizmoGeometry(out var beforeGeometry),
+                $"The framing geometry is missing before dragging the {label}.");
+            var grab = StageControl.EnumerateShotFramingHandles(beforeGeometry)
+                .Where(entry => entry.Kind == kind)
+                .Select(entry => Point.Round(entry.Point))
+                .DefaultIfEmpty(Point.Empty)
+                .First();
+            AssertTimeline(
+                grab != Point.Empty,
+                $"The {label} handle was not published by the framing geometry.");
+            AssertTimeline(
+                stage.HitTestShotFramingGizmo(grab).Kind == kind,
+                $"Clicking the {label} resolved to {stage.HitTestShotFramingGizmo(grab).Kind} instead.");
+            var centerBefore = beforeGeometry.Center;
+            var target = new Point(grab.X + travel.Width, grab.Y + travel.Height);
+
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, grab.X, grab.Y, 0)]);
+            mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, target.X, target.Y, 0)]);
+            Application.DoEvents();
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, target.X, target.Y, 0)]);
+            Application.DoEvents();
+
+            AssertTimeline(
+                stage.TryGetShotFramingGizmoGeometry(out var afterGeometry),
+                $"The framing geometry is missing after dragging the {label}.");
+            var landed = StageControl.EnumerateShotFramingHandles(afterGeometry)
+                .Where(entry => entry.Kind == kind)
+                .Select(entry => Point.Round(entry.Point))
+                .DefaultIfEmpty(Point.Empty)
+                .First();
+
+            // Only the axis the handle owns is consumed, which is how an edge handle is meant to feel.
+            // The cross-axis component of the drag is deliberately ignored.
+            var axisError = travel.Width != 0
+                ? MathF.Abs(landed.X - target.X)
+                : MathF.Abs(landed.Y - target.Y);
+            AssertTimeline(
+                axisError <= 4f,
+                $"The {label} did not follow the pointer: dragged to {target} but landed at {landed} "
+                + $"(axis error {axisError:0.##} px).");
+            AssertTimeline(
+                MathF.Abs(landed.X - grab.X) + MathF.Abs(landed.Y - grab.Y) > 20f,
+                $"The {label} barely moved ({grab} -> {landed}).");
+
+            // The frame must resize about its own centre, so the framed centre is the transform focus
+            // and stays where it was.
+            var centerDrift = MathF.Sqrt(
+                (afterGeometry.Center.X - centerBefore.X) * (afterGeometry.Center.X - centerBefore.X)
+                + (afterGeometry.Center.Y - centerBefore.Y) * (afterGeometry.Center.Y - centerBefore.Y));
+            AssertTimeline(
+                centerDrift <= 4f,
+                $"Dragging the {label} moved the framed centre by {centerDrift:0.##} px; the frame must "
+                + "resize about the camera centre instead of sliding sideways.");
+        }
+
+        // The frame body must be draggable and must land its centre exactly under the pointer.
+        scene.UpdateShotAtFrame(shot.Id, 0, start);
+        stage.SetShotFramingGizmo(start, "frame follow");
+        Application.DoEvents();
+        AssertTimeline(
+            stage.TryGetShotFramingGizmoGeometry(out var bodyGeometry),
+            "The framing geometry is missing before dragging the frame body.");
+        var bodyGrab = Point.Round(bodyGeometry.Center);
+        var bodyTarget = new Point(bodyGrab.X + 70, bodyGrab.Y + 50);
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, bodyGrab.X, bodyGrab.Y, 0)]);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, bodyTarget.X, bodyTarget.Y, 0)]);
+        Application.DoEvents();
+        mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, bodyTarget.X, bodyTarget.Y, 0)]);
+        Application.DoEvents();
+        AssertTimeline(
+            stage.TryGetShotFramingGizmoGeometry(out var movedBody),
+            "The framing geometry is missing after dragging the frame body.");
+        var bodyError = MathF.Sqrt(
+            (movedBody.Center.X - bodyTarget.X) * (movedBody.Center.X - bodyTarget.X)
+            + (movedBody.Center.Y - bodyTarget.Y) * (movedBody.Center.Y - bodyTarget.Y));
+        AssertTimeline(
+            bodyError <= 6f,
+            $"The frame body did not follow the pointer: dragged to {bodyTarget} but its centre landed "
+            + $"at ({movedBody.Center.X:0.#},{movedBody.Center.Y:0.#}) (error {bodyError:0.##} px).");
+    }
+
+
+    /// <summary>
+    /// The shot camera handle must stay on screen while playback runs, and it must keep following the
+    /// animated shot instead of freezing on the frame playback started from. Hiding it during playback
+    /// made the operator lose the control exactly when they were watching the shot move.
+    /// </summary>
+    private static void RunShotFramingPlaybackVisibilityRegression(
+        MainForm form,
+        StageControl stage,
+        SceneDefinition scene,
+        SceneShotDefinition shot)
+    {
+        var playingField = RequireField(typeof(MainForm), "_playing");
+        var updateGizmo = RequireMethod(typeof(MainForm), "UpdateShotFramingGizmo");
+        var frameField = RequireField(typeof(MainForm), "_frame");
+        var wasPlaying = (bool)playingField.GetValue(form)!;
+
+        try
+        {
+            // A shot whose framing genuinely changes between frames, so a frozen handle is detectable.
+            scene.UpdateShotAtFrame(shot.Id, 0, SceneShotSettings.Default with { X = 0f, Y = 0f });
+            scene.UpdateShotAtFrame(shot.Id, 6, SceneShotSettings.Default with { X = 900f, Y = 600f });
+            frameField.SetValue(form, 0);
+            updateGizmo.Invoke(form, null);
+            Application.DoEvents();
+
+            AssertTimeline(
+                stage.TryGetShotFramingGizmoGeometry(out var beforePlayback),
+                "The shot camera handle was not visible before playback started.");
+
+            playingField.SetValue(form, true);
+            updateGizmo.Invoke(form, null);
+            Application.DoEvents();
+            AssertTimeline(
+                stage.TryGetShotFramingGizmoGeometry(out _),
+                "The shot camera handle was hidden as soon as playback started.");
+            AssertTimeline(
+                !stage.IsShotFramingGizmoClearedForTesting,
+                "Playback cleared the shot camera handle instead of keeping it on screen.");
+
+            // Advancing the playhead while playing must re-evaluate the handle for the new frame.
+            frameField.SetValue(form, 6);
+            updateGizmo.Invoke(form, null);
+            Application.DoEvents();
+            AssertTimeline(
+                stage.TryGetShotFramingGizmoGeometry(out var duringPlayback),
+                "The shot camera handle disappeared while playing.");
+
+            var moved = MathF.Sqrt(
+                (duringPlayback.Center.X - beforePlayback.Center.X) * (duringPlayback.Center.X - beforePlayback.Center.X)
+                + (duringPlayback.Center.Y - beforePlayback.Center.Y) * (duringPlayback.Center.Y - beforePlayback.Center.Y));
+            AssertTimeline(
+                moved > 20f,
+                "The shot camera handle froze on the playback start frame instead of following the animated "
+                + $"shot (centre moved {moved:0.##} px).");
+        }
+        finally
+        {
+            playingField.SetValue(form, wasPlaying);
+        }
+    }
+
+    /// <summary>
+    /// Covers the adjustment aids promised for the rewritten camera handles: Shift slows a drag for
+    /// fine work, snapping rounds the camera values to whole units, the drag publishes a live numeric
+    /// readout, and Escape restores the pre-drag values.
+    /// </summary>
+    private static void RunShotCameraHandleModifierRegression(
+        MainForm form,
+        StageControl stage,
+        SceneDefinition scene,
+        SceneShotDefinition shot)
+    {
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var sessionField = RequireField(typeof(MainForm), "_shotFramingPointerSession");
+        var start = SceneShotSettings.Default with { FocalLength = 50f };
+
+        // Shift must reduce the applied change to a tenth, on the same drag that moves it fully when
+        // Shift is not held. The comparison is between two identical drags, so any projection scaling
+        // cancels out.
+        float Run(bool precision)
+        {
+            scene.UpdateShotAtFrame(shot.Id, 0, start);
+            stage.SetShotFramingGizmo(start, "modifiers");
+            Application.DoEvents();
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(
+                    ShotFramingHandleKind.CameraBody,
+                    out var bodyPoint),
+                "modifiers: camera body handle is missing.");
+            var origin = Point.Round(bodyPoint);
+            var target = new Point(origin.X + 60, origin.Y + 60);
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, origin.X, origin.Y, 0)]);
+            SetShiftHeld(precision);
+            try
+            {
+                mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, target.X, target.Y, 0)]);
+            }
+            finally
+            {
+                SetShiftHeld(false);
+            }
+
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(
+                    ShotFramingHandleKind.CameraBody,
+                    out var landed),
+                "modifiers: camera body handle disappeared during the drag.");
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, target.X, target.Y, 0)]);
+            Application.DoEvents();
+            return MathF.Sqrt(
+                (landed.X - origin.X) * (landed.X - origin.X)
+                + (landed.Y - origin.Y) * (landed.Y - origin.Y));
+        }
+
+        var free = Run(precision: false);
+        var fine = Run(precision: true);
+        AssertTimeline(
+            free > 20f,
+            $"A normal camera drag barely moved the handle ({free:0.##} px).");
+        AssertTimeline(
+            fine < free * 0.25f,
+            "Holding Shift did not slow the camera drag for precise adjustment "
+            + $"(free={free:0.##} px, fine={fine:0.##} px).");
+
+        RunShotFramingFrameFollowRegression(scene, shot, stage, form);
+        RunShotFramingPlaybackVisibilityRegression(form, stage, scene, shot);
+
+        // A free drag ends on arbitrary coordinates; snapping must land the values on whole units.
+        AssertTimeline(
+            ShotFramingIsWholeNumber(scene, shot),
+            "A snapped camera drag left fractional camera values behind.");
+
+        // The live readout must name the value being edited, so the operator can aim for an exact
+        // number instead of reading the inspector afterwards.
+        foreach (var (kind, expected) in new (ShotFramingHandleKind, string)[]
+                 {
+                     (ShotFramingHandleKind.CameraPositionX, "X "),
+                     (ShotFramingHandleKind.CameraLens, "Lens "),
+                     (ShotFramingHandleKind.CameraRotateZ, "Rot Z ")
+                 })
+        {
+            var text = StageControl.DescribeShotCameraSettings(start, kind);
+            AssertTimeline(
+                text is not null && text.StartsWith(expected, StringComparison.Ordinal),
+                $"The camera drag readout for {kind} did not report the edited value (got '{text}').");
+        }
+
+        // Escape must abandon the drag and restore what was there before it started.
+        scene.UpdateShotAtFrame(shot.Id, 0, start);
+        stage.SetShotFramingGizmo(start, "modifiers");
+        Application.DoEvents();
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(
+                ShotFramingHandleKind.CameraBody,
+                out var escapePoint),
+            "modifiers: camera body handle is missing before the escape check.");
+        var escapeOrigin = Point.Round(escapePoint);
+        var escapeTarget = new Point(escapeOrigin.X + 90, escapeOrigin.Y + 70);
+        mouseDown.Invoke(
+            form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, escapeOrigin.X, escapeOrigin.Y, 0)]);
+        mouseMove.Invoke(
+            form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 0, escapeTarget.X, escapeTarget.Y, 0)]);
+        Application.DoEvents();
+        var cancel = RequireMethod(typeof(MainForm), "CancelShotFramingPointer");
+        cancel.Invoke(form, null);
+        Application.DoEvents();
+        AssertTimeline(
+            sessionField.GetValue(form) is null,
+            "Escape did not end the camera pointer session.");
+        AssertTimeline(
+            scene.TryEvaluateShotSettings(shot.Id, 0, out var restored) && restored == start,
+            $"Escape did not restore the pre-drag camera settings (got {restored}).");
+    }
+
+    private static bool ShotFramingIsWholeNumber(SceneDefinition scene, SceneShotDefinition shot) =>
+        scene.TryEvaluateShotSettings(shot.Id, 0, out var settings)
+        && settings.X == MathF.Round(settings.X)
+        && settings.Y == MathF.Round(settings.Y)
+        && settings.Z == MathF.Round(settings.Z);
+
+    /// <summary>
+    /// Mirrors the Shift key state the way the form reads it. The form consults both the control's
+    /// modifier keys and the physical key state, so the test drives the same static entry point the
+    /// production code uses rather than reaching into private state.
+    /// </summary>
+    private static void SetShiftHeld(bool held)
+    {
+        var method = typeof(MainForm).GetMethod(
+            "SetShotFramingPrecisionOverrideForTesting",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+        AssertTimeline(
+            method is not null,
+            "The camera precision override hook is missing, so Shift behaviour cannot be driven.");
+        method!.Invoke(null, [held]);
+    }
+
+    /// <summary>
+    /// Verifies the optical slider is a genuine screen-space control. Its direction is chosen once per
+    /// layout from the free room around the body, so it neither collapses onto the body nor rotates
+    /// away with the camera. What must hold instead is that the slider is always clear of the body, is
+    /// axis-aligned on screen, and that its direction stays stable while the camera turns, because the
+    /// pointer mapping is derived from that same direction.
+    /// </summary>
+    private static void RunShotCameraLensHandleFollowRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        using var stage = new StageControl(project.DrawingObjects[0].Scene)
+        {
+            ClientSize = new Size(760, 520)
+        };
+        var start = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD,
+            X = 60f,
+            Y = 40f,
+            Z = -2_600f,
+            RotationDegrees = 0f
+        };
+
+        foreach (var rotation in new[] { 0f, 37f, 90f, 215f })
+        {
+            stage.SetShotFramingGizmo(start with { RotationDegrees = rotation }, "Lens follow");
+            var lens = PointF.Empty;
+            var body = PointF.Empty;
+            AssertTimeline(
+                stage.TryGetShotCameraWireframeHandlePoint(
+                    ShotFramingHandleKind.CameraLens,
+                    out lens)
+                && stage.TryGetShotCameraWireframeHandlePoint(
+                    ShotFramingHandleKind.CameraBody,
+                    out body),
+                $"The optical slider regression could not resolve the 2D camera handles at {rotation}°.");
+
+            var offset = new Vector2(lens.X - body.X, lens.Y - body.Y);
+            var length = offset.Length();
+            AssertTimeline(
+                length >= StageControl.ShotCameraHandleMinimumOffsetPixels - 0.5f,
+                $"The optical slider collapsed onto the body at {rotation}° (length={length:0.##}).");
+
+            // The slider is a screen-space control, so it must run along one fixed diagonal rather than
+            // following a projected optical axis. That is what makes the pointer mapping predictable.
+            AssertTimeline(
+                Math.Abs(Math.Abs(offset.X) - Math.Abs(offset.Y)) < 0.01f,
+                $"The optical slider is not on a screen diagonal at {rotation}° (offset={offset}).");
+        }
+
+        // Rotating the camera must not swing the slider to a different side: the direction is part of
+        // the pointer contract and has to remain the value the drag solver derives.
+        stage.SetShotFramingGizmo(start, "Lens follow");
+        var atZero = PointF.Empty;
+        var bodyZero = PointF.Empty;
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraLens, out atZero)
+            && stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraBody, out bodyZero),
+            "The optical slider regression could not resolve the unrotated handles.");
+        stage.SetShotFramingGizmo(start with { RotationDegrees = 90f }, "Lens follow");
+        var atNinety = PointF.Empty;
+        var bodyNinety = PointF.Empty;
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraLens, out atNinety)
+            && stage.TryGetShotCameraWireframeHandlePoint(ShotFramingHandleKind.CameraBody, out bodyNinety),
+            "The optical slider regression could not resolve the rotated handles.");
+
+        var directionAtZero = new Vector2(atZero.X - bodyZero.X, atZero.Y - bodyZero.Y);
+        var directionAtNinety = new Vector2(atNinety.X - bodyNinety.X, atNinety.Y - bodyNinety.Y);
+        if (directionAtZero.LengthSquared() > 0.0001f && directionAtNinety.LengthSquared() > 0.0001f)
+        {
+            directionAtZero = Vector2.Normalize(directionAtZero);
+            directionAtNinety = Vector2.Normalize(directionAtNinety);
+            AssertTimeline(
+                Vector2.Dot(directionAtZero, directionAtNinety) > 0.99f,
+                "The optical slider changed sides when the camera rotated, so the pointer mapping "
+                + $"would use a direction the user never grabbed ({directionAtZero} vs {directionAtNinety}).");
+        }
+    }
+
+    /// <summary>
+    /// True when the director inspector still hosts a preview surface. The shot monitor belongs to the
+    /// Stage overlay, so the inspector must carry only the camera list and numeric camera properties.
+    /// </summary>
+    private static bool ShotDirectorPanelPresentsPreview()
+    {
+        using var panel = new ShotDirectorPanel();
+        return Descendants(panel).Any(control => control is PictureBox);
+    }
+
+    /// <summary>
+    /// A 2D camera pins X/Y rotation but keeps Z depth, Z rotation and the lens fields; a 3D camera
+    /// exposes all three rotation channels. The framed plane must also follow the camera's own 3D
+    /// orientation instead of collapsing to the legacy flat 2D rectangle.
+    /// </summary>
+    private static void RunShotCameraKindRegression()
+    {
+        // Legacy documents predate the kind field, so the zero value must stay a full 3D camera.
+        AssertTimeline(
+            (int)SceneShotCameraKind.ThreeD == 0,
+            "The default camera kind is not the legacy-compatible 3D value.");
+        AssertTimeline(
+            SceneShotSettings.Default.Kind == SceneShotCameraKind.ThreeD,
+            "A new camera did not default to the 3D kind.");
+
+        // A 2D camera keeps its Z position and Z rotation but loses planar rotation.
+        var tilted = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD,
+            X = 120f,
+            Y = -80f,
+            Z = -2_400f,
+            RotationX = 35f,
+            RotationY = 15f,
+            RotationDegrees = 42f
+        };
+        var enforced = tilted.Normalized();
+        AssertTimeline(
+            enforced.Kind == SceneShotCameraKind.TwoD
+            && enforced.RotationX == 0f
+            && enforced.RotationY == 0f,
+            "A 2D camera did not pin its planar rotation.");
+        AssertTimeline(
+            enforced.Z == -2_400f && enforced.RotationDegrees == 42f,
+            "A 2D camera lost its Z depth or Z rotation.");
+        AssertTimeline(
+            enforced.AllowsPlanarRotationEdits == false && enforced.PinsPlanarRotation,
+            "A 2D camera still reported editable planar rotation.");
+
+        // A 3D camera keeps every channel.
+        var free3D = (SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.ThreeD,
+            RotationX = 35f,
+            RotationY = 15f
+        }).Normalized();
+        AssertTimeline(
+            free3D.RotationX == 35f && free3D.RotationY == 15f && free3D.AllowsPlanarRotationEdits,
+            "A 3D camera lost its free planar rotation.");
+
+        // The framed plane follows real 3D orientation: rotating around Y must move the frame's
+        // world-space corners instead of leaving a flat 2D rectangle.
+        var flat = SceneShotSettings.Default with { Kind = SceneShotCameraKind.ThreeD, RotationY = 0f };
+        var yawed = flat with { RotationY = 40f };
+        var flatCorners = flat.ResolveWorldFrameCorners(800f, 600f);
+        var yawedCorners = yawed.ResolveWorldFrameCorners(800f, 600f);
+        AssertTimeline(
+            flatCorners.Length == 4 && yawedCorners.Length == 4
+            && flatCorners.All(corner => float.IsFinite(corner.X) && float.IsFinite(corner.Y) && float.IsFinite(corner.Z)),
+            "The framed camera plane did not resolve four finite world-space corners.");
+        var yawShift = 0f;
+        for (var index = 0; index < flatCorners.Length; index++)
+        {
+            yawShift += MathF.Abs(yawedCorners[index].Z - flatCorners[index].Z);
+        }
+
+        AssertTimeline(
+            yawShift > 1f,
+            "Rotating a camera around Y did not change the framed plane's depth, so the preview would ignore 3D orientation.");
+
+        // A Z dolly must change how much scene the frame covers. The camera looks at the stage plane,
+        // so the meaningful depth effect is the projected extent, not the anchor point.
+        var near = SceneShotSettings.Default with { Kind = SceneShotCameraKind.ThreeD, Z = -1_000f };
+        var far = near with { Z = -6_000f };
+        var nearFrame = near.ResolveWorldFrame(800f, 600f);
+        var farFrame = far.ResolveWorldFrame(800f, 600f);
+        AssertTimeline(
+            farFrame.HalfHeight > nearFrame.HalfHeight * 1.5f,
+            "A Z dolly did not change the framed extent, so depth would not reach the preview.");
+        // The anchor stays on the stage plane the camera looks at, so the frame does not drift away.
+        AssertTimeline(
+            MathF.Abs(farFrame.Center.Z - nearFrame.Center.Z) < 1f,
+            "A Z dolly moved the framing anchor off the stage plane.");
+
+        // Kind survives a save/restore round trip through the durable scene snapshot.
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var shot = scene.AddShot("Camera kind", 20, null, null);
+        scene.SynchronizeTimelineTracks();
+        var twoD = SceneShotSettings.Default with { Kind = SceneShotCameraKind.TwoD, RotationX = 25f, Z = -3_000f };
+        AssertTimeline(
+            scene.UpdateShotAtFrame(shot.Id, 0, twoD),
+            "Could not store a 2D camera state.");
+        var snapshot = scene.CreateShotSnapshot();
+        var restoredScene = VectorProject.CreateEmpty().Scenes[0];
+        restoredScene.RestoreShotSnapshot(snapshot);
+        var restored = restoredScene.FindShot(shot.Id)
+            ?? throw new InvalidOperationException("The restored scene lost its camera.");
+        AssertTimeline(
+            restored.Settings.Kind == SceneShotCameraKind.TwoD && restored.Settings.Z == -3_000f,
+            "The camera kind or Z depth did not survive the scene snapshot round trip.");
+        AssertTimeline(
+            restored.Settings.RotationX == 0f,
+            "A restored 2D camera did not keep its planar rotation pinned.");
+
+        // A 2D camera offers no planar rotation rings but keeps the Z dolly shaft and Z rotation ring.
+        AssertTimeline(
+            !SceneShotCameraKind.TwoD.AllowsPlanarRotationEdits()
+            && SceneShotCameraKind.ThreeD.AllowsPlanarRotationEdits(),
+            "Camera kind handle availability is inconsistent.");
+
+        // The three position handles must stay separately identifiable: each carries its own axis
+        // channel and its own colour, which is what keeps X/Y/Z readable when the projected shafts
+        // overlap on a 2D camera.
+        AssertTimeline(
+            StageControl.IsShotCameraPositionHandle(ShotFramingHandleKind.CameraPositionX)
+            && StageControl.IsShotCameraPositionHandle(ShotFramingHandleKind.CameraPositionY)
+            && StageControl.IsShotCameraPositionHandle(ShotFramingHandleKind.CameraPositionZ)
+            && !StageControl.IsShotCameraPositionHandle(ShotFramingHandleKind.CameraRotateZ)
+            && !StageControl.IsShotCameraPositionHandle(ShotFramingHandleKind.CameraLens),
+            "The position handles were not classified separately from the other camera handles.");
+        var positionColors = new[]
+        {
+            StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionX),
+            StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionY),
+            StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionZ)
+        };
+        AssertTimeline(
+            positionColors.Distinct().Count() == 3
+            && positionColors.All(color => color != StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraLens)),
+            "Two camera position handles shared a colour, so their axis markers are not distinguishable.");
+        // A rotation handle is never also a position handle, so the ring and the arrow markers can
+        // never be confused by the renderers or by hit testing.
+        AssertTimeline(
+            StageControl.IsShotCameraRotationHandle(ShotFramingHandleKind.CameraRotateZ)
+            && !StageControl.IsShotCameraPositionHandle(ShotFramingHandleKind.CameraRotateZ)
+            && StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionZ)
+                == StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraRotateZ),
+            "The rotation and position handle families overlapped.");
+
+        // Render an actual 2D-camera gizmo and confirm the position markers paint their own axis
+        // colour on screen. This is the visible half of the identification work: the structural
+        // classification above can pass while the markers still look alike.
+        RunShotCameraHandleMarkerPixelRegression();
+
+        Console.WriteLine("shot_camera_kind_regression=ok");
+    }
+
+    /// <summary>
+    /// Renders a 2D camera gizmo through the normal Stage paint path and verifies each position
+    /// handle paints its own axis colour, so X/Y/Z markers stay distinguishable on screen.
+    /// </summary>
+    private static void RunShotCameraHandleMarkerPixelRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        using var stage = new StageControl(project.DrawingObjects[0].Scene)
+        {
+            ClientSize = new Size(760, 520)
+        };
+        var twoDCamera = SceneShotSettings.Default with
+        {
+            Kind = SceneShotCameraKind.TwoD,
+            X = 60f,
+            Y = 40f,
+            Z = -2_600f
+        };
+        stage.SetShotFramingGizmo(twoDCamera, "2D camera");
+        AssertTimeline(
+            stage.TryGetShotCameraWireframeGeometry(out var wireframe)
+            && stage.TryGetShotFramingGizmoGeometry(out _),
+            "The 2D camera did not produce a drawable handle wireframe for the marker check.");
+
+        // DrawGdi is the direct GDI overlay entry point. DrawToBitmap routes through
+        // WM_PRINTCLIENT, which paints an empty surface for this control in a headless run.
+        using var bitmap = new Bitmap(stage.ClientSize.Width, stage.ClientSize.Height);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            var drawGdi = typeof(StageControl).GetMethod(
+                "DrawGdi",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException(
+                    "The GDI shot framing overlay entry point could not be located.");
+            drawGdi.Invoke(stage, [graphics]);
+        }
+
+        foreach (var (kind, expected) in new[]
+        {
+            (ShotFramingHandleKind.CameraPositionX, StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionX)),
+            (ShotFramingHandleKind.CameraPositionY, StageControl.ShotCameraHandleColor(ShotFramingHandleKind.CameraPositionY))
+        })
+        {
+            var handle = wireframe.Handles.FirstOrDefault(candidate => candidate.Kind == kind);
+            AssertTimeline(
+                handle.Kind == kind,
+                $"The 2D camera gizmo did not present the {kind} position handle.");
+            // Each position handle paints a filled axis plate at its tip. Measured against the same
+            // gizmo without the plate, the marker contributes ~70 axis-coloured pixels versus ~10 for
+            // the bare arrowhead, so a plate-less marker falls far below this bound.
+            var markerPixels = ShotCameraMarkerPaintCount(bitmap, handle.Point, expected, radius: 9);
+            AssertTimeline(
+                markerPixels >= 30,
+                $"The {kind} position marker painted only {markerPixels} axis-coloured pixels, so it is "
+                + "not identifiable as a distinct axis handle.");
+        }
+    }
+
+    /// <summary>Counts pixels close to the expected axis colour around a handle marker.</summary>
+    private static int ShotCameraMarkerPaintCount(Bitmap bitmap, PointF center, Color expected, int radius)
+    {
+        var matches = 0;
+        var left = Math.Max(0, (int)MathF.Floor(center.X) - radius);
+        var right = Math.Min(bitmap.Width - 1, (int)MathF.Ceiling(center.X) + radius);
+        var top = Math.Max(0, (int)MathF.Floor(center.Y) - radius);
+        var bottom = Math.Min(bitmap.Height - 1, (int)MathF.Ceiling(center.Y) + radius);
+        for (var y = top; y <= bottom; y++)
+        {
+            for (var x = left; x <= right; x++)
+            {
+                var pixel = bitmap.GetPixel(x, y);
+                // Allow for anti-aliasing and the dark plate outline drawn over the marker.
+                if (Math.Abs(pixel.R - expected.R) <= 40
+                    && Math.Abs(pixel.G - expected.G) <= 40
+                    && Math.Abs(pixel.B - expected.B) <= 40)
+                {
+                    matches++;
+                }
+            }
+        }
+
+        return matches;
+    }
+
+    private static bool AllowsPlanarRotationEdits(this SceneShotCameraKind kind) =>
+        kind != SceneShotCameraKind.TwoD;
+
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (var nested in Descendants(child)) yield return nested;
+        }
+    }
+
+    private static bool ShotNear(float left, float right, float tolerance = 0.01f) =>
+        MathF.Abs(left - right) <= tolerance;
+
+    private static bool ShotNear(Vector2 left, Vector2 right, float tolerance = 0.01f) =>
+        ShotNear(left.X, right.X, tolerance) && ShotNear(left.Y, right.Y, tolerance);
+
+    private static float ShotPointDistance(PointF left, PointF right)
+    {
+        var dx = left.X - right.X;
+        var dy = left.Y - right.Y;
+        return MathF.Sqrt(dx * dx + dy * dy);
+    }
+
+    /// <summary>
+    /// The three workspaces zoom independently, so the workbench readout must follow the camera that
+    /// actually presents the current view: the 2D drawing camera for Basic Drawing and the 2D Front
+    /// scene view, and the reference camera for every reference-projected view.
+    /// </summary>
+    private static void RunWorkspaceZoomReadoutRegression()
+    {
+        using var stage = new StageControl(new VectorScene())
+        {
+            ClientSize = new Size(900, 620)
+        };
+
+        var definition = new SceneDefinition
+        {
+            Dimension = SceneDimension.TwoD,
+            Camera = { Projection = CameraProjection.Orthographic }
+        };
+        // The 2D Front scene view is driven by the 2D drawing camera.
+        stage.ConfigureReferenceView(definition, SceneDimension.TwoD, ReferenceCameraMotion.Immediate);
+        stage.SetReferenceViewDirection(ReferenceViewDirection.Front, ReferenceCameraMotion.Immediate);
+        stage.CompleteReferenceCameraTransition();
+        AssertTimeline(
+            !stage.RendersReferenceProjection,
+            "The 2D Front scene view was not driven by the drawing camera.");
+        stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 2f);
+        var twoDZoom = stage.ActiveViewZoom;
+        AssertTimeline(
+            WorkspaceZoomNear(twoDZoom, stage.Zoom) && twoDZoom > 1f,
+            "The 2D view reported a zoom that did not match its drawing camera.");
+
+        // A 3D scene view is driven by the reference camera and keeps its own independent zoom.
+        definition.Dimension = SceneDimension.ThreeD;
+        stage.ConfigureReferenceView(definition, SceneDimension.ThreeD, ReferenceCameraMotion.Immediate);
+        stage.CompleteReferenceCameraTransition();
+        AssertTimeline(
+            stage.RendersReferenceProjection,
+            "The 3D scene view did not switch to the reference projection.");
+        stage.ZoomReferenceCamera(1.5f);
+        var referenceZoom = stage.ActiveViewZoom;
+        AssertTimeline(
+            WorkspaceZoomNear(referenceZoom, stage.ReferenceZoomScale) && referenceZoom > 1f,
+            "The 3D view did not report its reference camera zoom.");
+        AssertTimeline(
+            !WorkspaceZoomNear(twoDZoom, referenceZoom),
+            "The 2D and 3D views reported the same zoom, so the readout is not per workspace.");
+        AssertTimeline(
+            WorkspaceZoomNear(stage.Zoom, twoDZoom),
+            "Zooming the 3D view changed the 2D drawing camera zoom.");
+
+        // A perspective 3D view is still zoomed through the reference zoom scale; a wheel dolly moves
+        // the camera distance instead. The readout follows the zoom scale, so it must track zoom
+        // commands and must not be driven by an unrelated distance gesture.
+        definition.Camera.Projection = CameraProjection.Perspective;
+        stage.ConfigureReferenceView(definition, SceneDimension.ThreeD, ReferenceCameraMotion.Immediate);
+        stage.CompleteReferenceCameraTransition();
+        var beforePerspectiveZoom = stage.ActiveViewZoom;
+        stage.ZoomReferenceCamera(1.5f);
+        AssertTimeline(
+            stage.ActiveViewZoom > beforePerspectiveZoom
+            && WorkspaceZoomNear(stage.ActiveViewZoom, stage.ReferenceZoomScale),
+            "A perspective 3D zoom did not change the reported zoom.");
+
+        // The reported zoom must stay finite and positive across the whole supported range.
+        stage.ZoomReferenceCamera(1000f);
+        AssertTimeline(
+            float.IsFinite(stage.ActiveViewZoom) && stage.ActiveViewZoom > 0f
+            && WorkspaceZoomNear(stage.ActiveViewZoom, stage.ReferenceZoomScale),
+            "The reported zoom was not finite and positive at the maximum reference zoom.");
+        stage.ZoomReferenceCamera(0.0001f);
+        AssertTimeline(
+            float.IsFinite(stage.ActiveViewZoom) && stage.ActiveViewZoom > 0f
+            && WorkspaceZoomNear(stage.ActiveViewZoom, stage.ReferenceZoomScale),
+            "The reported zoom was not finite and positive at the minimum reference zoom.");
+
+        Console.WriteLine("workspace_zoom_readout_regression=ok");
+    }
+
+    private static bool WorkspaceZoomNear(float left, float right, float tolerance = 0.0001f) =>
+        float.IsFinite(left) && float.IsFinite(right) && MathF.Abs(left - right) <= tolerance;
+
+    private static void RunShotDirectorWorkspaceRegression()
+    {
+        var workspaceTabsField = RequireField(typeof(MainForm), "_workspaceTabs");
+        var shotPanelField = RequireField(typeof(MainForm), "_shotDirectorPanel");
+        var headerField = RequireField(typeof(MainForm), "_workspaceHeader");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var projectField = RequireField(typeof(MainForm), "_project");
+        var inspectorField = RequireField(typeof(MainForm), "_inspectorHost");
+        var shotDirectorVisibleField = RequireField(typeof(MainForm), "_shotDirectorVisible");
+
+        using var form = new MainForm();
+        var workspaceTabs = workspaceTabsField.GetValue(form) as WorkspaceTabs
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the workspace tabs.");
+        var shotPanel = shotPanelField.GetValue(form) as ShotDirectorPanel
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the director panel.");
+        var header = headerField.GetValue(form) as Control
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the workspace header.");
+        var stage = stageField.GetValue(form) as Control
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the stage.");
+        var stageControl = stage as StageControl
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the StageControl instance.");
+        var timeline = timelineField.GetValue(form) as TimelineStrip
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the timeline.");
+        var project = projectField.GetValue(form) as VectorProject
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the project.");
+        var scene = project.Scenes[0];
+        var firstShot = scene.AddShot("First camera", 24, "First framing");
+        var secondShot = scene.AddShot("Second camera", 24, "Second framing");
+        var firstSettings = SceneShotSettings.Default with { X = -140f };
+        var secondSettings = SceneShotSettings.Default with { X = 180f };
+        AssertTimeline(
+            scene.UpdateShotAtFrame(firstShot.Id, 0, firstSettings)
+            && scene.UpdateShotAtFrame(secondShot.Id, 0, secondSettings),
+            "The shot workspace regression could not prepare independent camera framing states.");
+        var inspector = inspectorField.GetValue(form) as Control
+            ?? throw new InvalidOperationException("The shot workspace regression did not find the inspector host.");
+        var panelHost = shotPanel.Parent
+            ?? throw new InvalidOperationException("The director panel was not parented into the inspector host.");
+        var body = inspector.Parent
+            ?? throw new InvalidOperationException("The inspector host was not parented into the workbench body.");
+        var stagePanel = stage.Parent
+            ?? throw new InvalidOperationException("The stage was not parented into its stage panel.");
+
+        AssertTimeline(
+            ReferenceEquals(header.Parent, body)
+            && ReferenceEquals(stagePanel.Parent, body)
+            && ReferenceEquals(panelHost, inspector)
+            && workspaceTabs.Views.Contains(WorkspaceView.ShotDirector)
+            && !(bool)(shotDirectorVisibleField.GetValue(form) ?? true),
+            "The Shots & Directing workspace was not registered as a hidden right-inspector page.");
+
+        workspaceTabs.SelectedView = WorkspaceView.SceneEditor;
+        Application.DoEvents();
+        AssertTimeline(
+            !(bool)(shotDirectorVisibleField.GetValue(form) ?? true)
+            && stagePanel.Left == 0
+            && stagePanel.Right == inspector.Left,
+            "The director page appeared outside its workspace or did not leave the scene inspector intact.");
+
+        // Scene & Animation must not present the independent camera rows; entering the Shots
+        // workspace brings them back. This is a presentation filter over one scene timeline.
+        var sceneWorkflowRows = timeline.VisibleTrackRowCount;
+        var sceneWorkflowHidesCameraTracks = timeline.ShotTracksHidden;
+        AssertTimeline(
+            sceneWorkflowHidesCameraTracks && !timeline.HasShotFilter,
+            "Choosing the Scene & Animation workspace left the camera timeline rows visible.");
+
+        workspaceTabs.SelectedView = WorkspaceView.ShotDirector;
+        Application.DoEvents();
+        AssertTimeline(
+            (bool)(shotDirectorVisibleField.GetValue(form) ?? false)
+            && shotPanel.Dock == DockStyle.Fill
+            && stagePanel.Left == 0
+            && stagePanel.Right == inspector.Left
+            && shotPanel.Bounds == inspector.DisplayRectangle,
+            $"The director workspace did not replace the right inspector page: "
+            + $"panel={shotPanel.Bounds}/dock={shotPanel.Dock}/index={inspector.Controls.GetChildIndex(shotPanel)} "
+            + $"header={header.Bounds}/dock={header.Dock}/index={body.Controls.GetChildIndex(header)} "
+            + $"stage={stagePanel.Bounds}/dock={stagePanel.Dock}/index={body.Controls.GetChildIndex(stagePanel)} "
+            + $"inspector={inspector.Bounds}/dock={inspector.Dock}/index={body.Controls.GetChildIndex(inspector)} "
+            + $"body={body.ClientSize}.");
+
+        AssertTimeline(
+            timeline.HasShotFilter
+            && !timeline.ShotTracksHidden
+            && timeline.VisibleTrackRowCount == 2
+            && timeline.VisibleTrackRowCount > sceneWorkflowRows,
+            "Entering the Shots workspace did not restore the camera-only timeline rows.");
+
+        AssertTimeline(
+            stageControl.ShotFramingGizmoVisible
+            && string.Equals(timeline.ActiveTrackId, scene.FindShotTrack(firstShot.Id)?.Id, StringComparison.Ordinal)
+            && stageControl.ShotFramingGizmoSettings == firstSettings,
+            "Selecting the initial camera timeline row did not show its Stage framing component.");
+
+        AssertTimeline(
+            timeline.SelectSingleLayerTarget(secondShot.Id)
+            && stageControl.ShotFramingGizmoVisible
+            && stageControl.ShotFramingGizmoSettings == secondSettings,
+            "Selecting another camera timeline row did not update the Stage framing component.");
+
+        workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
+        Application.DoEvents();
+        AssertTimeline(
+            !(bool)(shotDirectorVisibleField.GetValue(form) ?? true)
+            && stagePanel.Left == 0,
+            "The stage did not reclaim the workbench width after leaving the shot workspace.");
+        // Leaving the scene workspaces must release the camera-row suppression, otherwise camera
+        // rows would stay hidden the next time Scene & Animation is shown.
+        AssertTimeline(
+            !timeline.HasShotFilter,
+            "Leaving the scene workspaces kept the camera-only timeline filter active.");
+    }
+
+    private static void RunSceneShotTimelineRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var layer = scene.Layers[0];
+        var sceneLayerTrack = scene.Timeline.FindTrackByTargetId(layer.Id)
+            ?? throw new InvalidOperationException("Shot timeline regression lost the scene layer track.");
+        scene.Timeline.SetTrackDuration(sceneLayerTrack.Id, AnimationTimeline.DefaultDuration);
+        var shot = scene.AddShot("Camera", 30, "Shot framing", [layer.Id]);
+        var secondaryShot = scene.AddShot("Camera B", 30, "Second capture", null);
+        AssertTimeline(
+            !scene.TryExtendTimelineToShotSequence()
+            && scene.FindShotTrack(shot.Id) is { } initialTrack
+            && scene.FindShotTrack(secondaryShot.Id) is { } secondaryTrack
+            && initialTrack.Id != secondaryTrack.Id
+            && initialTrack.TargetId == shot.Id
+            && secondaryTrack.TargetId == secondaryShot.Id
+            && initialTrack.Duration == secondaryTrack.Duration
+            && initialTrack.Keyframes.Any(keyframe => keyframe.Frame == 0
+                && keyframe.Kind == TimelineKeyframeKind.Populated)
+            && secondaryTrack.Keyframes.Any(keyframe => keyframe.Frame == 0
+                && keyframe.Kind == TimelineKeyframeKind.Populated)
+            && scene.TryEvaluateShotSettings(shot.Id, 0, out var initialSettings)
+            && initialSettings == SceneShotSettings.Default,
+            "Independent cameras did not receive separate populated tracks over the one scene.");
+
+        var startSettings = new SceneShotSettings(
+            CameraProjection.Perspective,
+            new Vector3(-120f, 60f, -800f),
+            new Vector3(10f, -15f, 0f),
+            85f,
+            28_000f);
+        var frameZeroUpdated = scene.UpdateShotAtFrame(shot.Id, 0, startSettings);
+        var heldEvaluated = scene.TryEvaluateShotSettings(shot.Id, 12, out var held);
+        AssertTimeline(
+            frameZeroUpdated
+            && heldEvaluated
+            && held == startSettings,
+            "Shot framing edits did not write the held frame-zero state.");
+
+        AssertTimeline(
+            scene.InsertShotTimelineBlankKeyframe(shot.Id, 6)
+            && !scene.TryEvaluateShotSettings(shot.Id, 6, out _),
+            "A blank shot keyframe still reported framing content.");
+        AssertTimeline(
+            scene.ClearShotTimelineKeyframe(shot.Id, 6)
+            && scene.TryEvaluateShotSettings(shot.Id, 6, out var inherited)
+            && inherited == startSettings,
+            "Clearing a shot keyframe did not restore the inherited framing.");
+
+        var durationBeforeInsert = scene.FindShotTrack(shot.Id)!.Duration;
+        AssertTimeline(
+            scene.InsertShotTimelineFrame(shot.Id, 4, 3)
+            && scene.FindShotTrack(shot.Id)!.Duration == durationBeforeInsert + 3
+            && scene.TryEvaluateShotSettings(shot.Id, 15, out var afterInsert)
+            && afterInsert == startSettings,
+            "Inserting shot frames did not move the framing keyframes with the exposure.");
+
+        var endSettings = new SceneShotSettings(
+            CameraProjection.Perspective,
+            new Vector3(240f, -90f, -420f),
+            new Vector3(35f, 20f, 90f),
+            135f,
+            24_000f);
+        var keyframeInserted = scene.InsertShotTimelineKeyframe(shot.Id, 20);
+        var endUpdated = scene.UpdateShotAtFrame(shot.Id, 20, endSettings);
+        var tweenCreated = scene.TryCreateTimelineTween(shot.Id, 0, 20, TimelineTweenKind.Classic, out var tweenError);
+        var midpointEvaluated = scene.TryEvaluateShotSettings(shot.Id, 10, out var midpoint);
+        var shotTrack = scene.FindShotTrack(shot.Id)
+            ?? throw new InvalidOperationException("Shot timeline regression lost the camera track after creating its tween.");
+        AssertTimeline(
+            keyframeInserted && endUpdated && tweenCreated && string.IsNullOrEmpty(tweenError) && midpointEvaluated,
+            $"A shot column could not create a Classic framing tween ({tweenError}).");
+        AssertTimeline(
+            TimelineStrip.ShouldDisplayKeyframeMarker(shotTrack, shotTrack.EvaluateExposure(0), 0)
+            && TimelineStrip.ShouldDisplayKeyframeMarker(shotTrack, shotTrack.EvaluateExposure(20), 20)
+            && Enumerable.Range(1, 19).All(frame =>
+                !TimelineStrip.ShouldDisplayKeyframeMarker(shotTrack, shotTrack.EvaluateExposure(frame), frame)),
+            "The camera tween timeline exposed materialized intermediate frames as keyframe markers.");
+        var expectedMidpoint = SceneShotSettings.Interpolate(startSettings, endSettings, 0.5f);
+        AssertTimeline(
+            midpoint == expectedMidpoint
+            && SceneShotSettings.Interpolate(startSettings, endSettings, 0f) == startSettings
+            && SceneShotSettings.Interpolate(startSettings, endSettings, 1f) == endSettings,
+            $"A shot framing tween did not evaluate its midpoint ({midpoint} vs {expectedMidpoint}).");
+
+        var curveReplaced = scene.ReplaceTimelineTweenCurve(
+            shot.Id,
+            0,
+            20,
+            [
+                new TweenCurveAnchor(0, 0),
+                new TweenCurveAnchor(0.5f, 0.25f),
+                new TweenCurveAnchor(1, 1)
+            ]);
+        var easedSpan = scene.FindShotTrack(shot.Id)!.EvaluateTween(10);
+        var easedEvaluated = scene.TryEvaluateShotSettings(shot.Id, 10, out var eased);
+        AssertTimeline(
+            curveReplaced
+            && easedSpan is { Kind: TimelineTweenKind.Classic } span
+            && Math.Abs(span.ProgressAt(10) - 0.25f) < 0.0005f
+            && easedEvaluated
+            && eased == SceneShotSettings.Interpolate(startSettings, endSettings, span.ProgressAt(10)),
+            "Changing a shot tween curve did not rematerialize the framing frames.");
+
+        AssertTimeline(
+            scene.RemoveTimelineTween(shot.Id, 0, 20)
+            && scene.FindShotTrack(shot.Id)!.Tweens.Count == 0
+            && scene.FindShotTrack(shot.Id)!.Keyframes.All(keyframe =>
+                keyframe.Frame is 0 or 20)
+            && scene.TryEvaluateShotSettings(shot.Id, 20, out var afterRemoval)
+            && afterRemoval == endSettings,
+            "Removing a shot tween did not clear its intermediate framing keyframes.");
+
+        var removedShotFrames = scene.RemoveShotTimelineFrame(shot.Id, 4, 3);
+        var removedShotTrack = scene.FindShotTrack(shot.Id);
+        var beforeEndEvaluated = scene.TryEvaluateShotSettings(shot.Id, 16, out var beforeEndKey);
+        var shiftedEndEvaluated = scene.TryEvaluateShotSettings(shot.Id, 17, out var shiftedEndKey);
+        AssertTimeline(
+            removedShotFrames
+            && removedShotTrack!.Duration == durationBeforeInsert
+            && beforeEndEvaluated
+            && beforeEndKey == startSettings
+            && shiftedEndEvaluated
+            && shiftedEndKey == endSettings,
+            "Removing shot frames did not shift the framing keyframes with the exposure.");
+
+        var secondaryStart = new SceneShotSettings(
+            CameraProjection.Orthographic,
+            new Vector3(30f, 40f, 500f),
+            new Vector3(0f, 20f, 35f),
+            50f,
+            12_000f);
+        var secondaryEnd = new SceneShotSettings(
+            CameraProjection.Orthographic,
+            new Vector3(-60f, 80f, 900f),
+            new Vector3(-10f, 40f, 75f),
+            70f,
+            6_000f);
+        var secondaryTweenError = string.Empty;
+        AssertTimeline(
+            scene.UpdateShotAtFrame(secondaryShot.Id, 0, secondaryStart)
+            && scene.InsertShotTimelineKeyframe(secondaryShot.Id, 20)
+            && scene.UpdateShotAtFrame(secondaryShot.Id, 20, secondaryEnd)
+            && scene.TryCreateTimelineTween(secondaryShot.Id, 0, 20, TimelineTweenKind.Classic, out secondaryTweenError)
+            && scene.TryEvaluateShotSettings(secondaryShot.Id, 10, out var secondaryMid)
+            && secondaryMid.Projection == CameraProjection.Orthographic
+            && secondaryMid.FocalLength > secondaryStart.FocalLength
+            && secondaryMid.OrthographicSize < secondaryStart.OrthographicSize
+            && scene.FindShotTrack(shot.Id)!.TargetId == shot.Id,
+            $"The second camera did not preserve orthographic XYZ/focal/size tweening independently ({secondaryTweenError}).");
+
+        RunSceneShotTimelineVisualRegression();
+        Console.WriteLine("scene_shot_timeline_regression=ok");
+    }
+
+    private static void RunSceneShotTimelineVisualRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var shot = scene.AddShot("Camera visual", 20, null, null);
+        scene.SynchronizeTimelineTracks();
+        var start = SceneShotSettings.Default with
+        {
+            X = -120f,
+            FocalLength = 35f
+        };
+        var end = SceneShotSettings.Default with
+        {
+            X = 180f,
+            FocalLength = 120f
+        };
+        var tweenError = string.Empty;
+        AssertTimeline(
+            scene.UpdateShotAtFrame(shot.Id, 0, start)
+            && scene.InsertShotTimelineKeyframe(shot.Id, 16)
+            && scene.UpdateShotAtFrame(shot.Id, 16, end)
+            && scene.TryCreateTimelineTween(shot.Id, 0, 16, TimelineTweenKind.Classic, out tweenError),
+            $"Camera timeline visual regression could not create its tween ({tweenError}).");
+
+        var track = scene.FindShotTrack(shot.Id)
+            ?? throw new InvalidOperationException("Camera timeline visual regression lost its track.");
+        using var host = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000),
+            ClientSize = new Size(760, 240)
+        };
+        using var strip = new TimelineStrip(scene) { Dock = DockStyle.Fill };
+        host.Controls.Add(strip);
+        strip.ApplyShotFilter(shot.Id, [shot.Id], scene.GetShotRanges());
+        strip.SelectSingleFrame(track.Id, 8);
+        host.Show();
+        Application.DoEvents();
+
+        var layout = RequireMethod(typeof(TimelineStrip), "CreateLayout").Invoke(strip, null)!;
+        var trackLeft = (int)layout.GetType().GetProperty("TrackLeft")!.GetValue(layout)!;
+        var rowTop = (int)layout.GetType().GetProperty("RowTop")!.GetValue(layout)!;
+        Func<int, int> frameCenter = frame => trackLeft + frame * strip.FrameWidth + strip.FrameWidth / 2;
+        var rowCenter = rowTop + strip.FrameHeight / 2;
+        using var bitmap = new Bitmap(760, 240);
+        strip.DrawToBitmap(bitmap, strip.ClientRectangle);
+        var bandPixel = bitmap.GetPixel(frameCenter(7), rowCenter + 1);
+        var exposurePixel = bitmap.GetPixel(frameCenter(7), rowTop + 2);
+
+        var captureDirectory = Environment.GetEnvironmentVariable("VECTOR_BENCH_TIMELINE_CAPTURE_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(captureDirectory))
+        {
+            Directory.CreateDirectory(captureDirectory);
+            bitmap.Save(Path.Combine(captureDirectory, "scene-shot-tween.png"));
+        }
+
+        AssertTimeline(
+            bandPixel.ToArgb() != exposurePixel.ToArgb(),
+            "The camera tween band did not produce a distinct visual lane in the rendered timeline.");
+
+        Console.WriteLine("scene_shot_tween_visual=ok");
+    }
+
+    private static void RunSceneShotTimelineFilterRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var scene = project.AddScene("Shot filter scene");
+        var firstLayer = scene.Layers[0];
+        var secondLayer = scene.AddLayer(project, "Layer B");
+        var thirdLayer = scene.AddLayer(project, "Layer C");
+        var firstShot = scene.AddShot("First shot", 10, null, [firstLayer.Id]);
+        scene.AddShot("Second shot", 10, null, [secondLayer.Id, thirdLayer.Id]);
+        var firstShotTrack = scene.FindShotTrack(firstShot.Id)
+            ?? throw new InvalidOperationException("Shot filter regression lost the first camera track.");
+        var filterTweenEnd = SceneShotSettings.Default with
+        {
+            X = 240f,
+            FocalLength = 120f,
+            OrthographicSize = 12_000f
+        };
+        var filterTweenError = string.Empty;
+        AssertTimeline(
+            scene.InsertShotTimelineKeyframe(firstShot.Id, 9)
+            && scene.UpdateShotAtFrame(firstShot.Id, 9, filterTweenEnd)
+            && scene.TryCreateTimelineTween(firstShot.Id, 0, 9, TimelineTweenKind.Classic, out filterTweenError),
+            $"Shot filter regression could not prepare a camera tween ({filterTweenError}).");
+
+        using var strip = new TimelineStrip(scene);
+        var allRows = strip.VisibleTrackRowCount;
+        strip.SelectSingleLayerTarget(firstShot.Id, notifyActiveLayerChanged: false);
+        var cameraTrackSelected = string.Equals(strip.ActiveTrackId, firstShotTrack.Id, StringComparison.Ordinal);
+        var cameraTrackIds = scene.Shots.Select(shot => shot.Id).ToArray();
+        var getVisibleTrackIndices = RequireMethod(typeof(TimelineStrip), "VisibleTrackIndices", Type.EmptyTypes);
+        strip.ApplyShotFilter(firstShot.Id, cameraTrackIds, scene.GetShotRanges());
+        var filteredRows = strip.VisibleTrackRowCount;
+        var directorFilterActive = strip.HasShotFilter;
+        var filteredTrackIndices = ((IEnumerable<int>)getVisibleTrackIndices.Invoke(strip, null)!).ToArray();
+        var filteredTracksAreCameras = filteredTrackIndices.All(index =>
+            cameraTrackIds.Contains(scene.Timeline.Tracks[index].TargetId, StringComparer.Ordinal));
+        strip.SelectSingleFrame(firstShotTrack.Id, 4);
+        var cameraTweenSelected = strip.SelectedTween is
+        {
+            TrackId: var selectedTrackId,
+            StartFrame: 0,
+            EndFrame: 9
+        } && string.Equals(selectedTrackId, firstShotTrack.Id, StringComparison.Ordinal);
+        var ordinaryTrack = scene.Timeline.FindTrackByTargetId(firstLayer.Id)
+            ?? throw new InvalidOperationException("Shot filter regression lost an ordinary layer track.");
+        var cameraSelectionBeforeOrdinaryTarget = strip.SelectedFrameCells.ToArray();
+        var ordinaryTargetRejected = !strip.SelectSingleLayerTarget(firstLayer.Id, notifyActiveLayerChanged: false)
+            && string.Equals(strip.ActiveTrackId, firstShotTrack.Id, StringComparison.Ordinal);
+        strip.SelectSingleFrame(ordinaryTrack.Id, 4);
+        var ordinaryFrameRejected = strip.SelectedFrameCells.SequenceEqual(cameraSelectionBeforeOrdinaryTarget);
+        strip.ApplyShotFilter(
+            firstShot.Id,
+            [firstShot.Id],
+            scene.GetShotRanges());
+        var singleCameraRows = strip.VisibleTrackRowCount;
+        var keptRanges = strip.ShotRanges.Length;
+        strip.ApplyShotFilter(null, null, null);
+        var clearedRows = strip.VisibleTrackRowCount;
+        strip.ApplyShotFilter(null, null, null, hideShotTracks: true);
+        var sceneWorkflowRows = strip.VisibleTrackRowCount;
+        var sceneWorkflowTrackIndices = ((IEnumerable<int>)getVisibleTrackIndices.Invoke(strip, null)!).ToArray();
+        var sceneWorkflowTracksAreLayers = sceneWorkflowTrackIndices.Length == 3
+            && sceneWorkflowTrackIndices.All(index =>
+                !cameraTrackIds.Contains(scene.Timeline.Tracks[index].TargetId, StringComparer.Ordinal));
+        var sceneWorkflowCameraTargetRejected =
+            !strip.SelectSingleLayerTarget(firstShot.Id, notifyActiveLayerChanged: false);
+        var sceneWorkflowActiveTrackIsLayer = sceneWorkflowTrackIndices.Any(index =>
+            string.Equals(
+                scene.Timeline.Tracks[index].Id,
+                strip.ActiveTrackId,
+                StringComparison.Ordinal));
+        strip.ApplyShotFilter(null, null, null);
+        var restoredAfterSceneWorkflowRows = strip.VisibleTrackRowCount;
+        AssertTimeline(
+            // Three element layers plus two independent camera tracks.
+            allRows == 5
+            && filteredRows == 2
+            && singleCameraRows == 1
+            && clearedRows == allRows
+            && sceneWorkflowRows == 3
+            && sceneWorkflowTracksAreLayers
+            && sceneWorkflowCameraTargetRejected
+            && sceneWorkflowActiveTrackIsLayer
+            && restoredAfterSceneWorkflowRows == allRows
+            && keptRanges == 2
+            && cameraTrackSelected
+            && directorFilterActive
+            && filteredTracksAreCameras
+            && cameraTweenSelected
+            && ordinaryTargetRejected
+            && ordinaryFrameRejected
+            && !strip.HasShotFilter
+            && !strip.ShotTracksHidden
+            && strip.ActiveShotId is null
+            && TimelineStrip.ResolveShotVisibleColumns(0, 9, 0, 20) == (0, 10)
+            && TimelineStrip.ResolveShotVisibleColumns(0, 9, 6, 20) == (0, 4)
+            && TimelineStrip.ResolveShotVisibleColumns(20, 29, 0, 20) == (0, 0),
+            "The director timeline did not isolate camera tracks or restore the scene workflow without camera rows.");
+    }
+
+    private static void RunSceneShotPersistenceRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var scene = project.Scenes[0];
+        var firstLayer = scene.Layers[0];
+        var secondLayer = scene.AddLayer(project, "Second");
+        scene.AddShot("Open", 18, "Fade in", [firstLayer.Id]);
+        scene.AddShot("Beat", 9, "Impact", [secondLayer.Id]);
+        scene.Shots[0].SetSettingsAtFrame(0, SceneShotSettings.Default with { AspectRatio = SceneShotAspectRatio.Portrait9To16 });
+        scene.InsertShotTimelineKeyframe(scene.Shots[0].Id, 12);
+        scene.UpdateShotAtFrame(scene.Shots[0].Id, 12, SceneShotSettings.Default with { AspectRatio = SceneShotAspectRatio.Square1To1 });
+
+        var restartRestored = VectorProject.RestoreRestartSnapshot(
+            EditorRestartStore.RoundTripProjectSnapshot(project.CreateRestartSnapshot()));
+        AssertSceneShotPersistence(
+            restartRestored.Scenes.Single(item => item.Id == scene.Id),
+            "Editor restart JSON");
+
+        var temporaryRoot = CreateTemporaryDirectory("scene-shot-regression");
+        var manifestPath = Path.Combine(temporaryRoot, "SceneShots.v2dProject");
+        try
+        {
+            ProjectVaultStore.Save(project, manifestPath);
+            var vaultRestored = ProjectVaultStore.Load(manifestPath);
+            AssertSceneShotPersistence(
+                vaultRestored.Scenes.Single(item => item.Id == scene.Id),
+                "Project Vault");
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(temporaryRoot);
+        }
+    }
+
+    private static void AssertSceneShotPersistence(
+        SceneDefinition restored,
+        string context)
+    {
+        AssertTimeline(
+            restored.ShotCount == 2
+            && restored.Shots[0].Settings.AspectRatio == SceneShotAspectRatio.Portrait9To16
+            && restored.Shots[0].EvaluateSettings(12).AspectRatio == SceneShotAspectRatio.Square1To1
+            && restored.Shots[0].Name == "Open"
+            && restored.Shots[0].Detail == "Fade in"
+            && restored.Shots[0].DurationFrames == 18
+            && restored.Shots[0].LayerIds.Count == 0
+            && restored.Shots[1].Name == "Beat"
+            && restored.Shots[1].DurationFrames == 9
+            && restored.Shots[1].LayerIds.Count == 0
+            && restored.GetShotRangeAt(0).StartFrame == 0
+            && restored.GetShotRangeAt(1).StartFrame == 0
+            && restored.GetShotRangeAt(1).EndFrame == restored.FrameCount - 1,
+            $"{context} did not preserve independent camera definitions over the continuous scene.");
     }
 
 }

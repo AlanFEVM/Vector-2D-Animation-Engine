@@ -296,12 +296,8 @@ internal sealed class ModernToggleSwitch : CheckBox
             return;
         }
 
-        var now = Stopwatch.GetTimestamp();
-        var elapsedMilliseconds = _lastMotionTimestamp == 0
-            ? _motionTimer.Interval
-            : Math.Clamp(Stopwatch.GetElapsedTime(_lastMotionTimestamp, now).TotalMilliseconds, 1d, 64d);
-        _lastMotionTimestamp = now;
-        var blend = 1f - MathF.Pow(0.70f, (float)(elapsedMilliseconds / _motionTimer.Interval));
+        var timeScale = UiMotion.GetTimeScale(ref _lastMotionTimestamp, _motionTimer.Interval);
+        var blend = 1f - MathF.Pow(0.70f, timeScale);
         _checkedProgress = Approach(_checkedProgress, _checkedTarget, blend);
         _hoverProgress = Approach(_hoverProgress, _hoverTarget, blend);
         _pressProgress = Approach(_pressProgress, _pressTarget, blend);

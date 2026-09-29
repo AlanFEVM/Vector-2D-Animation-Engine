@@ -126,11 +126,13 @@ internal sealed partial class MainForm : Form
     private bool _projectDirty;
     private ApplicationSettings _applicationSettings = ApplicationSettingsStore.Load();
     private VectorScene _scene;
+    private readonly Icon _applicationIcon = new(typeof(MainForm), "Application.ico");
     private readonly VectorScene _sceneEditStage = new();
     private readonly VectorScene _drawingObjectUnderlayStage = new();
     private readonly VectorScene _onionSkinStage = new();
     private readonly VectorScene _localOnionSkinStage = new();
     private readonly VectorScene _nestedOnionSkinStage = new();
+    private readonly VectorScene _sceneOnionSkinStage = new();
     private readonly VectorScene _dragPreviewStage = new();
     private readonly VectorScene _brushAreaPreviewStage = new();
     private readonly VectorScene _shapeGradientBrushPreviewStage = new();
@@ -178,6 +180,8 @@ internal sealed partial class MainForm : Form
     private DateTime _lineFlyoutHideAtUtc;
     private DateTime _brushFlyoutHideAtUtc;
     private readonly Dictionary<string, Button> _drawingObjectTabButtons = new();
+    private Button? _activeDrawingObjectTabButton;
+    private SvgIconButton? _addDrawingObjectTabButton;
     private IReadOnlyList<SceneDefinition> _scenes => _project.Scenes;
     private IReadOnlyList<DrawingObjectDefinition> _drawingObjects => _project.DrawingObjects;
     private readonly AnimatedToolTip _toolTip = new();
@@ -273,6 +277,10 @@ internal sealed partial class MainForm : Form
     private readonly ToolStripMenuItem _convertLineToFillMenuItem = new("Convert Line to Fill");
     private readonly ToolStripSeparator _lineActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _mergeAndSimplifyLinesMenuItem = new("Merge and Simplify Lines");
+    private readonly ToolStripSeparator _symbolExportMenuSeparator = new();
+    private readonly ToolStripMenuItem _exportSymbolSvgMenuItem = new("Export Symbol as SVG...");
+    private readonly ToolStripMenuItem _exportSymbolFileMenuItem = new("Export Symbol File...");
+    private readonly ToolStripMenuItem _importSymbolFileMenuItem = new("Import Symbol File...");
     private readonly Panel _inspectorHost = new();
     private readonly LayerBlendModePanel _layerBlendModePanel = new();
     private readonly ThemedScrollPanel _basicInspectorPage = new();
@@ -323,6 +331,7 @@ internal sealed partial class MainForm : Form
     private readonly Stack<DrawingUndoEntry> _undoStack = new();
     private readonly Stack<SceneTimelineUndoEntry> _sceneTimelineUndoStack = new();
     private OnionSkinRangeEditSession? _onionSkinRangeEditSession;
+    private SceneOnionSkinRangeEditSession? _sceneOnionSkinRangeEditSession;
     private TweenCurveEditSession? _tweenCurveEditSession;
     private readonly List<ClipboardObject> _clipboardObjects = new();
     private readonly List<ClipboardDrawingObjectInstance> _clipboardDrawingObjectInstances = new();
@@ -583,12 +592,21 @@ internal sealed partial class MainForm : Form
         TimelineSelectionSnapshot? TimelineSelection = null,
         string? CreatedDrawingObjectId = null,
         SceneLightDefinition[]? LightSnapshot = null,
-        string? SelectedLightId = null);
+        string? SelectedLightId = null,
+        SceneOnionSkinState? OnionSkinState = null,
+        SceneShotSnapshot[]? ShotSnapshot = null);
 
     private sealed class OnionSkinRangeEditSession
     {
         public required VectorScene Scene { get; init; }
         public required VectorSceneSnapshot Snapshot { get; init; }
+        public bool Changed { get; set; }
+    }
+
+    private sealed class SceneOnionSkinRangeEditSession
+    {
+        public required SceneDefinition Scene { get; init; }
+        public required SceneOnionSkinState Snapshot { get; init; }
         public bool Changed { get; set; }
     }
 
@@ -600,6 +618,7 @@ internal sealed partial class MainForm : Form
         public AnimationTimelineSnapshot? SceneTimelineSnapshot { get; init; }
         public DrawingObjectInstanceDefinition[]? InstanceSnapshot { get; init; }
         public SceneLightDefinition[]? LightSnapshot { get; init; }
+        public SceneShotSnapshot[]? ShotSnapshot { get; init; }
         public bool Changed { get; set; }
     }
 
@@ -777,6 +796,7 @@ internal sealed partial class MainForm : Form
         _sceneEditStage.CreateEmpty();
         _drawingObjectUnderlayStage.CreateEmpty();
         Text = "Vector 2D Animation Engine";
+        Icon = _applicationIcon;
         FormBorderStyle = FormBorderStyle.None;
         AutoScaleMode = AutoScaleMode.Dpi;
         Width = 1480;
@@ -836,6 +856,8 @@ internal sealed partial class MainForm : Form
         UiLocalization.Watch(_scene3DContextMenu);
         if (_restartState is null) CreateNewProject();
         else RestoreRestartState(_restartState);
+        UpdateShotDirectorWorkspace();
+        RefreshShotDirector(force: true);
         _timer.Tick += (_, _) => Tick();
         _timer.Start();
 
@@ -878,6 +900,19 @@ internal sealed partial class MainForm : Form
         _sendBackwardMenuItem.Click += (_, _) => MoveSelectedDrawingObjectsInStack(-1);
         _convertLineToFillMenuItem.Click += (_, _) => ConvertStageContextLineToFill();
         _mergeAndSimplifyLinesMenuItem.Click += (_, _) => MergeAndSimplifyLineSegments(_stageContextMenuLocation);
+        _exportSymbolSvgMenuItem.Click += (_, _) =>
+        {
+            if (ActiveDrawingObject() is { } drawingObject) ExportDrawingObjectSvg(drawingObject.Id);
+        };
+        _exportSymbolFileMenuItem.Click += (_, _) =>
+        {
+            if (ActiveDrawingObject() is { } drawingObject) ExportDrawingObjectSymbolPackage(drawingObject.Id);
+        };
+        _importSymbolFileMenuItem.Click += (_, _) => ImportDrawingObjectSymbolPackage();
+        _stageContextMenu.Items.Add(_symbolExportMenuSeparator);
+        _stageContextMenu.Items.Add(_exportSymbolSvgMenuItem);
+        _stageContextMenu.Items.Add(_exportSymbolFileMenuItem);
+        _stageContextMenu.Items.Add(_importSymbolFileMenuItem);
         _stageContextMenu.Opening += (_, _) =>
         {
             _stageContextMenuLineObject = -1;
@@ -954,6 +989,15 @@ internal sealed partial class MainForm : Form
             _sendBackwardMenuItem.Enabled = canSendBackward;
             _mergeAndSimplifyLinesMenuItem.Enabled = !DrawingToolsBlocked()
                 && CollectLineMergeTargets(_stageContextMenuLocation, out _).Count >= 2;
+            // Exporting a whole symbol is a document action, so it stays available
+            // regardless of which drawing tools are active.
+            var exportSymbol = ActiveDrawingObject();
+            _symbolExportMenuSeparator.Visible = exportSymbol is not null;
+            _exportSymbolSvgMenuItem.Visible = exportSymbol is not null;
+            _exportSymbolSvgMenuItem.Enabled = exportSymbol is not null;
+            _exportSymbolFileMenuItem.Visible = exportSymbol is not null;
+            _exportSymbolFileMenuItem.Enabled = exportSymbol is not null;
+            _importSymbolFileMenuItem.Visible = true;
             if (TryGetStageContextLineObject(_stageContextMenuLocation, out var objectIndex))
             {
                 _stageContextMenuLineObject = objectIndex;
@@ -1163,7 +1207,7 @@ internal sealed partial class MainForm : Form
         Theme.StyleToolbarButton(zoomIn);
         zoomIn.Click += (_, _) =>
         {
-            _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), 1.22f);
+            ZoomActiveView(1.22f);
             UpdateStatusBar();
         };
         var zoomOut = new SvgIconButton(SvgIconKind.ZoomOut)
@@ -1176,7 +1220,7 @@ internal sealed partial class MainForm : Form
         Theme.StyleToolbarButton(zoomOut);
         zoomOut.Click += (_, _) =>
         {
-            _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), 0.82f);
+            ZoomActiveView(0.82f);
             UpdateStatusBar();
         };
         metrics.Controls.Add(_sceneDimensionButton);
@@ -1257,6 +1301,7 @@ internal sealed partial class MainForm : Form
         stagePanel.Controls.Add(tools);
         tools.BringToFront();
         AttachSceneSpatialControls(stagePanel, metrics);
+        AttachShotPreviewOverlay(stagePanel, metrics);
         stagePanel.Resize += (_, _) => LayoutToolPalette();
         LayoutToolPalette();
         vaultDrawer.BringToFront();
@@ -1276,6 +1321,7 @@ internal sealed partial class MainForm : Form
         RefreshToolButtons();
         _workspaceTabs.BringToFront();
 
+        InitializeShotDirector();
         Controls.Add(_timeline);
         _timeline.Resize += (_, _) =>
         {
@@ -1295,6 +1341,24 @@ internal sealed partial class MainForm : Form
         LayoutToolPalette();
         BuildStatusBar();
         Controls.Add(_statusBar);
+    }
+
+    /// <summary>
+    /// Zooms whichever camera presents the current view. Basic Drawing and the 2D Front scene view
+    /// zoom the 2D drawing camera; every reference-projected view (3D scenes, side/top directions and
+    /// the Shots workspace) zooms the reference camera. The three workspaces keep independent zoom,
+    /// so dispatching matters: without it the toolbar buttons would silently do nothing in 3D.
+    /// </summary>
+    private void ZoomActiveView(float factor)
+    {
+        if (!float.IsFinite(factor) || factor <= 0f) return;
+        if (_stage.RendersReferenceProjection)
+        {
+            _stage.ZoomReferenceCamera(factor);
+            return;
+        }
+
+        _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), factor);
     }
 
     private void BuildEraserOptionsStrip(Panel metrics)
@@ -1537,6 +1601,7 @@ internal sealed partial class MainForm : Form
             _applicationSettings.AccentHueDegrees,
             _applicationSettings.AccentSaturationPercent,
             _applicationSettings.AccentBrightnessPercent);
+        dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
         void PreviewTheme(object? sender, EventArgs e) => ApplyThemePreview(
             dialog.SelectedColorTheme,
             dialog.SelectedThemeHueDegrees,
@@ -1586,6 +1651,7 @@ internal sealed partial class MainForm : Form
             AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
             AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent
         });
+        settings = ApplicationSettingsStore.Normalize(dialog.ApplyCodexSettingsTo(settings));
         if (!ApplicationSettingsStore.TrySave(settings))
         {
             RestoreThemePreview(originalTheme);
@@ -1599,6 +1665,7 @@ internal sealed partial class MainForm : Form
         }
 
         _applicationSettings = settings;
+        AppHost.Current?.ApplyCodexBridgeSettings(settings);
         Theme.ConfigureColorAdjustments(
             settings.ColorTheme,
             settings.ThemeHueDegrees,
@@ -1906,6 +1973,7 @@ internal sealed partial class MainForm : Form
         if (_timelinePanelOpen) _timeline.MinimumSize = _timelinePanelMinimumSize;
         _inspectorHost.Visible = _inspectorPanelOpen;
         _timeline.Visible = _timelinePanelOpen;
+        UpdateShotDirectorWorkspace();
         UpdateWorkspacePanelButtonStyles();
         _stage.Invalidate();
     }
@@ -2133,6 +2201,7 @@ internal sealed partial class MainForm : Form
             _workspaceColorFlyout.Dispose();
             _toolTip.Dispose();
             _textEditorOwnedFont?.Dispose();
+            _applicationIcon.Dispose();
         }
 
         base.Dispose(disposing);
@@ -2385,11 +2454,43 @@ internal sealed partial class MainForm : Form
 
     private void BuildDrawingObjectTabs()
     {
-        foreach (var tab in _drawingObjectTabs.Controls.Cast<Control>().ToArray()) tab.Dispose();
-        _drawingObjectTabs.Controls.Clear();
-        _drawingObjectTabButtons.Clear();
-        if (_activeDrawingObjectIndex >= 0 && _activeDrawingObjectIndex < _drawingObjects.Count) AddDrawingObjectTab(_activeDrawingObjectIndex);
-        AddNewDrawingObjectButton();
+        _drawingObjectTabs.SuspendLayout();
+        try
+        {
+            var drawingObject = ActiveDrawingObject();
+            if (drawingObject is null)
+            {
+                _activeDrawingObjectTabButton?.Dispose();
+                _activeDrawingObjectTabButton = null;
+                _drawingObjectTabButtons.Clear();
+            }
+            else
+            {
+                if (_activeDrawingObjectTabButton is null)
+                {
+                    AddDrawingObjectTab(_activeDrawingObjectIndex);
+                }
+                var button = _activeDrawingObjectTabButton!;
+                if (!Equals(button.Tag, drawingObject.Id))
+                {
+                    _toolTip.HideTip();
+                    button.Tag = drawingObject.Id;
+                    _drawingObjectTabButtons.Clear();
+                    _drawingObjectTabButtons[drawingObject.Id] = button;
+                }
+                if (button.Text != drawingObject.Name) button.Text = drawingObject.Name;
+                button.AccessibleName = drawingObject.Name;
+                var width = drawingObject.Name.Length > 10 ? 132 : 108;
+                if (button.Width != width) button.Width = width;
+                if (_drawingObjectTabs.Controls.GetChildIndex(button) != 0)
+                    _drawingObjectTabs.Controls.SetChildIndex(button, 0);
+            }
+            if (_addDrawingObjectTabButton is null) AddNewDrawingObjectButton();
+        }
+        finally
+        {
+            _drawingObjectTabs.ResumeLayout(performLayout: true);
+        }
         RefreshToolButtons();
     }
 
@@ -2402,26 +2503,40 @@ internal sealed partial class MainForm : Form
             Width = drawingObject.Name.Length > 10 ? 132 : 108,
             Height = 28,
             Margin = new Padding(0, 0, 6, 0),
-            Tag = index,
+            Tag = drawingObject.Id,
             AutoEllipsis = true,
             AccessibleName = drawingObject.Name,
             AccessibleRole = AccessibleRole.PageTab
         };
         Theme.StyleSegmentedButton(button);
-        button.Click += (_, _) => SelectDrawingObject(index);
-        button.MouseEnter += (_, _) => _toolTip.ShowFor(button, $"{drawingObject.Name} ({drawingObject.Kind})");
+        button.Click += (_, _) =>
+        {
+            for (var currentIndex = 0; currentIndex < _drawingObjects.Count; currentIndex++)
+            {
+                if (!Equals(button.Tag, _drawingObjects[currentIndex].Id)) continue;
+                SelectDrawingObject(currentIndex);
+                break;
+            }
+        };
+        button.MouseEnter += (_, _) =>
+        {
+            var current = _drawingObjects.FirstOrDefault(item => Equals(button.Tag, item.Id));
+            if (current is not null) _toolTip.ShowFor(button, $"{current.Name} ({current.Kind})");
+        };
         button.MouseLeave += (_, _) => _toolTip.HideTip();
         var dragStart = Point.Empty;
         button.MouseDown += (_, e) => dragStart = e.Location;
         button.MouseMove += (_, e) =>
         {
-            if (e.Button != MouseButtons.Left || drawingObject.Kind == "Scene") return;
+            var current = _drawingObjects.FirstOrDefault(item => Equals(button.Tag, item.Id));
+            if (e.Button != MouseButtons.Left || current is null || current.Kind == "Scene") return;
             if (Math.Abs(e.X - dragStart.X) < SystemInformation.DragSize.Width / 2 && Math.Abs(e.Y - dragStart.Y) < SystemInformation.DragSize.Height / 2) return;
             var dragData = new DataObject();
-            dragData.SetData(typeof(DrawingObjectDragData), new DrawingObjectDragData(_project.Id, drawingObject.Id));
-            dragData.SetData(typeof(VaultItem), drawingObject.ToVaultItem());
+            dragData.SetData(typeof(DrawingObjectDragData), new DrawingObjectDragData(_project.Id, current.Id));
+            dragData.SetData(typeof(VaultItem), current.ToVaultItem());
             button.DoDragDrop(dragData, DragDropEffects.Copy);
         };
+        _activeDrawingObjectTabButton = button;
         _drawingObjectTabButtons[drawingObject.Id] = button;
         _drawingObjectTabs.Controls.Add(button);
     }
@@ -2439,6 +2554,7 @@ internal sealed partial class MainForm : Form
         };
         Theme.StyleToolbarButton(button);
         button.Click += (_, _) => AddDrawingObject();
+        _addDrawingObjectTabButton = button;
         _drawingObjectTabs.Controls.Add(button);
     }
 
@@ -2457,7 +2573,7 @@ internal sealed partial class MainForm : Form
         _activeSceneIndex = index;
         _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects);
         UpdateSceneDimensionButton();
-        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor) BindSceneEditStage(resetView: false);
+        if (IsSceneWorkspaceSelected) BindSceneEditStage(resetView: false);
         AppLog.Info($"Selected scene: {_scenes[index].Name}");
     }
 
@@ -2473,6 +2589,10 @@ internal sealed partial class MainForm : Form
     }
 
     private bool IsSceneBuildingContext() => _timeline.Context is SceneDefinition;
+
+    private bool IsShotDirectorContext() =>
+        _workspaceTabs.SelectedView == WorkspaceView.ShotDirector
+        && IsSceneBuildingContext();
 
     private bool IsSceneMaskEditing()
     {
@@ -2535,7 +2655,7 @@ internal sealed partial class MainForm : Form
         MarkProjectDirty();
 
         UpdateSceneDimensionButton();
-        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor)
+        if (IsSceneWorkspaceSelected)
         {
             _stage.ConfigureReferenceView(
                 scene,
@@ -2549,13 +2669,27 @@ internal sealed partial class MainForm : Form
     {
         var scene = ActiveScene();
         if (scene is null || IsSceneMaskEditing()) return;
+        // Playback can finish on a scheduler callback before the UI-facing
+        // flag is observed. Treat any residual scheduler/Stage/preloader
+        // state as active so the dimension switch also repairs that state.
+        if (_playing
+            || _stage.PlaybackActive
+            || _stage.Reference3DPlaybackActive
+            || _stage.Reference3DOpticalInteractionPreviewActive
+            || _playbackSchedulerState is not null
+            || _playbackCompositionPreloader is not null
+            || _playbackCompositionSceneActive)
+        {
+            StopPlayback();
+        }
         var dimension = ActiveSceneViewDimension() == SceneDimension.TwoD
             ? SceneDimension.ThreeD
             : SceneDimension.TwoD;
         FinishPointerInteractionForContextChange();
         _sceneViewDimensions[scene.Id] = dimension;
         _project.TrySetSceneDimension(scene.Id, dimension);
-        _stage.ConfigureReferenceView(scene, dimension, ReferenceCameraMotion.Animated);
+        _stage.CompleteReferenceCameraTransition(invalidate: false);
+        _stage.ConfigureReferenceView(scene, dimension, ReferenceCameraMotion.Immediate);
         if (dimension == SceneDimension.ThreeD && _tool is ToolMode.Transform or ToolMode.Distort)
         {
             _tool = ToolMode.Transform3D;
@@ -2591,7 +2725,7 @@ internal sealed partial class MainForm : Form
             : "Current scene view is 2D. Activate to switch to 3D";
 
         var projection = scene?.Camera.Projection ?? CameraProjection.Orthographic;
-        var projectionAvailable = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+        var projectionAvailable = IsSceneWorkspaceSelected
             && scene is not null
             && !maskEditing;
         _sceneProjectionButton.Text = projection == CameraProjection.Perspective
@@ -2630,7 +2764,7 @@ internal sealed partial class MainForm : Form
         }
 
         _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects);
-        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor)
+        if (IsSceneWorkspaceSelected)
         {
             _timeline.RefreshTimeline();
             ApplyBoundTimelineDuration();
@@ -2935,7 +3069,6 @@ internal sealed partial class MainForm : Form
         if (IsSceneMaskEditing())
         {
             _stage.BindUnderlayScene(_sceneEditStage);
-            _stage.BindOnionSkinScene(null);
         }
         else
         {
@@ -2943,6 +3076,7 @@ internal sealed partial class MainForm : Form
         }
         _sceneInstancePreviewDirty = false;
         RefreshSelectedSceneInstanceObjectIndices();
+        RebuildOnionSkinPreview();
         if (!_playing && refreshScenePanels)
         {
             _hierarchyPanel.BindScene(_scene);
@@ -3022,7 +3156,7 @@ internal sealed partial class MainForm : Form
             }
             _drawingObjectUnderlayResult = SceneCompositionResult.Empty;
             _stage.BindUnderlayScene(null);
-            _stage.BindOnionSkinScene(null);
+            RebuildOnionSkinPreview();
             return;
         }
 
@@ -3042,7 +3176,19 @@ internal sealed partial class MainForm : Form
 
     private void RebuildOnionSkinPreview()
     {
-        if (_playing || IsSceneBuildingContext() || !_scene.HasOnionSkinPreviewEnabled)
+        if (_playing)
+        {
+            if (_stage.OnionSkinScene is not null) _stage.BindOnionSkinScene(null);
+            return;
+        }
+
+        if (IsSceneBuildingContext())
+        {
+            RebuildSceneOnionSkinPreview();
+            return;
+        }
+
+        if (!_scene.HasOnionSkinPreviewEnabled)
         {
             if (_stage.OnionSkinScene is not null) _stage.BindOnionSkinScene(null);
             return;
@@ -3077,12 +3223,34 @@ internal sealed partial class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// Scene Building onion skin: composes each requested neighbouring frame of
+    /// the scene definition and tints it, matching the drawing-mode preview.
+    /// </summary>
+    private void RebuildSceneOnionSkinPreview()
+    {
+        var sceneDefinition = ActiveScene();
+        if (sceneDefinition is null || !sceneDefinition.HasOnionSkinPreviewEnabled)
+        {
+            if (_stage.OnionSkinScene is not null) _stage.BindOnionSkinScene(null);
+            return;
+        }
+
+        SceneCompositionBuilder.BuildSceneOnionSkin(
+            _sceneOnionSkinStage,
+            sceneDefinition,
+            _drawingObjects,
+            _frame,
+            _playbackSettings.Fps);
+        _stage.BindOnionSkinScene(_sceneOnionSkinStage.ObjectCount == 0 ? null : _sceneOnionSkinStage);
+    }
+
     private void SelectDrawingObject(int index)
     {
         if (index < 0 || index >= _drawingObjects.Count) return;
         if (!CommitTextEdit()) return;
         _activeDrawingObjectIndex = index;
-        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor) BindSceneEditStage(resetView: false);
+        if (IsSceneWorkspaceSelected) BindSceneEditStage(resetView: false);
         else BindActiveDrawingObjectScene(resetView: true);
         BuildDrawingObjectTabs();
         RefreshToolButtons();

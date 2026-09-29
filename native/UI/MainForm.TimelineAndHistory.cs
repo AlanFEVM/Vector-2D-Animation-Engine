@@ -240,6 +240,26 @@ internal sealed partial class MainForm : Form
             or Keys.F7;
     }
 
+    private bool AllowsTimelineCellsInCurrentWorkspace(IReadOnlyList<TimelineFrameCell> cells)
+    {
+        if (!IsShotDirectorContext()) return true;
+        if (cells.Count == 0 || _timeline.Context is not SceneDefinition scene) return false;
+
+        return cells.All(cell =>
+        {
+            var track = scene.Timeline.FindTrack(cell.TrackId);
+            return track is not null && scene.FindShot(track.TargetId) is not null;
+        });
+    }
+
+    private bool AllowsActiveTimelineTrackInCurrentWorkspace()
+    {
+        if (!IsShotDirectorContext()) return true;
+        if (_timeline.Context is not SceneDefinition scene) return false;
+        var track = scene.Timeline.FindTrack(_timeline.ActiveTrackId ?? "");
+        return track is not null && scene.FindShot(track.TargetId) is not null;
+    }
+
     private bool HandleTimelineShortcut(Keys keyData)
     {
         switch (keyData)
@@ -264,16 +284,21 @@ internal sealed partial class MainForm : Form
                 SetFrame(_playbackSettings.EndFrame);
                 return true;
             case Keys.F5:
+                if (!AllowsActiveTimelineTrackInCurrentWorkspace()) return false;
                 return ExecuteTimelineEdit(
                     TimelineEditKind.InsertFrame,
                     movePlayheadToInsertedFrame: true);
             case Keys.Shift | Keys.F5:
+                if (!AllowsActiveTimelineTrackInCurrentWorkspace()) return false;
                 return ExecuteTimelineEdit(TimelineEditKind.RemoveFrame);
             case Keys.F6:
+                if (!AllowsActiveTimelineTrackInCurrentWorkspace()) return false;
                 return ExecuteTimelineEdit(TimelineEditKind.InsertKeyframe);
             case Keys.Shift | Keys.F6:
+                if (!AllowsActiveTimelineTrackInCurrentWorkspace()) return false;
                 return ExecuteTimelineEdit(TimelineEditKind.ClearKeyframe);
             case Keys.F7:
+                if (!AllowsActiveTimelineTrackInCurrentWorkspace()) return false;
                 return ExecuteTimelineEdit(TimelineEditKind.InsertBlankKeyframe);
             default:
                 return false;
@@ -314,6 +339,7 @@ internal sealed partial class MainForm : Form
             cells = [new TimelineFrameCell(_timeline.ActiveTrackId, _frame)];
         }
         if (cells.Length == 0) return false;
+        if (!AllowsTimelineCellsInCurrentWorkspace(cells)) return false;
 
         var preservedInstanceSelectionIds = edit == TimelineEditKind.InsertKeyframe
             ? _selectedSceneInstanceIds.ToArray()
@@ -325,6 +351,8 @@ internal sealed partial class MainForm : Form
             && edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe;
         var singleKeyframeInsertionBeyondTrackEnd = singleKeyframeInsertion
             && TimelineCellIsBeyondTrackEnd(timeline, cells[0]);
+        var singleKeyframeInsertionAtTrackEnd = singleKeyframeInsertion
+            && TimelineCellIsAtTrackEnd(timeline, cells[0]);
         var advanceSingleKeyframeInsertion = singleKeyframeInsertion
             && TimelineKeyframeInsertionShouldAdvance(timeline, cells[0])
             && !IsSceneLightTweenInterior(context, timeline, cells[0]);
@@ -348,9 +376,12 @@ internal sealed partial class MainForm : Form
         var sceneDefinition = context as SceneDefinition;
         var hasSceneMaskCells = sceneDefinition is not null
             && cells.Any(cell => IsSceneMaskTrack(sceneDefinition, timeline.FindTrack(cell.TrackId)));
+        var hasSceneShotCells = sceneDefinition is not null
+            && cells.Any(cell => sceneDefinition.FindShot(timeline.FindTrack(cell.TrackId)?.TargetId) is not null);
         var sceneSnapshot = sceneDefinition is null ? null : timeline.CreateSnapshot();
         var sceneLightSnapshot = sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
         var sceneLayerSnapshot = hasSceneMaskCells ? sceneDefinition!.CreateLayerSnapshot() : null;
+        var sceneShotSnapshot = hasSceneShotCells ? sceneDefinition!.CreateShotSnapshot() : null;
         var changed = false;
         var refreshCurrentComposition = edit != TimelineEditKind.InsertFrame;
 
@@ -472,7 +503,8 @@ internal sealed partial class MainForm : Form
                 layerSnapshot: sceneLayerSnapshot,
                 playheadFrame: undoPlayheadFrame,
                 timelineSelection: previousTimelineSelection,
-                lightSnapshot: sceneLightSnapshot);
+                lightSnapshot: sceneLightSnapshot,
+                shotSnapshot: sceneShotSnapshot);
         }
 
         if (!advanceSingleKeyframeInsertion
@@ -482,7 +514,9 @@ internal sealed partial class MainForm : Form
                 context,
                 timeline,
                 cells,
-                trailingFrames: singleKeyframeInsertionBeyondTrackEnd ? 0 : 1);
+                trailingFrames: singleKeyframeInsertionBeyondTrackEnd || singleKeyframeInsertionAtTrackEnd
+                    ? 0
+                    : 1);
         }
 
         var insertedFrameDestination = movePlayheadToInsertedFrame && edit == TimelineEditKind.InsertFrame
@@ -557,6 +591,14 @@ internal sealed partial class MainForm : Form
     {
         var track = timeline.FindTrack(cell.TrackId);
         return track is not null && cell.Frame >= track.Duration;
+    }
+
+    internal static bool TimelineCellIsAtTrackEnd(AnimationTimeline timeline, TimelineFrameCell cell)
+    {
+        var track = timeline.FindTrack(cell.TrackId);
+        return track is not null
+            && track.Duration > 0
+            && cell.Frame == track.Duration - 1;
     }
 
     internal static TimelineFrameCell ResolveTimelineKeyframeInsertionCell(
@@ -636,6 +678,14 @@ internal sealed partial class MainForm : Form
                 : lightSceneDefinition.RemoveLightTimelineFrame(track.TargetId, frame, count);
         }
 
+        if (context is SceneDefinition shotSceneDefinition
+            && shotSceneDefinition.FindShot(track.TargetId) is not null)
+        {
+            return edit == TimelineEditKind.InsertFrame
+                ? shotSceneDefinition.InsertShotTimelineFrame(track.TargetId, frame, count)
+                : shotSceneDefinition.RemoveShotTimelineFrame(track.TargetId, frame, count);
+        }
+
         if (context is SceneDefinition sceneDefinition
             && IsSceneMaskTrack(sceneDefinition, track))
         {
@@ -690,6 +740,21 @@ internal sealed partial class MainForm : Form
     {
         bool changed;
         TimelineKeyframeKind? insertedSceneKeyframeKind = null;
+        if (context is SceneDefinition shotSceneDefinition
+            && shotSceneDefinition.FindShot(track.TargetId) is not null)
+        {
+            return edit switch
+            {
+                TimelineEditKind.InsertKeyframe =>
+                    shotSceneDefinition.InsertShotTimelineKeyframe(track.TargetId, frame),
+                TimelineEditKind.InsertBlankKeyframe =>
+                    shotSceneDefinition.InsertShotTimelineBlankKeyframe(track.TargetId, frame),
+                TimelineEditKind.ClearKeyframe =>
+                    shotSceneDefinition.ClearShotTimelineKeyframe(track.TargetId, frame),
+                _ => false
+            };
+        }
+
         if (context is SceneDefinition lightSceneDefinition
             && lightSceneDefinition.FindLight(track.TargetId) is not null)
         {
@@ -864,6 +929,7 @@ internal sealed partial class MainForm : Form
         StopPlayback();
         ClearSelection();
         _timeline.RefreshTimeline();
+        RefreshShotDirector(force: true);
         var frameRefreshed = ApplyBoundTimelineDuration(
             previousLastFrame,
             refreshClampedFrame: finalPlayheadFrame is null);
@@ -903,6 +969,8 @@ internal sealed partial class MainForm : Form
 
     private void HandleTimelineCommand(TimelineCommand command, IReadOnlyList<TimelineFrameCell> cells)
     {
+        if (!AllowsTimelineCellsInCurrentWorkspace(cells)) return;
+
         switch (command)
         {
             case TimelineCommand.CopyFrames:
@@ -943,6 +1011,8 @@ internal sealed partial class MainForm : Form
 
     private bool ExecuteRemoveTimelineTween(IReadOnlyList<TimelineFrameCell> requestedCells)
     {
+        if (!AllowsTimelineCellsInCurrentWorkspace(requestedCells)) return false;
+
         var context = _timeline.Context;
         var sceneDefinition = context as SceneDefinition;
         var drawingScene = context switch
@@ -960,7 +1030,8 @@ internal sealed partial class MainForm : Form
         if (drawingScene is not null && (uint)layer >= drawingScene.LayerCount
             || sceneDefinition is not null
                 && sceneDefinition.FindLayer(track.TargetId)?.Kind != SceneLayerKind.Content
-                && sceneDefinition.FindLight(track.TargetId) is null)
+                && sceneDefinition.FindLight(track.TargetId) is null
+                && sceneDefinition.FindShot(track.TargetId) is null)
         {
             return false;
         }
@@ -971,6 +1042,10 @@ internal sealed partial class MainForm : Form
         var drawingSnapshot = drawingScene?.CreateSnapshot();
         var sceneTimelineSnapshot = sceneDefinition?.Timeline.CreateSnapshot();
         var sceneLightSnapshot = sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
+        var sceneShotSnapshot = sceneDefinition is not null
+            && sceneDefinition.FindShot(track.TargetId) is not null
+                ? sceneDefinition.CreateShotSnapshot()
+                : null;
         var removed = sceneDefinition is not null
             ? sceneDefinition.RemoveTimelineTween(track.TargetId, selection.StartFrame, selection.EndFrame)
             : contextDrawingObject is not null
@@ -988,7 +1063,8 @@ internal sealed partial class MainForm : Form
                 sceneTimelineSnapshot,
                 playheadFrame: _frame,
                 timelineSelection: timelineSelection,
-                lightSnapshot: sceneLightSnapshot);
+                lightSnapshot: sceneLightSnapshot,
+                shotSnapshot: sceneShotSnapshot);
         }
         else if (drawingSnapshot is not null)
         {
@@ -1012,6 +1088,8 @@ internal sealed partial class MainForm : Form
         IReadOnlyList<TimelineFrameCell> requestedCells,
         TimelineTweenKind kind)
     {
+        if (!AllowsTimelineCellsInCurrentWorkspace(requestedCells)) return false;
+
         var context = _timeline.Context;
         var sceneDefinition = context as SceneDefinition;
         var drawingScene = context switch
@@ -1039,7 +1117,8 @@ internal sealed partial class MainForm : Form
                 || !VectorScene.SupportsTimelineTweenLayer(drawingScene.GetLayerKind(layer), kind))
             || sceneDefinition is not null
                 && sceneDefinition.FindLayer(track.TargetId)?.Kind != SceneLayerKind.Content
-                && sceneDefinition.FindLight(track.TargetId) is null)
+                && sceneDefinition.FindLight(track.TargetId) is null
+                && sceneDefinition.FindShot(track.TargetId) is null)
         {
             return false;
         }
@@ -1060,6 +1139,7 @@ internal sealed partial class MainForm : Form
         var sceneTimelineSnapshot = sceneDefinition?.Timeline.CreateSnapshot();
         var sceneInstanceSnapshot = sceneDefinition?.CreateInstanceSnapshot();
         var sceneLightSnapshot = sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
+        var sceneShotSnapshot = sceneDefinition?.CreateShotSnapshot();
         var selection = _timeline.CaptureSelectionSnapshot();
         string error;
         var created = sceneDefinition is not null
@@ -1089,7 +1169,8 @@ internal sealed partial class MainForm : Form
                 instanceSnapshot: sceneInstanceSnapshot,
                 playheadFrame: _frame,
                 timelineSelection: selection,
-                lightSnapshot: sceneLightSnapshot);
+                lightSnapshot: sceneLightSnapshot,
+                shotSnapshot: sceneShotSnapshot);
         }
         else if (drawingSnapshot is not null)
         {
@@ -1127,6 +1208,10 @@ internal sealed partial class MainForm : Form
     private void RefreshTweenCurveInspector()
     {
         var resolved = TryResolveSelectedTimelineTween(out var target);
+        var shotTween = resolved
+            && _workspaceTabs.SelectedView == WorkspaceView.ShotDirector
+            && target.SceneDefinition is not null
+            && target.SceneDefinition.FindShot(target.Track.TargetId) is not null;
         var sceneTween = resolved
             && _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
             && target.SceneDefinition is not null
@@ -1134,12 +1219,25 @@ internal sealed partial class MainForm : Form
         var drawingTween = resolved
             && _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
             && target.DrawingScene is not null;
-        var visible = sceneTween || drawingTween;
+        var visible = shotTween || sceneTween || drawingTween;
         var visibilityChanged = _tweenCurveEditorPanel.Visible != visible;
         var previousParent = _tweenCurveEditorPanel.Parent;
+        if (shotTween)
+        {
+            _shotDirectorPanel.AttachTweenCurveEditor(_tweenCurveEditorPanel);
+        }
+        else
+        {
+            _shotDirectorPanel.DetachTweenCurveEditor(_tweenCurveEditorPanel);
+        }
+
         var targetParent = sceneTween ? _sceneEditPage.Content : _basicInspectorPage.Content;
-        var parentChanged = visible && !ReferenceEquals(previousParent, targetParent);
-        if (parentChanged) targetParent.Controls.Add(_tweenCurveEditorPanel);
+        var parentChanged = visible && !shotTween && !ReferenceEquals(previousParent, targetParent);
+        if (parentChanged)
+        {
+            _tweenCurveEditorPanel.Dock = DockStyle.Top;
+            targetParent.Controls.Add(_tweenCurveEditorPanel);
+        }
         if (!visible)
         {
             if (_tweenCurveEditorPanel.Visible) _tweenCurveEditorPanel.Visible = false;
@@ -1149,14 +1247,16 @@ internal sealed partial class MainForm : Form
         {
             _tweenCurveEditorPanel.SetTween(target.Selection, target.Tween);
             _tweenCurveEditorPanel.Visible = true;
-            if (sceneTween) ArrangeSceneInspectorSections();
+            if (shotTween) _shotDirectorPanel.PerformLayout();
+            else if (sceneTween) ArrangeSceneInspectorSections();
             else ArrangeBasicDrawingInspectorPanels();
         }
 
         if (!visibilityChanged && !parentChanged) return;
         if (ReferenceEquals(previousParent, _basicInspectorPage.Content)) _basicInspectorPage.Content.PerformLayout();
         if (ReferenceEquals(previousParent, _sceneEditPage.Content)) _sceneEditPage.Content.PerformLayout();
-        targetParent.PerformLayout();
+        if (shotTween) _shotDirectorPanel.PerformLayout();
+        else targetParent.PerformLayout();
     }
 
     private bool TryResolveSelectedTimelineTween(out TweenCurveEditTarget target)
@@ -1185,11 +1285,13 @@ internal sealed partial class MainForm : Form
 
         var track = context.Timeline.FindTrack(selected.TrackId);
         if (track is null) return false;
+        if (IsShotDirectorContext() && sceneDefinition?.FindShot(track.TargetId) is null) return false;
         var layer = drawingScene is null ? -1 : Array.IndexOf(drawingScene.LayerIds, track.TargetId);
         if (drawingScene is not null && (uint)layer >= drawingScene.LayerCount
             || sceneDefinition is not null
                 && sceneDefinition.FindLayer(track.TargetId)?.Kind != SceneLayerKind.Content
-                && sceneDefinition.FindLight(track.TargetId) is null)
+                && sceneDefinition.FindLight(track.TargetId) is null
+                && sceneDefinition.FindShot(track.TargetId) is null)
         {
             return false;
         }
@@ -1222,7 +1324,11 @@ internal sealed partial class MainForm : Form
             SceneTimelineSnapshot = target.SceneDefinition?.Timeline.CreateSnapshot(),
             InstanceSnapshot = target.DrawingObject?.CreateInstanceSnapshot()
                 ?? target.SceneDefinition?.CreateInstanceSnapshot(),
-            LightSnapshot = target.SceneDefinition?.Lights.Select(light => light.Clone()).ToArray()
+            LightSnapshot = target.SceneDefinition?.Lights.Select(light => light.Clone()).ToArray(),
+            ShotSnapshot = target.SceneDefinition is { } scene
+                && scene.FindShot(target.Track.TargetId) is not null
+                    ? scene.CreateShotSnapshot()
+                    : null
         };
     }
 
@@ -1283,7 +1389,8 @@ internal sealed partial class MainForm : Form
                 instanceSnapshot: session.InstanceSnapshot,
                 playheadFrame: _frame,
                 timelineSelection: session.TimelineSelection,
-                lightSnapshot: session.LightSnapshot);
+                lightSnapshot: session.LightSnapshot,
+                shotSnapshot: session.ShotSnapshot);
         }
         else if (session.Changed)
         {
@@ -1312,6 +1419,10 @@ internal sealed partial class MainForm : Form
             if (session.LightSnapshot is not null)
             {
                 sceneDefinition.RestoreLights(session.LightSnapshot, lightsWerePresent: true);
+            }
+            if (session.ShotSnapshot is not null)
+            {
+                sceneDefinition.RestoreShotSnapshot(session.ShotSnapshot);
             }
             if (session.InstanceSnapshot is not null)
             {
@@ -1353,6 +1464,7 @@ internal sealed partial class MainForm : Form
             .Where(cell => cell.Frame >= 0 && timeline.FindTrack(cell.TrackId) is not null)
             .Distinct()
             .ToArray();
+        if (!AllowsTimelineCellsInCurrentWorkspace(cells)) return false;
         if (!TimelineStrip.CanReverseFrameSelection(cells)) return false;
 
         var previousClipboard = _timelineClipboard;
@@ -1405,6 +1517,12 @@ internal sealed partial class MainForm : Form
             .Select(group => group.First())
             .ToArray();
         if (pairs.Length == 0) return false;
+        if (IsShotDirectorContext()
+            && (!AllowsTimelineCellsInCurrentWorkspace(pairs.Select(pair => pair.Source).ToArray())
+                || !AllowsTimelineCellsInCurrentWorkspace(pairs.Select(pair => pair.Destination).ToArray())))
+        {
+            return false;
+        }
 
         var sourceCells = pairs
             .Select(pair => pair.Source)
@@ -1605,7 +1723,6 @@ internal sealed partial class MainForm : Form
             }
         }
 
-        _timeline.RefreshTimeline();
         _timeline.RestoreSelectionSnapshot(state.TimelineSelection);
         if (context is SceneDefinition) RebuildSceneComposition();
         else if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
@@ -1659,6 +1776,7 @@ internal sealed partial class MainForm : Form
             cells = [new TimelineFrameCell(_timeline.ActiveTrackId, _frame)];
         }
         if (cells.Length == 0) return false;
+        if (!AllowsTimelineCellsInCurrentWorkspace(cells)) return false;
 
         var drawingScene = context switch
         {
@@ -1773,6 +1891,7 @@ internal sealed partial class MainForm : Form
         var destinationCells = (requestedCells ?? _timeline.SelectedFrameCells)
             .Where(cell => timeline.FindTrack(cell.TrackId) is not null)
             .ToArray();
+        if (!AllowsTimelineCellsInCurrentWorkspace(destinationCells)) return false;
         var anchorTrack = destinationCells.Length > 0
             ? destinationCells.Min(cell => TrackIndex(timeline, cell.TrackId))
             : TrackIndex(timeline, _timeline.ActiveTrackId);
@@ -2028,6 +2147,7 @@ internal sealed partial class MainForm : Form
 
     private void MoveTimelineLayerOutOfMask()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         context.SynchronizeTimelineTracks();
         var track = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "");
@@ -2072,6 +2192,7 @@ internal sealed partial class MainForm : Form
         TimelineLayerDropPlacement placement,
         bool moveOutOfMask = false)
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         context.SynchronizeTimelineTracks();
         var track = context.Timeline.FindTrack(trackId);
@@ -2281,6 +2402,7 @@ internal sealed partial class MainForm : Form
 
     private void ApplySelectedLayerBlendMode(LayerBlendMode blendMode)
     {
+        if (IsShotDirectorContext()) return;
         if (!Enum.IsDefined(blendMode)) return;
         var context = _timeline.Context;
         var targetIds = SelectedTimelineLayerTargetIds();
@@ -2348,6 +2470,7 @@ internal sealed partial class MainForm : Form
 
     private void RemoveTimelineLayers()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var targetIds = SelectedTimelineLayerTargetIds();
         if (targetIds.Count == 0) return;
@@ -2438,6 +2561,7 @@ internal sealed partial class MainForm : Form
 
     private void ChooseTimelineLayerColor()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var targetIds = SelectedTimelineLayerTargetIds();
         if (targetIds.Count == 0) return;
@@ -2533,6 +2657,7 @@ internal sealed partial class MainForm : Form
 
     private void RenameTimelineLayer()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var track = context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "");
         if (track is null) return;
@@ -2573,6 +2698,7 @@ internal sealed partial class MainForm : Form
 
     private void ToggleTimelineLayerLock()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var drawingScene = context switch
         {
@@ -2610,6 +2736,7 @@ internal sealed partial class MainForm : Form
 
     private void ToggleAllTimelineLayerVisibility()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var drawingScene = context switch
         {
@@ -2667,6 +2794,7 @@ internal sealed partial class MainForm : Form
 
     private void ToggleAllTimelineLayerLocks()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var drawingScene = context switch
         {
@@ -2696,11 +2824,13 @@ internal sealed partial class MainForm : Form
 
     private void ToggleTimelineLayerOutline()
     {
+        if (IsShotDirectorContext()) return;
         SetTimelineLayerOutline(SelectedTimelineLayerTargetIds(), outline: null);
     }
 
     private void ToggleAllTimelineLayerOutlines()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var targetIds = context switch
         {
@@ -2773,18 +2903,32 @@ internal sealed partial class MainForm : Form
         RefreshTimelineLayerDisplay(context);
     }
 
+    private VectorScene? TimelineOnionSkinDrawingScene() => _timeline.Context switch
+    {
+        VectorScene vectorScene => vectorScene,
+        DrawingObjectDefinition drawingObject => drawingObject.Scene,
+        _ => null
+    };
+
     private void ToggleTimelineOnionSkin()
     {
-        var drawingScene = _timeline.Context switch
+        if (TimelineOnionSkinDrawingScene() is { } drawingScene)
         {
-            VectorScene vectorScene => vectorScene,
-            DrawingObjectDefinition drawingObject => drawingObject.Scene,
-            _ => null
-        };
-        if (drawingScene is null) return;
-        var snapshot = drawingScene.CreateSnapshot();
-        if (!drawingScene.ToggleOnionSkin()) return;
-        PushUndoSnapshot(snapshot);
+            var snapshot = drawingScene.CreateSnapshot();
+            if (!drawingScene.ToggleOnionSkin()) return;
+            PushUndoSnapshot(snapshot);
+        }
+        else if (_timeline.Context is SceneDefinition sceneDefinition)
+        {
+            var previousState = sceneDefinition.CreateOnionSkinState();
+            if (!sceneDefinition.ToggleOnionSkin()) return;
+            PushSceneOnionSkinUndo(sceneDefinition, previousState);
+        }
+        else
+        {
+            return;
+        }
+
         RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
         _stage.Invalidate();
@@ -2792,25 +2936,50 @@ internal sealed partial class MainForm : Form
 
     private void SetTimelineOnionSkinRange(int previousFrames, int nextFrames)
     {
-        var drawingScene = _timeline.Context switch
+        if (TimelineOnionSkinDrawingScene() is { } drawingScene)
         {
-            VectorScene vectorScene => vectorScene,
-            DrawingObjectDefinition drawingObject => drawingObject.Scene,
-            _ => null
-        };
-        if (drawingScene is null) return;
+            var enableOnionSkin = !drawingScene.OnionSkinEnabled
+                && (previousFrames > 0 || nextFrames > 0);
+            var session = _onionSkinRangeEditSession;
+            var snapshot = session is null || !ReferenceEquals(session.Scene, drawingScene)
+                ? drawingScene.CreateSnapshot()
+                : null;
+            var rangeChanged = drawingScene.SetOnionSkinRange(previousFrames, nextFrames);
+            if (!rangeChanged && !enableOnionSkin) return;
+            if (enableOnionSkin) drawingScene.SetOnionSkinEnabled(true);
+            if (session is not null && ReferenceEquals(session.Scene, drawingScene)) session.Changed = true;
+            else if (snapshot is not null) PushUndoSnapshot(snapshot);
+        }
+        else if (_timeline.Context is SceneDefinition sceneDefinition)
+        {
+            var enableOnionSkin = !sceneDefinition.OnionSkinEnabled
+                && (previousFrames > 0 || nextFrames > 0);
+            var session = _sceneOnionSkinRangeEditSession;
+            var previousState = session is null || !ReferenceEquals(session.Scene, sceneDefinition)
+                ? sceneDefinition.CreateOnionSkinState()
+                : (SceneOnionSkinState?)null;
+            var rangeChanged = sceneDefinition.SetOnionSkinRange(previousFrames, nextFrames);
+            if (!rangeChanged && !enableOnionSkin) return;
+            if (enableOnionSkin) sceneDefinition.SetOnionSkinEnabled(true);
+            var rangeDragActive = session is not null && ReferenceEquals(session.Scene, sceneDefinition);
+            if (rangeDragActive) session!.Changed = true;
+            else if (previousState is { } state) PushSceneOnionSkinUndo(sceneDefinition, state);
 
-        var enableOnionSkin = !drawingScene.OnionSkinEnabled
-            && (previousFrames > 0 || nextFrames > 0);
-        var session = _onionSkinRangeEditSession;
-        var snapshot = session is null || !ReferenceEquals(session.Scene, drawingScene)
-            ? drawingScene.CreateSnapshot()
-            : null;
-        var rangeChanged = drawingScene.SetOnionSkinRange(previousFrames, nextFrames);
-        if (!rangeChanged && !enableOnionSkin) return;
-        if (enableOnionSkin) drawingScene.SetOnionSkinEnabled(true);
-        if (session is not null && ReferenceEquals(session.Scene, drawingScene)) session.Changed = true;
-        else if (snapshot is not null) PushUndoSnapshot(snapshot);
+            // A scene preview re-composes every neighbouring frame, so while the
+            // range handle is being dragged only the handles and headers follow;
+            // completing the drag rebuilds the preview once.
+            if (rangeDragActive)
+            {
+                _timeline.RefreshOnionSkinControls();
+                _stage.Invalidate();
+                return;
+            }
+        }
+        else
+        {
+            return;
+        }
+
         RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
         _stage.Invalidate();
@@ -2818,19 +2987,23 @@ internal sealed partial class MainForm : Form
 
     private void BeginTimelineOnionSkinRangeEdit()
     {
-        if (_onionSkinRangeEditSession is not null) return;
-        var drawingScene = _timeline.Context switch
+        if (TimelineOnionSkinDrawingScene() is { } drawingScene)
         {
-            VectorScene vectorScene => vectorScene,
-            DrawingObjectDefinition drawingObject => drawingObject.Scene,
-            _ => null
-        };
-        if (drawingScene is null) return;
+            if (_onionSkinRangeEditSession is not null) return;
+            _onionSkinRangeEditSession = new OnionSkinRangeEditSession
+            {
+                Scene = drawingScene,
+                Snapshot = drawingScene.CreateSnapshot()
+            };
+            return;
+        }
 
-        _onionSkinRangeEditSession = new OnionSkinRangeEditSession
+        if (_sceneOnionSkinRangeEditSession is not null) return;
+        if (_timeline.Context is not SceneDefinition sceneDefinition) return;
+        _sceneOnionSkinRangeEditSession = new SceneOnionSkinRangeEditSession
         {
-            Scene = drawingScene,
-            Snapshot = drawingScene.CreateSnapshot()
+            Scene = sceneDefinition,
+            Snapshot = sceneDefinition.CreateOnionSkinState()
         };
     }
 
@@ -2839,15 +3012,34 @@ internal sealed partial class MainForm : Form
         var session = _onionSkinRangeEditSession;
         _onionSkinRangeEditSession = null;
         if (session is not null && session.Changed) PushUndoSnapshot(session.Snapshot);
+
+        var sceneSession = _sceneOnionSkinRangeEditSession;
+        _sceneOnionSkinRangeEditSession = null;
+        if (sceneSession is not null && sceneSession.Changed)
+        {
+            PushSceneOnionSkinUndo(sceneSession.Scene, sceneSession.Snapshot);
+            RebuildOnionSkinPreview();
+            _stage.Invalidate();
+        }
     }
 
     private void CancelTimelineOnionSkinRangeEdit()
     {
         var session = _onionSkinRangeEditSession;
         _onionSkinRangeEditSession = null;
-        if (session is null || !session.Changed) return;
+        if (session is not null && session.Changed)
+        {
+            session.Scene.RestoreSnapshot(session.Snapshot);
+            RebuildOnionSkinPreview();
+            _timeline.RefreshOnionSkinControls();
+            _stage.Invalidate();
+        }
 
-        session.Scene.RestoreSnapshot(session.Snapshot);
+        var sceneSession = _sceneOnionSkinRangeEditSession;
+        _sceneOnionSkinRangeEditSession = null;
+        if (sceneSession is null || !sceneSession.Changed) return;
+
+        sceneSession.Scene.RestoreOnionSkinState(sceneSession.Snapshot);
         RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
         _stage.Invalidate();
@@ -2940,6 +3132,7 @@ internal sealed partial class MainForm : Form
 
     private void AddTimelineLayer()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         if (context.Timeline.ActiveTabGroupId == AnimationTimeline.TerrainTabGroupId
             && CanOfferRandomFractureCollisionTerrain())
@@ -2971,9 +3164,16 @@ internal sealed partial class MainForm : Form
         if (context is not SceneDefinition sceneDefinition) return;
         var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
         var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
+        var shotSnapshot = sceneDefinition.CreateShotSnapshot();
         if (!_project.TryAddSceneLayer(sceneDefinition.Id, out _)) return;
 
-        PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot);
+        // A layer created while a shot is active joins that shot, inside the same undo entry.
+        AssignActiveLayerToActiveShot(sceneDefinition);
+        PushSceneTimelineUndo(
+            sceneDefinition,
+            timelineSnapshot,
+            layerSnapshot,
+            shotSnapshot: shotSnapshot);
         _timeline.RefreshTimeline();
         _timeline.SelectModelActiveTrack();
         RebuildSceneComposition();
@@ -2983,6 +3183,7 @@ internal sealed partial class MainForm : Form
 
     private void AddTimelineFolderLayer()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var drawingScene = context switch
         {
@@ -3005,6 +3206,7 @@ internal sealed partial class MainForm : Form
 
     private void AddTimelineMaskLayer()
     {
+        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
         var drawingScene = context switch
         {
@@ -3038,6 +3240,7 @@ internal sealed partial class MainForm : Form
 
         var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
         var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
+        var shotSnapshot = sceneDefinition.CreateShotSnapshot();
         var timelineSelection = _timeline.CaptureSelectionSnapshot();
         if (!_project.TryAddSceneMaskLayer(
                 sceneDefinition.Id,
@@ -3048,12 +3251,14 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        AssignActiveLayerToActiveShot(sceneDefinition);
         PushSceneTimelineUndo(
             sceneDefinition,
             timelineSnapshot,
             layerSnapshot,
             playheadFrame: _frame,
-            timelineSelection: timelineSelection);
+            timelineSelection: timelineSelection,
+            shotSnapshot: shotSnapshot);
         _timeline.RefreshTimeline();
         _timeline.SelectModelActiveTrack();
         if (!ReferenceEquals(_scene, maskScene)) HandleSceneLayerEditingContextChanged();
@@ -3151,7 +3356,7 @@ internal sealed partial class MainForm : Form
 
     private void ToggleActiveSceneProjection()
     {
-        if (_workspaceTabs.SelectedView != WorkspaceView.SceneEditor || !IsSceneCompositionContext()) return;
+        if (!IsSceneWorkspaceSelected || !IsSceneCompositionContext()) return;
         var scene = ActiveScene();
         if (scene is null) return;
         scene.Camera.Projection = scene.Camera.Projection == CameraProjection.Perspective
@@ -3678,7 +3883,8 @@ internal sealed partial class MainForm : Form
         TimelineSelectionSnapshot? timelineSelection = null,
         string? createdDrawingObjectId = null,
         SceneLightDefinition[]? lightSnapshot = null,
-        string? selectedLightId = null)
+        string? selectedLightId = null,
+        SceneShotSnapshot[]? shotSnapshot = null)
     {
         MarkProjectDirty();
         PruneUndoSequenceEntries();
@@ -3691,7 +3897,8 @@ internal sealed partial class MainForm : Form
             timelineSelection,
             createdDrawingObjectId,
             lightSnapshot,
-            selectedLightId ?? (lightSnapshot is null ? null : _selectedSceneLightId));
+            selectedLightId ?? (lightSnapshot is null ? null : _selectedSceneLightId),
+            ShotSnapshot: shotSnapshot);
         _sceneTimelineUndoStack.Push(entry);
         RecordUndoSequence(entry);
         while (_sceneTimelineUndoStack.Count > MaxUndoSnapshots)
@@ -3700,6 +3907,26 @@ internal sealed partial class MainForm : Form
             _sceneTimelineUndoStack.Clear();
             foreach (var item in snapshots) _sceneTimelineUndoStack.Push(item);
         }
+        PruneUndoSequenceEntries();
+    }
+
+    private void PushSceneOnionSkinUndo(SceneDefinition scene, SceneOnionSkinState previousState)
+    {
+        MarkProjectDirty();
+        PruneUndoSequenceEntries();
+        var entry = new SceneTimelineUndoEntry(
+            scene,
+            scene.Timeline.CreateSnapshot(),
+            OnionSkinState: previousState);
+        _sceneTimelineUndoStack.Push(entry);
+        RecordUndoSequence(entry);
+        while (_sceneTimelineUndoStack.Count > MaxUndoSnapshots)
+        {
+            var snapshots = _sceneTimelineUndoStack.Take(MaxUndoSnapshots).Reverse().ToArray();
+            _sceneTimelineUndoStack.Clear();
+            foreach (var item in snapshots) _sceneTimelineUndoStack.Push(item);
+        }
+
         PruneUndoSequenceEntries();
     }
 
@@ -3778,6 +4005,15 @@ internal sealed partial class MainForm : Form
                 activeScene.RestoreLights(sceneUndo.LightSnapshot, lightsWerePresent: true);
                 _selectedSceneLightId = sceneUndo.SelectedLightId ?? string.Empty;
             }
+            if (sceneUndo.OnionSkinState is { } onionSkinState)
+            {
+                activeScene.RestoreOnionSkinState(onionSkinState);
+            }
+            if (sceneUndo.ShotSnapshot is not null)
+            {
+                activeScene.RestoreShotSnapshot(sceneUndo.ShotSnapshot);
+                _shotDirectorFingerprint = int.MinValue;
+            }
             activeScene.Timeline.RestoreSnapshot(sceneUndo.Snapshot);
             activeScene.SynchronizeTimelineTracks();
             if (sceneUndo.CreatedDrawingObjectId is { Length: > 0 } createdDrawingObjectId
@@ -3796,6 +4032,8 @@ internal sealed partial class MainForm : Form
                 }
             }
             _timeline.RefreshTimeline();
+            RefreshShotDirector();
+            RebuildOnionSkinPreview();
             ApplyBoundTimelineDuration(previousLastFrame, refreshClampedFrame: false);
             SetFrame(sceneUndo.PlayheadFrame ?? _frame);
             ClearSelection();
@@ -3858,11 +4096,13 @@ internal sealed partial class MainForm : Form
 
     private bool CutSelectedObjects()
     {
+        if (IsShotDirectorContext()) return false;
         return CopySelectedObjects() && DeleteSelectedObject();
     }
 
     private bool CopySelectedObjects()
     {
+        if (IsShotDirectorContext()) return false;
         var selectedInstances = SelectedSceneInstances();
         var targets = _selectedObjects
             .Where(index => index >= 0 && index < _scene.ObjectCount && _scene.IsObjectActive(index, _frame))
@@ -3957,6 +4197,7 @@ internal sealed partial class MainForm : Form
 
     private bool PasteCopiedObjects()
     {
+        if (IsShotDirectorContext()) return false;
         if (IsSceneCompositionContext()) return PasteCopiedSceneInstances();
         if (DrawingToolsBlocked()) return false;
         if (_clipboardObjects.Count == 0 && _clipboardDrawingObjectInstances.Count == 0) return false;
@@ -4229,6 +4470,7 @@ internal sealed partial class MainForm : Form
 
     private bool PasteCopiedSceneInstances()
     {
+        if (IsShotDirectorContext()) return false;
         var scene = ActiveScene();
         if (scene is null || _clipboardDrawingObjectInstances.Count == 0) return false;
 
@@ -4295,7 +4537,7 @@ internal sealed partial class MainForm : Form
 
     private bool MoveSelectedDrawingObjectsInStack(int direction)
     {
-        if (direction == 0) return false;
+        if (IsShotDirectorContext() || direction == 0) return false;
         if (IsSceneCompositionContext()) return MoveSelectedSceneInstancesInStack(direction);
         if (DrawingToolsBlocked()) return false;
         if (SelectedSceneInstances().Count > 0)
@@ -4384,7 +4626,13 @@ internal sealed partial class MainForm : Form
 
     private bool MoveSelectedSceneInstancesInStack(int direction)
     {
-        if (!IsSceneCompositionContext() || IsScene3DView() || direction == 0) return false;
+        if (IsShotDirectorContext()
+            || !IsSceneCompositionContext()
+            || IsScene3DView()
+            || direction == 0)
+        {
+            return false;
+        }
         var scene = ActiveScene();
         var instanceIds = SelectedSceneInstances().Select(instance => instance.Id).ToArray();
         if (scene is null

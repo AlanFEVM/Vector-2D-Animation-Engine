@@ -1040,11 +1040,23 @@ internal sealed partial class Direct2DStageRenderer
         ClearReference3DPlaybackPresentedBitmap();
     }
 
+    private bool RejectReference3DPlaybackRasterPreparation(StageControl stage)
+    {
+        if (stage.Reference3DGpuOpticsEnabled
+            && (LastGpuOpticalSurfaceCount > 0 || LastGpuOpticsBypassedSurfaces > 0))
+        {
+            LastReference3DCpuRasterFallbackReason = "gpu_optics";
+            return true;
+        }
+        return false;
+    }
+
     private bool TryQueueReference3DPlaybackRaster(
         StageControl stage,
         out Reference3DPlaybackRasterRequestKey key)
     {
         key = default;
+        if (RejectReference3DPlaybackRasterPreparation(stage)) return false;
         var worker = _reference3DPlaybackRasterWorker;
         if (_reference3DPlaybackRasterFrame?.Matches(stage) == true) return true;
         if (worker is null)
@@ -1139,6 +1151,7 @@ internal sealed partial class Direct2DStageRenderer
             // CPU-raster telemetry is otherwise cumulative, which would make
             // the preloader add the same historical time once per frame.
             ResetReference3DCpuRasterMetrics();
+            if (RejectReference3DPlaybackRasterPreparation(stage)) return null;
             var renderItems = stage.GetReference3DSceneRenderItems();
             if (!TryPrepareReference3DCpuRasterCommands(
                     stage,
@@ -1176,10 +1189,27 @@ internal sealed partial class Direct2DStageRenderer
         }
     }
 
+    internal bool TryGetPreparedPlaybackRenderItems(
+        StageControl stage,
+        object? preparedRaster,
+        out Reference3DRenderItem[] renderItems)
+    {
+        if (preparedRaster is Reference3DPlaybackPreparedCommands prepared
+            && prepared.Matches(stage, CreateReference3DPlaybackViewKey(stage)))
+        {
+            renderItems = prepared.RenderItems;
+            return true;
+        }
+
+        renderItems = [];
+        return false;
+    }
+
     internal object? PrepareReference3DPlaybackRasterFrame(
         StageControl stage,
         object? preparedRaster)
     {
+        if (RejectReference3DPlaybackRasterPreparation(stage)) return null;
         if (preparedRaster is not Reference3DPlaybackPreparedCommands prepared
             || !prepared.Matches(stage, CreateReference3DPlaybackViewKey(stage)))
         {

@@ -205,20 +205,8 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
         try
         {
             using var batch = Timeline.BeginBatchUpdate();
-            for (var frame = startFrame + 1; frame < endFrame; frame++)
-            {
-                if (!Timeline.InsertKeyframe(track.Id, frame))
-                {
-                    throw new InvalidOperationException("The tween span could not create an intermediate keyframe.");
-                }
-
-                instance.SetStateAtFrame(
-                    frame,
-                    DrawingObjectInstanceDefinition.InterpolateState(
-                        source,
-                        target,
-                        (float)(frame - startFrame) / (endFrame - startFrame)));
-            }
+            InstanceTimelineMaterialization.InsertLinearFrames(
+                Timeline, track.Id, instance, startFrame, endFrame, source, target);
 
             if (!Timeline.TryCreateTween(track.Id, startFrame, endFrame, kind, out var validation))
             {
@@ -399,18 +387,7 @@ internal sealed class DrawingObjectDefinition : ICompositionDefinition
                     continue;
                 }
 
-                var instance = instances[0];
-                var source = instance.EvaluateState(tween.StartFrame);
-                var target = instance.EvaluateState(tween.EndFrame);
-                for (var frame = tween.StartFrame + 1; frame < tween.EndFrame; frame++)
-                {
-                    changed |= instance.SetStateAtFrame(
-                        frame,
-                        DrawingObjectInstanceDefinition.InterpolateState(
-                            source,
-                            target,
-                            tween.ProgressAt(frame)));
-                }
+                changed |= InstanceTimelineMaterialization.RefreshFrames(instances[0], tween);
             }
         }
 

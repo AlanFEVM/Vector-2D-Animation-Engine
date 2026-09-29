@@ -17,6 +17,7 @@ internal sealed class VectorSceneSnapshot
     public bool[] LayerVisible { get; init; } = [];
     public float[] LayerOpacity { get; init; } = [];
     public LayerBlendMode[] LayerBlendModes { get; init; } = [];
+    public Dictionary<string, SymbolFilters> LayerSymbolFilters { get; init; } = new();
     public int[] LayerColorArgb { get; init; } = [];
     public bool[] LayerOutline { get; init; } = [];
     public bool? OnionSkinEnabled { get; init; }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -13,22 +14,13 @@ internal readonly record struct ImportedSvgLoadResult(string Source, SizeF Intri
 
 internal readonly record struct ImportedSvgRasterKey(string ContentSha256, int PixelWidth, int PixelHeight);
 
-internal sealed class ImportedSvgRaster : IDisposable
+internal sealed class ImportedSvgRaster
 {
-    private GCHandle _pixelsHandle;
-
     public ImportedSvgRaster(ImportedSvgRasterKey key)
     {
         Key = key;
         Stride = checked(key.PixelWidth * 4);
         Pixels = new byte[checked(Stride * key.PixelHeight)];
-        _pixelsHandle = GCHandle.Alloc(Pixels, GCHandleType.Pinned);
-        Bitmap = new Bitmap(
-            key.PixelWidth,
-            key.PixelHeight,
-            Stride,
-            PixelFormat.Format32bppPArgb,
-            _pixelsHandle.AddrOfPinnedObject());
     }
 
     public ImportedSvgRasterKey Key { get; }
@@ -36,12 +28,45 @@ internal sealed class ImportedSvgRaster : IDisposable
     public int PixelHeight => Key.PixelHeight;
     public int Stride { get; }
     public byte[] Pixels { get; }
-    public Bitmap Bitmap { get; }
+
+    internal ImportedSvgBitmapLease AcquireBitmap() => new(this);
+}
+
+internal sealed class ImportedSvgBitmapLease : IDisposable
+{
+    private GCHandle _pixelsHandle;
+
+    internal ImportedSvgBitmapLease(ImportedSvgRaster raster)
+    {
+        _pixelsHandle = GCHandle.Alloc(raster.Pixels, GCHandleType.Pinned);
+        try
+        {
+            Bitmap = new Bitmap(
+                raster.PixelWidth,
+                raster.PixelHeight,
+                raster.Stride,
+                PixelFormat.Format32bppPArgb,
+                _pixelsHandle.AddrOfPinnedObject());
+        }
+        catch
+        {
+            _pixelsHandle.Free();
+            throw;
+        }
+    }
+
+    internal Bitmap Bitmap { get; }
 
     public void Dispose()
     {
-        Bitmap.Dispose();
-        if (_pixelsHandle.IsAllocated) _pixelsHandle.Free();
+        try
+        {
+            Bitmap.Dispose();
+        }
+        finally
+        {
+            if (_pixelsHandle.IsAllocated) _pixelsHandle.Free();
+        }
     }
 }
 
@@ -53,8 +78,10 @@ internal static class ImportedSvgRasterizer
     internal const int MaxRasterPixels = 16 * 1024 * 1024;
     private const int MaxXmlDepth = 256;
     private const string InstanceAppearanceNamespace = "urn:vector-animation-engine:instance-appearance";
-    private const int MaxRasterCacheEntries = 96;
-    private const long MaxRasterCacheBytes = 256L * 1024 * 1024;
+    // Animated assets often have hundreds of small content/size variants. Retain those
+    // within the byte budget instead of evicting them while most of it is still unused.
+    private const int MaxRasterCacheEntries = 1024;
+    private const long MaxRasterCacheBytes = 512L * 1024 * 1024;
     private const int RasterDimensionQuantum = 32;
 
     private static readonly UTF8Encoding StrictUtf8 = new(
@@ -65,6 +92,68 @@ internal static class ImportedSvgRasterizer
     private static readonly object CacheSync = new();
     private static long _rasterCacheBytes;
     private static long _useSequence;
+    private static long _descriptorLookupCount;
+    private static long _descriptorCreationCount;
+    private static long _rasterizeCallCount;
+    private static long _rasterCacheHitCount;
+    private static long _rasterCacheMissCount;
+    private static long _rasterCacheEvictionCount;
+    private static long _rasterCacheSameContentDifferentSizeMissCount;
+    private static long _rasterCacheNewContentMissCount;
+    private static long _rasterCacheLargerHitCount;
+    private static long _rasterizeElapsedTicks;
+
+    internal static long DescriptorLookupCount =>
+        Interlocked.Read(ref _descriptorLookupCount);
+
+    internal static long DescriptorCreationCount =>
+        Interlocked.Read(ref _descriptorCreationCount);
+
+    internal static long RasterizeCallCount =>
+        Interlocked.Read(ref _rasterizeCallCount);
+
+    internal static long RasterCacheHitCount =>
+        Interlocked.Read(ref _rasterCacheHitCount);
+
+    internal static long RasterCacheMissCount =>
+        Interlocked.Read(ref _rasterCacheMissCount);
+
+    internal static long RasterCacheEvictionCount =>
+        Interlocked.Read(ref _rasterCacheEvictionCount);
+
+    internal static long RasterCacheSameContentDifferentSizeMissCount =>
+        Interlocked.Read(ref _rasterCacheSameContentDifferentSizeMissCount);
+
+    internal static long RasterCacheNewContentMissCount =>
+        Interlocked.Read(ref _rasterCacheNewContentMissCount);
+
+    internal static long RasterCacheLargerHitCount =>
+        Interlocked.Read(ref _rasterCacheLargerHitCount);
+
+    internal static int RasterCacheEntryCount
+    {
+        get
+        {
+            lock (CacheSync)
+            {
+                return RasterCache.Count;
+            }
+        }
+    }
+
+    internal static long RasterCacheBytes
+    {
+        get
+        {
+            lock (CacheSync)
+            {
+                return _rasterCacheBytes;
+            }
+        }
+    }
+
+    internal static double RasterizeMilliseconds =>
+        Interlocked.Read(ref _rasterizeElapsedTicks) * 1000d / Stopwatch.Frequency;
 
     static ImportedSvgRasterizer()
     {
@@ -137,42 +226,99 @@ internal static class ImportedSvgRasterizer
             throw new ArgumentOutOfRangeException(nameof(requestedPixelWidth), "SVG raster dimensions must be finite and positive.");
         }
 
-        var descriptor = DescribeSource(source);
-        var size = QuantizeRasterSize(requestedPixelWidth, requestedPixelHeight);
-        var key = new ImportedSvgRasterKey(descriptor.ContentSha256, size.Width, size.Height);
-        lock (CacheSync)
+        Interlocked.Increment(ref _rasterizeCallCount);
+        var started = Stopwatch.GetTimestamp();
+        try
         {
-            if (RasterCache.TryGetValue(key, out var cached))
+            var descriptor = DescribeSource(source);
+            var size = QuantizeRasterSize(requestedPixelWidth, requestedPixelHeight);
+            var key = new ImportedSvgRasterKey(descriptor.ContentSha256, size.Width, size.Height);
+            lock (CacheSync)
             {
-                cached.LastUse = ++_useSequence;
-                return cached.Raster;
-            }
+                if (RasterCache.TryGetValue(key, out var cached))
+                {
+                    Interlocked.Increment(ref _rasterCacheHitCount);
+                    cached.LastUse = ++_useSequence;
+                    return cached.Raster;
+                }
 
-            var raster = new ImportedSvgRaster(key);
-            try
-            {
+                // A larger raster is safe to reuse because every bitmap caller uses the
+                // returned raster's actual dimensions for source rectangles and UV transforms.
+                CacheEntry? larger = null;
+                var sameContent = false;
+                foreach (var candidate in RasterCache.Values)
+                {
+                    if (!string.Equals(
+                            candidate.Raster.Key.ContentSha256,
+                            key.ContentSha256,
+                            StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    sameContent = true;
+                    if (candidate.Raster.PixelWidth < key.PixelWidth
+                        || candidate.Raster.PixelHeight < key.PixelHeight
+                        || !HasCompatibleRasterAspect(
+                            requestedPixelWidth,
+                            requestedPixelHeight,
+                            candidate.Raster.Key))
+                    {
+                        continue;
+                    }
+
+                    if (larger is null
+                        || IsSmallerRaster(candidate.Raster, larger.Raster))
+                    {
+                        larger = candidate;
+                    }
+                }
+
+                if (larger is not null)
+                {
+                    Interlocked.Increment(ref _rasterCacheHitCount);
+                    Interlocked.Increment(ref _rasterCacheLargerHitCount);
+                    larger.LastUse = ++_useSequence;
+                    return larger.Raster;
+                }
+
+                Interlocked.Increment(ref _rasterCacheMissCount);
+                if (sameContent)
+                {
+                    Interlocked.Increment(ref _rasterCacheSameContentDifferentSizeMissCount);
+                }
+                else
+                {
+                    Interlocked.Increment(ref _rasterCacheNewContentMissCount);
+                }
+
+                var raster = new ImportedSvgRaster(key);
                 if (!descriptor.Document.TryGetTarget(out var document))
                 {
                     document = ParseDocument(StrictUtf8.GetBytes(source));
                     descriptor.Document.SetTarget(document);
                 }
-                using var rendered = document.Draw(raster.PixelWidth, raster.PixelHeight);
-                using var graphics = Graphics.FromImage(raster.Bitmap);
-                graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
-                graphics.DrawImageUnscaled(rendered, 0, 0);
+                using (var rendered = document.Draw(raster.PixelWidth, raster.PixelHeight))
+                using (var bitmap = raster.AcquireBitmap())
+                using (var graphics = Graphics.FromImage(bitmap.Bitmap))
+                {
+                    graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                    graphics.DrawImageUnscaled(rendered, 0, 0);
+                }
                 ApplyMultiplyTint(raster.Pixels, descriptor.MultiplyTintArgb);
-            }
-            catch
-            {
-                raster.Dispose();
-                throw;
-            }
 
-            var cacheBytes = raster.Pixels.LongLength;
-            EvictFor(cacheBytes);
-            RasterCache[key] = new CacheEntry(raster, ++_useSequence);
-            _rasterCacheBytes += cacheBytes;
-            return raster;
+                var cacheBytes = raster.Pixels.LongLength;
+                EvictFor(cacheBytes);
+                RasterCache[key] = new CacheEntry(raster, ++_useSequence);
+                _rasterCacheBytes += cacheBytes;
+                return raster;
+            }
+        }
+        finally
+        {
+            Interlocked.Add(
+                ref _rasterizeElapsedTicks,
+                Stopwatch.GetTimestamp() - started);
         }
     }
 
@@ -180,7 +326,6 @@ internal static class ImportedSvgRasterizer
     {
         lock (CacheSync)
         {
-            foreach (var cached in RasterCache.Values) cached.Raster.Dispose();
             RasterCache.Clear();
             _rasterCacheBytes = 0;
         }
@@ -188,6 +333,7 @@ internal static class ImportedSvgRasterizer
 
     private static SourceDescriptor DescribeSource(string source)
     {
+        Interlocked.Increment(ref _descriptorLookupCount);
         try
         {
             return SourceDescriptors.GetValue(source, CreateSourceDescriptor);
@@ -204,6 +350,7 @@ internal static class ImportedSvgRasterizer
 
     private static SourceDescriptor CreateSourceDescriptor(string source)
     {
+        Interlocked.Increment(ref _descriptorCreationCount);
         var sourceBytes = StrictUtf8.GetBytes(source);
         if (sourceBytes.LongLength <= 0 || sourceBytes.LongLength > MaxRasterSourceBytes)
         {
@@ -348,6 +495,30 @@ internal static class ImportedSvgRasterizer
         return checked((value + quantum - 1) / quantum * quantum);
     }
 
+    private static bool HasCompatibleRasterAspect(
+        float requestedPixelWidth,
+        float requestedPixelHeight,
+        ImportedSvgRasterKey candidate)
+    {
+        var crossProductError = Math.Abs(
+            candidate.PixelWidth * (double)requestedPixelHeight
+            - candidate.PixelHeight * (double)requestedPixelWidth);
+        return crossProductError <= Math.Max(requestedPixelWidth, requestedPixelHeight);
+    }
+
+    private static bool IsSmallerRaster(
+        ImportedSvgRaster candidate,
+        ImportedSvgRaster current)
+    {
+        var candidatePixels = (long)candidate.PixelWidth * candidate.PixelHeight;
+        var currentPixels = (long)current.PixelWidth * current.PixelHeight;
+        return candidatePixels < currentPixels
+            || candidatePixels == currentPixels
+                && (candidate.PixelWidth < current.PixelWidth
+                    || candidate.PixelWidth == current.PixelWidth
+                        && candidate.PixelHeight < current.PixelHeight);
+    }
+
     private static void EvictFor(long requiredBytes)
     {
         while (RasterCache.Count >= MaxRasterCacheEntries
@@ -357,7 +528,7 @@ internal static class ImportedSvgRasterizer
             if (oldest.Value is null) break;
             RasterCache.Remove(oldest.Key);
             _rasterCacheBytes -= oldest.Value.Raster.Pixels.LongLength;
-            oldest.Value.Raster.Dispose();
+            Interlocked.Increment(ref _rasterCacheEvictionCount);
         }
     }
 

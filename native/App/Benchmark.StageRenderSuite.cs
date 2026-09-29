@@ -8413,6 +8413,10 @@ internal static partial class Benchmark
 
     public static void RunStageRendererRegression()
     {
+        RunUiRefreshStabilityRegression();
+        RunSymbolFiltersRenderRegression();
+        RunSymbolFiltersPanelRegression();
+        RunGpuPlaybackTargetLifetimeRegression();
         RunLayerBlendRegression();
         RunSceneReferenceRenderRegression();
         RunWorkspacePreRenderTargetRegression();
@@ -8420,6 +8424,7 @@ internal static partial class Benchmark
         RunSnapPointSceneRegression();
         RunSnapPointOverlayRegression();
         RunImportedSvgRasterizerRegression();
+        RunProjectiveSvgClippingRegression();
         RunImportedSvgBreakApartRegression();
         RunSelectionHighlightStyleRegression();
         RunSelectionUsabilityRegression();
@@ -8436,6 +8441,7 @@ internal static partial class Benchmark
         RunShapeToolRegression();
         RunReleaseNotesRegression();
         RunHotReloadModuleRoutingRegression();
+        RunCodexBridgeRegression();
         RunColorHarmonyRegression();
         RunGradientPresetRegression();
         RunGradientPaintRegression();
@@ -9651,6 +9657,75 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException(
                 "Timeline focus incorrectly disabled global canvas and tool shortcuts after handling timeline-specific keys.");
+        }
+
+        using var shotStrip = new ShotDirectorPanel();
+        if (!MainForm.IsCanvasShortcutBlockingInteractiveControl(shotStrip))
+        {
+            throw new InvalidOperationException(
+                "A focused shot strip did not take ownership of Delete and canvas shortcuts before the Stage.");
+        }
+        shotStrip.Bind(new ShotDirectorState
+        {
+            IsAvailable = true,
+            ActiveShotId = "shot-a",
+            CurrentFrame = 3,
+            FrameCount = 40,
+            PlaybackFps = 24m,
+            ShotSequenceLength = 40,
+            Shots =
+            [
+                new ShotDirectorItem
+                {
+                    Id = "shot-a",
+                    Name = "Open",
+                    Detail = "Wide",
+                    DurationFrames = 16,
+                    StartFrame = 0,
+                    EndFrame = 15,
+                    IsActive = true,
+                    Layers =
+                    [
+                        new ShotDirectorLayer(
+                            "layer-a",
+                            "Background",
+                            Color.Coral.ToArgb(),
+                            false,
+                            [new ShotDirectorExposure(0, 15, true)])
+                    ]
+                },
+                new ShotDirectorItem
+                {
+                    Id = "shot-b",
+                    Name = "Beat",
+                    DurationFrames = 24,
+                    StartFrame = 16,
+                    EndFrame = 39
+                }
+            ]
+        });
+        if (shotStrip.SelectedShot?.Id != "shot-a"
+            || shotStrip.FindShot("shot-b")?.EndFrame != 39
+            || shotStrip.State.ShotSequenceLength != 40)
+        {
+            throw new InvalidOperationException(
+                "The shot strip did not present the bound shot sequence and its active shot.");
+        }
+        shotStrip.SetPlayhead(20);
+        if (shotStrip.SelectedShot?.Id != "shot-a")
+        {
+            throw new InvalidOperationException(
+                "Moving the playhead into another shot span cleared the active shot filter.");
+        }
+
+        using var workspaceTabs = new WorkspaceTabs();
+        if (!workspaceTabs.Views.Contains(WorkspaceView.ShotDirector)
+            || MainForm.ResolveShotDirectorWidth(4000) != 760
+            || MainForm.ResolveShotDirectorWidth(1200) != 480
+            || MainForm.ResolveShotDirectorWidth(300) != 360)
+        {
+            throw new InvalidOperationException(
+                "The Shots & Directing workspace was not registered as a bounded, responsive workspace view.");
         }
 
         if (MainForm.ShouldPreferStrokeMaterial(DrawingElementKind.Fill, ShapeKind.Rectangle)

@@ -78,6 +78,7 @@ internal sealed partial class MainForm
         if (_spatialTransformKeyboardActive
             || _spatialTransformPointerSession is not null
             || _projectedSceneMoveStartRayOrigin is not null
+            || _shotFramingPointerSession is not null
             || _sceneLightGizmoPointerSession is not null)
         {
             return false;

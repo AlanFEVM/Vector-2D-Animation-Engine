@@ -9,6 +9,7 @@ internal sealed partial class VectorScene
 {
     public void CreateEmpty(int layers = 1, int frameCount = AnimationTimeline.DefaultDuration)
     {
+        _layerSymbolFilters.Clear();
         InvalidateQueryActiveKeyframes();
         _deferredAppendKeyframes = null;
         LayerCount = Math.Clamp(layers, 1, ushort.MaxValue);
@@ -99,6 +100,7 @@ internal sealed partial class VectorScene
 
     public void Generate(int layers, int objects, long atoms)
     {
+        _layerSymbolFilters.Clear();
         InvalidateQueryActiveKeyframes();
         _deferredAppendKeyframes = null;
         LayerCount = Math.Clamp(layers, 1, ushort.MaxValue);

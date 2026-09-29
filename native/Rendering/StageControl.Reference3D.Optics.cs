@@ -395,6 +395,15 @@ internal sealed partial class StageControl
                 item,
                 viewDirection);
             var response = EvaluateReference3DOpticalResponse(material, ambientIrradiance);
+            if (!hasEffectiveLighting)
+            {
+                // Match the unlit vector/GPU path without dropping material transmission opacity.
+                response = response with
+                {
+                    ShadeArgb = Color.Transparent.ToArgb(),
+                    AmbientIrradiance = Vector3.One
+                };
+            }
             var normalizedMaterial = material.Normalize();
             var dielectricF0 = Reference3DDielectricF0(normalizedMaterial);
             Reference3DVectorLighting? vectorLighting = null;
@@ -642,6 +651,28 @@ internal sealed partial class StageControl
             break;
         }
         if (!requiresRasterSurfaces) return result;
+
+        if (Reference3DGpuOpticsEnabled)
+        {
+            for (var index = 0; index < result.Length; index++)
+            {
+                if (!receivesLinearOptics[index] || !hasSurfaceBounds[index]) continue;
+                result[index] = result[index] with
+                {
+                    GpuOpticalSurface = new Reference3DGpuOpticalSurface(
+                        surfaceBounds[index],
+                        materials[index])
+                };
+            }
+
+            DisableReference3DOpticsWithoutSurface(
+                result,
+                receivesLinearOptics,
+                hasSurfaceBounds,
+                sourceMaterialOpacities);
+            LastReference3DOpticalRasterLod = 0;
+            return result;
+        }
 
         for (var lod = Reference3DOpticalRasterStartLod;
              lod <= MaximumReference3DOpticalRasterLod;

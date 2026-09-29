@@ -43,6 +43,10 @@ internal sealed class DrawingObjectAppearanceChangedEventArgs(
 internal sealed class DrawingObjectInstancePanel : Panel
 {
     private const int PanelHeight = 332;
+    private readonly SymbolFiltersPanel _filters = new();
+    private readonly Button _showFilters = new() { Text = "Symbol Filters", AccessibleName = "Symbol Filters" };
+    private Form? _filtersWindow;
+    public SymbolFiltersPanel FiltersPanel => _filters;
 
     private sealed record PlaybackModeItem(DrawingObjectPlaybackMode Mode, string Label)
     {
@@ -137,8 +141,11 @@ internal sealed class DrawingObjectInstancePanel : Panel
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = new Padding(12, 8, 12, 10);
-        Height = PanelHeight;
-        MinimumSize = new Size(248, PanelHeight);
+        Height = PreferredPanelHeight;
+        MinimumSize = new Size(248, PreferredPanelHeight);
+        Controls.Add(_showFilters);
+        Theme.StyleButton(_showFilters);
+        _showFilters.Click += (_, _) => ShowFiltersWindow();
 
         Controls.Add(new Label
         {
@@ -201,7 +208,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
     public event EventHandler? AppearanceInteractionCanceled;
     public event EventHandler? RestoreOriginalSizeRequested;
 
-    public int PreferredPanelHeight => PanelHeight;
+    public int PreferredPanelHeight => PanelHeight + 40;
 
     public void SetInstance(
         DrawingObjectInstanceDefinition instance,
@@ -231,7 +238,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
         PointF sourceAnchor,
         bool canEditAnchor,
         bool alphaMixed = false,
-        bool tintMixed = false)
+        bool tintMixed = false,
+        bool filtersMixed = false)
     {
         _updating = true;
         try
@@ -249,6 +257,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
             _tintColor = Opaque(Color.FromArgb(state.TintArgb));
             _alphaMixed = alphaMixed;
             _tintMixed = tintMixed;
+            _filters.SetFilters(state.Filters, filtersMixed);
             UpdateAlphaPresentation();
             UpdateTintPresentation();
             UpdateModeState();
@@ -267,8 +276,49 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _toolTip.Dispose();
+        if (disposing)
+        {
+            _toolTip.Dispose();
+            _filtersWindow?.Dispose();
+            _filters.Dispose();
+        }
         base.Dispose(disposing);
+    }
+
+    private void ShowFiltersWindow()
+    {
+        if (_filtersWindow is null || _filtersWindow.IsDisposed)
+        {
+            _filtersWindow = new Form
+            {
+                Text = UiLocalization.T("Symbol Filters"), FormBorderStyle = FormBorderStyle.SizableToolWindow,
+                ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent,
+                ClientSize = new Size(330, _filters.PreferredPanelHeight),
+                MinimumSize = new Size(280, 430), BackColor = Theme.Panel
+            };
+            _filters.Dock = DockStyle.Fill;
+            _filtersWindow.Controls.Add(_filters);
+            _filtersWindow.FormClosing += (_, e) =>
+            {
+                if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; _filtersWindow.Hide(); }
+            };
+            UiLocalization.Watch(_filtersWindow);
+        }
+        _filters.Enabled = Enabled;
+        if (!_filtersWindow.Visible) _filtersWindow.Show(FindForm());
+        _filtersWindow.Activate();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (!Visible) _filtersWindow?.Hide();
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        base.OnEnabledChanged(e);
+        _filters.Enabled = Enabled;
     }
 
     private void HookEvents()
@@ -447,6 +497,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
     private void LayoutFields()
     {
+        _showFilters.SetBounds(12, PanelHeight, Math.Max(1, ClientSize.Width - 24), 30);
         var valueLeft = Math.Max(112, ClientSize.Width - Padding.Right - 136);
         var valueWidth = Math.Max(96, ClientSize.Width - valueLeft - Padding.Right);
         _fps.SetBounds(valueLeft, 40, valueWidth, Theme.ControlHeightCompact);

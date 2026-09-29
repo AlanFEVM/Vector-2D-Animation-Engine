@@ -2526,8 +2526,12 @@ internal sealed partial class MainForm : Form
 
     private void RestoreSelectedDrawingObjectOriginalSize()
     {
+        CompleteInstanceAppearanceEdit();
+        BeginInstanceAppearanceEdit();
+        var session = _instanceAppearanceEditSession;
+        if (session is null) return;
+
         var changed = false;
-        ClearInstanceTimelineEditTracking();
         foreach (var instance in SelectedSceneInstances())
         {
             var editFrame = ResolveInstanceStateEditFrameForCurrentContext(instance);
@@ -2535,19 +2539,16 @@ internal sealed partial class MainForm : Form
             editFrame = PrepareInstanceStateTimelineEdit(instance);
             changed |= RestoreDrawingObjectOriginalSize(instance, editFrame);
         }
-        if (!changed)
+        if (changed)
         {
-            ClearInstanceTimelineEditTracking();
-            return;
+            session.Changed = true;
+            _sceneInstanceTimelineDirty = true;
         }
-
-        RefreshEditedInstanceTimelineTweens();
-        ClearInstanceTimelineEditTracking();
-        _sceneInstanceTimelineDirty = true;
-        _timeline.RefreshTimeline();
-        _sceneInstanceTimelineDirty = false;
+        CompleteInstanceAppearanceEdit();
+        if (!changed) return;
         RebuildEditableInstanceComposition();
         UpdateInspector();
+        _stage.Invalidate();
     }
 
     private void ApplySelectedDrawingObjectAnchor(PointF anchor)
@@ -2570,14 +2571,24 @@ internal sealed partial class MainForm : Form
         var state = instance.EvaluateState(frame);
         if (!CanRestoreDrawingObjectOriginalSize(state)) return false;
 
-        return instance.SetStateAtFrame(frame, state with { ScaleX = 1f, ScaleY = 1f, ScaleZ = 1f });
+        return instance.SetStateAtFrame(frame, state with
+        {
+            ScaleX = 1f, ScaleY = 1f, ScaleZ = 1f,
+            RotationX = 0f, RotationY = 0f, RotationZ = 0f,
+            SkewX = 0f, SkewY = 0f
+        });
     }
 
     internal static bool CanRestoreDrawingObjectOriginalSize(InstanceFrameState state)
     {
         return Math.Abs(state.ScaleX - 1f) > 0.0001f
             || Math.Abs(state.ScaleY - 1f) > 0.0001f
-            || Math.Abs(state.ScaleZ - 1f) > 0.0001f;
+            || Math.Abs(state.ScaleZ - 1f) > 0.0001f
+            || Math.Abs(state.RotationX) > 0.0001f
+            || Math.Abs(state.RotationY) > 0.0001f
+            || Math.Abs(state.RotationZ) > 0.0001f
+            || Math.Abs(state.SkewX) > 0.0001f
+            || Math.Abs(state.SkewY) > 0.0001f;
     }
 
 }

@@ -1,136 +1,83 @@
 # Vector 2D Animation Engine Agent Guide
 
-## Bootstrap
+## 工作方式（Astra / 当前会话）
 
-- Start with `git status --short --branch` and record pre-existing changes. Treat unknown changes as user or other-Agent work; never revert, overwrite, stage, or attribute them to the current task.
-- Select the smallest owning skill from the routing table below. Read that `SKILL.md` completely, then load only the references it names for the requested behavior. Combine skills only when the change crosses contracts.
-- Use `$vector2d-coordinate-agents` when the user requests multiple Agents or when a change has at least two independent workstreams. Keep a small or tightly coupled change with one Agent.
-- Use `$vector2d-validate-change` after product, launcher, release-manager, or publishing changes and before declaring a product change complete. Load it for validation planning/execution, not as the implementation owner.
+- 主 Agent 负责理解目标、选择实现、完成修改与验证，并对最终结果负责。小改动和紧密耦合任务直接闭环；只有存在可独立推进的工作包时才委派，避免把每次搜索、编辑或命令执行拆成子任务。
+- 使用当前会话提供的模型和工具能力。子 Agent 默认继承主 Agent，不固定模型名称或推理档位，不探测或修改提供方、认证、模型目录与全局配置。用户明确指定模型时，以实际可用能力为准；不可用则说明并继续可独立完成的工作。
+- 实现请求推进到可审阅的修改和适度验证；分析、诊断或评审请求先给出证据，不擅自扩展成产品修改。任务范围内可逆的常规步骤直接执行，只有缺失决定性信息、无法避开他人修改或需要新增授权时才询问。
+- 默认用中文沟通，保留代码标识符与命令原文。进度说明聚焦发现、决定和待验证点；最终说明改了什么、验证结果及实际限制。
+
+## 启动与证据
+
+1. 首先运行 `git status --short --branch`，记录已修改和未跟踪文件。未知改动视为用户或其他 Agent 所有，不回退、覆盖、暂存或归功于本任务。存在基线改动不代表必须停止；在不冲突的范围继续。
+2. 按下表选择最小 owning skill，完整读取其 `SKILL.md`，再按行为读取所需引用。仅当跨越行为契约时组合技能，不因相邻目录而扩大加载范围。
+3. 用 `rg` / `rg --files` 和定向读取定位入口、调用方与回归覆盖。独立只读检查可批量并行；有依赖的修改顺序执行。知识图谱仅作导航，结论以当前源码为准；不要为普通定位重建图谱或改写其缓存。
+4. 编辑前读取目标文件及相关差异。已有改动若把代码提取到未跟踪 partial，必须同时核对新文件，不能仅凭 `git diff --stat` 判断功能被删除。
+5. 多步任务维护简短计划和验收条件；局部修正无需任务包仪式。只读取实际存在且适用的说明文件，不依赖未提供的 `1.md` 等历史约定。
+
+## 当前产品与开发重点
+
+以下是源码导航和应保护的契约，不是发布验收声明。相关任务开始时核对当前文件；未提交实现、文档描述、测试通过和正式发布是不同状态。
+
+- Windows 原生桌面：`native/UI/` 为 WinForms 工作台，`native/Engine/` 为几何、项目、时间轴与存储，`native/Rendering/` 为 Stage 和渲染，`native/App/` 为生命周期、集成与回归入口。SDK 以 `global.json` 为准，版本以 `Directory.Build.props` 为准，避免在此复制易过期版本号。
+- 已有 Basic Drawing 与 Scene Building 工作区，包含 Symbol/嵌套实例、Cel/曝光/补间、Vault/SVG 和项目目录存储。沿现有命令、撤销与组合流程扩展，保护稳定 ID、引用来源、图层顺序、Auto Key/held exposure 和旧文档兼容性。
+- 当前源码包含 Reference 3D 光学、GPU 光学/透视投影、后台准备与工作区预渲染。入口包括 `Direct2DStageRenderer.Reference3D*`、`Direct2DStageRenderer.Gpu*`、`StageControl.Reference3D*` 和 `*WorkspacePreRender*`。优化须保留近裁剪、真实材质边界、遮罩、深度、线性颜色与预乘 Alpha，同时核对 GPU、Direct2D 与 GDI 回退路径。
+- 缓存与并行修改须核对工程/帧/相机/尺寸/灯光/内容变化的失效、设备重建与释放、后台和前台共享 SVG 资源的生命周期。不要以跳过内容、改变最终几何、静默降质或放宽预算冒充性能修复；已有预览策略按各域契约处理。
+- 当前源码包含本地 Codex / MCP 编辑器接口与动画包导入。入口为 `native/App/CodexBridge*`、`AnimationBundleImporter.cs`、`native/UI/MainForm.Codex*` 和 `CodexIntegrationPanel.cs`。区分服务启用与编辑写权限，保护 UI 线程、忙碌状态、参数校验、撤销与原有文档操作边界；具体工具按当前协议发现，勿在此复制工具清单。
+- 产品行为与限制见 [用户指南](docs/USER_GUIDE.md)，架构入口见 [README](README.md)，正式包历史见 [文档索引](docs/README.md)。文档与代码不一致时核对实现和测试，明确差异，不把规模目标或基准夹具当成已达成的性能。
 
 ## Skill Routing
 
-| Request surface | Owning skill |
+| 请求行为 | Owning skill |
 | --- | --- |
-| Packed geometry, topology, hit/query, Boolean operations, transforms, distortions | `$vector2d-drawing-geometry` |
-| Brush, pressure, Mixing Brush, painted regions, brush erasing | `$vector2d-brush-paint` |
-| Project graph, scenes, symbols, instances, layers, masks, composition/provenance | `$vector2d-project-model` |
-| Frames, Cels, exposures, keyframes, Auto Key, tween, onion skin, playback | `$vector2d-timeline-animation` |
-| Project Save/Open, Vault, asset tags/folders, SVG import/export/Break Apart | `$vector2d-assets-persistence` |
-| Stage tools, pointer/keyboard sessions, selection, overlays, 2D rendering/caches | `$vector2d-stage-workflow` |
-| Scene reference 3D, cameras, spatial transforms, scene masks/reference projection | `$vector2d-scene-spatial` |
-| Non-Stage WinForms panels, controls, layout, theme, accessibility, binding | `$vector2d-winforms-ui` |
-| Native/source-launcher startup, hot reload, restart, single instance, diagnostics | `$vector2d-app-lifecycle` |
-| Versioning, bilingual release notes, Release Manager, formal single-EXE publishing | `$vector2d-release-workflow` |
-| Multi-Agent decomposition, ownership, handoff, integration | `$vector2d-coordinate-agents` |
-| Suite selection, builds, benchmarks, visual/manual and release acceptance | `$vector2d-validate-change` |
+| Packed geometry、拓扑、命中/空间查询、布尔、变换/畸变 | `$vector2d-drawing-geometry` |
+| Brush、Pressure、Mixing Brush、painted regions、笔刷擦除 | `$vector2d-brush-paint` |
+| 项目图、Symbol/实例、图层/遮罩、组合与 provenance | `$vector2d-project-model` |
+| 帧、Cel、曝光、关键帧、Auto Key、补间、洋葱皮、播放语义 | `$vector2d-timeline-animation` |
+| Save/Open、Vault、标签/目录、SVG 导入导出/Break Apart、持久化 | `$vector2d-assets-persistence` |
+| Stage 工具、输入/选择/拖动、覆盖层、2D 渲染与缓存 | `$vector2d-stage-workflow` |
+| Reference 3D、空间变换、相机、场景遮罩、光学与透视投影 | `$vector2d-scene-spatial` |
+| 非 Stage 的 WinForms 面板、控件、主题、可访问性与绑定 | `$vector2d-winforms-ui` |
+| 启动、开发 launcher、hot reload、重启、单实例、诊断 | `$vector2d-app-lifecycle` |
+| 版本、双语发布说明、Release Manager、正式单 EXE 打包 | `$vector2d-release-workflow` |
+| 多 Agent 分工、所有权、交接和集成 | `$vector2d-coordinate-agents` |
+| 构建、回归、性能、视觉/手工、启动和发布验收 | `$vector2d-validate-change` |
 
-Do not load a neighboring skill only because its directory appears in the diff. Load it when the requested behavior crosses that skill's contract. For example, a tween model change uses `$vector2d-timeline-animation`; add `$vector2d-stage-workflow` only if Stage presentation changes, and add `$vector2d-winforms-ui` only if a non-canvas control changes.
+MCP 不是独立业务模型：按工具实际修改的项目、时间轴、空间或存储行为选技能；仅涉及面板时用 UI 技能，涉及服务随应用启停时用生命周期技能。动画包导入按存储及实际跨越的项目/时间轴契约处理。
 
-## Coordination Contract
+## 多 Agent 协作
 
-The root Agent is the coordinator and integration owner. All Agents share this worktree, so coordination is based on explicit write ownership rather than branches or patch transfer.
+采用 `$vector2d-coordinate-agents` 的 [work-packages.md](.agents/skills/vector2d-coordinate-agents/references/work-packages.md)。根 Agent 是协调者和最终集成负责人；默认共享当前工作树，不主动创建分支/worktree 或转移补丁。
 
-1. Build a dependency graph before delegating. Run only work packages that are independent and ready.
-2. Give each sub-Agent a bounded packet containing the goal, owned paths or symbols, read-only dependencies, prerequisites, required invariants, deliverable, and suggested validation.
-3. Assign exactly one writer to each file at a time. An Agent may read outside its owned paths but must not edit there.
-4. Reserve shared hotspots for one integration owner: core files in the `Benchmark*`, `MainForm*`, `VectorScene*`, `StageControl*`, and `Direct2DStageRenderer*` partial families; `README.md`; `docs/USER_GUIDE.md`; project files; release sources; publishing scripts; and release artifacts. Disjoint partial files may have separate writers only when their contracts and callers are stable.
-5. Prefer parallel read-only reconnaissance, independent implementation in disjoint files, and independent review. Serialize dependent model/UI work, edits to the same file, final documentation, builds, benchmarks, visual capture, publishing, and release-launcher generation.
-6. Sub-Agents must refresh `git status --short` before editing and before handoff. They must preserve changes outside their packet and report unexpected overlap to the coordinator.
-7. Sub-Agents do not stage, commit, cherry-pick, reset, or create worktrees unless the coordinator explicitly delegates that operation. The coordinator owns the final diff and any requested commit.
-8. A handoff is not complete without changed files, behavior or findings, validation performed, unresolved risks, and integration notes. The coordinator verifies the actual diff instead of relying only on the summary.
+- 用户要求多 Agent 或有至少两个独立就绪工作流时评估拆分。适合并行的是只读探索、独立评审与不重叠实现；依赖未确定接口、同文件或同一串行步骤的工作保持单 Agent。根 Agent 保留可并行推进的实际工作，不为单纯等待而委派。
+- 子 Agent 默认继承当前模型；并发不超过会话上限，通常最多三个子 Agent，且不超过独立任务数。子 Agent 不再创建或协调下级 Agent。
+- 委派必须给出目标、独占写路径、只读依赖、前置条件、必须保留的行为、禁止范围、交付物和建议验证。只读任务不得改文件或生成缓存。
+- 每个文件同一时间只有一个写入者。`Benchmark*`、`MainForm*`、`VectorScene*`、`StageControl*`、`Direct2DStageRenderer*` 的核心文件，项目文件、公共文档、发布源/脚本/产物由集成负责人独占；仅在调用契约稳定时分配互不重叠的 partial 文件。
+- 子 Agent 编辑前和交接前刷新 `git status --short`。发现范围重叠先报告并停止该文件写入；不得撤销他人工作。未经明确授权不执行暂存、提交、分支切换、合并、变基或推送。
+- 构建、回归、基准、视觉捕获、launcher 生成和发布只有一位验证负责人执行，其他 Agent 仅建议套件。UI/GPU 和同一运行实例也属于独占资源。
+- 交接须包含完成状态、文件、行为或证据位置、已执行命令及结果、未验证项和集成需求。根 Agent 审阅实际 diff 与调用方后验收，不能只接受摘要。
+- 子任务不完整时进行聚焦修正；重复失败应重新检查根因、拆分或接管，不机械重试。结束前每个必要工作包须完成、明确取消或说明具体阻塞。
 
-Read [work-packages.md](.agents/skills/vector2d-coordinate-agents/references/work-packages.md) for routing, task packet, state, and handoff templates.
+## 验证门槛
 
-## Validation Gate
+- 产品、launcher、Release Manager 或发布修改使用 `$vector2d-validate-change` 选择最小充分套件。现有回归位于 `native/App/Benchmark*.cs`；不要假设存在独立测试工程或 CI。
+- 先用 `.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite <suite> -Plan` 检查计划，再由单一验证负责人运行。`-Plan` 不构建、不获取验证锁，也不是测试通过。
+- 根据 [benchmark-map.md](.agents/skills/vector2d-validate-change/references/benchmark-map.md) 和当前 `Program.cs` 核对真实入口与调用覆盖。新增回归接入已有 suite；新增 CLI 模式同步检查验证脚本、suite map 与 workflow 检查。不要仅凭 `Benchmark.*.cs` 文件存在声称用例已运行。
+- 性能与渲染验收串行执行，记录夹具、实际可见内容、视图/分辨率、渲染设备/回退、预热和缓存条件。按现有用例检查平均值/P95/最大值等指标；机器有竞争负载时明确性能结论的限制。`Stress` 与 `Render` 不并发。
+- 修复优先验证可观察失败行为及受影响契约。相关检查通过后，不无理由重复全套验证；纯说明文档变更无需产品构建。视觉与交互未实际检查时明确标注，不以编译成功替代。
+- 修改 `AGENTS.md` 或 `.agents/` 后运行 `.agents\skills\vector2d-coordinate-agents\scripts\test-agent-workflow.ps1` 和 `git diff --check`。失败时区分本次引入与原有工作树问题，不顺手修复无关基线。
+- `bin/`、`obj/`、运行时、验证输出、截图、发布产物以及任务无关的 graphify 缓存不得混入提交，除非用户明确要求。
 
-- Only one validation owner may build or run regression, performance, graphics, launcher, or visual suites at a time. Other Agents report suggested suites without running them.
-- Use `.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite <suite> -Plan` to inspect the resolved validation plan without taking the validation lock or building.
-- The validation owner runs the selected suites after implementation handoffs are integrated. `Stress` and `Render` remain sequential and require an uncontended machine for performance interpretation.
-- For changes under `.agents/`, run `.agents\skills\vector2d-coordinate-agents\scripts\test-agent-workflow.ps1` and `git diff --check`; product builds are not required unless product code also changed.
-- Keep generated `bin/`, `obj/`, runtime, validation, screenshot, and release artifacts out of the final diff unless the request explicitly requires them.
+## 发布边界
 
-## Release Packaging
+- 根目录 `VectorAnimationEngine.exe` 专用于本地开发，由 `scripts\publish-development-launcher.ps1` 生成，默认启动带模块热重载的源码 `dotnet watch`。绝不以正式发布 EXE 覆盖、复制或同步到此处。
+- 每次正式发布使用 `scripts\publish-single-exe.ps1`，输出仅放在 `artifacts\release` 或用户明确指定的空发布目录。产物必须是一个小于 5 MiB 的可替换 EXE，不附带 ZIP、校验侧文件或展开的 `.V2DEngine` / `.Runtime`。
+- EXE 内嵌完整压缩 `.V2DEngine`；替换 EXE 是更新边界，下次启动由 bootstrap 原子刷新外部 `.V2DEngine`。
+- `.Runtime` 保持外部持久化。缺失或无效时由 bootstrap 获取兼容的 Microsoft .NET 8 Core 与 Windows Desktop x64 runtime；不把开发 SDK 或本机运行时误当成发布依赖已满足。
+- 普通功能修复不自动生成 launcher、修改版本或发布；按用户请求和 release skill 完成相应流程。
 
-- The repository-root `VectorAnimationEngine.exe` is exclusively the local development launcher. Generate it with `scripts\publish-development-launcher.ps1`; it must start source `dotnet watch` with module hot reload by default.
-- Never copy, rename, or synchronize a formal release EXE onto the repository-root `VectorAnimationEngine.exe`. Formal release output belongs only in `artifacts\release` or an explicitly requested empty release directory.
-- Use `scripts\publish-single-exe.ps1` for every release. It must produce exactly one replaceable EXE smaller than 5 MiB; do not publish ZIPs, checksum sidecars, expanded `.V2DEngine`, or `.Runtime`.
-- The EXE embeds the complete compressed `.V2DEngine` payload. Replacing the EXE is the update boundary; the bootstrap atomically refreshes the external `.V2DEngine` directory on next launch.
-- Keep `.Runtime` external and persistent. The bootstrap must acquire the compatible Microsoft .NET 8 Core and Windows Desktop x64 runtimes when the local runtime is absent or invalid.
+## 完成交付
 
-## Completion
-
-- Re-read the aggregate diff for ownership leaks, incomplete cross-domain updates, and unrelated files.
-- Confirm every work package is `done`, deliberately cancelled, or reported as unresolved; do not silently drop blocked work.
-- Update `docs/USER_GUIDE.md` in the same change for user-facing features or interaction changes.
-- Report exact validation commands and outcomes, plus any baseline uncertainty from the pre-existing worktree.
-
-
-## Codex 多 Agent 委派规则
-
-### 启用条件
-
-- 本区块采用失败关闭策略。每个任务只在首次准备委派前检查一次当前会话的子 Agent 能力。
-- 只有当前会话明确支持 `gpt-5.6-luna`，并且该模型明确支持 `reasoning_effort: max` 时，才启用本区块的全部规则。
-- 若模型不存在、能力无法确认、`max` 不受支持，或首次创建子 Agent 返回模型不可用，则当前任务完全停用本区块；主 Agent 按本区块之外的原有项目规则直接工作。
-- 停用后不得替换为其他模型；不得修改模型、提供方、认证或模型目录配置，也不得反复探测或重试。
-
-### 总体职责
-
-- 本区块只定义项目级委派行为，不修改或覆盖当前会话使用的主 Agent 模型、全局模型提供方、认证信息与模型目录。
-- 简单对话、需求澄清、任务拆分、结果审核、整合与最终回复由主 Agent 直接处理。
-- 涉及仓库探索、文件修改、命令执行、构建、测试或修复的项目工作，主 Agent 默认委派给子 Agent；仅当子 Agent 工具不可用或委派会阻塞任务时，主 Agent 才可直接处理并说明原因。
-- 创建任何子 Agent 时，必须显式指定 `model: gpt-5.6-luna` 与 `reasoning_effort: max`。
-- 同时运行的子 Agent 最多三个。子 Agent 不得继续创建下级 Agent，也不得直接协调其他子 Agent。
-
-### 探索任务
-
-- 只读搜索与分析项目结构、代码位置、调用关系和影响范围，不修改任何文件。
-- 优先使用 `rg` / `rg --files` 和直接文件读取；不得执行会改变仓库、工程、编辑器或外部系统状态的命令。
-- 返回关键结论、证据位置、相关文件与行号、未确认事项和建议的下一步，不把推测表述为事实。
-
-### 执行任务
-
-- 只处理主 Agent 明确分配的文件、模块和验收目标，使用最小且局部的改动完成任务。
-- 修改前先读取目标文件并确认现有实现；保留用户及其他 Agent 的无关改动，不扩大范围，不顺手重构。
-- 除非用户明确要求，不得切换分支、提交、合并、变基、推送或修改仓库外文件。
-- 完成后执行与风险相匹配的验证，并如实说明通过、失败、未执行项及剩余风险。
-
-### 并行与审核
-
-- 仅在任务可以拆成互不依赖的文件或模块范围时并行；同一文件、共享接口或紧密耦合逻辑必须串行处理。
-- 主 Agent 为每个子 Agent 指定独立范围、禁止触碰范围、集成约定和验收标准，并负责解决冲突与最终整合。
-- 主 Agent 必须审阅子 Agent 报告和实际 diff，必要时执行统一验证，不得未经核对直接接受结果。
-- 子任务失败或结果不完整时，最多追加两次聚焦修复；仍未解决则停止扩展修改并向用户说明阻塞。
-
-### 委派模板
-
-主 Agent 委派时使用以下结构，并按任务删减无关项：
-
-```text
-任务：<具体目标>
-
-上下文：
-- <相关背景、入口文件和已知约束>
-
-范围：
-- 允许：<可读取或修改的文件/模块>
-- 禁止：<不得触碰的文件/模块>
-
-约束：
-- 保持改动最小且局部。
-- 遵守 AGENTS.md、1.md 与相关项目 Skill。
-- 不覆盖无关改动，不执行未经授权的 Git 操作。
-
-验收标准：
-- <可观察、可验证的完成条件>
-
-返回中文结构化报告：
-- 摘要
-- 改动文件
-- 执行命令
-- 验证结果
-- 阻塞项
-- 剩余风险
-```
-
-<!-- END CODEX_MULTI_AGENT_RULES -->
+- 重读本任务 aggregate diff，连同相关未跟踪文件核对所有权、调用链、跨域更新与无关改动。未授权不暂存或提交。
+- 用户可见功能或交互变化同步更新 `docs/USER_GUIDE.md`；仅 Agent 指南调整无需更改产品说明。新增行为遵循现有中英文本地化约定。
+- 报告修改文件、实际行为、准确验证命令与通过/失败/未执行结果。说明脏工作树的基线不确定性及未完成验收，不将他人修改、源码存在或计划输出表述为本任务已验证成果。

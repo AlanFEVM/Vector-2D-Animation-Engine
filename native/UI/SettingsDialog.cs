@@ -9,6 +9,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     private readonly ColorAdjustmentControl _themeColorAdjustment;
     private readonly ColorAdjustmentControl _highlightColorAdjustment;
     private readonly ShortcutProfileEditorPanel _shortcutProfiles;
+    private readonly CodexIntegrationPanel _codexIntegration = new() { Dock = DockStyle.Fill, Visible = false };
     private UiLanguage _selectedLanguage;
     private ApplicationColorTheme _selectedColorTheme;
     private int _selectedThemeHueDegrees;
@@ -140,7 +141,30 @@ internal sealed class SettingsDialog : ModernDialogForm
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        DialogContent.Controls.Add(content);
+        var pages = new Panel { Dock = DockStyle.Fill };
+        pages.Controls.Add(content);
+        pages.Controls.Add(_codexIntegration);
+        var navigation = new TableLayoutPanel { Dock = DockStyle.Top, Height = 38, ColumnCount = 2, RowCount = 1 };
+        navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        var general = new SegmentedButton { Text = "General", Dock = DockStyle.Fill };
+        var codex = new SegmentedButton { Text = "Codex / MCP", Dock = DockStyle.Fill };
+        ConfigureSelectionButton(general, "General");
+        ConfigureSelectionButton(codex, "Codex / MCP");
+        void SelectPage(bool integration)
+        {
+            content.Visible = !integration;
+            _codexIntegration.Visible = integration;
+            Theme.StyleSegmentedButton(general, active: !integration);
+            Theme.StyleSegmentedButton(codex, active: integration);
+        }
+        general.Click += (_, _) => SelectPage(false);
+        codex.Click += (_, _) => SelectPage(true);
+        navigation.Controls.Add(general, 0, 0);
+        navigation.Controls.Add(codex, 1, 0);
+        DialogContent.Controls.Add(pages);
+        DialogContent.Controls.Add(navigation);
+        SelectPage(false);
 
         content.Controls.Add(SectionHeading("Appearance"), 0, 0);
         var colorThemeSelector = CreateColorThemeSelector();
@@ -196,6 +220,8 @@ internal sealed class SettingsDialog : ModernDialogForm
     }
 
     public string SelectedShortcutProfileId => _shortcutProfiles.ActiveProfileId;
+    internal void SetCodexSettings(ApplicationSettings settings, string status) => _codexIntegration.SetSettings(settings, status);
+    internal ApplicationSettings ApplyCodexSettingsTo(ApplicationSettings settings) => _codexIntegration.ApplyTo(settings);
     public ShortcutProfileRecord[] CustomShortcutProfiles => _shortcutProfiles.CustomProfiles;
     public UiLanguage SelectedLanguage => _selectedLanguage;
     public ApplicationColorTheme SelectedColorTheme => _selectedColorTheme;

@@ -1112,6 +1112,7 @@ internal sealed partial class VectorScene
                 LayerVisible[destinationLayer] = source.LayerVisible[sourceLayer];
                 LayerOpacity[destinationLayer] = source.LayerOpacity[sourceLayer] * sourceItem.Opacity;
                 LayerBlendModes[destinationLayer] = source.LayerBlendModes[sourceLayer];
+                SetLayerSymbolFilters(destinationLayer, source.GetLayerSymbolFilters(sourceLayer));
                 LayerOutline[destinationLayer] = source.LayerOutline[sourceLayer];
                 LayerColorArgb[destinationLayer] = sourceItem.IsPrevious switch
                 {

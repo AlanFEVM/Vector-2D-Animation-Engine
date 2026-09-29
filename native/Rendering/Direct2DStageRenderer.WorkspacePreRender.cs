@@ -12,7 +12,7 @@ internal sealed partial class Direct2DStageRenderer
 {
     private ID2D1BitmapRenderTarget? _workspacePreRenderTarget;
     private ID2D1Bitmap? _workspacePreRenderBitmap;
-    private ID2D1HwndRenderTarget? _workspacePreRenderParentTarget;
+    private ID2D1RenderTarget? _workspacePreRenderParentTarget;
     private SizeI _workspacePreRenderTargetSize;
     private long _workspacePreRenderTargetGeneration = -1;
 
@@ -37,7 +37,8 @@ internal sealed partial class Direct2DStageRenderer
         try
         {
             EnsureTarget(stage);
-            if (_target is not ID2D1HwndRenderTarget mainTarget) return false;
+            if (_target is not { } mainTarget) return false;
+            PrepareGpuOpticalSurfaces(stage);
             PrepareReference3DWorkspaceFrameCache(stage);
             if (HasReference3DWorkspaceFrame(stage)) return true;
 
@@ -122,7 +123,7 @@ internal sealed partial class Direct2DStageRenderer
     internal double LastWorkspaceFramePreRenderMilliseconds { get; private set; }
 
     private ID2D1BitmapRenderTarget EnsureWorkspacePreRenderTarget(
-        ID2D1HwndRenderTarget parentTarget)
+        ID2D1RenderTarget parentTarget)
     {
         if (_workspacePreRenderTarget is not null
             && ReferenceEquals(_workspacePreRenderParentTarget, parentTarget)
@@ -213,6 +214,7 @@ internal sealed partial class Direct2DStageRenderer
             if (existing.Key != key) continue;
             _reference3DWorkspaceFrameCache.RemoveAt(index);
             _reference3DWorkspaceFrameCacheBytes -= existing.ByteSize;
+            ClearCurrentWorkspaceFrameReference(existing);
             existing.Dispose();
         }
 
@@ -243,6 +245,7 @@ internal sealed partial class Direct2DStageRenderer
                 var oldest = _reference3DWorkspaceFrameCache[0];
                 _reference3DWorkspaceFrameCache.RemoveAt(0);
                 _reference3DWorkspaceFrameCacheBytes -= oldest.ByteSize;
+                ClearCurrentWorkspaceFrameReference(oldest);
                 oldest.Dispose();
                 LastReference3DWorkspaceFrameCacheEvictions++;
             }

@@ -124,6 +124,13 @@ internal sealed partial class MainForm : Form
 
         if (UpdateSpatialTransformKeyboardPointer(e.Location)) return;
 
+        if (_shotFramingPointerSession is not null)
+        {
+            if (e.Button == MouseButtons.Left) UpdateShotFramingPointer(e.Location);
+            UpdateShotFramingGizmoCursor(e.Location);
+            return;
+        }
+
         if (_sceneLightGizmoPointerSession is not null)
         {
             if (e.Button == MouseButtons.Left) QueueSceneLightGizmoPointer(e.Location);
@@ -146,6 +153,12 @@ internal sealed partial class MainForm : Form
 
         if (_lastMouse is null)
         {
+            if (IsShotDirectorContext())
+            {
+                UpdateShotFramingGizmoCursor(e.Location);
+                return;
+            }
+
             if (_tool == ToolMode.Pen)
             {
                 UpdateTraditionalPenHover(e.Location);
@@ -222,6 +235,18 @@ internal sealed partial class MainForm : Form
         {
             if (e.Button == MouseButtons.Left) UpdateLineBranchDrag(e.Location);
             UpdateInteractionCursor(e.Location);
+            return;
+        }
+
+        if (IsShotDirectorContext()
+            && !_spacePanPointerActive
+            && !_viewPanning
+            && !_viewZooming
+            && !_viewOrbiting
+            && !_viewReferencePanning
+            && !_viewReferenceZooming)
+        {
+            UpdateShotFramingGizmoCursor(e.Location);
             return;
         }
 
@@ -441,7 +466,8 @@ internal sealed partial class MainForm : Form
 
     private void BeginSceneCompositionPointer(MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left
+        if (IsShotDirectorContext()
+            || e.Button != MouseButtons.Left
             || IsSceneReferenceView() && !IsProjectedScene2DTransformView())
         {
             return;
@@ -1007,10 +1033,14 @@ internal sealed partial class MainForm : Form
             if (!instancesById.TryGetValue(instanceId, out var instance)) continue;
             var currentState = instance.EvaluateState(_frame);
             if (!TryCreateInstancePreviewTransform(preview.StartState, currentState, out var transform)) continue;
+            // Primitive position/size/rotation cannot represent shear. Convert only
+            // the composed preview; the transform session retains the source geometry.
+            var skewChanged = currentState.SkewX != preview.StartState.SkewX
+                || currentState.SkewY != preview.StartState.SkewY;
             compositionScene.ApplyTransformSession(
                 preview.Session,
                 transform,
-                convertPrimitivesToPaths: false,
+                convertPrimitivesToPaths: skewChanged,
                 rebuildGeometryIndex: false);
             changed = true;
         }
@@ -2167,6 +2197,13 @@ internal sealed partial class MainForm : Form
 
         if (HandleSpatialTransformKeyboardMouseUp(e)) return;
 
+        if (_shotFramingPointerSession is not null)
+        {
+            if (e.Button == MouseButtons.Left) UpdateShotFramingPointer(e.Location);
+            CompleteShotFramingPointer();
+            return;
+        }
+
         if (_sceneLightGizmoPointerSession is not null)
         {
             if (e.Button == MouseButtons.Left)
@@ -2195,6 +2232,12 @@ internal sealed partial class MainForm : Form
         if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming)
         {
             EndGlobalViewDrag();
+            return;
+        }
+
+        if (IsShotDirectorContext())
+        {
+            FinishPointerInteraction();
             return;
         }
 
@@ -2341,6 +2384,11 @@ internal sealed partial class MainForm : Form
         if (CancelLassoPointerForLifecycle()) return;
 
         FinalizePendingMarqueeSelectionCancellation();
+        if (_shotFramingPointerSession is not null)
+        {
+            CompleteShotFramingPointer();
+            return;
+        }
         if (_sceneLightGizmoPointerSession is not null)
         {
             CompleteSceneLightGizmoPointer();
@@ -2459,6 +2507,7 @@ internal sealed partial class MainForm : Form
         CancelReferenceCameraRightLook();
         CancelTemporaryCanvasPan();
         if (CancelLassoPointerForLifecycle()) return;
+        if (_shotFramingPointerSession is not null) CancelShotFramingPointer();
         if (_sceneLightGizmoPointerSession is not null) CancelSceneLightGizmoPointer();
         if (_snapPointEditSession is not null) CancelSnapPointPointer(restore: true);
         if (_projectedSceneMoveStartRayOrigin is not null) CancelProjectedSceneMovePointer();
@@ -2512,6 +2561,7 @@ internal sealed partial class MainForm : Form
             || _fillEdgeBezierEditSession is not null
             || _lineBranchDragSession is not null
             || _drawingTransformSession is not null
+            || _shotFramingPointerSession is not null
             || _sceneLightGizmoPointerSession is not null
             || _spatialTransformPointerSession is not null
             || _spatialTransformEditSession is not null
@@ -2531,6 +2581,11 @@ internal sealed partial class MainForm : Form
         CancelReferenceCameraKeyboardNavigation();
         CancelTemporaryCanvasPan();
         if (CancelLassoPointerForLifecycle()) return;
+        if (_shotFramingPointerSession is not null)
+        {
+            CancelShotFramingPointer();
+            return;
+        }
         if (_sceneLightGizmoPointerSession is not null)
         {
             CancelSceneLightGizmoPointer();
@@ -2737,6 +2792,13 @@ internal sealed partial class MainForm : Form
 
     private void StageDragEnter(object? sender, DragEventArgs e)
     {
+        if (IsShotDirectorContext())
+        {
+            ClearDrawingObjectDragPreview();
+            e.Effect = DragDropEffects.None;
+            return;
+        }
+
         if (TryResolveDroppedExternalSvgAsset(e.Data, out _, out _))
         {
             ClearDrawingObjectDragPreview();
@@ -2772,6 +2834,13 @@ internal sealed partial class MainForm : Form
 
     private void StageDragOver(object? sender, DragEventArgs e)
     {
+        if (IsShotDirectorContext())
+        {
+            ClearDrawingObjectDragPreview();
+            e.Effect = DragDropEffects.None;
+            return;
+        }
+
         if (TryResolveDroppedExternalSvgAsset(e.Data, out _, out _))
         {
             ClearDrawingObjectDragPreview();
@@ -2807,7 +2876,7 @@ internal sealed partial class MainForm : Form
 
     private bool CanPlaceDroppedDrawingObject(DrawingObjectDefinition drawingObject)
     {
-        if (IsSceneMaskEditing()) return false;
+        if (IsShotDirectorContext() || IsSceneMaskEditing()) return false;
         return IsSceneCompositionContext()
             ? ActiveScene() is not null
             : ActiveDrawingObject() is { } container && _project.CanContainDrawingObject(container.Id, drawingObject.Id);
@@ -3190,6 +3259,13 @@ internal sealed partial class MainForm : Form
 
     private void StageDragDrop(object? sender, DragEventArgs e)
     {
+        if (IsShotDirectorContext())
+        {
+            ClearDrawingObjectDragPreview();
+            e.Effect = DragDropEffects.None;
+            return;
+        }
+
         if (TryResolveDroppedExternalSvgAsset(e.Data, out var externalSvgAsset, out _))
         {
             ClearDrawingObjectDragPreview();

@@ -437,6 +437,19 @@ internal sealed partial class StageControl
             Reference3DProjectiveTextureDimension(height));
     }
 
+    internal SizeF EstimateReference3DProjectiveSvgTextureSize(
+        IReadOnlyList<Reference3DProjectiveTriangle> triangles)
+    {
+        var size = EstimateReference3DProjectiveTextureSize(triangles);
+        // Near-plane derivatives can describe enormous offscreen magnification.
+        // Both renderers share a viewport budget to retain reusable SVG textures.
+        var pixelBudget = Math.Max(262_144d, (double)ClientSize.Width * ClientSize.Height);
+        var scale = Math.Min(1d, Math.Sqrt(pixelBudget / ((double)size.Width * size.Height)));
+        return new SizeF(
+            Math.Max(1f, (float)(size.Width * scale)),
+            Math.Max(1f, (float)(size.Height * scale)));
+    }
+
     internal static bool Reference3DProjectiveMeshCoversFullDomain(
         IReadOnlyList<Reference3DProjectiveTriangle> triangles)
     {

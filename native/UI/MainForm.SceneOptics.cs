@@ -61,9 +61,21 @@ internal sealed partial class MainForm
     // UpdateInspector, scene/frame selection, language, and hot-reload refresh hook.
     private void RefreshSceneOpticsInspector()
     {
-        var sceneWorkspace = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor;
+        var sceneWorkspace = IsSceneWorkspaceSelected;
         var scene3D = sceneWorkspace && IsSceneCompositionContext() && IsScene3DView() && !IsSceneMaskEditing();
         var scene = scene3D ? ActiveScene() : null;
+        if (!scene3D
+            && !_sceneLightingPanel.Visible
+            && !_spatialMaterialPanel.Visible
+            && string.IsNullOrEmpty(_selectedSceneLightId))
+        {
+            // Most inspector refreshes happen in the 2D workspace. Once the
+            // optics panels are already hidden there is no panel state to
+            // rebuild; keep the gizmo cleanup path for workspace transitions.
+            if (_stage.SceneLightGizmoVisible) RefreshSceneLightGizmo();
+            return;
+        }
+
         var lights = scene?.Lights.Select(light => ToEditorState(scene, light, _frame)).ToArray() ?? [];
         if (scene is null
             || !string.IsNullOrWhiteSpace(_selectedSceneLightId)
@@ -536,7 +548,7 @@ internal sealed partial class MainForm
 
     private void RefreshSceneLightGizmo()
     {
-        var scene3D = _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+        var scene3D = IsSceneWorkspaceSelected
             && IsSceneCompositionContext()
             && IsScene3DView()
             && !IsSceneMaskEditing();

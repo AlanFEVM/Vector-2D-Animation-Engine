@@ -1072,7 +1072,11 @@ internal sealed partial class VectorProject
                     CreatedAt = scene.CreatedAt,
                     Layers = scene.CreateLayerSnapshot(),
                     Instances = scene.Instances.Select(CreateInstanceRestartSnapshot).ToArray(),
-                    Timeline = scene.Timeline.CreateSnapshot()
+                    Timeline = scene.Timeline.CreateSnapshot(),
+                    Shots = scene.CreateShotSnapshot(),
+                    OnionSkinEnabled = scene.OnionSkinEnabled,
+                    OnionSkinPreviousFrames = scene.OnionSkinPreviousFrames,
+                    OnionSkinNextFrames = scene.OnionSkinNextFrames
                 })
                 .ToArray()
         };
@@ -1160,12 +1164,21 @@ internal sealed partial class VectorProject
                 CreatedAt = item.CreatedAt
             };
             scene.RestoreLights(CreateRestartLights(item), item.Lights is not null);
+            scene.RestoreOnionSkinState(new SceneOnionSkinState(
+                item.OnionSkinEnabled,
+                item.OnionSkinPreviousFrames,
+                item.OnionSkinNextFrames));
             project._scenes.Add(scene);
         }
 
         for (var index = 0; index < sceneSnapshots.Length; index++)
         {
             project._scenes[index].RestoreLayerSnapshot(sceneSnapshots[index].Layers);
+        }
+
+        for (var index = 0; index < sceneSnapshots.Length; index++)
+        {
+            project._scenes[index].RestoreShotSnapshot(sceneSnapshots[index].Shots);
         }
 
         for (var index = 0; index < drawingSnapshots.Length; index++)
@@ -1213,6 +1226,7 @@ internal sealed partial class VectorProject
                     Distortion = restored.Distortion?.DeepClone(),
                     Alpha = restored.Alpha,
                     TintArgb = restored.TintArgb,
+                    Filters = restored.Filters,
                     OpticalMaterialOverride = restored.OpticalMaterialOverride,
                     PlaybackFps = restored.PlaybackFps,
                     PlaybackMode = restored.PlaybackMode,
@@ -1239,6 +1253,7 @@ internal sealed partial class VectorProject
             project._scenes[index].Timeline.RestoreSnapshot(sceneSnapshots[index].Timeline);
             project._scenes[index].SynchronizeTimelineTracks();
             ValidateRestoredSceneLightTimeline(project._scenes[index]);
+            ValidateRestoredSceneShotTimeline(project._scenes[index]);
         }
 
         return project;
@@ -1308,6 +1323,7 @@ internal sealed partial class VectorProject
             Distortion = instance.Distortion?.DeepClone(),
             Alpha = instance.Alpha,
             TintArgb = instance.TintArgb,
+            Filters = instance.Filters,
             OpticalMaterialOverride = instance.OpticalMaterialOverride,
             PlaybackFps = instance.PlaybackFps,
             PlaybackMode = instance.PlaybackMode,
@@ -1321,6 +1337,8 @@ internal sealed partial class VectorProject
         instance = null!;
         if (!IsValidRestartId(snapshot.Id)
             || !IsValidRestartId(snapshot.DrawingObjectId)
+            || !snapshot.Filters.IsValid
+            || snapshot.StateKeyframes.Any(key => !key.State.Filters.IsValid)
             || snapshot.OpticalMaterialOverride is { IsValid: false })
         {
             return false;
@@ -1348,6 +1366,7 @@ internal sealed partial class VectorProject
             Distortion = snapshot.Distortion?.DeepClone(),
             Alpha = snapshot.Alpha,
             TintArgb = snapshot.TintArgb,
+            Filters = snapshot.Filters,
             OpticalMaterialOverride = snapshot.OpticalMaterialOverride,
             PlaybackFps = snapshot.PlaybackFps,
             PlaybackMode = snapshot.PlaybackMode,
@@ -1460,6 +1479,35 @@ internal sealed partial class VectorProject
         {
             throw new InvalidOperationException(
                 $"The editor restart snapshot has a light ID collision in scene '{scene.Id}'.");
+        }
+    }
+
+    /// <summary>Restored shot framing columns must be well formed and own every state keyframe.</summary>
+    private static void ValidateRestoredSceneShotTimeline(SceneDefinition scene)
+    {
+        foreach (var shot in scene.Shots)
+        {
+            var track = scene.Timeline.FindTrackByTargetId(shot.Id);
+            if (track is null
+                || track.Keyframes.Count == 0
+                || track.Keyframes[0].Frame != 0
+                || track.Tweens.Any(tween => tween.Kind != TimelineTweenKind.Classic))
+            {
+                throw new InvalidOperationException(
+                    $"The editor restart snapshot has an invalid shot timeline in scene '{scene.Id}'.");
+            }
+
+            var populatedFrames = track.Keyframes
+                .Where(keyframe => keyframe.Kind == TimelineKeyframeKind.Populated)
+                .Select(keyframe => keyframe.Frame)
+                .ToHashSet();
+            if (shot.StateKeyframes.Any(keyframe =>
+                    keyframe.Frame >= track.Duration
+                    || !populatedFrames.Contains(keyframe.Frame)))
+            {
+                throw new InvalidOperationException(
+                    $"The editor restart snapshot has an orphaned shot framing keyframe in scene '{scene.Id}'.");
+            }
         }
     }
 
@@ -1673,6 +1721,7 @@ internal sealed partial class VectorProject
             Distortion = source.Distortion?.DeepClone(),
             Alpha = source.Alpha,
             TintArgb = source.TintArgb,
+            Filters = source.Filters,
             OpticalMaterialOverride = source.OpticalMaterialOverride,
             PlaybackFps = source.PlaybackFps,
             PlaybackMode = source.PlaybackMode,

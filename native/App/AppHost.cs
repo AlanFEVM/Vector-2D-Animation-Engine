@@ -12,11 +12,20 @@ internal sealed class AppHost : ApplicationContext
     private HotReloadPlan? _startupHotReloadPlan;
     private readonly HotReloadCoordinator _hotReloadCoordinator;
     private Action? _completeRestartHandoff;
+    private readonly CodexBridgeServer _codexBridge;
 
     public static AppHost? Current { get; private set; }
+    internal string CodexBridgeStatus => _codexBridge.Status;
+    internal void ApplyCodexBridgeSettings(ApplicationSettings settings) => _codexBridge.Apply(settings);
 
     public AppHost(EditorRestartState? restartState = null, Action? completeRestartHandoff = null)
     {
+        _codexBridge = new CodexBridgeServer((name, arguments, cancellation) =>
+        {
+            if (GetReadyMainForm() is not MainForm form)
+                throw new InvalidOperationException("The editor is starting or restarting. Retry when it is ready.");
+            return form.ExecuteCodexToolAsync(name, arguments, cancellation);
+        });
         _hotReloadCoordinator = new HotReloadCoordinator(GetReadyMainForm, ApplyHotReloadBatch);
         _completeRestartHandoff = completeRestartHandoff;
         Current = this;
@@ -70,6 +79,7 @@ internal sealed class AppHost : ApplicationContext
     private void SetMainFormUnavailable()
     {
         lock (_hotReloadSync) _mainFormReady = false;
+        _codexBridge.Stop();
     }
 
     private void CompleteMainFormStartup(MainForm form)
@@ -97,6 +107,7 @@ internal sealed class AppHost : ApplicationContext
         _completeRestartHandoff?.Invoke();
         _completeRestartHandoff = null;
         LauncherShutdownSignal.NotifyMainWindowReady();
+        _codexBridge.Apply(form.CodexApplicationSettings);
         if (deferredPlan is { } plan) _hotReloadCoordinator.Enqueue(plan);
     }
 
@@ -151,6 +162,7 @@ internal sealed class AppHost : ApplicationContext
     {
         if (disposing)
         {
+            _codexBridge.Dispose();
             _hotReloadCoordinator.Dispose();
             CloseStartupBanner();
         }

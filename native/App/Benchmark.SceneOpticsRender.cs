@@ -118,6 +118,7 @@ internal static partial class Benchmark
         }
 
         AssertOpticalInteractionPreviewLod();
+        AssertOpticalInteractionPreviewLod(playback: true);
 
         AssertLightKindEvaluates(SceneLightKind.Ambient, new SceneLightSettings(
             true,
@@ -180,14 +181,16 @@ internal static partial class Benchmark
         AssertLinearMaterialLighting();
         AssertOpticalRasterBudgetAndFallback();
         AssertShared2D3DFrameOptics();
+        AssertUnlit2D3DFrameOptics();
         RunSceneOpticsDenseLightingRegression();
 
         Console.WriteLine("scene_optics_render_plan=ok");
         Console.WriteLine($"scene_optics_stable_allocated_bytes={stableAllocated}");
 
-        void AssertOpticalInteractionPreviewLod()
+        void AssertOpticalInteractionPreviewLod(bool playback = false)
         {
-            stage.BeginReference3DOpticalInteractionPreview();
+            if (playback) stage.SetReference3DPlaybackActive(true);
+            else stage.BeginReference3DOpticalInteractionPreview();
             var previewItems = stage.GetReference3DSceneRenderItems();
             var previewSurface = previewItems
                 .Where(item => item.ObjectIndex == receiver
@@ -197,7 +200,7 @@ internal static partial class Benchmark
                 .FirstOrDefault()
                 ?? throw new InvalidOperationException(
                     "The optical interaction preview did not build a receiver surface.");
-            if (!stage.Reference3DOpticalInteractionPreviewActive
+            if (!(playback ? stage.Reference3DPlaybackActive : stage.Reference3DOpticalInteractionPreviewActive)
                 || stage.LastReference3DOpticalRasterLod != 2
                 || previewSurface.PixelWidth != (int)Math.Ceiling(previewSurface.Bounds.Width / 4d)
                 || previewSurface.PixelHeight != (int)Math.Ceiling(previewSurface.Bounds.Height / 4d))
@@ -206,7 +209,31 @@ internal static partial class Benchmark
                     "The optical interaction preview did not use the bounded quarter-resolution raster.");
             }
 
-            stage.EndReference3DOpticalInteractionPreview();
+            if (playback)
+            {
+                using var preparationStage = new StageControl(new VectorScene())
+                {
+                    ClientSize = stage.ClientSize
+                };
+                preparationStage.ConfigureReference3DPlaybackPreparation(
+                    scene, composition, stage.Frame, stage.CaptureReference3DPlaybackPreparationState());
+                var preparedSurface = preparationStage.GetReference3DSceneRenderItems()
+                    .Where(item => item.ObjectIndex == receiver
+                        && item.Kind == Reference3DRenderKind.FrontFill)
+                    .Select(item => item.OpticalSurface)
+                    .OfType<Reference3DOpticalSurface>()
+                    .FirstOrDefault()
+                    ?? throw new InvalidOperationException("Playback preparation lost its optical receiver.");
+                if (preparedSurface.PixelWidth != previewSurface.PixelWidth
+                    || preparedSurface.PixelHeight != previewSurface.PixelHeight
+                    || !preparedSurface.PremultipliedPixels.AsSpan().SequenceEqual(previewSurface.PremultipliedPixels))
+                {
+                    throw new InvalidOperationException(
+                        "Background playback preparation did not match the displayed optical preview.");
+                }
+                stage.SetReference3DPlaybackActive(false);
+            }
+            else stage.EndReference3DOpticalInteractionPreview();
             var finalItems = stage.GetReference3DSceneRenderItems();
             var finalSurface = finalItems
                 .Where(item => item.ObjectIndex == receiver
@@ -216,7 +243,7 @@ internal static partial class Benchmark
                 .FirstOrDefault()
                 ?? throw new InvalidOperationException(
                     "Completing the optical interaction did not build a final receiver surface.");
-            if (stage.Reference3DOpticalInteractionPreviewActive
+            if (stage.Reference3DOpticalInteractionPreviewActive || stage.Reference3DPlaybackActive
                 || stage.LastReference3DOpticalRasterLod != 0
                 || finalSurface.PixelWidth != finalSurface.Bounds.Width
                 || finalSurface.PixelHeight != finalSurface.Bounds.Height
@@ -2677,6 +2704,95 @@ internal static partial class Benchmark
                 throw new InvalidOperationException(
                     $"{label} diverged: actual={actual.ToArgb():X8}, expected={expected.ToArgb():X8}.");
             }
+        }
+
+        void AssertUnlit2D3DFrameOptics()
+        {
+            var albedo = Color.FromArgb(255, 68, 138, 208);
+            var background = Color.FromArgb(255, 17, 21, 27);
+            foreach (var shape in new[] { ShapeKind.Rectangle, ShapeKind.Path })
+            foreach (var transmission in new[] { 0f, 0.4f })
+            foreach (var lightState in new[] { "uninitialized", "empty", "disabled", "zero-intensity" })
+            {
+                var unlitScene = new VectorScene();
+                unlitScene.CreateEmpty();
+                var objectIndex = shape == ShapeKind.Path
+                    ? unlitScene.AddPathObject(
+                        0,
+                        [new(-1200, -900), new(1200, -900), new(1200, 900), new(-1200, 900)],
+                        0, albedo, Color.Transparent, 12)
+                    : unlitScene.AddObject(
+                        0, PointF.Empty, new SizeF(2400, 1800), 0, 0,
+                        albedo, Color.Transparent, atoms: 12, shapeKind: ShapeKind.Rectangle);
+                var definition = new SceneDefinition();
+                definition.Camera.Projection = CameraProjection.Orthographic;
+                var initialized = lightState != "uninitialized";
+                if (lightState is "disabled" or "zero-intensity")
+                {
+                    var ambient = SceneLightDefinition.CreateDefaultAmbient();
+                    _ = ambient.TryApply(ambient.Name, ambient.Settings with
+                    {
+                        Enabled = lightState != "disabled",
+                        Intensity = lightState == "zero-intensity" ? 0f : 1f
+                    });
+                    definition.RestoreLights([ambient], lightsWerePresent: true);
+                }
+                else definition.RestoreLights([], lightsWerePresent: initialized);
+                var material = SpatialOpticalMaterial.Default with
+                {
+                    Transmission = transmission,
+                    Metallic = transmission > 0f ? 0.8f : 0f
+                };
+                var composition = new SceneCompositionResult(
+                    [new SceneCompositionObjectOwner("unlit-receiver", "fixture")],
+                    [new SceneCompositionObjectPose(Matrix4x4.Identity)],
+                    [material]);
+                using var unlitStage = new StageControl(unlitScene)
+                {
+                    ClientSize = new Size(320, 240),
+                    BackColor = background,
+                    WorldGridOpacity = 0
+                };
+                unlitStage.SetSceneCompositionResult(composition, unlitScene);
+                Color? twoDPixel = null;
+                var expectedOpacity = initialized ? 1f - transmission * 0.85f : 1f;
+                var expected = Color.FromArgb(255,
+                    (int)MathF.Round(albedo.R * expectedOpacity + background.R * (1f - expectedOpacity)),
+                    (int)MathF.Round(albedo.G * expectedOpacity + background.G * (1f - expectedOpacity)),
+                    (int)MathF.Round(albedo.B * expectedOpacity + background.B * (1f - expectedOpacity)));
+                foreach (var dimension in new[] { SceneDimension.TwoD, SceneDimension.ThreeD })
+                {
+                    unlitStage.ConfigureReferenceView(definition, dimension);
+                    unlitStage.ResetReferenceCameraView();
+                    unlitStage.SetReferenceCameraOrientation(0, 0);
+                    var items = unlitStage.GetReference3DSceneRenderItems();
+                    var fill = items.First(item => item.ObjectIndex == objectIndex
+                        && item.Kind == Reference3DRenderKind.FrontFill);
+                    if (Math.Abs(fill.MaterialOpacity - expectedOpacity) > 0.0001f
+                        || !unlitStage.TryProjectScenePoint(objectIndex, PointF.Empty, out var sample, out _))
+                    {
+                        throw new InvalidOperationException(
+                            $"Unlit {dimension}/{shape}/{lightState} changed material opacity or lost its receiver.");
+                    }
+                    using var bitmap = RenderOpticsGdi(unlitStage);
+                    var pixel = SampleBitmap(bitmap, sample);
+                    if (Math.Abs(pixel.R - expected.R) > 2
+                        || Math.Abs(pixel.G - expected.G) > 2
+                        || Math.Abs(pixel.B - expected.B) > 2
+                        || pixel.A != expected.A
+                        || twoDPixel is { } previous
+                            && (Math.Abs(previous.R - pixel.R) > 1
+                                || Math.Abs(previous.G - pixel.G) > 1
+                                || Math.Abs(previous.B - pixel.B) > 1))
+                    {
+                        throw new InvalidOperationException(
+                            $"Unlit {dimension}/{shape}/{lightState}/transmission={transmission} "
+                            + $"did not preserve source color and opacity: pixel={pixel}, expected={expected}, 2D={twoDPixel}.");
+                    }
+                    twoDPixel ??= pixel;
+                }
+            }
+            Console.WriteLine("scene_unlit_2d_3d_parity=ok");
         }
 
         void AssertShared2D3DFrameOptics()

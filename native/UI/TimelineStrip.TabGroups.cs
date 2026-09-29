@@ -213,6 +213,27 @@ internal sealed partial class TimelineStrip
         graphics.FillRectangle(backgroundBrush, bar);
         graphics.DrawLine(borderPen, bar.Left, bar.Bottom - 1, bar.Right, bar.Bottom - 1);
 
+        if (_shotFilterActive)
+        {
+            SvgIcons.Draw(
+                graphics,
+                SvgIconKind.Camera,
+                new Rectangle(ScaleTimelineMetric(9), ToolbarHeaderHeight + ScaleTimelineMetric(8), ScaleTimelineMetric(14), ScaleTimelineMetric(14)),
+                Theme.ReadableText(background, Theme.Accent));
+            TextRenderer.DrawText(
+                graphics,
+                UiLocalization.T("Camera tracks"),
+                Font,
+                new Rectangle(
+                    ScaleTimelineMetric(30),
+                    ToolbarHeaderHeight,
+                    Math.Max(24, bar.Width - ScaleTimelineMetric(38)),
+                    bar.Height),
+                Theme.ReadableText(background, Theme.Text),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            return;
+        }
+
         var activeId = _timeline?.ActiveTabGroupId;
         var snapshot = BuildTabGroupLayout();
         foreach (var tab in snapshot.VisibleTabs)
@@ -267,8 +288,8 @@ internal sealed partial class TimelineStrip
     private void LayoutTabGroupControls(TimelineLayout layout)
     {
         var snapshot = BuildTabGroupLayout();
-        var showAdd = _timeline is not null && !snapshot.AddBounds.IsEmpty;
-        var showOverflow = _timeline is not null && !snapshot.OverflowBounds.IsEmpty;
+        var showAdd = !_shotFilterActive && _timeline is not null && !snapshot.AddBounds.IsEmpty;
+        var showOverflow = !_shotFilterActive && _timeline is not null && !snapshot.OverflowBounds.IsEmpty;
         _tabGroupAddButton.Visible = showAdd;
         _tabGroupOverflowButton.Visible = showOverflow;
         if (showAdd && _tabGroupAddButton.Bounds != snapshot.AddBounds) _tabGroupAddButton.Bounds = snapshot.AddBounds;
@@ -299,6 +320,7 @@ internal sealed partial class TimelineStrip
     private bool TryHandleTabGroupClick(Point point)
     {
         if (!TabGroupBarBounds().Contains(point)) return false;
+        if (_shotFilterActive) return true;
         var id = TabGroupAt(point, out var overflow);
         if (overflow)
         {
@@ -319,6 +341,7 @@ internal sealed partial class TimelineStrip
     private bool TryShowTabGroupContextMenu(Point point)
     {
         if (!TabGroupBarBounds().Contains(point)) return false;
+        if (_shotFilterActive) return true;
         var id = TabGroupAt(point, out var overflow);
         if (overflow)
         {
@@ -334,6 +357,7 @@ internal sealed partial class TimelineStrip
 
     private void ShowTabGroupContextMenu(string id, Point point)
     {
+        if (_shotFilterActive) return;
         ClearTabGroupMenuItems(_tabGroupContextMenu.Items);
         var item = TabGroupItems().FirstOrDefault(candidate => string.Equals(candidate.Id, id, StringComparison.Ordinal));
         if (string.IsNullOrWhiteSpace(item.Id)) return;
@@ -359,6 +383,7 @@ internal sealed partial class TimelineStrip
 
     private void ShowTabGroupOverflowMenu()
     {
+        if (_shotFilterActive) return;
         ClearTabGroupMenuItems(_tabGroupOverflowMenu.Items);
         foreach (var item in TabGroupItems())
         {
@@ -551,6 +576,12 @@ internal sealed partial class TimelineStrip
 
     private void HandleLayerTabGroupContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        if (_shotFilterActive)
+        {
+            e.Cancel = true;
+            return;
+        }
+
         _moveLayerToTabGroupMenuItem.Text = UiLocalization.T("Move to tab group");
         ClearTabGroupMenuItems(_moveLayerToTabGroupMenuItem.DropDownItems);
         var activeTrack = GetActiveTrackIndex();
@@ -581,7 +612,9 @@ internal sealed partial class TimelineStrip
 
     private void MoveSelectedTracksToTabGroup(string groupId)
     {
-        if (_timeline is null || string.Equals(groupId, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)) return;
+        if (_shotFilterActive
+            || _timeline is null
+            || string.Equals(groupId, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)) return;
         var activeTrack = GetActiveTrackIndex();
         var selected = SelectedLayerTrackIndices();
         if (activeTrack >= 0 && selected.Count == 0 && IsTrackSelectableRow(activeTrack)) selected = [activeTrack];
@@ -606,6 +639,7 @@ internal sealed partial class TimelineStrip
     private bool IsTrackInActiveTabGroup(int trackIndex)
     {
         if (trackIndex < 0 || trackIndex >= TrackCount) return false;
+        if (_shotFilterActive && IsSceneShotTrack(trackIndex)) return true;
         var active = _timeline.ActiveTabGroupId;
         return string.Equals(active, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)
             || string.Equals(_timeline.Tracks[trackIndex].TabGroupId, active, StringComparison.Ordinal);
@@ -619,6 +653,7 @@ internal sealed partial class TimelineStrip
 
     private bool TryHandleTabGroupKey(KeyEventArgs e)
     {
+        if (_shotFilterActive) return false;
         if (!Focused
             || _focusedTabGroupId is null
             || e.Modifiers != Keys.None
@@ -652,6 +687,18 @@ internal sealed partial class TimelineStrip
 
     private void UpdateTabGroupHover(Point location, TimelineLayout layout)
     {
+        if (_shotFilterActive)
+        {
+            if (_hoveredTabGroupId is not null)
+            {
+                _hoveredTabGroupId = null;
+                Invalidate(TabGroupBarBounds());
+            }
+
+            SetTabGroupToolTip("");
+            return;
+        }
+
         var previous = _hoveredTabGroupId;
         _hoveredTabGroupId = TabGroupBarBounds().Contains(location)
             ? TabGroupAt(location, out _)

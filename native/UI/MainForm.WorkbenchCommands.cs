@@ -593,10 +593,22 @@ internal sealed partial class MainForm : Form
     {
         if (ApplyTemporaryCanvasPanCursor())
         {
+            ClearShotFramingFeedback();
             _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
             return;
         }
         var screen = _stage.PointToClient(Cursor.Position);
+        if (_stage.ClientRectangle.Contains(screen) && UpdateShotFramingGizmoCursor(screen)) return;
+        if (IsShotDirectorContext())
+        {
+            _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
+            _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
+            _stage.ClearBrushTipCursor();
+            _stage.ClearFillToolCursor();
+            ClearFillHoverPreview();
+            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
+            return;
+        }
         if (_stage.ClientRectangle.Contains(screen) && UpdateSceneLightGizmoCursor(screen)) return;
         if (_stage.ClientRectangle.Contains(screen) && UpdateSpatialTransformCursor(screen)) return;
         if (IsLassoTool(_tool))
@@ -669,18 +681,31 @@ internal sealed partial class MainForm : Form
     {
         if (ApplyTemporaryCanvasPanCursor())
         {
+            ClearShotFramingFeedback();
             _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
             _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
             return;
         }
         if (_viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming)
         {
+            ClearShotFramingFeedback();
             _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
             _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
             _stage.ClearBrushTipCursor();
             return;
         }
 
+        if (UpdateShotFramingGizmoCursor(screen)) return;
+        if (IsShotDirectorContext())
+        {
+            _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
+            _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
+            _stage.ClearBrushTipCursor();
+            _stage.ClearFillToolCursor();
+            ClearFillHoverPreview();
+            _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
+            return;
+        }
         if (UpdateSceneLightGizmoCursor(screen)) return;
         if (UpdateSpatialTransformCursor(screen)) return;
         if (IsLassoTool(_tool))
@@ -1030,7 +1055,10 @@ internal sealed partial class MainForm : Form
         _timeline.ActiveLayerChanged += (_, _) =>
         {
             if (!CommitTextEdit()) return;
+            var cameraSelected = IsSceneBuildingContext()
+                && SynchronizeSceneShotSelectionFromTimeline();
             if (IsSceneBuildingContext()
+                && !cameraSelected
                 && !SynchronizeSceneLightSelectionFromTimeline())
             {
                 ClearSceneOpticsLightSelection();
@@ -1094,6 +1122,9 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.DrawingObjectRenameRequested += (_, e) => RenameDrawingObject(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectDuplicateRequested += (_, e) => DuplicateDrawingObject(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectDeleteRequested += (_, e) => DeleteDrawingObject(e.DrawingObjectId);
+        _libraryVaultPanel.DrawingObjectSvgExportRequested += (_, e) => ExportDrawingObjectSvg(e.DrawingObjectId);
+        _libraryVaultPanel.DrawingObjectSymbolExportRequested += (_, e) => ExportDrawingObjectSymbolPackage(e.DrawingObjectId);
+        _libraryVaultPanel.DrawingObjectSymbolImportRequested += (_, e) => ImportDrawingObjectSymbolPackages(e.FileNames);
         _libraryVaultPanel.DrawingObjectAssetTagsRequested += (_, e) => EditDrawingObjectAssetTags(e.DrawingObjectId);
         _libraryVaultPanel.DrawingObjectAssetTagAssignmentRequested += (_, e) =>
             SetDrawingObjectAssetTagAssignment(e.DrawingObjectId, e.TagId, e.Assigned);
@@ -1164,6 +1195,10 @@ internal sealed partial class MainForm : Form
             CompleteInstanceAppearanceEdit();
         _drawingObjectInstancePanel.AppearanceInteractionCanceled += (_, _) =>
             CancelInstanceAppearanceEdit();
+        _drawingObjectInstancePanel.FiltersPanel.InteractionStarted += (_, _) => BeginInstanceAppearanceEdit();
+        _drawingObjectInstancePanel.FiltersPanel.FiltersChanged += (_, e) => ApplySelectedDrawingObjectFilters(e);
+        _drawingObjectInstancePanel.FiltersPanel.InteractionCompleted += (_, _) => CompleteInstanceAppearanceEdit();
+        _drawingObjectInstancePanel.FiltersPanel.InteractionCanceled += (_, _) => CancelInstanceAppearanceEdit();
         _drawingObjectInstancePanel.RestoreOriginalSizeRequested += (_, _) =>
             RestoreSelectedDrawingObjectOriginalSize();
         _materialEditor.MaterialChanged += (_, e) =>
@@ -1350,6 +1385,7 @@ internal sealed partial class MainForm : Form
         _stage.MouseMove += StageMouseMove;
         _stage.MouseLeave += (_, _) =>
         {
+            ClearShotFramingFeedback();
             _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
             _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
             _stage.ClearHoveredLineElement();
@@ -1374,6 +1410,7 @@ internal sealed partial class MainForm : Form
             if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
             else FinishLostPointerCapture();
             CancelTemporaryCanvasPan();
+            ClearShotFramingFeedback();
         };
     }
 
@@ -1751,6 +1788,7 @@ internal sealed partial class MainForm : Form
     private void RefreshLayers()
     {
         _timeline.RefreshTimeline();
+        RefreshShotDirector();
     }
 
     private void Tick()
@@ -1926,7 +1964,14 @@ internal sealed partial class MainForm : Form
 
     private void StopPlayback()
     {
-        if (!_playing)
+        var hadPlaybackState = _playing
+            || _stage.PlaybackActive
+            || _stage.Reference3DPlaybackActive
+            || _stage.Reference3DOpticalInteractionPreviewActive
+            || _playbackSchedulerState is not null
+            || _playbackCompositionPreloader is not null
+            || _playbackCompositionSceneActive;
+        if (!hadPlaybackState)
         {
             StopPlaybackScheduler();
             EndPlaybackTimerResolution();
@@ -1936,6 +1981,7 @@ internal sealed partial class MainForm : Form
         StopPlaybackScheduler();
         EndPlaybackTimerResolution();
         _stage.SetReference3DPlaybackActive(active: false);
+        _stage.EndReference3DOpticalInteractionPreview();
         var restoreComposition = _playbackCompositionSceneActive;
         StopPlaybackCompositionPreload();
         _updateBatcher.Reset();
@@ -1979,7 +2025,7 @@ internal sealed partial class MainForm : Form
         var totalAtoms = _scene.VirtualAtomCount;
         if (_stage.UnderlayScene is { } underlay && !ReferenceEquals(underlay, _scene)) totalAtoms += underlay.VirtualAtomCount;
         SetLabelText(_atoms, $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(totalAtoms)}");
-        SetLabelText(_zoom, $"Zoom {_stage.Zoom * 100:0}%");
+        SetLabelText(_zoom, $"Zoom {_stage.ActiveViewZoom * 100:0}%");
         UpdateStatusBar();
     }
 
@@ -1991,7 +2037,7 @@ internal sealed partial class MainForm : Form
         SetToolStripText(
             _animationFpsStatus,
             $"UPS {(_hasUpdateRateSample ? $"{_updatesPerSecond:0}" : "--")}/{TargetUps:0}  Animation FPS {FormatPlaybackFps(_playbackSettings.Fps)}");
-        SetToolStripText(_zoomStatus, $"Zoom {_stage.Zoom * 100:0}%");
+        SetToolStripText(_zoomStatus, $"Zoom {_stage.ActiveViewZoom * 100:0}%");
     }
 
     private static string FormatPlaybackFps(decimal playbackFps)
@@ -2074,6 +2120,10 @@ internal sealed partial class MainForm : Form
             }
 
             _frame = next;
+            _shotDirectorPanel.SetPlayhead(next);
+            PushShotDirectorFraming();
+            UpdateShotFramingGizmo();
+            RefreshShotPreview();
             TracePlaybackDiagnostic(
                 $"set_frame_apply next={next} changed={frameChanged} scene_building={IsSceneBuildingContext()}");
             if (IsSceneBuildingContext())
@@ -2110,12 +2160,13 @@ internal sealed partial class MainForm : Form
             if (playbackCompositionApplied && _stage.Reference3DPlaybackActive)
             {
                 _stage.SetReference3DPlaybackFrame(next);
-                if (!_stage.QueueReference3DPlaybackRaster())
-                {
-                    // The first playback paint creates the cached background.
-                    // Keep the normal invalidation fallback until it exists.
-                    _stage.Invalidate();
-                }
+                _stage.QueueReference3DPlaybackRaster();
+                // A worker may reject a frame (for example when an imported
+                // vector item uses a feature outside the playback raster
+                // subset) without publishing a result. Always enqueue one
+                // coalesced paint so the Direct2D path can present the frame
+                // and keep input/view controls responsive.
+                _stage.Invalidate();
             }
             else
             {
@@ -2133,6 +2184,11 @@ internal sealed partial class MainForm : Form
                         _selectedSceneLightId);
                 }
             }
+
+            // The shot camera handle stays on screen while playing, so it has to be re-evaluated for the
+            // frame that is now displayed. Without this it would freeze at the playback start frame and
+            // silently disagree with the animated shot.
+            if (frameChanged && _playing) UpdateShotFramingGizmo();
             if (frameChanged && (_selectedElements.Count > 0 || !_playing && IsSceneBuildingContext())) ClearSelection();
             if (!_playing)
             {
@@ -2200,6 +2256,7 @@ internal sealed partial class MainForm : Form
             ToggleTimelinePanel();
             return true;
         }
+        if (_workspaceTabs.TrySelectWorkspaceShortcut(keyData)) return true;
         var focusedEditor = ContainsFocusedEditor(this);
         var interactiveControlFocused = ContainsFocusedInteractiveControl(this);
         var commandButtonFocused = ContainsFocusedButton(this);
@@ -2215,6 +2272,11 @@ internal sealed partial class MainForm : Form
             CancelReferenceCameraRightLook();
         }
         if (HandleLassoCommandKey(keyData)) return true;
+        if (keyData == Keys.Escape && _shotFramingPointerSession is not null)
+        {
+            CancelShotFramingPointer();
+            return true;
+        }
         if (keyData == Keys.Escape && _sceneLightGizmoPointerSession is not null)
         {
             CancelSceneLightGizmoPointer();
@@ -2275,6 +2337,7 @@ internal sealed partial class MainForm : Form
         }
         var canvasShortcutsEnabled = _materialEditSession is null
             && !focusedEditor
+            && !IsShotDirectorContext()
             && (!interactiveControlFocused || commandButtonFocused);
         var drawingObjectStackDirection = ResolveDrawingObjectStackShortcutDirection(
             keyData,
@@ -2284,6 +2347,8 @@ internal sealed partial class MainForm : Form
             _materialEditSession is not null);
         var stageDeleteEnabled = _materialEditSession is null
             && !_timeline.ContainsFocus
+            && !_shotDirectorPanel.ContainsFocus
+            && !IsShotDirectorContext()
             && !ContainsFocusedTextEditor(this);
         if (_timeline.ContainsFocus)
         {
@@ -2309,6 +2374,10 @@ internal sealed partial class MainForm : Form
             }
             if (HandleTimelineShortcut(keyData)) return true;
         }
+        // Director mode disables geometry shortcuts, but still owns scene history.
+        // Text/numeric editors retain local undo; active gestures remain guarded above.
+        if (IsShotDirectorContext() && !focusedEditor && _materialEditSession is null
+            && keyData == (Keys.Control | Keys.Z) && UndoLastEdit()) return true;
         if (keyData == Keys.Space && TryHoldTemporaryCanvasPan()) return true;
         if (keyData == Keys.Escape && (_spacePanHeld || _spacePanPointerActive))
         {
