@@ -115,9 +115,23 @@ internal sealed partial class MainForm : Form
         e.SuppressKeyPress = true;
     }
 
+    protected override void OnDeactivate(EventArgs e)
+    {
+        base.OnDeactivate(e);
+        // Losing activation while F5 is held means no key-up will arrive; settle the coalesced
+        // gesture here so its deferred refresh is not stranded.
+        FinishTimelineRepeatGesture();
+    }
+
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
+        if (e.KeyCode == Keys.F5)
+        {
+            // Releasing the held insert/remove shortcut settles the coalesced gesture: the deferred
+            // timeline, shot, and inspector refresh runs once instead of once per key repeat.
+            FinishTimelineRepeatGesture();
+        }
         if (e.KeyCode == Keys.Space)
         {
             var wasHeld = _spacePanHeld;
@@ -260,6 +274,85 @@ internal sealed partial class MainForm : Form
         return track is not null && scene.FindShot(track.TargetId) is not null;
     }
 
+    /// <summary>
+    /// Tracks a held F5/Shift+F5 as one continuous gesture so Windows key auto-repeat does not turn
+    /// every repeat into a fresh snapshot, undo unit, and full timeline/inspector refresh.
+    /// </summary>
+    private sealed record TimelineRepeatGesture(
+        TimelineEditKind Edit,
+        string[] TrackIds)
+    {
+        /// <summary>
+        /// True once a repeat actually skipped the presentation refresh, so settling knows whether
+        /// there is deferred work to replay. A single tap never defers and never re-refreshes.
+        /// </summary>
+        public bool DeferredRefresh { get; set; }
+    }
+
+    private TimelineRepeatGesture? _timelineRepeatGesture;
+
+    private static bool IsRepeatableTimelineEdit(TimelineEditKind edit)
+    {
+        // Insert/Remove Frame (F5/Shift+F5) and Insert Keyframe / Insert Blank Keyframe (F6/F7) all
+        // arrive as a stream of separate shortcut presses under Windows key auto-repeat. Coalescing
+        // them keeps one snapshot and one undo unit per hold; without it every F6/F7 repeat paid a
+        // fresh deep snapshot clone plus a full timeline/shot/inspector refresh, which is what made a
+        // held F6 stutter on the timeline panel.
+        return edit is TimelineEditKind.InsertFrame
+            or TimelineEditKind.RemoveFrame
+            or TimelineEditKind.InsertKeyframe
+            or TimelineEditKind.InsertBlankKeyframe;
+    }
+
+    /// <summary>
+    /// True when a repeat of the same held shortcut may extend the open gesture instead of opening a
+    /// new undo unit. The shortcut retargets the active track as the playhead advances, so a repeat
+    /// continues the gesture only while it still covers exactly the same set of tracks.
+    /// </summary>
+    internal static bool TimelineRepeatGestureContinues(
+        IReadOnlyCollection<string> gestureTrackIds,
+        IEnumerable<TimelineFrameCell> repeatCells)
+    {
+        if (gestureTrackIds.Count == 0) return false;
+        var repeatTrackIds = repeatCells
+            .Select(cell => cell.TrackId)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return repeatTrackIds.Length == gestureTrackIds.Count
+            && repeatTrackIds.All(trackId => gestureTrackIds.Contains(trackId, StringComparer.Ordinal));
+    }
+
+    private void FinishTimelineRepeatGesture()
+    {
+        if (_timelineRepeatGesture is not { } gesture) return;
+        _timelineRepeatGesture = null;
+        if (!gesture.DeferredRefresh) return;
+        _timeline.RefreshTimeline();
+        RefreshShotDirector(force: true);
+        UpdateInspector();
+        RefreshTweenCurveInspector();
+        _stage.Invalidate();
+    }
+
+    /// <summary>
+    /// A held key that never reported a key-up (for example the window lost focus mid-hold) must not
+    /// keep deferring refreshes forever. Repeats arrive far faster than this window, so a gesture that
+    /// lapses is settled on the next shortcut evaluation.
+    /// </summary>
+    private void SettleTimelineRepeatGestureIfStale()
+    {
+        if (_timelineRepeatGesture is null) return;
+        if (Stopwatch.GetElapsedTime(_timelineRepeatGestureLastRepeatAt)
+            < TimeSpan.FromMilliseconds(TimelineRepeatStaleGestureMilliseconds))
+        {
+            return;
+        }
+        FinishTimelineRepeatGesture();
+    }
+
+    private const int TimelineRepeatStaleGestureMilliseconds = 400;
+    private long _timelineRepeatGestureLastRepeatAt;
+
     private bool HandleTimelineShortcut(Keys keyData)
     {
         switch (keyData)
@@ -287,7 +380,7 @@ internal sealed partial class MainForm : Form
                 if (!AllowsActiveTimelineTrackInCurrentWorkspace()) return false;
                 return ExecuteTimelineEdit(
                     TimelineEditKind.InsertFrame,
-                    movePlayheadToInsertedFrame: true);
+                    keepPlayheadForInsertFrame: true);
             case Keys.Shift | Keys.F5:
                 if (!AllowsActiveTimelineTrackInCurrentWorkspace()) return false;
                 return ExecuteTimelineEdit(TimelineEditKind.RemoveFrame);
@@ -308,9 +401,12 @@ internal sealed partial class MainForm : Form
     private bool ExecuteTimelineEdit(
         TimelineEditKind edit,
         IReadOnlyList<TimelineFrameCell>? selectedCells = null,
-        bool movePlayheadToInsertedFrame = false)
+        bool keepPlayheadForInsertFrame = false)
     {
         if (!CommitTextEdit()) return false;
+        // A new shortcut evaluation ends any held-key gesture that already lapsed, so its deferred
+        // refresh is applied before this press opens a fresh undo unit.
+        SettleTimelineRepeatGestureIfStale();
         var context = _timeline.Context;
         context.SynchronizeTimelineTracks();
         var previousLastFrame = Math.Max(0, context.FrameCount - 1);
@@ -370,18 +466,29 @@ internal sealed partial class MainForm : Form
             DrawingObjectDefinition drawingObject => drawingObject.Scene,
             _ => null
         };
-        var vectorSnapshot = drawingScene?.CreateSnapshot();
+        // A held F5/Shift+F5 arrives as a stream of separate shortcut presses. Only the first press
+        // opens the undo unit; later repeats of the same track selection reuse the gesture anchor and
+        // skip the deep snapshot clones that dominated each repeat.
+        var continuingGesture = IsRepeatableTimelineEdit(edit)
+            && _timelineRepeatGesture is { } activeGesture
+            && activeGesture.Edit == edit
+            && TimelineRepeatGestureContinues(activeGesture.TrackIds, cells);
         var drawingObjectDefinition = context as DrawingObjectDefinition;
-        var drawingObjectInstanceSnapshot = drawingObjectDefinition?.CreateInstanceSnapshot();
         var sceneDefinition = context as SceneDefinition;
+        var vectorSnapshot = continuingGesture
+            ? null
+            : drawingScene?.CreateSnapshot();
+        var drawingObjectInstanceSnapshot = continuingGesture
+            ? null
+            : drawingObjectDefinition?.CreateInstanceSnapshot();
         var hasSceneMaskCells = sceneDefinition is not null
             && cells.Any(cell => IsSceneMaskTrack(sceneDefinition, timeline.FindTrack(cell.TrackId)));
         var hasSceneShotCells = sceneDefinition is not null
             && cells.Any(cell => sceneDefinition.FindShot(timeline.FindTrack(cell.TrackId)?.TargetId) is not null);
-        var sceneSnapshot = sceneDefinition is null ? null : timeline.CreateSnapshot();
-        var sceneLightSnapshot = sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
-        var sceneLayerSnapshot = hasSceneMaskCells ? sceneDefinition!.CreateLayerSnapshot() : null;
-        var sceneShotSnapshot = hasSceneShotCells ? sceneDefinition!.CreateShotSnapshot() : null;
+        var sceneSnapshot = continuingGesture || sceneDefinition is null ? null : timeline.CreateSnapshot();
+        var sceneLightSnapshot = continuingGesture ? null : sceneDefinition?.Lights.Select(light => light.Clone()).ToArray();
+        var sceneLayerSnapshot = !continuingGesture && hasSceneMaskCells ? sceneDefinition!.CreateLayerSnapshot() : null;
+        var sceneShotSnapshot = !continuingGesture && hasSceneShotCells ? sceneDefinition!.CreateShotSnapshot() : null;
         var changed = false;
         var refreshCurrentComposition = edit != TimelineEditKind.InsertFrame;
 
@@ -486,25 +593,32 @@ internal sealed partial class MainForm : Form
         var undoPlayheadFrame = edit is TimelineEditKind.InsertKeyframe or TimelineEditKind.InsertBlankKeyframe
             ? previousPlayheadFrame
             : (int?)null;
-        if (vectorSnapshot is not null)
+        if (continuingGesture)
         {
-            PushUndoSnapshot(
-                vectorSnapshot,
-                drawingObjectDefinition,
-                drawingObjectInstanceSnapshot,
-                playheadFrame: undoPlayheadFrame,
-                timelineSelection: previousTimelineSelection);
+            // The open gesture already owns this edit's undo unit; nothing new is recorded.
         }
-        if (sceneDefinition is not null && sceneSnapshot is not null)
+        else
         {
-            PushSceneTimelineUndo(
-                sceneDefinition,
-                sceneSnapshot,
-                layerSnapshot: sceneLayerSnapshot,
-                playheadFrame: undoPlayheadFrame,
-                timelineSelection: previousTimelineSelection,
-                lightSnapshot: sceneLightSnapshot,
-                shotSnapshot: sceneShotSnapshot);
+            if (vectorSnapshot is not null)
+            {
+                PushUndoSnapshot(
+                    vectorSnapshot,
+                    drawingObjectDefinition,
+                    drawingObjectInstanceSnapshot,
+                    playheadFrame: undoPlayheadFrame,
+                    timelineSelection: previousTimelineSelection);
+            }
+            if (sceneDefinition is not null && sceneSnapshot is not null)
+            {
+                PushSceneTimelineUndo(
+                    sceneDefinition,
+                    sceneSnapshot,
+                    layerSnapshot: sceneLayerSnapshot,
+                    playheadFrame: undoPlayheadFrame,
+                    timelineSelection: previousTimelineSelection,
+                    lightSnapshot: sceneLightSnapshot,
+                    shotSnapshot: sceneShotSnapshot);
+            }
         }
 
         if (!advanceSingleKeyframeInsertion
@@ -519,10 +633,6 @@ internal sealed partial class MainForm : Form
                     : 1);
         }
 
-        var insertedFrameDestination = movePlayheadToInsertedFrame && edit == TimelineEditKind.InsertFrame
-            ? ResolveTimelineInsertPlayheadFrame(timeline, cells, _frame)
-            : _frame;
-
         CompleteTimelineMutation(
             context,
             drawingScene,
@@ -530,10 +640,39 @@ internal sealed partial class MainForm : Form
             refreshCurrentComposition,
             preservedInstanceSelectionIds,
             preservedPrimaryInstanceId,
-            singleKeyframeDestinationFrame);
-        if (movePlayheadToInsertedFrame && edit == TimelineEditKind.InsertFrame)
+            singleKeyframeDestinationFrame,
+            // Only an extending repeat defers; the first press of a gesture refreshes normally so a
+            // single tap, a context-menu insert, or a scripted call keeps its established behavior.
+            deferPresentationRefresh: continuingGesture);
+        if (keepPlayheadForInsertFrame && edit == TimelineEditKind.InsertFrame)
         {
-            SetFrame(insertedFrameDestination);
+            // Adobe Animate parity: F5 inserts a frame without moving the playhead. Frames before the
+            // insertion point are unchanged, so the content under the cursor is unchanged too, and an
+            // insert at or after the cursor leaves the cursor on the same frame number as before.
+            SetFrame(ResolveTimelinePlayheadAfterInsert(previousPlayheadFrame, _frame));
+        }
+        if (IsRepeatableTimelineEdit(edit))
+        {
+            // Keep the gesture open across key auto-repeat so the next repeat can extend this undo unit.
+            if (continuingGesture && _timelineRepeatGesture is { } open)
+            {
+                open.DeferredRefresh = true;
+                _timelineRepeatGestureLastRepeatAt = Stopwatch.GetTimestamp();
+            }
+            else
+            {
+                // A different edit replaces the gesture; replay whatever the previous one deferred.
+                FinishTimelineRepeatGesture();
+                _timelineRepeatGesture = new TimelineRepeatGesture(
+                    edit,
+                    cells.Select(cell => cell.TrackId).Distinct(StringComparer.Ordinal).ToArray());
+                _timelineRepeatGestureLastRepeatAt = Stopwatch.GetTimestamp();
+            }
+        }
+        else
+        {
+            // Any other timeline command ends an open held-key gesture.
+            FinishTimelineRepeatGesture();
         }
         PlayTimelineEditFeedback(edit, cells);
         return true;
@@ -619,32 +758,15 @@ internal sealed partial class MainForm : Form
         return Math.Max(0, insertionFrame) < Math.Max(0, currentFrame);
     }
 
-    internal static int ResolveTimelineInsertPlayheadFrame(
-        AnimationTimeline timeline,
-        IEnumerable<TimelineFrameCell> cells,
-        int fallbackFrame)
+    // Adobe Animate parity for Insert Frame (F5): the command changes the exposure under the
+    // playhead but leaves the playhead itself alone. The cursor therefore keeps its frame number
+    // regardless of how far the insertion extended the exposure, or whether the insertion point sat
+    // before, at, or after the cursor. This replaces the earlier behavior that moved the playhead to
+    // the newly extended exposure end.
+    internal static int ResolveTimelinePlayheadAfterInsert(int currentFrame, int exposureEndFrame)
     {
-        var destination = Math.Max(0, fallbackFrame);
-        var found = false;
-        foreach (var group in cells
-                     .Where(cell => cell.Frame >= 0)
-                     .GroupBy(cell => cell.TrackId, StringComparer.Ordinal))
-        {
-            var track = timeline.FindTrack(group.Key);
-            if (track is null) continue;
-            foreach (var range in TimelineFrameRanges(group.Select(cell => cell.Frame)))
-            {
-                var insertedEnd = range.Frame + range.Count - 1;
-                var exposure = track.EvaluateExposure(range.Frame);
-                var candidate = exposure.SourceKind is null
-                    ? insertedEnd
-                    : Math.Max(insertedEnd, exposure.EndFrame);
-                destination = found ? Math.Max(destination, candidate) : candidate;
-                found = true;
-            }
-        }
-
-        return found ? destination : Math.Max(0, fallbackFrame);
+        _ = exposureEndFrame;
+        return Math.Max(0, currentFrame);
     }
 
     internal static IReadOnlyList<TimelineBlankKeyframeRangePlan> ResolveTimelineBlankKeyframeRangePlans(
@@ -924,12 +1046,18 @@ internal sealed partial class MainForm : Form
         bool refreshCurrentComposition = true,
         IReadOnlyCollection<string>? preservedInstanceSelectionIds = null,
         string? preservedPrimaryInstanceId = null,
-        int? finalPlayheadFrame = null)
+        int? finalPlayheadFrame = null,
+        bool deferPresentationRefresh = false)
     {
         StopPlayback();
         ClearSelection();
-        _timeline.RefreshTimeline();
-        RefreshShotDirector(force: true);
+        // Held-key repeats keep the gesture open: the model and playhead still update every repeat,
+        // but the structural timeline/shot/inspector rebuild waits until the gesture settles.
+        if (!deferPresentationRefresh)
+        {
+            _timeline.RefreshTimeline();
+            RefreshShotDirector(force: true);
+        }
         var frameRefreshed = ApplyBoundTimelineDuration(
             previousLastFrame,
             refreshClampedFrame: finalPlayheadFrame is null);
@@ -963,6 +1091,7 @@ internal sealed partial class MainForm : Form
         {
             RestoreTimelineInstanceSelection(preservedInstanceSelectionIds, preservedPrimaryInstanceId);
         }
+        if (deferPresentationRefresh) return;
         UpdateInspector();
         RefreshTweenCurveInspector();
     }
@@ -2932,6 +3061,8 @@ internal sealed partial class MainForm : Form
         RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
         _stage.Invalidate();
+        RebuildMotionTrackPreview();
+        _timeline.RefreshMotionTrackControls();
     }
 
     private void SetTimelineOnionSkinRange(int previousFrames, int nextFrames)
@@ -2983,6 +3114,8 @@ internal sealed partial class MainForm : Form
         RebuildOnionSkinPreview();
         _timeline.RefreshOnionSkinControls();
         _stage.Invalidate();
+        RebuildMotionTrackPreview();
+        _timeline.RefreshMotionTrackControls();
     }
 
     private void BeginTimelineOnionSkinRangeEdit()
@@ -3976,6 +4109,9 @@ internal sealed partial class MainForm : Form
 
     private bool UndoLastEdit()
     {
+        // Undo is a hard boundary for a held-key gesture: settle its deferred refresh first, then the
+        // single gesture-wide undo entry restores the state from before the whole hold.
+        FinishTimelineRepeatGesture();
         _marqueeMaterializationSession = null;
         PruneUndoSequenceEntries();
         SceneTimelineUndoEntry? timelineUndo = null;
@@ -4179,7 +4315,8 @@ internal sealed partial class MainForm : Form
                     _scene.TryGetImportedSvgName(index, out var importedSvgName) ? importedSvgName : null,
                     _scene.TryGetTextObjectData(index, out var textData) ? textData : null,
                     mixingRegion,
-                    mixingSamples));
+                    mixingSamples,
+                    _scene.TryGetBitmapObjectData(index, out var bitmapData) ? bitmapData : null));
             }
 
             return _clipboardObjects.Count > 0 || _clipboardDrawingObjectInstances.Count > 0;
@@ -4225,6 +4362,17 @@ internal sealed partial class MainForm : Form
                     item.Angle,
                     item.ImportedSvgSource,
                     item.ImportedSvgName);
+            }
+            else if (item.Shape == ShapeKind.Bitmap && item.BitmapData is { } bitmapData)
+            {
+                var center = new PointF(item.Center.X + offset.X, item.Center.Y + offset.Y);
+                // A pasted bitmap keeps pointing at the same image asset: the payload is a
+                // reference, not pixels, so the copy shares the library entry.
+                index = _scene.AddBitmapObject(layer, center, bitmapData, item.Angle);
+            }
+            else if (item.Shape == ShapeKind.Bitmap)
+            {
+                index = -1;
             }
             else if (item.Shape == ShapeKind.Text && item.TextData is { } textData)
             {

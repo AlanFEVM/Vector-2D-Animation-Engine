@@ -287,7 +287,7 @@ internal static partial class Benchmark
         foreach (var invalid in new IDataObject?[]
         {
             null, new DataObject(DataFormats.Text, packagePath), FileDrop(), FileDrop(""),
-            FileDrop(unrelatedPath), FileDrop(packagePath, unrelatedPath), FileDrop(directoryPath),
+            FileDrop(directoryPath), FileDrop(packagePath, unrelatedPath),
             FileDrop(Path.Combine(Path.GetDirectoryName(packagePath)!, "missing.V2DSymbol"))
         })
         {
@@ -298,6 +298,15 @@ internal static partial class Benchmark
             AssertTimeline(rejected.Effect == DragDropEffects.None && importRequests == 0,
                 "The asset library accepted an unrelated, mixed, missing or non-file drop.");
         }
+
+        // A lone SVG is an external-SVG link drop handled by its own importer; the symbol
+        // importer must not claim it.
+        AssertTimeline(
+            LibraryVaultPanel.TryResolveDroppedAssetFiles(FileDrop(unrelatedPath), out var svgDrop)
+            && svgDrop.SvgFiles.SequenceEqual([unrelatedPath])
+            && svgDrop.SymbolFiles.Length == 0
+            && !LibraryVaultPanel.TryResolveDroppedSymbolFiles(FileDrop(unrelatedPath), out _),
+            "A lone SVG drop must be classified as an external-SVG link, not a symbol package.");
 
         var moveOnly = Drag(multiple, DragDropEffects.Move);
         dragEnter.Invoke(tree, [moveOnly]);

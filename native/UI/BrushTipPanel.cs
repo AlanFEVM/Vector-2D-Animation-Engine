@@ -2,6 +2,11 @@ namespace VectorAnimationEngine;
 
 internal sealed class BrushTipPanel : UserControl
 {
+    private const int PreviewRowHeight = 58;
+    private const int SettingRowHeight = 30;
+    private const int SettingRowCount = 7;
+    private const int TraditionalRowCount = 2;
+
     private readonly BrushTipPreview _preview = new();
     private readonly Label _name = new();
     private readonly ComboBox _preset = new();
@@ -27,14 +32,14 @@ internal sealed class BrushTipPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(0, 8, 0, 8);
-        MinimumSize = new Size(280, 248);
+        Padding = Theme.InspectorSectionPadding;
+        MinimumSize = new Size(280, PreferredHeight);
 
         var title = new Label
         {
             Text = "Brush Tip",
             Dock = DockStyle.Top,
-            Height = 24,
+            Height = Theme.InspectorTitleHeight,
             BackColor = Theme.Panel,
             ForeColor = Theme.Text,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -46,13 +51,16 @@ internal sealed class BrushTipPanel : UserControl
             BackColor = Theme.Panel,
             ColumnCount = 3,
             RowCount = 8,
-            Padding = new Padding(0, 2, 0, 0)
+            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
         };
         _content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
         _content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
-        _content.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-        for (var row = 1; row < _content.RowCount; row++) _content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        _content.RowStyles.Add(new RowStyle(SizeType.Absolute, PreviewRowHeight));
+        for (var row = 1; row < _content.RowCount; row++)
+        {
+            _content.RowStyles.Add(new RowStyle(SizeType.Absolute, SettingRowHeight));
+        }
 
         _preview.Dock = DockStyle.Fill;
         _preview.Margin = new Padding(0, 2, 8, 4);
@@ -226,7 +234,14 @@ internal sealed class BrushTipPanel : UserControl
         : TraditionalBrushTipKind.Round;
     public int TraditionalWidthPercent => (int)_traditionalWidth.Value;
     public int TraditionalDirectionDegrees => _traditionalDirection.Value;
-    public int PreferredHeight => _traditionalRowsVisible ? 308 : 248;
+    // Row 0 is the tip preview strip; the remaining dense rows are tip size, frequency,
+    // hardness, pressure smoothing, the two traditional-brush rows and the stroke row.
+    public int PreferredHeight => Theme.InspectorSectionPaddingVertical * 2
+        + Theme.InspectorTitleHeight
+        + Theme.InspectorContentPaddingTop
+        + PreviewRowHeight
+        + SettingRowHeight * SettingRowCount
+        - (_traditionalRowsVisible ? 0 : SettingRowHeight * TraditionalRowCount);
 
     public void SetBrushShape(BrushShape brushShape)
     {

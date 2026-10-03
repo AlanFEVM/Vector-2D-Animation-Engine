@@ -320,6 +320,11 @@ internal sealed partial class MainForm : Form
     private bool _sceneInstanceTimelineDirty;
     private string _dragPreviewDrawingObjectId = "";
     private PointF _dragPreviewPosition;
+    // Imported-file drops (image / external SVG) preview a throwaway clone of the pending
+    // object. The key identifies the file being dragged so the clone is rebuilt only when
+    // the hovered file changes, not on every DragOver sample.
+    private string _dragPreviewImportedKey = "";
+    private VectorScene? _dragPreviewImportedScene;
     private readonly Dictionary<int, PointF> _selectedMoveStarts = new();
     private readonly Dictionary<int, PointF> _selectedCurveStarts = new();
     private readonly Dictionary<int, PointF> _selectedCurve2Starts = new();
@@ -410,6 +415,15 @@ internal sealed partial class MainForm : Form
     private PointF _drawingTransformStartPointer;
     private PointF? _drawingTransformStartFocus;
     private float _drawingTransformAccumulatedAngle;
+
+    // Rotation is presented as a rigid body turn: the transform box captured at pointer-down is
+    // rotated by the same accumulated angle as the geometry instead of being re-derived from the
+    // rotated bounds on every move. Recomputing the frame each move made the box (and therefore
+    // the pivot and handle positions) jitter, so the fingers/cursor could not track the handle.
+    private bool _transformFrameFrozenForRotation;
+    private TransformOverlayFrame _transformFrozenFrame;
+    private PointF _transformFrozenPivot;
+    private PointF? _transformFrozenFocus;
     private InstanceAppearanceEditSession? _instanceAppearanceEditSession;
     private bool _instanceAppearancePreviewPending;
     private GradientHandleKind _gradientHandle = GradientHandleKind.None;
@@ -737,7 +751,8 @@ internal sealed partial class MainForm : Form
         string? ImportedSvgName,
         TextObjectData? TextData,
         MixingBrushRegionData? MixingRegion,
-        MixingBrushTrajectorySample[]? MixingSamples);
+        MixingBrushTrajectorySample[]? MixingSamples,
+        BitmapObjectData? BitmapData);
 
     private sealed record ClipboardDrawingObjectInstance(
         string DrawingObjectId,
@@ -1425,6 +1440,8 @@ internal sealed partial class MainForm : Form
         openProject.Click += (_, _) => OpenProjectFromDialog();
         var importSvg = new ToolStripMenuItem("Import SVG...");
         importSvg.Click += (_, _) => ImportSvgFromDialog();
+        var importImage = new ToolStripMenuItem("Import Image...");
+        importImage.Click += (_, _) => ImportImageAsset();
         var saveProject = new ToolStripMenuItem("Save Project") { ShortcutKeys = Keys.Control | Keys.S };
         saveProject.Click += (_, _) => SaveProject();
         var saveProjectAs = new ToolStripMenuItem("Save Project As...") { ShortcutKeys = Keys.Control | Keys.Shift | Keys.S };
@@ -1438,6 +1455,7 @@ internal sealed partial class MainForm : Form
             newProject,
             openProject,
             importSvg,
+            importImage,
             new ToolStripSeparator(),
             saveProject,
             saveProjectAs,
@@ -1446,7 +1464,11 @@ internal sealed partial class MainForm : Form
             new ToolStripSeparator(),
             releaseNotes
         });
-        _mainMenu.Opening += (_, _) => importSvg.Enabled = CanImportSvg();
+        _mainMenu.Opening += (_, _) =>
+        {
+            importSvg.Enabled = CanImportSvg();
+            importImage.Enabled = CanPlaceImage();
+        };
     }
 
     private bool CanImportSvg()
@@ -2322,7 +2344,7 @@ internal sealed partial class MainForm : Form
         _basicInspectorPage.BackColor = Theme.Panel;
         _basicInspectorPage.ContentPadding = new Padding(0, 0, 2, 0);
         _objectInspector.Dock = DockStyle.Top;
-        _objectInspector.Height = 142;
+        _objectInspector.Height = ObjectInspectorPanelHeight;
         _objectInspector.BackColor = Theme.Panel;
         BuildInspector(_objectInspector);
         _materialEditor.Dock = DockStyle.Top;
@@ -2402,15 +2424,27 @@ internal sealed partial class MainForm : Form
         ShowWorkspace(WorkspaceView.BasicDrawing);
     }
 
+    private const int ObjectInspectorRowCount = 4;
+
+    private static Padding ObjectInspectorPadding =>
+        new(0, Theme.GapXs, 0, Theme.InspectorSectionPaddingVertical);
+
+    private static int ObjectInspectorPanelHeight =>
+        ObjectInspectorPadding.Top
+        + Theme.InspectorTitleHeight
+        + Theme.InspectorContentPaddingTop
+        + Theme.InspectorMetaRowHeight * ObjectInspectorRowCount
+        + ObjectInspectorPadding.Bottom;
+
     private void BuildInspector(Control parent)
     {
-        parent.Padding = new Padding(0, 4, 0, 8);
+        parent.Padding = ObjectInspectorPadding;
 
         var title = new Label
         {
             Text = "Inspector",
             Dock = DockStyle.Top,
-            Height = 28,
+            Height = Theme.InspectorTitleHeight,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -2423,12 +2457,16 @@ internal sealed partial class MainForm : Form
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
             ColumnCount = 2,
-            RowCount = 4,
-            Padding = new Padding(0, 4, 0, 0)
+            RowCount = ObjectInspectorRowCount,
+            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Theme.InspectorFieldLabelColumnWidth));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < content.RowCount; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+        for (var i = 0; i < content.RowCount; i++)
+        {
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorMetaRowHeight));
+        }
+
         parent.Controls.Add(content);
         content.BringToFront();
 
@@ -2436,7 +2474,7 @@ internal sealed partial class MainForm : Form
         foreach (var label in new[] { _selected, _selectedLayer, _selectedAtoms, _objectMetric })
         {
             label.Dock = DockStyle.Fill;
-            label.Margin = new Padding(0, 0, 0, 3);
+            label.Margin = new Padding(0, 0, 0, 0);
             content.Controls.Add(label, 0, row);
             content.SetColumnSpan(label, 2);
             row++;
@@ -3175,6 +3213,15 @@ internal sealed partial class MainForm : Form
     }
 
     private void RebuildOnionSkinPreview()
+    {
+        RefreshMotionTrackToggle();
+        RebuildOnionSkinPreviewCore();
+        // The track samples the same pointer range the onion skin just resolved, so it is rebuilt
+        // after every onion-skin refresh, including the paths that clear the preview.
+        RebuildMotionTrackPreview();
+    }
+
+    private void RebuildOnionSkinPreviewCore()
     {
         if (_playing)
         {

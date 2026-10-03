@@ -461,9 +461,10 @@ internal sealed partial class VectorScene
             .ThenBy(index => source.ObjectSubOrder[index])
             .ToArray();
         if (sourceObjects.Length == 0) throw new InvalidDataException("Break Apart produced no visible geometry.");
-        if (sourceObjects.Any(index => source.ShapeKind[index] == VectorAnimationEngine.ShapeKind.ImportedSvg))
+        if (sourceObjects.Any(index => source.ShapeKind[index] is VectorAnimationEngine.ShapeKind.ImportedSvg
+                or VectorAnimationEngine.ShapeKind.Bitmap))
         {
-            throw new InvalidOperationException("Break Apart cannot materialize opaque SVG objects.");
+            throw new InvalidOperationException("Break Apart cannot materialize opaque raster objects.");
         }
 
         var snapshot = CreateSnapshot();

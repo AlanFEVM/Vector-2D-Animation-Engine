@@ -905,6 +905,7 @@ internal static partial class Benchmark
         material.SetGradientKind(GradientKind.ShapeRadial);
         var shapeRadialMaterialMode = material.GradientKind == GradientKind.ShapeRadial
             && material.EditingGradientStop;
+        AssertFillEditSurvivesHostEcho(material);
         using var shapePreview = new Bitmap(96, 48);
         using (var graphics = Graphics.FromImage(shapePreview))
         {
@@ -1740,6 +1741,46 @@ internal static partial class Benchmark
         Console.WriteLine($"trajectory_gradient_command_avg_ms={trajectoryGradientAverageCommandMilliseconds:0.000}");
         Console.WriteLine($"trajectory_gradient_cache_reuses={trajectoryGradientCacheReuses}");
         Console.WriteLine("gradient_paint_regression=ok");
+    }
+
+    /// <summary>
+    /// Changing the fill color must not be reverted by the host echoing the scene value back
+    /// through SetMaterial while the edit is still in flight.
+    /// </summary>
+    internal static void AssertFillEditSurvivesHostEcho(MaterialEditorPanel material)
+    {
+        material.SetGradient(GradientKind.Solid, [new GradientStop(0, Color.Black), new GradientStop(1, Color.Black)]);
+        material.SetGradientPreviewTarget(strokeTarget: false);
+        material.SetMaterial(Color.White, Color.Coral, 2f, 1f);
+
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var editingFill = typeof(MaterialEditorPanel).GetField("_editingFill", flags);
+        var handlingColorChange = typeof(MaterialEditorPanel).GetField("_handlingColorChange", flags);
+        if (editingFill is null || handlingColorChange is null)
+        {
+            throw new InvalidOperationException("The fill-edit echo regression could not read the material editor state.");
+        }
+
+        // Simulate the in-flight window: the editor is on the fill target and a color change is
+        // being raised, while the host writes the still-stale scene fill back into the panel.
+        var previousEditingFill = editingFill.GetValue(material);
+        var previousHandling = handlingColorChange.GetValue(material);
+        editingFill.SetValue(material, true);
+        handlingColorChange.SetValue(material, true);
+        try
+        {
+            material.Fill = Color.DeepSkyBlue;
+            material.SetMaterial(Color.White, material.Stroke, 2f, 1f);
+            if (material.Fill.ToArgb() != Color.DeepSkyBlue.ToArgb())
+            {
+                throw new InvalidOperationException($"The host echo reverted an in-flight fill edit to {material.Fill}.");
+            }
+        }
+        finally
+        {
+            editingFill.SetValue(material, previousEditingFill);
+            handlingColorChange.SetValue(material, previousHandling);
+        }
     }
 
     private static void RunFillEdgeAntialiasingRegression()

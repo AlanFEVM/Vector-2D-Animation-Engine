@@ -188,9 +188,9 @@ internal static partial class Benchmark
                 .Select(node => node?.AsObject())
                 .Single(node => node?["id"]?.GetValue<string>() == drawingObjectId)!;
             AssertTimeline(
-                manifest["formatVersion"]?.GetValue<int>() == 4
+                manifest["formatVersion"]?.GetValue<int>() == ProjectVaultStore.CurrentManifestFormatVersion
                 && savedDrawing["snapPoints"] is JsonArray { Count: 1 },
-                "Project Vault did not write symbol snap points to manifest v4.");
+                "Project Vault did not write symbol snap points to the current manifest format.");
             var restored = ProjectVaultStore.Load(manifestPath);
             var restoredDrawing = restored.DrawingObjects.SingleOrDefault(item => item.Id == drawingObjectId);
             var sourceDrawing = project.DrawingObjects.Single(item => item.Id == drawingObjectId);

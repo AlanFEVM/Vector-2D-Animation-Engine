@@ -100,6 +100,7 @@ internal sealed partial class VectorScene
                 item => cloneGeometry ? item.Value.DeepClone() : item.Value),
             ImportedSvgSources = _importedSvgSources.ToDictionary(item => item.Key, item => item.Value),
             ImportedSvgNames = _importedSvgNames.ToDictionary(item => item.Key, item => item.Value),
+            BitmapObjects = _bitmapObjects.ToDictionary(item => item.Key, item => item.Value),
             TextObjects = _textObjects.ToDictionary(item => item.Key, item => item.Value),
             ObjectDistortions = _objectDistortions.ToDictionary(
                 item => item.Key,
@@ -110,6 +111,7 @@ internal sealed partial class VectorScene
     public void RestoreSnapshot(VectorSceneSnapshot snapshot)
     {
         ValidateImportedSvgSnapshotPayload(snapshot);
+        ValidateBitmapSnapshotPayload(snapshot);
         ValidateTextSnapshotPayload(snapshot);
         ValidateMixingStrokeSnapshotPayload(snapshot);
         ValidateObjectDistortionSnapshotPayload(snapshot);
@@ -350,6 +352,12 @@ internal sealed partial class VectorScene
             _importedSvgNames[item.Key] = item.Value;
         }
 
+        _bitmapObjects.Clear();
+        foreach (var item in snapshot.BitmapObjects)
+        {
+            _bitmapObjects[item.Key] = item.Value;
+        }
+
         _textObjects.Clear();
         foreach (var item in snapshot.TextObjects)
         {
@@ -436,6 +444,36 @@ internal sealed partial class VectorScene
                 && !snapshot.ImportedSvgSources.ContainsKey(index))
             {
                 throw new InvalidOperationException("The scene snapshot is missing imported SVG payload.");
+            }
+        }
+    }
+
+    private static void ValidateBitmapSnapshotPayload(VectorSceneSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.BitmapObjects is null)
+        {
+            throw new InvalidOperationException("The scene snapshot is missing bitmap object metadata.");
+        }
+
+        foreach (var item in snapshot.BitmapObjects)
+        {
+            if ((uint)item.Key >= snapshot.ObjectCount
+                || item.Key >= snapshot.ShapeKind.Length
+                || snapshot.ShapeKind[item.Key] != VectorAnimationEngine.ShapeKind.Bitmap
+                || item.Value is null
+                || !item.Value.IsValid)
+            {
+                throw new InvalidOperationException("The scene snapshot contains invalid bitmap object metadata.");
+            }
+        }
+
+        for (var index = 0; index < Math.Min(snapshot.ObjectCount, snapshot.ShapeKind.Length); index++)
+        {
+            if (snapshot.ShapeKind[index] == VectorAnimationEngine.ShapeKind.Bitmap
+                && !snapshot.BitmapObjects.ContainsKey(index))
+            {
+                throw new InvalidOperationException("The scene snapshot is missing bitmap object payload.");
             }
         }
     }

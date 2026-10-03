@@ -1037,6 +1037,7 @@ internal sealed partial class VectorProject
                 })
                 .ToArray(),
             ExternalSvgAssets = CreateExternalSvgAssetRestartSnapshots(),
+            ImageAssets = CreateImageAssetRestartSnapshots(),
             DrawingObjects = _drawingObjects
                 .Select(drawingObject => new DrawingObjectRestartSnapshot
                 {
@@ -1146,6 +1147,7 @@ internal sealed partial class VectorProject
             project._drawingObjects.Add(drawingObject);
         }
         project.RestoreExternalSvgAssets(snapshot.ExternalSvgAssets ?? []);
+        project.RestoreImageAssets(snapshot.ImageAssets ?? []);
 
         for (var index = 0; index < drawingSnapshots.Length; index++)
         {

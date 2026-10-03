@@ -1114,9 +1114,104 @@ internal static partial class Benchmark
             throw new InvalidOperationException("Vertical flip did not mirror path geometry around the selection bounds.");
         }
 
+        RunTransformDragFlipRegression();
+
         RunBoundaryBezierHandleRegression();
 
         Console.WriteLine("shape_tool_regression=ok");
+    }
+
+    // A free-transform resize handle anchors the opposite corner. Dragging the pointer across that
+    // anchor must mirror the selection, which the tool expresses as a negative scale factor. The
+    // previous bounds builder clamped the moving edge onto the anchor, so the factors stayed
+    // positive and every flip collapsed into a one-unit sliver instead.
+    private static void RunTransformDragFlipRegression()
+    {
+        var bounds = RectangleF.FromLTRB(0, 0, 100, 50);
+
+        // At rest, a handle must report exactly 1 so grabbing it does not jump the selection.
+        var bottomRightPivot = new PointF(bounds.Left, bounds.Top);
+        foreach (var handle in new[]
+                 {
+                     TransformHandleKind.BottomRight,
+                     TransformHandleKind.TopLeft,
+                     TransformHandleKind.Right,
+                     TransformHandleKind.Bottom
+                 })
+        {
+            var (restPivotX, restPivotY) = handle switch
+            {
+                TransformHandleKind.BottomRight => (bounds.Left, bounds.Top),
+                TransformHandleKind.TopLeft => (bounds.Right, bounds.Bottom),
+                TransformHandleKind.Right => (bounds.Left, bounds.Top + bounds.Height * 0.5f),
+                _ => (bounds.Left + bounds.Width * 0.5f, bounds.Top)
+            };
+            var restPointer = handle switch
+            {
+                TransformHandleKind.BottomRight => new PointF(bounds.Right, bounds.Bottom),
+                TransformHandleKind.TopLeft => new PointF(bounds.Left, bounds.Top),
+                TransformHandleKind.Right => new PointF(bounds.Right, bounds.Top + bounds.Height * 0.5f),
+                _ => new PointF(bounds.Left + bounds.Width * 0.5f, bounds.Bottom)
+            };
+            if (!MainForm.TryGetResizedTransformScaleFactors(
+                    bounds,
+                    new PointF(restPivotX, restPivotY),
+                    handle,
+                    restPointer,
+                    out var restX,
+                    out var restY)
+                || !PointsNear(new PointF(restX, restY), new PointF(1f, 1f)))
+            {
+                throw new InvalidOperationException(
+                    $"Transform handle {handle} did not rest at a unit scale (got {restX}, {restY}).");
+            }
+        }
+
+        // Dragging the bottom-right handle past its top-left anchor flips both axes.
+        if (!MainForm.TryGetResizedTransformScaleFactors(
+                bounds,
+                bottomRightPivot,
+                TransformHandleKind.BottomRight,
+                new PointF(-40, -20),
+                out var flippedX,
+                out var flippedY)
+            || flippedX >= 0f
+            || flippedY >= 0f
+            || !PointsNear(new PointF(flippedX, flippedY), new PointF(-0.4f, -0.4f)))
+        {
+            throw new InvalidOperationException(
+                $"Crossing the anchor did not produce a mirrored scale factor (got {flippedX}, {flippedY}).");
+        }
+
+        // A horizontal-only flip must leave the other axis at rest rather than scaling it too.
+        if (!MainForm.TryGetResizedTransformScaleFactors(
+                bounds,
+                bottomRightPivot,
+                TransformHandleKind.Right,
+                new PointF(-100, 25),
+                out var singleAxisX,
+                out var singleAxisY)
+            || singleAxisX >= 0f
+            || !NearlyEqual(singleAxisY, 1f))
+        {
+            throw new InvalidOperationException(
+                $"A width-only flip disturbed the height axis (got {singleAxisX}, {singleAxisY}).");
+        }
+
+        // Remaining on the original side keeps the factor positive, so ordinary resizing is intact.
+        if (!MainForm.TryGetResizedTransformScaleFactors(
+                bounds,
+                bottomRightPivot,
+                TransformHandleKind.BottomRight,
+                new PointF(150, 100),
+                out var enlargedX,
+                out var enlargedY)
+            || enlargedX <= 1f
+            || enlargedY <= 1f)
+        {
+            throw new InvalidOperationException(
+                $"Enlarging inside the anchor quadrant regressed (got {enlargedX}, {enlargedY}).");
+        }
     }
 
     private static void RunPencilSmoothingRegression()
@@ -1153,7 +1248,7 @@ internal static partial class Benchmark
                 || slider.Maximum != 100
                 || shape.Visible
                 || aspect.Visible
-                || panel.PreferredHeight != 84
+                || panel.PreferredHeight != 78
                 || panel.MinimumSize.Height != panel.PreferredHeight)
             {
                 throw new InvalidOperationException("The compact Pencil smoothing panel layout or range was incorrect.");

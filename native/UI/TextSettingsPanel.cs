@@ -31,7 +31,7 @@ internal sealed class TextSettingsPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(0, 8, 0, 8);
+        Padding = Theme.InspectorSectionPadding;
         MinimumSize = new Size(248, PreferredHeight - 12);
         AccessibleName = "Text Tool";
         AccessibleRole = AccessibleRole.Pane;
@@ -55,7 +55,10 @@ internal sealed class TextSettingsPanel : UserControl
 
     public TextHorizontalAlignment Alignment => _alignment;
 
-    public int PreferredHeight => 188;
+    public int PreferredHeight => Theme.InspectorTitleHeight
+        + Theme.InspectorContentPaddingTop
+        + Theme.InspectorRowHeight * 4
+        + Theme.InspectorSectionPaddingVertical * 2;
 
     public event EventHandler? SettingsChanged;
 
@@ -135,7 +138,7 @@ internal sealed class TextSettingsPanel : UserControl
         {
             Text = "Text",
             Dock = DockStyle.Top,
-            Height = 28,
+            Height = Theme.InspectorTitleHeight,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
             Font = Theme.UiFont(10, System.Drawing.FontStyle.Bold),
@@ -149,14 +152,14 @@ internal sealed class TextSettingsPanel : UserControl
             BackColor = Theme.Panel,
             ColumnCount = 2,
             RowCount = 4,
-            Padding = new Padding(0, 4, 0, 0),
+            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0),
             Margin = Padding.Empty
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Theme.InspectorFieldLabelColumnWidthNarrow));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var row = 0; row < 4; row++)
         {
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         }
 
         Controls.Add(content);
@@ -164,7 +167,7 @@ internal sealed class TextSettingsPanel : UserControl
 
         PopulateFontFamilies();
         _fontFamily.Dock = DockStyle.Fill;
-        _fontFamily.Margin = new Padding(0, 3, 0, 3);
+        _fontFamily.Margin = Theme.InspectorFieldMargin(rightGap: false);
         _fontFamily.AccessibleName = "Font";
         Theme.StyleComboBox(_fontFamily);
         _fontFamily.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
@@ -176,7 +179,7 @@ internal sealed class TextSettingsPanel : UserControl
         _fontSize.Increment = 1m;
         _fontSize.Suffix = "pt";
         _fontSize.Dock = DockStyle.Fill;
-        _fontSize.Margin = new Padding(0, 3, 0, 3);
+        _fontSize.Margin = Theme.InspectorFieldMargin(rightGap: false);
         _fontSize.AccessibleName = "Size";
         Theme.StyleNumeric(_fontSize);
         _fontSize.ValueChanged += (_, _) => NotifySettingsChanged();
@@ -189,7 +192,7 @@ internal sealed class TextSettingsPanel : UserControl
             new StyleOption(TextFontStyle.BoldItalic, "Bold Italic")
         ]);
         _fontStyle.Dock = DockStyle.Fill;
-        _fontStyle.Margin = new Padding(0, 3, 0, 3);
+        _fontStyle.Margin = Theme.InspectorFieldMargin(rightGap: false);
         _fontStyle.AccessibleName = "Style";
         Theme.StyleComboBox(_fontStyle);
         _fontStyle.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
@@ -251,8 +254,8 @@ internal sealed class TextSettingsPanel : UserControl
         TextHorizontalAlignment alignment,
         Padding margin)
     {
-        button.Width = 32;
-        button.Height = Theme.ControlHeight;
+        button.Width = Theme.ControlHeightCompact;
+        button.Height = Theme.ControlHeightCompact;
         button.Margin = margin;
         button.AccessibleName = accessibleName;
         button.AccessibleRole = AccessibleRole.RadioButton;
@@ -330,7 +333,7 @@ internal sealed class TextSettingsPanel : UserControl
             Font = Theme.UiFont(),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
-            Margin = new Padding(0, 3, 8, 3)
+            Margin = Theme.InspectorFieldMargin(rightGap: true)
         };
         parent.Controls.Add(labelControl, 0, row);
         parent.Controls.Add(input, 1, row);

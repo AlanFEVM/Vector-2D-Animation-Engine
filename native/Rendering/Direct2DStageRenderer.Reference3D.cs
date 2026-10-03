@@ -487,6 +487,7 @@ internal sealed partial class Direct2DStageRenderer
         if (shape is ShapeKind.Line
             or ShapeKind.ImportedSvg
             or ShapeKind.MixingStroke
+            or ShapeKind.Bitmap
             or ShapeKind.Text
             || !SceneRenderOrder.HasStroke(shape, scene.Stroke[objectIndex])
             || scene.GetLayerKind(item.LayerIndex) == DrawingLayerKind.Mask
@@ -1193,7 +1194,7 @@ internal sealed partial class Direct2DStageRenderer
             return false;
         }
         var shape = stage.Scene.ShapeKind[item.ObjectIndex];
-        return shape is not (ShapeKind.ImportedSvg or ShapeKind.MixingStroke)
+        return shape is not (ShapeKind.ImportedSvg or ShapeKind.MixingStroke or ShapeKind.Bitmap)
             && !stage.Scene.HasGradient(item.ObjectIndex);
     }
 
@@ -1222,6 +1223,7 @@ internal sealed partial class Direct2DStageRenderer
             || shape is ShapeKind.Line
                 or ShapeKind.ImportedSvg
                 or ShapeKind.MixingStroke
+                or ShapeKind.Bitmap
                 or ShapeKind.Text
             || item.MaterialOpacity < 0.999999f
             || HasReference3DStrokeOpticalLayers(item)
@@ -1357,6 +1359,11 @@ internal sealed partial class Direct2DStageRenderer
         if (shape == ShapeKind.ImportedSvg)
         {
             if (pass == SceneRenderPass.Fill) DrawReference3DImportedSvg(stage, objectIndex);
+            return;
+        }
+        if (shape == ShapeKind.Bitmap)
+        {
+            if (pass == SceneRenderPass.Fill) DrawReference3DBitmap(stage, objectIndex);
             return;
         }
         if (shape == ShapeKind.MixingStroke)
@@ -3212,6 +3219,52 @@ internal sealed partial class Direct2DStageRenderer
         {
             return;
         }
+
+        DrawReference3DRaster(
+            stage,
+            objectIndex,
+            (pixelWidth, pixelHeight) =>
+                ImportedSvgBitmap(ImportedSvgRasterizer.Rasterize(source, pixelWidth, pixelHeight)),
+            BitmapInterpolationMode.Linear);
+    }
+
+    /// <summary>
+    /// Direct2D reference-3D draw for a placed bitmap. Shares the projective/affine
+    /// submission with imported SVG so both raster kinds stay perspective-correct on
+    /// tilted surfaces, while sampling follows the asset's import filter mode.
+    /// </summary>
+    private void DrawReference3DBitmap(StageControl stage, int objectIndex)
+    {
+        var scene = stage.Scene;
+        if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
+        if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var decoded)) return;
+        var interpolation = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
+            ? BitmapInterpolationMode.NearestNeighbor
+            : BitmapInterpolationMode.Linear;
+
+        DrawReference3DRaster(
+            stage,
+            objectIndex,
+            (_, _) => BitmapObjectBitmap(decoded),
+            interpolation,
+            decoded.PixelWidth,
+            decoded.PixelHeight);
+    }
+
+    /// <summary>
+    /// Shared reference-3D raster submission. <paramref name="resolveBitmap"/> returns the
+    /// GPU bitmap for the raster size the caller needs; SVG resolves by re-rasterizing at the
+    /// projected size while a decoded image reuses its existing upload.
+    /// </summary>
+    private void DrawReference3DRaster(
+        StageControl stage,
+        int objectIndex,
+        Func<float, float, ID2D1Bitmap> resolveBitmap,
+        BitmapInterpolationMode interpolation,
+        int? fixedPixelWidth = null,
+        int? fixedPixelHeight = null)
+    {
+        var scene = stage.Scene;
         var contour = stage.GetReference3DProjectedContours(objectIndex)
             .FirstOrDefault(item => item.Closed && item.Points.Length >= 3);
         if (contour.Points is not { Length: >= 3 }) return;
@@ -3245,8 +3298,10 @@ internal sealed partial class Direct2DStageRenderer
                 Math.Max(1f, Reference3DDistance(topLeft, topRight)),
                 Math.Max(1f, Reference3DDistance(topLeft, bottomLeft)));
         }
-        var raster = ImportedSvgRasterizer.Rasterize(source, rasterSize.Width, rasterSize.Height);
-        var bitmap = ImportedSvgBitmap(raster);
+
+        var pixelWidth = fixedPixelWidth ?? Math.Max(1, (int)rasterSize.Width);
+        var pixelHeight = fixedPixelHeight ?? Math.Max(1, (int)rasterSize.Height);
+        var bitmap = resolveBitmap(rasterSize.Width, rasterSize.Height);
         var opacity = GdiColor.FromArgb(scene.Argb[objectIndex]).A / 255f;
         if (projective)
         {
@@ -3257,7 +3312,7 @@ internal sealed partial class Direct2DStageRenderer
             {
                 if (stage.Reference3DGpuOpticsEnabled && stage.Reference3DPlaybackActive
                     && TryDrawGpuProjectiveBitmap(stage, bitmap, triangles, screenMask,
-                        raster.PixelWidth, raster.PixelHeight, opacity)) return;
+                        pixelWidth, pixelHeight, opacity)) return;
                 DrawReference3DProjectiveTriangles(
                     triangles,
                     screenMask,
@@ -3265,8 +3320,8 @@ internal sealed partial class Direct2DStageRenderer
                     {
                         if (!StageControl.TryGetReference3DTextureToScreenTransform(
                                 triangle,
-                                raster.PixelWidth,
-                                raster.PixelHeight,
+                                pixelWidth,
+                                pixelHeight,
                                 out var projectiveTransform))
                         {
                             return false;
@@ -3274,8 +3329,8 @@ internal sealed partial class Direct2DStageRenderer
                         _target!.Transform = projectiveTransform;
                         var textureBounds = StageControl.GetReference3DProjectiveTextureBounds(
                             triangle,
-                            raster.PixelWidth,
-                            raster.PixelHeight);
+                            pixelWidth,
+                            pixelHeight);
                         if (textureBounds.Width <= 0 || textureBounds.Height <= 0) return false;
                         var rectangle = Rect(
                             textureBounds.X,
@@ -3286,7 +3341,7 @@ internal sealed partial class Direct2DStageRenderer
                             bitmap,
                             rectangle,
                             opacity,
-                            BitmapInterpolationMode.Linear,
+                            interpolation,
                             rectangle);
                         return true;
                     });
@@ -3295,23 +3350,23 @@ internal sealed partial class Direct2DStageRenderer
         }
 
         var transform = new Matrix3x2(
-            (topRight.X - topLeft.X) / raster.PixelWidth,
-            (topRight.Y - topLeft.Y) / raster.PixelWidth,
-            (bottomLeft.X - topLeft.X) / raster.PixelHeight,
-            (bottomLeft.Y - topLeft.Y) / raster.PixelHeight,
+            (topRight.X - topLeft.X) / pixelWidth,
+            (topRight.Y - topLeft.Y) / pixelWidth,
+            (bottomLeft.X - topLeft.X) / pixelHeight,
+            (bottomLeft.Y - topLeft.Y) / pixelHeight,
             topLeft.X,
             topLeft.Y);
         var old = _target!.Transform;
         try
         {
             _target.Transform = transform;
-            var destination = Rect(0, 0, raster.PixelWidth, raster.PixelHeight);
-            var sourceRect = Rect(0, 0, raster.PixelWidth, raster.PixelHeight);
+            var destination = Rect(0, 0, pixelWidth, pixelHeight);
+            var sourceRect = Rect(0, 0, pixelWidth, pixelHeight);
             _target.DrawBitmap(
                 bitmap,
                 destination,
                 opacity,
-                BitmapInterpolationMode.Linear,
+                interpolation,
                 sourceRect);
         }
         finally

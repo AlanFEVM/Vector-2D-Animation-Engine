@@ -15,11 +15,35 @@ internal sealed partial class StageControl
         int objectIndex,
         ImportedSvgRaster raster,
         IReadOnlyList<Reference3DProjectiveTriangle> triangles,
+        float opacity) => TryDrawBoundedReference3DProjectiveRaster(
+            graphics,
+            objectIndex,
+            raster.Pixels,
+            raster.Stride,
+            raster.PixelWidth,
+            raster.PixelHeight,
+            triangles,
+            opacity);
+
+    /// <summary>
+    /// Generic projective texture submission. Shared by imported SVG and placed bitmaps so
+    /// both keep one perspective-correct sampling implementation; the only per-kind inputs
+    /// are the pixel buffer geometry.
+    /// </summary>
+    private bool TryDrawBoundedReference3DProjectiveRaster(
+        Graphics graphics,
+        int objectIndex,
+        byte[] pixels,
+        int stride,
+        int pixelWidth,
+        int pixelHeight,
+        IReadOnlyList<Reference3DProjectiveTriangle> triangles,
         float opacity)
     {
         if (triangles.Count == 0
-            || raster.PixelWidth <= 0
-            || raster.PixelHeight <= 0
+            || pixelWidth <= 0
+            || pixelHeight <= 0
+            || pixels is null
             || !float.IsFinite(opacity))
         {
             return false;
@@ -71,8 +95,8 @@ internal sealed partial class StageControl
 
                 if (!TryGetReference3DTextureToScreenTransform(
                         triangle,
-                        raster.PixelWidth,
-                        raster.PixelHeight,
+                        pixelWidth,
+                        pixelHeight,
                         out var textureToScreen)
                     || !Matrix3x2.Invert(textureToScreen, out var screenToTexture)
                     || !IsFinite(screenToTexture))
@@ -161,7 +185,10 @@ internal sealed partial class StageControl
                             new Vector2(screenPoint.X, screenPoint.Y),
                             screenToTexture);
                         if (!TrySamplePremultipliedBilinear(
-                                raster,
+                                pixels,
+                                stride,
+                                pixelWidth,
+                                pixelHeight,
                                 texturePoint,
                                 opacityScale,
                                 outputPixels,
@@ -470,7 +497,10 @@ internal sealed partial class StageControl
         - ((double)b.Y - a.Y) * ((double)point.X - a.X);
 
     private static bool TrySamplePremultipliedBilinear(
-        ImportedSvgRaster raster,
+        byte[] pixels,
+        int stride,
+        int pixelWidth,
+        int pixelHeight,
         Vector2 texturePoint,
         float opacity,
         byte[] destination,
@@ -484,20 +514,19 @@ internal sealed partial class StageControl
             return false;
         }
 
-        var sourceX = Math.Clamp(texturePoint.X - 0.5f, 0f, raster.PixelWidth - 1f);
-        var sourceY = Math.Clamp(texturePoint.Y - 0.5f, 0f, raster.PixelHeight - 1f);
+        var sourceX = Math.Clamp(texturePoint.X - 0.5f, 0f, pixelWidth - 1f);
+        var sourceY = Math.Clamp(texturePoint.Y - 0.5f, 0f, pixelHeight - 1f);
         var left = (int)MathF.Floor(sourceX);
         var top = (int)MathF.Floor(sourceY);
-        var right = Math.Min(raster.PixelWidth - 1, left + 1);
-        var bottom = Math.Min(raster.PixelHeight - 1, top + 1);
+        var right = Math.Min(pixelWidth - 1, left + 1);
+        var bottom = Math.Min(pixelHeight - 1, top + 1);
         var xAmount = sourceX - left;
         var yAmount = sourceY - top;
-        var pixels = raster.Pixels;
 
-        var topLeft = PixelAt(pixels, raster.Stride, left, top);
-        var topRight = PixelAt(pixels, raster.Stride, right, top);
-        var bottomLeft = PixelAt(pixels, raster.Stride, left, bottom);
-        var bottomRight = PixelAt(pixels, raster.Stride, right, bottom);
+        var topLeft = PixelAt(pixels, stride, left, top);
+        var topRight = PixelAt(pixels, stride, right, top);
+        var bottomLeft = PixelAt(pixels, stride, left, bottom);
+        var bottomRight = PixelAt(pixels, stride, right, bottom);
         var blue = Bilinear(topLeft.B, topRight.B, bottomLeft.B, bottomRight.B, xAmount, yAmount);
         var green = Bilinear(topLeft.G, topRight.G, bottomLeft.G, bottomRight.G, xAmount, yAmount);
         var red = Bilinear(topLeft.R, topRight.R, bottomLeft.R, bottomRight.R, xAmount, yAmount);

@@ -192,6 +192,10 @@ internal sealed partial class MainForm : Form
 
         if (IsLassoTool(_tool) && BeginLassoPointer(e)) return;
 
+        if (BeginMotionTrackPointer(e)) return;
+
+        if (TryBeginMotionTrackMarquee(e.Location)) return;
+
         if (TryBeginProjectedScenePointer(e)) return;
 
         if (IsSceneCompositionContext())

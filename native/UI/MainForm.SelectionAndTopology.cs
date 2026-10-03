@@ -1349,6 +1349,10 @@ internal sealed partial class MainForm : Form
         SyncSelectionToStage();
         RefreshSelectedSceneInstanceObjectIndices();
         UpdateSceneInstanceSelectionOverlay();
+        // Selecting a different instance changes whether (and which) motion track is available, so
+        // the timeline toggle and the Stage overlay must be refreshed here rather than only on the
+        // next onion-skin rebuild.
+        RebuildMotionTrackPreview();
     }
 
     private void SetSceneInstanceSelection(
@@ -1393,6 +1397,7 @@ internal sealed partial class MainForm : Form
         SyncSelectionToStage(syncTimelineLayer: syncTimelineLayer);
         RefreshSelectedSceneInstanceObjectIndices();
         UpdateSceneInstanceSelectionOverlay();
+        RebuildMotionTrackPreview();
     }
 
     private void SetMixedSelection(
@@ -1673,7 +1678,7 @@ internal sealed partial class MainForm : Form
     {
         if ((uint)objectIndex >= _scene.ObjectCount) return false;
         var shape = _scene.ShapeKind[objectIndex];
-        return shape is ShapeKind.ImportedSvg or ShapeKind.Text
+        return shape is ShapeKind.ImportedSvg or ShapeKind.Text or ShapeKind.Bitmap
             || shape == ShapeKind.MixingStroke
                 && !_scene.TryGetMixingBrushLocalRegion(objectIndex, out _);
     }
@@ -1736,6 +1741,26 @@ internal sealed partial class MainForm : Form
                 return;
             }
             referenceTransform = ProjectedSceneTransformOverlay();
+        }
+
+        // When the motion track is driving Free Transform, the box wraps the selected frames'
+        // anchors rather than the instance bounds; publishing it here keeps the handles, pivot and
+        // hit-testing consistent with what the motion-track overlay draws.
+        if (TryPublishMotionTrackTransformOverlay(referenceTransform)) return;
+        // While a rotation drag is frozen the box is a rigid body turn of the frame captured at
+        // pointer-down. Rebuilding it here from the freshly rotated geometry is exactly what made
+        // the box (and the handle under the pointer) slide during the drag, so publish the rotated
+        // capture instead of recomputing.
+        if (_transformFrameFrozenForRotation && _tool == ToolMode.Transform)
+        {
+            var frozenFrame = RotatedFrozenTransformFrame(_drawingTransformAccumulatedAngle);
+            var frozenFocus = _transformFrozenFocus is { } frozenFocusPoint
+                ? RotatePointAround(frozenFocusPoint, _transformFrozenPivot, _drawingTransformAccumulatedAngle)
+                : frozenFrame.Center;
+            _transformCurrentBounds = frozenFrame.Bounds;
+            _stage.SetDistortOverlay(false, default);
+            _stage.SetTransformOverlay(true, frozenFrame, frozenFocus, referenceTransform);
+            return;
         }
 
         var bounds = RectangleF.Empty;

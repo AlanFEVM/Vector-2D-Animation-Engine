@@ -149,6 +149,14 @@ internal static class EditorRestartStore
 
     public static void DeletePending()
     {
+        // A missing handoff directory already satisfies the "no pending handoff remains"
+        // contract, so it must not be reported as a deletion failure.
+        if (Path.GetDirectoryName(StatePath) is { Length: > 0 } handoffDirectory
+            && !Directory.Exists(handoffDirectory))
+        {
+            return;
+        }
+
         foreach (var path in new[]
                  {
                      StatePath,
@@ -161,6 +169,10 @@ internal static class EditorRestartStore
             {
                 RejectReparsePoint(path);
                 File.Delete(path);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // The directory disappeared between the check and the delete; treat as done.
             }
             catch (Exception ex)
             {

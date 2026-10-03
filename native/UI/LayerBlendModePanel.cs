@@ -7,7 +7,14 @@ internal sealed class LayerBlendModeChangedEventArgs(LayerBlendMode blendMode) :
 
 internal sealed class LayerBlendModePanel : Panel
 {
-    private const int PanelHeight = 92;
+    private const int PanelPaddingTop = 6;
+    private const int PanelPaddingBottom = 8;
+    private const int PanelPaddingHorizontal = 12;
+    private const int PanelHeight = PanelPaddingTop
+        + Theme.InspectorTitleHeight
+        + Theme.InspectorContentPaddingTop
+        + Theme.InspectorRowHeight
+        + PanelPaddingBottom;
 
     private sealed record BlendModeItem(LayerBlendMode Mode, string Label)
     {
@@ -67,7 +74,7 @@ internal sealed class LayerBlendModePanel : Panel
         Font = Theme.UiFont();
         Height = PanelHeight;
         MinimumSize = new Size(248, PanelHeight);
-        Padding = new Padding(12, 6, 12, 8);
+        Padding = new Padding(PanelPaddingHorizontal, PanelPaddingTop, PanelPaddingHorizontal, PanelPaddingBottom);
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Layer";
 
@@ -75,7 +82,7 @@ internal sealed class LayerBlendModePanel : Panel
         {
             Text = "Layer",
             Dock = DockStyle.Top,
-            Height = 27,
+            Height = Theme.InspectorTitleHeight,
             ForeColor = Theme.Text,
             BackColor = Color.Transparent,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -91,12 +98,12 @@ internal sealed class LayerBlendModePanel : Panel
             RowCount = 1,
             BackColor = Theme.Panel,
             Margin = Padding.Empty,
-            Padding = new Padding(0, 4, 0, 0)
+            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
-        row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         Controls.Add(row);
         row.BringToFront();
 
@@ -114,7 +121,7 @@ internal sealed class LayerBlendModePanel : Panel
         foreach (var item in BlendModes) _blendMode.Items.Add(new BlendModeItem(item.Mode, item.Label));
         Theme.StyleComboBox(_blendMode);
         _blendMode.Dock = DockStyle.Fill;
-        _blendMode.Margin = new Padding(0, 1, 8, 1);
+        _blendMode.Margin = new Padding(0, Theme.InspectorRowMarginVertical, 8, Theme.InspectorRowMarginVertical);
         row.Controls.Add(_blendMode, 1, 0);
 
         _layerName.Dock = DockStyle.Fill;

@@ -85,6 +85,15 @@ internal static class HotReloadModuleResolver
         nameof(VectorScene),
         nameof(VectorSceneSnapshot),
         nameof(TextObjectData),
+        nameof(BitmapObjectData),
+        nameof(BitmapImageImportSettings),
+        nameof(ImageAssetDefinition),
+        nameof(BitmapImageRaster),
+        nameof(BitmapImageRasterizer),
+        nameof(ImageFilterMode),
+        nameof(ImageCompression),
+        nameof(ImageAlphaSource),
+        nameof(ImageImportSettingsDialog),
         nameof(TextGeometry),
         nameof(TextFontStyle),
         nameof(TextHorizontalAlignment),
@@ -306,6 +315,16 @@ internal static class HotReloadModuleResolver
             or nameof(ProjectAssetTagData)
             or nameof(VectorSceneSnapshot)
             or nameof(TextObjectData)
+            or nameof(BitmapObjectData)
+            or nameof(BitmapImageImportSettings)
+            or nameof(ImageAssetDefinition)
+            or nameof(BitmapImageFormats)
+            or nameof(BitmapImageRasterizer)
+            or nameof(BitmapImageRaster)
+            or nameof(ImageFilterMode)
+            or nameof(ImageCompression)
+            or nameof(ImageAlphaSource)
+            or nameof(BitmapSampling)
             or nameof(TextGeometry)
             or nameof(TextFontStyle)
             or nameof(TextHorizontalAlignment)

@@ -50,6 +50,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         ClearTransientPathGradientBrushes();
         ClearLodBitmapCache();
         ClearImportedSvgBitmapCache();
+        ClearBitmapObjectCache();
         _shapeGradientMaskLayer?.Dispose();
         _shapeGradientMaskLayer = null;
         ClearBatch2DLayerCache();
@@ -1029,6 +1030,13 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         foreach (var cached in _importedSvgBitmapCache.Values) cached.Dispose();
         _importedSvgBitmapCache.Clear();
         _importedSvgBitmapCacheBytes = 0;
+    }
+
+    private void ClearBitmapObjectCache()
+    {
+        foreach (var cached in _bitmapObjectCache.Values) cached.Dispose();
+        _bitmapObjectCache.Clear();
+        _bitmapObjectCacheBytes = 0;
     }
 
     private ID2D1PathGeometry FreehandGeometry(VectorScene scene, int objectIndex, GdiPointF[] localPoints)

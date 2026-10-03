@@ -7,6 +7,7 @@ internal static partial class Benchmark
 {
     public static void RunTimelineRegression()
     {
+        RunMotionTrackRegression();
         RunSymbolFiltersModelRegression();
         if (Math.Abs(TimelineStrip.CursorTimeSeconds(13, 30) - 13d / 30d) > 0.000001
             || TimelineStrip.FormatCursorTimeSeconds(13, 30) != "0.433 s"
@@ -165,12 +166,14 @@ internal static partial class Benchmark
         RunTimelineLayerWorkflowRegression();
         RunTimelineLayerRemovalRegression();
         RunTimelineKeyframePerformanceRegression();
+        RunTimelineHeldInsertFrameShortcutRegression();
         RunVectorSceneKeyframeBoundaryRegression();
         RunProjectDocumentStructureRegression();
         RunSnapPointModelRegression();
         RunProjectAssetFolderRegression();
         RunAssetTagRegression();
         RunAssetLibraryCategoryRegression();
+        RunImageDropRegression();
         RunSceneMaskTimelineRegression();
         RunSceneInstanceTimelineRegression();
         RunSceneOnionSkinRegression();
@@ -1964,9 +1967,15 @@ internal static partial class Benchmark
             ?? throw new InvalidOperationException("F5 playhead regression setup lost its track.");
         var cursorCell = new TimelineFrameCell(cursorTrack.Id, 0);
         AssertTimeline(cursorTimeline.InsertFrame(cursorTrack.Id, cursorCell.Frame), "F5 playhead regression did not insert its frame.");
+        // Adobe Animate parity: inserting frames must not drag the playhead to the new exposure end.
+        // The inserted range extended the layer to frame 25, but the cursor stays where it was.
         AssertTimeline(
-            MainForm.ResolveTimelineInsertPlayheadFrame(cursorTimeline, [cursorCell], 0) == 25,
-            "F5 did not move the playhead to the newly extended exposure end.");
+            MainForm.ResolveTimelinePlayheadAfterInsert(currentFrame: 0, exposureEndFrame: 25) == 0,
+            "F5 moved the playhead instead of leaving it on its original frame.");
+        AssertTimeline(
+            MainForm.ResolveTimelinePlayheadAfterInsert(currentFrame: 12, exposureEndFrame: 25) == 12
+            && MainForm.ResolveTimelinePlayheadAfterInsert(currentFrame: 12, exposureEndFrame: 12) == 12,
+            "F5 did not hold the playhead across an insert at or beyond the cursor.");
 
         var timeline = new AnimationTimeline();
         timeline.SynchronizeTracks(["layer-a"], defaultDuration: 10);
@@ -3646,6 +3655,161 @@ internal static partial class Benchmark
             && composition.Instances[0].Id == sceneInstance!.Id
             && composition.Instances[0].SceneLayerId == compositionLayer.Id,
             "Scene-layer deletion snapshots did not restore instance ownership.");
+    }
+
+    // A held F6/F7 used to open a fresh undo unit and run a full timeline/shot/inspector refresh for
+    // every Windows key auto-repeat, because IsRepeatableTimelineEdit only recognized F5/Shift+F5.
+    // The per-repeat deep snapshot clone was the dominant cost, so the timeline panel stuttered while
+    // the key was held. These commands now coalesce exactly like F5: the model still advances on every
+    // repeat, but one hold records one undo unit and defers the presentation rebuild to key release.
+    private static void RunTimelineHeldKeyframeShortcutRegression()
+    {
+        var shortcut = RequireMethod(typeof(MainForm), "HandleTimelineShortcut");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var undoStackField = RequireField(typeof(MainForm), "_undoStack");
+
+        const int repeatCount = 8;
+
+        // Each key is held on its own form so the previous hold cannot leak a gesture into this one.
+        (int UndoUnits, int Duration, int Frame) HoldKey(Keys key)
+        {
+            using var form = new MainForm();
+            var strip = timelineField.GetValue(form) as TimelineStrip
+                ?? throw new InvalidOperationException("Held keyframe regression did not find the timeline control.");
+            var trackId = strip.Context.Timeline.Tracks[0].Id;
+            strip.SelectSingleFrame(trackId, 0);
+            var undosBefore = ((System.Collections.ICollection)(undoStackField.GetValue(form)
+                ?? throw new InvalidOperationException("Held keyframe regression lost the undo stack."))).Count;
+            for (var repeat = 0; repeat < repeatCount; repeat++) shortcut.Invoke(form, [key]);
+            var undosAfter = ((System.Collections.ICollection)undoStackField.GetValue(form)!).Count;
+            var duration = strip.Context.Timeline.FindTrack(trackId)?.Duration ?? -1;
+            return (undosAfter - undosBefore, duration, strip.CurrentFrame);
+        }
+
+        var f6 = HoldKey(Keys.F6);
+        var f7 = HoldKey(Keys.F7);
+
+        // Every repeat must still advance the model: the hold is coalesced, never collapsed into a
+        // single edit that silently drops the other repeats.
+        if (f6.Duration != repeatCount + 1 || f7.Duration != repeatCount + 1)
+        {
+            throw new InvalidOperationException(
+                $"A held F6/F7 did not insert one frame per repeat: F6={f6.Duration}, F7={f7.Duration}, "
+                + $"expected={repeatCount + 1}.");
+        }
+
+        if (f6.UndoUnits != 1 || f7.UndoUnits != 1)
+        {
+            throw new InvalidOperationException(
+                $"A held F6/F7 did not coalesce into a single undo unit: F6={f6.UndoUnits}, "
+                + $"F7={f7.UndoUnits}, repeats={repeatCount}.");
+        }
+
+        // The keyframe shortcuts advance the playhead per insert, so the hold must end on the last
+        // inserted frame rather than snapping back.
+        if (f6.Frame != repeatCount || f7.Frame != repeatCount)
+        {
+            throw new InvalidOperationException(
+                $"A held F6/F7 did not leave the playhead on the last inserted keyframe: "
+                + $"F6={f6.Frame}, F7={f7.Frame}, expected={repeatCount}.");
+        }
+
+        Console.WriteLine($"held_keyframe_shortcut_regression=ok F6_undo={f6.UndoUnits} F7_undo={f7.UndoUnits}");
+    }
+
+    private static void RunTimelineHeldInsertFrameShortcutRegression()
+    {
+        RunTimelineHeldKeyframeShortcutRegression();
+        var shortcut = RequireMethod(typeof(MainForm), "HandleTimelineShortcut");
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var timelineField = RequireField(typeof(MainForm), "_timeline");
+        var undoStackField = RequireField(typeof(MainForm), "_undoStack");
+        var frameField = RequireField(typeof(MainForm), "_frame");
+        var gestureField = RequireField(typeof(MainForm), "_timelineRepeatGesture");
+
+        // Track identity and the active layer are the contract: a held F5 must extend one gesture
+        // instead of opening a fresh undo unit for every Windows key repeat.
+        using var form = new MainForm();
+        var timelineStrip = timelineField.GetValue(form) as TimelineStrip
+            ?? throw new InvalidOperationException("Held F5 regression did not find the timeline control.");
+        var track = timelineStrip.Context.Timeline.Tracks[0];
+        var trackId = track.Id;
+        // Undo restores a timeline snapshot, which can replace track instances, so read the duration
+        // through the live timeline by stable track ID rather than a captured reference.
+        int CurrentDuration() => timelineStrip.Context.Timeline.FindTrack(trackId)?.Duration ?? -1;
+        timelineStrip.SelectSingleFrame(trackId, 0);
+
+        // The continuation predicate is the guard that keeps an unrelated selection from being merged
+        // into a gesture, and it must be independent of which frame the repeats advanced to.
+        AssertTimeline(
+            MainForm.TimelineRepeatGestureContinues([track.Id], [new TimelineFrameCell(track.Id, 3)])
+            && MainForm.TimelineRepeatGestureContinues([track.Id], [new TimelineFrameCell(track.Id, 7)])
+            && !MainForm.TimelineRepeatGestureContinues([track.Id], [new TimelineFrameCell("other", 3)])
+            && !MainForm.TimelineRepeatGestureContinues(
+                [track.Id],
+                [new TimelineFrameCell(track.Id, 3), new TimelineFrameCell("other", 3)])
+            && !MainForm.TimelineRepeatGestureContinues([], [new TimelineFrameCell(track.Id, 3)])
+            && !MainForm.TimelineRepeatGestureContinues([track.Id], []),
+            "The held-F5 gesture predicate merged a different track selection or accepted an empty repeat.");
+
+        var initialUndoCount = ((System.Collections.ICollection)(undoStackField.GetValue(form)
+            ?? throw new InvalidOperationException("Held F5 regression lost the undo stack."))).Count;
+        var initialDuration = CurrentDuration();
+
+        const int repeatCount = 6;
+        var succeeded = true;
+        for (var repeat = 0; repeat < repeatCount; repeat++)
+        {
+            succeeded &= shortcut.Invoke(form, [Keys.F5]) is true;
+        }
+
+        var gestureOpenAfterRepeats = gestureField.GetValue(form) is not null;
+        var undoCountAfterRepeats = ((System.Collections.ICollection)undoStackField.GetValue(form)!).Count;
+        var durationAfterRepeats = CurrentDuration();
+        // Every repeat must still extend the track; coalescing may only merge history and refresh work.
+        var expectedDuration = initialDuration + repeatCount;
+        AssertTimeline(
+            succeeded
+            && durationAfterRepeats == expectedDuration
+            && undoCountAfterRepeats == initialUndoCount + 1
+            && gestureOpenAfterRepeats,
+            "A held F5 did not insert every repeat's frame while recording a single undo unit: "
+            + $"succeeded={succeeded}, duration={initialDuration}->{durationAfterRepeats}, "
+            + $"expected={expectedDuration}, undo={initialUndoCount}->{undoCountAfterRepeats}, "
+            + $"gestureOpen={gestureOpenAfterRepeats}.");
+
+        // Releasing the key settles the gesture; the next press must open a fresh undo unit.
+        var finishGesture = RequireMethod(typeof(MainForm), "FinishTimelineRepeatGesture");
+        finishGesture.Invoke(form, null);
+        var gestureClosedAfterRelease = gestureField.GetValue(form) is null;
+        var singleInsert = shortcut.Invoke(form, [Keys.F5]) is true;
+        var undoCountAfterSecondGesture = ((System.Collections.ICollection)undoStackField.GetValue(form)!).Count;
+        AssertTimeline(
+            gestureClosedAfterRelease
+            && singleInsert
+            && CurrentDuration() == expectedDuration + 1
+            && undoCountAfterSecondGesture == undoCountAfterRepeats + 1,
+            "Releasing the held shortcut did not settle the gesture into a separate undo unit: "
+            + $"closed={gestureClosedAfterRelease}, inserted={singleInsert}, "
+            + $"duration={CurrentDuration()}, undo={undoCountAfterRepeats}->{undoCountAfterSecondGesture}.");
+
+        // One undo must revert the whole hold's six repeats as a single unit, then the second undo
+        // must revert the separate single press that followed it.
+        var undoneSecondGesture = undo.Invoke(form, null) is true;
+        var durationAfterSecondUndo = CurrentDuration();
+        var undoneGesture = undo.Invoke(form, null) is true;
+        var durationAfterUndo = CurrentDuration();
+        var frameAfterUndo = (int)(frameField.GetValue(form) ?? -1);
+        AssertTimeline(
+            undoneSecondGesture
+            && durationAfterSecondUndo == expectedDuration
+            && undoneGesture
+            && durationAfterUndo == initialDuration
+            && frameAfterUndo <= durationAfterUndo,
+            "Undoing a held F5 did not treat the whole hold as one undo unit: "
+            + $"undoneSecond={undoneSecondGesture}, duration={durationAfterRepeats}->{durationAfterSecondUndo}, "
+            + $"expectedAfterSecond={expectedDuration}, undoneHold={undoneGesture}, "
+            + $"durationAfterHold={durationAfterUndo}, initial={initialDuration}, frame={frameAfterUndo}.");
     }
 
     private static void RunTimelineKeyframePerformanceRegression()

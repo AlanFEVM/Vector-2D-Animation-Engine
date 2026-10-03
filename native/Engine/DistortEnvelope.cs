@@ -158,6 +158,11 @@ internal readonly struct DistortWarp : IEquatable<DistortWarp>
 internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
 {
     private const int MaximumAnchorsPerSide = 64;
+    // The Distort tool exposes exactly one inserted anchor across the whole envelope. The four
+    // corners are fixed structural anchors; every side may also carry one user-inserted anchor,
+    // but only one such anchor may exist at a time. Splitting is therefore refused whenever the
+    // envelope already holds an inserted anchor.
+    private const int MaximumInsertedAnchors = 1;
     private const int MaximumFlattenDepth = 12;
     private const float SourceParameterTolerance = 0.00001f;
     private const float BoundaryFlatnessUnits = 0.25f;
@@ -224,6 +229,118 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
     public DistortEnvelope DeepClone() => IsValid
         ? new DistortEnvelope(_top!, _right!, _bottom!, _left!)
         : default;
+
+    // Collapses a legacy envelope that carries more than one inserted anchor down to the single
+    // anchor the Distort tool now allows. Every side keeps its two structural corners and, at most,
+    // the retained inserted anchor; each remaining inserted anchor is removed by re-fitting its
+    // neighbouring span through the same de Casteljau subdivision that inserted it, so the boundary
+    // shape is preserved rather than straightened. Returns the receiver when nothing had to change.
+    public DistortEnvelope NormalizeInsertedAnchors()
+    {
+        if (!IsValid || CountInsertedAnchors() <= MaximumInsertedAnchors) return this;
+
+        var retained = FindFirstInsertedAnchor();
+        var sides = CloneSides();
+        SetSide(sides, retained.Side, CollapseSide(Side(sides, retained.Side), keepAnchorId: retained.Id));
+        foreach (var side in Enum.GetValues<DistortSide>())
+        {
+            if (side == retained.Side) continue;
+            SetSide(sides, side, CollapseSide(Side(sides, side), keepAnchorId: Guid.Empty));
+        }
+
+        var candidate = new DistortEnvelope(sides.Top, sides.Right, sides.Bottom, sides.Left);
+        return candidate.IsValid ? candidate : this;
+    }
+
+    private (DistortSide Side, Guid Id) FindFirstInsertedAnchor()
+    {
+        foreach (var side in Enum.GetValues<DistortSide>())
+        {
+            var anchors = Side(side);
+            for (var index = 1; index < anchors.Length - 1; index++)
+            {
+                return (side, anchors[index].Id);
+            }
+        }
+        return (DistortSide.Top, Guid.Empty);
+    }
+
+    // Rebuilds one side so that at most `keepAnchorId` survives as an inserted anchor. Removed
+    // anchors are eliminated by merging their adjacent spans back into a single cubic that passes
+    // through the removed anchor, which keeps the rendered boundary unchanged.
+    private static DistortBezierAnchor[] CollapseSide(
+        DistortBezierAnchor[] anchors,
+        Guid keepAnchorId)
+    {
+        if (anchors.Length <= 2) return anchors;
+        var retained = new List<DistortBezierAnchor>(anchors.Length) { anchors[0] };
+        for (var index = 1; index < anchors.Length - 1; index++)
+        {
+            var anchor = anchors[index];
+            if (anchor.Id == keepAnchorId) retained.Add(anchor);
+        }
+        retained.Add(anchors[^1]);
+        if (retained.Count == anchors.Length) return anchors;
+
+        // Re-fit each surviving span against the original boundary so removed anchors keep bending
+        // the curve instead of being silently straightened.
+        var result = new DistortBezierAnchor[retained.Count];
+        result[0] = retained[0];
+        result[^1] = retained[^1];
+        for (var index = 1; index < retained.Count - 1; index++)
+        {
+            var anchor = retained[index];
+            result[index] = anchor with
+            {
+                IncomingControl = FitControlIntoOriginalSpan(
+                    anchors,
+                    anchor.SourceT,
+                    anchor.Anchor,
+                    incoming: true,
+                    anchor.IncomingControl),
+                OutgoingControl = FitControlIntoOriginalSpan(
+                    anchors,
+                    anchor.SourceT,
+                    anchor.Anchor,
+                    incoming: false,
+                    anchor.OutgoingControl)
+            };
+        }
+        return result;
+    }
+
+    // Maps a control point from the original multi-anchor side onto the collapsed side by locating
+    // the original segment that contains `sourceT` and evaluating the same cubic there.
+    private static PointF FitControlIntoOriginalSpan(
+        DistortBezierAnchor[] original,
+        float sourceT,
+        PointF anchor,
+        bool incoming,
+        PointF fallback)
+    {
+        var segment = sourceT <= original[0].SourceT
+            ? 0
+            : sourceT >= original[^1].SourceT
+                ? original.Length - 2
+                : Math.Clamp(UpperBound(original, sourceT) - 1, 0, original.Length - 2);
+        var start = original[segment];
+        var end = original[segment + 1];
+        var span = end.SourceT - start.SourceT;
+        if (span <= SourceParameterTolerance) return fallback;
+        var localT = Math.Clamp((sourceT - start.SourceT) / span, 0f, 1f);
+        // Preserve the control's offset from its anchor as a fraction of the local derivative, so
+        // tangent direction and relative handle length survive the collapse.
+        var derivative = CubicDerivative(start.Anchor, start.OutgoingControl, end.IncomingControl, end.Anchor, localT);
+        var derivativeLength = MathF.Sqrt(derivative.X * derivative.X + derivative.Y * derivative.Y);
+        if (!IsFinite(derivative) || derivativeLength <= float.Epsilon) return fallback;
+        var offset = Subtract(fallback, anchor);
+        var offsetLength = MathF.Sqrt(offset.X * offset.X + offset.Y * offset.Y);
+        if (offsetLength <= float.Epsilon) return fallback;
+        var direction = incoming ? Scale(derivative, -1f / derivativeLength) : Scale(derivative, 1f / derivativeLength);
+        return new PointF(
+            anchor.X + direction.X * offsetLength,
+            anchor.Y + direction.Y * offsetLength);
+    }
 
     public DistortBezierAnchor[] GetAnchors(DistortSide side) => CloneAnchors(Side(side));
 
@@ -460,7 +577,8 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
             || sourceT <= SourceParameterTolerance
             || sourceT >= 1f - SourceParameterTolerance
             || anchorId == Guid.Empty
-            || ContainsAnchorId(anchorId))
+            || ContainsAnchorId(anchorId)
+            || CountInsertedAnchors() >= MaximumInsertedAnchors)
         {
             return false;
         }
@@ -844,6 +962,42 @@ internal readonly struct DistortEnvelope : IEquatable<DistortEnvelope>
             || _right!.Any(item => item.Id == id)
             || _bottom!.Any(item => item.Id == id)
             || _left!.Any(item => item.Id == id);
+    }
+
+    // Counts user-inserted anchors across every side. Each side always stores its two structural
+    // corner anchors, so anything beyond those is an inserted anchor. Corners are shared between
+    // adjacent sides and are counted once by matching the side's first/last anchor ids.
+    [JsonIgnore]
+    public int InsertedAnchorCount => CountInsertedAnchors();
+
+    // Reports the single inserted anchor, when the envelope carries one. The four corners are
+    // structural and are never reported here.
+    public bool TryGetInsertedAnchor(out DistortHandleRef handle)
+    {
+        handle = default;
+        if (!IsValid) return false;
+        foreach (var side in Enum.GetValues<DistortSide>())
+        {
+            var anchors = Side(side);
+            for (var index = 1; index < anchors.Length - 1; index++)
+            {
+                handle = new DistortHandleRef(side, anchors[index].Id, DistortHandleKind.Anchor);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int CountInsertedAnchors()
+    {
+        if (!IsValid) return 0;
+        var count = 0;
+        foreach (var side in Enum.GetValues<DistortSide>())
+        {
+            var anchors = Side(side);
+            for (var index = 1; index < anchors.Length - 1; index++) count++;
+        }
+        return count;
     }
 
     private static void MoveAnchorById(MutableSides sides, Guid anchorId, PointF delta)

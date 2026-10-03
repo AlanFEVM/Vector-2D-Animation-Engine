@@ -91,6 +91,7 @@ internal sealed partial class VectorScene
         _mixingStrokeLocalRegions.Clear();
         _importedSvgSources.Clear();
         _importedSvgNames.Clear();
+        _bitmapObjects.Clear();
         _textObjects.Clear();
         _objectDistortions.Clear();
         InitializeTimelineFromLayerExposure(frameCount);
@@ -183,6 +184,7 @@ internal sealed partial class VectorScene
         _mixingStrokeLocalRegions.Clear();
         _importedSvgSources.Clear();
         _importedSvgNames.Clear();
+        _bitmapObjects.Clear();
         _textObjects.Clear();
         _objectDistortions.Clear();
 
@@ -362,6 +364,103 @@ internal sealed partial class VectorScene
 
         name = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// Places an imported image asset as one whole bitmap object. The payload stores only
+    /// the asset reference and the placed size, so the same image can be placed many times
+    /// without duplicating pixel data.
+    /// </summary>
+    public int AddBitmapObject(int layer, PointF center, BitmapObjectData data, float angle = 0)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        var placedSize = data.PlacedSize;
+        return AppendPackedObject(
+            layer,
+            center,
+            placedSize,
+            angle,
+            stroke: 0,
+            colorArgb: unchecked((int)0xffffffff),
+            strokeColorArgb: Color.Transparent.ToArgb(),
+            atoms: BitmapObjectAtomCount,
+            shapeKind: VectorAnimationEngine.ShapeKind.Bitmap,
+            curveControl: center,
+            bitmapObjectData: data);
+    }
+
+    public bool TryGetBitmapObjectData(int objectIndex, out BitmapObjectData data)
+    {
+        if ((uint)objectIndex < ObjectCount
+            && ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Bitmap
+            && _bitmapObjects.TryGetValue(objectIndex, out data!)
+            && data.IsValid)
+        {
+            return true;
+        }
+
+        data = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Re-points a placed bitmap at new import settings. Returns false when the object is
+    /// not a bitmap, so callers can treat "nothing changed" and "wrong kind" distinctly.
+    /// </summary>
+    public bool TryUpdateBitmapObject(int objectIndex, BitmapObjectData data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Bitmap
+            || !data.IsValid)
+        {
+            return false;
+        }
+
+        _bitmapObjects[objectIndex] = data;
+        Width[objectIndex] = Math.Max(1, VectorUnits.Quantize(data.PlacedSize.Width));
+        Height[objectIndex] = Math.Max(1, VectorUnits.Quantize(data.PlacedSize.Height));
+        MaxHalfExtent = Math.Max(
+            MaxHalfExtent,
+            Math.Max(Width[objectIndex], Height[objectIndex]) * 0.5f);
+        RebuildGeometryIndex();
+        RebuildSummaries();
+        return true;
+    }
+
+    /// <summary>Object indices whose bitmap payload references the given image asset.</summary>
+    public int[] FindBitmapObjectsUsingImageAsset(string imageAssetId)
+    {
+        if (string.IsNullOrWhiteSpace(imageAssetId)) return [];
+        var matches = new List<int>();
+        foreach (var (index, data) in _bitmapObjects)
+        {
+            if ((uint)index < ObjectCount
+                && string.Equals(data.ImageAssetId, imageAssetId, StringComparison.Ordinal))
+            {
+                matches.Add(index);
+            }
+        }
+        matches.Sort();
+        return matches.ToArray();
+    }
+
+    /// <summary>
+    /// Drops placed bitmap objects whose image asset no longer exists. Used when an image
+    /// is removed from the library so the scene never keeps a dangling reference.
+    /// </summary>
+    public int RemoveBitmapObjectsWithoutImageAsset(Func<string, bool> imageAssetExists)
+    {
+        ArgumentNullException.ThrowIfNull(imageAssetExists);
+        var orphaned = _bitmapObjects
+            .Where(item => (uint)item.Key < ObjectCount
+                && !imageAssetExists(item.Value.ImageAssetId))
+            .Select(item => item.Key)
+            .OrderDescending()
+            .ToArray();
+        if (orphaned.Length == 0) return 0;
+        foreach (var index in orphaned) RemoveObjectAt(index);
+        return orphaned.Length;
     }
 
     public int AddTextObject(int layer, PointF center, TextObjectData data, Color color)
@@ -876,9 +975,11 @@ internal sealed partial class VectorScene
         PointF? curveControl2 = null,
         string? importedSvgSource = null,
         string? importedSvgName = null,
-        TextObjectData? textObjectData = null)
+        TextObjectData? textObjectData = null,
+        BitmapObjectData? bitmapObjectData = null)
     {
         TextObjectData? normalizedTextData = null;
+        BitmapObjectData? normalizedBitmapData = null;
         if (shapeKind == VectorAnimationEngine.ShapeKind.ImportedSvg)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(importedSvgSource);
@@ -886,10 +987,30 @@ internal sealed partial class VectorScene
             {
                 throw new ArgumentException("Imported SVG objects cannot carry text payload.", nameof(textObjectData));
             }
+            if (bitmapObjectData is not null)
+            {
+                throw new ArgumentException("Imported SVG objects cannot carry bitmap payload.", nameof(bitmapObjectData));
+            }
+        }
+        else if (shapeKind == VectorAnimationEngine.ShapeKind.Bitmap)
+        {
+            if (importedSvgSource is not null || importedSvgName is not null || textObjectData is not null)
+            {
+                throw new ArgumentException("Bitmap objects cannot carry SVG or text payload.", nameof(importedSvgSource));
+            }
+            normalizedBitmapData = bitmapObjectData
+                ?? throw new ArgumentNullException(nameof(bitmapObjectData), "Bitmap objects require an image asset reference.");
+            if (!normalizedBitmapData.IsValid)
+            {
+                throw new ArgumentException("The bitmap object payload is invalid.", nameof(bitmapObjectData));
+            }
+            // A bitmap is drawn from its own pixels; the shape fill and stroke play no part.
+            stroke = 0;
+            strokeColorArgb = Color.Transparent.ToArgb();
         }
         else if (shapeKind == VectorAnimationEngine.ShapeKind.Text)
         {
-            if (importedSvgSource is not null || importedSvgName is not null)
+            if (importedSvgSource is not null || importedSvgName is not null || bitmapObjectData is not null)
             {
                 throw new ArgumentException("Text objects cannot carry imported SVG source payload.", nameof(importedSvgSource));
             }
@@ -898,7 +1019,10 @@ internal sealed partial class VectorScene
             stroke = 0;
             strokeColorArgb = Color.Transparent.ToArgb();
         }
-        else if (importedSvgSource is not null || importedSvgName is not null || textObjectData is not null)
+        else if (importedSvgSource is not null
+            || importedSvgName is not null
+            || textObjectData is not null
+            || bitmapObjectData is not null)
         {
             throw new ArgumentException("Only sparse object kinds can carry sparse object payload.");
         }
@@ -964,6 +1088,7 @@ internal sealed partial class VectorScene
         if (importedSvgSource is not null) _importedSvgSources[index] = importedSvgSource;
         var normalizedImportedSvgName = NormalizeImportedSvgName(importedSvgName);
         if (normalizedImportedSvgName.Length > 0) _importedSvgNames[index] = normalizedImportedSvgName;
+        if (normalizedBitmapData is not null) _bitmapObjects[index] = normalizedBitmapData;
         if (normalizedTextData is not null) _textObjects[index] = normalizedTextData;
         MaxHalfExtent = Math.Max(MaxHalfExtent, Math.Max(Width[index], Height[index]) * 0.5f);
         return index;
@@ -975,7 +1100,8 @@ internal sealed partial class VectorScene
         if (objects.Length == 0) return ObjectCount;
         if (objects.Any(item => item.Shape is VectorAnimationEngine.ShapeKind.ImportedSvg
                 or VectorAnimationEngine.ShapeKind.Text
-                or VectorAnimationEngine.ShapeKind.MixingStroke))
+                or VectorAnimationEngine.ShapeKind.MixingStroke
+                or VectorAnimationEngine.ShapeKind.Bitmap))
         {
             throw new InvalidOperationException("Sparse-payload objects cannot be appended through a packed batch.");
         }
@@ -1295,6 +1421,46 @@ internal sealed partial class VectorScene
         return destination;
     }
 
+    /// <summary>
+    /// Clones one object into a standalone single-layer scene for a drop preview. The
+    /// clone carries the same sparse payload (bitmap reference, imported SVG source, text,
+    /// distortions) so the preview renders exactly what a committed drop would insert,
+    /// but it owns its own arrays and is never referenced by the project.
+    /// </summary>
+    internal static VectorScene? CreateObjectPreviewScene(VectorScene source, int objectIndex)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if ((uint)objectIndex >= source.ObjectCount) return null;
+
+        var preview = new VectorScene();
+        preview.CreateEmpty(1, 1);
+        var sourceLayer = source.ObjectLayer[objectIndex];
+        if ((uint)sourceLayer < source.LayerCount)
+        {
+            preview.LayerNames[0] = source.LayerNames[sourceLayer];
+            preview.LayerColorArgb[0] = source.LayerColorArgb[sourceLayer];
+        }
+
+        // A preview scene has its own single layer; mirror whether the object's own layer
+        // was visible so a drop on a hidden layer does not look like a successful commit.
+        preview.LayerVisible[0] = (uint)sourceLayer < source.LayerCount
+            && source.LayerVisible[sourceLayer];
+
+        preview.EnsureObjectCapacity(1);
+        preview.ObjectCount = 1;
+        preview.CopyObjectDataFrom(source, objectIndex, 0);
+        preview.ObjectLayer[0] = 0;
+        preview.ObjectKeyframeFrame[0] = 0;
+        preview.ObjectOrder[0] = ++preview._nextObjectOrder;
+        preview.ObjectSubOrder[0] = 0;
+        preview.VirtualAtomCount = preview.AtomCount[0];
+        preview.MaxHalfExtent = Math.Max(128f, Math.Max(preview.Width[0], preview.Height[0]) * 0.5f);
+        preview.SynchronizeAllKeyframeContentKinds();
+        preview.RebuildGeometryIndex();
+        preview.RebuildSummaries();
+        return preview;
+    }
+
     internal void InvalidateDeferredTopologyQueries()
     {
         _fillPartitionCache.Clear();
@@ -1462,6 +1628,15 @@ internal sealed partial class VectorScene
             _importedSvgNames.Remove(to);
         }
 
+        if (source._bitmapObjects.TryGetValue(from, out var bitmapObject))
+        {
+            _bitmapObjects[to] = bitmapObject;
+        }
+        else
+        {
+            _bitmapObjects.Remove(to);
+        }
+
         if (source._textObjects.TryGetValue(from, out var textObjectData))
         {
             _textObjects[to] = textObjectData;
@@ -1496,6 +1671,7 @@ internal sealed partial class VectorScene
         MoveObjectDictionaryEntry(_mixingStrokeLocalRegions, from, to);
         MoveObjectDictionaryEntry(_importedSvgSources, from, to);
         MoveObjectDictionaryEntry(_importedSvgNames, from, to);
+        MoveObjectDictionaryEntry(_bitmapObjects, from, to);
         MoveObjectDictionaryEntry(_textObjects, from, to);
         MoveObjectDictionaryEntry(_objectDistortions, from, to);
     }
@@ -1514,6 +1690,7 @@ internal sealed partial class VectorScene
         RemapObjectDictionary(_mixingStrokeLocalRegions, oldToNew);
         RemapObjectDictionary(_importedSvgSources, oldToNew);
         RemapObjectDictionary(_importedSvgNames, oldToNew);
+        RemapObjectDictionary(_bitmapObjects, oldToNew);
         RemapObjectDictionary(_textObjects, oldToNew);
         RemapObjectDictionary(_objectDistortions, oldToNew);
     }
@@ -1620,6 +1797,10 @@ internal sealed partial class VectorScene
         foreach (var index in _importedSvgNames.Keys.Where(index => index >= ObjectCount).ToArray())
         {
             _importedSvgNames.Remove(index);
+        }
+        foreach (var index in _bitmapObjects.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _bitmapObjects.Remove(index);
         }
     }
 

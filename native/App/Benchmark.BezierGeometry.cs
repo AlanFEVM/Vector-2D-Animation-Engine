@@ -2308,6 +2308,534 @@ internal static partial class Benchmark
         RunRepeatedFillAnchorLineEndpointRegression();
         RunCoincidentFillBoundaryLineRegression();
         RunSelfIntersectingFillBoundaryRegression();
+        RunFlipCompoundFillHoleRegression();
+    }
+
+    // FlipObjects mirrors coordinates straight through SetPathBezierContoursCore, which stores the
+    // exact cubic nodes without any orientation pass. A mirror has determinant -1, so every contour
+    // reverses its winding. Point-in-polygon hit testing and the Direct2D Alternate fill mode are
+    // orientation independent, but a compound fill's solid area depends on contour nesting, so the
+    // mirrored winding must not turn the ring into a hole (or the hole into a solid island).
+    //
+    // The neighbour shares layer/cel and material so the same-color merge path has to reason about
+    // the flipped winding as well: that path rebuilds its boundary through Clipper and reassigns
+    // contour depth from Clipper.IsPositive.
+    private static void RunFlipCompoundFillHoleRegression()
+    {
+        static PointF[] Rect(float left, float top, float right, float bottom) =>
+        [
+            new PointF(left, top),
+            new PointF(right, top),
+            new PointF(right, bottom),
+            new PointF(left, bottom)
+        ];
+
+        static VectorScene CreateCompoundScene(out int donut, out int neighbour)
+        {
+            var scene = new VectorScene();
+            scene.CreateEmpty();
+            donut = scene.AddPathObjectContours(
+                0,
+                [Rect(-160, -100, 160, 100), Rect(-50, -40, 50, 40)],
+                0,
+                Color.Teal,
+                Color.Transparent,
+                8);
+            neighbour = scene.AddPathObjectContours(
+                0,
+                [Rect(300, -60, 420, 60)],
+                0,
+                Color.Teal,
+                Color.Transparent,
+                8);
+            scene.CompleteDeferredBuild();
+            scene.TryConvertFillToBezierPath(donut);
+            scene.TryConvertFillToBezierPath(neighbour);
+            return scene;
+        }
+
+        var scene = CreateCompoundScene(out var donut, out var neighbour);
+        if (donut < 0
+            || neighbour < 0
+            || scene.FillContainsPoint(donut, PointF.Empty)
+            || !scene.FillContainsPoint(donut, new PointF(120, 0))
+            || !scene.TryGetPathBezierWorldContours(donut, out var originalContours)
+            || originalContours.Length != 2)
+        {
+            throw new InvalidOperationException(
+                $"The compound fill fixture did not start as a holed ring: donut={donut}, "
+                + $"neighbour={neighbour}, objects={scene.ObjectCount}, "
+                + $"hole={scene.FillContainsPoint(donut, PointF.Empty)}.");
+        }
+
+        var originalSigns = originalContours.Select(SignedContourArea).ToArray();
+        if (!scene.FlipObjects([donut, neighbour], horizontal: true)
+            || !scene.TryGetPathBezierWorldContours(donut, out var flippedContours)
+            || flippedContours.Length != 2)
+        {
+            throw new InvalidOperationException("Flipping a compound fill selection was refused or changed its contour count.");
+        }
+
+        // FlipObjects mirrors around the selection union center: the donut spans x=-160..160 and the
+        // neighbour x=300..420, so the union center is x=130 and the donut lands on x=-30..290.
+        const float mirrorAxisX = 130f;
+        var mirroredRing = new PointF(mirrorAxisX * 2 - 120, 0);
+        var mirroredHole = PointF.Empty;
+        var ringSolid = scene.FillContainsPoint(donut, mirroredRing);
+        var holeVoid = !scene.FillContainsPoint(donut, mirroredHole);
+        var windingReversed = originalSigns
+            .Zip(flippedContours.Select(SignedContourArea), (before, after) => before * after < 0f)
+            .All(reversed => reversed);
+        if (!ringSolid || !holeVoid || !windingReversed)
+        {
+            throw new InvalidOperationException(
+                $"A flipped compound fill lost its solid ring or its hole: ringSolid={ringSolid}, "
+                + $"holeVoid={holeVoid}, windingReversed={windingReversed}, "
+                + $"originalSigns=[{string.Join(',', originalSigns.Select(value => value.ToString("0.0")))}], "
+                + $"flippedSigns=[{string.Join(',', flippedContours.Select(contour => SignedContourArea(contour).ToString("0.0")))}].");
+        }
+
+        // The merge path must keep the flipped hole open and must not invent filled area.
+        var mergeScene = CreateCompoundScene(out var mergeDonut, out var mergeNeighbour);
+        if (!mergeScene.FlipObjects([mergeDonut, mergeNeighbour], horizontal: true)
+            || !mergeScene.TryGetPathWorldContours(mergeDonut, out var mergeContours)
+            || mergeContours.Length != 2)
+        {
+            throw new InvalidOperationException("The flipped merge fixture lost its compound contours.");
+        }
+
+        // Derive probes from the actual flipped geometry so this survives a mirror-axis change.
+        var outerContour = mergeContours.OrderByDescending(contour => Math.Abs(SignedContourArea(contour))).First();
+        var innerContour = mergeContours.OrderBy(contour => Math.Abs(SignedContourArea(contour))).First();
+        var holeProbe = new PointF(innerContour.Average(point => point.X), innerContour.Average(point => point.Y));
+        var ringProbe = new PointF(
+            (holeProbe.X + outerContour.Max(point => point.X)) * 0.5f,
+            outerContour.Average(point => point.Y));
+
+        var mergedIndex = mergeScene.MergeSameColorFillsAround(mergeDonut, connectNearby: false);
+        var mergedHolePreserved = !mergeScene.FillContainsPoint(mergedIndex, holeProbe);
+        var mergedRingPreserved = mergeScene.FillContainsPoint(mergedIndex, ringProbe);
+        var mergedContourCount = mergeScene.TryGetPathWorldContours(mergedIndex, out var mergedContours)
+            ? mergedContours.Length
+            : -1;
+        if (!mergedHolePreserved || !mergedRingPreserved || mergedContourCount < 2)
+        {
+            throw new InvalidOperationException(
+                $"Merging a flipped compound fill did not preserve its hole and ring: "
+                + $"merged={mergedIndex}/{mergeScene.ObjectCount}, hole={mergedHolePreserved}, "
+                + $"ring={mergedRingPreserved}, contours={mergedContourCount}.");
+        }
+
+        Console.WriteLine("flip_compound_fill_hole_regression=ok");
+
+        RunFlipCompoundFillGapRegression();
+    }
+
+    // Companion coverage for the flip paths that the single horizontal rectangular case above does
+    // not reach: vertical mirroring, a Bezier (curved) hole, a mirrored gradient path, and a flip
+    // applied to an object that already carries a Distort envelope.
+    private static void RunFlipCompoundFillGapRegression()
+    {
+        static PathBezierNode[] Circle(float centerX, float centerY, float radius)
+        {
+            var handle = radius * 0.55228475f;
+            return
+            [
+                new PathBezierNode(
+                    new PointF(centerX + radius, centerY),
+                    new PointF(centerX + radius, centerY - handle),
+                    new PointF(centerX + radius, centerY + handle)),
+                new PathBezierNode(
+                    new PointF(centerX, centerY + radius),
+                    new PointF(centerX + handle, centerY + radius),
+                    new PointF(centerX - handle, centerY + radius)),
+                new PathBezierNode(
+                    new PointF(centerX - radius, centerY),
+                    new PointF(centerX - radius, centerY + handle),
+                    new PointF(centerX - radius, centerY - handle)),
+                new PathBezierNode(
+                    new PointF(centerX, centerY - radius),
+                    new PointF(centerX + handle, centerY - radius),
+                    new PointF(centerX - handle, centerY - radius))
+            ];
+        }
+
+        // 1. Vertical flip of a compound fill whose hole is a true cubic circle.
+        var curvedScene = new VectorScene();
+        curvedScene.CreateEmpty();
+        var curvedDonut = curvedScene.AppendPathBezierObjectContours(
+            0,
+            [Circle(0, 0, 160), Circle(0, 0, 60)],
+            0,
+            Color.Teal,
+            Color.Transparent,
+            16);
+        curvedScene.CompleteDeferredBuild();
+        if (curvedDonut < 0
+            || curvedScene.FillContainsPoint(curvedDonut, PointF.Empty)
+            || !curvedScene.FillContainsPoint(curvedDonut, new PointF(110, 0)))
+        {
+            throw new InvalidOperationException("The curved compound fill fixture did not start as a holed ring.");
+        }
+
+        var curvedBounds = curvedScene.GetObjectWorldBounds(curvedDonut);
+        var curvedAxisY = curvedBounds.Top + curvedBounds.Bottom;
+        var ringBefore = new PointF(0, 110);
+        var mirroredRingY = curvedAxisY - ringBefore.Y;
+        curvedScene.FlipObjects([curvedDonut], horizontal: false);
+        var curvedHoleVoid = !curvedScene.FillContainsPoint(curvedDonut, PointF.Empty);
+        var curvedRingSolid = curvedScene.FillContainsPoint(curvedDonut, new PointF(0, mirroredRingY));
+        if (!curvedHoleVoid || !curvedRingSolid)
+        {
+            throw new InvalidOperationException(
+                $"A vertically flipped curved compound fill lost its hole or ring: "
+                + $"holeVoid={curvedHoleVoid}, ringSolid={curvedRingSolid}@{mirroredRingY}.");
+        }
+
+        // 2. A gradient path must mirror with its geometry rather than keep its original side.
+        var gradientScene = new VectorScene();
+        gradientScene.CreateEmpty();
+        var gradientPath = gradientScene.AddPathObjectContours(
+            0,
+            [
+                [
+                    new PointF(-200, -80),
+                    new PointF(200, -80),
+                    new PointF(200, 80),
+                    new PointF(-200, 80)
+                ]
+            ],
+            0,
+            Color.Teal,
+            Color.Transparent,
+            8);
+        gradientScene.CompleteDeferredBuild();
+        gradientScene.TryConvertFillToBezierPath(gradientPath);
+        gradientScene.SetLinearGradient(
+            gradientPath,
+            Color.Teal,
+            Color.RoyalBlue,
+            new PointF(-150, 0),
+            new PointF(150, 0));
+        // A gently curved multi-point path so the self-intersection fallback cannot collapse it.
+        var sourceGradientPath = new[]
+        {
+            new PointF(-150, -40),
+            new PointF(0, -60),
+            new PointF(150, -40)
+        };
+        gradientScene.SetOrderedGradientPath(gradientPath, sourceGradientPath);
+        if (!gradientScene.TryGetGradientPathWorldPoints(gradientPath, out var pathBefore)
+            || pathBefore.Length != sourceGradientPath.Length)
+        {
+            throw new InvalidOperationException("The gradient path fixture did not retain its ordered trajectory.");
+        }
+
+        var gradientBounds = gradientScene.GetObjectWorldBounds(gradientPath);
+        var gradientAxis = gradientBounds.Left + gradientBounds.Right;
+        gradientScene.FlipObjects([gradientPath], horizontal: true);
+        if (!gradientScene.TryGetGradientPathWorldPoints(gradientPath, out var pathAfter)
+            || pathAfter.Length != pathBefore.Length)
+        {
+            throw new InvalidOperationException("Flipping a gradient path dropped or resized its trajectory.");
+        }
+
+        // Horizontal mirror reverses X about the axis while preserving the point order.
+        var mirroredGradientPath = pathBefore
+            .Select(point => new PointF(gradientAxis - point.X, point.Y))
+            .ToArray();
+        if (!pathAfter.Select((point, index) => PointsNear(point, mirroredGradientPath[index])).All(match => match))
+        {
+            throw new InvalidOperationException(
+                $"A flipped gradient path did not mirror its trajectory: "
+                + $"before=[{string.Join('|', pathBefore.Select(point => $"{point.X:0.#},{point.Y:0.#}"))}], "
+                + $"after=[{string.Join('|', pathAfter.Select(point => $"{point.X:0.#},{point.Y:0.#}"))}], "
+                + $"expected=[{string.Join('|', mirroredGradientPath.Select(point => $"{point.X:0.#},{point.Y:0.#}"))}].");
+        }
+
+        // 3. A flip must carry an existing Distort envelope along with the geometry.
+        var warpScene = new VectorScene();
+        warpScene.CreateEmpty();
+        var warped = warpScene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(400, 240),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        var warpSource = TransformOverlayFrame.FromBounds(warpScene.GetObjectWorldBounds(warped));
+        var baseEnvelope = DistortEnvelope.FromBounds(warpScene.GetObjectWorldBounds(warped));
+        var draggedEnvelope = baseEnvelope.WithHandle(
+            new DistortHandleRef(
+                DistortSide.Top,
+                baseEnvelope.TopRight == baseEnvelope.TopLeft
+                    ? baseEnvelope.GetAnchors(DistortSide.Top)[0].Id
+                    : baseEnvelope.GetAnchors(DistortSide.Top)[^1].Id,
+                DistortHandleKind.Anchor),
+            baseEnvelope.BottomRight,
+            new PointF(baseEnvelope.BottomRight.X + 90, baseEnvelope.BottomRight.Y - 70));
+        if (draggedEnvelope == baseEnvelope)
+        {
+            throw new InvalidOperationException("The distort fixture could not move an envelope corner.");
+        }
+
+        warpScene.SetObjectDistortions(warped, [new DistortWarp(warpSource, draggedEnvelope)]);
+        if (!warpScene.TryGetObjectDistortions(warped, out var distortionsBefore) || distortionsBefore.Length != 1)
+        {
+            throw new InvalidOperationException("The distort fixture did not persist its envelope.");
+        }
+
+        var warpedBounds = warpScene.GetObjectWorldBounds(warped);
+        var warpedAxis = warpedBounds.Left + warpedBounds.Right;
+        warpScene.FlipObjects([warped], horizontal: true);
+        if (!warpScene.TryGetObjectDistortions(warped, out var distortionsAfter) || distortionsAfter.Length != 1)
+        {
+            throw new InvalidOperationException("Flipping an object dropped its Distort envelope.");
+        }
+
+        // Every envelope handle must mirror about the same axis as the geometry.
+        var beforeHandles = distortionsBefore[0].Envelope.GetVisualHandles()
+            .Where(handle => handle.Reference.Kind == DistortHandleKind.Anchor)
+            .ToArray();
+        var afterHandles = distortionsAfter[0].Envelope.GetVisualHandles()
+            .Where(handle => handle.Reference.Kind == DistortHandleKind.Anchor)
+            .ToArray();
+        var handlesMirrored = beforeHandles.Length == afterHandles.Length
+            && beforeHandles.Length > 0
+            && beforeHandles
+                .Select(handle => new PointF(warpedAxis - handle.Position.X, handle.Position.Y))
+                .Zip(afterHandles, (expected, actual) => PointsNear(actual.Position, expected))
+                .All(match => match);
+        if (!handlesMirrored)
+        {
+            throw new InvalidOperationException(
+                $"A flipped object did not mirror its Distort envelope handles: "
+                + $"before={beforeHandles.Length}, after={afterHandles.Length}, axis={warpedAxis}.");
+        }
+
+        Console.WriteLine("flip_compound_fill_gap_regression=ok");
+
+        RunCrossLayerFlipCenterRegression();
+        RunDistortSingleAnchorRegression();
+    }
+
+    // FlipObjects mirrors around the union of GetObjectWorldBounds across every target, regardless
+    // of layer. A cross-layer selection must therefore share one mirror axis rather than flipping
+    // each layer about its own center, which would silently tear the selection apart.
+    private static void RunCrossLayerFlipCenterRegression()
+    {
+        static PointF[] Rect(float left, float top, float right, float bottom) =>
+        [
+            new PointF(left, top),
+            new PointF(right, top),
+            new PointF(right, bottom),
+            new PointF(left, bottom)
+        ];
+
+        static PointF ContourCenter(int sceneObject, VectorScene scene)
+        {
+            var contour = scene.GetShapeBoundary(sceneObject);
+            return new PointF(
+                contour.Average(point => point.X),
+                contour.Average(point => point.Y));
+        }
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var secondLayer = scene.AddLayer("Second");
+        if (secondLayer <= 0)
+        {
+            throw new InvalidOperationException("The cross-layer flip fixture could not add a second layer.");
+        }
+
+        // Left object on layer 0, right object on layer 1, deliberately far apart so a per-layer
+        // center and the shared union center produce clearly different results.
+        var left = scene.AddObject(
+            0,
+            new PointF(-400, 0),
+            new SizeF(120, 80),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        var right = scene.AddObject(
+            secondLayer,
+            new PointF(600, 0),
+            new SizeF(80, 60),
+            0,
+            0,
+            Color.Coral,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        if (left < 0 || right < 0)
+        {
+            throw new InvalidOperationException("The cross-layer flip fixture could not create its objects.");
+        }
+
+        var leftBounds = scene.GetObjectWorldBounds(left);
+        var rightBounds = scene.GetObjectWorldBounds(right);
+        var union = RectangleF.Union(leftBounds, rightBounds);
+        var axis = union.Left + union.Right;
+        if (axis <= 0f || union.Width <= leftBounds.Width)
+        {
+            throw new InvalidOperationException(
+                $"The cross-layer flip fixture did not span two layers: "
+                + $"union=[{union.Left},{union.Right}], left=[{leftBounds.Left},{leftBounds.Right}], "
+                + $"right=[{rightBounds.Left},{rightBounds.Right}].");
+        }
+
+        var leftCenterBefore = ContourCenter(left, scene);
+        var rightCenterBefore = ContourCenter(right, scene);
+        if (!scene.FlipObjects([left, right], horizontal: true))
+        {
+            throw new InvalidOperationException("Flipping a cross-layer selection was refused.");
+        }
+
+        // Both objects must land at the mirror of their original position about the SHARED axis,
+        // and each must keep its own layer.
+        var leftExpected = new PointF(axis - leftCenterBefore.X, leftCenterBefore.Y);
+        var rightExpected = new PointF(axis - rightCenterBefore.X, rightCenterBefore.Y);
+        var leftCenterAfter = ContourCenter(left, scene);
+        var rightCenterAfter = ContourCenter(right, scene);
+        var swappedSides = leftCenterAfter.X > rightCenterAfter.X;
+        var sharedAxisRespected = PointsWithin(leftCenterAfter, leftExpected, 1f)
+            && PointsWithin(rightCenterAfter, rightExpected, 1f);
+        var layersPreserved = scene.ObjectLayer[left] != scene.ObjectLayer[right];
+        if (!sharedAxisRespected || !swappedSides || !layersPreserved)
+        {
+            throw new InvalidOperationException(
+                $"A cross-layer flip did not mirror both objects about the shared selection axis: "
+                + $"left {leftCenterBefore.X:0.#}->{leftCenterAfter.X:0.#} (expected {leftExpected.X:0.#}), "
+                + $"right {rightCenterBefore.X:0.#}->{rightCenterAfter.X:0.#} (expected {rightExpected.X:0.#}), "
+                + $"axis={axis:0.#}, swappedSides={swappedSides}, layersPreserved={layersPreserved}.");
+        }
+
+        Console.WriteLine("cross_layer_flip_center_regression=ok");
+    }
+
+    // The Distort tool exposes exactly one inserted anchor across the whole envelope. Corners stay
+    // structural, a second insertion is refused, and legacy envelopes that already carry several
+    // inserted anchors collapse to one on the next write instead of being rejected.
+    private static void RunDistortSingleAnchorRegression()
+    {
+        var bounds = RectangleF.FromLTRB(0, 0, 400, 240);
+        var identity = DistortEnvelope.FromBounds(bounds);
+        if (identity.InsertedAnchorCount != 0 || identity.TryGetInsertedAnchor(out _))
+        {
+            throw new InvalidOperationException("A fresh Distort envelope reported an inserted anchor.");
+        }
+
+        var firstInserted = identity.TryInsertAnchor(DistortSide.Top, 0.5f, out var oneAnchor, out var firstHandle)
+            && oneAnchor.InsertedAnchorCount == 1
+            && oneAnchor.TryGetInsertedAnchor(out var reported)
+            && reported.Side == DistortSide.Top
+            && reported.AnchorId == firstHandle.AnchorId;
+        if (!firstInserted)
+        {
+            throw new InvalidOperationException(
+                $"The first Distort anchor insertion did not take effect: count={oneAnchor.InsertedAnchorCount}.");
+        }
+
+        // A second insertion anywhere on the envelope must be refused while one anchor exists.
+        var secondRefused = !oneAnchor.TryInsertAnchor(DistortSide.Top, 0.25f, out _, out _)
+            && !oneAnchor.TryInsertAnchor(DistortSide.Right, 0.5f, out _, out _)
+            && !oneAnchor.TryInsertAnchor(DistortSide.Bottom, 0.6f, out _, out _)
+            && !oneAnchor.TryInsertAnchor(DistortSide.Left, 0.4f, out _, out _);
+        if (!secondRefused)
+        {
+            throw new InvalidOperationException(
+                $"The Distort tool accepted a second inserted anchor: count={oneAnchor.InsertedAnchorCount}.");
+        }
+
+        // The two remaining corners on the split side stay structural, so the side still has 3
+        // anchors total (2 corners + 1 inserted).
+        var splitSideAnchors = oneAnchor.GetAnchors(DistortSide.Top).Length;
+        if (splitSideAnchors != 3)
+        {
+            throw new InvalidOperationException(
+                $"A single inserted Distort anchor produced {splitSideAnchors} anchors on its side instead of 3.");
+        }
+
+        // Apply the single-anchor envelope to a scene, then re-write it with a legacy multi-anchor
+        // envelope to confirm the write path collapses instead of failing.
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var target = scene.AddObject(
+            0,
+            new PointF(200, 120),
+            new SizeF(400, 240),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            8,
+            ShapeKind.Rectangle);
+        var sourceFrame = TransformOverlayFrame.FromBounds(scene.GetObjectWorldBounds(target));
+        if (target < 0
+            || !scene.SetObjectDistortions(target, [new DistortWarp(sourceFrame, oneAnchor)])
+            || !scene.TryGetObjectDistortions(target, out var stored)
+            || stored.Length != 1
+            || stored[0].Envelope.InsertedAnchorCount != 1)
+        {
+            throw new InvalidOperationException("A single-anchor Distort envelope did not persist through the scene.");
+        }
+
+        // Build a legacy envelope carrying three inserted anchors by splitting repeatedly, which the
+        // public API still permits on a freshly built envelope through the internal path.
+        var legacy = identity;
+        var insertedCount = 0;
+        if (legacy.TryInsertAnchor(DistortSide.Top, 0.25f, out legacy, out _)) insertedCount++;
+        if (legacy.TryInsertAnchor(DistortSide.Top, 0.5f, out legacy, out _)) insertedCount++;
+        if (legacy.TryInsertAnchor(DistortSide.Bottom, 0.5f, out legacy, out _)) insertedCount++;
+        if (insertedCount == 0)
+        {
+            throw new InvalidOperationException("The legacy multi-anchor fixture could not insert any anchor.");
+        }
+
+        var collapsed = legacy.NormalizeInsertedAnchors();
+        if (collapsed.InsertedAnchorCount > 1)
+        {
+            throw new InvalidOperationException(
+                $"Normalizing a legacy envelope left {collapsed.InsertedAnchorCount} inserted anchors.");
+        }
+
+        if (!scene.SetObjectDistortions(target, [new DistortWarp(sourceFrame, legacy)])
+            || !scene.TryGetObjectDistortions(target, out var normalizedStored)
+            || normalizedStored.Length != 1
+            || normalizedStored[0].Envelope.InsertedAnchorCount > 1)
+        {
+            throw new InvalidOperationException(
+                $"Writing a legacy multi-anchor envelope did not collapse it to one anchor: "
+                + $"count={(scene.TryGetObjectDistortions(target, out var probe) ? probe[0].Envelope.InsertedAnchorCount : -1)}.");
+        }
+
+        Console.WriteLine("distort_single_anchor_regression=ok");
+    }
+
+    private static float SignedContourArea(IReadOnlyList<PathBezierNode> contour) =>
+        SignedContourArea(contour.Select(node => node.Anchor).ToArray());
+
+    private static float SignedContourArea(IReadOnlyList<PointF> polygon)
+    {
+        if (polygon.Count < 3) return 0f;
+        var origin = polygon[0];
+        var area = 0d;
+        for (var index = 1; index < polygon.Count - 1; index++)
+        {
+            var ax = (double)polygon[index].X - origin.X;
+            var ay = (double)polygon[index].Y - origin.Y;
+            var bx = (double)polygon[index + 1].X - origin.X;
+            var by = (double)polygon[index + 1].Y - origin.Y;
+            area += ax * by - bx * ay;
+        }
+
+        return (float)(area * 0.5d);
     }
 
 }

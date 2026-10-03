@@ -15,6 +15,7 @@ internal sealed class ProjectRestartSnapshot
     public ProjectAssetTagRestartSnapshot[] AssetTags { get; init; } = [];
     public ProjectAssetFolderRestartSnapshot[] AssetFolders { get; init; } = [];
     public ExternalSvgAssetRestartSnapshot[] ExternalSvgAssets { get; init; } = [];
+    public ImageAssetRestartSnapshot[] ImageAssets { get; init; } = [];
     public DrawingObjectRestartSnapshot[] DrawingObjects { get; init; } = [];
     public SceneRestartSnapshot[] Scenes { get; init; } = [];
 }
@@ -41,6 +42,20 @@ internal sealed class ExternalSvgAssetRestartSnapshot
     public string SourcePath { get; init; } = "";
     public string ProjectRelativePath { get; init; } = "";
     public string LastKnownSha256 { get; init; } = "";
+    public DateTime CreatedAt { get; init; } = DateTime.Now;
+}
+
+internal sealed class ImageAssetRestartSnapshot
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "Image";
+    public string SourcePath { get; init; } = "";
+    public string ProjectRelativePath { get; init; } = "";
+    public string Sha256 { get; init; } = "";
+    public int PixelWidth { get; init; }
+    public int PixelHeight { get; init; }
+    public float NaturalPixelsPerUnit { get; init; } = 96f;
+    public BitmapImageImportSettings ImportSettings { get; init; } = BitmapImageImportSettings.Default;
     public DateTime CreatedAt { get; init; } = DateTime.Now;
 }
 

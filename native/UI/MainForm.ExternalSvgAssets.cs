@@ -28,6 +28,64 @@ internal sealed partial class MainForm
         AppLog.Info($"Added external SVG asset link: {asset.Name} -> {asset.SourcePath}");
     }
 
+    /// <summary>
+    /// Adds SVG links from files dropped onto the asset library. Each file is validated
+    /// before it is registered, so one unreadable SVG does not abort the rest, and files
+    /// already linked by the same source path are skipped instead of duplicated. Failures
+    /// are reported once at the end rather than prompting per file.
+    /// </summary>
+    private void AddExternalSvgAssetLinksFromFiles(IReadOnlyList<string> fileNames)
+    {
+        var added = 0;
+        var skipped = 0;
+        var failure = "";
+        foreach (var fileName in fileNames)
+        {
+            string path;
+            try
+            {
+                path = Path.GetFullPath(fileName);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                failure = exception.Message;
+                continue;
+            }
+
+            if (_project.ExternalSvgAssets.Any(asset =>
+                    string.Equals(asset.SourcePath, path, StringComparison.OrdinalIgnoreCase)))
+            {
+                skipped++;
+                continue;
+            }
+
+            if (!TryValidateExternalSvgAssetFile(path, out var validated, out var sha256, out var error))
+            {
+                failure = error;
+                continue;
+            }
+
+            if (_project.TryAddExternalSvgAsset(
+                    ImportedSvgDisplayName(validated),
+                    validated,
+                    ProjectRelativeExternalSvgPath(validated),
+                    sha256,
+                    out var asset)
+                && asset is not null)
+            {
+                added++;
+                AppLog.Info($"Added external SVG asset link: {asset.Name} -> {asset.SourcePath}");
+            }
+        }
+
+        if (added > 0) _libraryVaultPanel.RefreshProjectObjects();
+        if (failure.Length == 0) return;
+        AppLog.Warn($"Skipped {fileNames.Count - added - skipped} SVG link(s) during a library drop: {failure}");
+        // A drop can carry several files; report once and only when there is a host window,
+        // so a background or non-interactive caller is never blocked by a modal dialog.
+        if (IsHandleCreated && Visible) ShowExternalSvgAssetError("The SVG link could not be added.", failure);
+    }
+
     private void UseExternalSvgAssetLink(string assetId, PointF? center = null)
     {
         var asset = FindExternalSvgAsset(assetId);
@@ -170,6 +228,41 @@ internal sealed partial class MainForm
         path = resolved;
         return true;
     }
+
+    /// <summary>Preview scene for a Vault external-SVG link hovered over the stage.</summary>
+    private VectorScene? BuildExternalSvgDropPreviewScene(string path) =>
+        BuildSvgFileDropPreviewScene(path);
+
+    /// <summary>
+    /// Preview scene for a dragged <c>.svg</c> file. The source is parsed but nothing is
+    /// written to the project; the drop performs the real import.
+    /// </summary>
+    private VectorScene? BuildSvgFileDropPreviewScene(string path)
+    {
+        try
+        {
+            var imported = ImportedSvgRasterizer.Load(path);
+            var viewport = _stage.VisibleWorldBounds();
+            var size = ImportedSvgInitialSize(imported.IntrinsicSize, viewport);
+            var data = new ImportedSvgObjectPreview(imported.Source, size);
+            var preview = new VectorScene();
+            preview.CreateEmpty(1, 1);
+            preview.AddImportedSvgObject(
+                0,
+                PointF.Empty,
+                data.Size,
+                data.Source,
+                ImportedSvgDisplayName(path));
+            return preview.ObjectCount > 0 ? preview : null;
+        }
+        catch (Exception exception)
+        {
+            AppLog.Error($"Unable to build SVG drop preview: {path}", exception);
+            return null;
+        }
+    }
+
+    private readonly record struct ImportedSvgObjectPreview(string Source, SizeF Size);
 
     private static OpenFileDialog CreateExternalSvgAssetDialog(string title) => new()
     {

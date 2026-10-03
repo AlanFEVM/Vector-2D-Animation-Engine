@@ -2,7 +2,14 @@ namespace VectorAnimationEngine;
 
 internal sealed class MixingBrushSettingsPanel : UserControl
 {
-    private const int PanelHeight = 210;
+    private const int PanelPaddingTop = 6;
+    private const int PanelPaddingBottom = 6;
+    private const int PanelPaddingHorizontal = 12;
+    private const int PanelRowCount = 5;
+    private const int PanelHeight = PanelPaddingTop
+        + PanelPaddingBottom
+        + Theme.InspectorTitleHeight
+        + Theme.InspectorRowHeight * PanelRowCount;
 
     private readonly SegmentedButton _opticalMode = new() { Text = "Optical" };
     private readonly SegmentedButton _pigmentMode = new() { Text = "Pigment" };
@@ -25,7 +32,7 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         Font = Theme.UiFont();
         Height = PanelHeight;
         MinimumSize = new Size(240, PanelHeight);
-        Padding = new Padding(12, 8, 12, 8);
+        Padding = new Padding(PanelPaddingHorizontal, PanelPaddingTop, PanelPaddingHorizontal, PanelPaddingBottom);
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Mixing brush settings";
 
@@ -33,7 +40,7 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         {
             Text = "Mixing",
             Dock = DockStyle.Top,
-            Height = 24,
+            Height = Theme.InspectorTitleHeight,
             BackColor = Color.Transparent,
             ForeColor = Theme.Text,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -55,7 +62,7 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40));
         for (var row = 0; row < content.RowCount; row++)
         {
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         }
 
         var modeSelector = new TableLayoutPanel
@@ -75,12 +82,12 @@ internal sealed class MixingBrushSettingsPanel : UserControl
             _opticalMode,
             "Optical mixing mode",
             "Mixes the sampled and loaded colors as emitted light",
-            new Padding(0, 3, 2, 3));
+            new Padding(0, Theme.InspectorRowMarginVertical, 2, Theme.InspectorRowMarginVertical));
         ConfigureModeButton(
             _pigmentMode,
             "Pigment mixing mode",
             "Mixes the sampled and loaded colors as physical pigments",
-            new Padding(2, 3, 0, 3));
+            new Padding(2, Theme.InspectorRowMarginVertical, 0, Theme.InspectorRowMarginVertical));
         modeSelector.Controls.Add(_opticalMode, 0, 0);
         modeSelector.Controls.Add(_pigmentMode, 1, 0);
 
@@ -212,7 +219,7 @@ internal sealed class MixingBrushSettingsPanel : UserControl
             Font = Theme.UiFont(),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
-            Margin = new Padding(0, 2, 8, 2)
+            Margin = Theme.InspectorFieldMargin(rightGap: true)
         };
     }
 

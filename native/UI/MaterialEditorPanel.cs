@@ -205,7 +205,7 @@ internal sealed class MaterialEditorPanel : UserControl
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
         MinimumSize = new Size(240, 0);
-        Padding = new Padding(0, 8, 0, 8);
+        Padding = Theme.InspectorSectionPadding;
         Theme.StyleToolTip(_toolTip);
 
         EnsureGradientPaletteStateLoaded();
@@ -329,7 +329,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
     public void SetMaterial(Color fill, Color stroke, float strokeWidth, float opacity)
     {
-        ApplyMaterial(fill, stroke, strokeWidth, opacity, raiseEvent: false);
+        ApplyMaterial(fill, stroke, strokeWidth, opacity, raiseEvent: false, isHostEcho: true);
     }
 
     public void SetTextObjectMode(bool enabled)
@@ -347,7 +347,7 @@ internal sealed class MaterialEditorPanel : UserControl
             _gradientPanel.Visible = !enabled;
             _materialSettings.Visible = !enabled;
             _content.RowStyles[2].Height = enabled ? 0 : _gradientSettingsExpanded ? 158 : 30;
-            _content.RowStyles[3].Height = enabled ? 0 : 38;
+            _content.RowStyles[3].Height = enabled ? 0 : Theme.InspectorRowHeight;
         }
         finally
         {
@@ -411,14 +411,14 @@ internal sealed class MaterialEditorPanel : UserControl
             Padding = Padding.Empty
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorTitleHeight));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 158));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         Controls.Add(content);
         _content = content;
@@ -673,7 +673,7 @@ internal sealed class MaterialEditorPanel : UserControl
             ColumnCount = 2,
             RowCount = 1,
             Margin = Padding.Empty,
-            Padding = new Padding(0, 4, 0, 4)
+            Padding = new Padding(0, Theme.InspectorRowMarginVertical, 0, Theme.InspectorRowMarginVertical)
         };
         hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
         hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -981,7 +981,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _materialSettings = settings;
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        settings.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         content.Controls.Add(settings, 0, 3);
 
         settings.Controls.Add(_strokeWidthLabel, 0, 0);
@@ -990,7 +990,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _strokeWidth.DecimalPlaces = 1;
         _strokeWidth.Increment = 0.1m;
         _strokeWidth.Dock = DockStyle.Fill;
-        _strokeWidth.Margin = new Padding(0, 4, 0, 4);
+        _strokeWidth.Margin = Theme.InspectorFieldMargin(rightGap: false);
         Theme.StyleNumeric(_strokeWidth);
         _strokeWidth.ValueChanged += (_, _) => RaiseMaterialChanged(strokeWidthChanged: true);
         _strokeWidth.InteractionStarted += (_, _) => BeginGradientContinuousEdit();
@@ -1238,9 +1238,9 @@ internal sealed class MaterialEditorPanel : UserControl
         _content.SuspendLayout();
         try
         {
-            _content.RowStyles[5].Height = expanded ? 36 : 0;
+            _content.RowStyles[5].Height = expanded ? Theme.InspectorRowHeight : 0;
             _content.RowStyles[6].Height = expanded ? 236 : 0;
-            _content.RowStyles[7].Height = 38;
+            _content.RowStyles[7].Height = Theme.InspectorRowHeight;
             _colorEditorToggle.Text = "Color";
             if (_colorEditorToggle is SvgIconButton iconButton)
             {
@@ -1464,14 +1464,34 @@ internal sealed class MaterialEditorPanel : UserControl
         Theme.StyleSegmentedButton(round, endpointStyle != LineEndpointStyle.Sharp);
     }
 
-    private void ApplyMaterial(Color fill, Color stroke, float strokeWidth, float opacity, bool raiseEvent)
+    private void ApplyMaterial(
+        Color fill,
+        Color stroke,
+        float strokeWidth,
+        float opacity,
+        bool raiseEvent,
+        bool isHostEcho = false)
     {
+        // A host echo mirrors the scene back into the panel while our own edit is still being
+        // applied, and that echo still carries the pre-edit color. Adopting it would silently
+        // revert the edit, so an echo never replaces the target the user is editing. Explicit
+        // setter calls are real edits and always win. Gradient stops are raised through
+        // GradientChanged and are never replaced from here.
+        var colorEditActive = _handlingColorChange || _colorInteractionDepth > 0;
+        if (isHostEcho
+            && colorEditActive
+            && _editingGradientTarget != GradientColorTarget.Stop)
+        {
+            if (_editingFill) fill = _fill;
+            else stroke = _stroke;
+        }
+
         var fillChanged = _fill.ToArgb() != fill.ToArgb();
         var strokeChanged = _stroke.ToArgb() != stroke.ToArgb();
         var strokeWidthChanged = Math.Abs(StrokeWidth - strokeWidth) > 0.001f;
         var opacityChanged = Math.Abs(Opacity - opacity) > 0.001f;
         if (!raiseEvent && !fillChanged && !strokeChanged && !strokeWidthChanged && !opacityChanged) return;
-        var refreshComponents = !_handlingColorChange && _colorInteractionDepth == 0;
+        var refreshComponents = !colorEditActive;
 
         _updating = true;
         _fill = fill;
@@ -2089,8 +2109,8 @@ internal sealed class MaterialEditorPanel : UserControl
         if (_materialSettings is null || _content is null) return;
 
         var showStrokeSettings = !_editingFill;
-        var materialRowHeight = showStrokeSettings ? 38f : 0f;
-        var widthRowHeight = showStrokeSettings ? 38f : 0f;
+        var materialRowHeight = showStrokeSettings ? (float)Theme.InspectorRowHeight : 0f;
+        var widthRowHeight = showStrokeSettings ? (float)Theme.InspectorRowHeight : 0f;
         var changed = _strokeWidthLabel.Visible != showStrokeSettings
             || _strokeWidth.Visible != showStrokeSettings
             || Math.Abs(_materialSettings.RowStyles[0].Height - widthRowHeight) > 0.001f

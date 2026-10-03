@@ -919,7 +919,8 @@ internal sealed partial class VectorScene
     {
         return shape is VectorAnimationEngine.ShapeKind.ImportedSvg
             or VectorAnimationEngine.ShapeKind.Text
-            or VectorAnimationEngine.ShapeKind.MixingStroke;
+            or VectorAnimationEngine.ShapeKind.MixingStroke
+            or VectorAnimationEngine.ShapeKind.Bitmap;
     }
 
     private static bool IsTopologyStrokeShape(ShapeKind shape)
@@ -939,6 +940,10 @@ internal sealed partial class VectorScene
         {
             return false;
         }
+
+        // A placed bitmap always covers its quad; its Argb channel carries tint and
+        // instance opacity, so testing it here would wrongly treat a tinted image as empty.
+        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Bitmap) return true;
 
         if (Color.FromArgb(Argb[objectIndex]).A > 0) return true;
         if (!HasGradient(objectIndex)) return false;

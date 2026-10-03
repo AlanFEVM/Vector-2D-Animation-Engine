@@ -206,7 +206,7 @@ internal static partial class Benchmark
                 || Math.Abs(panelSettings.PaintLoad - 0.83f) > 0.001f
                 || Math.Abs(panelSettings.Influence - 0.47f) > 0.001f
                 || panel.MinimumSize.Width != 240
-                || panel.PreferredPanelHeight != 210)
+                || panel.PreferredPanelHeight != 196)
             {
                 throw new InvalidOperationException("The mixing-brush settings panel did not retain its compact model state.");
             }

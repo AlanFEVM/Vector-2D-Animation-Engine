@@ -13,5 +13,6 @@ internal enum ShapeKind : byte
     BrushStroke = 8,
     ImportedSvg = 9,
     Text = 10,
-    MixingStroke = 11
+    MixingStroke = 11,
+    Bitmap = 12
 }

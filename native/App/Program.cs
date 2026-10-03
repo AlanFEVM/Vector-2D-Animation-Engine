@@ -23,19 +23,7 @@ internal static class Program
     {
         AppLog.Initialize(args);
         LauncherShutdownSignal.Configure(args);
-        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) => AppLog.Error("Unhandled UI thread exception", e.Exception);
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-        {
-            var exception = e.ExceptionObject as Exception;
-            AppLog.Error($"Unhandled domain exception. Terminating: {e.IsTerminating}", exception);
-            AppLog.Flush();
-        };
-        TaskScheduler.UnobservedTaskException += (_, e) =>
-        {
-            AppLog.Error("Unobserved task exception", e.Exception);
-            e.SetObserved();
-        };
+        InstallCrashHandlers();
 
         if (TryRunBenchmark(args) || TryValidateReleaseNotes(args)) return;
 
@@ -92,16 +80,105 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            AppLog.Error("Fatal application exception", ex);
+            var report = CrashReporter.Capture("Fatal application exception", ex, isTerminating: true);
             AppLog.Flush();
             ModernMessageDialog.Show(
                 null,
                 UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese
-                    ? $"应用程序已崩溃。详细信息请查看最新日志文件：\n\n{AppLog.LogPath}"
-                    : $"The application crashed. See the latest log file for details:\n\n{AppLog.LogPath}",
+                    ? $"应用程序已崩溃。诊断报告已保存到：\n\n{(string.IsNullOrEmpty(report) ? AppLog.LogPath : report)}"
+                    : $"The application crashed. A diagnostic report was saved to:\n\n{(string.IsNullOrEmpty(report) ? AppLog.LogPath : report)}",
                 "Vector 2D Animation Engine",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+        }
+    }
+
+    /// <summary>
+    /// Installs every managed crash channel this process can observe. Native access violations and
+    /// stack overflows cannot be caught in managed code, so the log and crash-report paths are also
+    /// flushed on the way out to leave the best possible trail.
+    /// </summary>
+    private static void InstallCrashHandlers()
+    {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+
+        // UI-thread exceptions: the message loop keeps running, so this is a recoverable crash.
+        Application.ThreadException += (_, e) =>
+        {
+            var report = CrashReporter.Capture("Unhandled UI thread exception", e.Exception, isTerminating: false);
+            ReportCrashToUser(e.Exception, report, terminating: false);
+        };
+
+        // A background thread exception that nothing handled. This terminates the process.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            var exception = e.ExceptionObject as Exception;
+            if (exception is null)
+            {
+                AppLog.Crash(
+                    $"Unhandled domain exception with a non-Exception object of type " +
+                    $"{e.ExceptionObject?.GetType().FullName ?? "null"}. Terminating: {e.IsTerminating}",
+                    exception: null);
+                AppLog.Flush();
+                return;
+            }
+
+            var report = CrashReporter.Capture("Unhandled domain exception", exception, e.IsTerminating);
+            AppLog.Flush();
+            ReportCrashToUser(exception, report, terminating: e.IsTerminating);
+        };
+
+        // A faulted Task whose exception was never observed. Usually not fatal, but it is exactly
+        // the kind of silent failure that later surfaces as an unexplained crash.
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            AppLog.Error("Unobserved task exception", e.Exception);
+            e.SetObserved();
+        };
+
+        // Capture the originating stack of exceptions that are later swallowed or rethrown. This is
+        // opt-in because first-chance handling is expensive and produces a large volume.
+        if (IsEnabled(Environment.GetEnvironmentVariable("V2D_LOG_FIRST_CHANCE_EXCEPTIONS")))
+        {
+            AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+                AppLog.Warn($"First-chance exception: {AppLog.DescribeException(e.Exception)}");
+            AppLog.Info("First-chance exception logging is enabled.");
+        }
+
+        AppLog.Info("Crash handlers installed.");
+    }
+
+    private static bool IsEnabled(string? value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && !value.Equals("0", StringComparison.Ordinal)
+        && !value.Equals("false", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Surfaces a crash report path after the log has been flushed. Kept defensive: a failure while
+    /// reporting must not replace the original exception or block termination.
+    /// </summary>
+    private static void ReportCrashToUser(Exception? exception, string reportPath, bool terminating)
+    {
+        var detail = string.IsNullOrEmpty(reportPath)
+            ? AppLog.LogPath
+            : reportPath;
+        AppLog.Crash($"Crash report available at: {detail}", exception: null);
+
+        if (!terminating) return;
+        try
+        {
+            ModernMessageDialog.Show(
+                null,
+                UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese
+                    ? $"应用程序遇到未处理的错误。诊断报告已保存到：\n\n{detail}"
+                    : $"The application hit an unhandled error. A diagnostic report was saved to:\n\n{detail}",
+                "Vector 2D Animation Engine",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        catch
+        {
+            // A terminating path may be unable to show UI; the log already has the report path.
         }
     }
 

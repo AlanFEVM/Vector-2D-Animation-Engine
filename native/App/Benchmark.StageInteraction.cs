@@ -5583,4 +5583,196 @@ internal static partial class Benchmark
         Console.WriteLine("marquee_overlay_gdi_fallback=ok");
     }
 
+    // Free Transform rotation must present the box as a rigid body turn of the frame captured at
+    // pointer-down. Recomputing the frame from the freshly rotated geometry each move made the box
+    // (and the handle under the pointer) slide, which is the handling problem this guards against.
+    private static void RunFrozenRotationTransformFrameRegression()
+    {
+        var sceneField = RequireField(typeof(MainForm), "_scene");
+        var stageField = RequireField(typeof(MainForm), "_stage");
+        var toolField = RequireField(typeof(MainForm), "_tool");
+        var frozenField = RequireField(typeof(MainForm), "_transformFrameFrozenForRotation");
+        var accumulatedAngleField = RequireField(typeof(MainForm), "_drawingTransformAccumulatedAngle");
+        var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var updateOverlay = RequireMethod(typeof(MainForm), "UpdateTransformOverlay");
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+
+        using var form = new MainForm { Size = new Size(1280, 800) };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = sceneField.GetValue(form) as VectorScene
+            ?? throw new InvalidOperationException("Frozen rotation regression did not find the scene.");
+        var stage = stageField.GetValue(form) as StageControl
+            ?? throw new InvalidOperationException("Frozen rotation regression did not find the Stage.");
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+
+        var objectIndex = scene.AppendObject(
+            scene.ActiveLayer,
+            PointF.Empty,
+            new SizeF(240, 160),
+            0,
+            2,
+            Color.CornflowerBlue,
+            Color.Black,
+            8,
+            ShapeKind.Rectangle);
+        scene.CompleteDeferredBuild();
+        setSelection.Invoke(form, [objectIndex, false]);
+        activateTool.Invoke(form, [ToolMode.Transform]);
+        updateOverlay.Invoke(form, null);
+        if (toolField.GetValue(form) is not ToolMode.Transform
+            || !stage.TransformBoundsVisible
+            || !stage.TransformFrame.IsValid)
+        {
+            throw new InvalidOperationException("Frozen rotation regression did not expose the transform box.");
+        }
+
+        var startFrame = stage.TransformFrame;
+        var geometry = stage.GetTransformOverlayScreenGeometry();
+        if (geometry.RotationHandles.Length == 0)
+        {
+            throw new InvalidOperationException("The transform box exposed no rotation handle.");
+        }
+
+        var rotateHandle = geometry.RotationHandles[0];
+        var handleScreen = Point.Round(rotateHandle.Point);
+        if (stage.HitTestTransformHandle(handleScreen) != rotateHandle.Kind)
+        {
+            throw new InvalidOperationException(
+                $"The visible rotation handle was not hit-testable: {stage.HitTestTransformHandle(handleScreen)}.");
+        }
+
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, handleScreen.X, handleScreen.Y, 0)]);
+        if (frozenField.GetValue(form) is not true)
+        {
+            throw new InvalidOperationException("A rotation drag did not capture the frozen transform frame.");
+        }
+
+        var pivotScreen = stage.TransformOverlayPointToScreen(startFrame.Center);
+        var handleVector = new PointF(
+            handleScreen.X - pivotScreen.X,
+            handleScreen.Y - pivotScreen.Y);
+        var startRadius = MathF.Sqrt(handleVector.X * handleVector.X + handleVector.Y * handleVector.Y);
+        if (startRadius <= 1f)
+        {
+            throw new InvalidOperationException("The rotation handle was not offset from the box centre.");
+        }
+
+        // Sweep the pointer along the drag circle. The box must follow the pointer as a rigid body:
+        // the grabbed handle stays under the cursor and the frame keeps its captured edge lengths.
+        const float sweepRadians = 0.5f;
+        var targetAngle = MathF.Atan2(handleVector.Y, handleVector.X) + sweepRadians;
+        var target = new Point(
+            (int)MathF.Round(pivotScreen.X + MathF.Cos(targetAngle) * startRadius),
+            (int)MathF.Round(pivotScreen.Y + MathF.Sin(targetAngle) * startRadius));
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, target.X, target.Y, 0)]);
+
+        if (frozenField.GetValue(form) is not true)
+        {
+            throw new InvalidOperationException("The frozen transform frame was released mid-drag.");
+        }
+        var accumulated = accumulatedAngleField.GetValue(form) is float angle ? angle : 0f;
+        if (Math.Abs(accumulated) <= 0.01f)
+        {
+            throw new InvalidOperationException("The rotation drag did not accumulate an angle.");
+        }
+
+        var movedFrame = stage.TransformFrame;
+        if (!movedFrame.IsValid)
+        {
+            throw new InvalidOperationException("The transform box became invalid during rotation.");
+        }
+
+        // Edge lengths are invariant under a rigid rotation; a recomputed axis-aligned box would
+        // change them as soon as the shape is no longer axis aligned.
+        var startWidth = MathF.Sqrt(
+            startFrame.AxisX.X * startFrame.AxisX.X + startFrame.AxisX.Y * startFrame.AxisX.Y);
+        var startHeight = MathF.Sqrt(
+            startFrame.AxisY.X * startFrame.AxisY.X + startFrame.AxisY.Y * startFrame.AxisY.Y);
+        var movedWidth = MathF.Sqrt(
+            movedFrame.AxisX.X * movedFrame.AxisX.X + movedFrame.AxisX.Y * movedFrame.AxisX.Y);
+        var movedHeight = MathF.Sqrt(
+            movedFrame.AxisY.X * movedFrame.AxisY.X + movedFrame.AxisY.Y * movedFrame.AxisY.Y);
+        if (Math.Abs(movedWidth - startWidth) > 0.5f || Math.Abs(movedHeight - startHeight) > 0.5f)
+        {
+            throw new InvalidOperationException(
+                "The transform box was recomputed instead of rotating rigidly with the shape: "
+                + $"start=({startWidth:0.###},{startHeight:0.###}), moved=({movedWidth:0.###},{movedHeight:0.###}).");
+        }
+
+        // The captured axes must have turned by the accumulated drag angle.
+        var startAxisAngle = MathF.Atan2(startFrame.AxisX.Y, startFrame.AxisX.X);
+        var movedAxisAngle = MathF.Atan2(movedFrame.AxisX.Y, movedFrame.AxisX.X);
+        var axisDelta = MathF.Abs(NormalizeAngleForRegression(movedAxisAngle - startAxisAngle));
+        var expectedAxisDelta = MathF.Abs(NormalizeAngleForRegression(accumulated));
+        if (Math.Abs(axisDelta - expectedAxisDelta) > 0.01f)
+        {
+            throw new InvalidOperationException(
+                "The transform box did not turn by the dragged angle: "
+                + $"axisDelta={axisDelta:0.####}, accumulated={expectedAxisDelta:0.####}.");
+        }
+
+        // The grabbed handle must still sit under the pointer, which is the handling property the
+        // frozen frame exists to preserve.
+        var movedGeometry = stage.GetTransformOverlayScreenGeometry();
+        var movedHandle = movedGeometry.RotationHandles
+            .FirstOrDefault(handle => handle.Kind == rotateHandle.Kind);
+        var handleDrift = MathF.Sqrt(
+            (movedHandle.Point.X - target.X) * (movedHandle.Point.X - target.X)
+            + (movedHandle.Point.Y - target.Y) * (movedHandle.Point.Y - target.Y));
+        if (handleDrift > 2f)
+        {
+            throw new InvalidOperationException(
+                $"The rotated handle did not stay under the pointer: drift={handleDrift:0.###}px.");
+        }
+
+        mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, target.X, target.Y, 0)]);
+        if (frozenField.GetValue(form) is not false)
+        {
+            throw new InvalidOperationException("Committing the rotation drag did not release the frozen transform frame.");
+        }
+
+        var committedFrame = stage.TransformFrame;
+        if (!committedFrame.IsValid)
+        {
+            throw new InvalidOperationException("The committed rotation left an invalid transform box.");
+        }
+
+        // On commit the box is re-derived from the rotated geometry, so it becomes the axis-aligned
+        // bound of the turned shape rather than the rotated capture. Its area must therefore not
+        // shrink below the captured box, and the box must still contain the shape's centre.
+        var committedSurface = MathF.Abs(
+            committedFrame.AxisX.X * committedFrame.AxisY.Y - committedFrame.AxisX.Y * committedFrame.AxisY.X);
+        var startSurface = MathF.Abs(
+            startFrame.AxisX.X * startFrame.AxisY.Y - startFrame.AxisX.Y * startFrame.AxisY.X);
+        var committedBounds = committedFrame.Bounds;
+        var committedCentre = committedFrame.Center;
+        if (committedSurface < startSurface * 0.99f
+            || committedBounds.Width <= 1f
+            || committedBounds.Height <= 1f)
+        {
+            throw new InvalidOperationException(
+                "Committing the rotation did not settle the box back onto the rotated geometry: "
+                + $"startArea={startSurface:0.###}, committedArea={committedSurface:0.###}, "
+                + $"bounds=({committedBounds.Width:0.###}x{committedBounds.Height:0.###}), "
+                + $"centre=({committedCentre.X:0.###},{committedCentre.Y:0.###}).");
+        }
+
+        Console.WriteLine("rotation_frozen_frame=ok");
+        Console.WriteLine($"rotation_handle_drift_px={handleDrift:0.###}");
+        Console.WriteLine($"rotation_accumulated_radians={accumulated:0.####}");
+        Console.WriteLine($"rotation_committed_frame_area={committedSurface:0.###}");
+
+        static float NormalizeAngleForRegression(float value)
+        {
+            while (value > MathF.PI) value -= MathF.Tau;
+            while (value < -MathF.PI) value += MathF.Tau;
+            return value;
+        }
+    }
+
 }

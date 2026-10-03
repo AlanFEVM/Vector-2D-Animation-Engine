@@ -17,13 +17,13 @@ internal static class SceneRenderOrder
 
     public static bool HasFill(ShapeKind shape)
     {
-        if (shape is ShapeKind.ImportedSvg or ShapeKind.Text) return true;
+        if (shape is ShapeKind.ImportedSvg or ShapeKind.Text or ShapeKind.Bitmap) return true;
         return shape is not ShapeKind.Line and not ShapeKind.Freeform;
     }
 
     public static bool HasStroke(ShapeKind shape, float stroke)
     {
-        if (shape is ShapeKind.ImportedSvg or ShapeKind.Text) return false;
+        if (shape is ShapeKind.ImportedSvg or ShapeKind.Text or ShapeKind.Bitmap) return false;
         return stroke > 0 && shape is not ShapeKind.BrushStroke and not ShapeKind.MixingStroke;
     }
 
@@ -32,7 +32,15 @@ internal static class SceneRenderOrder
         if (scene.HasLayerOutline) return true;
         for (var index = 0; index < scene.ObjectCount; index++)
         {
-            if (scene.ShapeKind[index] is ShapeKind.ImportedSvg or ShapeKind.Text or ShapeKind.MixingStroke) return true;
+            // Raster payloads cannot be drawn by the packed/LOD tile path, so their
+            // presence forces the full per-object renderer.
+            if (scene.ShapeKind[index] is ShapeKind.ImportedSvg
+                or ShapeKind.Text
+                or ShapeKind.MixingStroke
+                or ShapeKind.Bitmap)
+            {
+                return true;
+            }
         }
         return false;
     }

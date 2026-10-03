@@ -16,10 +16,14 @@ internal sealed partial class MainForm : Form
         if (toolChanged)
         {
             FinishPointerInteractionForContextChange();
+            SessionBreadcrumbs.Record("Tool", $"Activated {tool}");
         }
         CancelTemporaryCanvasPan();
         CancelGradientPointer(restore: true);
         HideBrushColorPalette();
+        // A tool switch ends any in-flight anchor drag or box selection: their pointer-up and
+        // hover state must not survive into a tool that does not understand anchors.
+        AbortMotionTrackPointerSession();
         _tool = tool;
         _stage.ClearDrawingPreview();
         if (tool != ToolMode.SnapPoint) ClearSnapPointPresentation();
@@ -1105,6 +1109,7 @@ internal sealed partial class MainForm : Form
         _timeline.AllLayerLocksRequested += (_, _) => ToggleAllTimelineLayerLocks();
         _timeline.AllLayerOutlinesRequested += (_, _) => ToggleAllTimelineLayerOutlines();
         _timeline.OnionSkinToggleRequested += (_, _) => ToggleTimelineOnionSkin();
+        _timeline.MotionTrackToggleRequested += (_, _) => ToggleTimelineMotionTrack();
         _timeline.OnionSkinRangeChanged += (_, e) => SetTimelineOnionSkinRange(e.PreviousFrames, e.NextFrames);
         _timeline.OnionSkinRangeInteractionStarted += (_, _) => BeginTimelineOnionSkinRangeEdit();
         _timeline.OnionSkinRangeInteractionCompleted += (_, _) => CompleteTimelineOnionSkinRangeEdit();
@@ -1129,11 +1134,32 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.DrawingObjectAssetTagAssignmentRequested += (_, e) =>
             SetDrawingObjectAssetTagAssignment(e.DrawingObjectId, e.TagId, e.Assigned);
         _libraryVaultPanel.ExternalSvgAssetAddRequested += (_, _) => AddExternalSvgAssetLink();
+        _libraryVaultPanel.ExternalSvgAssetFilesDropped += (_, e) => AddExternalSvgAssetLinksFromFiles(e.FileNames);
         _libraryVaultPanel.ExternalSvgAssetUseRequested += (_, e) => UseExternalSvgAssetLink(e.AssetId);
         _libraryVaultPanel.ExternalSvgAssetRelocateRequested += (_, e) => RelocateExternalSvgAssetLink(e.AssetId);
         _libraryVaultPanel.ExternalSvgAssetDeleteRequested += (_, e) => DeleteExternalSvgAssetLink(e.AssetId);
         _libraryVaultPanel.SetExternalSvgAssetAvailabilityProvider(asset =>
             ResolveExternalSvgAssetPath(asset) is not null);
+        _libraryVaultPanel.ImageAssetAddRequested += (_, _) => ImportImageAsset();
+        _libraryVaultPanel.ImageAssetFilesDropped += (_, e) => ImportImageAssetsFromFiles(e.FileNames);
+        _libraryVaultPanel.ImageAssetPlaceRequested += (_, e) => PlaceImageAsset(e.AssetId);
+        _libraryVaultPanel.ImageAssetImportSettingsRequested += (_, e) => EditImageAssetImportSettings(e.AssetId);
+        _libraryVaultPanel.ImageAssetRelinkRequested += (_, e) => RelinkImageAsset(e.AssetId);
+        _libraryVaultPanel.ImageAssetDeleteRequested += (_, e) => DeleteImageAsset(e.AssetId);
+        _libraryVaultPanel.SetImageAssetAvailabilityProvider(asset => ResolveImageAssetPath(asset) is not null);
+        _libraryVaultPanel.SetImageAssetPreviewProvider(asset =>
+        {
+            var path = ResolveImageAssetPath(asset);
+            if (path is null) return null;
+            try
+            {
+                return BitmapImageRasterizer.Decode(path, asset.ImportSettings);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or OutOfMemoryException)
+            {
+                return null;
+            }
+        });
         _libraryVaultPanel.AssetFolderCreateRequested += (_, e) => CreateProjectAssetFolder(e.ParentFolderId);
         _libraryVaultPanel.AssetFolderRenameRequested += (_, e) => RenameProjectAssetFolder(e.FolderId);
         _libraryVaultPanel.AssetFolderDuplicateRequested += (_, e) => DuplicateProjectAssetFolder(e.FolderId);
@@ -1501,6 +1527,7 @@ internal sealed partial class MainForm : Form
         Cursor = Cursors.WaitCursor;
         try
         {
+            SessionBreadcrumbs.Record("Project", $"Opening {dialog.FileName}");
             var project = ProjectVaultStore.Load(dialog.FileName);
             StopPlayback();
             FinishPointerInteractionForFrameChange();
@@ -1557,6 +1584,7 @@ internal sealed partial class MainForm : Form
         Cursor = Cursors.WaitCursor;
         try
         {
+            SessionBreadcrumbs.Record("Project", $"Saving {manifestPath}");
             FinishPointerInteractionForFrameChange();
             RefreshPendingSceneLightTweenMaterializations();
             _projectManifestPath = ProjectVaultStore.Save(_project, manifestPath);
@@ -2089,6 +2117,8 @@ internal sealed partial class MainForm : Form
                 CancelTraditionalPenPath();
                 CancelPenCurve();
                 FinishPointerInteractionForFrameChange();
+                // Only user-initiated navigation is worth a breadcrumb; playback would flood the ring.
+                SessionBreadcrumbs.Record("Frame", $"Moved {_frame} -> {next}");
             }
         }
         _syncingFrame = true;
@@ -2444,6 +2474,18 @@ internal sealed partial class MainForm : Form
                 FinishPointerInteraction();
                 return true;
             }
+            if (keyData == Keys.Escape && _motionTrackDragSession is not null)
+            {
+                CancelMotionTrackDrag();
+                FinishPointerInteraction();
+                return true;
+            }
+            if (keyData == Keys.Escape && _motionTrackMarqueeActive)
+            {
+                AbortMotionTrackPointerSession();
+                FinishPointerInteraction();
+                return true;
+            }
             if (keyData == Keys.Escape && CancelTraditionalPenPath()) return true;
             if (keyData == Keys.Escape && CancelPenCurve()) return true;
             if (!(commandButtonFocused && keyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
@@ -2453,6 +2495,16 @@ internal sealed partial class MainForm : Form
             if (!commandButtonFocused && keyData == Keys.Tab && CycleActiveToolGroup(reverse: false)) return true;
             if (!commandButtonFocused && keyData == (Keys.Shift | Keys.Tab) && CycleActiveToolGroup(reverse: true)) return true;
             if (keyData == (Keys.Control | Keys.Z) && UndoLastEdit()) return true;
+            if (keyData == (Keys.Control | Keys.A)
+                && _motionTrackEnabled
+                && _stage.MotionTrackVisible)
+            {
+                // While a motion track is on Stage, Select All targets every sampled anchor: that is
+                // the selection the transform box and the frame drag operate on.
+                SelectAllMotionTrackAnchors();
+                return true;
+            }
+
             if (keyData == (Keys.Control | Keys.A) && SelectAllObjectsInCurrentFrame()) return true;
             if (keyData == Keys.F8
                 && (ConvertSelectedSceneInstancesToSpatialComponent()

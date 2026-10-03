@@ -10,9 +10,21 @@ internal static class ProjectVaultStore
     internal const string ProjectExtension = ".v2dProject";
 
     private const int MinimumReadableManifestFormatVersion = 1;
-    private const int ManifestFormatVersion = 4;
+    private const int ManifestFormatVersion = 5;
+    /// <summary>
+    /// Format 5 added the managed image asset library (.Vault/Images).
+    /// </summary>
+    private const int FirstManifestFormatVersionWithImageAssets = 5;
+
+    /// <summary>
+    /// The format version this build writes. Exposed so regressions assert against the
+    /// current value instead of a hardcoded number that every format bump invalidates.
+    /// </summary>
+    internal const int CurrentManifestFormatVersion = ManifestFormatVersion;
+
     private const int TimelineFormatVersion = 1;
     private const string VaultDirectoryName = ".Vault";
+    private const string VaultImageDirectoryName = "Images";
     private const string TimelineDirectoryName = ".TimeLine";
     private const string DrawingTimelineDirectoryName = "Drawings";
     private const string SceneTimelineDirectoryName = "Scenes";
@@ -24,9 +36,11 @@ internal static class ProjectVaultStore
     private const long MaxManifestBytes = 64L * 1024 * 1024;
     private const long MaxTimelineBytes = 128L * 1024 * 1024;
     private const long MaxSvgAssetBytes = 128L * 1024 * 1024;
+    private const long MaxImageAssetBytes = BitmapImageFormats.MaximumSourceBytes;
     private const int MaxAssetFolders = 100_000;
     private const int MaxAssetTags = VectorProject.MaxAssetTagCount;
     private const int MaxExternalSvgAssets = VectorProject.MaxExternalSvgAssetCount;
+    private const int MaxImageAssets = VectorProject.MaxImageAssetCount;
     private const int MaxDrawingObjects = 100_000;
     private const int MaxScenes = 100_000;
     private const int MaxSceneMaskLayers = ushort.MaxValue;
@@ -137,6 +151,48 @@ internal static class ProjectVaultStore
                 });
             }
 
+            var stagingImages = Path.Combine(stagingVault, VaultImageDirectoryName);
+            if (snapshot.ImageAssets.Length > 0) Directory.CreateDirectory(stagingImages);
+            var imageEntries = new List<ImageAssetDescriptor>(snapshot.ImageAssets.Length);
+            foreach (var imageAsset in snapshot.ImageAssets)
+            {
+                // The source file may have been moved or replaced since import. A save must
+                // not silently drop the asset, so a missing source fails the whole save and
+                // leaves the previous project intact rather than writing a broken reference.
+                if (!File.Exists(imageAsset.SourcePath))
+                {
+                    throw new InvalidDataException(
+                        $"Image asset '{imageAsset.Name}' is missing its source file.");
+                }
+
+                var imageRelativePath = imageAsset.ProjectRelativePath;
+                var imagePath = ResolveExpectedRelativePath(stagingRoot, imageRelativePath, imageRelativePath);
+                Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
+                File.Copy(imageAsset.SourcePath, imagePath, overwrite: true);
+                FlushFileToDisk(imagePath);
+                ValidateMaximumFileSize(imagePath, MaxImageAssetBytes, "image asset");
+                var sha256 = ComputeSha256(imagePath);
+                if (!string.Equals(sha256, imageAsset.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException(
+                        $"Image asset '{imageAsset.Name}' changed on disk since it was imported.");
+                }
+
+                imageEntries.Add(new ImageAssetDescriptor
+                {
+                    Id = imageAsset.Id,
+                    Name = imageAsset.Name,
+                    SourcePath = imageAsset.SourcePath,
+                    ProjectRelativePath = imageRelativePath,
+                    Sha256 = sha256,
+                    PixelWidth = imageAsset.PixelWidth,
+                    PixelHeight = imageAsset.PixelHeight,
+                    NaturalPixelsPerUnit = imageAsset.NaturalPixelsPerUnit,
+                    ImportSettings = imageAsset.ImportSettings,
+                    CreatedAt = imageAsset.CreatedAt
+                });
+            }
+
             var manifest = new ProjectManifest
             {
                 FormatVersion = ManifestFormatVersion,
@@ -158,6 +214,7 @@ internal static class ProjectVaultStore
                 AssetTags = snapshot.AssetTags.Select(AssetTagDescriptor.From).ToArray(),
                 AssetFolders = snapshot.AssetFolders.Select(AssetFolderDescriptor.From).ToArray(),
                 ExternalSvgAssets = snapshot.ExternalSvgAssets.Select(ExternalSvgAssetDescriptor.From).ToArray(),
+                ImageAssets = imageEntries.ToArray(),
                 DrawingObjects = drawingEntries.ToArray(),
                 Scenes = sceneEntries.ToArray()
             };
@@ -251,6 +308,37 @@ internal static class ProjectVaultStore
             };
         }
 
+        var imageAssets = new ImageAssetRestartSnapshot[manifest.ImageAssets.Length];
+        for (var index = 0; index < manifest.ImageAssets.Length; index++)
+        {
+            var entry = manifest.ImageAssets[index];
+            // The managed file is the canonical .Vault/Images/<id> path plus a supported
+            // image extension, matching what ValidateImageAssets accepts.
+            var expectedImagePath = ImageAssetRelativePath(entry.Id)
+                + Path.GetExtension(entry.ProjectRelativePath);
+            var imagePath = ResolveExpectedRelativePath(projectRoot, entry.ProjectRelativePath, expectedImagePath);
+            projectBytes = AddProjectBytes(
+                projectBytes,
+                ValidateFile(imagePath, entry.Sha256, MaxImageAssetBytes, "image asset"));
+
+            // The managed copy is authoritative for rendering: once imported, the project
+            // must keep working even when the original file is moved or deleted. SourcePath
+            // is retained only as a diagnostic breadcrumb and a Relink target.
+            imageAssets[index] = new ImageAssetRestartSnapshot
+            {
+                Id = entry.Id,
+                Name = entry.Name,
+                SourcePath = imagePath,
+                ProjectRelativePath = entry.ProjectRelativePath,
+                Sha256 = entry.Sha256,
+                PixelWidth = entry.PixelWidth,
+                PixelHeight = entry.PixelHeight,
+                NaturalPixelsPerUnit = entry.NaturalPixelsPerUnit,
+                ImportSettings = entry.ImportSettings,
+                CreatedAt = entry.CreatedAt
+            };
+        }
+
         var scenes = new SceneRestartSnapshot[manifest.Scenes.Length];
         for (var index = 0; index < manifest.Scenes.Length; index++)
         {
@@ -296,6 +384,7 @@ internal static class ProjectVaultStore
             AssetTags = manifest.AssetTags.Select(item => item.ToSnapshot()).ToArray(),
             AssetFolders = manifest.AssetFolders.Select(item => item.ToSnapshot()).ToArray(),
             ExternalSvgAssets = manifest.ExternalSvgAssets.Select(item => item.ToSnapshot()).ToArray(),
+            ImageAssets = imageAssets,
             DrawingObjects = drawings,
             Scenes = scenes
         };
@@ -723,13 +812,15 @@ internal static class ProjectVaultStore
             || manifest.Scenes is null || manifest.Scenes.Length == 0
             || manifest.AssetFolders is null
             || manifest.AssetTags is null
-            || manifest.ExternalSvgAssets is null)
+            || manifest.ExternalSvgAssets is null
+            || manifest.ImageAssets is null)
         {
             throw new InvalidDataException("The project manifest has no valid project roots.");
         }
         if (manifest.AssetFolders.Length > MaxAssetFolders
             || manifest.AssetTags.Length > MaxAssetTags
             || manifest.ExternalSvgAssets.Length > MaxExternalSvgAssets
+            || manifest.ImageAssets.Length > MaxImageAssets
             || manifest.DrawingObjects.Length > MaxDrawingObjects
             || manifest.Scenes.Length > MaxScenes)
         {
@@ -745,6 +836,7 @@ internal static class ProjectVaultStore
         ValidateUniqueIds(manifest.AssetFolders.Select(item => item?.Id), "asset folder");
         ValidateUniqueIds(manifest.AssetTags.Select(item => item?.Id), "asset tag");
         ValidateUniqueIds(manifest.ExternalSvgAssets.Select(item => item?.Id), "external SVG asset");
+        ValidateUniqueIds(manifest.ImageAssets.Select(item => item?.Id), "image asset");
         ValidateUniqueIds(manifest.DrawingObjects.Select(item => item?.Id), "symbol");
         ValidateUniqueIds(manifest.Scenes.Select(item => item?.Id), "scene");
         ValidateAssetFolders(manifest.AssetFolders);
@@ -754,7 +846,13 @@ internal static class ProjectVaultStore
         {
             throw new InvalidDataException("Project format 1 cannot contain external SVG asset links.");
         }
+        if (manifest.FormatVersion < FirstManifestFormatVersionWithImageAssets
+            && manifest.ImageAssets.Length > 0)
+        {
+            throw new InvalidDataException("Older project formats cannot contain image assets.");
+        }
         ValidateExternalSvgAssets(manifest.ExternalSvgAssets, projectRoot);
+        ValidateImageAssets(manifest.ImageAssets);
 
         var folderIds = manifest.AssetFolders.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var assetTagIds = manifest.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
@@ -762,6 +860,12 @@ internal static class ProjectVaultStore
         if (externalSvgAssetIds.Overlaps(manifest.DrawingObjects.Select(item => item.Id)))
         {
             throw new InvalidDataException("An external SVG asset ID collides with a symbol ID.");
+        }
+        var imageAssetIds = manifest.ImageAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        if (imageAssetIds.Overlaps(manifest.DrawingObjects.Select(item => item.Id))
+            || imageAssetIds.Overlaps(externalSvgAssetIds))
+        {
+            throw new InvalidDataException("An image asset ID collides with another asset ID.");
         }
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var drawing in manifest.DrawingObjects)
@@ -863,6 +967,60 @@ internal static class ProjectVaultStore
         }
     }
 
+    private static void ValidateRestartSnapshotImageAssets(
+        IReadOnlyList<ImageAssetRestartSnapshot> assets,
+        string projectRoot)
+    {
+        foreach (var asset in assets)
+        {
+            if (asset is null
+                || !IsSafeStableId(asset.Id)
+                || string.IsNullOrWhiteSpace(asset.Name)
+                || asset.Name.Length > VectorProject.MaxImageAssetNameLength
+                || !IsSha256(asset.Sha256)
+                || asset.PixelWidth <= 0
+                || asset.PixelHeight <= 0
+                || asset.PixelWidth > BitmapImageFormats.MaximumPixelDimension
+                || asset.PixelHeight > BitmapImageFormats.MaximumPixelDimension
+                || (long)asset.PixelWidth * asset.PixelHeight > BitmapImageFormats.MaximumDecodedPixels
+                || !float.IsFinite(asset.NaturalPixelsPerUnit)
+                || asset.NaturalPixelsPerUnit < BitmapImageImportSettings.MinimumPixelsPerUnit
+                || asset.NaturalPixelsPerUnit > BitmapImageImportSettings.MaximumPixelsPerUnit
+                || !asset.ImportSettings.IsValid
+                || string.IsNullOrWhiteSpace(asset.SourcePath)
+                || asset.SourcePath.Length > VectorProject.MaxImageAssetPathLength
+                || asset.SourcePath.IndexOf('\0') >= 0)
+            {
+                throw new InvalidDataException("An image asset snapshot is invalid.");
+            }
+
+            var expectedRelativePath = ImageAssetRelativePath(asset.Id);
+            var actualExtension = Path.GetExtension(asset.ProjectRelativePath);
+            if (!string.Equals(
+                    Path.ChangeExtension(asset.ProjectRelativePath, null),
+                    expectedRelativePath,
+                    StringComparison.Ordinal)
+                || !BitmapImageFormats.IsSupportedExtension(actualExtension))
+            {
+                throw new InvalidDataException(
+                    $"Image asset '{asset.Id}' does not use its canonical managed path.");
+            }
+
+            // A save writes the managed copy from SourcePath, so an unusable source is
+            // rejected before the staging directory is built rather than halfway through
+            // the commit.
+            _ = ResolveExpectedRelativePath(
+                projectRoot,
+                asset.ProjectRelativePath,
+                expectedRelativePath + actualExtension);
+            if (!BitmapImageFormats.IsSupportedExtension(Path.GetExtension(asset.SourcePath)))
+            {
+                throw new InvalidDataException(
+                    $"Image asset '{asset.Id}' has an unsupported source file format.");
+            }
+        }
+    }
+
     private static void ValidateExternalSvgAssets(
         IReadOnlyList<ExternalSvgAssetDescriptor> assets,
         string projectRoot)
@@ -900,6 +1058,52 @@ internal static class ProjectVaultStore
                 asset.ProjectRelativePath,
                 asset.LastKnownSha256,
                 projectRoot);
+        }
+    }
+
+    private static void ValidateImageAssets(IReadOnlyList<ImageAssetDescriptor> assets)
+    {
+        foreach (var asset in assets)
+        {
+            if (asset is null
+                || !IsSafeStableId(asset.Id)
+                || string.IsNullOrWhiteSpace(asset.Name)
+                || asset.Name.Length > VectorProject.MaxImageAssetNameLength
+                || !IsSha256(asset.Sha256)
+                || asset.PixelWidth <= 0
+                || asset.PixelHeight <= 0
+                || asset.PixelWidth > BitmapImageFormats.MaximumPixelDimension
+                || asset.PixelHeight > BitmapImageFormats.MaximumPixelDimension
+                || (long)asset.PixelWidth * asset.PixelHeight > BitmapImageFormats.MaximumDecodedPixels
+                || !float.IsFinite(asset.NaturalPixelsPerUnit)
+                || asset.NaturalPixelsPerUnit < BitmapImageImportSettings.MinimumPixelsPerUnit
+                || asset.NaturalPixelsPerUnit > BitmapImageImportSettings.MaximumPixelsPerUnit
+                || !asset.ImportSettings.IsValid)
+            {
+                throw new InvalidDataException("An image asset descriptor is invalid.");
+            }
+
+            // The managed path is owned by the store: it must be the canonical
+            // .Vault/Images/<id> location plus a supported image extension, so a manifest
+            // cannot redirect managed writes elsewhere.
+            var expectedRelativePath = ImageAssetRelativePath(asset.Id);
+            var actualExtension = Path.GetExtension(asset.ProjectRelativePath);
+            if (!string.Equals(
+                    Path.ChangeExtension(asset.ProjectRelativePath, null),
+                    expectedRelativePath,
+                    StringComparison.Ordinal)
+                || !BitmapImageFormats.IsSupportedExtension(actualExtension))
+            {
+                throw new InvalidDataException(
+                    $"Image asset '{asset.Id}' does not use its canonical managed path.");
+            }
+
+            if (string.IsNullOrWhiteSpace(asset.SourcePath)
+                || asset.SourcePath.Length > VectorProject.MaxImageAssetPathLength
+                || asset.SourcePath.IndexOf('\0') >= 0)
+            {
+                throw new InvalidDataException($"Image asset '{asset.Id}' has an invalid source path.");
+            }
         }
     }
 
@@ -967,6 +1171,7 @@ internal static class ProjectVaultStore
     {
         if (snapshot is null || string.IsNullOrWhiteSpace(snapshot.Id) || string.IsNullOrWhiteSpace(snapshot.Name)
             || snapshot.AssetFolders is null || snapshot.AssetTags is null || snapshot.ExternalSvgAssets is null
+            || snapshot.ImageAssets is null
             || snapshot.DrawingObjects is null || snapshot.DrawingObjects.Length == 0
             || snapshot.Scenes is null || snapshot.Scenes.Length == 0)
         {
@@ -975,6 +1180,7 @@ internal static class ProjectVaultStore
         if (snapshot.AssetFolders.Length > MaxAssetFolders
             || snapshot.AssetTags.Length > MaxAssetTags
             || snapshot.ExternalSvgAssets.Length > MaxExternalSvgAssets
+            || snapshot.ImageAssets.Length > MaxImageAssets
             || snapshot.DrawingObjects.Length > MaxDrawingObjects
             || snapshot.Scenes.Length > MaxScenes)
         {
@@ -989,16 +1195,19 @@ internal static class ProjectVaultStore
         ValidateUniqueIds(snapshot.AssetFolders.Select(item => item?.Id), "asset folder");
         ValidateUniqueIds(snapshot.AssetTags.Select(item => item?.Id), "asset tag");
         ValidateUniqueIds(snapshot.ExternalSvgAssets.Select(item => item?.Id), "external SVG asset");
+        ValidateUniqueIds(snapshot.ImageAssets.Select(item => item?.Id), "image asset");
         ValidateUniqueIds(snapshot.DrawingObjects.Select(item => item?.Id), "symbol");
         ValidateUniqueIds(snapshot.Scenes.Select(item => item?.Id), "scene");
 
         ValidateAssetTags(snapshot.AssetTags.Select(AssetTagDescriptor.From).ToArray());
         ValidateExternalSvgAssets(snapshot.ExternalSvgAssets, projectRoot);
+        ValidateRestartSnapshotImageAssets(snapshot.ImageAssets, projectRoot);
         var assetTagIds = snapshot.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var drawingIds = snapshot.DrawingObjects.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
-        if (drawingIds.Overlaps(snapshot.ExternalSvgAssets.Select(item => item.Id)))
+        if (drawingIds.Overlaps(snapshot.ExternalSvgAssets.Select(item => item.Id))
+            || drawingIds.Overlaps(snapshot.ImageAssets.Select(item => item.Id)))
         {
-            throw new InvalidDataException("An external SVG asset ID collides with a symbol ID.");
+            throw new InvalidDataException("An asset ID collides with a symbol ID.");
         }
         var graph = snapshot.DrawingObjects.ToDictionary(
             item => item.Id,
@@ -1430,6 +1639,7 @@ internal static class ProjectVaultStore
             || SceneMaskDictionaryInvalid(snapshot.MixingStrokeLocalRegions, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.ImportedSvgSources, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.ImportedSvgNames, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.BitmapObjects, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.TextObjects, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.ObjectDistortions, snapshot.ObjectCount)
             || snapshot.ObjectDistortions.Any(item => item.Value.Any(distortion => !distortion.IsValid)))
@@ -1889,6 +2099,14 @@ internal static class ProjectVaultStore
     private static string SceneTimelineRelativePath(string id, int manifestFormatVersion) =>
         $"{TimelineDirectoryName}/{SceneTimelineDirectoryName}/{id}{TimelineFileExtension(manifestFormatVersion)}";
 
+    /// <summary>
+    /// The managed path for an image asset: the asset id plus the extension of its stored
+    /// format. Validators compare against this exact form, so the manifest cannot redirect
+    /// a managed file outside the image directory.
+    /// </summary>
+    private static string ImageAssetRelativePath(string id) =>
+        $"{VaultDirectoryName}/{VaultImageDirectoryName}/{id}";
+
     private static string TimelineFileExtension(int manifestFormatVersion) =>
         manifestFormatVersion == ManifestFormatVersion
             ? CompressedTimelineFileExtension
@@ -2190,6 +2408,7 @@ internal static class ProjectVaultStore
             MixingStrokeLocalRegions = source.MixingStrokeLocalRegions,
             ImportedSvgSources = source.ImportedSvgSources,
             ImportedSvgNames = source.ImportedSvgNames,
+            BitmapObjects = source.BitmapObjects,
             TextObjects = source.TextObjects,
             ObjectDistortions = source.ObjectDistortions
         };
@@ -2203,6 +2422,7 @@ internal static class ProjectVaultStore
         public AssetTagDescriptor[] AssetTags { get; init; } = [];
         public AssetFolderDescriptor[] AssetFolders { get; init; } = [];
         public ExternalSvgAssetDescriptor[] ExternalSvgAssets { get; init; } = [];
+        public ImageAssetDescriptor[] ImageAssets { get; init; } = [];
         public DrawingManifestEntry[] DrawingObjects { get; init; } = [];
         public SceneManifestEntry[] Scenes { get; init; } = [];
     }
@@ -2321,6 +2541,20 @@ internal static class ProjectVaultStore
             LastKnownSha256 = LastKnownSha256,
             CreatedAt = CreatedAt
         };
+    }
+
+    private sealed class ImageAssetDescriptor
+    {
+        public string Id { get; init; } = "";
+        public string Name { get; init; } = "Image";
+        public string SourcePath { get; init; } = "";
+        public string ProjectRelativePath { get; init; } = "";
+        public string Sha256 { get; init; } = "";
+        public int PixelWidth { get; init; }
+        public int PixelHeight { get; init; }
+        public float NaturalPixelsPerUnit { get; init; } = 96f;
+        public BitmapImageImportSettings ImportSettings { get; init; }
+        public DateTime CreatedAt { get; init; }
     }
 
     private sealed class DrawingManifestEntry

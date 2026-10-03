@@ -515,7 +515,13 @@ internal sealed partial class VectorScene
                 normalized = [];
                 return false;
             }
-            normalized[index] = distortions[index].DeepClone();
+            // The Distort tool allows a single inserted anchor per envelope. Legacy documents may
+            // carry more, so every write path collapses them here rather than rejecting the file.
+            var distortion = distortions[index];
+            var collapsed = distortion.Envelope.NormalizeInsertedAnchors();
+            normalized[index] = ReferenceEquals(collapsed, distortion.Envelope) || collapsed == distortion.Envelope
+                ? distortion.DeepClone()
+                : new DistortWarp(distortion.Source, collapsed);
         }
         return true;
     }

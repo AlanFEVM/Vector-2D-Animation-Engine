@@ -49,7 +49,7 @@ internal static partial class Benchmark
                     "v2d-metadata",
                     StringComparison.Ordinal));
             AssertTimeline(
-                manifest["formatVersion"]?.GetValue<int>() == 4
+                manifest["formatVersion"]?.GetValue<int>() == ProjectVaultStore.CurrentManifestFormatVersion
                 && string.Equals(
                     (string?)svgMetadata?.Attribute("data-encoding"),
                     "base64-brotli-json",
@@ -157,7 +157,7 @@ internal static partial class Benchmark
                 ProjectVaultStore.Save(legacy, legacyManifestPath);
                 var migratedManifest = ReadProjectCompressionManifest(legacyManifestPath);
                 AssertTimeline(
-                    migratedManifest["formatVersion"]?.GetValue<int>() == 4
+                    migratedManifest["formatVersion"]?.GetValue<int>() == ProjectVaultStore.CurrentManifestFormatVersion
                     && File.Exists(Path.Combine(
                         legacyRoot,
                         ".TimeLine",

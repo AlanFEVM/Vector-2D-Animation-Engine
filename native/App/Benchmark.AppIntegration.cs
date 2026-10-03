@@ -645,4 +645,69 @@ internal static partial class Benchmark
         Console.WriteLine("module_reload_routing_regression=ok");
     }
 
+    /// <summary>
+    /// Crash capture must survive the situations that make a crash hard to diagnose: nested
+    /// exceptions, aggregate exceptions, non-Exception payloads, and repeated captures.
+    /// </summary>
+    private static void RunCrashDiagnosticsRegression()
+    {
+        var inner = new InvalidOperationException("inner cause");
+        var middle = new ArgumentException("middle cause", inner);
+        var outer = new ApplicationException("outer cause", middle);
+        var description = AppLog.DescribeException(outer);
+        AssertTimeline(
+            description.Contains("outer cause", StringComparison.Ordinal)
+            && description.Contains("middle cause", StringComparison.Ordinal)
+            && description.Contains("inner cause", StringComparison.Ordinal)
+            && description.Contains(nameof(InvalidOperationException), StringComparison.Ordinal),
+            $"The exception description dropped part of the cause chain: {description}");
+
+        var aggregate = new AggregateException(
+            "aggregate cause",
+            new InvalidOperationException("first"),
+            new TaskCanceledException("second"));
+        var aggregateDescription = AppLog.DescribeException(aggregate);
+        AssertTimeline(
+            aggregateDescription.Contains("first", StringComparison.Ordinal)
+            && aggregateDescription.Contains("second", StringComparison.Ordinal),
+            $"The exception description dropped aggregate members: {aggregateDescription}");
+
+        // A crash must produce a report on disk that can be read after the process is gone.
+        var reportPath = CrashReporter.Capture("Regression crash capture", outer, isTerminating: false);
+        AssertTimeline(
+            !string.IsNullOrEmpty(reportPath) && File.Exists(reportPath),
+            "The crash reporter did not write a report file.");
+        var report = File.ReadAllText(reportPath);
+        AssertTimeline(
+            report.Contains("Regression crash capture", StringComparison.Ordinal)
+            && report.Contains("inner cause", StringComparison.Ordinal)
+            && report.Contains("-- Recent user actions", StringComparison.Ordinal)
+            && report.Contains("-- Modules --", StringComparison.Ordinal)
+            && report.Contains(Environment.ProcessId.ToString(), StringComparison.Ordinal),
+            "The crash report is missing forensic context.");
+
+        // Repeated captures must stay safe and must not corrupt or lose the first report.
+        var secondPath = CrashReporter.Capture("Secondary crash capture", new InvalidOperationException("secondary"), isTerminating: true);
+        AssertTimeline(
+            string.Equals(secondPath, reportPath, StringComparison.OrdinalIgnoreCase)
+            && File.Exists(reportPath),
+            "A repeated crash capture replaced or lost the authoritative report.");
+
+        // Breadcrumbs are what make a report actionable, so the ring must stay bounded and ordered.
+        SessionBreadcrumbs.Clear();
+        AssertTimeline(SessionBreadcrumbs.Count == 0, "Session breadcrumbs did not clear.");
+        for (var index = 0; index < 200; index++) SessionBreadcrumbs.Record("Regression", $"action {index}");
+        AssertTimeline(
+            SessionBreadcrumbs.Count is > 0 and <= 120,
+            $"Session breadcrumbs were not bounded: {SessionBreadcrumbs.Count}.");
+        var formatted = SessionBreadcrumbs.Format();
+        AssertTimeline(
+            formatted.Contains("action 199", StringComparison.Ordinal)
+            && !formatted.Contains("action 0\n", StringComparison.Ordinal),
+            "Session breadcrumbs did not retain the most recent actions.");
+        SessionBreadcrumbs.Clear();
+
+        Console.WriteLine($"crash_diagnostics_regression=ok report_bytes={new FileInfo(reportPath).Length}");
+    }
+
 }

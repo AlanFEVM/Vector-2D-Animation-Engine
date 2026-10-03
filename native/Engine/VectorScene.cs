@@ -49,6 +49,12 @@ internal sealed partial class VectorScene : ITimelineContext
     private const int MaximumGradientPathCoverageSamples = 192;
     private const int MaximumObjectDistortions = 256;
     public const int DefaultOnionSkinPreviousFrames = 2;
+
+    /// <summary>
+    /// Virtual atom cost charged for a placed bitmap object. Matches the imported-SVG
+    /// cost so dense-scene LOD accounting treats raster objects comparably.
+    /// </summary>
+    public const uint BitmapObjectAtomCount = 64;
     public const int DefaultOnionSkinNextFrames = 2;
     public const int MaximumOnionSkinFrames = 8;
     private const int OnionSkinPreviousTintArgb = unchecked((int)0xffe0867e);
@@ -169,6 +175,9 @@ internal sealed partial class VectorScene : ITimelineContext
     private readonly Dictionary<int, MixingBrushRegionData> _mixingStrokeLocalRegions = new();
     private readonly Dictionary<int, string> _importedSvgSources = new();
     private readonly Dictionary<int, string> _importedSvgNames = new();
+    // Placed bitmap objects point at a managed image asset; the pixels are stored once
+    // per asset rather than once per placed object.
+    private readonly Dictionary<int, BitmapObjectData> _bitmapObjects = new();
     private readonly Dictionary<int, TextObjectData> _textObjects = new();
     // Distortion is an object-level display transform. Keep source geometry intact and
     // apply this ordered stack only when producing display/query coordinates.

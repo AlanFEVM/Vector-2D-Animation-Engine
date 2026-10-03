@@ -834,7 +834,7 @@ internal sealed partial class StageControl
             return false;
         }
         var shape = Scene.ShapeKind[item.ObjectIndex];
-        return shape is not (ShapeKind.ImportedSvg or ShapeKind.MixingStroke)
+        return shape is not (ShapeKind.ImportedSvg or ShapeKind.MixingStroke or ShapeKind.Bitmap)
             && !Scene.HasGradient(item.ObjectIndex);
     }
 
@@ -915,6 +915,14 @@ internal sealed partial class StageControl
             if (pass == SceneRenderPass.Fill)
             {
                 DrawReference3DImportedSvg(graphics, objectIndex, item.MaterialOpacity);
+            }
+            return;
+        }
+        if (shape == ShapeKind.Bitmap)
+        {
+            if (pass == SceneRenderPass.Fill)
+            {
+                DrawReference3DBitmap(graphics, item, objectIndex, item.MaterialOpacity);
             }
             return;
         }
@@ -1952,6 +1960,96 @@ internal sealed partial class StageControl
         IReadOnlyList<Reference3DProjectiveTriangle> triangles,
         float opacity) => TryDrawBoundedReference3DProjectiveSvg(
             graphics, objectIndex, raster, triangles, opacity);
+
+    /// <summary>
+    /// Reference-3D equivalent of the placed-bitmap draw. Projected bitmaps follow the same
+    /// projective/affine split as imported SVG so a texture on a tilted surface stays
+    /// perspective-correct instead of being smeared by a single affine blit.
+    /// </summary>
+    private void DrawReference3DBitmap(
+        Graphics graphics,
+        Reference3DRenderItem item,
+        int objectIndex,
+        float materialOpacity)
+    {
+        if (!Scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
+        if (!TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+        var contour = GetReference3DProjectedContours(objectIndex)
+            .FirstOrDefault(candidate => candidate.Closed && candidate.Points.Length >= 3);
+        if (contour.Points is not { Length: >= 3 }) return;
+
+        var hasAffineTransform = TryGetReference3DFlatToScreenTransform(objectIndex, out _);
+        Reference3DProjectiveTriangle[] triangles = [];
+        var hasProjectiveMesh = TryGetReference3DProjectiveMesh(
+            objectIndex,
+            usePrimaryContourQuad: true,
+            out triangles)
+            && triangles.Length > 0;
+        var projective = hasProjectiveMesh
+            && (!hasAffineTransform || !Reference3DProjectiveMeshCoversFullDomain(triangles));
+
+        PointF topLeft = default;
+        PointF topRight = default;
+        PointF bottomLeft = default;
+        if (!projective)
+        {
+            if (!hasAffineTransform || contour.Points.Length < 4) return;
+            topLeft = contour.Points[0];
+            topRight = contour.Points[1];
+            bottomLeft = contour.Points[^1];
+        }
+
+        var opacity = Color.FromArgb(Scene.Argb[objectIndex]).A / 255f
+            * Math.Clamp(materialOpacity, 0f, 1f);
+        if (projective)
+        {
+            _ = TryDrawBoundedReference3DProjectiveRaster(
+                graphics,
+                objectIndex,
+                raster.Pixels,
+                raster.Stride,
+                raster.PixelWidth,
+                raster.PixelHeight,
+                triangles,
+                opacity);
+            return;
+        }
+
+        using var bitmap = raster.AcquireBitmap();
+        var destination = new[] { topLeft, topRight, bottomLeft };
+        var state = graphics.Save();
+        try
+        {
+            graphics.InterpolationMode = BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
+                ? InterpolationMode.NearestNeighbor
+                : InterpolationMode.HighQualityBicubic;
+            if (opacity >= 0.999f)
+            {
+                graphics.DrawImage(
+                    bitmap.Bitmap,
+                    destination,
+                    new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
+                    GraphicsUnit.Pixel);
+                return;
+            }
+
+            using var attributes = new ImageAttributes();
+            attributes.SetColorMatrix(
+                new ColorMatrix { Matrix33 = Math.Clamp(opacity, 0f, 1f) },
+                ColorMatrixFlag.Default,
+                ColorAdjustType.Bitmap);
+            graphics.DrawImage(
+                bitmap.Bitmap,
+                destination,
+                new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
+                GraphicsUnit.Pixel,
+                attributes);
+        }
+        finally
+        {
+            graphics.Restore(state);
+        }
+    }
 
     private void DrawReference3DMixingStroke(
         Graphics graphics,

@@ -493,7 +493,7 @@ internal sealed partial class StageControl : Control
                 return;
             }
 
-            if (shape == ShapeKind.ImportedSvg)
+            if (shape is ShapeKind.ImportedSvg or ShapeKind.Bitmap)
             {
                 var screen = WorldToScreen(scene.X[objectIndex], scene.Y[objectIndex]);
                 var width = Math.Max(0.75f, WorldLengthToScreen(scene.Width[objectIndex]));
@@ -622,6 +622,15 @@ internal sealed partial class StageControl : Control
                 && !string.IsNullOrWhiteSpace(source))
             {
                 DrawImportedSvg(g, source, screen, w, h, scene.Angle[i], Color.FromArgb(scene.Argb[i]).A / 255f);
+            }
+            return;
+        }
+
+        if (shape == ShapeKind.Bitmap)
+        {
+            if (pass == SceneRenderPass.Fill)
+            {
+                DrawBitmapObject(g, scene, i, screen, w, h);
             }
             return;
         }
@@ -1243,6 +1252,65 @@ internal sealed partial class StageControl : Control
                 -screenHeight * 0.5f,
                 screenWidth,
                 screenHeight);
+            if (opacity >= 0.999f)
+            {
+                graphics.DrawImage(bitmap.Bitmap, destination);
+                return;
+            }
+
+            using var attributes = new ImageAttributes();
+            var colorMatrix = new ColorMatrix { Matrix33 = Math.Clamp(opacity, 0f, 1f) };
+            attributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+            var destinationPoints = new[]
+            {
+                new PointF(destination.Left, destination.Top),
+                new PointF(destination.Right, destination.Top),
+                new PointF(destination.Left, destination.Bottom)
+            };
+            graphics.DrawImage(
+                bitmap.Bitmap,
+                destinationPoints,
+                new RectangleF(0, 0, raster.PixelWidth, raster.PixelHeight),
+                GraphicsUnit.Pixel,
+                attributes);
+        }
+        finally
+        {
+            graphics.Restore(state);
+        }
+    }
+
+    /// <summary>
+    /// Draws one placed bitmap object from its decoded managed asset. The interpolation
+    /// mode follows the asset's import filter mode, so a Point-filtered image keeps hard
+    /// pixel edges instead of being smoothed by the GDI fallback.
+    /// </summary>
+    private void DrawBitmapObject(
+        Graphics graphics,
+        VectorScene scene,
+        int objectIndex,
+        PointF screenCenter,
+        float screenWidth,
+        float screenHeight)
+    {
+        if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
+        if (!TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+
+        using var bitmap = raster.AcquireBitmap();
+        var state = graphics.Save();
+        try
+        {
+            graphics.InterpolationMode = BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
+                ? InterpolationMode.NearestNeighbor
+                : InterpolationMode.HighQualityBicubic;
+            graphics.TranslateTransform(screenCenter.X, screenCenter.Y);
+            graphics.RotateTransform(scene.Angle[objectIndex] * 57.29578f);
+            var destination = new RectangleF(
+                -screenWidth * 0.5f,
+                -screenHeight * 0.5f,
+                screenWidth,
+                screenHeight);
+            var opacity = Color.FromArgb(scene.Argb[objectIndex]).A / 255f;
             if (opacity >= 0.999f)
             {
                 graphics.DrawImage(bitmap.Bitmap, destination);

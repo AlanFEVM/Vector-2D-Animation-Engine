@@ -732,6 +732,8 @@ internal static class UiLocalization
             ["No"] = "否",
             ["New Project"] = "新建工程",
             ["Onion"] = "洋葱皮",
+            ["Motion"] = "运动轨",
+            ["Show the selected symbol's motion track on the Stage"] = "在舞台显示所选元件的运动轨",
             ["Open"] = "打开",
             ["Open Project"] = "打开工程",
             ["Open Project..."] = "打开工程...",

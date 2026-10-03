@@ -323,11 +323,19 @@ internal sealed partial class TimelineStrip : Control
         AccessibleName = "Enable onion skin for the drawing timeline",
         Height = Theme.ControlHeightCompact
     };
+    private readonly ModernToggleSwitch _motionTrackToggle = new()
+    {
+        AutoSize = false,
+        Text = "Motion",
+        AccessibleName = "Show the selected symbol's motion track on the Stage",
+        Height = Theme.ControlHeightCompact
+    };
     private readonly Label _onionPreviousLabel = CreateOnionSkinRangeLabel("Prev");
     private readonly ModernNumericUpDown _onionPreviousFrames = CreateOnionSkinRangeInput("Previous onion skin frames");
     private readonly Label _onionNextLabel = CreateOnionSkinRangeLabel("Next");
     private readonly ModernNumericUpDown _onionNextFrames = CreateOnionSkinRangeInput("Next onion skin frames");
     private bool _updatingOnionSkinControls;
+    private bool _updatingMotionTrackControls;
     private bool _updatingFrameWidthControls;
     private bool _updatingFrameHeightControl;
     private bool _frameWidthCommitPending;
@@ -362,6 +370,16 @@ internal sealed partial class TimelineStrip : Control
     public event EventHandler? OnionSkinRangeInteractionStarted;
     public event EventHandler? OnionSkinRangeInteractionCompleted;
     public event EventHandler? OnionSkinRangeInteractionCanceled;
+    public event EventHandler? MotionTrackToggleRequested;
+
+    /// <summary>
+    /// True while the workbench is presenting a motion track for the selected symbol. Set by the
+    /// workbench after it rebuilds the track, so the toggle reflects real availability.
+    /// </summary>
+    public bool MotionTrackToggleAvailable { get; set; }
+
+    /// <summary>Checked state of the motion-track toggle, owned by the workbench.</summary>
+    public bool MotionTrackEnabled { get; set; }
 
     public TimelineStrip(VectorScene scene)
         : this((ITimelineContext)scene)
@@ -462,6 +480,10 @@ internal sealed partial class TimelineStrip : Control
         {
             if (!_updatingOnionSkinControls) OnionSkinToggleRequested?.Invoke(this, EventArgs.Empty);
         };
+        _motionTrackToggle.CheckedChanged += (_, _) =>
+        {
+            if (!_updatingMotionTrackControls) MotionTrackToggleRequested?.Invoke(this, EventArgs.Empty);
+        };
         _onionPreviousFrames.ValueChanged += (_, _) => RaiseOnionSkinRangeChanged();
         _onionNextFrames.ValueChanged += (_, _) => RaiseOnionSkinRangeChanged();
         _onionPreviousFrames.InteractionStarted += (_, _) => OnionSkinRangeInteractionStarted?.Invoke(this, EventArgs.Empty);
@@ -501,6 +523,7 @@ internal sealed partial class TimelineStrip : Control
             _frameHeightInput,
             _autoKeyframeToggle,
             _onionSkinToggle,
+            _motionTrackToggle,
             _onionPreviousLabel,
             _onionPreviousFrames,
             _onionNextLabel,
@@ -987,6 +1010,31 @@ internal sealed partial class TimelineStrip : Control
 
         if (!enabled) ResetOnionSkinRangeHandleInteraction();
         LayoutHeaderControls(CreateLayout(), available);
+    }
+
+    /// <summary>
+    /// Mirrors the motion-track toggle against the editing state. Availability and the checked
+    /// value are owned by the workbench, because the track only exists while a symbol instance is
+    /// selected; the strip never infers that from the timeline context alone.
+    /// </summary>
+    public void RefreshMotionTrackControls()
+    {
+        _updatingMotionTrackControls = true;
+        try
+        {
+            if (_motionTrackToggle.Checked != MotionTrackEnabled) _motionTrackToggle.Checked = MotionTrackEnabled;
+            if (_motionTrackToggle.Enabled != MotionTrackToggleAvailable)
+            {
+                _motionTrackToggle.Enabled = MotionTrackToggleAvailable;
+            }
+        }
+        finally
+        {
+            _updatingMotionTrackControls = false;
+        }
+
+        LayoutHeaderControls(CreateLayout(), IsOnionSkinControlsAvailable());
+        Invalidate();
     }
 
     private void ResetOnionSkinRangeHandleInteraction()
@@ -4666,10 +4714,12 @@ internal sealed partial class TimelineStrip : Control
             IsHandleCreated ? DeviceDpi : 96,
             onionSkinAvailable,
             IsAutoKeyframeAvailable(),
+            MotionTrackToggleAvailable,
             _frameWidthLabel.Text,
             _frameHeightLabel.Text,
             _autoKeyframeToggle.Text,
             _onionSkinToggle.Text,
+            _motionTrackToggle.Text,
             _onionPreviousLabel.Text,
             _onionNextLabel.Text);
         if (_headerLayoutKey == layoutKey) return;
@@ -4715,6 +4765,7 @@ internal sealed partial class TimelineStrip : Control
 
         var onionSkinAnchor = showFrameHeight ? frameHeightBounds : frameHeightAnchor;
         LayoutOnionSkinControls(layout, onionSkinAvailable, onionSkinAnchor);
+        LayoutMotionTrackControl(layout);
         LayoutAutoKeyframeControl(layout);
     }
 
@@ -4727,10 +4778,49 @@ internal sealed partial class TimelineStrip : Control
             return Rectangle.Empty;
         }
 
+        // The header's left cluster reads Auto Key, then the motion-track toggle, then the onion-skin
+        // group. The group's creep limit therefore has to include the motion toggle's footprint;
+        // pinned at TrackLeft + 200 the motion toggle had no slot of its own and was pushed under the
+        // onion group (visible in Simplified Chinese, where the longer labels leave only a 70px gap).
+        var budget = ScaleTimelineMetric(200) + MotionTrackClusterFootprint();
         var left = Math.Min(
             right - controlsWidth - ScaleTimelineMetric(8),
-            layout.TrackLeft + ScaleTimelineMetric(200));
+            layout.TrackLeft + budget);
+
+        // Never let the group drift back over the motion-track toggle. If the frame controls leave
+        // room for neither, the onion group yields: it has other controls beside it, while the
+        // motion toggle is the feature's only entry point.
+        var motionFloor = MotionTrackClusterFloor(layout);
+        if (motionFloor > left) left = motionFloor;
+        if (left + controlsWidth > right) return Rectangle.Empty;
+
         return new Rectangle(left, ScaleTimelineMetric(2), controlsWidth, Math.Max(Theme.ControlHeightCompact, ToolbarHeaderHeight - ScaleTimelineMetric(4)));
+    }
+
+    /// <summary>
+    /// Horizontal space the motion-track toggle contributes to the header's left cluster.
+    /// </summary>
+    private int MotionTrackClusterFootprint() => MotionTrackToggleWidth() + ScaleTimelineMetric(8);
+
+    /// <summary>
+    /// Leftmost x the motion-track toggle may occupy: immediately right of Auto Key, which is pinned
+    /// to the track's left edge.
+    /// </summary>
+    private int MotionTrackSlotLeft(TimelineLayout layout)
+    {
+        var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
+        return autoKeyframeBounds.IsEmpty
+            ? layout.TrackLeft + ScaleTimelineMetric(8)
+            : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
+    }
+
+    /// <summary>
+    /// Leftmost x the onion-skin group may occupy while still leaving the motion-track toggle its
+    /// own slot between Auto Key and the group.
+    /// </summary>
+    private int MotionTrackClusterFloor(TimelineLayout layout)
+    {
+        return MotionTrackSlotLeft(layout) + MotionTrackClusterFootprint();
     }
 
     private Rectangle AutoKeyframeControlsBounds(TimelineLayout layout)
@@ -4802,6 +4892,55 @@ internal sealed partial class TimelineStrip : Control
         SetControlBounds(_onionNextLabel, new Rectangle(left, bounds.Top, nextLabelWidth, bounds.Height));
         left += nextLabelWidth;
         SetControlBounds(_onionNextFrames, new Rectangle(left, bounds.Top, numericWidth, bounds.Height));
+    }
+
+    /// <summary>
+    /// Places the motion-track toggle in its own slot between Auto Key and the onion-skin group, so
+    /// the three related controls read as one cluster.
+    /// </summary>
+    private void LayoutMotionTrackControl(TimelineLayout layout)
+    {
+        // The toggle stays *visible* wherever the timeline can host it, so the feature is
+        // discoverable; it is merely *disabled* until a symbol instance is selected, which is what
+        // MotionTrackToggleAvailable reports. Hiding it outright would leave no entry point.
+        var bounds = MotionTrackControlsBounds(layout);
+        SetControlVisible(_motionTrackToggle, !bounds.IsEmpty);
+        if (!bounds.IsEmpty) SetControlBounds(_motionTrackToggle, bounds);
+    }
+
+    private Rectangle MotionTrackControlsBounds(TimelineLayout layout)
+    {
+        if (!IsOnionSkinControlsAvailable()) return Rectangle.Empty;
+        var controlsWidth = MotionTrackToggleWidth();
+        // Sit immediately left of the onion-skin cluster, which is anchored to the right controls.
+        var frameHeightBounds = FrameHeightControlsBounds(layout, Rectangle.Empty);
+        var frameWidthBounds = FrameWidthControlsBounds(layout, frameHeightBounds);
+        var anchor = !frameWidthBounds.IsEmpty ? frameWidthBounds : frameHeightBounds;
+        var right = anchor.IsEmpty
+            ? layout.TrackRight - ScaleTimelineMetric(8)
+            : anchor.Left - ScaleTimelineMetric(8);
+        var onionBounds = OnionSkinControlsBounds(layout, anchor);
+        if (!onionBounds.IsEmpty) right = onionBounds.Left - ScaleTimelineMetric(8);
+
+        // The toggle is the entry point for the whole feature, so it must never be dropped just
+        // because the header is crowded: slide it left, but never under Auto Key, which is pinned to
+        // the track's left edge and is laid out after this control.
+        var left = right - controlsWidth;
+        var minimumLeft = MotionTrackSlotLeft(layout);
+        if (left < minimumLeft) left = minimumLeft;
+        if (layout.TrackRight - left < controlsWidth) return Rectangle.Empty;
+        return new Rectangle(
+            left,
+            ScaleTimelineMetric(2),
+            controlsWidth,
+            Math.Max(Theme.ControlHeightCompact, ToolbarHeaderHeight - ScaleTimelineMetric(4)));
+    }
+
+    private int MotionTrackToggleWidth()
+    {
+        return Math.Max(
+            ScaleTimelineMetric(72),
+            _motionTrackToggle.GetPreferredSize(Size.Empty).Width + ScaleTimelineMetric(2));
     }
 
     private void LayoutAutoKeyframeControl(TimelineLayout layout)
@@ -5086,10 +5225,12 @@ internal sealed partial class TimelineStrip : Control
         int Dpi,
         bool OnionSkinAvailable,
         bool AutoKeyframeAvailable,
+        bool MotionTrackAvailable,
         string FrameWidthLabel,
         string FrameHeightLabel,
         string AutoKeyframeLabel,
         string OnionSkinLabel,
+        string MotionTrackLabel,
         string PreviousLabel,
         string NextLabel);
 }

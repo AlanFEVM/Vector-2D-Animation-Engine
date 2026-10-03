@@ -8,6 +8,7 @@ internal static partial class Benchmark
     private static void RunAssetLibraryCategoryRegression()
     {
         RunExternalSvgAssetPersistenceRegression();
+        RunImageAssetPersistenceRegression();
         RunSpatialComponentModelRegression();
         Console.WriteLine("asset_library_category_regression=ok");
     }
@@ -56,7 +57,7 @@ internal static partial class Benchmark
             var manifest = JsonNode.Parse(File.ReadAllText(manifestPath))?.AsObject()
                 ?? throw new InvalidOperationException("External SVG regression could not parse the project manifest.");
             AssertTimeline(
-                manifest["formatVersion"]?.GetValue<int>() == 4
+                manifest["formatVersion"]?.GetValue<int>() == ProjectVaultStore.CurrentManifestFormatVersion
                 && manifest["externalSvgAssets"] is JsonArray { Count: 1 }
                 && Directory.GetFiles(Path.Combine(temporaryRoot, ".Vault"), "*.svg").Length
                     == project.DrawingObjects.Count,

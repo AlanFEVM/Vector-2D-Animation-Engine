@@ -60,6 +60,25 @@ internal static class Theme
     public const int GapSm = 8;
     public const int GapMd = 12;
 
+    // Inspector density metrics. The right-hand inspector stacks several sections in one
+    // scrollable column, so they share one geometry definition: a label/input row fits a
+    // ControlHeightCompact editor plus a uniform margin, and section heights derive from
+    // the same constants so a panel's PreferredHeight cannot drift from its built rows.
+    public const int InspectorTitleHeight = 24;
+    public const int InspectorMetaRowHeight = 24;
+    public const int InspectorRowHeight = ControlHeightCompact + InspectorRowMarginVertical * 2;
+    public const int InspectorRowHeightComfortable = 40;
+    public const int InspectorRowMarginVertical = 2;
+    public const int InspectorContentPaddingTop = 2;
+    public const int InspectorSectionPaddingVertical = 6;
+    public const int InspectorFieldLabelColumnWidth = 104;
+    public const int InspectorFieldLabelColumnWidthNarrow = 72;
+
+    public static Padding InspectorSectionPadding => new(0, InspectorSectionPaddingVertical, 0, InspectorSectionPaddingVertical);
+
+    public static Padding InspectorFieldMargin(bool rightGap) =>
+        new(0, InspectorRowMarginVertical, rightGap ? GapSm : 0, InspectorRowMarginVertical);
+
     private const double RowHoverDurationMs = 110d;
     private const double RowSelectionDurationMs = 160d;
     private const double RowPressedDurationMs = 70d;

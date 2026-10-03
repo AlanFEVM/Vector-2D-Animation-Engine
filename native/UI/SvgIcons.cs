@@ -32,6 +32,7 @@ internal enum SvgIconKind
     Swatches,
     Eraser,
     Vault,
+    Image,
     Snap,
     Grid,
     GoldenSpiral,
@@ -566,6 +567,18 @@ internal static class SvgIcons
                 g.DrawArc(pen, Rect(r, 2, 2, 20, 20), 25, 250);
                 DrawChevron(g, thinPen, P(r, 19, 7), 1);
                 DrawChevron(g, pen, P(r, 5, 18), 3);
+                break;
+            case SvgIconKind.Image:
+                DrawRectangle(g, pen, Rect(r, 3, 5, 18, 14));
+                g.DrawEllipse(thinPen, Rect(r, 6, 8, 3, 3));
+                g.DrawLines(pen, new[]
+                {
+                    P(r, 4, 18),
+                    P(r, 9, 12),
+                    P(r, 13, 16),
+                    P(r, 16, 13),
+                    P(r, 20, 18)
+                });
                 break;
             case SvgIconKind.Objects:
                 DrawRectangle(g, thinPen, Rect(r, 5, 5, 8, 8));

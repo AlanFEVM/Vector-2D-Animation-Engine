@@ -8414,16 +8414,19 @@ internal static partial class Benchmark
     public static void RunStageRendererRegression()
     {
         RunUiRefreshStabilityRegression();
+        RunCrashDiagnosticsRegression();
         RunSymbolFiltersRenderRegression();
         RunSymbolFiltersPanelRegression();
         RunGpuPlaybackTargetLifetimeRegression();
         RunLayerBlendRegression();
         RunSceneReferenceRenderRegression();
         RunWorkspacePreRenderTargetRegression();
+        RunBitmapObjectRegression();
         RunSceneOpticsRenderRegression();
         RunSnapPointSceneRegression();
         RunSnapPointOverlayRegression();
         RunImportedSvgRasterizerRegression();
+        RunBitmapObjectRegression();
         RunProjectiveSvgClippingRegression();
         RunImportedSvgBreakApartRegression();
         RunSelectionHighlightStyleRegression();
@@ -8433,6 +8436,7 @@ internal static partial class Benchmark
         RunSceneToolPaletteVisibilityRegression();
         RunMarqueeToolPolicyRegression();
         RunDistortPointerRegression();
+        RunFrozenRotationTransformFrameRegression();
         RunZoomLodPreviewRegression();
         RunWorkspacePanelAnimationRegression();
         RunWorldGridRegression();

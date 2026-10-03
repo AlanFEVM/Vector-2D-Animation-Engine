@@ -1187,6 +1187,40 @@ internal sealed partial class StageControl : Control
     internal object? Reference3DPlaybackRasterPreparation { get; private set; }
     internal object? Reference3DPlaybackRasterFrame { get; private set; }
 
+    /// <summary>
+    /// Host-supplied resolver from an image asset id to its decoded raster. The control only
+    /// knows the scene, so the project layer owns asset lookup and file resolution; keeping
+    /// it injected also lets the regression run the renderer without a live project.
+    /// Returns null when the asset is missing, unreadable, or has no managed copy yet, in
+    /// which case the renderer draws nothing rather than a placeholder.
+    /// </summary>
+    internal Func<string, BitmapImageRaster?>? BitmapImageResolver { get; set; }
+
+    /// <summary>
+    /// Host-supplied sampling mode for an image asset, derived from its import filter mode.
+    /// Defaults to linear when the host has no opinion, matching a bilinear import.
+    /// </summary>
+    internal Func<string, BitmapSampling>? BitmapImageSamplingProvider { get; set; }
+
+    internal bool TryDecodeBitmapImage(string imageAssetId, out BitmapImageRaster raster)
+    {
+        raster = null!;
+        if (string.IsNullOrWhiteSpace(imageAssetId) || BitmapImageResolver is null) return false;
+        var resolved = BitmapImageResolver(imageAssetId);
+        if (resolved is null) return false;
+        raster = resolved;
+        return true;
+    }
+
+    internal BitmapSampling BitmapImageSampling(string imageAssetId)
+    {
+        if (BitmapImageSamplingProvider is null || string.IsNullOrWhiteSpace(imageAssetId))
+        {
+            return BitmapSampling.Linear;
+        }
+        return BitmapImageSamplingProvider(imageAssetId);
+    }
+
     internal void SetReference3DPlaybackActive(bool active)
     {
         if (Reference3DPlaybackActive == active && PlaybackActive == active) return;
@@ -3283,6 +3317,7 @@ internal sealed partial class StageControl : Control
         {
             if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
             DrawSelection(g);
+            DrawMotionTrack(g);
             DrawFillEdgeBezierOverlay(g);
             DrawSnapPointOverlay(g);
             DrawPenAnchorGuides(g);

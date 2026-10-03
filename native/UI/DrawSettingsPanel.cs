@@ -28,7 +28,7 @@ internal sealed class DrawSettingsPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(0, 8, 0, 8);
+        Padding = Theme.InspectorSectionPadding;
         MinimumSize = new Size(248, 152);
         Theme.StyleToolTip(_toolTip);
 
@@ -51,9 +51,20 @@ internal sealed class DrawSettingsPanel : UserControl
         ConfigureShapeDetail(_settings.ShapeKind, syncValue: true);
     }
 
-    public int PreferredHeight => _pencilPresentation
-        ? 84
-        : 164 + (_shapeDetailVisible ? 36 : 0) + (_eraserOptions.Visible ? 36 : 0);
+    // Rows are Shape + Aspect + optional Sides/Points + the comfortable smoothing row; the
+    // optional eraser row is a separate docked strip below the content table.
+    public int PreferredHeight => SectionBaseHeight
+        + Theme.InspectorRowHeightComfortable
+        + (_pencilPresentation
+            ? 0
+            : Theme.InspectorRowHeight * 2
+              + (_shapeDetailVisible ? Theme.InspectorRowHeight : 0)
+              + (_eraserOptions.Visible ? Theme.InspectorRowHeight : 0));
+
+    private static int SectionBaseHeight =>
+        Theme.InspectorTitleHeight
+        + Theme.InspectorContentPaddingTop
+        + Theme.InspectorSectionPaddingVertical * 2;
 
     public void SetPencilPresentation()
     {
@@ -63,7 +74,7 @@ internal sealed class DrawSettingsPanel : UserControl
         _content!.RowStyles[0].Height = 0;
         _content.RowStyles[1].Height = 0;
         _content.RowStyles[2].Height = 0;
-        _content.RowStyles[3].Height = 36;
+        _content.RowStyles[3].Height = Theme.InspectorRowHeightComfortable;
         _shapeLabel!.Visible = false;
         _shape.Visible = false;
         _aspectLabel!.Visible = false;
@@ -90,7 +101,7 @@ internal sealed class DrawSettingsPanel : UserControl
     {
         _title.Text = "Draw Settings";
         _title.Dock = DockStyle.Top;
-        _title.Height = 28;
+        _title.Height = Theme.InspectorTitleHeight;
         _title.ForeColor = Theme.Text;
         _title.BackColor = Theme.Panel;
         _title.Font = Theme.UiFont(10, FontStyle.Bold);
@@ -104,20 +115,20 @@ internal sealed class DrawSettingsPanel : UserControl
             BackColor = Theme.Panel,
             ColumnCount = 2,
             RowCount = 4,
-            Padding = new Padding(0, 4, 0, 0)
+            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Theme.InspectorFieldLabelColumnWidth));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeightComfortable));
         _content = content;
         Controls.Add(content);
         content.BringToFront();
 
         _eraserOptions.Dock = DockStyle.Bottom;
-        _eraserOptions.Height = 36;
+        _eraserOptions.Height = Theme.InspectorRowHeight;
         _eraserOptions.BackColor = Theme.Panel;
         _eraserOptions.Padding = new Padding(0, 2, 0, 2);
         _eraserOptions.Visible = false;
@@ -125,7 +136,7 @@ internal sealed class DrawSettingsPanel : UserControl
         {
             Text = "Erase",
             Dock = DockStyle.Left,
-            Width = 104,
+            Width = Theme.InspectorFieldLabelColumnWidth,
             ForeColor = Theme.Muted,
             BackColor = Theme.Panel,
             Font = Theme.UiFont(),
@@ -145,7 +156,10 @@ internal sealed class DrawSettingsPanel : UserControl
         _eraserOptions.Controls.Add(eraseControls);
         _eraserOptions.Controls.Add(eraseLabel);
         Controls.Add(_eraserOptions);
-        _eraserOptions.BringToFront();
+        // Dock last: WinForms lays out back-to-front, so the eraser row must stay behind the
+        // filling content row. Bringing it to front made content claim the eraser's strip and
+        // left dead space under the last field row.
+        _eraserOptions.SendToBack();
 
         _shape.Items.AddRange([
             ShapeKind.Rectangle.ToString(),
@@ -156,7 +170,7 @@ internal sealed class DrawSettingsPanel : UserControl
             ShapeKind.Line.ToString()
         ]);
         _shape.Dock = DockStyle.Fill;
-        _shape.Margin = new Padding(0, 3, 0, 3);
+        _shape.Margin = Theme.InspectorFieldMargin(rightGap: false);
         Theme.StyleComboBox(_shape);
         _shape.SelectedIndexChanged += (_, _) => UpdateSettings();
         _shapeLabel = AddField(content, "Shape", _shape, 0);
@@ -165,10 +179,10 @@ internal sealed class DrawSettingsPanel : UserControl
         _eraseFills.CheckedChanged += (_, _) => UpdateSettings();
 
         AddCheck(_keepRatio);
-        _keepRatio.Width = 32;
-        _keepRatio.Height = 32;
+        _keepRatio.Width = Theme.ControlHeightCompact;
+        _keepRatio.Height = Theme.ControlHeightCompact;
         _keepRatio.Dock = DockStyle.Left;
-        _keepRatio.Margin = new Padding(0, 2, 0, 2);
+        _keepRatio.Margin = new Padding(0, Theme.InspectorRowMarginVertical, 0, Theme.InspectorRowMarginVertical);
         _toolTip.SetToolTip(_keepRatio, _keepRatio.AccessibleName);
         _aspectLabel = AddField(content, "Aspect", _keepRatio, 1, fillInput: false);
 
@@ -288,7 +302,7 @@ internal sealed class DrawSettingsPanel : UserControl
 
         if (_shapeDetailVisible == visible) return;
         _shapeDetailVisible = visible;
-        _content!.RowStyles[2].Height = visible ? 36 : 0;
+        _content!.RowStyles[2].Height = visible ? Theme.InspectorRowHeight : 0;
         _shapeVertexCountLabel!.Visible = visible;
         _shapeVertexCount.Visible = visible;
         NotifyPreferredHeightChanged();
@@ -311,11 +325,16 @@ internal sealed class DrawSettingsPanel : UserControl
             Font = Theme.UiFont(),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
-            Margin = new Padding(0, 3, 8, 3)
+            Margin = Theme.InspectorFieldMargin(rightGap: true)
         };
         parent.Controls.Add(labelControl, 0, row);
 
-        if (fillInput) input.Dock = DockStyle.Fill;
+        if (fillInput)
+        {
+            input.Dock = DockStyle.Fill;
+            input.Margin = Theme.InspectorFieldMargin(rightGap: false);
+        }
+
         parent.Controls.Add(input, 1, row);
         return labelControl;
     }

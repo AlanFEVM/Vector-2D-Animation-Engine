@@ -124,6 +124,14 @@ internal sealed partial class MainForm : Form
 
         if (UpdateSpatialTransformKeyboardPointer(e.Location)) return;
 
+        if (MotionTrackPointerMove(e)) return;
+
+        if (_motionTrackMarqueeActive)
+        {
+            UpdateMotionTrackMarquee(e.Location);
+            return;
+        }
+
         if (_shotFramingPointerSession is not null)
         {
             if (e.Button == MouseButtons.Left) UpdateShotFramingPointer(e.Location);
@@ -593,6 +601,7 @@ internal sealed partial class MainForm : Form
         BeginSceneInstanceTransformPreview();
         _transformPivot = TransformPivotFor(handle, _stage.TransformFrame);
         _transformLastAngle = TransformPointerAngle(_transformLastPointer, _transformPivot);
+        if (IsRotationHandle(handle)) TryBeginRotationTransformFrame();
     }
 
     private void HandleSceneCompositionPointerMove(MouseEventArgs e, int dx, int dy)
@@ -655,7 +664,14 @@ internal sealed partial class MainForm : Form
             && _activeTransformHandle != TransformHandleKind.None
             && e.Button == MouseButtons.Left)
         {
-            if (PointerDragExceeded(e.Location)) ApplySceneInstanceTransform(world);
+            // With a motion track on Stage the same Free Transform gesture edits the selected
+            // frames' anchors rather than the instance's current frame.
+            if (PointerDragExceeded(e.Location))
+            {
+                if (ApplyMotionTrackTransform(world)) return;
+                ApplySceneInstanceTransform(world);
+            }
+
             return;
         }
 
@@ -752,12 +768,14 @@ internal sealed partial class MainForm : Form
         Func<PointF, PointF>? previewTransform = null;
         if (IsRotationHandle(_activeTransformHandle))
         {
-            var angle = TransformPointerAngle(world, _transformPivot);
+            // A frozen rotation turns around the pivot captured at pointer-down. The live pivot is
+            // derived from the box, so using it here would let the pivot chase its own rotation.
+            var pivot = _transformFrameFrozenForRotation ? _transformFrozenPivot : _transformPivot;
+            var angle = TransformPointerAngle(world, pivot);
             var delta = NormalizeAngle(angle - _transformLastAngle);
             if (Math.Abs(delta) <= 0.0001f) return;
             var cos = MathF.Cos(delta);
             var sin = MathF.Sin(delta);
-            var pivot = _transformPivot;
             foreach (var selectedInstance in instances)
             {
                 var editFrame = PrepareInstanceStateTimelineEdit(selectedInstance);
@@ -765,7 +783,7 @@ internal sealed partial class MainForm : Form
                 var operationPivot = DrawingObjectInstanceDefinition.RotationPivotScenePosition(state);
                 var rotatedPivot = RotatePointAround(
                     new PointF(operationPivot.X, operationPivot.Y),
-                    _transformPivot,
+                    pivot,
                     delta);
                 selectedInstance.SetStateAtFrame(editFrame, state with
                 {
@@ -826,14 +844,16 @@ internal sealed partial class MainForm : Form
             }
             else
             {
-                var nextBounds = ResizedTransformBounds(
-                    _transformCurrentBounds,
-                    _transformPivot,
-                    _activeTransformHandle,
-                    world);
-                if (nextBounds.Width <= 0 || nextBounds.Height <= 0) return;
-                scaleX = nextBounds.Width / Math.Max(0.001f, _transformCurrentBounds.Width);
-                scaleY = nextBounds.Height / Math.Max(0.001f, _transformCurrentBounds.Height);
+                if (!TryGetResizedTransformScaleFactors(
+                        _transformCurrentBounds,
+                        _transformPivot,
+                        _activeTransformHandle,
+                        world,
+                        out scaleX,
+                        out scaleY))
+                {
+                    return;
+                }
             }
             (scaleX, scaleY) = ConstrainTransformScaleFactors(
                 _activeTransformHandle,
@@ -848,8 +868,10 @@ internal sealed partial class MainForm : Form
                 var state = selectedInstance.EvaluateState(editFrame);
                 var next = state with
                 {
-                    ScaleX = Math.Clamp(state.ScaleX * scaleX, 0.01f, 1000f),
-                    ScaleY = Math.Clamp(state.ScaleY * scaleY, 0.01f, 1000f)
+                    // Preserve the sign so crossing the anchor flips the instance instead of
+                    // being clamped back to a positive scale; only the magnitude is bounded.
+                    ScaleX = ClampScaleMagnitude(state.ScaleX * scaleX, 0.01f, 1000f),
+                    ScaleY = ClampScaleMagnitude(state.ScaleY * scaleY, 0.01f, 1000f)
                 };
                 next = oriented
                     ? KeepWorldPointFixed(state, next, pivot)
@@ -1033,14 +1055,17 @@ internal sealed partial class MainForm : Form
             if (!instancesById.TryGetValue(instanceId, out var instance)) continue;
             var currentState = instance.EvaluateState(_frame);
             if (!TryCreateInstancePreviewTransform(preview.StartState, currentState, out var transform)) continue;
-            // Primitive position/size/rotation cannot represent shear. Convert only
-            // the composed preview; the transform session retains the source geometry.
+            // Primitive position/size/rotation cannot represent shear, and cannot represent a
+            // mirror either because Width/Height/Angle are always positively oriented. Convert
+            // only the composed preview; the transform session retains the source geometry.
             var skewChanged = currentState.SkewX != preview.StartState.SkewX
                 || currentState.SkewY != preview.StartState.SkewY;
+            var flipped = currentState.ScaleX * preview.StartState.ScaleX < 0f
+                || currentState.ScaleY * preview.StartState.ScaleY < 0f;
             compositionScene.ApplyTransformSession(
                 preview.Session,
                 transform,
-                convertPrimitivesToPaths: skewChanged,
+                convertPrimitivesToPaths: skewChanged || flipped,
                 rebuildGeometryIndex: false);
             changed = true;
         }
@@ -1105,6 +1130,8 @@ internal sealed partial class MainForm : Form
         _transformPivot = TransformPivotFor(handle, _transformCurrentBounds);
         _transformLastAngle = TransformPointerAngle(_transformLastPointer, _transformPivot);
         _drawingTransformAccumulatedAngle = 0;
+        EndRotationTransformFrame();
+        if (IsRotationHandle(handle)) TryBeginRotationTransformFrame();
     }
 
     private void BeginDistortPointer(MouseEventArgs e)
@@ -1515,6 +1542,9 @@ internal sealed partial class MainForm : Form
 
     private void ApplyTransformFromPointer(PointF world)
     {
+        // Basic Drawing routes Free Transform here; when the motion track owns the box the gesture
+        // edits the selected frames instead of the selected drawing objects.
+        if (ApplyMotionTrackTransform(world)) return;
         if (_selectedObjects.Count == 0 || _activeTransformHandle == TransformHandleKind.None) return;
 
         if (_activeTransformHandle == TransformHandleKind.Focus)
@@ -1598,14 +1628,17 @@ internal sealed partial class MainForm : Form
         }
         else
         {
-            var nextBounds = ResizedTransformBounds(
-                _drawingTransformStartBounds,
-                _transformPivot,
-                _activeTransformHandle,
-                world);
-            if (nextBounds.Width <= 0 || nextBounds.Height <= 0) return;
-            var scaleX = nextBounds.Width / Math.Max(0.001f, _drawingTransformStartBounds.Width);
-            var scaleY = nextBounds.Height / Math.Max(0.001f, _drawingTransformStartBounds.Height);
+            if (!TryGetResizedTransformScaleFactors(
+                    _drawingTransformStartBounds,
+                    _transformPivot,
+                    _activeTransformHandle,
+                    world,
+                    out var scaleX,
+                    out var scaleY))
+            {
+                return;
+            }
+
             (scaleX, scaleY) = ConstrainTransformScaleFactors(
                 _activeTransformHandle,
                 scaleX,
@@ -1620,12 +1653,16 @@ internal sealed partial class MainForm : Form
 
             if (!TryEnsureDrawingTransformSession(out var session)) return;
             var pivot = _transformPivot;
+            // Parametric primitives store a positively oriented Width/Height/Angle, so they cannot
+            // represent a mirror. Materialize them to paths whenever an axis flips, otherwise the
+            // negative factor is silently rounded away and the shape stays unmirrored.
+            var flipped = scaleX < 0f || scaleY < 0f;
             _scene.ApplyTransformSession(
                 session,
                 point => new PointF(
                     pivot.X + (point.X - pivot.X) * scaleX,
                     pivot.Y + (point.Y - pivot.Y) * scaleY),
-                convertPrimitivesToPaths: false,
+                convertPrimitivesToPaths: flipped,
                 rebuildGeometryIndex: false);
         }
 
@@ -1797,10 +1834,12 @@ internal sealed partial class MainForm : Form
         var (pivotX, pivotY) = TransformHandleCoordinates(OppositeTransformHandle(handle));
         if (ChangesTransformWidth(handle)) scaleX = (local.X - pivotX) / (handleX - pivotX);
         if (ChangesTransformHeight(handle)) scaleY = (local.Y - pivotY) / (handleY - pivotY);
+        // The ratios are already signed: dragging past the opposite anchor yields a negative
+        // factor that mirrors the instance. Only reject degenerate magnitudes, not the sign.
         return float.IsFinite(scaleX)
             && float.IsFinite(scaleY)
-            && scaleX > 0.01f
-            && scaleY > 0.01f;
+            && Math.Abs(scaleX) > 0.01f
+            && Math.Abs(scaleY) > 0.01f;
     }
 
     private static bool TryGetFrameCoordinates(TransformOverlayFrame frame, PointF point, out PointF local)
@@ -1884,8 +1923,10 @@ internal sealed partial class MainForm : Form
         var changesHeight = ChangesTransformHeight(handle);
         if (!changesWidth && !changesHeight) return (scaleX, scaleY);
 
+        // Compare how far each axis moved from its resting magnitude, so a flipped (negative)
+        // factor can still win the uniform comparison and keep its sign.
         var uniformScale = changesWidth && changesHeight
-            ? Math.Abs(scaleX - 1f) >= Math.Abs(scaleY - 1f) ? scaleX : scaleY
+            ? Math.Abs(Math.Abs(scaleX) - 1f) >= Math.Abs(Math.Abs(scaleY) - 1f) ? scaleX : scaleY
             : changesWidth ? scaleX : scaleY;
         return (uniformScale, uniformScale);
     }
@@ -1942,58 +1983,69 @@ internal sealed partial class MainForm : Form
         };
     }
 
-    private static RectangleF ResizedTransformBounds(RectangleF current, PointF pivot, TransformHandleKind handle, PointF pointer)
+    // A resize handle anchors the opposite edge or corner, and dragging the pointer across that
+    // anchor must yield a mirrored (negative) scale factor. Clamping the moving edge onto the
+    // anchor - as the previous bounds builder did - silently swallowed every flip and squashed
+    // the selection to a sliver instead.
+    //
+    // The inward distance is measured from the anchor towards the handle's own starting side, so
+    // a handle at rest reports exactly 1 and only a real crossing produces a negative ratio.
+    internal static bool TryGetResizedTransformScaleFactors(
+        RectangleF startBounds,
+        PointF pivot,
+        TransformHandleKind handle,
+        PointF pointer,
+        out float scaleX,
+        out float scaleY)
     {
-        const float minimum = 1f;
-        var left = current.Left;
-        var top = current.Top;
-        var right = current.Right;
-        var bottom = current.Bottom;
-        switch (handle)
+        const float degenerate = 0.0001f;
+        scaleX = 1f;
+        scaleY = 1f;
+        var changesWidth = ChangesTransformWidth(handle);
+        var changesHeight = ChangesTransformHeight(handle);
+        if (!changesWidth && !changesHeight) return false;
+
+        var (handleX, handleY) = TransformHandleCoordinates(handle);
+        if (changesWidth)
         {
-            case TransformHandleKind.TopLeft:
-                left = Math.Min(pointer.X, pivot.X - minimum);
-                top = Math.Min(pointer.Y, pivot.Y - minimum);
-                right = pivot.X;
-                bottom = pivot.Y;
-                break;
-            case TransformHandleKind.Top:
-                top = Math.Min(pointer.Y, pivot.Y - minimum);
-                bottom = pivot.Y;
-                break;
-            case TransformHandleKind.TopRight:
-                left = pivot.X;
-                top = Math.Min(pointer.Y, pivot.Y - minimum);
-                right = Math.Max(pointer.X, pivot.X + minimum);
-                bottom = pivot.Y;
-                break;
-            case TransformHandleKind.Right:
-                left = pivot.X;
-                right = Math.Max(pointer.X, pivot.X + minimum);
-                break;
-            case TransformHandleKind.BottomRight:
-                left = pivot.X;
-                top = pivot.Y;
-                right = Math.Max(pointer.X, pivot.X + minimum);
-                bottom = Math.Max(pointer.Y, pivot.Y + minimum);
-                break;
-            case TransformHandleKind.Bottom:
-                top = pivot.Y;
-                bottom = Math.Max(pointer.Y, pivot.Y + minimum);
-                break;
-            case TransformHandleKind.BottomLeft:
-                left = Math.Min(pointer.X, pivot.X - minimum);
-                top = pivot.Y;
-                right = pivot.X;
-                bottom = Math.Max(pointer.Y, pivot.Y + minimum);
-                break;
-            case TransformHandleKind.Left:
-                left = Math.Min(pointer.X, pivot.X - minimum);
-                right = pivot.X;
-                break;
+            if (startBounds.Width <= 0f) return false;
+            var signedWidth = handleX <= 0f ? pivot.X - pointer.X : pointer.X - pivot.X;
+            if (Math.Abs(signedWidth) <= degenerate) return false;
+            scaleX = ApplyScaleFloor(signedWidth / startBounds.Width, FloorScale(startBounds.Width));
         }
 
-        return RectangleF.FromLTRB(left, top, right, bottom);
+        if (changesHeight)
+        {
+            if (startBounds.Height <= 0f) return false;
+            var signedHeight = handleY <= 0f ? pivot.Y - pointer.Y : pointer.Y - pivot.Y;
+            if (Math.Abs(signedHeight) <= degenerate) return false;
+            scaleY = ApplyScaleFloor(signedHeight / startBounds.Height, FloorScale(startBounds.Height));
+        }
+
+        return float.IsFinite(scaleX) && float.IsFinite(scaleY);
+    }
+
+    // Keep a one-unit floor on the resulting edge length, expressed as a scale floor. Capped at 1
+    // so a selection already smaller than one unit cannot be forced to grow on grab.
+    private static float FloorScale(float startExtent) =>
+        Math.Min(1f, 1f / startExtent);
+
+    // Raise a scale factor to at least `minimum` in magnitude while preserving its sign, so a
+    // flipped (negative) factor stays negative. Enlargement beyond 1 is never limited here.
+    private static float ApplyScaleFloor(float value, float minimum)
+    {
+        if (!float.IsFinite(value)) return value < 0f ? -minimum : minimum;
+        if (Math.Abs(value) >= minimum) return value;
+        return value < 0f ? -minimum : minimum;
+    }
+
+    // Instance scale limits bound how small or large an instance may become. Bounding the
+    // magnitude keeps a flipped (negative) factor negative, so clamping cannot undo a flip.
+    private static float ClampScaleMagnitude(float value, float minimum, float maximum)
+    {
+        if (!float.IsFinite(value)) return value < 0f ? -minimum : minimum;
+        var magnitude = Math.Clamp(Math.Abs(value), minimum, maximum);
+        return value < 0f ? -magnitude : magnitude;
     }
 
     private static float TransformPointerAngle(PointF point, PointF pivot) => MathF.Atan2(point.Y - pivot.Y, point.X - pivot.X);
@@ -2019,6 +2071,50 @@ internal sealed partial class MainForm : Form
         while (degrees > 180) degrees -= 360;
         while (degrees <= -180) degrees += 360;
         return degrees;
+    }
+
+    // Captures the transform box at rotation start so the rest of the drag can rotate it rigidly.
+    // Returns false when the box is degenerate, in which case rotation falls back to recomputing
+    // the frame from the live geometry.
+    private bool TryBeginRotationTransformFrame()
+    {
+        var frame = _stage.TransformFrame;
+        if (!frame.IsValid) return false;
+        _transformFrozenFrame = frame;
+        _transformFrozenPivot = _transformPivot;
+        _transformFrozenFocus = _transformFocus;
+        _transformFrameFrozenForRotation = true;
+        return true;
+    }
+
+    private void EndRotationTransformFrame()
+    {
+        _transformFrameFrozenForRotation = false;
+        _transformFrozenFrame = default;
+        _transformFrozenPivot = PointF.Empty;
+        _transformFrozenFocus = null;
+    }
+
+    // The box the overlay should draw for the current rotation drag. While frozen the captured
+    // frame is turned by the same angle the geometry received, so the box stays glued to the
+    // shape and the handle under the pointer never slides away.
+    private TransformOverlayFrame RotatedFrozenTransformFrame(float radians)
+    {
+        var frame = _transformFrozenFrame;
+        var pivot = _transformFrozenPivot;
+        return new TransformOverlayFrame(
+            RotatePointAround(frame.Origin, pivot, radians),
+            RotateVector(frame.AxisX, radians),
+            RotateVector(frame.AxisY, radians));
+    }
+
+    private static PointF RotateVector(PointF vector, float radians)
+    {
+        var cos = MathF.Cos(radians);
+        var sin = MathF.Sin(radians);
+        return new PointF(
+            vector.X * cos - vector.Y * sin,
+            vector.X * sin + vector.Y * cos);
     }
 
     private bool TryFindSelectedLineControlHit(Point screen, out DrawingElementHit line)
@@ -2309,6 +2405,8 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (MotionTrackPointerUp(e)) return;
+
         if (_tool == ToolMode.Pen && _traditionalPenAnchorEditing)
         {
             CompleteTraditionalPenAnchorEdit();
@@ -2527,6 +2625,10 @@ internal sealed partial class MainForm : Form
             FinishLostPointerCapture();
         }
 
+        // A frame change re-centres the onion skin, so the anchor drag and box selection are no
+        // longer anchored to what the operator grabbed.
+        AbortMotionTrackPointerSession();
+
         _pendingClickSelection = DrawingElementHit.None;
         CancelTraditionalPenPath();
         CancelPenCurve();
@@ -2724,6 +2826,7 @@ internal sealed partial class MainForm : Form
         _activeTransformHandle = TransformHandleKind.None;
         _drawingTransformSession = null;
         _pendingDrawingTransformWorld = null;
+        EndRotationTransformFrame();
         _distortStartEnvelope = default;
         _distortCurrentEnvelope = default;
         _distortSourceFrame = default;
@@ -2799,19 +2902,46 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (TryResolveDroppedExternalSvgAsset(e.Data, out _, out _))
+        if (TryResolveDroppedExternalSvgAsset(e.Data, out var externalSvgAsset, out var externalSvgPath))
         {
-            ClearDrawingObjectDragPreview();
-            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
+            UpdateFileDropFeedback(
+                e,
+                CanImportSvg(),
+                externalSvgAsset.Id,
+                () => BuildExternalSvgDropPreviewScene(externalSvgPath));
             return;
         }
-        if (TryResolveDroppedSvgFile(e.Data, out _))
+        if (TryResolveDroppedImageAsset(e.Data, out var imageAsset, out var imagePath))
         {
-            ClearDrawingObjectDragPreview();
-            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
+            UpdateFileDropFeedback(
+                e,
+                CanPlaceImage(),
+                imageAsset.Id,
+                () => BuildImageDropPreviewScene(imageAsset, imagePath));
+            return;
+        }
+        if (TryResolveDroppedImageFile(e.Data, out var imageFilePath, out var imageFileAsset))
+        {
+            UpdateFileDropFeedback(
+                e,
+                CanPlaceImage(),
+                imageFileAsset?.Id ?? imageFilePath,
+                () => imageFileAsset is null
+                    ? null
+                    : BuildImageDropPreviewScene(imageFileAsset, imageFilePath));
+            return;
+        }
+        if (TryResolveDroppedSvgFile(e.Data, out var svgFilePath))
+        {
+            UpdateFileDropFeedback(
+                e,
+                CanImportSvg(),
+                svgFilePath,
+                () => BuildSvgFileDropPreviewScene(svgFilePath));
             return;
         }
 
+        ClearImportedObjectDragPreview();
         if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject))
         {
             ClearDrawingObjectDragPreview();
@@ -2832,47 +2962,61 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private void StageDragOver(object? sender, DragEventArgs e)
+    /// <summary>
+    /// Reports the effect for a file-backed drop and positions its preview. The preview
+    /// scene is built once per distinct dragged file (<paramref name="previewKey"/>) and
+    /// only when it is actually needed, so hovering never mutates the project.
+    /// </summary>
+    private void UpdateFileDropFeedback(
+        DragEventArgs e,
+        bool canDrop,
+        string previewKey,
+        Func<VectorScene?> buildPreview)
     {
-        if (IsShotDirectorContext())
+        ClearDrawingObjectDragPreview();
+        if (!canDrop || !TryDragEventWorldPosition(e, out var world))
         {
-            ClearDrawingObjectDragPreview();
-            e.Effect = DragDropEffects.None;
-            return;
-        }
-
-        if (TryResolveDroppedExternalSvgAsset(e.Data, out _, out _))
-        {
-            ClearDrawingObjectDragPreview();
-            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
-            return;
-        }
-        if (TryResolveDroppedSvgFile(e.Data, out _))
-        {
-            ClearDrawingObjectDragPreview();
-            e.Effect = CanImportSvg() ? DragDropEffects.Copy : DragDropEffects.None;
-            return;
-        }
-
-        if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject) || !CanPlaceDroppedDrawingObject(drawingObject))
-        {
-            ClearDrawingObjectDragPreview();
-            e.Effect = DragDropEffects.None;
-            return;
-        }
-
-        if (!TryDragEventWorldPosition(e, out var world))
-        {
-            ClearDrawingObjectDragPreview();
-            e.Effect = DragDropEffects.None;
+            ClearImportedObjectDragPreview();
+            e.Effect = canDrop ? DragDropEffects.Copy : DragDropEffects.None;
             return;
         }
 
         e.Effect = DragDropEffects.Copy;
-        UpdateDrawingObjectDragPreview(drawingObject, world);
+        if (_dragPreviewImportedScene is null
+            || !string.Equals(_dragPreviewImportedKey, previewKey, StringComparison.Ordinal))
+        {
+            var preview = buildPreview();
+            if (preview is null)
+            {
+                ClearImportedObjectDragPreview();
+                return;
+            }
+
+            _dragPreviewImportedKey = previewKey;
+            _dragPreviewImportedScene = preview;
+            _dragPreviewPosition = world;
+            _stage.BindDragPreviewScene(preview);
+            return;
+        }
+
+        var dx = world.X - _dragPreviewPosition.X;
+        var dy = world.Y - _dragPreviewPosition.Y;
+        if (Math.Abs(dx) <= 0.0001f && Math.Abs(dy) <= 0.0001f) return;
+        _dragPreviewImportedScene.TranslateAllObjectsForPreview(dx, dy);
+        _dragPreviewPosition = world;
+        _stage.Invalidate();
     }
 
-    private void StageDragLeave(object? sender, EventArgs e) => ClearDrawingObjectDragPreview();
+    private void StageDragOver(object? sender, DragEventArgs e)
+    {
+        StageDragEnter(sender, e);
+    }
+
+    private void StageDragLeave(object? sender, EventArgs e)
+    {
+        ClearDrawingObjectDragPreview();
+        ClearImportedObjectDragPreview();
+    }
 
     private bool CanPlaceDroppedDrawingObject(DrawingObjectDefinition drawingObject)
     {
@@ -3257,28 +3401,59 @@ internal sealed partial class MainForm : Form
         _stage.BindDragPreviewScene(null);
     }
 
+    private void ClearImportedObjectDragPreview()
+    {
+        if (_dragPreviewImportedScene is null) return;
+        _dragPreviewImportedKey = "";
+        _dragPreviewImportedScene = null;
+        _dragPreviewPosition = PointF.Empty;
+        _stage.BindDragPreviewScene(null);
+    }
+
     private void StageDragDrop(object? sender, DragEventArgs e)
     {
         if (IsShotDirectorContext())
         {
             ClearDrawingObjectDragPreview();
+            ClearImportedObjectDragPreview();
             e.Effect = DragDropEffects.None;
             return;
         }
 
         if (TryResolveDroppedExternalSvgAsset(e.Data, out var externalSvgAsset, out _))
         {
+            var dropPosition = DragEventWorldPosition(e);
             ClearDrawingObjectDragPreview();
-            UseExternalSvgAssetLink(externalSvgAsset.Id, DragEventWorldPosition(e));
+            ClearImportedObjectDragPreview();
+            UseExternalSvgAssetLink(externalSvgAsset.Id, dropPosition);
+            return;
+        }
+        if (TryResolveDroppedImageAsset(e.Data, out var imageAsset, out _))
+        {
+            var dropPosition = DragEventWorldPosition(e);
+            ClearDrawingObjectDragPreview();
+            ClearImportedObjectDragPreview();
+            PlaceImageAsset(imageAsset.Id, dropPosition);
+            return;
+        }
+        if (TryResolveDroppedImageFile(e.Data, out var imageFile, out var knownImageAsset))
+        {
+            var dropPosition = DragEventWorldPosition(e);
+            ClearDrawingObjectDragPreview();
+            ClearImportedObjectDragPreview();
+            PlaceDroppedImageFile(imageFile, knownImageAsset, dropPosition);
             return;
         }
         if (TryResolveDroppedSvgFile(e.Data, out var svgFile))
         {
+            var dropPosition = DragEventWorldPosition(e);
             ClearDrawingObjectDragPreview();
-            ImportSvgFile(svgFile, DragEventWorldPosition(e));
+            ClearImportedObjectDragPreview();
+            ImportSvgFile(svgFile, dropPosition);
             return;
         }
 
+        ClearImportedObjectDragPreview();
         if (!TryResolveDroppedDrawingObject(e.Data, out var drawingObject))
         {
             ClearDrawingObjectDragPreview();

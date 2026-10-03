@@ -178,6 +178,7 @@ internal static class SceneCompositionBuilder
         MixingStroke,
         Curve,
         ImportedSvg,
+        Bitmap,
         Text
     }
 
@@ -218,6 +219,7 @@ internal static class SceneCompositionBuilder
         public PointF Control2 { get; init; }
         public string ImportedSvgSource { get; init; } = "";
         public string ImportedSvgName { get; init; } = "";
+        public BitmapObjectData? BitmapObjectData { get; init; }
         public TextObjectData? TextObjectData { get; init; }
         public bool FillAutoMergeProtected { get; init; }
         public DistortWarp[] Distortions { get; init; } = [];
@@ -1337,6 +1339,7 @@ internal static class SceneCompositionBuilder
                     or ShapeKind.Freeform
                     or ShapeKind.MixingStroke
                     or ShapeKind.ImportedSvg
+                    or ShapeKind.Bitmap
                     or ShapeKind.Text)
                 {
                     return false;
@@ -1666,6 +1669,64 @@ internal static class SceneCompositionBuilder
             {
                 ImportedSvgSource = importedSvgSource,
                 ImportedSvgName = importedSvgName,
+                Distortions = distortions
+            };
+        }
+
+        if (shape == ShapeKind.Bitmap)
+        {
+            if (!source.TryGetBitmapObjectData(sourceObject, out var bitmapObjectData))
+            {
+                throw new InvalidOperationException("Bitmap composition source is missing its payload.");
+            }
+
+            var bitmapCenter = new PointF(source.X[sourceObject], source.Y[sourceObject]);
+            var bitmapSize = new SizeF(source.Width[sourceObject], source.Height[sourceObject]);
+            var bitmapAngle = source.Angle[sourceObject];
+            if (!identityTransform)
+            {
+                if (!TryPrepareImportedSvgTransform(
+                        bitmapCenter,
+                        bitmapSize,
+                        bitmapAngle,
+                        transform,
+                        out var transformedCenter,
+                        out var transformedSize,
+                        out var transformedAngle))
+                {
+                    // Unlike imported SVG, a bitmap cannot absorb a shear by re-encoding its
+                    // payload, so a non-conformal parent transform cannot be represented as a
+                    // placed quad. Failing loudly keeps the mismatch visible instead of
+                    // silently emitting an un-sheared image.
+                    throw new InvalidOperationException(
+                        "Bitmap objects cannot be composed through a sheared or non-conformal transform.");
+                }
+
+                bitmapCenter = transformedCenter;
+                bitmapSize = transformedSize;
+                bitmapAngle = transformedAngle;
+            }
+
+            return new PreparedCompositionObject(
+                PreparedCompositionKind.Bitmap,
+                destinationLayer,
+                shape,
+                bitmapCenter,
+                bitmapSize,
+                bitmapAngle,
+                0,
+                fillArgb,
+                strokeArgb,
+                atoms,
+                PointF.Empty,
+                PointF.Empty,
+                PointF.Empty,
+                [],
+                [])
+            {
+                // Instance alpha and tint ride on the composed object's Argb channel, exactly
+                // as they do for imported SVG, so the renderers keep one tinting rule.
+                BitmapObjectData = bitmapObjectData,
                 Distortions = distortions
             };
         }
@@ -2172,6 +2233,7 @@ internal static class SceneCompositionBuilder
             or PreparedCompositionKind.Freehand
             or PreparedCompositionKind.MixingStroke
             or PreparedCompositionKind.ImportedSvg
+            or PreparedCompositionKind.Bitmap
             or PreparedCompositionKind.Text)
         {
             throw new InvalidOperationException("Sparse geometry cannot be written through the packed batch path.");
@@ -2212,6 +2274,12 @@ internal static class SceneCompositionBuilder
                 item.Angle,
                 item.ImportedSvgSource,
                 item.ImportedSvgName),
+            PreparedCompositionKind.Bitmap => destination.AddBitmapObject(
+                item.DestinationLayer,
+                item.Center,
+                item.BitmapObjectData
+                    ?? throw new InvalidOperationException("Prepared bitmap composition is missing its image payload."),
+                item.Angle),
             PreparedCompositionKind.Text => destination.AppendTextObject(
                 item.DestinationLayer,
                 item.Center,
@@ -2316,7 +2384,10 @@ internal static class SceneCompositionBuilder
         if (index >= 0)
         {
             destination.FillAutoMergeProtected[index] = item.FillAutoMergeProtected;
-            if (item.Kind == PreparedCompositionKind.ImportedSvg) destination.Argb[index] = item.FillArgb;
+            if (item.Kind is PreparedCompositionKind.ImportedSvg or PreparedCompositionKind.Bitmap)
+            {
+                destination.Argb[index] = item.FillArgb;
+            }
             if (item.Distortions.Length > 0) destination.SetObjectDistortionsForComposition(index, item.Distortions);
         }
         if (item.LinearGradientEnabled)

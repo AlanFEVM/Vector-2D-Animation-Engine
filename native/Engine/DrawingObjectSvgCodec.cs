@@ -289,6 +289,7 @@ internal static class DrawingObjectSvgCodec
             ShapeKind.Path => CreateCompoundPath(snapshot, index),
             ShapeKind.Freeform or ShapeKind.BrushStroke => CreateFreehandPath(snapshot, index),
             ShapeKind.ImportedSvg => CreateImportedSvgImage(snapshot, index),
+            ShapeKind.Bitmap => CreateBitmapPlaceholder(snapshot, index),
             ShapeKind.Text => CreateTextPath(snapshot, index),
             ShapeKind.MixingStroke => CreateMixingStrokePreview(snapshot, index),
             _ => null
@@ -297,7 +298,7 @@ internal static class DrawingObjectSvgCodec
 
         element.SetAttributeValue("id", $"v2d-object-{index.ToString(CultureInfo.InvariantCulture)}");
         element.SetAttributeValue("data-v2d-object-index", index.ToString(CultureInfo.InvariantCulture));
-        if (shape is not ShapeKind.ImportedSvg and not ShapeKind.MixingStroke)
+        if (shape is not ShapeKind.ImportedSvg and not ShapeKind.MixingStroke and not ShapeKind.Bitmap)
         {
             ApplyPaint(element, snapshot, index);
         }
@@ -323,6 +324,31 @@ internal static class DrawingObjectSvgCodec
             new XAttribute("height", Number(snapshot.Height[index])),
             new XAttribute("preserveAspectRatio", "none"),
             new XAttribute("href", $"data:image/svg+xml;base64,{encoded}"),
+            RotationAttribute(snapshot, index));
+    }
+
+    /// <summary>
+    /// Symbol SVG previews are geometry-only documents that deliberately do not embed the
+    /// project's image library. A placed bitmap therefore degrades to an explicitly marked
+    /// placeholder frame instead of silently disappearing from the preview.
+    /// </summary>
+    private static XElement? CreateBitmapPlaceholder(VectorSceneSnapshot snapshot, int index)
+    {
+        if (!snapshot.BitmapObjects.TryGetValue(index, out var data) || data is null || !data.IsValid)
+        {
+            return null;
+        }
+
+        return new XElement(
+            SvgNamespace + "rect",
+            new XAttribute("x", Number(snapshot.X[index] - snapshot.Width[index] * 0.5f)),
+            new XAttribute("y", Number(snapshot.Y[index] - snapshot.Height[index] * 0.5f)),
+            new XAttribute("width", Number(snapshot.Width[index])),
+            new XAttribute("height", Number(snapshot.Height[index])),
+            new XAttribute("fill", "none"),
+            new XAttribute("stroke", "#7a7f87"),
+            new XAttribute("stroke-width", "2"),
+            new XAttribute("data-v2d-bitmap-placeholder", data.ImageAssetId),
             RotationAttribute(snapshot, index));
     }
 
@@ -763,6 +789,7 @@ internal static class DrawingObjectSvgCodec
         ValidateFreehandBezierNodes(snapshot);
         ValidateMixingStrokePayloads(snapshot, formatVersion);
         ValidateImportedSvgSources(snapshot);
+        ValidateBitmapObjects(snapshot);
         ValidateTextObjects(snapshot);
         ValidateObjectDistortions(snapshot, formatVersion);
         var pointCount = CountPoints(snapshot.GradientPathLocalPoints)
@@ -894,6 +921,35 @@ internal static class DrawingObjectSvgCodec
                 || name.Length > MaxImportedSvgNameCharacters)
             {
                 throw new InvalidDataException("Imported SVG name metadata is invalid.");
+            }
+        }
+    }
+
+    private static void ValidateBitmapObjects(VectorSceneSnapshot snapshot)
+    {
+        if (snapshot.BitmapObjects is null)
+        {
+            throw new InvalidDataException("Bitmap object metadata is missing.");
+        }
+
+        foreach (var (index, data) in snapshot.BitmapObjects)
+        {
+            if ((uint)index >= snapshot.ObjectCount
+                || index >= snapshot.ShapeKind.Length
+                || snapshot.ShapeKind[index] != ShapeKind.Bitmap
+                || data is null
+                || !data.IsValid)
+            {
+                throw new InvalidDataException("Bitmap object metadata is invalid.");
+            }
+        }
+
+        for (var index = 0; index < Math.Min(snapshot.ObjectCount, snapshot.ShapeKind.Length); index++)
+        {
+            if (snapshot.ShapeKind[index] == ShapeKind.Bitmap
+                && !snapshot.BitmapObjects.ContainsKey(index))
+            {
+                throw new InvalidDataException($"Bitmap object {index} has no image asset payload.");
             }
         }
     }

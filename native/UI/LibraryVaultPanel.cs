@@ -51,6 +51,21 @@ internal sealed class DrawingObjectSymbolImportRequestedEventArgs(string[] fileN
     public IReadOnlyList<string> FileNames { get; } = fileNames;
 }
 
+/// <summary>File paths a host should import for one asset category.</summary>
+internal sealed class AssetFileImportRequestedEventArgs(string[] fileNames) : EventArgs
+{
+    public IReadOnlyList<string> FileNames { get; } = fileNames;
+}
+
+/// <summary>
+/// A shell drop classified by asset kind. Categories are disjoint, so a mixed selection
+/// from Explorer is imported once per owning importer.
+/// </summary>
+internal readonly record struct DroppedAssetFiles(
+    string[] SymbolFiles,
+    string[] ImageFiles,
+    string[] SvgFiles);
+
 internal sealed class DrawingObjectAssetTagAssignmentRequestedEventArgs(
     string drawingObjectId,
     string tagId,
@@ -116,17 +131,22 @@ internal sealed partial class LibraryVaultPanel : UserControl
         bool IsProjectObject,
         ProjectAssetFolder? Folder = null,
         ExternalSvgAssetDefinition? ExternalSvgAsset = null,
-        bool ExternalSvgMissing = false) : ITreeNodeTrailingColorSource, ITreeNodeLeadingIconSource
+        bool ExternalSvgMissing = false,
+        ImageAssetDefinition? ImageAsset = null,
+        bool ImageAssetMissing = false) : ITreeNodeTrailingColorSource, ITreeNodeLeadingIconSource
     {
         public IReadOnlyList<Color> TrailingColors { get; set; } = [];
         public SvgIconKind LeadingIcon => ExternalSvgAsset is not null
             ? ExternalSvgMissing ? SvgIconKind.Warning : SvgIconKind.Vault
-            : Folder is not null ? SvgIconKind.Folder : SvgIconKind.Objects;
+            : ImageAsset is not null
+                ? ImageAssetMissing ? SvgIconKind.Warning : SvgIconKind.Image
+                : Folder is not null ? SvgIconKind.Folder : SvgIconKind.Objects;
     }
     private readonly record struct ProjectRowsFingerprint(
         int ObjectCount,
         int FolderCount,
         int ExternalSvgAssetCount,
+        int ImageAssetCount,
         int Hash);
 
     private enum VaultSource
@@ -225,6 +245,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _selectedProjectDrawingObjectId = "";
             _selectedAssetFolderId = "";
             _selectedExternalSvgAssetId = "";
+            _selectedImageAssetId = "";
             SelectAssetCategory(AssetCategory.BasicSymbols, refresh: false);
             _projectRowsDirty = true;
         }
@@ -506,6 +527,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             delete
         });
         AppendExternalSvgContextMenuItems(_projectObjectMenu.Items);
+        AppendImageContextMenuItems(_projectObjectMenu.Items);
         _projectObjectMenu.Opening += (_, e) =>
         {
             HidePreview();
@@ -513,15 +535,18 @@ internal sealed partial class LibraryVaultPanel : UserControl
             var drawingObjectSelected = selected?.DrawingObject is not null;
             var folderSelected = selected?.Folder is not null;
             var externalSvgSelected = selected?.ExternalSvgAsset is not null;
-            newFolder.Visible = !externalSvgSelected && _activeAssetCategory != AssetCategory.ExternalSvg;
+            var imageSelected = selected?.ImageAsset is not null;
+            var hostedAssetSelected = externalSvgSelected || imageSelected;
+            var hostedCategory = _activeAssetCategory is AssetCategory.ExternalSvg or AssetCategory.Images;
+            newFolder.Visible = !hostedCategory;
             folderSeparator.Visible = newFolder.Visible;
-            rename.Visible = !externalSvgSelected;
+            rename.Visible = !hostedAssetSelected;
             rename.Enabled = drawingObjectSelected || folderSelected;
-            duplicate.Visible = !externalSvgSelected;
+            duplicate.Visible = !hostedAssetSelected;
             duplicate.Enabled = rename.Enabled;
-            exportSvg.Visible = !externalSvgSelected;
+            exportSvg.Visible = !hostedAssetSelected;
             exportSvg.Enabled = drawingObjectSelected;
-            exportSymbol.Visible = !externalSvgSelected;
+            exportSymbol.Visible = !hostedAssetSelected;
             exportSymbol.Enabled = drawingObjectSelected;
             setTags.Visible = drawingObjectSelected;
             setTags.Enabled = drawingObjectSelected && (_project?.AssetTags.Count ?? 0) > 0;
@@ -532,6 +557,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
             delete.Visible = drawingObjectSelected;
             delete.Enabled = drawingObjectSelected && (_project?.DrawingObjects.Count ?? 0) > 1;
             UpdateExternalSvgContextMenu(selected);
+            UpdateImageContextMenu(selected);
         };
         _projectObjects.ContextMenuStrip = _projectObjectMenu;
         _projectObjects.MouseDown += (_, e) =>
@@ -566,6 +592,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
             {
                 RaiseSelectedExternalSvgAssetRequest(
                     ExternalSvgAssetUseRequested,
+                    requireAvailable: true);
+                return;
+            }
+            if (e.Node.Tag is VaultRow { ImageAsset: not null })
+            {
+                RaiseSelectedImageAssetRequest(
+                    ImageAssetPlaceRequested,
                     requireAvailable: true);
                 return;
             }
@@ -697,6 +730,16 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _projectObjects.DoDragDrop(externalSvgData, DragDropEffects.Copy);
             return;
         }
+        if (row.ImageAsset is { } imageAsset)
+        {
+            if (row.ImageAssetMissing) return;
+            var imageData = new DataObject();
+            imageData.SetData(
+                typeof(ImageAssetDragData),
+                new ImageAssetDragData(_project.Id, imageAsset.Id));
+            _projectObjects.DoDragDrop(imageData, DragDropEffects.Copy);
+            return;
+        }
         var data = new DataObject();
         if (row.Folder is not null)
         {
@@ -728,17 +771,79 @@ internal sealed partial class LibraryVaultPanel : UserControl
         {
             return DragDropEffects.Move;
         }
-        return TryResolveDroppedSymbolFiles(data, out _) ? DragDropEffects.Copy : DragDropEffects.None;
+        return TryResolveDroppedAssetFiles(data, out _) ? DragDropEffects.Copy : DragDropEffects.None;
     }
 
-    internal static bool TryResolveDroppedSymbolFiles(IDataObject? data, out string[] fileNames)
+    internal static bool TryResolveDroppedSymbolFiles(IDataObject? data, out string[] fileNames) =>
+        TryResolveDroppedFiles(
+            data,
+            path => string.Equals(
+                Path.GetExtension(path),
+                DrawingObjectSymbolPackage.FileExtension,
+                StringComparison.OrdinalIgnoreCase),
+            out fileNames);
+
+    /// <summary>
+    /// Splits a shell drop into the asset kinds the library can host. Every file must be a
+    /// recognized asset and the whole drop must be one kind: a drop mixing symbol packages,
+    /// images or SVG links with each other, or with an unrelated file, is rejected as a
+    /// whole so a stray file cannot silently import only part of a selection.
+    /// </summary>
+    internal static bool TryResolveDroppedAssetFiles(IDataObject? data, out DroppedAssetFiles files)
+    {
+        files = default;
+        if (data?.GetDataPresent(DataFormats.FileDrop) != true
+            || data.GetData(DataFormats.FileDrop) is not string[] dropped
+            || dropped.Length == 0)
+        {
+            return false;
+        }
+
+        var symbols = new List<string>();
+        var images = new List<string>();
+        var svgLinks = new List<string>();
+        foreach (var path in dropped)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            var extension = Path.GetExtension(path);
+            if (string.Equals(extension, DrawingObjectSymbolPackage.FileExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                symbols.Add(path);
+            }
+            else if (BitmapImageFormats.IsSupportedExtension(extension))
+            {
+                images.Add(path);
+            }
+            else if (string.Equals(extension, ".svg", StringComparison.OrdinalIgnoreCase))
+            {
+                svgLinks.Add(path);
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        var kinds = (symbols.Count > 0 ? 1 : 0) + (images.Count > 0 ? 1 : 0) + (svgLinks.Count > 0 ? 1 : 0);
+        if (kinds != 1) return false;
+        files = new DroppedAssetFiles(
+            symbols.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            images.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            svgLinks.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        return true;
+    }
+
+    private static bool TryResolveDroppedFiles(
+        IDataObject? data,
+        Func<string, bool> accept,
+        out string[] fileNames)
     {
         fileNames = [];
         if (data?.GetDataPresent(DataFormats.FileDrop) != true
             || data.GetData(DataFormats.FileDrop) is not string[] files
             || files.Length == 0
             || files.Any(file => string.IsNullOrWhiteSpace(file)
-                || !string.Equals(Path.GetExtension(file), DrawingObjectSymbolPackage.FileExtension, StringComparison.OrdinalIgnoreCase)
+                || !accept(file)
                 || !File.Exists(file)))
         {
             return false;
@@ -770,10 +875,29 @@ internal sealed partial class LibraryVaultPanel : UserControl
                 new ProjectAssetMoveRequestedEventArgs(drawingObject.DrawingObjectId, targetFolderId));
             return;
         }
-        if (TryResolveDroppedSymbolFiles(e.Data, out var fileNames))
+        if (!TryResolveDroppedAssetFiles(e.Data, out var files)) return;
+
+        HidePreview();
+        // A mixed selection imports through the importer that owns each extension. SVG
+        // files become re-read source links (the "External SVG" category), matching how
+        // the library stores SVG assets rather than embedding a copy.
+        if (files.SymbolFiles.Length > 0)
         {
-            HidePreview();
-            DrawingObjectSymbolImportRequested?.Invoke(this, new DrawingObjectSymbolImportRequestedEventArgs(fileNames));
+            DrawingObjectSymbolImportRequested?.Invoke(
+                this,
+                new DrawingObjectSymbolImportRequestedEventArgs(files.SymbolFiles));
+        }
+        if (files.ImageFiles.Length > 0)
+        {
+            ImageAssetFilesDropped?.Invoke(
+                this,
+                new AssetFileImportRequestedEventArgs(files.ImageFiles));
+        }
+        if (files.SvgFiles.Length > 0)
+        {
+            ExternalSvgAssetFilesDropped?.Invoke(
+                this,
+                new AssetFileImportRequestedEventArgs(files.SvgFiles));
         }
     }
 
@@ -931,6 +1055,14 @@ internal sealed partial class LibraryVaultPanel : UserControl
             return;
         }
 
+        if (row.ImageAsset is not null)
+        {
+            RaiseSelectedImageAssetRequest(
+                ImageAssetPlaceRequested,
+                requireAvailable: true);
+            return;
+        }
+
         if (row.DrawingObject is not null)
         {
             DrawingObjectOpenRequested?.Invoke(this, new DrawingObjectOpenRequestedEventArgs(row.DrawingObject.Id));
@@ -1014,6 +1146,10 @@ internal sealed partial class LibraryVaultPanel : UserControl
                 if (_activeAssetCategory == AssetCategory.ExternalSvg)
                 {
                     AddExternalSvgAssetNodes(_projectObjects.Nodes);
+                }
+                else if (_activeAssetCategory == AssetCategory.Images)
+                {
+                    AddImageAssetNodes(_projectObjects.Nodes);
                 }
                 else
                 {
@@ -1131,10 +1267,24 @@ internal sealed partial class LibraryVaultPanel : UserControl
             hash.Add(externalSvgAsset.CreatedAt);
         }
 
+        foreach (var imageAsset in _project.ImageAssets)
+        {
+            hash.Add(imageAsset.Id, StringComparer.Ordinal);
+            hash.Add(imageAsset.Name, StringComparer.Ordinal);
+            hash.Add(imageAsset.SourcePath, StringComparer.Ordinal);
+            hash.Add(imageAsset.ProjectRelativePath, StringComparer.Ordinal);
+            hash.Add(imageAsset.Sha256, StringComparer.Ordinal);
+            hash.Add(imageAsset.PixelWidth);
+            hash.Add(imageAsset.PixelHeight);
+            hash.Add(imageAsset.ImportSettings);
+            hash.Add(imageAsset.CreatedAt);
+        }
+
         return new ProjectRowsFingerprint(
             _project.DrawingObjects.Count,
             _project.AssetFolders.Count,
             _project.ExternalSvgAssets.Count,
+            _project.ImageAssets.Count,
             hash.ToHashCode());
     }
 
@@ -1154,6 +1304,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
                 if (_activeAssetCategory == AssetCategory.ExternalSvg
                     && node.Tag is VaultRow { ExternalSvgAsset: { } externalSvgAsset }
                     && string.Equals(externalSvgAsset.Id, _selectedExternalSvgAssetId, StringComparison.Ordinal))
+                {
+                    selectedNode = node;
+                    break;
+                }
+                if (_activeAssetCategory == AssetCategory.Images
+                    && node.Tag is VaultRow { ImageAsset: { } imageAsset }
+                    && string.Equals(imageAsset.Id, _selectedImageAssetId, StringComparison.Ordinal))
                 {
                     selectedNode = node;
                     break;
@@ -1259,6 +1416,12 @@ internal sealed partial class LibraryVaultPanel : UserControl
             UpdateActionButtons();
             return;
         }
+        if (_activeAssetCategory == AssetCategory.Images)
+        {
+            _selectedImageAssetId = row?.ImageAsset?.Id ?? "";
+            UpdateActionButtons();
+            return;
+        }
         _selectedAssetFolderId = row?.Folder?.Id ?? "";
         _selectedProjectDrawingObjectId = row?.DrawingObject?.Id ?? "";
         UpdateActionButtons();
@@ -1279,7 +1442,8 @@ internal sealed partial class LibraryVaultPanel : UserControl
         var row = SelectedVaultRow();
         var projectSelected = row is { DrawingObject: not null, IsProjectObject: true };
         var externalSvgAvailable = ExternalSvgRowCanBeUsed(row);
-        SetActionState(_openButton, visible: true, enabled: projectSelected || externalSvgAvailable);
+        var imageAvailable = ImageRowCanBeUsed(row);
+        SetActionState(_openButton, visible: true, enabled: projectSelected || externalSvgAvailable || imageAvailable);
         UpdateAssetTagActions(projectSelected);
     }
 
@@ -1315,7 +1479,10 @@ internal sealed partial class LibraryVaultPanel : UserControl
         _hoverTimer.Stop();
         _hoverList = null;
         _hoverIndex = -1;
-        _hoverProjectNode = node?.Tag is VaultRow { DrawingObject: not null } ? node : null;
+        _hoverProjectNode = node?.Tag is VaultRow { DrawingObject: not null }
+            || node?.Tag is VaultRow { ImageAsset: not null, ImageAssetMissing: false }
+                ? node
+                : null;
         if (_hoverProjectNode is null)
         {
             HidePreview();
@@ -1336,6 +1503,27 @@ internal sealed partial class LibraryVaultPanel : UserControl
             var projectFrame = Math.Max(0, _frameProvider?.Invoke() ?? drawingObject.Scene.EditFrame);
             _preview.ShowDrawingObject(drawingObject, _project, projectFrame);
             _preview.ShowAt(FindForm(), PreviewAnchor(_projectObjects, projectNode.Bounds));
+            return;
+        }
+
+        if (_hoverProjectNode is { TreeView: not null } imageNode
+            && imageNode.Tag is VaultRow { ImageAsset: { } imageAsset }
+            && ReferenceEquals(_projectObjects.GetNodeAt(_projectObjects.PointToClient(Cursor.Position)), imageNode))
+        {
+            _preview ??= new VaultPreviewForm();
+            BitmapImageRaster? raster = null;
+            try
+            {
+                raster = _imageAssetPreviewProvider?.Invoke(imageAsset);
+            }
+            catch (Exception exception) when (exception is not (OutOfMemoryException or StackOverflowException))
+            {
+                // A broken or unreadable image must not take down the workbench; the
+                // preview falls back to the "Image unavailable" state.
+                raster = null;
+            }
+            _preview.ShowImageAsset(imageAsset, raster);
+            _preview.ShowAt(FindForm(), PreviewAnchor(_projectObjects, imageNode.Bounds));
             return;
         }
 
@@ -1426,6 +1614,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         private readonly Label _kind = new();
         private readonly Label _metadata = new();
         private readonly Label _detail = new();
+        private readonly PictureBox _imagePreview = new();
         private VectorScene? _contentScene;
         private VectorScene? _contentUnderlay;
         private int _contentFrame;
@@ -1499,6 +1688,11 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _emptyState.TextAlign = ContentAlignment.MiddleCenter;
             _emptyState.AutoEllipsis = true;
             content.Controls.Add(_stage);
+            content.Controls.Add(_imagePreview);
+            _imagePreview.Dock = DockStyle.Fill;
+            _imagePreview.BackColor = Theme.Stage;
+            _imagePreview.Visible = false;
+            _imagePreview.SizeMode = PictureBoxSizeMode.Zoom;
             content.Controls.Add(_emptyState);
             _emptyState.BringToFront();
             UiLocalization.Watch(this);
@@ -1532,6 +1726,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         public void ShowDrawingObject(DrawingObjectDefinition drawingObject, VectorProject project, int frame)
         {
             StopPlayback();
+            HideImagePreview();
             frame = Math.Clamp(frame, 0, Math.Max(0, drawingObject.FrameCount - 1));
             _drawingObject = drawingObject;
             _project = project;
@@ -1547,9 +1742,92 @@ internal sealed partial class LibraryVaultPanel : UserControl
             RenderDrawingObjectFrame(frame);
         }
 
+        public void ShowImageAsset(ImageAssetDefinition asset, BitmapImageRaster? raster)
+        {
+            StopPlayback();
+            _drawingObject = null;
+            _project = null;
+            _hasFittedContent = false;
+            _stage.BindScene(_emptyScene);
+            _stage.Frame = 0;
+            _stage.BindUnderlayScene(null);
+            _contentScene = null;
+            _contentUnderlay = null;
+            _contentFrame = 0;
+            ShowImagePreview(raster?.Pixels, raster?.PixelWidth ?? 0, raster?.PixelHeight ?? 0, raster?.Stride ?? 0);
+            _emptyState.Text = raster is null ? "Image unavailable" : "No visual preview";
+            _emptyState.Visible = raster is null;
+            _title.Text = asset.Name;
+            _kind.Text = $"Image  |  {asset.ImportSettings.FilterMode}";
+            _metadata.Text =
+                $"{asset.PixelWidth} x {asset.PixelHeight} px  |  {asset.ImportSettings.PixelsPerUnit:0.##} PPU";
+            _detail.Text = SingleLine(
+                asset.ImportSettings.IsValid
+                    ? $"{asset.ImportSettings.Compression}  |  {asset.ProjectRelativePath}"
+                    : asset.ProjectRelativePath);
+        }
+
+        /// <summary>
+        /// Renders the decoded premultiplied BGRA buffer into a preview bitmap. The buffer
+        /// belongs to the raster cache, so it is copied into a 32bppArgb bitmap the
+        /// PictureBox owns and disposes with the previous preview.
+        /// </summary>
+        private void ShowImagePreview(byte[]? pixels, int pixelWidth, int pixelHeight, int stride)
+        {
+            var previous = _imagePreview.Image;
+            _imagePreview.Image = null;
+            previous?.Dispose();
+            if (pixels is null || pixelWidth <= 0 || pixelHeight <= 0 || stride < pixelWidth * 4)
+            {
+                _imagePreview.Visible = false;
+                return;
+            }
+
+            try
+            {
+                var bitmap = new Bitmap(pixelWidth, pixelHeight, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                var data = bitmap.LockBits(
+                    new Rectangle(0, 0, pixelWidth, pixelHeight),
+                    System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                try
+                {
+                    for (var row = 0; row < pixelHeight; row++)
+                    {
+                        System.Runtime.InteropServices.Marshal.Copy(
+                            pixels,
+                            row * stride,
+                            data.Scan0 + row * data.Stride,
+                            pixelWidth * 4);
+                    }
+                }
+                finally
+                {
+                    bitmap.UnlockBits(data);
+                }
+
+                _imagePreview.Image = bitmap;
+                _imagePreview.Visible = true;
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                or System.Runtime.InteropServices.ExternalException)
+            {
+                _imagePreview.Visible = false;
+            }
+        }
+
+        private void HideImagePreview()
+        {
+            var previous = _imagePreview.Image;
+            _imagePreview.Image = null;
+            previous?.Dispose();
+            _imagePreview.Visible = false;
+        }
+
         public void ShowVaultItem(VaultItem item)
         {
             StopPlayback();
+            HideImagePreview();
             _drawingObject = null;
             _project = null;
             _hasFittedContent = false;
@@ -1573,6 +1851,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         public void ClearContent()
         {
             StopPlayback();
+            HideImagePreview();
             _drawingObject = null;
             _project = null;
             _hasFittedContent = false;

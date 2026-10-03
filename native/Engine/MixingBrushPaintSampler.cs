@@ -96,7 +96,7 @@ internal static class MixingBrushPaintSampler
                 if ((uint)objectIndex >= _scene.ObjectCount
                     || _scene.ObjectLayer[objectIndex] != _layer
                     || !_scene.IsObjectActive(objectIndex, _frame)
-                    || _scene.ShapeKind[objectIndex] == ShapeKind.ImportedSvg)
+                    || _scene.ShapeKind[objectIndex] is ShapeKind.ImportedSvg or ShapeKind.Bitmap)
                 {
                     continue;
                 }

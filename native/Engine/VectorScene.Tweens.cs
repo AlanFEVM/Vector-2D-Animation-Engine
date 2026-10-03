@@ -1307,7 +1307,9 @@ internal sealed partial class VectorScene
             return false;
         }
 
-        if (shape is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Text)
+        if (shape is VectorAnimationEngine.ShapeKind.ImportedSvg
+            or VectorAnimationEngine.ShapeKind.Text
+            or VectorAnimationEngine.ShapeKind.Bitmap)
         {
             error = "This shape type cannot be interpolated.";
             return false;

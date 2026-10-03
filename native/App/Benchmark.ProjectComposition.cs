@@ -2110,6 +2110,9 @@ internal static partial class Benchmark
             WindowState = FormWindowState.Normal
         };
         EditorRestartStore.DeletePending();
+        AssertTimeline(
+            RunEditorRestartMissingDirectoryRegression(),
+            "Deleting pending editor restart state without an existing handoff directory was not treated as success.");
         try
         {
             var pendingPaths = EditorRestartStore.GetPendingPathsForRegression();
@@ -2172,6 +2175,44 @@ internal static partial class Benchmark
         RunRestartWindowVisibilityRegression();
 
         Console.WriteLine("editor_restart_snapshot_regression=ok");
+    }
+
+    /// <summary>
+    /// A cold start has never created the handoff directory, so deleting pending state must be a
+    /// silent no-op instead of logging a DirectoryNotFoundException for every pending path.
+    /// </summary>
+    private static bool RunEditorRestartMissingDirectoryRegression()
+    {
+        var (statePath, tokenSidecarPath) = EditorRestartStore.GetPendingPathsForRegression();
+        var directory = Path.GetDirectoryName(statePath);
+        if (string.IsNullOrEmpty(directory)) return false;
+
+        EditorRestartStore.DeletePending();
+        if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        if (Directory.Exists(directory)) return false;
+
+        AppLog.Flush();
+        var logPath = AppLog.LogPath;
+        if (string.IsNullOrEmpty(logPath) || !File.Exists(logPath)) return false;
+        var before = new FileInfo(logPath).Length;
+
+        EditorRestartStore.DeletePending();
+        AppLog.Flush();
+
+        var appended = ReadAppendedLogText(logPath, before);
+        return !appended.Contains("Unable to delete the pending editor restart handoff", StringComparison.Ordinal)
+            && !appended.Contains("DirectoryNotFoundException", StringComparison.Ordinal)
+            && !File.Exists(statePath)
+            && !File.Exists(tokenSidecarPath);
+    }
+
+    private static string ReadAppendedLogText(string logPath, long offset)
+    {
+        using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        if (offset > stream.Length) offset = 0;
+        stream.Seek(offset, SeekOrigin.Begin);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 
     private static void RunSingleInstanceRestartWaitRegression()

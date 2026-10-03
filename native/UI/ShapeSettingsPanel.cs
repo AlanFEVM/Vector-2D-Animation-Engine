@@ -14,7 +14,7 @@ internal sealed class ShapeSettingsPanel : UserControl
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(0, 8, 0, 8);
+        Padding = Theme.InspectorSectionPadding;
         MinimumSize = new Size(248, PreferredHeight);
 
         BuildUi();
@@ -22,7 +22,9 @@ internal sealed class ShapeSettingsPanel : UserControl
         _settings.Changed += SettingsChanged;
     }
 
-    public int PreferredHeight => 80;
+    public int PreferredHeight => Theme.InspectorTitleHeight
+        + Theme.InspectorRowHeight
+        + Theme.InspectorSectionPaddingVertical * 2;
 
     internal static bool SupportsShape(ShapeKind shape) => shape is ShapeKind.Polygon or ShapeKind.Star;
 
@@ -60,7 +62,7 @@ internal sealed class ShapeSettingsPanel : UserControl
         {
             Text = "Shape Settings",
             Dock = DockStyle.Top,
-            Height = 28,
+            Height = Theme.InspectorTitleHeight,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -77,9 +79,9 @@ internal sealed class ShapeSettingsPanel : UserControl
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Theme.InspectorFieldLabelColumnWidth));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         Controls.Add(content);
         content.BringToFront();
 
@@ -89,11 +91,11 @@ internal sealed class ShapeSettingsPanel : UserControl
         _vertexCountLabel.Font = Theme.UiFont();
         _vertexCountLabel.TextAlign = ContentAlignment.MiddleLeft;
         _vertexCountLabel.AutoEllipsis = true;
-        _vertexCountLabel.Margin = new Padding(0, 3, 8, 3);
+        _vertexCountLabel.Margin = Theme.InspectorFieldMargin(rightGap: true);
         content.Controls.Add(_vertexCountLabel, 0, 0);
 
         _vertexCount.Dock = DockStyle.Fill;
-        _vertexCount.Margin = new Padding(0, 3, 0, 3);
+        _vertexCount.Margin = Theme.InspectorFieldMargin(rightGap: false);
         _vertexCount.DecimalPlaces = 0;
         _vertexCount.Increment = 1m;
         _vertexCount.AccessibleName = "Polygon sides or star points";

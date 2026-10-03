@@ -68,6 +68,7 @@ internal sealed class VectorSceneSnapshot
     public Dictionary<int, MixingBrushRegionData> MixingStrokeLocalRegions { get; init; } = new();
     public Dictionary<int, string> ImportedSvgSources { get; init; } = new();
     public Dictionary<int, string> ImportedSvgNames { get; init; } = new();
+    public Dictionary<int, BitmapObjectData> BitmapObjects { get; init; } = new();
     public Dictionary<int, TextObjectData> TextObjects { get; init; } = new();
     public Dictionary<int, DistortWarp[]> ObjectDistortions { get; init; } = new();
 
@@ -269,6 +270,11 @@ internal sealed class VectorSceneSnapshot
 
         bytes += 72L * ImportedSvgNames.Count;
         foreach (var name in ImportedSvgNames.Values) bytes += StringBytes(name);
+
+        // Each entry is a small payload: the asset id string plus two floats and the
+        // dictionary overhead. Pixel data lives in the project image library, not here.
+        bytes += 64L * BitmapObjects.Count;
+        foreach (var bitmap in BitmapObjects.Values) bytes += StringBytes(bitmap.ImageAssetId);
 
         bytes += 72L * ObjectDistortions.Count;
         foreach (var distortions in ObjectDistortions.Values)

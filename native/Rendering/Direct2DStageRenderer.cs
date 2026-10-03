@@ -36,6 +36,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private const int MaxPathGradientBrushCount = 4_096;
     private const int MaxImportedSvgBitmapCacheEntries = 1024;
     private const long MaxImportedSvgBitmapCacheBytes = 512L * 1024 * 1024;
+    private const int MaxBitmapObjectCacheEntries = 512;
+    private const long MaxBitmapObjectCacheBytes = 512L * 1024 * 1024;
     private const float FillEdgeCoverageWidthPixels = 0.8f;
     private readonly Dictionary<int, ID2D1SolidColorBrush> _brushCache = new(512);
     private ID2D1SolidColorBrush? _mixingBrush;
@@ -54,6 +56,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<VectorScene, int> _freehandSceneObjectCounts = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LodBitmapKey, CachedLodBitmap> _lodBitmapCache = new();
     private readonly Dictionary<ImportedSvgRasterKey, CachedImportedSvgBitmap> _importedSvgBitmapCache = new();
+    private readonly Dictionary<BitmapImageRasterKey, CachedImportedSvgBitmap> _bitmapObjectCache = new();
+    private long _bitmapObjectCacheBytes;
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private ID2D1Factory1? _factory;
     private ID2D1RenderTarget? _target;
@@ -754,6 +758,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                     DrawReference3DSelection(stage);
                     DrawTransformOverlay(stage);
                     DrawDistortOverlay(stage);
+                    DrawMotionTrack(stage);
                     DrawSnapPointOverlay(stage);
                     DrawMarquee(stage);
                     DrawShotFramingGizmo(stage);
@@ -885,6 +890,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             {
                 if (!stage.MarqueeLodPreviewActive) DrawActiveMaskOutline(stage);
                 DrawSelection(stage);
+                DrawMotionTrack(stage);
                 DrawFillEdgeBezierOverlay(stage);
                 DrawSnapPointOverlay(stage);
                 DrawPenAnchorGuides(stage);
@@ -1917,7 +1923,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             return;
         }
 
-        if (shape == ShapeKind.ImportedSvg)
+        if (shape is ShapeKind.ImportedSvg or ShapeKind.Bitmap)
         {
             var screen = stage.WorldToScreen(scene.X[objectIndex], scene.Y[objectIndex]);
             var width = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Width[objectIndex]));
@@ -2106,6 +2112,17 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             return;
         }
 
+        if (shape == ShapeKind.Bitmap)
+        {
+            // A placed bitmap draws its own pixels on the fill pass only; the object's
+            // fill and stroke colours are intentionally unused.
+            if (pass == SceneRenderPass.Fill)
+            {
+                DrawBitmapObject(stage, scene, i, screen, w, h);
+            }
+            return;
+        }
+
         if (shape == ShapeKind.MixingStroke)
         {
             if (pass == SceneRenderPass.Fill) DrawMixingStroke(stage, i);
@@ -2236,6 +2253,88 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
         _importedSvgBitmapCache[raster.Key] = new CachedImportedSvgBitmap(pixelBytes, bitmap);
         _importedSvgBitmapCacheBytes += pixelBytes;
+        return bitmap;
+    }
+
+    /// <summary>
+    /// Draws one placed bitmap object. The managed asset path and the decode itself are
+    /// resolved by <see cref="StageControl"/>, so this renderer only uploads pixels and
+    /// blits them; a missing or unreadable asset draws nothing rather than substituting a
+    /// placeholder, matching how a missing SVG source behaves.
+    /// </summary>
+    private void DrawBitmapObject(
+        StageControl stage,
+        VectorScene scene,
+        int objectIndex,
+        GdiPointF screenCenter,
+        float screenWidth,
+        float screenHeight)
+    {
+        if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
+        if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+
+        var bitmap = BitmapObjectBitmap(raster);
+        var destination = Rect(
+            screenCenter.X - screenWidth * 0.5f,
+            screenCenter.Y - screenHeight * 0.5f,
+            screenWidth,
+            screenHeight);
+        var sourceRectangle = Rect(0, 0, raster.PixelWidth, raster.PixelHeight);
+        var opacity = GdiColor.FromArgb(scene.Argb[objectIndex]).A / 255f;
+        var interpolation = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
+            ? BitmapInterpolationMode.NearestNeighbor
+            : BitmapInterpolationMode.Linear;
+        var old = _target!.Transform;
+        try
+        {
+            _target.Transform = Matrix3x2.CreateRotation(
+                scene.Angle[objectIndex],
+                new Vector2(screenCenter.X, screenCenter.Y));
+            _target.DrawBitmap(
+                bitmap,
+                destination,
+                Math.Clamp(opacity, 0f, 1f),
+                interpolation,
+                sourceRectangle);
+        }
+        finally
+        {
+            _target.Transform = old;
+        }
+    }
+
+    private ID2D1Bitmap BitmapObjectBitmap(BitmapImageRaster raster)
+    {
+        if (_target is null) throw new InvalidOperationException("Direct2D render target is not ready.");
+        if (_bitmapObjectCache.TryGetValue(raster.Key, out var cached)) return cached.Bitmap;
+        var pixelBytes = raster.Pixels.LongLength;
+        if (_bitmapObjectCache.Count >= MaxBitmapObjectCacheEntries
+            || _bitmapObjectCacheBytes > MaxBitmapObjectCacheBytes - pixelBytes)
+        {
+            ClearBitmapObjectCache();
+        }
+
+        var pixelsHandle = GCHandle.Alloc(raster.Pixels, GCHandleType.Pinned);
+        ID2D1Bitmap bitmap;
+        try
+        {
+            var properties = new BitmapProperties(
+                new PixelFormat(Format.B8G8R8A8_UNorm, DCommonAlphaMode.Premultiplied),
+                96,
+                96);
+            bitmap = _target.CreateBitmap(
+                new SizeI(raster.PixelWidth, raster.PixelHeight),
+                pixelsHandle.AddrOfPinnedObject(),
+                (uint)raster.Stride,
+                properties);
+        }
+        finally
+        {
+            pixelsHandle.Free();
+        }
+
+        _bitmapObjectCache[raster.Key] = new CachedImportedSvgBitmap(pixelBytes, bitmap);
+        _bitmapObjectCacheBytes += pixelBytes;
         return bitmap;
     }
 

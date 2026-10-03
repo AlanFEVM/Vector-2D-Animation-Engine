@@ -42,7 +42,18 @@ internal sealed class DrawingObjectAppearanceChangedEventArgs(
 
 internal sealed class DrawingObjectInstancePanel : Panel
 {
-    private const int PanelHeight = 332;
+    // Absolute field geometry. Rows reuse the shared inspector pitch so this panel keeps the
+    // same vertical rhythm as the docked settings panels above and below it.
+    private const int PanelTitleTop = 6;
+    private const int FieldPitch = Theme.InspectorRowHeight;
+    private const int FieldLabelOffset = 2;
+    private const int FieldRowTop = PanelTitleTop + Theme.InspectorTitleHeight + Theme.GapXs;
+    private const int FieldRowCount = 6;
+    private const int TintRowTop = FieldRowTop + FieldPitch * FieldRowCount;
+    private const int TintRowHeight = 42;
+    private const int RestoreButtonTop = TintRowTop + TintRowHeight + Theme.GapXs;
+    private const int FiltersButtonHeight = 30;
+    private const int PanelHeight = RestoreButtonTop + Theme.ControlHeightCompact + Theme.GapXs;
     private readonly SymbolFiltersPanel _filters = new();
     private readonly Button _showFilters = new() { Text = "Symbol Filters", AccessibleName = "Symbol Filters" };
     private Form? _filtersWindow;
@@ -151,9 +162,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
         {
             Text = "Symbol Instance",
             Left = 12,
-            Top = 8,
+            Top = PanelTitleTop,
             Width = 210,
-            Height = 26,
+            Height = Theme.InspectorTitleHeight,
             ForeColor = Theme.Text,
             BackColor = Color.Transparent,
             Font = Theme.UiFont(10, FontStyle.Bold),
@@ -161,13 +172,13 @@ internal sealed class DrawingObjectInstancePanel : Panel
             AutoEllipsis = true
         });
 
-        AddFieldLabel("Playback FPS", 42);
-        AddFieldLabel("Mode", 76);
-        _holdFrameLabel = AddFieldLabel("Hold Frame", 110);
-        AddFieldLabel("Anchor X", 144);
-        AddFieldLabel("Anchor Y", 178);
-        AddFieldLabel("Alpha", 212);
-        AddFieldLabel("Original Size", 296);
+        AddFieldLabel("Playback FPS", RowLabelTop(0));
+        AddFieldLabel("Mode", RowLabelTop(1));
+        _holdFrameLabel = AddFieldLabel("Hold Frame", RowLabelTop(2));
+        AddFieldLabel("Anchor X", RowLabelTop(3));
+        AddFieldLabel("Anchor Y", RowLabelTop(4));
+        AddFieldLabel("Alpha", RowLabelTop(5));
+        AddFieldLabel("Original Size", RestoreButtonTop + FieldLabelOffset);
 
         _playbackMode.Items.AddRange([
             new PlaybackModeItem(DrawingObjectPlaybackMode.PlayOnce, "Play Once"),
@@ -497,33 +508,42 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
     private void LayoutFields()
     {
-        _showFilters.SetBounds(12, PanelHeight, Math.Max(1, ClientSize.Width - 24), 30);
+        _showFilters.SetBounds(
+            12,
+            PanelHeight,
+            Math.Max(1, ClientSize.Width - 24),
+            FiltersButtonHeight);
         var valueLeft = Math.Max(112, ClientSize.Width - Padding.Right - 136);
         var valueWidth = Math.Max(96, ClientSize.Width - valueLeft - Padding.Right);
-        _fps.SetBounds(valueLeft, 40, valueWidth, Theme.ControlHeightCompact);
-        _playbackMode.SetBounds(valueLeft, 74, valueWidth, Theme.ControlHeightCompact);
-        _holdFrame.SetBounds(valueLeft, 108, valueWidth, Theme.ControlHeightCompact);
-        _anchorX.SetBounds(valueLeft, 142, valueWidth, Theme.ControlHeightCompact);
-        _anchorY.SetBounds(valueLeft, 176, valueWidth, Theme.ControlHeightCompact);
+        _fps.SetBounds(valueLeft, RowTop(0), valueWidth, Theme.ControlHeightCompact);
+        _playbackMode.SetBounds(valueLeft, RowTop(1), valueWidth, Theme.ControlHeightCompact);
+        _holdFrame.SetBounds(valueLeft, RowTop(2), valueWidth, Theme.ControlHeightCompact);
+        _anchorX.SetBounds(valueLeft, RowTop(3), valueWidth, Theme.ControlHeightCompact);
+        _anchorY.SetBounds(valueLeft, RowTop(4), valueWidth, Theme.ControlHeightCompact);
         var alphaValueWidth = 44;
         var alphaGap = 4;
+        var alphaTop = RowTop(5);
         _alpha.SetBounds(
             valueLeft,
-            210,
+            alphaTop,
             Math.Max(72, valueWidth - alphaValueWidth - alphaGap),
             Theme.ControlHeightCompact);
         _alphaValue.SetBounds(
             _alpha.Right + alphaGap,
-            210,
+            alphaTop,
             Math.Max(0, valueLeft + valueWidth - _alpha.Right - alphaGap),
             Theme.ControlHeightCompact);
-        _tint.SetBounds(Padding.Left, 244, Math.Max(96, ClientSize.Width - Padding.Horizontal), 42);
+        _tint.SetBounds(Padding.Left, TintRowTop, Math.Max(96, ClientSize.Width - Padding.Horizontal), TintRowHeight);
         _restoreSize.SetBounds(
             ClientSize.Width - Padding.Right - Theme.ControlHeightCompact,
-            294,
+            RestoreButtonTop,
             Theme.ControlHeightCompact,
             Theme.ControlHeightCompact);
     }
+
+    private static int RowTop(int row) => FieldRowTop + FieldPitch * row;
+
+    private static int RowLabelTop(int row) => RowTop(row) + FieldLabelOffset;
 
     private static Color Opaque(Color color) => Color.FromArgb(255, color.R, color.G, color.B);
 
