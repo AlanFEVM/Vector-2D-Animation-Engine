@@ -118,7 +118,12 @@ internal sealed partial class MainForm : Form
     private const int VaultDrawerMaximumPixelsPerTick = 64;
     private const double VaultDrawerAnimationMilliseconds = 160;
     private const int InspectorPanelExpandedWidth = 372;
-    private const int TimelinePanelDefaultHeight = 192;
+    /// <summary>
+    /// Height the timeline opens at: 108 px of chrome (64 header + 28 ruler + 16 scroll bar) plus six
+    /// layer rows at 21 px. Four rows was too few to read a scene, and the old value was also spent
+    /// as device pixels while the chrome scales with DPI, so high-DPI screens lost rows outright.
+    /// </summary>
+    private const int TimelinePanelDefaultHeight = 234;
     private const double WorkspacePanelAnimationMilliseconds = 180;
 
     private VectorProject _project = VectorProject.CreateEmpty();

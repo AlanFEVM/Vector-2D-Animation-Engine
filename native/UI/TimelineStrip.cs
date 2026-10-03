@@ -164,6 +164,12 @@ internal sealed partial class TimelineStrip : Control
 
     private const int PreferredGutterWidth = 232;
     private const int MinimumGutterWidth = 148;
+
+    /// <summary>Widest the layer-name column may be dragged, so long names stop being cut off.</summary>
+    private const int MaximumGutterWidth = 560;
+
+    /// <summary>Half-width of the grab strip around the gutter's right edge, in logical pixels.</summary>
+    private const int GutterSplitterGrabLogical = 4;
     private const int RulerHeight = 28;
     private const int RowHeight = 21;
     private const int LowRowHeight = 16;
@@ -232,6 +238,13 @@ internal sealed partial class TimelineStrip : Control
     private int _heightResizeStartHeight;
     private int? _pendingHeightResize;
     private bool _heightResizeLayoutDirty;
+
+    /// <summary>Operator-chosen width of the layer-name column; starts at the preferred width.</summary>
+    private int _gutterWidth = PreferredGutterWidth;
+    private bool _draggingGutterSplitter;
+    private int _gutterSplitterStartWidth;
+    private int _gutterSplitterStartX;
+    private bool _hoveringGutterSplitter;
     private readonly System.Windows.Forms.Timer _heightResizeTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _frameSelectionAutoScrollTimer = new() { Interval = 80 };
     private Point _frameSelectionPointer;
@@ -1266,6 +1279,11 @@ internal sealed partial class TimelineStrip : Control
             BeginHeightResize();
             return;
         }
+        if (e.Button == MouseButtons.Left && GutterSplitterBounds(CreateLayout()).Contains(e.Location))
+        {
+            BeginGutterSplitterDrag(e.Location);
+            return;
+        }
         if (e.Button == MouseButtons.Right)
         {
             if (TryShowTabGroupContextMenu(e.Location)) return;
@@ -1390,6 +1408,12 @@ internal sealed partial class TimelineStrip : Control
             return;
         }
 
+        if (_draggingGutterSplitter)
+        {
+            UpdateGutterSplitterDrag(e.X);
+            return;
+        }
+
         var layout = CreateLayout();
         if (_draggingFrameTransform)
         {
@@ -1464,6 +1488,24 @@ internal sealed partial class TimelineStrip : Control
             return;
         }
 
+        if (GutterSplitterBounds(layout).Contains(e.Location))
+        {
+            if (!_hoveringGutterSplitter)
+            {
+                _hoveringGutterSplitter = true;
+                Invalidate(GutterSplitterBounds(layout));
+            }
+
+            Cursor = Cursors.SizeWE;
+            return;
+        }
+
+        if (_hoveringGutterSplitter)
+        {
+            _hoveringGutterSplitter = false;
+            Invalidate(GutterSplitterBounds(layout));
+        }
+
         UpdateHover(e.Location, layout);
         UpdateLayerControlToolTip(e.Location, layout);
     }
@@ -1472,6 +1514,7 @@ internal sealed partial class TimelineStrip : Control
     {
         base.OnMouseLeave(e);
         Cursor = Cursors.Default;
+        _hoveringGutterSplitter = false;
         SetLayerControlToolTip("");
         var previousFrame = _hoverFrame;
         var previousTrack = _hoverTrack;
@@ -1550,6 +1593,16 @@ internal sealed partial class TimelineStrip : Control
             Height = _heightResizeStartHeight;
             _heightResizeLayoutDirty = true;
             EndMouseDrag(canceled: true);
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+        if (e.KeyCode == Keys.Escape && _draggingGutterSplitter)
+        {
+            _gutterWidth = _gutterSplitterStartWidth;
+            EndGutterSplitterDrag();
+            RefreshOnionSkinControls();
+            Invalidate();
             e.Handled = true;
             e.SuppressKeyPress = true;
             return;
@@ -1764,6 +1817,61 @@ internal sealed partial class TimelineStrip : Control
         return new Rectangle(0, 0, Math.Max(0, Width), Math.Min(HeightResizeHandleHeight, Math.Max(0, Height)));
     }
 
+    /// <summary>
+    /// Grab strip around the gutter's right edge, where the layer-name column meets the frames.
+    /// <para>
+    /// It runs from just below the tab-group row down to the scroll bar, so the grab follows the seam
+    /// where the operator actually sees it. The rows it crosses keep their name labels clear of the
+    /// edge, so the strip does not sit on top of the text that in-place renaming needs.
+    /// </para>
+    /// </summary>
+    private Rectangle GutterSplitterBounds(TimelineLayout layout)
+    {
+        var grab = Math.Max(2, ScaleTimelineMetric(GutterSplitterGrabLogical));
+        var top = Math.Clamp(HeaderHeight, 0, Math.Max(0, Height));
+        var bottom = Math.Clamp(Math.Max(top, layout.ScrollTop), top, Math.Max(0, Height));
+        return new Rectangle(Math.Max(0, layout.TrackLeft - grab), top, grab * 2, Math.Max(0, bottom - top));
+    }
+
+    /// <summary>Everything below the pinned toolbar header; only this band changes with the gutter.</summary>
+    private Rectangle BelowHeaderBounds() =>
+        new(0, Math.Min(HeaderHeight, Math.Max(0, Height)), Width, Math.Max(0, Height - HeaderHeight));
+
+    private void BeginGutterSplitterDrag(Point location)
+    {
+        _draggingGutterSplitter = true;
+        _gutterSplitterStartWidth = _gutterWidth;
+        // Drag by delta from the grab point: snapping the width straight to the cursor x would make
+        // the seam jump by up to the grab strip's half-width the instant the drag starts.
+        _gutterSplitterStartX = location.X;
+        Capture = true;
+        Cursor = Cursors.SizeWE;
+        Invalidate(BelowHeaderBounds());
+    }
+
+    private void UpdateGutterSplitterDrag(int x)
+    {
+        var available = Math.Max(MinimumGutterWidth, Width - _frameCellWidth * 5);
+        var next = Math.Clamp(
+            _gutterSplitterStartWidth + (x - _gutterSplitterStartX),
+            MinimumGutterWidth,
+            Math.Min(MaximumGutterWidth, available));
+        if (next == _gutterWidth) return;
+        _gutterWidth = next;
+        // Nothing above the header band depends on the gutter any more, so repainting just that band
+        // keeps the pinned chrome perfectly still while the column slides.
+        Invalidate(BelowHeaderBounds());
+    }
+
+    private void EndGutterSplitterDrag()
+    {
+        if (!_draggingGutterSplitter) return;
+        _draggingGutterSplitter = false;
+        if (Capture) Capture = false;
+        Cursor = Cursors.Default;
+        Invalidate(BelowHeaderBounds());
+    }
+
     private void BeginHeightResize()
     {
         _draggingHeightResize = true;
@@ -1820,6 +1928,12 @@ internal sealed partial class TimelineStrip : Control
     {
         base.OnMouseUp(e);
         if (e.Button != MouseButtons.Left) return;
+        if (_draggingGutterSplitter)
+        {
+            EndGutterSplitterDrag();
+            return;
+        }
+
         if (_draggingFrameSelection) UpdateFrameSelectionFromPointer(e.Location);
         CommitLayerDrag();
         EndMouseDrag(canceled: false);
@@ -4601,7 +4715,10 @@ internal sealed partial class TimelineStrip : Control
 
     private TimelineLayout CreateLayout()
     {
-        var trackLeft = Math.Min(PreferredGutterWidth, Math.Max(MinimumGutterWidth, Width - _frameCellWidth * 5));
+        // The gutter honours the width the operator dragged it to, but never gives up the frames it
+        // would take to show a usable timeline.
+        var availableGutter = Math.Max(MinimumGutterWidth, Width - _frameCellWidth * 5);
+        var trackLeft = Math.Clamp(_gutterWidth, MinimumGutterWidth, Math.Min(MaximumGutterWidth, availableGutter));
         var trackRight = Math.Max(trackLeft + 1, Width - 1);
         var rowTop = HeaderHeight + RulerHeight;
         var scrollTop = Math.Max(rowTop, Height - HorizontalScrollHeight);
@@ -4667,21 +4784,24 @@ internal sealed partial class TimelineStrip : Control
         return new VerticalScrollGeometry(bounds, new Rectangle(bounds.Left, thumbTop, bounds.Width, thumbHeight), maxValue);
     }
 
-    private static Rectangle SoloButtonBounds(TimelineLayout layout)
+    private Rectangle SoloButtonBounds(TimelineLayout layout)
     {
         var all = AllButtonBounds(layout);
         return new Rectangle(Math.Max(4, all.Left - SoloButtonWidth - 5), 5, SoloButtonWidth, 22);
     }
 
-    private static Rectangle AddLayerButtonBounds(TimelineLayout layout)
+    private Rectangle AddLayerButtonBounds(TimelineLayout layout)
     {
         var solo = SoloButtonBounds(layout);
         return new Rectangle(Math.Max(4, solo.Left - AddLayerButtonWidth - 5), 5, AddLayerButtonWidth, 22);
     }
 
-    private static Rectangle AllButtonBounds(TimelineLayout layout)
+    private Rectangle AllButtonBounds(TimelineLayout layout)
     {
-        return new Rectangle(Math.Max(4, layout.TrackLeft - AllButtonWidth - 8), 5, AllButtonWidth, 22);
+        // Anchored to the header's fixed origin rather than the live gutter edge: the title and the
+        // add/solo/all group hang off this rectangle, so tying it to the seam made the whole top-left
+        // group slide whenever the layer-name column was dragged.
+        return new Rectangle(Math.Max(4, HeaderControlsLeft() - AllButtonWidth - 8), 5, AllButtonWidth, 22);
     }
 
     private HeaderCommand HeaderCommandAt(Point point, TimelineLayout layout)
@@ -4861,7 +4981,7 @@ internal sealed partial class TimelineStrip : Control
     {
         var controlsWidth = OnionSkinControlsWidth();
         var right = rightControlsBounds.IsEmpty ? layout.TrackRight : rightControlsBounds.Left - ScaleTimelineMetric(8);
-        if (!IsOnionSkinControlsAvailable() || right - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112))
+        if (!IsOnionSkinControlsAvailable() || right - HeaderControlsLeft() < controlsWidth + ScaleTimelineMetric(112))
         {
             return Rectangle.Empty;
         }
@@ -4873,7 +4993,7 @@ internal sealed partial class TimelineStrip : Control
         var budget = ScaleTimelineMetric(200) + MotionTrackClusterFootprint();
         var left = Math.Min(
             right - controlsWidth - ScaleTimelineMetric(8),
-            layout.TrackLeft + budget);
+            HeaderControlsLeft() + budget);
 
         // Never let the group drift back over the motion-track toggle. If the frame controls leave
         // room for neither, the onion group yields: it has other controls beside it, while the
@@ -4895,11 +5015,18 @@ internal sealed partial class TimelineStrip : Control
     /// Leftmost x the motion-track toggle may occupy: immediately right of Auto Key, which is pinned
     /// to the track's left edge.
     /// </summary>
+    /// <summary>
+    /// Left edge the header control row is measured from. It is deliberately independent of the live
+    /// gutter width: dragging the layer-name column below must not shift — or drop — the toggle row
+    /// above the frames, in either direction.
+    /// </summary>
+    private int HeaderControlsLeft() => PreferredGutterWidth + ScaleTimelineMetric(8);
+
     private int MotionTrackSlotLeft(TimelineLayout layout)
     {
         var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
         return autoKeyframeBounds.IsEmpty
-            ? layout.TrackLeft + ScaleTimelineMetric(8)
+            ? HeaderControlsLeft()
             : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
     }
 
@@ -4916,9 +5043,9 @@ internal sealed partial class TimelineStrip : Control
     {
         if (!IsAutoKeyframeAvailable()) return Rectangle.Empty;
         var controlsWidth = AutoKeyframeToggleWidth();
-        var idealLeft = layout.TrackLeft + ScaleTimelineMetric(8);
+        var idealLeft = HeaderControlsLeft();
         var maximumLeft = Math.Max(
-            layout.TrackLeft,
+            HeaderControlsLeft(),
             layout.TrackRight - controlsWidth - ScaleTimelineMetric(2));
         return new Rectangle(
             Math.Min(idealLeft, maximumLeft),

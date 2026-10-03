@@ -414,15 +414,15 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// Ctrl+Shift+drag on blank Stage space box-selects anchors. Kept separate from scene marquee
-    /// selection so the two never write to the same selection state.
+    /// Dragging on blank Stage space box-selects anchors: a plain drag replaces the selection and
+    /// Shift adds to it (Ctrl still toggles single anchors on a click). Kept separate from the scene
+    /// marquee so the two never write to the same selection state.
     /// </summary>
     private bool TryBeginMotionTrackMarquee(Point location)
     {
         if (!_motionTrackEnabled || !_stage.MotionTrackVisible) return false;
-        // Box selection belongs to the selection tool; drawing tools keep their own marquee rules.
-        if (_tool is not ToolMode.Select) return false;
-        if (!IsControlPressed() || !IsShiftPressed()) return false;
+        // The two tools that edit anchors get the box; drawing tools keep their own marquee rules.
+        if (_tool is not (ToolMode.Select or ToolMode.Transform)) return false;
         _motionTrackMarqueeActive = true;
         _motionTrackMarqueeStart = location;
         _stage.Capture = true;

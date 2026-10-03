@@ -71,9 +71,11 @@ internal sealed partial class MainForm
             232,
             VaultDrawerExpandedWidth);
         var minimumTimelineHeight = ScaleResponsive(118, scale);
+        // Six rows need a little more than a fifth of the window, so the share was raised or the
+        // default height would be clipped straight back to about four rows on a tall window.
         var responsiveTimelineCap = Math.Max(
             minimumTimelineHeight,
-            (int)Math.Round(clientSize.Height * 0.22));
+            (int)Math.Round(clientSize.Height * 0.28));
         var stagePreservingTimelineCap = Math.Max(
             minimumTimelineHeight,
             clientSize.Height - ScaleResponsive(320, scale));

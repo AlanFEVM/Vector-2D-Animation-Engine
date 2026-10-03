@@ -292,7 +292,6 @@ internal sealed partial class StageControl : Control
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         try
         {
-            DrawMotionTrackTransformBox(g);
             DrawMotionTrackSegments(g, anchors);
             DrawMotionTrackAnchors(g, anchors);
             DrawMotionTrackHoverLabel(g, anchors);

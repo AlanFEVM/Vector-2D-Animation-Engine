@@ -36,7 +36,6 @@ internal sealed partial class Direct2DStageRenderer
 
         var dpiScale = stage.SpatialGizmoDpiScale;
         var dashed = PreviewBoundsStrokeStyle();
-        DrawMotionTrackTransformBox(stage, dpiScale, dashed);
         DrawMotionTrackSegments(anchors, dpiScale, dashed);
         DrawMotionTrackAnchors(stage, anchors, dpiScale);
     }

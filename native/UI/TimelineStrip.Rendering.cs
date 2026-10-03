@@ -25,10 +25,13 @@ internal sealed partial class TimelineStrip : Control
         }
         graphics.DrawLine(borderPen, 0, ToolbarHeaderHeight - 1, Width, ToolbarHeaderHeight - 1);
         graphics.DrawLine(borderPen, 0, HeaderHeight - 1, Width, HeaderHeight - 1);
-        graphics.DrawLine(borderPen, layout.TrackLeft - 1, 0, layout.TrackLeft - 1, layout.ScrollTop);
+        // The seam starts below the tab-group row: the toolbar header above it is pinned chrome, so a
+        // divider that slides with the gutter would read as the header itself moving.
+        graphics.DrawLine(borderPen, layout.TrackLeft - 1, HeaderHeight, layout.TrackLeft - 1, layout.ScrollTop);
         graphics.DrawLine(softPen, 0, layout.RowTop - 1, Width, layout.RowTop - 1);
         graphics.DrawLine(borderPen, 0, Height - 1, Width, Height - 1);
         DrawHeightResizeHandle(graphics);
+        DrawGutterSplitterHandle(graphics, layout);
 
         var allBounds = AllButtonBounds(layout);
         var soloBounds = SoloButtonBounds(layout);
@@ -157,6 +160,29 @@ internal sealed partial class TimelineStrip : Control
         {
             graphics.DrawLine(line, x, y - 2, x, y + 2);
         }
+    }
+
+    /// <summary>
+    /// Grip on the gutter's right edge. It is always visible so the column reads as resizable, and it
+    /// brightens on hover and while dragging to confirm the grab.
+    /// </summary>
+    private void DrawGutterSplitterHandle(Graphics graphics, TimelineLayout layout)
+    {
+        var bounds = GutterSplitterBounds(layout);
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+
+        var active = _draggingGutterSplitter || _hoveringGutterSplitter;
+        var color = active ? Theme.Accent : Theme.ReadableUiColor(Theme.Panel, Theme.Muted);
+        var centerX = layout.TrackLeft - 1f;
+
+        using var line = new Pen(color, active ? 1.8f : 1.2f);
+        graphics.DrawLine(line, centerX, bounds.Top, centerX, bounds.Bottom);
+
+        // Three ribs in the layer header row advertise the seam without sitting on a data row.
+        var middle = bounds.Top + RulerHeight * 0.5f;
+        graphics.DrawLine(line, centerX - 2.5f, middle - 4f, centerX + 2.5f, middle - 4f);
+        graphics.DrawLine(line, centerX - 2.5f, middle, centerX + 2.5f, middle);
+        graphics.DrawLine(line, centerX - 2.5f, middle + 4f, centerX + 2.5f, middle + 4f);
     }
 
     private void DrawRuler(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
