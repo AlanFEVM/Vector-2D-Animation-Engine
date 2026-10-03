@@ -5,8 +5,9 @@ namespace VectorAnimationEngine;
 /// <summary>
 /// Samples the motion track of one symbol instance over the onion-skin pointer range.
 /// <para>
-/// This is pure engine-side computation: it reads the symbol anchor, the instance's evaluated
-/// per-frame state, and the owning layer's exposure/tween metadata, then returns an immutable
+/// This is pure engine-side computation: it reads the free-transform anchor (the element centre by
+/// default, or a caller-supplied symbol-local point), the instance's evaluated per-frame state, and
+/// the owning layer's exposure/tween metadata, then returns an immutable
 /// <see cref="DrawingObjectMotionTrack"/>. It performs no UI work, allocates only the anchor
 /// array it returns, and never throws on malformed input, because the Stage calls it during
 /// every onion-skin repaint.
@@ -18,12 +19,16 @@ internal static class DrawingObjectMotionTrackBuilder
     /// Samples the motion track of <paramref name="instance"/> for the frames
     /// <c>[centerFrame - previousFrames, centerFrame + nextFrames]</c>.
     /// </summary>
-    /// <param name="symbol">Tracked symbol definition. Supplies <c>Anchor</c> and is the pivot source.</param>
+    /// <param name="symbol">Tracked symbol definition. Supplies <c>Anchor</c> and its geometry centre.</param>
     /// <param name="instance">Tracked instance. Supplies <c>EvaluateState</c> and <c>StateKeyframes</c>.</param>
     /// <param name="track">Timeline track of the layer holding the instance. Supplies <c>EvaluateExposure</c>.</param>
     /// <param name="centerFrame">Onion-skin centre (the current playhead frame).</param>
     /// <param name="previousFrames">Frames sampled to the left; 0 disables that side.</param>
     /// <param name="nextFrames">Frames sampled to the right; 0 disables that side.</param>
+    /// <param name="localAnchor">
+    /// Optional symbol-local point to trace, used when the operator moved the free-transform anchor.
+    /// Null traces the element's own geometry centre.
+    /// </param>
     /// <returns>
     /// A track whose anchors are ordered by ascending frame, or <see cref="DrawingObjectMotionTrack.Empty"/>
     /// when an argument is missing or no frame in the range is inside the track.
@@ -34,14 +39,23 @@ internal static class DrawingObjectMotionTrackBuilder
         AnimationTimelineTrack track,
         int centerFrame,
         int previousFrames,
-        int nextFrames)
+        int nextFrames,
+        Vector2? localAnchor = null)
     {
         if (symbol is null || instance is null || track is null) return DrawingObjectMotionTrack.Empty;
 
         // A negative side count is meaningless; clamp rather than letting it widen the range.
         previousFrames = Math.Max(0, previousFrames);
         nextFrames = Math.Max(0, nextFrames);
-        return BuildCore(symbol, instance, track, centerFrame, centerFrame - previousFrames, centerFrame + nextFrames);
+        return BuildCore(
+            symbol,
+            instance,
+            track,
+            centerFrame,
+            centerFrame - previousFrames,
+            centerFrame + nextFrames,
+            null,
+            localAnchor);
     }
 
     /// <summary>
@@ -54,7 +68,8 @@ internal static class DrawingObjectMotionTrackBuilder
         DrawingObjectInstanceDefinition instance,
         AnimationTimelineTrack track,
         int centerFrame,
-        IEnumerable<int> frames)
+        IEnumerable<int> frames,
+        Vector2? localAnchor = null)
     {
         if (symbol is null || instance is null || track is null || frames is null)
         {
@@ -67,7 +82,7 @@ internal static class DrawingObjectMotionTrackBuilder
         Array.Sort(ordered);
         if (ordered.Length == 0) return DrawingObjectMotionTrack.Empty;
 
-        return BuildCore(symbol, instance, track, centerFrame, ordered[0], ordered[^1], ordered);
+        return BuildCore(symbol, instance, track, centerFrame, ordered[0], ordered[^1], ordered, localAnchor);
     }
 
     private static DrawingObjectMotionTrack BuildCore(
@@ -77,9 +92,14 @@ internal static class DrawingObjectMotionTrackBuilder
         int centerFrame,
         int firstFrame,
         int lastFrame,
-        int[]? explicitFrames = null)
+        int[]? explicitFrames = null,
+        Vector2? localAnchor = null)
     {
         var duration = track.Duration;
+        // The trail traces the free-transform anchor. Callers may hand us the anchor the operator moved
+        // on canvas (in symbol-local space); otherwise it defaults to the element's own geometry centre,
+        // which is where the free-transform tool draws its anchor when it has not been moved.
+        var anchorPoint = localAnchor ?? SymbolLocalCenter(symbol);
         var anchors = new List<MotionTrackAnchor>(explicitFrames?.Length ?? Math.Max(0, lastFrame - firstFrame + 1));
 
         // Frames outside the track are skipped, so an onion-skin pointer range that runs past either
@@ -97,7 +117,7 @@ internal static class DrawingObjectMotionTrackBuilder
         {
             for (var frame = from; frame <= to; frame++)
             {
-                AppendAnchor(anchors, symbol, instance, track, stateKeyframes, ref stateKeyframeCursor, frame);
+                AppendAnchor(anchors, symbol, anchorPoint, instance, track, stateKeyframes, ref stateKeyframeCursor, frame);
             }
         }
         else
@@ -105,7 +125,7 @@ internal static class DrawingObjectMotionTrackBuilder
             foreach (var frame in explicitFrames)
             {
                 if (frame < from || frame > to) continue;
-                AppendAnchor(anchors, symbol, instance, track, stateKeyframes, ref stateKeyframeCursor, frame);
+                AppendAnchor(anchors, symbol, anchorPoint, instance, track, stateKeyframes, ref stateKeyframeCursor, frame);
             }
         }
 
@@ -123,6 +143,7 @@ internal static class DrawingObjectMotionTrackBuilder
     private static void AppendAnchor(
         List<MotionTrackAnchor> anchors,
         DrawingObjectDefinition symbol,
+        Vector2 localAnchor,
         DrawingObjectInstanceDefinition instance,
         AnimationTimelineTrack track,
         IReadOnlyList<InstanceStateKeyframe> stateKeyframes,
@@ -133,9 +154,9 @@ internal static class DrawingObjectMotionTrackBuilder
         var onTweenSegment = IsInsideTweenSpan(track, frame);
 
         var state = instance.EvaluateState(frame);
-        var worldPosition = Vector2.Transform(
-            new Vector2(symbol.Anchor.X, symbol.Anchor.Y),
-            InstanceMatrix(symbol, state));
+        // Trace the free-transform anchor instead of the symbol's 00 origin, so the motion trail
+        // follows the anchor the operator sees on canvas (element centre by default).
+        var worldPosition = Vector2.Transform(localAnchor, InstanceMatrix(symbol, state));
 
         // A non-finite transform (degenerate scale, hand-edited project data) would poison the whole
         // polyline, so drop that frame instead of propagating NaN into the overlay.
@@ -210,6 +231,37 @@ internal static class DrawingObjectMotionTrackBuilder
         if (cursor > 0 && stateKeyframes[cursor - 1].Frame >= frame) cursor = 0;
         while (cursor < stateKeyframes.Count && stateKeyframes[cursor].Frame < frame) cursor++;
         return cursor < stateKeyframes.Count && stateKeyframes[cursor].Frame == frame;
+    }
+
+    /// <summary>
+    /// The symbol-local point the trail traces by default: the centre of the symbol's own geometry.
+    /// This is where the free-transform tool parks its anchor before the operator moves it, so the
+    /// trail lines up with that handle. Symbols with no geometry fall back to their registration
+    /// anchor, which keeps hand-authored/empty symbols behaving exactly as before.
+    /// </summary>
+    private static Vector2 SymbolLocalCenter(DrawingObjectDefinition symbol)
+    {
+        var scene = symbol.Scene;
+        if (scene is null || scene.ObjectCount <= 0) return new Vector2(symbol.Anchor.X, symbol.Anchor.Y);
+
+        var left = float.MaxValue;
+        var top = float.MaxValue;
+        var right = float.MinValue;
+        var bottom = float.MinValue;
+        for (var index = 0; index < scene.ObjectCount; index++)
+        {
+            // Object X/Y is the shape centre, so half the extent reaches each edge.
+            var halfWidth = scene.Width[index] * 0.5f;
+            var halfHeight = scene.Height[index] * 0.5f;
+            left = MathF.Min(left, scene.X[index] - halfWidth);
+            top = MathF.Min(top, scene.Y[index] - halfHeight);
+            right = MathF.Max(right, scene.X[index] + halfWidth);
+            bottom = MathF.Max(bottom, scene.Y[index] + halfHeight);
+        }
+
+        return right >= left && bottom >= top
+            ? new Vector2((left + right) * 0.5f, (top + bottom) * 0.5f)
+            : new Vector2(symbol.Anchor.X, symbol.Anchor.Y);
     }
 
     /// <summary>

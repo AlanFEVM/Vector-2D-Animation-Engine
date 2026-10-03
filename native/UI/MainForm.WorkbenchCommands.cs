@@ -1110,6 +1110,7 @@ internal sealed partial class MainForm : Form
         _timeline.AllLayerOutlinesRequested += (_, _) => ToggleAllTimelineLayerOutlines();
         _timeline.OnionSkinToggleRequested += (_, _) => ToggleTimelineOnionSkin();
         _timeline.MotionTrackToggleRequested += (_, _) => ToggleTimelineMotionTrack();
+        _timeline.MotionTrackRangeChanged += (_, e) => SetMotionTrackRange(e.FirstFrame, e.LastFrame);
         _timeline.OnionSkinRangeChanged += (_, e) => SetTimelineOnionSkinRange(e.PreviousFrames, e.NextFrames);
         _timeline.OnionSkinRangeInteractionStarted += (_, _) => BeginTimelineOnionSkinRangeEdit();
         _timeline.OnionSkinRangeInteractionCompleted += (_, _) => CompleteTimelineOnionSkinRangeEdit();

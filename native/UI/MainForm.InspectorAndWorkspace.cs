@@ -1750,7 +1750,7 @@ internal sealed partial class MainForm : Form
     private static ToolStripStatusLabel StatusLabel(string text) => new() { Text = text, ForeColor = Theme.Muted, Spring = false, Margin = new Padding(0, 0, 10, 0) };
     private static ToolStripStatusLabel StatusSeparator() => new() { Text = "|", ForeColor = Theme.Border, Margin = new Padding(0, 0, 10, 0) };
     private static bool IsModuleHotReloadEnabled() => Environment.GetEnvironmentVariable("V2D_DEV_HOT_RELOAD") == "1";
-    private static Label InspectorLabel(string text) => new() { Text = text, Height = 26, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private static Label InspectorLabel(string text) => new() { Text = text, Height = 26, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = false };
     private static Label FieldLabel(string text) => new()
     {
         Text = text,
@@ -1759,7 +1759,7 @@ internal sealed partial class MainForm : Form
         BackColor = Theme.Panel,
         Font = Theme.UiFont(),
         TextAlign = ContentAlignment.MiddleLeft,
-        AutoEllipsis = true,
+        AutoEllipsis = false,
         Margin = new Padding(0, 3, 8, 3)
     };
     private static float Distance(PointF a, PointF b) => MathF.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));

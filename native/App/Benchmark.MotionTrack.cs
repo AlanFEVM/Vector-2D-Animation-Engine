@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace VectorAnimationEngine;
 
 /// <summary>
@@ -343,8 +345,9 @@ internal static partial class Benchmark
             "Motion track world-position setup could not create its nested instance.");
         var track = EnsureMotionTrackDuration(host, 10);
 
-        // The anchor is shifted to the origin and then translated by the instance position, so an
-        // unmoved instance puts the anchor exactly at its own placement.
+        // The trail traces the free-transform anchor, defaulting to the element centre. These test
+        // symbols carry no geometry, so the centre falls back to the registration anchor and the world
+        // position of an unmoved instance therefore resolves to its own placement.
         var placed = DrawingObjectMotionTrackBuilder.Build(symbol, instance!, track, 0, 0, 2);
         AssertTimeline(
             placed.FindAnchor(0) is { } frameZero && PointsNear(frameZero.WorldPosition, new PointF(200, 120)),
@@ -365,8 +368,8 @@ internal static partial class Benchmark
             && moved.FindAnchor(2) is { } earlier && PointsNear(earlier.WorldPosition, new PointF(200, 120)),
             "Motion track anchor did not hold the keyed placement across adjacent frames.");
 
-        // Rotation is part of the reused planar transform: a 90 degree turn about the anchor must
-        // leave the anchor itself where the instance was placed.
+        // Rotation and scale fold into the planar transform, but the registration-anchor fallback still
+        // sits at the instance placement no matter how the symbol is turned or scaled.
         var rotatedSymbol = project.AddDrawingObject("Motion track rotation source");
         rotatedSymbol.SetAnchor(new PointF(0, 0));
         rotatedSymbol.Scene.CreateEmpty(1, 6);
@@ -395,6 +398,54 @@ internal static partial class Benchmark
             && PointsNear(rotatedAnchor.WorldPosition, new PointF(50, 60)),
             $"Motion track anchor drifted under rotation and scale: "
             + $"actual={DescribeMotionTrackAnchor(rotated.FindAnchor(0))}.");
+
+        // A symbol with real geometry traces its element centre by default, which is exactly where the
+        // free-transform tool parks its anchor when it has not been moved.
+        var centreSymbol = project.AddDrawingObject("Motion track centre source");
+        centreSymbol.SetAnchor(new PointF(0, 0));
+        centreSymbol.Scene.CreateEmpty(1, 4);
+        centreSymbol.Scene.AddObject(
+            0,
+            new PointF(70, -30),
+            new SizeF(120, 80),
+            0,
+            0,
+            Color.Teal,
+            12,
+            ShapeKind.Rectangle);
+        var centreHost = project.AddDrawingObject("Motion track centre host");
+        centreHost.Scene.CreateEmpty(1, 4);
+        AssertTimeline(
+            project.TryAddDrawingObjectInstance(
+                centreHost.Id,
+                centreSymbol.Id,
+                new PointF(10, 20),
+                out var centreInstance)
+            && centreInstance is not null,
+            "Motion track centre setup could not create its nested instance.");
+        var centred = DrawingObjectMotionTrackBuilder.Build(
+            centreSymbol,
+            centreInstance!,
+            ResolveMotionTrackLayerTrack(centreHost),
+            0,
+            0,
+            1);
+        AssertTimeline(
+            centred.FindAnchor(0) is { } centredAnchor
+            && PointsNear(centredAnchor.WorldPosition, new PointF(80, -10)),
+            $"Motion track anchor did not resolve the element centre: "
+            + $"actual={DescribeMotionTrackAnchor(centred.FindAnchor(0))}.");
+
+        // The defining behavior: the trail traces the free-transform anchor, so an explicit anchor
+        // (the operator's dragged handle, in symbol-local space) offsets every sampled point by that
+        // same local offset, independent of where the element centre sits.
+        var explicitAnchor = new Vector2(symbol.Anchor.X + 40, symbol.Anchor.Y + 25);
+        var anchored = DrawingObjectMotionTrackBuilder.Build(symbol, instance!, track, 0, 0, 1, explicitAnchor);
+        AssertTimeline(
+            anchored.FindAnchor(0) is { } anchoredFrame
+            && PointsNear(anchoredFrame.WorldPosition, new PointF(240, 145)),
+            $"Motion track anchor did not follow the explicit free-transform anchor: "
+            + $"actual={DescribeMotionTrackAnchor(anchored.FindAnchor(0))}.");
     }
 
     /// <summary>Coverage for range clipping, non-finite rejection, and empty inputs.</summary>

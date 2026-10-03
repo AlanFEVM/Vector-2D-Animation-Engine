@@ -324,7 +324,7 @@ internal sealed class DrawSettingsPanel : UserControl
             BackColor = Theme.Panel,
             Font = Theme.UiFont(),
             TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true,
+            AutoEllipsis = false,
             Margin = Theme.InspectorFieldMargin(rightGap: true)
         };
         parent.Controls.Add(labelControl, 0, row);

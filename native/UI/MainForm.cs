@@ -117,7 +117,7 @@ internal sealed partial class MainForm : Form
     private const int VaultDrawerExpandedWidth = 306;
     private const int VaultDrawerMaximumPixelsPerTick = 64;
     private const double VaultDrawerAnimationMilliseconds = 160;
-    private const int InspectorPanelExpandedWidth = 324;
+    private const int InspectorPanelExpandedWidth = 372;
     private const int TimelinePanelDefaultHeight = 192;
     private const double WorkspacePanelAnimationMilliseconds = 180;
 
@@ -205,6 +205,7 @@ internal sealed partial class MainForm : Form
     private WindowChromeButton? _maximizeButton;
     private WindowChromeButton? _closeWindowButton;
     private Label? _projectTitleLabel;
+    private TextBox? _projectTitleEditor;
     private SvgIconButton? _propertiesPanelButton;
     private SvgIconButton? _timelinePanelButton;
     private readonly DashDock _dashDock = new();
@@ -1055,8 +1056,47 @@ internal sealed partial class MainForm : Form
         top.Controls.Add(mark);
         _projectTitleLabel = Theme.Label("Untitled Project", 94, 13, 180, Theme.Text, Theme.UiFont(10, FontStyle.Bold));
         _projectTitleLabel.AutoEllipsis = true;
-        RegisterWindowDrag(_projectTitleLabel);
+        _projectTitleLabel.Cursor = Cursors.Hand;
+        _projectTitleLabel.Click += (_, _) => BeginProjectTitleEdit();
+        _projectTitleLabel.MouseEnter += (_, _) => _toolTip.ShowFor(_projectTitleLabel, "Click to rename project");
+        _projectTitleLabel.MouseLeave += (_, _) => _toolTip.HideTip();
         top.Controls.Add(_projectTitleLabel);
+
+        _projectTitleEditor = new TextBox
+        {
+            Left = 94,
+            Top = 13,
+            Width = 180,
+            Height = 23,
+            Visible = false,
+            BorderStyle = BorderStyle.None,
+            BackColor = Theme.Top,
+            ForeColor = Theme.Text,
+            Font = Theme.UiFont(10, FontStyle.Bold)
+        };
+        _projectTitleEditor.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                CommitProjectTitleEdit();
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                e.SuppressKeyPress = true;
+                CancelProjectTitleEdit();
+            }
+        };
+        _projectTitleEditor.Leave += (_, _) => CommitProjectTitleEdit();
+        top.Controls.Add(_projectTitleEditor);
+        top.Paint += (_, e) =>
+        {
+            if (_projectTitleEditor.Visible)
+            {
+                using var pen = new Pen(Theme.Accent);
+                e.Graphics.DrawLine(pen, _projectTitleEditor.Left, _projectTitleEditor.Bottom, _projectTitleEditor.Right, _projectTitleEditor.Bottom);
+            }
+        };
         _propertiesPanelButton = new SvgIconButton(SvgIconKind.PropertiesPanel)
         {
             Left = 282,
@@ -1446,6 +1486,8 @@ internal sealed partial class MainForm : Form
         saveProject.Click += (_, _) => SaveProject();
         var saveProjectAs = new ToolStripMenuItem("Save Project As...") { ShortcutKeys = Keys.Control | Keys.Shift | Keys.S };
         saveProjectAs.Click += (_, _) => SaveProjectAs();
+        var renameProject = new ToolStripMenuItem("Rename Project...");
+        renameProject.Click += (_, _) => BeginProjectTitleEdit();
         var settings = new ToolStripMenuItem("Settings...");
         settings.Click += (_, _) => ShowSettings();
         var releaseNotes = new ToolStripMenuItem("Release Notes...");
@@ -1459,6 +1501,7 @@ internal sealed partial class MainForm : Form
             new ToolStripSeparator(),
             saveProject,
             saveProjectAs,
+            renameProject,
             new ToolStripSeparator(),
             settings,
             new ToolStripSeparator(),
@@ -2862,6 +2905,43 @@ internal sealed partial class MainForm : Form
 
         _libraryVaultPanel.SelectAssetFolder(folder.Id);
         AppLog.Info($"Created project asset folder: {folder.Name}");
+    }
+
+    private void BeginProjectTitleEdit()
+    {
+        if (_projectTitleEditor is null || _projectTitleLabel is null) return;
+        _projectTitleEditor.Text = _project.Name;
+        _projectTitleLabel.Visible = false;
+        _projectTitleEditor.Visible = true;
+        _projectTitleEditor.BringToFront();
+        _projectTitleEditor.Focus();
+        _projectTitleEditor.SelectAll();
+    }
+
+    private void CommitProjectTitleEdit()
+    {
+        if (_projectTitleEditor is null || !_projectTitleEditor.Visible) return;
+        var name = _projectTitleEditor.Text.Trim();
+        EndProjectTitleEdit();
+        if (string.IsNullOrWhiteSpace(name) || string.Equals(name, _project.Name, StringComparison.Ordinal)) return;
+
+        _project.Name = name;
+        SetProjectDirty(true);
+        UpdateProjectTitle();
+        AppLog.Info($"Renamed project: {_project.Name}");
+    }
+
+    private void CancelProjectTitleEdit()
+    {
+        if (_projectTitleEditor is null || !_projectTitleEditor.Visible) return;
+        EndProjectTitleEdit();
+    }
+
+    private void EndProjectTitleEdit()
+    {
+        if (_projectTitleEditor is null || _projectTitleLabel is null) return;
+        _projectTitleEditor.Visible = false;
+        _projectTitleLabel.Visible = true;
     }
 
     private void RenameProjectAssetFolder(string folderId)

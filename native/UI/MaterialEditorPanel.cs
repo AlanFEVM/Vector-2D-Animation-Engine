@@ -346,7 +346,7 @@ internal sealed class MaterialEditorPanel : UserControl
             _targetRow.SetColumnSpan(_fillTarget, enabled ? 2 : 1);
             _gradientPanel.Visible = !enabled;
             _materialSettings.Visible = !enabled;
-            _content.RowStyles[2].Height = enabled ? 0 : _gradientSettingsExpanded ? 158 : 30;
+            _content.RowStyles[2].Height = enabled ? 0 : _gradientSettingsExpanded ? 166 : 34;
             _content.RowStyles[3].Height = enabled ? 0 : Theme.InspectorRowHeight;
         }
         finally
@@ -415,7 +415,7 @@ internal sealed class MaterialEditorPanel : UserControl
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 158));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
@@ -518,7 +518,7 @@ internal sealed class MaterialEditorPanel : UserControl
             Text = text,
             Dock = DockStyle.Fill,
             Height = Theme.ControlHeightCompact,
-            Margin = new Padding(column == 1 ? 0 : 1, 3, column == row.ColumnCount - 1 ? 0 : 1, 3),
+            Margin = new Padding(column == 1 ? 0 : 1, 2, column == row.ColumnCount - 1 ? 0 : 1, 2),
             AccessibleName = text
         };
         button.AccessibleRole = AccessibleRole.RadioButton;
@@ -1033,10 +1033,10 @@ internal sealed class MaterialEditorPanel : UserControl
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));
         for (var index = 0; index < 4; index++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         _gradientPanel.Controls.Add(grid);
         _gradientSettingsGrid = grid;
 
@@ -1064,6 +1064,7 @@ internal sealed class MaterialEditorPanel : UserControl
         grid.Controls.Add(_linearGradientMode, 2, 0);
         grid.Controls.Add(_radialGradientMode, 3, 0);
         grid.Controls.Add(_shapeRadialGradientMode, 4, 0);
+        _paletteButton.Margin = new Padding(2, 0, 0, 0);
         grid.Controls.Add(_paletteButton, 5, 0);
 
         grid.Controls.Add(CreateFieldLabel("Stops"), 0, 1);
@@ -1319,13 +1320,13 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             grid.RowStyles[1].Height = expanded ? 46 : 0;
             grid.RowStyles[2].Height = expanded ? 46 : 0;
-            grid.RowStyles[3].Height = expanded ? 36 : 0;
+            grid.RowStyles[3].Height = expanded ? 40 : 0;
             foreach (Control control in grid.Controls)
             {
                 if (grid.GetRow(control) > 0) control.Visible = expanded;
             }
 
-            _content.RowStyles[2].Height = _textObjectMode ? 0 : expanded ? 158 : 30;
+            _content.RowStyles[2].Height = _textObjectMode ? 0 : expanded ? 166 : 34;
         }
         finally
         {

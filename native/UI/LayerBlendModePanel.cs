@@ -87,7 +87,7 @@ internal sealed class LayerBlendModePanel : Panel
             BackColor = Color.Transparent,
             Font = Theme.UiFont(10, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
+            AutoEllipsis = false
         };
         Controls.Add(title);
 
@@ -100,9 +100,9 @@ internal sealed class LayerBlendModePanel : Panel
             Margin = Padding.Empty,
             Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         row.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         Controls.Add(row);
         row.BringToFront();
@@ -114,7 +114,7 @@ internal sealed class LayerBlendModePanel : Panel
             ForeColor = Theme.Muted,
             BackColor = Color.Transparent,
             TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
+            AutoEllipsis = false
         };
         row.Controls.Add(label, 0, 0);
 
@@ -136,7 +136,7 @@ internal sealed class LayerBlendModePanel : Panel
         SizeChanged += (_, _) =>
         {
             var showLayerName = ClientSize.Width >= 300;
-            row.ColumnStyles[2].Width = showLayerName ? 78 : 0;
+            row.ColumnStyles[2].Width = showLayerName ? 104 : 0;
             _layerName.Visible = showLayerName;
         };
 

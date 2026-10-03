@@ -22,6 +22,15 @@ internal sealed partial class MainForm
     private bool _motionTrackEnabled;
 
     /// <summary>
+    /// The motion track's own sampling window, in absolute frames. A negative first frame means "not
+    /// resolved yet", which is how the workbench freezes the onion-skin window at the moment the
+    /// track is switched on; from then on the range is absolute and the playhead cannot move it.
+    /// </summary>
+    private int _motionTrackRangeFirst = -1;
+    private int _motionTrackRangeLast = -1;
+    private string? _motionTrackRangeInstanceId;
+
+    /// <summary>
     /// Pointer session for dragging selected anchors. Null while no drag is in flight; the captured
     /// instance state lets a cancel restore exactly what the gesture started from.
     /// </summary>
@@ -105,6 +114,14 @@ internal sealed partial class MainForm
 
         _timeline.MotionTrackToggleAvailable = available;
         _timeline.MotionTrackEnabled = _motionTrackEnabled;
+        _timeline.MotionTrackRangeVisible = _motionTrackEnabled;
+        if (_motionTrackEnabled && instance is not null && track is not null)
+        {
+            var mirrored = ResolveMotionTrackRange(instance, track);
+            _timeline.MotionTrackRangeFirst = mirrored.FirstFrame;
+            _timeline.MotionTrackRangeLast = mirrored.LastFrame;
+        }
+
         _timeline.RefreshMotionTrackControls();
 
         if (!_motionTrackEnabled || instance is null || symbol is null || track is null)
@@ -118,14 +135,21 @@ internal sealed partial class MainForm
             return;
         }
 
-        var (previousFrames, nextFrames) = MotionTrackOnionSkinRange();
-        var sampled = DrawingObjectMotionTrackBuilder.Build(
+        var (rangeFirst, rangeLast) = ResolveMotionTrackRange(instance, track);
+        // Trace the free-transform anchor. While the operator has moved it, the Stage keeps that as a
+        // world point, so fold it back into symbol-local space so every sampled frame follows it.
+        var localAnchor = _transformFocus is { } focus
+            ? MotionTrackLocalAnchor(symbol, instance, _frame, focus)
+            : null;
+        // The track owns an absolute frame window, so the playhead only decides which anchor wins a
+        // hit-test tie; it no longer decides which frames exist.
+        var sampled = DrawingObjectMotionTrackBuilder.BuildForFrames(
             symbol,
             instance,
             track,
             _frame,
-            previousFrames,
-            nextFrames);
+            Enumerable.Range(rangeFirst, Math.Max(1, rangeLast - rangeFirst + 1)),
+            localAnchor);
 
         // Frames that fell outside the track (or that the pointer range no longer covers) must not
         // stay selected, or a later drag would write to a frame the operator cannot see.
@@ -137,8 +161,62 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// Onion-skin range the motion track mirrors: the drawing scene's or the scene definition's
-    /// range, matching whatever the timeline onion-skin controls currently report.
+    /// Maps the Stage's world-space free-transform anchor back into the symbol's local space so the
+    /// engine can re-place it per sampled frame. Returns <see langword="null"/> when the instance's
+    /// planar transform is not invertible (degenerate scale), so the trail falls back to the element
+    /// centre rather than emitting a bogus anchor.
+    /// </summary>
+    private static Vector2? MotionTrackLocalAnchor(
+        DrawingObjectDefinition symbol,
+        DrawingObjectInstanceDefinition instance,
+        int frame,
+        PointF worldAnchor)
+    {
+        var transform = DrawingObjectInstanceDefinition.CreatePlanarTransform(instance.EvaluateState(frame));
+        if (!Matrix3x2.Invert(transform, out var inverse)) return null;
+
+        var local = Vector2.Transform(new Vector2(worldAnchor.X, worldAnchor.Y), inverse);
+        return new Vector2(symbol.Anchor.X + local.X, symbol.Anchor.Y + local.Y);
+    }
+
+    /// <summary>
+    /// The motion track's own sampling window, in absolute frames.
+    /// <para>
+    /// The window is seeded once, from wherever the onion-skin window happened to sit at that
+    /// instant, and is then absolute: moving the playhead — which happens every time an anchor is
+    /// clicked, because the edit follows the grabbed frame — leaves the sampled frames alone. The
+    /// onion-skin range is read exactly once, as the seed, and never again.
+    /// </para>
+    /// </summary>
+    private (int FirstFrame, int LastFrame) ResolveMotionTrackRange(
+        DrawingObjectInstanceDefinition instance,
+        AnimationTimelineTrack track)
+    {
+        var lastValid = Math.Max(0, track.Duration - 1);
+        var fresh = _motionTrackRangeFirst < 0
+            || _motionTrackRangeLast < 0
+            || !string.Equals(_motionTrackRangeInstanceId, instance.Id, StringComparison.Ordinal);
+        if (fresh)
+        {
+            var (previousFrames, nextFrames) = MotionTrackOnionSkinRange();
+            _motionTrackRangeFirst = Math.Clamp(_frame - previousFrames, 0, lastValid);
+            _motionTrackRangeLast = Math.Clamp(_frame + nextFrames, _motionTrackRangeFirst, lastValid);
+            _motionTrackRangeInstanceId = instance.Id;
+        }
+
+        return (Math.Clamp(_motionTrackRangeFirst, 0, lastValid), Math.Clamp(_motionTrackRangeLast, 0, lastValid));
+    }
+
+    /// <summary>True when the active timeline context already has onion skin switched on.</summary>
+    private bool IsTimelineOnionSkinEnabled()
+    {
+        if (TimelineOnionSkinDrawingScene() is { } drawingScene) return drawingScene.OnionSkinEnabled;
+        return _timeline.Context is SceneDefinition sceneDefinition && sceneDefinition.OnionSkinEnabled;
+    }
+
+    /// <summary>
+    /// Onion-skin window the motion track seeds itself from: the drawing scene's or the scene
+    /// definition's relative range, read once when the track appears.
     /// </summary>
     private (int PreviousFrames, int NextFrames) MotionTrackOnionSkinRange()
     {
@@ -153,6 +231,28 @@ internal sealed partial class MainForm
         }
 
         return (VectorScene.DefaultOnionSkinPreviousFrames, VectorScene.DefaultOnionSkinNextFrames);
+    }
+
+    /// <summary>
+    /// Applies a range typed into the timeline header. The values are clamped to the track so the
+    /// inputs always agree with the frames the overlay actually samples.
+    /// </summary>
+    private void SetMotionTrackRange(int firstFrame, int lastFrame)
+    {
+        var lastValid = int.MaxValue;
+        if (MotionTrackInstance() is { } instance && MotionTrackTimelineTrack(instance) is { } track)
+        {
+            lastValid = Math.Max(0, track.Duration - 1);
+        }
+
+        var first = Math.Clamp(firstFrame, 0, lastValid);
+        var last = Math.Clamp(lastFrame, first, lastValid);
+        if (_motionTrackRangeFirst == first && _motionTrackRangeLast == last) return;
+
+        _motionTrackRangeFirst = first;
+        _motionTrackRangeLast = last;
+        RebuildMotionTrackPreview();
+        _stage.Invalidate();
     }
 
     private void ToggleTimelineMotionTrack()
@@ -175,6 +275,18 @@ internal sealed partial class MainForm
             _motionTrackDragSession = null;
             _stage.SetMotionTrack(null);
             _stage.SetMotionTrackTransformBoxVisible(false);
+        }
+        else
+        {
+            // The track seeds its window from wherever the onion skin currently sits, so the onion
+            // skin has to be on for that seed to mean anything to the operator.
+            if (!IsTimelineOnionSkinEnabled()) ToggleTimelineOnionSkin();
+
+            // Switching on freezes a fresh window around the playhead, so the track starts out
+            // covering exactly what the onion skin shows right now.
+            _motionTrackRangeFirst = -1;
+            _motionTrackRangeLast = -1;
+            _motionTrackRangeInstanceId = null;
         }
 
         RebuildMotionTrackPreview();
@@ -202,6 +314,7 @@ internal sealed partial class MainForm
 
         _timeline.MotionTrackToggleAvailable = available;
         _timeline.MotionTrackEnabled = _motionTrackEnabled;
+        _timeline.MotionTrackRangeVisible = _motionTrackEnabled;
         _timeline.RefreshMotionTrackControls();
     }
 
@@ -431,37 +544,12 @@ internal sealed partial class MainForm
             return false;
         }
 
-        // The anchor contract caps the transform box at three frames. Beyond that, suppress the box
-        // entirely rather than falling through to the instance box, which would frame a completely
-        // different region than the anchors the operator selected.
-        if (_motionTrackSelectedFrames.Count > 3)
-        {
-            _stage.SetDistortOverlay(false, default);
-            _stage.SetTransformOverlay(false, RectangleF.Empty);
-            return true;
-        }
-
-        if (!TryGetMotionTrackTransformFrame(out var frame))
-        {
-            _stage.SetDistortOverlay(false, default);
-            _stage.SetTransformOverlay(false, RectangleF.Empty);
-            return true;
-        }
-
-        // A frozen rotation publishes the box captured at pointer-down, matching the instance path:
-        // rebuilding it from rotated geometry would let the handle slide under the pointer.
-        if (_transformFrameFrozenForRotation)
-        {
-            var frozenFrame = RotatedFrozenTransformFrame(_drawingTransformAccumulatedAngle);
-            _transformCurrentBounds = frozenFrame.Bounds;
-            _stage.SetDistortOverlay(false, default);
-            _stage.SetTransformOverlay(true, frozenFrame, frozenFrame.Center, referenceTransform);
-            return true;
-        }
-
-        _transformCurrentBounds = frame.Bounds;
+        // Anchors move by translation only: no rotation or scale control axes are published for them.
+        // The pointer session drags the anchor itself, so handing the overlay back to the instance
+        // would just show a box framing a completely different region than the selected anchors, and
+        // publishing one here would arm rotate/scale handles the anchors have no business carrying.
         _stage.SetDistortOverlay(false, default);
-        _stage.SetTransformOverlay(true, frame, frame.Center, referenceTransform);
+        _stage.SetTransformOverlay(false, RectangleF.Empty);
         return true;
     }
 

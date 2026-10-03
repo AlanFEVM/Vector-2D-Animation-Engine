@@ -126,6 +126,12 @@ internal sealed class TimelineOnionSkinRangeChangedEventArgs(int previousFrames,
     public int NextFrames { get; } = nextFrames;
 }
 
+internal sealed class TimelineMotionTrackRangeChangedEventArgs(int firstFrame, int lastFrame) : EventArgs
+{
+    public int FirstFrame { get; } = firstFrame;
+    public int LastFrame { get; } = lastFrame;
+}
+
 internal enum TimelineOnionSkinRangeHandle : byte
 {
     None,
@@ -334,8 +340,18 @@ internal sealed partial class TimelineStrip : Control
     private readonly ModernNumericUpDown _onionPreviousFrames = CreateOnionSkinRangeInput("Previous onion skin frames");
     private readonly Label _onionNextLabel = CreateOnionSkinRangeLabel("Next");
     private readonly ModernNumericUpDown _onionNextFrames = CreateOnionSkinRangeInput("Next onion skin frames");
+
+    /// <summary>
+    /// Upper bound for the shared range inputs while they hold absolute motion-track frames. The
+    /// sampler clamps to the timeline duration, so this only has to be generous enough that the
+    /// operator can type any frame the project could hold.
+    /// </summary>
+    private const int MaximumMotionTrackFrame = 100_000;
     private bool _updatingOnionSkinControls;
     private bool _updatingMotionTrackControls;
+
+    /// <summary>Mode the shared range inputs were last rewording for; drives the republish on a switch.</summary>
+    private bool _onionSkinRangeAbsoluteApplied;
     private bool _updatingFrameWidthControls;
     private bool _updatingFrameHeightControl;
     private bool _frameWidthCommitPending;
@@ -371,6 +387,7 @@ internal sealed partial class TimelineStrip : Control
     public event EventHandler? OnionSkinRangeInteractionCompleted;
     public event EventHandler? OnionSkinRangeInteractionCanceled;
     public event EventHandler? MotionTrackToggleRequested;
+    public event EventHandler<TimelineMotionTrackRangeChangedEventArgs>? MotionTrackRangeChanged;
 
     /// <summary>
     /// True while the workbench is presenting a motion track for the selected symbol. Set by the
@@ -380,6 +397,18 @@ internal sealed partial class TimelineStrip : Control
 
     /// <summary>Checked state of the motion-track toggle, owned by the workbench.</summary>
     public bool MotionTrackEnabled { get; set; }
+
+    /// <summary>
+    /// First frame of the motion track's own sampling range. Unlike the onion-skin range this is an
+    /// absolute frame, so moving the playhead never moves the sampled window.
+    /// </summary>
+    public int MotionTrackRangeFirst { get; set; }
+
+    /// <summary>Last sampled frame of the motion track, inclusive.</summary>
+    public int MotionTrackRangeLast { get; set; }
+
+    /// <summary>True while the range inputs belong on the header, i.e. while a track is presented.</summary>
+    public bool MotionTrackRangeVisible { get; set; }
 
     public TimelineStrip(VectorScene scene)
         : this((ITimelineContext)scene)
@@ -486,12 +515,12 @@ internal sealed partial class TimelineStrip : Control
         };
         _onionPreviousFrames.ValueChanged += (_, _) => RaiseOnionSkinRangeChanged();
         _onionNextFrames.ValueChanged += (_, _) => RaiseOnionSkinRangeChanged();
-        _onionPreviousFrames.InteractionStarted += (_, _) => OnionSkinRangeInteractionStarted?.Invoke(this, EventArgs.Empty);
-        _onionNextFrames.InteractionStarted += (_, _) => OnionSkinRangeInteractionStarted?.Invoke(this, EventArgs.Empty);
-        _onionPreviousFrames.InteractionCompleted += (_, _) => OnionSkinRangeInteractionCompleted?.Invoke(this, EventArgs.Empty);
-        _onionNextFrames.InteractionCompleted += (_, _) => OnionSkinRangeInteractionCompleted?.Invoke(this, EventArgs.Empty);
-        _onionPreviousFrames.InteractionCanceled += (_, _) => OnionSkinRangeInteractionCanceled?.Invoke(this, EventArgs.Empty);
-        _onionNextFrames.InteractionCanceled += (_, _) => OnionSkinRangeInteractionCanceled?.Invoke(this, EventArgs.Empty);
+        _onionPreviousFrames.InteractionStarted += (_, _) => RaiseOnionSkinRangeInteraction(OnionSkinRangeInteractionStarted);
+        _onionNextFrames.InteractionStarted += (_, _) => RaiseOnionSkinRangeInteraction(OnionSkinRangeInteractionStarted);
+        _onionPreviousFrames.InteractionCompleted += (_, _) => RaiseOnionSkinRangeInteraction(OnionSkinRangeInteractionCompleted);
+        _onionNextFrames.InteractionCompleted += (_, _) => RaiseOnionSkinRangeInteraction(OnionSkinRangeInteractionCompleted);
+        _onionPreviousFrames.InteractionCanceled += (_, _) => RaiseOnionSkinRangeInteraction(OnionSkinRangeInteractionCanceled);
+        _onionNextFrames.InteractionCanceled += (_, _) => RaiseOnionSkinRangeInteraction(OnionSkinRangeInteractionCanceled);
         _frameWidthSlider.ValueChanged += (_, _) =>
         {
             if (_updatingFrameWidthControls) return;
@@ -996,11 +1025,16 @@ internal sealed partial class TimelineStrip : Control
         try
         {
             if (_onionSkinToggle.Enabled != available) _onionSkinToggle.Enabled = available;
+            ApplyOnionSkinRangeControlMode();
             if (available)
             {
                 if (_onionSkinToggle.Checked != enabled) _onionSkinToggle.Checked = enabled;
-                if (_onionPreviousFrames.Value != previousFrames) _onionPreviousFrames.Value = previousFrames;
-                if (_onionNextFrames.Value != nextFrames) _onionNextFrames.Value = nextFrames;
+                // Same two inputs, two meanings: with a track presented they carry its absolute
+                // window, otherwise the onion skin's relative counts.
+                var firstValue = MotionTrackRangeVisible ? MotionTrackRangeFirst : previousFrames;
+                var lastValue = MotionTrackRangeVisible ? MotionTrackRangeLast : nextFrames;
+                if (_onionPreviousFrames.Value != firstValue) _onionPreviousFrames.Value = firstValue;
+                if (_onionNextFrames.Value != lastValue) _onionNextFrames.Value = lastValue;
             }
         }
         finally
@@ -1010,6 +1044,52 @@ internal sealed partial class TimelineStrip : Control
 
         if (!enabled) ResetOnionSkinRangeHandleInteraction();
         LayoutHeaderControls(CreateLayout(), available);
+    }
+
+    /// <summary>
+    /// Rewords the shared range inputs for the mode they are in. The controls themselves are never
+    /// swapped: onion skin reads them as "frames before/after the playhead" and the motion track reads
+    /// them as "first/last frame", so only the wording and the upper bound follow the mode.
+    /// </summary>
+    private void ApplyOnionSkinRangeControlMode()
+    {
+        var absolute = MotionTrackRangeVisible;
+        _onionSkinRangeAbsoluteApplied = absolute;
+        var maximum = absolute ? MaximumMotionTrackFrame : VectorScene.MaximumOnionSkinFrames;
+        if (_onionPreviousFrames.Maximum != maximum) _onionPreviousFrames.Maximum = maximum;
+        if (_onionNextFrames.Maximum != maximum) _onionNextFrames.Maximum = maximum;
+
+        ApplyRangeLabel(
+            _onionPreviousLabel,
+            absolute,
+            relativeText: "Prev",
+            absoluteText: "From",
+            relativeAccessibleName: "Previous onion skin frames",
+            absoluteAccessibleName: "Motion track first frame");
+        ApplyRangeLabel(
+            _onionNextLabel,
+            absolute,
+            relativeText: "Next",
+            absoluteText: "To",
+            relativeAccessibleName: "Next onion skin frames",
+            absoluteAccessibleName: "Motion track last frame");
+    }
+
+    private static void ApplyRangeLabel(
+        Label label,
+        bool absolute,
+        string relativeText,
+        string absoluteText,
+        string relativeAccessibleName,
+        string absoluteAccessibleName)
+    {
+        var text = absolute ? absoluteText : relativeText;
+        var accessibleName = absolute ? absoluteAccessibleName : relativeAccessibleName;
+        if (!string.Equals(label.Text, text, StringComparison.Ordinal)) label.Text = text;
+        if (!string.Equals(label.AccessibleName, accessibleName, StringComparison.Ordinal))
+        {
+            label.AccessibleName = accessibleName;
+        }
     }
 
     /// <summary>
@@ -1027,11 +1107,16 @@ internal sealed partial class TimelineStrip : Control
             {
                 _motionTrackToggle.Enabled = MotionTrackToggleAvailable;
             }
+
         }
         finally
         {
             _updatingMotionTrackControls = false;
         }
+
+        // The two range inputs are shared, so a mode switch or a new window has to republish them;
+        // otherwise they would keep showing the onion-skin counts the operator just left behind.
+        if (MotionTrackRangeVisible || _onionSkinRangeAbsoluteApplied) RefreshOnionSkinControls();
 
         LayoutHeaderControls(CreateLayout(), IsOnionSkinControlsAvailable());
         Invalidate();
@@ -4658,6 +4743,8 @@ internal sealed partial class TimelineStrip : Control
         return input;
     }
 
+
+
     private static ModernSlider CreateFrameWidthSlider()
     {
         return new ModernSlider
@@ -4715,6 +4802,7 @@ internal sealed partial class TimelineStrip : Control
             onionSkinAvailable,
             IsAutoKeyframeAvailable(),
             MotionTrackToggleAvailable,
+            MotionTrackRangeVisible,
             _frameWidthLabel.Text,
             _frameHeightLabel.Text,
             _autoKeyframeToggle.Text,
@@ -4798,7 +4886,8 @@ internal sealed partial class TimelineStrip : Control
     }
 
     /// <summary>
-    /// Horizontal space the motion-track toggle contributes to the header's left cluster.
+    /// Horizontal space the motion-track cluster contributes to the header's left cluster: the toggle
+    /// plus, while a track is presented, its absolute frame range inputs.
     /// </summary>
     private int MotionTrackClusterFootprint() => MotionTrackToggleWidth() + ScaleTimelineMetric(8);
 
@@ -4973,9 +5062,30 @@ internal sealed partial class TimelineStrip : Control
     private void RaiseOnionSkinRangeChanged()
     {
         if (_updatingOnionSkinControls) return;
+        if (MotionTrackRangeVisible)
+        {
+            // Same inputs, other meaning: while a track is presented these hold its absolute window.
+            MotionTrackRangeChanged?.Invoke(
+                this,
+                new TimelineMotionTrackRangeChangedEventArgs(
+                    (int)_onionPreviousFrames.Value,
+                    (int)_onionNextFrames.Value));
+            return;
+        }
+
         OnionSkinRangeChanged?.Invoke(
             this,
             new TimelineOnionSkinRangeChangedEventArgs((int)_onionPreviousFrames.Value, (int)_onionNextFrames.Value));
+    }
+
+    /// <summary>
+    /// Interaction notices for the shared inputs. In absolute mode the inputs only steer view state,
+    /// so there is no onion-skin edit for the workbench to open an undo session for.
+    /// </summary>
+    private void RaiseOnionSkinRangeInteraction(EventHandler? handler)
+    {
+        if (MotionTrackRangeVisible) return;
+        handler?.Invoke(this, EventArgs.Empty);
     }
 
     private int OnionSkinControlsWidth()
@@ -5226,6 +5336,7 @@ internal sealed partial class TimelineStrip : Control
         bool OnionSkinAvailable,
         bool AutoKeyframeAvailable,
         bool MotionTrackAvailable,
+        bool MotionTrackRangeVisible,
         string FrameWidthLabel,
         string FrameHeightLabel,
         string AutoKeyframeLabel,

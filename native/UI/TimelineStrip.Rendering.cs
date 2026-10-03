@@ -116,11 +116,16 @@ internal sealed partial class TimelineStrip : Control
                 ? frameWidthControlsBounds
                 : frameHeightControlsBounds);
         var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
+        var motionTrackBounds = MotionTrackControlsBounds(layout);
         var firstControlsLeft = Math.Min(
             frameWidthControlsBounds.IsEmpty ? layout.TrackRight : frameWidthControlsBounds.Left,
             Math.Min(
                 frameHeightControlsBounds.IsEmpty ? layout.TrackRight : frameHeightControlsBounds.Left,
                 onionControlsBounds.IsEmpty ? layout.TrackRight : onionControlsBounds.Left));
+        // The motion-track toggle sits between Auto Key and the onion-skin group, so the frame-status
+        // summary and its right-aligned time text must stop before it; otherwise the time text is
+        // painted on top of the toggle's label and the two strings overlap.
+        if (!motionTrackBounds.IsEmpty) firstControlsLeft = Math.Min(firstControlsLeft, motionTrackBounds.Left);
         var left = autoKeyframeBounds.IsEmpty
             ? layout.TrackLeft + ScaleTimelineMetric(8)
             : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
@@ -293,8 +298,15 @@ internal sealed partial class TimelineStrip : Control
     {
         if (!TryGetOnionSkinRange(out var previousFrames, out var nextFrames, out var enabled) || !enabled) return;
 
-        var previousFrame = Math.Max(StartFrame, CurrentFrame - previousFrames);
-        var nextFrame = Math.Min(EndFrame, CurrentFrame + nextFrames);
+        // With a track presented the handles mark its absolute window instead of an onion-skin offset
+        // around the playhead, so they stay put however the playhead travels.
+        var absolute = MotionTrackRangeVisible;
+        var previousFrame = absolute
+            ? MotionTrackRangeFirst
+            : Math.Max(StartFrame, CurrentFrame - previousFrames);
+        var nextFrame = absolute
+            ? MotionTrackRangeLast
+            : Math.Min(EndFrame, CurrentFrame + nextFrames);
         var previousX = FrameCenterX(previousFrame, layout);
         var currentX = FrameCenterX(CurrentFrame, layout);
         var nextX = FrameCenterX(nextFrame, layout);
@@ -305,13 +317,24 @@ internal sealed partial class TimelineStrip : Control
         var handleY = HeaderHeight + RulerHeight - ScaleTimelineMetric(7);
         using var previousPen = new Pen(previousColor, ScaleTimelineMetric(1));
         using var nextPen = new Pen(nextColor, ScaleTimelineMetric(1));
-        if (!float.IsNaN(previousX) && previousFrame != CurrentFrame)
+        if (absolute)
         {
-            graphics.DrawLine(previousPen, previousX, handleY, currentX, handleY);
+            // One span from the first frame to the last: the playhead is not an endpoint any more.
+            if (!float.IsNaN(previousX) && !float.IsNaN(nextX) && nextFrame != previousFrame)
+            {
+                graphics.DrawLine(previousPen, previousX, handleY, nextX, handleY);
+            }
         }
-        if (!float.IsNaN(nextX) && nextFrame != CurrentFrame)
+        else
         {
-            graphics.DrawLine(nextPen, currentX, handleY, nextX, handleY);
+            if (!float.IsNaN(previousX) && previousFrame != CurrentFrame)
+            {
+                graphics.DrawLine(previousPen, previousX, handleY, currentX, handleY);
+            }
+            if (!float.IsNaN(nextX) && nextFrame != CurrentFrame)
+            {
+                graphics.DrawLine(nextPen, currentX, handleY, nextX, handleY);
+            }
         }
 
         DrawOnionSkinRangeHandle(
@@ -366,6 +389,30 @@ internal sealed partial class TimelineStrip : Control
         }
 
         var targetFrame = FrameFromX(x, layout);
+        if (MotionTrackRangeVisible)
+        {
+            // Dragging a handle moves that end of the absolute window; the other end stays put.
+            if (_draggingOnionSkinRangeHandle == TimelineOnionSkinRangeHandle.Previous)
+            {
+                MotionTrackRangeChanged?.Invoke(
+                    this,
+                    new TimelineMotionTrackRangeChangedEventArgs(
+                        Math.Clamp(targetFrame, StartFrame, MotionTrackRangeLast),
+                        MotionTrackRangeLast));
+            }
+            else
+            {
+                MotionTrackRangeChanged?.Invoke(
+                    this,
+                    new TimelineMotionTrackRangeChangedEventArgs(
+                        MotionTrackRangeFirst,
+                        Math.Clamp(targetFrame, MotionTrackRangeFirst, EndFrame)));
+            }
+
+            Invalidate();
+            return;
+        }
+
         if (_draggingOnionSkinRangeHandle == TimelineOnionSkinRangeHandle.Previous)
         {
             previousFrames = Math.Clamp(
@@ -397,7 +444,12 @@ internal sealed partial class TimelineStrip : Control
         var next = OnionSkinRangeHandleBounds(TimelineOnionSkinRangeHandle.Next, layout);
         if (previous.Contains(location) && next.Contains(location))
         {
-            return location.X <= FrameCenterX(CurrentFrame, layout)
+            // In absolute mode the playhead is not between the handles any more, so the two are split
+            // at the middle of their own overlap instead.
+            var pivotX = MotionTrackRangeVisible
+                ? (previous.Left + next.Right) * 0.5f
+                : FrameCenterX(CurrentFrame, layout);
+            return location.X <= pivotX
                 ? TimelineOnionSkinRangeHandle.Previous
                 : TimelineOnionSkinRangeHandle.Next;
         }
@@ -414,8 +466,12 @@ internal sealed partial class TimelineStrip : Control
         }
         var frame = handle switch
         {
-            TimelineOnionSkinRangeHandle.Previous => Math.Max(StartFrame, CurrentFrame - previousFrames),
-            TimelineOnionSkinRangeHandle.Next => Math.Min(EndFrame, CurrentFrame + nextFrames),
+            TimelineOnionSkinRangeHandle.Previous => MotionTrackRangeVisible
+                ? MotionTrackRangeFirst
+                : Math.Max(StartFrame, CurrentFrame - previousFrames),
+            TimelineOnionSkinRangeHandle.Next => MotionTrackRangeVisible
+                ? MotionTrackRangeLast
+                : Math.Min(EndFrame, CurrentFrame + nextFrames),
             _ => -1
         };
         var centerX = FrameCenterX(frame, layout);

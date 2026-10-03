@@ -63,7 +63,7 @@ internal sealed partial class MainForm
                 Math.Max(minimumSize.Height, availableHeight)));
 
         var inspectorLogicalWidth = Math.Clamp(
-            (int)Math.Round(logicalClientWidth * 0.22),
+            (int)Math.Round(logicalClientWidth * 0.25),
             272,
             InspectorPanelExpandedWidth);
         var vaultLogicalWidth = Math.Clamp(

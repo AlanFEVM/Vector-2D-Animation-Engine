@@ -71,8 +71,8 @@ internal static class Theme
     public const int InspectorRowMarginVertical = 2;
     public const int InspectorContentPaddingTop = 2;
     public const int InspectorSectionPaddingVertical = 6;
-    public const int InspectorFieldLabelColumnWidth = 104;
-    public const int InspectorFieldLabelColumnWidthNarrow = 72;
+    public const int InspectorFieldLabelColumnWidth = 124;
+    public const int InspectorFieldLabelColumnWidthNarrow = 96;
 
     public static Padding InspectorSectionPadding => new(0, InspectorSectionPaddingVertical, 0, InspectorSectionPaddingVertical);
 

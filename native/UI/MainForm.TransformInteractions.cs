@@ -760,6 +760,8 @@ internal sealed partial class MainForm : Form
         {
             _transformFocus = VectorUnits.Quantize(world);
             UpdateTransformOverlay();
+            // The motion track traces this anchor, so resample it live while the operator drags it.
+            RebuildMotionTrackPreview();
             _stage.Invalidate();
             return;
         }

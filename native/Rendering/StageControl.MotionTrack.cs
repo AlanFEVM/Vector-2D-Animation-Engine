@@ -315,6 +315,9 @@ internal sealed partial class StageControl : Control
             // A span is a tween segment when either endpoint reports it, so the dash flips exactly at
             // the tween boundaries the sampler marked.
             var isTweenSegment = start.IsOnTweenSegment || end.IsOnTweenSegment;
+            // Stroke the dark underlay first so the classified ink on top keeps its own dash rhythm
+            // while remaining visible over white or light artwork.
+            g.DrawLine(resources.PathHaloPen, start.Screen, end.Screen);
             g.DrawLine(isTweenSegment ? resources.TweenPen : resources.PathPen, start.Screen, end.Screen);
         }
     }
@@ -431,8 +434,15 @@ internal sealed partial class StageControl : Control
     private void DrawMotionTrackTransformBox(Graphics g)
     {
         if (!TryResolveMotionTrackTransformBoxScreen(out var bounds)) return;
+        var resources = MotionTrackResources();
         g.DrawRectangle(
-            MotionTrackResources().TransformBoxPen,
+            resources.TransformBoxHaloPen,
+            bounds.X,
+            bounds.Y,
+            bounds.Width,
+            bounds.Height);
+        g.DrawRectangle(
+            resources.TransformBoxPen,
             bounds.X,
             bounds.Y,
             bounds.Width,
@@ -592,11 +602,25 @@ internal sealed class MotionTrackGdiResources
     /// <summary>Ink for the trajectory dash: deliberately the quietest colour in the overlay.</summary>
     private static Color PathInk => Theme.Muted;
 
+    /// <summary>
+    /// Neutral dark underlay stroked beneath every dashed trajectory element so the muted and accent
+    /// inks stay readable over white or light artwork. Shared by both render backends, which is why it
+    /// lives here rather than inside the GDI resource set.
+    /// </summary>
+    internal static Color MotionTrackHaloInk => Color.FromArgb(150, 0, 0, 0);
+
     /// <summary>Ink for an ordinary anchor marker.</summary>
     private static Color AnchorInk => Theme.Text;
 
     /// <summary>Trajectory dash between two ordinary anchors.</summary>
     internal Pen PathPen { get; }
+
+    /// <summary>
+    /// Dark underlay drawn beneath every trajectory dash. The muted and accent inks disappear over
+    /// white or light artwork, so the segment is stroked twice: a wider dark dash first, then the
+    /// classified ink on top. On a dark stage the underlay blends away and the bright dash dominates.
+    /// </summary>
+    internal Pen PathHaloPen { get; }
 
     /// <summary>Dash for a segment that lies inside a classic tween span.</summary>
     internal Pen TweenPen { get; }
@@ -612,6 +636,9 @@ internal sealed class MotionTrackGdiResources
 
     /// <summary>Dashed box around a multi-selection.</summary>
     internal Pen TransformBoxPen { get; }
+
+    /// <summary>Dark underlay for the dashed selection box, same reasoning as <see cref="PathHaloPen"/>.</summary>
+    internal Pen TransformBoxHaloPen { get; }
 
     internal SolidBrush PathBrush { get; }
 
@@ -636,11 +663,13 @@ internal sealed class MotionTrackGdiResources
     internal MotionTrackGdiResources(float dpiScale)
     {
         PathPen = DashedPen(WithAlpha(PathInk, 190), 1.4f, dpiScale);
+        PathHaloPen = DashedPen(MotionTrackHaloInk, 2.9f, dpiScale);
         TweenPen = DashedPen(WithAlpha(TweenInk, 235), 1.9f, dpiScale);
         AnchorBorderPen = new Pen(WithAlpha(Theme.Stage, 235), 1.2f * dpiScale);
         SelectionPen = new Pen(WithAlpha(StageControl.MotionTrackSelectionInk, 245), 1.8f * dpiScale);
         HoverPen = new Pen(WithAlpha(StageControl.MotionTrackHoverInk, 240), 1.6f * dpiScale);
         TransformBoxPen = DashedPen(WithAlpha(StageControl.MotionTrackSelectionInk, 215), 1.4f, dpiScale);
+        TransformBoxHaloPen = DashedPen(MotionTrackHaloInk, 2.9f, dpiScale);
         PathBrush = new SolidBrush(WithAlpha(PathInk, 200));
         AdjustedBrush = new SolidBrush(AdjustedInk);
         TweenBrush = new SolidBrush(TweenInk);

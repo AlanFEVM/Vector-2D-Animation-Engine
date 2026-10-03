@@ -44,6 +44,9 @@ internal sealed partial class Direct2DStageRenderer
     /// <summary>Dashed trajectory between consecutive anchors, coloured per tween membership.</summary>
     private void DrawMotionTrackSegments(MotionTrackScreenAnchor[] anchors, float dpiScale, ID2D1StrokeStyle dashed)
     {
+        // A dark halo under the ink keeps the trajectory legible over white or light artwork where the
+        // muted/accent dashes would otherwise vanish; on a dark stage the bright dash itself dominates.
+        var halo = BrushFor(MotionTrackGdiResources.MotionTrackHaloInk.ToArgb());
         for (var index = 1; index < anchors.Length; index++)
         {
             var start = anchors[index - 1];
@@ -53,11 +56,18 @@ internal sealed partial class Direct2DStageRenderer
             var brush = isTweenSegment
                 ? BrushFor(GdiColor.FromArgb(235, Theme.Accent).ToArgb())
                 : BrushFor(GdiColor.FromArgb(190, Theme.Muted).ToArgb());
+            var width = (isTweenSegment ? 1.9f : 1.4f) * dpiScale;
             _target!.DrawLine(
                 new Vector2(start.Screen.X, start.Screen.Y),
                 new Vector2(end.Screen.X, end.Screen.Y),
+                halo,
+                width + 1.5f * dpiScale,
+                dashed);
+            _target.DrawLine(
+                new Vector2(start.Screen.X, start.Screen.Y),
+                new Vector2(end.Screen.X, end.Screen.Y),
                 brush,
-                (isTweenSegment ? 1.9f : 1.4f) * dpiScale,
+                width,
                 dashed);
         }
     }
@@ -123,7 +133,13 @@ internal sealed partial class Direct2DStageRenderer
     {
         if (!stage.TryResolveMotionTrackTransformBoxScreen(out var bounds)) return;
         var rect = Rect(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+        // Same halo rule as the trajectory: the dashed box must stay readable over light artwork.
         _target!.DrawRectangle(
+            rect,
+            BrushFor(MotionTrackGdiResources.MotionTrackHaloInk.ToArgb()),
+            2.9f * dpiScale,
+            dashed);
+        _target.DrawRectangle(
             rect,
             BrushFor(GdiColor.FromArgb(215, StageControl.MotionTrackSelectionInk).ToArgb()),
             1.4f * dpiScale,
