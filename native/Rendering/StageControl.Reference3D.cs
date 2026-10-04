@@ -356,8 +356,8 @@ internal sealed partial class StageControl
     private const int Reference3DOpticalPreviewIdleMilliseconds = 120;
     internal const float SpatialGizmoMinimumPlaneRayDot = 0.06f;
 
-    internal static Color Reference3DSelectionLineColor { get; } = Color.FromArgb(255, 255, 145, 44);
-    internal static Color Reference3DSelectionHaloColor { get; } = Color.FromArgb(112, 112, 48, 8);
+    internal static Color Reference3DSelectionLineColor { get; } = Color.FromArgb(255, 104, 244, 214);
+    internal static Color Reference3DSelectionHaloColor { get; } = Color.FromArgb(95, 20, 150, 180);
 
     private SceneCompositionResult? _sceneCompositionResult;
     private VectorScene? _sceneCompositionResultScene;

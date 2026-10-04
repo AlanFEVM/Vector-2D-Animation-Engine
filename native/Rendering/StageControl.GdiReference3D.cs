@@ -2101,14 +2101,14 @@ internal sealed partial class StageControl
     private void DrawReference3DSelection(Graphics graphics)
     {
         if (_reference3DSelectedObjects.Length == 0) return;
-        using var glow = new Pen(Reference3DSelectionHaloColor, 5.5f)
+        using var glow = new Pen(Reference3DSelectionHaloColor, 3.5f)
         {
             DashStyle = DashStyle.Solid,
             LineJoin = LineJoin.Round,
             StartCap = LineCap.Round,
             EndCap = LineCap.Round
         };
-        using var outline = new Pen(Reference3DSelectionLineColor, 2f)
+        using var outline = new Pen(Reference3DSelectionLineColor, 1.5f)
         {
             DashStyle = DashStyle.Solid,
             LineJoin = LineJoin.Round,

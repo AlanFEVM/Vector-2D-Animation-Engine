@@ -3979,7 +3979,7 @@ internal static partial class Benchmark
                         radius: 2,
                         tolerance: 28))
                 {
-                    throw new InvalidOperationException("The 3D selection outline was not a continuous orange stroke.");
+                    throw new InvalidOperationException("The 3D selection outline was not a continuous mint stroke.");
                 }
             }
         }

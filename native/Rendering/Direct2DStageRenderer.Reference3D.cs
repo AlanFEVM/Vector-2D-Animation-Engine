@@ -3441,12 +3441,12 @@ internal sealed partial class Direct2DStageRenderer
                 _target!.DrawGeometry(
                     geometry,
                     BrushFor(StageControl.Reference3DSelectionHaloColor.ToArgb()),
-                    5.5f,
+                    3.5f,
                     RoundStrokeStyle());
                 _target.DrawGeometry(
                     geometry,
                     BrushFor(StageControl.Reference3DSelectionLineColor.ToArgb()),
-                    2f,
+                    1.5f,
                     RoundStrokeStyle());
             });
         }
