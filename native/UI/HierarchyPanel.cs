@@ -232,7 +232,7 @@ internal sealed class HierarchyPanel : UserControl
         _objectsRoot = objectsRoot;
         _tree.EndUpdate();
 
-        _summary.Text = $"{_scene.LayerCount} layers, {_scene.ObjectCount} objects";
+        _summary.Text = $"{_scene.LayerCount} {UiLocalization.T("layers")}, {_scene.ObjectCount} {UiLocalization.T("objects")}";
         CapturePresentationSnapshot();
     }
 

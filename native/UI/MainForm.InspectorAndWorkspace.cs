@@ -27,7 +27,7 @@ internal sealed partial class MainForm : Form
         try
         {
         drawingParameterPanelsMoved = PlaceDrawingParameterPanels();
-        _objectMetric.Text = $"Objects: {CompactFormat.Number(_scene.ObjectCount)}";
+        _objectMetric.Text = $"{UiLocalization.T("Objects:")} {CompactFormat.Number(_scene.ObjectCount)}";
         if (refreshLineEndpointStyles) UpdateLineEndpointStyleControl();
         UpdateTextSettingsPanel();
         var validSelection = _selectedObjects
@@ -75,10 +75,15 @@ internal sealed partial class MainForm : Form
                     ? _scene.LayerNames[drawingLayer]
                     : null;
             _selected.Text = selectedSceneInstances.Count > 1
-                ? $"Selected: {selectedSceneInstances.Count} Symbol Instances"
-                : $"Selected: {sceneInstance.Name}";
-            _selectedLayer.Text = $"Layer: {layerName ?? "Missing layer"} / Symbol: {drawingObject?.Name ?? "Missing object"}";
-            _selectedAtoms.Text = $"Transform: {sceneInstanceState.ScaleX:0.##}, {sceneInstanceState.ScaleY:0.##} / {sceneInstanceState.RotationZ:0.#} deg / skew {sceneInstanceState.SkewX:0.#}, {sceneInstanceState.SkewY:0.#}";
+                ? $"{UiLocalization.T("Selected:")} {selectedSceneInstances.Count} {UiLocalization.T("Symbol Instances")}"
+                : $"{UiLocalization.T("Selected:")} {sceneInstance.Name}";
+            _selectedLayer.Text =
+                $"{UiLocalization.T("Layer:")} {layerName ?? UiLocalization.T("Missing layer")} / "
+                + $"{UiLocalization.T("Symbol:")} {drawingObject?.Name ?? UiLocalization.T("Missing object")}";
+            _selectedAtoms.Text =
+                $"{UiLocalization.T("Transform:")} {sceneInstanceState.ScaleX:0.##}, {sceneInstanceState.ScaleY:0.##} / "
+                + $"{sceneInstanceState.RotationZ:0.#} {UiLocalization.T("deg")} / "
+                + $"{UiLocalization.T("skew")} {sceneInstanceState.SkewX:0.#}, {sceneInstanceState.SkewY:0.#}";
             return;
         }
 
@@ -89,9 +94,11 @@ internal sealed partial class MainForm : Form
             var mixedLayer = validSelection.Any(index => _scene.ObjectLayer[index] != firstLayer);
             var atoms = _selectedElements.Sum(hit => _scene.EstimateElementAtomCount(hit, _frame));
             var kindLabel = kinds.Length == 1 ? kinds[0].ToString() : "Mixed";
-            _selected.Text = $"Selected: {CompactFormat.Number(_selectedElements.Count)} {kindLabel} parts";
-            _selectedLayer.Text = mixedLayer ? "Layer: Mixed" : firstLayer >= 0 ? $"Layer: {_scene.LayerNames[firstLayer]}" : "Layer: -";
-            _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(atoms)}";
+            _selected.Text = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(_selectedElements.Count)} {kindLabel} {UiLocalization.T("parts")}";
+            _selectedLayer.Text = mixedLayer
+                ? UiLocalization.T("Layer: Mixed")
+                : firstLayer >= 0 ? $"{UiLocalization.T("Layer:")} {_scene.LayerNames[firstLayer]}" : UiLocalization.T("Layer: -");
+            _selectedAtoms.Text = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
             return;
         }
 
@@ -106,18 +113,20 @@ internal sealed partial class MainForm : Form
                 if (_scene.ObjectLayer[index] != firstLayer) mixedLayer = true;
             }
 
-            _selected.Text = $"Selected: {CompactFormat.Number(validSelection.Length)} objects";
-            _selectedLayer.Text = mixedLayer ? "Layer: Mixed" : $"Layer: {_scene.LayerNames[firstLayer]}";
-            _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(atoms)}";
+            _selected.Text = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(validSelection.Length)} {UiLocalization.T("objects")}";
+            _selectedLayer.Text = mixedLayer ? UiLocalization.T("Layer: Mixed") : $"{UiLocalization.T("Layer:")} {_scene.LayerNames[firstLayer]}";
+            _selectedAtoms.Text = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
             return;
         }
 
         if (validSelection.Length == 1 && _selectedObject != validSelection[0]) _selectedObject = validSelection[0];
         if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount)
         {
-            _selected.Text = "Selected: None";
-            _selectedLayer.Text = _scene.LayerNames.Length > 0 ? $"Layer: {_scene.LayerNames[_scene.ActiveLayer]}" : "Layer: -";
-            _selectedAtoms.Text = "Atoms: -";
+            _selected.Text = $"{UiLocalization.T("Selected:")} {UiLocalization.T("None")}";
+            _selectedLayer.Text = _scene.LayerNames.Length > 0
+                ? $"{UiLocalization.T("Layer:")} {_scene.LayerNames[_scene.ActiveLayer]}"
+                : UiLocalization.T("Layer: -");
+            _selectedAtoms.Text = $"{UiLocalization.T("Atoms:")} -";
             return;
         }
 

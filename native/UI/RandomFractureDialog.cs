@@ -445,7 +445,7 @@ internal sealed class RandomFractureDialog : ModernDialogForm
     {
         var maxFrame = Math.Max(0, PreviewFrameCount - 1);
         _previewFrame = Math.Clamp(_previewFrame, 0, maxFrame);
-        _previewFrameLabel.Text = $"Frame {_previewFrame} / {maxFrame}";
+        _previewFrameLabel.Text = $"{UiLocalization.T("Frame")} {_previewFrame} / {maxFrame}";
         _previewFrameLabel.AccessibleName = _previewFrameLabel.Text;
         var canPlay = _hasValidPreview && maxFrame > 0;
         if (_playButton is not null)

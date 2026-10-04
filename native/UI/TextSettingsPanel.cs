@@ -177,7 +177,7 @@ internal sealed class TextSettingsPanel : UserControl
         _fontSize.Maximum = 512m;
         _fontSize.DecimalPlaces = 1;
         _fontSize.Increment = 1m;
-        _fontSize.Suffix = "pt";
+        _fontSize.Suffix = UiLocalization.T("pt");
         _fontSize.Dock = DockStyle.Fill;
         _fontSize.Margin = Theme.InspectorFieldMargin(rightGap: false);
         _fontSize.AccessibleName = "Size";

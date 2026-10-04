@@ -193,9 +193,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Theme.StyleComboBox(_playbackMode);
         Theme.StyleButton(_restoreSize);
         Theme.StyleToolTip(_toolTip);
-        _toolTip.SetToolTip(_alpha, "Adjust symbol alpha");
-        _toolTip.SetToolTip(_tint, "Choose symbol tint");
-        _toolTip.SetToolTip(_restoreSize, "Restore original size");
+        _toolTip.SetToolTip(_alpha, UiLocalization.T("Adjust symbol alpha"));
+        _toolTip.SetToolTip(_tint, UiLocalization.T("Choose symbol tint"));
+        _toolTip.SetToolTip(_restoreSize, UiLocalization.T("Restore original size"));
 
         Controls.Add(_fps);
         Controls.Add(_playbackMode);

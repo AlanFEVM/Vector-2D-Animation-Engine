@@ -375,7 +375,7 @@ internal sealed partial class VectorScene
     {
         ArgumentNullException.ThrowIfNull(data);
         var placedSize = data.PlacedSize;
-        return AppendPackedObject(
+        var index = AppendPackedObject(
             layer,
             center,
             placedSize,
@@ -387,6 +387,12 @@ internal sealed partial class VectorScene
             shapeKind: VectorAnimationEngine.ShapeKind.Bitmap,
             curveControl: center,
             bitmapObjectData: data);
+        // Keep the spatial index and overview summaries in sync so the placed image can
+        // be hit-tested and selected. The packed append only stores the object arrays;
+        // every other Add* variant performs this step (see AddImportedSvgObject).
+        AppendObjectToSpatialIndex(index);
+        AddObjectToSummariesIncremental(index, Color.FromArgb(unchecked((int)0xffffffff)));
+        return index;
     }
 
     public bool TryGetBitmapObjectData(int objectIndex, out BitmapObjectData data)

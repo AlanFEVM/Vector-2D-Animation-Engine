@@ -390,7 +390,7 @@ internal sealed partial class MainForm : Form
         _traditionalPenAnchorEditTracksCurrent = handle is EditHandleKind.LineStart or EditHandleKind.LineEnd
             && _traditionalPenCurrentAnchor is { } current
             && _scene.TryGetLineEndpoint(objectIndex, handle == EditHandleKind.LineStart, out var editAnchor)
-            && Distance(current, editAnchor) <= EndpointConnectionToleranceUnits;
+            && Distance(current, editAnchor) <= _stage.ScreenLengthToWorld(EndpointConnectionTolerancePixels);
         if (_traditionalPenAnchorEditTracksCurrent)
         {
             _traditionalPenAnchorEditOriginalCurrent = _traditionalPenCurrentAnchor!.Value;
@@ -514,7 +514,7 @@ internal sealed partial class MainForm : Form
             var dy = movedAnchor.Y - _traditionalPenAnchorEditOriginalCurrent.Y;
             _traditionalPenCurrentAnchor = movedAnchor;
             if (_traditionalPenFirstAnchor is { } first
-                && Distance(first, _traditionalPenAnchorEditOriginalCurrent) <= EndpointConnectionToleranceUnits)
+                && Distance(first, _traditionalPenAnchorEditOriginalCurrent) <= _stage.ScreenLengthToWorld(EndpointConnectionTolerancePixels))
             {
                 _traditionalPenFirstAnchor = movedAnchor;
             }
@@ -2017,7 +2017,7 @@ internal sealed partial class MainForm : Form
     {
         _lineEndpointSnapBuckets.Clear();
         _lineEndpointSnapCacheLayer = layer;
-        _lineEndpointSnapBucketSize = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(10));
+        _lineEndpointSnapBucketSize = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(LineEndpointSnapRadiusPixels));
         var first = _stage.ScreenToWorld(Point.Empty);
         var second = _stage.ScreenToWorld(new Point(Math.Max(1, _stage.ClientSize.Width), Math.Max(1, _stage.ClientSize.Height)));
         _lineEndpointSnapCacheBounds = RectangleF.FromLTRB(
@@ -2062,7 +2062,7 @@ internal sealed partial class MainForm : Form
     private void CaptureConnectedEndpoint(int objectIndex, bool startEndpoint, PointF anchor)
     {
         if (!_scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var endpoint)) return;
-        if (Distance(endpoint, anchor) > EndpointConnectionToleranceUnits) return;
+        if (Distance(endpoint, anchor) > _stage.ScreenLengthToWorld(EndpointConnectionTolerancePixels)) return;
         if (!_scene.TryGetLineEndpoint(objectIndex, !startEndpoint, out var opposite)) return;
         var control1 = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
         var control2 = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]);
@@ -2144,10 +2144,15 @@ internal sealed partial class MainForm : Form
     {
         var temporarilySnapToObjects = IsControlPressed();
         PointF? objectCandidate = null;
-        if (EndpointSnappingRequested()
-            && TrySnapToNearbyLineEndpoint(world, layer, excludeEditedLines, out var nearbyEndpoint))
+        if (EndpointSnappingRequested())
         {
-            objectCandidate = nearbyEndpoint;
+            if (TrySnapToNearbyLineEndpoint(world, layer, excludeEditedLines, out var nearbyEndpoint))
+                objectCandidate = nearbyEndpoint;
+            if (TrySnapToNearbyPathPoint(world, layer, excludeEditedLines, out var nearbyPath)
+                && (objectCandidate is null || Distance(world, nearbyPath) < Distance(world, objectCandidate.Value)))
+            {
+                objectCandidate = nearbyPath;
+            }
         }
 
         return (
@@ -2182,7 +2187,7 @@ internal sealed partial class MainForm : Form
         bool excludeEditedLines,
         out PointF snapped)
     {
-        var tolerance = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(10));
+        var tolerance = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(LineEndpointSnapRadiusPixels));
         snapped = world;
         var bestDistance = tolerance;
         if (excludeEditedLines
@@ -2229,6 +2234,68 @@ internal sealed partial class MainForm : Form
         }
 
         return bestDistance < tolerance;
+    }
+
+    private bool TrySnapToNearbyPathPoint(
+        PointF world,
+        int layer,
+        bool excludeEditedLines,
+        out PointF snapped)
+    {
+        var tolerance = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(LineEndpointSnapRadiusPixels));
+        snapped = world;
+        var bestDistance = tolerance;
+        var queryBounds = new RectangleF(
+            world.X - tolerance,
+            world.Y - tolerance,
+            tolerance * 2,
+            tolerance * 2);
+        var editedLines = excludeEditedLines
+            ? _lineEndpointEditStarts.Select(edit => edit.ObjectIndex).ToHashSet()
+            : null;
+        foreach (var i in _scene.QueryObjects(queryBounds, _frame))
+        {
+            if (_scene.ObjectLayer[i] != layer
+                || !_scene.IsObjectActive(i, _frame)
+                || editedLines?.Contains(i) == true)
+            {
+                continue;
+            }
+
+            foreach (var part in _scene.GetStrokeParts(i, _frame))
+                AccumulateClosestOnPolyline(part.Points, world, ref snapped, ref bestDistance);
+            foreach (var part in _scene.GetBoundaryParts(i, _frame))
+                AccumulateClosestOnPolyline(part.Points, world, ref snapped, ref bestDistance);
+        }
+
+        return bestDistance < tolerance;
+    }
+
+    private static void AccumulateClosestOnPolyline(
+        PointF[] points,
+        PointF world,
+        ref PointF best,
+        ref float bestDistance)
+    {
+        for (var index = 1; index < points.Length; index++)
+        {
+            var projected = ProjectPointOntoSegment(world, points[index - 1], points[index]);
+            var distance = Distance(world, projected);
+            if (distance >= bestDistance) continue;
+            bestDistance = distance;
+            best = projected;
+        }
+    }
+
+    private static PointF ProjectPointOntoSegment(PointF point, PointF start, PointF end)
+    {
+        var dx = end.X - start.X;
+        var dy = end.Y - start.Y;
+        var lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= float.Epsilon) return start;
+        var t = ((point.X - start.X) * dx + (point.Y - start.Y) * dy) / lengthSquared;
+        t = Math.Clamp(t, 0f, 1f);
+        return new PointF(start.X + dx * t, start.Y + dy * t);
     }
 
     private static void TrySnapToCachedEndpoint(

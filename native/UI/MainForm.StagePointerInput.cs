@@ -391,7 +391,10 @@ internal sealed partial class MainForm : Form
                     _selectedElement = DrawingElementHit.None;
                     SyncSelectionToStage(deferPresentation: true);
                 }
-                else SetSelection(hit, deferPresentation: true);
+                else
+                {
+                    SetSelection(hit, deferPresentation: true);
+                }
 
                 if (_selectedObject >= 0) CaptureEditStart(_selectedObject);
             }
@@ -1454,7 +1457,7 @@ internal sealed partial class MainForm : Form
             _ => capture.OriginalAnchor
         };
         return handle is not EditHandleKind.LineStart and not EditHandleKind.LineEnd
-            || Distance(currentAnchor, capture.OriginalAnchor) <= EndpointConnectionToleranceUnits;
+            || Distance(currentAnchor, capture.OriginalAnchor) <= _stage.ScreenLengthToWorld(EndpointConnectionTolerancePixels);
     }
 
     private SharedBoundaryIntersection CaptureFillEdgeSharedIntersection(
@@ -2134,7 +2137,12 @@ internal sealed partial class MainForm : Form
             || _selectedObjects[0] != _selectedObject
             || !_scene.IsObjectSelectable(_selectedObject, _frame)
             || !_scene.HasFill(_selectedObject)
-            || !IsFillShape(_scene.ShapeKind[_selectedObject]))
+            || !IsFillShape(_scene.ShapeKind[_selectedObject])
+            // Whole-object-only shapes (bitmaps, imported SVG, text, non-region mixing
+            // strokes) carry no editable vertex geometry. Offering the fill-boundary
+            // bezier overlay for them would let the Select tool write vertex data that
+            // their renderers never honour, which visibly corrupts the object.
+            || IsWholeObjectOnlyObject(_selectedObject))
         {
             ClearFillEdgeBezierOverlayState();
             return;

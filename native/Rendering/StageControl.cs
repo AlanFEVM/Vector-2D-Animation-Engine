@@ -680,6 +680,7 @@ internal sealed partial class StageControl : Control
     private readonly Pen _handleBorderPen = new(Color.FromArgb(255, 16, 18, 22), 1);
     private readonly System.Windows.Forms.Timer _fillAnimationTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _selectionHighlightTimer = new() { Interval = 40 };
+    private readonly System.Windows.Forms.Timer _selectionSweepTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _zoomLodPreviewTimer = new() { Interval = ZoomLodPreviewIdleMilliseconds };
     private readonly Direct2DStageRenderer _direct2DRenderer = new();
     private readonly SceneRenderOrderBuffer _renderOrder = new();
@@ -732,6 +733,9 @@ internal sealed partial class StageControl : Control
     private float _fillAnimationMaxRadiusWorld;
     private float _fillAnimationProgress = 1f;
     private long _fillAnimationStartedAt;
+    private PointF[][] _selectionSweepContours = Array.Empty<PointF[]>();
+    private float _selectionSweepProgress = 1f;
+    private long _selectionSweepStartedAt;
     private float _selectionHighlightPhase;
     private long _selectionHighlightStartedAt;
     private bool _fillToolCursorVisible;
@@ -1048,6 +1052,9 @@ internal sealed partial class StageControl : Control
     public float FillAnimationBloomProgress => SmoothStep(_fillAnimationProgress);
     public float FillAnimationFade => 1f - SmoothStep(Math.Clamp((_fillAnimationProgress - 0.68f) / 0.32f, 0f, 1f));
     public float FillAnimationBloomRadiusWorld => Math.Max(1f, _fillAnimationMaxRadiusWorld * FillAnimationBloomProgress);
+    public bool SelectionSweepVisible => _selectionSweepContours.Length > 0 && _selectionSweepProgress < 1f;
+    public IReadOnlyList<PointF[]> SelectionSweepContours => _selectionSweepContours;
+    public float SelectionSweepProgress => _selectionSweepProgress;
     public float CameraX { get; private set; }
     public float CameraY { get; private set; }
     public float Zoom { get; private set; } = 1;
@@ -1348,6 +1355,7 @@ internal sealed partial class StageControl : Control
         TabStop = false;
         BackColor = Color.FromArgb(17, 19, 21);
         _fillAnimationTimer.Tick += (_, _) => TickFillAnimation();
+        _selectionSweepTimer.Tick += (_, _) => TickSelectionSweep();
         _selectionHighlightTimer.Tick += (_, _) => TickSelectionHighlight();
         _zoomLodPreviewTimer.Tick += (_, _) => EndZoomLodPreview(invalidate: true);
         _reference3DOpticalPreviewTimer.Tick += (_, _) =>
@@ -3317,6 +3325,7 @@ internal sealed partial class StageControl : Control
         {
             if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
             DrawSelection(g);
+            DrawSelectionSweep(g);
             DrawMotionTrack(g);
             DrawFillEdgeBezierOverlay(g);
             DrawSnapPointOverlay(g);
@@ -3507,6 +3516,7 @@ internal sealed partial class StageControl : Control
             ResetFrameSchedulerState();
             ResetFillEdgeBezierOverlay(invalidate: false);
             _fillAnimationTimer.Dispose();
+            _selectionSweepTimer.Dispose();
             _selectionHighlightTimer.Dispose();
             _zoomLodPreviewTimer.Dispose();
             _reference3DOpticalPreviewTimer.Dispose();
@@ -4320,6 +4330,52 @@ internal sealed partial class StageControl : Control
         _fillAnimationContours = Array.Empty<PointF[]>();
         _fillAnimationMaxRadiusWorld = 0f;
         _fillAnimationProgress = 1f;
+        InvalidateOverlay();
+    }
+
+    private const double SelectionSweepDurationMilliseconds = 200;
+
+    public void StartFillSelectionSweep(DrawingElementHit fillHit)
+    {
+        if (_disposingResources || Scene is null) return;
+        if (!fillHit.IsValid || fillHit.Key.Kind != DrawingElementKind.Fill) return;
+        var contours = GetSelectedFillPartContours(fillHit)
+            .Where(contour => contour.Length >= 3)
+            .Select(contour => contour.ToArray())
+            .ToArray();
+        if (contours.Length == 0) return;
+
+        _selectionSweepContours = contours;
+        _selectionSweepProgress = 0f;
+        _selectionSweepStartedAt = Stopwatch.GetTimestamp();
+        if (!_selectionSweepTimer.Enabled) _selectionSweepTimer.Start();
+        InvalidateOverlay();
+    }
+
+    private void TickSelectionSweep()
+    {
+        if (_selectionSweepContours.Length == 0)
+        {
+            _selectionSweepTimer.Stop();
+            return;
+        }
+
+        var elapsed = Stopwatch.GetElapsedTime(_selectionSweepStartedAt).TotalMilliseconds;
+        _selectionSweepProgress = (float)Math.Clamp(elapsed / SelectionSweepDurationMilliseconds, 0d, 1d);
+        if (_selectionSweepProgress >= 1f)
+        {
+            ClearSelectionSweep();
+            return;
+        }
+
+        InvalidateOverlay();
+    }
+
+    private void ClearSelectionSweep()
+    {
+        _selectionSweepTimer.Stop();
+        _selectionSweepContours = Array.Empty<PointF[]>();
+        _selectionSweepProgress = 1f;
         InvalidateOverlay();
     }
 

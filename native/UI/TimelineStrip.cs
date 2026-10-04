@@ -3064,8 +3064,10 @@ internal sealed partial class TimelineStrip : Control
             && (DrawingScene() is not null || canAddSceneMask);
         var canToggleLayerGroup = hasLayerContext && hasSingleLayerSelection && IsTrackCollapsible(activeTrack);
         _toggleFolderMenuItem.Enabled = canToggleLayerGroup;
-        var layerGroupName = IsTrackMaskGroup(activeTrack) ? "Mask" : "Folder";
-        _toggleFolderMenuItem.Text = IsTrackCollapsed(activeTrack) ? $"Expand {layerGroupName}" : $"Collapse {layerGroupName}";
+        var layerGroupName = UiLocalization.T(IsTrackMaskGroup(activeTrack) ? "Mask" : "Folder");
+        _toggleFolderMenuItem.Text = IsTrackCollapsed(activeTrack)
+            ? $"{UiLocalization.T("Expand")} {layerGroupName}"
+            : $"{UiLocalization.T("Collapse")} {layerGroupName}";
         _moveLayerOutOfMaskMenuItem.Enabled = hasLayerContext
             && hasSingleLayerSelection
             && IsTrackMaskedContent(activeTrack);

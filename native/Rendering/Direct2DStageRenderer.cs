@@ -56,7 +56,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<VectorScene, int> _freehandSceneObjectCounts = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LodBitmapKey, CachedLodBitmap> _lodBitmapCache = new();
     private readonly Dictionary<ImportedSvgRasterKey, CachedImportedSvgBitmap> _importedSvgBitmapCache = new();
-    private readonly Dictionary<BitmapImageRasterKey, CachedImportedSvgBitmap> _bitmapObjectCache = new();
+    private readonly Dictionary<(BitmapImageRasterKey Key, int Level), CachedImportedSvgBitmap> _bitmapObjectCache = new();
     private long _bitmapObjectCacheBytes;
     private readonly SceneRenderOrderBuffer _renderOrder = new();
     private ID2D1Factory1? _factory;
@@ -890,6 +890,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             {
                 if (!stage.MarqueeLodPreviewActive) DrawActiveMaskOutline(stage);
                 DrawSelection(stage);
+                DrawSelectionSweep(stage);
                 DrawMotionTrack(stage);
                 DrawFillEdgeBezierOverlay(stage);
                 DrawSnapPointOverlay(stage);
@@ -2273,15 +2274,35 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
         if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
 
-        var bitmap = BitmapObjectBitmap(raster);
+        var nearestNeighbour = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point;
+        // Pick a pre-filtered half-resolution copy that matches the on-screen size. Drawing a
+        // minified bitmap straight from its full-resolution source aliases badly under plain
+        // bilinear filtering, and that aliasing reads as jagged edges once the object is
+        // rotated. At most a 2x reduction is left for the bilinear pass.
+        var sampled = raster;
+        var level = 0;
+        if (!nearestNeighbour)
+        {
+            var requested = MinificationLevel(raster, screenWidth, screenHeight);
+            var minified = requested > 0
+                ? BitmapImageRasterizer.TryGetMinifiedRaster(raster, requested)
+                : null;
+            if (minified is not null && !ReferenceEquals(minified, raster))
+            {
+                sampled = minified;
+                level = requested;
+            }
+        }
+
+        var bitmap = BitmapObjectBitmap(sampled, level);
         var destination = Rect(
             screenCenter.X - screenWidth * 0.5f,
             screenCenter.Y - screenHeight * 0.5f,
             screenWidth,
             screenHeight);
-        var sourceRectangle = Rect(0, 0, raster.PixelWidth, raster.PixelHeight);
+        var sourceRectangle = Rect(0, 0, sampled.PixelWidth, sampled.PixelHeight);
         var opacity = GdiColor.FromArgb(scene.Argb[objectIndex]).A / 255f;
-        var interpolation = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
+        var interpolation = nearestNeighbour
             ? BitmapInterpolationMode.NearestNeighbor
             : BitmapInterpolationMode.Linear;
         var old = _target!.Transform;
@@ -2303,10 +2324,13 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         }
     }
 
-    private ID2D1Bitmap BitmapObjectBitmap(BitmapImageRaster raster)
+    private ID2D1Bitmap BitmapObjectBitmap(BitmapImageRaster raster) => BitmapObjectBitmap(raster, 0);
+
+    private ID2D1Bitmap BitmapObjectBitmap(BitmapImageRaster raster, int level)
     {
         if (_target is null) throw new InvalidOperationException("Direct2D render target is not ready.");
-        if (_bitmapObjectCache.TryGetValue(raster.Key, out var cached)) return cached.Bitmap;
+        var cacheKey = (raster.Key, level);
+        if (_bitmapObjectCache.TryGetValue(cacheKey, out var cached)) return cached.Bitmap;
         var pixelBytes = raster.Pixels.LongLength;
         if (_bitmapObjectCache.Count >= MaxBitmapObjectCacheEntries
             || _bitmapObjectCacheBytes > MaxBitmapObjectCacheBytes - pixelBytes)
@@ -2333,9 +2357,23 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             pixelsHandle.Free();
         }
 
-        _bitmapObjectCache[raster.Key] = new CachedImportedSvgBitmap(pixelBytes, bitmap);
+        _bitmapObjectCache[cacheKey] = new CachedImportedSvgBitmap(pixelBytes, bitmap);
         _bitmapObjectCacheBytes += pixelBytes;
         return bitmap;
+    }
+
+    /// <summary>
+    /// Number of successive halvings that bring the raster closest to the on-screen size.
+    /// Returns 0 when the bitmap is drawn at (or above) half its source resolution, where a
+    /// bilinear pass is already adequate and shrinking would only lose detail.
+    /// </summary>
+    private static int MinificationLevel(BitmapImageRaster raster, float screenWidth, float screenHeight)
+    {
+        if (raster.PixelWidth <= 0 || raster.PixelHeight <= 0) return 0;
+        var scale = Math.Max(screenWidth / raster.PixelWidth, screenHeight / raster.PixelHeight);
+        if (!float.IsFinite(scale) || scale <= 0f || scale >= 0.5f) return 0;
+        var level = (int)MathF.Floor(MathF.Log2(1f / scale));
+        return Math.Clamp(level, 0, 8);
     }
 
     private void DrawPathObject(StageControl stage, GdiPointF[][] worldContours, ID2D1SolidColorBrush brush, ID2D1SolidColorBrush strokeBrush, float stroke, float screenStroke, SceneRenderPass pass)
@@ -3766,6 +3804,61 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         fillGeometry.CombineWithGeometry(bloom, CombineMode.Intersect, sink);
         sink.Close();
         return intersection;
+    }
+
+    private void DrawSelectionSweep(StageControl stage)
+    {
+        if (!stage.SelectionSweepVisible) return;
+
+        using var fillPath = _factory!.CreatePathGeometry();
+        using (var sink = fillPath.Open())
+        {
+            sink.SetFillMode(FillMode.Alternate);
+            foreach (var contour in stage.SelectionSweepContours)
+            {
+                if (contour.Length < 3) continue;
+                sink.BeginFigure(WorldToVector(stage, contour[0]), FigureBegin.Filled);
+                for (var index = 1; index < contour.Length; index++) sink.AddLine(WorldToVector(stage, contour[index]));
+                sink.EndFigure(FigureEnd.Closed);
+            }
+
+            sink.Close();
+        }
+
+        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        foreach (var contour in stage.SelectionSweepContours)
+        {
+            foreach (var point in contour)
+            {
+                var v = WorldToVector(stage, point);
+                minX = Math.Min(minX, v.X);
+                minY = Math.Min(minY, v.Y);
+                maxX = Math.Max(maxX, v.X);
+                maxY = Math.Max(maxY, v.Y);
+            }
+        }
+
+        if (minX > maxX || minY > maxY) return;
+        var center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+        var diagonal = MathF.Sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY));
+        if (diagonal < 1f) return;
+
+        var progress = stage.SelectionSweepProgress;
+        var ease = SmoothStepF(Math.Clamp(progress / 0.15f, 0f, 1f))
+                 * (1f - SmoothStepF(Math.Clamp((progress - 0.85f) / 0.15f, 0f, 1f)));
+        if (ease <= 0f) return;
+
+        var alpha = (byte)Math.Clamp(16f * ease, 0f, 255f);
+        if (alpha <= 0) return;
+
+        using var brush = _target!.CreateSolidColorBrush(ToColor4(GdiColor.FromArgb(alpha, 0, 0, 0)));
+        _target.FillGeometry(fillPath, brush);
+    }
+
+    private static float SmoothStepF(float value)
+    {
+        value = Math.Clamp(value, 0f, 1f);
+        return value * value * (3f - 2f * value);
     }
 
     private void DrawFillPreview(StageControl stage)

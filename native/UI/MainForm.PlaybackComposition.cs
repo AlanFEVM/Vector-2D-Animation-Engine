@@ -104,7 +104,9 @@ internal sealed partial class MainForm
                 _playbackSettings.LoopPlayback,
                 _playbackSettings.Fps,
                 prefetchCapacity,
-                preparationState);
+                preparationState,
+                ResolveBitmapImageRaster,
+                ResolveBitmapImageSampling);
             _playbackCompositionPreloader.Start();
             // Keep the editable current frame visible until the asynchronous
             // preloader publishes a replacement. Playback startup must never
@@ -350,6 +352,8 @@ internal sealed partial class MainForm
         private readonly decimal _fps;
         private readonly int _capacity;
         private readonly Reference3DPlaybackPreparationState _preparationState;
+        private readonly Func<string, BitmapImageRaster?>? _bitmapImageResolver;
+        private readonly Func<string, BitmapSampling>? _bitmapImageSamplingProvider;
         private readonly BlockingCollection<PendingPlaybackComposition> _pending;
         private readonly ConcurrentDictionary<int, PreparedPlaybackComposition> _ready = new();
         private readonly CancellationTokenSource _cancellation = new();
@@ -387,7 +391,9 @@ internal sealed partial class MainForm
             bool loop,
             decimal fps,
             int capacity,
-            Reference3DPlaybackPreparationState preparationState)
+            Reference3DPlaybackPreparationState preparationState,
+            Func<string, BitmapImageRaster?>? bitmapImageResolver,
+            Func<string, BitmapSampling>? bitmapImageSamplingProvider)
         {
             _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
             _sceneId = sceneId ?? string.Empty;
@@ -397,6 +403,8 @@ internal sealed partial class MainForm
             _fps = Math.Max(1m, fps);
             _capacity = Math.Max(1, capacity);
             _preparationState = preparationState;
+            _bitmapImageResolver = bitmapImageResolver;
+            _bitmapImageSamplingProvider = bitmapImageSamplingProvider;
             _pending = new BlockingCollection<PendingPlaybackComposition>(
                 new ConcurrentQueue<PendingPlaybackComposition>(),
                 _capacity);
@@ -692,6 +700,10 @@ internal sealed partial class MainForm
             try
             {
                 using var preparationStage = new StageControl(new VectorScene());
+                // The preparation stage paints the live scene, so it needs the same asset
+                // lookup the editor stage uses or bitmaps vanish from prepared playback frames.
+                preparationStage.BitmapImageResolver = _bitmapImageResolver;
+                preparationStage.BitmapImageSamplingProvider = _bitmapImageSamplingProvider;
                 preparationStage.Size = new Size(
                     Math.Max(1, _preparationState.Width),
                     Math.Max(1, _preparationState.Height));

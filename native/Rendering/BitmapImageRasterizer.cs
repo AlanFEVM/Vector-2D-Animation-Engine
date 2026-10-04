@@ -323,6 +323,101 @@ internal static class BitmapImageRasterizer
     }
 
     /// <summary>
+    /// Successively halved, high-quality-filtered copies of a decoded raster.
+    /// A placed bitmap is normally drawn far smaller than its source pixels, and sampling
+    /// that full-resolution source with plain bilinear filtering aliases badly; the aliasing
+    /// reads as jagged edges as soon as the object is rotated. Renderers therefore pick the
+    /// level closest to the on-screen size and leave at most a 2x reduction to the filter.
+    /// This is what the import "Generate mipmaps" option promises but never produced.
+    /// </summary>
+    private const long MaxMinifiedCacheBytes = 128L * 1024 * 1024;
+    private static readonly Dictionary<(BitmapImageRasterKey Key, int Level), BitmapImageRaster> MinifiedCache = new();
+    private static readonly object MinifiedSync = new();
+    private static long _minifiedCacheBytes;
+
+    /// <summary>
+    /// Returns the raster reduced by <paramref name="level"/> successive halvings, or null
+    /// when it cannot be built. Level 0 is the source itself.
+    /// </summary>
+    internal static BitmapImageRaster? TryGetMinifiedRaster(BitmapImageRaster source, int level)
+    {
+        if (level <= 0) return source;
+        var width = source.PixelWidth;
+        var height = source.PixelHeight;
+        for (var step = 0; step < level && (width > 1 || height > 1); step++)
+        {
+            width = Math.Max(1, width / 2);
+            height = Math.Max(1, height / 2);
+        }
+        if (width >= source.PixelWidth && height >= source.PixelHeight) return source;
+
+        lock (MinifiedSync)
+        {
+            if (MinifiedCache.TryGetValue((source.Key, level), out var cached)) return cached;
+            var minified = CreateMinifiedRaster(source, width, height);
+            if (minified is null) return null;
+            if (_minifiedCacheBytes + minified.Pixels.LongLength > MaxMinifiedCacheBytes)
+            {
+                MinifiedCache.Clear();
+                _minifiedCacheBytes = 0;
+            }
+            MinifiedCache[(source.Key, level)] = minified;
+            _minifiedCacheBytes += minified.Pixels.LongLength;
+            return minified;
+        }
+    }
+
+    private static BitmapImageRaster? CreateMinifiedRaster(BitmapImageRaster source, int width, int height)
+    {
+        if (width <= 0 || height <= 0) return null;
+        try
+        {
+            using var lease = source.AcquireBitmap();
+            var raster = new BitmapImageRaster(
+                new BitmapImageRasterKey(source.Key.ContentSha256, width, height));
+            using var target = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            using (var graphics = Graphics.FromImage(target))
+            {
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.CompositingQuality = CompositingQuality.HighQuality;
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.DrawImage(
+                    lease.Bitmap,
+                    new Rectangle(0, 0, width, height),
+                    new Rectangle(0, 0, source.PixelWidth, source.PixelHeight),
+                    GraphicsUnit.Pixel);
+            }
+
+            var data = target.LockBits(
+                new Rectangle(0, 0, width, height),
+                ImageLockMode.ReadOnly,
+                PixelFormat.Format32bppPArgb);
+            try
+            {
+                for (var y = 0; y < height; y++)
+                {
+                    Marshal.Copy(
+                        IntPtr.Add(data.Scan0, y * data.Stride),
+                        raster.Pixels,
+                        y * raster.Stride,
+                        raster.Stride);
+                }
+            }
+            finally
+            {
+                target.UnlockBits(data);
+            }
+
+            return raster;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Honours the alpha-source setting: pre-multiplied pixels whose alpha is dropped must
     /// have their colour channels un-premultiplied, not left darkened.
     /// </summary>

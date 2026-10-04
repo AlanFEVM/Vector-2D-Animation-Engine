@@ -103,6 +103,8 @@ internal sealed partial class MainForm : Form
     private const int IdleTimerIntervalMs = 250;
     private const int PlaybackTimerIntervalMs = 8;
     private const float EndpointConnectionToleranceUnits = 1.25f;
+    private const float LineEndpointSnapRadiusPixels = 32f;
+    private const float EndpointConnectionTolerancePixels = 5f;
     private const int MaxUndoSnapshots = 32;
     private const long MaxUndoSnapshotBytes = 128L * 1024 * 1024;
     private const float PasteOffsetUnits = 96f;
@@ -834,6 +836,7 @@ internal sealed partial class MainForm : Form
             BackColor = Color.FromArgb(_applicationSettings.WorkspaceColorArgb)
         };
         _stage.AllowDrop = true;
+        BindStageBitmapImageResolvers(_stage);
         _dashDock.SetWorkspaceColor(_stage.BackColor);
         Theme.StyleTextBox(_textEditor);
         _textEditor.BorderStyle = BorderStyle.FixedSingle;

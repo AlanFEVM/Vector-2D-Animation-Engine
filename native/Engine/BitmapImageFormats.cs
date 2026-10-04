@@ -62,17 +62,17 @@ internal static class BitmapImageFormats
         error = "";
         if (pixelWidth < 1 || pixelHeight < 1)
         {
-            error = "The image has no positive pixel size.";
+            error = UiLocalization.T("The image has no positive pixel size.");
             return false;
         }
         if (pixelWidth > MaximumPixelDimension || pixelHeight > MaximumPixelDimension)
         {
-            error = $"Image dimensions must not exceed {MaximumPixelDimension} pixels per side.";
+            error = string.Format(UiLocalization.T("Image dimensions must not exceed {0} pixels per side."), MaximumPixelDimension);
             return false;
         }
         if ((long)pixelWidth * pixelHeight > MaximumDecodedPixels)
         {
-            error = $"Image pixel count must not exceed {MaximumDecodedPixels} pixels.";
+            error = string.Format(UiLocalization.T("Image pixel count must not exceed {0} pixels."), MaximumDecodedPixels);
             return false;
         }
         return true;

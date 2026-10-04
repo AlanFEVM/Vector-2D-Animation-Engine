@@ -121,7 +121,7 @@ internal sealed class BrushTipPanel : UserControl
         _size.DecimalPlaces = 1;
         _size.Increment = 0.1m;
         _size.Value = 8m;
-        _size.Suffix = "pt";
+        _size.Suffix = UiLocalization.T("pt");
         _size.ValueChanged += (_, _) =>
         {
             if (!_updating) BrushSizeChanged?.Invoke(this, EventArgs.Empty);

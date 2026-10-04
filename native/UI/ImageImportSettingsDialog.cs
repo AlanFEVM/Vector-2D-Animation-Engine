@@ -85,22 +85,22 @@ internal sealed class ImageImportSettingsDialog : ModernDialogForm
 
     private void ConfigureCombos()
     {
-        _filterMode.Items.AddRange(["Point (no filter)", "Bilinear", "Trilinear"]);
+        _filterMode.Items.AddRange([UiLocalization.T("Point (no filter)"), UiLocalization.T("Bilinear"), UiLocalization.T("Trilinear")]);
         _filterMode.AccessibleName = "Filter mode";
         _filterMode.AccessibleDescription = "Choose how the image is sampled when scaled";
         Theme.StyleComboBox(_filterMode);
 
-        _nonPowerOfTwo.Items.AddRange(["None", "ToNearest"]);
+        _nonPowerOfTwo.Items.AddRange([UiLocalization.T("None"), UiLocalization.T("ToNearest")]);
         _nonPowerOfTwo.AccessibleName = "Non power of two";
         _nonPowerOfTwo.AccessibleDescription = "Choose how a non-power-of-two image is resized on import";
         Theme.StyleComboBox(_nonPowerOfTwo);
 
-        _compression.Items.AddRange(["Lossless (PNG)", "JPEG", "Raw"]);
+        _compression.Items.AddRange([UiLocalization.T("Lossless (PNG)"), "JPEG", UiLocalization.T("Raw")]);
         _compression.AccessibleName = "Compression";
         _compression.AccessibleDescription = "Choose the stored format of the managed copy";
         Theme.StyleComboBox(_compression);
 
-        _alphaSource.Items.AddRange(["From input", "None"]);
+        _alphaSource.Items.AddRange([UiLocalization.T("From input"), UiLocalization.T("None")]);
         _alphaSource.AccessibleName = "Alpha source";
         _alphaSource.AccessibleDescription = "Choose whether the source alpha channel is kept";
         Theme.StyleComboBox(_alphaSource);
@@ -350,7 +350,7 @@ internal sealed class ImageImportSettingsDialog : ModernDialogForm
         Value = value,
         AccessibleName = accessibleName,
         AccessibleDescription = accessibleName,
-        Suffix = accessibleName
+        Suffix = UiLocalization.T(accessibleName)
     };
 
     private static CheckBox Check(string text, string description, bool value) => new()

@@ -753,6 +753,50 @@ internal sealed partial class StageControl : Control
         g.SmoothingMode = oldMode;
     }
 
+    private void DrawSelectionSweep(Graphics g)
+    {
+        if (!SelectionSweepVisible) return;
+
+        using var path = new GraphicsPath(FillMode.Alternate);
+        foreach (var contour in _selectionSweepContours)
+        {
+            var points = contour.Select(point => WorldToScreen(point.X, point.Y)).ToArray();
+            if (points.Length >= 3) path.AddPolygon(points);
+        }
+
+        if (path.PointCount == 0) return;
+
+        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        foreach (var contour in _selectionSweepContours)
+        {
+            foreach (var point in contour)
+            {
+                var v = WorldToScreen(point.X, point.Y);
+                minX = Math.Min(minX, v.X);
+                minY = Math.Min(minY, v.Y);
+                maxX = Math.Max(maxX, v.X);
+                maxY = Math.Max(maxY, v.Y);
+            }
+        }
+
+        if (minX > maxX || minY > maxY) return;
+        var cx = (minX + maxX) * 0.5f;
+        var cy = (minY + maxY) * 0.5f;
+        var diagonal = MathF.Sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY));
+        if (diagonal < 1f) return;
+
+        var progress = _selectionSweepProgress;
+        var ease = SmoothStep(Math.Clamp(progress / 0.15f, 0f, 1f))
+                 * (1f - SmoothStep(Math.Clamp((progress - 0.85f) / 0.15f, 0f, 1f)));
+        if (ease <= 0f) return;
+
+        var alpha = (int)Math.Clamp(16f * ease, 0f, 255f);
+        if (alpha <= 0) return;
+
+        using var brush = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0));
+        g.FillPath(brush, path);
+    }
+
     private static void DrawFillBloom(Graphics g, PointF origin, float radius, Color color, float fade)
     {
         DrawFillBloomLayer(g, origin, radius, color, 20f * fade);
@@ -1244,10 +1288,10 @@ internal sealed partial class StageControl : Control
     {
         g.DrawLine(_guidePen, start, control1);
         g.DrawLine(_guidePen, end, control2);
-        DrawHandle(g, start, _handleBrush, 8);
-        DrawHandle(g, end, _handleBrush, 8);
-        DrawHandle(g, control1, _bezierHandleBrush, 10);
-        DrawHandle(g, control2, _bezierHandleBrush, 10);
+        DrawHandle(g, start, _handleBrush, 7);
+        DrawHandle(g, end, _handleBrush, 7);
+        DrawHandle(g, control1, _bezierHandleBrush, 9);
+        DrawHandle(g, control2, _bezierHandleBrush, 9);
     }
 
     private void DrawTransformOverlay(Graphics g)
@@ -1556,21 +1600,21 @@ internal sealed partial class StageControl : Control
     {
         return highlightKind == SelectionHighlightKind.Fill
             ? primary ? 7.5f + 2f * pulse : 5.5f + 1.5f * pulse
-            : primary ? 10.5f + 3f * pulse : 7f + 2f * pulse;
+            : primary ? 6.2f + 1.6f * pulse : 4.6f + 1.2f * pulse;
     }
 
     internal static float SelectionGlowWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
     {
         return highlightKind == SelectionHighlightKind.Fill
             ? primary ? 4.2f + 1.4f * pulse : 3.2f + 1f * pulse
-            : primary ? 5.8f + 2.4f * pulse : 4.2f + 1.6f * pulse;
+            : primary ? 4.2f + 1.2f * pulse : 3.2f + 0.9f * pulse;
     }
 
     internal static float SelectionLineWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
     {
         return highlightKind == SelectionHighlightKind.Fill
             ? primary ? 1.7f + 0.45f * pulse : 1.15f + 0.35f * pulse
-            : primary ? 2.2f + 0.7f * pulse : 1.35f + 0.45f * pulse;
+            : primary ? 1.9f + 0.5f * pulse : 1.2f + 0.35f * pulse;
     }
 
     private void PrepareSelectionHighlightPens(SelectionHighlightKind highlightKind)

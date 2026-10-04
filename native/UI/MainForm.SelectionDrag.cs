@@ -410,8 +410,8 @@ internal sealed partial class MainForm
             return false;
         }
 
-        return Distance(start, endpoint) <= EndpointConnectionToleranceUnits
-            || Distance(end, endpoint) <= EndpointConnectionToleranceUnits;
+        return Distance(start, endpoint) <= _stage.ScreenLengthToWorld(EndpointConnectionTolerancePixels)
+            || Distance(end, endpoint) <= _stage.ScreenLengthToWorld(EndpointConnectionTolerancePixels);
     }
 
     private bool TryResetSelectedBezierCurvature(MouseButtons button, EditHandleKind handle)

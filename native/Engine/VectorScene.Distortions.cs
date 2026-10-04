@@ -9,6 +9,20 @@ internal sealed partial class VectorScene
 {
     internal bool HasObjectDistortions => _objectDistortions.Count > 0;
 
+    /// <summary>
+    /// Whether the render pipeline actually honours per-object distortion warps for
+    /// this object. Vector fills build distorted geometry (TryBuildDistortedVectorGeometry)
+    /// so the Distort tool is meaningful for them. Placed bitmaps, however, are drawn by
+    /// DrawBitmapObject as an axis-aligned rotated rectangle that ignores _objectDistortions:
+    /// exposing the Distort tool on them would persist an invisible, un-renderable warp that
+    /// still corrupts hit-testing. Callers must gate distort UI on this before showing handles.
+    /// </summary>
+    internal bool SupportsDistortion(int objectIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount) return false;
+        return ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Bitmap;
+    }
+
     internal bool TryGetObjectDistortions(int objectIndex, out DistortWarp[] distortions)
     {
         if ((uint)objectIndex >= ObjectCount

@@ -1791,6 +1791,20 @@ internal sealed partial class MainForm : Form
 
         if (_tool == ToolMode.Distort)
         {
+            // Bitmaps (and any other non-distortable shape) have no editable vertex
+            // geometry for the Distort tool to warp. Showing the distort envelope would
+            // persist an un-renderable warp that still corrupts hit-testing, so the
+            // Distort tool must not expose its handles for them. The tool then degrades
+            // to plain selection (no broken, non-functional distort handles), and the
+            // user switches to the Free Transform tool for move/scale/rotate.
+            if (_selectedObjects.Count == 0
+                || !_selectedObjects.All(i => _scene.SupportsDistortion(i)))
+            {
+                _stage.SetDistortOverlay(false, default);
+                _stage.SetTransformOverlay(false, RectangleF.Empty);
+                return;
+            }
+
             var envelope = _activeTransformHandle != TransformHandleKind.None
                 || _distortVisualHandleActive
                 ? _distortCurrentEnvelope

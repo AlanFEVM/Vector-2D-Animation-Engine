@@ -1694,6 +1694,11 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _imagePreview.Visible = false;
             _imagePreview.SizeMode = PictureBoxSizeMode.Zoom;
             content.Controls.Add(_emptyState);
+            // Controls.Add appends behind the controls already present, so the stage (added
+            // first, docked fill, opaque) sits in front of the preview and hid the decoded
+            // image entirely. Restate the intended stacking: stage at the back, decoded
+            // preview above it, empty-state message on top.
+            _imagePreview.BringToFront();
             _emptyState.BringToFront();
             UiLocalization.Watch(this);
         }
@@ -1735,9 +1740,9 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _contentScene = drawingObject.Scene;
             _contentUnderlay = _underlayScene;
             _title.Text = drawingObject.Name;
-            _kind.Text = $"Kind: {drawingObject.Kind}";
+            _kind.Text = $"{UiLocalization.T("Kind:")} {UiLocalization.T(drawingObject.Kind.ToString())}";
             _detail.Text = string.IsNullOrWhiteSpace(drawingObject.Detail)
-                ? $"Created {drawingObject.CreatedAt:g}"
+                ? $"{UiLocalization.T("Created")} {drawingObject.CreatedAt:g}"
                 : drawingObject.Detail;
             RenderDrawingObjectFrame(frame);
         }
@@ -1755,15 +1760,19 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _contentUnderlay = null;
             _contentFrame = 0;
             ShowImagePreview(raster?.Pixels, raster?.PixelWidth ?? 0, raster?.PixelHeight ?? 0, raster?.Stride ?? 0);
-            _emptyState.Text = raster is null ? "Image unavailable" : "No visual preview";
+            _emptyState.Text = raster is null
+                ? UiLocalization.T("Image unavailable")
+                : UiLocalization.T("No visual preview");
             _emptyState.Visible = raster is null;
             _title.Text = asset.Name;
-            _kind.Text = $"Image  |  {asset.ImportSettings.FilterMode}";
+            _kind.Text =
+                $"{UiLocalization.T("Image")}  |  {UiLocalization.T(asset.ImportSettings.FilterMode.ToString())}";
             _metadata.Text =
-                $"{asset.PixelWidth} x {asset.PixelHeight} px  |  {asset.ImportSettings.PixelsPerUnit:0.##} PPU";
+                $"{asset.PixelWidth} x {asset.PixelHeight} {UiLocalization.T("px")}  |  "
+                + $"{asset.ImportSettings.PixelsPerUnit:0.##} {UiLocalization.T("PPU")}";
             _detail.Text = SingleLine(
                 asset.ImportSettings.IsValid
-                    ? $"{asset.ImportSettings.Compression}  |  {asset.ProjectRelativePath}"
+                    ? $"{UiLocalization.T(asset.ImportSettings.Compression.ToString())}  |  {asset.ProjectRelativePath}"
                     : asset.ProjectRelativePath);
         }
 
@@ -1839,12 +1848,12 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _contentUnderlay = null;
             _contentFrame = 0;
             _emptyState.Text = string.Equals(item.ReferenceKind, "DrawingObject", StringComparison.Ordinal)
-                ? "Symbol unavailable"
-                : "No visual preview";
+                ? UiLocalization.T("Symbol unavailable")
+                : UiLocalization.T("No visual preview");
             _emptyState.Visible = true;
             _title.Text = item.Name;
             _kind.Text = item.Kind;
-            _metadata.Text = $"Stored {item.CreatedAt:g}";
+            _metadata.Text = $"{UiLocalization.T("Stored")} {item.CreatedAt:g}";
             _detail.Text = SingleLine(item.Detail.Length > 0 ? item.Detail : item.Payload);
         }
 
@@ -1964,9 +1973,15 @@ internal sealed partial class LibraryVaultPanel : UserControl
             var objectCount = _drawingObject.Scene.ObjectCount + _underlayScene.ObjectCount;
             var activeObjectCount = CountActiveObjects(_drawingObject.Scene, frame)
                 + CountActiveObjects(_underlayScene, frame);
-            _emptyState.Text = objectCount == 0 ? "Empty symbol" : "No content at this frame";
+            _emptyState.Text = objectCount == 0
+                ? UiLocalization.T("Empty symbol")
+                : UiLocalization.T("No content at this frame");
             _emptyState.Visible = activeObjectCount == 0;
-            _metadata.Text = $"{activeObjectCount}/{objectCount} visible | {_drawingObject.Scene.LayerCount} layers | {_drawingObject.Instances.Count} nested | frame {frame + 1}/{_drawingObject.FrameCount}";
+            _metadata.Text =
+                $"{activeObjectCount}/{objectCount} {UiLocalization.T("visible")} | "
+                + $"{_drawingObject.Scene.LayerCount} {UiLocalization.T("layers")} | "
+                + $"{_drawingObject.Instances.Count} {UiLocalization.T("nested")} | "
+                + $"{UiLocalization.T("frame")} {frame + 1}/{_drawingObject.FrameCount}";
             if (Visible && !_hasFittedContent && activeObjectCount > 0) FitContent();
         }
 

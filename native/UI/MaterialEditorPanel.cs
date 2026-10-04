@@ -147,7 +147,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly Button _saveGradientPreset = new SvgIconButton(SvgIconKind.Add);
     private readonly Button _removeGradientPreset = new SvgIconButton(SvgIconKind.Remove);
     private readonly Button _colorEditorToggle = new SvgIconButton(SvgIconKind.ChevronDown) { Text = "Color" };
-    private readonly ModernNumericUpDown _strokeWidth = new() { Suffix = "pt" };
+    private readonly ModernNumericUpDown _strokeWidth = new() { Suffix = UiLocalization.T("pt") };
     private readonly Label _strokeWidthLabel = CreateFieldLabel("Width pt");
     private readonly Panel _lineEndpointStylePanel = new();
     private readonly Button _startSharpEndpointStyle = new SegmentedButton { Text = "Sharp" };
@@ -210,7 +210,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
         EnsureGradientPaletteStateLoaded();
         BuildUi();
-        ApplyMaterial(_fill, _stroke, 2f, 1f, raiseEvent: false);
+        ApplyMaterial(_fill, _stroke, 1f, 1f, raiseEvent: false);
     }
 
     public event EventHandler<MaterialChangedEventArgs>? MaterialChanged;
@@ -2075,7 +2075,9 @@ internal sealed class MaterialEditorPanel : UserControl
         _recentPaletteTitle.Text = RecentPalette.Count == 0 && RecentGradientPresets.Count == 0
             ? "Recent"
             : $"Recent ({RecentPalette.Count} colors, {RecentGradientPresets.Count} gradients)";
-        _customPaletteTitle.Text = CustomPalette.Count == 0 ? "Custom" : $"Custom ({CustomPalette.Count})";
+        _customPaletteTitle.Text = CustomPalette.Count == 0
+            ? UiLocalization.T("Custom")
+            : $"{UiLocalization.T("Custom")} ({CustomPalette.Count})";
         _removeCustom.Enabled = CustomPalette.Count > 0;
         RefreshGradientPresetActions();
         UpdateColorSelectionIndicators();

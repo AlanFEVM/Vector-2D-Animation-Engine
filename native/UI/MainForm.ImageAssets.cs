@@ -4,7 +4,7 @@ internal sealed partial class MainForm
 {
     private void ImportImageAsset()
     {
-        if (!CanPlaceImage()) return;
+        if (!EnsureImagePlacementAllowed()) return;
         using var dialog = CreateImageAssetDialog("Import Image...");
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         ImportImageAssetFromPath(dialog.FileName);
@@ -19,6 +19,9 @@ internal sealed partial class MainForm
     private void ImportImageAssetsFromFiles(IReadOnlyList<string> fileNames)
     {
         if (fileNames.Count == 0) return;
+        // Reported once for the whole drop instead of per file, so a blocked batch does not
+        // stack one dialog per image.
+        if (!EnsureImagePlacementAllowed()) return;
         BitmapImageImportSettings? sharedSettings = null;
         var imported = 0;
         foreach (var fileName in fileNames)
@@ -51,7 +54,7 @@ internal sealed partial class MainForm
         ImageAssetDefinition? knownAsset,
         PointF center)
     {
-        if (!CanPlaceImage()) return;
+        if (!EnsureImagePlacementAllowed()) return;
         var asset = knownAsset ?? ImportImageAssetFromPath(fileName, showSettingsDialog: true);
         if (asset is null) return;
         PlaceImageAsset(asset.Id, center);
@@ -208,16 +211,7 @@ internal sealed partial class MainForm
             ShowImageAssetError("The image is missing.", assetId);
             return;
         }
-        if (!CanPlaceImage())
-        {
-            ModernMessageDialog.Show(
-                this,
-                UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before placing an image."),
-                UiLocalization.T("Images"),
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            return;
-        }
+        if (!EnsureImagePlacementAllowed()) return;
 
         var path = ResolveImageAssetPath(asset);
         if (path is null)
@@ -539,11 +533,89 @@ internal sealed partial class MainForm
     /// drawing-kind active layer. Placing onto a mask layer would silently produce a
     /// bitmap the mask path cannot clip with.
     /// </summary>
-    private bool CanPlaceImage() => CanImportSvg();
+    /// <summary>
+    /// Explains why an image cannot be placed right now. Placement depends on the active
+    /// workspace, whether drawing tools are busy, the current selection and the layer kind,
+    /// so each unmet requirement reports its own actionable message instead of failing
+    /// silently from a bare guard clause.
+    /// </summary>
+    private string? ImagePlacementBlockedReason()
+    {
+        if (_workspaceTabs.SelectedView != WorkspaceView.BasicDrawing && !IsSceneMaskEditing())
+        {
+            return UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before placing an image.");
+        }
+        if (DrawingToolsBlocked())
+        {
+            return UiLocalization.T("Finish the current drawing operation before placing an image.");
+        }
+        if (!IsSceneMaskEditing() && ActiveDrawingObject() is null)
+        {
+            return UiLocalization.T("Select an object on the stage first.");
+        }
+        var layer = _scene.ActiveLayer;
+        if ((uint)layer >= _scene.LayerCount || _scene.GetLayerKind(layer) != DrawingLayerKind.Drawing)
+        {
+            return UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before placing an image.");
+        }
+        return null;
+    }
+
+    private bool CanPlaceImage() => ImagePlacementBlockedReason() is null;
+
+    private bool EnsureImagePlacementAllowed()
+    {
+        if (ImagePlacementBlockedReason() is not { } reason) return true;
+        ModernMessageDialog.Show(
+            this,
+            reason,
+            UiLocalization.T("Images"),
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+        return false;
+    }
 
     private ImageAssetDefinition? FindImageAsset(string assetId) =>
         _project.ImageAssets.FirstOrDefault(asset =>
             string.Equals(asset.Id, assetId, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Resolves an image asset id to decoded pixels for the stage renderers. The renderers
+    /// only ever see the scene, so asset lookup, file resolution and decoding stay in the
+    /// project layer. The rasterizer caches by content hash, so repeated frames are cheap.
+    /// </summary>
+    private BitmapImageRaster? ResolveBitmapImageRaster(string imageAssetId)
+    {
+        var asset = FindImageAsset(imageAssetId);
+        if (asset is null) return null;
+        var path = ResolveImageAssetPath(asset);
+        if (path is null) return null;
+        try
+        {
+            return BitmapImageRasterizer.Decode(path, asset.ImportSettings);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or OutOfMemoryException or ArgumentException)
+        {
+            AppLog.Error($"Unable to decode image asset for rendering: {asset.Name}", exception);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Gives a stage the asset lookup it needs to paint bitmap objects. Without it the
+    /// renderers resolve nothing and skip every bitmap without a sound, which reads as an
+    /// empty canvas instead of a failure.
+    /// </summary>
+    private BitmapSampling ResolveBitmapImageSampling(string imageAssetId) =>
+        FindImageAsset(imageAssetId)?.ImportSettings.FilterMode == ImageFilterMode.Point
+            ? BitmapSampling.Point
+            : BitmapSampling.Linear;
+
+    private void BindStageBitmapImageResolvers(StageControl stage)
+    {
+        stage.BitmapImageResolver = ResolveBitmapImageRaster;
+        stage.BitmapImageSamplingProvider = ResolveBitmapImageSampling;
+    }
 
     /// <summary>
     /// Resolves the file to decode. The managed copy inside the project is authoritative

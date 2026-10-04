@@ -455,10 +455,10 @@ internal sealed partial class Direct2DStageRenderer
         var guide = BrushFor(GdiColor.FromArgb(190, 112, 204, 255).ToArgb());
         _target!.DrawLine(start, control1, guide, 1);
         _target.DrawLine(end, control2, guide, 1);
-        DrawHandle(start, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 8);
-        DrawHandle(end, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 8);
-        DrawHandle(control1, BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb()), 10);
-        DrawHandle(control2, BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb()), 10);
+        DrawHandle(start, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 7);
+        DrawHandle(end, BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb()), 7);
+        DrawHandle(control1, BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb()), 9);
+        DrawHandle(control2, BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb()), 9);
     }
 
     private void DrawTransformOverlay(StageControl stage)
