@@ -755,9 +755,22 @@ internal sealed partial class MainForm : Form
     {
         public required VectorScene Scene { get; init; }
         public required VectorSceneSnapshot Snapshot { get; init; }
-        public required int ObjectIndex { get; init; }
-        public required int NodeIndex { get; init; }
-        public required PathBezierNode BaseCorner { get; init; }
+        /// <summary>First segment of a Line corner split, or the edited Freeform anchor owner.</summary>
+        public required int FirstObjectIndex { get; init; }
+        public required bool FirstSharedIsStart { get; init; }
+        public required PointF FirstOppositeEndpoint { get; init; }
+        /// <summary>
+        /// Second segment of a Line corner split, or -1 while the session drives a Freeform anchor by
+        /// node index instead.
+        /// </summary>
+        public required int SecondObjectIndex { get; init; }
+        public required bool SecondSharedIsStart { get; init; }
+        public required PointF SecondOppositeEndpoint { get; init; }
+        public required PointF BaseAnchor { get; init; }
+        /// <summary>Freeform node being dragged; unused by a split Line corner.</summary>
+        public int NodeIndex { get; init; } = -1;
+        /// <summary>Freeform node state captured when the drag started.</summary>
+        public PathBezierNode BaseCorner { get; init; }
         public bool DragExceeded { get; set; }
     }
 

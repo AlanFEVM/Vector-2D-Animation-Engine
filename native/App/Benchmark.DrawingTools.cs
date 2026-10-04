@@ -1338,4 +1338,168 @@ internal static partial class Benchmark
         }
     }
 
+    // Ctrl+dragging a Line produces two independent Line objects that share the corner vertex, and
+    // dragging moves that shared endpoint under the pointer. It must not turn the line into a single
+    // freeform path, and neither segment may bend: the result has to read as two straight segments.
+    private static void RunLineCornerDragRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var line = scene.AddLineSegment(
+            scene.ActiveLayer,
+            new PointF(0, 0),
+            new PointF(400, 0),
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Black,
+            6);
+        if (!scene.SplitLineAt(line, 0.5f, out var split)
+            || scene.ObjectCount != 2
+            || scene.ShapeKind[split.FirstObjectIndex] != ShapeKind.Line
+            || scene.ShapeKind[split.SecondObjectIndex] != ShapeKind.Line)
+        {
+            throw new InvalidOperationException("The Line corner gesture did not split the line into two Line objects.");
+        }
+
+        if (!scene.TryGetLineEndpoint(split.FirstObjectIndex, startEndpoint: false, out var firstShared)
+            || !scene.TryGetLineEndpoint(split.SecondObjectIndex, startEndpoint: true, out var secondShared)
+            || !PointsWithin(firstShared, new PointF(200, 0), 0.01f)
+            || !PointsWithin(secondShared, new PointF(200, 0), 0.01f)
+            || !scene.TryGetLineEndpoint(split.FirstObjectIndex, startEndpoint: true, out var firstOpposite)
+            || !scene.TryGetLineEndpoint(split.SecondObjectIndex, startEndpoint: false, out var secondOpposite)
+            || !PointsWithin(firstOpposite, new PointF(0, 0), 0.01f)
+            || !PointsWithin(secondOpposite, new PointF(400, 0), 0.01f))
+        {
+            throw new InvalidOperationException("The Line corner split did not keep the grabbed point as the shared endpoint.");
+        }
+
+        var anchorMethod = typeof(MainForm).GetMethod(
+            "SetSplitLineCornerAnchor",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)
+            ?? throw new InvalidOperationException("The Line corner drag no longer exposes its shared-anchor update.");
+        var dragged = new PointF(200, 150);
+        anchorMethod.Invoke(null, [
+            scene,
+            split.FirstObjectIndex,
+            false,
+            firstOpposite,
+            split.SecondObjectIndex,
+            true,
+            secondOpposite,
+            (PointF)dragged]);
+
+        if (!scene.TryGetLineEndpoint(split.FirstObjectIndex, startEndpoint: false, out firstShared)
+            || !scene.TryGetLineEndpoint(split.SecondObjectIndex, startEndpoint: true, out secondShared)
+            || !PointsWithin(firstShared, dragged, 0.01f)
+            || !PointsWithin(secondShared, dragged, 0.01f))
+        {
+            throw new InvalidOperationException("Ctrl+dragging a Line corner did not move both segments onto the pointer.");
+        }
+
+        if (!scene.IsLineStraight(split.FirstObjectIndex)
+            || !scene.IsLineStraight(split.SecondObjectIndex))
+        {
+            throw new InvalidOperationException("Ctrl+dragging a Line corner bent a segment instead of keeping two straight segments.");
+        }
+
+        // The fixed endpoints have to stay put, otherwise the corner gesture would drag the whole line.
+        if (!scene.TryGetLineEndpoint(split.FirstObjectIndex, startEndpoint: true, out var firstAfter)
+            || !scene.TryGetLineEndpoint(split.SecondObjectIndex, startEndpoint: false, out var secondAfter)
+            || !PointsWithin(firstAfter, firstOpposite, 0.01f)
+            || !PointsWithin(secondAfter, secondOpposite, 0.01f))
+        {
+            throw new InvalidOperationException("Ctrl+dragging a Line corner moved the segments' opposite endpoints.");
+        }
+
+        Console.WriteLine("line_corner_drag_regression=ok");
+    }
+
+    // Dragging a line's own endpoint handle converts the line into a cubic Bezier: the endpoint
+    // follows the pointer while its control handle travels with it, so the segment bends instead of
+    // staying a rubber band. An already-curved line only moves, and a line that shares the endpoint
+    // with another line stays straight so the connection is not broken.
+    private static void RunLineEndpointCurveRegression()
+    {
+        var start = new PointF(0, 0);
+        var control1 = new PointF(100f / 3f, 0);
+        var control2 = new PointF(200f / 3f, 0);
+        var end = new PointF(100, 0);
+
+        // Straight line, start endpoint dragged to (0, 60): control1 follows the endpoint and
+        // control2 mirrors the same offset, which makes the segment curved.
+        var (draggedControl, oppositeControl) = MainForm.ResolveLineEndpointDragControls(
+            endpointIsStart: true,
+            curveOnDrag: true,
+            originalEndpoint: start,
+            endpoint: new PointF(0, 60),
+            oppositeEndpoint: end,
+            translatedControl: new PointF(100f / 3f, 60),
+            oppositeControl: control2);
+        if (PointsWithin(draggedControl, new PointF(100f / 3f, 60), 0.01f) == false
+            || PointsWithin(oppositeControl, new PointF(200f / 3f, 60), 0.01f) == false)
+        {
+            throw new InvalidOperationException("Dragging a line endpoint did not carry its control handles with the pointer.");
+        }
+
+        if (VectorScene.IsStraightBezierSegment(start, draggedControl, oppositeControl, new PointF(0, 60)))
+        {
+            throw new InvalidOperationException("Dragging a line endpoint handle did not convert the segment into a cubic Bezier.");
+        }
+
+        // The same drag with the conversion disabled keeps the original straight chord.
+        var (keptDragged, keptOpposite) = MainForm.ResolveLineEndpointDragControls(
+            endpointIsStart: true,
+            curveOnDrag: false,
+            originalEndpoint: start,
+            endpoint: new PointF(0, 60),
+            oppositeEndpoint: end,
+            translatedControl: new PointF(100f / 3f, 60),
+            oppositeControl: control2);
+        if (!PointsWithin(keptOpposite, control2, 0.01f))
+        {
+            throw new InvalidOperationException("A connected line endpoint drag introduced curvature instead of keeping the chord straight.");
+        }
+
+        // An already-curved line keeps its own shape and only moves the dragged endpoint.
+        var curvedControl1 = new PointF(20, 40);
+        var (curvedDragged, curvedOpposite) = MainForm.ResolveLineEndpointDragControls(
+            endpointIsStart: true,
+            curveOnDrag: true,
+            originalEndpoint: start,
+            endpoint: new PointF(0, 60),
+            oppositeEndpoint: end,
+            translatedControl: new PointF(20, 100),
+            oppositeControl: curvedControl1);
+        if (!PointsWithin(curvedDragged, new PointF(20, 100), 0.01f)
+            || !PointsWithin(curvedOpposite, curvedControl1, 0.01f)
+            || VectorScene.IsStraightBezierSegment(start, curvedDragged, curvedOpposite, new PointF(0, 60)))
+        {
+            throw new InvalidOperationException("Dragging an endpoint of an already-curved line changed its curve instead of only moving the endpoint.");
+        }
+
+        // The shape has to survive a real scene mutation, not just the pure helper.
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var line = scene.AddLineSegment(
+            scene.ActiveLayer,
+            start,
+            end,
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Black,
+            6);
+        var moved = new PointF(0, 60);
+        scene.SetLineEndpoint(line, startEndpoint: true, moved, end, draggedControl, oppositeControl, keepStraight: false);
+        if (scene.IsLineStraight(line)
+            || !scene.TryGetLineEndpoint(line, startEndpoint: true, out var movedStart)
+            || !PointsWithin(movedStart, moved, 0.01f)
+            || !scene.TryGetLineEndpoint(line, startEndpoint: false, out var keptEnd)
+            || !PointsWithin(keptEnd, end, 0.01f))
+        {
+            throw new InvalidOperationException("The line endpoint curve drag did not produce a curved line with a fixed opposite endpoint.");
+        }
+
+        Console.WriteLine("line_endpoint_curve_regression=ok");
+    }
+
 }

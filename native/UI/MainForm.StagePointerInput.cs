@@ -1212,12 +1212,20 @@ internal sealed partial class MainForm : Form
         return bestT;
     }
 
+    /// <summary>
+    /// Ctrl+dragging a Line splits it at the grabbed point into two independent Line objects and
+    /// starts moving the anchor they share. Both endpoints stay on the pointer, so the gesture reads
+    /// as pulling a new corner vertex between two segments rather than bending one path.
+    /// </summary>
     private bool BeginLineCornerDrag(int objectIndex, float parameter)
     {
         var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
-        if (!_scene.TryConvertLineToBezierFreeform(objectIndex, parameter, out _)
-            || !_scene.TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
-            || nodes.Length < 3)
+        if (!_scene.SplitLineAt(objectIndex, parameter, out var split)
+            || !_scene.TryGetLineEndpoint(split.FirstObjectIndex, startEndpoint: false, out var firstShared)
+            || !_scene.TryGetLineEndpoint(split.SecondObjectIndex, startEndpoint: true, out var secondShared)
+            || Distance(firstShared, secondShared) > DrawingTopologyRules.MinStrokeSegmentUnits
+            || !_scene.TryGetLineEndpoint(split.FirstObjectIndex, startEndpoint: true, out var firstOpposite)
+            || !_scene.TryGetLineEndpoint(split.SecondObjectIndex, startEndpoint: false, out var secondOpposite))
         {
             RestoreCanvasMutationSnapshot(snapshot);
             return false;
@@ -1227,12 +1235,16 @@ internal sealed partial class MainForm : Form
         {
             Scene = _scene,
             Snapshot = snapshot,
-            ObjectIndex = objectIndex,
-            NodeIndex = 1,
-            BaseCorner = nodes[1],
+            FirstObjectIndex = split.FirstObjectIndex,
+            FirstSharedIsStart = false,
+            FirstOppositeEndpoint = firstOpposite,
+            SecondObjectIndex = split.SecondObjectIndex,
+            SecondSharedIsStart = true,
+            SecondOppositeEndpoint = secondOpposite,
+            BaseAnchor = split.Anchor,
             DragExceeded = false
         };
-        SetSelection(objectIndex);
+        SetSelection([split.FirstObjectIndex, split.SecondObjectIndex]);
         return true;
     }
 
@@ -1252,7 +1264,13 @@ internal sealed partial class MainForm : Form
         {
             Scene = _scene,
             Snapshot = snapshot,
-            ObjectIndex = objectIndex,
+            FirstObjectIndex = objectIndex,
+            FirstSharedIsStart = false,
+            FirstOppositeEndpoint = PointF.Empty,
+            SecondObjectIndex = -1,
+            SecondSharedIsStart = false,
+            SecondOppositeEndpoint = PointF.Empty,
+            BaseAnchor = nodes[nodeIndex].Anchor,
             NodeIndex = nodeIndex,
             BaseCorner = nodes[nodeIndex],
             DragExceeded = false
@@ -1269,24 +1287,86 @@ internal sealed partial class MainForm : Form
         session.DragExceeded = true;
 
         var world = _stage.ScreenToWorld(screen);
-        if (!_scene.TryGetFreehandBezierWorldNodes(session.ObjectIndex, out var nodes)
+        if (session.SecondObjectIndex >= 0)
+        {
+            UpdateSplitLineCornerDrag(session, world);
+            return;
+        }
+
+        if (!_scene.TryGetFreehandBezierWorldNodes(session.FirstObjectIndex, out var nodes)
             || (uint)session.NodeIndex >= nodes.Length)
         {
             return;
         }
 
         var baseCorner = session.BaseCorner;
-        var deltaX = world.X - baseCorner.Anchor.X;
-        var deltaY = world.Y - baseCorner.Anchor.Y;
         nodes[session.NodeIndex] = new PathBezierNode(
             world,
-            new PointF(baseCorner.IncomingControl.X + deltaX, baseCorner.IncomingControl.Y + deltaY),
-            new PointF(baseCorner.OutgoingControl.X + deltaX, baseCorner.OutgoingControl.Y + deltaY));
-        if (!_scene.TrySetFreehandBezierWorldNodes(session.ObjectIndex, nodes)) return;
+            new PointF(baseCorner.IncomingControl.X + (world.X - baseCorner.Anchor.X), baseCorner.IncomingControl.Y + (world.Y - baseCorner.Anchor.Y)),
+            new PointF(baseCorner.OutgoingControl.X + (world.X - baseCorner.Anchor.X), baseCorner.OutgoingControl.Y + (world.Y - baseCorner.Anchor.Y)));
+        if (!_scene.TrySetFreehandBezierWorldNodes(session.FirstObjectIndex, nodes)) return;
 
         _scene.InvalidateDeferredTopologyQueries();
         _geometryDirty = true;
         _stage.Invalidate();
+    }
+
+    /// <summary>
+    /// Moves the endpoint shared by the two segments the line corner gesture produced. Each object
+    /// keeps its own opposite endpoint, so both stay straight lines meeting on the pointer.
+    /// </summary>
+    private void UpdateSplitLineCornerDrag(CornerDragSession session, PointF world)
+    {
+        var layer = _scene.ObjectLayer[session.FirstObjectIndex];
+        var (anchor, _) = ResolveLineEndpointSnap(VectorUnits.Quantize(world), layer, excludeEditedLines: false);
+        SetSplitLineCornerAnchor(
+            _scene,
+            session.FirstObjectIndex,
+            session.FirstSharedIsStart,
+            session.FirstOppositeEndpoint,
+            session.SecondObjectIndex,
+            session.SecondSharedIsStart,
+            session.SecondOppositeEndpoint,
+            anchor);
+
+        _scene.InvalidateDeferredTopologyQueries();
+        _geometryDirty = true;
+        _stage.Invalidate();
+    }
+
+    /// <summary>
+    /// Places the shared endpoint of a split Line corner onto <paramref name="anchor"/> and leaves
+    /// the two opposite endpoints untouched. Both segments are kept straight, so the corner stays a
+    /// polyline vertex however far the pointer travels.
+    /// </summary>
+    internal static void SetSplitLineCornerAnchor(
+        VectorScene scene,
+        int firstObjectIndex,
+        bool firstSharedIsStart,
+        PointF firstOppositeEndpoint,
+        int secondObjectIndex,
+        bool secondSharedIsStart,
+        PointF secondOppositeEndpoint,
+        PointF anchor)
+    {
+        // keepStraight derives both control points from the new endpoints, so the control
+        // arguments are placeholders.
+        scene.SetLineEndpoint(
+            firstObjectIndex,
+            firstSharedIsStart,
+            anchor,
+            firstOppositeEndpoint,
+            anchor,
+            anchor,
+            keepStraight: true);
+        scene.SetLineEndpoint(
+            secondObjectIndex,
+            secondSharedIsStart,
+            anchor,
+            secondOppositeEndpoint,
+            anchor,
+            anchor,
+            keepStraight: true);
     }
 
     private void CompleteCornerDrag(Point screen, MouseButtons button)
