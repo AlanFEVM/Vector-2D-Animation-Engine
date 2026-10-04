@@ -2455,6 +2455,18 @@ internal sealed partial class MainForm : Form
                 FinishPointerInteraction();
                 return true;
             }
+            if (keyData == Keys.Escape && _arcDragSession is not null)
+            {
+                CancelArcDrag(restore: true);
+                FinishPointerInteraction();
+                return true;
+            }
+            if (keyData == Keys.Escape && _cornerDragSession is not null)
+            {
+                CancelCornerDrag(restore: true);
+                FinishPointerInteraction();
+                return true;
+            }
             if (keyData == Keys.Escape && _distortPreviewChanged)
             {
                 CancelDistortPointerPreview();

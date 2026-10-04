@@ -3168,6 +3168,124 @@ internal sealed partial class VectorScene
         }
     }
 
+    /// <summary>
+    /// Converts a straight Line into an open 3-node Freeform stroke split at
+    /// <paramref name="parameter"/>. The middle node is a corner anchor whose
+    /// incoming/outgoing controls are independent, producing a sharp point.
+    /// </summary>
+    public bool TryConvertLineToBezierFreeform(int objectIndex, float parameter, out PointF cornerAnchor)
+    {
+        cornerAnchor = PointF.Empty;
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line
+            || parameter <= 0.001f
+            || parameter >= 0.999f)
+        {
+            return false;
+        }
+
+        var curve = LineCurve(objectIndex);
+        var p01 = Lerp(curve.Start, curve.Control1, parameter);
+        var p12 = Lerp(curve.Control1, curve.Control2, parameter);
+        var p23 = Lerp(curve.Control2, curve.End, parameter);
+        var p012 = Lerp(p01, p12, parameter);
+        var p123 = Lerp(p12, p23, parameter);
+        var anchor = VectorUnits.Quantize(Lerp(p012, p123, parameter));
+        p01 = VectorUnits.Quantize(p01);
+        p012 = VectorUnits.Quantize(p012);
+        p123 = VectorUnits.Quantize(p123);
+        p23 = VectorUnits.Quantize(p23);
+        if (Distance(curve.Start, anchor) < DrawingTopologyRules.MinStrokeSegmentUnits
+            || Distance(anchor, curve.End) < DrawingTopologyRules.MinStrokeSegmentUnits)
+        {
+            return false;
+        }
+
+        var nodes = new[]
+        {
+            new PathBezierNode(curve.Start, curve.Start, p01),
+            new PathBezierNode(anchor, p012, p123),
+            new PathBezierNode(curve.End, p23, curve.End)
+        };
+
+        var snapshot = CreateSnapshot();
+        try
+        {
+            ShapeKind[objectIndex] = VectorAnimationEngine.ShapeKind.Freeform;
+            LineEndpointStyles[objectIndex] = LineEndpointStyle.Round;
+            LineEndEndpointStyles[objectIndex] = LineEndpointStyle.Round;
+            if (!SetFreehandBezierNodesCore(objectIndex, nodes))
+            {
+                throw new InvalidOperationException("The corner freeform conversion failed.");
+            }
+
+            RebuildGeometryIndex();
+            RebuildSummaries();
+            cornerAnchor = anchor;
+            return true;
+        }
+        catch
+        {
+            RestoreSnapshot(snapshot);
+            cornerAnchor = PointF.Empty;
+            return false;
+        }
+    }
+
+    public bool TrySetFreehandBezierWorldNodes(int objectIndex, IReadOnlyList<PathBezierNode> worldNodes)
+    {
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Freeform
+            || worldNodes.Count < 2)
+        {
+            return false;
+        }
+
+        return SetFreehandBezierNodesCore(objectIndex, worldNodes);
+    }
+
+    /// <summary>
+    /// Splits an open Freeform segment with de Casteljau and inserts a corner
+    /// anchor (independent in/out controls) at <paramref name="parameter"/>.
+    /// </summary>
+    public bool TryInsertFreehandBezierCorner(int objectIndex, int segmentIndex, float parameter, out int insertedNodeIndex)
+    {
+        insertedNodeIndex = -1;
+        if ((uint)objectIndex >= ObjectCount
+            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Freeform
+            || segmentIndex < 0
+            || parameter <= 0.001f
+            || parameter >= 0.999f
+            || !TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
+            || segmentIndex + 1 >= nodes.Length)
+        {
+            return false;
+        }
+
+        var p0 = nodes[segmentIndex].Anchor;
+        var p1 = nodes[segmentIndex].OutgoingControl;
+        var p2 = nodes[segmentIndex + 1].IncomingControl;
+        var p3 = nodes[segmentIndex + 1].Anchor;
+        var p01 = Lerp(p0, p1, parameter);
+        var p12 = Lerp(p1, p2, parameter);
+        var p23 = Lerp(p2, p3, parameter);
+        var p012 = Lerp(p01, p12, parameter);
+        var p123 = Lerp(p12, p23, parameter);
+        var m = VectorUnits.Quantize(Lerp(p012, p123, parameter));
+
+        var updated = new List<PathBezierNode>(nodes);
+        updated[segmentIndex] = updated[segmentIndex] with { OutgoingControl = VectorUnits.Quantize(p01) };
+        updated.Insert(segmentIndex + 1, new PathBezierNode(m, VectorUnits.Quantize(p012), VectorUnits.Quantize(p123)));
+        updated[segmentIndex + 2] = updated[segmentIndex + 2] with { IncomingControl = VectorUnits.Quantize(p23) };
+
+        if (!SetFreehandBezierNodesCore(objectIndex, updated)) return false;
+
+        RebuildGeometryIndex();
+        RebuildSummaries();
+        insertedNodeIndex = segmentIndex + 1;
+        return true;
+    }
+
     public bool AddConnectedLineBranch(
         int sourceObjectIndex,
         float sourceParameter,
@@ -3373,6 +3491,32 @@ internal sealed partial class VectorScene
         control2 = curve.Control2;
         end = curve.End;
         return true;
+    }
+
+    public bool TryGetLineQuadraticControl(int objectIndex, out PointF control)
+    {
+        control = PointF.Empty;
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return false;
+        if (!TryGetLineEndpoint(objectIndex, startEndpoint: true, out var start)) return false;
+        control = new PointF(
+            1.5f * CurveControlX[objectIndex] - 0.5f * start.X,
+            1.5f * CurveControlY[objectIndex] - 0.5f * start.Y);
+        return true;
+    }
+
+    public void SetLineQuadraticControl(int objectIndex, PointF control)
+    {
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return;
+        if (!TryGetLineEndpoint(objectIndex, startEndpoint: true, out var start)
+            || !TryGetLineEndpoint(objectIndex, startEndpoint: false, out var end))
+        {
+            return;
+        }
+
+        CurveControlX[objectIndex] = start.X + (2f / 3f) * (control.X - start.X);
+        CurveControlY[objectIndex] = start.Y + (2f / 3f) * (control.Y - start.Y);
+        CurveControl2X[objectIndex] = end.X + (2f / 3f) * (control.X - end.X);
+        CurveControl2Y[objectIndex] = end.Y + (2f / 3f) * (control.Y - end.Y);
     }
 
 }

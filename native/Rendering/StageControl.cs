@@ -665,9 +665,9 @@ internal sealed partial class StageControl : Control
     private readonly Pen _multiSelectionPen = SelectionPen(Color.FromArgb(235, 112, 220, 255), 1.5f);
     private readonly Pen _multiSelectionGlowPen = SelectionPen(Color.FromArgb(135, 32, 172, 255), 5);
     private readonly Pen _multiSelectionOuterGlowPen = SelectionPen(Color.FromArgb(70, 80, 210, 255), 8);
-    private readonly Pen _drawingObjectSelectionPen = SelectionPen(Color.FromArgb(255, 118, 255, 170), 2.2f);
-    private readonly Pen _drawingObjectSelectionGlowPen = SelectionPen(Color.FromArgb(185, 38, 238, 122), 7);
-    private readonly Pen _drawingObjectSelectionOuterGlowPen = SelectionPen(Color.FromArgb(82, 24, 255, 104), 14);
+    private readonly Pen _drawingObjectSelectionPen = SelectionPen(Color.FromArgb(255, 104, 244, 214), 1.5f);
+    private readonly Pen _drawingObjectSelectionGlowPen = SelectionPen(Color.FromArgb(195, 32, 190, 224), 3f);
+    private readonly Pen _drawingObjectSelectionOuterGlowPen = SelectionPen(Color.FromArgb(95, 20, 150, 180), 3.5f);
     private readonly Pen _guidePen = new(Color.FromArgb(190, 112, 204, 255), 1);
     private readonly Pen _previewGuidePen = new(Color.FromArgb(170, 255, 255, 255), 1);
     private readonly Pen _marqueePen = new(Color.FromArgb(230, 112, 204, 255), 1) { DashStyle = DashStyle.Dash };
@@ -4602,6 +4602,13 @@ internal sealed partial class StageControl : Control
         return TryGetEditableBezierWorldPoints(hit, out _, out _, out _, out _);
     }
 
+    internal bool ShouldShowLineControlHandles(int objectIndex)
+    {
+        if ((uint)objectIndex >= Scene.ObjectCount) return false;
+        if (Scene.ShapeKind[objectIndex] != ShapeKind.Line) return true;
+        return !Scene.IsLineStraight(objectIndex);
+    }
+
     internal bool ShouldDrawHoveredLineControls()
     {
         var hit = _hoveredLineElement;
@@ -4743,6 +4750,23 @@ internal sealed partial class StageControl : Control
 
         if (Distance(screen, WorldToScreen(start)) <= EndpointHandleHitRadiusPixels) return EditHandleKind.LineStart;
         if (Distance(screen, WorldToScreen(end)) <= EndpointHandleHitRadiusPixels) return EditHandleKind.LineEnd;
+        if (!ShouldShowLineControlHandles(hit.Key.ObjectIndex)) return EditHandleKind.None;
+
+        if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        {
+            if (!Scene.TryGetLineQuadraticControl(hit.Key.ObjectIndex, out var quadratic)) return EditHandleKind.None;
+            var quadraticReach = Math.Max(
+                Distance(WorldToScreen(start), WorldToScreen(quadratic)),
+                Distance(WorldToScreen(end), WorldToScreen(quadratic)));
+            var quadraticHitRadius = Math.Clamp(
+                ControlHandleHitRadiusPixels + MathF.Sqrt(quadraticReach) * 0.35f,
+                ControlHandleHitRadiusPixels,
+                MaxControlHandleHitRadiusPixels);
+            return Distance(screen, WorldToScreen(quadratic)) <= quadraticHitRadius
+                ? EditHandleKind.BezierControl
+                : EditHandleKind.None;
+        }
+
         var controlReach = Math.Max(
             Distance(WorldToScreen(start), WorldToScreen(control1)),
             Distance(WorldToScreen(end), WorldToScreen(control2)));

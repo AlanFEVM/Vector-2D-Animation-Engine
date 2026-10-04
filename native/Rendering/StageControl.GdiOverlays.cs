@@ -206,25 +206,13 @@ internal sealed partial class StageControl : Control
         }
         else
         {
-            if (shape == ShapeKind.Path)
+            var worldBounds = Scene.GetObjectWorldBounds(i);
+            var rect = WorldToScreenBounds(worldBounds);
+            if (rect.Width > 0.001f && rect.Height > 0.001f)
             {
-                using var path = CreateObjectBoundaryPath(Scene, i);
-                if (path.PointCount > 0)
-                {
-                    DrawSelectionPath(g, path, primary, SelectionHighlightKind.Fill);
-                }
-            }
-            else if (TryGetSelectionWorldContours(i, shape, out var contours))
-            {
-                foreach (var contour in contours)
-                {
-                    var points = contour.Select(WorldToScreen).ToArray();
-                    if (points.Length >= 3) DrawSelectionPolygon(g, points, primary, SelectionHighlightKind.Fill);
-                }
-            }
-            else
-            {
-                DrawBoundaryOutline(g, i, primary, SelectionHighlightForShape(shape));
+                g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+                g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+                g.DrawRectangle(_drawingObjectSelectionPen, rect.X, rect.Y, rect.Width, rect.Height);
             }
 
             if (primary && shape is not ShapeKind.Path and not ShapeKind.Text && !(TransformMode || DistortMode)) DrawBoundaryHandles(g, i);
@@ -236,6 +224,25 @@ internal sealed partial class StageControl : Control
         if (shape == ShapeKind.Text) return Scene.TryGetTextWorldContours(objectIndex, out contours);
         contours = Array.Empty<PointF[]>();
         return false;
+    }
+
+    private static bool IsPrimitiveFillShape(ShapeKind shape) =>
+        shape is ShapeKind.Rectangle or ShapeKind.Ellipse or ShapeKind.Triangle
+            or ShapeKind.Polygon or ShapeKind.Star;
+
+    private bool TryDrawPrimitiveFillSelectionBounds(Graphics g, int objectIndex)
+    {
+        if ((uint)objectIndex >= Scene.ObjectCount || !IsPrimitiveFillShape(Scene.ShapeKind[objectIndex]))
+        {
+            return false;
+        }
+
+        var rect = WorldToScreenBounds(Scene.GetObjectWorldBounds(objectIndex));
+        if (rect.Width <= 0.001f || rect.Height <= 0.001f) return false;
+        g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+        g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+        g.DrawRectangle(_drawingObjectSelectionPen, rect.X, rect.Y, rect.Width, rect.Height);
+        return true;
     }
 
     private void DrawElementSelectionOutline(Graphics g, DrawingElementHit hit, bool primary)
@@ -290,6 +297,7 @@ internal sealed partial class StageControl : Control
                 return;
             }
 
+            if (IsFullElementRange(hit) && TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
             var points = GetSelectedStrokePartPoints(hit).Select(WorldToScreen).ToArray();
             if (points.Length == 1) DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Stroke);
             else if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
@@ -298,6 +306,9 @@ internal sealed partial class StageControl : Control
 
         if (hit.Key.Kind == DrawingElementKind.Fill)
         {
+            // Primitive closed shapes use the same rectangular bounding box as whole-object
+            // selection instead of a contour hugging the shape.
+            if (TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
             foreach (var contour in GetSelectedFillPartContours(hit))
             {
                 var points = contour.Select(WorldToScreen).ToArray();
@@ -309,10 +320,15 @@ internal sealed partial class StageControl : Control
 
         if (hit.Key.Kind == DrawingElementKind.BoundaryStroke)
         {
+            if (IsFullElementRange(hit) && TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
             var points = GetSelectedBoundaryPartPoints(hit).Select(WorldToScreen).ToArray();
             if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
         }
     }
+
+    private static bool IsFullElementRange(DrawingElementHit hit) =>
+        hit.StartT <= DrawingTopologyRules.UnitIntersectionTolerance
+        && hit.EndT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance;
 
     private bool DrawPresentedEditableBezierSelection(Graphics graphics, DrawingElementHit hit, bool primary)
     {
@@ -1232,14 +1248,27 @@ internal sealed partial class StageControl : Control
 
     private void DrawBezierHandles(Graphics g, int i)
     {
+        if (Scene.ShapeKind[i] == ShapeKind.Line)
+        {
+            DrawLineQuadraticHandles(g, i);
+            return;
+        }
+
         var (start, control1, control2, end) = GetBezierScreenPoints(i);
-        DrawBezierHandles(g, start, control1, control2, end);
+        DrawBezierHandles(g, start, control1, control2, end, ShouldShowLineControlHandles(i));
     }
 
     private void DrawBezierHandles(Graphics g, DrawingElementHit hit)
     {
+        if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        {
+            DrawLineQuadraticHandles(g, hit.Key.ObjectIndex);
+            return;
+        }
+
         var segments = GetPresentedEditableBezierWorldSegments(hit);
         if (segments.Length == 0) return;
+        var showControls = ShouldShowLineControlHandles(hit.Key.ObjectIndex);
         if ((uint)hit.PresentedBezierSegmentIndex < segments.Length)
         {
             var selected = segments[hit.PresentedBezierSegmentIndex];
@@ -1248,7 +1277,8 @@ internal sealed partial class StageControl : Control
                 WorldToScreen(selected.Start),
                 WorldToScreen(selected.Control1),
                 WorldToScreen(selected.Control2),
-                WorldToScreen(selected.End));
+                WorldToScreen(selected.End),
+                showControls);
             return;
         }
 
@@ -1259,8 +1289,41 @@ internal sealed partial class StageControl : Control
                 WorldToScreen(segment.Start),
                 WorldToScreen(segment.Control1),
                 WorldToScreen(segment.Control2),
-                WorldToScreen(segment.End));
+                WorldToScreen(segment.End),
+                showControls);
         }
+    }
+
+    private void DrawLineQuadraticHandles(Graphics g, int i)
+    {
+        if (!Scene.TryGetLineQuadraticControl(i, out var q)
+            || !Scene.TryGetLineEndpoint(i, startEndpoint: true, out var start)
+            || !Scene.TryGetLineEndpoint(i, startEndpoint: false, out var end))
+        {
+            return;
+        }
+
+        var startScreen = WorldToScreen(start);
+        var endScreen = WorldToScreen(end);
+        var controlScreen = WorldToScreen(q);
+        using var endpoint = new SolidBrush(Color.FromArgb(210, 255, 240, 168));
+        DrawHandle(g, startScreen, endpoint, 7);
+        DrawHandle(g, endScreen, endpoint, 7);
+        if (!ShouldShowLineControlHandles(i)) return;
+        using var guide = new Pen(Color.FromArgb(120, 112, 204, 255), 1);
+        g.DrawLine(guide, startScreen, controlScreen);
+        g.DrawLine(guide, endScreen, controlScreen);
+        DrawControlHandle(g, controlScreen, 9);
+    }
+
+    private void DrawControlHandle(Graphics g, PointF point, float size)
+    {
+        var r = size * 0.5f;
+        var bounds = new RectangleF(point.X - r, point.Y - r, size, size);
+        using var fill = new SolidBrush(Color.FromArgb(70, 112, 204, 255));
+        using var outline = new Pen(Color.FromArgb(235, 112, 204, 255), 2);
+        g.FillEllipse(fill, bounds);
+        g.DrawEllipse(outline, bounds);
     }
 
     private void DrawHoveredLineControls(Graphics g)
@@ -1268,30 +1331,41 @@ internal sealed partial class StageControl : Control
         var hit = _hoveredLineElement;
         if (!ShouldDrawHoveredLineControls()) return;
 
+        if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        {
+            DrawLineQuadraticHandles(g, hit.Key.ObjectIndex);
+            return;
+        }
+
         if (!TryGetEditableBezierWorldPoints(hit, out var start, out var control1, out var control2, out var end)) return;
         var startScreen = WorldToScreen(start);
         var control1Screen = WorldToScreen(control1);
         var control2Screen = WorldToScreen(control2);
         var endScreen = WorldToScreen(end);
-        using var guide = new Pen(Color.FromArgb(120, 112, 204, 255), 1);
         using var endpoint = new SolidBrush(Color.FromArgb(210, 255, 240, 168));
+        DrawHandle(g, startScreen, endpoint, 7);
+        DrawHandle(g, endScreen, endpoint, 7);
+        if (!ShouldShowLineControlHandles(hit.Key.ObjectIndex)) return;
+        using var guide = new Pen(Color.FromArgb(120, 112, 204, 255), 1);
         using var controlBrush = new SolidBrush(Color.FromArgb(210, 112, 204, 255));
         g.DrawLine(guide, startScreen, control1Screen);
         g.DrawLine(guide, endScreen, control2Screen);
-        DrawHandle(g, startScreen, endpoint, 7);
-        DrawHandle(g, endScreen, endpoint, 7);
         DrawHandle(g, control1Screen, controlBrush, 9);
         DrawHandle(g, control2Screen, controlBrush, 9);
     }
 
-    private void DrawBezierHandles(Graphics g, PointF start, PointF control1, PointF control2, PointF end)
+    private void DrawBezierHandles(Graphics g, PointF start, PointF control1, PointF control2, PointF end, bool showControls = true)
     {
-        g.DrawLine(_guidePen, start, control1);
-        g.DrawLine(_guidePen, end, control2);
+        if (showControls)
+        {
+            g.DrawLine(_guidePen, start, control1);
+            g.DrawLine(_guidePen, end, control2);
+            DrawHandle(g, control1, _bezierHandleBrush, 9);
+            DrawHandle(g, control2, _bezierHandleBrush, 9);
+        }
+
         DrawHandle(g, start, _handleBrush, 7);
         DrawHandle(g, end, _handleBrush, 7);
-        DrawHandle(g, control1, _bezierHandleBrush, 9);
-        DrawHandle(g, control2, _bezierHandleBrush, 9);
     }
 
     private void DrawTransformOverlay(Graphics g)
@@ -1599,21 +1673,21 @@ internal sealed partial class StageControl : Control
     internal static float SelectionOuterGlowWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
     {
         return highlightKind == SelectionHighlightKind.Fill
-            ? primary ? 7.5f + 2f * pulse : 5.5f + 1.5f * pulse
+            ? primary ? 3.5f + 1.2f * pulse : 3f + 1f * pulse
             : primary ? 6.2f + 1.6f * pulse : 4.6f + 1.2f * pulse;
     }
 
     internal static float SelectionGlowWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
     {
         return highlightKind == SelectionHighlightKind.Fill
-            ? primary ? 4.2f + 1.4f * pulse : 3.2f + 1f * pulse
+            ? primary ? 3f + 1f * pulse : 2.4f + 0.8f * pulse
             : primary ? 4.2f + 1.2f * pulse : 3.2f + 0.9f * pulse;
     }
 
     internal static float SelectionLineWidth(SelectionHighlightKind highlightKind, bool primary, float pulse)
     {
         return highlightKind == SelectionHighlightKind.Fill
-            ? primary ? 1.7f + 0.45f * pulse : 1.15f + 0.35f * pulse
+            ? primary ? 1.5f + 0.4f * pulse : 1.1f + 0.3f * pulse
             : primary ? 1.9f + 0.5f * pulse : 1.2f + 0.35f * pulse;
     }
 

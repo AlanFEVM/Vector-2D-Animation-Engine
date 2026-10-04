@@ -442,6 +442,8 @@ internal sealed partial class MainForm : Form
     private FillEdgeBezierEditSession? _fillEdgeBezierEditSession;
     private int _fillEdgeBezierArmGeneration;
     private LineBranchDragSession? _lineBranchDragSession;
+    private ArcDragSession? _arcDragSession;
+    private CornerDragSession? _cornerDragSession;
     private int _fillEdgeBezierActivePartIndex = -1;
     private int _fillEdgeBezierActivePieceIndex = -1;
     private FillBezierSegmentPiece[] _fillEdgeBezierOverlayPieces = [];
@@ -735,6 +737,27 @@ internal sealed partial class MainForm : Form
         public required Color StrokeColor { get; init; }
         public required float Stroke { get; init; }
         public PointF End { get; set; }
+        public bool DragExceeded { get; set; }
+    }
+
+    private sealed class ArcDragSession
+    {
+        public required VectorScene Scene { get; init; }
+        public required VectorSceneSnapshot Snapshot { get; init; }
+        public required int ObjectIndex { get; init; }
+        public required PointF Start { get; init; }
+        public required PointF End { get; init; }
+        public required float Parameter { get; init; }
+        public bool DragExceeded { get; set; }
+    }
+
+    private sealed class CornerDragSession
+    {
+        public required VectorScene Scene { get; init; }
+        public required VectorSceneSnapshot Snapshot { get; init; }
+        public required int ObjectIndex { get; init; }
+        public required int NodeIndex { get; init; }
+        public required PathBezierNode BaseCorner { get; init; }
         public bool DragExceeded { get; set; }
     }
 

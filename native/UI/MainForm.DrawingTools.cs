@@ -424,26 +424,18 @@ internal sealed partial class MainForm : Form
                 continue;
             }
 
-            var control1 = _stage.WorldToScreen(_scene.CurveControlX[index], _scene.CurveControlY[index]);
-            var dx1 = control1.X - screen.X;
-            var dy1 = control1.Y - screen.Y;
-            var distance1 = MathF.Sqrt(dx1 * dx1 + dy1 * dy1);
-            if (distance1 < bestDistance)
+            if (_scene.IsLineStraight(index)) continue;
+
+            if (!_scene.TryGetLineQuadraticControl(index, out var quadratic)) continue;
+            var control = _stage.WorldToScreen(quadratic.X, quadratic.Y);
+            var dx = control.X - screen.X;
+            var dy = control.Y - screen.Y;
+            var distance = MathF.Sqrt(dx * dx + dy * dy);
+            if (distance < bestDistance)
             {
-                bestDistance = distance1;
+                bestDistance = distance;
                 objectIndex = index;
                 handle = EditHandleKind.BezierControl;
-            }
-
-            var control2 = _stage.WorldToScreen(_scene.CurveControl2X[index], _scene.CurveControl2Y[index]);
-            var dx2 = control2.X - screen.X;
-            var dy2 = control2.Y - screen.Y;
-            var distance2 = MathF.Sqrt(dx2 * dx2 + dy2 * dy2);
-            if (distance2 < bestDistance)
-            {
-                bestDistance = distance2;
-                objectIndex = index;
-                handle = EditHandleKind.BezierControl2;
             }
         }
 
@@ -1709,8 +1701,17 @@ internal sealed partial class MainForm : Form
                 marqueeSession.IndependentStrokeObjects);
         }
         _selectedStart = new PointF(_scene.X[objectIndex], _scene.Y[objectIndex]);
-        _curveControlStart = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
-        _curveControl2Start = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]);
+        if (_scene.ShapeKind[objectIndex] == ShapeKind.Line
+            && _scene.TryGetLineQuadraticControl(objectIndex, out var lineQuadratic))
+        {
+            _curveControlStart = lineQuadratic;
+            _curveControl2Start = lineQuadratic;
+        }
+        else
+        {
+            _curveControlStart = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
+            _curveControl2Start = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]);
+        }
         _freehandBezierEditStart = null;
         _freehandBezierEditObject = -1;
         _freehandBezierEditSegment = -1;
@@ -1808,8 +1809,16 @@ internal sealed partial class MainForm : Form
                 originalControl,
                 sourcePointerStart,
                 world)));
-            _scene.CurveControlX[_selectedObject] = snapped.X;
-            _scene.CurveControlY[_selectedObject] = snapped.Y;
+            if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line)
+            {
+                _scene.SetLineQuadraticControl(_selectedObject, snapped);
+            }
+            else
+            {
+                _scene.CurveControlX[_selectedObject] = snapped.X;
+                _scene.CurveControlY[_selectedObject] = snapped.Y;
+            }
+
             return;
         }
 
@@ -1820,8 +1829,15 @@ internal sealed partial class MainForm : Form
                 originalControl,
                 sourcePointerStart,
                 world)));
-            _scene.CurveControl2X[_selectedObject] = snapped.X;
-            _scene.CurveControl2Y[_selectedObject] = snapped.Y;
+            if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line)
+            {
+                _scene.SetLineQuadraticControl(_selectedObject, snapped);
+            }
+            else
+            {
+                _scene.CurveControl2X[_selectedObject] = snapped.X;
+                _scene.CurveControl2Y[_selectedObject] = snapped.Y;
+            }
             return;
         }
 

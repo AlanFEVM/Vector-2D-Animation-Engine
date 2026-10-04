@@ -249,6 +249,13 @@ internal sealed partial class MainForm : Form
 
         if (_tool == ToolMode.Select
             && IsControlPressed()
+            && TryBeginCornerDrag(e))
+        {
+            return;
+        }
+
+        if (_tool == ToolMode.Select
+            && IsAltPressed()
             && TryBeginLineBranchDrag(e))
         {
             return;
@@ -364,6 +371,23 @@ internal sealed partial class MainForm : Form
             var hit = _scene.HitTestElement(startWorld, _frame, SelectionToleranceWorld());
             if (hit.IsValid && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame))
             {
+                if (e.Button == MouseButtons.Left
+                    && !_additiveSelection
+                    && hit.Key.Kind == DrawingElementKind.Stroke
+                    && _scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
+                    && BeginArcDrag(startWorld, hit.Key.ObjectIndex))
+                {
+                    _stage.Capture = true;
+                    _lastMouse = e.Location;
+                    _startScreen = e.Location;
+                    _startWorld = startWorld;
+                    _forceMarqueeOnPointerDown = false;
+                    _pendingClickSelection = DrawingElementHit.None;
+                    _stage.ClearHoveredLineElement();
+                    UpdateInteractionCursor(e.Location);
+                    return;
+                }
+
                 if (_selectionWasEmptyOnPointerDown && e.Button == MouseButtons.Left && !_additiveSelection)
                 {
                     _pendingClickSelection = hit;
@@ -817,7 +841,7 @@ internal sealed partial class MainForm : Form
 
     private bool TryBeginLineBranchDrag(MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left || !IsControlPressed() || IsScene3DView()) return false;
+        if (e.Button != MouseButtons.Left || !IsAltPressed() || IsScene3DView()) return false;
 
         var world = _stage.ScreenToWorld(e.Location);
         var tolerance = Math.Max(
@@ -876,27 +900,7 @@ internal sealed partial class MainForm : Form
             tolerance);
         if (!endpointGesture)
         {
-            if (!hit.IsValid
-                || hit.Key.Kind != DrawingElementKind.Stroke
-                || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount
-                || _scene.ShapeKind[hit.Key.ObjectIndex] != ShapeKind.Line
-                || !_scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame)
-                || !_scene.TryGetClosestPointOnLine(
-                    hit.Key.ObjectIndex,
-                    world,
-                    out sourceParameter,
-                    out _,
-                    out _)
-                || !IsLineInteriorBranchGesture(
-                    e.Button,
-                    controlPressed: true,
-                    altPressed: IsAltPressed(),
-                    sourceParameter))
-            {
-                return false;
-            }
-
-            sourceObject = hit.Key.ObjectIndex;
+            return false;
         }
 
         var stackKey = new DrawingStackKey(
@@ -910,29 +914,10 @@ internal sealed partial class MainForm : Form
             return true;
         }
 
-        PointF anchor;
-        if (endpointGesture)
-        {
-            if (!_scene.TryGetLineEndpoint(
-                    sourceObject,
-                    startEndpoint: sourceParameter <= 0.001f,
-                    out anchor))
-            {
-                RestoreCanvasMutationSnapshot(snapshot);
-                return true;
-            }
-        }
-        else if (!_scene.TryGetClosestPointOnLine(
-                     sourceObject,
-                     world,
-                     out sourceParameter,
-                     out anchor,
-                     out _)
-                 || !IsLineInteriorBranchGesture(
-                     e.Button,
-                     controlPressed: true,
-                     altPressed: IsAltPressed(),
-                     sourceParameter))
+        if (!_scene.TryGetLineEndpoint(
+                sourceObject,
+                startEndpoint: sourceParameter <= 0.001f,
+                out var anchor))
         {
             RestoreCanvasMutationSnapshot(snapshot);
             return true;
@@ -1062,6 +1047,273 @@ internal sealed partial class MainForm : Form
         var session = _lineBranchDragSession;
         _lineBranchDragSession = null;
         _stage.ClearDrawingPreview();
+        if (restore && session is not null && ReferenceEquals(session.Scene, _scene))
+        {
+            RestoreCanvasMutationSnapshot(session.Snapshot);
+        }
+    }
+
+    private bool BeginArcDrag(PointF world, int objectIndex)
+    {
+        if ((uint)objectIndex >= _scene.ObjectCount
+            || _scene.ShapeKind[objectIndex] != ShapeKind.Line
+            || !_scene.TryGetLineEndpoint(objectIndex, startEndpoint: true, out var start)
+            || !_scene.TryGetLineEndpoint(objectIndex, startEndpoint: false, out var end)
+            || !_scene.TryGetClosestPointOnLine(objectIndex, world, out var t, out _, out _))
+        {
+            return false;
+        }
+
+        t = Math.Clamp(t, 0.05f, 0.95f);
+        var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
+        _arcDragSession = new ArcDragSession
+        {
+            Scene = _scene,
+            Snapshot = snapshot,
+            ObjectIndex = objectIndex,
+            Start = start,
+            End = end,
+            Parameter = t,
+            DragExceeded = false
+        };
+        SetSelection(objectIndex);
+        return true;
+    }
+
+    private void UpdateArcDrag(Point screen)
+    {
+        var session = _arcDragSession;
+        if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
+        if (!session.DragExceeded && !PointerDragExceeded(screen)) return;
+        session.DragExceeded = true;
+
+        var world = _stage.ScreenToWorld(screen);
+        _scene.SetLineQuadraticControl(session.ObjectIndex, world);
+
+        _scene.InvalidateDeferredTopologyQueries();
+        _geometryDirty = true;
+        _stage.Invalidate();
+    }
+
+    private void CompleteArcDrag(Point screen, MouseButtons button)
+    {
+        var session = _arcDragSession;
+        _arcDragSession = null;
+        if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
+
+        var exceeded = session.DragExceeded || PointerDragExceeded(screen);
+        if (exceeded && button == MouseButtons.Left)
+        {
+            PushUndoSnapshot(session.Snapshot);
+        }
+        else
+        {
+            RestoreCanvasMutationSnapshot(session.Snapshot);
+        }
+
+        _geometryDirty = true;
+        _stage.Invalidate();
+        UpdateInteractionCursor(screen);
+    }
+
+    private void CancelArcDrag(bool restore)
+    {
+        var session = _arcDragSession;
+        _arcDragSession = null;
+        if (restore && session is not null && ReferenceEquals(session.Scene, _scene))
+        {
+            RestoreCanvasMutationSnapshot(session.Snapshot);
+        }
+    }
+
+    private bool TryBeginCornerDrag(MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || !IsControlPressed() || IsScene3DView()) return false;
+
+        var world = _stage.ScreenToWorld(e.Location);
+        var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+        if (!hit.IsValid
+            || hit.Key.Kind != DrawingElementKind.Stroke
+            || !_scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame))
+        {
+            return false;
+        }
+
+        var objectIndex = hit.Key.ObjectIndex;
+        var shape = _scene.ShapeKind[objectIndex];
+        if (shape == ShapeKind.Line)
+        {
+            if (!_scene.TryGetClosestPointOnLine(objectIndex, world, out var t, out _, out _)
+                || t <= 0.06f
+                || t >= 0.94f
+                || !BeginLineCornerDrag(objectIndex, t))
+            {
+                return false;
+            }
+        }
+        else if (shape == ShapeKind.Freeform)
+        {
+            var segmentIndex = hit.BezierSegmentIndex;
+            if (segmentIndex < 0
+                || !_scene.TryGetFreehandBezierSegment(objectIndex, segmentIndex, out var part))
+            {
+                return false;
+            }
+
+            var t = ClosestCubicParameter(part.Curve, world);
+            if (t <= 0.06f || t >= 0.94f || !BeginFreeformCornerDrag(objectIndex, segmentIndex, t))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+
+        _stage.Capture = true;
+        _lastMouse = e.Location;
+        _startScreen = e.Location;
+        _startWorld = world;
+        _forceMarqueeOnPointerDown = false;
+        _pendingClickSelection = DrawingElementHit.None;
+        _stage.ClearHoveredLineElement();
+        UpdateInteractionCursor(e.Location);
+        return true;
+    }
+
+    private static float ClosestCubicParameter(CubicBoundarySegment curve, PointF world)
+    {
+        var bestT = 0.5f;
+        var bestDistance = float.MaxValue;
+        const int steps = 48;
+        for (var i = 0; i <= steps; i++)
+        {
+            var t = i / (float)steps;
+            var u = 1f - t;
+            var x = u * u * u * curve.Start.X
+                + 3f * u * u * t * curve.Control1.X
+                + 3f * u * t * t * curve.Control2.X
+                + t * t * t * curve.End.X;
+            var y = u * u * u * curve.Start.Y
+                + 3f * u * u * t * curve.Control1.Y
+                + 3f * u * t * t * curve.Control2.Y
+                + t * t * t * curve.End.Y;
+            var dx = x - world.X;
+            var dy = y - world.Y;
+            var distance = dx * dx + dy * dy;
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestT = t;
+            }
+        }
+
+        return bestT;
+    }
+
+    private bool BeginLineCornerDrag(int objectIndex, float parameter)
+    {
+        var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
+        if (!_scene.TryConvertLineToBezierFreeform(objectIndex, parameter, out _)
+            || !_scene.TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
+            || nodes.Length < 3)
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return false;
+        }
+
+        _cornerDragSession = new CornerDragSession
+        {
+            Scene = _scene,
+            Snapshot = snapshot,
+            ObjectIndex = objectIndex,
+            NodeIndex = 1,
+            BaseCorner = nodes[1],
+            DragExceeded = false
+        };
+        SetSelection(objectIndex);
+        return true;
+    }
+
+    private bool BeginFreeformCornerDrag(int objectIndex, int segmentIndex, float parameter)
+    {
+        var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
+        if (!_scene.TryInsertFreehandBezierCorner(objectIndex, segmentIndex, parameter, out var nodeIndex)
+            || nodeIndex < 0
+            || !_scene.TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
+            || nodeIndex >= nodes.Length)
+        {
+            RestoreCanvasMutationSnapshot(snapshot);
+            return false;
+        }
+
+        _cornerDragSession = new CornerDragSession
+        {
+            Scene = _scene,
+            Snapshot = snapshot,
+            ObjectIndex = objectIndex,
+            NodeIndex = nodeIndex,
+            BaseCorner = nodes[nodeIndex],
+            DragExceeded = false
+        };
+        SetSelection(objectIndex);
+        return true;
+    }
+
+    private void UpdateCornerDrag(Point screen)
+    {
+        var session = _cornerDragSession;
+        if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
+        if (!session.DragExceeded && !PointerDragExceeded(screen)) return;
+        session.DragExceeded = true;
+
+        var world = _stage.ScreenToWorld(screen);
+        if (!_scene.TryGetFreehandBezierWorldNodes(session.ObjectIndex, out var nodes)
+            || (uint)session.NodeIndex >= nodes.Length)
+        {
+            return;
+        }
+
+        var baseCorner = session.BaseCorner;
+        var deltaX = world.X - baseCorner.Anchor.X;
+        var deltaY = world.Y - baseCorner.Anchor.Y;
+        nodes[session.NodeIndex] = new PathBezierNode(
+            world,
+            new PointF(baseCorner.IncomingControl.X + deltaX, baseCorner.IncomingControl.Y + deltaY),
+            new PointF(baseCorner.OutgoingControl.X + deltaX, baseCorner.OutgoingControl.Y + deltaY));
+        if (!_scene.TrySetFreehandBezierWorldNodes(session.ObjectIndex, nodes)) return;
+
+        _scene.InvalidateDeferredTopologyQueries();
+        _geometryDirty = true;
+        _stage.Invalidate();
+    }
+
+    private void CompleteCornerDrag(Point screen, MouseButtons button)
+    {
+        var session = _cornerDragSession;
+        _cornerDragSession = null;
+        if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
+
+        var exceeded = session.DragExceeded || PointerDragExceeded(screen);
+        if (exceeded && button == MouseButtons.Left)
+        {
+            PushUndoSnapshot(session.Snapshot);
+        }
+        else
+        {
+            RestoreCanvasMutationSnapshot(session.Snapshot);
+        }
+
+        _geometryDirty = true;
+        _stage.Invalidate();
+        UpdateInteractionCursor(screen);
+    }
+
+    private void CancelCornerDrag(bool restore)
+    {
+        var session = _cornerDragSession;
+        _cornerDragSession = null;
         if (restore && session is not null && ReferenceEquals(session.Scene, _scene))
         {
             RestoreCanvasMutationSnapshot(session.Snapshot);

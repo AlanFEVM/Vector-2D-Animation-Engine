@@ -246,6 +246,20 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (_arcDragSession is not null)
+        {
+            if (e.Button == MouseButtons.Left) UpdateArcDrag(e.Location);
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
+        if (_cornerDragSession is not null)
+        {
+            if (e.Button == MouseButtons.Left) UpdateCornerDrag(e.Location);
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
         if (IsShotDirectorContext()
             && !_spacePanPointerActive
             && !_viewPanning
@@ -2399,6 +2413,20 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (_arcDragSession is not null)
+        {
+            CompleteArcDrag(e.Location, e.Button);
+            FinishPointerInteraction();
+            return;
+        }
+
+        if (_cornerDragSession is not null)
+        {
+            CompleteCornerDrag(e.Location, e.Button);
+            FinishPointerInteraction();
+            return;
+        }
+
         if (_marqueeSelecting)
         {
             CompleteMarqueeSelection(e.Location);
@@ -2529,6 +2557,20 @@ internal sealed partial class MainForm : Form
         if (_lineBranchDragSession is not null)
         {
             CancelLineBranchDrag(restore: true);
+            FinishPointerInteraction();
+            return;
+        }
+
+        if (_arcDragSession is not null)
+        {
+            CancelArcDrag(restore: true);
+            FinishPointerInteraction();
+            return;
+        }
+
+        if (_cornerDragSession is not null)
+        {
+            CancelCornerDrag(restore: true);
             FinishPointerInteraction();
             return;
         }
@@ -2664,6 +2706,8 @@ internal sealed partial class MainForm : Form
             || _fillEdgeBezierArmedSession is not null
             || _fillEdgeBezierEditSession is not null
             || _lineBranchDragSession is not null
+            || _arcDragSession is not null
+            || _cornerDragSession is not null
             || _drawingTransformSession is not null
             || _shotFramingPointerSession is not null
             || _sceneLightGizmoPointerSession is not null
@@ -2724,6 +2768,19 @@ internal sealed partial class MainForm : Form
         if (_lineBranchDragSession is not null)
         {
             CancelLineBranchDrag(restore: true);
+            FinishPointerInteraction();
+            return;
+        }
+        if (_arcDragSession is not null)
+        {
+            CancelArcDrag(restore: true);
+            FinishPointerInteraction();
+            return;
+        }
+
+        if (_cornerDragSession is not null)
+        {
+            CancelCornerDrag(restore: true);
             FinishPointerInteraction();
             return;
         }
@@ -2790,6 +2847,8 @@ internal sealed partial class MainForm : Form
             .ToArray();
         FinalizePendingMarqueeSelectionCancellation();
         if (_lineBranchDragSession is not null) CancelLineBranchDrag(restore: true);
+        if (_arcDragSession is not null) CancelArcDrag(restore: true);
+        if (_cornerDragSession is not null) CancelCornerDrag(restore: true);
         ResetLineDragPreview();
         _lastMouse = null;
         _startScreen = null;
