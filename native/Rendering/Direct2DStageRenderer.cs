@@ -174,8 +174,12 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             GdiPointF[][]? pathContoursIdentity,
             PathBezierNode[][]? pathBezierContoursIdentity)
         {
-            return ReferenceEquals(PathContoursIdentity, pathContoursIdentity)
-                && ReferenceEquals(PathBezierContoursIdentity, pathBezierContoursIdentity);
+            // Compare by value, not by reference. Several editing paths mutate
+            // the stored contour arrays in place while keeping the outer array
+            // identity, which previously let this cache serve stale geometry
+            // (bent fill/edge froze until an unrelated edit reallocated it).
+            return ContoursEqual(PathContoursIdentity, pathContoursIdentity)
+                && BezierContoursEqual(PathBezierContoursIdentity, pathBezierContoursIdentity);
         }
 
         public bool MatchesContent(
@@ -2152,6 +2156,9 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
         if (shape == ShapeKind.Path)
         {
+            // Fill and stroke share the smooth bezier geometry, matching the
+            // stable release: any boundary edit moves both together. Stale
+            // geometry is prevented by the value-based cache comparison.
             var path = ObjectPathGeometry(scene, i);
             if (path is not null)
             {

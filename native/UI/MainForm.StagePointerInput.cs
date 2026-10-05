@@ -1066,6 +1066,9 @@ internal sealed partial class MainForm : Form
 
         t = Math.Clamp(t, 0.05f, 0.95f);
         var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
+        // Capture while the line is still straight so coincident fill edges
+        // are linked and follow the arc while it is dragged.
+        var fillBoundaryLinks = _scene.CaptureFillBoundaryLineLinks(objectIndex, _frame);
         _arcDragSession = new ArcDragSession
         {
             Scene = _scene,
@@ -1074,6 +1077,7 @@ internal sealed partial class MainForm : Form
             Start = start,
             End = end,
             Parameter = t,
+            FillBoundaryLinks = fillBoundaryLinks,
             DragExceeded = false
         };
         SetSelection(objectIndex);
@@ -1089,6 +1093,10 @@ internal sealed partial class MainForm : Form
 
         var world = _stage.ScreenToWorld(screen);
         _scene.SetLineQuadraticControl(session.ObjectIndex, world);
+        if (session.FillBoundaryLinks.Length > 0)
+        {
+            _scene.UpdateFillBoundaryLineLinks(session.FillBoundaryLinks, rebuildGeometryIndex: false);
+        }
 
         _scene.InvalidateDeferredTopologyQueries();
         _geometryDirty = true;
@@ -1215,6 +1223,9 @@ internal sealed partial class MainForm : Form
     private bool BeginLineCornerDrag(int objectIndex, float parameter)
     {
         var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
+        // Capture while the line is still straight so coincident fill edges
+        // follow the corner while it is dragged.
+        var fillBoundaryLinks = _scene.CaptureFillBoundaryLineLinks(objectIndex, _frame);
         if (!_scene.TryConvertLineToBezierFreeform(objectIndex, parameter, out _)
             || !_scene.TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
             || nodes.Length < 3)
@@ -1230,6 +1241,7 @@ internal sealed partial class MainForm : Form
             ObjectIndex = objectIndex,
             NodeIndex = 1,
             BaseCorner = nodes[1],
+            FillBoundaryLinks = fillBoundaryLinks,
             DragExceeded = false
         };
         SetSelection(objectIndex);
@@ -1239,6 +1251,7 @@ internal sealed partial class MainForm : Form
     private bool BeginFreeformCornerDrag(int objectIndex, int segmentIndex, float parameter)
     {
         var snapshot = CreateCanvasMutationSnapshot([objectIndex]);
+        var fillBoundaryLinks = _scene.CaptureFillBoundaryLineLinks(objectIndex, _frame);
         if (!_scene.TryInsertFreehandBezierCorner(objectIndex, segmentIndex, parameter, out var nodeIndex)
             || nodeIndex < 0
             || !_scene.TryGetFreehandBezierWorldNodes(objectIndex, out var nodes)
@@ -1255,6 +1268,7 @@ internal sealed partial class MainForm : Form
             ObjectIndex = objectIndex,
             NodeIndex = nodeIndex,
             BaseCorner = nodes[nodeIndex],
+            FillBoundaryLinks = fillBoundaryLinks,
             DragExceeded = false
         };
         SetSelection(objectIndex);
@@ -1283,6 +1297,10 @@ internal sealed partial class MainForm : Form
             new PointF(baseCorner.IncomingControl.X + deltaX, baseCorner.IncomingControl.Y + deltaY),
             new PointF(baseCorner.OutgoingControl.X + deltaX, baseCorner.OutgoingControl.Y + deltaY));
         if (!_scene.TrySetFreehandBezierWorldNodes(session.ObjectIndex, nodes)) return;
+        if (session.FillBoundaryLinks.Length > 0)
+        {
+            _scene.UpdateFillBoundaryLineLinks(session.FillBoundaryLinks, rebuildGeometryIndex: false);
+        }
 
         _scene.InvalidateDeferredTopologyQueries();
         _geometryDirty = true;
@@ -1788,7 +1806,8 @@ internal sealed partial class MainForm : Form
                 control1,
                 control2,
                 end,
-                preserveStraightAdjacentSegments: session.Handle is EditHandleKind.LineStart or EditHandleKind.LineEnd))
+                preserveStraightAdjacentSegments: session.Handle is EditHandleKind.LineStart or EditHandleKind.LineEnd,
+                handle: session.Handle))
         {
             return;
         }

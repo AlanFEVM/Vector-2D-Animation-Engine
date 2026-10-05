@@ -1380,6 +1380,7 @@ internal sealed partial class VectorScene
     {
         RebuildGeometryIndex();
         RebuildSummaries();
+        GeometryRevision++;
     }
 
     internal VectorScene CreateStaticSelectionScene(

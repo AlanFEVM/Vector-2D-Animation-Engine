@@ -2669,7 +2669,8 @@ internal sealed partial class VectorScene
         PointF control1,
         PointF control2,
         PointF end,
-        bool preserveStraightAdjacentSegments = false)
+        bool preserveStraightAdjacentSegments = false,
+        EditHandleKind handle = EditHandleKind.BezierControl)
     {
         if ((uint)objectIndex >= ObjectCount
             || partIndex < 0
@@ -2770,9 +2771,17 @@ internal sealed partial class VectorScene
                 };
             }
 
-            // Replace only the outer identity so target-bound renderer caches
-            // observe the edit without cloning or resampling the whole contour.
-            _pathBezierLocalContours[objectIndex] = (PathBezierNode[][])contours.Clone();
+            // Deep-copy every contour so renderer caches keyed on array
+            // identity always observe the edit.
+            _pathBezierLocalContours[objectIndex] = contours
+                .Select(c => (PathBezierNode[])c.Clone())
+                .ToArray();
+            if (handle is EditHandleKind.BezierControl or EditHandleKind.BezierControl2)
+            {
+                // Curvature edits reshape the filled region, so keep the fill
+                // contour in sync with the bent edge.
+                ResamplePathLocalContours(objectIndex);
+            }
             GeometryRevision++;
             InvalidateDeferredTopologyQueries();
             return true;

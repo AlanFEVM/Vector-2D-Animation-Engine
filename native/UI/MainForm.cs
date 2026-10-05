@@ -748,6 +748,7 @@ internal sealed partial class MainForm : Form
         public required PointF Start { get; init; }
         public required PointF End { get; init; }
         public required float Parameter { get; init; }
+        public required FillBoundaryLineLink[] FillBoundaryLinks { get; init; }
         public bool DragExceeded { get; set; }
     }
 
@@ -758,6 +759,7 @@ internal sealed partial class MainForm : Form
         public required int ObjectIndex { get; init; }
         public required int NodeIndex { get; init; }
         public required PathBezierNode BaseCorner { get; init; }
+        public required FillBoundaryLineLink[] FillBoundaryLinks { get; init; }
         public bool DragExceeded { get; set; }
     }
 

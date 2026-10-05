@@ -273,6 +273,19 @@ internal sealed partial class VectorScene
             .ToArray();
     }
 
+    private void ResamplePathLocalContours(int objectIndex)
+    {
+        if (!TryGetPathBezierWorldContours(objectIndex, out var worldBezier)
+            || !TryPreparePathBezierContours(worldBezier, out _, out var sampledWorld, out _))
+        {
+            return;
+        }
+
+        _pathLocalContours[objectIndex] = sampledWorld
+            .Select(contour => contour.Select(point => VectorUnits.Quantize(WorldToLocal(objectIndex, point))).ToArray())
+            .ToArray();
+    }
+
     private void CompletePathBezierMutation(bool rebuildGeometryIndex)
     {
         if (rebuildGeometryIndex)
