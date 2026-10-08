@@ -21,18 +21,21 @@ internal sealed partial class MainForm : Form
         var materialEditorParent = _materialEditor.Parent;
         var textSettingsWasVisible = _textSettingsPanel.Visible;
         var textSettingsParent = _textSettingsPanel.Parent;
+        var imageInspectorWasVisible = _imageInspector.Visible;
+        var imageInspectorParent = _imageInspector.Parent;
         _basicInspectorPage.SuspendContentLayout();
         _sceneEditPage.SuspendContentLayout();
         var drawingParameterPanelsMoved = false;
         try
         {
         drawingParameterPanelsMoved = PlaceDrawingParameterPanels();
-        _objectMetric.Text = $"{UiLocalization.T("Objects:")} {CompactFormat.Number(_scene.ObjectCount)}";
+        _objectInspector.ObjectsText = $"{UiLocalization.T("Objects:")} {CompactFormat.Number(_scene.ObjectCount)}";
         if (refreshLineEndpointStyles) UpdateLineEndpointStyleControl();
         UpdateTextSettingsPanel();
         var validSelection = _selectedObjects
             .Where(index => index >= 0 && index < _scene.ObjectCount)
             .ToArray();
+        UpdateImageInspector(validSelection);
         if (_selectedElement.IsValid && (uint)_selectedElement.Key.ObjectIndex < _scene.ObjectCount)
         {
             _materialEditor.SetGradientPreviewTarget(ShouldPreferStrokeMaterial(
@@ -49,7 +52,8 @@ internal sealed partial class MainForm : Form
         var sceneInstance = SelectedSceneInstance();
         RefreshSceneOpticsInspector();
         _drawingObjectInstancePanel.Visible = sceneInstance is not null;
-        _materialEditor.Visible = sceneInstance is not null || !validSelection.Any(IsImportedSvgObject);
+        _materialEditor.Visible = sceneInstance is not null || !validSelection.Any(index =>
+            IsImportedSvgObject(index) || _scene.ShapeKind[index] == ShapeKind.Bitmap);
         if (sceneInstance is not null)
         {
             var sceneInstanceState = sceneInstance.EvaluateState(_frame);
@@ -74,13 +78,13 @@ internal sealed partial class MainForm : Form
                 : drawingLayer >= 0
                     ? _scene.LayerNames[drawingLayer]
                     : null;
-            _selected.Text = selectedSceneInstances.Count > 1
+            _objectInspector.SelectedText = selectedSceneInstances.Count > 1
                 ? $"{UiLocalization.T("Selected:")} {selectedSceneInstances.Count} {UiLocalization.T("Symbol Instances")}"
                 : $"{UiLocalization.T("Selected:")} {sceneInstance.Name}";
-            _selectedLayer.Text =
+            _objectInspector.LayerText =
                 $"{UiLocalization.T("Layer:")} {layerName ?? UiLocalization.T("Missing layer")} / "
                 + $"{UiLocalization.T("Symbol:")} {drawingObject?.Name ?? UiLocalization.T("Missing object")}";
-            _selectedAtoms.Text =
+            _objectInspector.AtomsText =
                 $"{UiLocalization.T("Transform:")} {sceneInstanceState.ScaleX:0.##}, {sceneInstanceState.ScaleY:0.##} / "
                 + $"{sceneInstanceState.RotationZ:0.#} {UiLocalization.T("deg")} / "
                 + $"{UiLocalization.T("skew")} {sceneInstanceState.SkewX:0.#}, {sceneInstanceState.SkewY:0.#}";
@@ -94,11 +98,11 @@ internal sealed partial class MainForm : Form
             var mixedLayer = validSelection.Any(index => _scene.ObjectLayer[index] != firstLayer);
             var atoms = _selectedElements.Sum(hit => _scene.EstimateElementAtomCount(hit, _frame));
             var kindLabel = kinds.Length == 1 ? kinds[0].ToString() : "Mixed";
-            _selected.Text = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(_selectedElements.Count)} {kindLabel} {UiLocalization.T("parts")}";
-            _selectedLayer.Text = mixedLayer
+            _objectInspector.SelectedText = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(_selectedElements.Count)} {kindLabel} {UiLocalization.T("parts")}";
+            _objectInspector.LayerText = mixedLayer
                 ? UiLocalization.T("Layer: Mixed")
                 : firstLayer >= 0 ? $"{UiLocalization.T("Layer:")} {_scene.LayerNames[firstLayer]}" : UiLocalization.T("Layer: -");
-            _selectedAtoms.Text = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
+            _objectInspector.AtomsText = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
             return;
         }
 
@@ -113,32 +117,32 @@ internal sealed partial class MainForm : Form
                 if (_scene.ObjectLayer[index] != firstLayer) mixedLayer = true;
             }
 
-            _selected.Text = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(validSelection.Length)} {UiLocalization.T("objects")}";
-            _selectedLayer.Text = mixedLayer ? UiLocalization.T("Layer: Mixed") : $"{UiLocalization.T("Layer:")} {_scene.LayerNames[firstLayer]}";
-            _selectedAtoms.Text = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
+            _objectInspector.SelectedText = $"{UiLocalization.T("Selected:")} {CompactFormat.Number(validSelection.Length)} {UiLocalization.T("objects")}";
+            _objectInspector.LayerText = mixedLayer ? UiLocalization.T("Layer: Mixed") : $"{UiLocalization.T("Layer:")} {_scene.LayerNames[firstLayer]}";
+            _objectInspector.AtomsText = $"{UiLocalization.T("Atoms:")} {CompactFormat.Number(atoms)}";
             return;
         }
 
         if (validSelection.Length == 1 && _selectedObject != validSelection[0]) _selectedObject = validSelection[0];
         if (_selectedObject < 0 || _selectedObject >= _scene.ObjectCount)
         {
-            _selected.Text = $"{UiLocalization.T("Selected:")} {UiLocalization.T("None")}";
-            _selectedLayer.Text = _scene.LayerNames.Length > 0
+            _objectInspector.SelectedText = $"{UiLocalization.T("Selected:")} {UiLocalization.T("None")}";
+            _objectInspector.LayerText = _scene.LayerNames.Length > 0
                 ? $"{UiLocalization.T("Layer:")} {_scene.LayerNames[_scene.ActiveLayer]}"
                 : UiLocalization.T("Layer: -");
-            _selectedAtoms.Text = $"{UiLocalization.T("Atoms:")} -";
+            _objectInspector.AtomsText = $"{UiLocalization.T("Atoms:")} -";
             return;
         }
 
         var layer = _scene.ObjectLayer[_selectedObject];
-        _selected.Text = _selectedElement.IsValid && _selectedElement.Key.ObjectIndex == _selectedObject
+        _objectInspector.SelectedText = _selectedElement.IsValid && _selectedElement.Key.ObjectIndex == _selectedObject
             ? $"Selected: #{_selectedObject} {_selectedElement.Key.Kind} part {_selectedElement.Key.PartIndex}"
             : $"Selected: #{_selectedObject}";
-        _selectedLayer.Text = $"Layer: {_scene.LayerNames[layer]}";
+        _objectInspector.LayerText = $"Layer: {_scene.LayerNames[layer]}";
         var selectedAtoms = _selectedElement.IsValid
             ? _scene.EstimateElementAtomCount(_selectedElement, _frame)
             : _scene.AtomCount[_selectedObject];
-        _selectedAtoms.Text = $"Atoms: {CompactFormat.Number(selectedAtoms)}";
+        _objectInspector.AtomsText = $"Atoms: {CompactFormat.Number(selectedAtoms)}";
         var fill = Color.FromArgb(_scene.Argb[_selectedObject]);
         var stroke = _scene.StrokeArgb.Length > _selectedObject ? Color.FromArgb(_scene.StrokeArgb[_selectedObject]) : ActiveStrokeColor();
         var strokePoints = VectorUnits.UnitsToStrokePoints(_scene.Stroke[_selectedObject]);
@@ -203,14 +207,16 @@ internal sealed partial class MainForm : Form
             var materialEditorLayoutChanged = materialEditorHeight != _materialEditor.Height
                 || materialEditorWasVisible != _materialEditor.Visible;
             var textSettingsLayoutChanged = textSettingsWasVisible != _textSettingsPanel.Visible;
-            var basicLayoutChanged = drawingParameterPanelsMoved
+            var imageLayoutChanged = imageInspectorWasVisible != _imageInspector.Visible
+                || !ReferenceEquals(imageInspectorParent, _imageInspector.Parent);
+            var basicLayoutChanged = drawingParameterPanelsMoved || imageLayoutChanged
                 || (drawingObjectLayoutChanged
                     && ReferenceEquals(drawingObjectPanelParent, _basicInspectorPage.Content))
                 || (materialEditorLayoutChanged
                     && ReferenceEquals(materialEditorParent, _basicInspectorPage.Content))
                 || (textSettingsLayoutChanged
                     && ReferenceEquals(textSettingsParent, _basicInspectorPage.Content));
-            var sceneLayoutChanged = drawingParameterPanelsMoved
+            var sceneLayoutChanged = drawingParameterPanelsMoved || imageLayoutChanged
                 || sceneLightingWasVisible != _sceneLightingPanel.Visible
                 || spatialMaterialWasVisible != _spatialMaterialPanel.Visible
                 || (drawingObjectLayoutChanged
@@ -263,13 +269,12 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        SetLabelText(_selected, "Selected: None");
-        SetLabelText(
-            _selectedLayer,
+        _objectInspector.SelectedText = "Selected: None";
+        _objectInspector.LayerText =
             _scene.LayerNames.Length > 0 && _scene.ActiveLayer >= 0 && _scene.ActiveLayer < _scene.LayerNames.Length
                 ? $"Layer: {_scene.LayerNames[_scene.ActiveLayer]}"
-                : "Layer: -");
-        SetLabelText(_selectedAtoms, "Atoms: -");
+                : "Layer: -";
+        _objectInspector.AtomsText = "Atoms: -";
     }
 
     private void RestoreInspectorScrollPosition(ThemedScrollPanel page, int verticalPosition)
@@ -1040,21 +1045,6 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private void PlaceDrawingObjectInstancePanel(bool sceneEdit)
-    {
-        var target = sceneEdit ? _sceneEditPage.Content : _basicInspectorPage.Content;
-        if (!ReferenceEquals(_drawingObjectInstancePanel.Parent, target))
-        {
-            target.Controls.Add(_drawingObjectInstancePanel);
-        }
-        _drawingObjectInstancePanel.BringToFront();
-        if (!sceneEdit)
-        {
-            _materialEditor.BringToFront();
-            _shapeSettingsPanel.BringToFront();
-        }
-    }
-
     private bool IsSceneMaskDrawingInspectorContext()
     {
         return _workspaceTabs.SelectedView == WorkspaceView.SceneEditor && IsSceneMaskEditing();
@@ -1064,83 +1054,6 @@ internal sealed partial class MainForm : Form
     {
         return _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
             || IsSceneMaskDrawingInspectorContext();
-    }
-
-    private bool PlaceDrawingParameterPanels()
-    {
-        var target = IsSceneMaskDrawingInspectorContext()
-            ? _sceneEditPage.Content
-            : _basicInspectorPage.Content;
-        Control[] panels =
-        [
-            _materialEditor,
-            _brushTipPanel,
-            _mixingBrushSettingsPanel,
-            _textSettingsPanel,
-            _drawSettingsPanel,
-            _shapeSettingsPanel
-        ];
-        var moved = false;
-        foreach (var panel in panels)
-        {
-            if (ReferenceEquals(panel.Parent, target)) continue;
-            target.Controls.Add(panel);
-            moved = true;
-        }
-
-        if (ReferenceEquals(target, _sceneEditPage.Content))
-        {
-            ArrangeSceneMaskInspectorPanels();
-        }
-        else if (moved)
-        {
-            ArrangeBasicDrawingInspectorPanels();
-            ArrangeSceneInspectorSections();
-        }
-
-        return moved;
-    }
-
-    private void ArrangeBasicDrawingInspectorPanels()
-    {
-        if (ReferenceEquals(_drawingObjectInstancePanel.Parent, _basicInspectorPage.Content))
-        {
-            _drawingObjectInstancePanel.BringToFront();
-        }
-        _textSettingsPanel.BringToFront();
-        _materialEditor.BringToFront();
-        _mixingBrushSettingsPanel.BringToFront();
-        _drawSettingsPanel.BringToFront();
-        _shapeSettingsPanel.BringToFront();
-        _tweenCurveEditorPanel.BringToFront();
-    }
-
-    private void ArrangeSceneMaskInspectorPanels()
-    {
-        var content = _sceneEditPage.Content;
-        // Docking is evaluated back-to-front, ending with the text panel at the top.
-        Control[] frontToBack =
-        [
-            _hierarchyPanel,
-            _sceneWorkflowControls,
-            _drawingObjectInstancePanel,
-            _shapeSettingsPanel,
-            _drawSettingsPanel,
-            _mixingBrushSettingsPanel,
-            _brushTipPanel,
-            _materialEditor,
-            _textSettingsPanel
-        ];
-        var childIndex = 0;
-        foreach (var control in frontToBack)
-        {
-            if (!ReferenceEquals(control.Parent, content)) continue;
-            if (content.Controls.GetChildIndex(control) != childIndex)
-            {
-                content.Controls.SetChildIndex(control, childIndex);
-            }
-            childIndex++;
-        }
     }
 
     private static bool IsDrawingTool(ToolMode tool)
@@ -1300,6 +1213,7 @@ internal sealed partial class MainForm : Form
             and not ShapeKind.Freeform
             and not ShapeKind.BrushStroke
             and not ShapeKind.ImportedSvg
+            and not ShapeKind.Bitmap
             and not ShapeKind.MixingStroke;
     }
 
@@ -1360,7 +1274,7 @@ internal sealed partial class MainForm : Form
             _workspaceTabs.SelectedView,
             _tool,
             sceneMaskEditing);
-        if (_drawSettingsPanel.Visible && !sceneMaskEditing) _drawSettingsPanel.BringToFront();
+        if (_drawSettingsPanel.Visible && !sceneMaskEditing) ArrangeBasicDrawingInspectorPanels();
         if (sceneMaskEditing) ArrangeSceneMaskInspectorPanels();
     }
 
@@ -1368,7 +1282,8 @@ internal sealed partial class MainForm : Form
     {
         if (ToolShapeKind(_tool) is { } shape && ShapeSettingsPanel.SupportsShape(shape))
         {
-            _shapeSettingsPanel.SetShape(shape);
+            _shapeSettingsPanel.SetState(new(shape, shape == ShapeKind.Polygon
+                ? _drawSettings.PolygonSides : _drawSettings.StarPoints));
         }
 
         var sceneMaskEditing = IsSceneMaskDrawingInspectorContext();
@@ -1759,7 +1674,6 @@ internal sealed partial class MainForm : Form
     private static ToolStripStatusLabel StatusLabel(string text) => new() { Text = text, ForeColor = Theme.Muted, Spring = false, Margin = new Padding(0, 0, 10, 0) };
     private static ToolStripStatusLabel StatusSeparator() => new() { Text = "|", ForeColor = Theme.Border, Margin = new Padding(0, 0, 10, 0) };
     private static bool IsModuleHotReloadEnabled() => Environment.GetEnvironmentVariable("V2D_DEV_HOT_RELOAD") == "1";
-    private static Label InspectorLabel(string text) => new() { Text = text, Height = 26, ForeColor = Theme.Text, BackColor = Theme.Panel, Font = Theme.UiFont(), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = false };
     private static Label FieldLabel(string text) => new()
     {
         Text = text,

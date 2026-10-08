@@ -95,6 +95,42 @@ internal static class BitmapImageRasterizer
     private static long _cacheHitCount;
     private static long _cacheMissCount;
     private static long _cacheEvictionCount;
+    private static readonly ConditionalWeakTable<BitmapObjectData, string> ClipKeys = new();
+
+    internal static BitmapImageRaster ApplyObjectClip(BitmapImageRaster source, BitmapObjectData data)
+    {
+        if (data.VisibleContours is not { } contours) return source;
+        var clipKey = ClipKeys.GetValue(data, value => Convert.ToHexString(SHA256.HashData(
+            System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value.VisibleContours,
+                new System.Text.Json.JsonSerializerOptions { IncludeFields = true }))));
+        var key = source.Key with { ContentSha256 = source.Key.ContentSha256 + ":clip:" + clipKey };
+        lock (CacheSync)
+        {
+            if (RasterCache.TryGetValue(key, out var cached))
+            {
+                cached.LastUse = ++_useSequence;
+                return cached.Raster;
+            }
+            var result = new BitmapImageRaster(key);
+            if (contours.Length > 0)
+            {
+                using var path = new GraphicsPath(FillMode.Alternate);
+                foreach (var contour in contours)
+                    path.AddPolygon(contour.Select(point => new PointF(
+                        point.X * source.PixelWidth, point.Y * source.PixelHeight)).ToArray());
+                using var input = source.AcquireBitmap();
+                using var output = result.AcquireBitmap();
+                using var graphics = Graphics.FromImage(output.Bitmap);
+                graphics.SetClip(path);
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.DrawImageUnscaled(input.Bitmap, 0, 0);
+            }
+            EvictFor(result.Pixels.LongLength);
+            RasterCache[key] = new CacheEntry(result, ++_useSequence);
+            _cacheBytes += result.Pixels.LongLength;
+            return result;
+        }
+    }
 
     internal static long DecodeCallCount => Interlocked.Read(ref _decodeCallCount);
     internal static long CacheHitCount => Interlocked.Read(ref _cacheHitCount);
@@ -167,7 +203,8 @@ internal static class BitmapImageRasterizer
         ValidateSourceFile(fullPath);
         var storedSize = ResolveDecodeSize(fullPath, settings);
         var contentSha256 = ComputeSha256(fullPath);
-        var key = new BitmapImageRasterKey(contentSha256, storedSize.Width, storedSize.Height);
+        var key = new BitmapImageRasterKey(
+            $"{contentSha256}:{settings.FilterMode}:{settings.AlphaSource}", storedSize.Width, storedSize.Height);
 
         lock (CacheSync)
         {

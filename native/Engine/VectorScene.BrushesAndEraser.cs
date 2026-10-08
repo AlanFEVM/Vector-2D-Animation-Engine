@@ -574,10 +574,35 @@ internal sealed partial class VectorScene
         var cutter = ToClipperPaths(sweepContours, minimumAreaUnitsSquared: 0.001d);
         if (cutter.Count == 0) return false;
 
+        var bitmapUpdates = new Dictionary<int, BitmapObjectData>();
         var plans = new List<BrushEraserPlan>();
         for (var index = 0; index < ObjectCount; index++)
         {
             if (!IsObjectActive(index, frame)) continue;
+            if (TryGetBitmapObjectData(index, out var bitmap))
+            {
+                if (eraseFills && TryDifferenceFillRegions(FillWorldContours(index), cutter, out var regions))
+                {
+                    if (regions.Count == 0)
+                    {
+                        plans.Add(new BrushEraserPlan(index, ObjectKeyframeFrame[index], []));
+                        continue;
+                    }
+                    var source = index;
+                    bitmapUpdates[index] = new BitmapObjectData
+                    {
+                        ImageAssetId = bitmap.ImageAssetId,
+                        PlacedSize = bitmap.PlacedSize,
+                        VisibleContours = regions.SelectMany(region => region.Contours).Select(contour =>
+                            contour.Select(point =>
+                            {
+                                var local = WorldToLocal(source, point);
+                                return new PointF(local.X / Width[source] + 0.5f, local.Y / Height[source] + 0.5f);
+                            }).ToArray()).ToArray()
+                    };
+                }
+                continue;
+            }
             if (TryBuildBrushEraserPlan(
                     index,
                     cutter,
@@ -590,12 +615,13 @@ internal sealed partial class VectorScene
             }
         }
 
-        if (plans.Count == 0) return false;
+        if (plans.Count == 0 && bitmapUpdates.Count == 0) return false;
 
         if (materializeAutoKeyframes)
         {
             var planLayers = plans
                 .Select(plan => (int)ObjectLayer[plan.Source])
+                .Concat(bitmapUpdates.Keys.Select(index => (int)ObjectLayer[index]))
                 .Distinct()
                 .ToArray();
             var materializedLayers = new HashSet<int>();
@@ -620,6 +646,7 @@ internal sealed partial class VectorScene
             }
         }
 
+        foreach (var (index, data) in bitmapUpdates) _bitmapObjects[index] = data;
         RemoveObjects(plans.Select(plan => plan.Source));
         foreach (var plan in plans)
         {

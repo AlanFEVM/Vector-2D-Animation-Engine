@@ -274,6 +274,37 @@ internal static partial class Benchmark
             VectorScene.CreateObjectPreviewScene(scene, -1) is null
             && VectorScene.CreateObjectPreviewScene(scene, scene.ObjectCount) is null,
             "The object preview clone accepted an out-of-range object index.");
+
+        var image = scene.AddBitmapObject(scene.ActiveLayer, PointF.Empty,
+            new BitmapObjectData { ImageAssetId = loadedAsset.Id, PlacedSize = new SizeF(600, 400) });
+        scene.Width[image] = 900;
+        scene.Height[image] = 600;
+        var select = RequireMethod(typeof(MainForm), "SetSelection", [typeof(DrawingElementHit), typeof(bool)]);
+        void SelectImage(int index) => select.Invoke(form, [new DrawingElementHit(
+            new DrawingElementKey(index, DrawingElementKind.Fill, 0), 0, 0, 1), false]);
+        SelectImage(image);
+        AssertTimeline((bool)RequireMethod(typeof(MainForm), "CopySelectedObjects").Invoke(form, null)!
+            && (bool)RequireMethod(typeof(MainForm), "PasteCopiedObjects").Invoke(form, null)!,
+            "Copy/paste rejected a clicked bitmap selection.");
+        var copy = scene.ObjectCount - 1;
+        AssertTimeline(scene.TryGetBitmapObjectData(copy, out var copied) && copied.ImageAssetId == loadedAsset.Id
+            && scene.Width[copy] == 900 && scene.Height[copy] == 600, "Image paste lost its payload or current scale.");
+        SelectImage(copy);
+        AssertTimeline((bool)RequireMethod(typeof(MainForm), "MoveSelectedDrawingObjectsInStack").Invoke(form, [-1])!,
+            "Image stack ordering rejected a clicked bitmap selection.");
+        var inspector = (ImageInspectorPanel)RequireField(typeof(MainForm), "_imageInspector").GetValue(form)!;
+        var summary = (Label)RequireField(typeof(ImageInspectorPanel), "_summary").GetValue(inspector)!;
+        AssertTimeline(summary.Text.Contains(loadedAsset.Name) && summary.Text.Contains(loadedAsset.SourcePath),
+            "Selecting an image did not show its import information.");
+        var other = project.TryAddImageAssetFromSource("Other image", imagePath, loadedAsset.Sha256,
+            40, 24, 96, loadedAsset.ImportSettings with { PixelsPerUnit = 321 }, out var otherAsset);
+        AssertTimeline(other && otherAsset is not null, "Could not prepare an independent image import.");
+        var otherIndex = scene.AddBitmapObject(scene.ActiveLayer, new PointF(1000, 0),
+            new BitmapObjectData { ImageAssetId = otherAsset!.Id, PlacedSize = new SizeF(300, 200) });
+        SelectImage(otherIndex);
+        RequireMethod(typeof(MainForm), "UpdateInspector", [typeof(bool)]).Invoke(form, [true]);
+        AssertTimeline(summary.Text.Contains("Other image") && summary.Text.Contains("321"),
+            "The inspector reused another image import settings.");
     }
 
     private static SizeF ScalePlacedSizeForDecodeProbe(ImageAssetDefinition asset, string path)

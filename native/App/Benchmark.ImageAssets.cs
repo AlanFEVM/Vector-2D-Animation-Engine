@@ -106,6 +106,27 @@ internal static partial class Benchmark
                 && raster.Pixels.LongLength == raster.Stride * (long)raster.PixelHeight,
                 "The image rasterizer did not decode to the resolved stored size.");
 
+            var drawing = project.DrawingObjects.FirstOrDefault() ?? project.AddDrawingObject();
+            var imageScene = drawing.Scene;
+            var placed = imageScene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+            { ImageAssetId = asset!.Id, PlacedSize = new SizeF(400, 300) });
+            var beforeErase = imageScene.CreateSnapshot();
+            AssertTimeline(imageScene.EraseWithBrushStroke(0, [PointF.Empty], 100,
+                BrushShape.CreateSoftRound(), eraseLines: false, eraseFills: true), "Image erasing did not change the image.");
+            AssertTimeline(imageScene.TryGetBitmapObjectData(placed, out var clipped)
+                && clipped.VisibleContours is { Length: > 0 }
+                && imageScene.ShapeKind[placed] == ShapeKind.Bitmap
+                && !imageScene.FillContainsPoint(placed, PointF.Empty), "Erasing replaced the image or failed to remove the center.");
+            var pixels = BitmapImageRasterizer.ApplyObjectClip(raster, clipped);
+            var centerOffset = (pixels.PixelHeight / 2) * pixels.Stride + (pixels.PixelWidth / 2) * 4;
+            AssertTimeline(pixels.Pixels[centerOffset + 3] == 0
+                && pixels.Pixels.Take(4).SequenceEqual(raster.Pixels.Take(4))
+                && !ReferenceEquals(raster, pixels), "Image clipping lost colors or modified shared source pixels.");
+            var afterErase = imageScene.CreateSnapshot();
+            imageScene.RestoreSnapshot(beforeErase);
+            AssertTimeline(imageScene.TryGetBitmapObjectData(placed, out var uncut) && uncut.VisibleContours is null,
+                "Undo did not restore the uncut image.");
+            imageScene.RestoreSnapshot(afterErase);
             ProjectVaultStore.Save(project, manifestPath);
             // The managed file is named after the asset id, not the content hash.
             var managedPath = Path.Combine(temporaryRoot, ".Vault", "Images", $"{asset!.Id}.png");
@@ -121,6 +142,9 @@ internal static partial class Benchmark
             File.Delete(sourcePath);
             var vaultRestored = ProjectVaultStore.Load(manifestPath);
             var restored = vaultRestored.ImageAssets.Single();
+            AssertTimeline(vaultRestored.DrawingObjects.Single(item => item.Id == drawing.Id).Scene
+                .TryGetBitmapObjectData(placed, out var loadedClip) && loadedClip.VisibleContours is { Length: > 0 },
+                "Saving and reopening lost the image erasure.");
             AssertTimeline(
                 restored.Id == asset.Id
                 && restored.ImportSettings == settings

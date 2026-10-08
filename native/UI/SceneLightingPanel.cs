@@ -469,30 +469,15 @@ internal sealed class SceneLightingPanel : UserControl
     {
         if (!CanEditParameters) return;
         using var picker = new ProfessionalColorPickerDialog(_color.SwatchColor, UiLocalization.T("Light color"));
-        var startColor = _color.SwatchColor;
-        var changed = false;
         BeginInteraction();
         picker.ColorChanged += (_, _) =>
         {
             _color.SwatchColor = Opaque(picker.Color);
             _color.DetailText = Hex(_color.SwatchColor);
-            changed = true;
             RaiseChanged(SceneLightChangedFields.Color);
         };
-        if (picker.ShowDialog(FindForm()) == DialogResult.OK)
-        {
-            if (!changed && picker.Color.ToArgb() != startColor.ToArgb())
-            {
-                _color.SwatchColor = Opaque(picker.Color);
-                _color.DetailText = Hex(_color.SwatchColor);
-                RaiseChanged(SceneLightChangedFields.Color);
-            }
-            CompleteInteraction();
-            return;
-        }
-        _color.SwatchColor = startColor;
-        _color.DetailText = Hex(startColor);
-        CancelInteraction();
+        try { picker.ShowDialog(FindForm()); }
+        finally { CompleteInteraction(); }
     }
 
     private void HandleNameKeyDown(object? sender, KeyEventArgs e)

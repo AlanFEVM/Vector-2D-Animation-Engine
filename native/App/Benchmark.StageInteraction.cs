@@ -60,7 +60,7 @@ internal static partial class Benchmark
         var cameraProjectionField = RequireField(typeof(SceneEditorPanel), "_cameraProjection");
         var referenceViewPadField = RequireField(typeof(MainForm), "_referenceViewPad");
         var spatialTransformPanelField = RequireField(typeof(MainForm), "_spatialTransformPanel");
-        var sceneWorkflowControlsField = RequireField(typeof(MainForm), "_sceneWorkflowControls");
+        var playbackSettingsField = RequireField(typeof(MainForm), "_playbackSettings");
         var hierarchyPanelField = RequireField(typeof(MainForm), "_hierarchyPanel");
         var basicInspectorPageField = RequireField(typeof(MainForm), "_basicInspectorPage");
         var sceneInspectorPageField = RequireField(typeof(MainForm), "_sceneEditPage");
@@ -165,14 +165,17 @@ internal static partial class Benchmark
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the reference-view pad.");
             var spatialTransformPanel = spatialTransformPanelField.GetValue(form) as SpatialTransformPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the spatial Transform panel.");
-            var sceneWorkflowControls = sceneWorkflowControlsField.GetValue(form) as TableLayoutPanel
-                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the Scene workflow controls.");
+            var playbackSettings = playbackSettingsField.GetValue(form) as PlaybackSettingsPanel
+                ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the playback controls.");
             var hierarchyPanel = hierarchyPanelField.GetValue(form) as HierarchyPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the hierarchy panel.");
             var basicInspectorPage = basicInspectorPageField.GetValue(form) as ThemedScrollPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the Basic Drawing inspector page.");
             var sceneInspectorPage = sceneInspectorPageField.GetValue(form) as ThemedScrollPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the Scene inspector page.");
+            AssertTimeline(ReferenceEquals(sceneEditorPanel.Parent, sceneInspectorPage.Content)
+                && ReferenceEquals(playbackSettings.Parent, sceneInspectorPage.Content),
+                "Scene and playback components must be peers in the inspector composition.");
             var materialEditor = materialEditorField.GetValue(form) as MaterialEditorPanel
                 ?? throw new InvalidOperationException("Scene tool-palette regression did not obtain the material editor.");
             var brushTipPanel = brushTipPanelField.GetValue(form) as BrushTipPanel
@@ -5588,6 +5591,7 @@ internal static partial class Benchmark
     // (and the handle under the pointer) slide, which is the handling problem this guards against.
     private static void RunFrozenRotationTransformFrameRegression()
     {
+        RunFreeTransformScalingPreferenceRegression();
         var sceneField = RequireField(typeof(MainForm), "_scene");
         var stageField = RequireField(typeof(MainForm), "_stage");
         var toolField = RequireField(typeof(MainForm), "_tool");
@@ -5775,4 +5779,40 @@ internal static partial class Benchmark
         }
     }
 
+    private static void RunFreeTransformScalingPreferenceRegression()
+    {
+        foreach (var useShiftForProportionalScaling in new[] { false, true })
+        foreach (var shiftPressed in new[] { false, true })
+        {
+            var expectedProportional = useShiftForProportionalScaling == shiftPressed;
+            if (MainForm.FreeTransformKeepsAspectRatio(useShiftForProportionalScaling, shiftPressed)
+                != expectedProportional)
+            {
+                throw new InvalidOperationException(
+                    $"Incorrect scaling mode: preference={useShiftForProportionalScaling}, Shift={shiftPressed}.");
+            }
+        }
+
+        foreach (var test in new[]
+                 {
+                     (TransformHandleKind.BottomRight, 1.5f, 1.25f, 1.5f, 1.5f),
+                     (TransformHandleKind.Right, 1.5f, 1f, 1.5f, 1.5f),
+                     (TransformHandleKind.BottomRight, -1.5f, -1.25f, -1.5f, -1.5f),
+                     (TransformHandleKind.Right, -1.5f, 1f, -1.5f, -1.5f)
+                 })
+        {
+            var free = MainForm.ConstrainTransformScaleFactors(test.Item1, test.Item2, test.Item3, false);
+            var proportional = MainForm.ConstrainTransformScaleFactors(test.Item1, test.Item2, test.Item3, true);
+            if (Math.Abs(free.ScaleX - test.Item2) > 0.0001f
+                || Math.Abs(free.ScaleY - test.Item3) > 0.0001f
+                || Math.Abs(proportional.ScaleX - test.Item4) > 0.0001f
+                || Math.Abs(proportional.ScaleY - test.Item5) > 0.0001f)
+            {
+                throw new InvalidOperationException(
+                    $"Free Transform scale constraint failed for {test.Item1}: free={free}, proportional={proportional}.");
+            }
+        }
+
+        Console.WriteLine("free_transform_scaling_preference=ok");
+    }
 }

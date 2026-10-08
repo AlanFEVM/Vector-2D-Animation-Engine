@@ -1295,6 +1295,7 @@ internal sealed partial class StageControl : Control
     {
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
         if (!TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+        raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
 
         using var bitmap = raster.AcquireBitmap();
         var state = graphics.Save();

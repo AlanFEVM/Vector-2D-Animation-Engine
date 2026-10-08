@@ -52,7 +52,7 @@ Codex and other MCP clients can connect to the running editor after enabling **S
 - Shape, Line, Pen, Simple Pen, Pencil, Brush, Pressure Brush, Mixing Brush, Text, Fill, Ink Bottle, Eyedropper, Gradient, and Eraser tools share the Stage interaction and undo model.
 - Pencil produces editable open Bezier strokes with `0-100%` smoothing. Fill and stroke topology supports intersections, partial marquee materialization, editable anchors, and connected boundary updates.
 - Mixing Brush computes Optical or Pigment color in real time and commits a baked vertex-color triangle region. Repeated topmost regions on the same layer and Cel can merge; hit testing, marquee selection, transforms, deletion, and Fill erasing operate on actual painted connected islands. Legacy trajectory payloads remain load/render compatible.
-- Free Transform supports corner and edge scaling, four-corner rotation, edge skew, and a movable focus. Holding `Shift` while dragging any scale handle preserves the current aspect ratio.
+- Free Transform supports corner and edge scaling, four-corner rotation, edge skew, and a movable focus. The `Use Shift for proportional scaling` operation preference in Settings chooses the default scaling mode: on (the default) scales freely and holding `Shift` preserves the aspect ratio; off scales proportionally and holding `Shift` allows free scaling. Corner and edge handles use the same rule, and Shift temporarily reverses the mode during a drag.
 - Stage `Ctrl+A` selects only current-frame visible, unlocked content. Basic Drawing prioritizes local objects and falls back to visible nested instances; Scene & Animation selects visible editable scene instances.
 
 ### Layers, Materials, And Timeline
@@ -91,6 +91,10 @@ scripts/                 Development launcher and release packaging entry points
 ```
 
 The model stores scene data in packed arrays, uses spatial indices and deterministic parallel batches for large workloads, and retains complex vector topology on the CPU. Direct2D caches and rasterizes stable content while interaction overlays remain independently updatable. If Direct2D initialization fails, the Stage continues through GDI.
+
+UI components can be composed from source using flat section lists in
+`MainForm.UiComposition.cs`. See [UI composition](docs/UI_COMPOSITION.md) for the
+layout API, component state/event contracts, and examples for AI-assisted changes.
 
 ## Validation
 

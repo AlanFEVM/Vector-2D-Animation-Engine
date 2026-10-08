@@ -51,6 +51,13 @@ internal sealed partial class VectorScene
 
             var sourceKeys = group.ToArray();
             var shape = ShapeKind[source];
+            if (shape is VectorAnimationEngine.ShapeKind.Bitmap or VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Text)
+            {
+                if (sourceKeys.Any(key => key.Kind != DrawingElementKind.Fill || key.PartIndex != 0))
+                    return new MaterializeSelectedPartsResult(false, false, [], []);
+                foreach (var key in sourceKeys) mappedResults[key] = key;
+                continue;
+            }
             var candidates = CollectTopologyCandidates(source, frame);
             if (strokeIntersectionsOnly)
             {

@@ -201,18 +201,12 @@ internal sealed partial class SymbolFiltersPanel : Panel
         };
         try
         {
-            if (picker.ShowDialog(FindForm()) == DialogResult.OK && _interactionActive && !_disposing)
-            {
-                // Confirming the displayed color also resolves this parameter for mixed selections.
-                ApplyColor(kind, picker.Color);
-                CompleteInteraction();
-            }
-            else CancelInteraction();
+            picker.ShowDialog(FindForm());
         }
         finally
         {
             _activePicker = null;
-            CancelInteraction();
+            CompleteInteraction();
         }
     }
 
@@ -304,8 +298,12 @@ internal sealed partial class SymbolFiltersPanel : Panel
 
     private void CancelPendingInteraction()
     {
-        CancelInteraction();
-        if (_activePicker is { IsDisposed: false } picker) picker.DialogResult = DialogResult.Cancel;
+        if (_activePicker is { IsDisposed: false } picker)
+        {
+            CompleteInteraction();
+            picker.Close();
+        }
+        else CancelInteraction();
     }
 
     protected override void Dispose(bool disposing)

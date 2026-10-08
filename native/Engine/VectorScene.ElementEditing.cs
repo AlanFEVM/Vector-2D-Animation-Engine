@@ -1170,6 +1170,8 @@ internal sealed partial class VectorScene
     private bool FillContainsRawPoint(int objectIndex, PointF world)
     {
         if ((uint)objectIndex >= ObjectCount) return false;
+        if (TryGetBitmapObjectData(objectIndex, out _))
+            return PointInCompoundPolygonOrOnBoundary(world, FillWorldContours(objectIndex));
         var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
         if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
         {

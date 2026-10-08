@@ -481,8 +481,13 @@ internal sealed partial class TimelineStrip
         if (!timeline.TabGroups.Any(group => group.Id == id)) return;
         using var picker = new ProfessionalColorPickerDialog(
             GetTabGroupColor(id) ?? Theme.Accent, UiLocalization.T("Tab Group Color"));
-        if (picker.ShowDialog(DialogOwner) != DialogResult.OK || !ReferenceEquals(timeline, _timeline)) return;
-        PerformTabGroupEdit(() => timeline.SetTabGroupColor(id, picker.Color.ToArgb()));
+        picker.ColorChanged += (_, _) =>
+        {
+            if (ReferenceEquals(timeline, _timeline)) timeline.SetTabGroupColor(id, picker.Color.ToArgb());
+        };
+        TabGroupEditStarting?.Invoke(this, EventArgs.Empty);
+        try { picker.ShowDialog(DialogOwner); }
+        finally { TabGroupEditCompleted?.Invoke(this, EventArgs.Empty); }
     }
 
     private void SetTabGroupMenuSwatch(ToolStripMenuItem item, string id)

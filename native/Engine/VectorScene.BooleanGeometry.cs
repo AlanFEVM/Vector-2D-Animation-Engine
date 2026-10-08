@@ -739,6 +739,9 @@ internal sealed partial class VectorScene
             return contours;
         }
 
+        if (TryGetBitmapObjectData(objectIndex, out var bitmap) && bitmap.VisibleContours is { } visible)
+            return visible.Select(contour => contour.Select(point => LocalToWorld(objectIndex,
+                (point.X - 0.5f) * Width[objectIndex], (point.Y - 0.5f) * Height[objectIndex])).ToArray()).ToArray();
         var polygon = OpenPolygon(ShapeBoundary(objectIndex));
         return polygon.Length >= 3 ? new[] { polygon } : Array.Empty<PointF[]>();
     }

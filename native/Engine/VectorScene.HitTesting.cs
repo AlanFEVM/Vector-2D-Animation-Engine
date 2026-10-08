@@ -96,6 +96,8 @@ internal sealed partial class VectorScene
 
     private bool HitObject(PointF world, int i, float toleranceWorld)
     {
+        if (TryGetBitmapObjectData(i, out var bitmap) && bitmap.VisibleContours is not null)
+            return PointInCompoundPolygon(world, FillWorldContours(i));
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
         if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
         {

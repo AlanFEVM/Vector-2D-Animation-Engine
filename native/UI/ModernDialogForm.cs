@@ -135,6 +135,14 @@ internal class ModernDialogForm : Form
 
     protected Panel DialogContent { get; } = new();
     protected FlowLayoutPanel DialogActions { get; } = new();
+
+    protected void HideDialogActions()
+    {
+        if (DialogActions.Parent is not { Parent: TableLayoutPanel surface } footer) return;
+        footer.Visible = false;
+        surface.RowStyles[2].Height = 0;
+    }
+
     internal bool IsDialogMotionRunning => _motionTimer.Enabled;
     internal bool IsDialogClosing => false;
 

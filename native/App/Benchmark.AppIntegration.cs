@@ -6,6 +6,9 @@ internal static partial class Benchmark
 {
     private static void RunUiRefreshStabilityRegression()
     {
+        RunImmediateColorEditingRegression();
+        RunUiCompositionRegression();
+        RunInspectorCompositionWorkspaceRegression();
         RunUiDiscoverabilityRegression();
         using (var form = new MainForm())
         {
@@ -93,6 +96,393 @@ internal static partial class Benchmark
                 "Incremental light refresh retained removed rows.");
         }
         Console.WriteLine("ui_refresh_stability=ok,symbol_refreshes=100,light_refreshes=100");
+    }
+
+    private static void RunImmediateColorEditingRegression()
+    {
+        RunSharedColorPickerRegression();
+        using var host = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30000, -30000), ClientSize = new Size(500, 500)
+        };
+        host.Show();
+        Application.DoEvents();
+        using var dock = new DashDock();
+        host.Controls.Add(dock);
+        var requests = 0;
+        dock.WorkspaceColorRequested += (_, _) => requests++;
+        var mouseDown = typeof(DashDock).GetMethod("OnMouseDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var mouseUp = typeof(DashDock).GetMethod("OnMouseUp", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        foreach (var compact in new[] { false, true })
+        {
+            dock.Compact = compact;
+            void ClickAt(Point point)
+            {
+                mouseDown.Invoke(dock, [new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0)]);
+                mouseUp.Invoke(dock, [new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0)]);
+            }
+            var previous = requests;
+            ClickAt(new Point(dock.Width - 2, dock.Height / 2));
+            AssertTimeline(requests == previous, "Workspace color text or surrounding area opened the picker.");
+            ClickAt(new Point(dock.SwatchBounds.Left + 3, dock.SwatchBounds.Top + 3));
+            AssertTimeline(requests == previous + 1, "Workspace swatch did not open its picker.");
+        }
+        dock.Enabled = false;
+        mouseDown.Invoke(dock, [new MouseEventArgs(MouseButtons.Left, 1, 20, 20, 0)]);
+        mouseUp.Invoke(dock, [new MouseEventArgs(MouseButtons.Left, 1, 20, 20, 0)]);
+        AssertTimeline(requests == 2, "Disabled workspace color control emitted a request.");
+        dock.Enabled = true;
+
+        foreach (var reason in new[] { ToolStripDropDownCloseReason.AppClicked, ToolStripDropDownCloseReason.Keyboard,
+            ToolStripDropDownCloseReason.CloseCalled })
+        {
+            using var flyout = new WorkspaceColorFlyout();
+            var previews = 0;
+            var completed = 0;
+            flyout.ColorPreviewChanged += (_, _) => previews++;
+            flyout.ColorEditingCompleted += (_, _) => completed++;
+            flyout.ShowFor(dock, Color.CornflowerBlue);
+            var panel = (WorkspaceColorPickerPanel)RequireField(typeof(WorkspaceColorFlyout), "_picker").GetValue(flyout)!;
+            var red = (ModernNumericUpDown)RequireField(typeof(WorkspaceColorPickerPanel), "_red").GetValue(panel)!;
+            red.Value = 19;
+            var current = flyout.Color;
+            flyout.Close(reason);
+            AssertTimeline(flyout.Color == current && previews == 1 && completed == 1,
+                "Closing the workspace picker discarded or duplicated a live color update.");
+            AssertTimeline(!Descendants(panel).OfType<Button>().Any(button => button.Text is "Apply" or "Cancel"),
+                "Workspace picker still requires confirmation.");
+        }
+
+        using var tint = new DrawingObjectInstancePanel();
+        var tintStarts = 0;
+        var tintCompletes = 0;
+        var tintCancels = 0;
+        var tintChanges = 0;
+        tint.AppearanceInteractionStarted += (_, _) => tintStarts++;
+        tint.AppearanceInteractionCompleted += (_, _) => tintCompletes++;
+        tint.AppearanceInteractionCanceled += (_, _) => tintCancels++;
+        tint.AppearanceChanged += (_, _) => tintChanges++;
+        EditPicker(() => RequireMethod(typeof(DrawingObjectInstancePanel), "ChooseTint").Invoke(tint, null), picker =>
+            AssertTimeline(tintChanges == 2 && (Color)RequireField(typeof(DrawingObjectInstancePanel), "_tintColor").GetValue(tint)! == picker.Color,
+                "Symbol tint did not apply before picker close."));
+        AssertTimeline(tintStarts == 1 && tintCompletes == 1 && tintCancels == 0,
+            "Closing symbol tint canceled its live edit or split its transaction.");
+
+        using var lighting = new SceneLightingPanel();
+        lighting.SetLights([new SceneLightEditorState("light", "Light", SceneLightKind.Point, true,
+            Color.White, 1, 100, System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero, 1, 1, false, 1, 0)], "light");
+        var lightChanges = 0;
+        var lightCompletes = 0;
+        var lightCancels = 0;
+        lighting.LightChanged += (_, e) => { if (e.Fields == SceneLightChangedFields.Color) lightChanges++; };
+        lighting.InteractionCompleted += (_, _) => lightCompletes++;
+        lighting.InteractionCanceled += (_, _) => lightCancels++;
+        EditPicker(() => RequireMethod(typeof(SceneLightingPanel), "ChooseColor").Invoke(lighting, null), _ =>
+            AssertTimeline(lightChanges == 2, "Light color did not update while the picker was open."), escape: true);
+        AssertTimeline(lightCompletes == 1 && lightCancels == 0, "Escape rolled back live light color.");
+
+        using var filters = new SymbolFiltersPanel();
+        filters.SetFilters(new SymbolFilters { Glow = SymbolGlowFilter.Default });
+        var patches = 0;
+        var filterCompletes = 0;
+        var filterCancels = 0;
+        filters.FiltersChanged += (_, _) => patches++;
+        filters.InteractionCompleted += (_, _) => filterCompletes++;
+        filters.InteractionCanceled += (_, _) => filterCancels++;
+        EditPicker(() => RequireMethod(typeof(SymbolFiltersPanel), "ChooseColor").Invoke(filters,
+            [Enum.Parse(typeof(SymbolFiltersPanel).GetNestedType("FilterKind", System.Reflection.BindingFlags.NonPublic)!, "Glow")]),
+            _ => AssertTimeline(patches == 2, "Glow color did not update before close."));
+        EditPicker(() => RequireMethod(typeof(SymbolFiltersPanel), "ChooseEdgeColor").Invoke(filters, [false]),
+            _ => AssertTimeline(patches == 4, "Edge color did not update before close."), escape: true);
+        AssertTimeline(filterCompletes == 2 && filterCancels == 0, "Filter color close canceled its live transaction.");
+
+        using var form = new MainForm { ShowInTaskbar = false, Location = new Point(-30000, -30000) };
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var layerColor = scene.GetLayerColor(scene.ActiveLayer);
+        EditPicker(() => RequireMethod(typeof(MainForm), "ChooseTimelineLayerColor").Invoke(form, null), picker =>
+            AssertTimeline(scene.GetLayerColor(scene.ActiveLayer) == picker.Color, "Layer color was only applied after close."), escape: true);
+        AssertTimeline(scene.GetLayerColor(scene.ActiveLayer) != layerColor
+            && RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is true
+            && scene.GetLayerColor(scene.ActiveLayer) == layerColor, "Live layer color did not preserve one undo step.");
+        var groupId = scene.Timeline.CreateTabGroup("Live color");
+        var oldGroup = scene.Timeline.TabGroups.Single(group => group.Id == groupId);
+        EditPicker(() => RequireMethod(typeof(TimelineStrip), "EditTabGroupColor").Invoke(timeline, [groupId]), picker =>
+            AssertTimeline((Color?)RequireMethod(typeof(TimelineStrip), "GetTabGroupColor").Invoke(timeline, [groupId]) == picker.Color,
+                "Tab group color did not apply before close."));
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is true
+            && scene.Timeline.TabGroups.Single(group => group.Id == groupId) == oldGroup,
+            "Live tab-group color did not preserve its original state in one undo step.");
+
+        var output = Path.Combine(Directory.GetCurrentDirectory(), "artifacts", "live-colors");
+        Directory.CreateDirectory(output);
+        using var bitmap = new Bitmap(dock.Width, dock.Height);
+        dock.DrawToBitmap(bitmap, dock.ClientRectangle);
+        AssertTimeline(bitmap.GetPixel(dock.Width - 5, dock.Height / 2).ToArgb() == host.BackColor.ToArgb(),
+            "Workspace color entry retained its outer surface or border.");
+        bitmap.Save(Path.Combine(output, "workspace-swatch.png"));
+        Console.WriteLine("immediate_color_editing=ok,swatch_only=ok,close_keeps_color=ok,layer_and_group_undo=ok");
+
+        void EditPicker(Action open, Action<ProfessionalColorPickerDialog> check, bool escape = false)
+        {
+            Exception? failure = null;
+            var visited = false;
+            using var timer = new System.Windows.Forms.Timer { Interval = 30 };
+            timer.Tick += (_, _) =>
+            {
+                var picker = Application.OpenForms.OfType<ProfessionalColorPickerDialog>().FirstOrDefault();
+                if (picker is null) return;
+                timer.Stop();
+                visited = true;
+                try
+                {
+                    AssertTimeline(!Descendants(picker).OfType<Button>().Any(button => button.Text is "Apply" or "Cancel"),
+                        "A color dialog still shows confirmation buttons.");
+                    var hex = (TextBox)RequireField(typeof(ProfessionalColorPickerDialog), "_hex").GetValue(picker)!;
+                    hex.Text = "#123456";
+                    hex.Text = "#345678";
+                    check(picker);
+                    if (escape)
+                    {
+                        object[] args = [Message.Create(picker.Handle, 0x0100, IntPtr.Zero, IntPtr.Zero), Keys.Escape];
+                        AssertTimeline((bool)RequireMethod(typeof(ProfessionalColorPickerDialog), "ProcessCmdKey",
+                            [typeof(Message).MakeByRefType(), typeof(Keys)]).Invoke(picker, args)!, "Escape did not close color editing.");
+                    }
+                    else picker.Close();
+                }
+                catch (Exception ex) { failure = ex; picker.Close(); }
+            };
+            timer.Start();
+            open();
+            AssertTimeline(visited, "The color command did not open a picker.");
+            if (failure is not null) throw new InvalidOperationException("Immediate color regression failed.", failure);
+        }
+
+        static IEnumerable<Control> Descendants(Control root)
+        {
+            foreach (Control child in root.Controls)
+            {
+                yield return child;
+                foreach (var descendant in Descendants(child)) yield return descendant;
+            }
+        }
+    }
+
+    private static void RunInspectorCompositionWorkspaceRegression()
+    {
+        using var form = new MainForm { ShowInTaskbar = false, Location = new Point(-30000, -30000) };
+        form.Show();
+        Application.DoEvents();
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var basic = (ThemedScrollPanel)RequireField(typeof(MainForm), "_basicInspectorPage").GetValue(form)!;
+        var scene = (ThemedScrollPanel)RequireField(typeof(MainForm), "_sceneEditPage").GetValue(form)!;
+        var sceneEditor = (SceneEditorPanel)RequireField(typeof(MainForm), "_sceneEditorPanel").GetValue(form)!;
+        var playback = (PlaybackSettingsPanel)RequireField(typeof(MainForm), "_playbackSettings").GetValue(form)!;
+        var material = (MaterialEditorPanel)RequireField(typeof(MainForm), "_materialEditor").GetValue(form)!;
+        var image = (ImageInspectorPanel)RequireField(typeof(MainForm), "_imageInspector").GetValue(form)!;
+        var shape = (ShapeSettingsPanel)RequireField(typeof(MainForm), "_shapeSettingsPanel").GetValue(form)!;
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var activate = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        for (var iteration = 0; iteration < 3; iteration++)
+        {
+            tabs.SelectedView = WorkspaceView.SceneEditor;
+            Application.DoEvents();
+            scene.PerformLayout();
+            AssertTimeline(ReferenceEquals(sceneEditor.Parent, scene.Content)
+                && ReferenceEquals(playback.Parent, scene.Content)
+                && sceneEditor.Bottom <= playback.Top,
+                "Scene and playback did not remain independently composed in visual order.");
+            RequireMethod(typeof(MainForm), "AddTimelineMaskLayer").Invoke(form, null);
+            Application.DoEvents();
+            AssertTimeline(project.Scenes[0].Layers.Any(layer => layer.Kind == SceneLayerKind.Mask)
+                && ReferenceEquals(material.Parent, scene.Content) && ReferenceEquals(image.Parent, scene.Content),
+                "Mask editing did not move drawing components to the scene inspector.");
+            foreach (var tool in new[] { ToolMode.Polygon, ToolMode.Star, ToolMode.Pencil,
+                ToolMode.MixingBrush, ToolMode.Text, ToolMode.Eraser })
+            {
+                activate.Invoke(form, [tool]);
+                Application.DoEvents();
+                if (tool is ToolMode.Polygon or ToolMode.Star)
+                {
+                    var settings = (DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!;
+                    var numeric = (ModernNumericUpDown)RequireField(typeof(ShapeSettingsPanel), "_vertexCount").GetValue(shape)!;
+                    numeric.Value = tool == ToolMode.Polygon ? 7 : 8;
+                    AssertTimeline(shape.Visible && (tool == ToolMode.Polygon ? settings.PolygonSides == 7 : settings.StarPoints == 8),
+                        "Standalone shape intent did not update the existing host settings in mask editing.");
+                }
+            }
+            AssertTimeline(undo.Invoke(form, null) is true, "Mask creation could not be undone after UI composition changes.");
+            tabs.SelectedView = WorkspaceView.ShotDirector;
+            Application.DoEvents();
+            tabs.SelectedView = WorkspaceView.BasicDrawing;
+            activate.Invoke(form, [ToolMode.Polygon]);
+            Application.DoEvents();
+            AssertTimeline(ReferenceEquals(material.Parent, basic.Content) && ReferenceEquals(shape.Parent, basic.Content)
+                && ReferenceEquals(image.Parent, basic.Content) && shape.Visible,
+                "Drawing components did not return after switching workspaces.");
+        }
+        Console.WriteLine("inspector_workspace_composition=ok,mask_roundtrips=3,shape_host_intent=ok");
+    }
+
+    private static void RunUiCompositionRegression()
+    {
+        var output = Path.Combine(Directory.GetCurrentDirectory(), "artifacts", "ui-composition");
+        Directory.CreateDirectory(output);
+        using var host = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30000, -30000), ClientSize = new Size(620, 260)
+        };
+        using var first = new ThemedScrollPanel { Bounds = new Rectangle(0, 0, 300, 250) };
+        using var second = new ThemedScrollPanel { Bounds = new Rectangle(310, 0, 300, 250) };
+        host.Controls.Add(first);
+        host.Controls.Add(second);
+        using var movable = new Panel { Height = 400, Margin = Padding.Empty };
+        using var leaf = new Label { Dock = DockStyle.Top, Height = 30, Text = "Reusable leaf" };
+        movable.Controls.Add(leaf);
+        UiComposition.MountVertical(first.Content, [new(movable, 400)]);
+        host.Show();
+        Application.DoEvents();
+        var wheel = typeof(Control).GetMethod("OnMouseWheel", System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.NonPublic)!;
+        for (var iteration = 0; iteration < 12; iteration++)
+        {
+            first.RestoreScrollPosition(0);
+            second.RestoreScrollPosition(0);
+            var target = iteration % 2 == 0 ? second : first;
+            var old = iteration % 2 == 0 ? first : second;
+            UiComposition.MountVertical(target.Content, [new(movable, 400)]);
+            using var resident = new Panel { Height = 400, Margin = Padding.Empty };
+            UiComposition.MountVertical(old.Content, [new(resident, 400)]);
+            target.RestoreScrollPosition(0);
+            old.RestoreScrollPosition(0);
+            var amount = SystemInformation.MouseWheelScrollLines == -1 ? 222
+                : Math.Max(28, SystemInformation.MouseWheelScrollLines * 28);
+            wheel.Invoke(leaf, [new MouseEventArgs(MouseButtons.None, 0, 2, 2, -120)]);
+            AssertTimeline(target.ScrollPosition == Math.Min(150, amount) && old.ScrollPosition == 0,
+                "Reparenting a component duplicated scroll subscriptions or retained the previous host.");
+            // Children inserted after mounting must detach when moved independently too.
+            using var dynamicLeaf = new Label { Text = "Dynamic leaf" };
+            movable.Controls.Add(dynamicLeaf);
+            target.RestoreScrollPosition(0);
+            old.RestoreScrollPosition(0);
+            resident.Controls.Add(dynamicLeaf);
+            wheel.Invoke(dynamicLeaf, [new MouseEventArgs(MouseButtons.None, 0, 2, 2, -120)]);
+            AssertTimeline(target.ScrollPosition == 0 && old.ScrollPosition == Math.Min(150, amount),
+                "A dynamically inserted child retained its old scroll host.");
+            old.Content.Controls.Remove(resident);
+        }
+        first.Content.Controls.Remove(movable);
+        second.Content.Controls.Remove(movable);
+
+        using var layout = new Panel { Bounds = new Rectangle(0, 0, 280, 240) };
+        using var a = new Panel { Height = 30 };
+        using var b = new Panel { Height = 50 };
+        using var fill = new Panel();
+        host.Controls.Add(layout);
+        UiComposition.MountVertical(layout, [new(a, 30), new(b, 50)], fill);
+        layout.PerformLayout();
+        AssertTimeline(a.Top == 0 && b.Top == 30 && fill.Top == 80 && fill.Bottom == 240,
+            "Vertical composition did not honor visual order and fill allocation.");
+        var handle = a.Handle;
+        var mutations = 0;
+        layout.ControlAdded += (_, _) => mutations++;
+        layout.ControlRemoved += (_, _) => mutations++;
+        for (var iteration = 0; iteration < 50; iteration++)
+            AssertTimeline(!UiComposition.MountVertical(layout, [new(a, 30), new(b, 50)], fill),
+                "An unchanged composition reparented its components.");
+        AssertTimeline(mutations == 0 && a.Handle == handle, "Composition recreated a live control.");
+        UiComposition.MountVertical(layout, [new(b, 50), new(a, 30)], fill);
+        layout.PerformLayout();
+        AssertTimeline(b.Top == 0 && a.Top == 50 && b.TabIndex < a.TabIndex && a.TabIndex < fill.TabIndex,
+            "Components could not be reordered with matching keyboard focus order.");
+        b.Visible = false;
+        layout.PerformLayout();
+        AssertTimeline(a.Top == 0 && fill.Top == 30, "A hidden component left a layout gap.");
+        var rejected = false;
+        try { UiComposition.MountVertical(layout, [new(a), new(a)]); }
+        catch (ArgumentException) { rejected = true; }
+        AssertTimeline(rejected && a.Parent == layout, "Duplicate layout entries were not rejected before mutation.");
+
+        using var shape = new ShapeSettingsPanel();
+        var changes = 0;
+        ShapeSettingsState? requested = null;
+        shape.SettingsChanged += (_, e) => { changes++; requested = e.State; };
+        shape.SetState(new(ShapeKind.Star, 12));
+        AssertTimeline(changes == 0 && shape.State == new ShapeSettingsState(ShapeKind.Star, 12),
+            "Host-driven shape state emitted a user edit.");
+        var vertices = (ModernNumericUpDown)RequireField(typeof(ShapeSettingsPanel), "_vertexCount").GetValue(shape)!;
+        vertices.Value = 13;
+        AssertTimeline(changes == 1 && requested == new ShapeSettingsState(ShapeKind.Star, 13),
+            "Standalone shape editing did not emit typed intent.");
+        using var image = new ImageInspectorPanel();
+        string? requestedAsset = null;
+        image.SettingsRequested += (_, e) => requestedAsset = e.AssetId;
+        image.SetState(new("asset-a", "Image A"));
+        var edit = (Button)RequireField(typeof(ImageInspectorPanel), "_edit").GetValue(image)!;
+        edit.PerformClick();
+        AssertTimeline(requestedAsset == "asset-a", "Image settings intent lost the asset ID.");
+        image.SetState(null);
+        requestedAsset = null;
+        edit.PerformClick();
+        AssertTimeline(requestedAsset is null && !edit.Enabled, "Empty image state emitted an edit.");
+        var routing = HotReloadModuleResolver.Resolve([typeof(UiComposition), typeof(UiSection),
+            typeof(SelectionSummaryPanel), typeof(ImageInspectorPanel), typeof(ShapeSettingsState)]);
+        AssertTimeline(routing.Modules == HotReloadModule.Inspector && routing.RequiresProcessRestart,
+            "Composable inspector types lost their hot-reload route.");
+
+        var language = UiLocalization.CurrentLanguage;
+        var theme = Theme.ColorTheme;
+        var paletteParameters = new[] { Theme.ThemeHueDegrees, Theme.ThemeSaturationPercent,
+            Theme.ThemeBrightnessPercent, Theme.AccentHueDegrees, Theme.AccentSaturationPercent, Theme.AccentBrightnessPercent };
+        try
+        {
+            foreach (var nextTheme in new[] { ApplicationColorTheme.Dark, ApplicationColorTheme.White })
+            foreach (var nextLanguage in new[] { UiLanguage.English, UiLanguage.SimplifiedChinese })
+            foreach (var width in new[] { 296, 260 })
+            {
+                Theme.Configure(nextTheme, 220, 180);
+                UiLocalization.SetLanguage(nextLanguage);
+                using var page = new ThemedScrollPanel { Size = new Size(width, 530) };
+                using var summary = new SelectionSummaryPanel
+                {
+                    SelectedText = UiLocalization.T("Selected:") + " A very long reusable symbol name 0123456789",
+                    LayerText = UiLocalization.T("Layer:") + " Foreground", AtomsText = "Atoms: 128", ObjectsText = "Objects: 64"
+                };
+                using var shapePanel = new ShapeSettingsPanel();
+                shapePanel.SetState(new(ShapeKind.Star, 12));
+                using var imagePanel = new ImageInspectorPanel();
+                imagePanel.SetState(new("preview", "Example image.png" + Environment.NewLine + "1920 × 1080"));
+                UiComposition.MountVertical(page.Content,
+                    [new(summary, summary.PreferredHeight), new(shapePanel, shapePanel.PreferredHeight),
+                     new(imagePanel, imagePanel.PreferredHeight)]);
+                using var captureHost = new Form
+                {
+                    ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+                    Location = new Point(-30000, -30000), ClientSize = page.Size
+                };
+                captureHost.Controls.Add(page);
+                captureHost.Show();
+                Application.DoEvents();
+                page.PerformLayout();
+                foreach (var disabled in new[] { false, true })
+                {
+                    page.Enabled = !disabled;
+                    using var bitmap = new Bitmap(width, 530);
+                    page.DrawToBitmap(bitmap, page.ClientRectangle);
+                    bitmap.Save(Path.Combine(output, $"composition-{nextTheme}-{nextLanguage}-{width}-{disabled}.png"));
+                }
+            }
+        }
+        finally
+        {
+            UiLocalization.SetLanguage(language);
+            Theme.ConfigureColorAdjustments(theme, paletteParameters[0], paletteParameters[1], paletteParameters[2],
+                paletteParameters[3], paletteParameters[4], paletteParameters[5]);
+        }
+        Console.WriteLine("ui_composition=ok,reparents=12,stable_mounts=50,standalone_intent=ok,captures=16");
     }
 
     private static void RunUiDiscoverabilityRegression()
@@ -189,6 +579,11 @@ internal static partial class Benchmark
 
         var legacy = System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>("{}")!;
         Check(!legacy.CodexIntegrationEnabled && !legacy.CodexIntegrationAllowChanges, "legacy settings must keep integration opt-in.");
+        Check(legacy.FreeTransformShiftProportionalEnabled, "legacy settings without the preference must default Free Transform Shift proportional scaling on.");
+        var preferencePatched = MainForm.PatchCodexSettings(legacy, Json("""{"freeTransformShiftProportionalEnabled":false}"""));
+        Check(!preferencePatched.FreeTransformShiftProportionalEnabled
+            && !preferencePatched.CodexIntegrationEnabled && !preferencePatched.CodexIntegrationAllowChanges,
+            "the Free Transform Shift aspect-ratio preference must be writable through settings_update without granting connection permissions.");
         var patched = MainForm.PatchCodexSettings(legacy with { CodexIntegrationAuthToken = "test-secret" },
             Json("""{"language":"SimplifiedChinese","timelineFrameWidth":20,"colorTheme":"White"}"""));
         Check(patched.Language == UiLanguage.SimplifiedChinese && patched.TimelineFrameWidth == 20

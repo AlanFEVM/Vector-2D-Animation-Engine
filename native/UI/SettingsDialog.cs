@@ -8,7 +8,9 @@ internal sealed class SettingsDialog : ModernDialogForm
     private readonly Button _whiteColorTheme = new SegmentedButton { Text = "White" };
     private readonly ColorAdjustmentControl _themeColorAdjustment;
     private readonly ColorAdjustmentControl _highlightColorAdjustment;
-    private readonly ShortcutProfileEditorPanel _shortcutProfiles;
+    private string _selectedShortcutProfileId;
+    private ShortcutProfileRecord[] _customShortcutProfiles;
+    private bool _freeTransformShiftProportionalEnabled;
     private readonly CodexIntegrationPanel _codexIntegration = new() { Dock = DockStyle.Fill, Visible = false };
     private UiLanguage _selectedLanguage;
     private ApplicationColorTheme _selectedColorTheme;
@@ -89,9 +91,14 @@ internal sealed class SettingsDialog : ModernDialogForm
         int selectedThemeBrightnessPercent,
         int selectedAccentHueDegrees,
         int selectedAccentSaturationPercent,
-        int selectedAccentBrightnessPercent)
-        : base("Settings", new Size(760, 700))
+        int selectedAccentBrightnessPercent,
+        bool freeTransformShiftProportionalEnabled = true)
+        : base("Settings", new Size(760, 550))
     {
+        var shortcuts = ShortcutProfiles.Normalize(activeShortcutProfileId, customShortcutProfiles);
+        _selectedShortcutProfileId = shortcuts.ActiveProfileId;
+        _customShortcutProfiles = shortcuts.CustomProfiles.Select(ShortcutProfiles.CloneProfile).ToArray();
+        _freeTransformShiftProportionalEnabled = freeTransformShiftProportionalEnabled;
         _selectedLanguage = selectedLanguage;
         _selectedColorTheme = Enum.IsDefined(selectedColorTheme)
             ? selectedColorTheme
@@ -116,12 +123,6 @@ internal sealed class SettingsDialog : ModernDialogForm
             _selectedAccentBrightnessPercent);
         _themeColorAdjustment.ValueChanged += (_, _) => ThemeColorAdjustmentChanged();
         _highlightColorAdjustment.ValueChanged += (_, _) => HighlightColorAdjustmentChanged();
-        _shortcutProfiles = new ShortcutProfileEditorPanel(activeShortcutProfileId, customShortcutProfiles)
-        {
-            Dock = DockStyle.Fill,
-            Margin = Padding.Empty
-        };
-
         AccessibleName = "Application settings";
         DialogContent.Padding = Padding.Empty;
 
@@ -131,7 +132,7 @@ internal sealed class SettingsDialog : ModernDialogForm
             BackColor = Theme.Panel,
             Padding = new Padding(18),
             ColumnCount = 1,
-            RowCount = 7
+            RowCount = 8
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
@@ -139,7 +140,8 @@ internal sealed class SettingsDialog : ModernDialogForm
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 128));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var pages = new Panel { Dock = DockStyle.Fill };
         pages.Controls.Add(content);
@@ -151,8 +153,12 @@ internal sealed class SettingsDialog : ModernDialogForm
         var codex = new SegmentedButton { Text = "Codex / MCP", Dock = DockStyle.Fill };
         ConfigureSelectionButton(general, "General");
         ConfigureSelectionButton(codex, "Codex / MCP");
+        var integrationPageSelected = false;
         void SelectPage(bool integration)
         {
+            if (integration != integrationPageSelected)
+                ClientSize = new Size(ClientSize.Width, (int)Math.Round((integration ? 700 : 550) * DeviceDpi / 96f));
+            integrationPageSelected = integration;
             content.Visible = !integration;
             _codexIntegration.Visible = integration;
             Theme.StyleSegmentedButton(general, active: !integration);
@@ -191,8 +197,17 @@ internal sealed class SettingsDialog : ModernDialogForm
         languageSelector.Controls.Add(_chineseLanguage, 1, 0);
         content.Controls.Add(languageSelector, 0, 4);
 
-        content.Controls.Add(SectionHeading("Shortcut profiles"), 0, 5);
-        content.Controls.Add(_shortcutProfiles, 0, 6);
+        content.Controls.Add(SectionHeading("More settings"), 0, 5);
+        var settingsPanels = CreateSegmentedSelector();
+        var operationPreferences = CreatePanelButton("Operation preferences...", "Open operation preferences");
+        var shortcutProfiles = CreatePanelButton("Shortcut profiles...", "Open shortcut profiles");
+        operationPreferences.Margin = new Padding(0, 0, 4, 0);
+        shortcutProfiles.Margin = new Padding(4, 0, 0, 0);
+        operationPreferences.Click += (_, _) => OpenOperationPreferences();
+        shortcutProfiles.Click += (_, _) => OpenShortcutProfiles();
+        settingsPanels.Controls.Add(operationPreferences, 0, 0);
+        settingsPanels.Controls.Add(shortcutProfiles, 1, 0);
+        content.Controls.Add(settingsPanels, 0, 6);
 
         var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary);
         var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
@@ -219,10 +234,10 @@ internal sealed class SettingsDialog : ModernDialogForm
     {
     }
 
-    public string SelectedShortcutProfileId => _shortcutProfiles.ActiveProfileId;
+    public string SelectedShortcutProfileId => _selectedShortcutProfileId;
     internal void SetCodexSettings(ApplicationSettings settings, string status) => _codexIntegration.SetSettings(settings, status);
     internal ApplicationSettings ApplyCodexSettingsTo(ApplicationSettings settings) => _codexIntegration.ApplyTo(settings);
-    public ShortcutProfileRecord[] CustomShortcutProfiles => _shortcutProfiles.CustomProfiles;
+    public ShortcutProfileRecord[] CustomShortcutProfiles => _customShortcutProfiles.Select(ShortcutProfiles.CloneProfile).ToArray();
     public UiLanguage SelectedLanguage => _selectedLanguage;
     public ApplicationColorTheme SelectedColorTheme => _selectedColorTheme;
     public int SelectedThemeHueDegrees => _selectedThemeHueDegrees;
@@ -231,10 +246,39 @@ internal sealed class SettingsDialog : ModernDialogForm
     public int SelectedAccentHueDegrees => _selectedAccentHueDegrees;
     public int SelectedAccentSaturationPercent => _selectedAccentSaturationPercent;
     public int SelectedAccentBrightnessPercent => _selectedAccentBrightnessPercent;
+    public bool FreeTransformShiftProportionalEnabled => _freeTransformShiftProportionalEnabled;
     internal event EventHandler? ThemePreviewChanged;
     public ToolShortcutPreset SelectedPreset => ShortcutProfiles.LegacyPresetForProfile(
         SelectedShortcutProfileId,
         CustomShortcutProfiles);
+
+    private static Button CreatePanelButton(string text, string accessibleName)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            AccessibleName = accessibleName,
+            AutoEllipsis = true
+        };
+        Theme.StyleStandardButton(button);
+        return button;
+    }
+
+    private void OpenOperationPreferences()
+    {
+        using var dialog = new OperationPreferencesDialog(_freeTransformShiftProportionalEnabled);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            _freeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled;
+    }
+
+    private void OpenShortcutProfiles()
+    {
+        using var dialog = new ShortcutProfilesDialog(_selectedShortcutProfileId, _customShortcutProfiles);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        _selectedShortcutProfileId = dialog.SelectedShortcutProfileId;
+        _customShortcutProfiles = dialog.CustomShortcutProfiles;
+    }
 
     private TableLayoutPanel CreateColorAdjustmentLayout()
     {

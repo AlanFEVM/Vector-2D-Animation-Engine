@@ -81,10 +81,8 @@ internal sealed partial class SymbolFiltersPanel
         picker.ColorChanged += (_, _) => { if (_interactionActive && !_disposing) Preview(); };
         try
         {
-            if (picker.ShowDialog(FindForm()) == DialogResult.OK && _interactionActive && !_disposing)
-            { Preview(); CompleteInteraction(); }
-            else CancelInteraction();
+            picker.ShowDialog(FindForm());
         }
-        finally { _activePicker = null; CancelInteraction(); }
+        finally { _activePicker = null; CompleteInteraction(); }
     }
 }

@@ -1974,6 +1974,7 @@ internal sealed partial class StageControl
     {
         if (!Scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
         if (!TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+        raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
         var contour = GetReference3DProjectedContours(objectIndex)
             .FirstOrDefault(candidate => candidate.Closed && candidate.Points.Length >= 3);
         if (contour.Points is not { Length: >= 3 }) return;
