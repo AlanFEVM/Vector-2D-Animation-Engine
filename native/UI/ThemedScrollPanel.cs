@@ -42,7 +42,7 @@ internal sealed class ThemedScrollPanel : UserControl
         _content.BackColor = Theme.Panel;
         _content.TabStop = false;
         _content.ControlAdded += ContentControlAdded;
-        _content.ControlRemoved += (_, _) => UpdateScrollMetrics();
+        _content.ControlRemoved += ContentControlRemoved;
         _content.Layout += (_, _) => UpdateScrollMetrics();
         _content.MouseWheel += ContentMouseWheel;
     }
@@ -201,14 +201,43 @@ internal sealed class ThemedScrollPanel : UserControl
         UpdateScrollMetrics();
     }
 
+    private void ContentControlRemoved(object? sender, ControlEventArgs e)
+    {
+        if (e.Control is { } control) DetachMouseWheelHandler(control);
+        UpdateScrollMetrics();
+    }
+
     private void AttachMouseWheelHandler(Control control)
     {
         control.MouseWheel += ContentMouseWheel;
-        control.ControlAdded += (_, e) =>
-        {
-            if (e.Control is { } child) AttachMouseWheelHandler(child);
-        };
+        control.ControlAdded += DescendantControlAdded;
+        control.ControlRemoved += DescendantControlRemoved;
         foreach (Control child in control.Controls) AttachMouseWheelHandler(child);
+    }
+
+    private void DetachMouseWheelHandler(Control control)
+    {
+        control.MouseWheel -= ContentMouseWheel;
+        control.ControlAdded -= DescendantControlAdded;
+        control.ControlRemoved -= DescendantControlRemoved;
+        foreach (Control child in control.Controls) DetachMouseWheelHandler(child);
+    }
+
+    private void DescendantControlAdded(object? sender, ControlEventArgs e)
+    {
+        if (e.Control is { } control) AttachMouseWheelHandler(control);
+    }
+
+    private void DescendantControlRemoved(object? sender, ControlEventArgs e)
+    {
+        if (e.Control is { } control) DetachMouseWheelHandler(control);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            foreach (Control child in _content.Controls) DetachMouseWheelHandler(child);
+        base.Dispose(disposing);
     }
 
     private void ContentMouseWheel(object? sender, MouseEventArgs e)

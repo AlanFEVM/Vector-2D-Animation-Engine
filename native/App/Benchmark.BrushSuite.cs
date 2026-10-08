@@ -233,17 +233,17 @@ internal static partial class Benchmark
         var workspaceHex = (TextBox)RequireField(workspace.GetType(), "_hex").GetValue(workspace)!;
         dialogHex.Text = "#ABCDEF";
         workspaceHex.Text = "#ABCDEF";
-        AssertTimeline(dialogChanges == 1 && workspaceChanges == 2,
-            "Dialog validation and flyout live preview timing were incorrectly unified.");
+        AssertTimeline(dialogChanges == 2 && workspaceChanges == 2,
+            "Valid hex edits did not apply immediately in both color pickers.");
         AssertTimeline((bool)RequireMethod(dialog.GetType(), "TryCommitHex").Invoke(dialog, null)!
             && dialogChanges == 2 && dialog.Color.ToArgb() == workspace.Color.ToArgb(),
             "Dialog hex validation failed to commit exactly one color change.");
         workspaceHex.Text = "#GG0000";
         AssertTimeline(workspaceChanges == 2 && workspace.Color.ToArgb() == dialog.Color.ToArgb(),
             "Invalid flyout hex changed the current color.");
-        workspace.RestoreInitialColor();
-        AssertTimeline(workspaceChanges == 2 && workspace.Color.ToArgb() == opaqueInitial.ToArgb(),
-            "Flyout cancellation changed its silent initial-color restoration contract.");
+        dialogHex.Text = "#GG0000";
+        AssertTimeline(dialogChanges == 2 && dialog.Color.ToArgb() == workspace.Color.ToArgb(),
+            "Invalid dialog hex changed the current color.");
         Console.WriteLine("shared_color_picker_regression=ok");
     }
 

@@ -15,7 +15,14 @@ internal sealed class BitmapObjectData
     /// </summary>
     public SizeF PlacedSize { get; init; }
 
+    // Normalized image coordinates; null means the whole image, empty means erased.
+    public PointF[][]? VisibleContours { get; init; }
+
     public bool IsValid =>
+        (VisibleContours is null || (VisibleContours.Length <= 65536
+            && VisibleContours.All(contour => contour is { Length: >= 3 }
+                && contour.All(point => float.IsFinite(point.X) && float.IsFinite(point.Y)))))
+        &&
         !string.IsNullOrWhiteSpace(ImageAssetId)
         && ImageAssetId.Length <= 128
         && ImageAssetId.IndexOf('\0') < 0
@@ -27,6 +34,7 @@ internal sealed class BitmapObjectData
     public BitmapObjectData WithPlacedSize(SizeF placedSize) => new()
     {
         ImageAssetId = ImageAssetId,
+        VisibleContours = VisibleContours,
         PlacedSize = placedSize
     };
 }

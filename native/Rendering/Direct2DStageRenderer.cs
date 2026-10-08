@@ -2344,6 +2344,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
         if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var raster)) return;
+        raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
 
         var nearestNeighbour = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point;
         // Pick a pre-filtered half-resolution copy that matches the on-screen size. Drawing a

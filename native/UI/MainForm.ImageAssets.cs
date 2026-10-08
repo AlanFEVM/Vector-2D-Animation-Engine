@@ -2,6 +2,38 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
+    private readonly ImageInspectorPanel _imageInspector = new() { Visible = false };
+
+    private void UpdateImageInspector(int[] selection)
+    {
+        var asset = selection.Length == 1 && _scene.TryGetBitmapObjectData(selection[0], out var bitmap)
+            ? FindImageAsset(bitmap.ImageAssetId) : null;
+        _imageInspector.Visible = asset is not null;
+        if (asset is null)
+        {
+            _imageInspector.SetState(null);
+            return;
+        }
+        var settings = asset.ImportSettings;
+        string Row(string label, object value) => $"{UiLocalization.T(label)}: {value}";
+        string Flag(bool value) => UiLocalization.T(value ? "Yes" : "No");
+        var summary = string.Join(Environment.NewLine, new[]
+        {
+            asset.Name, asset.SourcePath, $"{asset.PixelWidth} × {asset.PixelHeight}",
+            Row("Filter mode", UiLocalization.T(settings.FilterMode.ToString())),
+            Row("Pixels per unit", settings.PixelsPerUnit),
+            Row("Max size (pixels)", settings.MaxSize),
+            Row("Non power of two", Flag(settings.NonPowerOfTwoScale)),
+            Row("Compression", settings.Compression),
+            Row("Compression quality", settings.CompressionQuality),
+            Row("Alpha source", settings.AlphaSource),
+            Row("Generate mipmaps", Flag(settings.Mipmaps)),
+            Row("Read/Write enabled", Flag(settings.ReadWriteEnabled)),
+            $"{UiLocalization.T("Pivot X")}: {settings.PivotX:0.###} / {UiLocalization.T("Pivot Y")}: {settings.PivotY:0.###}"
+        });
+        _imageInspector.SetState(new(asset.Id, summary));
+    }
+
     private void ImportImageAsset()
     {
         if (!EnsureImagePlacementAllowed()) return;

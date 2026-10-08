@@ -4,17 +4,8 @@ namespace VectorAnimationEngine;
 
 internal sealed class WorkspaceColorFlyout : ToolStripDropDown
 {
-    private enum CompletionKind
-    {
-        None,
-        Apply,
-        Cancel
-    }
-
     private readonly WorkspaceColorPickerPanel _picker = new();
     private readonly ToolStripControlHost _host;
-    private CompletionKind _completion;
-    private bool _completionRaised;
 
     public WorkspaceColorFlyout()
     {
@@ -36,8 +27,7 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
         Size = new Size(_picker.Width + Padding.Horizontal, _picker.Height + Padding.Vertical);
 
         _picker.ColorChanged += HandleColorChanged;
-        _picker.ApplyRequested += HandleApplyRequested;
-        _picker.CancelRequested += HandleCancelRequested;
+        _picker.CloseRequested += HandleCloseRequested;
         UiLocalization.Watch(_picker);
     }
 
@@ -47,9 +37,7 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
 
     public event EventHandler? ColorPreviewChanged;
 
-    public event EventHandler? ColorApplied;
-
-    public event EventHandler? ColorCanceled;
+    public event EventHandler? ColorEditingCompleted;
 
     public void ShowFor(Control anchor, Color initialColor)
     {
@@ -58,8 +46,6 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
 
         if (Visible) Close(ToolStripDropDownCloseReason.CloseCalled);
 
-        _completion = CompletionKind.None;
-        _completionRaised = false;
         _picker.SetInitialColor(initialColor);
 
         var workingArea = Screen.FromControl(anchor).WorkingArea;
@@ -78,7 +64,7 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
     {
         if ((keyData & Keys.KeyCode) == Keys.Escape)
         {
-            RequestCompletion(CompletionKind.Cancel);
+            Close(ToolStripDropDownCloseReason.Keyboard);
             return true;
         }
 
@@ -88,8 +74,7 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
     protected override void OnClosed(ToolStripDropDownClosedEventArgs e)
     {
         base.OnClosed(e);
-        if (_completion == CompletionKind.None) _completion = CompletionKind.Cancel;
-        RaiseCompletionOnce();
+        ColorEditingCompleted?.Invoke(this, EventArgs.Empty);
     }
 
     protected override void Dispose(bool disposing)
@@ -97,8 +82,7 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
         if (disposing)
         {
             _picker.ColorChanged -= HandleColorChanged;
-            _picker.ApplyRequested -= HandleApplyRequested;
-            _picker.CancelRequested -= HandleCancelRequested;
+            _picker.CloseRequested -= HandleCloseRequested;
         }
 
         base.Dispose(disposing);
@@ -106,34 +90,10 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
 
     private void HandleColorChanged(object? sender, EventArgs e)
     {
-        if (_completion == CompletionKind.None) ColorPreviewChanged?.Invoke(this, EventArgs.Empty);
+        ColorPreviewChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void HandleApplyRequested(object? sender, EventArgs e) => RequestCompletion(CompletionKind.Apply);
-
-    private void HandleCancelRequested(object? sender, EventArgs e) => RequestCompletion(CompletionKind.Cancel);
-
-    private void RequestCompletion(CompletionKind completion)
-    {
-        if (_completion != CompletionKind.None || _completionRaised) return;
-        _completion = completion;
-        if (Visible) Close(ToolStripDropDownCloseReason.CloseCalled);
-        else RaiseCompletionOnce();
-    }
-
-    private void RaiseCompletionOnce()
-    {
-        if (_completionRaised) return;
-        _completionRaised = true;
-        if (_completion == CompletionKind.Apply)
-        {
-            ColorApplied?.Invoke(this, EventArgs.Empty);
-            return;
-        }
-
-        _picker.RestoreInitialColor();
-        ColorCanceled?.Invoke(this, EventArgs.Empty);
-    }
+    private void HandleCloseRequested(object? sender, EventArgs e) => Close(ToolStripDropDownCloseReason.Keyboard);
 
     private sealed class FlyoutColorTable : ProfessionalColorTable
     {
@@ -145,7 +105,7 @@ internal sealed class WorkspaceColorFlyout : ToolStripDropDown
 internal sealed class WorkspaceColorPickerPanel : UserControl
 {
     public const int PreferredPanelWidth = 360;
-    public const int PreferredPanelHeight = 400;
+    public const int PreferredPanelHeight = 358;
 
     private readonly HsvColorPlane _plane = new();
     private readonly ColorComponentSlider _hue = new();
@@ -156,7 +116,6 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
     private readonly ColorPaletteGrid _presets = new();
     private readonly Panel _originalPreview = new();
     private readonly Panel _newPreview = new();
-    private readonly Button _applyButton = new() { Text = "Apply" };
     private bool _updating;
     private Color _initialColor = Theme.Stage;
     private Color _color = Theme.Stage;
@@ -187,9 +146,7 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
 
     public event EventHandler? ColorChanged;
 
-    internal event EventHandler? ApplyRequested;
-
-    internal event EventHandler? CancelRequested;
+    internal event EventHandler? CloseRequested;
 
     public override Size GetPreferredSize(Size proposedSize) => new(PreferredPanelWidth, PreferredPanelHeight);
 
@@ -200,8 +157,6 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
         _originalPreview.BackColor = _initialColor;
     }
 
-    internal void RestoreInitialColor() => SetColor(_initialColor, raiseChanged: false);
-
     internal void FocusFirstControl()
     {
         _plane.Focus();
@@ -211,7 +166,7 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
     {
         if ((keyData & Keys.KeyCode) == Keys.Escape)
         {
-            CancelRequested?.Invoke(this, EventArgs.Empty);
+            CloseRequested?.Invoke(this, EventArgs.Empty);
             return true;
         }
 
@@ -225,7 +180,7 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
             Dock = DockStyle.Fill,
             BackColor = Theme.PanelStrong,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = 6,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
@@ -235,7 +190,6 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         Controls.Add(layout);
 
         layout.Controls.Add(BuildPreviewRow(), 0, 0);
@@ -260,14 +214,24 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
         layout.Controls.Add(BuildChannelRow(), 0, 3);
 
         var hexRow = CreateLabeledRow("Hex", 42);
+        hexRow.ColumnCount = 3;
+        hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
         _hex.Dock = DockStyle.Fill;
-        _hex.Margin = new Padding(0, 4, 0, 4);
+        _hex.Margin = new Padding(0, 4, 8, 4);
         _hex.MaxLength = 7;
         _hex.CharacterCasing = CharacterCasing.Upper;
         _hex.AccessibleName = "Hex color";
         _hex.AccessibleDescription = "Six digit RGB color beginning with a number sign";
         Theme.StyleTextBox(_hex);
         hexRow.Controls.Add(_hex, 1, 0);
+        var reset = new Button
+        {
+            Text = "Reset", Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3),
+            AccessibleName = "Reset", AccessibleDescription = "Restore the original workspace color"
+        };
+        Theme.StyleButton(reset);
+        reset.Click += (_, _) => SetColor(_initialColor);
+        hexRow.Controls.Add(reset, 2, 0);
         layout.Controls.Add(hexRow, 0, 4);
 
         var presetRow = CreateLabeledRow("Presets", 52);
@@ -280,8 +244,6 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
         _presets.SetColors(PresetColors);
         presetRow.Controls.Add(_presets, 1, 0);
         layout.Controls.Add(presetRow, 0, 5);
-
-        layout.Controls.Add(BuildActionRow(), 0, 6);
     }
 
     private Control BuildPreviewRow()
@@ -327,39 +289,6 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
         AddChannel(channels, "G", _green, 2);
         AddChannel(channels, "B", _blue, 4);
         return channels;
-    }
-
-    private Control BuildActionRow()
-    {
-        var actions = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.PanelStrong,
-            ColumnCount = 3,
-            RowCount = 1,
-            Margin = Padding.Empty,
-            Padding = new Padding(0, 6, 0, 0)
-        };
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
-
-        var reset = CreateActionButton("Reset", "Restore the original workspace color");
-        var cancel = CreateActionButton("Cancel", "Cancel workspace color changes");
-        _applyButton.Text = "Apply";
-        ConfigureActionButton(_applyButton, "Apply workspace color");
-        Theme.StylePrimaryButton(_applyButton);
-        reset.Click += (_, _) => SetColor(_initialColor);
-        cancel.Click += (_, _) => CancelRequested?.Invoke(this, EventArgs.Empty);
-        _applyButton.Click += (_, _) =>
-        {
-            if (TryCommitHex(showError: true)) ApplyRequested?.Invoke(this, EventArgs.Empty);
-        };
-
-        actions.Controls.Add(reset, 0, 0);
-        actions.Controls.Add(cancel, 1, 0);
-        actions.Controls.Add(_applyButton, 2, 0);
-        return actions;
     }
 
     private void WireEvents()
@@ -408,8 +337,7 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
         if (showError)
         {
             _hex.BackColor = Theme.Mix(Theme.Field, Theme.Danger, 0.22f);
-            _hex.SelectAll();
-            _hex.Focus();
+            _hex.ForeColor = Theme.ReadableText(_hex.BackColor, Theme.DangerText);
         }
         return false;
     }
@@ -432,6 +360,7 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
             var hex = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
             if (!string.Equals(_hex.Text, hex, StringComparison.Ordinal)) _hex.Text = hex;
             _hex.BackColor = Theme.Field;
+            _hex.ForeColor = Theme.ReadableText(_hex.BackColor, Theme.Text);
             _originalPreview.BackColor = _initialColor;
             _newPreview.BackColor = color;
             _newPreview.AccessibleDescription = hex;
@@ -492,23 +421,6 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
     {
         layout.Controls.Add(CreateLabel(label), column, 0);
         layout.Controls.Add(input, column + 1, 0);
-    }
-
-    private static Button CreateActionButton(string text, string accessibleDescription)
-    {
-        var button = new Button { Text = text };
-        ConfigureActionButton(button, accessibleDescription);
-        Theme.StyleButton(button);
-        return button;
-    }
-
-    private static void ConfigureActionButton(Button button, string accessibleDescription)
-    {
-        button.Dock = DockStyle.Fill;
-        button.Margin = new Padding(0, 0, 6, 0);
-        button.AccessibleName = button.Text;
-        button.AccessibleDescription = accessibleDescription;
-        button.AccessibleRole = AccessibleRole.PushButton;
     }
 
 }

@@ -1359,10 +1359,18 @@ internal sealed partial class MainForm : Form
             }
         };
         _hierarchyPanel.HierarchyFocusRequested += (_, e) => HandleHierarchyFocusRequested(e);
+        _shapeSettingsPanel.SettingsChanged += (_, e) =>
+        {
+            if (e.State.Shape == ShapeKind.Polygon) _drawSettings.PolygonSides = e.State.VertexCount;
+            else if (e.State.Shape == ShapeKind.Star) _drawSettings.StarPoints = e.State.VertexCount;
+            _drawSettings.NotifyChanged();
+        };
+        _imageInspector.SettingsRequested += (_, e) => EditImageAssetImportSettings(e.AssetId);
         _drawSettings.Changed += (_, _) =>
         {
             SyncBrushTipSettings();
             SyncEraserOptions();
+            UpdateShapeSettingsPanelPresentation();
             if (_drawSettings.ShapeKind == _lastSettingsShape) return;
             _lastSettingsShape = _drawSettings.ShapeKind;
             if (ToolModeForShape(_drawSettings.ShapeKind) is { } tool)

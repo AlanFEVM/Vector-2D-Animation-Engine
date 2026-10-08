@@ -905,7 +905,7 @@ internal sealed partial class MainForm : Form
                 _activeTransformHandle,
                 scaleX,
                 scaleY,
-                IsShiftPressed());
+                FreeTransformKeepsAspectRatio());
             if (Math.Abs(scaleX - 1) <= 0.0001f && Math.Abs(scaleY - 1) <= 0.0001f) return;
             var pivot = _transformPivot;
             foreach (var selectedInstance in instances)
@@ -1689,7 +1689,7 @@ internal sealed partial class MainForm : Form
                 _activeTransformHandle,
                 scaleX,
                 scaleY,
-                IsShiftPressed());
+                FreeTransformKeepsAspectRatio());
             if (Math.Abs(scaleX - 1) <= 0.0001f
                 && Math.Abs(scaleY - 1) <= 0.0001f
                 && _drawingTransformSession is null)
@@ -1957,7 +1957,19 @@ internal sealed partial class MainForm : Form
             or TransformHandleKind.BottomLeft;
     }
 
-    private static (float ScaleX, float ScaleY) ConstrainTransformScaleFactors(
+    /// <summary>
+    /// Shift temporarily reverses the preferred scaling mode. By default scaling is proportional
+    /// and Shift releases the aspect ratio; enabling the preference reverses those two modes.
+    /// </summary>
+    private bool FreeTransformKeepsAspectRatio() =>
+        FreeTransformKeepsAspectRatio(
+            _applicationSettings.FreeTransformShiftProportionalEnabled,
+            IsShiftPressed());
+
+    internal static bool FreeTransformKeepsAspectRatio(bool useShiftForProportionalScaling, bool shiftPressed) =>
+        useShiftForProportionalScaling == shiftPressed;
+
+    internal static (float ScaleX, float ScaleY) ConstrainTransformScaleFactors(
         TransformHandleKind handle,
         float scaleX,
         float scaleY,

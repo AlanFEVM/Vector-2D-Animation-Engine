@@ -651,7 +651,7 @@ internal sealed partial class MainForm
                 _activeTransformHandle,
                 scaleX,
                 scaleY,
-                IsShiftPressed());
+                FreeTransformKeepsAspectRatio());
             if (Math.Abs(scaleX - 1) <= 0.0001f && Math.Abs(scaleY - 1) <= 0.0001f) return true;
             foreach (var frameIndex in _motionTrackSelectedFrames)
             {

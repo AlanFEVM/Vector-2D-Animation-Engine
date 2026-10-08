@@ -948,15 +948,12 @@ internal sealed partial class VectorScene
 
     internal bool HasFill(int objectIndex)
     {
+        if ((uint)objectIndex < ObjectCount && ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Bitmap) return true;
         if ((uint)objectIndex >= ObjectCount
             || !IsFillShape(ShapeKind[objectIndex]))
         {
             return false;
         }
-
-        // A placed bitmap always covers its quad; its Argb channel carries tint and
-        // instance opacity, so testing it here would wrongly treat a tinted image as empty.
-        if (ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Bitmap) return true;
 
         if (Color.FromArgb(Argb[objectIndex]).A > 0) return true;
         if (!HasGradient(objectIndex)) return false;
@@ -984,6 +981,7 @@ internal sealed partial class VectorScene
             and not VectorAnimationEngine.ShapeKind.Freeform
             and not VectorAnimationEngine.ShapeKind.BrushStroke
             and not VectorAnimationEngine.ShapeKind.ImportedSvg
+            and not VectorAnimationEngine.ShapeKind.Bitmap
             and not VectorAnimationEngine.ShapeKind.Text
             and not VectorAnimationEngine.ShapeKind.MixingStroke;
     }

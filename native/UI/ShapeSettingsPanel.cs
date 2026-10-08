@@ -1,16 +1,21 @@
 namespace VectorAnimationEngine;
 
+internal readonly record struct ShapeSettingsState(ShapeKind Shape, int VertexCount);
+
+internal sealed class ShapeSettingsChangedEventArgs(ShapeSettingsState state) : EventArgs
+{
+    public ShapeSettingsState State { get; } = state;
+}
+
 internal sealed class ShapeSettingsPanel : UserControl
 {
-    private readonly DrawSettings _settings;
     private readonly Label _vertexCountLabel = new();
     private readonly ModernNumericUpDown _vertexCount = new();
     private ShapeKind _shape = ShapeKind.Polygon;
     private bool _updating;
 
-    public ShapeSettingsPanel(DrawSettings settings)
+    public ShapeSettingsPanel()
     {
-        _settings = settings;
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
@@ -18,8 +23,7 @@ internal sealed class ShapeSettingsPanel : UserControl
         MinimumSize = new Size(248, PreferredHeight);
 
         BuildUi();
-        SetShape(settings.ShapeKind);
-        _settings.Changed += SettingsChanged;
+        SetState(new(ShapeKind.Polygon, 6));
     }
 
     public int PreferredHeight => Theme.InspectorTitleHeight
@@ -28,8 +32,13 @@ internal sealed class ShapeSettingsPanel : UserControl
 
     internal static bool SupportsShape(ShapeKind shape) => shape is ShapeKind.Polygon or ShapeKind.Star;
 
-    public void SetShape(ShapeKind shape)
+    public event EventHandler<ShapeSettingsChangedEventArgs>? SettingsChanged;
+
+    public ShapeSettingsState State => new(_shape, (int)_vertexCount.Value);
+
+    public void SetState(ShapeSettingsState state)
     {
+        var shape = state.Shape;
         if (!SupportsShape(shape)) return;
         _shape = shape;
         var polygon = shape == ShapeKind.Polygon;
@@ -37,12 +46,10 @@ internal sealed class ShapeSettingsPanel : UserControl
         try
         {
             var label = polygon ? "Sides" : "Points";
-            _vertexCountLabel.Text = label;
+            _vertexCountLabel.Text = UiLocalization.T(label);
             _vertexCount.Minimum = 3m;
             _vertexCount.Maximum = polygon ? 64m : 32m;
-            _vertexCount.Value = polygon
-                ? Math.Clamp(_settings.PolygonSides, 3, 64)
-                : Math.Clamp(_settings.StarPoints, 3, 32);
+            _vertexCount.Value = Math.Clamp(state.VertexCount, 3, polygon ? 64 : 32);
         }
         finally
         {
@@ -50,17 +57,11 @@ internal sealed class ShapeSettingsPanel : UserControl
         }
     }
 
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) _settings.Changed -= SettingsChanged;
-        base.Dispose(disposing);
-    }
-
     private void BuildUi()
     {
         var title = new Label
         {
-            Text = "Shape Settings",
+            Text = UiLocalization.T("Shape Settings"),
             Dock = DockStyle.Top,
             Height = Theme.InspectorTitleHeight,
             ForeColor = Theme.Text,
@@ -104,13 +105,9 @@ internal sealed class ShapeSettingsPanel : UserControl
         content.Controls.Add(_vertexCount, 1, 0);
     }
 
-    private void SettingsChanged(object? sender, EventArgs e) => SetShape(_shape);
-
     private void UpdateSettings()
     {
         if (_updating) return;
-        if (_shape == ShapeKind.Polygon) _settings.PolygonSides = (int)_vertexCount.Value;
-        else _settings.StarPoints = (int)_vertexCount.Value;
-        _settings.NotifyChanged();
+        SettingsChanged?.Invoke(this, new(State));
     }
 }

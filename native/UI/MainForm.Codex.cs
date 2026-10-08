@@ -176,6 +176,7 @@ internal sealed partial class MainForm
             _applicationSettings.ThemeHueDegrees, _applicationSettings.ThemeSaturationPercent, _applicationSettings.ThemeBrightnessPercent,
             _applicationSettings.AccentHueDegrees, _applicationSettings.AccentSaturationPercent, _applicationSettings.AccentBrightnessPercent,
             _applicationSettings.TimelineFrameWidth, _applicationSettings.TimelineFrameHeight, _applicationSettings.TimelineAutoKeyframeEnabled,
+            _applicationSettings.FreeTransformShiftProportionalEnabled,
             _applicationSettings.WorkspaceColorArgb, _applicationSettings.ActiveShortcutProfileId
         },
         writableSchema = CodexBridgeProtocol.SettingsSchema,

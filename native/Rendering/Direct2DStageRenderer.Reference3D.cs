@@ -3241,6 +3241,7 @@ internal sealed partial class Direct2DStageRenderer
         var scene = stage.Scene;
         if (!scene.TryGetBitmapObjectData(objectIndex, out var data)) return;
         if (!stage.TryDecodeBitmapImage(data.ImageAssetId, out var decoded)) return;
+        decoded = BitmapImageRasterizer.ApplyObjectClip(decoded, data);
         var interpolation = stage.BitmapImageSampling(data.ImageAssetId) == BitmapSampling.Point
             ? BitmapInterpolationMode.NearestNeighbor
             : BitmapInterpolationMode.Linear;

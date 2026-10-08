@@ -49,6 +49,12 @@ internal sealed record ApplicationSettings
     public int TimelineFrameWidth { get; init; } = 14;
     public TimelineFrameHeightPreset TimelineFrameHeight { get; init; } = TimelineFrameHeightPreset.Medium;
     public bool TimelineAutoKeyframeEnabled { get; init; } = false;
+    /// <summary>
+    /// Operation preference. When enabled, holding Shift while dragging a Free Transform scale handle
+    /// keeps the selection's aspect ratio and releasing Shift allows free scaling. This mode is the
+    /// default. When disabled, scaling is proportional and Shift temporarily allows free scaling.
+    /// </summary>
+    public bool FreeTransformShiftProportionalEnabled { get; init; } = true;
     public int WorkspaceColorArgb { get; init; } = DefaultWorkspaceColorArgb;
     /// <summary>Enables the loopback JSON-RPC bridge used by Codex and MCP clients.</summary>
     public bool CodexIntegrationEnabled { get; init; } = false;

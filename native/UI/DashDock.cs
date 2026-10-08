@@ -8,8 +8,6 @@ internal sealed class DashDock : UserControl
     public const int PreferredDockHeight = 48;
     public const int CompactDockWidth = 48;
 
-    private const int SurfaceCornerRadius = 8;
-
     private readonly ToolTip _toolTip = new();
     private Color _workspaceColor = Theme.Stage;
     private bool _hovered;
@@ -21,7 +19,7 @@ internal sealed class DashDock : UserControl
         AutoScaleMode = AutoScaleMode.None;
         AutoSize = false;
         BackColor = Color.Transparent;
-        Cursor = Cursors.Hand;
+        Cursor = Cursors.Default;
         DoubleBuffered = true;
         Font = Theme.UiFont();
         ForeColor = Theme.Text;
@@ -48,6 +46,16 @@ internal sealed class DashDock : UserControl
     public event EventHandler? WorkspaceColorRequested;
 
     public Color WorkspaceColor => _workspaceColor;
+
+    internal Rectangle SwatchBounds
+    {
+        get
+        {
+            var side = ScaleLogical(26);
+            return new Rectangle(Compact ? Math.Max(1, (Width - side) / 2 - ScaleLogical(1)) : ScaleLogical(12),
+                ScaleLogical(11), side, side);
+        }
+    }
 
     public bool Compact
     {
@@ -82,62 +90,13 @@ internal sealed class DashDock : UserControl
         var previousSmoothingMode = e.Graphics.SmoothingMode;
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
 
-        var shadowOffset = ScaleLogical(3);
-        var surfaceInset = ScaleLogical(1);
-        var trailingInset = ScaleLogical(4);
-        var shadowBounds = new Rectangle(
-            shadowOffset,
-            shadowOffset,
-            Math.Max(1, Width - trailingInset),
-            Math.Max(1, Height - trailingInset));
-        var surfaceBounds = new Rectangle(
-            surfaceInset,
-            surfaceInset,
-            Math.Max(1, Width - trailingInset),
-            Math.Max(1, Height - trailingInset));
-        using var shadowPath = CreateRoundedRectangle(shadowBounds, ScaleLogical(SurfaceCornerRadius));
-        using var surfacePath = CreateRoundedRectangle(surfaceBounds, ScaleLogical(SurfaceCornerRadius));
-        using var shadow = new SolidBrush(SystemInformation.HighContrast
-            ? Color.Transparent
-            : Color.FromArgb(72, Color.Black));
-        var surfaceColor = SystemInformation.HighContrast
-            ? SystemColors.Control
-            : !Enabled
-                ? Theme.DisabledSurface
-                : _pressed
-                    ? Theme.FieldFocus
-                    : _hovered
-                        ? Theme.PanelHover
-                        : Theme.PanelStrong;
-        var borderColor = SystemInformation.HighContrast
-            ? SystemColors.ControlText
-            : !Enabled
-                ? Theme.Border
-                : Focused
-                    ? Theme.Accent
-                    : _hovered
-                        ? Theme.BorderHover
-                        : Theme.Border;
-        using var surface = new SolidBrush(surfaceColor);
-        using var border = new Pen(borderColor);
-        e.Graphics.FillPath(shadow, shadowPath);
-        e.Graphics.FillPath(surface, surfacePath);
-        e.Graphics.DrawPath(border, surfacePath);
-
-        var swatchSize = ScaleLogical(26);
-        var swatchTop = ScaleLogical(11);
-        var swatchBounds = Compact
-            ? new Rectangle(
-                Math.Max(1, (Width - swatchSize) / 2 - surfaceInset),
-                swatchTop,
-                swatchSize,
-                swatchSize)
-            : new Rectangle(ScaleLogical(12), swatchTop, swatchSize, swatchSize);
+        var surfaceColor = Parent?.BackColor ?? Theme.Top;
+        var swatchBounds = SwatchBounds;
         using var swatch = new SolidBrush(_workspaceColor);
         using var swatchBorder = new Pen(
             SystemInformation.HighContrast
                 ? SystemColors.ControlText
-                : Theme.ReadableUiColor(_workspaceColor, Theme.BorderHover));
+                : Theme.ReadableUiColor(_workspaceColor, Enabled && (_hovered || _pressed) ? Theme.Accent : Theme.BorderHover));
         e.Graphics.FillRectangle(swatch, swatchBounds);
         e.Graphics.DrawRectangle(swatchBorder, swatchBounds);
 
@@ -186,7 +145,7 @@ internal sealed class DashDock : UserControl
             var focusInset = ScaleLogical(4);
             ControlPaint.DrawFocusRectangle(
                 e.Graphics,
-                Rectangle.Inflate(surfaceBounds, -focusInset, -focusInset),
+                Rectangle.Inflate(swatchBounds, focusInset, focusInset),
                 SystemInformation.HighContrast
                     ? SystemColors.ControlText
                     : Theme.ReadableUiColor(surfaceColor, Theme.Accent),
@@ -203,21 +162,36 @@ internal sealed class DashDock : UserControl
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        _hovered = Enabled;
-        Invalidate();
+        UpdateSwatchHover(PointToClient(MousePosition));
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
         _hovered = false;
+        Cursor = Cursors.Default;
         if (!_pressed) Invalidate();
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        UpdateSwatchHover(e.Location);
+    }
+
+    private void UpdateSwatchHover(Point location)
+    {
+        var hovered = Enabled && SwatchBounds.Contains(location);
+        Cursor = hovered ? Cursors.Hand : Cursors.Default;
+        if (_hovered == hovered) return;
+        _hovered = hovered;
+        Invalidate(SwatchBounds);
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (!Enabled || e.Button != MouseButtons.Left) return;
+        if (!Enabled || e.Button != MouseButtons.Left || !SwatchBounds.Contains(e.Location)) return;
         Focus();
         _pressed = true;
         Capture = true;
@@ -226,7 +200,7 @@ internal sealed class DashDock : UserControl
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
-        var activate = Enabled && _pressed && e.Button == MouseButtons.Left && ClientRectangle.Contains(e.Location);
+        var activate = Enabled && _pressed && e.Button == MouseButtons.Left && SwatchBounds.Contains(e.Location);
         _pressed = false;
         Capture = false;
         Invalidate();
@@ -269,7 +243,7 @@ internal sealed class DashDock : UserControl
             _pressed = false;
             Capture = false;
         }
-        Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+        Cursor = Enabled && _hovered ? Cursors.Hand : Cursors.Default;
         Invalidate();
     }
 
@@ -289,28 +263,6 @@ internal sealed class DashDock : UserControl
         MinimumSize = size;
         MaximumSize = size;
         Size = size;
-    }
-
-    private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
-    {
-        var diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
-        var path = new GraphicsPath();
-        if (diameter <= 1)
-        {
-            path.AddRectangle(bounds);
-            return path;
-        }
-
-        var arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
-        path.AddArc(arc, 180, 90);
-        arc.X = bounds.Right - diameter;
-        path.AddArc(arc, 270, 90);
-        arc.Y = bounds.Bottom - diameter;
-        path.AddArc(arc, 0, 90);
-        arc.X = bounds.Left;
-        path.AddArc(arc, 90, 90);
-        path.CloseFigure();
-        return path;
     }
 
     private static string ToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";

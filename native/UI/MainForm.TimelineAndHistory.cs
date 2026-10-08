@@ -2722,14 +2722,7 @@ internal sealed partial class MainForm : Form
                 foreach (var layer in layers) drawingScene.SetLayerColor(layer, picker.Color);
                 RefreshTimelineLayerDisplay(context);
             };
-            if (picker.ShowDialog(this) != DialogResult.OK)
-            {
-                drawingScene.RestoreSnapshot(snapshot);
-                RefreshTimelineLayerDisplay(context);
-                return;
-            }
-
-            foreach (var layer in layers) drawingScene.SetLayerColor(layer, picker.Color);
+            picker.ShowDialog(this);
             if (!layers.Select((layer, index) => drawingScene.GetLayerColor(layer).ToArgb() != drawingOriginalColors[index]).Any(changed => changed)) return;
             PushUndoSnapshot(snapshot);
             RefreshTimelineLayerDisplay(context);
@@ -2758,14 +2751,7 @@ internal sealed partial class MainForm : Form
                 foreach (var layerId in sceneLayerIds) sceneDefinition.SetLayerColor(layerId, picker.Color);
                 RefreshTimelineLayerDisplay(context);
             };
-            if (picker.ShowDialog(this) != DialogResult.OK)
-            {
-                sceneDefinition.RestoreLayerSnapshot(layerSnapshot);
-                RefreshTimelineLayerDisplay(context);
-                return;
-            }
-
-            foreach (var layerId in sceneLayerIds) sceneDefinition.SetLayerColor(layerId, picker.Color);
+            picker.ShowDialog(this);
             var changed = sceneLayerIds
                 .Select((layerId, index) => sceneDefinition.FindLayer(layerId)!.ColorArgb != originalColors[index])
                 .Any(value => value);
@@ -4368,7 +4354,7 @@ internal sealed partial class MainForm : Form
                 var center = new PointF(item.Center.X + offset.X, item.Center.Y + offset.Y);
                 // A pasted bitmap keeps pointing at the same image asset: the payload is a
                 // reference, not pixels, so the copy shares the library entry.
-                index = _scene.AddBitmapObject(layer, center, bitmapData, item.Angle);
+                index = _scene.AddBitmapObject(layer, center, bitmapData.WithPlacedSize(item.Size), item.Angle);
             }
             else if (item.Shape == ShapeKind.Bitmap)
             {

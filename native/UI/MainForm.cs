@@ -162,10 +162,6 @@ internal sealed partial class MainForm : Form
     private readonly Label _draw = MetricLabel("Draw 0", 210);
     private readonly Label _atoms = MetricLabel("Atoms 0", 210);
     private readonly Label _zoom = MetricLabel("Zoom 100%", 112);
-    private readonly Label _selected = InspectorLabel("Selected: None");
-    private readonly Label _selectedLayer = InspectorLabel("Layer: -");
-    private readonly Label _selectedAtoms = InspectorLabel("Atoms: -");
-    private readonly Label _objectMetric = InspectorLabel("Objects: 0");
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
     private bool? _lastDrawingToolsBlocked;
     private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
@@ -293,9 +289,8 @@ internal sealed partial class MainForm : Form
     private readonly LayerBlendModePanel _layerBlendModePanel = new();
     private readonly ThemedScrollPanel _basicInspectorPage = new();
     private readonly TweenCurveEditorPanel _tweenCurveEditorPanel = new();
-    private readonly Panel _objectInspector = new();
+    private readonly SelectionSummaryPanel _objectInspector = new();
     private readonly ThemedScrollPanel _sceneEditPage = new();
-    private readonly TableLayoutPanel _sceneWorkflowControls = new();
     private readonly Panel _animationPage = new();
     private readonly FlowLayoutPanel _toolPalette = new();
     private SvgIconButton? _shapeToolButton;
@@ -761,10 +756,27 @@ internal sealed partial class MainForm : Form
     {
         public required VectorScene Scene { get; init; }
         public required VectorSceneSnapshot Snapshot { get; init; }
-        public required int ObjectIndex { get; init; }
-        public required int NodeIndex { get; init; }
-        public required PathBezierNode BaseCorner { get; init; }
-        public required FillBoundaryLineLink[] FillBoundaryLinks { get; init; }
+        /// <summary>First segment of a Line corner split, or the edited Freeform anchor owner.</summary>
+        public required int FirstObjectIndex { get; init; }
+        public required bool FirstSharedIsStart { get; init; }
+        public required PointF FirstOppositeEndpoint { get; init; }
+        /// <summary>
+        /// Second segment of a Line corner split, or -1 while the session drives a Freeform anchor by
+        /// node index instead.
+        /// </summary>
+        public required int SecondObjectIndex { get; init; }
+        public required bool SecondSharedIsStart { get; init; }
+        public required PointF SecondOppositeEndpoint { get; init; }
+        public required PointF BaseAnchor { get; init; }
+        /// <summary>Freeform node being dragged; unused by a split Line corner.</summary>
+        public int NodeIndex { get; init; } = -1;
+        /// <summary>Freeform node state captured when the drag started.</summary>
+        public PathBezierNode BaseCorner { get; init; }
+        /// <summary>
+        /// Fill boundaries coincident with the dragged stroke, captured while the geometry was
+        /// still straight so fills follow the corner while it is dragged.
+        /// </summary>
+        public FillBoundaryLineLink[] FillBoundaryLinks { get; init; } = Array.Empty<FillBoundaryLineLink>();
         public bool DragExceeded { get; set; }
     }
 
@@ -881,7 +893,7 @@ internal sealed partial class MainForm : Form
         _timeline.AutoKeyframeEnabled = _applicationSettings.TimelineAutoKeyframeEnabled;
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
         _drawSettingsPanel.SetPencilPresentation();
-        _shapeSettingsPanel = new ShapeSettingsPanel(_drawSettings);
+        _shapeSettingsPanel = new ShapeSettingsPanel();
         _brushTipPanel.SetBrushShape(_brushShape);
         _brushTipPanel.SetBrushStrokeSettings(
             _drawSettings.BrushFrequency,
@@ -1163,8 +1175,7 @@ internal sealed partial class MainForm : Form
         _dashDock.Top = 1;
         _dashDock.WorkspaceColorRequested += (_, _) => ChooseWorkspaceColor();
         _workspaceColorFlyout.ColorPreviewChanged += (_, _) => PreviewWorkspaceColor(_workspaceColorFlyout.Color);
-        _workspaceColorFlyout.ColorApplied += (_, _) => CommitWorkspaceColor(_workspaceColorFlyout.Color);
-        _workspaceColorFlyout.ColorCanceled += (_, _) => PreviewWorkspaceColor(_workspaceColorFlyout.InitialColor);
+        _workspaceColorFlyout.ColorEditingCompleted += (_, _) => CommitWorkspaceColor(_workspaceColorFlyout.Color);
         top.Controls.Add(_dashDock);
         var playbackFpsLabel = new Label
         {
@@ -1685,14 +1696,6 @@ internal sealed partial class MainForm : Form
 
     private void ShowSettings()
     {
-        var originalTheme = (
-            _applicationSettings.ColorTheme,
-            _applicationSettings.ThemeHueDegrees,
-            _applicationSettings.ThemeSaturationPercent,
-            _applicationSettings.ThemeBrightnessPercent,
-            _applicationSettings.AccentHueDegrees,
-            _applicationSettings.AccentSaturationPercent,
-            _applicationSettings.AccentBrightnessPercent);
         using var dialog = new SettingsDialog(
             _applicationSettings.ActiveShortcutProfileId,
             _applicationSettings.CustomShortcutProfiles,
@@ -1703,36 +1706,27 @@ internal sealed partial class MainForm : Form
             _applicationSettings.ThemeBrightnessPercent,
             _applicationSettings.AccentHueDegrees,
             _applicationSettings.AccentSaturationPercent,
-            _applicationSettings.AccentBrightnessPercent);
+            _applicationSettings.AccentBrightnessPercent,
+            _applicationSettings.FreeTransformShiftProportionalEnabled);
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
-        void PreviewTheme(object? sender, EventArgs e) => ApplyThemePreview(
-            dialog.SelectedColorTheme,
-            dialog.SelectedThemeHueDegrees,
-            dialog.SelectedThemeSaturationPercent,
-            dialog.SelectedThemeBrightnessPercent,
-            dialog.SelectedAccentHueDegrees,
-            dialog.SelectedAccentSaturationPercent,
-            dialog.SelectedAccentBrightnessPercent,
-            dialog);
+        void PreviewTheme(object? sender, EventArgs e)
+        {
+            ApplyThemePreview(
+                dialog.SelectedColorTheme,
+                dialog.SelectedThemeHueDegrees,
+                dialog.SelectedThemeSaturationPercent,
+                dialog.SelectedThemeBrightnessPercent,
+                dialog.SelectedAccentHueDegrees,
+                dialog.SelectedAccentSaturationPercent,
+                dialog.SelectedAccentBrightnessPercent,
+                dialog);
+            CommitThemeColors(dialog);
+        }
         dialog.ThemePreviewChanged += PreviewTheme;
         var dialogResult = dialog.ShowDialog(this);
         dialog.ThemePreviewChanged -= PreviewTheme;
         if (dialogResult != DialogResult.OK)
         {
-            RestoreThemePreview(originalTheme);
-            return;
-        }
-
-        var themeChanged = dialog.SelectedColorTheme != _applicationSettings.ColorTheme
-            || dialog.SelectedThemeHueDegrees != _applicationSettings.ThemeHueDegrees
-            || dialog.SelectedThemeSaturationPercent != _applicationSettings.ThemeSaturationPercent
-            || dialog.SelectedThemeBrightnessPercent != _applicationSettings.ThemeBrightnessPercent
-            || dialog.SelectedAccentHueDegrees != _applicationSettings.AccentHueDegrees
-            || dialog.SelectedAccentSaturationPercent != _applicationSettings.AccentSaturationPercent
-            || dialog.SelectedAccentBrightnessPercent != _applicationSettings.AccentBrightnessPercent;
-        if (themeChanged && !CommitTextEdit())
-        {
-            RestoreThemePreview(originalTheme);
             return;
         }
 
@@ -1752,12 +1746,12 @@ internal sealed partial class MainForm : Form
             ThemeBrightnessPercent = dialog.SelectedThemeBrightnessPercent,
             AccentHueDegrees = dialog.SelectedAccentHueDegrees,
             AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
-            AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent
+            AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent,
+            FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled
         });
         settings = ApplicationSettingsStore.Normalize(dialog.ApplyCodexSettingsTo(settings));
         if (!ApplicationSettingsStore.TrySave(settings))
         {
-            RestoreThemePreview(originalTheme);
             ModernMessageDialog.Show(
                 this,
                 UiLocalization.T("The settings could not be saved. See the latest log file for details."),
@@ -1785,7 +1779,6 @@ internal sealed partial class MainForm : Form
             + $"colorTheme={settings.ColorTheme}, "
             + $"themeHsb={settings.ThemeHueDegrees}/{settings.ThemeSaturationPercent}/{settings.ThemeBrightnessPercent}, "
             + $"accentHsb={settings.AccentHueDegrees}/{settings.AccentSaturationPercent}/{settings.AccentBrightnessPercent}.");
-        if (themeChanged) RebuildWorkbenchForThemeChange();
     }
 
     private void ApplyThemePreview(
@@ -1831,42 +1824,22 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private void RestoreThemePreview((
-        ApplicationColorTheme ColorTheme,
-        int ThemeHueDegrees,
-        int ThemeSaturationPercent,
-        int ThemeBrightnessPercent,
-        int AccentHueDegrees,
-        int AccentSaturationPercent,
-        int AccentBrightnessPercent) originalTheme)
+    private void CommitThemeColors(SettingsDialog dialog)
     {
-        ApplyThemePreview(
-            originalTheme.ColorTheme,
-            originalTheme.ThemeHueDegrees,
-            originalTheme.ThemeSaturationPercent,
-            originalTheme.ThemeBrightnessPercent,
-            originalTheme.AccentHueDegrees,
-            originalTheme.AccentSaturationPercent,
-            originalTheme.AccentBrightnessPercent);
-    }
-
-    private void RebuildWorkbenchForThemeChange()
-    {
-        if (_restartRequested) return;
-        var handler = RestartRequested;
-        if (handler is null)
+        var settings = ApplicationSettingsStore.Normalize(_applicationSettings with
         {
-            AppLog.Warn("The theme was saved but the current workbench cannot be rebuilt; it will be fully applied on the next launch.");
-            return;
-        }
-
-        StopPlayback();
-        FinishPointerInteractionForFrameChange();
-        HideToolFlyouts();
-        var state = CaptureEditorRestartState();
-        _restartRequested = true;
-        AppLog.Info("Rebuilding the workbench to apply the selected application theme.");
-        handler(this, new EditorRestartRequestedEventArgs(state));
+            ColorTheme = dialog.SelectedColorTheme,
+            ThemeHueDegrees = dialog.SelectedThemeHueDegrees,
+            ThemeSaturationPercent = dialog.SelectedThemeSaturationPercent,
+            ThemeBrightnessPercent = dialog.SelectedThemeBrightnessPercent,
+            AccentHueDegrees = dialog.SelectedAccentHueDegrees,
+            AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
+            AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent
+        });
+        if (settings == _applicationSettings) return;
+        _applicationSettings = settings;
+        if (!ApplicationSettingsStore.TrySave(settings))
+            AppLog.Warn("Theme colors could not be saved; the current session keeps the selected colors.");
     }
 
     private void ChooseWorkspaceColor()
@@ -2417,149 +2390,6 @@ internal sealed partial class MainForm : Form
             using var pen = new Pen(Theme.Border);
             e.Graphics.DrawRectangle(pen, 0, 0, control.Width - 1, control.Height - 1);
         };
-    }
-
-    private void BuildInspectorPages(Control inspector)
-    {
-        _basicInspectorPage.Dock = DockStyle.Fill;
-        _basicInspectorPage.BackColor = Theme.Panel;
-        _basicInspectorPage.ContentPadding = new Padding(0, 0, 2, 0);
-        _objectInspector.Dock = DockStyle.Top;
-        _objectInspector.Height = ObjectInspectorPanelHeight;
-        _objectInspector.BackColor = Theme.Panel;
-        BuildInspector(_objectInspector);
-        _materialEditor.Dock = DockStyle.Top;
-        _drawingObjectInstancePanel.Dock = DockStyle.Top;
-        _drawingObjectInstancePanel.Height = _drawingObjectInstancePanel.PreferredPanelHeight;
-        _drawingObjectInstancePanel.Visible = false;
-        _brushTipPanel.Dock = DockStyle.Top;
-        _brushTipPanel.Height = _brushTipPanel.PreferredHeight;
-        _brushTipPanel.Visible = false;
-        _mixingBrushSettingsPanel.Dock = DockStyle.Top;
-        _mixingBrushSettingsPanel.Height = _mixingBrushSettingsPanel.PreferredPanelHeight;
-        _mixingBrushSettingsPanel.Visible = false;
-        _textSettingsPanel.Dock = DockStyle.Top;
-        _textSettingsPanel.Height = _textSettingsPanel.PreferredHeight;
-        _textSettingsPanel.Visible = false;
-        _drawSettingsPanel.Dock = DockStyle.Top;
-        _drawSettingsPanel.Height = _drawSettingsPanel.PreferredHeight;
-        _shapeSettingsPanel.Dock = DockStyle.Top;
-        _shapeSettingsPanel.Height = _shapeSettingsPanel.PreferredHeight;
-        _shapeSettingsPanel.Visible = false;
-        _tweenCurveEditorPanel.Dock = DockStyle.Top;
-        _tweenCurveEditorPanel.Height = _tweenCurveEditorPanel.PreferredPanelHeight;
-        _tweenCurveEditorPanel.Visible = false;
-        _basicInspectorPage.Content.Controls.Add(_materialEditor);
-        _basicInspectorPage.Content.Controls.Add(_drawingObjectInstancePanel);
-        _basicInspectorPage.Content.Controls.Add(_brushTipPanel);
-        _basicInspectorPage.Content.Controls.Add(_mixingBrushSettingsPanel);
-        _basicInspectorPage.Content.Controls.Add(_textSettingsPanel);
-        _basicInspectorPage.Content.Controls.Add(_drawSettingsPanel);
-        _basicInspectorPage.Content.Controls.Add(_shapeSettingsPanel);
-        _basicInspectorPage.Content.Controls.Add(_objectInspector);
-        _basicInspectorPage.Content.Controls.Add(_tweenCurveEditorPanel);
-        _objectInspector.Visible = false;
-        _drawSettingsPanel.Visible = false;
-        _drawingObjectInstancePanel.BringToFront();
-        _textSettingsPanel.BringToFront();
-        _materialEditor.BringToFront();
-        _mixingBrushSettingsPanel.BringToFront();
-        _drawSettingsPanel.BringToFront();
-        _shapeSettingsPanel.BringToFront();
-        _tweenCurveEditorPanel.BringToFront();
-
-        _sceneEditPage.Dock = DockStyle.Fill;
-        _sceneEditPage.BackColor = Theme.Panel;
-        _sceneWorkflowControls.Dock = DockStyle.Top;
-        _sceneWorkflowControls.Height = _sceneEditorPanel.PreferredPanelHeight + 188;
-        _sceneWorkflowControls.BackColor = Theme.Panel;
-        _sceneWorkflowControls.ColumnCount = 1;
-        _sceneWorkflowControls.RowCount = 2;
-        _sceneWorkflowControls.Margin = Padding.Empty;
-        _sceneWorkflowControls.Padding = Padding.Empty;
-        _sceneWorkflowControls.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _sceneWorkflowControls.RowStyles.Add(new RowStyle(SizeType.Absolute, _sceneEditorPanel.PreferredPanelHeight));
-        _sceneWorkflowControls.RowStyles.Add(new RowStyle(SizeType.Absolute, 188));
-        _hierarchyPanel.Dock = DockStyle.Fill;
-        _sceneEditorPanel.Dock = DockStyle.Fill;
-        _sceneEditorPanel.Height = _sceneEditorPanel.PreferredPanelHeight;
-        _playbackSettings.Dock = DockStyle.Fill;
-        _playbackSettings.Height = 188;
-        _sceneWorkflowControls.Controls.Add(_sceneEditorPanel, 0, 0);
-        _sceneWorkflowControls.Controls.Add(_playbackSettings, 0, 1);
-        _sceneEditPage.Content.Controls.Add(_hierarchyPanel);
-        _sceneEditPage.Content.Controls.Add(_sceneWorkflowControls);
-        _sceneWorkflowControls.SendToBack();
-        BuildSceneOpticsInspectorPanels();
-
-        _animationPage.Dock = DockStyle.Fill;
-        _animationPage.BackColor = Theme.Panel;
-
-        inspector.Controls.Add(_animationPage);
-        inspector.Controls.Add(_sceneEditPage);
-        inspector.Controls.Add(_basicInspectorPage);
-        _layerBlendModePanel.Dock = DockStyle.Top;
-        _layerBlendModePanel.Height = _layerBlendModePanel.PreferredPanelHeight;
-        inspector.Controls.Add(_layerBlendModePanel);
-        _layerBlendModePanel.SendToBack();
-        ShowWorkspace(WorkspaceView.BasicDrawing);
-    }
-
-    private const int ObjectInspectorRowCount = 4;
-
-    private static Padding ObjectInspectorPadding =>
-        new(0, Theme.GapXs, 0, Theme.InspectorSectionPaddingVertical);
-
-    private static int ObjectInspectorPanelHeight =>
-        ObjectInspectorPadding.Top
-        + Theme.InspectorTitleHeight
-        + Theme.InspectorContentPaddingTop
-        + Theme.InspectorMetaRowHeight * ObjectInspectorRowCount
-        + ObjectInspectorPadding.Bottom;
-
-    private void BuildInspector(Control parent)
-    {
-        parent.Padding = ObjectInspectorPadding;
-
-        var title = new Label
-        {
-            Text = "Inspector",
-            Dock = DockStyle.Top,
-            Height = Theme.InspectorTitleHeight,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-        parent.Controls.Add(title);
-
-        var content = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.Panel,
-            ColumnCount = 2,
-            RowCount = ObjectInspectorRowCount,
-            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
-        };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Theme.InspectorFieldLabelColumnWidth));
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < content.RowCount; i++)
-        {
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorMetaRowHeight));
-        }
-
-        parent.Controls.Add(content);
-        content.BringToFront();
-
-        var row = 0;
-        foreach (var label in new[] { _selected, _selectedLayer, _selectedAtoms, _objectMetric })
-        {
-            label.Dock = DockStyle.Fill;
-            label.Margin = new Padding(0, 0, 0, 0);
-            content.Controls.Add(label, 0, row);
-            content.SetColumnSpan(label, 2);
-            row++;
-        }
     }
 
     private static void AddField(TableLayoutPanel parent, string label, Control input, int row)

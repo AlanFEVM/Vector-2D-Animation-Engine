@@ -31,6 +31,7 @@ internal static partial class CodexBridgeProtocol
         "timelineFrameWidth":{"type":"integer","minimum":8,"maximum":32},
         "timelineFrameHeight":{"type":"string","enum":["Low","Medium","High"]},
         "timelineAutoKeyframeEnabled":{"type":"boolean"},
+        "freeTransformShiftProportionalEnabled":{"type":"boolean"},
         "workspaceColorArgb":{"type":"integer","minimum":-2147483648,"maximum":2147483647}
         """);
 

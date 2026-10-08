@@ -1170,6 +1170,8 @@ internal sealed partial class VectorScene
     private bool FillContainsRawPoint(int objectIndex, PointF world)
     {
         if ((uint)objectIndex >= ObjectCount) return false;
+        if (TryGetBitmapObjectData(objectIndex, out _))
+            return PointInCompoundPolygonOrOnBoundary(world, FillWorldContours(objectIndex));
         var shape = ShapeKind.Length > objectIndex ? ShapeKind[objectIndex] : VectorAnimationEngine.ShapeKind.Rectangle;
         if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
         {
@@ -3272,70 +3274,6 @@ internal sealed partial class VectorScene
         {
             RestoreSnapshot(snapshot);
             result = default;
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Converts a straight Line into an open 3-node Freeform stroke split at
-    /// <paramref name="parameter"/>. The middle node is a corner anchor whose
-    /// incoming/outgoing controls are independent, producing a sharp point.
-    /// </summary>
-    public bool TryConvertLineToBezierFreeform(int objectIndex, float parameter, out PointF cornerAnchor)
-    {
-        cornerAnchor = PointF.Empty;
-        if ((uint)objectIndex >= ObjectCount
-            || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line
-            || parameter <= 0.001f
-            || parameter >= 0.999f)
-        {
-            return false;
-        }
-
-        var curve = LineCurve(objectIndex);
-        var p01 = Lerp(curve.Start, curve.Control1, parameter);
-        var p12 = Lerp(curve.Control1, curve.Control2, parameter);
-        var p23 = Lerp(curve.Control2, curve.End, parameter);
-        var p012 = Lerp(p01, p12, parameter);
-        var p123 = Lerp(p12, p23, parameter);
-        var anchor = VectorUnits.Quantize(Lerp(p012, p123, parameter));
-        p01 = VectorUnits.Quantize(p01);
-        p012 = VectorUnits.Quantize(p012);
-        p123 = VectorUnits.Quantize(p123);
-        p23 = VectorUnits.Quantize(p23);
-        if (Distance(curve.Start, anchor) < DrawingTopologyRules.MinStrokeSegmentUnits
-            || Distance(anchor, curve.End) < DrawingTopologyRules.MinStrokeSegmentUnits)
-        {
-            return false;
-        }
-
-        var nodes = new[]
-        {
-            new PathBezierNode(curve.Start, curve.Start, p01),
-            new PathBezierNode(anchor, p012, p123),
-            new PathBezierNode(curve.End, p23, curve.End)
-        };
-
-        var snapshot = CreateSnapshot();
-        try
-        {
-            ShapeKind[objectIndex] = VectorAnimationEngine.ShapeKind.Freeform;
-            LineEndpointStyles[objectIndex] = LineEndpointStyle.Round;
-            LineEndEndpointStyles[objectIndex] = LineEndpointStyle.Round;
-            if (!SetFreehandBezierNodesCore(objectIndex, nodes))
-            {
-                throw new InvalidOperationException("The corner freeform conversion failed.");
-            }
-
-            RebuildGeometryIndex();
-            RebuildSummaries();
-            cornerAnchor = anchor;
-            return true;
-        }
-        catch
-        {
-            RestoreSnapshot(snapshot);
-            cornerAnchor = PointF.Empty;
             return false;
         }
     }

@@ -1145,6 +1145,30 @@ internal static partial class Benchmark
             {
                 throw new InvalidOperationException("Application theme H/S/B changes did not emit independent live-preview updates.");
             }
+
+            if (!themePreviewDialog.FreeTransformShiftProportionalEnabled)
+            {
+                throw new InvalidOperationException("The Free Transform Shift aspect-ratio preference must default to checked.");
+            }
+        }
+
+        using (var freeTransformPreferenceDialog = new SettingsDialog(
+            ShortcutProfiles.TraditionalFlashProfileId,
+            [],
+            UiLanguage.English,
+            ApplicationColorTheme.Dark,
+            ApplicationSettings.DefaultThemeHueDegrees,
+            ApplicationSettings.DefaultThemeSaturationPercent,
+            ApplicationSettings.DefaultThemeBrightnessPercent,
+            ApplicationSettings.DefaultAccentHueDegrees,
+            ApplicationSettings.DefaultAccentSaturationPercent,
+            ApplicationSettings.DefaultAccentBrightnessPercent,
+            freeTransformShiftProportionalEnabled: false))
+        {
+            if (freeTransformPreferenceDialog.FreeTransformShiftProportionalEnabled)
+            {
+                throw new InvalidOperationException("The Free Transform Shift aspect-ratio preference did not reach the settings dialog.");
+            }
         }
 
         var originalTheme = (

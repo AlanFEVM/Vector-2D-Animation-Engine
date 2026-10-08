@@ -188,33 +188,6 @@ internal sealed partial class MainForm : Form
         ArrangeSceneInspectorSections();
     }
 
-    private void ArrangeSceneInspectorSections()
-    {
-        var controls = _sceneEditPage.Content.Controls;
-        if (!controls.Contains(_hierarchyPanel)
-            || !controls.Contains(_sceneWorkflowControls))
-        {
-            return;
-        }
-
-        // Docking is evaluated from back to front, ending with the selection panels at the top.
-        Control[] frontToBack =
-        [
-            _hierarchyPanel,
-            _sceneWorkflowControls,
-            _sceneLightingPanel,
-            _spatialMaterialPanel,
-            _drawingObjectInstancePanel,
-            _tweenCurveEditorPanel
-        ];
-        var childIndex = 0;
-        foreach (var control in frontToBack)
-        {
-            if (!ReferenceEquals(control.Parent, _sceneEditPage.Content)) continue;
-            controls.SetChildIndex(control, childIndex++);
-        }
-    }
-
     private void HandleSceneLayerEditingContextChanged()
     {
         if (_switchingSceneLayerEditingContext) return;

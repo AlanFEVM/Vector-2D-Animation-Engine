@@ -402,34 +402,20 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private void ChooseTint()
     {
         using var picker = new ProfessionalColorPickerDialog(_tintColor, "Symbol tint");
-        var startedMixed = _tintMixed;
-        var changed = false;
         AppearanceInteractionStarted?.Invoke(this, EventArgs.Empty);
         picker.ColorChanged += (_, _) =>
         {
             _tintColor = Opaque(picker.Color);
             _tintMixed = false;
-            changed = true;
             UpdateTintPresentation();
             RaiseAppearanceChanged(alphaChanged: false, tintChanged: true);
         };
 
-        if (picker.ShowDialog(FindForm()) == DialogResult.OK)
+        try { picker.ShowDialog(FindForm()); }
+        finally
         {
-            if (startedMixed && !changed)
-            {
-                _tintMixed = false;
-                UpdateTintPresentation();
-                RaiseAppearanceChanged(alphaChanged: false, tintChanged: true);
-            }
             AppearanceInteractionCompleted?.Invoke(this, EventArgs.Empty);
-            return;
         }
-
-        _tintColor = picker.InitialColor;
-        _tintMixed = startedMixed;
-        UpdateTintPresentation();
-        AppearanceInteractionCanceled?.Invoke(this, EventArgs.Empty);
     }
 
     private void RaiseAppearanceChanged(bool alphaChanged, bool tintChanged)

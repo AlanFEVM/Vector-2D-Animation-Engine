@@ -29,10 +29,7 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
         WireEvents();
         SetColor(_initialColor, raiseChanged: false);
 
-        var apply = AddDialogAction("Apply", DialogResult.OK, DialogActionStyle.Primary, () => TryCommitHex());
-        var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
-        AcceptButton = apply;
-        CancelButton = cancel;
+        HideDialogActions();
         UiLocalization.Watch(this);
     }
 
@@ -41,6 +38,16 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
     public Color InitialColor => _initialColor;
 
     public event EventHandler? ColorChanged;
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape)
+        {
+            Close();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
 
     private void BuildUi()
     {
@@ -160,6 +167,10 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
         _red.ValueChanged += (_, _) => SetFromChannels();
         _green.ValueChanged += (_, _) => SetFromChannels();
         _blue.ValueChanged += (_, _) => SetFromChannels();
+        _hex.TextChanged += (_, _) =>
+        {
+            if (!_updating && TryParseRgb(_hex.Text, out var color)) SetColor(color);
+        };
         _hex.Validated += (_, _) => TryCommitHex();
         _hex.KeyDown += (_, e) =>
         {
@@ -187,10 +198,8 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
             return true;
         }
 
-            _hex.BackColor = Theme.Mix(Theme.Field, Theme.Danger, 0.22f);
-            _hex.ForeColor = Theme.ReadableText(_hex.BackColor, Theme.DangerText);
-            _hex.SelectAll();
-            _hex.Focus();
+        _hex.BackColor = Theme.Mix(Theme.Field, Theme.Danger, 0.22f);
+        _hex.ForeColor = Theme.ReadableText(_hex.BackColor, Theme.DangerText);
         return false;
     }
 

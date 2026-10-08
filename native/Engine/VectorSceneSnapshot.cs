@@ -281,7 +281,13 @@ internal sealed class VectorSceneSnapshot
         // Each entry is a small payload: the asset id string plus two floats and the
         // dictionary overhead. Pixel data lives in the project image library, not here.
         bytes += 64L * BitmapObjects.Count;
-        foreach (var bitmap in BitmapObjects.Values) bytes += StringBytes(bitmap.ImageAssetId);
+        foreach (var bitmap in BitmapObjects.Values)
+        {
+            bytes += StringBytes(bitmap.ImageAssetId);
+            if (bitmap.VisibleContours is not { } contours) continue;
+            bytes += ArrayBytes(contours.Length, IntPtr.Size);
+            foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 8);
+        }
 
         bytes += 72L * ObjectDistortions.Count;
         foreach (var distortions in ObjectDistortions.Values)
