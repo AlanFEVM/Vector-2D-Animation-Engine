@@ -1382,6 +1382,8 @@ internal sealed partial class VectorScene
         int? fillPartIndex,
         bool includeCoincidentStrokes)
     {
+        // The fill-boundary overlay edits the fill contour, which keeps its full closed
+        // outline even where the stroke was detached (hidden) — so no filtering here.
         var sourceParts = GetEditableFillBezierSegmentParts(objectIndex);
         if (sourceParts.Length == 0 || !IsObjectActive(objectIndex, frame)) return [];
 
@@ -2800,6 +2802,103 @@ internal sealed partial class VectorScene
 
         CompletePathBezierMutation(rebuildGeometryIndex);
         return true;
+    }
+
+    /// <summary>
+    /// Pulls a single boundary segment out of a fill shape as an independent, open
+    /// stroke object (a Line) that inherits the source stroke style. The source
+    /// contour is left closed and untouched — the fill keeps the pre-detach outline
+    /// (including any bend) — and the segment's stroke is hidden on the source so
+    /// every detached edge leaves its own exposed gap. The pulled piece is marked
+    /// fill-boundary-detached so it never drags the fill along afterwards.
+    /// </summary>
+    internal bool SplitOutSegmentAsNewObject(int objectIndex, int partIndex, out int newObjectIndex)
+    {
+        newObjectIndex = -1;
+        if (!TryConvertFillToBezierPath(objectIndex, rebuildGeometryIndex: false)) return false;
+        if (!TryGetPathBezierWorldContours(objectIndex, out var contours)) return false;
+
+        var currentPart = 0;
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            if (partIndex >= currentPart + contour.Length)
+            {
+                currentPart += contour.Length;
+                continue;
+            }
+
+            if (contour.Length < 2 || (uint)partIndex >= currentPart + contour.Length) return false;
+
+            var segmentIndex = partIndex - currentPart;
+            var nextIndex = (segmentIndex + 1) % contour.Length;
+            var anchor = contour[segmentIndex];
+            var next = contour[nextIndex];
+            var start = anchor.Anchor;
+            var control1 = anchor.OutgoingControl;
+            var control2 = next.IncomingControl;
+            var end = next.Anchor;
+
+            // 1) Spawn the pulled segment as a standalone, open Line.
+            var layer = ObjectLayer[objectIndex];
+            var atoms = AtomCount[objectIndex];
+            var strokeWidth = Stroke[objectIndex];
+            var strokeColor = Color.FromArgb(StrokeArgb[objectIndex]);
+            if (!HasStroke(objectIndex))
+            {
+                // A fill-only source has no stroke to inherit, and a zero-width transparent
+                // line would be invisible and impossible to grab. Fall back to the standard
+                // 2pt default so the pulled segment stays visible and draggable.
+                strokeWidth = VectorUnits.StrokePointsToUnits(2f);
+                strokeColor = Color.Black;
+            }
+
+            var created = AddCubicCurveSegment(
+                layer,
+                start,
+                control1,
+                control2,
+                end,
+                strokeWidth,
+                Color.Transparent,
+                strokeColor,
+                atoms,
+                LineEndpointStyle.Sharp,
+                LineEndpointStyle.Sharp);
+            if (created < 0) return false;
+
+            ObjectKeyframeFrame[created] = ObjectKeyframeFrame[objectIndex];
+            ObjectOrder[created] = ObjectOrder[objectIndex];
+            ObjectSubOrder[created] = ObjectSubOrder[objectIndex];
+            // The pulled segment starts coincident with the source boundary; mark it so the
+            // fill-boundary link capture skips it and it stays fully independent (Animate
+            // behavior: reshaping the fill afterwards never drags the torn piece along).
+            FillBoundaryLinkDetached[created] = true;
+            newObjectIndex = created;
+
+            // 2) Record this boundary segment as detached (always — the bookkeeping also
+            //    prevents detaching the same segment twice) and suppress the source's
+            //    stroke for it. The contour stays closed so the fill keeps its previous
+            //    outline and multiple gaps coexist.
+            HideBoundaryStrokePart(objectIndex, partIndex);
+
+            // When the last boundary segment has been pulled out there is no visible
+            // stroke left on the source: promote it to a pure fill (Stroke = 0) so the
+            // boundary stops rendering/hit-testing as a stroke. The detached-segment
+            // bookkeeping is kept — it is what stops duplicate detaches afterwards.
+            if (HasStroke(objectIndex)
+                && _hiddenBoundaryStrokeParts.TryGetValue(objectIndex, out var hiddenNow)
+                && TryGetPathBezierWorldContours(objectIndex, out var promoteContours)
+                && hiddenNow.Count >= promoteContours.Sum(contour => contour.Length))
+            {
+                Stroke[objectIndex] = 0;
+            }
+
+            CompletePathBezierMutation(rebuildGeometryIndex: true);
+            return true;
+        }
+
+        return false;
     }
 
     internal bool NormalizeFillBoundaryOverlaps(

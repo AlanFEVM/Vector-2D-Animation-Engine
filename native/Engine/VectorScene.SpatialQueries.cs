@@ -70,7 +70,7 @@ internal sealed partial class VectorScene
     private DrawingElementHit DetachBoundaryStrokePart(DrawingElementHit hit, IReadOnlyList<int> candidates)
     {
         var source = hit.Key.ObjectIndex;
-        if ((uint)source >= ObjectCount || !HasStroke(source)) return hit;
+        if ((uint)source >= ObjectCount || !HasFill(source) || !IsFillShape(ShapeKind[source])) return hit;
 
         var segments = BuildBoundaryStrokeParts(source, candidates);
         if (segments.Count == 0) return hit;
@@ -81,6 +81,14 @@ internal sealed partial class VectorScene
         var stroke = Stroke[source];
         var fillColor = Color.FromArgb(Argb[source]);
         var strokeColor = Color.FromArgb(StrokeArgb[source]);
+        if (!HasStroke(source))
+        {
+            // Fill-only sources have no stroke to detach; use the standard visible default
+            // so the detached segment remains grabbable instead of an invisible line.
+            stroke = VectorUnits.StrokePointsToUnits(2f);
+            strokeColor = Color.Black;
+        }
+
         var atoms = AtomCount[source];
         var selectedPart = hit.Key.PartIndex;
         var subOrders = ReplacementSubOrders(source, segments.Count, preserveSourceSubOrder: true);

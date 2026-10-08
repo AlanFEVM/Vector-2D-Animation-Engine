@@ -146,6 +146,36 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (_fillEdgeNoUiArc.HasValue)
+        {
+            if (e.Button == MouseButtons.Left) UpdateFillEdgeNoUiArc(_stage.ScreenToWorld(e.Location));
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
+        if (_fillEdgeDetachMoving.HasValue)
+        {
+            if (e.Button == MouseButtons.Left) UpdateFillEdgeDetachMove(_stage.ScreenToWorld(e.Location));
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
+        if (_fillEdgeDetachPending.HasValue)
+        {
+            if (e.Button == MouseButtons.Left && PointerDragExceeded(e.Location))
+                BeginFillEdgeDetach(_fillEdgeDetachPending.Value, _stage.ScreenToWorld(e.Location));
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
+        if (_fillEdgePreSelect.HasValue)
+        {
+            if (e.Button == MouseButtons.Left && PointerDragExceeded(e.Location))
+                BeginFillEdgeNoUiArc(_fillEdgePreSelect.Value, _stage.ScreenToWorld(e.Location));
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
         if (_tool == ToolMode.SnapPoint)
         {
             if (_snapPointEditSession is not null)
@@ -2305,6 +2335,35 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (_fillEdgeNoUiArc.HasValue)
+        {
+            CompleteFillEdgeNoUiArc();
+            return;
+        }
+
+        if (_fillEdgeDetachMoving.HasValue)
+        {
+            CompleteFillEdgeDetach();
+            return;
+        }
+
+        if (_fillEdgeDetachPending.HasValue)
+        {
+            var pending = _fillEdgeDetachPending.Value;
+            _fillEdgeDetachPending = null;
+            SelectPreSelectObject((pending.ObjectIndex, pending.PartIndex), e.Location);
+            FinishPointerInteraction();
+            return;
+        }
+
+        if (_fillEdgePreSelect.HasValue)
+        {
+            SelectPreSelectObject(_fillEdgePreSelect.Value, e.Location);
+            _fillEdgePreSelect = null;
+            FinishPointerInteraction();
+            return;
+        }
+
         if (IsLassoTool(_tool) && HandleLassoMouseUp(e)) return;
 
         if (HandleSpatialTransformKeyboardMouseUp(e)) return;
@@ -2951,6 +3010,10 @@ internal sealed partial class MainForm : Form
         UpdateTransformOverlay();
         _stage.ClearSelectionDragPreview();
         _stage.Capture = false;
+        _fillEdgeSuppressOverlay = false;
+        _fillEdgeNoUiArc = null;
+        _fillEdgeDetachPending = null;
+        _fillEdgeDetachMoving = null;
         RefreshInteractionCursorAtPointer();
     }
 

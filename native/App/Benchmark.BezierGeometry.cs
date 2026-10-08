@@ -2192,7 +2192,7 @@ internal static partial class Benchmark
                     editedOutlinedSegment.Control1.Y)));
             if (boundaryControlHit.PartIndex != editedOutlinedSegment.PartIndex
                 || boundaryControlHit.Handle != EditHandleKind.BezierControl
-                || !outlinedStage.SuppressFillEdgeBezierSelectionOutline(outlinedFill))
+                || outlinedStage.SuppressFillEdgeBezierSelectionOutline(outlinedFill))
             {
                 throw new InvalidOperationException("A selected curved outline did not expose its exact fill-edge control handles.");
             }

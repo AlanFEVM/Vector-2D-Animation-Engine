@@ -103,6 +103,7 @@ internal sealed partial class StageControl : Control
         {
             if (index == SelectedObject || index < 0 || index >= Scene.ObjectCount) continue;
             if (SuppressFillEdgeBezierSelectionOutline(index)) continue;
+            if (HasSelectedBoundaryElementFor(index)) continue;
             if (!Scene.IsObjectActive(index, Frame)) continue;
             DrawSelectionOutline(g, index, primary: false);
             drawn++;
@@ -113,6 +114,7 @@ internal sealed partial class StageControl : Control
         if (primary >= 0
             && primary < Scene.ObjectCount
             && !SuppressFillEdgeBezierSelectionOutline(primary)
+            && !HasSelectedBoundaryElementFor(primary)
             && Scene.IsObjectActive(primary, Frame))
         {
             DrawSelectionOutline(g, primary, primary: true);
@@ -297,11 +299,10 @@ internal sealed partial class StageControl : Control
                 return;
             }
 
-            if (IsFullElementRange(hit) && TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
             var points = GetSelectedStrokePartPoints(hit).Select(WorldToScreen).ToArray();
             if (points.Length == 1) DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Stroke);
             else if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
-            return;
+            else if (TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
         }
 
         if (hit.Key.Kind == DrawingElementKind.Fill)
@@ -320,15 +321,28 @@ internal sealed partial class StageControl : Control
 
         if (hit.Key.Kind == DrawingElementKind.BoundaryStroke)
         {
-            if (IsFullElementRange(hit) && TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
             var points = GetSelectedBoundaryPartPoints(hit).Select(WorldToScreen).ToArray();
-            if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
+            if (points.Length > 1)
+            {
+                DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
+                DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Stroke);
+                DrawSelectionDot(g, points[points.Length - 1], primary, SelectionHighlightKind.Stroke);
+                return;
+            }
+            if (TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
         }
     }
 
     private static bool IsFullElementRange(DrawingElementHit hit) =>
         hit.StartT <= DrawingTopologyRules.UnitIntersectionTolerance
         && hit.EndT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance;
+
+    // When a boundary-stroke element is selected, the orange stroke-path outline replaces
+    // the whole-object fill selection box for that object.
+    private bool HasSelectedBoundaryElementFor(int objectIndex) =>
+        _selectedElements.Any(hit =>
+            hit.Key.ObjectIndex == objectIndex
+            && hit.Key.Kind == DrawingElementKind.BoundaryStroke);
 
     private bool DrawPresentedEditableBezierSelection(Graphics graphics, DrawingElementHit hit, bool primary)
     {
@@ -1268,7 +1282,6 @@ internal sealed partial class StageControl : Control
 
         var segments = GetPresentedEditableBezierWorldSegments(hit);
         if (segments.Length == 0) return;
-        var showControls = ShouldShowLineControlHandles(hit.Key.ObjectIndex);
         if ((uint)hit.PresentedBezierSegmentIndex < segments.Length)
         {
             var selected = segments[hit.PresentedBezierSegmentIndex];
@@ -1278,7 +1291,7 @@ internal sealed partial class StageControl : Control
                 WorldToScreen(selected.Control1),
                 WorldToScreen(selected.Control2),
                 WorldToScreen(selected.End),
-                showControls);
+                ShouldShowEditableSegmentControlHandles(hit, selected.Start, selected.Control1, selected.Control2, selected.End));
             return;
         }
 
@@ -1290,7 +1303,7 @@ internal sealed partial class StageControl : Control
                 WorldToScreen(segment.Control1),
                 WorldToScreen(segment.Control2),
                 WorldToScreen(segment.End),
-                showControls);
+                ShouldShowEditableSegmentControlHandles(hit, segment.Start, segment.Control1, segment.Control2, segment.End));
         }
     }
 

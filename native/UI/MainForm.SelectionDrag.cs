@@ -90,15 +90,19 @@ internal sealed partial class MainForm
                 {
                     _scene.X[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.X + dxWorld);
                     _scene.Y[_selectedObject] = VectorUnits.Quantize(_selectedStart.Value.Y + dyWorld);
-                    if (_curveControlStart is not null)
+                    // Translate the raw cubic control points by the same delta so the
+                    // curve keeps its exact shape. The quadratic-handle capture
+                    // (_curveControlStart) is only for handle drags — writing it back
+                    // here rewrote the stored controls and warped the arc every move.
+                    if (_selectedCurveStarts.TryGetValue(_selectedObject, out var curveStart))
                     {
-                        _scene.CurveControlX[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.X + dxWorld);
-                        _scene.CurveControlY[_selectedObject] = VectorUnits.Quantize(_curveControlStart.Value.Y + dyWorld);
+                        _scene.CurveControlX[_selectedObject] = VectorUnits.Quantize(curveStart.X + dxWorld);
+                        _scene.CurveControlY[_selectedObject] = VectorUnits.Quantize(curveStart.Y + dyWorld);
                     }
-                    if (_curveControl2Start is not null)
+                    if (_selectedCurve2Starts.TryGetValue(_selectedObject, out var curve2Start))
                     {
-                        _scene.CurveControl2X[_selectedObject] = VectorUnits.Quantize(_curveControl2Start.Value.X + dxWorld);
-                        _scene.CurveControl2Y[_selectedObject] = VectorUnits.Quantize(_curveControl2Start.Value.Y + dyWorld);
+                        _scene.CurveControl2X[_selectedObject] = VectorUnits.Quantize(curve2Start.X + dxWorld);
+                        _scene.CurveControl2Y[_selectedObject] = VectorUnits.Quantize(curve2Start.Y + dyWorld);
                     }
                     TranslateGradientFromEditStart(_selectedObject, dxWorld, dyWorld);
                 }

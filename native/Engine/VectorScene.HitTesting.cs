@@ -460,6 +460,9 @@ internal sealed partial class VectorScene
         var best = DrawingElementHit.None;
         foreach (var part in HitBoundaryStrokeParts(objectIndex, frame, candidates))
         {
+            // Pulled-out (detached) boundary segments are no longer part of the source's
+            // editable stroke: they must not be hit-testable again.
+            if (IsBoundaryPartHitHidden(objectIndex, part)) continue;
             var distance = DistanceToPolyline(world, part.Points);
             if (distance > hitRadius || (best.IsValid && distance >= best.Distance)) continue;
             best = new DrawingElementHit(

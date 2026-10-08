@@ -20,6 +20,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)lineObjectIndex >= ObjectCount
             || !IsFillBoundaryLinkedStrokeShape(ShapeKind[lineObjectIndex])
+            || FillBoundaryLinkDetached[lineObjectIndex]
             || !IsObjectActive(lineObjectIndex, frame))
         {
             return Array.Empty<FillBoundaryLineLink>();
@@ -481,6 +482,7 @@ internal sealed partial class VectorScene
                 || ObjectLayer[candidate] != ObjectLayer[fillObjectIndex]
                 || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[fillObjectIndex]
                 || ShapeKind[candidate] != VectorAnimationEngine.ShapeKind.Line
+                || FillBoundaryLinkDetached[candidate]
                 || !HasStroke(candidate)
                 || !TryGetLineCubic(candidate, out var start, out var control1, out var control2, out var end))
             {
@@ -643,6 +645,7 @@ internal sealed partial class VectorScene
             if (ShapeKind[candidate] == VectorAnimationEngine.ShapeKind.Line)
             {
                 if (excludedLineObjectIndices?.Contains(candidate) == true
+                    || FillBoundaryLinkDetached[candidate]
                     || !TryGetLineCubic(candidate, out var lineStart, out _, out _, out var lineEnd))
                 {
                     continue;
@@ -721,6 +724,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)lineObjectIndex >= ObjectCount
             || ShapeKind[lineObjectIndex] != VectorAnimationEngine.ShapeKind.Line
+            || FillBoundaryLinkDetached[lineObjectIndex]
             || !IsObjectActive(lineObjectIndex, frame)
             || !TryGetLineEndpoint(lineObjectIndex, startEndpoint, out var anchor))
         {

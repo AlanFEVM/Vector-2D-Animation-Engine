@@ -4077,8 +4077,31 @@ internal sealed partial class StageControl : Control
                 ref bestHandleIsActive);
         }
 
-        if (bestHandle.IsValid) return bestHandle;
+        // Endpoint anchors always win so a segment's ends can still be reshaped.
+        if (bestHandle.IsValid
+            && bestHandle.Handle is EditHandleKind.LineStart or EditHandleKind.LineEnd)
+        {
+            return bestHandle;
+        }
 
+        // An interior bezier control handle only wins when it sits clearly off
+        // the segment body; otherwise grabbing a (gently) curved segment tears
+        // it off instead of only reshaping the curvature.
+        if (bestHandle.IsValid && TryFillEdgeControlHandleIsOffBody(presented, bestHandle))
+        {
+            return bestHandle;
+        }
+
+        var bodyHit = TryHitFillEdgeBezierCurveBody(presented, screen);
+        if (bodyHit.IsValid) return bodyHit;
+
+        if (bestHandle.IsValid) return bestHandle;
+        return FillEdgeBezierOverlayHit.None;
+    }
+
+    private FillEdgeBezierOverlayHit TryHitFillEdgeBezierCurveBody(
+        IReadOnlyList<FillEdgeBezierOverlaySegment> presented, Point screen)
+    {
         if (_fillEdgeBezierOverlayActivePartIndex >= 0)
         {
             foreach (var source in presented)
@@ -4111,6 +4134,20 @@ internal sealed partial class StageControl : Control
         }
 
         return FillEdgeBezierOverlayHit.None;
+    }
+
+    private bool TryFillEdgeControlHandleIsOffBody(
+        IReadOnlyList<FillEdgeBezierOverlaySegment> presented, FillEdgeBezierOverlayHit handle)
+    {
+        foreach (var source in presented)
+        {
+            if (source.PartIndex != handle.PartIndex) continue;
+            var segment = TranslatedFillEdgeBezierOverlaySegment(source);
+            var control = handle.Handle == EditHandleKind.BezierControl ? segment.Control1 : segment.Control2;
+            return !CubicCurveHit(Point.Round(WorldToScreen(control)), segment, FillEdgeBezierCurveHitRadiusPixels);
+        }
+
+        return true;
     }
 
     private void ConsiderFillEdgeBezierSegmentHandles(
@@ -4439,9 +4476,11 @@ internal sealed partial class StageControl : Control
 
         if (_selectedElements.Length > 0)
         {
+            // Fill-part selections stay suppressed (the overlay already highlights them),
+            // but boundary-stroke selections must show the orange stroke outline.
             return _selectedElements.All(hit =>
                 hit.Key.ObjectIndex == objectIndex
-                && hit.Key.Kind is DrawingElementKind.Fill or DrawingElementKind.BoundaryStroke);
+                && hit.Key.Kind == DrawingElementKind.Fill);
         }
 
         var shape = Scene.ShapeKind[objectIndex];
@@ -4609,6 +4648,21 @@ internal sealed partial class StageControl : Control
         return !Scene.IsLineStraight(objectIndex);
     }
 
+    // Straight boundary segments keep their bezier control points on the segment body
+    // itself; exposing them there would swallow body presses that should detach/move the
+    // segment, so only curved segments expose control handles (mirrors Line behavior).
+    internal bool ShouldShowEditableSegmentControlHandles(
+        DrawingElementHit hit,
+        PointF start,
+        PointF control1,
+        PointF control2,
+        PointF end)
+    {
+        if (!ShouldShowLineControlHandles(hit.Key.ObjectIndex)) return false;
+        return hit.Key.Kind != DrawingElementKind.BoundaryStroke
+            || !VectorScene.IsStraightBezierSegment(start, control1, control2, end);
+    }
+
     internal bool ShouldDrawHoveredLineControls()
     {
         var hit = _hoveredLineElement;
@@ -4750,7 +4804,7 @@ internal sealed partial class StageControl : Control
 
         if (Distance(screen, WorldToScreen(start)) <= EndpointHandleHitRadiusPixels) return EditHandleKind.LineStart;
         if (Distance(screen, WorldToScreen(end)) <= EndpointHandleHitRadiusPixels) return EditHandleKind.LineEnd;
-        if (!ShouldShowLineControlHandles(hit.Key.ObjectIndex)) return EditHandleKind.None;
+        if (!ShouldShowEditableSegmentControlHandles(hit, start, control1, control2, end)) return EditHandleKind.None;
 
         if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
         {

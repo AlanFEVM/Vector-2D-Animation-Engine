@@ -970,7 +970,7 @@ internal sealed partial class VectorScene
             || (uint)GradientEndArgb[objectIndex] >> 24 > 0;
     }
 
-    private bool HasStroke(int objectIndex)
+    internal bool HasStroke(int objectIndex)
     {
         return (uint)objectIndex < ObjectCount
             && !IsWholeObjectShape(ShapeKind[objectIndex])

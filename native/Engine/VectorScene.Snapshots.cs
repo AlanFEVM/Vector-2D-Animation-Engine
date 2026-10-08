@@ -62,6 +62,7 @@ internal sealed partial class VectorScene
             Argb = Argb[..ObjectCount],
             StrokeArgb = StrokeArgb[..ObjectCount],
             FillAutoMergeProtected = FillAutoMergeProtected[..ObjectCount],
+            FillBoundaryLinkDetached = FillBoundaryLinkDetached[..ObjectCount],
             LinearGradientEnabled = LinearGradientEnabled[..ObjectCount],
             GradientKinds = GradientKinds[..ObjectCount],
             GradientStartArgb = GradientStartArgb[..ObjectCount],
@@ -86,6 +87,10 @@ internal sealed partial class VectorScene
             PathBezierLocalContours = _pathBezierLocalContours.ToDictionary(
                 item => item.Key,
                 item => cloneGeometry ? CloneBezierContours(item.Value) : item.Value),
+            PathOpenFlags = _openPathObjects.ToHashSet(),
+            HiddenBoundaryStrokeParts = _hiddenBoundaryStrokeParts.ToDictionary(
+                item => item.Key,
+                item => item.Value.ToArray()),
             FreehandLocalPoints = _freehandLocalPoints.ToDictionary(
                 item => item.Key,
                 item => cloneGeometry ? item.Value.ToArray() : item.Value),
@@ -208,6 +213,9 @@ internal sealed partial class VectorScene
         FillAutoMergeProtected = snapshot.FillAutoMergeProtected.Length == ObjectCount
             ? snapshot.FillAutoMergeProtected.ToArray()
             : new bool[ObjectCount];
+        FillBoundaryLinkDetached = snapshot.FillBoundaryLinkDetached.Length == ObjectCount
+            ? snapshot.FillBoundaryLinkDetached.ToArray()
+            : new bool[ObjectCount];
         LinearGradientEnabled = snapshot.LinearGradientEnabled.Length == ObjectCount
             ? snapshot.LinearGradientEnabled.ToArray()
             : new bool[ObjectCount];
@@ -286,6 +294,24 @@ internal sealed partial class VectorScene
 
             _pathBezierLocalContours[item.Key] = exactContours;
             _pathLocalContours[item.Key] = sampledContours;
+        }
+
+        _openPathObjects.Clear();
+        foreach (var index in snapshot.PathOpenFlags)
+        {
+            if ((uint)index < ObjectCount
+                && ShapeKind[index] == VectorAnimationEngine.ShapeKind.Path
+                && _pathBezierLocalContours.ContainsKey(index))
+            {
+                _openPathObjects.Add(index);
+            }
+        }
+
+        _hiddenBoundaryStrokeParts.Clear();
+        foreach (var item in snapshot.HiddenBoundaryStrokeParts)
+        {
+            if ((uint)item.Key >= ObjectCount || item.Value.Length == 0) continue;
+            _hiddenBoundaryStrokeParts[item.Key] = item.Value.ToHashSet();
         }
 
         _freehandLocalPoints.Clear();

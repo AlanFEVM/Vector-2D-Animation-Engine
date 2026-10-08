@@ -1704,6 +1704,7 @@ internal sealed partial class MainForm : Form
         if (_scene.ShapeKind[objectIndex] == ShapeKind.Line
             && _scene.TryGetLineQuadraticControl(objectIndex, out var lineQuadratic))
         {
+            // The quadratic-handle position: consumed by BezierControl handle drags.
             _curveControlStart = lineQuadratic;
             _curveControl2Start = lineQuadratic;
         }
@@ -1757,8 +1758,10 @@ internal sealed partial class MainForm : Form
         if (!_selectedMoveStarts.ContainsKey(objectIndex))
         {
             _selectedMoveStarts[objectIndex] = _selectedStart.Value;
-            _selectedCurveStarts[objectIndex] = _curveControlStart.Value;
-            _selectedCurve2Starts[objectIndex] = _curveControl2Start.Value;
+            // Move translation must use the raw cubic control points, never the derived
+            // quadratic-handle position (which would warp the arc on every move).
+            _selectedCurveStarts[objectIndex] = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
+            _selectedCurve2Starts[objectIndex] = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]);
             if (_scene.HasGradient(objectIndex))
             {
                 _selectedGradientStarts[objectIndex] = (_scene.GetGradientStart(objectIndex), _scene.GetGradientEnd(objectIndex));

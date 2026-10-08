@@ -155,6 +155,7 @@ internal sealed partial class VectorScene : ITimelineContext
     public int[] Argb { get; private set; } = [];
     public int[] StrokeArgb { get; private set; } = [];
     public bool[] FillAutoMergeProtected { get; private set; } = [];
+    public bool[] FillBoundaryLinkDetached { get; private set; } = [];
     public bool[] LinearGradientEnabled { get; private set; } = [];
     public GradientKind[] GradientKinds { get; private set; } = [];
     public int[] GradientStartArgb { get; private set; } = [];
@@ -168,6 +169,15 @@ internal sealed partial class VectorScene : ITimelineContext
     private readonly Dictionary<int, PointF[][]> _shapeGradientMappingLocalContours = new();
     private readonly Dictionary<int, PointF[][]> _pathLocalContours = new();
     private readonly Dictionary<int, PathBezierNode[][]> _pathBezierLocalContours = new();
+    // Object indices whose bezier path contours are rendered as open (unclosed) figures,
+    // e.g. a segment that was pulled out of a fill boundary. Closed-only consumers (boolean
+    // geometry, topology links) still treat the contour data as closed; only rendering honors this.
+    private readonly HashSet<int> _openPathObjects = new();
+    // Boundary segments (global bezier contour part indices) whose stroke is suppressed
+    // because the segment was pulled out of a closed fill boundary. The contour itself
+    // stays closed and untouched so the fill keeps the pre-detach outline (including any
+    // bend) and any number of gaps can coexist; only stroke rendering honors this.
+    private readonly Dictionary<int, HashSet<int>> _hiddenBoundaryStrokeParts = new();
     private readonly Dictionary<int, PointF[]> _freehandLocalPoints = new();
     private readonly Dictionary<int, PathBezierNode[]> _freehandBezierLocalNodes = new();
     private readonly Dictionary<int, (PointF[] SourcePoints, PathBezierNode[] Nodes)> _legacyFreehandBezierNodeCache = new();
@@ -192,6 +202,151 @@ internal sealed partial class VectorScene : ITimelineContext
     private long _fillPartitionCacheRevision = -1;
     private long _exposedFillBezierCacheRevision = -1;
     private long _interactiveQueryCacheRevision = -1;
+
+    internal bool IsPathOpen(int objectIndex) => _openPathObjects.Contains(objectIndex);
+    internal void SetPathOpen(int objectIndex) => _openPathObjects.Add(objectIndex);
+    internal void ClearPathOpen(int objectIndex) => _openPathObjects.Remove(objectIndex);
+
+    internal bool IsBoundaryStrokePartHidden(int objectIndex, int partIndex)
+    {
+        // Stroke-suppression view: hidden-segment bookkeeping only means something while
+        // the object still has a stroke to suppress. On a stroke-less fill it must not
+        // lock the segment out of fill-boundary editing (bending, overlay handles).
+        if ((uint)objectIndex >= ObjectCount || !HasStroke(objectIndex)) return false;
+        return _hiddenBoundaryStrokeParts.TryGetValue(objectIndex, out var parts)
+            && parts.Contains(partIndex);
+    }
+
+    /// <summary>
+    /// Detached-segment bookkeeping, independent of the current stroke state: a boundary
+    /// segment that was pulled out stays detached forever, so it can never be detached
+    /// twice (which would spawn duplicate lines). Used to guard the detach entries.
+    /// </summary>
+    internal bool IsBoundarySegmentDetached(int objectIndex, int partIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount) return false;
+        return _hiddenBoundaryStrokeParts.TryGetValue(objectIndex, out var parts)
+            && parts.Contains(partIndex);
+    }
+
+    internal void HideBoundaryStrokePart(int objectIndex, int partIndex)
+    {
+        if (!_hiddenBoundaryStrokeParts.TryGetValue(objectIndex, out var parts))
+        {
+            parts = new HashSet<int>();
+            _hiddenBoundaryStrokeParts[objectIndex] = parts;
+        }
+
+        parts.Add(partIndex);
+    }
+
+    internal IReadOnlySet<int>? GetHiddenBoundaryStrokeParts(int objectIndex)
+    {
+        // Same rule as IsBoundaryStrokePartHidden: a stroke-less object has nothing to
+        // hide, so callers (renderers, materialization, editing) must see no hidden parts.
+        if ((uint)objectIndex >= ObjectCount || !HasStroke(objectIndex)) return null;
+        return _hiddenBoundaryStrokeParts.TryGetValue(objectIndex, out var parts) && parts.Count > 0
+            ? parts
+            : null;
+    }
+
+    internal void ClearHiddenBoundaryStrokeParts(int objectIndex)
+    {
+        _hiddenBoundaryStrokeParts.Remove(objectIndex);
+    }
+
+    private void ClearHiddenBoundaryStrokePartsBelow(int objectCount)
+    {
+        foreach (var index in _hiddenBoundaryStrokeParts.Keys.Where(index => index >= objectCount).ToArray())
+        {
+            _hiddenBoundaryStrokeParts.Remove(index);
+        }
+    }
+
+    /// <summary>
+    /// Maps a hit-test boundary part (whose PartIndex is a split-sequence number) back to
+    /// its global bezier contour segment index and reports whether that segment is hidden.
+    /// </summary>
+    private bool IsBoundaryPartHitHidden(int objectIndex, BoundaryStrokePart part)
+    {
+        if (!_hiddenBoundaryStrokeParts.TryGetValue(objectIndex, out var hidden) || hidden.Count == 0) return false;
+        if (!TryGetPathBezierWorldContours(objectIndex, out var contours)) return false;
+
+        var offset = 0;
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contourLength = contours[contourIndex].Length;
+            if (contourIndex == part.ContourIndex)
+            {
+                if (contourLength == 0) return false;
+                var segmentIndex = Math.Min(
+                    (int)MathF.Floor((part.StartT * contourLength) + 0.001f),
+                    contourLength - 1);
+                return hidden.Contains(offset + segmentIndex);
+            }
+
+            offset += contourLength;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves a global bezier contour segment index back to a selectable BoundaryStroke
+    /// hit (whose PartIndex is a split-sequence number) by matching the split parts that
+    /// cover that segment's global parameter range.
+    /// </summary>
+    internal bool TryGetBoundaryStrokeHitForPart(
+        int objectIndex,
+        int partIndex,
+        int frame,
+        out DrawingElementHit hit)
+    {
+        hit = DrawingElementHit.None;
+        if ((uint)objectIndex >= ObjectCount
+            || !TryGetPathBezierWorldContours(objectIndex, out var contours))
+        {
+            return false;
+        }
+
+        var offset = 0;
+        var targetContourIndex = -1;
+        var targetSegmentIndex = -1;
+        var targetContourLength = 0;
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contourLength = contours[contourIndex].Length;
+            if (partIndex >= offset && partIndex < offset + contourLength)
+            {
+                targetContourIndex = contourIndex;
+                targetSegmentIndex = partIndex - offset;
+                targetContourLength = contourLength;
+                break;
+            }
+
+            offset += contourLength;
+        }
+
+        if (targetContourIndex < 0 || targetContourLength < 2) return false;
+
+        var startT = (float)targetSegmentIndex / targetContourLength;
+        var endT = (float)(targetSegmentIndex + 1) / targetContourLength;
+        const float rangeEpsilon = 1e-4f;
+        var candidates = CollectTopologyCandidates(objectIndex, frame);
+        foreach (var part in BuildBoundaryStrokeParts(objectIndex, candidates))
+        {
+            if (part.ContourIndex != targetContourIndex) continue;
+            if (part.StartT < startT - rangeEpsilon || part.EndT > endT + rangeEpsilon) continue;
+            hit = new DrawingElementHit(
+                new DrawingElementKey(objectIndex, DrawingElementKind.BoundaryStroke, part.PartIndex),
+                0f,
+                part.StartT,
+                part.EndT);
+            return true;
+        }
+
+        return false;
+    }
 
     internal sealed class TransformSession
     {

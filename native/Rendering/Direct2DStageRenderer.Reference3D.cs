@@ -46,7 +46,8 @@ internal sealed partial class Direct2DStageRenderer
         ulong Hash,
         int ContourCount,
         int PointCount,
-        bool UsesBezier);
+        bool UsesBezier,
+        bool Open);
 
     private readonly record struct Reference3DMaterialBitmapCacheKey(
         VectorScene Scene,
@@ -3103,12 +3104,14 @@ internal sealed partial class Direct2DStageRenderer
         PathBezierNode[][]? bezierIdentity = bezierContours.Length > 0 ? bezierContours : null;
         if (polygonIdentity is null && bezierIdentity is null) return null;
 
-        var sourceKey = CreatePathGeometryContentKey(scene, polygonIdentity, bezierIdentity);
+        var open = scene.IsPathOpen(objectIndex);
+        var sourceKey = CreatePathGeometryContentKey(scene, polygonIdentity, bezierIdentity, open);
         var key = new Reference3DLocalPathGeometryKey(
             sourceKey.Hash,
             sourceKey.ContourCount,
             sourceKey.PointCount,
-            sourceKey.UsesBezier);
+            sourceKey.UsesBezier,
+            open);
         if (_reference3DLocalPathGeometryCache.TryGetValue(key, out var entries))
         {
             foreach (var entry in entries)
@@ -3130,7 +3133,7 @@ internal sealed partial class Direct2DStageRenderer
         {
             sink.SetFillMode(FillMode.Alternate);
             hasContours = bezierIdentity is not null
-                ? AppendBezierFigures(sink, stage: null, bezierIdentity)
+                ? AppendBezierFigures(sink, stage: null, bezierIdentity, open)
                 : AppendPolygonFigures(sink, stage: null, polygonIdentity!);
             sink.Close();
         }

@@ -311,6 +311,19 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (_tool == ToolMode.Select
+            && e.Button == MouseButtons.Left
+            && !_forceMarqueeOnPointerDown
+            && !_additiveSelection
+            && TryResolveUnselectedFillEdgeCandidate(e.Location, out var candObj, out var candPart))
+        {
+            // Hovering an unselected fill shape's edge: defer the decision until the
+            // pointer moves (bend, no UI) or is released (select, show UI).
+            _fillEdgePreSelect = (candObj, candPart);
+            UpdateInteractionCursor(e.Location);
+            return;
+        }
+
         if (_tool == ToolMode.Select)
         {
             var fillEdgeOverlayHit = _forceMarqueeOnPointerDown || _additiveSelection
@@ -368,11 +381,38 @@ internal sealed partial class MainForm : Form
             }
 
             if (_startWorld is not { } startWorld) return;
+            if (e.Button == MouseButtons.Left
+                && !_additiveSelection
+                && !_forceMarqueeOnPointerDown
+                && TryBeginSelectedBoundarySegmentDetach(startWorld))
+            {
+                // Pressing the body of an already-selected boundary segment detaches it
+                // as a freely movable stroke (the fill keeps its own outline), matching
+                // the overlay body-drag detach. Bezier closest-point matching keeps this
+                // working for curved segments where the point-in-shape hit resolves to
+                // the fill part instead of the boundary stroke.
+                _stage.Capture = true;
+                _lastMouse = e.Location;
+                _startScreen = e.Location;
+                _startWorld = startWorld;
+                _forceMarqueeOnPointerDown = false;
+                _pendingClickSelection = DrawingElementHit.None;
+                _stage.ClearHoveredLineElement();
+                UpdateInteractionCursor(e.Location);
+                return;
+            }
+
             var hit = _scene.HitTestElement(startWorld, _frame, SelectionToleranceWorld());
             if (hit.IsValid && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame))
             {
+                // Body drag on an unselected line bends it (arc drag). Once the line is
+                // selected — its orange path UI is showing — body drag must move it
+                // instead, matching the detach-move rule for selected segments.
+                var hitLineAlreadySelected = _selectedElements.Any(selected => selected.Key == hit.Key)
+                    || (_selectedElements.Count == 0 && _selectedObjects.Contains(hit.Key.ObjectIndex));
                 if (e.Button == MouseButtons.Left
                     && !_additiveSelection
+                    && !hitLineAlreadySelected
                     && hit.Key.Kind == DrawingElementKind.Stroke
                     && _scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line
                     && BeginArcDrag(startWorld, hit.Key.ObjectIndex))
@@ -1357,8 +1397,21 @@ internal sealed partial class MainForm : Form
             _fillEdgeBezierActivePieceIndex = overlayPiece.PieceIndex;
             if (overlayHit.Handle == EditHandleKind.None)
             {
-                UpdateFillEdgeBezierOverlay();
-                FinishPointerInteraction();
+                if (!_scene.HasStroke(targetObject)
+                    || _scene.IsBoundarySegmentDetached(targetObject, overlayPiece.SourcePartIndex))
+                {
+                    // A pure fill has no stroke to pull, and an already-detached segment
+                    // has none either: body drag bends the fill boundary directly (pure
+                    // reshape) instead of spawning a stroke line.
+                    BeginFillEdgeNoUiArc((targetObject, overlayPiece.SourcePartIndex), world);
+                    UpdateInteractionCursor(e.Location);
+                    return;
+                }
+
+                // Dragging the segment body of a selected shape detaches it as a new,
+                // freely movable stroke object (the original keeps its geometry).
+                _fillEdgeDetachPending = (targetObject, overlayPiece.SourcePartIndex);
+                UpdateInteractionCursor(e.Location);
                 return;
             }
 
@@ -2398,8 +2451,305 @@ internal sealed partial class MainForm : Form
         _stage.ClearFillEdgeBezierOverlay();
     }
 
+    // --- Unselected-edge press-drag (no UI) and segment detach -------------------
+
+    private bool TryResolveUnselectedFillEdgeCandidate(Point screen, out int objectIndex, out int partIndex)
+    {
+        objectIndex = -1;
+        partIndex = -1;
+        if (_tool != ToolMode.Select || _stage is null) return false;
+        var world = _stage.ScreenToWorld(screen);
+        var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+        if (!hit.IsValid) return false;
+        var obj = hit.Key.ObjectIndex;
+        if (obj < 0 || obj >= _scene.ObjectCount || obj == _selectedObject) return false;
+        if (!_scene.HasFill(obj)
+            || !IsFillShape(_scene.ShapeKind[obj])
+            || IsWholeObjectOnlyObject(obj)) return false;
+        if (!_scene.TryConvertFillToBezierPath(obj, rebuildGeometryIndex: false)) return false;
+        if (!_scene.TryGetPathBezierWorldContours(obj, out var contours)) return false;
+
+        var tolerance = SelectionToleranceWorld() * 2f;
+        var best = float.MaxValue;
+        var bestPart = -1;
+        var currentPart = 0;
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            if (contour.Length < 2) continue;
+            for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
+            {
+                // Detached (stroke-hidden) segments are no longer bend candidates: the
+                // fill cools its previous outline and the floating line owns the edge.
+                if (_scene.IsBoundaryStrokePartHidden(obj, currentPart))
+                {
+                    currentPart++;
+                    continue;
+                }
+
+                // Bezier closest-point matching keeps curved segments reachable: the
+                // anchor-to-anchor chord distance would miss presses on the arc body.
+                var distance = _scene.TryGetClosestPointOnPathBezierSegment(
+                    obj,
+                    currentPart,
+                    world,
+                    out _,
+                    out _,
+                    out var curveDistance)
+                    ? curveDistance
+                    : DistanceToSegment(world, contour[segmentIndex].Anchor, contour[(segmentIndex + 1) % contour.Length].Anchor);
+                if (distance < best)
+                {
+                    best = distance;
+                    bestPart = currentPart;
+                }
+                currentPart++;
+            }
+        }
+
+        if (bestPart < 0 || best > tolerance) return false;
+        objectIndex = obj;
+        partIndex = bestPart;
+        return true;
+    }
+
+    private static float DistanceToSegment(PointF point, PointF a, PointF b)
+    {
+        var dx = b.X - a.X;
+        var dy = b.Y - a.Y;
+        var lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= float.Epsilon)
+        {
+            return MathF.Sqrt((point.X - a.X) * (point.X - a.X) + (point.Y - a.Y) * (point.Y - a.Y));
+        }
+        var t = ((point.X - a.X) * dx + (point.Y - a.Y) * dy) / lengthSquared;
+        t = Math.Clamp(t, 0f, 1f);
+        var projX = a.X + t * dx;
+        var projY = a.Y + t * dy;
+        return MathF.Sqrt((point.X - projX) * (point.X - projX) + (point.Y - projY) * (point.Y - projY));
+    }
+
+    private static (PointF? Start, PointF? Control1, PointF? Control2, PointF? End) ResolveWorldSegment(
+        PathBezierNode[][] contours, int partIndex)
+    {
+        var currentPart = 0;
+        for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
+        {
+            var contour = contours[contourIndex];
+            if (partIndex >= currentPart + contour.Length)
+            {
+                currentPart += contour.Length;
+                continue;
+            }
+            if (contour.Length < 2) return (null, null, null, null);
+            var segmentIndex = partIndex - currentPart;
+            var nextIndex = (segmentIndex + 1) % contour.Length;
+            var anchor = contour[segmentIndex];
+            var next = contour[nextIndex];
+            return (anchor.Anchor, anchor.OutgoingControl, next.IncomingControl, next.Anchor);
+        }
+        return (null, null, null, null);
+    }
+
+    private void BeginFillEdgeNoUiArc((int ObjectIndex, int PartIndex) candidate, PointF world)
+    {
+        _fillEdgePreSelect = null;
+        var obj = candidate.ObjectIndex;
+        var part = candidate.PartIndex;
+        if (!_scene.TryConvertFillToBezierPath(obj, rebuildGeometryIndex: false)
+            || !_scene.TryGetPathBezierWorldContours(obj, out var contours))
+        {
+            return;
+        }
+
+        var (start, control1, control2, end) = ResolveWorldSegment(contours, part);
+        if (start is null) return;
+
+        var snapshot = CreateCanvasGeometryMutationSnapshot([obj]);
+        _fillEdgeSuppressOverlay = true;
+        _stage.ClearFillEdgeBezierOverlay();
+        _fillEdgeNoUiArc = (obj, part, start.Value, control1!.Value, control2!.Value, end!.Value, world, snapshot);
+    }
+
+    private void UpdateFillEdgeNoUiArc(PointF world)
+    {
+        var arc = _fillEdgeNoUiArc;
+        if (arc is null) return;
+        var control = VectorUnits.Quantize(SnapDrawingPoint(world));
+        _scene.SetPathBezierSegmentForPreview(
+            arc.Value.ObjectIndex,
+            arc.Value.PartIndex,
+            arc.Value.Start,
+            control,
+            control,
+            arc.Value.End,
+            preserveStraightAdjacentSegments: false,
+            handle: EditHandleKind.BezierControl);
+        _stage.Invalidate();
+    }
+
+    private void CompleteFillEdgeNoUiArc()
+    {
+        var arc = _fillEdgeNoUiArc;
+        _fillEdgeNoUiArc = null;
+        if (arc is null) return;
+        _scene.CompletePathBezierPreview(arc.Value.ObjectIndex);
+        PushUndoSnapshot(arc.Value.Snapshot);
+        _fillEdgeSuppressOverlay = false;
+        // Releasing a bend selects the bent boundary segment itself so the orange
+        // stroke-path anchor UI shows for that segment (matching line selection),
+        // not the whole fill-boundary overlay. Falls back to whole-object selection
+        // only when the segment can no longer be resolved to a boundary part.
+        if (!TryCreateBoundarySegmentHit(arc.Value.ObjectIndex, arc.Value.PartIndex, out var segmentHit))
+        {
+            SetSelection(arc.Value.ObjectIndex);
+        }
+        else
+        {
+            SetSelection(segmentHit);
+        }
+
+        UpdateFillEdgeBezierOverlay();
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+        FinishPointerInteraction();
+    }
+
+    private void BeginFillEdgeDetach((int ObjectIndex, int PartIndex) candidate, PointF world)
+    {
+        var snapshot = CreateCanvasGeometryMutationSnapshot([candidate.ObjectIndex]);
+        // Detach genuinely removes the segment's stroke from the source outline (each
+        // detached edge leaves its own exposed gap) while the source fill keeps its
+        // previous closed outline, and the pulled piece is fully independent. Already
+        // detached (stroke-hidden) segments are skipped so dragging their fill-boundary
+        // overlay body cannot spawn a duplicate line.
+        if (_scene.IsBoundarySegmentDetached(candidate.ObjectIndex, candidate.PartIndex)
+            || !_scene.SplitOutSegmentAsNewObject(candidate.ObjectIndex, candidate.PartIndex, out var newObject))
+        {
+            _fillEdgeDetachPending = null;
+            return;
+        }
+
+        RebuildDrawingObjectUnderlay();
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        SetSelection(newObject);
+        _fillEdgeDetachPending = null;
+        _fillEdgeDetachMoving = (newObject, world, snapshot);
+        _stage.Invalidate();
+    }
+
+    private void UpdateFillEdgeDetachMove(PointF world)
+    {
+        var moving = _fillEdgeDetachMoving;
+        if (moving is null) return;
+        var dx = world.X - moving.Value.LastWorld.X;
+        var dy = world.Y - moving.Value.LastWorld.Y;
+        _scene.TranslateObjectsForPreview(new[] { moving.Value.NewObjectIndex }, dx, dy);
+        _fillEdgeDetachMoving = (moving.Value.NewObjectIndex, world, moving.Value.Snapshot);
+        _stage.Invalidate();
+    }
+
+    private void CompleteFillEdgeDetach()
+    {
+        var moving = _fillEdgeDetachMoving;
+        _fillEdgeDetachMoving = null;
+        if (moving is null) return;
+        PushUndoSnapshot(moving.Value.Snapshot);
+        RebuildDrawingObjectUnderlay();
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+        FinishPointerInteraction();
+    }
+
+    private void SelectPreSelectObject((int ObjectIndex, int PartIndex) candidate, Point screen)
+    {
+        _fillEdgeSuppressOverlay = false;
+
+        // A plain click (no drag) on a fill boundary edge selects that edge as a
+        // BoundaryStroke element so the orange stroke-path UI shows, matching line
+        // selection. Falls back to whole-object selection only when the candidate
+        // part no longer exists (e.g. topology split changed part numbering).
+        var world = _stage.ScreenToWorld(screen);
+        var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+        if (hit.IsValid
+            && hit.Key.Kind == DrawingElementKind.BoundaryStroke
+            && hit.Key.ObjectIndex == candidate.ObjectIndex)
+        {
+            SetSelection(hit);
+        }
+        else if (TryCreateBoundarySegmentHit(candidate.ObjectIndex, candidate.PartIndex, out var candidateHit))
+        {
+            SetSelection(candidateHit);
+        }
+        else
+        {
+            SetSelection(candidate.ObjectIndex);
+        }
+
+        UpdateFillEdgeBezierOverlay();
+        _hierarchyPanel.RefreshScene();
+        UpdateInspector();
+        _stage.Invalidate();
+    }
+
+    private bool TryCreateBoundarySegmentHit(int objectIndex, int partIndex, out DrawingElementHit hit)
+    {
+        // BoundaryStroke hit keys carry a split-sequence PartIndex, so the exact bezier
+        // contour part index is resolved back through the scene's boundary parts.
+        return _scene.TryGetBoundaryStrokeHitForPart(objectIndex, partIndex, _frame, out hit);
+    }
+
+    private bool TryBeginSelectedBoundarySegmentDetach(PointF world)
+    {
+        if (_selectedObject < 0
+            || (uint)_selectedObject >= _scene.ObjectCount
+            || _selectedElements.Count == 0)
+        {
+            return false;
+        }
+
+        var tolerance = SelectionToleranceWorld() * 2f;
+        foreach (var element in _selectedElements)
+        {
+            if (element.Key.Kind != DrawingElementKind.BoundaryStroke
+                || element.Key.ObjectIndex != _selectedObject
+                || !_scene.TryGetExactFillBezierSegmentForBoundary(element, _frame, out var segment)
+                || _scene.IsBoundarySegmentDetached(_selectedObject, segment.PartIndex))
+            {
+                continue;
+            }
+
+            if (!_scene.TryGetClosestPointOnPathBezierSegment(
+                    _selectedObject,
+                    segment.PartIndex,
+                    world,
+                    out _,
+                    out _,
+                    out var distance))
+            {
+                continue;
+            }
+
+            if (distance > tolerance) continue;
+
+            _fillEdgeDetachPending = (_selectedObject, segment.PartIndex);
+            return true;
+        }
+
+        return false;
+    }
+
     private void UpdateFillEdgeBezierOverlay()
     {
+        if (_fillEdgeSuppressOverlay)
+        {
+            _stage.ClearFillEdgeBezierOverlay();
+            return;
+        }
+
         if (_tool != ToolMode.Select
             || _selectedObjects.Count != 1
             || IsSceneCompositionContext()
@@ -2432,7 +2782,16 @@ internal sealed partial class MainForm : Form
                 _selectedObject,
                 _selectedElements,
                 out selectedBoundaryPartIndex);
-        if (!hasEditableFillSelection && !hasSelectedBoundarySegment)
+        if (hasSelectedBoundarySegment)
+        {
+            // A selected boundary edge presents the orange stroke-path selection UI on
+            // its own; the editable fill-boundary overlay returns when the fill or the
+            // whole object is selected again.
+            ClearFillEdgeBezierOverlayState();
+            return;
+        }
+
+        if (!hasEditableFillSelection)
         {
             ClearFillEdgeBezierOverlayState();
             return;

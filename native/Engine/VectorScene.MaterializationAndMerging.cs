@@ -278,6 +278,16 @@ internal sealed partial class VectorScene
             IReadOnlyList<BoundaryStrokePart> boundaryParts = boundaryKeys.Length > 0 || fillKeys.Length > 0 && HasStroke(source)
                 ? CachedBoundaryStrokeParts(source, frame, candidates)
                 : Array.Empty<BoundaryStrokePart>();
+            // Pulled-out (stroke-hidden) boundary segments already exist as independent
+            // lines: materialization must not resurrect them as visible stroke parts,
+            // otherwise moving the fill briefly spawns the detached edges again.
+            if (boundaryParts.Count > 0)
+            {
+                boundaryParts = boundaryParts
+                    .Where(part => !IsBoundaryPartHitHidden(source, part))
+                    .ToArray();
+            }
+
             if (selectedBoundaryParts.Keys.Any(part => boundaryParts.All(segment => segment.PartIndex != part)))
             {
                 return new MaterializeSelectedPartsResult(false, false, Array.Empty<MaterializedPartMapping>(), Array.Empty<int>());
@@ -292,6 +302,11 @@ internal sealed partial class VectorScene
                     if (detachBoundary)
                     {
                         clearStroke.Add(source);
+                        // The stroke is being removed from this fill entirely (either
+                        // spawned as visible boundary lines or already detached/hidden):
+                        // the hidden-segment bookkeeping becomes meaningless and would
+                        // block fill-boundary editing, so drop it.
+                        _hiddenBoundaryStrokeParts.Remove(source);
                         var boundaryAtoms = Math.Max(3u, atoms / (uint)Math.Max(1, boundaryParts.Count));
                         var retainedBoundarySubOrders = ReplacementSubOrders(
                             source,
@@ -369,7 +384,13 @@ internal sealed partial class VectorScene
                 continue;
             }
 
-            if (HasFill(source)) clearStroke.Add(source);
+            if (HasFill(source))
+            {
+                clearStroke.Add(source);
+                // Stroke leaves this fill entirely with the boundary materialization:
+                // drop the hidden-segment bookkeeping so fill-boundary editing keeps working.
+                _hiddenBoundaryStrokeParts.Remove(source);
+            }
             else remove[source] = true;
             var atomsPerBoundary = Math.Max(3u, atoms / (uint)Math.Max(1, boundaryParts.Count));
             var boundarySubOrders = ReplacementSubOrders(source, boundaryParts.Count, preserveSourceSubOrder: true);
@@ -2383,7 +2404,14 @@ internal sealed partial class VectorScene
         List<MaterializedPartAddition> additions,
         bool preserveSourceSubOrder)
     {
-        if ((uint)source >= ObjectCount || !HasStroke(source)) return;
+        if ((uint)source >= ObjectCount || !HasFill(source) || !IsFillShape(ShapeKind[source])) return;
+        if (!HasStroke(source))
+        {
+            // A fill-only source has no boundary stroke to preserve. Materializing its
+            // boundary as fallback 2pt lines would paint phantom strokes whenever pure
+            // fills merge — the merge result must stay a pure fill.
+            return;
+        }
         var candidates = CollectTopologyCandidates(source, frame);
         var parts = BuildBoundaryStrokeParts(source, candidates);
         var layer = ObjectLayer[source];
@@ -2445,6 +2473,8 @@ internal sealed partial class VectorScene
             selectionPolygon);
         var boundaryParts = Stroke[source] > 0
             ? BuildMarqueeBoundaryParts(source, bounds, activeCandidates, selectionPolygon)
+                .Where(boundary => !IsBoundaryPartHitHidden(source, boundary.Part))
+                .ToList()
             : new List<(BoundaryStrokePart Part, bool Selected)>();
         var replacementCount = boundaryParts.Count + 2;
         var subOrders = ReplacementSubOrders(source, replacementCount);

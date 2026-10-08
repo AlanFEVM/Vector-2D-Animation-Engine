@@ -659,6 +659,32 @@ internal sealed partial class StageControl : Control
         if (shape == ShapeKind.Path)
         {
             using var path = CreateObjectBoundaryPath(scene, i);
+            if (pass == SceneRenderPass.Fill)
+            {
+                DrawPathObject(g, path, brush, strokeColor, scene.Stroke[i], screenStroke, pass);
+                return;
+            }
+
+            if (scene.GetHiddenBoundaryStrokeParts(i) is { } hiddenParts)
+            {
+                // The stroke pass draws only the still-visible segments so detached
+                // edges stay exposed as gaps; the fill already used the closed boundary.
+                if (scene.Stroke[i] > 0)
+                {
+                    using var strokePath = CreateVisibleBoundaryStrokePath(scene, i, hiddenParts);
+                    if (strokePath.PointCount > 0)
+                    {
+                        using var pen = StrokePen(strokeColor, screenStroke);
+                        var oldMode = g.SmoothingMode;
+                        g.SmoothingMode = SmoothingMode.AntiAlias;
+                        g.DrawPath(pen, strokePath);
+                        g.SmoothingMode = oldMode;
+                    }
+                }
+
+                return;
+            }
+
             DrawPathObject(g, path, brush, strokeColor, scene.Stroke[i], screenStroke, pass);
             return;
         }
@@ -1366,6 +1392,60 @@ internal sealed partial class StageControl : Control
         if (stroke <= 0) return;
         using var pen = StrokePen(strokeColor, screenStroke);
         graphics.DrawPath(pen, path);
+    }
+
+    private GraphicsPath CreateVisibleBoundaryStrokePath(
+        VectorScene scene,
+        int objectIndex,
+        IReadOnlySet<int> hiddenParts)
+    {
+        var path = new GraphicsPath(FillMode.Alternate);
+        if (!scene.TryGetPathBezierWorldContours(objectIndex, out var contours)) return path;
+
+        var partIndex = 0;
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 2)
+            {
+                partIndex += Math.Max(contour.Length, 0);
+                continue;
+            }
+
+            var startIndex = 0;
+            while (startIndex < contour.Length)
+            {
+                if (hiddenParts.Contains(partIndex + startIndex))
+                {
+                    startIndex++;
+                    continue;
+                }
+
+                var endIndex = startIndex;
+                while (endIndex + 1 < contour.Length
+                    && !hiddenParts.Contains(partIndex + endIndex + 1))
+                {
+                    endIndex++;
+                }
+
+                path.StartFigure();
+                for (var nodeIndex = startIndex; nodeIndex <= endIndex; nodeIndex++)
+                {
+                    var current = contour[nodeIndex];
+                    var next = contour[(nodeIndex + 1) % contour.Length];
+                    path.AddBezier(
+                        WorldToScreen(current.Anchor),
+                        WorldToScreen(current.OutgoingControl),
+                        WorldToScreen(next.IncomingControl),
+                        WorldToScreen(next.Anchor));
+                }
+
+                startIndex = endIndex + 1;
+            }
+
+            partIndex += contour.Length;
+        }
+
+        return path;
     }
 
     private GraphicsPath CreateObjectBoundaryPath(VectorScene scene, int objectIndex)

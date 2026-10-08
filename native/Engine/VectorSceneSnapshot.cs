@@ -48,6 +48,7 @@ internal sealed class VectorSceneSnapshot
     public int[] Argb { get; init; } = [];
     public int[] StrokeArgb { get; init; } = [];
     public bool[] FillAutoMergeProtected { get; init; } = [];
+    public bool[] FillBoundaryLinkDetached { get; init; } = [];
     public bool[] LinearGradientEnabled { get; init; } = [];
     public GradientKind[] GradientKinds { get; init; } = [];
     public int[] GradientStartArgb { get; init; } = [];
@@ -62,6 +63,8 @@ internal sealed class VectorSceneSnapshot
     public AnimationTimelineSnapshot? Timeline { get; init; }
     public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
     public Dictionary<int, PathBezierNode[][]> PathBezierLocalContours { get; init; } = new();
+    public HashSet<int> PathOpenFlags { get; init; } = new();
+    public Dictionary<int, int[]> HiddenBoundaryStrokeParts { get; init; } = new();
     public Dictionary<int, PointF[]> FreehandLocalPoints { get; init; } = new();
     public Dictionary<int, PathBezierNode[]> FreehandBezierLocalNodes { get; init; } = new();
     public Dictionary<int, MixingBrushTrajectorySample[]> MixingStrokeLocalSamples { get; init; } = new();
@@ -212,6 +215,7 @@ internal sealed class VectorSceneSnapshot
         bytes += ArrayBytes(Argb.Length, 4);
         bytes += ArrayBytes(StrokeArgb.Length, 4);
         bytes += ArrayBytes(FillAutoMergeProtected.Length, 1);
+        bytes += ArrayBytes(FillBoundaryLinkDetached.Length, 1);
         bytes += ArrayBytes(LinearGradientEnabled.Length, 1);
         bytes += ArrayBytes(GradientKinds.Length, 4);
         bytes += ArrayBytes(GradientStartArgb.Length, 4);
@@ -223,6 +227,9 @@ internal sealed class VectorSceneSnapshot
 
         bytes += 72L * GradientStops.Count;
         foreach (var stops in GradientStops.Values) bytes += ArrayBytes(stops.Length, 8);
+
+        bytes += 56L * HiddenBoundaryStrokeParts.Count;
+        foreach (var parts in HiddenBoundaryStrokeParts.Values) bytes += ArrayBytes(parts.Length, 4);
 
         bytes += 64L * GradientPathLocalPoints.Count;
         foreach (var points in GradientPathLocalPoints.Values) bytes += ArrayBytes(points.Length, 8);

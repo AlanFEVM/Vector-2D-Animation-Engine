@@ -446,6 +446,11 @@ internal sealed partial class MainForm : Form
     private CornerDragSession? _cornerDragSession;
     private int _fillEdgeBezierActivePartIndex = -1;
     private int _fillEdgeBezierActivePieceIndex = -1;
+    private (int ObjectIndex, int PartIndex)? _fillEdgePreSelect;
+    private (int ObjectIndex, int PartIndex, PointF Start, PointF Control1, PointF Control2, PointF End, PointF PointerStart, VectorSceneSnapshot Snapshot)? _fillEdgeNoUiArc;
+    private bool _fillEdgeSuppressOverlay;
+    private (int ObjectIndex, int PartIndex)? _fillEdgeDetachPending;
+    private (int NewObjectIndex, PointF LastWorld, VectorSceneSnapshot Snapshot)? _fillEdgeDetachMoving;
     private FillBezierSegmentPiece[] _fillEdgeBezierOverlayPieces = [];
     private FillEdgeBezierOverlaySegment[] _fillEdgeBezierOverlaySegments = [];
     private int _fillEdgeBezierOverlayBaseObject = -1;

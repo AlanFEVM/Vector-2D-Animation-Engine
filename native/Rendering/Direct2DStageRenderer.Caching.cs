@@ -37,6 +37,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         ClearMixingBrushBitmapCache();
         ClearLineGeometryCache();
         ClearObjectPathGeometryCache();
+        ClearObjectStrokeGeometryCache();
         ClearReference3DLocalPathGeometryCache();
         ClearGradientBrushCache();
         ClearTransientGradientBrushes();

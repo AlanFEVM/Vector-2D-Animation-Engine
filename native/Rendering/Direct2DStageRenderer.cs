@@ -46,6 +46,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedLineGeometry> _lineGeometryCache = new();
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedObjectPathGeometry> _objectPathGeometryCache = new();
     private readonly Dictionary<PathGeometryContentKey, List<CachedObjectPathGeometry>> _objectPathGeometryContentCache = new();
+    private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedObjectStrokeGeometry> _objectStrokeGeometryCache = new();
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedGradientBrush> _gradientBrushCache = new();
     private readonly List<CachedGradientBrush> _transientGradientBrushes = [];
     private readonly Dictionary<(VectorScene Scene, int ObjectIndex), CachedShapeGradientBitmap> _shapeGradientBitmapCache = new();
@@ -142,7 +143,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         ulong Hash,
         int ContourCount,
         int PointCount,
-        bool UsesBezier);
+        bool UsesBezier,
+        bool Open);
 
     private sealed class CachedObjectPathGeometry : IDisposable
     {
@@ -152,11 +154,13 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             PathGeometryContentKey contentKey,
             GdiPointF[][]? pathContoursIdentity,
             PathBezierNode[][]? pathBezierContoursIdentity,
+            bool open,
             ID2D1PathGeometry geometry)
         {
             ContentKey = contentKey;
             PathContoursIdentity = pathContoursIdentity;
             PathBezierContoursIdentity = pathBezierContoursIdentity;
+            Open = open;
             Geometry = geometry;
         }
 
@@ -168,17 +172,21 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
         public ID2D1PathGeometry Geometry { get; }
 
+        public bool Open { get; }
+
         public int ReferenceCount { get; private set; } = 1;
 
         public bool Matches(
             GdiPointF[][]? pathContoursIdentity,
-            PathBezierNode[][]? pathBezierContoursIdentity)
+            PathBezierNode[][]? pathBezierContoursIdentity,
+            bool open)
         {
             // Compare by value, not by reference. Several editing paths mutate
             // the stored contour arrays in place while keeping the outer array
             // identity, which previously let this cache serve stale geometry
             // (bent fill/edge froze until an unrelated edit reallocated it).
-            return ContoursEqual(PathContoursIdentity, pathContoursIdentity)
+            return Open == open
+                && ContoursEqual(PathContoursIdentity, pathContoursIdentity)
                 && BezierContoursEqual(PathBezierContoursIdentity, pathBezierContoursIdentity);
         }
 
@@ -230,6 +238,62 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             }
 
             return true;
+        }
+
+        private static bool BezierContoursEqual(
+            PathBezierNode[][]? left,
+            PathBezierNode[][]? right)
+        {
+            if (ReferenceEquals(left, right)) return true;
+            if (left is null || right is null || left.Length != right.Length) return false;
+            for (var contourIndex = 0; contourIndex < left.Length; contourIndex++)
+            {
+                var leftContour = left[contourIndex];
+                var rightContour = right[contourIndex];
+                if (leftContour.Length != rightContour.Length) return false;
+                for (var nodeIndex = 0; nodeIndex < leftContour.Length; nodeIndex++)
+                {
+                    if (!leftContour[nodeIndex].Equals(rightContour[nodeIndex])) return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    private sealed class CachedObjectStrokeGeometry : IDisposable
+    {
+        private bool _disposed;
+
+        public CachedObjectStrokeGeometry(
+            PathBezierNode[][] contours,
+            int[] hiddenParts,
+            ID2D1PathGeometry geometry)
+        {
+            Contours = contours;
+            HiddenParts = hiddenParts;
+            Geometry = geometry;
+        }
+
+        public PathBezierNode[][] Contours { get; }
+
+        public int[] HiddenParts { get; }
+
+        public ID2D1PathGeometry Geometry { get; }
+
+        public bool Matches(PathBezierNode[][] contours, int[] hiddenParts)
+        {
+            // Contours can be mutated in place while keeping array identity, so compare
+            // by value exactly like CachedObjectPathGeometry does.
+            return BezierContoursEqual(Contours, contours)
+                && HiddenParts.AsSpan().SequenceEqual(hiddenParts);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            Geometry.Dispose();
         }
 
         private static bool BezierContoursEqual(
@@ -2472,7 +2536,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         if (scene.TryGetPathBezierWorldContours(objectIndex, out var bezierContours))
         {
-            return AppendBezierFigures(sink, stage, bezierContours);
+            return AppendBezierFigures(sink, stage, bezierContours, scene.IsPathOpen(objectIndex));
         }
 
         return AppendPolygonFigures(sink, stage, scene.GetObjectBoundaryContours(objectIndex));
@@ -2481,14 +2545,16 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private static bool AppendBezierFigures(
         ID2D1GeometrySink sink,
         StageControl? stage,
-        IReadOnlyList<PathBezierNode[]> contours)
+        IReadOnlyList<PathBezierNode[]> contours,
+        bool open = false)
     {
         var hasContours = false;
         foreach (var contour in contours)
         {
-            if (contour.Length < 3) continue;
+            if (contour.Length < (open ? 2 : 3)) continue;
             sink.BeginFigure(GeometryPoint(stage, contour[0].Anchor), FigureBegin.Filled);
-            for (var nodeIndex = 0; nodeIndex < contour.Length; nodeIndex++)
+            var lastSegment = open ? contour.Length - 1 : contour.Length;
+            for (var nodeIndex = 0; nodeIndex < lastSegment; nodeIndex++)
             {
                 var current = contour[nodeIndex];
                 var next = contour[(nodeIndex + 1) % contour.Length];
@@ -2497,7 +2563,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 var end = GeometryPoint(stage, next.Anchor);
                 sink.AddBezier(new BezierSegment(in control1, in control2, in end));
             }
-            sink.EndFigure(FigureEnd.Closed);
+            sink.EndFigure(open ? FigureEnd.Open : FigureEnd.Closed);
             hasContours = true;
         }
 
@@ -4201,7 +4267,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         var key = (scene, objectIndex);
         if (_objectPathGeometryCache.TryGetValue(key, out var cached))
         {
-            if (cached.Matches(pathIdentity, pathBezierIdentity))
+            if (cached.Matches(pathIdentity, pathBezierIdentity, scene.IsPathOpen(objectIndex)))
             {
                 LastObjectPathGeometryCacheReuses++;
                 return cached.Geometry;
@@ -4212,7 +4278,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         }
 
         if (pathIdentity is null && pathBezierIdentity is null) return null;
-        var contentKey = CreatePathGeometryContentKey(scene, pathIdentity, pathBezierIdentity);
+        var open = scene.IsPathOpen(objectIndex);
+        var contentKey = CreatePathGeometryContentKey(scene, pathIdentity, pathBezierIdentity, open);
         if (_objectPathGeometryContentCache.TryGetValue(contentKey, out var sharedEntries))
         {
             foreach (var shared in sharedEntries)
@@ -4237,7 +4304,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         {
             sink.SetFillMode(FillMode.Alternate);
             hasContours = pathBezierIdentity is not null
-                ? AppendBezierFigures(sink, null, pathBezierIdentity)
+                ? AppendBezierFigures(sink, null, pathBezierIdentity, open)
                 : AppendPolygonFigures(sink, null, pathIdentity!);
             sink.Close();
         }
@@ -4252,6 +4319,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             contentKey,
             pathIdentity,
             pathBezierIdentity,
+            open,
             geometry);
         _objectPathGeometryCache[key] = created;
         if (!_objectPathGeometryContentCache.TryGetValue(contentKey, out sharedEntries))
@@ -4264,10 +4332,107 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         return geometry;
     }
 
+    /// <summary>
+    /// Stroke-only geometry for objects whose boundary segments are hidden (a pulled-out
+    /// segment of a closed fill boundary). Visible segments are emitted as open figures so
+    /// every detached edge leaves its own gap while the fill keeps the closed contour.
+    /// Returns null when nothing is hidden and the shared object path can be reused.
+    /// </summary>
+    private ID2D1PathGeometry? ObjectStrokePathGeometry(VectorScene scene, int objectIndex)
+    {
+        var hidden = scene.GetHiddenBoundaryStrokeParts(objectIndex);
+        if (hidden is null || hidden.Count == 0) return null;
+        if (!scene.TryGetPathBezierLocalContours(objectIndex, out var contours)) return null;
+
+        var key = (scene, objectIndex);
+        var hiddenKey = hidden.OrderBy(value => value).ToArray();
+        if (_objectStrokeGeometryCache.TryGetValue(key, out var cached))
+        {
+            if (cached.Matches(contours, hiddenKey)) return cached.Geometry;
+            _objectStrokeGeometryCache.Remove(key);
+            cached.Dispose();
+        }
+
+        var geometry = _factory!.CreatePathGeometry();
+        using (var sink = geometry.Open())
+        {
+            AppendVisibleStrokeFigures(sink, contours, hidden);
+            sink.Close();
+        }
+
+        _objectStrokeGeometryCache[key] = new CachedObjectStrokeGeometry(contours, hiddenKey, geometry);
+        return geometry;
+    }
+
+    private static void AppendVisibleStrokeFigures(
+        ID2D1GeometrySink sink,
+        PathBezierNode[][] contours,
+        IReadOnlySet<int> hidden)
+    {
+        var partIndex = 0;
+        foreach (var contour in contours)
+        {
+            if (contour.Length < 2)
+            {
+                partIndex += Math.Max(contour.Length, 0);
+                continue;
+            }
+
+            var runStart = -1;
+            for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
+            {
+                var visible = !hidden.Contains(partIndex + segmentIndex);
+                if (visible)
+                {
+                    if (runStart < 0) runStart = segmentIndex;
+                    if (segmentIndex == contour.Length - 1)
+                    {
+                        EmitVisibleStrokeRun(sink, contour, runStart, segmentIndex);
+                    }
+                }
+                else if (runStart >= 0)
+                {
+                    EmitVisibleStrokeRun(sink, contour, runStart, segmentIndex - 1);
+                    runStart = -1;
+                }
+            }
+
+            partIndex += contour.Length;
+        }
+    }
+
+    private static void EmitVisibleStrokeRun(
+        ID2D1GeometrySink sink,
+        PathBezierNode[] contour,
+        int startIndex,
+        int endIndex)
+    {
+        if (endIndex < startIndex) return;
+        sink.BeginFigure(GeometryPoint(null, contour[startIndex].Anchor), FigureBegin.Hollow);
+        for (var nodeIndex = startIndex; nodeIndex <= endIndex; nodeIndex++)
+        {
+            var current = contour[nodeIndex];
+            var next = contour[(nodeIndex + 1) % contour.Length];
+            var control1 = GeometryPoint(null, current.OutgoingControl);
+            var control2 = GeometryPoint(null, next.IncomingControl);
+            var end = GeometryPoint(null, next.Anchor);
+            sink.AddBezier(new BezierSegment(in control1, in control2, in end));
+        }
+
+        sink.EndFigure(FigureEnd.Open);
+    }
+
+    private void ClearObjectStrokeGeometryCache()
+    {
+        foreach (var cached in _objectStrokeGeometryCache.Values) cached.Dispose();
+        _objectStrokeGeometryCache.Clear();
+    }
+
     private static PathGeometryContentKey CreatePathGeometryContentKey(
         VectorScene scene,
         GdiPointF[][]? pathContours,
-        PathBezierNode[][]? pathBezierContours)
+        PathBezierNode[][]? pathBezierContours,
+        bool open)
     {
         const ulong offset = 14695981039346656037UL;
         const ulong prime = 1099511628211UL;
@@ -4304,7 +4469,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         AddInt(contourCount);
         AddInt(pointCount);
         AddInt(usesBezier ? 1 : 0);
-        return new PathGeometryContentKey(scene, hash, contourCount, pointCount, usesBezier);
+        AddInt(open ? 1 : 0);
+        return new PathGeometryContentKey(scene, hash, contourCount, pointCount, usesBezier, open);
 
         void AddPoint(GdiPointF point)
         {
@@ -4373,7 +4539,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             }
             else if (scene.Stroke[objectIndex] > 0)
             {
-                _target.DrawGeometry(path, strokeBrush, scene.Stroke[objectIndex]);
+                var strokePath = ObjectStrokePathGeometry(scene, objectIndex) ?? path;
+                _target.DrawGeometry(strokePath, strokeBrush, scene.Stroke[objectIndex]);
             }
         }
         finally

@@ -71,6 +71,7 @@ internal sealed partial class VectorScene
         Argb = [];
         StrokeArgb = [];
         FillAutoMergeProtected = [];
+        FillBoundaryLinkDetached = [];
         LinearGradientEnabled = [];
         GradientKinds = [];
         GradientStartArgb = [];
@@ -164,6 +165,7 @@ internal sealed partial class VectorScene
         Argb = GC.AllocateUninitializedArray<int>(ObjectCount);
         StrokeArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
         FillAutoMergeProtected = new bool[ObjectCount];
+        FillBoundaryLinkDetached = new bool[ObjectCount];
         LinearGradientEnabled = new bool[ObjectCount];
         GradientKinds = new GradientKind[ObjectCount];
         GradientStartArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
@@ -1661,11 +1663,35 @@ internal sealed partial class VectorScene
         {
             _objectDistortions.Remove(to);
         }
+
+        if (source._openPathObjects.Contains(from)) _openPathObjects.Add(to);
+        else _openPathObjects.Remove(to);
+
+        if (source._hiddenBoundaryStrokeParts.TryGetValue(from, out var copiedHiddenParts))
+        {
+            _hiddenBoundaryStrokeParts[to] = new HashSet<int>(copiedHiddenParts);
+        }
+        else
+        {
+            _hiddenBoundaryStrokeParts.Remove(to);
+        }
     }
 
     private void MoveObjectData(int from, int to)
     {
         CopyObjectScalarDataFrom(this, from, to);
+        if (_openPathObjects.Contains(from)) _openPathObjects.Add(to);
+        else _openPathObjects.Remove(to);
+        if (_hiddenBoundaryStrokeParts.TryGetValue(from, out var movedHiddenParts))
+        {
+            _hiddenBoundaryStrokeParts.Remove(from);
+            _hiddenBoundaryStrokeParts[to] = movedHiddenParts;
+        }
+        else
+        {
+            _hiddenBoundaryStrokeParts.Remove(to);
+        }
+
         MoveObjectDictionaryEntry(_gradientStops, from, to);
         MoveObjectDictionaryEntry(_gradientPathLocalPoints, from, to);
         MoveObjectDictionaryEntry(_shapeGradientMappingLocalContours, from, to);
@@ -1700,6 +1726,7 @@ internal sealed partial class VectorScene
         RemapObjectDictionary(_bitmapObjects, oldToNew);
         RemapObjectDictionary(_textObjects, oldToNew);
         RemapObjectDictionary(_objectDistortions, oldToNew);
+        RemapObjectDictionary(_hiddenBoundaryStrokeParts, oldToNew);
     }
 
     private static void RemapObjectDictionary<T>(Dictionary<int, T> dictionary, IReadOnlyList<int> oldToNew)
@@ -1745,6 +1772,7 @@ internal sealed partial class VectorScene
         Argb[to] = source.Argb[from];
         StrokeArgb[to] = source.StrokeArgb[from];
         FillAutoMergeProtected[to] = source.FillAutoMergeProtected[from];
+        FillBoundaryLinkDetached[to] = source.FillBoundaryLinkDetached[from];
         LinearGradientEnabled[to] = source.LinearGradientEnabled[from];
         GradientStartArgb[to] = source.GradientStartArgb[from];
         GradientEndArgb[to] = source.GradientEndArgb[from];
@@ -1765,6 +1793,11 @@ internal sealed partial class VectorScene
         {
             _pathBezierLocalContours.Remove(index);
         }
+        foreach (var index in _openPathObjects.Where(index => index >= ObjectCount).ToArray())
+        {
+            _openPathObjects.Remove(index);
+        }
+        ClearHiddenBoundaryStrokePartsBelow(ObjectCount);
     }
 
     private void RemoveFreehandDataOutsideObjectCount()
@@ -1874,6 +1907,7 @@ internal sealed partial class VectorScene
         var argb = Argb;
         var strokeArgb = StrokeArgb;
         var fillAutoMergeProtected = FillAutoMergeProtected;
+        var fillBoundaryLinkDetached = FillBoundaryLinkDetached;
         var linearGradientEnabled = LinearGradientEnabled;
         var gradientKinds = GradientKinds;
         var gradientStartArgb = GradientStartArgb;
@@ -1904,6 +1938,7 @@ internal sealed partial class VectorScene
         Array.Resize(ref argb, ObjectCount);
         Array.Resize(ref strokeArgb, ObjectCount);
         Array.Resize(ref fillAutoMergeProtected, ObjectCount);
+        Array.Resize(ref fillBoundaryLinkDetached, ObjectCount);
         Array.Resize(ref linearGradientEnabled, ObjectCount);
         Array.Resize(ref gradientKinds, ObjectCount);
         Array.Resize(ref gradientStartArgb, ObjectCount);
@@ -1934,6 +1969,7 @@ internal sealed partial class VectorScene
         Argb = argb;
         StrokeArgb = strokeArgb;
         FillAutoMergeProtected = fillAutoMergeProtected;
+        FillBoundaryLinkDetached = fillBoundaryLinkDetached;
         LinearGradientEnabled = linearGradientEnabled;
         GradientKinds = gradientKinds;
         GradientStartArgb = gradientStartArgb;
@@ -1970,6 +2006,7 @@ internal sealed partial class VectorScene
         var argb = Argb;
         var strokeArgb = StrokeArgb;
         var fillAutoMergeProtected = FillAutoMergeProtected;
+        var fillBoundaryLinkDetached = FillBoundaryLinkDetached;
         var linearGradientEnabled = LinearGradientEnabled;
         var gradientKinds = GradientKinds;
         var gradientStartArgb = GradientStartArgb;
@@ -2000,6 +2037,7 @@ internal sealed partial class VectorScene
         Array.Resize(ref argb, capacity);
         Array.Resize(ref strokeArgb, capacity);
         Array.Resize(ref fillAutoMergeProtected, capacity);
+        Array.Resize(ref fillBoundaryLinkDetached, capacity);
         Array.Resize(ref linearGradientEnabled, capacity);
         Array.Resize(ref gradientKinds, capacity);
         Array.Resize(ref gradientStartArgb, capacity);
@@ -2030,6 +2068,7 @@ internal sealed partial class VectorScene
         Argb = argb;
         StrokeArgb = strokeArgb;
         FillAutoMergeProtected = fillAutoMergeProtected;
+        FillBoundaryLinkDetached = fillBoundaryLinkDetached;
         LinearGradientEnabled = linearGradientEnabled;
         GradientKinds = gradientKinds;
         GradientStartArgb = gradientStartArgb;

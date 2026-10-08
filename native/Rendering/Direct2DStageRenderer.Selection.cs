@@ -108,6 +108,7 @@ internal sealed partial class Direct2DStageRenderer
         {
             if (index == stage.SelectedObject || index < 0 || index >= stage.Scene.ObjectCount) continue;
             if (stage.SuppressFillEdgeBezierSelectionOutline(index)) continue;
+            if (HasSelectedBoundaryElementFor(stage, index)) continue;
             if (!stage.Scene.IsObjectActive(index, stage.Frame)) continue;
             DrawSelectionOutline(stage, index, primary: false);
             drawn++;
@@ -118,6 +119,7 @@ internal sealed partial class Direct2DStageRenderer
         if (primary >= 0
             && primary < stage.Scene.ObjectCount
             && !stage.SuppressFillEdgeBezierSelectionOutline(primary)
+            && !HasSelectedBoundaryElementFor(stage, primary)
             && stage.Scene.IsObjectActive(primary, stage.Frame))
         {
             DrawSelectionOutline(stage, primary, primary: true);
@@ -252,13 +254,12 @@ internal sealed partial class Direct2DStageRenderer
                 return;
             }
 
-            if (IsFullElementRange(hit) && TryDrawSelectionBoundsRect(stage, objectIndex)) return;
             var points = stage.GetSelectedStrokePartPoints(hit)
                 .Select(point => WorldToVector(stage, point))
                 .ToArray();
             if (points.Length == 1) DrawSelectionDot(points[0], primary, SelectionHighlightKind.Stroke);
             else if (points.Length > 1) DrawSelectionPolyline(points, primary, SelectionHighlightKind.Stroke);
-            return;
+            else if (TryDrawSelectionBoundsRect(stage, objectIndex)) return;
         }
 
         if (hit.Key.Kind == DrawingElementKind.Fill)
@@ -277,17 +278,30 @@ internal sealed partial class Direct2DStageRenderer
 
         if (hit.Key.Kind == DrawingElementKind.BoundaryStroke)
         {
-            if (IsFullElementRange(hit) && TryDrawSelectionBoundsRect(stage, objectIndex)) return;
             var points = stage.GetSelectedBoundaryPartPoints(hit)
                 .Select(point => WorldToVector(stage, point))
                 .ToArray();
-            if (points.Length > 1) DrawSelectionPolyline(points, primary, SelectionHighlightKind.Stroke);
+            if (points.Length > 1)
+            {
+                DrawSelectionPolyline(points, primary, SelectionHighlightKind.Stroke);
+                DrawSelectionDot(points[0], primary, SelectionHighlightKind.Stroke);
+                DrawSelectionDot(points[points.Length - 1], primary, SelectionHighlightKind.Stroke);
+                return;
+            }
+            if (TryDrawSelectionBoundsRect(stage, objectIndex)) return;
         }
     }
 
     private static bool IsFullElementRange(DrawingElementHit hit) =>
         hit.StartT <= DrawingTopologyRules.UnitIntersectionTolerance
         && hit.EndT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance;
+
+    // When a boundary-stroke element is selected, the orange stroke-path outline replaces
+    // the whole-object fill selection box for that object.
+    private static bool HasSelectedBoundaryElementFor(StageControl stage, int objectIndex) =>
+        stage.SelectedElements.Any(hit =>
+            hit.Key.ObjectIndex == objectIndex
+            && hit.Key.Kind == DrawingElementKind.BoundaryStroke);
 
     private bool DrawPresentedEditableBezierSelection(
         StageControl stage,
@@ -397,7 +411,6 @@ internal sealed partial class Direct2DStageRenderer
 
         var segments = stage.GetPresentedEditableBezierWorldSegments(hit);
         if (segments.Length == 0) return;
-        var showControls = stage.ShouldShowLineControlHandles(hit.Key.ObjectIndex);
         if ((uint)hit.PresentedBezierSegmentIndex < segments.Length)
         {
             var selected = segments[hit.PresentedBezierSegmentIndex];
@@ -406,7 +419,7 @@ internal sealed partial class Direct2DStageRenderer
                 WorldToVector(stage, selected.Control1),
                 WorldToVector(stage, selected.Control2),
                 WorldToVector(stage, selected.End),
-                showControls);
+                stage.ShouldShowEditableSegmentControlHandles(hit, selected.Start, selected.Control1, selected.Control2, selected.End));
             return;
         }
 
@@ -417,7 +430,7 @@ internal sealed partial class Direct2DStageRenderer
                 WorldToVector(stage, segment.Control1),
                 WorldToVector(stage, segment.Control2),
                 WorldToVector(stage, segment.End),
-                showControls);
+                stage.ShouldShowEditableSegmentControlHandles(hit, segment.Start, segment.Control1, segment.Control2, segment.End));
         }
     }
 
