@@ -35,6 +35,7 @@ internal sealed partial class MainForm
     /// instance state lets a cancel restore exactly what the gesture started from.
     /// </summary>
     private MotionTrackDragSession? _motionTrackDragSession;
+    private bool _motionTrackHintVisible;
 
     private sealed class MotionTrackDragSession
     {
@@ -43,7 +44,13 @@ internal sealed partial class MainForm
         /// <summary>Frame the drag writes to. With Auto Key off this may differ from the grabbed frame.</summary>
         public required int EditFrame { get; init; }
 
-        public required PointF StartPointer { get; init; }
+        public required Vector3 StartPointer { get; init; }
+        public Vector3 PlaneNormal { get; init; }
+        public required InstanceFrameState EditStartState { get; init; }
+        public SceneDefinition? Scene { get; init; }
+        public AnimationTimelineSnapshot? TimelineSnapshot { get; init; }
+        public DrawingObjectInstanceDefinition[]? InstanceSnapshot { get; init; }
+        public TimelineSelectionSnapshot? TimelineSelection { get; init; }
 
         /// <summary>Instance state at the moment the gesture began, keyed by frame.</summary>
         public required Dictionary<int, InstanceFrameState> StartStates { get; init; }
@@ -131,6 +138,7 @@ internal sealed partial class MainForm
                 _stage.SetMotionTrack(null);
                 _stage.SetMotionTrackTransformBoxVisible(false);
             }
+            ClearMotionTrackHoverHint();
 
             return;
         }
@@ -149,7 +157,8 @@ internal sealed partial class MainForm
             track,
             _frame,
             Enumerable.Range(rangeFirst, Math.Max(1, rangeLast - rangeFirst + 1)),
-            localAnchor);
+            localAnchor,
+            _playbackSettings.Fps);
 
         // Frames that fell outside the track (or that the pointer range no longer covers) must not
         // stay selected, or a later drag would write to a frame the operator cannot see.
@@ -364,6 +373,7 @@ internal sealed partial class MainForm
         if (!TryBeginMotionTrackDrag(e.Location)) return true;
         _stage.Capture = true;
         _motionTrackMarqueeActive = false;
+        UpdateInteractionCursor(e.Location);
         return true;
     }
 
@@ -377,10 +387,12 @@ internal sealed partial class MainForm
         if (_motionTrackDragSession is not null)
         {
             if (e.Button == MouseButtons.Left) UpdateMotionTrackDrag(e.Location);
+            UpdateInteractionCursor(e.Location);
             return true;
         }
 
         UpdateMotionTrackHover(e.Location);
+        if (_stage.MotionTrackHoverFrame >= 0) UpdateInteractionCursor(e.Location);
         return _stage.MotionTrackHoverFrame >= 0;
     }
 
@@ -395,6 +407,7 @@ internal sealed partial class MainForm
             if (e.Button == MouseButtons.Left) CompleteMotionTrackDrag();
             else CancelMotionTrackDrag();
             _stage.Capture = false;
+            RefreshInteractionCursorAtPointer();
             return true;
         }
 
@@ -439,6 +452,7 @@ internal sealed partial class MainForm
     /// <summary>Clears the drag session when a frame change, tool switch or workspace switch occurs.</summary>
     private void AbortMotionTrackPointerSession()
     {
+        ClearMotionTrackHoverHint();
         _motionTrackMarqueeActive = false;
         if (_motionTrackDragSession is not null) CancelMotionTrackDrag();
         _stage.ClearMarquee();
@@ -684,11 +698,26 @@ internal sealed partial class MainForm
             || _tool is not (ToolMode.Select or ToolMode.Transform))
         {
             if (_stage.MotionTrackHoverFrame != -1) _stage.SetMotionTrackHover(-1);
+            ClearMotionTrackHoverHint();
             return;
         }
 
         var frame = _stage.HitTestMotionTrackAnchor(location);
         if (frame != _stage.MotionTrackHoverFrame) _stage.SetMotionTrackHover(frame);
+        if (frame < 0)
+        {
+            ClearMotionTrackHoverHint();
+            return;
+        }
+        _toolTip.ShowCompactAt(_stage, location, $"{UiLocalization.T("Frame")} {frame}");
+        _motionTrackHintVisible = true;
+    }
+
+    private void ClearMotionTrackHoverHint()
+    {
+        if (!_motionTrackHintVisible) return;
+        _motionTrackHintVisible = false;
+        _toolTip.HideTip();
     }
 
     // ---- Drag --------------------------------------------------------------------------------
@@ -715,12 +744,31 @@ internal sealed partial class MainForm
     {
         // One undo unit for the whole gesture: capturing here (not per move) is what makes a drag
         // that touches several frames revert in a single step.
-        CapturePointerUndoSnapshot(allowSharedGeometry: true);
+        var scene = IsSceneCompositionContext() ? ActiveScene() : null;
+        var pointer = _stage.ScreenToWorld(location);
+        var startPointer = new Vector3(pointer.X, pointer.Y, 0);
+        var planeNormal = Vector3.Zero;
+        if (_stage.UsesReferenceProjection)
+        {
+            if (_stage.MotionTrack?.FindAnchor(_frame)?.ScenePosition is not { } position
+                || !_stage.TryGetReferenceRay(location, out var ray)) return false;
+            planeNormal = ray.Direction;
+            if (!TryGetSpatialPlanePoint(location, position, planeNormal, out startPointer)) return false;
+        }
+        ClearInstanceTimelineEditTracking();
+        ClearMotionTrackHoverHint();
+        if (scene is null) CapturePointerUndoSnapshot(allowSharedGeometry: true);
         _motionTrackDragSession = new MotionTrackDragSession
         {
             InstanceId = instance.Id,
             EditFrame = editFrame,
-            StartPointer = _stage.ScreenToWorld(location),
+            StartPointer = startPointer,
+            PlaneNormal = planeNormal,
+            EditStartState = instance.EvaluateState(editFrame),
+            Scene = scene,
+            TimelineSnapshot = scene?.Timeline.CreateSnapshot(),
+            InstanceSnapshot = scene?.CreateInstanceSnapshot(),
+            TimelineSelection = scene is null ? null : _timeline.CaptureSelectionSnapshot(),
             StartStates = _motionTrackSelectedFrames
                 .Where(frame => frame >= 0)
                 .ToDictionary(frame => frame, instance.EvaluateState),
@@ -744,10 +792,17 @@ internal sealed partial class MainForm
             return;
         }
 
-        var pointer = _stage.ScreenToWorld(location);
-        var dx = pointer.X - session.StartPointer.X;
-        var dy = pointer.Y - session.StartPointer.Y;
-        if (Math.Abs(dx) <= 0.0001f && Math.Abs(dy) <= 0.0001f) return;
+        Vector3 pointer;
+        if (session.PlaneNormal != Vector3.Zero)
+        {
+            if (!TryGetSpatialPlanePoint(location, session.StartPointer, session.PlaneNormal, out pointer)) return;
+        }
+        else
+        {
+            var world = _stage.ScreenToWorld(location);
+            pointer = new Vector3(world.X, world.Y, 0);
+        }
+        var delta = pointer - session.StartPointer;
 
         var autoKeyframe = _timeline.AutoKeyframeEnabled;
         var changed = false;
@@ -755,19 +810,29 @@ internal sealed partial class MainForm
         // exposure. Its state must be read once, before the loop: re-reading it per iteration would
         // fold this gesture's own delta into the next read and multiply the move by the selection
         // size.
-        var sharedTarget = autoKeyframe ? (InstanceFrameState?)null : instance.EvaluateState(session.EditFrame);
         foreach (var (frame, startState) in session.StartStates)
         {
             // Auto Key writes each dragged frame itself; otherwise the edit lands on the frame that
             // actually owns the exposure, matching how the Stage instance move behaves.
             var editFrame = autoKeyframe ? frame : session.EditFrame;
-            PrepareInstanceStateTimelineEdit(instance);
-            var target = autoKeyframe ? startState : sharedTarget!.Value;
+            var playhead = _frame;
+            try
+            {
+                _frame = editFrame;
+                PrepareInstanceStateTimelineEdit(instance);
+            }
+            finally
+            {
+                _frame = playhead;
+            }
+            var target = autoKeyframe ? startState : session.EditStartState;
             changed |= instance.SetStateAtFrame(editFrame, target with
             {
-                X = VectorUnits.Quantize(target.X + dx),
-                Y = VectorUnits.Quantize(target.Y + dy)
+                X = VectorUnits.Quantize(target.X + delta.X),
+                Y = VectorUnits.Quantize(target.Y + delta.Y),
+                Z = VectorUnits.Quantize(target.Z + delta.Z)
             });
+            if (!autoKeyframe) break;
         }
 
         if (!changed) return;
@@ -784,6 +849,13 @@ internal sealed partial class MainForm
         if (session is null) return;
         if (session.Changed)
         {
+            if (session.Scene is { } scene)
+            {
+                PushSceneTimelineUndo(scene, session.TimelineSnapshot!,
+                    instanceSnapshot: session.InstanceSnapshot,
+                    playheadFrame: _frame,
+                    timelineSelection: session.TimelineSelection);
+            }
             _sceneInstanceTimelineDirty = true;
             FinishMotionTrackEdit();
             FinalizePointerUndoSnapshot();
@@ -794,7 +866,7 @@ internal sealed partial class MainForm
 
         // Nothing moved: drop the undo unit captured at pointer-down so a plain click does not
         // leave an empty history entry behind.
-        if (_undoCapturedForPointerEdit && _undoStack.TryPop(out var undo))
+        if (session.Scene is null && _undoCapturedForPointerEdit && _undoStack.TryPop(out var undo))
         {
             RestoreCancelledMarqueeHistory(undo);
             RestoreCanvasMutationSnapshot(undo.Snapshot);
@@ -809,14 +881,23 @@ internal sealed partial class MainForm
     {
         var session = _motionTrackDragSession;
         _motionTrackDragSession = null;
-        if (session is null || !session.Changed) return;
-        if (MotionTrackInstance() is { } instance
+        if (session is null) return;
+        if (session.Scene is { } scene)
+        {
+            scene.RestoreInstanceSnapshot(session.InstanceSnapshot!);
+            scene.Timeline.RestoreSnapshot(session.TimelineSnapshot!);
+            scene.SynchronizeTimelineTracks();
+            _timeline.RefreshTimeline();
+            _timeline.RestoreSelectionSnapshot(session.TimelineSelection!);
+            InvalidateSceneCompositionCache();
+        }
+        if (session.Scene is null && MotionTrackInstance() is { } instance
             && string.Equals(instance.Id, session.InstanceId, StringComparison.Ordinal))
         {
             foreach (var (frame, startState) in session.StartStates) instance.SetStateAtFrame(frame, startState);
         }
 
-        if (_undoCapturedForPointerEdit && _undoStack.TryPop(out var undo))
+        if (session.Scene is null && _undoCapturedForPointerEdit && _undoStack.TryPop(out var undo))
         {
             RestoreCancelledMarqueeHistory(undo);
             RestoreCanvasMutationSnapshot(undo.Snapshot);

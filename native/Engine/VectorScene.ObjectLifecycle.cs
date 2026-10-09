@@ -72,6 +72,7 @@ internal sealed partial class VectorScene
         StrokeArgb = [];
         FillAutoMergeProtected = [];
         FillBoundaryLinkDetached = [];
+        QuadraticLineEditing = [];
         LinearGradientEnabled = [];
         GradientKinds = [];
         GradientStartArgb = [];
@@ -166,6 +167,7 @@ internal sealed partial class VectorScene
         StrokeArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
         FillAutoMergeProtected = new bool[ObjectCount];
         FillBoundaryLinkDetached = new bool[ObjectCount];
+        QuadraticLineEditing = new bool[ObjectCount];
         LinearGradientEnabled = new bool[ObjectCount];
         GradientKinds = new GradientKind[ObjectCount];
         GradientStartArgb = GC.AllocateUninitializedArray<int>(ObjectCount);
@@ -1070,6 +1072,7 @@ internal sealed partial class VectorScene
         Angle[index] = angle;
         Stroke[index] = Math.Max(0, stroke);
         ShapeKind[index] = shapeKind;
+        QuadraticLineEditing[index] = false;
         ShapeVertexCounts[index] = NormalizeShapeVertexCount(shapeKind, shapeVertexCount);
         var firstControl = curveControl;
         var secondControl = curveControl2 ?? curveControl;
@@ -1156,6 +1159,7 @@ internal sealed partial class VectorScene
                 LineEndpointStyles[index] = NormalizeLineEndpointStyle(item.StartEndpointStyle);
                 LineEndEndpointStyles[index] = NormalizeLineEndpointStyle(item.EndEndpointStyle);
                 ShapeKind[index] = item.Shape;
+                QuadraticLineEditing[index] = item.Shape == VectorAnimationEngine.ShapeKind.Line && item.QuadraticLineEditing;
                 ShapeVertexCounts[index] = NormalizeShapeVertexCount(item.Shape, item.ShapeVertexCount);
                 AtomCount[index] = Math.Max(3, item.Atoms);
                 Argb[index] = objectArgb;
@@ -1779,6 +1783,7 @@ internal sealed partial class VectorScene
         StrokeArgb[to] = source.StrokeArgb[from];
         FillAutoMergeProtected[to] = source.FillAutoMergeProtected[from];
         FillBoundaryLinkDetached[to] = source.FillBoundaryLinkDetached[from];
+        QuadraticLineEditing[to] = source.QuadraticLineEditing[from];
         LinearGradientEnabled[to] = source.LinearGradientEnabled[from];
         GradientStartArgb[to] = source.GradientStartArgb[from];
         GradientEndArgb[to] = source.GradientEndArgb[from];
@@ -1914,6 +1919,7 @@ internal sealed partial class VectorScene
         var strokeArgb = StrokeArgb;
         var fillAutoMergeProtected = FillAutoMergeProtected;
         var fillBoundaryLinkDetached = FillBoundaryLinkDetached;
+        var quadraticLineEditing = QuadraticLineEditing;
         var linearGradientEnabled = LinearGradientEnabled;
         var gradientKinds = GradientKinds;
         var gradientStartArgb = GradientStartArgb;
@@ -1945,6 +1951,7 @@ internal sealed partial class VectorScene
         Array.Resize(ref strokeArgb, ObjectCount);
         Array.Resize(ref fillAutoMergeProtected, ObjectCount);
         Array.Resize(ref fillBoundaryLinkDetached, ObjectCount);
+        Array.Resize(ref quadraticLineEditing, ObjectCount);
         Array.Resize(ref linearGradientEnabled, ObjectCount);
         Array.Resize(ref gradientKinds, ObjectCount);
         Array.Resize(ref gradientStartArgb, ObjectCount);
@@ -1976,6 +1983,7 @@ internal sealed partial class VectorScene
         StrokeArgb = strokeArgb;
         FillAutoMergeProtected = fillAutoMergeProtected;
         FillBoundaryLinkDetached = fillBoundaryLinkDetached;
+        QuadraticLineEditing = quadraticLineEditing;
         LinearGradientEnabled = linearGradientEnabled;
         GradientKinds = gradientKinds;
         GradientStartArgb = gradientStartArgb;
@@ -2013,6 +2021,7 @@ internal sealed partial class VectorScene
         var strokeArgb = StrokeArgb;
         var fillAutoMergeProtected = FillAutoMergeProtected;
         var fillBoundaryLinkDetached = FillBoundaryLinkDetached;
+        var quadraticLineEditing = QuadraticLineEditing;
         var linearGradientEnabled = LinearGradientEnabled;
         var gradientKinds = GradientKinds;
         var gradientStartArgb = GradientStartArgb;
@@ -2044,6 +2053,7 @@ internal sealed partial class VectorScene
         Array.Resize(ref strokeArgb, capacity);
         Array.Resize(ref fillAutoMergeProtected, capacity);
         Array.Resize(ref fillBoundaryLinkDetached, capacity);
+        Array.Resize(ref quadraticLineEditing, capacity);
         Array.Resize(ref linearGradientEnabled, capacity);
         Array.Resize(ref gradientKinds, capacity);
         Array.Resize(ref gradientStartArgb, capacity);
@@ -2075,6 +2085,7 @@ internal sealed partial class VectorScene
         StrokeArgb = strokeArgb;
         FillAutoMergeProtected = fillAutoMergeProtected;
         FillBoundaryLinkDetached = fillBoundaryLinkDetached;
+        QuadraticLineEditing = quadraticLineEditing;
         LinearGradientEnabled = linearGradientEnabled;
         GradientKinds = gradientKinds;
         GradientStartArgb = gradientStartArgb;

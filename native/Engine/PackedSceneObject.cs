@@ -21,4 +21,5 @@ internal readonly record struct PackedSceneObject(
     PointF GradientStart = default,
     PointF GradientEnd = default,
     GradientStop[]? GradientStops = null,
-    int ShapeVertexCount = 0);
+    int ShapeVertexCount = 0,
+    bool QuadraticLineEditing = false);

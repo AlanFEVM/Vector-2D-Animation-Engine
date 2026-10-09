@@ -154,7 +154,7 @@ internal sealed partial class StageControl : Control
         foreach (var anchor in track.Anchors)
         {
             if (!anchor.IsSelectable) continue;
-            var point = ToMotionTrackScreenPoint(anchor.WorldPosition);
+            var point = ToMotionTrackScreenPoint(anchor);
             if (!IsFiniteMotionTrackPoint(point)) continue;
             var dx = point.X - screen.X;
             var dy = point.Y - screen.Y;
@@ -187,7 +187,7 @@ internal sealed partial class StageControl : Control
     {
         if (_motionTrack?.FindAnchor(frame) is { } anchor)
         {
-            var point = ToMotionTrackScreenPoint(anchor.WorldPosition);
+            var point = ToMotionTrackScreenPoint(anchor);
             if (IsFiniteMotionTrackPoint(point))
             {
                 screen = point;
@@ -216,7 +216,7 @@ internal sealed partial class StageControl : Control
         foreach (var anchor in track.Anchors)
         {
             if (!anchor.IsSelectable) continue;
-            var point = ToMotionTrackScreenPoint(anchor.WorldPosition);
+            var point = ToMotionTrackScreenPoint(anchor);
             if (!IsFiniteMotionTrackPoint(point)) continue;
             // Inclusive edges: a marquee that grazes an anchor still selects it.
             if (point.X < normalized.Left || point.X > normalized.Right) continue;
@@ -242,7 +242,7 @@ internal sealed partial class StageControl : Control
         var count = 0;
         foreach (var anchor in track.Anchors)
         {
-            var point = ToMotionTrackScreenPoint(anchor.WorldPosition);
+            var point = ToMotionTrackScreenPoint(anchor);
             if (!IsFiniteMotionTrackPoint(point)) continue;
             result[count++] = new MotionTrackScreenAnchor(
                 anchor.Frame,
@@ -251,7 +251,10 @@ internal sealed partial class StageControl : Control
                 anchor.IsMutedInk,
                 anchor.IsOnTweenSegment,
                 anchor.IsSelectable,
-                _motionTrackSelectedFrames.Contains(anchor.Frame));
+                _motionTrackSelectedFrames.Contains(anchor.Frame))
+            {
+                IsCurrentFrame = anchor.Frame == track.CenterFrame
+            };
         }
 
         if (count == result.Length) return result;
@@ -294,7 +297,6 @@ internal sealed partial class StageControl : Control
         {
             DrawMotionTrackSegments(g, anchors);
             DrawMotionTrackAnchors(g, anchors);
-            DrawMotionTrackHoverLabel(g, anchors);
         }
         finally
         {
@@ -314,9 +316,6 @@ internal sealed partial class StageControl : Control
             // A span is a tween segment when either endpoint reports it, so the dash flips exactly at
             // the tween boundaries the sampler marked.
             var isTweenSegment = start.IsOnTweenSegment || end.IsOnTweenSegment;
-            // Stroke the dark underlay first so the classified ink on top keeps its own dash rhythm
-            // while remaining visible over white or light artwork.
-            g.DrawLine(resources.PathHaloPen, start.Screen, end.Screen);
             g.DrawLine(isTweenSegment ? resources.TweenPen : resources.PathPen, start.Screen, end.Screen);
         }
     }
@@ -328,6 +327,17 @@ internal sealed partial class StageControl : Control
         var anchorSize = MotionTrackAnchorSizePixels * scale;
         var haloSize = MotionTrackHaloSizePixels * scale;
         var resources = MotionTrackResources();
+
+        foreach (var anchor in anchors)
+        {
+            if (!anchor.IsCurrentFrame) continue;
+            var radius = 9f * scale;
+            g.FillEllipse(resources.CurrentFrameGlowBrush,
+                anchor.Screen.X - radius, anchor.Screen.Y - radius, radius * 2, radius * 2);
+            radius = 7f * scale;
+            g.FillEllipse(resources.CurrentFrameCoreBrush,
+                anchor.Screen.X - radius, anchor.Screen.Y - radius, radius * 2, radius * 2);
+        }
 
         foreach (var anchor in anchors)
         {
@@ -347,7 +357,7 @@ internal sealed partial class StageControl : Control
                         haloSize);
                 }
 
-                if (isHovered)
+                if (isHovered && !anchor.IsSelected)
                 {
                     g.DrawEllipse(
                         resources.HoverPen,
@@ -361,7 +371,9 @@ internal sealed partial class StageControl : Control
             var size = anchor.IsSelected ? anchorSize * 1.15f : anchorSize;
             var half = size * 0.5f;
             var bounds = new RectangleF(anchor.Screen.X - half, anchor.Screen.Y - half, size, size);
-            var fill = anchor.IsAdjusted
+            var fill = anchor.IsCurrentFrame
+                ? resources.TweenBrush
+                : anchor.IsAdjusted
                 ? resources.AdjustedBrush
                 : anchor.IsOnTweenSegment
                     ? resources.TweenBrush
@@ -371,12 +383,6 @@ internal sealed partial class StageControl : Control
             g.FillRectangle(fill, bounds);
             g.DrawRectangle(resources.AnchorBorderPen, bounds.X, bounds.Y, bounds.Width, bounds.Height);
 
-            if (anchor.IsSelected)
-            {
-                // A thick ring in addition to the larger marker keeps the selection readable when the
-                // trajectory passes over a busy onion-skin ghost.
-                g.DrawEllipse(resources.SelectionPen, bounds.X - 1.5f * scale, bounds.Y - 1.5f * scale, bounds.Width + 3f * scale, bounds.Height + 3f * scale);
-            }
         }
     }
 
@@ -419,7 +425,8 @@ internal sealed partial class StageControl : Control
         var resources = MotionTrackResources();
 
         g.FillRectangle(resources.LabelBackgroundBrush, bounds);
-        g.DrawRectangle(resources.HoverPen, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+        using var labelBorder = new Pen(Theme.Border, scale);
+        g.DrawRectangle(labelBorder, bounds.X, bounds.Y, bounds.Width, bounds.Height);
         TextRenderer.DrawText(
             g,
             text,
@@ -467,7 +474,7 @@ internal sealed partial class StageControl : Control
         foreach (var anchor in track.Anchors)
         {
             if (!_motionTrackSelectedFrames.Contains(anchor.Frame)) continue;
-            var point = ToMotionTrackScreenPoint(anchor.WorldPosition);
+            var point = ToMotionTrackScreenPoint(anchor);
             if (!IsFiniteMotionTrackPoint(point)) continue;
             left = Math.Min(left, point.X);
             top = Math.Min(top, point.Y);
@@ -539,6 +546,7 @@ internal sealed partial class StageControl : Control
             var b = right.Anchors[index];
             if (a.Frame != b.Frame
                 || a.WorldPosition != b.WorldPosition
+                || a.ScenePosition != b.ScenePosition
                 || a.Kind != b.Kind
                 || a.IsAdjusted != b.IsAdjusted
                 || a.IsOnTweenSegment != b.IsOnTweenSegment)
@@ -553,7 +561,15 @@ internal sealed partial class StageControl : Control
     /// <summary>The hover label text. Kept in one place so the Direct2D side can match it if it ever draws text.</summary>
     private static string MotionTrackFormatFrameLabel(int frame) => frame.ToString();
 
-    private PointF ToMotionTrackScreenPoint(PointF world) => WorldToScreen(world.X, world.Y);
+    private PointF ToMotionTrackScreenPoint(MotionTrackAnchor anchor)
+    {
+        if (!RendersReferenceProjection) return WorldToScreen(anchor.WorldPosition.X, anchor.WorldPosition.Y);
+        var position = anchor.ScenePosition
+            ?? new System.Numerics.Vector3(anchor.WorldPosition.X, anchor.WorldPosition.Y, 0);
+        return TryProjectScenePosition(position, out var screen, out _)
+            ? screen
+            : new PointF(float.NaN, float.NaN);
+    }
 
     private static bool IsFiniteMotionTrackPoint(PointF point) =>
         float.IsFinite(point.X) && float.IsFinite(point.Y);
@@ -658,6 +674,8 @@ internal sealed class MotionTrackGdiResources
 
     /// <summary>Backdrop for the frame-number label, so the text stays legible over the artwork.</summary>
     internal SolidBrush LabelBackgroundBrush { get; }
+    internal SolidBrush CurrentFrameGlowBrush { get; }
+    internal SolidBrush CurrentFrameCoreBrush { get; }
 
     internal MotionTrackGdiResources(float dpiScale)
     {
@@ -676,6 +694,8 @@ internal sealed class MotionTrackGdiResources
         MutedBrush = new SolidBrush(WithAlpha(AnchorInk, 110));
         HoverBrush = new SolidBrush(StageControl.MotionTrackHoverInk);
         LabelBackgroundBrush = new SolidBrush(WithAlpha(Theme.PanelStrong, 214));
+        CurrentFrameGlowBrush = new SolidBrush(WithAlpha(Theme.Accent, 72));
+        CurrentFrameCoreBrush = new SolidBrush(WithAlpha(Theme.Accent, 145));
     }
 
     /// <summary>Applies an overlay opacity to a theme colour without introducing a new hue.</summary>
@@ -706,4 +726,7 @@ internal readonly record struct MotionTrackScreenAnchor(
     bool IsMutedInk,
     bool IsOnTweenSegment,
     bool IsSelectable,
-    bool IsSelected);
+    bool IsSelected)
+{
+    public bool IsCurrentFrame { get; init; }
+}

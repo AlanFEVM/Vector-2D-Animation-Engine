@@ -136,16 +136,17 @@ internal sealed partial class Direct2DStageRenderer
         var shape = stage.Scene.ShapeKind.Length > i ? stage.Scene.ShapeKind[i] : ShapeKind.Rectangle;
         if (stage.Scene.TryGetObjectDistortions(i, out _))
         {
+            var highlightKind = stage.SelectionHighlightForObject(i, SelectionHighlightKind.Fill);
             foreach (var contour in stage.Scene.GetDistortedObjectBoundaryContours(i))
             {
                 var points = contour.Select(point => WorldToVector(stage, point)).ToArray();
-                if (points.Length == 1) DrawSelectionDot(points[0], primary, SelectionHighlightKind.Fill);
+                if (points.Length == 1) DrawSelectionDot(points[0], primary, highlightKind);
                 else if (points.Length > 1)
                 {
                     DrawSelectionPolyline(
                         points.Length >= 3 ? CloseSelectionPolyline(points) : points,
                         primary,
-                        SelectionHighlightKind.Fill);
+                        highlightKind);
                 }
             }
             return;
@@ -231,16 +232,17 @@ internal sealed partial class Direct2DStageRenderer
 
         if (stage.Scene.TryGetObjectDistortions(objectIndex, out _))
         {
+            var highlightKind = stage.SelectionHighlightForObject(objectIndex, SelectionHighlightKind.Fill);
             foreach (var contour in stage.Scene.GetDistortedObjectBoundaryContours(objectIndex))
             {
                 var points = contour.Select(point => WorldToVector(stage, point)).ToArray();
-                if (points.Length == 1) DrawSelectionDot(points[0], primary, SelectionHighlightKind.Fill);
+                if (points.Length == 1) DrawSelectionDot(points[0], primary, highlightKind);
                 else if (points.Length > 1)
                 {
                     DrawSelectionPolyline(
                         points.Length >= 3 ? CloseSelectionPolyline(points) : points,
                         primary,
-                        SelectionHighlightKind.Fill);
+                        highlightKind);
                 }
             }
             return;
@@ -332,7 +334,7 @@ internal sealed partial class Direct2DStageRenderer
             stage.Frame,
             out var startStyle,
             out var endStyle);
-        DrawSelectionGeometry(path, primary, startStyle, endStyle);
+        DrawSelectionGeometry(path, primary, startStyle, endStyle, stage.SelectionHighlightForObject(hit.Key.ObjectIndex));
         return true;
     }
 
@@ -343,7 +345,7 @@ internal sealed partial class Direct2DStageRenderer
         if (stage.Scene.IsLineStraight(i))
         {
             var points = GetBezierScreenPoints(stage, i);
-            DrawSelectionLine(points.Start, points.End, primary, startStyle, endStyle);
+            DrawSelectionLine(points.Start, points.End, primary, startStyle, endStyle, stage.SelectionHighlightForObject(i));
         }
         else
         {
@@ -376,9 +378,14 @@ internal sealed partial class Direct2DStageRenderer
                 sink.EndFigure(FigureEnd.Open);
             }
             sink.Close();
-            DrawSelectionGeometry(path, primary: true, startStyle, endStyle);
+            DrawSelectionGeometry(path, primary: true, startStyle, endStyle, stage.SelectionHighlightForObject(i));
         }
 
+        if (stage.Scene.IsQuadraticLine(i))
+        {
+            DrawLineQuadraticHandles(stage, i);
+            return;
+        }
         foreach (var segment in segments)
         {
             DrawBezierHandles(
@@ -391,7 +398,7 @@ internal sealed partial class Direct2DStageRenderer
 
     private void DrawBezierHandles(StageControl stage, int i)
     {
-        if (stage.Scene.ShapeKind[i] == ShapeKind.Line)
+        if (stage.Scene.IsQuadraticLine(i))
         {
             DrawLineQuadraticHandles(stage, i);
             return;
@@ -403,7 +410,7 @@ internal sealed partial class Direct2DStageRenderer
 
     private void DrawBezierHandles(StageControl stage, DrawingElementHit hit)
     {
-        if (stage.Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        if (stage.Scene.IsQuadraticLine(hit.Key.ObjectIndex))
         {
             DrawLineQuadraticHandles(stage, hit.Key.ObjectIndex);
             return;
@@ -452,19 +459,11 @@ internal sealed partial class Direct2DStageRenderer
         {
             _target!.DrawLine(s, c, guide, 1);
             _target.DrawLine(e, c, guide, 1);
-            DrawControlHandle(c, 255, 112, 204, 9);
+            DrawHandle(c, BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb()), 9);
         }
 
         DrawHandle(s, endpointBrush, 7);
         DrawHandle(e, endpointBrush, 7);
-    }
-
-    private void DrawControlHandle(Vector2 point, int r, int g, int b, float size)
-    {
-        var radius = size * 0.5f;
-        var ellipse = new Ellipse(new Vector2(point.X, point.Y), radius, radius);
-        _target!.FillEllipse(ellipse, BrushFor(GdiColor.FromArgb(70, r, g, b).ToArgb()));
-        _target.DrawEllipse(ellipse, BrushFor(GdiColor.FromArgb(235, r, g, b).ToArgb()), 2f);
     }
 
     private void DrawHoveredLineControls(StageControl stage)
@@ -472,7 +471,7 @@ internal sealed partial class Direct2DStageRenderer
         var hit = stage.HoveredLineElement;
         if (!stage.ShouldDrawHoveredLineControls()) return;
 
-        if (stage.Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        if (stage.Scene.IsQuadraticLine(hit.Key.ObjectIndex))
         {
             DrawLineQuadraticHandles(stage, hit.Key.ObjectIndex);
             return;
@@ -704,7 +703,8 @@ internal sealed partial class Direct2DStageRenderer
                 : LineEndpointStyle.Round,
             endT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance
                 ? stage.Scene.GetLineEndpointStyle(i, startEndpoint: false)
-                : LineEndpointStyle.Round);
+                : LineEndpointStyle.Round,
+            stage.SelectionHighlightForObject(i));
     }
 
     private void DrawBezierSelectionContext(StageControl stage, int i)
@@ -740,6 +740,7 @@ internal sealed partial class Direct2DStageRenderer
                 primary,
                 startStyle,
                 endStyle,
+                stage.SelectionHighlightForObject(objectIndex),
                 strokeWidthScale: stage.ScreenLengthToWorld(1));
         }
         finally
@@ -806,15 +807,16 @@ internal sealed partial class Direct2DStageRenderer
         Vector2 end,
         bool primary,
         LineEndpointStyle startStyle,
-        LineEndpointStyle endStyle)
+        LineEndpointStyle endStyle,
+        SelectionHighlightKind highlightKind)
     {
         var strokeStyle = LineStrokeStyle(
             LineCapForEndpoint(startStyle),
             LineCapForEndpoint(endStyle),
             startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp);
-        _target!.DrawLine(start, end, BrushFor(SelectionOuterGlowColor(SelectionHighlightKind.Stroke, primary).ToArgb()), SelectionOuterGlowWidth(SelectionHighlightKind.Stroke, primary), strokeStyle);
-        _target.DrawLine(start, end, BrushFor(SelectionGlowColor(SelectionHighlightKind.Stroke, primary).ToArgb()), SelectionGlowWidth(SelectionHighlightKind.Stroke, primary), strokeStyle);
-        _target.DrawLine(start, end, BrushFor(SelectionLineColor(SelectionHighlightKind.Stroke, primary).ToArgb()), SelectionLineWidth(SelectionHighlightKind.Stroke, primary), strokeStyle);
+        _target!.DrawLine(start, end, BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()), SelectionOuterGlowWidth(highlightKind, primary), strokeStyle);
+        _target.DrawLine(start, end, BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()), SelectionGlowWidth(highlightKind, primary), strokeStyle);
+        _target.DrawLine(start, end, BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()), SelectionLineWidth(highlightKind, primary), strokeStyle);
     }
 
     private void DrawSelectionPolyline(Vector2[] points, bool primary, SelectionHighlightKind highlightKind)

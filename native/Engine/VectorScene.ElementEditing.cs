@@ -3251,6 +3251,7 @@ internal sealed partial class VectorScene
                 LineEndpointStyle.Round,
                 endStyle);
             if (secondObject < 0) throw new InvalidOperationException("The second line segment was invalid.");
+            QuadraticLineEditing[secondObject] = IsQuadraticLine(objectIndex);
             ObjectLayer[secondObject] = layer;
             ObjectKeyframeFrame[secondObject] = keyframeFrame;
             ObjectOrder[secondObject] = order;
@@ -3538,6 +3539,11 @@ internal sealed partial class VectorScene
         end = curve.End;
         return true;
     }
+
+    public bool IsQuadraticLine(int objectIndex)
+        => (uint)objectIndex < ObjectCount
+            && ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Line
+            && QuadraticLineEditing[objectIndex];
 
     public bool TryGetLineQuadraticControl(int objectIndex, out PointF control)
     {

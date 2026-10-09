@@ -22,12 +22,6 @@ internal sealed partial class Direct2DStageRenderer
     /// Draws the motion-track overlay for the attached track. Returns immediately when the overlay is
     /// off, and draws nothing when no anchor resolves to a finite screen position.
     /// </summary>
-    /// <remarks>
-    /// The hover frame number is intentionally not drawn here. The GDI overlay renders it with
-    /// <c>TextRenderer</c>; this renderer has no DirectWrite factory, and adding one purely for a label
-    /// would introduce a text stack the rest of the Direct2D pipeline does not use. The marker and ring
-    /// geometry is identical between the backends, so only the tooltip is GDI-only.
-    /// </remarks>
     internal void DrawMotionTrack(StageControl stage)
     {
         if (!stage.MotionTrackVisible) return;
@@ -43,9 +37,6 @@ internal sealed partial class Direct2DStageRenderer
     /// <summary>Dashed trajectory between consecutive anchors, coloured per tween membership.</summary>
     private void DrawMotionTrackSegments(MotionTrackScreenAnchor[] anchors, float dpiScale, ID2D1StrokeStyle dashed)
     {
-        // A dark halo under the ink keeps the trajectory legible over white or light artwork where the
-        // muted/accent dashes would otherwise vanish; on a dark stage the bright dash itself dominates.
-        var halo = BrushFor(MotionTrackGdiResources.MotionTrackHaloInk.ToArgb());
         for (var index = 1; index < anchors.Length; index++)
         {
             var start = anchors[index - 1];
@@ -57,12 +48,6 @@ internal sealed partial class Direct2DStageRenderer
                 : BrushFor(GdiColor.FromArgb(190, Theme.Muted).ToArgb());
             var width = (isTweenSegment ? 1.9f : 1.4f) * dpiScale;
             _target!.DrawLine(
-                new Vector2(start.Screen.X, start.Screen.Y),
-                new Vector2(end.Screen.X, end.Screen.Y),
-                halo,
-                width + 1.5f * dpiScale,
-                dashed);
-            _target.DrawLine(
                 new Vector2(start.Screen.X, start.Screen.Y),
                 new Vector2(end.Screen.X, end.Screen.Y),
                 brush,
@@ -87,6 +72,16 @@ internal sealed partial class Direct2DStageRenderer
         var ordinary = BrushFor(Theme.Text.ToArgb());
         var muted = BrushFor(GdiColor.FromArgb(110, Theme.Text).ToArgb());
         var hoverFrame = stage.MotionTrackHoverFrame;
+        var currentGlow = BrushFor(GdiColor.FromArgb(72, Theme.Accent).ToArgb());
+        var currentCore = BrushFor(GdiColor.FromArgb(145, Theme.Accent).ToArgb());
+
+        foreach (var anchor in anchors)
+        {
+            if (!anchor.IsCurrentFrame) continue;
+            var center = new Vector2(anchor.Screen.X, anchor.Screen.Y);
+            _target!.FillEllipse(new Ellipse(center, 9f * dpiScale, 9f * dpiScale), currentGlow);
+            _target.FillEllipse(new Ellipse(center, 7f * dpiScale, 7f * dpiScale), currentCore);
+        }
 
         foreach (var anchor in anchors)
         {
@@ -98,7 +93,7 @@ internal sealed partial class Direct2DStageRenderer
                 _target!.DrawEllipse(new Ellipse(center, haloSize * 0.5f, haloSize * 0.5f), selection, 1.8f * dpiScale);
             }
 
-            if (isHovered)
+            if (isHovered && !anchor.IsSelected)
             {
                 _target!.DrawEllipse(new Ellipse(center, haloSize * 0.5f, haloSize * 0.5f), hover, 1.6f * dpiScale);
             }
@@ -106,7 +101,9 @@ internal sealed partial class Direct2DStageRenderer
             // Selection grows the marker, matching the GDI overlay so the two backends agree on size.
             var size = anchor.IsSelected ? anchorSize * 1.15f : anchorSize;
             var half = size * 0.5f;
-            var fill = anchor.IsAdjusted
+            var fill = anchor.IsCurrentFrame
+                ? tween
+                : anchor.IsAdjusted
                 ? adjusted
                 : anchor.IsOnTweenSegment
                     ? tween
@@ -117,13 +114,6 @@ internal sealed partial class Direct2DStageRenderer
             _target!.FillRectangle(in rect, fill);
             _target.DrawRectangle(in rect, border, 1.2f * dpiScale);
 
-            if (anchor.IsSelected)
-            {
-                _target.DrawRectangle(
-                    Rect(center.X - half - 1.5f * dpiScale, center.Y - half - 1.5f * dpiScale, size + 3f * dpiScale, size + 3f * dpiScale),
-                    selection,
-                    1.8f * dpiScale);
-            }
         }
     }
 

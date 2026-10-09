@@ -1117,6 +1117,9 @@ internal sealed partial class MainForm : Form
             Start = start,
             End = end,
             Parameter = t,
+            Control1 = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]),
+            Control2 = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]),
+            PointerStart = world,
             FillBoundaryLinks = fillBoundaryLinks,
             DragExceeded = false
         };
@@ -1132,7 +1135,30 @@ internal sealed partial class MainForm : Form
         session.DragExceeded = true;
 
         var world = _stage.ScreenToWorld(screen);
-        _scene.SetLineQuadraticControl(session.ObjectIndex, world);
+        if (world == session.PointerStart)
+        {
+            _scene.CurveControlX[session.ObjectIndex] = session.Control1.X;
+            _scene.CurveControlY[session.ObjectIndex] = session.Control1.Y;
+            _scene.CurveControl2X[session.ObjectIndex] = session.Control2.X;
+            _scene.CurveControl2Y[session.ObjectIndex] = session.Control2.Y;
+        }
+        else if (_scene.IsQuadraticLine(session.ObjectIndex))
+        {
+            var originalControl = new PointF(
+                1.5f * session.Control1.X - 0.5f * session.Start.X,
+                1.5f * session.Control1.Y - 0.5f * session.Start.Y);
+            _scene.SetLineQuadraticControl(session.ObjectIndex, ResolveQuadraticArcDragControl(
+                originalControl, session.PointerStart, world, session.Parameter));
+        }
+        else
+        {
+            var influence = 3f * session.Parameter * (1f - session.Parameter);
+            var dx = (world.X - session.PointerStart.X) / influence;
+            var dy = (world.Y - session.PointerStart.Y) / influence;
+            _scene.SetLineEndpoint(session.ObjectIndex, true, session.Start, session.End,
+                new PointF(session.Control1.X + dx, session.Control1.Y + dy),
+                new PointF(session.Control2.X + dx, session.Control2.Y + dy), false);
+        }
         if (session.FillBoundaryLinks.Length > 0)
         {
             _scene.UpdateFillBoundaryLineLinks(session.FillBoundaryLinks, rebuildGeometryIndex: false);
@@ -1141,6 +1167,17 @@ internal sealed partial class MainForm : Form
         _scene.InvalidateDeferredTopologyQueries();
         _geometryDirty = true;
         _stage.Invalidate();
+    }
+
+    internal static PointF ResolveQuadraticArcDragControl(
+        PointF originalControl, PointF pointerStart, PointF pointer, float parameter)
+    {
+        var t = Math.Clamp(parameter, 0.05f, 0.95f);
+        // Move the grabbed curve point, preserving the pointer's initial hit-test offset.
+        var influence = 2f * t * (1f - t);
+        return new PointF(
+            originalControl.X + (pointer.X - pointerStart.X) / influence,
+            originalControl.Y + (pointer.Y - pointerStart.Y) / influence);
     }
 
     private void CompleteArcDrag(Point screen, MouseButtons button)

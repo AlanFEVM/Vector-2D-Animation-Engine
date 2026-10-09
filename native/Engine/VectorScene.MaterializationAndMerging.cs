@@ -191,7 +191,8 @@ internal sealed partial class VectorScene
                             segment.PartIndex == 0 ? GetLineEndpointStyle(source, startEndpoint: true) : LineEndpointStyle.Round,
                             segment.PartIndex == segments[^1].PartIndex ? GetLineEndpointStyle(source, startEndpoint: false) : LineEndpointStyle.Round) with
                         {
-                            GradientPaint = gradientPaint
+                            GradientPaint = gradientPaint,
+                            QuadraticEditing = IsQuadraticLine(source)
                         });
                     }
                 }
@@ -829,6 +830,7 @@ internal sealed partial class VectorScene
             ObjectOrder[index] = addition.Order;
             ObjectSubOrder[index] = addition.SubOrder;
             FillAutoMergeProtected[index] = addition.FillAutoMergeProtected;
+            QuadraticLineEditing[index] = addition.QuadraticEditing && ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line;
             ApplyGradientPaint(index, addition.GradientPaint);
         }
         return index;
@@ -2119,7 +2121,8 @@ internal sealed partial class VectorScene
                 ObjectOrder[retainedSource],
                 ObjectSubOrder[retainedSource],
                 startEndpointStyle,
-                endEndpointStyle));
+                endEndpointStyle,
+                IsQuadraticLine(retainedSource)));
             mergeCount += group.Length - 1;
 
             void UpdateLineMergeExtent(PointF point, LineEndpointStyle endpointStyle)
@@ -2164,6 +2167,7 @@ internal sealed partial class VectorScene
                 if (merged < 0) throw new InvalidOperationException("Compatible line merge produced invalid geometry.");
 
                 ObjectKeyframeFrame[merged] = plan.KeyframeFrame;
+                QuadraticLineEditing[merged] = plan.QuadraticEditing;
                 ObjectOrder[merged] = plan.Order;
                 ObjectSubOrder[merged] = plan.SubOrder;
                 foreach (var source in plan.Sources) oldToNew[source] = merged;
@@ -2239,6 +2243,7 @@ internal sealed partial class VectorScene
                 Argb[objectIndex],
                 StrokeArgb[objectIndex],
                 BitConverter.SingleToInt32Bits(Stroke[objectIndex]),
+                IsQuadraticLine(objectIndex),
                 GetLineEndpointStyle(objectIndex, startEndpoint: true),
                 GetLineEndpointStyle(objectIndex, startEndpoint: false),
                 directionBucket,
@@ -3187,7 +3192,7 @@ internal sealed partial class VectorScene
                     segment.End,
                     segment.PartIndex == 0 ? GetLineEndpointStyle(source, startEndpoint: true) : LineEndpointStyle.Round,
                     segment.PartIndex == segments[^1].PartIndex ? GetLineEndpointStyle(source, startEndpoint: false) : LineEndpointStyle.Round)
-                with { GradientPaint = gradientPaint },
+                with { GradientPaint = gradientPaint, QuadraticEditing = IsQuadraticLine(source) },
                 ObjectKeyframeFrame[source],
                 selected[part]));
         }

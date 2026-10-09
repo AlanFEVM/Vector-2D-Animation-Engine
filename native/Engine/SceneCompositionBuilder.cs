@@ -222,6 +222,7 @@ internal static class SceneCompositionBuilder
         public BitmapObjectData? BitmapObjectData { get; init; }
         public TextObjectData? TextObjectData { get; init; }
         public bool FillAutoMergeProtected { get; init; }
+        public bool QuadraticLineEditing { get; init; }
         public DistortWarp[] Distortions { get; init; } = [];
     }
 
@@ -2260,7 +2261,8 @@ internal static class SceneCompositionBuilder
             item.GradientStart,
             item.GradientEnd,
             item.GradientStops,
-            item.ShapeVertexCount);
+            item.ShapeVertexCount,
+            item.QuadraticLineEditing);
     }
 
     private static int AppendPreparedObject(VectorScene destination, PreparedCompositionObject item)
@@ -2384,6 +2386,7 @@ internal static class SceneCompositionBuilder
         if (index >= 0)
         {
             destination.FillAutoMergeProtected[index] = item.FillAutoMergeProtected;
+            destination.QuadraticLineEditing[index] = item.QuadraticLineEditing;
             if (item.Kind is PreparedCompositionKind.ImportedSvg or PreparedCompositionKind.Bitmap)
             {
                 destination.Argb[index] = item.FillArgb;
@@ -2421,7 +2424,8 @@ internal static class SceneCompositionBuilder
         item = item with
         {
             ShapeVertexCount = source.GetShapeVertexCount(sourceObject),
-            FillAutoMergeProtected = source.FillAutoMergeProtected[sourceObject]
+            FillAutoMergeProtected = source.FillAutoMergeProtected[sourceObject],
+            QuadraticLineEditing = source.IsQuadraticLine(sourceObject)
         };
         if (!source.HasGradient(sourceObject)) return item;
         return item with

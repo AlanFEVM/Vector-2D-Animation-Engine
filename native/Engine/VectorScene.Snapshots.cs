@@ -63,6 +63,7 @@ internal sealed partial class VectorScene
             StrokeArgb = StrokeArgb[..ObjectCount],
             FillAutoMergeProtected = FillAutoMergeProtected[..ObjectCount],
             FillBoundaryLinkDetached = FillBoundaryLinkDetached[..ObjectCount],
+            QuadraticLineEditing = QuadraticLineEditing[..ObjectCount],
             LinearGradientEnabled = LinearGradientEnabled[..ObjectCount],
             GradientKinds = GradientKinds[..ObjectCount],
             GradientStartArgb = GradientStartArgb[..ObjectCount],
@@ -179,6 +180,9 @@ internal sealed partial class VectorScene
             ? snapshot.LineEndEndpointStyles.Select(NormalizeLineEndpointStyle).ToArray()
             : LineEndpointStyles.ToArray();
         ShapeKind = snapshot.ShapeKind.ToArray();
+        QuadraticLineEditing = snapshot.QuadraticLineEditing.Length == ObjectCount
+            ? snapshot.QuadraticLineEditing.Select((value, index) => value && ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line).ToArray()
+            : new bool[ObjectCount];
         if (snapshot.CurveControl2X.Length != ObjectCount || snapshot.CurveControl2Y.Length != ObjectCount)
         {
             for (var index = 0; index < ObjectCount; index++)

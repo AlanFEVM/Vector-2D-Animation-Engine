@@ -4042,7 +4042,7 @@ internal static partial class Benchmark
         var commandKey = RequireMethod(typeof(MainForm), "HandleLassoCommandKey");
         var lassoPointsField = RequireField(typeof(MainForm), "_lassoScreenPoints");
         var lassoDownField = RequireField(typeof(MainForm), "_lassoPointerDown");
-        var clearSelection = RequireMethod(typeof(MainForm), "ClearSelection");
+        var clearSelection = RequireMethod(typeof(MainForm), "ClearSelection", [typeof(bool)]);
         var points = (IReadOnlyList<Point>)lassoPointsField.GetValue(form)!;
         const uint mouseDownMessage = 0x0201;
         const uint mouseUpMessage = 0x0202;
@@ -6405,6 +6405,8 @@ internal static partial class Benchmark
 
     private static void RunTemporaryCanvasPanRegression()
     {
+        RunLineEditingPointerRegression();
+        RunSelectionMoveCursorRegression();
         AssertTimeline(
             MainForm.CanStartTemporaryCanvasPan(
                 editorFocused: false,
@@ -6438,6 +6440,174 @@ internal static partial class Benchmark
             Math.Abs(originAfter.X - originBefore.X - 37) < 0.01f
             && Math.Abs(originAfter.Y - originBefore.Y + 19) < 0.01f,
             "Stage pan did not preserve the pointer drag delta in screen space.");
+    }
+
+    private static void RunLineEditingPointerRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var settings = (DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!;
+        settings.SnapEnabled = false;
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(1200);
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+        RequireMethod(typeof(MainForm), "AddDrawnObject").Invoke(form,
+            [new PointF(-200, -450), new PointF(200, -450), ToolMode.Line]);
+        AssertTimeline(scene.IsQuadraticLine(scene.ObjectCount - 1), "The Line tool did not create a quadratic-editable segment.");
+        RequireField(typeof(MainForm), "_penStartWorld").SetValue(form, new PointF(-200, -300));
+        RequireField(typeof(MainForm), "_penEndWorld").SetValue(form, new PointF(200, -300));
+        RequireField(typeof(MainForm), "_penControlWorld").SetValue(form, new PointF(0, -400));
+        AssertTimeline(RequireMethod(typeof(MainForm), "CommitPenSegment").Invoke(form, null) is true
+            && scene.IsQuadraticLine(scene.ObjectCount - 1), "Simple Pen did not retain quadratic editing.");
+        RequireField(typeof(MainForm), "_traditionalPenCurrentAnchor").SetValue(form, new PointF(-200, 500));
+        RequireField(typeof(MainForm), "_traditionalPenPendingAnchor").SetValue(form, new PointF(200, 500));
+        RequireField(typeof(MainForm), "_traditionalPenOutgoingHandle").SetValue(form, new PointF(-150, 400));
+        RequireField(typeof(MainForm), "_traditionalPenIncomingHandle").SetValue(form, new PointF(150, 600));
+        AssertTimeline(RequireMethod(typeof(MainForm), "CommitTraditionalPenSegment").Invoke(form, null) is true
+            && !scene.IsQuadraticLine(scene.ObjectCount - 1), "Pen was demoted to quadratic editing.");
+        var line = scene.AddCurveSegment(scene.ActiveLayer, new PointF(-200, 0),
+            new PointF(0, -150), new PointF(200, 0), 12, Color.Transparent, Color.Black, 6);
+        scene.QuadraticLineEditing[line] = true;
+        scene.CompleteDeferredBuild();
+        var press = Point.Round(stage.WorldToScreen(0, -75));
+        var pressWorld = stage.ScreenToWorld(press);
+        AssertTimeline(RequireMethod(typeof(MainForm), "BeginArcDrag").Invoke(form, [pressWorld, line]) is true,
+            "Quadratic arc drag did not start.");
+        var session = RequireField(typeof(MainForm), "_arcDragSession").GetValue(form)!;
+        session.GetType().GetProperty("DragExceeded")!.SetValue(session, true);
+        var updateArc = RequireMethod(typeof(MainForm), "UpdateArcDrag");
+        var originalSecond = new PointF(scene.CurveControl2X[line], scene.CurveControl2Y[line]);
+        scene.TryGetLineQuadraticControl(line, out var initial);
+        updateArc.Invoke(form, [press]);
+        scene.TryGetLineQuadraticControl(line, out var stationary);
+        AssertTimeline(PointsWithin(initial, stationary, 0.001f),
+            "The first real quadratic arc-drag sample changed the original geometry.");
+        AssertTimeline(originalSecond == new PointF(scene.CurveControl2X[line], scene.CurveControl2Y[line]),
+            "The first quadratic arc-drag sample rounded its degree-elevated second control.");
+        updateArc.Invoke(form, [new Point(press.X + 6, press.Y + 4)]);
+        scene.TryGetLineQuadraticControl(line, out var moved);
+        AssertTimeline(!PointsWithin(initial, moved, 0.001f), "Quadratic arc drag did not bend the curve.");
+        updateArc.Invoke(form, [press]);
+        scene.TryGetLineQuadraticControl(line, out var returned);
+        AssertTimeline(PointsWithin(initial, returned, 0.001f), "Real quadratic arc drag accumulated drift.");
+        AssertTimeline(originalSecond == new PointF(scene.CurveControl2X[line], scene.CurveControl2Y[line]),
+            "Returning a quadratic arc drag did not restore the exact original second control.");
+        RequireMethod(typeof(MainForm), "CancelArcDrag").Invoke(form, [true]);
+
+        var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        var capture = RequireMethod(typeof(MainForm), "CaptureEditStart");
+        var apply = RequireMethod(typeof(MainForm), "ApplyHandleDrag");
+        var pointerStartField = RequireField(typeof(MainForm), "_startWorld");
+        var handleField = RequireField(typeof(MainForm), "_activeHandle");
+        setSelection.Invoke(form, [line, false]);
+        var controlScreen = Point.Round(stage.WorldToScreen(initial.X, initial.Y));
+        AssertTimeline(stage.HitTestHandle(controlScreen, line) == EditHandleKind.BezierControl,
+            "Quadratic fan control was not hittable.");
+        handleField.SetValue(form, EditHandleKind.BezierControl);
+        var offsetPress = new PointF(initial.X + 3, initial.Y - 2);
+        pointerStartField.SetValue(form, offsetPress);
+        capture.Invoke(form, [line]);
+        apply.Invoke(form, [offsetPress, false]);
+        scene.TryGetLineQuadraticControl(line, out stationary);
+        AssertTimeline(PointsWithin(initial, stationary, 0.1f),
+            "Pressing off-center on the quadratic control snapped it onto the cursor.");
+
+        var cubic = scene.AddCubicCurveSegment(scene.ActiveLayer, new PointF(-200, 200),
+            new PointF(-160, 70), new PointF(160, 330), new PointF(200, 200),
+            12, Color.Transparent, Color.Black, 6);
+        scene.CompleteDeferredBuild();
+        setSelection.Invoke(form, [cubic, false]);
+        var firstControl = new PointF(scene.CurveControlX[cubic], scene.CurveControlY[cubic]);
+        var secondControl = new PointF(scene.CurveControl2X[cubic], scene.CurveControl2Y[cubic]);
+        AssertTimeline(stage.HitTestHandle(Point.Round(stage.WorldToScreen(secondControl.X, secondControl.Y)), cubic)
+            == EditHandleKind.BezierControl2, "Cubic line lost its independent second control.");
+        handleField.SetValue(form, EditHandleKind.BezierControl2);
+        pointerStartField.SetValue(form, secondControl);
+        capture.Invoke(form, [cubic]);
+        apply.Invoke(form, [new PointF(secondControl.X + 20, secondControl.Y + 15), false]);
+        AssertTimeline(PointsWithin(firstControl, new PointF(scene.CurveControlX[cubic], scene.CurveControlY[cubic]), 0.001f)
+            && !scene.IsQuadraticLine(cubic), "Editing a cubic second control rewrote its first control or degree.");
+
+        using var bitmap = new Bitmap(stage.Width, stage.Height);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.Clear(Color.FromArgb(176, 166, 166));
+            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var drawGuides = RequireMethod(typeof(StageControl), "DrawBezierGuides", [typeof(Graphics), typeof(int)]);
+            drawGuides.Invoke(stage, [graphics, line]);
+            drawGuides.Invoke(stage, [graphics, cubic]);
+        }
+        var blueControl = bitmap.GetPixel(controlScreen.X, controlScreen.Y);
+        AssertTimeline(blueControl.B > blueControl.R + 50 && blueControl.G > blueControl.R + 30,
+            "The quadratic fan control did not use the default blue square style.");
+        var yellowPixels = 0;
+        for (var y = 0; y < bitmap.Height; y++)
+            for (var x = 0; x < bitmap.Width; x++)
+            {
+                var pixel = bitmap.GetPixel(x, y);
+                if (pixel.R > 230 && pixel.G > 200 && pixel.B < 100) yellowPixels++;
+            }
+        AssertTimeline(yellowPixels > 100, "Quadratic line selection did not render a visible yellow core.");
+        var output = Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "line-editing-overlays.png");
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+        Console.WriteLine("line_editing_pointer_regression=ok");
+    }
+
+    private static void RunSelectionMoveCursorRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        var clearSelection = RequireMethod(typeof(MainForm), "ClearSelection");
+        var updateCursor = RequireMethod(typeof(MainForm), "UpdateInteractionCursor");
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var line = scene.AddLineSegment(scene.ActiveLayer, PointF.Empty, new PointF(240, 0),
+            VectorUnits.StrokePointsToUnits(2), Color.Transparent, Color.Black, 8);
+        scene.CompleteDeferredBuild();
+        activateTool.Invoke(form, [ToolMode.Select]);
+        setSelection.Invoke(form, [line, false]);
+        var body = Point.Round(stage.WorldToScreen(120, 0));
+        updateCursor.Invoke(form, [body]);
+        AssertTimeline(stage.Cursor == Cursors.SizeAll, "Selected line body did not show the move cursor.");
+        var endpoint = Point.Round(stage.WorldToScreen(0, 0));
+        updateCursor.Invoke(form, [endpoint]);
+        AssertTimeline(stage.Cursor == Cursors.Cross, "Line endpoint lost its editing cursor.");
+
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, body.X, body.Y, 0)]);
+        var moved = new Point(body.X + 40, body.Y + 30);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, moved.X, moved.Y, 0)]);
+        AssertTimeline(stage.Cursor == Cursors.SizeAll, "Line movement lost its cursor outside the original line.");
+        mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, moved.X, moved.Y, 0)]);
+        AssertTimeline(scene.IsLineStraight(line), "Moving a selected line bent its geometry.");
+        var blank = Point.Round(stage.WorldToScreen(500, 300));
+        updateCursor.Invoke(form, [blank]);
+        AssertTimeline(stage.Cursor == Cursors.Default, "Move cursor remained on empty Stage space.");
+
+        clearSelection.Invoke(form, [false]);
+        var hasStart = scene.TryGetLineEndpoint(line, true, out var start);
+        var hasEnd = scene.TryGetLineEndpoint(line, false, out var finalEnd);
+        AssertTimeline(hasStart && hasEnd, "Moved line endpoints were unavailable.");
+        body = Point.Round(stage.WorldToScreen((start.X + finalEnd.X) * 0.5f,
+            (start.Y + finalEnd.Y) * 0.5f));
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, body.X, body.Y, 0)]);
+        moved = new Point(body.X, body.Y + 30);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, moved.X, moved.Y, 0)]);
+        AssertTimeline(stage.Cursor == Cursors.Cross, "Unselected line bending showed a whole-object move cursor.");
+        mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, moved.X, moved.Y, 0)]);
+        Console.WriteLine("selection_move_cursor_regression=ok");
     }
 
     private static void RunImmediateMarqueeOverlayRegression()

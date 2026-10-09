@@ -143,7 +143,7 @@ internal sealed partial class StageControl : Control
                         g,
                         path,
                         primary,
-                        SelectionHighlightForShape(shape),
+                        SelectionHighlightForObject(i, SelectionHighlightForShape(shape)),
                         Scene.GetLineEndpointStyle(i, startEndpoint: true),
                         Scene.GetLineEndpointStyle(i, startEndpoint: false));
                 }
@@ -159,7 +159,7 @@ internal sealed partial class StageControl : Control
                 else if (points.Length == 1) DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Fill);
                 else if (points.Length > 1)
                 {
-                    DrawSelectionPolyline(g, points, primary, SelectionHighlightForShape(shape));
+                    DrawSelectionPolyline(g, points, primary, SelectionHighlightForObject(i, SelectionHighlightForShape(shape)));
                 }
             }
             return;
@@ -269,7 +269,7 @@ internal sealed partial class StageControl : Control
                         g,
                         path,
                         primary,
-                        SelectionHighlightForShape(shape),
+                        SelectionHighlightForObject(objectIndex, SelectionHighlightForShape(shape)),
                         Scene.GetLineEndpointStyle(objectIndex, startEndpoint: true),
                         Scene.GetLineEndpointStyle(objectIndex, startEndpoint: false));
                 }
@@ -285,7 +285,7 @@ internal sealed partial class StageControl : Control
                 else if (points.Length == 1) DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Fill);
                 else if (points.Length > 1)
                 {
-                    DrawSelectionPolyline(g, points, primary, SelectionHighlightForShape(shape));
+                    DrawSelectionPolyline(g, points, primary, SelectionHighlightForObject(objectIndex, SelectionHighlightForShape(shape)));
                 }
             }
             return;
@@ -370,7 +370,7 @@ internal sealed partial class StageControl : Control
             graphics,
             path,
             primary,
-            SelectionHighlightKind.Stroke,
+            SelectionHighlightForObject(hit.Key.ObjectIndex),
             startStyle,
             endStyle);
         return true;
@@ -1246,9 +1246,14 @@ internal sealed partial class StageControl : Control
             g,
             path,
             true,
-            SelectionHighlightKind.Stroke,
+            SelectionHighlightForObject(i),
             Scene.GetLineEndpointStyle(i, startEndpoint: true),
             Scene.GetLineEndpointStyle(i, startEndpoint: false));
+        if (Scene.IsQuadraticLine(i))
+        {
+            DrawLineQuadraticHandles(g, i);
+            return;
+        }
         foreach (var segment in segments)
         {
             DrawBezierHandles(
@@ -1262,7 +1267,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawBezierHandles(Graphics g, int i)
     {
-        if (Scene.ShapeKind[i] == ShapeKind.Line)
+        if (Scene.IsQuadraticLine(i))
         {
             DrawLineQuadraticHandles(g, i);
             return;
@@ -1274,7 +1279,7 @@ internal sealed partial class StageControl : Control
 
     private void DrawBezierHandles(Graphics g, DrawingElementHit hit)
     {
-        if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        if (Scene.IsQuadraticLine(hit.Key.ObjectIndex))
         {
             DrawLineQuadraticHandles(g, hit.Key.ObjectIndex);
             return;
@@ -1323,20 +1328,9 @@ internal sealed partial class StageControl : Control
         DrawHandle(g, startScreen, endpoint, 7);
         DrawHandle(g, endScreen, endpoint, 7);
         if (!ShouldShowLineControlHandles(i)) return;
-        using var guide = new Pen(Color.FromArgb(120, 112, 204, 255), 1);
-        g.DrawLine(guide, startScreen, controlScreen);
-        g.DrawLine(guide, endScreen, controlScreen);
-        DrawControlHandle(g, controlScreen, 9);
-    }
-
-    private void DrawControlHandle(Graphics g, PointF point, float size)
-    {
-        var r = size * 0.5f;
-        var bounds = new RectangleF(point.X - r, point.Y - r, size, size);
-        using var fill = new SolidBrush(Color.FromArgb(70, 112, 204, 255));
-        using var outline = new Pen(Color.FromArgb(235, 112, 204, 255), 2);
-        g.FillEllipse(fill, bounds);
-        g.DrawEllipse(outline, bounds);
+        g.DrawLine(_guidePen, startScreen, controlScreen);
+        g.DrawLine(_guidePen, endScreen, controlScreen);
+        DrawHandle(g, controlScreen, _bezierHandleBrush, 9);
     }
 
     private void DrawHoveredLineControls(Graphics g)
@@ -1344,7 +1338,7 @@ internal sealed partial class StageControl : Control
         var hit = _hoveredLineElement;
         if (!ShouldDrawHoveredLineControls()) return;
 
-        if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        if (Scene.IsQuadraticLine(hit.Key.ObjectIndex))
         {
             DrawLineQuadraticHandles(g, hit.Key.ObjectIndex);
             return;
@@ -1557,7 +1551,7 @@ internal sealed partial class StageControl : Control
             g,
             partialPath,
             primary,
-            SelectionHighlightKind.Stroke,
+            SelectionHighlightForObject(i),
             startT <= DrawingTopologyRules.UnitIntersectionTolerance
                 ? Scene.GetLineEndpointStyle(i, startEndpoint: true)
                 : LineEndpointStyle.Round,
@@ -1570,7 +1564,7 @@ internal sealed partial class StageControl : Control
     {
         var (start, control1, control2, end) = GetBezierScreenPoints(i);
         using var fullPath = BuildCubicPath(start, control1, control2, end);
-        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightKind.Stroke, primary: false)), 1.2f);
+        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightForObject(i), primary: false)), 1.2f);
         g.DrawPath(mutedPen, fullPath);
     }
 
@@ -1582,7 +1576,7 @@ internal sealed partial class StageControl : Control
             g,
             path,
             primary,
-            SelectionHighlightKind.Stroke,
+            SelectionHighlightForObject(i),
             Scene.GetLineEndpointStyle(i, startEndpoint: true),
             Scene.GetLineEndpointStyle(i, startEndpoint: false));
     }
@@ -1635,6 +1629,12 @@ internal sealed partial class StageControl : Control
         }
     }
 
+    internal SelectionHighlightKind SelectionHighlightForObject(
+        int objectIndex, SelectionHighlightKind fallback = SelectionHighlightKind.Stroke)
+        => Scene.IsQuadraticLine(objectIndex)
+            ? SelectionHighlightKind.QuadraticStroke
+            : fallback;
+
     internal static SelectionHighlightKind SelectionHighlightForShape(ShapeKind shape)
     {
         return shape is ShapeKind.Line or ShapeKind.Freeform
@@ -1646,6 +1646,8 @@ internal sealed partial class StageControl : Control
     {
         return (highlightKind, primary) switch
         {
+            (SelectionHighlightKind.QuadraticStroke, true) => Color.FromArgb(255, 255, 222, 82),
+            (SelectionHighlightKind.QuadraticStroke, false) => Color.FromArgb(245, 255, 212, 64),
             (SelectionHighlightKind.Fill, true) => Color.FromArgb(255, 104, 244, 214),
             (SelectionHighlightKind.Fill, false) => Color.FromArgb(235, 112, 220, 255),
             (SelectionHighlightKind.Stroke, true) => Color.FromArgb(255, 255, 214, 92),
@@ -1656,6 +1658,8 @@ internal sealed partial class StageControl : Control
     internal static Color SelectionGlowColor(SelectionHighlightKind highlightKind, bool primary, float pulse)
     {
         pulse = Math.Clamp(pulse, 0, 1);
+        if (highlightKind == SelectionHighlightKind.QuadraticStroke)
+            return Color.FromArgb((primary ? 180 : 140) + (int)MathF.Round((primary ? 55 : 45) * pulse), 232, 166, 0);
         if (highlightKind == SelectionHighlightKind.Fill)
         {
             return primary
@@ -1671,6 +1675,8 @@ internal sealed partial class StageControl : Control
     internal static Color SelectionOuterGlowColor(SelectionHighlightKind highlightKind, bool primary, float pulse)
     {
         pulse = Math.Clamp(pulse, 0, 1);
+        if (highlightKind == SelectionHighlightKind.QuadraticStroke)
+            return Color.FromArgb((primary ? 105 : 80) + (int)MathF.Round((primary ? 55 : 45) * pulse), 190, 128, 0);
         if (highlightKind == SelectionHighlightKind.Fill)
         {
             return primary

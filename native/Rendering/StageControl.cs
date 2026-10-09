@@ -188,6 +188,7 @@ internal readonly record struct FillEdgeBezierOverlayHit(
 
 internal enum SelectionHighlightKind
 {
+    QuadraticStroke,
     Fill,
     Stroke
 }
@@ -3271,6 +3272,7 @@ internal sealed partial class StageControl : Control
         DrawReference3DSelection(g);
         DrawTransformOverlay(g);
         DrawDistortOverlay(g);
+        DrawMotionTrack(g);
         DrawSnapPointOverlay(g);
         DrawMarquee(g);
         DrawShotFramingGizmoGdi(g);
@@ -4842,7 +4844,7 @@ internal sealed partial class StageControl : Control
         if (Distance(screen, WorldToScreen(end)) <= EndpointHandleHitRadiusPixels) return EditHandleKind.LineEnd;
         if (!ShouldShowEditableSegmentControlHandles(hit, start, control1, control2, end)) return EditHandleKind.None;
 
-        if (Scene.ShapeKind[hit.Key.ObjectIndex] == ShapeKind.Line)
+        if (Scene.IsQuadraticLine(hit.Key.ObjectIndex))
         {
             if (!Scene.TryGetLineQuadraticControl(hit.Key.ObjectIndex, out var quadratic)) return EditHandleKind.None;
             var quadraticReach = Math.Max(

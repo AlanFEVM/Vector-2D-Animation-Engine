@@ -748,6 +748,9 @@ internal sealed partial class MainForm : Form
         public required PointF Start { get; init; }
         public required PointF End { get; init; }
         public required float Parameter { get; init; }
+        public PointF Control1 { get; init; }
+        public PointF Control2 { get; init; }
+        public PointF PointerStart { get; init; }
         public required FillBoundaryLineLink[] FillBoundaryLinks { get; init; }
         public bool DragExceeded { get; set; }
     }
@@ -802,7 +805,10 @@ internal sealed partial class MainForm : Form
         TextObjectData? TextData,
         MixingBrushRegionData? MixingRegion,
         MixingBrushTrajectorySample[]? MixingSamples,
-        BitmapObjectData? BitmapData);
+        BitmapObjectData? BitmapData)
+    {
+        public bool QuadraticLineEditing { get; init; }
+    }
 
     private sealed record ClipboardDrawingObjectInstance(
         string DrawingObjectId,

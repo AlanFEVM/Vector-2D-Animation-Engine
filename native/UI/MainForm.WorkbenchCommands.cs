@@ -699,6 +699,49 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (_tool is ToolMode.Select or ToolMode.Transform
+            && _motionTrackEnabled && _stage.MotionTrackVisible
+            && (_motionTrackDragSession is not null
+                || _lastMouse is null
+                    && (_tool != ToolMode.Transform || _stage.HitTestTransformHandle(screen) == TransformHandleKind.None)
+                    && _stage.HitTestMotionTrackAnchor(screen) >= 0))
+        {
+            var frame = _stage.HitTestMotionTrackAnchor(screen);
+            _stage.Cursor = _motionTrackDragSession is not null
+                || _motionTrackSelectedFrames.Contains(frame)
+                    ? Cursors.SizeAll
+                    : Cursors.Default;
+            return;
+        }
+
+        if (_tool == ToolMode.Select)
+        {
+            if (_fillEdgeDetachPending.HasValue || _fillEdgeDetachMoving.HasValue)
+            {
+                _stage.Cursor = Cursors.SizeAll;
+                return;
+            }
+            if (_arcDragSession is not null || _cornerDragSession is not null
+                || _lineBranchDragSession is not null || _fillEdgePreSelect.HasValue
+                || _fillEdgeNoUiArc.HasValue)
+            {
+                _stage.Cursor = Cursors.Cross;
+                return;
+            }
+            if (_activeHandle != EditHandleKind.None)
+            {
+                _stage.Cursor = CursorForEditHandle(_activeHandle);
+                return;
+            }
+            if (_stage.Capture && _selectedObject >= 0 && _startWorld is not null && _selectedStart is not null
+                && !_marqueeSelecting && !_forceMarqueeOnPointerDown
+                && !_pendingClickSelection.IsValid)
+            {
+                _stage.Cursor = Cursors.SizeAll;
+                return;
+            }
+        }
+
         if (UpdateShotFramingGizmoCursor(screen)) return;
         if (IsShotDirectorContext())
         {
@@ -797,12 +840,21 @@ internal sealed partial class MainForm : Form
         if (_tool == ToolMode.Select)
         {
             var fillEdgeHit = _stage.HitTestFillEdgeBezierOverlay(screen);
-            if (fillEdgeHit.IsValid)
+            var lineHit = fillEdgeHit.IsValid && fillEdgeHit.Handle == EditHandleKind.None
+                ? _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld())
+                : DrawingElementHit.None;
+            if (FillEdgeOverlayOwnsPointer(fillEdgeHit, IsSelectableLineHit(lineHit)))
             {
                 ClearFillHoverPreview();
-                _stage.Cursor = fillEdgeHit.Handle == EditHandleKind.None
-                    ? Cursors.Cross
-                    : Cursors.SizeAll;
+                var targetObject = _stage.FillEdgeBezierOverlayTargetObject;
+                var bodyCanMove = fillEdgeHit.Handle == EditHandleKind.None
+                    && (uint)targetObject < _scene.ObjectCount
+                    && _scene.HasStroke(targetObject)
+                    && TryGetFillEdgeBezierOverlayPiece(fillEdgeHit.PartIndex, out var piece)
+                    && !_scene.IsBoundarySegmentDetached(targetObject, piece.SourcePartIndex);
+                _stage.Cursor = fillEdgeHit.Handle != EditHandleKind.None || bodyCanMove
+                    ? Cursors.SizeAll
+                    : Cursors.Cross;
                 return;
             }
         }
@@ -815,11 +867,14 @@ internal sealed partial class MainForm : Form
                 : _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
             var localObjectHasPriority = localHit.IsValid
                 && _scene.IsObjectSelectable(localHit.Key.ObjectIndex, _frame);
-            _stage.Cursor = !localObjectHasPriority
-                && (TryResolveSceneInstanceAt(world, out _) || IsPointerInsideSelectedSceneInstance(world))
-                ? Cursors.SizeAll
-                : Cursors.Default;
-            return;
+            if (!localObjectHasPriority)
+            {
+                _stage.Cursor = _sceneInstanceMoveActive
+                    || TryResolveSceneInstanceAt(world, out _) || IsPointerInsideSelectedSceneInstance(world)
+                    ? Cursors.SizeAll
+                    : Cursors.Default;
+                return;
+            }
         }
 
         if (_tool == ToolMode.Distort)
@@ -857,7 +912,14 @@ internal sealed partial class MainForm : Form
                 handle = _stage.HitTestHandle(screen, _selectedObject);
             }
 
-            _stage.Cursor = CursorForEditHandle(handle);
+            var hit = handle == EditHandleKind.None
+                ? _scene.HitTestElement(_stage.ScreenToWorld(screen), _frame, SelectionToleranceWorld())
+                : DrawingElementHit.None;
+            var selectedBody = hit.IsValid
+                && _scene.IsObjectSelectable(hit.Key.ObjectIndex, _frame)
+                && (_selectedElements.Any(selected => selected.Key == hit.Key)
+                    || _selectedElements.Count == 0 && _selectedObjects.Contains(hit.Key.ObjectIndex));
+            _stage.Cursor = selectedBody ? Cursors.SizeAll : CursorForEditHandle(handle);
             return;
         }
 
@@ -1420,6 +1482,8 @@ internal sealed partial class MainForm : Form
         _stage.MouseMove += StageMouseMove;
         _stage.MouseLeave += (_, _) =>
         {
+            _stage.SetMotionTrackHover(-1);
+            ClearMotionTrackHoverHint();
             ClearShotFramingFeedback();
             _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
             _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
@@ -2228,11 +2292,12 @@ internal sealed partial class MainForm : Form
             // frame that is now displayed. Without this it would freeze at the playback start frame and
             // silently disagree with the animated shot.
             if (frameChanged && _playing) UpdateShotFramingGizmo();
-            if (frameChanged && (_selectedElements.Count > 0 || !_playing && IsSceneBuildingContext())) ClearSelection();
+            if (frameChanged && (_selectedElements.Count > 0
+                || !_playing && IsSceneBuildingContext() && !_motionTrackEnabled)) ClearSelection();
             if (!_playing)
             {
                 ClearInactiveSelection();
-                if (_timeline.HasFrameSelection) SynchronizeSelectionFromTimelineFrames();
+                if (_timeline.HasFrameSelection && !_motionTrackEnabled) SynchronizeSelectionFromTimelineFrames();
                 UpdateFillEdgeBezierOverlay();
             }
         }

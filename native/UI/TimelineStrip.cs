@@ -1082,14 +1082,14 @@ internal sealed partial class TimelineStrip : Control
             _onionPreviousLabel,
             absolute,
             relativeText: "Prev",
-            absoluteText: "From",
+            absoluteText: "Start",
             relativeAccessibleName: "Previous onion skin frames",
             absoluteAccessibleName: "Motion track first frame");
         ApplyRangeLabel(
             _onionNextLabel,
             absolute,
             relativeText: "Next",
-            absoluteText: "To",
+            absoluteText: "End",
             relativeAccessibleName: "Next onion skin frames",
             absoluteAccessibleName: "Motion track last frame");
     }
@@ -1104,7 +1104,10 @@ internal sealed partial class TimelineStrip : Control
     {
         var text = absolute ? absoluteText : relativeText;
         var accessibleName = absolute ? absoluteAccessibleName : relativeAccessibleName;
-        if (!string.Equals(label.Text, text, StringComparison.Ordinal)) label.Text = text;
+        var localizedText = UiLocalization.T(text);
+        if (!string.Equals(label.Text, localizedText, StringComparison.Ordinal)) label.Text = localizedText;
+        var color = absolute ? Theme.AccentLabel : Theme.Muted;
+        if (label.ForeColor != color) label.ForeColor = color;
         if (!string.Equals(label.AccessibleName, accessibleName, StringComparison.Ordinal))
         {
             label.AccessibleName = accessibleName;

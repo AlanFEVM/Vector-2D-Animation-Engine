@@ -4,6 +4,114 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunLineEditingModeRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var start = new PointF(-200, 0);
+        var end = new PointF(200, 0);
+        var quadratic = scene.AddCurveSegment(0, start, new PointF(20, -180), end,
+            12, Color.Transparent, Color.Black, 6);
+        scene.QuadraticLineEditing[quadratic] = true;
+        var cubic = scene.AddCubicCurveSegment(0, new PointF(-200, 300),
+            new PointF(-180, 180), new PointF(160, 430), new PointF(200, 300),
+            12, Color.Transparent, Color.Black, 6);
+        AssertTimeline(scene.IsQuadraticLine(quadratic) && !scene.IsQuadraticLine(cubic),
+            "Line editing modes did not distinguish quadratic and cubic geometry.");
+        var snapshot = scene.CreateSnapshot();
+        var restored = new VectorScene();
+        restored.RestoreSnapshot(snapshot);
+        AssertTimeline(restored.IsQuadraticLine(quadratic) && !restored.IsQuadraticLine(cubic),
+            "Snapshot round-trip lost line editing modes.");
+        AssertTimeline(restored.SplitLineAt(quadratic, 0.4f, out var split)
+            && restored.IsQuadraticLine(split.FirstObjectIndex)
+            && restored.IsQuadraticLine(split.SecondObjectIndex),
+            "Splitting a quadratic line lost the single-control editing mode.");
+        restored.RemoveObjectAt(cubic);
+        AssertTimeline(Enumerable.Range(0, restored.ObjectCount).All(restored.IsQuadraticLine),
+            "Compacting line objects lost their editing modes.");
+        var newCubic = restored.AddLineSegment(0, new PointF(500, 0), new PointF(800, 0),
+            12, Color.Transparent, Color.Black, 6);
+        AssertTimeline(!restored.IsQuadraticLine(newCubic),
+            "A reused object slot inherited the removed line's quadratic mode.");
+
+        var path = Path.Combine(Path.GetTempPath(), $"v2d-line-modes-{Guid.NewGuid():N}.svg");
+        try
+        {
+            DrawingObjectSvgCodec.Write(path, "line-modes", snapshot);
+            var decoded = DrawingObjectSvgCodec.Read(path, "line-modes");
+            restored.RestoreSnapshot(decoded);
+            AssertTimeline(restored.IsQuadraticLine(quadratic) && !restored.IsQuadraticLine(cubic),
+                "Saving and reopening line objects lost editing modes.");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+
+        restored.RestoreSnapshot(snapshot);
+        var marquee = restored.MaterializeMarqueeLineParts(new RectangleF(-40, -120, 80, 180), 0);
+        AssertTimeline(marquee.Changed && restored.ObjectCount > 2
+            && Enumerable.Range(0, restored.ObjectCount).Count(restored.IsQuadraticLine) == restored.ObjectCount - 1,
+            "Marquee materialization lost quadratic modes on selected or unselected fragments.");
+        var project = VectorProject.CreateEmpty();
+        var definition = project.DrawingObjects[0];
+        definition.Scene.RestoreSnapshot(snapshot);
+        var composed = new VectorScene();
+        SceneCompositionBuilder.BuildDrawingObjectPreview(composed, definition, project.DrawingObjects,
+            new PointF(100, 200), 0, opacity: 1f);
+        AssertTimeline(composed.ObjectCount == 2
+            && Enumerable.Range(0, composed.ObjectCount).Count(composed.IsQuadraticLine) == 1,
+            "Packed scene composition lost line editing modes.");
+
+        var mergeScene = new VectorScene();
+        mergeScene.CreateEmpty();
+        var firstLine = mergeScene.AddLineSegment(0, PointF.Empty, new PointF(100, 0),
+            12, Color.Transparent, Color.Black, 6);
+        var secondLine = mergeScene.AddLineSegment(0, new PointF(100, 0), new PointF(200, 0),
+            12, Color.Transparent, Color.Black, 6);
+        mergeScene.QuadraticLineEditing[firstLine] = true;
+        AssertTimeline(!mergeScene.MergeCompatibleLineSegments(0).Changed,
+            "Merging differently typed lines erased their editing-mode distinction.");
+        mergeScene.QuadraticLineEditing[secondLine] = true;
+        AssertTimeline(mergeScene.MergeCompatibleLineSegments(0).Changed
+            && mergeScene.ObjectCount == 1 && mergeScene.IsQuadraticLine(0),
+            "Merging quadratic lines lost their editing mode.");
+
+        foreach (var q in new[] { new PointF(0, 0), new PointF(20, -180) })
+        {
+            foreach (var t in new[] { 0.12f, 0.5f, 0.82f })
+            {
+                var picked = QuadraticPoint(start, q, end, t);
+                var pointerStart = new PointF(picked.X + 2, picked.Y - 3);
+                var stationary = MainForm.ResolveQuadraticArcDragControl(q, pointerStart, pointerStart, t);
+                AssertTimeline(PointsWithin(stationary, q, 0.0001f),
+                    "The first quadratic drag sample snapped its control onto the pointer.");
+                var pointer = new PointF(pointerStart.X + 7, pointerStart.Y + 11);
+                var moved = MainForm.ResolveQuadraticArcDragControl(q, pointerStart, pointer, t);
+                var movedPick = QuadraticPoint(start, moved, end, t);
+                AssertTimeline(PointsWithin(movedPick, new PointF(picked.X + 7, picked.Y + 11), 0.001f),
+                    "The grabbed quadratic curve point did not follow the pointer delta.");
+                var returned = MainForm.ResolveQuadraticArcDragControl(q, pointerStart, pointerStart, t);
+                AssertTimeline(PointsWithin(returned, q, 0.0001f),
+                    "Dragging a quadratic curve back to the press point accumulated geometry drift.");
+            }
+        }
+        var yellow = StageControl.SelectionLineColor(SelectionHighlightKind.QuadraticStroke, true);
+        var halo = StageControl.SelectionOuterGlowColor(SelectionHighlightKind.QuadraticStroke, true, 0.5f);
+        AssertTimeline(yellow.R == 255 && yellow.G >= 215 && yellow.B >= 64
+            && halo.A >= 120 && halo.G < yellow.G - 60,
+            "Quadratic selection lost its light yellow core or contrasting outer halo.");
+        Console.WriteLine("line_editing_modes_and_quadratic_drag_regression=ok");
+
+        static PointF QuadraticPoint(PointF a, PointF q, PointF b, float t)
+        {
+            var u = 1f - t;
+            return new PointF(u * u * a.X + 2f * u * t * q.X + t * t * b.X,
+                u * u * a.Y + 2f * u * t * q.Y + t * t * b.Y);
+        }
+    }
+
     private static void RunLinkedFillBoundaryRegression()
     {
         var scene = new VectorScene();
@@ -1457,6 +1565,7 @@ internal static partial class Benchmark
     // with another line stays straight so the connection is not broken.
     private static void RunLineEndpointCurveRegression()
     {
+        RunLineEditingModeRegression();
         var start = new PointF(0, 0);
         var control1 = new PointF(100f / 3f, 0);
         var control2 = new PointF(200f / 3f, 0);

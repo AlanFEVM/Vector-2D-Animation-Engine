@@ -28,6 +28,7 @@ internal sealed partial class VectorScene
         if (ShapeKind[source] == VectorAnimationEngine.ShapeKind.Line)
         {
             var curve = LineCurve(source);
+            var quadraticEditing = IsQuadraticLine(source);
             var segments = BuildCurveParts(curve.Start, curve.Control1, curve.Control2, curve.End, splits);
             RemoveObjectAt(source);
             foreach (var segment in segments)
@@ -44,7 +45,11 @@ internal sealed partial class VectorScene
                     Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)),
                     segment.PartIndex == 0 ? GetLineEndpointStyle(source, startEndpoint: true) : LineEndpointStyle.Round,
                     segment.PartIndex == segments[^1].PartIndex ? GetLineEndpointStyle(source, startEndpoint: false) : LineEndpointStyle.Round);
-                if (index >= 0) ObjectOrder[index] = order;
+                if (index >= 0)
+                {
+                    ObjectOrder[index] = order;
+                    QuadraticLineEditing[index] = quadraticEditing;
+                }
                 if (segment.PartIndex == selectedPart) selectedIndex = index;
             }
         }

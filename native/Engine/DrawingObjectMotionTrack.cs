@@ -53,6 +53,8 @@ internal readonly record struct MotionTrackAnchor(
     bool IsAdjusted,
     bool IsOnTweenSegment)
 {
+    public System.Numerics.Vector3? ScenePosition { get; init; }
+
     /// <summary>Populated and tween frames accept hover, click and drag; held frames do too.</summary>
     public bool IsSelectable => Kind != MotionTrackFrameKind.BlankKeyframe;
 

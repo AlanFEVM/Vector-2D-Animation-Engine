@@ -40,7 +40,8 @@ internal static class DrawingObjectMotionTrackBuilder
         int centerFrame,
         int previousFrames,
         int nextFrames,
-        Vector2? localAnchor = null)
+        Vector2? localAnchor = null,
+        decimal parentFps = 30m)
     {
         if (symbol is null || instance is null || track is null) return DrawingObjectMotionTrack.Empty;
 
@@ -55,7 +56,8 @@ internal static class DrawingObjectMotionTrackBuilder
             centerFrame - previousFrames,
             centerFrame + nextFrames,
             null,
-            localAnchor);
+            localAnchor,
+            parentFps);
     }
 
     /// <summary>
@@ -69,7 +71,8 @@ internal static class DrawingObjectMotionTrackBuilder
         AnimationTimelineTrack track,
         int centerFrame,
         IEnumerable<int> frames,
-        Vector2? localAnchor = null)
+        Vector2? localAnchor = null,
+        decimal parentFps = 30m)
     {
         if (symbol is null || instance is null || track is null || frames is null)
         {
@@ -82,7 +85,7 @@ internal static class DrawingObjectMotionTrackBuilder
         Array.Sort(ordered);
         if (ordered.Length == 0) return DrawingObjectMotionTrack.Empty;
 
-        return BuildCore(symbol, instance, track, centerFrame, ordered[0], ordered[^1], ordered, localAnchor);
+        return BuildCore(symbol, instance, track, centerFrame, ordered[0], ordered[^1], ordered, localAnchor, parentFps);
     }
 
     private static DrawingObjectMotionTrack BuildCore(
@@ -93,13 +96,13 @@ internal static class DrawingObjectMotionTrackBuilder
         int firstFrame,
         int lastFrame,
         int[]? explicitFrames = null,
-        Vector2? localAnchor = null)
+        Vector2? localAnchor = null,
+        decimal parentFps = 30m)
     {
         var duration = track.Duration;
         // The trail traces the free-transform anchor. Callers may hand us the anchor the operator moved
         // on canvas (in symbol-local space); otherwise it defaults to the element's own geometry centre,
         // which is where the free-transform tool draws its anchor when it has not been moved.
-        var anchorPoint = localAnchor ?? SymbolLocalCenter(symbol);
         var anchors = new List<MotionTrackAnchor>(explicitFrames?.Length ?? Math.Max(0, lastFrame - firstFrame + 1));
 
         // Frames outside the track are skipped, so an onion-skin pointer range that runs past either
@@ -117,7 +120,7 @@ internal static class DrawingObjectMotionTrackBuilder
         {
             for (var frame = from; frame <= to; frame++)
             {
-                AppendAnchor(anchors, symbol, anchorPoint, instance, track, stateKeyframes, ref stateKeyframeCursor, frame);
+                AppendAnchor(anchors, symbol, localAnchor, instance, track, stateKeyframes, ref stateKeyframeCursor, frame, parentFps);
             }
         }
         else
@@ -125,7 +128,7 @@ internal static class DrawingObjectMotionTrackBuilder
             foreach (var frame in explicitFrames)
             {
                 if (frame < from || frame > to) continue;
-                AppendAnchor(anchors, symbol, anchorPoint, instance, track, stateKeyframes, ref stateKeyframeCursor, frame);
+                AppendAnchor(anchors, symbol, localAnchor, instance, track, stateKeyframes, ref stateKeyframeCursor, frame, parentFps);
             }
         }
 
@@ -143,20 +146,27 @@ internal static class DrawingObjectMotionTrackBuilder
     private static void AppendAnchor(
         List<MotionTrackAnchor> anchors,
         DrawingObjectDefinition symbol,
-        Vector2 localAnchor,
+        Vector2? localAnchor,
         DrawingObjectInstanceDefinition instance,
         AnimationTimelineTrack track,
         IReadOnlyList<InstanceStateKeyframe> stateKeyframes,
         ref int stateKeyframeCursor,
-        int frame)
+        int frame,
+        decimal parentFps)
     {
         var kind = ClassifyFrame(track, frame);
         var onTweenSegment = IsInsideTweenSpan(track, frame);
 
         var state = instance.EvaluateState(frame);
+        var sourceFrame = DrawingObjectInstanceDefinition.ResolvePlaybackFrame(
+            frame, parentFps, symbol.FrameCount, state);
+        var anchorPoint = localAnchor ?? SymbolLocalCenter(symbol, sourceFrame);
         // Trace the free-transform anchor instead of the symbol's 00 origin, so the motion trail
         // follows the anchor the operator sees on canvas (element centre by default).
-        var worldPosition = Vector2.Transform(localAnchor, InstanceMatrix(symbol, state));
+        var worldPosition = Vector2.Transform(anchorPoint, InstanceMatrix(symbol, state));
+        var scenePosition = Vector3.Transform(
+            new Vector3(anchorPoint.X - symbol.Anchor.X, anchorPoint.Y - symbol.Anchor.Y, 0),
+            DrawingObjectInstanceDefinition.CreateSpatialTransform(state));
 
         // A non-finite transform (degenerate scale, hand-edited project data) would poison the whole
         // polyline, so drop that frame instead of propagating NaN into the overlay.
@@ -170,7 +180,10 @@ internal static class DrawingObjectMotionTrackBuilder
             new PointF(worldPosition.X, worldPosition.Y),
             kind,
             adjusted,
-            onTweenSegment));
+            onTweenSegment)
+        {
+            ScenePosition = scenePosition
+        });
     }
 
     /// <summary>
@@ -239,7 +252,7 @@ internal static class DrawingObjectMotionTrackBuilder
     /// trail lines up with that handle. Symbols with no geometry fall back to their registration
     /// anchor, which keeps hand-authored/empty symbols behaving exactly as before.
     /// </summary>
-    private static Vector2 SymbolLocalCenter(DrawingObjectDefinition symbol)
+    private static Vector2 SymbolLocalCenter(DrawingObjectDefinition symbol, int frame)
     {
         var scene = symbol.Scene;
         if (scene is null || scene.ObjectCount <= 0) return new Vector2(symbol.Anchor.X, symbol.Anchor.Y);
@@ -248,15 +261,14 @@ internal static class DrawingObjectMotionTrackBuilder
         var top = float.MaxValue;
         var right = float.MinValue;
         var bottom = float.MinValue;
-        for (var index = 0; index < scene.ObjectCount; index++)
+        foreach (var index in scene.GetActiveObjectIndices(frame))
         {
-            // Object X/Y is the shape centre, so half the extent reaches each edge.
-            var halfWidth = scene.Width[index] * 0.5f;
-            var halfHeight = scene.Height[index] * 0.5f;
-            left = MathF.Min(left, scene.X[index] - halfWidth);
-            top = MathF.Min(top, scene.Y[index] - halfHeight);
-            right = MathF.Max(right, scene.X[index] + halfWidth);
-            bottom = MathF.Max(bottom, scene.Y[index] + halfHeight);
+            if (!scene.ShouldRenderLayerContent(scene.ObjectLayer[index])) continue;
+            var bounds = scene.GetObjectWorldBounds(index);
+            left = MathF.Min(left, bounds.Left);
+            top = MathF.Min(top, bounds.Top);
+            right = MathF.Max(right, bounds.Right);
+            bottom = MathF.Max(bottom, bounds.Bottom);
         }
 
         return right >= left && bottom >= top

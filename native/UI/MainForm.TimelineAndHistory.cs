@@ -4309,7 +4309,10 @@ internal sealed partial class MainForm : Form
                     _scene.TryGetTextObjectData(index, out var textData) ? textData : null,
                     mixingRegion,
                     mixingSamples,
-                    _scene.TryGetBitmapObjectData(index, out var bitmapData) ? bitmapData : null));
+                    _scene.TryGetBitmapObjectData(index, out var bitmapData) ? bitmapData : null)
+                {
+                    QuadraticLineEditing = _scene.IsQuadraticLine(index)
+                });
             }
 
             _internalClipboardSequence = GetClipboardSequenceNumber();
@@ -4457,6 +4460,7 @@ internal sealed partial class MainForm : Form
                     item.ShapeVertexCount);
                 if (item.Shape == ShapeKind.Line)
                 {
+                    _scene.QuadraticLineEditing[index] = item.QuadraticLineEditing;
                     _scene.CurveControlX[index] = item.CurveControl.X + offset.X;
                     _scene.CurveControlY[index] = item.CurveControl.Y + offset.Y;
                     _scene.CurveControl2X[index] = item.CurveControl2.X + offset.X;

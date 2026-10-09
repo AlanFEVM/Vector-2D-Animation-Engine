@@ -1080,6 +1080,7 @@ internal static class DrawingObjectSvgCodec
         ValidateArray(snapshot.Argb, count, nameof(snapshot.Argb));
         ValidateArray(snapshot.StrokeArgb, count, nameof(snapshot.StrokeArgb));
         ValidateOptionalArray(snapshot.FillAutoMergeProtected, count, nameof(snapshot.FillAutoMergeProtected));
+        ValidateOptionalArray(snapshot.QuadraticLineEditing, count, nameof(snapshot.QuadraticLineEditing));
         ValidateArray(snapshot.LinearGradientEnabled, count, nameof(snapshot.LinearGradientEnabled));
         ValidateArray(snapshot.GradientKinds, count, nameof(snapshot.GradientKinds));
         ValidateArray(snapshot.GradientStartArgb, count, nameof(snapshot.GradientStartArgb));

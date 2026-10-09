@@ -414,6 +414,8 @@ internal sealed partial class MainForm : Form
         objectIndex = -1;
         handle = EditHandleKind.None;
         var bestDistance = 12f;
+        var bestObject = -1;
+        var bestHandle = EditHandleKind.None;
         for (var index = 0; index < _scene.ObjectCount; index++)
         {
             if (_scene.ShapeKind[index] != ShapeKind.Line
@@ -426,20 +428,33 @@ internal sealed partial class MainForm : Form
 
             if (_scene.IsLineStraight(index)) continue;
 
-            if (!_scene.TryGetLineQuadraticControl(index, out var quadratic)) continue;
-            var control = _stage.WorldToScreen(quadratic.X, quadratic.Y);
-            var dx = control.X - screen.X;
-            var dy = control.Y - screen.Y;
-            var distance = MathF.Sqrt(dx * dx + dy * dy);
-            if (distance < bestDistance)
+            if (_scene.IsQuadraticLine(index))
             {
-                bestDistance = distance;
-                objectIndex = index;
-                handle = EditHandleKind.BezierControl;
+                if (_scene.TryGetLineQuadraticControl(index, out var quadratic))
+                    ConsiderControl(index, quadratic, EditHandleKind.BezierControl);
+            }
+            else
+            {
+                ConsiderControl(index, new PointF(_scene.CurveControlX[index], _scene.CurveControlY[index]), EditHandleKind.BezierControl);
+                ConsiderControl(index, new PointF(_scene.CurveControl2X[index], _scene.CurveControl2Y[index]), EditHandleKind.BezierControl2);
             }
         }
 
+        objectIndex = bestObject;
+        handle = bestHandle;
         return objectIndex >= 0;
+
+        void ConsiderControl(int index, PointF worldControl, EditHandleKind candidate)
+        {
+            var control = _stage.WorldToScreen(worldControl.X, worldControl.Y);
+            var dx = control.X - screen.X;
+            var dy = control.Y - screen.Y;
+            var distance = MathF.Sqrt(dx * dx + dy * dy);
+            if (distance >= bestDistance) return;
+            bestDistance = distance;
+            bestObject = index;
+            bestHandle = candidate;
+        }
     }
 
     private bool TryFindTraditionalPenAnchor(
@@ -621,6 +636,7 @@ internal sealed partial class MainForm : Form
             ActiveColor(),
             ActiveStrokeColor(),
             6);
+        _scene.QuadraticLineEditing[newObject] = true;
         SetSelection(newObject);
         FinalizeNewTopologyStrokeDrawingOperation(newObject);
         _hierarchyPanel.RefreshScene();
@@ -1702,7 +1718,7 @@ internal sealed partial class MainForm : Form
                 marqueeSession.IndependentStrokeObjects);
         }
         _selectedStart = new PointF(_scene.X[objectIndex], _scene.Y[objectIndex]);
-        if (_scene.ShapeKind[objectIndex] == ShapeKind.Line
+        if (_scene.IsQuadraticLine(objectIndex)
             && _scene.TryGetLineQuadraticControl(objectIndex, out var lineQuadratic))
         {
             // The quadratic-handle position: consumed by BezierControl handle drags.
@@ -1806,14 +1822,26 @@ internal sealed partial class MainForm : Form
             ApplyTextAreaHandleDrag(world);
             return;
         }
+        if (world == sourcePointerStart
+            && _scene.IsQuadraticLine(_selectedObject)
+            && _activeHandle is EditHandleKind.BezierControl or EditHandleKind.BezierControl2
+            && _selectedCurveStarts.TryGetValue(_selectedObject, out var originalFirst)
+            && _selectedCurve2Starts.TryGetValue(_selectedObject, out var originalSecond))
+        {
+            _scene.CurveControlX[_selectedObject] = originalFirst.X;
+            _scene.CurveControlY[_selectedObject] = originalFirst.Y;
+            _scene.CurveControl2X[_selectedObject] = originalSecond.X;
+            _scene.CurveControl2Y[_selectedObject] = originalSecond.Y;
+            return;
+        }
         if (_activeHandle == EditHandleKind.BezierControl)
         {
             if (_curveControlStart is not { } originalControl) return;
-            var snapped = VectorUnits.Quantize(SnapDrawingPoint(MoveHandleWithPointer(
-                originalControl,
-                sourcePointerStart,
-                world)));
-            if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line)
+            var snapped = world == sourcePointerStart
+                ? originalControl
+                : VectorUnits.Quantize(SnapDrawingPoint(MoveHandleWithPointer(
+                    originalControl, sourcePointerStart, world)));
+            if (_scene.IsQuadraticLine(_selectedObject))
             {
                 _scene.SetLineQuadraticControl(_selectedObject, snapped);
             }
@@ -1829,11 +1857,11 @@ internal sealed partial class MainForm : Form
         if (_activeHandle == EditHandleKind.BezierControl2)
         {
             if (_curveControl2Start is not { } originalControl) return;
-            var snapped = VectorUnits.Quantize(SnapDrawingPoint(MoveHandleWithPointer(
-                originalControl,
-                sourcePointerStart,
-                world)));
-            if (_scene.ShapeKind[_selectedObject] == ShapeKind.Line)
+            var snapped = world == sourcePointerStart
+                ? originalControl
+                : VectorUnits.Quantize(SnapDrawingPoint(MoveHandleWithPointer(
+                    originalControl, sourcePointerStart, world)));
+            if (_scene.IsQuadraticLine(_selectedObject))
             {
                 _scene.SetLineQuadraticControl(_selectedObject, snapped);
             }
@@ -2189,6 +2217,17 @@ internal sealed partial class MainForm : Form
                 ? edit.Control2
                 : new PointF(edit.Control2.X + dx, edit.Control2.Y + dy);
             var curved = ShouldCurveDraggedLineEndpoint(edit, primaryEditIndex);
+            if (_scene.IsQuadraticLine(edit.ObjectIndex))
+            {
+                var originalStart = edit.StartEndpoint ? edit.OriginalEndpoint : edit.OppositeEndpoint;
+                var quadratic = new PointF(
+                    1.5f * edit.Control1.X - 0.5f * originalStart.X,
+                    1.5f * edit.Control1.Y - 0.5f * originalStart.Y);
+                var control = new PointF(quadratic.X + dx * (curved ? 1f : 0.5f), quadratic.Y + dy * (curved ? 1f : 0.5f));
+                _scene.SetLineEndpoint(edit.ObjectIndex, edit.StartEndpoint, snapped, edit.OppositeEndpoint,
+                    control, edit.KeepStraight && !curved);
+                continue;
+            }
             var (draggedControl, oppositeControl) = ResolveLineEndpointDragControls(
                 edit.StartEndpoint,
                 curved,
@@ -2246,13 +2285,16 @@ internal sealed partial class MainForm : Form
 
         var start = endpointIsStart ? originalEndpoint : oppositeEndpoint;
         var end = endpointIsStart ? oppositeEndpoint : originalEndpoint;
-        if (!VectorScene.IsStraightBezierSegment(start, translatedControl, oppositeControl, end))
+        var dx = endpoint.X - originalEndpoint.X;
+        var dy = endpoint.Y - originalEndpoint.Y;
+        var originalDraggedControl = new PointF(translatedControl.X - dx, translatedControl.Y - dy);
+        if (!VectorScene.IsStraightBezierSegment(start,
+            endpointIsStart ? originalDraggedControl : oppositeControl,
+            endpointIsStart ? oppositeControl : originalDraggedControl, end))
         {
             return (translatedControl, oppositeControl);
         }
 
-        var dx = endpoint.X - originalEndpoint.X;
-        var dy = endpoint.Y - originalEndpoint.Y;
         return (
             translatedControl,
             new PointF(oppositeControl.X + dx, oppositeControl.Y + dy));
@@ -2568,6 +2610,7 @@ internal sealed partial class MainForm : Form
                 ActiveColor(),
                 ActiveStrokeColor(),
                 6);
+            _scene.QuadraticLineEditing[newObject] = true;
         }
         else
         {

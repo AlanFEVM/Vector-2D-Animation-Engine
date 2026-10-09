@@ -413,6 +413,7 @@ internal sealed partial class MainForm : Form
                 _pointerHitWasAlreadySelected = true;
                 CaptureEditStart(hit.Key.ObjectIndex);
                 QueueMoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
+                UpdateInteractionCursor(e.Location);
             }
         }
         else if (_tool == ToolMode.Select && _forceMarqueeOnPointerDown && e.Button == MouseButtons.Left)
@@ -432,6 +433,7 @@ internal sealed partial class MainForm : Form
                 return;
             }
             QueueMoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
+            UpdateInteractionCursor(e.Location);
         }
         else if (IsFreehandTool(_tool) && _freehandDrawing && e.Button == MouseButtons.Left)
         {

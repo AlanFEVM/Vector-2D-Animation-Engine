@@ -9,6 +9,7 @@ internal sealed class AnimatedToolTip : Control
     private bool _targetVisible;
     private Point _targetLocation;
     private string _message = "";
+    private bool _compact;
 
     public AnimatedToolTip()
     {
@@ -22,6 +23,8 @@ internal sealed class AnimatedToolTip : Control
 
     public void ShowFor(Control anchor, string message)
     {
+        _compact = false;
+        Font = Theme.UiFont(9.5f, FontStyle.Bold);
         if (anchor.FindForm() is not { } form) return;
         if (Parent != form) Parent = form;
 
@@ -57,6 +60,8 @@ internal sealed class AnimatedToolTip : Control
     /// <summary>Shows a multiline canvas hint near the pointer without restarting its animation.</summary>
     public void ShowAt(Control anchor, Point point, string message)
     {
+        _compact = false;
+        Font = Theme.UiFont(9.5f, FontStyle.Bold);
         if (anchor.FindForm() is not { } form) return;
         if (Parent != form) Parent = form;
         var scale = Math.Max(1f, anchor.DeviceDpi / 96f);
@@ -83,6 +88,36 @@ internal sealed class AnimatedToolTip : Control
         if (_progress < 1f && !_timer.Enabled) _timer.Start();
     }
 
+    public void ShowCompactAt(Control anchor, Point point, string message)
+    {
+        if (anchor.FindForm() is not { } form) return;
+        if (Parent != form) Parent = form;
+        _compact = true;
+
+        var scale = Math.Max(1f, anchor.DeviceDpi / 96f);
+        var textFont = Theme.UiFont(8.5f, FontStyle.Bold);
+        var textSize = TextRenderer.MeasureText(message, textFont, Size.Empty, TextFormatFlags.NoPadding);
+        Font = textFont;
+        Size = new Size(textSize.Width + (int)(12 * scale), Math.Max((int)(22 * scale), textSize.Height + (int)(6 * scale)));
+
+        var location = form.PointToClient(anchor.PointToScreen(
+            new Point(point.X + (int)(12 * scale), point.Y + (int)(12 * scale))));
+        var viewport = form.RectangleToClient(anchor.RectangleToScreen(anchor.ClientRectangle));
+        if (location.X + Width > viewport.Right - 6) location.X -= Width + (int)(24 * scale);
+        if (location.Y + Height > viewport.Bottom - 6) location.Y -= Height + (int)(24 * scale);
+        _targetLocation = new Point(
+            Math.Clamp(location.X, viewport.Left + 6, Math.Max(viewport.Left + 6, viewport.Right - Width - 6)),
+            Math.Clamp(location.Y, viewport.Top + 6, Math.Max(viewport.Top + 6, viewport.Bottom - Height - 6)));
+        Location = _targetLocation;
+        _message = message;
+        _targetVisible = true;
+        Visible = true;
+        AccessibleName = message;
+        BringToFront();
+        Invalidate();
+        if (_progress < 1f && !_timer.Enabled) _timer.Start();
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         if (_progress <= 0.01f || string.IsNullOrWhiteSpace(_message)) return;
@@ -101,7 +136,7 @@ internal sealed class AnimatedToolTip : Control
         using var text = new SolidBrush(
             Color.FromArgb(textAlpha, Theme.ReadableText(tooltipBackground, Theme.Text)));
         var rect = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
-        using var path = RoundedRect(rect, 7);
+        using var path = RoundedRect(rect, _compact ? 3 : 7);
         g.FillPath(bg, path);
         g.DrawPath(border, path);
         using var format = new StringFormat
@@ -109,7 +144,8 @@ internal sealed class AnimatedToolTip : Control
             LineAlignment = StringAlignment.Center,
             Alignment = StringAlignment.Near
         };
-        g.DrawString(_message, Font, text, new RectangleF(12, 0, Width - 24, Height), format);
+        var padding = _compact ? 6 : 12;
+        g.DrawString(_message, Font, text, new RectangleF(padding, 0, Width - padding * 2, Height), format);
     }
 
     protected override void Dispose(bool disposing)

@@ -18,10 +18,226 @@ internal static partial class Benchmark
         RunMotionTrackClassificationRegression();
         RunMotionTrackAdjustmentRegression();
         RunMotionTrackWorldPositionRegression();
+        RunMotionTrackAnimatedContentRegression();
+        RunMotionTrackAnchorGlowRegression();
         RunMotionTrackRangeAndEmptyRegression();
         RunMotionTrackAvailabilityContractRegression();
         RunMotionTrackHeaderLayoutRegression();
+        RunMotionTrackSceneInteractionRegression();
         Console.WriteLine("motion_track_regression=ok");
+    }
+
+    private static void RunMotionTrackAnchorGlowRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var stage = new StageControl(scene) { ClientSize = new Size(160, 100) };
+        using var bitmap = new Bitmap(160, 100);
+        using var graphics = Graphics.FromImage(bitmap);
+        MotionTrackScreenAnchor[] anchors =
+        [
+            new(0, new PointF(40, 40), true, false, false, true, false) { IsCurrentFrame = true },
+            new(1, new PointF(120, 40), true, false, false, true, false)
+        ];
+        RequireMethod(typeof(StageControl), "DrawMotionTrackSegments").Invoke(stage, [graphics, anchors]);
+        RequireMethod(typeof(StageControl), "DrawMotionTrackAnchors").Invoke(stage, [graphics, anchors]);
+        AssertTimeline(bitmap.GetPixel(40, 40).ToArgb() == Theme.Accent.ToArgb()
+            && bitmap.GetPixel(120, 40).ToArgb() == Theme.Warning.ToArgb()
+            && bitmap.GetPixel(40, 48).A > 0
+            && bitmap.GetPixel(120, 48).A == 0
+            && bitmap.GetPixel(80, 43).A == 0
+            && !anchors.Any(anchor => anchor.IsSelected),
+            "Motion-track glow did not stay on the current anchor independently of selection.");
+        Console.WriteLine("motion_track_anchor_glow=ok");
+    }
+
+    private static void RunMotionTrackSceneInteractionRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            Size = new Size(1280, 800)
+        };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var workspace = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var toggle = RequireMethod(typeof(MainForm), "ToggleTimelineMotionTrack");
+        var setRange = RequireMethod(typeof(MainForm), "SetMotionTrackRange");
+        var rebuild = RequireMethod(typeof(MainForm), "RebuildSceneComposition");
+        var select = RequireMethod(typeof(MainForm), "SetSceneInstanceSelection",
+            [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var pointerDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var pointerMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var pointerUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var cancel = RequireMethod(typeof(MainForm), "CancelMotionTrackDrag");
+        var symbol = project.DrawingObjects[0];
+        symbol.SetAnchor(new PointF(20, -30));
+        symbol.Scene.AddObject(0, new PointF(240, 120), new SizeF(320, 180),
+            0, 0, Color.CornflowerBlue, 4, ShapeKind.Rectangle);
+        var scene = project.Scenes[0];
+        AssertTimeline(project.TryAddSceneInstance(scene.Id, symbol.Id,
+            new PointF(900, 250), 0, out var created) && created is not null,
+            "Scene motion-track fixture could not add its instance.");
+        var instanceId = created!.Id;
+        created.SetStateAtFrame(0, created.EvaluateState(0) with
+        {
+            Z = 600,
+            RotationX = 18,
+            RotationY = -25
+        });
+        created.SetStateAtFrame(4, created.EvaluateState(0) with { X = 2200 });
+        var track = scene.Timeline.FindTrackByTargetId(created.SceneLayerId)!;
+        scene.Timeline.InsertKeyframe(track.Id, 4);
+        form.Show();
+        Application.DoEvents();
+        try
+        {
+            workspace.SelectedView = WorkspaceView.SceneEditor;
+            RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)])
+                .Invoke(form, [ToolMode.Select]);
+            timeline.AutoKeyframeEnabled = true;
+            foreach (var dimension in new[] { SceneDimension.TwoD, SceneDimension.ThreeD })
+            {
+                foreach (var projection in new[] { CameraProjection.Orthographic, CameraProjection.Perspective })
+                {
+                    scene.Camera.Projection = projection;
+                    stage.ConfigureReferenceView(scene, dimension);
+                    stage.ResetReferenceCameraView();
+                    stage.SetReferenceCameraOrientation(dimension == SceneDimension.ThreeD ? 0.7f : 0,
+                        dimension == SceneDimension.ThreeD ? 0.35f : 0);
+                    rebuild.Invoke(form, [false, false]);
+                    var instance = scene.Instances.Single(item => item.Id == instanceId);
+                    select.Invoke(form, [instance, false]);
+                    toggle.Invoke(form, null);
+                    setRange.Invoke(form, [0, 4]);
+                    AssertTimeline(timeline.MotionTrackEnabled && stage.MotionTrackVisible,
+                        $"Scene motion track did not become available in {dimension}/{projection}.");
+                    var original = instance.EvaluateState(0);
+                    var selectedFrames = (HashSet<int>)RequireField(typeof(MainForm), "_motionTrackSelectedFrames").GetValue(form)!;
+                    selectedFrames.Clear();
+                    selectedFrames.Add(0);
+                    var setFrame = RequireMethod(typeof(MainForm), "SetFrame");
+                    setFrame.Invoke(form, [4, true, false, false]);
+                    var frameAnchors = stage.ResolveMotionTrackScreenAnchors();
+                    AssertTimeline(frameAnchors.Single(anchor => anchor.Frame == 4).IsCurrentFrame
+                        && !frameAnchors.Single(anchor => anchor.Frame == 4).IsSelected
+                        && frameAnchors.Single(anchor => anchor.Frame == 0).IsSelected
+                        && selectedFrames.SetEquals([0])
+                        && (string)RequireField(typeof(MainForm), "_selectedSceneInstanceId").GetValue(form)! == instanceId,
+                        "Moving the motion-track playhead changed the Stage selection.");
+                    setFrame.Invoke(form, [0, true, false, false]);
+                    var local = new Vector3(240 - symbol.Anchor.X, 120 - symbol.Anchor.Y, 0);
+                    var position = Vector3.Transform(local,
+                        DrawingObjectInstanceDefinition.CreateSpatialTransform(original));
+                    AssertTimeline(stage.TryProjectScenePosition(position, out var expected, out _)
+                        && stage.TryGetMotionTrackAnchorScreenPoint(0, out var actual)
+                        && Vector2.Distance(new Vector2(actual.X, actual.Y),
+                            new Vector2(expected.X, expected.Y)) < 0.01f,
+                        $"Scene motion-track anchor ignored the spatial camera in {dimension}/{projection}.");
+                    var start = Point.Round(expected);
+                    pointerMove.Invoke(form, [stage, Mouse(start, MouseButtons.None)]);
+                    var hint = (AnimatedToolTip)RequireField(typeof(MainForm), "_toolTip").GetValue(form)!;
+                    AssertTimeline(stage.MotionTrackHoverFrame == 0
+                        && hint.AccessibleName == $"{UiLocalization.T("Frame")} 0"
+                        && hint.Width < 92 * stage.SpatialGizmoDpiScale
+                        && hint.Height < 34 * stage.SpatialGizmoDpiScale
+                        && selectedFrames.SetEquals([0]),
+                        "Motion-track hovering did not show its frame without changing selection.");
+                    selectedFrames.Clear();
+                    stage.SetMotionTrackSelection(selectedFrames);
+                    var target = new Point(start.X + 30, start.Y - 20);
+                    pointerDown.Invoke(form, [stage, Mouse(start, MouseButtons.Left)]);
+                    pointerDown.Invoke(form, [stage, Mouse(start, MouseButtons.Left)]);
+                    pointerMove.Invoke(form, [stage, Mouse(target, MouseButtons.Left)]);
+                    pointerUp.Invoke(form, [stage, Mouse(target, MouseButtons.Left)]);
+                    AssertTimeline(stage.TryGetMotionTrackAnchorScreenPoint(0, out var moved)
+                        && Math.Abs(moved.X - expected.X - 30) < 1
+                        && Math.Abs(moved.Y - expected.Y + 20) < 1,
+                        $"Scene motion-track drag did not follow its pointer in {dimension}/{projection}.");
+                    AssertTimeline((bool)undo.Invoke(form, null)!
+                        && scene.Instances.Single(item => item.Id == instanceId).EvaluateState(0) == original,
+                        $"Scene motion-track drag did not undo in {dimension}/{projection}.");
+                    instance = scene.Instances.Single(item => item.Id == instanceId);
+                    select.Invoke(form, [instance, false]);
+                    pointerDown.Invoke(form, [stage, Mouse(start, MouseButtons.Left)]);
+                    pointerDown.Invoke(form, [stage, Mouse(start, MouseButtons.Left)]);
+                    pointerMove.Invoke(form, [stage, Mouse(target, MouseButtons.Left)]);
+                    cancel.Invoke(form, null);
+                    stage.Capture = false;
+                    AssertTimeline(scene.Instances.Single(item => item.Id == instanceId).EvaluateState(0) == original,
+                        $"Scene motion-track cancellation lost the original placement in {dimension}/{projection}.");
+                    toggle.Invoke(form, null);
+                }
+            }
+        }
+        finally
+        {
+            RequireField(typeof(MainForm), "_projectDirty").SetValue(form, false);
+            form.Hide();
+        }
+        Console.WriteLine("motion_track_scene_interaction=ok");
+
+        static MouseEventArgs Mouse(Point point, MouseButtons buttons) =>
+            new(buttons, 1, point.X, point.Y, 0);
+    }
+
+    private static void RunMotionTrackAnimatedContentRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var symbol = project.DrawingObjects[0];
+        symbol.Scene.CreateEmpty(1, 12);
+        symbol.SetAnchor(new PointF(30, -20));
+        symbol.Scene.AddObject(0, new PointF(100, 200), new SizeF(80, 60),
+            0, 0, Color.Teal, 4, ShapeKind.Rectangle);
+        symbol.Scene.InsertTimelineBlankKeyframe(0, 4);
+        symbol.Scene.EditFrame = 4;
+        symbol.Scene.AddObject(0, new PointF(800, -500), new SizeF(80, 60),
+            0, 0, Color.Teal, 4, ShapeKind.Rectangle);
+        symbol.Scene.InsertTimelineBlankKeyframe(0, 8);
+        symbol.Scene.EditFrame = 8;
+        symbol.Scene.AddObject(0, new PointF(1600, 900), new SizeF(80, 60),
+            0, 0, Color.Teal, 4, ShapeKind.Rectangle);
+        var host = project.AddDrawingObject("Animated motion track host");
+        host.Scene.CreateEmpty(1, 24);
+        AssertTimeline(project.TryAddDrawingObjectInstance(host.Id, symbol.Id,
+            new PointF(50, 70), out var instance) && instance is not null,
+            "Animated motion-track fixture could not create its instance.");
+        var track = EnsureMotionTrackDuration(host, 24);
+        var sampled = DrawingObjectMotionTrackBuilder.BuildForFrames(
+            symbol, instance!, track, 4, [0, 3, 4, 7, 8]);
+        AssertPosition(sampled, 0, new PointF(120, 290));
+        AssertPosition(sampled, 3, new PointF(120, 290));
+        AssertPosition(sampled, 4, new PointF(820, -410));
+        AssertPosition(sampled, 7, new PointF(820, -410));
+        AssertPosition(sampled, 8, new PointF(1620, 990));
+        instance!.PlaybackMode = DrawingObjectPlaybackMode.Loop;
+        sampled = DrawingObjectMotionTrackBuilder.BuildForFrames(symbol, instance, track, 12, [12, 16]);
+        AssertPosition(sampled, 12, new PointF(120, 290));
+        AssertPosition(sampled, 16, new PointF(820, -410));
+        instance.PlaybackMode = DrawingObjectPlaybackMode.HoldFrame;
+        instance.HoldFrame = 4;
+        sampled = DrawingObjectMotionTrackBuilder.BuildForFrames(symbol, instance, track, 0, [0, 8]);
+        AssertPosition(sampled, 0, new PointF(820, -410));
+        AssertPosition(sampled, 8, new PointF(820, -410));
+        instance.PlaybackMode = DrawingObjectPlaybackMode.PlayOnce;
+        sampled = DrawingObjectMotionTrackBuilder.BuildForFrames(
+            symbol, instance, track, 4, [4, 8], parentFps: 60m);
+        AssertPosition(sampled, 4, new PointF(120, 290));
+        AssertPosition(sampled, 8, new PointF(820, -410));
+        Console.WriteLine("motion_track_animated_content=ok");
+
+        static void AssertPosition(DrawingObjectMotionTrack motion, int frame, PointF expected)
+        {
+            AssertTimeline(motion.FindAnchor(frame) is { } anchor
+                && PointsNear(anchor.WorldPosition, expected)
+                && anchor.ScenePosition is { } spatial
+                && PointsNear(new PointF(spatial.X, spatial.Y), expected),
+                $"Motion track sampled inactive Cels at frame {frame}: {DescribeMotionTrackAnchor(motion.FindAnchor(frame))}.");
+        }
     }
 
     /// <summary>

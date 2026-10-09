@@ -49,6 +49,7 @@ internal sealed class VectorSceneSnapshot
     public int[] StrokeArgb { get; init; } = [];
     public bool[] FillAutoMergeProtected { get; init; } = [];
     public bool[] FillBoundaryLinkDetached { get; init; } = [];
+    public bool[] QuadraticLineEditing { get; init; } = [];
     public bool[] LinearGradientEnabled { get; init; } = [];
     public GradientKind[] GradientKinds { get; init; } = [];
     public int[] GradientStartArgb { get; init; } = [];
@@ -216,6 +217,7 @@ internal sealed class VectorSceneSnapshot
         bytes += ArrayBytes(StrokeArgb.Length, 4);
         bytes += ArrayBytes(FillAutoMergeProtected.Length, 1);
         bytes += ArrayBytes(FillBoundaryLinkDetached.Length, 1);
+        bytes += ArrayBytes(QuadraticLineEditing.Length, 1);
         bytes += ArrayBytes(LinearGradientEnabled.Length, 1);
         bytes += ArrayBytes(GradientKinds.Length, 4);
         bytes += ArrayBytes(GradientStartArgb.Length, 4);

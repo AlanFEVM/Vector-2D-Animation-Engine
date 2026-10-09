@@ -156,6 +156,7 @@ internal sealed partial class VectorScene : ITimelineContext
     public int[] StrokeArgb { get; private set; } = [];
     public bool[] FillAutoMergeProtected { get; private set; } = [];
     public bool[] FillBoundaryLinkDetached { get; private set; } = [];
+    public bool[] QuadraticLineEditing { get; private set; } = [];
     public bool[] LinearGradientEnabled { get; private set; } = [];
     public GradientKind[] GradientKinds { get; private set; } = [];
     public int[] GradientStartArgb { get; private set; } = [];
@@ -441,6 +442,7 @@ internal sealed partial class VectorScene : ITimelineContext
         int FillArgb,
         int StrokeArgb,
         int StrokeBits,
+        bool QuadraticEditing,
         LineEndpointStyle StartEndpointStyle,
         LineEndpointStyle EndEndpointStyle,
         int DirectionBucket,
@@ -460,7 +462,8 @@ internal sealed partial class VectorScene : ITimelineContext
         long Order,
         double SubOrder,
         LineEndpointStyle StartEndpointStyle,
-        LineEndpointStyle EndEndpointStyle);
+        LineEndpointStyle EndEndpointStyle,
+        bool QuadraticEditing);
 
     private readonly record struct TopologyCutterPath(Path64 Path, bool Closed);
 
@@ -508,6 +511,7 @@ internal sealed partial class VectorScene : ITimelineContext
         PointF[][] Contours)
     {
         public GradientPaintData? GradientPaint { get; init; }
+        public bool QuadraticEditing { get; init; }
         public bool FillAutoMergeProtected { get; init; }
         public PathBezierNode[][] BezierContours { get; init; } = [];
         public PathBezierNode[] OpenBezierNodes { get; init; } = [];
