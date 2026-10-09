@@ -768,6 +768,7 @@ internal sealed partial class StageControl : Control
     private double _lastFrameRenderMilliseconds;
     private bool _marqueeSceneInvalidationPending;
     private bool _zoomLodPreviewActive;
+    private bool _distortZoomPreviewActive;
     private long _basePresentationRevision;
     private long _reference3DWorkspaceFrameCacheRevision;
     private bool _basePresentationInvalidationPending;
@@ -792,6 +793,11 @@ internal sealed partial class StageControl : Control
         long GeometryRevision,
         long SummaryRevision,
         long PresentationRevision,
+        bool InteractivePreview,
+        BitmapImageRasterKey Image,
+        BitmapSampling Sampling,
+        DistortObjectGeometryState ObjectGeometry,
+        int Argb,
         int Frame,
         float CameraX,
         float CameraY,
@@ -1674,6 +1680,9 @@ internal sealed partial class StageControl : Control
     private void ClearDistortPreviewCore(bool invalidate)
     {
         var hadPreview = HasDistortPreview;
+        // Ordinary Select clicks finish through this cleanup even with no Distort
+        // preview. Preserve committed results; lifecycle callers still clear them.
+        if (invalidate && !hadPreview) return;
         _distortPreviewScene = null;
         _distortPreviewOverrides = new Dictionary<int, DistortWarp[]>();
         _distortedVectorGeometryCache.Clear();
@@ -1685,6 +1694,7 @@ internal sealed partial class StageControl : Control
 
     private void ClearDistortRasterCache()
     {
+        ClearDistortResultCache();
         foreach (var bitmap in _distortRasterCache.Values) bitmap.Dispose();
         _distortRasterCache.Clear();
         _distortRasterCacheBytes = 0;
@@ -1847,7 +1857,7 @@ internal sealed partial class StageControl : Control
     private PointF[][] GetObjectBoundaryContoursForRendering(VectorScene scene, int objectIndex)
     {
         return TryGetObjectDistortionsForRendering(scene, objectIndex, out var distortions)
-            ? scene.GetDistortedObjectBoundaryContours(objectIndex, distortions)
+            ? GetCachedDistortedBoundaryContours(scene, objectIndex, distortions)
             : scene.GetObjectBoundaryContours(objectIndex);
     }
 
@@ -2105,9 +2115,12 @@ internal sealed partial class StageControl : Control
         var after = ScreenToWorld(screen);
         CameraX += before.X - after.X;
         CameraY += before.Y - after.Y;
-        if (interactivePreview && ShouldUseZoomLodPreview(Scene.ObjectCount, Scene.HasDisplayLayerEffects))
+        var objectLodPreview = interactivePreview
+            && ShouldUseZoomLodPreview(Scene.ObjectCount, Scene.HasDisplayLayerEffects);
+        var distortPreview = interactivePreview && HasSoftwareDistortionForCurrentFrame();
+        if (objectLodPreview || distortPreview)
         {
-            BeginZoomLodPreview();
+            BeginZoomLodPreview(objectLodPreview, distortPreview);
         }
         else
         {
@@ -2143,6 +2156,14 @@ internal sealed partial class StageControl : Control
         if (_selectedElements.Any(hit => hit.Key.ObjectIndex == objectIndex)
             && (shape is not ShapeKind.Line and not ShapeKind.Freeform
                 || !_selectedElements.Any(hit => hit.Key.ObjectIndex == objectIndex && hit.Key.Kind == DrawingElementKind.Stroke)))
+        {
+            return EditHandleKind.None;
+        }
+
+        // Distorted outlines do not draw the raw bounding-corner or text handles.
+        // Keep their invisible source positions from intercepting Select body clicks.
+        if (shape is not ShapeKind.Line and not ShapeKind.Freeform
+            && TryGetObjectDistortionsForRendering(Scene, objectIndex, out _))
         {
             return EditHandleKind.None;
         }
@@ -3011,6 +3032,15 @@ internal sealed partial class StageControl : Control
         }
     }
 
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (!Capture && !_disposingResources && HasSoftwareDistortionForCurrentFrame())
+        {
+            RequestStageFrame(basePresentationChanged: true);
+        }
+    }
+
     private void LogSlowPointerFeedback(long presentedAt)
     {
         if (LastPointerDownToPresentMilliseconds < SlowPointerFeedbackMilliseconds
@@ -3066,8 +3096,12 @@ internal sealed partial class StageControl : Control
     {
         return !PlaybackActive
             && !HasDistortPreview
+            && !(DistortRasterInteractivePreview && HasSoftwareDistortionForCurrentFrame())
             && (RendersReferenceProjection || HasSoftwareDistortionForCurrentFrame());
     }
+
+    private bool DistortRasterInteractivePreview => HasDistortPreview
+        || !PlaybackActive && (Capture || _distortZoomPreviewActive);
 
     private bool HasSoftwareDistortionForCurrentFrame()
     {
@@ -3160,6 +3194,8 @@ internal sealed partial class StageControl : Control
 
     private void ResetLastGdiFrameTelemetry()
     {
+        LastGdiDistortResultBuilds = 0;
+        LastGdiDistortResultReuses = 0;
         LastGdiDistortRasterBuilds = 0;
         LastGdiDistortRasterReuses = 0;
         LastGdiBaseFrameCacheBuilds = 0;
@@ -3488,7 +3524,7 @@ internal sealed partial class StageControl : Control
         CompleteReferenceCameraTransition(invalidate: false);
         CompleteSpatialTransformGizmoMotion(invalidate: false);
         ResetFrameSchedulerState();
-        _zoomLodPreviewTimer.Stop();
+        EndZoomLodPreview(invalidate: false);
         _reference3DOpticalPreviewTimer.Stop();
         _marqueeOverlay.Hide();
         ClearLassoPreviewForLifecycle();
@@ -5109,9 +5145,10 @@ internal sealed partial class StageControl : Control
         InvalidateOverlay();
     }
 
-    private void BeginZoomLodPreview()
+    private void BeginZoomLodPreview(bool objectLodPreview, bool distortPreview)
     {
-        _zoomLodPreviewActive = true;
+        _zoomLodPreviewActive = objectLodPreview;
+        _distortZoomPreviewActive = distortPreview;
         _zoomLodPreviewTimer.Stop();
         _zoomLodPreviewTimer.Start();
     }
@@ -5119,8 +5156,9 @@ internal sealed partial class StageControl : Control
     private void EndZoomLodPreview(bool invalidate)
     {
         _zoomLodPreviewTimer.Stop();
-        if (!_zoomLodPreviewActive) return;
+        if (!_zoomLodPreviewActive && !_distortZoomPreviewActive) return;
         _zoomLodPreviewActive = false;
+        _distortZoomPreviewActive = false;
         if (invalidate) Invalidate();
     }
 

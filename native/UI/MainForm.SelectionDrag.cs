@@ -65,7 +65,20 @@ internal sealed partial class MainForm
                 if (!_independentMarqueeStrokeMove) CaptureFillBoundaryLineLinks();
                 var dxWorld = world.X - _startWorld.Value.X;
                 var dyWorld = world.Y - _startWorld.Value.Y;
-                if (_selectedMoveStarts.Count > 1)
+                // A placement and its distortion must move together from the same
+                // pointer-down baseline. Moving only X/Y leaves visible pixels outside
+                // the persisted source envelope, where inverse hit testing cannot find them.
+                if (_drawingTransformSession is null
+                    && _selectedMoveStarts.Keys.Any(index => _scene.TryGetObjectDistortionsView(index, out _)))
+                {
+                    _drawingTransformSession = _scene.BeginTransformSession(_selectedMoveStarts.Keys);
+                }
+                if (_drawingTransformSession is { } translationSession)
+                {
+                    _scene.ApplyTranslationSessionForPreview(translationSession, dxWorld, dyWorld,
+                        synchronizeLinkedFills: false);
+                }
+                else if (_selectedMoveStarts.Count > 1)
                 {
                     foreach (var item in _selectedMoveStarts)
                     {

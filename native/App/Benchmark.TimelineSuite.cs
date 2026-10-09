@@ -135,6 +135,8 @@ internal static partial class Benchmark
         RunFixedStepBatchRegression();
         RunPlaybackSchedulerCoalescingRegression();
         RunDenseTimelinePlaybackUiRegression();
+        RunTimelineEditingHighlightRegression();
+        RunNewLayerFrameSelectionRegression();
         RunTimelineExposureRegression();
         RunTimelineTweenRegression();
         RunTimelineShortcutAdvanceRegression();
@@ -174,6 +176,7 @@ internal static partial class Benchmark
         RunAssetTagRegression();
         RunAssetLibraryCategoryRegression();
         RunImageDropRegression();
+        RunClipboardImagePasteRegression();
         RunSceneMaskTimelineRegression();
         RunSceneInstanceTimelineRegression();
         RunSceneOnionSkinRegression();
@@ -491,6 +494,173 @@ internal static partial class Benchmark
         Console.WriteLine($"timeline_dense_playback_selected_cells={timelineStrip.SelectedFrameCells.Count}");
         Console.WriteLine($"timeline_dense_playback_viewport_shifts={viewportShiftCount}");
         Console.WriteLine($"timeline_dense_playback_full_invalidations={fullSurfaceInvalidations}");
+    }
+
+    private static void RunNewLayerFrameSelectionRegression()
+    {
+        foreach (var command in new[] { "AddTimelineLayer", "AddTimelineFolderLayer", "AddTimelineMaskLayer",
+            "AddRandomFractureCollisionTerrain" })
+        {
+            Verify(command, sceneWorkspace: false);
+        }
+        Verify("AddTimelineLayer", sceneWorkspace: true);
+        Verify("AddTimelineMaskLayer", sceneWorkspace: true);
+        Console.WriteLine("new_layer_frame_selection=ok,drawing_folder_mask_terrain=ok,scene_layer_mask=ok,undo_selection=ok");
+
+        static void Verify(string command, bool sceneWorkspace)
+        {
+            using var form = new MainForm { ShowInTaskbar = false, Location = new Point(-32000, -32000) };
+            if (sceneWorkspace)
+            {
+                var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+                tabs.SelectedView = WorkspaceView.SceneEditor;
+                Application.DoEvents();
+            }
+            var strip = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+            var context = strip.Context;
+            var oldTrack = context.Timeline.Tracks[0];
+            context.Timeline.SetTrackDuration(oldTrack.Id, 12);
+            strip.RefreshTimeline();
+            RequireMethod(typeof(MainForm), "ApplyProjectPlaybackSettingsToCurrentContext", Type.EmptyTypes).Invoke(form, null);
+            RequireMethod(typeof(MainForm), "SyncTimelineFrameRange", Type.EmptyTypes).Invoke(form, null);
+            var cells = new[] { new TimelineFrameCell(oldTrack.Id, 4), new TimelineFrameCell(oldTrack.Id, 5) };
+            strip.SelectFrameCells(cells, cells[0]);
+            strip.CurrentFrame = 5;
+            var oldSelection = strip.CaptureSelectionSnapshot();
+            var oldTrackIds = context.Timeline.Tracks.Select(track => track.Id).ToHashSet();
+            RequireMethod(typeof(MainForm), command, Type.EmptyTypes).Invoke(form, null);
+            AssertTimeline(!strip.HasFrameSelection && strip.SelectedFrameCells.Count == 0,
+                $"{command} retained the previous layer's highlighted frame selection (scene={sceneWorkspace}).");
+            var addedTrackIds = strip.Context.Timeline.Tracks.Where(track => !oldTrackIds.Contains(track.Id))
+                .Select(track => track.Id).ToHashSet();
+            var expectedActive = command == "AddTimelineFolderLayer"
+                ? strip.ActiveTrackId == oldTrack.Id
+                : strip.ActiveTrackId is { } activeTrackId && addedTrackIds.Contains(activeTrackId);
+            AssertTimeline(strip.CurrentFrame == 5 && expectedActive && addedTrackIds.Count > 0,
+                $"{command} failed to focus the new layer or moved the playhead (scene={sceneWorkspace}, "
+                + $"frame={strip.CurrentFrame}, old={oldTrack.Id}, active={strip.ActiveTrackId}, "
+                + $"added={string.Join(',', strip.Context.Timeline.Tracks.Where(track => !oldTrackIds.Contains(track.Id)).Select(track => track.Id))}).");
+            AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit").Invoke(form, null) is true,
+                $"{command} did not create an undo entry.");
+            AssertTimeline(strip.CurrentFrame == 5 && strip.ActiveTrackId == oldSelection.ActiveTrackId
+                && strip.SelectedFrameCells.ToHashSet().SetEquals(oldSelection.FrameCells)
+                && strip.Context.Timeline.Tracks.Select(track => track.Id).ToHashSet().SetEquals(oldTrackIds),
+                $"Undoing {command} did not restore the original frame selection and layers (scene={sceneWorkspace}).");
+        }
+    }
+
+    private static void RunTimelineEditingHighlightRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(3, 40);
+        using var host = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000), ClientSize = new Size(760, 260)
+        };
+        using var strip = new TimelineStrip(scene) { Dock = DockStyle.Fill };
+        host.Controls.Add(strip);
+        host.Show();
+        Application.DoEvents();
+        var cells = scene.Timeline.Tracks.Take(2)
+            .SelectMany(track => Enumerable.Range(2, 7).Select(frame => new TimelineFrameCell(track.Id, frame)))
+            .ToArray();
+        strip.RestoreSelectionSnapshot(new TimelineSelectionSnapshot(
+            cells, cells[0], scene.Timeline.Tracks[0].Id, [], null));
+        strip.CurrentFrame = 5;
+        var timer = (System.Windows.Forms.Timer)RequireField(typeof(TimelineStrip), "_editingHighlightTimer").GetValue(strip)!;
+        AssertTimeline(timer.Enabled == UiMotion.AnimationsEnabled,
+            "Editing highlight did not respect the system animation preference.");
+        var phase = RequireField(typeof(TimelineStrip), "_editingHighlightPhase");
+        phase.SetValue(strip, 0f);
+        var layout = RequireMethod(typeof(TimelineStrip), "CreateLayout").Invoke(strip, null)!;
+        var grid = (Rectangle)layout.GetType().GetProperty("GridBounds")!.GetValue(layout)!;
+        var ruler = (Rectangle)layout.GetType().GetProperty("RulerBounds")!.GetValue(layout)!;
+        void PaintSurface(Bitmap bitmap, Region region)
+        {
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.SetClip(region, System.Drawing.Drawing2D.CombineMode.Replace);
+            using var paint = new PaintEventArgs(graphics, Rectangle.Ceiling(region.GetBounds(graphics)));
+            RequireMethod(typeof(TimelineStrip), "OnPaint").Invoke(strip, [paint]);
+        }
+        using var initial = new Bitmap(strip.Width, strip.Height);
+        using (var full = new Region(strip.ClientRectangle)) PaintSurface(initial, full);
+        var orangePixels = 0;
+        for (var y = grid.Top; y < Math.Min(grid.Bottom, initial.Height); y++)
+        for (var x = grid.Left + 2 * strip.FrameWidth; x < Math.Min(grid.Right, grid.Left + 9 * strip.FrameWidth); x++)
+        {
+            var pixel = initial.GetPixel(x, y);
+            if (pixel.R > pixel.B + 24 && pixel.R > pixel.G + 12) orangePixels++;
+        }
+        AssertTimeline(SystemInformation.HighContrast || orangePixels > 12,
+            "Selected timeline frames did not receive an orange edge.");
+        var modelChanges = 0;
+        var selectionChanges = 0;
+        scene.Timeline.Changed += (_, _) => modelChanges++;
+        strip.FrameSelectionChanged += (_, _) => selectionChanges++;
+        strip.CurrentFrameChanged += (_, _) => selectionChanges++;
+
+        if (UiMotion.AnimationsEnabled)
+        {
+            var invalidated = new List<Rectangle>();
+            InvalidateEventHandler capture = (_, args) => invalidated.Add(args.InvalidRect);
+            strip.Invalidated += capture;
+            RequireField(typeof(TimelineStrip), "_editingHighlightTimestamp").SetValue(strip,
+                Stopwatch.GetTimestamp() - Stopwatch.Frequency / 5);
+            RequireMethod(typeof(TimelineStrip), "TickEditingHighlight").Invoke(strip, null);
+            strip.Invalidated -= capture;
+            AssertTimeline((float)phase.GetValue(strip)! > 0 && invalidated.Count > 0
+                && invalidated.All(bounds => bounds.Left >= grid.Left - 8 && bounds.Top >= ruler.Top
+                    && bounds.Width < strip.Width),
+                "Continuous editing feedback failed to advance or repainted unrelated workbench controls.");
+            using var incremental = (Bitmap)initial.Clone();
+            using (var region = new Region(invalidated[0]))
+            {
+                foreach (var bounds in invalidated.Skip(1)) region.Union(bounds);
+                PaintSurface(incremental, region);
+            }
+            using var complete = new Bitmap(strip.Width, strip.Height);
+            using (var full = new Region(strip.ClientRectangle)) PaintSurface(complete, full);
+            var count = checked(strip.Width * strip.Height);
+            var beforePixels = new int[count];
+            var incrementalPixels = new int[count];
+            var completePixels = new int[count];
+            CopyBitmapPixels(initial, beforePixels);
+            CopyBitmapPixels(incremental, incrementalPixels);
+            CopyBitmapPixels(complete, completePixels);
+            AssertTimeline(!beforePixels.SequenceEqual(completePixels),
+                "Editing highlight advanced time without any visible animation.");
+            var differingPixel = -1;
+            for (var index = 0; index < count; index++)
+            {
+                if (incrementalPixels[index] == completePixels[index]) continue;
+                differingPixel = index;
+                break;
+            }
+            AssertTimeline(differingPixel < 0,
+                "Editing animation left stale pixels: "
+                + $"x={differingPixel % strip.Width}, y={differingPixel / strip.Width}, "
+                + $"incremental={(differingPixel < 0 ? 0 : incrementalPixels[differingPixel]):X8}, "
+                + $"complete={(differingPixel < 0 ? 0 : completePixels[differingPixel]):X8}, "
+                + $"invalidated={string.Join(';', invalidated)}.");
+        }
+
+        AssertTimeline(modelChanges == 0 && selectionChanges == 0 && strip.CurrentFrame == 5
+            && strip.SelectedFrameCells.ToHashSet().SetEquals(cells),
+            "Editing highlight animation mutated the document, playhead, or selected frames.");
+        strip.Enabled = false;
+        AssertTimeline(!timer.Enabled, "Disabled timeline retained a continuous animation timer.");
+        strip.Enabled = true;
+        strip.Visible = false;
+        AssertTimeline(!timer.Enabled, "Hidden timeline retained a continuous animation timer.");
+        strip.Visible = true;
+        using var resumed = new Bitmap(strip.Width, strip.Height);
+        strip.DrawToBitmap(resumed, strip.ClientRectangle);
+        AssertTimeline(timer.Enabled == UiMotion.AnimationsEnabled,
+            "Showing the timeline failed to resume editing feedback.");
+        strip.Dispose();
+        AssertTimeline(!timer.Enabled, "Disposed timeline retained its editing timer.");
+        Console.WriteLine("timeline_editing_highlight=ok,orange=ok,animation_pixels=ok,local_invalidation=ok,lifecycle=ok,model_unchanged=ok");
     }
 
     private static void RunTimelineFrameSelectionDragFeedbackRegression()

@@ -77,7 +77,8 @@ internal sealed partial class VectorScene
     internal bool ApplyTranslationSessionForPreview(
         TransformSession session,
         float dx,
-        float dy)
+        float dy,
+        bool synchronizeLinkedFills = true)
     {
         ArgumentNullException.ThrowIfNull(session);
         if (!ReferenceEquals(session.Owner, this))
@@ -161,7 +162,7 @@ internal sealed partial class VectorScene
         }
 
         if (!changed) return false;
-        var linkedBoundariesChanged = UpdateFillBoundaryLineLinks(
+        var linkedBoundariesChanged = synchronizeLinkedFills && UpdateFillBoundaryLineLinks(
             session.LinkedBoundaries,
             rebuildGeometryIndex: false);
         if (changed && !linkedBoundariesChanged) GeometryRevision++;

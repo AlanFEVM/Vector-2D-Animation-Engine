@@ -4,6 +4,129 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunClipboardImagePasteRegression()
+    {
+        using var source = new Bitmap(40, 24, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        source.SetPixel(20, 12, Color.FromArgb(128, 240, 80, 30));
+        using var png = new MemoryStream();
+        source.Save(png, System.Drawing.Imaging.ImageFormat.Png);
+        png.Position = png.Length;
+        var data = new DataObject();
+        data.SetData("PNG", false, png);
+        using var opaque = new Bitmap(10, 10);
+        data.SetData(DataFormats.Bitmap, opaque);
+        using (var decoded = MainForm.ReadClipboardImage(data))
+        {
+            AssertTimeline(decoded is { Width: 40, Height: 24 } && decoded.GetPixel(20, 12).A == 128
+                && decoded.GetPixel(0, 0).A == 0 && png.CanRead && png.Position == png.Length,
+                "Clipboard PNG lost transparency, preferred the Bitmap fallback, or consumed the source stream.");
+        }
+        var bytes = new DataObject();
+        bytes.SetData("PNG", false, png.ToArray());
+        using (var decoded = MainForm.ReadClipboardImage(bytes))
+            AssertTimeline(decoded is { Width: 40, Height: 24 }, "Clipboard PNG bytes could not be decoded.");
+        var bitmap = new DataObject(DataFormats.Bitmap, source);
+        using (var decoded = MainForm.ReadClipboardImage(bitmap))
+            AssertTimeline(decoded is { Width: 40, Height: 24 }, "Clipboard Bitmap could not be decoded.");
+        using (var decoded = MainForm.ReadClipboardImage(new DataObject(DataFormats.Text, "plain text")))
+            AssertTimeline(decoded is null, "Text clipboard content was treated as an image.");
+
+        var temporaryRoot = CreateTemporaryDirectory("clipboard-image-paste");
+        using var form = new MainForm();
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var strip = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var scene = strip.Context is DrawingObjectDefinition drawing ? drawing.Scene : (VectorScene)strip.Context;
+        var originalCount = scene.ObjectCount;
+        var paste = RequireMethod(typeof(MainForm), "PasteClipboardImage", [typeof(IDataObject)]);
+        var sourcePaths = new List<string>();
+        try
+        {
+            RequireMethod(typeof(MainForm), "AddTimelineLayer", Type.EmptyTypes).Invoke(form, null);
+            var activeLayer = scene.ActiveLayer;
+            var track = scene.Timeline.Tracks.Single(track => track.TargetId == scene.LayerIds[activeLayer]);
+            scene.Timeline.SetTrackDuration(track.Id, 12);
+            strip.RefreshTimeline();
+            RequireMethod(typeof(MainForm), "ApplyProjectPlaybackSettingsToCurrentContext", Type.EmptyTypes).Invoke(form, null);
+            RequireMethod(typeof(MainForm), "SyncTimelineFrameRange", Type.EmptyTypes).Invoke(form, null);
+            strip.AutoKeyframeEnabled = true;
+            strip.CurrentFrame = 5;
+            stage.Size = new Size(760, 480);
+            stage.ZoomAt(new Point(100, 100), 2.5f);
+            stage.Pan(-237, 129);
+            var viewport = stage.VisibleWorldBounds();
+            var center = new PointF(viewport.Left + viewport.Width / 2, viewport.Top + viewport.Height / 2);
+            AssertTimeline(paste.Invoke(form, [data]) is true, "Clipboard image paste was not handled.");
+            var asset = project.ImageAssets.Single();
+            sourcePaths.Add(asset.SourcePath);
+            var index = scene.ObjectCount - 1;
+            AssertTimeline(scene.ObjectCount == originalCount + 1 && scene.ObjectLayer[index] == activeLayer
+                && Math.Abs(scene.X[index] - center.X) <= 1 && Math.Abs(scene.Y[index] - center.Y) <= 1
+                && scene.TryGetBitmapObjectData(index, out var payload) && payload.ImageAssetId == asset.Id
+                && scene.IsObjectActive(index, 5) && !scene.IsObjectActive(index, 0)
+                && scene.Timeline.Tracks.Single(item => item.Id == track.Id).Keyframes
+                    .Any(key => key.Frame == 5 && key.Kind == TimelineKeyframeKind.Populated)
+                && (int)RequireField(typeof(MainForm), "_selectedObject").GetValue(form)! == index,
+                "Clipboard image missed the active layer/view center, Auto Key, or automatic selection.");
+            AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+                && scene.ObjectCount == originalCount && !scene.Timeline.Tracks.Single(item => item.Id == track.Id)
+                    .Keyframes.Any(key => key.Frame == 5),
+                "Undo failed to remove the clipboard placement and its automatic keyframe.");
+
+            // The first source remains a reusable Vault asset after undo. A second paste
+            // still targets the current camera and must reuse the same asset across formats.
+            strip.AutoKeyframeEnabled = false;
+            stage.Pan(119, -88);
+            viewport = stage.VisibleWorldBounds();
+            center = new PointF(viewport.Left + viewport.Width / 2, viewport.Top + viewport.Height / 2);
+            AssertTimeline(paste.Invoke(form, [bitmap]) is true, "A repeated Bitmap paste was not handled.");
+            index = scene.ObjectCount - 1;
+            AssertTimeline(project.ImageAssets.Count == 1 && project.ImageAssets[0].Id == asset.Id
+                && project.ImageAssets[0].SourcePath == sourcePaths[0]
+                && scene.TryGetBitmapObjectData(index, out var repeated) && repeated.ImageAssetId == asset.Id
+                && scene.ObjectLayer[index] == activeLayer && Math.Abs(scene.X[index] - center.X) <= 1
+                && Math.Abs(scene.Y[index] - center.Y) <= 1 && scene.IsObjectActive(index, 0),
+                "Repeated Bitmap paste duplicated the PNG asset or missed the new center/held exposure.");
+            AssertTimeline(paste.Invoke(form, [bytes]) is true && project.ImageAssets.Count == 1
+                && scene.ObjectCount == originalCount + 2,
+                "Repeated PNG bytes created a duplicate asset or failed to add another placement.");
+            AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+                && project.ImageAssets.Count == 1 && scene.ObjectCount == originalCount + 1,
+                "Undoing reused image paste removed the shared asset or other placement.");
+            using var changed = new Bitmap(source);
+            changed.SetPixel(20, 12, Color.FromArgb(129, 240, 80, 30));
+            AssertTimeline(paste.Invoke(form, [new DataObject(DataFormats.Bitmap, changed)]) is true
+                && project.ImageAssets.Count == 2,
+                "An image with changed transparency incorrectly reused the existing asset.");
+            sourcePaths.Add(project.ImageAssets.Last().SourcePath);
+            var manifestPath = Path.Combine(temporaryRoot, "Clipboard.v2dProject");
+            ProjectVaultStore.Save(project, manifestPath);
+            foreach (var path in sourcePaths) File.Delete(path);
+            var restored = ProjectVaultStore.Load(manifestPath);
+            AssertTimeline(restored.ImageAssets.Count == 2
+                && restored.ImageAssets.All(asset => File.Exists(asset.SourcePath))
+                && restored.DrawingObjects.Single(item => item.Id == project.DrawingObjects[0].Id).Scene
+                    .TryGetBitmapObjectData(index, out _),
+                "Clipboard image bytes or placements did not survive Save/Open without the cached source.");
+            using var reopened = new MainForm();
+            RequireMethod(typeof(MainForm), "LoadProjectDocument", [typeof(VectorProject), typeof(string)])
+                .Invoke(reopened, [restored, manifestPath]);
+            var reopenedScene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(reopened)!;
+            var reopenedCount = reopenedScene.ObjectCount;
+            AssertTimeline(paste.Invoke(reopened, [bytes]) is true && restored.ImageAssets.Count == 2
+                && reopenedScene.ObjectCount == reopenedCount + 1
+                && reopenedScene.TryGetBitmapObjectData(reopenedScene.ObjectCount - 1, out var reused)
+                && reused.ImageAssetId == asset.Id,
+                "Pasting after Save/Open failed to reuse the managed image asset.");
+        }
+        finally
+        {
+            foreach (var path in sourcePaths) File.Delete(path);
+            DeleteTemporaryDirectory(temporaryRoot);
+        }
+        Console.WriteLine("clipboard_image_paste=ok,png_alpha=ok,bitmap=ok,active_layer=ok,view_center=ok,auto_key=ok,undo=ok,save_open=ok,dedup_formats=ok,changed_alpha=ok,reopened_dedup=ok");
+    }
+
     /// <summary>
     /// Covers dragging image files in from the shell onto the asset library and the Stage:
     /// extension routing, reject rules, library-side batch import, and the Stage drop

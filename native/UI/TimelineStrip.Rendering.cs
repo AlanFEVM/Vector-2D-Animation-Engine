@@ -5,6 +5,68 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class TimelineStrip : Control
 {
+    private static Color EditingHighlightColor => SystemInformation.HighContrast
+        ? SystemColors.Highlight
+        : Color.FromArgb(255, 174, 52);
+
+    private static Color EditingHighlightEdgeColor => SystemInformation.HighContrast
+        ? SystemColors.Highlight
+        : Theme.IsLight ? Color.FromArgb(172, 88, 0) : Color.FromArgb(255, 190, 76);
+
+    private float EditingHighlightPulse => _editingHighlightTimer.Enabled
+        ? 0.5f - 0.5f * MathF.Cos(_editingHighlightPhase * MathF.Tau)
+        : 0.5f;
+
+    private bool CanAnimateEditingHighlight => IsHandleCreated && Visible && Enabled
+        && !IsDisposed && !Disposing && UiMotion.AnimationsEnabled
+        && _timeline is not null && _timeline.Tracks.Count > 0
+        && FindForm()?.WindowState != FormWindowState.Minimized;
+
+    private void UpdateEditingHighlightAnimation()
+    {
+        if (CanAnimateEditingHighlight)
+        {
+            if (_editingHighlightTimer.Enabled) return;
+            _editingHighlightTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            _editingHighlightTimer.Start();
+        }
+        else
+        {
+            _editingHighlightTimer.Stop();
+            _editingHighlightTimestamp = 0;
+        }
+    }
+
+    private void TickEditingHighlight()
+    {
+        if (!CanAnimateEditingHighlight)
+        {
+            UpdateEditingHighlightAnimation();
+            return;
+        }
+
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var elapsed = _editingHighlightTimestamp == 0 ? _editingHighlightTimer.Interval
+            : Math.Clamp(System.Diagnostics.Stopwatch.GetElapsedTime(_editingHighlightTimestamp, now).TotalMilliseconds, 0, 250);
+        _editingHighlightTimestamp = now;
+        _editingHighlightPhase = (_editingHighlightPhase + (float)(elapsed / 2200d)) % 1f;
+        var layout = CreateLayout();
+        if (!_editingSelectionVisualBounds.IsEmpty)
+        {
+            var selectionBounds = Rectangle.Intersect(
+                _editingSelectionVisualBounds,
+                Rectangle.FromLTRB(Math.Max(0, layout.TrackLeft - ScaleTimelineMetric(8)), layout.RowTop,
+                    layout.TrackRight, layout.RowBottom));
+            if (!selectionBounds.IsEmpty) Invalidate(selectionBounds);
+        }
+        var column = CurrentFrame - _firstVisibleFrame;
+        if (column < 0 || column >= VisibleFrameDrawCount(layout)) return;
+        var margin = ScaleTimelineMetric(8);
+        var left = Math.Max(layout.TrackLeft, layout.TrackLeft + column * _frameCellWidth - margin);
+        var right = Math.Min(layout.TrackRight, layout.TrackLeft + (column + 1) * _frameCellWidth + margin);
+        Invalidate(Rectangle.FromLTRB(left, HeaderHeight, right, layout.RowBottom));
+    }
+
     private void DrawShell(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
         using var headerBrush = new SolidBrush(Theme.Panel);
@@ -189,9 +251,7 @@ internal sealed partial class TimelineStrip : Control
     {
         using var rulerBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(23, 26, 29), Theme.Top));
         using var majorBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(32, 37, 40), Theme.PanelStrong));
-        using var selectedBrush = new SolidBrush(ThemeNeutral(
-            Color.FromArgb(150, 177, 68, 65),
-            Theme.Mix(Theme.Top, Theme.Danger, 0.22f)));
+        using var selectedBrush = new SolidBrush(Color.FromArgb(90, EditingHighlightColor));
         using var hoverBrush = new SolidBrush(Color.FromArgb(34, Theme.Accent));
         using var gridPen = new Pen(ThemeNeutral(Color.FromArgb(64, 72, 77), Theme.BorderHover));
         using var minorPen = new Pen(ThemeNeutral(Color.FromArgb(48, 55, 59), Theme.Border));
@@ -296,7 +356,7 @@ internal sealed partial class TimelineStrip : Control
             if (inTimelineRange && frame == CurrentFrame) graphics.FillRectangle(selectedBrush, bounds);
             if (inTimelineRange && frame == CurrentFrame)
             {
-                textBackground = Theme.Mix(Theme.Top, Theme.Danger, 0.22f);
+                textBackground = Theme.Mix(Theme.Top, EditingHighlightColor, 90f / 255f);
             }
 
             graphics.DrawLine(inSelectableRange && major ? gridPen : minorPen, x, major ? HeaderHeight + 5 : HeaderHeight + 17, x, layout.RowTop - 1);
@@ -307,7 +367,7 @@ internal sealed partial class TimelineStrip : Control
                 rulerFont,
                 new Rectangle(x + 2, HeaderHeight + 1, _frameCellWidth * 2 - 2, RulerHeight - 4),
                 inTimelineRange && frame == CurrentFrame
-                    ? Theme.ReadableText(textBackground, Theme.Danger)
+                    ? Theme.ReadableText(textBackground, EditingHighlightEdgeColor)
                     : inTimelineRange
                         ? Theme.ReadableText(textBackground, Theme.Muted)
                         : Theme.ReadableText(textBackground, Theme.DisabledText),
@@ -560,14 +620,15 @@ internal sealed partial class TimelineStrip : Control
         using var shapeTweenBrush = new SolidBrush(Color.FromArgb(220, 78, 181, 132));
         using var gridPen = new Pen(ThemeNeutral(Color.FromArgb(44, 50, 54), Theme.Border));
         using var majorGridPen = new Pen(ThemeNeutral(Color.FromArgb(65, 73, 79), Theme.BorderHover));
-        using var currentCellPen = new Pen(Color.FromArgb(176, 242, 94, 91), 1.2f);
-        using var selectionPen = new Pen(Color.FromArgb(238, 105, 181, 230), 1.6f);
+        var editingPulse = EditingHighlightPulse;
+        using var currentCellPen = new Pen(EditingHighlightEdgeColor, 1.6f + editingPulse * 0.4f);
+        using var selectionPen = new Pen(Color.FromArgb(120, EditingHighlightEdgeColor), 1.6f);
         using var hiddenBrush = new SolidBrush(ThemeNeutral(
             Color.FromArgb(126, 12, 14, 16),
             Color.FromArgb(36, Color.Black)));
-        using var currentColumnBrush = new SolidBrush(Color.FromArgb(24, 240, 94, 91));
+        using var currentColumnBrush = new SolidBrush(Color.FromArgb(28, EditingHighlightColor));
         using var hoverCellBrush = new SolidBrush(Color.FromArgb(30, 104, 181, 230));
-        using var selectionBrush = new SolidBrush(Color.FromArgb(54, 68, 151, 207));
+        using var selectionBrush = new SolidBrush(Color.FromArgb((int)(64 + editingPulse * 24), EditingHighlightColor));
         using var layerDropFill = new SolidBrush(Color.FromArgb(52, Theme.Accent));
         using var layerDropPen = new Pen(Theme.Accent, 2f);
         using var layerDragShadow = new SolidBrush(Color.FromArgb(82, Color.Black));
@@ -859,7 +920,6 @@ internal sealed partial class TimelineStrip : Control
             if (!graphics.IsVisible(cellBounds)) continue;
             var inTimelineRange = frame <= EndFrame;
             var inSelectableRange = frame <= maximumSelectableFrame;
-            var selected = false;
             if (inSelectableRange)
             {
                 if (trackIndex == _hoverTrack && frame == _hoverFrame && frame != CurrentFrame)
@@ -867,8 +927,6 @@ internal sealed partial class TimelineStrip : Control
                     graphics.FillRectangle(hoverCellBrush, cellBounds);
                 }
                 if (frame == CurrentFrame) graphics.FillRectangle(currentColumnBrush, cellBounds);
-
-                selected = _selectedFrameCells.Contains(new TimelineFrameCell(track.Id, frame));
 
                 if (inTimelineRange)
                 {
@@ -985,8 +1043,10 @@ internal sealed partial class TimelineStrip : Control
             graphics.DrawLine(gridPen, x, y + _rowHeight - 1, x + _frameCellWidth, y + _rowHeight - 1);
             if (inSelectableRange && !visible) graphics.FillRectangle(hiddenBrush, cellBounds);
 
-            if (!selected && active && frame == CurrentFrame)
+            if (!HasFrameSelection && active && frame == CurrentFrame)
             {
+                using var editingFill = new SolidBrush(Color.FromArgb((int)(54 + EditingHighlightPulse * 24), EditingHighlightColor));
+                graphics.FillRectangle(editingFill, x + 1, y + 1, _frameCellWidth - 2, _rowHeight - 2);
                 graphics.DrawRectangle(currentCellPen, x + 1, y + 1, _frameCellWidth - 3, _rowHeight - 3);
             }
         }
@@ -1013,6 +1073,7 @@ internal sealed partial class TimelineStrip : Control
 
         var transformBounds = GetFrameSelectionTransformBounds(layout, selection);
         var visualBounds = Rectangle.Inflate(transformBounds, ScaleTimelineMetric(6), ScaleTimelineMetric(6));
+        _editingSelectionVisualBounds = visualBounds;
         if (!graphics.IsVisible(visualBounds)) return;
 
         IReadOnlySet<TimelineFrameCell> previewCellSet = hasTransformPreview
@@ -1097,9 +1158,10 @@ internal sealed partial class TimelineStrip : Control
         }
         DrawCells(previewCellSet, selectionBrush, selectionPen);
 
-        using (var transformPen = new Pen(Color.FromArgb(235, Theme.AccentLabel), Math.Max(1.25f, DeviceDpi / 72f))
+        using (var transformPen = new Pen(EditingHighlightEdgeColor, Math.Max(1.5f, DeviceDpi / 72f))
         {
-            DashStyle = DashStyle.Dash
+            DashStyle = DashStyle.Dash,
+            DashOffset = _editingHighlightPhase * 12f
         })
         {
             graphics.DrawRectangle(
@@ -1135,8 +1197,8 @@ internal sealed partial class TimelineStrip : Control
 
             var handleBounds = FrameTransformHandleBounds(bounds, mode);
             var hovered = !_draggingFrameTransform && _hoveredFrameTransformHandle == mode;
-            using var fill = new SolidBrush(hovered ? Theme.AccentLabel : Theme.PanelStrong);
-            using var border = new Pen(hovered ? Theme.Text : Theme.Accent, Math.Max(1f, DeviceDpi / 96f));
+            using var fill = new SolidBrush(hovered ? EditingHighlightColor : Theme.PanelStrong);
+            using var border = new Pen(EditingHighlightEdgeColor, Math.Max(1f, DeviceDpi / 96f));
             graphics.FillRectangle(fill, handleBounds);
             graphics.DrawRectangle(border, handleBounds.X, handleBounds.Y, handleBounds.Width - 1, handleBounds.Height - 1);
         }
@@ -1852,12 +1914,12 @@ internal sealed partial class TimelineStrip : Control
         var centerX = layout.TrackLeft + column * _frameCellWidth + _frameCellWidth / 2f;
         if (centerX < layout.TrackLeft || centerX >= layout.TrackRight) return;
 
-        var pulse = _isPlaying ? 0.55f : 0f;
-        var playhead = Color.FromArgb(242, 94, 91);
+        var pulse = EditingHighlightPulse;
+        var playhead = EditingHighlightEdgeColor;
         using var glowPen = new Pen(Color.FromArgb((int)Math.Round(42 + pulse * 68), playhead), 4.5f + pulse * 2.5f);
         using var linePen = new Pen(playhead, 1.5f + pulse * 0.35f);
         using var fillBrush = new SolidBrush(playhead);
-        if (_isPlaying) graphics.DrawLine(glowPen, centerX, HeaderHeight, centerX, layout.RowBottom);
+        if (Enabled && !SystemInformation.HighContrast) graphics.DrawLine(glowPen, centerX, HeaderHeight, centerX, layout.RowBottom);
         graphics.DrawLine(linePen, centerX, HeaderHeight, centerX, layout.RowBottom);
         _playheadHandlePoints[0] = new PointF(centerX - 5, HeaderHeight);
         _playheadHandlePoints[1] = new PointF(centerX + 5, HeaderHeight);

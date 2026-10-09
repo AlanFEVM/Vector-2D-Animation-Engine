@@ -1972,6 +1972,7 @@ internal sealed partial class MainForm : Form
             }).ToArray()
         };
         _sceneMaskTimelineClipboardSources = sceneMaskSources;
+        if (playFeedback) _internalClipboardSequence = GetClipboardSequenceNumber();
         if (playFeedback) _timeline.PlayCommandFeedback(TimelineCommand.CopyFrames, cells);
         return true;
     }
@@ -3269,10 +3270,11 @@ internal sealed partial class MainForm : Form
         if (drawingScene is not null)
         {
             var snapshot = drawingScene.CreateSnapshot();
+            var timelineSelection = _timeline.CaptureSelectionSnapshot();
             drawingScene.AddLayer();
-            PushUndoSnapshot(snapshot);
+            PushUndoSnapshot(snapshot, playheadFrame: _frame, timelineSelection: timelineSelection);
             _timeline.RefreshTimeline();
-            _timeline.SelectModelActiveTrack();
+            _timeline.SelectModelActiveTrack(clearFrameSelection: true);
             if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
             _hierarchyPanel.RefreshScene();
             UpdateInspector();
@@ -3284,6 +3286,7 @@ internal sealed partial class MainForm : Form
         var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
         var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
         var shotSnapshot = sceneDefinition.CreateShotSnapshot();
+        var selectionSnapshot = _timeline.CaptureSelectionSnapshot();
         if (!_project.TryAddSceneLayer(sceneDefinition.Id, out _)) return;
 
         // A layer created while a shot is active joins that shot, inside the same undo entry.
@@ -3292,9 +3295,11 @@ internal sealed partial class MainForm : Form
             sceneDefinition,
             timelineSnapshot,
             layerSnapshot,
+            playheadFrame: _frame,
+            timelineSelection: selectionSnapshot,
             shotSnapshot: shotSnapshot);
         _timeline.RefreshTimeline();
-        _timeline.SelectModelActiveTrack();
+        _timeline.SelectModelActiveTrack(clearFrameSelection: true);
         RebuildSceneComposition();
         UpdateInspector();
         _stage.Invalidate();
@@ -3313,10 +3318,11 @@ internal sealed partial class MainForm : Form
         if (drawingScene is null) return;
 
         var snapshot = drawingScene.CreateSnapshot();
+        var timelineSelection = _timeline.CaptureSelectionSnapshot();
         drawingScene.AddFolderLayer();
-        PushUndoSnapshot(snapshot);
+        PushUndoSnapshot(snapshot, playheadFrame: _frame, timelineSelection: timelineSelection);
         _timeline.RefreshTimeline();
-        _timeline.SelectModelActiveTrack();
+        _timeline.SelectModelActiveTrack(clearFrameSelection: true);
         if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
@@ -3336,10 +3342,11 @@ internal sealed partial class MainForm : Form
         if (drawingScene is not null)
         {
             var snapshot = drawingScene.CreateSnapshot();
+            var drawingSelection = _timeline.CaptureSelectionSnapshot();
             drawingScene.AddMaskLayer();
-            PushUndoSnapshot(snapshot);
+            PushUndoSnapshot(snapshot, playheadFrame: _frame, timelineSelection: drawingSelection);
             _timeline.RefreshTimeline();
-            _timeline.SelectModelActiveTrack();
+            _timeline.SelectModelActiveTrack(clearFrameSelection: true);
             if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
             _hierarchyPanel.RefreshScene();
             UpdateInspector();
@@ -3379,7 +3386,7 @@ internal sealed partial class MainForm : Form
             timelineSelection: timelineSelection,
             shotSnapshot: shotSnapshot);
         _timeline.RefreshTimeline();
-        _timeline.SelectModelActiveTrack();
+        _timeline.SelectModelActiveTrack(clearFrameSelection: true);
         if (!ReferenceEquals(_scene, maskScene)) HandleSceneLayerEditingContextChanged();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
@@ -4305,6 +4312,7 @@ internal sealed partial class MainForm : Form
                     _scene.TryGetBitmapObjectData(index, out var bitmapData) ? bitmapData : null));
             }
 
+            _internalClipboardSequence = GetClipboardSequenceNumber();
             return _clipboardObjects.Count > 0 || _clipboardDrawingObjectInstances.Count > 0;
         }
         finally

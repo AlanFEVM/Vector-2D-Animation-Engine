@@ -79,7 +79,7 @@ internal sealed partial class MainForm
         _drawSettings.PolygonSides = 6;
         _drawSettings.NotifyChanged();
         RefreshLayers();
-        _timeline.SelectModelActiveTrack();
+        _timeline.SelectModelActiveTrack(clearFrameSelection: true);
         _timeline.SetActiveTabGroup(AnimationTimeline.TerrainTabGroupId);
         if (_timeline.Context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
         _hierarchyPanel.RefreshScene();

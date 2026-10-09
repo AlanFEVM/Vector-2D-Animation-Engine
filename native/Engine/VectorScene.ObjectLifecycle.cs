@@ -415,7 +415,10 @@ internal sealed partial class VectorScene
     /// Re-points a placed bitmap at new import settings. Returns false when the object is
     /// not a bitmap, so callers can treat "nothing changed" and "wrong kind" distinctly.
     /// </summary>
-    public bool TryUpdateBitmapObject(int objectIndex, BitmapObjectData data)
+    public bool TryUpdateBitmapObject(
+        int objectIndex,
+        BitmapObjectData data,
+        bool rebuildSpatialIndex = true)
     {
         ArgumentNullException.ThrowIfNull(data);
         if ((uint)objectIndex >= ObjectCount
@@ -431,8 +434,11 @@ internal sealed partial class VectorScene
         MaxHalfExtent = Math.Max(
             MaxHalfExtent,
             Math.Max(Width[objectIndex], Height[objectIndex]) * 0.5f);
-        RebuildGeometryIndex();
-        RebuildSummaries();
+        if (rebuildSpatialIndex)
+        {
+            RebuildGeometryIndex();
+            RebuildSummaries();
+        }
         return true;
     }
 

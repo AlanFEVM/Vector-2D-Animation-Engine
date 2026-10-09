@@ -550,11 +550,7 @@ internal sealed partial class VectorScene
             return bounds;
         }
 
-        foreach (var distortion in distortions)
-        {
-            bounds = MapBoundsThroughDistortion(bounds, distortion);
-        }
-        return bounds;
+        return GetCachedDistortedObjectBounds(i, bounds, distortions);
     }
 
     private static RectangleF MapBoundsThroughDistortion(RectangleF sourceBounds, DistortWarp distortion)

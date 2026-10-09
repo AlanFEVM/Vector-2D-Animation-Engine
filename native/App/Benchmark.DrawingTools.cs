@@ -1115,6 +1115,7 @@ internal static partial class Benchmark
         }
 
         RunTransformDragFlipRegression();
+        RunBitmapSelectAspectRegression();
 
         RunBoundaryBezierHandleRegression();
 
@@ -1211,6 +1212,42 @@ internal static partial class Benchmark
         {
             throw new InvalidOperationException(
                 $"Enlarging inside the anchor quadrant regressed (got {enlargedX}, {enlargedY}).");
+        }
+    }
+
+    private static void RunBitmapSelectAspectRegression()
+    {
+        var start = new SizeF(300, 200);
+        var minimum = VectorUnits.FromPixels(4);
+
+        if (!MainForm.TryGetBitmapCornerResizeSize(
+                start,
+                EditHandleKind.BoundsBottomRight,
+                new PointF(240, 190),
+                minimum,
+                out var bottomRightWidth,
+                out var bottomRightHeight)
+            || Math.Abs(bottomRightWidth / bottomRightHeight - start.Width / start.Height) > 0.0001f
+            || Math.Abs(bottomRightWidth - 435f) > 0.01f
+            || Math.Abs(bottomRightHeight - 290f) > 0.01f)
+        {
+            throw new InvalidOperationException(
+                $"Bitmap Select bottom-right resize did not preserve its aspect ratio ({bottomRightWidth} x {bottomRightHeight}).");
+        }
+
+        if (!MainForm.TryGetBitmapCornerResizeSize(
+                start,
+                EditHandleKind.BoundsTopLeft,
+                new PointF(-240, -190),
+                minimum,
+                out var topLeftWidth,
+                out var topLeftHeight)
+            || Math.Abs(topLeftWidth / topLeftHeight - start.Width / start.Height) > 0.0001f
+            || Math.Abs(topLeftWidth - 435f) > 0.01f
+            || Math.Abs(topLeftHeight - 290f) > 0.01f)
+        {
+            throw new InvalidOperationException(
+                $"Bitmap Select top-left resize did not preserve its aspect ratio ({topLeftWidth} x {topLeftHeight}).");
         }
     }
 

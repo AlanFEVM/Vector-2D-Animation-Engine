@@ -2403,6 +2403,7 @@ internal sealed partial class MainForm : Form
             }
             if (keyData == (Keys.Control | Keys.V))
             {
+                if (!focusedEditor && _materialEditSession is null && TryPasteClipboardImage()) return true;
                 PasteTimelineFrames();
                 return true;
             }
@@ -2532,7 +2533,8 @@ internal sealed partial class MainForm : Form
                     || ConvertSelectedDrawingObjectsToSymbol())) return true;
             if (keyData == (Keys.Control | Keys.X) && CutSelectedObjects()) return true;
             if (keyData == (Keys.Control | Keys.C) && CopySelectedObjects()) return true;
-            if (keyData == (Keys.Control | Keys.V) && PasteCopiedObjects()) return true;
+            if (keyData == (Keys.Control | Keys.V)
+                && (TryPasteClipboardImage() || PasteCopiedObjects())) return true;
         }
 
         if (drawingObjectStackDirection != 0

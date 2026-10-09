@@ -256,6 +256,10 @@ internal sealed partial class TimelineStrip : Control
     private long _commandFeedbackStartedMilliseconds;
     private readonly System.Windows.Forms.Timer _layerFeedbackTimer = new() { Interval = 16 };
     private readonly System.Windows.Forms.Timer _layerDragAnimationTimer = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer _editingHighlightTimer = new() { Interval = 33 };
+    private long _editingHighlightTimestamp;
+    private float _editingHighlightPhase;
+    private Rectangle _editingSelectionVisualBounds;
     private readonly SvgIconBitmapCache _headerIconCache = new();
     private readonly PointF[] _playheadHandlePoints = new PointF[5];
     private TimelineLayerFeedbackTarget[] _layerFeedbackTargets = [];
@@ -517,6 +521,7 @@ internal sealed partial class TimelineStrip : Control
         _commandFeedbackTimer.Tick += (_, _) => TickCommandFeedback();
         _layerFeedbackTimer.Tick += (_, _) => TickLayerFeedback();
         _layerDragAnimationTimer.Tick += (_, _) => TickLayerDragAnimation();
+        _editingHighlightTimer.Tick += (_, _) => TickEditingHighlight();
         _autoKeyframeToggle.CheckedChanged += (_, _) => AutoKeyframeChanged?.Invoke(this, EventArgs.Empty);
         _onionSkinToggle.CheckedChanged += (_, _) =>
         {
@@ -928,7 +933,7 @@ internal sealed partial class TimelineStrip : Control
         Invalidate();
     }
 
-    public void SelectModelActiveTrack()
+    public void SelectModelActiveTrack(bool clearFrameSelection = false)
     {
         var trackIndex = GetModelActiveTrackIndex();
         if (trackIndex < 0) return;
@@ -936,6 +941,7 @@ internal sealed partial class TimelineStrip : Control
         if (IsTrackSelectableRow(trackIndex)) _selectedLayerTrackIds.Add(_timeline.Tracks[trackIndex].Id);
         _layerSelectionAnchorTrackId = _timeline.Tracks[trackIndex].Id;
         SetActiveTrack(trackIndex);
+        if (clearFrameSelection) ClearSelectionFromEmptyArea();
     }
 
     internal bool SelectSingleLayerTarget(string targetId, bool notifyActiveLayerChanged = true)
@@ -1222,6 +1228,8 @@ internal sealed partial class TimelineStrip : Control
             _layerFeedbackTimer.Dispose();
             _layerDragAnimationTimer.Stop();
             _layerDragAnimationTimer.Dispose();
+            _editingHighlightTimer.Stop();
+            _editingHighlightTimer.Dispose();
             _headerIconCache.Dispose();
             _layerContextMenu.Dispose();
             _frameContextMenu.Dispose();
@@ -1245,6 +1253,8 @@ internal sealed partial class TimelineStrip : Control
         if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
 
         var layout = CreateLayout();
+        UpdateEditingHighlightAnimation();
+        _editingSelectionVisualBounds = Rectangle.Empty;
         DrawShell(graphics, layout, e.ClipRectangle);
         DrawRuler(graphics, layout, e.ClipRectangle);
         DrawTrackRows(graphics, layout, e.ClipRectangle);
@@ -1253,6 +1263,26 @@ internal sealed partial class TimelineStrip : Control
         DrawPlayhead(graphics, layout);
         DrawHorizontalScroll(graphics, layout);
         DrawVerticalScroll(graphics, layout);
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        UpdateEditingHighlightAnimation();
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        base.OnEnabledChanged(e);
+        UpdateEditingHighlightAnimation();
+        Invalidate();
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        _editingHighlightTimer.Stop();
+        _editingHighlightTimestamp = 0;
+        base.OnHandleDestroyed(e);
     }
 
     protected override void OnResize(EventArgs e)

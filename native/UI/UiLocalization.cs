@@ -633,6 +633,8 @@ internal static class UiLocalization
             ["Import brush tip"] = "导入笔尖",
             ["Import Image"] = "导入图片",
             ["Import Image..."] = "导入图片...",
+            ["Clipboard Image"] = "剪贴板图片",
+            ["The image could not be pasted."] = "无法粘贴图片。",
             ["Increase value"] = "增大数值",
             ["Ink"] = "墨水",
             ["Ink Bottle"] = "墨水瓶",

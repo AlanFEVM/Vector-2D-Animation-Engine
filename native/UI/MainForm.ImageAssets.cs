@@ -3,6 +3,164 @@ namespace VectorAnimationEngine;
 internal sealed partial class MainForm
 {
     private readonly ImageInspectorPanel _imageInspector = new() { Visible = false };
+    private uint? _internalClipboardSequence;
+    private readonly Dictionary<string, string> _imageContentHashes = new(StringComparer.OrdinalIgnoreCase);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
+
+    private bool TryPasteClipboardImage()
+    {
+        // Preserve application object/Cel copies until the system clipboard changes.
+        if (_internalClipboardSequence == GetClipboardSequenceNumber()) return false;
+        try
+        {
+            return PasteClipboardImage(Clipboard.GetDataObject());
+        }
+        catch (Exception exception) when (exception is System.Runtime.InteropServices.ExternalException
+            or ArgumentException or System.IO.IOException or InvalidDataException or OutOfMemoryException)
+        {
+            ShowImageAssetError("The image could not be pasted.", exception.Message);
+            return true;
+        }
+    }
+
+    private bool PasteClipboardImage(IDataObject? clipboard)
+    {
+        using var image = ReadClipboardImage(clipboard);
+        if (image is null) return false;
+        if (!EnsureImagePlacementAllowed()) return true;
+        if (!BitmapImageFormats.TryValidateDecodedBudget(image.Width, image.Height, out var error))
+        {
+            ShowImageAssetError("The image could not be pasted.", error);
+            return true;
+        }
+
+        var contentHash = ClipboardImageContentHash(image);
+        if (_imageContentHashes.Count >= VectorProject.MaxImageAssetCount) _imageContentHashes.Clear();
+        foreach (var candidate in _project.ImageAssets)
+        {
+            if (candidate.PixelWidth != image.Width || candidate.PixelHeight != image.Height) continue;
+            var path = ResolveImageAssetPath(candidate);
+            if (path is null) continue;
+            try
+            {
+                // Key the cache by actual file content, so replacing/relinking an asset
+                // cannot reuse a stale identity. Compare source pixels before import settings.
+                var fileHash = BitmapImageRasterizer.ComputeSha256(path);
+                if (!_imageContentHashes.TryGetValue(fileHash, out var candidateHash))
+                {
+                    using var decoded = Image.FromFile(path);
+                    using var bitmap = CloneClipboardImage(decoded);
+                    candidateHash = ClipboardImageContentHash(bitmap);
+                    _imageContentHashes[fileHash] = candidateHash;
+                }
+                if (candidateHash != contentHash) continue;
+            }
+            catch (Exception exception) when (exception is System.Runtime.InteropServices.ExternalException
+                or ArgumentException or IOException or InvalidDataException or OutOfMemoryException)
+            {
+                AppLog.Warn($"Unable to compare image asset for clipboard reuse: {candidate.Name}: {exception.Message}");
+                continue;
+            }
+            PlaceImageAsset(candidate.Id);
+            return true;
+        }
+
+        // Unsaved projects and restart handoff need a durable source until Save copies
+        // these pixels into .Vault/Images. Do not use a disposable temporary file.
+        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Vector2DAnimationEngine", "ClipboardImages");
+        Directory.CreateDirectory(directory);
+        var sourcePath = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".png");
+        ImageAssetDefinition? asset = null;
+        var placed = false;
+        try
+        {
+            image.Save(sourcePath, System.Drawing.Imaging.ImageFormat.Png);
+            var settings = BitmapImageImportSettings.Default with { PixelsPerUnit = 96 };
+            var sourceHash = BitmapImageRasterizer.ComputeSha256(sourcePath);
+            if (!_project.TryAddImageAssetFromSource(UiLocalization.T("Clipboard Image"), sourcePath,
+                    sourceHash, image.Width, image.Height, 96,
+                    settings, out asset) || asset is null)
+            {
+                ShowImageAssetError("The image could not be pasted.",
+                    UiLocalization.T("The image metadata is invalid or the library is full."));
+                return true;
+            }
+            placed = PlaceImageAsset(asset.Id);
+            if (placed)
+            {
+                _imageContentHashes[sourceHash] = contentHash;
+                _libraryVaultPanel.RefreshProjectObjects();
+            }
+            return true;
+        }
+        finally
+        {
+            if (!placed)
+            {
+                if (asset is not null) _project.TryRemoveImageAsset(asset.Id, out _);
+                File.Delete(sourcePath);
+            }
+        }
+    }
+
+    private static string ClipboardImageContentHash(Bitmap image)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+            System.Security.Cryptography.HashAlgorithmName.SHA256);
+        hash.AppendData(BitConverter.GetBytes(image.Width));
+        hash.AppendData(BitConverter.GetBytes(image.Height));
+        var pixels = image.LockBits(new Rectangle(0, 0, image.Width, image.Height),
+            System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[checked(image.Width * 4)];
+            for (var y = 0; y < image.Height; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(IntPtr.Add(pixels.Scan0, y * pixels.Stride), row, 0, row.Length);
+                hash.AppendData(row);
+            }
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
+        finally { image.UnlockBits(pixels); }
+    }
+
+    internal static Bitmap? ReadClipboardImage(IDataObject? clipboard)
+    {
+        if (clipboard is null) return null;
+        // PNG carries alpha that the Windows Bitmap conversion can discard.
+        if (clipboard.GetDataPresent("PNG", autoConvert: false))
+        {
+            var payload = clipboard.GetData("PNG", autoConvert: false);
+            if (payload is byte[] bytes)
+            {
+                using var stream = new MemoryStream(bytes, writable: false);
+                using var decoded = Image.FromStream(stream);
+                return CloneClipboardImage(decoded);
+            }
+            if (payload is Stream source)
+            {
+                var position = source.CanSeek ? source.Position : 0;
+                try
+                {
+                    if (source.CanSeek) source.Position = 0;
+                    using var decoded = Image.FromStream(source);
+                    return CloneClipboardImage(decoded);
+                }
+                finally { if (source.CanSeek) source.Position = position; }
+            }
+        }
+        return clipboard.GetData(DataFormats.Bitmap) is Image bitmap ? CloneClipboardImage(bitmap) : null;
+    }
+
+    private static Bitmap CloneClipboardImage(Image image)
+    {
+        if (!BitmapImageFormats.TryValidateDecodedBudget(image.Width, image.Height, out var error))
+            throw new InvalidDataException(error);
+        return new Bitmap(image);
+    }
 
     private void UpdateImageInspector(int[] selection)
     {
@@ -235,21 +393,21 @@ internal sealed partial class MainForm
         return asset;
     }
 
-    private void PlaceImageAsset(string assetId, PointF? center = null)
+    private bool PlaceImageAsset(string assetId, PointF? center = null)
     {
         var asset = FindImageAsset(assetId);
         if (asset is null)
         {
             ShowImageAssetError("The image is missing.", assetId);
-            return;
+            return false;
         }
-        if (!EnsureImagePlacementAllowed()) return;
+        if (!EnsureImagePlacementAllowed()) return false;
 
         var path = ResolveImageAssetPath(asset);
         if (path is null)
         {
             ShowImageAssetError("The image is missing.", asset.ProjectRelativePath);
-            return;
+            return false;
         }
 
         Cursor = Cursors.WaitCursor;
@@ -259,7 +417,7 @@ internal sealed partial class MainForm
             // Decode before mutating so an unreadable file cannot leave a bitmap object
             // pointing at pixels the renderers can never resolve.
             var raster = BitmapImageRasterizer.Decode(path, asset.ImportSettings);
-            if (!CanPlaceImage()) return;
+            if (!CanPlaceImage()) return false;
 
             var viewport = _stage.VisibleWorldBounds();
             var placement = center ?? new PointF(
@@ -275,7 +433,7 @@ internal sealed partial class MainForm
             if (!data.IsValid)
             {
                 ShowImageAssetError("The image could not be placed.", "The placement metadata is invalid.");
-                return;
+                return false;
             }
 
             snapshot = CreateCanvasMutationSnapshot(affectedLayers: [_scene.ActiveLayer]);
@@ -284,7 +442,7 @@ internal sealed partial class MainForm
             {
                 RestoreCanvasMutationSnapshot(snapshot);
                 ShowImageAssetError("The image could not be placed.", "The active layer rejected the object.");
-                return;
+                return false;
             }
 
             PushUndoSnapshot(snapshot);
@@ -294,12 +452,14 @@ internal sealed partial class MainForm
             _stage.Invalidate();
             if (IsSceneMaskEditing()) RebuildDrawingObjectUnderlay();
             AppLog.Info($"Placed image asset: {asset.Name} at {placement.X:0.##},{placement.Y:0.##}");
+            return true;
         }
         catch (Exception exception)
         {
             if (snapshot is not null) RestoreCanvasMutationSnapshot(snapshot);
             AppLog.Error($"Unable to place image: {asset.Name}", exception);
             ShowImageAssetError("The image could not be placed.", exception.Message);
+            return false;
         }
         finally
         {

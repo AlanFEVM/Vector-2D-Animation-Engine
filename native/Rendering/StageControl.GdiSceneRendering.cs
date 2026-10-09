@@ -740,6 +740,11 @@ internal sealed partial class StageControl : Control
         SceneRenderPass pass,
         IReadOnlyList<DistortWarp> distortions)
     {
+        // These whole-object renderers emit pixels only in the fill pass. Avoid
+        // building and warping a second, entirely transparent raster for strokes.
+        if (pass == SceneRenderPass.Stroke
+            && scene.ShapeKind[objectIndex] is ShapeKind.Bitmap or ShapeKind.ImportedSvg
+                or ShapeKind.Text or ShapeKind.MixingStroke) return;
         if (TryGetDistortedVectorGeometryForRendering(scene, objectIndex, distortions, out var geometry))
         {
             DrawDistortedVectorObject(target, scene, objectIndex, pass, distortions, geometry);
@@ -858,6 +863,18 @@ internal sealed partial class StageControl : Control
         SceneRenderPass pass,
         IReadOnlyList<DistortWarp> distortions)
     {
+        if (TryDrawCachedBitmapDistortion(target, scene, objectIndex, pass, distortions)) return;
+        DrawRasterDistortedObjectCore(target, scene, objectIndex, pass, distortions);
+    }
+
+    private void DrawRasterDistortedObjectCore(
+        Graphics target,
+        VectorScene scene,
+        int objectIndex,
+        SceneRenderPass pass,
+        IReadOnlyList<DistortWarp> distortions,
+        bool allowFallback = true)
+    {
         if (distortions.Count == 0)
         {
             DrawObjectRaw(target, objectIndex, pass);
@@ -937,7 +954,9 @@ internal sealed partial class StageControl : Control
             return;
         }
 
-        var interactivePreview = HasDistortPreview;
+        // Reuse the envelope preview while moving the image or camera, including
+        // wheel zoom. Pointer release or zoom idle restores the committed frame.
+        var interactivePreview = DistortRasterInteractivePreview;
         var rasterMaximumDimension = interactivePreview
             ? DistortPreviewRasterMaximumDimension
             : DistortRasterMaximumDimension;
@@ -960,6 +979,9 @@ internal sealed partial class StageControl : Control
         var disposeSourceBitmap = false;
         try
         {
+            var imageKey = scene.TryGetBitmapObjectData(objectIndex, out var bitmapData)
+                && TryDecodeBitmapImage(bitmapData.ImageAssetId, out var decoded) ? decoded.Key : default;
+            var sampling = bitmapData is not null ? BitmapImageSampling(bitmapData.ImageAssetId) : BitmapSampling.Linear;
             var cacheKey = new DistortRasterCacheKey(
                 scene,
                 objectIndex,
@@ -967,6 +989,11 @@ internal sealed partial class StageControl : Control
                 scene.GeometryRevision,
                 scene.SummaryRevision,
                 interactivePreview ? 0 : BasePresentationRevision,
+                interactivePreview,
+                imageKey,
+                sampling,
+                GetDistortObjectGeometryState(scene, objectIndex, Array.Empty<DistortWarp>()),
+                scene.Argb[objectIndex],
                 Frame,
                 CameraX,
                 CameraY,
@@ -1039,6 +1066,7 @@ internal sealed partial class StageControl : Control
                 minimumDivisions,
                 maximumDivisions);
             var rows = columns;
+            DistortMeshBuildCount++;
             var rasterPoints = new PointF[rows + 1, columns + 1];
             var destinationPoints = new PointF[rows + 1, columns + 1];
             for (var row = 0; row <= rows; row++)
@@ -1105,11 +1133,11 @@ internal sealed partial class StageControl : Control
                 target.Transform = baseTransform;
             }
         }
-        catch (ArgumentException)
+        catch (ArgumentException) when (allowFallback)
         {
             DrawObjectRaw(target, objectIndex, pass);
         }
-        catch (OutOfMemoryException)
+        catch (OutOfMemoryException) when (allowFallback)
         {
             DrawObjectRaw(target, objectIndex, pass);
         }
@@ -1131,6 +1159,14 @@ internal sealed partial class StageControl : Control
         bool interactivePreview)
     {
         if (Math.Abs(Cross(first, second, third)) < 0.01f) return;
+        var destinationBounds = RectangleF.FromLTRB(
+            Math.Min(first.X, Math.Min(second.X, third.X)),
+            Math.Min(first.Y, Math.Min(second.Y, third.Y)),
+            Math.Max(first.X, Math.Max(second.X, third.X)),
+            Math.Max(first.Y, Math.Max(second.Y, third.Y)));
+        // Use the caller's clip (including its transform), so offscreen mesh cells
+        // do not allocate a path or ask GDI to filter pixels that cannot be seen.
+        if (!target.IsVisible(RectangleF.Inflate(destinationBounds, 1, 1))) return;
         using var clip = new GraphicsPath(FillMode.Alternate);
         clip.AddPolygon([first, second, third]);
         var state = target.Save();
@@ -1158,7 +1194,32 @@ internal sealed partial class StageControl : Control
             using var targetTransform = target.Transform;
             transform.Multiply(targetTransform, MatrixOrder.Append);
             target.Transform = transform;
-            target.DrawImage(source, 0, 0, source.Width, source.Height);
+            // GDI's HQ bicubic resampler changes its sampling lattice when the source
+            // rectangle is cropped. Keep the complete raster for the committed frame.
+            if (!interactivePreview)
+            {
+                target.DrawImage(source, 0, 0, source.Width, source.Height);
+                return;
+            }
+            using var inverse = transform.Clone();
+            if (!inverse.IsInvertible) return;
+            inverse.Invert();
+            var inverseAxes = new[] { new PointF(1, 0), new PointF(0, 1) };
+            inverse.TransformVectors(inverseAxes);
+            // Include the bilinear footprint under the complete caller transform.
+            var filterHalo = (int)Math.Min(Math.Max(source.Width, source.Height), MathF.Ceiling(2 * Math.Max(1f,
+                Math.Max(Math.Abs(inverseAxes[0].X) + Math.Abs(inverseAxes[1].X),
+                    Math.Abs(inverseAxes[0].Y) + Math.Abs(inverseAxes[1].Y)))) + 2);
+            // Bound the preview submission to this cell and its sampling footprint.
+            // Integer bounds keep the preview's source-to-destination pixel alignment.
+            var left = Math.Max(0, (int)MathF.Floor(Math.Min(sourceFirst.X, Math.Min(sourceSecond.X, sourceThird.X))) - filterHalo);
+            var top = Math.Max(0, (int)MathF.Floor(Math.Min(sourceFirst.Y, Math.Min(sourceSecond.Y, sourceThird.Y))) - filterHalo);
+            var right = Math.Min(source.Width, (int)MathF.Ceiling(Math.Max(sourceFirst.X, Math.Max(sourceSecond.X, sourceThird.X))) + filterHalo);
+            var bottom = Math.Min(source.Height, (int)MathF.Ceiling(Math.Max(sourceFirst.Y, Math.Max(sourceSecond.Y, sourceThird.Y))) + filterHalo);
+            if (right <= left || bottom <= top) return;
+            var sourceBounds = new Rectangle(left, top, right - left, bottom - top);
+            target.DrawImage(source, sourceBounds, sourceBounds.X, sourceBounds.Y,
+                sourceBounds.Width, sourceBounds.Height, GraphicsUnit.Pixel);
         }
         finally
         {

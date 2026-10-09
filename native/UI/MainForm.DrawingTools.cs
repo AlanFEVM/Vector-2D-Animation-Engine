@@ -1690,6 +1690,7 @@ internal sealed partial class MainForm : Form
 
     private void CaptureEditStart(int objectIndex)
     {
+        if (_tool == ToolMode.Select) _drawingTransformSession = null;
         _pointerTopologyQueriesInvalidated = false;
         if (!_independentMarqueeStrokeMove
             && _marqueeMaterializationSession is { } marqueeSession
@@ -1851,10 +1852,78 @@ internal sealed partial class MainForm : Form
         }
 
         var draggedLocal = WorldToLocalFromEditStart(world);
+        var bitmapCornerResize = _tool == ToolMode.Select
+            && _scene.ShapeKind[_selectedObject] == ShapeKind.Bitmap
+            && (_activeHandle is EditHandleKind.BoundsTopLeft
+                or EditHandleKind.BoundsTopRight
+                or EditHandleKind.BoundsBottomRight
+                or EditHandleKind.BoundsBottomLeft);
+        if (bitmapCornerResize)
+        {
+            // Hit testing allows a small tolerance around the visible handle. Apply the
+            // pointer delta to the exact corner so the first drag sample cannot jump.
+            var pointerStartLocal = WorldToLocalFromEditStart(sourcePointerStart);
+            var originalCorner = BitmapCornerLocal(_activeHandle, _resizeStartSize.Value);
+            draggedLocal = MoveHandleWithPointer(originalCorner, pointerStartLocal, draggedLocal);
+        }
         var anchor = OppositeCorner(_activeHandle, _resizeStartSize.Value);
         var minSize = VectorUnits.FromPixels(4);
         var width = Math.Max(minSize, Math.Abs(draggedLocal.X - anchor.X));
         var height = Math.Max(minSize, Math.Abs(draggedLocal.Y - anchor.Y));
+
+        // Bitmap placements are whole image objects. Their Select-tool corner handles
+        // preserve the source aspect ratio regardless of the Free Transform Shift
+        // preference (which applies to the separate Transform tool). Keep the opposite
+        // corner fixed and use the dominant drag axis to choose one scale factor.
+        if (bitmapCornerResize)
+        {
+            if (!TryGetBitmapCornerResizeSize(
+                    _resizeStartSize.Value,
+                    _activeHandle,
+                    draggedLocal,
+                    minSize,
+                    out width,
+                    out height))
+            {
+                return;
+            }
+            var (signX, signY) = BitmapCornerSigns(_activeHandle);
+            var startWidth = Math.Max(1f, _resizeStartSize.Value.Width);
+            var startHeight = Math.Max(1f, _resizeStartSize.Value.Height);
+            var anchorScaleX = (draggedLocal.X - anchor.X) * signX / startWidth;
+            var anchorScaleY = (draggedLocal.Y - anchor.Y) * signY / startHeight;
+            var selectedScale = Math.Abs(Math.Abs(anchorScaleX) - 1f)
+                >= Math.Abs(Math.Abs(anchorScaleY) - 1f)
+                ? anchorScaleX
+                : anchorScaleY;
+            var orientation = selectedScale < 0f ? -1f : 1f;
+
+            // Rebuild the dragged corner from the constrained size. This keeps the
+            // opposite corner fixed even when the pointer moved more on the other axis.
+            draggedLocal = new PointF(
+                anchor.X + signX * orientation * width,
+                anchor.Y + signY * orientation * height);
+            var constrainedCenter = new PointF(
+                (draggedLocal.X + anchor.X) * 0.5f,
+                (draggedLocal.Y + anchor.Y) * 0.5f);
+            var constrainedCenterWorld = LocalToWorldFromEditStart(constrainedCenter);
+            _scene.X[_selectedObject] = VectorUnits.Quantize(constrainedCenterWorld.X);
+            _scene.Y[_selectedObject] = VectorUnits.Quantize(constrainedCenterWorld.Y);
+            _scene.Width[_selectedObject] = Math.Max(1, VectorUnits.Quantize(width));
+            _scene.Height[_selectedObject] = Math.Max(1, VectorUnits.Quantize(height));
+            if (_scene.TryGetBitmapObjectData(_selectedObject, out var bitmapData))
+            {
+                _scene.TryUpdateBitmapObject(
+                    _selectedObject,
+                    bitmapData.WithPlacedSize(new SizeF(
+                        _scene.Width[_selectedObject],
+                        _scene.Height[_selectedObject])),
+                    rebuildSpatialIndex: false);
+            }
+            ResizeGradientFromEditStart(_selectedObject, constrainedCenterWorld, width, height);
+            UpdateGradientOverlay();
+            return;
+        }
         var centerLocal = new PointF((draggedLocal.X + anchor.X) * 0.5f, (draggedLocal.Y + anchor.Y) * 0.5f);
         var centerWorld = LocalToWorldFromEditStart(centerLocal);
 
@@ -2426,6 +2495,60 @@ internal sealed partial class MainForm : Form
             EditHandleKind.BoundsBottomLeft => new PointF(halfW, -halfH),
             _ => PointF.Empty
         };
+    }
+
+    private static PointF BitmapCornerLocal(EditHandleKind handle, SizeF size)
+    {
+        var halfW = size.Width * 0.5f;
+        var halfH = size.Height * 0.5f;
+        var (signX, signY) = BitmapCornerSigns(handle);
+        return new PointF(signX * halfW, signY * halfH);
+    }
+
+    private static (float X, float Y) BitmapCornerSigns(EditHandleKind handle)
+    {
+        return handle switch
+        {
+            EditHandleKind.BoundsTopLeft => (-1f, -1f),
+            EditHandleKind.BoundsTopRight => (1f, -1f),
+            EditHandleKind.BoundsBottomRight => (1f, 1f),
+            EditHandleKind.BoundsBottomLeft => (-1f, 1f),
+            _ => (0f, 0f)
+        };
+    }
+
+    internal static bool TryGetBitmapCornerResizeSize(
+        SizeF startSize,
+        EditHandleKind handle,
+        PointF draggedLocal,
+        float minimumSize,
+        out float width,
+        out float height)
+    {
+        width = height = 0f;
+        if (startSize.Width <= 0f
+            || startSize.Height <= 0f
+            || !float.IsFinite(minimumSize)
+            || minimumSize <= 0f)
+        {
+            return false;
+        }
+
+        var (signX, signY) = BitmapCornerSigns(handle);
+        if (signX == 0f || signY == 0f) return false;
+        var anchor = OppositeCorner(handle, startSize);
+        var startWidth = Math.Max(1f, startSize.Width);
+        var startHeight = Math.Max(1f, startSize.Height);
+        var scaleX = (draggedLocal.X - anchor.X) * signX / startWidth;
+        var scaleY = (draggedLocal.Y - anchor.Y) * signY / startHeight;
+        var scale = Math.Abs(Math.Abs(scaleX) - 1f) >= Math.Abs(Math.Abs(scaleY) - 1f)
+            ? scaleX
+            : scaleY;
+        var minimumScale = Math.Max(minimumSize / startWidth, minimumSize / startHeight);
+        if (Math.Abs(scale) < minimumScale) scale = scale < 0f ? -minimumScale : minimumScale;
+        width = Math.Max(minimumSize, Math.Abs(startWidth * scale));
+        height = Math.Max(minimumSize, Math.Abs(startHeight * scale));
+        return float.IsFinite(width) && float.IsFinite(height);
     }
 
     private void AddDrawnObject(PointF start, PointF end, ToolMode tool)

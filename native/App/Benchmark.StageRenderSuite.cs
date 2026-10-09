@@ -8436,6 +8436,13 @@ internal static partial class Benchmark
         RunSceneToolPaletteVisibilityRegression();
         RunMarqueeToolPolicyRegression();
         RunDistortPointerRegression();
+        RunBitmapDistortRegression();
+        RunDistortBoundsCacheRegression();
+        RunBitmapDistortNativeRasterRegression();
+        RunBitmapDistortResultCacheRegression();
+        RunBitmapDistortZoomCacheRegression();
+        RunBitmapDistortResultCacheBudgetRegression();
+        RunDistortRasterPerformanceRegression();
         RunFrozenRotationTransformFrameRegression();
         RunZoomLodPreviewRegression();
         RunWorkspacePanelAnimationRegression();

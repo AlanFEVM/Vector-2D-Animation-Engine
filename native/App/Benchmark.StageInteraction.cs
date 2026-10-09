@@ -4338,6 +4338,976 @@ internal static partial class Benchmark
         Console.WriteLine("lasso_partial_symbol_native_pointer=ok");
     }
 
+    private static void RunDistortBoundsCacheRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AppendObject(0, new PointF(7000, 0), new SizeF(200, 200), 0, 0,
+            Color.Teal, Color.Transparent, 0, ShapeKind.Rectangle);
+        var index = scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+        {
+            ImageAssetId = "bounds-cache-image", PlacedSize = new SizeF(4500, 3000)
+        });
+        scene.CompleteDeferredBuild();
+        var raw = scene.GetRawObjectWorldBounds(index);
+        var warp = new DistortWarp(TransformOverlayFrame.FromBounds(raw), new DistortEnvelope(
+            new PointF(raw.Left - 400, raw.Top - 350), new PointF(raw.Right + 300, raw.Top + 100),
+            new PointF(raw.Right - 100, raw.Bottom + 200), new PointF(raw.Left + 200, raw.Bottom - 100)));
+        scene.SetObjectDistortions(index, [warp]);
+        var rawBounds = RequireMethod(typeof(VectorScene), "GetObjectWorldBoundsCore", [typeof(int)]);
+        var mapBounds = RequireMethod(typeof(VectorScene), "MapBoundsThroughDistortion", [typeof(RectangleF), typeof(DistortWarp)],
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        RectangleF UncachedBounds()
+        {
+            var bounds = (RectangleF)rawBounds.Invoke(scene, [index])!;
+            scene.TryGetObjectDistortionsView(index, out var distortions);
+            foreach (var distortion in distortions) bounds = (RectangleF)mapBounds.Invoke(null, [bounds, distortion])!;
+            return bounds;
+        }
+        void Check(string context) => AssertTimeline(scene.GetObjectWorldBounds(index) == UncachedBounds(),
+            $"Distort bounds cache changed {context} culling bounds.");
+        Check("committed");
+        var builds = scene.DistortBoundsCacheBuildCount;
+        for (var iteration = 0; iteration < 20; iteration++) Check("stable");
+        scene.CompleteDeferredBuild();
+        AssertTimeline(scene.DistortBoundsCacheBuildCount == builds, "Scene rebuild repeated stable warp bounds mapping.");
+        scene.X[index] += 17.25f;
+        var expected = UncachedBounds();
+        Parallel.For(0, 32, _ => AssertTimeline(scene.GetObjectWorldBounds(index) == expected,
+            "Concurrent bounds requests returned stale warp bounds."));
+        AssertTimeline(scene.DistortBoundsCacheBuildCount == builds + 1,
+            "Concurrent cold bounds requests did not share one warp calculation.");
+        scene.Y[index] += 20; scene.Width[index] += 90; scene.Angle[index] = 0.23f; scene.Stroke[index] = 110;
+        Check("placement_and_stroke");
+        var snapshot = scene.CreateSnapshot();
+        scene.SetObjectDistortions(index, [warp.WithEnvelope(warp.Envelope.Transform(p => new PointF(p.X + 240, p.Y)))]);
+        Check("changed_stack");
+        scene.RestoreSnapshot(snapshot);
+        Check("snapshot_restore");
+        var beforeRemap = scene.GetObjectWorldBounds(index);
+        scene.RemoveObjectAt(0);
+        index = 0;
+        Check("packed_remap");
+        AssertTimeline(scene.GetObjectWorldBounds(index) == beforeRemap, "Packed remap changed the cached bitmap bounds.");
+        scene.ClearObjectDistortions(index);
+        Check("removed_stack");
+        scene.SetObjectDistortions(index, [warp]);
+        Check("restored_stack");
+        AssertTimeline(scene.DistortBoundsCacheEntryCount <= 4096, "Warp bounds cache exceeded its entry budget.");
+        Console.WriteLine("distort_bounds_cache=ok,stable_rebuild=ok,parallel_single_build=ok,placement_stack_snapshot_remap=ok");
+    }
+
+    private static void RunBitmapDistortNativeRasterRegression()
+    {
+        var source = new BitmapImageRaster(new BitmapImageRasterKey("distort-native-oracle", 32, 24));
+        for (var y = 0; y < source.PixelHeight; y++)
+        for (var x = 0; x < source.PixelWidth; x++)
+        {
+            var offset = y * source.Stride + x * 4;
+            var alpha = x is >= 10 and < 14 && y is >= 8 and < 12 ? 0 : 128 + (x + y) % 100;
+            source.Pixels[offset] = (byte)(x * 7 * alpha / 255);
+            source.Pixels[offset + 1] = (byte)(y * 9 * alpha / 255);
+            source.Pixels[offset + 2] = (byte)((230 - x * 3) * alpha / 255);
+            source.Pixels[offset + 3] = (byte)alpha;
+        }
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var data = new BitmapObjectData { ImageAssetId = "native-oracle", PlacedSize = new SizeF(800, 600) };
+        var index = scene.AddBitmapObject(0, new PointF(400, 300), data);
+        scene.CompleteDeferredBuild();
+        // The envelope can cover several objects. Its source frame is deliberately
+        // larger than the image placement; source pixels must use the placement.
+        var frame = TransformOverlayFrame.FromBounds(new RectangleF(-300, -500, 1500, 1600));
+        var envelope = new DistortEnvelope(frame.TopLeft, frame.TopRight, frame.BottomRight, frame.BottomLeft);
+        var identity = new DistortWarp(frame, envelope);
+        foreach (var sampling in new[] { BitmapSampling.Point, BitmapSampling.Linear })
+        {
+            Check([], sampling, (x, y) => new PointF((x + 0.5f) * 25, (y + 0.5f) * 25), "identity");
+            Check([identity], sampling, (x, y) => new PointF((x + 0.5f) * 25, (y + 0.5f) * 25), "group_source_frame");
+            var translateA = identity.WithEnvelope(envelope.Transform(p => new PointF(p.X + 75, p.Y - 25)));
+            var translateB = identity.WithEnvelope(envelope.Transform(p => new PointF(p.X - 25, p.Y + 75)));
+            Check([translateA, translateB], sampling,
+                (x, y) => new PointF((x + 0.5f) * 25 + 50, (y + 0.5f) * 25 + 50), "stacked_translation");
+            var flip = identity.WithEnvelope(envelope.Transform(p => new PointF(800 - p.X, p.Y)));
+            Check([flip], sampling,
+                (x, y) => new PointF(800 - (x + 0.5f) * 25, (y + 0.5f) * 25), "reversed_winding");
+            scene.Angle[index] = MathF.PI / 2;
+            Check([identity], sampling,
+                (x, y) => new PointF(400 - ((y + 0.5f) * 25 - 300), 300 + (x + 0.5f) * 25 - 400), "rotated_placement");
+            scene.Angle[index] = 0;
+        }
+        var clippedData = new BitmapObjectData
+        {
+            ImageAssetId = data.ImageAssetId, PlacedSize = data.PlacedSize,
+            VisibleContours = [[new PointF(0, 0), new PointF(0.5f, 0), new PointF(0.5f, 1), new PointF(0, 1)]]
+        };
+        var clipped = BitmapImageRasterizer.ApplyObjectClip(source, clippedData);
+        var erasedResult = BitmapDistortRasterizer.Rasterize(clipped, scene, index, [identity], BitmapSampling.Point, 1_000_000);
+        AssertTimeline(erasedResult is not null, "Native erased-image fixture did not bake.");
+        for (var y = 0; y < source.PixelHeight; y++)
+        for (var x = 18; x < source.PixelWidth; x++)
+        {
+            var pixel = (y + 2) * erasedResult!.Raster.Stride + (x + 2) * 4;
+            AssertTimeline(erasedResult.Raster.Pixels[pixel + 3] == 0, "Native distortion filled an erased pixel.");
+        }
+        AssertTimeline(BitmapDistortRasterizer.Rasterize(source, scene, index, [identity], BitmapSampling.Linear, 64) is null,
+            "Native distortion ignored its byte budget or silently reduced the source pixel density.");
+        var expand = identity.WithEnvelope(envelope.Transform(p => new PointF(p.X * 1e20f, p.Y * 1e20f)));
+        AssertTimeline(BitmapDistortRasterizer.Rasterize(source, scene, index, [expand], BitmapSampling.Linear, 1_000_000) is null,
+            "Extreme finite warp expansion did not reject its impossible allocation.");
+        // x(u)=3200*u*(1-u), y(v)=600*v folds two complete source
+        // regions onto the same rectangle. Its interior must composite twice,
+        // while ordinary mesh edges must never introduce a third alpha layer.
+        var flat = new BitmapImageRaster(new BitmapImageRasterKey("distort-fold-oracle", 32, 24));
+        for (var offset = 0; offset < flat.Pixels.Length; offset += 4)
+        {
+            flat.Pixels[offset] = 20; flat.Pixels[offset + 1] = 60;
+            flat.Pixels[offset + 2] = 100; flat.Pixels[offset + 3] = 128;
+        }
+        var tl = Guid.NewGuid(); var tr = Guid.NewGuid(); var bl = Guid.NewGuid(); var br = Guid.NewGuid();
+        DistortBezierAnchor[] Horizontal(Guid start, Guid end, float y) =>
+        [
+            new(start, 0, new PointF(0, y), new PointF(0, y), new PointF(3200f / 3, y)),
+            new(end, 1, new PointF(0, y), new PointF(3200f / 3, y), new PointF(0, y))
+        ];
+        DistortBezierAnchor[] Vertical(Guid start, Guid end) =>
+        [
+            new(start, 0, PointF.Empty, PointF.Empty, new PointF(0, 200)),
+            new(end, 1, new PointF(0, 600), new PointF(0, 400), new PointF(0, 600))
+        ];
+        var folded = new DistortWarp(TransformOverlayFrame.FromBounds(new RectangleF(0, 0, 800, 600)),
+            new DistortEnvelope(Horizontal(tl, tr, 0), Vertical(tr, br), Horizontal(bl, br, 600), Vertical(tl, bl)));
+        AssertTimeline(folded.IsValid, "Analytic folded-alpha fixture is invalid.");
+        var foldedResult = BitmapDistortRasterizer.Rasterize(flat, scene, index, [folded], BitmapSampling.Linear, 1_000_000);
+        AssertTimeline(foldedResult is not null, "Analytic folded-alpha fixture did not bake.");
+        var foldedPixels = foldedResult!.Raster;
+        for (var y = 4; y < 20; y++)
+        for (var x = 4; x < 28; x++)
+        {
+            var offset = (y + 2) * foldedPixels.Stride + (x + 2) * 4;
+            AssertTimeline(foldedPixels.Pixels[offset + 3] == 192 && foldedPixels.Pixels[offset + 2] == 150,
+                "Folded native pixels lost true overlap or double-composited a shared mesh edge.");
+        }
+        using (var stage = new StageControl(scene) { Size = new Size(100, 100) })
+        using (var bitmap = new Bitmap(100, 100, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.Clear(Color.Transparent);
+            var drawResult = RequireMethod(typeof(StageControl), "DrawBitmapDistortResult",
+                [typeof(Graphics), typeof(BitmapDistortRaster), typeof(BitmapSampling), typeof(float)]);
+            drawResult.Invoke(stage, [graphics, foldedResult, BitmapSampling.Point, 0.5f]);
+            var pixel = bitmap.GetPixel(50, 50);
+            AssertTimeline(Math.Abs(pixel.A - 96) <= 1,
+                "Folded image opacity was applied per triangle instead of once to the cached object.");
+        }
+        Console.WriteLine("bitmap_distort_native_pixels=ok,point_linear=ok,transparent_hole=ok,shared_edge_alpha=ok,group_frame=ok,stack_rotation_flip=ok,erase_budget=ok");
+
+        void Check(IReadOnlyList<DistortWarp> distortions, BitmapSampling sampling,
+            Func<int, int, PointF> expectedWorldPoint, string context)
+        {
+            var result = BitmapDistortRasterizer.Rasterize(source, scene, index, distortions, sampling, 1_000_000);
+            AssertTimeline(result is not null, $"Native {context}/{sampling} fixture did not bake.");
+            var raster = result!.Raster;
+            for (var y = 0; y < source.PixelHeight; y++)
+            for (var x = 0; x < source.PixelWidth; x++)
+            {
+                var world = expectedWorldPoint(x, y);
+                var px = (int)Math.Floor((world.X - result.WorldBounds.Left) / 25d);
+                var py = (int)Math.Floor((world.Y - result.WorldBounds.Top) / 25d);
+                AssertTimeline(px >= 0 && py >= 0 && px < raster.PixelWidth && py < raster.PixelHeight,
+                    $"Native {context}/{sampling} clipped source pixel {x},{y}.");
+                var expectedOffset = y * source.Stride + x * 4;
+                var actualOffset = py * raster.Stride + px * 4;
+                for (var channel = 0; channel < 4; channel++)
+                    AssertTimeline(Math.Abs(source.Pixels[expectedOffset + channel] - raster.Pixels[actualOffset + channel]) <= 1,
+                        $"Native {context}/{sampling} changed source pixel {x},{y} channel {channel}: "
+                        + $"expected={source.Pixels[expectedOffset + channel]},actual={raster.Pixels[actualOffset + channel]}.");
+            }
+            // The two-pixel halo must remain transparent.
+            for (var x = 0; x < raster.PixelWidth; x++)
+                AssertTimeline(raster.Pixels[x * 4 + 3] == 0 && raster.Pixels[(raster.PixelHeight - 1) * raster.Stride + x * 4 + 3] == 0,
+                    $"Native {context} leaked alpha into its halo.");
+        }
+    }
+
+    private static void RunBitmapDistortResultCacheRegression()
+    {
+        var source = new BitmapImageRaster(new BitmapImageRasterKey("distort-cache-a", 32, 24));
+        var replacement = new BitmapImageRaster(new BitmapImageRasterKey("distort-cache-b", 32, 24));
+        for (var y = 0; y < source.PixelHeight; y++)
+        for (var x = 0; x < source.PixelWidth; x++)
+        {
+            var offset = y * source.Stride + x * 4;
+            var alpha = x < 8 && y < 8 ? 0 : 180;
+            source.Pixels[offset] = (byte)(40 * alpha / 255);
+            source.Pixels[offset + 1] = (byte)(100 * alpha / 255);
+            source.Pixels[offset + 2] = (byte)(240 * alpha / 255);
+            source.Pixels[offset + 3] = (byte)alpha;
+            replacement.Pixels[offset] = (byte)(200 * alpha / 255);
+            replacement.Pixels[offset + 1] = (byte)(200 * alpha / 255);
+            replacement.Pixels[offset + 2] = (byte)(20 * alpha / 255);
+            replacement.Pixels[offset + 3] = (byte)alpha;
+        }
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var placedSize = new SizeF(VectorUnits.FromPixels(180), VectorUnits.FromPixels(120));
+        var data = new BitmapObjectData { ImageAssetId = "cache-image", PlacedSize = placedSize };
+        var index = scene.AddBitmapObject(0, PointF.Empty, data);
+        scene.CompleteDeferredBuild();
+        var raw = scene.GetRawObjectWorldBounds(index);
+        var warp = new DistortWarp(TransformOverlayFrame.FromBounds(raw), new DistortEnvelope(
+            new PointF(raw.Left - 400, raw.Top - 350), new PointF(raw.Right + 300, raw.Top + 100),
+            new PointF(raw.Right - 100, raw.Bottom + 200), new PointF(raw.Left + 200, raw.Bottom - 100)));
+        scene.SetObjectDistortions(index, [warp]);
+        BitmapImageRaster? decoded = source;
+        var sampling = BitmapSampling.Linear;
+        using var stage = new StageControl(scene)
+        {
+            Size = new Size(400, 300),
+            BitmapImageResolver = _ => decoded,
+            BitmapImageSamplingProvider = _ => sampling
+        };
+        var draw = RequireMethod(typeof(StageControl), "DrawObjectUnclipped", [typeof(Graphics), typeof(int), typeof(SceneRenderPass)]);
+        var frame = RequireMethod(typeof(StageControl), "DrawGdiFrame", [typeof(Graphics)]);
+        var boundary = RequireMethod(typeof(StageControl), "GetObjectBoundaryContoursForRendering", [typeof(VectorScene), typeof(int)]);
+        var getDistortions = RequireMethod(typeof(StageControl), "TryGetObjectDistortionsForRendering",
+            [typeof(VectorScene), typeof(int), typeof(IReadOnlyList<DistortWarp>).MakeByRefType()]);
+        var rasterize = RequireMethod(typeof(BitmapDistortRasterizer), "Rasterize",
+            [typeof(BitmapImageRaster), typeof(VectorScene), typeof(int), typeof(IReadOnlyList<DistortWarp>), typeof(BitmapSampling), typeof(long)],
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var drawResult = RequireMethod(typeof(StageControl), "DrawBitmapDistortResult",
+            [typeof(Graphics), typeof(BitmapDistortRaster), typeof(BitmapSampling), typeof(float)]);
+        var core = RequireMethod(typeof(StageControl), "DrawRasterDistortedObjectCore",
+            [typeof(Graphics), typeof(VectorScene), typeof(int), typeof(SceneRenderPass), typeof(IReadOnlyList<DistortWarp>), typeof(bool)]);
+        using var actual = new Bitmap(stage.Width, stage.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using var expected = new Bitmap(stage.Width, stage.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using var graphics = Graphics.FromImage(actual);
+        using var reference = Graphics.FromImage(expected);
+        void PaintCached() => draw.Invoke(stage, [graphics, index, SceneRenderPass.Fill]);
+        void AssertPixels(string context)
+        {
+            var maximum = 0;
+            for (var y = 0; y < actual.Height; y++)
+            for (var x = 0; x < actual.Width; x++)
+            {
+                var a = actual.GetPixel(x, y); var b = expected.GetPixel(x, y);
+                maximum = Math.Max(maximum, Math.Max(Math.Abs(a.A - b.A),
+                    Math.Max(Math.Abs(a.R * a.A / 255 - b.R * b.A / 255),
+                        Math.Max(Math.Abs(a.G * a.A / 255 - b.G * b.A / 255),
+                            Math.Abs(a.B * a.A / 255 - b.B * b.A / 255)))));
+            }
+            AssertTimeline(maximum <= 2, $"Cached bitmap warp changed {context} pixels/alpha by {maximum}.");
+            Console.WriteLine($"bitmap_distort_result_cache_{context}_pixel_delta={maximum}");
+        }
+        void PaintFreshReference(Graphics target)
+        {
+            object?[] distortionArguments = [scene, index, null];
+            AssertTimeline(getDistortions.Invoke(stage, distortionArguments) is true, "Missing cache regression warp.");
+            var distortions = (IReadOnlyList<DistortWarp>)distortionArguments[2]!;
+            if (stage.HasDistortPreview)
+            {
+                core.Invoke(stage, [target, scene, index, SceneRenderPass.Fill, distortions, false]);
+                return;
+            }
+            var sourceRaster = decoded ?? throw new InvalidOperationException("Fresh distortion reference requires a decoded source.");
+            if (scene.TryGetBitmapObjectData(index, out var bitmapData))
+                sourceRaster = BitmapImageRasterizer.ApplyObjectClip(sourceRaster, bitmapData);
+            var result = (BitmapDistortRaster?)rasterize.Invoke(null,
+                [sourceRaster, scene, index, distortions, sampling, 64L * 1024 * 1024]);
+            AssertTimeline(result is not null, "Fresh native-pixel distortion reference exceeded its fixture budget.");
+            drawResult.Invoke(stage, [target, result!, sampling, Color.FromArgb(scene.Argb[index]).A / 255f]);
+        }
+        void PaintAndCompare(string context, Rectangle? clip = null, bool transformed = false, Color? backdrop = null,
+            bool requireResultBuild = false)
+        {
+            foreach (var target in new[] { graphics, reference })
+            {
+                target.ResetClip(); target.ResetTransform();
+                target.Clear(backdrop ?? Color.FromArgb(255, 35, 80, 130));
+                if (clip is { } rectangle) target.SetClip(rectangle);
+                if (transformed) target.TranslateTransform(0.5f, 1.25f);
+            }
+            var resultBuilds = stage.LastGdiDistortResultBuilds;
+            PaintFreshReference(reference);
+            PaintCached();
+            if (requireResultBuild) AssertTimeline(stage.LastGdiDistortResultBuilds == resultBuilds + 1,
+                $"Changed {context} did not rebuild the native-pixel bitmap warp result.");
+            else AssertTimeline(stage.LastGdiDistortResultBuilds == resultBuilds,
+                $"View-only change {context} rebuilt the native-pixel bitmap warp result.");
+            AssertPixels(context);
+        }
+        PaintAndCompare("committed", requireResultBuild: true);
+        var mesh = stage.DistortMeshBuildCount;
+        var samples = new List<double>();
+        for (var iteration = 0; iteration < 8; iteration++)
+        {
+            stage.Invalidate();
+            graphics.Clear(Color.FromArgb(255, 35, 80, 130));
+            var started = Stopwatch.GetTimestamp();
+            PaintCached();
+            if (iteration >= 2) samples.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+        AssertTimeline(stage.DistortMeshBuildCount == mesh && stage.LastGdiDistortResultReuses >= 8,
+            "Presentation refresh recomputed an unchanged bitmap warp mesh.");
+        stage.ClearDistortPreview(); // Normal Select lifecycle cleanup with no active preview.
+        graphics.Clear(Color.FromArgb(255, 35, 80, 130));
+        PaintCached();
+        AssertTimeline(stage.DistortMeshBuildCount == mesh, "An ordinary Select click evicted committed bitmap results.");
+        var contours = boundary.Invoke(stage, [scene, index]);
+        var boundaryBuilds = stage.DistortBoundaryBuildCount;
+        for (var iteration = 0; iteration < 8; iteration++)
+            AssertTimeline(ReferenceEquals(contours, boundary.Invoke(stage, [scene, index])), "Stable selection contours were rebuilt.");
+        AssertTimeline(stage.DistortBoundaryBuildCount == boundaryBuilds, "Selection refresh repeated warp boundary mapping.");
+        scene.AppendObject(0, new PointF(7000, 0), new SizeF(200, 200), 0, 0,
+            Color.Teal, Color.Transparent, 0, ShapeKind.Rectangle);
+        scene.CompleteDeferredBuild();
+        graphics.Clear(Color.FromArgb(255, 35, 80, 130));
+        PaintCached();
+        AssertTimeline(stage.DistortMeshBuildCount == mesh, "Editing another object evicted the unchanged bitmap result.");
+        PaintAndCompare("masked", new Rectangle(130, 90, 80, 70));
+        graphics.Clear(Color.FromArgb(255, 35, 80, 130));
+        var clippedMesh = stage.DistortMeshBuildCount;
+        PaintCached();
+        AssertTimeline(stage.DistortMeshBuildCount == clippedMesh, "The same mask repeated a stable image warp.");
+        PaintAndCompare("unmasked");
+        PaintAndCompare("changed_backdrop", backdrop: Color.FromArgb(255, 130, 80, 35));
+        PaintAndCompare("transparent_backdrop", backdrop: Color.Transparent);
+        graphics.Clear(Color.Transparent);
+        var transparentMesh = stage.DistortMeshBuildCount;
+        PaintCached();
+        AssertTimeline(stage.DistortMeshBuildCount == transparentMesh, "Stable transparent backdrop repeated the image warp.");
+        // Direct field edits and injected asset/provider changes can leave scene revisions unchanged.
+        scene.Argb[index] = Color.FromArgb(110, 255, 255, 255).ToArgb();
+        PaintAndCompare("opacity");
+        decoded = replacement;
+        PaintAndCompare("replaced_asset", requireResultBuild: true);
+        sampling = BitmapSampling.Point;
+        PaintAndCompare("sampling", requireResultBuild: true);
+        decoded = null;
+        graphics.Clear(Color.FromArgb(255, 35, 80, 130));
+        var missingAssetBuilds = stage.LastGdiDistortResultBuilds;
+        PaintCached();
+        AssertTimeline(stage.LastGdiDistortResultBuilds == missingAssetBuilds,
+            "A missing bitmap asset incorrectly generated a native distortion result.");
+        decoded = replacement;
+        var clippedData = new BitmapObjectData
+        {
+            ImageAssetId = data.ImageAssetId, PlacedSize = placedSize,
+            VisibleContours = [[new PointF(0, 0), new PointF(0.5f, 0), new PointF(0.5f, 1), new PointF(0, 1)]]
+        };
+        scene.TryUpdateBitmapObject(index, clippedData);
+        PaintAndCompare("erased", requireResultBuild: true);
+        scene.X[index] += 25;
+        PaintAndCompare("moved_placement", requireResultBuild: true);
+        scene.Width[index] *= 1.1f;
+        PaintAndCompare("resized_placement", requireResultBuild: true);
+        scene.Angle[index] = 0.18f;
+        PaintAndCompare("rotated_placement", requireResultBuild: true);
+        PaintAndCompare("transformed_fallback", transformed: true);
+        graphics.ResetTransform(); reference.ResetTransform();
+        stage.Pan(3.5f, 2.5f);
+        PaintAndCompare("pan");
+        stage.ZoomAt(Point.Empty, 1.12f);
+        PaintAndCompare("zoom");
+        stage.SetDistortPreview(scene, new Dictionary<int, DistortWarp[]> { [index] = [warp] });
+        PaintAndCompare("preview");
+        var previewSourceBuilds = stage.DistortPreviewRasterBuildCount;
+        graphics.Clear(Color.FromArgb(255, 35, 80, 130));
+        PaintCached();
+        AssertTimeline(stage.DistortPreviewRasterBuildCount == previewSourceBuilds,
+            "Stable envelope preview repeated source rasterization.");
+        stage.SetDistortPreview(scene, new Dictionary<int, DistortWarp[]>
+        {
+            [index] = [warp.WithEnvelope(warp.Envelope.Transform(p => new PointF(p.X + 240, p.Y)))]
+        });
+        PaintAndCompare("changed_preview");
+        stage.ClearDistortPreview();
+        PaintAndCompare("preview_cancel", requireResultBuild: true);
+        var snapshot = scene.CreateSnapshot();
+        scene.SetObjectDistortions(index, [warp.WithEnvelope(warp.Envelope.Transform(p => new PointF(p.X - 140, p.Y + 90)))]);
+        PaintAndCompare("changed_stack", requireResultBuild: true);
+        scene.RestoreSnapshot(snapshot);
+        PaintAndCompare("snapshot_restore", requireResultBuild: true);
+        stage.Frame = 1;
+        PaintAndCompare("frame_change");
+        graphics.Clear(Color.FromArgb(255, 35, 80, 130));
+        var frameMesh = stage.DistortMeshBuildCount;
+        PaintCached();
+        AssertTimeline(stage.DistortMeshBuildCount == frameMesh, "Stable frame repeated bitmap warping.");
+        stage.Frame = 0;
+        stage.Size = new Size(430, 320);
+        PaintAndCompare("resize");
+        stage.Size = actual.Size;
+        foreach (var zoom in new[] { 0.25f, 0.5f, 1f, 2f, 4f, 64f, 1f })
+        {
+            stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), zoom / stage.Zoom);
+            PaintAndCompare($"zoom_{zoom:0.##}");
+        }
+        graphics.ResetClip(); reference.ResetClip();
+        frame.Invoke(stage, [graphics]);
+        var warmedMesh = stage.DistortMeshBuildCount;
+        for (var iteration = 0; iteration < 4; iteration++)
+        {
+            stage.Invalidate();
+            frame.Invoke(stage, [graphics]);
+            AssertTimeline(stage.LastGdiDistortResultReuses == 1 && stage.DistortMeshBuildCount == warmedMesh,
+                "A rebuilt base frame repeated a stable image's distortion.");
+        }
+        using (var host = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-3000, -3000), ClientSize = new Size(760, 480)
+        })
+        using (var presented = new StageControl(scene)
+        {
+            Dock = DockStyle.Fill,
+            BitmapImageResolver = stage.BitmapImageResolver,
+            BitmapImageSamplingProvider = stage.BitmapImageSamplingProvider,
+            SelectedObject = index
+        })
+        {
+            host.Controls.Add(presented);
+            host.Show();
+            Application.DoEvents();
+            presented.Invalidate(); presented.Update();
+            AssertTimeline(presented.IsHandleCreated && !presented.LastFrameUsedDirect2D && presented.LastStats.DrawnObjects > 0,
+                "Result cache fixture did not present visible distorted content on a real software HWND.");
+            var windowMesh = presented.DistortMeshBuildCount;
+            var windowBoundary = presented.DistortBoundaryBuildCount;
+            var windowBounds = scene.DistortBoundsCacheBuildCount;
+            AssertTimeline(windowMesh > 0 && windowBoundary > 0 && windowBounds > 0,
+                "Real window fixture did not build its distorted image, selection outline and culling bounds.");
+            var windowSamples = new List<double>();
+            for (var iteration = 0; iteration < 8; iteration++)
+            {
+                var started = Stopwatch.GetTimestamp();
+                presented.ClearDistortPreview(); presented.Invalidate(); presented.Update();
+                windowSamples.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                AssertTimeline(presented.LastGdiDistortResultReuses == 1 && presented.DistortMeshBuildCount == windowMesh
+                    && presented.DistortBoundaryBuildCount == windowBoundary && scene.DistortBoundsCacheBuildCount == windowBounds,
+                    "Real window selection/repaint repeated stable mesh, boundary or culling calculations.");
+            }
+            host.ClientSize = new Size(780, 500);
+            presented.Invalidate(); presented.Update();
+            AssertTimeline(presented.DistortMeshBuildCount == windowMesh,
+                "Window resize recomputed the view-independent bitmap warp.");
+            var resultCache = (System.Collections.IDictionary)RequireField(typeof(StageControl), "_distortResultCache").GetValue(presented)!;
+            var cacheBytes = (long)RequireField(typeof(StageControl), "_distortResultCacheBytes").GetValue(presented)!;
+            AssertTimeline(resultCache.Count <= 32 && cacheBytes <= 64L * 1024 * 1024, "Result cache exceeded its memory budget.");
+            presented.BindScene(scene);
+            AssertTimeline(resultCache.Count == 0
+                && (long)RequireField(typeof(StageControl), "_distortResultCacheBytes").GetValue(presented)! == 0,
+                "Scene rebinding retained retired distortion cache resources.");
+            Console.WriteLine($"bitmap_distort_result_real_hwnd=ok,stable_mesh_boundary_bounds=ok,resize_and_lifecycle=ok,repaint_average_ms={windowSamples.Average():0.000},max_ms={windowSamples.Max():0.000}");
+        }
+        Console.WriteLine($"bitmap_distort_result_cached_repaint_average_ms={samples.Average():0.000},max_ms={samples.Max():0.000}");
+        Console.WriteLine("bitmap_distort_result_cache=ok,stable_mesh=ok,stable_boundaries=ok,clip=ok,asset_sampling_opacity=ok,preview_invalidation=ok");
+    }
+
+    private static void RunBitmapDistortZoomCacheRegression()
+    {
+        var source = new BitmapImageRaster(new BitmapImageRasterKey("distort-native-zoom-1024x768", 1024, 768));
+        for (var offset = 0; offset < source.Pixels.Length; offset += 4)
+        {
+            source.Pixels[offset] = 35; source.Pixels[offset + 1] = 85;
+            source.Pixels[offset + 2] = 170; source.Pixels[offset + 3] = 200;
+        }
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var index = scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+        {
+            ImageAssetId = "native-zoom", PlacedSize = new SizeF(VectorUnits.FromPixels(640), VectorUnits.FromPixels(480))
+        });
+        var raw = scene.GetRawObjectWorldBounds(index);
+        scene.SetObjectDistortions(index, [new DistortWarp(TransformOverlayFrame.FromBounds(raw),
+            new DistortEnvelope(new PointF(raw.Left - 300, raw.Top - 150), new PointF(raw.Right + 200, raw.Top + 400),
+                new PointF(raw.Right - 100, raw.Bottom + 200), new PointF(raw.Left + 300, raw.Bottom - 100)))]);
+        scene.CompleteDeferredBuild();
+        using var stage = new StageControl(scene)
+        {
+            Size = new Size(760, 480), WorldGridOpacity = 0, BitmapImageResolver = _ => source,
+            BitmapImageSamplingProvider = _ => BitmapSampling.Linear
+        };
+        using var bitmap = new Bitmap(stage.Width, stage.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using var graphics = Graphics.FromImage(bitmap);
+        var frame = RequireMethod(typeof(StageControl), "DrawGdiFrame", [typeof(Graphics)]);
+        var started = Stopwatch.GetTimestamp();
+        frame.Invoke(stage, [graphics]);
+        var firstBakeMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var meshBuilds = stage.DistortMeshBuildCount;
+        var bakeAttempts = stage.DistortResultBakeAttemptCount;
+        AssertTimeline(meshBuilds == 1 && stage.LastGdiDistortResultBuilds == 1,
+            "Large-image zoom fixture did not build exactly one native-pixel result.");
+        var center = bitmap.GetPixel(bitmap.Width / 2, bitmap.Height / 2);
+        AssertTimeline(center.R > center.B + 60, "Large-image zoom fixture did not draw its warped pixels.");
+        var samples = new List<double>();
+        for (var iteration = 0; iteration < 3; iteration++)
+        foreach (var zoom in new[] { 0.25f, 0.5f, 1f, 2f, 4f, 64f })
+        {
+            stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), zoom / stage.Zoom, interactivePreview: true);
+            stage.Pan(0.25f, -0.5f);
+            started = Stopwatch.GetTimestamp();
+            frame.Invoke(stage, [graphics]);
+            samples.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            AssertTimeline(stage.DistortMeshBuildCount == meshBuilds && stage.DistortResultBakeAttemptCount == bakeAttempts
+                && stage.LastGdiDistortResultBuilds == 0 && stage.LastGdiDistortResultReuses == 1,
+                $"Large-image zoom {zoom} recomputed its native warp.");
+        }
+        samples.Sort();
+        Console.WriteLine($"bitmap_distort_native_zoom_source=1024x768,target=760x480,gdi=software,warm_frames={samples.Count},"
+            + $"mesh_builds={meshBuilds},first_bake_ms={firstBakeMilliseconds:0.000},"
+            + $"average_ms={samples.Average():0.000},p95_ms={samples[(int)Math.Ceiling(samples.Count * 0.95) - 1]:0.000},max_ms={samples[^1]:0.000}");
+    }
+
+    private static void RunBitmapDistortResultCacheBudgetRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var image = new BitmapImageRaster(new BitmapImageRasterKey("distort-cache-budget", 1, 1));
+        image.Pixels[0] = 40; image.Pixels[1] = 100; image.Pixels[2] = 240; image.Pixels[3] = 255;
+        for (var objectIndex = 0; objectIndex < 36; objectIndex++)
+        {
+            var index = scene.AddBitmapObject(0, PointF.Empty, new BitmapObjectData
+            {
+                ImageAssetId = "budget-image", PlacedSize = new SizeF(300, 300)
+            });
+            var bounds = scene.GetRawObjectWorldBounds(index);
+            scene.SetObjectDistortions(index, [new DistortWarp(TransformOverlayFrame.FromBounds(bounds),
+                new DistortEnvelope(new PointF(bounds.Left - 20, bounds.Top - 20),
+                    new PointF(bounds.Right + 20, bounds.Top), new PointF(bounds.Right, bounds.Bottom + 20),
+                    new PointF(bounds.Left, bounds.Bottom)))]);
+        }
+        scene.CompleteDeferredBuild();
+        using var stage = new StageControl(scene) { Size = new Size(64, 48), BitmapImageResolver = _ => image };
+        using var bitmap = new Bitmap(stage.Width, stage.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using var graphics = Graphics.FromImage(bitmap);
+        var draw = RequireMethod(typeof(StageControl), "DrawObjectUnclipped", [typeof(Graphics), typeof(int), typeof(SceneRenderPass)]);
+        void Paint(int index)
+        {
+            graphics.Clear(Color.DarkGray);
+            draw.Invoke(stage, [graphics, index, SceneRenderPass.Fill]);
+        }
+        for (var index = 0; index < 36; index++) Paint(index);
+        var cache = (System.Collections.IDictionary)RequireField(typeof(StageControl), "_distortResultCache").GetValue(stage)!;
+        AssertTimeline(cache.Count == 32
+            && (long)RequireField(typeof(StageControl), "_distortResultCacheBytes").GetValue(stage)! <= 64L * 1024 * 1024,
+            "Result cache did not enforce its entry/memory limit.");
+        var builds = stage.LastGdiDistortResultBuilds;
+        Paint(35);
+        AssertTimeline(stage.LastGdiDistortResultBuilds == builds, "Result cache evicted the most recently used object.");
+        Paint(0);
+        AssertTimeline(stage.LastGdiDistortResultBuilds == builds + 1 && cache.Count == 32,
+            "Result cache did not rebuild its evicted oldest object within budget.");
+        stage.BindScene(scene);
+        AssertTimeline(cache.Count == 0 && (long)RequireField(typeof(StageControl), "_distortResultCacheBytes").GetValue(stage)! == 0,
+            "Result cache eviction/lifecycle accounting retained memory.");
+        var raw = scene.GetRawObjectWorldBounds(0);
+        var hugeWarp = new DistortWarp(TransformOverlayFrame.FromBounds(raw),
+            DistortEnvelope.FromBounds(new RectangleF(raw.Left * 5000, raw.Top * 5000, raw.Width * 5000, raw.Height * 5000)));
+        scene.SetObjectDistortions(0, [hugeWarp]);
+        Paint(0);
+        var attempts = stage.DistortResultBakeAttemptCount;
+        AssertTimeline(attempts > 0 && stage.LastGdiDistortResultBuilds == builds + 1,
+            "Over-budget fixture silently reduced native pixel precision.");
+        stage.Pan(1, 2); stage.ZoomAt(Point.Empty, 0.5f);
+        Paint(0);
+        AssertTimeline(stage.DistortResultBakeAttemptCount == attempts,
+            "Camera navigation retried a rejected native-pixel result.");
+        Console.WriteLine("bitmap_distort_result_cache_budget=ok,entry_eviction=ok,lru_reuse=ok,lifecycle_accounting=ok");
+    }
+
+    private static void RunDistortRasterPerformanceRegression()
+    {
+        using var source = new Bitmap(1024, 768, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using (var graphics = Graphics.FromImage(source))
+        {
+            graphics.Clear(Color.FromArgb(170, Color.CornflowerBlue));
+            using var brush = new SolidBrush(Color.FromArgb(220, Color.OrangeRed));
+            graphics.FillEllipse(brush, 100, 50, 600, 500);
+        }
+        var optimized = RequireMethod(typeof(StageControl), "DrawDistortedTriangle",
+            [typeof(Graphics), typeof(Bitmap), typeof(PointF), typeof(PointF), typeof(PointF),
+                typeof(PointF), typeof(PointF), typeof(PointF), typeof(bool)],
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+            .CreateDelegate<Action<Graphics, Bitmap, PointF, PointF, PointF, PointF, PointF, PointF, bool>>();
+        var affine = RequireMethod(typeof(StageControl), "CreateAffineTransform",
+            [typeof(PointF), typeof(PointF), typeof(PointF), typeof(PointF), typeof(PointF), typeof(PointF)],
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+            .CreateDelegate<Func<PointF, PointF, PointF, PointF, PointF, PointF, System.Drawing.Drawing2D.Matrix>>();
+        void Legacy(Graphics target, Bitmap raster, PointF s0, PointF s1, PointF s2,
+            PointF d0, PointF d1, PointF d2, bool preview)
+        {
+            using var clip = new System.Drawing.Drawing2D.GraphicsPath();
+            clip.AddPolygon([d0, d1, d2]);
+            var state = target.Save();
+            try
+            {
+                target.SetClip(clip, System.Drawing.Drawing2D.CombineMode.Intersect);
+                target.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+                target.CompositingQuality = preview ? System.Drawing.Drawing2D.CompositingQuality.AssumeLinear
+                    : System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+                target.InterpolationMode = preview ? System.Drawing.Drawing2D.InterpolationMode.Bilinear
+                    : System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                target.PixelOffsetMode = preview ? System.Drawing.Drawing2D.PixelOffsetMode.Half
+                    : System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                using var transform = affine(s0, s1, s2, d0, d1, d2);
+                using var callerTransform = target.Transform;
+                transform.Multiply(callerTransform, System.Drawing.Drawing2D.MatrixOrder.Append);
+                target.Transform = transform;
+                target.DrawImage(raster, 0, 0, raster.Width, raster.Height);
+            }
+            finally { target.Restore(state); }
+        }
+        using var expected = new Bitmap(800, 500, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using var actual = new Bitmap(800, 500, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using var expectedGraphics = Graphics.FromImage(expected);
+        using var actualGraphics = Graphics.FromImage(actual);
+        foreach (var preview in new[] { true, false })
+        {
+            expectedGraphics.Clear(Color.Transparent);
+            actualGraphics.Clear(Color.Transparent);
+            foreach (var target in new[] { expectedGraphics, actualGraphics })
+            {
+                target.ResetTransform();
+                target.ResetClip();
+                target.TranslateTransform(12, 9);
+                target.SetClip(new Rectangle(25, 20, 720, 440));
+            }
+            // A skewed triangle covers only part of the image. Verify alpha, the caller's
+            // transformed clip, and filter edges against the old full-raster operation.
+            var s0 = new PointF(100, 70); var s1 = new PointF(800, 70); var s2 = new PointF(100, 650);
+            var d0 = new PointF(-20, 30); var d1 = new PointF(760, 70); var d2 = new PointF(80, 470);
+            Legacy(expectedGraphics, source, s0, s1, s2, d0, d1, d2, preview);
+            optimized(actualGraphics, source, s0, s1, s2, d0, d1, d2, preview);
+            var maximumDelta = 0;
+            var changedPixels = 0;
+            var worstPoint = Point.Empty;
+            var worstExpected = Color.Empty;
+            var worstActual = Color.Empty;
+            for (var y = 0; y < actual.Height; y++)
+            for (var x = 0; x < actual.Width; x++)
+            {
+                var a = actual.GetPixel(x, y); var b = expected.GetPixel(x, y);
+                // Compare premultiplied channels: GetPixel unpremultiplies them and
+                // can magnify one-byte interpolation rounding at transparent pixels.
+                var delta = Math.Max(Math.Abs(a.A - b.A),
+                    Math.Max(Math.Abs(a.R * a.A / 255 - b.R * b.A / 255),
+                        Math.Max(Math.Abs(a.G * a.A / 255 - b.G * b.A / 255),
+                            Math.Abs(a.B * a.A / 255 - b.B * b.A / 255))));
+                if (delta > 0) changedPixels++;
+                if (delta <= maximumDelta) continue;
+                maximumDelta = delta;
+                worstPoint = new Point(x, y);
+                worstExpected = b;
+                worstActual = a;
+            }
+            Console.WriteLine($"distort_triangle_preview={preview},max_pixel_delta={maximumDelta},"
+                + $"changed_pixels={changedPixels},worst={worstPoint},expected={worstExpected},actual={worstActual}");
+            AssertTimeline(maximumDelta <= 2, $"Bounded Distort triangle sampling changed pixels or alpha: {maximumDelta}.");
+        }
+        actualGraphics.ResetTransform(); actualGraphics.ResetClip();
+        double Measure(Action<Graphics, Bitmap, PointF, PointF, PointF, PointF, PointF, PointF, bool> draw,
+            bool preview)
+        {
+            var samples = new List<double>();
+            for (var frame = 0; frame < 8; frame++)
+            {
+                actualGraphics.Clear(Color.Transparent);
+                var started = Stopwatch.GetTimestamp();
+                for (var row = 0; row < 24; row++)
+                for (var column = 0; column < 24; column++)
+                {
+                    var s0 = new PointF(column * source.Width / 24f, row * source.Height / 24f);
+                    var s1 = new PointF((column + 1) * source.Width / 24f, s0.Y);
+                    var s2 = new PointF(s0.X, (row + 1) * source.Height / 24f);
+                    PointF Destination(PointF p) => new(p.X * 0.65f + p.Y * 0.08f, p.Y * 0.55f + p.X * 0.03f);
+                    draw(actualGraphics, source, s0, s1, s2, Destination(s0), Destination(s1), Destination(s2), preview);
+                }
+                if (frame >= 3) samples.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
+            return samples.Average();
+        }
+        // Captured Select/camera movement previously paid the committed HQ filter cost.
+        // Both modes keep the same dense mesh here to isolate the interaction policy;
+        // the real Stage also reuses its existing lighter envelope-preview mesh.
+        var before = Measure(Legacy, preview: false);
+        var after = Measure(optimized, preview: true);
+        Console.WriteLine($"distort_raster_committed_legacy_average_ms={before:0.000}");
+        Console.WriteLine($"distort_raster_preview_bounded_average_ms={after:0.000}");
+        Console.WriteLine($"distort_raster_speedup={before / after:0.00}");
+        AssertTimeline(after < before * 0.65, "Interactive Distort rendering retained committed-frame resampling cost.");
+        Console.WriteLine("distort_raster_performance=ok,transformed_clip=ok,pixels_alpha=ok");
+    }
+
+    private static void RunBitmapDistortRegression()
+    {
+        var temporaryRoot = CreateTemporaryDirectory("bitmap-distort");
+        var sourcePath = Path.Combine(temporaryRoot, "image.png");
+        using (var image = new Bitmap(120, 80, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+        using (var graphics = Graphics.FromImage(image))
+        {
+            graphics.Clear(Color.CornflowerBlue);
+            using var orange = new SolidBrush(Color.OrangeRed);
+            graphics.FillRectangle(orange, 0, 0, 60, 40);
+            graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+            using var transparent = new SolidBrush(Color.Transparent);
+            graphics.FillRectangle(transparent, 70, 50, 20, 20);
+            image.Save(sourcePath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+        try
+        {
+            using var form = new MainForm { Size = new Size(1280, 800) };
+            form.CreateControl();
+            form.PerformLayout();
+            var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+            var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+            var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+            stage.Size = new Size(760, 480);
+            stage.CreateControl();
+            stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 1f / stage.Zoom);
+            AssertTimeline(project.TryAddImageAssetFromSource("Bitmap Distort", sourcePath,
+                BitmapImageRasterizer.ComputeSha256(sourcePath), 120, 80, 96,
+                BitmapImageImportSettings.Default with { PixelsPerUnit = 96 }, out var asset)
+                && asset is not null, "Bitmap Distort could not register its image.");
+            var center = new PointF(stage.CameraX, stage.CameraY);
+            var index = scene.AddBitmapObject(scene.ActiveLayer, center,
+                new BitmapObjectData { ImageAssetId = asset!.Id, PlacedSize = new SizeF(3000, 2000) });
+            RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]).Invoke(form, [index, false]);
+            RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Distort]);
+            RequireMethod(typeof(MainForm), "UpdateTransformOverlay").Invoke(form, null);
+            AssertTimeline(scene.SupportsDistortion(index) && stage.DistortBoundsVisible,
+                "A placed image did not expose its Distort envelope.");
+            var sourceEnvelope = stage.DistortFrame;
+            var start = Point.Round(stage.WorldToScreen(sourceEnvelope.TopLeft.X, sourceEnvelope.TopLeft.Y));
+            var targetWorld = new PointF(sourceEnvelope.TopLeft.X - 1000, sourceEnvelope.TopLeft.Y - 650);
+            var end = Point.Round(stage.WorldToScreen(targetWorld.X, targetWorld.Y));
+            var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+            var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+            var draw = RequireMethod(typeof(StageControl), "DrawObjectUnclipped",
+                [typeof(Graphics), typeof(int), typeof(SceneRenderPass)]);
+            Bitmap Paint()
+            {
+                var bitmap = new Bitmap(stage.Width, stage.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                using var graphics = Graphics.FromImage(bitmap);
+                graphics.Clear(Color.Transparent);
+                draw.Invoke(stage, [graphics, index, SceneRenderPass.Fill]);
+                return bitmap;
+            }
+            using var before = Paint();
+            var revision = scene.GeometryRevision;
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
+            RequireMethod(typeof(MainForm), "ApplyDistortFromPointer").Invoke(form, [targetWorld]);
+            AssertTimeline(stage.HasDistortPreview && scene.GeometryRevision == revision
+                && !scene.TryGetObjectDistortions(index, out _),
+                "Bitmap Distort preview changed source geometry before commit.");
+            using var preview = Paint();
+            var coloredOutsideOriginal = 0;
+            var rawBounds = scene.GetRawObjectWorldBounds(index);
+            for (var y = 0; y < preview.Height; y++)
+            for (var x = 0; x < preview.Width; x++)
+            {
+                if (preview.GetPixel(x, y).A > 180 && before.GetPixel(x, y).A == 0
+                    && !rawBounds.Contains(stage.ScreenToWorld(new Point(x, y)))) coloredOutsideOriginal++;
+            }
+            AssertTimeline(coloredOutsideOriginal > 60, "Bitmap Distort preview changed handles without warping image pixels.");
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]);
+            var hasWarp = scene.TryGetObjectDistortions(index, out var warps);
+            AssertTimeline(!stage.HasDistortPreview && hasWarp
+                && warps.Length == 1 && scene.ShapeKind[index] == ShapeKind.Bitmap
+                && scene.TryGetBitmapObjectData(index, out var data) && data.ImageAssetId == asset.Id,
+                "Bitmap Distort did not commit the placement warp or replaced the shared asset.");
+            using var committed = Paint();
+            var interior = new PointF(center.X - 750, center.Y - 500);
+            var mapped = scene.MapObjectPoint(index, interior);
+            var screen = Point.Round(stage.WorldToScreen(mapped.X, mapped.Y));
+            var pixel = committed.GetPixel(screen.X, screen.Y);
+            AssertTimeline(pixel.R > 180 && pixel.G < 140 && scene.HitTest(mapped, 0, 1) == index,
+                "Distorted image pixels and model hit testing disagreed.");
+            var transparentWorld = scene.MapObjectPoint(index, new PointF(center.X + 500, center.Y + 500));
+            var transparentScreen = Point.Round(stage.WorldToScreen(transparentWorld.X, transparentWorld.Y));
+            AssertTimeline(committed.GetPixel(transparentScreen.X, transparentScreen.Y).A < 20,
+                "Bitmap Distort filled a transparent image region.");
+
+            var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+            var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+            var selectedObject = RequireField(typeof(MainForm), "_selectedObject");
+            var selectedElements = RequireField(typeof(MainForm), "_selectedElements");
+            activateTool.Invoke(form, [ToolMode.Select]);
+            void Click(Point point)
+            {
+                mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0)]);
+                mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0)]);
+                AssertTimeline((int)selectedObject.GetValue(form)! == index
+                    && ((ICollection<DrawingElementHit>)selectedElements.GetValue(form)!).Count == 0,
+                    "Select could not reselect the distorted image as a whole object.");
+            }
+            setSelection.Invoke(form, [-1, false]);
+            Click(screen);
+            AssertTimeline(stage.HitTestHandle(screen, index) == EditHandleKind.None,
+                "An invisible source-corner handle intercepted the distorted image body.");
+            var moveEnd = new Point(screen.X + 144, screen.Y + 26);
+            var moveStartWorld = stage.ScreenToWorld(screen);
+            var moveEndWorld = stage.ScreenToWorld(moveEnd);
+            var dx = moveEndWorld.X - moveStartWorld.X;
+            var dy = moveEndWorld.Y - moveStartWorld.Y;
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+            var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+            // Multiple samples must translate from pointer-down, without accumulating
+            // the already moved envelope or leaving it at its original world position.
+            mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, screen.X + 72, screen.Y + 13, 0)]);
+            mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, moveEnd.X, moveEnd.Y, 0)]);
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, moveEnd.X, moveEnd.Y, 0)]);
+            var movedSource = new PointF(interior.X + dx, interior.Y + dy);
+            var movedMapped = scene.MapObjectPoint(index, movedSource);
+            AssertTimeline(Math.Abs(movedMapped.X - mapped.X - dx) < 1
+                && Math.Abs(movedMapped.Y - mapped.Y - dy) < 1
+                && scene.TryGetObjectDistortions(index, out var movedWarps)
+                && Math.Abs(movedWarps[0].Source.TopLeft.X - warps[0].Source.TopLeft.X - dx) < 1
+                && Math.Abs(movedWarps[0].Envelope.TopLeft.Y - warps[0].Envelope.TopLeft.Y - dy) < 1
+                && scene.HitTest(movedMapped, 0, 1) == index,
+                "Select moved image coordinates without translating the distortion source and envelope.");
+            using (var movedImage = Paint())
+            {
+                var movedScreen = Point.Round(stage.WorldToScreen(movedMapped.X, movedMapped.Y));
+                var movedPixel = movedImage.GetPixel(movedScreen.X, movedScreen.Y);
+                AssertTimeline(movedPixel.R > 180 && movedPixel.G < 140,
+                    "Select dragging changed the distorted image's appearance.");
+                setSelection.Invoke(form, [-1, false]);
+                Click(movedScreen);
+            }
+            AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+                && scene.TryGetObjectDistortions(index, out var undoneWarps) && undoneWarps.SequenceEqual(warps)
+                && scene.X[index] == center.X && scene.Y[index] == center.Y,
+                "Undo failed to restore the image position and its distortion together.");
+            var drawFrame = RequireMethod(typeof(StageControl), "DrawGdiFrame", [typeof(Graphics)]);
+            using (var frameBitmap = new Bitmap(stage.Width, stage.Height,
+                System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+            using (var frameGraphics = Graphics.FromImage(frameBitmap))
+            {
+                stage.Capture = true;
+                drawFrame.Invoke(stage, [frameGraphics]);
+                var interactiveSamples = new List<double>();
+                for (var sample = 0; sample < 8; sample++)
+                {
+                    var started = Stopwatch.GetTimestamp();
+                    drawFrame.Invoke(stage, [frameGraphics]);
+                    if (sample >= 2) interactiveSamples.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                }
+                AssertTimeline(stage.LastGdiBaseFrameCacheBuilds == 0,
+                    "Captured image movement incorrectly cached a committed-quality frame.");
+                stage.Capture = false;
+                drawFrame.Invoke(stage, [frameGraphics]);
+                AssertTimeline(stage.LastGdiBaseFrameCacheBuilds == 1,
+                    "Releasing the image pointer did not restore the committed-quality frame.");
+                drawFrame.Invoke(stage, [frameGraphics]);
+                AssertTimeline(stage.LastGdiBaseFrameCacheReuses == 1,
+                    "A stable distorted image frame was rebuilt instead of reusing its cache.");
+                Console.WriteLine($"bitmap_distort_interactive_760x480_average_ms={interactiveSamples.Average():0.000},"
+                    + $"max_ms={interactiveSamples.Max():0.000},final_frame_cache=ok");
+            }
+            using (var host = new Form
+            {
+                ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+                Location = new Point(-3000, -3000), ClientSize = new Size(760, 480)
+            })
+            using (var presented = new StageControl(scene)
+            {
+                Dock = DockStyle.Fill,
+                BitmapImageResolver = stage.BitmapImageResolver,
+                BitmapImageSamplingProvider = stage.BitmapImageSamplingProvider
+            })
+            {
+                host.Controls.Add(presented);
+                host.Show();
+                Application.DoEvents();
+                presented.Capture = true;
+                presented.Invalidate();
+                presented.Update();
+                AssertTimeline(presented.IsHandleCreated && !presented.LastFrameUsedDirect2D
+                    && presented.LastGdiBaseFrameCacheBuilds == 0,
+                    "The captured bitmap warp did not present its software preview on a real HWND.");
+                presented.Capture = false;
+                presented.Update();
+                AssertTimeline(presented.LastGdiBaseFrameCacheBuilds == 1,
+                    "Capture loss did not repaint the committed bitmap warp on a real HWND.");
+                Console.WriteLine("bitmap_distort_real_hwnd_preview_and_capture_loss=ok");
+
+                var settledFrameBuilds = 0;
+                presented.FrameRendered += (_, _) => settledFrameBuilds += presented.LastGdiBaseFrameCacheBuilds;
+                var nativeMeshBuilds = presented.DistortMeshBuildCount;
+                presented.ZoomAt(new Point(presented.Width / 2, presented.Height / 2), 1.12f, interactivePreview: true);
+                presented.Update();
+                AssertTimeline(!presented.Capture && !presented.ZoomLodPreviewActive
+                    && presented.LastGdiBaseFrameCacheBuilds == 0 && settledFrameBuilds == 0
+                    && presented.LastGdiDistortResultReuses > 0 && presented.DistortMeshBuildCount == nativeMeshBuilds,
+                    "Wheel zoom recomputed a single warped bitmap or enabled object LOD.");
+                var distortZoomPreview = RequireField(typeof(StageControl), "_distortZoomPreviewActive");
+                var zoomStarted = Stopwatch.GetTimestamp();
+                while (((bool)distortZoomPreview.GetValue(presented)! || settledFrameBuilds == 0)
+                    && Stopwatch.GetElapsedTime(zoomStarted).TotalSeconds < 2)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(10);
+                }
+                AssertTimeline(!(bool)distortZoomPreview.GetValue(presented)! && settledFrameBuilds == 1
+                    && presented.DistortMeshBuildCount == nativeMeshBuilds,
+                    "Zoom idle recomputed the native bitmap result or failed to restore one committed frame.");
+                presented.InvalidateOverlay();
+                presented.Update();
+                AssertTimeline(presented.LastGdiBaseFrameCacheReuses == 1,
+                    "The settled bitmap zoom frame was not cached.");
+                Console.WriteLine("bitmap_distort_real_hwnd_wheel_preview_idle_and_cache=ok");
+
+                presented.ZoomAt(Point.Empty, 1.12f, interactivePreview: true);
+                AssertTimeline((bool)distortZoomPreview.GetValue(presented)!,
+                    "Handle recreation regression did not start in the bitmap zoom preview.");
+                var beforeRecreateBuilds = settledFrameBuilds;
+                RequireMethod(typeof(Control), "RecreateHandle").Invoke(presented, null);
+                presented.InvalidateOverlay();
+                presented.Update();
+                var recreateStarted = Stopwatch.GetTimestamp();
+                while (settledFrameBuilds == beforeRecreateBuilds
+                    && Stopwatch.GetElapsedTime(recreateStarted).TotalSeconds < 2)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(10);
+                }
+                AssertTimeline(!(bool)distortZoomPreview.GetValue(presented)!
+                    && !presented.ZoomLodPreviewActive && settledFrameBuilds == beforeRecreateBuilds + 1
+                    && presented.LastGdiBaseFrameCacheBuilds + presented.LastGdiBaseFrameCacheReuses == 1,
+                    "Handle recreation did not restore a committed bitmap frame: "
+                    + $"distortPreview={distortZoomPreview.GetValue(presented)},objectLod={presented.ZoomLodPreviewActive},"
+                    + $"builds={presented.LastGdiBaseFrameCacheBuilds},reuses={presented.LastGdiBaseFrameCacheReuses},"
+                    + $"recreateBuilds={settledFrameBuilds - beforeRecreateBuilds},"
+                    + $"handle={presented.IsHandleCreated},visible={presented.Visible},capture={presented.Capture}.");
+                Console.WriteLine("bitmap_distort_real_hwnd_recreate_restores_final=ok");
+            }
+            var manifestPath = Path.Combine(temporaryRoot, "Distorted.v2dProject");
+            ProjectVaultStore.Save(project, manifestPath);
+            var reopened = ProjectVaultStore.Load(manifestPath);
+            var restoredScene = reopened.DrawingObjects.Single(item => item.Id == project.DrawingObjects[0].Id).Scene;
+            AssertTimeline(restoredScene.TryGetObjectDistortions(index, out var restoredWarps)
+                && restoredWarps.SequenceEqual(warps) && restoredScene.TryGetBitmapObjectData(index, out _),
+                "Save/Open lost the bitmap placement distortion.");
+            AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+                && !scene.TryGetObjectDistortions(index, out _) && scene.ShapeKind[index] == ShapeKind.Bitmap
+                && project.ImageAssets.Count == 1,
+                "Undo failed to restore the unwarped image without deleting its asset.");
+            RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]).Invoke(form, [index, false]);
+            activateTool.Invoke(form, [ToolMode.Distort]);
+            RequireMethod(typeof(MainForm), "UpdateTransformOverlay").Invoke(form, null);
+            start = Point.Round(stage.WorldToScreen(stage.DistortFrame.TopLeft.X, stage.DistortFrame.TopLeft.Y));
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
+            RequireMethod(typeof(MainForm), "ApplyDistortFromPointer").Invoke(form, [targetWorld]);
+            RequireMethod(typeof(MainForm), "CancelDistortPointerPreview").Invoke(form, null);
+            AssertTimeline(!stage.HasDistortPreview && !scene.TryGetObjectDistortions(index, out _),
+                "Cancel left a bitmap distortion preview or committed warp.");
+            RequireMethod(typeof(MainForm), "FinishPointerInteraction").Invoke(form, null);
+        }
+        finally { DeleteTemporaryDirectory(temporaryRoot); }
+        Console.WriteLine("bitmap_distort=ok,pointer_preview=ok,warped_pixels=ok,alpha=ok,hit_test=ok,select_reselect=ok,select_move=ok,save_open=ok,undo_cancel=ok");
+    }
+
     private static void RunDistortPointerRegression()
     {
         var sceneField = RequireField(typeof(MainForm), "_scene");
