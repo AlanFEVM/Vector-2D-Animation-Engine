@@ -104,6 +104,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
     private TreeNode? _hoverProjectNode;
     private bool _syncingSelection;
     private bool _projectRowsDirty = true;
+    private int _projectObjectUpdateDepth;
     private ProjectRowsFingerprint _projectRowsFingerprint;
     private string _activeDrawingObjectId = "";
     private string _selectedProjectDrawingObjectId = "";
@@ -285,12 +286,26 @@ internal sealed partial class LibraryVaultPanel : UserControl
         SynchronizeProjectObjectSelection();
     }
 
+    public void BeginProjectObjectUpdate() => _projectObjectUpdateDepth++;
+
+    public void EndProjectObjectUpdate()
+    {
+        if (_projectObjectUpdateDepth == 0) return;
+        if (--_projectObjectUpdateDepth == 0) RefreshProjectObjects();
+    }
+
     public void RefreshProjectObjects()
     {
         if (IsDisposed) return;
         if (InvokeRequired)
         {
             BeginInvoke(RefreshProjectObjects);
+            return;
+        }
+
+        if (_projectObjectUpdateDepth > 0)
+        {
+            _projectRowsDirty = true;
             return;
         }
 

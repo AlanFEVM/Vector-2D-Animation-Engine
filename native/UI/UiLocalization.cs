@@ -1067,6 +1067,13 @@ internal static class UiLocalization
             ["Module Reload Recovering"] = "模块重载恢复中",
             ["Module Reload Failed"] = "模块重载失败",
             ["Image Import Settings"] = "图片导入设置",
+            ["Importing images"] = "正在导入图片",
+            ["Import progress"] = "导入进度",
+            ["{0} / {1} images ({2:P0})"] = "{0} / {1} 张图片（{2:P0}）",
+            ["Cancel stops after the current file. Imported images are kept."] = "取消将在当前文件处理后停止，已导入的图片会保留。",
+            ["Stopping..."] = "正在停止...",
+            ["Image import cancelled."] = "图片导入已取消。",
+            ["Imported: {0}\nSkipped: {1}\nFailed: {2}\nNot processed: {3}"] = "已导入：{0}\n已跳过：{1}\n失败：{2}\n未处理：{3}",
             ["Images"] = "图片",
             ["Missing image"] = "图片缺失",
             // Image asset context menu (built with target-typed new(), so the dictionary is the

@@ -94,6 +94,7 @@ internal static class HotReloadModuleResolver
         nameof(ImageCompression),
         nameof(ImageAlphaSource),
         nameof(ImageImportSettingsDialog),
+        nameof(ImageImportProgressDialog),
         nameof(TextGeometry),
         nameof(TextFontStyle),
         nameof(TextHorizontalAlignment),
@@ -208,6 +209,7 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(LibraryVaultPanel)
+            or nameof(ImageImportProgressDialog)
             or nameof(HierarchyPanel)
             or nameof(SceneEditorPanel)
             or nameof(ReferenceViewPad)

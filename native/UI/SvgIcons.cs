@@ -306,28 +306,14 @@ internal static class SvgIcons
                     P(r, 10.5f, 19.5f), P(r, 10.5f, 5.5f), P(r, 6.5f, 5.5f),
                     P(r, 6.5f, 7), P(r, 4, 7)
                 };
-                using (var gradient = new LinearGradientBrush(
-                    Rect(r, 4, 3, 16, 19),
-                    Color.FromArgb(235, color),
-                    Color.FromArgb(85, color),
-                    LinearGradientMode.Vertical))
-                {
-                    g.FillPolygon(gradient, textTool);
-                }
-                DrawPolygon(g, thinPen, textTool);
+                g.FillPolygon(fill, textTool);
+                DrawPolygon(g, pen, textTool);
                 break;
             }
             case SvgIconKind.Fill:
             {
                 var bucket = new[] { P(r, 10, 2), P(r, 20, 12), P(r, 11, 21), P(r, 1, 11) };
-                using (var gradient = new LinearGradientBrush(
-                    Rect(r, 1, 2, 19, 19),
-                    Color.FromArgb(225, color),
-                    Color.FromArgb(65, color),
-                    LinearGradientMode.ForwardDiagonal))
-                {
-                    g.FillPolygon(gradient, bucket);
-                }
+                g.FillPolygon(fill, bucket);
                 DrawPolygon(g, pen, bucket);
                 g.DrawLine(thinPen, P(r, 3.5f, 2.5f), P(r, 12.5f, 11.5f));
                 g.DrawLine(pen, P(r, 1.5f, 11), P(r, 19.5f, 11));
@@ -335,7 +321,8 @@ internal static class SvgIcons
                 drop.AddBezier(P(r, 21, 13), P(r, 18.8f, 16.2f), P(r, 18.5f, 19), P(r, 21, 20.5f));
                 drop.AddBezier(P(r, 21, 20.5f), P(r, 23.5f, 19), P(r, 23.2f, 16.2f), P(r, 21, 13));
                 drop.CloseFigure();
-                g.FillPath(solidFill, drop);
+                g.FillPath(fill, drop);
+                g.DrawPath(thinPen, drop);
                 break;
             }
             case SvgIconKind.InkBottle:
@@ -357,14 +344,7 @@ internal static class SvgIcons
                     P(r, 22, 6.1f), P(r, 18, 2.1f), P(r, 15.7f, 4.4f), P(r, 13.8f, 2.5f),
                     P(r, 10.5f, 5.8f), P(r, 12.1f, 7.4f), P(r, 2, 17.5f)
                 };
-                using (var gradient = new LinearGradientBrush(
-                    Rect(r, 2, 2.5f, 19.5f, 19.5f),
-                    Color.FromArgb(235, color),
-                    Color.FromArgb(75, color),
-                    LinearGradientMode.ForwardDiagonal))
-                {
-                    g.FillPolygon(gradient, eyedropper);
-                }
+                g.FillPolygon(fill, eyedropper);
                 DrawPolygon(g, pen, eyedropper);
                 g.DrawLine(thinPen, P(r, 12.1f, 7.4f), P(r, 16.6f, 11.9f));
                 g.DrawLine(thinPen, P(r, 2, 19.5f), P(r, 6.5f, 19.5f));
@@ -410,14 +390,7 @@ internal static class SvgIcons
                     P(r, 2, 14), P(r, 13, 3), P(r, 22, 12),
                     P(r, 14, 20), P(r, 8, 20)
                 };
-                using (var gradient = new LinearGradientBrush(
-                    Rect(r, 2, 3, 20, 17),
-                    Color.FromArgb(230, color),
-                    Color.FromArgb(70, color),
-                    LinearGradientMode.ForwardDiagonal))
-                {
-                    g.FillPolygon(gradient, eraser);
-                }
+                g.FillPolygon(fill, eraser);
                 DrawPolygon(g, pen, eraser);
                 g.DrawLine(pen, P(r, 9.7f, 6.3f), P(r, 18.7f, 15.3f));
                 g.DrawLine(thinPen, P(r, 14, 20), P(r, 22, 20));
@@ -438,14 +411,7 @@ internal static class SvgIcons
                 using var vault = new GraphicsPath(FillMode.Alternate);
                 vault.AddPolygon(outer);
                 vault.AddPolygon(opening);
-                using (var gradient = new LinearGradientBrush(
-                    Rect(r, 3, 3, 18, 18),
-                    Color.FromArgb(225, color),
-                    Color.FromArgb(70, color),
-                    LinearGradientMode.Vertical))
-                {
-                    g.FillPath(gradient, vault);
-                }
+                g.FillPath(fill, vault);
                 DrawPolygon(g, pen, outer);
                 DrawPolygon(g, thinPen, opening);
                 g.DrawLine(pen, P(r, 3, 9.5f), P(r, 21, 9.5f));

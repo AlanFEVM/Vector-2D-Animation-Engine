@@ -196,8 +196,9 @@ internal sealed partial class MainForm
     {
         if (!EnsureImagePlacementAllowed()) return;
         using var dialog = CreateImageAssetDialog("Import Image...");
+        dialog.Multiselect = true;
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        ImportImageAssetFromPath(dialog.FileName);
+        ImportImageAssetsFromFiles(dialog.FileNames);
     }
 
     /// <summary>
@@ -209,29 +210,129 @@ internal sealed partial class MainForm
     private void ImportImageAssetsFromFiles(IReadOnlyList<string> fileNames)
     {
         if (fileNames.Count == 0) return;
-        // Reported once for the whole drop instead of per file, so a blocked batch does not
-        // stack one dialog per image.
         if (!EnsureImagePlacementAllowed()) return;
-        BitmapImageImportSettings? sharedSettings = null;
-        var imported = 0;
-        foreach (var fileName in fileNames)
+        using var progress = new ImageImportProgressDialog(fileNames.Count);
+        ImageImportBatchResult? result = null;
+        progress.Shown += async (_, _) =>
         {
-            if (_project.ImageAssets.Any(asset =>
-                    string.Equals(asset.SourcePath, fileName, StringComparison.OrdinalIgnoreCase)))
+            try
             {
-                continue;
+                result = await ImportImageAssetsBatchAsync(fileNames,
+                    (path, width, height, pixelsPerUnit) =>
+                    {
+                        using var settings = new ImageImportSettingsDialog(
+                            UiLocalization.T("Image Import Settings"), Path.GetFileName(path),
+                            width, height, pixelsPerUnit, BitmapImageImportSettings.Default);
+                        return settings.ShowDialog(progress) == DialogResult.OK ? settings.Settings : null;
+                    }, progress.Report, () => progress.CancellationRequested);
             }
+            catch (Exception exception)
+            {
+                AppLog.Error("Unable to finish image batch import.", exception);
+                ShowImageAssetError("The image could not be imported.", exception.Message);
+            }
+            finally
+            {
+                progress.Complete();
+            }
+        };
+        progress.ShowDialog(this);
+        if (result is null) return;
+        var summary = string.Format(
+            UiLocalization.T("Imported: {0}\nSkipped: {1}\nFailed: {2}\nNot processed: {3}"),
+            result.Imported, result.Skipped, result.Failed,
+            fileNames.Count - result.Imported - result.Skipped - result.Failed);
+        if (result.Cancelled) summary = UiLocalization.T("Image import cancelled.") + "\n\n" + summary;
+        if (result.Errors.Count > 0) summary += "\n\n" + string.Join("\n", result.Errors);
+        ModernMessageDialog.Show(this, summary, UiLocalization.T("Images"), MessageBoxButtons.OK,
+            result.Failed > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        AppLog.Info($"Image batch import: {result.Imported} imported, {result.Skipped} skipped, "
+            + $"{result.Failed} failed, cancelled={result.Cancelled}.");
+    }
 
-            var asset = sharedSettings is { } reused
-                ? ImportImageAssetWithSettings(fileName, reused)
-                : ImportImageAssetFromPathCollectingSettings(fileName, out sharedSettings);
-            if (asset is null) continue;
-            imported++;
+    private sealed record ImageImportBatchResult(
+        int Imported, int Skipped, int Failed, bool Cancelled, IReadOnlyList<string> Errors);
+
+    private async Task<ImageImportBatchResult> ImportImageAssetsBatchAsync(
+        IReadOnlyList<string> fileNames,
+        Func<string, int, int, float, BitmapImageImportSettings?> chooseSettings,
+        Action<int, string> report,
+        Func<bool> cancellationRequested)
+    {
+        var imported = 0;
+        var skipped = 0;
+        var failed = 0;
+        var cancelled = false;
+        var errors = new List<string>();
+        BitmapImageImportSettings? sharedSettings = null;
+        var existingPaths = new HashSet<string>(_project.ImageAssets.Select(asset => asset.SourcePath),
+            StringComparer.OrdinalIgnoreCase);
+        _libraryVaultPanel.BeginProjectObjectUpdate();
+        try
+        {
+            for (var index = 0; index < fileNames.Count; index++)
+            {
+                if (cancellationRequested()) { cancelled = true; break; }
+                var fileName = fileNames[index];
+                report(index, fileName);
+                try
+                {
+                    var fullPath = Path.GetFullPath(fileName);
+                    if (existingPaths.Contains(fullPath))
+                    {
+                        skipped++;
+                    }
+                    else
+                    {
+                        var prepared = await Task.Run(() => PrepareImageImport(fullPath));
+                        if (cancellationRequested()) { cancelled = true; break; }
+                        if (sharedSettings is null)
+                        {
+                            var probe = prepared.Probe;
+                            sharedSettings = chooseSettings(probe.FullPath, probe.PixelWidth,
+                                probe.PixelHeight, probe.NaturalPixelsPerUnit);
+                            if (sharedSettings is null) { cancelled = true; break; }
+                        }
+                        if (cancellationRequested()) { cancelled = true; break; }
+                        if (!CanPlaceImage()) throw new InvalidOperationException(
+                            UiLocalization.T("The image metadata is invalid or the library is full."));
+                        var asset = RegisterImageAsset(prepared.Probe, sharedSettings.Value,
+                            prepared.Sha256, deferRefresh: true, showError: detail =>
+                                throw new InvalidDataException(detail));
+                        if (asset is not null)
+                        {
+                            existingPaths.Add(fullPath);
+                            imported++;
+                        }
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException
+                    or NotSupportedException or UnauthorizedAccessException
+                    or System.Runtime.InteropServices.ExternalException or OutOfMemoryException
+                    or InvalidOperationException)
+                {
+                    failed++;
+                    var detail = $"{fileName}: {exception.Message}";
+                    if (errors.Count < 5) errors.Add(detail);
+                    AppLog.Warn($"Image batch import failed: {detail}");
+                }
+                report(index + 1, fileName);
+                await Task.Yield();
+            }
         }
+        finally
+        {
+            _libraryVaultPanel.EndProjectObjectUpdate();
+        }
+        return new ImageImportBatchResult(imported, skipped, failed, cancelled, errors);
+    }
 
-        if (imported == 0) return;
-        _libraryVaultPanel.RefreshProjectObjects();
-        AppLog.Info($"Imported {imported} image asset(s) from a library drop.");
+    private static (ImageFileProbe Probe, string Sha256) PrepareImageImport(string fullPath)
+    {
+        if (!BitmapImageRasterizer.TryProbe(fullPath, out var width, out var height,
+                out var pixelsPerUnit, out var error)) throw new InvalidDataException(error);
+        return (new ImageFileProbe(fullPath, width, height, pixelsPerUnit),
+            BitmapImageRasterizer.ComputeSha256(fullPath));
     }
 
     /// <summary>
@@ -277,38 +378,6 @@ internal sealed partial class MainForm
         return RegisterImageAsset(probe, settings);
     }
 
-    /// <summary>
-    /// Probes one image file and, on the first accepted file of a batch drop, reports the
-    /// settings the user chose so the remaining files can reuse them without re-prompting.
-    /// </summary>
-    private ImageAssetDefinition? ImportImageAssetFromPathCollectingSettings(
-        string fileName,
-        out BitmapImageImportSettings? sharedSettings)
-    {
-        sharedSettings = null;
-        if (!CanPlaceImage()) return null;
-        if (!TryProbeImageFile(fileName, out var probe)) return null;
-
-        using var settingsDialog = new ImageImportSettingsDialog(
-            UiLocalization.T("Image Import Settings"),
-            Path.GetFileName(probe.FullPath),
-            probe.PixelWidth,
-            probe.PixelHeight,
-            probe.NaturalPixelsPerUnit,
-            BitmapImageImportSettings.Default);
-        if (settingsDialog.ShowDialog(this) != DialogResult.OK) return null;
-        sharedSettings = settingsDialog.Settings;
-        return RegisterImageAsset(probe, settingsDialog.Settings);
-    }
-
-    private ImageAssetDefinition? ImportImageAssetWithSettings(
-        string fileName,
-        BitmapImageImportSettings settings)
-    {
-        if (!CanPlaceImage()) return null;
-        return TryProbeImageFile(fileName, out var probe) ? RegisterImageAsset(probe, settings) : null;
-    }
-
     private readonly record struct ImageFileProbe(
         string FullPath,
         int PixelWidth,
@@ -346,26 +415,30 @@ internal sealed partial class MainForm
 
     private ImageAssetDefinition? RegisterImageAsset(
         ImageFileProbe probe,
-        BitmapImageImportSettings settings)
+        BitmapImageImportSettings settings,
+        string? preparedSha256 = null,
+        bool deferRefresh = false,
+        Action<string>? showError = null)
     {
+        showError ??= detail => ShowImageAssetError("The image could not be imported.", detail);
         var decodedSize = settings.ResolveStoredPixelSize(new SizeF(probe.PixelWidth, probe.PixelHeight));
         if (!BitmapImageFormats.TryValidateDecodedBudget(
                 Math.Max(1, (int)decodedSize.Width),
                 Math.Max(1, (int)decodedSize.Height),
                 out var error))
         {
-            ShowImageAssetError("The image could not be imported.", error);
+            showError(error);
             return null;
         }
 
         string sha256;
         try
         {
-            sha256 = BitmapImageRasterizer.ComputeSha256(probe.FullPath);
+            sha256 = preparedSha256 ?? BitmapImageRasterizer.ComputeSha256(probe.FullPath);
         }
         catch (Exception exception)
         {
-            ShowImageAssetError("The image could not be imported.", exception.Message);
+            showError(exception.Message);
             return null;
         }
 
@@ -380,14 +453,11 @@ internal sealed partial class MainForm
                 out var asset)
             || asset is null)
         {
-            ShowImageAssetError(
-                "The image could not be imported.",
-                "The image metadata is invalid or the library is full.");
+            showError(UiLocalization.T("The image metadata is invalid or the library is full."));
             return null;
         }
 
-        _libraryVaultPanel.RefreshProjectObjects();
-        MarkProjectDirty();
+        if (!deferRefresh) _libraryVaultPanel.RefreshProjectObjects();
         AppLog.Info(
             $"Imported image asset: {asset.Name} ({asset.PixelWidth}x{asset.PixelHeight}) from {probe.FullPath}");
         return asset;

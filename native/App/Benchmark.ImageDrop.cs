@@ -161,6 +161,8 @@ internal static partial class Benchmark
                 textPath,
                 directoryPath);
             RunLibraryImageDropRegression(imagePath, secondImagePath, svgPath, textPath);
+            RunImageImportProgressRegression();
+            RunImageImportBatchRegression(sourceDirectory, imagePath, secondImagePath);
             using var form = new MainForm();
             RunStageImageDropPreviewRegression(form, imagePath);
         }
@@ -170,6 +172,112 @@ internal static partial class Benchmark
         }
 
         Console.WriteLine("image_drop_regression=passed");
+    }
+
+    private static void RunImageImportProgressRegression()
+    {
+        using var dialog = new ImageImportProgressDialog(3000);
+        dialog.Report(1500, new string('x', 200) + ".png");
+        var progress = (ProgressBar)RequireField(typeof(ImageImportProgressDialog), "_progress").GetValue(dialog)!;
+        AssertTimeline(progress.Maximum == 3000 && progress.Value == 1500,
+            "Image import progress lost its batch size or processed count.");
+        var closing = new FormClosingEventArgs(CloseReason.UserClosing, false);
+        RequireMethod(typeof(ImageImportProgressDialog), "OnFormClosing", [typeof(FormClosingEventArgs)])
+            .Invoke(dialog, [closing]);
+        var cancel = (Button)RequireField(typeof(ImageImportProgressDialog), "_cancelButton").GetValue(dialog)!;
+        AssertTimeline(closing.Cancel && dialog.CancellationRequested && !cancel.Enabled
+            && dialog.DialogResult == DialogResult.None,
+            "Closing the image import window failed to request cancellation without disposing active work.");
+        dialog.Complete();
+    }
+
+    private static void RunImageImportBatchRegression(string directory, string imagePath, string secondImagePath)
+    {
+        using var form = new MainForm();
+        form.CreateControl();
+        var previousContext = SynchronizationContext.Current;
+        using var context = new WindowsFormsSynchronizationContext();
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            var import = RequireMethod(typeof(MainForm), "ImportImageAssetsBatchAsync",
+                [typeof(IReadOnlyList<string>), typeof(Func<string, int, int, float, BitmapImageImportSettings?>),
+                 typeof(Action<int, string>), typeof(Func<bool>)]);
+            var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+            var panel = (LibraryVaultPanel)RequireField(typeof(MainForm), "_libraryVaultPanel").GetValue(form)!;
+            var depth = RequireField(typeof(LibraryVaultPanel), "_projectObjectUpdateDepth");
+            var uiThread = Environment.CurrentManagedThreadId;
+            var changed = 0;
+            project.Changed += (_, _) =>
+            {
+                AssertTimeline(Environment.CurrentManagedThreadId == uiThread && (int)depth.GetValue(panel)! > 0,
+                    "Batch image registration left the UI thread or refreshed the library per file.");
+                changed++;
+            };
+            Task Run(IReadOnlyList<string> files,
+                Func<string, int, int, float, BitmapImageImportSettings?> settings,
+                Action<int, string> report, Func<bool> cancelled)
+            {
+                SynchronizationContext.SetSynchronizationContext(context);
+                var task = (Task)import.Invoke(form, [files, settings, report, cancelled])!;
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                while (!task.IsCompleted && watch.Elapsed < TimeSpan.FromSeconds(90))
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(1);
+                }
+                AssertTimeline(task.IsCompleted, "Image import batch did not complete within 90 seconds.");
+                task.GetAwaiter().GetResult();
+                AssertTimeline((int)depth.GetValue(panel)! == 0, "Image import leaked its deferred library refresh.");
+                return task;
+            }
+            object Result(Task task) => task.GetType().GetProperty("Result")!.GetValue(task)!;
+            int Count(object result, string property) => (int)result.GetType().GetProperty(property)!.GetValue(result)!;
+            bool Cancelled(object result) => (bool)result.GetType().GetProperty("Cancelled")!.GetValue(result)!;
+
+            var files = new List<string>();
+            for (var index = 0; index < 3000; index++)
+            {
+                var path = Path.Combine(directory, $"batch-{index:D4}.png");
+                File.Copy(imagePath, path);
+                files.Add(path);
+            }
+            var invalidPath = Path.Combine(directory, "corrupt.png");
+            File.WriteAllText(invalidPath, "not a bitmap");
+            files.Insert(10, invalidPath);
+            files.Add(files[0]);
+            files.Add(Path.Combine(directory, ".", "batch-0000.png"));
+            var settingsCalls = 0;
+            var processed = 0;
+            var sharedSettings = BitmapImageImportSettings.Default with { PixelsPerUnit = 250 };
+            var result = Result(Run(files, (_, _, _, _) => { settingsCalls++; return sharedSettings; },
+                (count, _) => processed = count, () => false));
+            AssertTimeline(Count(result, "Imported") == 3000 && Count(result, "Skipped") == 2
+                && Count(result, "Failed") == 1 && !Cancelled(result) && processed == files.Count
+                && settingsCalls == 1 && project.ImageAssets.Count == 3000 && changed == 3000
+                && project.ImageAssets.All(asset => asset.ImportSettings == sharedSettings)
+                && project.ImageAssets.Select(asset => asset.Id).Distinct().Count() == 3000,
+                "The 3000-image batch lost shared settings, stable IDs, duplicate skipping or failure isolation.");
+
+            var stop = false;
+            result = Result(Run([imagePath, secondImagePath], (_, _, _, _) => sharedSettings,
+                (count, _) => stop = count == 1, () => stop));
+            AssertTimeline(Count(result, "Imported") == 1 && Cancelled(result)
+                && project.ImageAssets.Count == 3001,
+                "Cancelling a batch did not keep completed imports and stop subsequent files.");
+            result = Result(Run([secondImagePath], (_, _, _, _) => null, (_, _) => { }, () => false));
+            AssertTimeline(Count(result, "Imported") == 0 && Cancelled(result)
+                && project.ImageAssets.Count == 3001,
+                "Cancelling shared import settings modified the project or continued the batch.");
+            result = Result(Run([secondImagePath], (_, _, _, _) => sharedSettings, (_, _) => { }, () => true));
+            AssertTimeline(Count(result, "Imported") == 0 && Cancelled(result),
+                "An already-cancelled image batch started importing files.");
+            Console.WriteLine("image_import_batch_3000_regression=passed");
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previousContext);
+        }
     }
 
     private static DataObject FileDrop(params string[] paths)

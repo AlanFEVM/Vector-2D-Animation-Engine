@@ -274,6 +274,16 @@ internal sealed partial class MainForm
             _maximizeButton,
             _closeWindowButton);
 
+        if (_projectTitleLabel is { } title && _projectTitleEditor is { } editor)
+        {
+            var titleHeight = Math.Max(
+                ScaleResponsive(24, DeviceDpi / 96d),
+                title.PreferredHeight);
+            title.Height = titleHeight;
+            title.Top = Math.Max(0, (_topBar.ClientSize.Height - titleHeight) / 2);
+            editor.Top = Math.Max(0, (_topBar.ClientSize.Height - editor.PreferredHeight) / 2);
+        }
+
         var availableAfterDash = _restartWindowButton.Left - _dashDock.Left - 14;
         _dashDock.Visible = availableAfterDash >= ScaleResponsive(DashDock.CompactDockWidth, DeviceDpi / 96d);
         _dashDock.Compact = availableAfterDash < ScaleResponsive(

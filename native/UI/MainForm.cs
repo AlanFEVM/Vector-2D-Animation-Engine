@@ -2435,7 +2435,7 @@ internal sealed partial class MainForm : Form
                 }
                 if (button.Text != drawingObject.Name) button.Text = drawingObject.Name;
                 button.AccessibleName = drawingObject.Name;
-                var width = drawingObject.Name.Length > 10 ? 132 : 108;
+                var width = ScaleDrawingObjectTabMetric(drawingObject.Name.Length > 10 ? 132 : 108);
                 if (button.Width != width) button.Width = width;
                 if (_drawingObjectTabs.Controls.GetChildIndex(button) != 0)
                     _drawingObjectTabs.Controls.SetChildIndex(button, 0);
@@ -2455,9 +2455,9 @@ internal sealed partial class MainForm : Form
         var button = new SegmentedButton
         {
             Text = drawingObject.Name,
-            Width = drawingObject.Name.Length > 10 ? 132 : 108,
-            Height = 28,
-            Margin = new Padding(0, 0, 6, 0),
+            Width = ScaleDrawingObjectTabMetric(drawingObject.Name.Length > 10 ? 132 : 108),
+            Height = ScaleDrawingObjectTabMetric(28),
+            Margin = new Padding(0, 0, ScaleDrawingObjectTabMetric(6), 0),
             Tag = drawingObject.Id,
             AutoEllipsis = true,
             AccessibleName = drawingObject.Name,
@@ -2501,9 +2501,9 @@ internal sealed partial class MainForm : Form
         var button = new SvgIconButton(SvgIconKind.Add)
         {
             Text = "Symbol",
-            Width = 88,
-            Height = 28,
-            Margin = new Padding(4, 0, 6, 0),
+            Width = ScaleDrawingObjectTabMetric(104),
+            Height = ScaleDrawingObjectTabMetric(28),
+            Margin = new Padding(ScaleDrawingObjectTabMetric(4), 0, ScaleDrawingObjectTabMetric(6), 0),
             AutoEllipsis = true,
             AccessibleName = "Add Symbol"
         };
@@ -2512,6 +2512,9 @@ internal sealed partial class MainForm : Form
         _addDrawingObjectTabButton = button;
         _drawingObjectTabs.Controls.Add(button);
     }
+
+    private int ScaleDrawingObjectTabMetric(int logicalPixels) =>
+        ScaleResponsive(logicalPixels, Math.Max(1, DeviceDpi) / 96d);
 
     private void AddScene()
     {

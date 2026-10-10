@@ -246,6 +246,15 @@ internal sealed class WorkspaceTabs : UserControl
         UpdateIndicator(animate: false);
     }
 
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        MinimumSize = new Size(ScaleLogical(48), ScaleLogical(TopNavigationHeight));
+        if (_placement == WorkspaceTabPlacement.Top) Height = ScaleLogical(TopNavigationHeight);
+        ApplyPlacement();
+        UpdateIndicator(animate: false);
+    }
+
     protected override void OnLayout(LayoutEventArgs e)
     {
         base.OnLayout(e);
@@ -364,12 +373,12 @@ internal sealed class WorkspaceTabs : UserControl
             ? FlowDirection.LeftToRight
             : FlowDirection.TopDown;
         _tabStrip.Padding = _placement == WorkspaceTabPlacement.Top
-            ? new Padding(8, 5, 8, 5)
-            : new Padding(6, 8, 6, 8);
+            ? ScalePadding(8, 5, 8, 5)
+            : ScalePadding(6, 8, 6, 8);
         _gridControls.Dock = _placement == WorkspaceTabPlacement.Top
             ? DockStyle.Right
             : DockStyle.Bottom;
-        _gridControls.Height = TopNavigationHeight;
+        _gridControls.Height = ScaleLogical(TopNavigationHeight);
         UpdateResponsiveLayout(force: true);
         LayoutButtons();
     }
@@ -381,15 +390,16 @@ internal sealed class WorkspaceTabs : UserControl
         if (_placement == WorkspaceTabPlacement.Top)
         {
             var buttons = _buttons.Values.ToArray();
-            var totalGap = Theme.GapXs * Math.Max(0, buttons.Length - 1);
+            var gap = ScaleLogical(Theme.GapXs);
+            var totalGap = gap * Math.Max(0, buttons.Length - 1);
             var availableWidth = Math.Max(1, _tabStrip.ClientSize.Width - _tabStrip.Padding.Horizontal - totalGap);
-            var buttonWidth = Math.Max(1, Math.Min(PreferredWorkspaceButtonWidth, availableWidth / buttons.Length));
+            var buttonWidth = Math.Max(1, Math.Min(ScaleLogical(PreferredWorkspaceButtonWidth), availableWidth / buttons.Length));
             for (var index = 0; index < buttons.Length; index++)
             {
                 var button = buttons[index];
                 button.Width = buttonWidth;
-                button.Height = Theme.ControlHeightCompact;
-                button.Margin = new Padding(0, 0, index == buttons.Length - 1 ? 0 : Theme.GapXs, 0);
+                button.Height = ScaleLogical(Theme.ControlHeightCompact);
+                button.Margin = new Padding(0, 0, index == buttons.Length - 1 ? 0 : gap, 0);
             }
 
             _tabStrip.PerformLayout();
@@ -400,9 +410,9 @@ internal sealed class WorkspaceTabs : UserControl
         for (var index = 0; index < verticalButtons.Length; index++)
         {
             var button = verticalButtons[index];
-            button.Width = Math.Max(36, ClientSize.Width - _tabStrip.Padding.Horizontal);
-            button.Height = Theme.ControlHeight;
-            button.Margin = new Padding(0, 0, 0, index == verticalButtons.Length - 1 ? 0 : Theme.GapXs);
+            button.Width = Math.Max(ScaleLogical(36), ClientSize.Width - _tabStrip.Padding.Horizontal);
+            button.Height = ScaleLogical(Theme.ControlHeight);
+            button.Margin = new Padding(0, 0, 0, index == verticalButtons.Length - 1 ? 0 : ScaleLogical(Theme.GapXs));
         }
 
         _tabStrip.PerformLayout();
@@ -489,7 +499,7 @@ internal sealed class WorkspaceTabs : UserControl
     {
         if (_gridControls.ColumnStyles.Count < 4) return;
 
-        var compact = _placement == WorkspaceTabPlacement.Left || ClientSize.Width < ExpandedGridBreakpoint;
+        var compact = _placement == WorkspaceTabPlacement.Left || ClientSize.Width < ScaleLogical(ExpandedGridBreakpoint);
         if (!force && _compactGridControls == compact) return;
 
         _compactGridControls = compact;
@@ -499,17 +509,17 @@ internal sealed class WorkspaceTabs : UserControl
         _gridOpacityValue.Visible = !compact;
         if (_placement == WorkspaceTabPlacement.Left)
         {
-            _gridControls.Padding = new Padding(6, 5, 6, 5);
+            _gridControls.Padding = ScalePadding(6, 5, 6, 5);
             SetGridColumn(0, SizeType.Percent, 50);
-            SetGridColumn(1, SizeType.Absolute, Theme.ControlHeightCompact);
+            SetGridColumn(1, SizeType.Absolute, ScaleLogical(Theme.ControlHeightCompact));
             SetGridColumn(2, SizeType.Percent, 50);
             SetGridColumn(3, SizeType.Absolute, 0);
             _gridTypeButton.Margin = Padding.Empty;
         }
         else if (compact)
         {
-            _gridControls.Width = CompactGridControlsWidth;
-            _gridControls.Padding = new Padding(4, 5, 8, 5);
+            _gridControls.Width = ScaleLogical(CompactGridControlsWidth);
+            _gridControls.Padding = ScalePadding(4, 5, 8, 5);
             SetGridColumn(0, SizeType.Absolute, 0);
             SetGridColumn(1, SizeType.Percent, 100);
             SetGridColumn(2, SizeType.Absolute, 0);
@@ -518,13 +528,13 @@ internal sealed class WorkspaceTabs : UserControl
         }
         else
         {
-            _gridControls.Width = ExpandedGridControlsWidth;
-            _gridControls.Padding = new Padding(0, 5, 8, 5);
-            SetGridColumn(0, SizeType.Absolute, 44);
-            SetGridColumn(1, SizeType.Absolute, 30);
+            _gridControls.Width = ScaleLogical(ExpandedGridControlsWidth);
+            _gridControls.Padding = ScalePadding(0, 5, 8, 5);
+            SetGridColumn(0, SizeType.Absolute, ScaleLogical(44));
+            SetGridColumn(1, SizeType.Absolute, ScaleLogical(30));
             SetGridColumn(2, SizeType.Percent, 100);
-            SetGridColumn(3, SizeType.Absolute, 38);
-            _gridTypeButton.Margin = new Padding(1, 0, 1, 0);
+            SetGridColumn(3, SizeType.Absolute, ScaleLogical(38));
+            _gridTypeButton.Margin = ScalePadding(1, 0, 1, 0);
         }
 
         _gridControls.ResumeLayout(performLayout: true);
@@ -535,6 +545,16 @@ internal sealed class WorkspaceTabs : UserControl
         _gridControls.ColumnStyles[index].SizeType = sizeType;
         _gridControls.ColumnStyles[index].Width = width;
     }
+
+    private int ScaleLogical(int value) => value == 0
+        ? 0
+        : Math.Max(1, (int)Math.Round(value * DeviceDpi / 96f));
+
+    private Padding ScalePadding(int left, int top, int right, int bottom) => new(
+        ScaleLogical(left),
+        ScaleLogical(top),
+        ScaleLogical(right),
+        ScaleLogical(bottom));
 
     private void HandleWorkspaceButtonKeyDown(object? sender, KeyEventArgs e)
     {
