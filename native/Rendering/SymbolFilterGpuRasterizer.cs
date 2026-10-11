@@ -83,15 +83,15 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
             }
             finally { pin.Free(); }
             Texture current = _input!;
-            if (filters.Blur.Enabled) current = Blur(current, null, filters.Blur.BlurX, filters.Blur.BlurY);
+            if (filters.Blur.Enabled) current = Blur(current, null, filters.Blur.BlurX, filters.Blur.BlurY, filters.Blur.Quality, filters.Blur.FlashCompatible);
             if (Visible(filters.Glow.Enabled, filters.Glow.Strength, filters.Glow.Opacity, filters.Glow.ColorArgb))
-                Behind(filters.Glow.BlurX, filters.Glow.BlurY, filters.Glow.ColorArgb, filters.Glow.Strength, filters.Glow.Opacity, 0, 0);
+                Behind(filters.Glow.BlurX, filters.Glow.BlurY, filters.Glow.ColorArgb, filters.Glow.Strength, filters.Glow.Opacity, 0, 0, filters.Glow.Quality);
             if (Visible(filters.Shadow.Enabled, filters.Shadow.Strength, filters.Shadow.Opacity, filters.Shadow.ColorArgb))
             {
                 var angle = filters.Shadow.Angle * (Math.PI / 180);
                 var distance = (double)filters.Shadow.Distance * scale;
                 Behind(filters.Shadow.BlurX, filters.Shadow.BlurY, filters.Shadow.ColorArgb, filters.Shadow.Strength, filters.Shadow.Opacity,
-                    (float)(Math.Cos(angle) * distance), (float)(Math.Sin(angle) * distance));
+                    (float)(Math.Cos(angle) * distance), (float)(Math.Sin(angle) * distance), filters.Shadow.Quality);
             }
             Edge(filters.Bevel, 3);
             Edge(filters.GradientBevel, 4);
@@ -116,25 +116,30 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
             }
             return true;
 
-            Texture Blur(Texture source, Texture? preserve, float x, float y)
+            Texture Blur(Texture source, Texture? preserve, float x, float y, int? quality, bool flash = false)
             {
-                for (int pass = 0; pass < 3; pass++)
+                double widthX = flash ? SymbolFilterRasterizer.FlashKernelWidth(x, scale) : 0;
+                double widthY = flash ? SymbolFilterRasterizer.FlashKernelWidth(y, scale) : 0;
+                for (int pass = 0; pass < SymbolFilterValidation.Passes(quality); pass++)
                 {
-                    if (x > 0) Axis((float)((double)x * scale / 3), false);
-                    if (y > 0) Axis((float)((double)y * scale / 3), true);
+                    if (flash ? widthX > 1 : x > 0) Axis(flash ? (float)((widthX - 1) / 2) : (float)((double)x * scale / 3), false);
+                    if (flash ? widthY > 1 : y > 0) Axis(flash ? (float)((widthY - 1) / 2) : (float)((double)y * scale / 3), true);
                 }
                 return source;
                 void Axis(float radius, bool vertical)
                 {
                     var target = Available(source, preserve);
-                    Dispatch(source, null, target, new(new(width, height, 0, vertical ? 1 : 0), new(radius, 0, 0, 0), default, default), radius > 32);
+                    int whole = flash ? (int)Math.Ceiling(radius) - 1 : (int)Math.Floor(radius);
+                    float fraction = flash ? (float)Math.Floor((radius - whole) * 255) : radius - whole;
+                    Dispatch(source, null, target, new(new(width, height, flash ? 6 : 0, vertical ? 1 : 0),
+                        new(radius, whole, fraction, 2 * radius + 1), default, default), radius > 32);
                     source = target;
                 }
             }
             void Edge(SymbolEdgeFilter filter, int mode)
             {
                 if (!filter.Enabled || filter.Strength == 0 || filter.Opacity == 0) return;
-                var mask = Blur(current, current, filter.BlurX, filter.BlurY);
+                var mask = Blur(current, current, filter.BlurX, filter.BlurY, filter.Quality);
                 var target = Available(current, mask);
                 double angle = filter.Angle * Math.PI / 180;
                 double distance = (double)filter.Distance * scale;
@@ -144,9 +149,9 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
                     ColorVector(filter.EndColorArgb)));
                 current = target;
             }
-            void Behind(float x, float y, int argb, float strength, float opacity, float dx, float dy)
+            void Behind(float x, float y, int argb, float strength, float opacity, float dx, float dy, int? quality)
             {
-                var mask = Blur(current, current, x, y);
+                var mask = Blur(current, current, x, y, quality);
                 var target = Available(current, mask);
                 uint color = (uint)argb;
                 // Texture channels deliberately hold BGRA, matching the PArgb bytes.
@@ -408,14 +413,18 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
             int2 p = id.xy;
             if (any(p >= (int2)bounds.xy)) return;
             float4 value = Read(p);
-            if (bounds.z == 0) {
+            if (bounds.z == 0 || bounds.z == 6) {
                 int2 axis = bounds.w == 0 ? int2(1,0) : int2(0,1);
-                int radius = (int)floor(kernel.x);
-                float fraction = kernel.x - radius;
+                bool flash = bounds.z == 6;
+                int radius = flash ? (int)kernel.y : (int)floor(kernel.x);
+                float fraction = flash ? kernel.z : kernel.x - radius;
                 value = 0;
-                for (int i = -radius; i <= radius; i++) value += Read(p + axis * i);
-                value += fraction * (Read(p - axis * (radius + 1)) + Read(p + axis * (radius + 1)));
-                value = saturate(value / (2 * kernel.x + 1));
+                for (int i = -radius; i <= radius; i++)
+                    value += flash ? floor(Read(p + axis * i) * 255 + 0.5) : Read(p + axis * i);
+                float4 edge = Read(p - axis * (radius + 1));
+                float4 other = Read(p + axis * (radius + 1));
+                if (flash) value = saturate(floor((value * 255 + fraction * (floor(edge * 255 + 0.5) + floor(other * 255 + 0.5))) / (255 * kernel.w)) / 255);
+                else value = saturate((value + fraction * (edge + other)) / (2 * kernel.x + 1));
             } else if (bounds.z == 1) {
                 float2 q = (float2)p - effect.xy;
                 int2 a = (int2)floor(q); float2 f = q - a;
@@ -448,15 +457,22 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
             if (id.x >= count) return;
             int2 axis = vertical ? int2(0,1) : int2(1,0);
             int2 start = vertical ? int2(id.x,0) : int2(0,id.x);
-            int radius = (int)floor(kernel.x);
-            float fraction = kernel.x - radius;
+            bool flash = bounds.z == 6;
+            int radius = flash ? (int)kernel.y : (int)floor(kernel.x);
+            float fraction = flash ? kernel.z : kernel.x - radius;
             float4 sum = 0;
-            for (int i=0; i<=min(radius,length-1); i++) sum += Read(start+axis*i);
+            for (int i=0; i<=min(radius,length-1); i++)
+                sum += flash ? floor(Read(start+axis*i) * 255 + 0.5) : Read(start+axis*i);
             for (int pos=0; pos<length; pos++) {
-                float4 value = sum + fraction * (Read(start+axis*(pos-radius-1)) + Read(start+axis*(pos+radius+1)));
-                target[start+axis*pos] = saturate(value / (2*kernel.x+1));
-                sum -= Read(start+axis*(pos-radius));
-                sum += Read(start+axis*(pos+radius+1));
+                float4 edge = Read(start+axis*(pos-radius-1));
+                float4 other = Read(start+axis*(pos+radius+1));
+                float4 value = flash
+                    ? floor((sum * 255 + fraction * (floor(edge * 255 + 0.5) + floor(other * 255 + 0.5))) / (255 * kernel.w)) / 255
+                    : (sum + fraction * (edge + other)) / (2*kernel.x+1);
+                target[start+axis*pos] = saturate(value);
+                float4 leaving = Read(start+axis*(pos-radius));
+                sum -= flash ? floor(leaving * 255 + 0.5) : leaving;
+                sum += flash ? floor(other * 255 + 0.5) : other;
             }
         }
         """;

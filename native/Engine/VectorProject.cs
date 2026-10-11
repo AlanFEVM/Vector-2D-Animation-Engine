@@ -1229,6 +1229,7 @@ internal sealed partial class VectorProject
                     Alpha = restored.Alpha,
                     TintArgb = restored.TintArgb,
                     Filters = restored.Filters,
+                    BlendMode = restored.BlendMode,
                     OpticalMaterialOverride = restored.OpticalMaterialOverride,
                     PlaybackFps = restored.PlaybackFps,
                     PlaybackMode = restored.PlaybackMode,
@@ -1326,6 +1327,7 @@ internal sealed partial class VectorProject
             Alpha = instance.Alpha,
             TintArgb = instance.TintArgb,
             Filters = instance.Filters,
+            BlendMode = instance.BlendMode,
             OpticalMaterialOverride = instance.OpticalMaterialOverride,
             PlaybackFps = instance.PlaybackFps,
             PlaybackMode = instance.PlaybackMode,
@@ -1340,7 +1342,8 @@ internal sealed partial class VectorProject
         if (!IsValidRestartId(snapshot.Id)
             || !IsValidRestartId(snapshot.DrawingObjectId)
             || !snapshot.Filters.IsValid
-            || snapshot.StateKeyframes.Any(key => !key.State.Filters.IsValid)
+            || !Enum.IsDefined(snapshot.BlendMode)
+            || snapshot.StateKeyframes.Any(key => !key.State.Filters.IsValid || !Enum.IsDefined(key.State.BlendMode))
             || snapshot.OpticalMaterialOverride is { IsValid: false })
         {
             return false;
@@ -1369,6 +1372,7 @@ internal sealed partial class VectorProject
             Alpha = snapshot.Alpha,
             TintArgb = snapshot.TintArgb,
             Filters = snapshot.Filters,
+            BlendMode = snapshot.BlendMode,
             OpticalMaterialOverride = snapshot.OpticalMaterialOverride,
             PlaybackFps = snapshot.PlaybackFps,
             PlaybackMode = snapshot.PlaybackMode,
@@ -1724,6 +1728,7 @@ internal sealed partial class VectorProject
             Alpha = source.Alpha,
             TintArgb = source.TintArgb,
             Filters = source.Filters,
+            BlendMode = source.BlendMode,
             OpticalMaterialOverride = source.OpticalMaterialOverride,
             PlaybackFps = source.PlaybackFps,
             PlaybackMode = source.PlaybackMode,

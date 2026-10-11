@@ -24,6 +24,7 @@
 | `Benchmark.PencilBezier.cs` | `Freehand` | Pencil Bezier generation |
 | `Benchmark.ProjectComposition.cs` | `Timeline`, `Stress` | project graph, persistence, instances, composition |
 | `Benchmark.ProjectCompression.cs` | `Timeline` | compressed project storage, legacy migration, bounded decoding |
+| `Benchmark.FlashImport.cs` | `Timeline` | Flash / Animate XFL import, geometry and exposures, nested symbols, safe input rejection, legacy conversion bridge and V2D save/reopen |
 | `Benchmark.RandomFracture.cs` | `Freehand`, `Timeline` | fracture geometry, gradients and timeline commands |
 | `Benchmark.RegressionHelpers.cs` | shared | assertions, temporary fixtures, reflection, GC preparation and pixel sampling; no standalone entrypoint |
 | `Benchmark.SceneComponents.cs` | `Freehand` | spatial component shortcuts |

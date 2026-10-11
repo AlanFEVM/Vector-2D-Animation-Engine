@@ -1737,6 +1737,7 @@ internal static class ProjectVaultStore
                     instance.PlaybackFps, instance.PlaybackMode, instance.HoldFrame)
                 || !IsValidDistortion(instance.Distortion)
                 || !instance.Filters.IsValid
+                || !Enum.IsDefined(instance.BlendMode)
                 || instance.OpticalMaterialOverride is { IsValid: false })
             {
                 throw new InvalidDataException($"An instance in {owner} is invalid.");
@@ -1752,7 +1753,8 @@ internal static class ProjectVaultStore
                         state.Alpha, state.TintArgb,
                         state.PlaybackFps, state.PlaybackMode, state.HoldFrame)
                     || !IsValidDistortion(state.Distortion)
-                    || !state.Filters.IsValid)
+                    || !state.Filters.IsValid
+                    || !Enum.IsDefined(state.BlendMode))
                 {
                     throw new InvalidDataException($"An instance state keyframe in {owner} is invalid.");
                 }
@@ -2358,6 +2360,7 @@ internal static class ProjectVaultStore
             LayerVisible = source.LayerVisible,
             LayerOpacity = source.LayerOpacity,
             LayerBlendModes = source.LayerBlendModes,
+            LayerSymbolFilters = source.LayerSymbolFilters,
             LayerColorArgb = source.LayerColorArgb,
             LayerOutline = source.LayerOutline,
             OnionSkinEnabled = source.OnionSkinEnabled,
@@ -2388,6 +2391,8 @@ internal static class ProjectVaultStore
             Argb = source.Argb,
             StrokeArgb = source.StrokeArgb,
             FillAutoMergeProtected = source.FillAutoMergeProtected,
+            FillBoundaryLinkDetached = source.FillBoundaryLinkDetached,
+            QuadraticLineEditing = source.QuadraticLineEditing,
             LinearGradientEnabled = source.LinearGradientEnabled,
             GradientKinds = source.GradientKinds,
             GradientStartArgb = source.GradientStartArgb,
@@ -2401,7 +2406,10 @@ internal static class ProjectVaultStore
             ShapeGradientMappingLocalContours = source.ShapeGradientMappingLocalContours,
             Timeline = timeline,
             PathLocalContours = source.PathLocalContours,
+            SvgStrokeStyles = source.SvgStrokeStyles,
             PathBezierLocalContours = source.PathBezierLocalContours,
+            PathOpenFlags = source.PathOpenFlags,
+            HiddenBoundaryStrokeParts = source.HiddenBoundaryStrokeParts,
             FreehandLocalPoints = source.FreehandLocalPoints,
             FreehandBezierLocalNodes = source.FreehandBezierLocalNodes,
             MixingStrokeLocalSamples = source.MixingStrokeLocalSamples,

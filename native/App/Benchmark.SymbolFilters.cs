@@ -12,9 +12,212 @@ internal static partial class Benchmark
         Shadow = SymbolShadowFilter.Default with { Angle = 90, Distance = 12 }
     };
 
+    private static void RunSymbolBlendModelRegression()
+    {
+        var instance = new DrawingObjectInstanceDefinition { BlendMode = LayerBlendMode.Multiply };
+        var state = instance.EvaluateState(0);
+        instance.SetStateAtFrame(6, state with { BlendMode = LayerBlendMode.Invert });
+        var clone = instance.Clone();
+        instance.SetStateAtFrame(6, state with { BlendMode = LayerBlendMode.Screen });
+        AssertTimeline(clone.BlendMode == LayerBlendMode.Multiply
+            && clone.EvaluateState(5).BlendMode == LayerBlendMode.Multiply
+            && clone.EvaluateState(6).BlendMode == LayerBlendMode.Invert,
+            "Symbol blend cloning or held state lost its independent blend mode.");
+        var before = instance.StateKeyframes.ToArray();
+        AssertTimeline(!instance.SetStateAtFrame(0, state with { BlendMode = (LayerBlendMode)255 })
+            && instance.BlendMode == LayerBlendMode.Multiply,
+            "Invalid blend state mutated an instance.");
+        var rejected = false;
+        try
+        {
+            instance.RestoreStateKeyframes([new InstanceStateKeyframe(0, state with { BlendMode = LayerBlendMode.Isolate }),
+                new InstanceStateKeyframe(8, state with { BlendMode = (LayerBlendMode)255 })]);
+        }
+        catch (ArgumentOutOfRangeException) { rejected = true; }
+        AssertTimeline(rejected && instance.BlendMode == LayerBlendMode.Multiply
+            && instance.StateKeyframes.SequenceEqual(before), "Invalid blend restore was not atomic.");
+        var jsonOptions = new System.Text.Json.JsonSerializerOptions { IncludeFields = true };
+        var legacyState = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(state, jsonOptions))!;
+        legacyState.AsObject().Remove(nameof(InstanceFrameState.BlendMode));
+        AssertTimeline(System.Text.Json.JsonSerializer.Deserialize<InstanceFrameState>(legacyState.ToJsonString(), jsonOptions).BlendMode
+            == LayerBlendMode.Normal, "Legacy state without BlendMode did not default to Normal.");
+
+        var project = VectorProject.CreateEmpty();
+        var container = project.DrawingObjects[0];
+        container.Scene.CreateEmpty(1, 12);
+        var child = project.AddDrawingObject("Blend child");
+        child.Scene.AddObject(0, PointF.Empty, new SizeF(500, 500), 0, 0, Color.Coral, Color.Transparent, 0, ShapeKind.Rectangle);
+        AssertTimeline(project.TryAddDrawingObjectInstance(container.Id, child.Id, PointF.Empty, out var nested) && nested is not null,
+            "Could not create nested blend fixture.");
+        nested!.BlendMode = LayerBlendMode.Isolate;
+        nested.SetStateAtFrame(6, nested.EvaluateState(0) with { BlendMode = LayerBlendMode.LinearDodge });
+        AssertTimeline(project.TryAddSceneInstance(project.Scenes[0].Id, container.Id, PointF.Empty, 0, out var root) && root is not null,
+            "Could not create root blend fixture.");
+        root!.BlendMode = LayerBlendMode.Multiply;
+        var track = project.Scenes[0].Timeline.FindTrackByTargetId(root.SceneLayerId)!;
+        project.Scenes[0].Timeline.SetTrackDuration(track.Id, 12);
+        project.Scenes[0].Timeline.InsertKeyframe(track.Id, 6);
+        root.SetStateAtFrame(6, root.EvaluateState(0) with { BlendMode = LayerBlendMode.Invert });
+        CheckProject(VectorProject.RestoreRestartSnapshot(EditorRestartStore.RoundTripProjectSnapshot(project.CreateRestartSnapshot())), "restart");
+        var legacy = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(project.CreateRestartSnapshot(), jsonOptions))!;
+        RemoveBlendFields(legacy);
+        var legacyProject = VectorProject.RestoreRestartSnapshot(System.Text.Json.JsonSerializer.Deserialize<ProjectRestartSnapshot>(legacy.ToJsonString(), jsonOptions)!);
+        AssertTimeline(legacyProject.Scenes[0].Instances[0].BlendMode == LayerBlendMode.Normal
+            && legacyProject.Scenes[0].Instances[0].EvaluateState(6).BlendMode == LayerBlendMode.Normal,
+            "Legacy restart without blend fields did not default to Normal.");
+        var directory = CreateTemporaryDirectory("symbol-blend");
+        try
+        {
+            var manifest = Path.Combine(directory, "Blend.v2dProject");
+            ProjectVaultStore.Save(project, manifest);
+            CheckProject(ProjectVaultStore.Load(manifest), "Save/Open");
+            var packagePath = Path.Combine(directory, "Blend.V2DSymbol");
+            DrawingObjectSymbolPackageService.CreatePackage(project, container.Id).Write(packagePath);
+            var imported = DrawingObjectSymbolPackageService.Import(VectorProject.CreateEmpty(), DrawingObjectSymbolPackage.Read(packagePath));
+            AssertTimeline(imported.Instances[0].BlendMode == LayerBlendMode.Isolate
+                && imported.Instances[0].EvaluateState(6).BlendMode == LayerBlendMode.LinearDodge,
+                "Symbol package lost base or animated blend modes.");
+        }
+        finally { DeleteTemporaryDirectory(directory); }
+        Console.WriteLine("symbol_blend_model_snapshot_persistence=ok");
+
+        void CheckProject(VectorProject loaded, string path)
+        {
+            var loadedRoot = loaded.Scenes[0].Instances[0];
+            var loadedNested = loaded.DrawingObjects.First(item => item.Id == container.Id).Instances[0];
+            AssertTimeline(loadedRoot.BlendMode == LayerBlendMode.Multiply && loadedRoot.EvaluateState(6).BlendMode == LayerBlendMode.Invert
+                && loadedNested.BlendMode == LayerBlendMode.Isolate && loadedNested.EvaluateState(6).BlendMode == LayerBlendMode.LinearDodge,
+                $"{path} discarded symbol blend modes.");
+        }
+        static void RemoveBlendFields(System.Text.Json.Nodes.JsonNode node)
+        {
+            if (node is System.Text.Json.Nodes.JsonObject obj)
+            {
+                obj.Remove("BlendMode");
+                foreach (var entry in obj.ToArray()) if (entry.Value is { } value) RemoveBlendFields(value);
+            }
+            else if (node is System.Text.Json.Nodes.JsonArray array)
+                foreach (var value in array) if (value is not null) RemoveBlendFields(value);
+        }
+    }
+
+    private static void RunSymbolBlendRenderRegression()
+    {
+        var backdrop = Color.FromArgb(255, 80, 120, 160);
+        var bottom = Color.FromArgb(255, 210, 100, 40);
+        var top = Color.FromArgb(255, 100, 70, 130);
+        var project = VectorProject.CreateEmpty();
+        var symbol = project.DrawingObjects[0];
+        symbol.Scene.CreateEmpty(2);
+        symbol.Scene.AddObject(1, PointF.Empty, new SizeF(1000, 1000), 0, 0, bottom, Color.Transparent, 0, ShapeKind.Rectangle);
+        symbol.Scene.AddObject(0, PointF.Empty, new SizeF(600, 600), 0, 0, top, Color.Transparent, 0, ShapeKind.Rectangle);
+        var background = project.AddDrawingObject("Blend backdrop");
+        background.Scene.AddObject(0, PointF.Empty, new SizeF(3000, 3000), 0, 0, backdrop, Color.Transparent, 0, ShapeKind.Rectangle);
+        AssertTimeline(project.TryAddSceneInstance(project.Scenes[0].Id, symbol.Id, PointF.Empty, 0, out var root) && root is not null
+            && project.TryAddSceneInstance(project.Scenes[0].Id, background.Id, PointF.Empty, 0, out _), "Could not create blend render fixture.");
+        var rendered = new VectorScene();
+        using var stage = new StageControl(rendered) { ClientSize = new Size(240, 180), WorldGridOpacity = 0 };
+        foreach (var mode in new[] { LayerBlendMode.Multiply, LayerBlendMode.LinearDodge, LayerBlendMode.Invert, LayerBlendMode.Isolate })
+        foreach (var opacity in new[] { 1f, 0.5f })
+        {
+            root!.BlendMode = mode; root.Alpha = opacity;
+            Build();
+            AssertStagePixel(LayerBlendCompositor.CompositeColorForRegression(backdrop, top, mode, opacity), $"whole {mode} alpha={opacity}");
+        }
+        root!.BlendMode = LayerBlendMode.Normal; root.Alpha = 0.5f;
+        Build();
+        AssertStagePixel(LayerBlendCompositor.CompositeColorForRegression(backdrop, top, LayerBlendMode.Normal, 0.5f), "whole Normal alpha");
+
+        var nestedSymbol = project.AddDrawingObject("Nested blend top");
+        nestedSymbol.Scene.AddObject(0, PointF.Empty, new SizeF(600, 600), 0, 0, top, Color.Transparent, 0, ShapeKind.Rectangle);
+        symbol.Scene.CreateEmpty(2);
+        symbol.Scene.AddObject(1, PointF.Empty, new SizeF(1000, 1000), 0, 0, bottom, Color.Transparent, 0, ShapeKind.Rectangle);
+        AssertTimeline(project.TryAddDrawingObjectInstance(symbol.Id, nestedSymbol.Id, PointF.Empty, symbol.Scene.LayerIds[0], out var nested)
+            && nested is not null, "Could not create isolated nested blend fixture.");
+        nested!.BlendMode = LayerBlendMode.Multiply;
+        foreach (var opacity in new[] { 1f, 0.5f })
+        {
+            root.Alpha = opacity; Build();
+            var inside = LayerBlendCompositor.CompositeColorForRegression(bottom, top, LayerBlendMode.Multiply);
+            AssertStagePixel(LayerBlendCompositor.CompositeColorForRegression(backdrop, inside, LayerBlendMode.Normal, opacity), "Normal parent with blend child");
+        }
+        // A folder must keep the child's synthetic blend group in its ancestor chain.
+        root.Alpha = 1f;
+        var folder = symbol.Scene.AddFolderLayer("Blend host folder");
+        symbol.Scene.LayerOpacity[folder] = 0.5f;
+        Build();
+        // Multiply against the folder's transparent backdrop retains the source color.
+        // The completed folder then blends normally against its outside sibling.
+        var folderResult = LayerBlendCompositor.CompositeColorForRegression(bottom, top, LayerBlendMode.Normal, 0.5f);
+        AssertStagePixel(folderResult, "folder opacity once");
+        symbol.Scene.LayerVisible[folder] = false; Build();
+        AssertStagePixel(bottom, "hidden folder clips nested blend");
+        symbol.Scene.LayerVisible[folder] = true;
+        root.BlendMode = LayerBlendMode.Multiply; root.Alpha = 0.5f; Build();
+        AssertStagePixel(LayerBlendCompositor.CompositeColorForRegression(backdrop, folderResult, LayerBlendMode.Multiply, 0.5f), "restored folder before HWND");
+        stage.SetReference3DPlaybackActive(true); // Exclude editor cursors and gizmos from pixel assertions.
+        stage.ConfigureReferenceView(project.Scenes[0], SceneDimension.TwoD);
+        stage.SetReferenceCameraOrientation(0, 0);
+        using var form = new Form
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000), ClientSize = stage.ClientSize
+        };
+        stage.Dock = DockStyle.Fill; form.Controls.Add(stage); form.Show(); Application.DoEvents();
+        AssertStagePixel(LayerBlendCompositor.CompositeColorForRegression(backdrop, folderResult, LayerBlendMode.Multiply, 0.5f), "restored folder after HWND");
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        var drawFrame = RequireMethod(typeof(StageControl), "DrawGdiFrame");
+        foreach (var size in new[] { new Size(240, 180), new Size(300, 220) })
+        {
+            form.ClientSize = size; Application.DoEvents();
+            var expected = LayerBlendCompositor.CompositeColorForRegression(backdrop, folderResult, LayerBlendMode.Multiply, 0.5f);
+            AssertStagePixel(expected, $"resized scene {size}");
+            AssertTimeline(stage.TryProjectScenePosition(Vector3.Zero, out var samplePoint, out _), "Blend fixture origin could not be projected.");
+            using var frame = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppPArgb);
+            using (var graphics = Graphics.FromImage(frame)) drawFrame.Invoke(stage, [graphics]);
+            AssertBlendColor(SampleBitmap(frame, samplePoint), expected, "GDI frame");
+            if (renderer.TryPresentSoftwareFrame(stage, graphics => drawFrame.Invoke(stage, [graphics])))
+            {
+                var surface = (Bitmap)RequireField(typeof(Direct2DStageRenderer), "_softwareFrameSurface").GetValue(renderer)!;
+                AssertTimeline(surface.Size == size, "Blend software presentation retained stale dimensions.");
+                AssertBlendColor(SampleBitmap(surface, samplePoint), expected, "software presentation");
+            }
+            else Console.WriteLine("symbol_blend_software_presentation=unavailable");
+        }
+        Console.WriteLine("symbol_blend_groups_stage_pixels=ok");
+
+        void Build()
+        {
+            var composition = SceneCompositionBuilder.Build(rendered, project.Scenes[0], project.DrawingObjects, 0);
+            stage.SetSceneCompositionResult(composition, rendered);
+        }
+        void AssertStagePixel(Color expected, string label)
+        {
+            using var bitmap = new Bitmap(stage.Width, stage.Height, PixelFormat.Format32bppPArgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            RequireMethod(typeof(StageControl), "DrawSceneGdi").Invoke(stage, [graphics, rendered, int.MaxValue, false]);
+            AssertBlendColor(SampleBitmap(bitmap, stage.WorldToScreen(0, 0)), expected, label);
+        }
+        static void AssertBlendColor(Color actual, Color expected, string label)
+        {
+            AssertTimeline(Math.Abs(actual.A - expected.A) <= 2 && Math.Abs(actual.R - expected.R) <= 2
+                && Math.Abs(actual.G - expected.G) <= 2 && Math.Abs(actual.B - expected.B) <= 2,
+                $"Symbol blend {label}: actual={actual}, expected={expected}.");
+        }
+    }
+
     private static void RunSymbolFiltersModelRegression()
     {
-        var filters = RegressionSymbolFilters with { Bevel = SymbolEdgeFilter.Default, GradientBevel = SymbolEdgeFilter.Default, GradientGlow = SymbolEdgeFilter.Default };
+        RunSymbolBlendModelRegression();
+        var filters = RegressionSymbolFilters with
+        {
+            Blur = SymbolBlurFilter.Default with { Quality = 1 },
+            Glow = RegressionSymbolFilters.Glow with { Quality = 2 },
+            Shadow = RegressionSymbolFilters.Shadow with { Quality = 15 },
+            Bevel = SymbolEdgeFilter.Default with { Quality = 4 },
+            GradientBevel = SymbolEdgeFilter.Default with { Quality = 5 },
+            GradientGlow = SymbolEdgeFilter.Default with { Quality = 6 }
+        };
         var instance = new DrawingObjectInstanceDefinition { Filters = filters };
         var state = instance.EvaluateState(0);
         AssertTimeline(state.Filters == filters && instance.Clone().Filters == filters,
@@ -31,6 +234,25 @@ internal static partial class Benchmark
             "Filter keyframes or held exposures shared mutable state with their source.");
         AssertTimeline(default(SymbolFilters).IsValid && !default(SymbolFilters).HasEnabled,
             "Legacy documents did not default to disabled filters.");
+        foreach (var invalidQuality in new[] { 0, -1, 16 })
+        {
+            var invalid = new[]
+            {
+                filters with { Blur = filters.Blur with { Quality = invalidQuality } },
+                filters with { Glow = filters.Glow with { Quality = invalidQuality } },
+                filters with { Shadow = filters.Shadow with { Quality = invalidQuality } },
+                filters with { Bevel = filters.Bevel with { Quality = invalidQuality } },
+                filters with { GradientBevel = filters.GradientBevel with { Quality = invalidQuality } },
+                filters with { GradientGlow = filters.GradientGlow with { Quality = invalidQuality } }
+            };
+            foreach (var value in invalid)
+                AssertTimeline(!value.IsValid && !instance.SetStateAtFrame(0, state with { Filters = value }),
+                    "Invalid filter quality mutated an instance.");
+        }
+        var legacyBlur = System.Text.Json.JsonSerializer.Deserialize<SymbolBlurFilter>(
+            "{\"Enabled\":true,\"BlurX\":6,\"BlurY\":6}");
+        AssertTimeline(legacyBlur.Quality is null && SymbolFilterValidation.Passes(legacyBlur.Quality) == 3,
+            "Absent legacy quality did not preserve three-pass rendering.");
 
         var project = VectorProject.CreateEmpty();
         var container = project.DrawingObjects[0];
@@ -41,7 +263,7 @@ internal static partial class Benchmark
             Color.Coral, Color.Transparent, 4, ShapeKind.Rectangle);
         AssertTimeline(project.TryAddDrawingObjectInstance(container.Id, child.Id, PointF.Empty, out var nested)
             && nested is not null, "Could not set up nested filter regression.");
-        nested!.Filters = new SymbolFilters { Glow = SymbolGlowFilter.Default };
+        nested!.Filters = filters;
         var scene = project.Scenes[0];
         AssertTimeline(project.TryAddSceneInstance(scene.Id, container.Id, PointF.Empty, 0, out var root)
             && root is not null, "Could not set up root filter regression.");
@@ -102,8 +324,54 @@ internal static partial class Benchmark
         Console.WriteLine("symbol_filters_model_snapshot_persistence=ok");
     }
 
+    private static void RunSymbolFilterQualityRegression()
+    {
+        for (int kind = 0; kind < 6; kind++)
+        {
+            var legacy = Effect(kind, null);
+            var low = Effect(kind, 1);
+            var high = Effect(kind, 15);
+            var oldPixels = Render(legacy);
+            AssertTimeline(oldPixels.SequenceEqual(Render(Effect(kind, 3))),
+                "Explicit quality 3 changed legacy filter pixels.");
+            AssertTimeline(!Render(low).SequenceEqual(Render(high)),
+                "Changing filter quality did not affect rendered pixels.");
+            var lowPadding = SymbolFilterRasterizer.GetPadding(low);
+            var highPadding = SymbolFilterRasterizer.GetPadding(high);
+            AssertTimeline(highPadding.Left > lowPadding.Left && highPadding.Top > lowPadding.Top,
+                "High quality did not expand finite-support bounds.");
+        }
+        Console.WriteLine("symbol_filter_quality_pixels_legacy_padding=ok");
+
+        static SymbolFilters Effect(int kind, int? quality) => kind switch
+        {
+            0 => new() { Blur = SymbolBlurFilter.Default with { Quality = quality } },
+            1 => new() { Glow = SymbolGlowFilter.Default with { Quality = quality } },
+            2 => new() { Shadow = SymbolShadowFilter.Default with { Quality = quality } },
+            3 => new() { Bevel = SymbolEdgeFilter.Default with { Quality = quality } },
+            4 => new() { GradientBevel = SymbolEdgeFilter.Default with { Quality = quality } },
+            _ => new() { GradientGlow = SymbolEdgeFilter.Default with { Quality = quality } }
+        };
+        static int[] Render(SymbolFilters filters)
+        {
+            using var bitmap = new Bitmap(160, 160, PixelFormat.Format32bppPArgb);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                using var brush = new SolidBrush(Color.FromArgb(170, 210, 80, 30));
+                graphics.FillRectangle(brush, 60, 60, 32, 32);
+            }
+            SymbolFilterRasterizer.Apply(bitmap, filters);
+            var pixels = new int[bitmap.Width * bitmap.Height];
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++) pixels[y * bitmap.Width + x] = bitmap.GetPixel(x, y).ToArgb();
+            return pixels;
+        }
+    }
+
     private static void RunSymbolFiltersRenderRegression()
     {
+        RunSymbolFilterQualityRegression();
+        RunSymbolBlendRenderRegression();
         AssertNormalCompositingFastPath();
         AssertEdgeFilters();
         AssertSymbolFilterGpuParity();
@@ -321,6 +589,13 @@ internal static partial class Benchmark
             var cases = new[]
             {
                 new SymbolFilters { Bevel = SymbolEdgeFilter.Default },
+                new SymbolFilters { Blur = SymbolBlurFilter.Default with { Quality = 1 } },
+                new SymbolFilters { Blur = SymbolBlurFilter.Default with { Quality = 15 } },
+                new SymbolFilters { Glow = SymbolGlowFilter.Default with { Quality = 2 } },
+                new SymbolFilters { Shadow = SymbolShadowFilter.Default with { Quality = 5 } },
+                new SymbolFilters { Bevel = SymbolEdgeFilter.Default with { Quality = 1 } },
+                new SymbolFilters { GradientBevel = SymbolEdgeFilter.Default with { Quality = 2 } },
+                new SymbolFilters { GradientGlow = SymbolEdgeFilter.Default with { Quality = 15 } },
                 new SymbolFilters { GradientBevel = SymbolEdgeFilter.Default },
                 new SymbolFilters { GradientGlow = SymbolEdgeFilter.Default },
                 new SymbolFilters { Bevel = SymbolEdgeFilter.Default with { BlurX = 0, BlurY = 0, Distance = 0 } },
@@ -425,6 +700,7 @@ internal static partial class Benchmark
         var changed = RegressionSymbolFilters with { Shadow = SymbolShadowFilter.Default with { Angle = -137 } };
         Miss(input, 96, 128, changed, 0.75f);
         input[3]--; Miss(input, 96, 128, changed, 0.75f);
+        Miss(input, 96, 128, changed with { Blur = changed.Blur with { Quality = 1 } }, 0.75f);
         Environment.SetEnvironmentVariable("VECTOR_DISABLE_GPU_FILTERS", "1");
         try { AssertTimeline(!gpu.TryApply((byte[])input.Clone(), 96, 128, changed, 0.75f), "Disable switch used cached GPU output."); }
         finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_GPU_FILTERS", null); }

@@ -459,7 +459,9 @@ internal sealed class LayerBlendCompositor : IDisposable
         uint dissolveSeed)
     {
         if (opacity <= 0f) return;
-        if (mode == LayerBlendMode.Normal && opacity == 1f)
+        // Isolate retains its folder boundary in the tree traversal, but its
+        // already isolated surface uses the same pixel operation as Normal.
+        if ((mode is LayerBlendMode.Normal or LayerBlendMode.Isolate) && opacity == 1f)
         {
             // Native premultiplied SourceOver avoids three full-surface managed
             // copies, per-pixel unpremultiplication and a Parallel.For barrier.
@@ -596,7 +598,7 @@ internal sealed class LayerBlendCompositor : IDisposable
     {
         return mode switch
         {
-            LayerBlendMode.Normal => source,
+            LayerBlendMode.Normal or LayerBlendMode.Isolate => source,
             LayerBlendMode.Multiply => Channels(backdrop, source, static (b, s) => b * s),
             LayerBlendMode.Screen => Channels(backdrop, source, static (b, s) => b + s - b * s),
             LayerBlendMode.Darken => Channels(backdrop, source, MathF.Min),
@@ -615,6 +617,7 @@ internal sealed class LayerBlendCompositor : IDisposable
             LayerBlendMode.PinLight => Channels(backdrop, source, PinLight),
             LayerBlendMode.HardMix => Channels(backdrop, source, static (b, s) => VividLight(b, s) < 0.5f ? 0f : 1f),
             LayerBlendMode.Difference => Channels(backdrop, source, static (b, s) => MathF.Abs(b - s)),
+            LayerBlendMode.Invert => new Rgb(1f - backdrop.R, 1f - backdrop.G, 1f - backdrop.B),
             LayerBlendMode.Exclusion => Channels(backdrop, source, static (b, s) => b + s - 2f * b * s),
             LayerBlendMode.Hue => SetLuminosity(SetSaturation(source, Saturation(backdrop)), Luminosity(backdrop)),
             LayerBlendMode.Saturation => SetLuminosity(SetSaturation(backdrop, Saturation(source)), Luminosity(backdrop)),

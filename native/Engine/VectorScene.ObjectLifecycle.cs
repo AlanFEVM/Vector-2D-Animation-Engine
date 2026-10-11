@@ -637,7 +637,8 @@ internal sealed partial class VectorScene
 
     internal (int[] ProducedObjects, ImportedSvgBreakApproximation Approximations) BreakApartImportedSvgObjects(
         IEnumerable<int> objectIndices,
-        bool createDrawingLayers = true)
+        bool createDrawingLayers = true,
+        bool requireExactGeometry = false)
     {
         ArgumentNullException.ThrowIfNull(objectIndices);
         var targets = objectIndices
@@ -664,11 +665,15 @@ internal sealed partial class VectorScene
                     ? storedName
                     : "SVG";
 
-                var extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: !createDrawingLayers);
+                var extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: !createDrawingLayers, requireExactGeometry);
                 var placementScaleX = Width[sourceObject] / extracted.IntrinsicSize.Width;
                 var placementScaleY = Height[sourceObject] / extracted.IntrinsicSize.Height;
                 if (Math.Abs(placementScaleX - placementScaleY) > Math.Max(placementScaleX, placementScaleY) * 0.001f)
-                    extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: true);
+                {
+                    if (requireExactGeometry && extracted.Parts.Any(part => part is ImportedSvgBreakStroke))
+                        throw new InvalidDataException("Non-uniform SVG placement requires a flattened stroke outline; exact editable conversion stopped.");
+                    if (!requireExactGeometry) extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: true);
+                }
                 approximations |= extracted.Approximations;
                 var keyframe = ObjectKeyframeFrame[sourceObject];
                 var order = ObjectOrder[sourceObject];
@@ -697,6 +702,7 @@ internal sealed partial class VectorScene
                                 .ToArray());
                             if (contours.Length == 0)
                             {
+                                if (requireExactGeometry) throw new InvalidDataException("An SVG fill collapses at native coordinate precision.");
                                 approximations |= ImportedSvgBreakApproximation.SkippedInvalidGeometry;
                                 continue;
                             }
@@ -706,6 +712,7 @@ internal sealed partial class VectorScene
                             var points = NormalizeFreehandPoints(stroke.Points.Select(ToWorld).ToArray());
                             if (points.Length == 0)
                             {
+                                if (requireExactGeometry) throw new InvalidDataException("An SVG stroke collapses at native coordinate precision.");
                                 approximations |= ImportedSvgBreakApproximation.SkippedInvalidGeometry;
                                 continue;
                             }
@@ -787,6 +794,9 @@ internal sealed partial class VectorScene
                     {
                         case ImportedSvgBreakFill fill:
                             var exactFill = fill.BezierContours.Select(contour => contour.Select(MapNode).ToArray()).ToArray();
+                            if (requireExactGeometry && (exactFill.Length == 0
+                                || exactFill.Any(contour => !TryPreparePathBezierContours([contour], out _, out _, out _))))
+                                throw new InvalidDataException("An SVG fill contour cannot be preserved as an editable native curve.");
                             // Quantization may collapse tiny AN subpaths. Do not discard
                             // the entire compound fill because one zero-area contour fails.
                             exactFill = exactFill.Where(contour => TryPreparePathBezierContours([contour], out _, out _, out _)).ToArray();
@@ -799,7 +809,7 @@ internal sealed partial class VectorScene
                                 fill.Paint.Color,
                                 Color.Transparent,
                                 (uint)Math.Max(3, prepared.Contours.Sum(contour => contour.Length)));
-                            if (created < 0) created = AppendPathObjectContours(layer, prepared.Contours,
+                            if (created < 0 && !requireExactGeometry) created = AppendPathObjectContours(layer, prepared.Contours,
                                 0, fill.Paint.Color, Color.Transparent, (uint)Math.Max(3, prepared.Contours.Sum(contour => contour.Length)));
                             break;
                         case ImportedSvgBreakStroke stroke:
@@ -813,11 +823,17 @@ internal sealed partial class VectorScene
                             if (created < 0 && stroke.Closed)
                                 created = AppendFreehandBezierStroke(layer, [..exactStroke, exactStroke[0]],
                                     stroke.Width * strokeScale, stroke.Paint.Color, (uint)Math.Max(3, exactStroke.Length));
-                            if (created < 0 && stroke.Style.Cap != SvgNativeCap.Butt && exactStroke.Length > 0
+                            if (created < 0 && !requireExactGeometry && stroke.Style.Cap != SvgNativeCap.Butt && exactStroke.Length > 0
                                 && exactStroke.All(node => node.Anchor == exactStroke[0].Anchor))
                                 created = AppendFreehandStroke(layer, [exactStroke[0].Anchor], stroke.Width * strokeScale,
                                     stroke.Paint.Color, (uint)Math.Max(3, exactStroke.Length));
-                            if (created >= 0) SetSvgStrokeStyle(created, stroke.Style);
+                            if (created >= 0)
+                            {
+                                // Freehand append applies the drawing tool's minimum width.
+                                // Imported exact strokes retain their source width instead.
+                                if (requireExactGeometry) Stroke[created] = stroke.Width * strokeScale;
+                                SetSvgStrokeStyle(created, stroke.Style);
+                            }
                             break;
                         default:
                             throw new InvalidDataException("The SVG break-apart result contains an unknown geometry part.");
@@ -825,6 +841,7 @@ internal sealed partial class VectorScene
 
                     if (created < 0)
                     {
+                        if (requireExactGeometry) throw new InvalidDataException("An SVG part cannot be preserved as editable native geometry.");
                         approximations |= ImportedSvgBreakApproximation.SkippedInvalidGeometry;
                         continue;
                     }
@@ -861,6 +878,8 @@ internal sealed partial class VectorScene
                 }
             }
 
+            if (requireExactGeometry && approximations != ImportedSvgBreakApproximation.None)
+                throw new InvalidDataException("Exact SVG conversion would omit or approximate source geometry.");
             RemoveObjects(targets);
             var produced = producedKeys
                 .Select(key => FindObjectByStackKey(key.Order, key.SubOrder))

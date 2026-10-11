@@ -37,6 +37,8 @@ internal readonly record struct InstanceFrameState(
 
     public SymbolFilters Filters { get; init; }
 
+    public LayerBlendMode BlendMode { get; init; } = LayerBlendMode.Normal;
+
     public Vector3 RotationPivot { get; init; }
 
     public Vector3 ScalePivot { get; init; }
@@ -82,6 +84,7 @@ internal class DrawingObjectInstanceDefinition
     private int _tintArgb = unchecked((int)0xffffffff);
     private SpatialOpticalMaterial? _opticalMaterialOverride;
     private SymbolFilters _filters;
+    private LayerBlendMode _blendMode = LayerBlendMode.Normal;
 
     public DrawingObjectInstanceDefinition()
     {
@@ -120,6 +123,15 @@ internal class DrawingObjectInstanceDefinition
     {
         get => _alpha;
         set => _alpha = float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : 1f;
+    }
+    public LayerBlendMode BlendMode
+    {
+        get => _blendMode;
+        set
+        {
+            if (!Enum.IsDefined(value)) throw new ArgumentOutOfRangeException(nameof(value));
+            _blendMode = value;
+        }
     }
     public int TintArgb
     {
@@ -181,6 +193,7 @@ internal class DrawingObjectInstanceDefinition
             Alpha = Alpha,
             TintArgb = TintArgb,
             Filters = Filters,
+            BlendMode = BlendMode,
             OpticalMaterialOverride = OpticalMaterialOverride,
             PlaybackFps = PlaybackFps,
             PlaybackMode = PlaybackMode,
@@ -316,9 +329,14 @@ internal class DrawingObjectInstanceDefinition
 
     internal void RestoreStateKeyframes(IEnumerable<InstanceStateKeyframe>? keyframes)
     {
+        var restored = keyframes?.ToArray();
+        if (restored is not null && restored.Any(keyframe => !Enum.IsDefined(keyframe.State.BlendMode)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyframes), "An instance state blend mode is invalid.");
+        }
         _stateKeyframes.Clear();
-        if (keyframes is null) return;
-        foreach (var keyframe in keyframes
+        if (restored is null) return;
+        foreach (var keyframe in restored
                      .Where(item => item.Frame >= 0 && TryNormalizeState(item.State, out _))
                      .GroupBy(item => item.Frame)
                      .Select(group => group.Last())
@@ -481,6 +499,7 @@ internal class DrawingObjectInstanceDefinition
             ScalePivot = Vector3.Lerp(source.ScalePivot, target.ScalePivot, progress),
             Alpha = Lerp(source.Alpha, target.Alpha, progress),
             TintArgb = LerpArgb(source.TintArgb, target.TintArgb, progress),
+            BlendMode = source.BlendMode,
             Distortion = source.Distortion?.DeepClone()
         };
     }
@@ -529,6 +548,7 @@ internal class DrawingObjectInstanceDefinition
             Alpha = Alpha,
             TintArgb = TintArgb,
             Filters = Filters,
+            BlendMode = BlendMode,
             RotationPivot = RotationPivot,
             ScalePivot = ScalePivot,
             Distortion = Distortion?.DeepClone()
@@ -555,6 +575,7 @@ internal class DrawingObjectInstanceDefinition
         Alpha = state.Alpha;
         TintArgb = state.TintArgb;
         Filters = state.Filters;
+        BlendMode = state.BlendMode;
         PlaybackFps = state.PlaybackFps;
         PlaybackMode = state.PlaybackMode;
         HoldFrame = state.HoldFrame;
@@ -578,6 +599,7 @@ internal class DrawingObjectInstanceDefinition
             || !Finite(state.ScalePivot)
             || !float.IsFinite(state.Alpha)
             || !state.Filters.IsValid
+            || !Enum.IsDefined(state.BlendMode)
             || state.Distortion is { IsValid: false })
         {
             return false;

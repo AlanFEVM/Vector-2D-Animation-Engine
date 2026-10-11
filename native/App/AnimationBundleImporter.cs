@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml;
@@ -180,6 +181,15 @@ internal static class AnimationBundleImporter
                 var svgPath = ResolveSvgPath(bundleDirectory, frame.Path!);
                 if (!svgSources.ContainsKey(svgPath))
                 {
+                    // Enforce the resource boundary before SVG.NET inspects references or dimensions.
+                    var length = new FileInfo(svgPath).Length;
+                    if (length is <= 0 || length > ImportedSvgRasterizer.MaxImportSourceBytes)
+                        throw new InvalidDataException($"SVG frame exceeds the source size limit: {frame.Path}");
+                    string rawSource;
+                    try { rawSource = File.ReadAllText(svgPath, new UTF8Encoding(false, true)); }
+                    catch (DecoderFallbackException exception)
+                    { throw new InvalidDataException($"SVG frame is not valid UTF-8: {frame.Path}", exception); }
+                    ValidateSvgSource(rawSource, frame.Path!);
                     var imported = ImportedSvgRasterizer.Load(svgPath);
                     ValidateSvgSource(imported.Source, frame.Path!);
                     svgSources.Add(svgPath, imported.Source);
@@ -584,6 +594,7 @@ internal static class AnimationBundleImporter
                 }
 
                 if (!reader.HasAttributes) continue;
+                var isImageElement = string.Equals(reader.LocalName, "image", StringComparison.OrdinalIgnoreCase);
                 while (reader.MoveToNextAttribute())
                 {
                     if (reader.NamespaceURI == "http://www.w3.org/2000/xmlns/") continue;
@@ -591,7 +602,8 @@ internal static class AnimationBundleImporter
                     var value = reader.Value;
                     if (name.StartsWith("on", StringComparison.OrdinalIgnoreCase)
                         || (name.Equals("href", StringComparison.OrdinalIgnoreCase)
-                            && !value.TrimStart().StartsWith('#'))
+                            && !value.TrimStart().StartsWith('#')
+                            && !(isImageElement && FlashEmbeddedImageValidator.IsValidDataImage(value)))
                         || value.Contains("javascript:", StringComparison.OrdinalIgnoreCase)
                         || ContainsExternalReference(value))
                     {

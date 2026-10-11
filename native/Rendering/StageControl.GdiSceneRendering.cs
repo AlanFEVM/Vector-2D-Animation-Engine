@@ -675,6 +675,7 @@ internal sealed partial class StageControl : Control
                     if (strokePath.PointCount > 0)
                     {
                         using var pen = StrokePen(strokeColor, screenStroke);
+                        if (scene.GetSvgStrokeStyle(i) is not null) pen.Width = Math.Max(0.01f, WorldLengthToScreen(scene.Stroke[i]));
                         scene.ApplySvgStrokeStyle(i, pen);
                         var oldMode = g.SmoothingMode;
                         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -689,6 +690,7 @@ internal sealed partial class StageControl : Control
             if (scene.GetSvgStrokeStyle(i) is not null && scene.Stroke[i] > 0)
             {
                 using var svgPen = StrokePen(strokeColor, screenStroke);
+                svgPen.Width = Math.Max(0.01f, WorldLengthToScreen(scene.Stroke[i]));
                 scene.ApplySvgStrokeStyle(i, svgPen);
                 g.DrawPath(svgPen, path);
             }
@@ -789,7 +791,8 @@ internal sealed partial class StageControl : Control
         }
 
         if (scene.Stroke[objectIndex] <= 0) return;
-        var screenStroke = Math.Max(0.1f, WorldLengthToScreen(scene.Stroke[objectIndex]));
+        var screenStroke = Math.Max(scene.GetSvgStrokeStyle(objectIndex) is not null ? 0.01f : 0.1f,
+            WorldLengthToScreen(scene.Stroke[objectIndex]));
         var strokeColor = StrokeColorFor(objectIndex);
         if (shape == ShapeKind.Line && scene.HasGradient(objectIndex))
         {
@@ -801,6 +804,8 @@ internal sealed partial class StageControl : Control
         using var pen = shape == ShapeKind.Line
             ? CreateDistortedStrokePen(scene, objectIndex, strokeColor, screenStroke)
             : StrokePen(strokeColor, screenStroke);
+        if (scene.GetSvgStrokeStyle(objectIndex) is not null) pen.Width = screenStroke;
+        scene.ApplySvgStrokeStyle(objectIndex, pen);
         var oldMode = target.SmoothingMode;
         target.SmoothingMode = SmoothingMode.AntiAlias;
         target.DrawPath(pen, path);
@@ -852,7 +857,7 @@ internal sealed partial class StageControl : Control
     {
         var startStyle = scene.GetLineEndpointStyle(objectIndex, startEndpoint: true);
         var endStyle = scene.GetLineEndpointStyle(objectIndex, startEndpoint: false);
-        return new Pen(color, Math.Max(1.5f, width))
+        var pen = new Pen(color, Math.Max(scene.GetSvgStrokeStyle(objectIndex) is not null ? 0.01f : 1.5f, width))
         {
             StartCap = LineCapForEndpoint(startStyle),
             EndCap = LineCapForEndpoint(endStyle),
@@ -861,6 +866,8 @@ internal sealed partial class StageControl : Control
                 : LineJoin.Round,
             MiterLimit = startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp ? 8 : 1
         };
+        scene.ApplySvgStrokeStyle(objectIndex, pen);
+        return pen;
     }
 
     private void DrawRasterDistortedObject(
@@ -1846,6 +1853,7 @@ internal sealed partial class StageControl : Control
         }
 
         using var pen = StrokePen(color, screenWidth);
+        if (scene.GetSvgStrokeStyle(i) is not null) pen.Width = screenWidth;
         scene.ApplySvgStrokeStyle(i, pen);
         if (scene.GetSvgStrokeStyle(i) is not null && scene.TryGetFreehandBezierWorldNodes(i, out var exactNodes))
         {

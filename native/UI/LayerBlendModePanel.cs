@@ -21,7 +21,7 @@ internal sealed class LayerBlendModePanel : Panel
         public override string ToString() => UiLocalization.T(Label);
     }
 
-    private static readonly (LayerBlendMode Mode, string Label)[] BlendModes =
+    internal static readonly (LayerBlendMode Mode, string Label)[] BlendModes =
     [
         (LayerBlendMode.Normal, "Normal"),
         (LayerBlendMode.Multiply, "Multiply"),
@@ -49,7 +49,9 @@ internal sealed class LayerBlendModePanel : Panel
         (LayerBlendMode.Color, "Color"),
         (LayerBlendMode.Luminosity, "Luminosity"),
         (LayerBlendMode.Subtract, "Subtract"),
-        (LayerBlendMode.Divide, "Divide")
+        (LayerBlendMode.Divide, "Divide"),
+        (LayerBlendMode.Isolate, "Isolated Group"),
+        (LayerBlendMode.Invert, "Invert")
     ];
 
     private readonly Label _layerName = new()

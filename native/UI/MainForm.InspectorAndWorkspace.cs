@@ -71,7 +71,8 @@ internal sealed partial class MainForm : Form
                     string.Equals(instance.DrawingObjectId, drawingObject.Id, StringComparison.Ordinal)),
                 selectedSceneInstanceStates.Any(state => Math.Abs(state.Alpha - sceneInstanceState.Alpha) > 0.0001f),
                 selectedSceneInstanceStates.Any(state => state.TintArgb != sceneInstanceState.TintArgb),
-                selectedSceneInstanceStates.Any(state => state.Filters != sceneInstanceState.Filters));
+                selectedSceneInstanceStates.Any(state => state.Filters != sceneInstanceState.Filters),
+                selectedSceneInstanceStates.Any(state => state.BlendMode != sceneInstanceState.BlendMode));
             var drawingLayer = Array.IndexOf(_scene.LayerIds, sceneInstance.SceneLayerId);
             var layerName = IsSceneCompositionContext()
                 ? ActiveScene()?.FindLayer(sceneInstance.SceneLayerId)?.Name

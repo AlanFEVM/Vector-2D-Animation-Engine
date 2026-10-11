@@ -1534,6 +1534,10 @@ internal sealed partial class MainForm : Form
         newProject.Click += (_, _) => CreateNewProjectFromCommand();
         var openProject = new ToolStripMenuItem("Open Project...") { ShortcutKeys = Keys.Control | Keys.O };
         openProject.Click += (_, _) => OpenProjectFromDialog();
+        var importFlash = new ToolStripMenuItem("Import Flash Project...");
+        importFlash.Click += (_, _) => ImportFlashProjectFromDialog();
+        var flashVisualBridge = new ToolStripMenuItem("Create Flash Visual Bridge...");
+        flashVisualBridge.Click += (_, _) => PrepareFlashVisualBridgeFromDialog();
         var importSvg = new ToolStripMenuItem("Import SVG...");
         importSvg.Click += (_, _) => ImportSvgFromDialog();
         var importImage = new ToolStripMenuItem("Import Image...");
@@ -1552,6 +1556,8 @@ internal sealed partial class MainForm : Form
         {
             newProject,
             openProject,
+            importFlash,
+            flashVisualBridge,
             importSvg,
             importImage,
             new ToolStripSeparator(),

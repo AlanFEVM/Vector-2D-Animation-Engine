@@ -6281,6 +6281,7 @@ internal static partial class Benchmark
 
     private static void RunSvgNativePaintRegression()
     {
+        RunSvgNativeThinStrokeRegression();
         const string source = """
             <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
               <path d="M20 20 H40" fill="none" stroke="black" stroke-width="4" stroke-linecap="butt"/>
@@ -6319,6 +6320,43 @@ internal static partial class Benchmark
                 $"SVG {(direct2d ? "Direct2D" : "GDI")} paint did not retain butt/square caps or the quadratic curve centerline.");
         }
         Console.WriteLine("svg_native_paint=ok,gdi=ok,direct2d=ok,butt=ok,square=ok,quadratic=ok");
+    }
+
+    private static void RunSvgNativeThinStrokeRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+              <path d="M20 50 H80" fill="none" stroke="black" stroke-width="0.125" stroke-linecap="butt"/>
+            </svg>
+            """;
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(2500, 2500), source, "Thin stroke");
+        var part = scene.BreakApartImportedSvgObjects([0], true).ProducedObjects.Single();
+        using var stage = new StageControl(scene) { Size = new Size(400, 400), WorldGridOpacity = 0 };
+        stage.SetVisibleWorldWidth(2500);
+        foreach (var direct2d in new[] { false })
+        {
+            using var bitmap = RenderSvgNativePaintFixture(stage, direct2d);
+            var coverage = 0d;
+            for (var y = 0; y < bitmap.Height; y++)
+                coverage += (255 - bitmap.GetPixel(200, y).R) / 255d;
+            // GDI+ rasterizes a subpixel pen at this alignment into one pixel.
+            // The former 1.5 px minimum covers more than one pixel.
+            AssertTimeline(coverage > 0.25 && coverage <= 1.1,
+                $"SVG {(direct2d ? "Direct2D" : "GDI")} thin stroke was enlarged to a native tool minimum: {coverage}.");
+        }
+        scene.Stroke[part] = 100;
+        var bounds = scene.GetObjectWorldBounds(part);
+        scene.SetObjectDistortions(part, [new DistortWarp(TransformOverlayFrame.FromBounds(bounds),
+            DistortEnvelope.FromBounds(bounds).Transform(point => new PointF(point.X + 100, point.Y)))]);
+        scene.TryGetFreehandBezierWorldNodes(part, out var nodes);
+        using var distorted = RenderSvgNativePaintFixture(stage, false);
+        var start = Point.Round(stage.WorldToScreen(nodes[0].Anchor.X + 100, nodes[0].Anchor.Y));
+        AssertTimeline(distorted.GetPixel(start.X - 5, start.Y).R > 220
+            && distorted.GetPixel(start.X + 5, start.Y).R < 40,
+            "SVG GDI distorted stroke lost its butt cap.");
+        Console.WriteLine("svg_native_thin_stroke=ok,gdi=ok,distorted_butt_cap=ok");
     }
 
     private static void RunSvgFillBoundaryEditingRegression()

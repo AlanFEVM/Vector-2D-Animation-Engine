@@ -12,6 +12,7 @@ internal static partial class Benchmark
     /// </summary>
     private static void RunDrawingObjectSvgExportRegression()
     {
+        RunSvgNativeStorageAndExportRegression();
         RunDrawingObjectSvgViewportRegression();
         var scene = new VectorScene();
         scene.CreateEmpty(3, 8);
@@ -228,6 +229,77 @@ internal static partial class Benchmark
             DeleteTemporaryDirectory(temporaryRoot);
         }
     }
+    private static void RunSvgNativeStorageAndExportRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var scene = project.DrawingObjects[0].Scene;
+        var line = scene.AddLineSegment(0, new PointF(-100, -100), new PointF(100, 100),
+            20, Color.Transparent, Color.Black, 4);
+        scene.SetSvgStrokeStyle(line, new SvgNativeStrokeStyle(SvgNativeCap.Square, SvgNativeJoin.Bevel, 7));
+        // A diagonal square cap extends farther on each axis than a round cap.
+        var extent = 100 + 10 * MathF.Sqrt(2);
+        var squareDocument = DrawingObjectSvgExport.CreateDocument(
+            "square-cap", "Square cap", scene, 0);
+        var squareBounds = squareDocument.Root!.Attribute("viewBox")!.Value.Split(' ')
+            .Select(value => float.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+        AssertTimeline(squareBounds[0] <= -extent + 0.02f && squareBounds[1] <= -extent + 0.02f
+            && squareBounds[0] + squareBounds[2] >= extent - 0.02f
+            && squareBounds[1] + squareBounds[3] >= extent - 0.02f
+            && squareBounds[2] < 2 * extent + 0.2f && squareBounds[3] < 2 * extent + 0.2f,
+            "SVG export clipped a diagonal square cap or added excessive empty space.");
+
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+              <path d="M0 200 L100 0 L200 200 Z" fill="none" stroke="black" stroke-width="20" stroke-linejoin="miter" stroke-miterlimit="10"/>
+            </svg>
+            """;
+        var miterScene = new VectorScene();
+        miterScene.CreateEmpty();
+        miterScene.AddImportedSvgObject(0, PointF.Empty, new SizeF(200, 200), source, "Miter");
+        var miterParts = miterScene.BreakApartImportedSvgObjects([0], true).ProducedObjects;
+        var miterDocument = DrawingObjectSvgExport.CreateDocument("miter", "Miter", miterScene, 0);
+        var viewport = miterDocument.Root!.Attribute("viewBox")!.Value.Split(' ')
+            .Select(value => float.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+        AssertTimeline(viewport[1] < -120, "SVG export clipped the acute miter join to a round-join viewport.");
+
+        var imported = scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(200, 200), source, "Editable path");
+        var path = scene.BreakApartImportedSvgObjects([imported], true).ProducedObjects.Single();
+        AssertTimeline(scene.ShapeKind[path] == ShapeKind.Path && miterParts.Length == 1,
+            "SVG storage fixture did not create a native Bezier path.");
+        scene.SetPathOpen(path);
+        scene.HideBoundaryStrokePart(path, 1);
+        scene.FillBoundaryLinkDetached[path] = true;
+        scene.QuadraticLineEditing[line] = true;
+        scene.SetLayerSymbolFilters(0, new SymbolFilters { Blur = SymbolBlurFilter.Default });
+        var expected = scene.CreateSnapshot();
+        var temporaryRoot = CreateTemporaryDirectory("svg-native-storage");
+        try
+        {
+            var manifest = Path.Combine(temporaryRoot, "Native.v2dProject");
+            for (var roundTrip = 0; roundTrip < 2; roundTrip++)
+            {
+                ProjectVaultStore.Save(project, manifest);
+                project = ProjectVaultStore.Load(manifest);
+                var loaded = project.DrawingObjects[0].Scene.CreateSnapshot();
+                AssertTimeline(loaded.SvgStrokeStyles.OrderBy(item => item.Key).SequenceEqual(
+                        expected.SvgStrokeStyles.OrderBy(item => item.Key))
+                    && loaded.LayerSymbolFilters.OrderBy(item => item.Key).SequenceEqual(
+                        expected.LayerSymbolFilters.OrderBy(item => item.Key))
+                    && loaded.PathOpenFlags.SetEquals(expected.PathOpenFlags)
+                    && loaded.HiddenBoundaryStrokeParts.Count == expected.HiddenBoundaryStrokeParts.Count
+                    && expected.HiddenBoundaryStrokeParts.All(item =>
+                        loaded.HiddenBoundaryStrokeParts.TryGetValue(item.Key, out var parts) && parts.SequenceEqual(item.Value))
+                    && loaded.FillBoundaryLinkDetached.SequenceEqual(expected.FillBoundaryLinkDetached)
+                    && loaded.QuadraticLineEditing.SequenceEqual(expected.QuadraticLineEditing)
+                    && loaded.PathBezierLocalContours[path].SelectMany(contour => contour).SequenceEqual(
+                        expected.PathBezierLocalContours[path].SelectMany(contour => contour)),
+                    "Project Save/Open lost SVG stroke styles or native curve editing state.");
+            }
+        }
+        finally { DeleteTemporaryDirectory(temporaryRoot); }
+        Console.WriteLine("svg_native_storage_export=ok,square_caps=ok,miter_bounds=ok,save_reopen_twice=ok,editing_state=ok");
+    }
+
     private static void RunDrawingObjectSvgViewportRegression()
     {
         var scene = new VectorScene();

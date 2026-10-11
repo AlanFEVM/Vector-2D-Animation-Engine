@@ -1287,6 +1287,7 @@ internal sealed partial class MainForm : Form
             CancelInstanceAppearanceEdit();
         _drawingObjectInstancePanel.FiltersPanel.InteractionStarted += (_, _) => BeginInstanceAppearanceEdit();
         _drawingObjectInstancePanel.FiltersPanel.FiltersChanged += (_, e) => ApplySelectedDrawingObjectFilters(e);
+        _drawingObjectInstancePanel.BlendModeChanged += (_, e) => ApplySelectedDrawingObjectBlendMode(e.BlendMode);
         _drawingObjectInstancePanel.FiltersPanel.InteractionCompleted += (_, _) => CompleteInstanceAppearanceEdit();
         _drawingObjectInstancePanel.FiltersPanel.InteractionCanceled += (_, _) => CancelInstanceAppearanceEdit();
         _drawingObjectInstancePanel.RestoreOriginalSizeRequested += (_, _) =>
