@@ -85,6 +85,7 @@ internal sealed partial class VectorScene
             PathLocalContours = _pathLocalContours.ToDictionary(
                 item => item.Key,
                 item => cloneGeometry ? CloneContours(item.Value) : item.Value),
+            SvgStrokeStyles = _svgStrokeStyles.ToDictionary(item => item.Key, item => item.Value),
             PathBezierLocalContours = _pathBezierLocalContours.ToDictionary(
                 item => item.Key,
                 item => cloneGeometry ? CloneBezierContours(item.Value) : item.Value),
@@ -286,6 +287,8 @@ internal sealed partial class VectorScene
             _pathLocalContours[item.Key] = CloneContours(item.Value);
         }
 
+        _svgStrokeStyles.Clear();
+        foreach (var item in snapshot.SvgStrokeStyles) SetSvgStrokeStyle(item.Key, item.Value);
         _pathBezierLocalContours.Clear();
         foreach (var item in snapshot.PathBezierLocalContours)
         {

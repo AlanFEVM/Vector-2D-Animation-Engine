@@ -23,7 +23,7 @@ internal sealed partial class VectorScene
         var result = new List<int>(Math.Min(candidates.Length, Math.Min(ObjectCount, 1024)));
         foreach (var objectIndex in candidates)
         {
-            if (!IsObjectGeometryInsidePolygonCore(objectIndex, polygon)) continue;
+            if (!HasExposedPathFill(objectIndex, frame) || !IsObjectGeometryInsidePolygonCore(objectIndex, polygon)) continue;
             result.Add(objectIndex);
             if (result.Count >= limit) break;
         }
@@ -46,6 +46,7 @@ internal sealed partial class VectorScene
         var result = new List<DrawingElementHit>();
         foreach (var objectIndex in candidates)
         {
+            if (!HasExposedPathFill(objectIndex, frame)) continue;
             AppendDrawingElementsInsidePolygon(objectIndex, frame, polygon, result);
             if (result.Count >= limit) break;
         }

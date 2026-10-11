@@ -606,6 +606,12 @@ internal static class DrawingObjectSvgCodec
             var roundStart = snapshot.LineEndpointStyles[index] == LineEndpointStyle.Round;
             var roundEnd = snapshot.LineEndEndpointStyles[index] == LineEndpointStyle.Round;
             element.SetAttributeValue("stroke-linecap", roundStart && roundEnd ? "round" : "butt");
+            if (snapshot.SvgStrokeStyles.TryGetValue(index, out var style))
+            {
+                element.SetAttributeValue("stroke-linecap", style.Cap.ToString().ToLowerInvariant());
+                element.SetAttributeValue("stroke-linejoin", style.Join.ToString().ToLowerInvariant());
+                element.SetAttributeValue("stroke-miterlimit", Number(style.MiterLimit));
+            }
         }
     }
 
@@ -784,6 +790,11 @@ internal static class DrawingObjectSvgCodec
         ValidatePointDictionary(snapshot.GradientPathLocalPoints, snapshot.ObjectCount, nameof(snapshot.GradientPathLocalPoints));
         ValidateContourDictionary(snapshot.ShapeGradientMappingLocalContours, snapshot.ObjectCount, nameof(snapshot.ShapeGradientMappingLocalContours));
         ValidateContourDictionary(snapshot.PathLocalContours, snapshot.ObjectCount, nameof(snapshot.PathLocalContours));
+        if (snapshot.SvgStrokeStyles is null) throw new InvalidDataException("Missing SVG stroke styles.");
+        foreach (var (index, style) in snapshot.SvgStrokeStyles)
+            if ((uint)index >= snapshot.ObjectCount || !Enum.IsDefined(style.Cap) || !Enum.IsDefined(style.Join)
+                || !float.IsFinite(style.MiterLimit) || style.MiterLimit < 1)
+                throw new InvalidDataException("Invalid SVG stroke style.");
         ValidatePathBezierContours(snapshot);
         ValidatePointDictionary(snapshot.FreehandLocalPoints, snapshot.ObjectCount, nameof(snapshot.FreehandLocalPoints));
         ValidateFreehandBezierNodes(snapshot);

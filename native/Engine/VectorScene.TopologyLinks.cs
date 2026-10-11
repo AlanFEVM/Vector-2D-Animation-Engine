@@ -16,10 +16,59 @@ internal sealed partial class VectorScene
         return new DrawingElementHit(materialized.Parts[0].Result, -1, 0, 1);
     }
 
+    private bool IsLinkedBoundaryStroke(int index) =>
+        IsFillBoundaryLinkedStrokeShape(ShapeKind[index])
+        || ShapeKind[index] == VectorAnimationEngine.ShapeKind.Path && !HasFill(index) && HasStroke(index);
+
+    private bool CanLinkFillBoundaryLayers(int stroke, int fill) =>
+        ObjectLayer[stroke] == ObjectLayer[fill]
+        || GetSvgStrokeStyle(stroke) is not null && FillAutoMergeProtected[fill]
+            && !string.IsNullOrEmpty(LayerParentIds[ObjectLayer[stroke]])
+            && LayerParentIds[ObjectLayer[stroke]] == LayerParentIds[ObjectLayer[fill]];
+
+    private (int SegmentIndex, CubicBoundarySegment Curve)[] LinkedStrokeCurves(int index)
+    {
+        if (ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line)
+            return [(-1, LineCurve(index))];
+        if (TryGetFreehandBezierWorldNodes(index, out var nodes))
+            return Enumerable.Range(0, nodes.Length - 1).Select(segment => (segment,
+                new CubicBoundarySegment(nodes[segment].Anchor, nodes[segment].OutgoingControl,
+                    nodes[segment + 1].IncomingControl, nodes[segment + 1].Anchor))).ToArray();
+        if (!HasFill(index) && TryGetPathBezierWorldContours(index, out _))
+            return GetPathBezierSegmentParts(index).Select(part => (part.PartIndex, part.Curve)).ToArray();
+        return [];
+    }
+
+    private bool TryGetLinkedStrokeCurve(int index, int segment, out CubicBoundarySegment curve)
+    {
+        foreach (var item in LinkedStrokeCurves(index))
+            if (item.SegmentIndex == segment) { curve = item.Curve; return true; }
+        curve = default;
+        return false;
+    }
+
+    private bool SetLinkedStrokeCurve(int index, int segment, CubicBoundarySegment curve)
+    {
+        if (segment < 0 && ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line)
+        {
+            SetLineCurve(index, curve.Start, curve.Control1, curve.Control2, curve.End);
+            return true;
+        }
+        if (TryGetFreehandBezierWorldNodes(index, out var nodes) && (uint)segment < nodes.Length - 1)
+        {
+            nodes[segment] = nodes[segment] with { Anchor = curve.Start, OutgoingControl = curve.Control1 };
+            nodes[segment + 1] = nodes[segment + 1] with { Anchor = curve.End, IncomingControl = curve.Control2 };
+            return SetFreehandBezierNodesCore(index, nodes);
+        }
+        return ShapeKind[index] == VectorAnimationEngine.ShapeKind.Path
+            && SetPathBezierSegment(index, segment, curve.Start, curve.Control1, curve.Control2, curve.End,
+                rebuildGeometryIndex: false);
+    }
+
     public FillBoundaryLineLink[] CaptureFillBoundaryLineLinks(int lineObjectIndex, int frame)
     {
         if ((uint)lineObjectIndex >= ObjectCount
-            || !IsFillBoundaryLinkedStrokeShape(ShapeKind[lineObjectIndex])
+            || !IsLinkedBoundaryStroke(lineObjectIndex)
             || FillBoundaryLinkDetached[lineObjectIndex]
             || !IsObjectActive(lineObjectIndex, frame))
         {
@@ -37,7 +86,7 @@ internal sealed partial class VectorScene
         queryBounds.Inflate(ConnectedStrokeEndpointToleranceUnits, ConnectedStrokeEndpointToleranceUnits);
         foreach (var fillObjectIndex in QueryObjects(queryBounds, frame))
         {
-            if (ObjectLayer[fillObjectIndex] != ObjectLayer[lineObjectIndex]
+            if (fillObjectIndex == lineObjectIndex || !CanLinkFillBoundaryLayers(lineObjectIndex, fillObjectIndex)
                 || ObjectKeyframeFrame[fillObjectIndex] != ObjectKeyframeFrame[lineObjectIndex]
                 || !HasFill(fillObjectIndex))
             {
@@ -47,39 +96,27 @@ internal sealed partial class VectorScene
             var contours = ShapeBoundaryContours(fillObjectIndex);
             if (!TryGetEditableFillBezierContours(fillObjectIndex, out var originalBezierContours)) continue;
             PointF[][]? originalContours = null;
-            if (ShapeKind[lineObjectIndex] == VectorAnimationEngine.ShapeKind.Line
-                && TryGetLineCubic(
-                    lineObjectIndex,
-                    out var exactLineStart,
-                    out var lineControl1,
-                    out var lineControl2,
-                    out var exactLineEnd)
-                && TryFindCoincidentFillBezierSegment(
-                    originalBezierContours,
-                    exactLineStart,
-                    lineControl1,
-                    lineControl2,
-                    exactLineEnd,
-                    out var exactContourIndex,
-                    out var exactBezierSegmentIndex,
-                    out var exactSampledSegmentIndex,
-                    out var exactSampledSegmentCount,
-                    out var exactReversed))
+            var exactMatch = false;
+            var exactStrokeCurves = ShapeKind[lineObjectIndex] == VectorAnimationEngine.ShapeKind.Line
+                || GetSvgStrokeStyle(lineObjectIndex) is not null
+                    ? LinkedStrokeCurves(lineObjectIndex) : [];
+            foreach (var (strokeSegment, curve) in exactStrokeCurves)
             {
-                originalContours = CloneContours(contours);
-                links.Add(new FillBoundaryLineLink(
-                    lineObjectIndex,
-                    fillObjectIndex,
-                    originalContours,
-                    CloneBezierContours(originalBezierContours),
-                    exactContourIndex,
-                    exactSampledSegmentIndex,
-                    exactSampledSegmentCount,
-                    exactBezierSegmentIndex,
-                    BezierSegmentCount: 1,
-                    Reversed: exactReversed));
-                continue;
+                if (!TryFindLinkedFillBezierSegment(originalBezierContours, curve,
+                    out var exactContourIndex, out var exactBezierSegmentIndex,
+                    out var exactSampledSegmentIndex, out var exactSampledSegmentCount, out var exactReversed,
+                    out var boundaryStartT, out var boundaryEndT)) continue;
+                originalContours ??= CloneContours(contours);
+                links.Add(new FillBoundaryLineLink(lineObjectIndex, fillObjectIndex, originalContours,
+                    CloneBezierContours(originalBezierContours), exactContourIndex,
+                    exactSampledSegmentIndex, exactSampledSegmentCount, exactBezierSegmentIndex, 1,
+                    exactReversed, strokeSegment, curve, boundaryStartT, boundaryEndT));
+                exactMatch = true;
             }
+            // Imported curves must never fall back to sampled endpoint matching:
+            // a short or partially split stroke can otherwise replace an unrelated
+            // complete fill edge, including when the pointer has not moved.
+            if (exactMatch || GetSvgStrokeStyle(lineObjectIndex) is not null) continue;
 
             var exactMatches = new List<(int ContourIndex, int SegmentIndex, bool Reversed)>();
             for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
@@ -387,6 +424,18 @@ internal sealed partial class VectorScene
             }
 
             var linksForFill = fillLinks.ToArray();
+            var exactLinks = linksForFill.All(link => link.OriginalStrokeCurve.HasValue);
+            if (exactLinks && linksForFill.All(link =>
+                TryGetLinkedStrokeCurve(link.LineObjectIndex, link.StrokeSegmentIndex, out var curve)
+                && curve == link.OriginalStrokeCurve!.Value))
+            {
+                var baseline = linksForFill[0].OriginalBezierContours;
+                if (TryGetEditableFillBezierContours(fillObjectIndex, out var current)
+                    && current.Length == baseline.Length
+                    && current.Zip(baseline).All(pair => pair.First.SequenceEqual(pair.Second))) continue;
+                changed |= SetPathBezierContoursCore(fillObjectIndex, baseline);
+                continue;
+            }
             if (TryBuildLinkedFillBezierContours(linksForFill, out var bezierContours)
                 && SetPathBezierContoursCore(fillObjectIndex, bezierContours))
             {
@@ -394,6 +443,7 @@ internal sealed partial class VectorScene
                 continue;
             }
 
+            if (exactLinks) continue; // Reject ambiguous overlaps without destructive sampled fallback.
             var template = linksForFill[0];
             var contours = CloneContours(template.OriginalContours);
             var fillChanged = false;
@@ -478,32 +528,15 @@ internal sealed partial class VectorScene
         var result = new List<FillBoundaryStrokeLink>();
         foreach (var candidate in QueryObjects(bounds, frame))
         {
-            if (candidate == fillObjectIndex
-                || ObjectLayer[candidate] != ObjectLayer[fillObjectIndex]
+            if (candidate == fillObjectIndex || !CanLinkFillBoundaryLayers(candidate, fillObjectIndex)
                 || ObjectKeyframeFrame[candidate] != ObjectKeyframeFrame[fillObjectIndex]
-                || ShapeKind[candidate] != VectorAnimationEngine.ShapeKind.Line
-                || FillBoundaryLinkDetached[candidate]
-                || !HasStroke(candidate)
-                || !TryGetLineCubic(candidate, out var start, out var control1, out var control2, out var end))
+                || !IsLinkedBoundaryStroke(candidate) || FillBoundaryLinkDetached[candidate] || !HasStroke(candidate)) continue;
+            foreach (var (segmentIndex, curve) in LinkedStrokeCurves(candidate))
             {
-                continue;
+                if (!CubicCurvesCoincide(fillSegment.Start, fillSegment.Control1, fillSegment.Control2, fillSegment.End,
+                    curve.Start, curve.Control1, curve.Control2, curve.End, out var reversed)) continue;
+                result.Add(new FillBoundaryStrokeLink(candidate, reversed, segmentIndex));
             }
-
-            if (!CubicCurvesCoincide(
-                    fillSegment.Start,
-                    fillSegment.Control1,
-                    fillSegment.Control2,
-                    fillSegment.End,
-                    start,
-                    control1,
-                    control2,
-                    end,
-                    out var reversed))
-            {
-                continue;
-            }
-
-            result.Add(new FillBoundaryStrokeLink(candidate, reversed));
         }
 
         return result.ToArray();
@@ -521,7 +554,7 @@ internal sealed partial class VectorScene
         foreach (var link in links.OrderBy(link => link.LineObjectIndex))
         {
             if ((uint)link.LineObjectIndex >= ObjectCount
-                || ShapeKind[link.LineObjectIndex] != VectorAnimationEngine.ShapeKind.Line)
+                || !IsLinkedBoundaryStroke(link.LineObjectIndex))
             {
                 continue;
             }
@@ -530,26 +563,11 @@ internal sealed partial class VectorScene
             var lineControl1 = link.Reversed ? control2 : control1;
             var lineControl2 = link.Reversed ? control1 : control2;
             var lineEnd = link.Reversed ? start : end;
-            if (TryGetLineCubic(
-                    link.LineObjectIndex,
-                    out var currentStart,
-                    out var currentControl1,
-                    out var currentControl2,
-                    out var currentEnd)
-                && CubicControlPointsMatch(
-                    currentStart,
-                    currentControl1,
-                    currentControl2,
-                    currentEnd,
-                    lineStart,
-                    lineControl1,
-                    lineControl2,
-                    lineEnd))
-            {
-                continue;
-            }
-
-            SetLineCurve(link.LineObjectIndex, lineStart, lineControl1, lineControl2, lineEnd);
+            if (TryGetLinkedStrokeCurve(link.LineObjectIndex, link.StrokeSegmentIndex, out var current)
+                && CubicControlPointsMatch(current.Start, current.Control1, current.Control2, current.End,
+                    lineStart, lineControl1, lineControl2, lineEnd)) continue;
+            if (!SetLinkedStrokeCurve(link.LineObjectIndex, link.StrokeSegmentIndex,
+                new CubicBoundarySegment(lineStart, lineControl1, lineControl2, lineEnd))) continue;
             changed = true;
         }
 
@@ -1206,6 +1224,108 @@ internal sealed partial class VectorScene
         }
     }
 
+    private static bool TryFindLinkedFillBezierSegment(
+        IReadOnlyList<PathBezierNode[]> contours, CubicBoundarySegment stroke,
+        out int contourIndex, out int segmentIndex, out int sampleIndex, out int sampleCount,
+        out bool reversed, out float startT, out float endT)
+    {
+        startT = 0;
+        endT = 1;
+        if (TryFindCoincidentFillBezierSegment(contours, stroke.Start, stroke.Control1, stroke.Control2, stroke.End,
+            out contourIndex, out segmentIndex, out sampleIndex, out sampleCount, out reversed)) return true;
+        for (var ci = 0; ci < contours.Count; ci++)
+        {
+            var contour = contours[ci];
+            var offset = 0;
+            for (var si = 0; si < contour.Length; si++)
+            {
+                var current = contour[si];
+                var next = contour[(si + 1) % contour.Length];
+                var curve = new CubicBoundarySegment(current.Anchor, current.OutgoingControl, next.IncomingControl, next.Anchor);
+                var count = Math.Max(1, SampleCubicSegment(curve).Length - 1);
+                if (TryGetBezierSubcurveInterval(PrepareBezierCurve(curve), stroke, out startT, out endT))
+                {
+                    var part = CubicSubcurve(curve.Start, curve.Control1, curve.Control2, curve.End, startT, endT);
+                    reversed = Distance(stroke.Start, part.End) < Distance(stroke.Start, part.Start);
+                    contourIndex = ci;
+                    segmentIndex = si;
+                    sampleIndex = offset;
+                    sampleCount = count;
+                    return true;
+                }
+                offset += count;
+            }
+        }
+        return false;
+    }
+
+    private bool TryBuildExactLinkedFillBezierContours(
+        IReadOnlyList<FillBoundaryLineLink> links, out PathBezierNode[][] contours)
+    {
+        contours = CloneBezierContours(links[0].OriginalBezierContours);
+        foreach (var group in links.GroupBy(link => (link.ContourIndex, link.BezierSegmentIndex))
+                     .OrderByDescending(group => group.Key.ContourIndex)
+                     .ThenByDescending(group => group.Key.BezierSegmentIndex))
+        {
+            var (ci, si) = group.Key;
+            if ((uint)ci >= contours.Length || (uint)si >= contours[ci].Length) return false;
+            var contour = contours[ci];
+            var baselineContour = links[0].OriginalBezierContours[ci];
+            var current = baselineContour[si];
+            var next = baselineContour[(si + 1) % baselineContour.Length];
+            var source = new CubicBoundarySegment(current.Anchor, current.OutgoingControl, next.IncomingControl, next.Anchor);
+            var runs = new List<CubicBoundarySegment>();
+            var cursor = 0f;
+            foreach (var link in group.OrderBy(link => link.BoundaryStartT).ThenBy(link => link.LineObjectIndex))
+            {
+                if (!TryGetLinkedStrokeCurve(link.LineObjectIndex, link.StrokeSegmentIndex, out var edited)
+                    || link.OriginalStrokeCurve is not { } original || link.BoundaryStartT < cursor - 0.0001f) return false;
+                if (link.Reversed)
+                {
+                    edited = new(edited.End, edited.Control2, edited.Control1, edited.Start);
+                    original = new(original.End, original.Control2, original.Control1, original.Start);
+                }
+                if (link.BoundaryStartT > cursor + 0.0001f)
+                    runs.Add(CubicSubcurve(source.Start, source.Control1, source.Control2, source.End, cursor, link.BoundaryStartT));
+                var baseline = CubicSubcurve(source.Start, source.Control1, source.Control2, source.End,
+                    link.BoundaryStartT, link.BoundaryEndT);
+                static PointF Move(PointF value, PointF before, PointF after) =>
+                    new(value.X + after.X - before.X, value.Y + after.Y - before.Y);
+                var movedStart = Move(baseline.Start, original.Start, edited.Start);
+                if (runs.Count > 0 && runs[^1].End != movedStart)
+                {
+                    var previous = runs[^1];
+                    runs[^1] = previous with { End = movedStart,
+                        Control2 = new(previous.Control2.X + movedStart.X - previous.End.X,
+                            previous.Control2.Y + movedStart.Y - previous.End.Y) };
+                }
+                runs.Add(new(movedStart,
+                    Move(baseline.Control1, original.Control1, edited.Control1),
+                    Move(baseline.Control2, original.Control2, edited.Control2),
+                    Move(baseline.End, original.End, edited.End)));
+                cursor = link.BoundaryEndT;
+            }
+            if (cursor < 1 - 0.0001f)
+            {
+                var tail = CubicSubcurve(source.Start, source.Control1, source.Control2, source.End, cursor, 1);
+                var join = runs[^1].End;
+                tail = tail with { Start = join,
+                    Control1 = new(tail.Control1.X + join.X - tail.Start.X, tail.Control1.Y + join.Y - tail.Start.Y) };
+                runs.Add(tail);
+            }
+            // Retain adjacent native boundaries, then insert only the necessary
+            // subcurve anchors. Every preview starts from the pointer-down contour.
+            contour = ReplaceBezierContourSegment(contour, si, 1,
+                new(runs[0].Start, runs[0].Control1, runs[^1].Control2, runs[^1].End));
+            if (contour.Length < 3) return false;
+            var nodes = contour.ToList();
+            for (var ri = runs.Count - 1; ri > 0; ri--)
+                nodes.Insert(si + 1, new(runs[ri].Start, runs[ri - 1].Control2, runs[ri].Control1));
+            contours[ci] = nodes.ToArray();
+        }
+        return true;
+    }
+
     private static bool TryFindCoincidentFillBezierSegment(
         IReadOnlyList<PathBezierNode[]> contours,
         PointF lineStart,
@@ -1313,13 +1433,15 @@ internal sealed partial class VectorScene
         contours = Array.Empty<PathBezierNode[]>();
         if (links.Count == 0
             || links.Any(link => (uint)link.LineObjectIndex >= ObjectCount
-                || ShapeKind[link.LineObjectIndex] != VectorAnimationEngine.ShapeKind.Line
+                || !TryGetLinkedStrokeCurve(link.LineObjectIndex, link.StrokeSegmentIndex, out _)
                 || link.BezierSegmentIndex < 0
                 || link.BezierSegmentCount <= 0))
         {
             return false;
         }
 
+        if (links.All(link => link.OriginalStrokeCurve.HasValue))
+            return TryBuildExactLinkedFillBezierContours(links, out contours);
         contours = CloneBezierContours(links[0].OriginalBezierContours);
         foreach (var contourLinks in links
                      .GroupBy(link => link.ContourIndex)
@@ -1332,7 +1454,7 @@ internal sealed partial class VectorScene
                          .OrderByDescending(link => link.BezierSegmentIndex)
                          .ThenBy(link => link.LineObjectIndex))
             {
-                var line = LineCurve(link.LineObjectIndex);
+                if (!TryGetLinkedStrokeCurve(link.LineObjectIndex, link.StrokeSegmentIndex, out var line)) return false;
                 var replacement = link.Reversed
                     ? new CubicBoundarySegment(line.End, line.Control2, line.Control1, line.Start)
                     : new CubicBoundarySegment(line.Start, line.Control1, line.Control2, line.End);

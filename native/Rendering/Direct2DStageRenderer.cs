@@ -74,6 +74,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private ID2D1Layer? _shapeGradientMaskLayer;
     private ID2D1PathGeometry? _fillEdgeBezierOverlayGeometry;
     private ID2D1PathGeometry? _collisionTerrainOverlayGeometry;
+    private readonly Dictionary<SvgNativeStrokeStyle, ID2D1StrokeStyle> _svgStrokeStyles = new();
     private ID2D1StrokeStyle? _roundStrokeStyle;
     private ID2D1StrokeStyle? _previewBoundsStrokeStyle;
     private readonly Dictionary<(CapStyle Start, CapStyle End, bool MiterJoin), ID2D1StrokeStyle> _lineStrokeStyles = new();
@@ -118,7 +119,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private int _collisionTerrainOverlayHeight;
     private int[] _collisionTerrainOverlayObjects = [];
 
-    private sealed record CachedFreehandGeometry(GdiPointF[] Points, ID2D1PathGeometry Geometry) : IDisposable
+    private sealed record CachedFreehandGeometry(GdiPointF[] Points, ID2D1PathGeometry Geometry, PathBezierNode[]? Nodes = null) : IDisposable
     {
         public void Dispose() => Geometry.Dispose();
     }
@@ -2917,12 +2918,14 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     {
         if (localPoints.Length == 0) return;
         var scene = stage.Scene;
-        var screenWidth = Math.Max(0.75f, stage.WorldLengthToScreen(scene.Stroke[objectIndex]));
+        var screenWidth = Math.Max(scene.GetSvgStrokeStyle(objectIndex) is not null ? 0.01f : 0.75f, stage.WorldLengthToScreen(scene.Stroke[objectIndex]));
         if (localPoints.Length == 1)
         {
             var point = LocalFreehandPointToScreen(stage, objectIndex, localPoints[0]);
             var dot = new Ellipse(point, screenWidth * 0.5f, screenWidth * 0.5f);
-            _target!.FillEllipse(dot, brush);
+            if (scene.GetSvgStrokeStyle(objectIndex) is { Cap: SvgNativeCap.Square })
+                _target!.FillRectangle(Rect(point.X - screenWidth * 0.5f, point.Y - screenWidth * 0.5f, screenWidth, screenWidth), brush);
+            else _target!.FillEllipse(dot, brush);
             return;
         }
 
@@ -2935,7 +2938,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             _target.Transform = Matrix3x2.CreateScale(scale)
                 * Matrix3x2.CreateRotation(scene.Angle[objectIndex])
                 * Matrix3x2.CreateTranslation(screen.X, screen.Y);
-            _target.DrawGeometry(geometry, brush, scene.Stroke[objectIndex], RoundStrokeStyle());
+            _target.DrawGeometry(geometry, brush, scene.Stroke[objectIndex], SvgStrokeStyle(scene, objectIndex));
         }
         finally
         {
@@ -4072,6 +4075,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             startCap,
             endCap,
             startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp);
+        if (stage.Scene.GetSvgStrokeStyle(i) is not null) strokeStyle = SvgStrokeStyle(stage.Scene, i);
         if (stage.Scene.IsLineStraight(i))
         {
             var points = GetBezierScreenPoints(stage, i);
@@ -4086,8 +4090,11 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 stage.Scene.Stroke[i],
                 strokeStyle);
         }
-        DrawEndpointJoin(stage, i, startEndpoint: true, screenStroke, brush);
-        DrawEndpointJoin(stage, i, startEndpoint: false, screenStroke, brush);
+        if (stage.Scene.GetSvgStrokeStyle(i) is null)
+        {
+            DrawEndpointJoin(stage, i, startEndpoint: true, screenStroke, brush);
+            DrawEndpointJoin(stage, i, startEndpoint: false, screenStroke, brush);
+        }
     }
 
     private void DrawGradientBezierLine(StageControl stage, VectorScene scene, int objectIndex, float screenStroke)
@@ -4541,7 +4548,8 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             else if (scene.Stroke[objectIndex] > 0)
             {
                 var strokePath = ObjectStrokePathGeometry(scene, objectIndex) ?? path;
-                _target.DrawGeometry(strokePath, strokeBrush, scene.Stroke[objectIndex]);
+                _target.DrawGeometry(strokePath, strokeBrush, scene.Stroke[objectIndex],
+                    scene.GetSvgStrokeStyle(objectIndex) is not null ? SvgStrokeStyle(scene, objectIndex) : null);
             }
         }
         finally

@@ -51,11 +51,16 @@ internal sealed record FillBoundaryLineLink(
     int SegmentCount,
     int BezierSegmentIndex,
     int BezierSegmentCount,
-    bool Reversed);
+    bool Reversed,
+    int StrokeSegmentIndex = -1,
+    CubicBoundarySegment? OriginalStrokeCurve = null,
+    float BoundaryStartT = 0,
+    float BoundaryEndT = 1);
 
 internal readonly record struct FillBoundaryStrokeLink(
     int LineObjectIndex,
-    bool Reversed);
+    bool Reversed,
+    int StrokeSegmentIndex = -1);
 
 internal readonly record struct PathIntersectionAnchor(
     int ObjectIndex,

@@ -201,6 +201,7 @@ internal static class SceneCompositionBuilder
         LineEndpointStyle StartEndpointStyle = LineEndpointStyle.Round,
         LineEndpointStyle EndEndpointStyle = LineEndpointStyle.Round)
     {
+        public SvgNativeStrokeStyle? SvgStrokeStyle { get; init; }
         public bool UseSourceLocalPathGeometry { get; init; }
         public bool LinearGradientEnabled { get; init; }
         public GradientKind GradientKind { get; init; }
@@ -1335,6 +1336,7 @@ internal static class SceneCompositionBuilder
             var sourceObjects = SourceObjects(layer, sourceObjectsByLayer);
             foreach (var sourceObject in sourceObjects)
             {
+                if (layer.Source.GetSvgStrokeStyle(sourceObject) is not null) return false;
                 if (layer.Source.TryGetObjectDistortions(sourceObject, out _)) return false;
                 if (layer.Source.ShapeKind[sourceObject] is ShapeKind.Path
                     or ShapeKind.Freeform
@@ -2385,6 +2387,7 @@ internal static class SceneCompositionBuilder
         };
         if (index >= 0)
         {
+            if (item.SvgStrokeStyle is { } svgStyle) destination.SetSvgStrokeStyle(index, svgStyle);
             destination.FillAutoMergeProtected[index] = item.FillAutoMergeProtected;
             destination.QuadraticLineEditing[index] = item.QuadraticLineEditing;
             if (item.Kind is PreparedCompositionKind.ImportedSvg or PreparedCompositionKind.Bitmap)
@@ -2423,6 +2426,7 @@ internal static class SceneCompositionBuilder
     {
         item = item with
         {
+            SvgStrokeStyle = source.GetSvgStrokeStyle(sourceObject),
             ShapeVertexCount = source.GetShapeVertexCount(sourceObject),
             FillAutoMergeProtected = source.FillAutoMergeProtected[sourceObject],
             QuadraticLineEditing = source.IsQuadraticLine(sourceObject)

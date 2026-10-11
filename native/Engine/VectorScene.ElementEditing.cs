@@ -27,14 +27,14 @@ internal sealed partial class VectorScene
             if (IsWholeObjectShape(shape)
                 && HitObject(sourceWorld, objectIndex, toleranceWorld))
             {
-                return true;
+                if (IsSelectionPointExposed(objectIndex, world, frame, strokePass: HasStroke(objectIndex))) return true;
             }
             var hitRadius = Math.Max(Stroke[objectIndex] * 0.5f, 1) + toleranceWorld;
             if (IsTopologyStrokeShape(shape))
             {
                 if (HasStroke(objectIndex) && CurveSamplesHit(sourceWorld, StrokeSamples(objectIndex), hitRadius))
                 {
-                    return true;
+                    if (IsSelectionPointExposed(objectIndex, world, frame, strokePass: HasStroke(objectIndex))) return true;
                 }
                 continue;
             }
@@ -42,9 +42,10 @@ internal sealed partial class VectorScene
             if (HasStroke(objectIndex)
                 && ShapeBoundaryContours(objectIndex).Any(contour => DistanceToPolyline(sourceWorld, contour) <= hitRadius))
             {
-                return true;
+                if (IsSelectionPointExposed(objectIndex, world, frame, strokePass: HasStroke(objectIndex))) return true;
             }
-            if (HasFill(objectIndex) && FillContainsRawPoint(objectIndex, sourceWorld)) return true;
+            if (HasFill(objectIndex) && FillContainsRawPoint(objectIndex, sourceWorld)
+                && IsSelectionPointExposed(objectIndex, world, frame)) return true;
         }
 
         return false;
@@ -93,10 +94,29 @@ internal sealed partial class VectorScene
         {
             if (!ObjectMayContainHitPoint(i, world, toleranceWorld)) continue;
             var hit = HitElement(world, i, eligibleCandidates, frame, toleranceWorld);
-            if (!hit.IsValid) continue;
+            if (!hit.IsValid || !IsSelectionHitExposed(hit, world, frame)) continue;
             if (IsBetterHit(hit, best)) best = hit;
         }
 
+        return best;
+    }
+
+    internal DrawingElementHit HitTestFillElement(PointF world, int frame, float toleranceWorld = 6)
+    {
+        GetHitTestRange(world, toleranceWorld, out var minX, out var maxX, out var minY, out var maxY);
+        var candidates = CollectHitCandidates(minX, maxX, minY, maxY, frame, sort: false);
+        var best = DrawingElementHit.None;
+        foreach (var index in candidates)
+        {
+            if (!IsObjectSelectable(index, frame) || !HasFill(index)
+                || !TryInverseMapObjectPoint(index, world, out var source)
+                || !FillContainsRawPoint(index, source) || !OwnsFillUnit(world, index, candidates)
+                || !IsSelectionPointExposed(index, world, frame)) continue;
+            var part = FillPartIndex(source, index, frame, CollectTopologyCandidates(index, frame));
+            if (part < 0) continue;
+            var hit = new DrawingElementHit(new DrawingElementKey(index, DrawingElementKind.Fill, part), 0, 0, 1);
+            if (IsBetterHit(hit, best)) best = hit;
+        }
         return best;
     }
 
@@ -1366,7 +1386,10 @@ internal sealed partial class VectorScene
         }
 
         var cacheKey = (objectIndex, frame, fillPartIndex ?? -1, includeCoincidentStrokes);
-        if (_exposedFillBezierCache.TryGetValue(cacheKey, out var cached)) return cached;
+        if (_exposedFillBezierCache.TryGetValue(cacheKey, out var cached))
+            return includeCoincidentStrokes
+                ? HasExposedPathFill(objectIndex, frame) ? cached : []
+                : ClipExposedFillBezierPieces(objectIndex, frame, cached);
 
         var pieces = BuildExposedFillBezierSegmentPieces(
             objectIndex,
@@ -1375,7 +1398,11 @@ internal sealed partial class VectorScene
             includeCoincidentStrokes);
         if (_exposedFillBezierCache.Count >= MaximumTopologyQueryCacheEntries) _exposedFillBezierCache.Clear();
         _exposedFillBezierCache[cacheKey] = pieces;
-        return pieces;
+        // An explicitly selected fill edits its closed source contour. Occlusion
+        // clips hit tests and hover outlines, not the contour's editable topology.
+        return includeCoincidentStrokes
+            ? HasExposedPathFill(objectIndex, frame) ? pieces : []
+            : ClipExposedFillBezierPieces(objectIndex, frame, pieces);
     }
 
     private FillBezierSegmentPiece[] BuildExposedFillBezierSegmentPieces(
@@ -3258,6 +3285,7 @@ internal sealed partial class VectorScene
             ObjectSubOrder[secondObject] = secondSubOrder;
             ApplyGradientPaint(objectIndex, gradientPaint);
             ApplyGradientPaint(secondObject, gradientPaint);
+            if (GetSvgStrokeStyle(objectIndex) is { } svgStyle) SetSvgStrokeStyle(secondObject, svgStyle);
             if (rebuildGeometryIndex)
             {
                 RebuildGeometryIndex();

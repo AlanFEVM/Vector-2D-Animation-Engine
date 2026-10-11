@@ -63,6 +63,7 @@ internal sealed class VectorSceneSnapshot
     public Dictionary<int, PointF[][]> ShapeGradientMappingLocalContours { get; init; } = new();
     public AnimationTimelineSnapshot? Timeline { get; init; }
     public Dictionary<int, PointF[][]> PathLocalContours { get; init; } = new();
+    public Dictionary<int, SvgNativeStrokeStyle> SvgStrokeStyles { get; init; } = new();
     public Dictionary<int, PathBezierNode[][]> PathBezierLocalContours { get; init; } = new();
     public HashSet<int> PathOpenFlags { get; init; } = new();
     public Dictionary<int, int[]> HiddenBoundaryStrokeParts { get; init; } = new();
@@ -250,6 +251,7 @@ internal sealed class VectorSceneSnapshot
             foreach (var contour in contours) bytes += ArrayBytes(contour.Length, 8);
         }
 
+        bytes += 48L * SvgStrokeStyles.Count;
         bytes += 72L * PathBezierLocalContours.Count;
         foreach (var contours in PathBezierLocalContours.Values)
         {

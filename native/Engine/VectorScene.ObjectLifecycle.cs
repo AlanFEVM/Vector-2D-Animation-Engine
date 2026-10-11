@@ -85,6 +85,7 @@ internal sealed partial class VectorScene
         _gradientPathLocalPoints.Clear();
         _shapeGradientMappingLocalContours.Clear();
         _pathLocalContours.Clear();
+        _svgStrokeStyles.Clear();
         _pathBezierLocalContours.Clear();
         _freehandLocalPoints.Clear();
         _freehandBezierLocalNodes.Clear();
@@ -180,6 +181,7 @@ internal sealed partial class VectorScene
         _gradientPathLocalPoints.Clear();
         _shapeGradientMappingLocalContours.Clear();
         _pathLocalContours.Clear();
+        _svgStrokeStyles.Clear();
         _pathBezierLocalContours.Clear();
         _freehandLocalPoints.Clear();
         _freehandBezierLocalNodes.Clear();
@@ -662,7 +664,11 @@ internal sealed partial class VectorScene
                     ? storedName
                     : "SVG";
 
-                var extracted = ImportedSvgBreakApart.Extract(source);
+                var extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: !createDrawingLayers);
+                var placementScaleX = Width[sourceObject] / extracted.IntrinsicSize.Width;
+                var placementScaleY = Height[sourceObject] / extracted.IntrinsicSize.Height;
+                if (Math.Abs(placementScaleX - placementScaleY) > Math.Max(placementScaleX, placementScaleY) * 0.001f)
+                    extracted = ImportedSvgBreakApart.Extract(source, forceStrokeOutlines: true);
                 approximations |= extracted.Approximations;
                 var keyframe = ObjectKeyframeFrame[sourceObject];
                 var order = ObjectOrder[sourceObject];
@@ -780,32 +786,38 @@ internal sealed partial class VectorScene
                     switch (part)
                     {
                         case ImportedSvgBreakFill fill:
-                            created = AppendPathObjectContours(
+                            var exactFill = fill.BezierContours.Select(contour => contour.Select(MapNode).ToArray()).ToArray();
+                            // Quantization may collapse tiny AN subpaths. Do not discard
+                            // the entire compound fill because one zero-area contour fails.
+                            exactFill = exactFill.Where(contour => TryPreparePathBezierContours([contour], out _, out _, out _)).ToArray();
+                            created = exactFill.Length > 0 ? AppendPathBezierObjectContours(
+                                layer, exactFill, 0, fill.Paint.Color, Color.Transparent,
+                                (uint)Math.Max(3, exactFill.Sum(contour => contour.Length))) : AppendPathObjectContours(
                                 layer,
                                 prepared.Contours,
                                 0,
                                 fill.Paint.Color,
                                 Color.Transparent,
                                 (uint)Math.Max(3, prepared.Contours.Sum(contour => contour.Length)));
+                            if (created < 0) created = AppendPathObjectContours(layer, prepared.Contours,
+                                0, fill.Paint.Color, Color.Transparent, (uint)Math.Max(3, prepared.Contours.Sum(contour => contour.Length)));
                             break;
                         case ImportedSvgBreakStroke stroke:
-                            created = prepared.Points.Length == 2 && !stroke.Closed
-                                ? AddLineSegment(
-                                    layer,
-                                    prepared.Points[0],
-                                    prepared.Points[1],
-                                    stroke.Width * strokeScale,
-                                    Color.Transparent,
-                                    stroke.Paint.Color,
-                                    (uint)Math.Max(3, prepared.Points.Length),
-                                    stroke.StartEndpointStyle,
-                                    stroke.EndEndpointStyle)
-                                : AppendFreehandStroke(
-                                    layer,
-                                    prepared.Points,
-                                    stroke.Width * strokeScale,
-                                    stroke.Paint.Color,
-                                    (uint)Math.Max(3, prepared.Points.Length));
+                            var exactStroke = stroke.BezierNodes.Select(MapNode).ToArray();
+                            created = stroke.Closed && exactStroke.Length >= 3
+                                ? AppendPathBezierObjectContours(layer, [exactStroke], stroke.Width * strokeScale,
+                                    Color.Transparent, stroke.Paint.Color, (uint)Math.Max(3, exactStroke.Length))
+                                : AppendFreehandBezierStroke(layer,
+                                    stroke.Closed ? [..exactStroke, exactStroke[0]] : exactStroke,
+                                    stroke.Width * strokeScale, stroke.Paint.Color, (uint)Math.Max(3, exactStroke.Length));
+                            if (created < 0 && stroke.Closed)
+                                created = AppendFreehandBezierStroke(layer, [..exactStroke, exactStroke[0]],
+                                    stroke.Width * strokeScale, stroke.Paint.Color, (uint)Math.Max(3, exactStroke.Length));
+                            if (created < 0 && stroke.Style.Cap != SvgNativeCap.Butt && exactStroke.Length > 0
+                                && exactStroke.All(node => node.Anchor == exactStroke[0].Anchor))
+                                created = AppendFreehandStroke(layer, [exactStroke[0].Anchor], stroke.Width * strokeScale,
+                                    stroke.Paint.Color, (uint)Math.Max(3, exactStroke.Length));
+                            if (created >= 0) SetSvgStrokeStyle(created, stroke.Style);
                             break;
                         default:
                             throw new InvalidDataException("The SVG break-apart result contains an unknown geometry part.");
@@ -836,6 +848,8 @@ internal sealed partial class VectorScene
                 {
                     throw new InvalidDataException("The SVG break-apart result contains no visible geometry at the current object size.");
                 }
+
+                PathBezierNode MapNode(PathBezierNode node) => new(ToWorld(node.Anchor), ToWorld(node.IncomingControl), ToWorld(node.OutgoingControl));
 
                 PointF ToWorld(PointF point)
                 {
@@ -1583,6 +1597,8 @@ internal sealed partial class VectorScene
         {
             _pathLocalContours.Remove(to);
         }
+        if (source._svgStrokeStyles.TryGetValue(from, out var svgStyle)) _svgStrokeStyles[to] = svgStyle;
+        else _svgStrokeStyles.Remove(to);
         if (source._pathBezierLocalContours.TryGetValue(from, out var bezierContours))
         {
             _pathBezierLocalContours[to] = CloneBezierContours(bezierContours);
@@ -1706,6 +1722,7 @@ internal sealed partial class VectorScene
         MoveObjectDictionaryEntry(_gradientPathLocalPoints, from, to);
         MoveObjectDictionaryEntry(_shapeGradientMappingLocalContours, from, to);
         MoveObjectDictionaryEntry(_pathLocalContours, from, to);
+        MoveObjectDictionaryEntry(_svgStrokeStyles, from, to);
         MoveObjectDictionaryEntry(_pathBezierLocalContours, from, to);
         MoveObjectDictionaryEntry(_freehandLocalPoints, from, to);
         MoveObjectDictionaryEntry(_freehandBezierLocalNodes, from, to);
@@ -1725,6 +1742,7 @@ internal sealed partial class VectorScene
         RemapObjectDictionary(_gradientPathLocalPoints, oldToNew);
         RemapObjectDictionary(_shapeGradientMappingLocalContours, oldToNew);
         RemapObjectDictionary(_pathLocalContours, oldToNew);
+        RemapObjectDictionary(_svgStrokeStyles, oldToNew);
         RemapObjectDictionary(_pathBezierLocalContours, oldToNew);
         RemapObjectDictionary(_freehandLocalPoints, oldToNew);
         RemapObjectDictionary(_freehandBezierLocalNodes, oldToNew);
@@ -1800,6 +1818,7 @@ internal sealed partial class VectorScene
         {
             _pathLocalContours.Remove(index);
         }
+        foreach (var index in _svgStrokeStyles.Keys.Where(index => index >= ObjectCount).ToArray()) _svgStrokeStyles.Remove(index);
         foreach (var index in _pathBezierLocalContours.Keys.Where(index => index >= ObjectCount).ToArray())
         {
             _pathBezierLocalContours.Remove(index);

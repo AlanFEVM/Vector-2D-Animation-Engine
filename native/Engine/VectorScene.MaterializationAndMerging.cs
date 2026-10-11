@@ -41,6 +41,9 @@ internal sealed partial class VectorScene
         var mappedResults = new Dictionary<DrawingElementKey, DrawingElementKey>();
         var keyframesBySourceStack = new Dictionary<(ushort Layer, long Order), int>();
 
+        void AddAddition(int source, MaterializedPartAddition addition) => additions.Add(
+            addition with { SvgStrokeStyle = GetSvgStrokeStyle(source) });
+
         foreach (var group in keys.GroupBy(key => key.ObjectIndex).OrderBy(group => group.Key))
         {
             var source = group.Key;
@@ -175,7 +178,7 @@ internal sealed partial class VectorScene
                     var subOrderIndex = 0;
                     foreach (var segment in segments)
                     {
-                        additions.Add(CurveMaterialization(
+                        AddAddition(source, CurveMaterialization(
                             selectedByPart.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
                             layer,
                             order,
@@ -213,7 +216,7 @@ internal sealed partial class VectorScene
                         for (var runIndex = 0; runIndex < runs.Count; runIndex++)
                         {
                             var run = runs[runIndex];
-                            additions.Add(FreehandBezierMaterialization(
+                            AddAddition(source, FreehandBezierMaterialization(
                                 selectedByPart.GetValueOrDefault(run.PartIndex, DrawingElementKey.None),
                                 layer,
                                 order,
@@ -243,7 +246,7 @@ internal sealed partial class VectorScene
                     var subOrderIndex = 0;
                     foreach (var segment in segments)
                     {
-                        additions.Add(FreehandMaterialization(
+                        AddAddition(source, FreehandMaterialization(
                             selectedByPart.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
                             layer,
                             order,
@@ -323,7 +326,7 @@ internal sealed partial class VectorScene
                         var retainedBoundarySubOrderIndex = 0;
                         foreach (var segment in boundaryParts)
                         {
-                            additions.Add(BoundaryMaterialization(
+                            AddAddition(source, BoundaryMaterialization(
                                 segment,
                                 selectedBoundaryParts.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
                                 layer,
@@ -349,7 +352,7 @@ internal sealed partial class VectorScene
                     var boundaryAtoms = Math.Max(3u, atoms / (uint)Math.Max(1, boundaryParts.Count));
                     foreach (var segment in boundaryParts)
                     {
-                        additions.Add(BoundaryMaterialization(
+                        AddAddition(source, BoundaryMaterialization(
                             segment,
                             selectedBoundaryParts.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
                             layer,
@@ -375,7 +378,7 @@ internal sealed partial class VectorScene
                         regionBezierContours = rebuiltBezierContours;
                     }
 
-                    additions.Add(FillMaterialization(
+                    AddAddition(source, FillMaterialization(
                         selectedFillParts.GetValueOrDefault(part, DrawingElementKey.None),
                         layer,
                         order,
@@ -405,7 +408,7 @@ internal sealed partial class VectorScene
             var boundarySubOrderIndex = 0;
             foreach (var segment in boundaryParts)
             {
-                additions.Add(BoundaryMaterialization(
+                AddAddition(source, BoundaryMaterialization(
                     segment,
                     selectedBoundaryParts.GetValueOrDefault(segment.PartIndex, DrawingElementKey.None),
                     layer,
@@ -827,6 +830,7 @@ internal sealed partial class VectorScene
                     addition.Control2,
                     keepStraight: false);
             }
+            if (addition.SvgStrokeStyle is { } style && addition.Stroke > 0) SetSvgStrokeStyle(index, style);
             ObjectOrder[index] = addition.Order;
             ObjectSubOrder[index] = addition.SubOrder;
             FillAutoMergeProtected[index] = addition.FillAutoMergeProtected;

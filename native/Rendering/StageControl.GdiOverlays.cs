@@ -195,16 +195,12 @@ internal sealed partial class StageControl : Control
         }
         else if (IsFreehandShape(shape))
         {
-            var points = GetBoundaryScreenPolyline(i);
-            var highlightKind = SelectionHighlightForShape(shape);
-            if (points.Length == 1)
-            {
-                DrawSelectionDot(g, points[0], primary, highlightKind);
-            }
-            else if (points.Length > 1)
-            {
-                DrawSelectionPolyline(g, points, primary, highlightKind);
-            }
+            var world = Scene.GetShapeBoundary(i);
+            var highlightKind = SelectionHighlightForObject(i, SelectionHighlightForShape(shape));
+            if (world.Length == 1 && Scene.IsSelectionPointExposed(i, world[0], Frame, strokePass: true))
+                DrawSelectionDot(g, WorldToScreen(world[0]), primary, highlightKind);
+            foreach (var contour in Scene.GetVisiblePathSelectionPolylines(i, Frame, [world], closed: false))
+                DrawSelectionPolyline(g, contour.Select(WorldToScreen).ToArray(), primary, highlightKind);
         }
         else
         {
@@ -299,10 +295,13 @@ internal sealed partial class StageControl : Control
                 return;
             }
 
-            var points = GetSelectedStrokePartPoints(hit).Select(WorldToScreen).ToArray();
-            if (points.Length == 1) DrawSelectionDot(g, points[0], primary, SelectionHighlightKind.Stroke);
-            else if (points.Length > 1) DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Stroke);
-            else if (TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
+            var world = GetSelectedStrokePartPoints(hit);
+            var highlightKind = SelectionHighlightForObject(objectIndex, SelectionHighlightKind.Stroke);
+            if (world.Length == 1 && Scene.IsSelectionPointExposed(objectIndex, world[0], Frame, strokePass: true))
+                DrawSelectionDot(g, WorldToScreen(world[0]), primary, highlightKind);
+            foreach (var contour in Scene.GetVisiblePathSelectionPolylines(objectIndex, Frame, [world], closed: false))
+                DrawSelectionPolyline(g, contour.Select(WorldToScreen).ToArray(), primary, highlightKind);
+            if (world.Length == 0) TryDrawPrimitiveFillSelectionBounds(g, objectIndex);
         }
 
         if (hit.Key.Kind == DrawingElementKind.Fill)
@@ -310,10 +309,14 @@ internal sealed partial class StageControl : Control
             // Primitive closed shapes use the same rectangular bounding box as whole-object
             // selection instead of a contour hugging the shape.
             if (TryDrawPrimitiveFillSelectionBounds(g, objectIndex)) return;
-            foreach (var contour in GetSelectedFillPartContours(hit))
+            foreach (var contour in shape == ShapeKind.Path
+                ? Scene.GetVisiblePathSelectionPolylines(objectIndex, Frame, GetSelectedFillPartContours(hit))
+                : GetSelectedFillPartContours(hit))
             {
                 var points = contour.Select(WorldToScreen).ToArray();
-                if (points.Length >= 3) DrawSelectionPolygon(g, points, primary, SelectionHighlightKind.Fill);
+                if (shape == ShapeKind.Path && points.Length >= 2)
+                    DrawSelectionPolyline(g, points, primary, SelectionHighlightKind.Fill);
+                else if (points.Length >= 3) DrawSelectionPolygon(g, points, primary, SelectionHighlightKind.Fill);
             }
 
             return;
@@ -1083,6 +1086,7 @@ internal sealed partial class StageControl : Control
             MiterLimit = startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp ? 8 : 1
         };
 
+        Scene.ApplySvgStrokeStyle(i, linePen);
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         if (Scene.IsLineStraight(i)) g.DrawLine(linePen, start, end);
@@ -1091,8 +1095,11 @@ internal sealed partial class StageControl : Control
             using var path = BuildCubicPath(start, control1, control2, end);
             g.DrawPath(linePen, path);
         }
-        DrawEndpointJoin(g, i, startEndpoint: true, screenStroke, brush);
-        DrawEndpointJoin(g, i, startEndpoint: false, screenStroke, brush);
+        if (Scene.GetSvgStrokeStyle(i) is null)
+        {
+            DrawEndpointJoin(g, i, startEndpoint: true, screenStroke, brush);
+            DrawEndpointJoin(g, i, startEndpoint: false, screenStroke, brush);
+        }
         g.SmoothingMode = oldMode;
     }
 

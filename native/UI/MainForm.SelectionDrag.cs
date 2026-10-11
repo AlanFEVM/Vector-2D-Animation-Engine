@@ -46,11 +46,10 @@ internal sealed partial class MainForm
                 {
                     return;
                 }
-                if (!editsFreehandBezier && !_independentMarqueeStrokeMove) CaptureFillBoundaryLineLinks();
+                if (!_independentMarqueeStrokeMove) CaptureFillBoundaryLineLinks();
                 if (!editsFreehandBezier && !_independentMarqueeStrokeMove) CaptureLineEndpointFillIntersections();
                 ApplyHandleDrag(world, resetBezierCurvature);
-                if (!editsFreehandBezier
-                    && synchronizeLinkedFills
+                if (synchronizeLinkedFills
                     && !_independentMarqueeStrokeMove)
                 {
                     SynchronizeLinkedFillBoundaries();
@@ -320,7 +319,8 @@ internal sealed partial class MainForm
             .Concat(_lineEndpointEditStarts.Select(edit => edit.ObjectIndex))
             .Append(_selectedObject)
             .Where(index => (uint)index < _scene.ObjectCount
-                && _scene.ShapeKind[index] is ShapeKind.Line or ShapeKind.Freeform)
+                && (_scene.ShapeKind[index] is ShapeKind.Line or ShapeKind.Freeform
+                    || _scene.ShapeKind[index] == ShapeKind.Path && !_scene.HasFill(index) && _scene.HasStroke(index)))
             .Distinct();
         foreach (var lineObjectIndex in editedLines)
         {

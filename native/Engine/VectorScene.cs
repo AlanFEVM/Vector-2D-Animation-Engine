@@ -510,6 +510,7 @@ internal sealed partial class VectorScene : ITimelineContext
         PointF[] Points,
         PointF[][] Contours)
     {
+        public SvgNativeStrokeStyle? SvgStrokeStyle { get; init; }
         public GradientPaintData? GradientPaint { get; init; }
         public bool QuadraticEditing { get; init; }
         public bool FillAutoMergeProtected { get; init; }

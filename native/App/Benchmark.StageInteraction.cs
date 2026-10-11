@@ -5938,8 +5938,635 @@ internal static partial class Benchmark
         }
     }
 
+    private static void RunImportedSvgLocalReferenceRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+                 width="100" height="80" viewBox="0 0 100 80">
+              <defs>
+                <g id="body">
+                  <path fill="#1a1b28" fill-rule="evenodd"
+                        d="M0 0 Q5 -2 10 0 L10 10 H0 Z M3 3 H7 V7 H3 Z"/>
+                  <path fill="none" stroke="#000000" stroke-width="2" d="M0 12 H10"/>
+                </g>
+                <g id="nested"><use xlink:href="#body" x="2" y="3" transform="scale(2)"/></g>
+                <path id="inherited" fill-opacity="0.5" d="M0 0 H10 V10 H0 Z"/>
+                <rect id="unused" width="100" height="80" fill="#ff0000"/>
+              </defs>
+              <g transform="translate(10 20)"><use xlink:href="#nested"/></g>
+              <use href="#body" x="50"/>
+              <use href="#inherited" x="70" fill="#228844" opacity="0.5"/>
+            </svg>
+            """;
+        var extracted = ImportedSvgBreakApart.Extract(source);
+        var fills = extracted.Parts.OfType<ImportedSvgBreakFill>().ToArray();
+        var firstBounds = RectangleF.FromLTRB(
+            fills[0].Contours.SelectMany(contour => contour).Min(point => point.X),
+            fills[0].Contours.SelectMany(contour => contour).Min(point => point.Y),
+            fills[0].Contours.SelectMany(contour => contour).Max(point => point.X),
+            fills[0].Contours.SelectMany(contour => contour).Max(point => point.Y));
+        AssertTimeline(
+            extracted.Approximations == ImportedSvgBreakApproximation.FlattenedGroupOpacity
+            && fills.Length == 3
+            && extracted.Parts.OfType<ImportedSvgBreakStroke>().Count() == 2
+            && fills[0].Contours.Length == 2
+            && Math.Abs(firstBounds.Left - 14f) < 0.01f
+            && Math.Abs(firstBounds.Right - 34f) < 0.01f
+            && Math.Abs(firstBounds.Top - 24f) < 0.1f
+            && Math.Abs(firstBounds.Bottom - 46f) < 0.01f
+            && fills[1].Contours.SelectMany(contour => contour).Min(point => point.X) == 50f
+            && extracted.Parts.Select(part => part.Paint.Color.ToArgb()).SequenceEqual(
+            [
+                Color.FromArgb(255, 26, 27, 40).ToArgb(), Color.Black.ToArgb(),
+                Color.FromArgb(255, 26, 27, 40).ToArgb(), Color.Black.ToArgb(),
+                Color.FromArgb(64, 34, 136, 68).ToArgb()
+            ]),
+            "Local SVG references lost nested transforms, compound holes, inherited paint, opacity or paint order.");
+
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(2_500, 2_000), source, "Animate artwork");
+        var before = scene.CreateSnapshot();
+        var result = scene.BreakApartImportedSvgObjects([0]);
+        AssertTimeline(
+            result.ProducedObjects.Length == 5
+            && result.Approximations == ImportedSvgBreakApproximation.FlattenedGroupOpacity
+            && result.ProducedObjects.Count(index => scene.HasFill(index)) == 3
+            && result.ProducedObjects.Count(index => scene.HasStroke(index)) == 2,
+            "Animate-style defs/use artwork did not materialize editable local paths.");
+        scene.RestoreSnapshot(before);
+        AssertTimeline(scene.ObjectCount == 1 && scene.TryGetImportedSvgSource(0, out var restored) && restored == source,
+            "Local-reference SVG break-apart did not restore the intact source on undo.");
+
+        const string visibleReferenceSource = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">
+              <defs><rect id="shape" width="5" height="5" fill="#228844"/></defs>
+              <use id="placed" href="#shape" x="2"/>
+              <use href="#placed" x="10"/>
+              <use href="#placed" x="20"/>
+            </svg>
+            """;
+        var repeated = ImportedSvgBreakApart.Extract(visibleReferenceSource);
+        AssertTimeline(repeated.Parts.Length == 3
+            && repeated.Approximations == ImportedSvgBreakApproximation.None
+            && repeated.Parts.OfType<ImportedSvgBreakFill>()
+                .Select(part => part.Contours.SelectMany(contour => contour).Min(point => point.X))
+                .SequenceEqual([2f, 12f, 22f]),
+            "A reference to an already placed SVG use duplicated or changed its source geometry.");
+
+        const string cyclicSource = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+              <defs><g id="a"><use href="#b"/></g><g id="b"><use href="#a"/></g></defs>
+              <use href="#a"/>
+            </svg>
+            """;
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(500, 500), cyclicSource);
+        var rejectedCycle = false;
+        try { scene.BreakApartImportedSvgObjects([0]); }
+        catch (InvalidDataException) { rejectedCycle = true; }
+        AssertTimeline(rejectedCycle && scene.ObjectCount == 1 && scene.LayerCount == 1
+            && scene.TryGetImportedSvgSource(0, out restored) && restored == cyclicSource,
+            "Cyclic SVG references did not fail safely while preserving the original object.");
+
+        var explosiveSource = new System.Text.StringBuilder(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><defs><rect id='r0' width='5' height='5'/>");
+        for (var level = 1; level <= 17; level++)
+        {
+            explosiveSource.Append($"<g id='r{level}'><use href='#r{level - 1}'/><use href='#r{level - 1}'/></g>");
+        }
+        explosiveSource.Append("</defs><use href='#r17'/></svg>");
+        var rejectedExpansion = false;
+        try { ImportedSvgBreakApart.Extract(explosiveSource.ToString()); }
+        catch (InvalidDataException) { rejectedExpansion = true; }
+        AssertTimeline(rejectedExpansion, "SVG use expansion did not enforce its bounded geometry budget.");
+    }
+
+    private static void RunImportedSvgPathSelectionRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="220" height="180" viewBox="0 0 220 180">
+              <path fill="#2f3445" fill-rule="evenodd"
+                    d="M10 170 L110 10 L210 170 Z M85 110 L110 70 L135 110 Z"/>
+            </svg>
+            """;
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(5_500, 4_500), source);
+        var path = scene.BreakApartImportedSvgObjects([0]).ProducedObjects.Single();
+        using var stage = new StageControl(scene) { Size = new Size(400, 300) };
+        var drawGdiSelection = RequireMethod(typeof(StageControl), "DrawSelection", [typeof(Graphics)]);
+        var drawD2dSelection = RequireMethod(typeof(Direct2DStageRenderer), "DrawSelection", [typeof(StageControl)]);
+        var fillHit = scene.HitTestElement(new PointF(-1_625, 1_375), 0, toleranceWorld: 0);
+        AssertTimeline(fillHit.IsValid && fillHit.Key.Kind == DrawingElementKind.Fill,
+            "The imported SVG selection fixture did not expose its native fill.");
+
+        foreach (var direct2d in new[] { false, true })
+        foreach (var selectFillPart in new[] { false, true })
+        {
+            var label = $"{(direct2d ? "Direct2D" : "GDI")} {(selectFillPart ? "fill-part" : "whole-object")}";
+            stage.SetSelection([path], path);
+            if (selectFillPart) stage.SetSelectedElement(fillHit);
+            RequireField(typeof(StageControl), "_selectionHighlightPhase").SetValue(stage, 0f);
+            using var bitmap = new Bitmap(stage.Width, stage.Height);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Black);
+                DrawOverlay(stage, bitmap, graphics, direct2d);
+            }
+            if (selectFillPart)
+            {
+                AssertCyan(new PointF(0, 2_000), "outer contour");
+                AssertCyan(new PointF(0, 500), "hole contour");
+            }
+            else AssertCyan(new PointF(-2_500, -2_000), "native object bounds");
+            AssertNativeOverlayParity(stage, bitmap, direct2d);
+            var fillInterior = SampleBitmap(bitmap, stage.WorldToScreen(-1_625, 1_375));
+            AssertTimeline(fillInterior.ToArgb() == Color.Black.ToArgb(),
+                $"SVG Path {label} selection changed the fill instead of drawing an overlay.");
+
+            void AssertCyan(PointF world, string contourLabel)
+            {
+                var screen = Point.Round(stage.WorldToScreen(world.X, world.Y));
+                var cyan = false;
+                for (var y = screen.Y - 3; y <= screen.Y + 3; y++)
+                for (var x = screen.X - 3; x <= screen.X + 3; x++)
+                {
+                    var color = bitmap.GetPixel(x, y);
+                    cyan |= color.G > 100 && color.B > 100 && color.R < color.G;
+                }
+                AssertTimeline(cyan, $"SVG Path {label} did not use native fill UI for {contourLabel}.");
+            }
+        }
+
+        // Selection must use the native stroke UI at every zoom without mutating
+        // the imported centerline, width or material.
+        const string thinStrokeSource = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="220" height="180" viewBox="0 0 220 180">
+              <path fill="none" stroke="#101820" stroke-width="0.4" d="M60 90 H160"/>
+            </svg>
+            """;
+        var strokeScene = new VectorScene();
+        strokeScene.CreateEmpty();
+        strokeScene.AddImportedSvgObject(0, PointF.Empty, new SizeF(5_500, 4_500), thinStrokeSource);
+        var strokePath = strokeScene.BreakApartImportedSvgObjects([0]).ProducedObjects.Single();
+        AssertTimeline(strokeScene.TryGetFreehandBezierWorldNodes(strokePath, out var originalNodes)
+            && originalNodes.Length == 2 && Math.Abs(strokeScene.Stroke[strokePath] - 10f) < 0.01f
+            && !strokeScene.HasFill(strokePath),
+            "The thin SVG stroke did not retain its centerline and 0.4 px = 10 vu width.");
+        var originalBounds = strokeScene.GetObjectWorldBounds(strokePath);
+        var originalColor = strokeScene.Argb[strokePath];
+        var originalStroke = strokeScene.Stroke[strokePath];
+        var strokeFillHit = strokeScene.HitTestElement(PointF.Empty, 0, toleranceWorld: 0);
+        AssertTimeline(strokeFillHit.IsValid && strokeFillHit.Key.Kind == DrawingElementKind.Stroke,
+            "The thin SVG stroke-outline fixture did not expose an editable filled region.");
+        using var strokeStage = new StageControl(strokeScene) { Size = new Size(400, 300) };
+        foreach (var worldWidth in new[] { 4_000f, 8_000f, 16_000f })
+        foreach (var direct2d in new[] { false, true })
+        foreach (var selectFillPart in new[] { false, true })
+        {
+            strokeStage.SetVisibleWorldWidth(worldWidth);
+            strokeStage.SetSelection([strokePath], strokePath);
+            if (selectFillPart) strokeStage.SetSelectedElement(strokeFillHit);
+            RequireField(typeof(StageControl), "_selectionHighlightPhase").SetValue(strokeStage, 0f);
+            using var bitmap = new Bitmap(strokeStage.Width, strokeStage.Height);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Black);
+                DrawOverlay(strokeStage, bitmap, graphics, direct2d);
+            }
+            var center = Point.Round(strokeStage.WorldToScreen(0, 0));
+            var footprint = 0;
+            for (var y = center.Y - 20; y <= center.Y + 20; y++)
+            {
+                if (bitmap.GetPixel(center.X, y).ToArgb() != Color.Black.ToArgb()) footprint++;
+            }
+            AssertTimeline(footprint > 0, "SVG stroke selection did not draw the native stroke overlay.");
+            AssertNativeOverlayParity(strokeStage, bitmap, direct2d);
+            AssertTimeline(strokeScene.TryGetFreehandBezierWorldNodes(strokePath, out var selectedNodes)
+                && originalNodes.SequenceEqual(selectedNodes)
+                && strokeScene.GetObjectWorldBounds(strokePath) == originalBounds
+                && strokeScene.Argb[strokePath] == originalColor
+                && strokeScene.Stroke[strokePath] == originalStroke,
+                "SVG selection changed the stroke-outline geometry or material.");
+        }
+        scene.AddImportedSvgObject(0, new PointF(3500, 0), new SizeF(1000, 800), thinStrokeSource);
+        var importedStroke = scene.BreakApartImportedSvgObjects([scene.ObjectCount - 1]).ProducedObjects.Single();
+        var importedStrokeHit = scene.HitTestElement(new PointF(3500, 0), 0, toleranceWorld: 0);
+        AssertTimeline(importedStrokeHit.IsValid && importedStrokeHit.Key.ObjectIndex == importedStroke,
+            "SVG multi-selection fixture lost its editable stroke.");
+        stage.SetVisibleWorldWidth(12000);
+        foreach (var direct2d in new[] { false, true })
+        foreach (var selectParts in new[] { false, true })
+        {
+            stage.SetSelection([path, importedStroke], importedStroke);
+            if (selectParts) stage.SetSelectedElements([fillHit, importedStrokeHit], importedStrokeHit);
+            RequireField(typeof(StageControl), "_selectionHighlightPhase").SetValue(stage, 0f);
+            using var bitmap = new Bitmap(stage.Width, stage.Height);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Black);
+                DrawOverlay(stage, bitmap, graphics, direct2d);
+            }
+            AssertNativeOverlayParity(stage, bitmap, direct2d);
+        }
+        Console.WriteLine("imported_svg_path_selection=ok,gdi=ok,direct2d=ok,native_ui_parity=ok,multi_selection=ok,whole_object=ok,fill_part=ok,holes=ok,stroke_part=ok,zoom=ok,selection_nonmutating=ok");
+
+        void AssertNativeOverlayParity(StageControl importedStage, Bitmap importedBitmap, bool direct2d)
+        {
+            var nativeScene = new VectorScene();
+            var snapshot = importedStage.Scene.CreateSnapshot();
+            // Identical native geometry without any SVG paint metadata must produce
+            // identical selection pixels; source provenance cannot select a UI style.
+            snapshot.SvgStrokeStyles.Clear();
+            nativeScene.RestoreSnapshot(snapshot);
+            using var nativeStage = new StageControl(nativeScene) { Size = importedStage.Size };
+            nativeStage.SetVisibleWorldWidth(importedStage.ScreenLengthToWorld(importedStage.Width));
+            nativeStage.SetSelection(importedStage.SelectedObjects, importedStage.SelectedObject);
+            nativeStage.SetSelectedElements(importedStage.SelectedElements, importedStage.SelectedElement);
+            RequireField(typeof(StageControl), "_selectionHighlightPhase").SetValue(nativeStage, 0f);
+            using var nativeBitmap = new Bitmap(nativeStage.Width, nativeStage.Height);
+            using (var graphics = Graphics.FromImage(nativeBitmap))
+            {
+                graphics.Clear(Color.Black);
+                DrawOverlay(nativeStage, nativeBitmap, graphics, direct2d);
+            }
+            for (var y = 0; y < nativeBitmap.Height; y++)
+            for (var x = 0; x < nativeBitmap.Width; x++)
+                AssertTimeline(nativeBitmap.GetPixel(x, y) == importedBitmap.GetPixel(x, y),
+                    $"Imported/native selection UI differs at ({x},{y}), Direct2D={direct2d}.");
+        }
+
+        void DrawOverlay(StageControl selectedStage, Bitmap bitmap, Graphics graphics, bool direct2d)
+        {
+            if (!direct2d)
+            {
+                drawGdiSelection.Invoke(selectedStage, [graphics]);
+                return;
+            }
+            // A DC target exercises the actual Direct2D overlay without requiring
+            // foreground desktop ownership or capturing another application's pixels.
+            using var renderer = new Direct2DStageRenderer();
+            var factory = Vortice.Direct2D1.D2D1.D2D1CreateFactory<Vortice.Direct2D1.ID2D1Factory1>(
+                Vortice.Direct2D1.FactoryType.SingleThreaded, Vortice.Direct2D1.DebugLevel.None);
+            RequireField(typeof(Direct2DStageRenderer), "_factory").SetValue(renderer, factory);
+            var target = factory.CreateDCRenderTarget(new Vortice.Direct2D1.RenderTargetProperties(
+                Vortice.Direct2D1.RenderTargetType.Software,
+                new Vortice.DCommon.PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Ignore),
+                96, 96, Vortice.Direct2D1.RenderTargetUsage.None, Vortice.Direct2D1.FeatureLevel.Default));
+            RequireField(typeof(Direct2DStageRenderer), "_target").SetValue(renderer, target);
+            var hdc = graphics.GetHdc();
+            try
+            {
+                target.BindDC(hdc, new Vortice.RawRect(0, 0, bitmap.Width, bitmap.Height));
+                target.BeginDraw();
+                drawD2dSelection.Invoke(renderer, [selectedStage]);
+                target.EndDraw().CheckError();
+            }
+            finally { graphics.ReleaseHdc(hdc); }
+        }
+    }
+
+    // Use the same object draw entry points as the stage, with a software DC
+    // target so SVG paint validation does not need foreground desktop ownership.
+    private static Bitmap RenderSvgNativePaintFixture(StageControl stage, bool direct2d)
+    {
+        var bitmap = new Bitmap(stage.Width, stage.Height);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(Color.White);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using var renderer = new Direct2DStageRenderer();
+        Vortice.Direct2D1.ID2D1DCRenderTarget? target = null;
+        var hdc = IntPtr.Zero;
+        try
+        {
+            if (direct2d)
+            {
+                var factory = Vortice.Direct2D1.D2D1.D2D1CreateFactory<Vortice.Direct2D1.ID2D1Factory1>(
+                    Vortice.Direct2D1.FactoryType.SingleThreaded, Vortice.Direct2D1.DebugLevel.None);
+                RequireField(typeof(Direct2DStageRenderer), "_factory").SetValue(renderer, factory);
+                target = factory.CreateDCRenderTarget(new Vortice.Direct2D1.RenderTargetProperties(
+                    Vortice.Direct2D1.RenderTargetType.Software,
+                    new Vortice.DCommon.PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Ignore),
+                    96, 96, Vortice.Direct2D1.RenderTargetUsage.None, Vortice.Direct2D1.FeatureLevel.Default));
+                RequireField(typeof(Direct2DStageRenderer), "_target").SetValue(renderer, target);
+                hdc = graphics.GetHdc();
+                target.BindDC(hdc, new Vortice.RawRect(0, 0, bitmap.Width, bitmap.Height));
+                target.BeginDraw();
+            }
+            var draw = direct2d
+                ? RequireMethod(typeof(Direct2DStageRenderer), "DrawObject", [typeof(StageControl), typeof(int), typeof(SceneRenderPass)])
+                : RequireMethod(typeof(StageControl), "DrawObject", [typeof(Graphics), typeof(int), typeof(SceneRenderPass)]);
+            var scene = stage.Scene;
+            for (var layer = scene.LayerCount - 1; layer >= 0; layer--)
+            {
+                var objects = Enumerable.Range(0, scene.ObjectCount)
+                    .Where(index => scene.ObjectLayer[index] == layer)
+                    .OrderBy(index => scene.ObjectOrder[index]).ToArray();
+                foreach (var pass in new[] { SceneRenderPass.Fill, SceneRenderPass.Stroke })
+                foreach (var index in objects)
+                {
+                    if (pass == SceneRenderPass.Fill && !SceneRenderOrder.HasFill(scene.ShapeKind[index])
+                        || pass == SceneRenderPass.Stroke && !SceneRenderOrder.HasStroke(scene.ShapeKind[index], scene.Stroke[index])) continue;
+                    if (direct2d) draw.Invoke(renderer, [stage, index, pass]);
+                    else draw.Invoke(stage, [graphics, index, pass]);
+                }
+            }
+            target?.EndDraw().CheckError();
+            return bitmap;
+        }
+        catch { bitmap.Dispose(); throw; }
+        finally { if (hdc != IntPtr.Zero) graphics.ReleaseHdc(hdc); }
+    }
+
+    private static void RunSvgNativePaintRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+              <path d="M20 20 H40" fill="none" stroke="black" stroke-width="4" stroke-linecap="butt"/>
+              <path d="M60 20 H80" fill="none" stroke="black" stroke-width="4" stroke-linecap="square"/>
+              <path d="M10 70 Q50 30 90 70" fill="none" stroke="black" stroke-width="4" stroke-linecap="round" stroke-linejoin="bevel"/>
+            </svg>
+            """;
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(2500, 2500), source, "SVG stroke paint");
+        var parts = scene.BreakApartImportedSvgObjects([0], true).ProducedObjects;
+        using var stage = new StageControl(scene) { Size = new Size(400, 400), WorldGridOpacity = 0 };
+        stage.SetVisibleWorldWidth(2500);
+        AssertTimeline(parts.Length == 3, "SVG paint fixture lost a stroke.");
+        var butt = parts.Single(index => scene.GetSvgStrokeStyle(index)?.Cap == SvgNativeCap.Butt);
+        var square = parts.Single(index => scene.GetSvgStrokeStyle(index)?.Cap == SvgNativeCap.Square);
+        var curved = parts.Single(index => scene.GetSvgStrokeStyle(index)?.Cap == SvgNativeCap.Round);
+        scene.TryGetFreehandBezierWorldNodes(butt, out var buttNodes);
+        scene.TryGetFreehandBezierWorldNodes(square, out var squareNodes);
+        scene.TryGetFreehandBezierWorldNodes(curved, out var curveNodes);
+        var curveStart = curveNodes[0];
+        var curveEnd = curveNodes[1];
+        var curveMid = new PointF(
+            (curveStart.Anchor.X + 3 * curveStart.OutgoingControl.X + 3 * curveEnd.IncomingControl.X + curveEnd.Anchor.X) / 8,
+            (curveStart.Anchor.Y + 3 * curveStart.OutgoingControl.Y + 3 * curveEnd.IncomingControl.Y + curveEnd.Anchor.Y) / 8);
+        foreach (var direct2d in new[] { false, true })
+        {
+            using var bitmap = RenderSvgNativePaintFixture(stage, direct2d);
+            var buttStart = Point.Round(stage.WorldToScreen(buttNodes[0].Anchor.X, buttNodes[0].Anchor.Y));
+            var squareStart = Point.Round(stage.WorldToScreen(squareNodes[0].Anchor.X, squareNodes[0].Anchor.Y));
+            var midpoint = Point.Round(stage.WorldToScreen(curveMid.X, curveMid.Y));
+            AssertTimeline(bitmap.GetPixel(buttStart.X - 5, buttStart.Y).R > 220
+                && bitmap.GetPixel(squareStart.X - 5, squareStart.Y).R < 40
+                && bitmap.GetPixel(midpoint.X, midpoint.Y).R < 40
+                && bitmap.GetPixel(midpoint.X, midpoint.Y + 14).R > 220,
+                $"SVG {(direct2d ? "Direct2D" : "GDI")} paint did not retain butt/square caps or the quadratic curve centerline.");
+        }
+        Console.WriteLine("svg_native_paint=ok,gdi=ok,direct2d=ok,butt=ok,square=ok,quadratic=ok");
+    }
+
+    private static void RunSvgFillBoundaryEditingRegression()
+    {
+        const string source = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+              <path fill="#cccccc" d="M10 10 Q50 0 90 10 L90 90 L10 90 Z"/>
+              <path fill="none" stroke="black" stroke-width="8" d="M10 10 Q50 0 90 10"/>
+              <path fill="black" fill-rule="evenodd" d="M7 7 H93 V93 H7 Z M13 13 H87 V87 H13 Z"/>
+            </svg>
+            """;
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        scene.AddImportedSvgObject(0, PointF.Empty, new SizeF(2500, 2500), source, "Boundary editing");
+        var parts = scene.BreakApartImportedSvgObjects([0], true).ProducedObjects;
+        var fill = parts.Single(index => scene.Argb[index] == Color.FromArgb(204, 204, 204).ToArgb());
+        var stroke = parts.Single(index => scene.GetSvgStrokeStyle(index) is not null);
+        var original = scene.CreateSnapshot();
+        var hiddenPieces = scene.GetExposedFillBezierSegmentPieces(fill, 0);
+        var editablePieces = scene.GetExposedFillBezierSegmentPieces(fill, 0, includeCoincidentStrokes: true);
+        AssertTimeline(editablePieces.Select(piece => piece.SourcePartIndex).Distinct().Count()
+            == scene.GetPathBezierSegmentParts(fill).Length
+            && hiddenPieces.Length < editablePieces.Length,
+            "An explicitly selected SVG fill lost its closed boundary under the black outline.");
+        // Stroke tolerance overlaps this visible fill point. The fill tool must
+        // still edit the fill, while Select keeps the native stroke priority.
+        var nearStroke = new PointF(0, -875);
+        AssertTimeline(scene.HitTestFillElement(nearStroke, 0, 250).Key.ObjectIndex == fill,
+            "SVG fill-tool hit testing was captured by the overlapping outline.");
+        var links = scene.CaptureFillBoundaryLineLinks(stroke, 0);
+        AssertTimeline(links.Any(link => link.FillObjectIndex == fill && link.StrokeSegmentIndex == 0),
+            "SVG Bezier stroke was not linked to its fill boundary across paint layers.");
+        scene.TryGetFreehandBezierWorldNodes(stroke, out var nodes);
+        nodes[0] = nodes[0] with { OutgoingControl = new PointF(nodes[0].OutgoingControl.X, nodes[0].OutgoingControl.Y - 200) };
+        nodes[1] = nodes[1] with { IncomingControl = new PointF(nodes[1].IncomingControl.X, nodes[1].IncomingControl.Y - 200) };
+        AssertTimeline(scene.TrySetFreehandBezierWorldNodes(stroke, nodes)
+            && scene.UpdateFillBoundaryLineLinks(links), "SVG stroke editing failed to update the linked fill.");
+        var segment = scene.GetPathBezierSegmentParts(fill).Single(part => part.PartIndex == links.Single(link => link.FillObjectIndex == fill).BezierSegmentIndex);
+        AssertTimeline(segment.Control1 == nodes[0].OutgoingControl && segment.Control2 == nodes[1].IncomingControl,
+            "Linked SVG fill did not retain the edited exact stroke controls.");
+        var reverseLinks = scene.CaptureFillBoundaryStrokeLinks(fill, segment.PartIndex, 0);
+        var raisedControl1 = new PointF(segment.Control1.X, segment.Control1.Y - 100);
+        AssertTimeline(reverseLinks.Any(link => link.LineObjectIndex == stroke)
+            && scene.SetPathBezierSegment(fill, segment.PartIndex, segment.Start, raisedControl1, segment.Control2, segment.End)
+            && scene.UpdateFillBoundaryStrokeLinks(reverseLinks, segment.Start, raisedControl1, segment.Control2, segment.End),
+            "SVG fill-boundary editing failed to update the associated stroke.");
+        scene.TryGetFreehandBezierWorldNodes(stroke, out var updated);
+        AssertTimeline(updated[0].OutgoingControl == raisedControl1, "SVG stroke lost the fill-boundary control edit.");
+        // A materialized short stroke may cover only part of a source cubic.
+        // Editing it must leave the rest of the contour intact and every preview
+        // must be relative to the same pointer-down geometry.
+        scene.RestoreSnapshot(original);
+        var top = scene.GetPathBezierSegmentParts(fill)[0];
+        var partCurve = VectorScene.CubicSubcurve(top.Start, top.Control1, top.Control2, top.End, 0.25f, 0.75f);
+        var partial = scene.AddCubicCurveSegment(scene.ObjectLayer[stroke], partCurve.Start,
+            partCurve.Control1, partCurve.Control2, partCurve.End, 10, Color.Transparent, Color.Black, 6);
+        scene.SetSvgStrokeStyle(partial, scene.GetSvgStrokeStyle(stroke)!.Value);
+        scene.CompleteDeferredBuild();
+        var partialLinks = scene.CaptureFillBoundaryLineLinks(partial, 0).Where(link => link.FillObjectIndex == fill).ToArray();
+        AssertTimeline(partialLinks.Length == 1 && partialLinks[0].BoundaryStartT > 0.2f
+            && partialLinks[0].BoundaryEndT < 0.8f,
+            "A short imported stroke was not matched to its exact fill subcurve.");
+        scene.TryGetPathBezierWorldContours(fill, out var beforePartial);
+        scene.UpdateFillBoundaryLineLinks(partialLinks);
+        scene.TryGetPathBezierWorldContours(fill, out var noMove);
+        AssertTimeline(beforePartial.Zip(noMove).All(pair => pair.First.SequenceEqual(pair.Second)),
+            "An unchanged imported stroke modified fill controls during link capture.");
+        static PointF Offset(PointF value, float dx) => new(value.X + dx, value.Y);
+        var applyMove = RequireMethod(typeof(VectorScene), "SetLineCurve");
+        applyMove.Invoke(scene, [partial, Offset(partCurve.Start, 100), Offset(partCurve.Control1, 100),
+            Offset(partCurve.Control2, 100), Offset(partCurve.End, 100)]);
+        AssertTimeline(scene.UpdateFillBoundaryLineLinks(partialLinks), "Partial imported stroke move did not update its fill.");
+        scene.TryGetPathBezierWorldContours(fill, out var once);
+        scene.UpdateFillBoundaryLineLinks(partialLinks);
+        scene.TryGetPathBezierWorldContours(fill, out var twice);
+        AssertTimeline(once.Zip(twice).All(pair => pair.First.SequenceEqual(pair.Second))
+            && once[0][0].Anchor == beforePartial[0][0].Anchor
+            && once[0][3].Anchor == beforePartial[0][1].Anchor,
+            "Partial stroke translation accumulated or moved the full boundary endpoints.");
+        applyMove.Invoke(scene, [partial, partCurve.Start, partCurve.Control1, partCurve.Control2, partCurve.End]);
+        scene.UpdateFillBoundaryLineLinks(partialLinks);
+        scene.TryGetPathBezierWorldContours(fill, out var returned);
+        AssertTimeline(beforePartial.Zip(returned).All(pair => pair.First.SequenceEqual(pair.Second)),
+            "Returning a partial stroke did not restore its exact original fill.");
+        AssertTimeline(scene.SplitLineAt(partial, 0.5f, out var split)
+            && scene.GetSvgStrokeStyle(split.SecondObjectIndex) is not null,
+            "Splitting an imported line lost its SVG boundary-link provenance.");
+        var splitLinks = scene.CaptureFillBoundaryLineLinks(split.FirstObjectIndex, 0)
+            .Concat(scene.CaptureFillBoundaryLineLinks(split.SecondObjectIndex, 0))
+            .Where(link => link.FillObjectIndex == fill).ToArray();
+        AssertTimeline(splitLinks.Length == 2, "Split imported stroke halves lost their fill subcurve links.");
+        scene.TryGetLineCubic(split.FirstObjectIndex, out var a, out var b, out var c, out var d);
+        applyMove.Invoke(scene, [split.FirstObjectIndex, a, b, Offset(c, 40), Offset(d, 40)]);
+        scene.TryGetLineCubic(split.SecondObjectIndex, out a, out b, out c, out d);
+        applyMove.Invoke(scene, [split.SecondObjectIndex, Offset(a, 40), Offset(b, 40), c, d]);
+        AssertTimeline(scene.UpdateFillBoundaryLineLinks(splitLinks), "Moving a split anchor did not update its fill.");
+        scene.TryGetPathBezierWorldContours(fill, out var splitMoved);
+        AssertTimeline(splitMoved[0][0].Anchor == beforePartial[0][0].Anchor
+            && splitMoved[0][4].Anchor == beforePartial[0][1].Anchor,
+            "Moving a split anchor replaced the entire imported fill edge.");
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var editorScene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        editorScene.RestoreSnapshot(original);
+        stage.Size = new Size(640, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(3000);
+        var activate = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        activate.Invoke(form, [ToolMode.Select]);
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]).Invoke(form, [fill, false]);
+        AssertTimeline(stage.FillEdgeBezierOverlayTargetObject == fill
+            && stage.FillEdgeBezierOverlaySegments.Count == editablePieces.Length,
+            "The editor still displayed only the exposed half of the selected SVG fill boundary.");
+        using (var bitmap = new Bitmap(stage.Width, stage.Height))
+        {
+            using var graphics = Graphics.FromImage(bitmap);
+            RequireMethod(typeof(StageControl), "DrawGdi", [typeof(Graphics)]).Invoke(stage, [graphics]);
+            var output = Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "svg-fill-boundary.png");
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+            bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+        }
+        var hit = new DrawingElementHit(new DrawingElementKey(stroke, DrawingElementKind.Stroke, 0), 0, 0, 1)
+            { BezierSegmentIndex = 0 };
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(DrawingElementHit), typeof(bool)]).Invoke(form, [hit, false]);
+        editorScene.TryGetFreehandBezierWorldNodes(stroke, out var editorNodes);
+        var press = editorNodes[0].OutgoingControl;
+        RequireField(typeof(MainForm), "_activeHandle").SetValue(form, EditHandleKind.BezierControl);
+        RequireField(typeof(MainForm), "_startWorld").SetValue(form, press);
+        RequireMethod(typeof(MainForm), "CaptureEditStart").Invoke(form, [stroke]);
+        ((DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!).SnapEnabled = false;
+        var move = RequireMethod(typeof(MainForm), "MoveSelectedFromPointer");
+        move.Invoke(form, [new PointF(press.X, press.Y - 100), true, false]);
+        var editorCurve = editorScene.GetPathBezierSegmentParts(fill)[0];
+        editorScene.TryGetFreehandBezierWorldNodes(stroke, out var changedNodes);
+        AssertTimeline(editorCurve.Control1 == changedNodes[0].OutgoingControl,
+            "The actual editor Bezier handle drag failed to synchronize imported fill geometry.");
+        move.Invoke(form, [press, true, false]);
+        editorScene.TryGetPathBezierWorldContours(fill, out var editorReturned);
+        AssertTimeline(editorReturned[0].SequenceEqual(beforePartial[0]),
+            "Returning the actual editor Bezier handle did not restore the imported fill.");
+        RequireMethod(typeof(MainForm), "FinishPointerInteraction").Invoke(form, null);
+        editorScene.RestoreSnapshot(original);
+        var editorPartial = editorScene.AddCubicCurveSegment(editorScene.ObjectLayer[stroke], partCurve.Start,
+            partCurve.Control1, partCurve.Control2, partCurve.End, 10, Color.Transparent, Color.Black, 6);
+        editorScene.SetSvgStrokeStyle(editorPartial, editorScene.GetSvgStrokeStyle(stroke)!.Value);
+        editorScene.CompleteDeferredBuild();
+        var setObject = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        setObject.Invoke(form, [editorPartial, false]);
+        RequireField(typeof(MainForm), "_activeHandle").SetValue(form, EditHandleKind.None);
+        RequireField(typeof(MainForm), "_startWorld").SetValue(form, PointF.Empty);
+        RequireMethod(typeof(MainForm), "CaptureEditStart").Invoke(form, [editorPartial]);
+        move.Invoke(form, [new PointF(100, 0), true, false]);
+        editorScene.TryGetPathBezierWorldContours(fill, out var movedFill);
+        AssertTimeline(movedFill[0][0].Anchor == beforePartial[0][0].Anchor
+            && movedFill[0][3].Anchor == beforePartial[0][1].Anchor,
+            "The editor translated an entire fill edge when moving a partial imported stroke.");
+        move.Invoke(form, [PointF.Empty, true, false]);
+        editorScene.TryGetPathBezierWorldContours(fill, out var unmovedFill);
+        AssertTimeline(unmovedFill[0].SequenceEqual(beforePartial[0]),
+            "Returning the editor stroke translation did not restore the fill.");
+        RequireMethod(typeof(MainForm), "FinishPointerInteraction").Invoke(form, null);
+        var arcWorld = new PointF((partCurve.Start.X + partCurve.End.X) / 2,
+            (partCurve.Start.Y + 3 * partCurve.Control1.Y + 3 * partCurve.Control2.Y + partCurve.End.Y) / 8);
+        var arcScreen = Point.Round(stage.WorldToScreen(arcWorld.X, arcWorld.Y));
+        arcWorld = stage.ScreenToWorld(arcScreen);
+        RequireField(typeof(MainForm), "_startWorld").SetValue(form, arcWorld);
+        AssertTimeline(RequireMethod(typeof(MainForm), "BeginArcDrag").Invoke(form, [arcWorld, editorPartial]) is true,
+            "The editor could not begin an imported partial stroke arc drag.");
+        var arcSession = RequireField(typeof(MainForm), "_arcDragSession").GetValue(form)!;
+        arcSession.GetType().GetProperty("DragExceeded")!.SetValue(arcSession, true);
+        var updateArc = RequireMethod(typeof(MainForm), "UpdateArcDrag");
+        updateArc.Invoke(form, [new Point(arcScreen.X, arcScreen.Y - 20)]);
+        editorScene.TryGetPathBezierWorldContours(fill, out var bentFill);
+        AssertTimeline(bentFill[0][0].Anchor == beforePartial[0][0].Anchor
+            && bentFill[0][3].Anchor == beforePartial[0][1].Anchor
+            && !bentFill[0].SequenceEqual(beforePartial[0]),
+            "The editor arc drag failed to bend only the corresponding imported fill subcurve.");
+        updateArc.Invoke(form, [arcScreen]);
+        editorScene.TryGetPathBezierWorldContours(fill, out var unbentFill);
+        AssertTimeline(unbentFill[0].SequenceEqual(beforePartial[0]),
+            "Returning the editor arc drag accumulated fill deformation.");
+        RequireMethod(typeof(MainForm), "CancelArcDrag").Invoke(form, [true]);
+        RequireMethod(typeof(MainForm), "FinishPointerInteraction").Invoke(form, null);
+        activate.Invoke(form, [ToolMode.Fill]);
+        stage.SetVisibleWorldWidth(16000);
+        var screen = Point.Round(stage.WorldToScreen(nearStroke.X, nearStroke.Y));
+        RequireMethod(typeof(MainForm), "UpdateFillHoverPreview").Invoke(form, [screen]);
+        var preview = (PointF[][])RequireField(typeof(MainForm), "_fillHoverPreviewContours").GetValue(form)!;
+        AssertTimeline(preview.Length > 0 && RequireMethod(typeof(MainForm), "PointInFillPreview", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).Invoke(null, [PointF.Empty, preview]) is true,
+            "The editor fill preview targeted the outline instead of the visible colored fill.");
+        var color = (Color)RequireMethod(typeof(MainForm), "ActiveColor").Invoke(form, null)!;
+        RequireMethod(typeof(MainForm), "StageMouseDown").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+        RequireMethod(typeof(MainForm), "StageMouseUp").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+        AssertTimeline(editorScene.Argb[fill] == color.ToArgb(),
+            "The editor fill click did not recolor the visible imported fill.");
+        Console.WriteLine("svg_fill_boundary_editing=ok,closed_overlay=ok,fill_hit=ok,stroke_to_fill=ok,fill_to_stroke=ok,editor_overlay=ok,editor_fill_preview=ok,editor_fill_click=ok,partial_curve_move=ok,split_anchor=ok,editor_bezier_drag=ok,editor_partial_move=ok,editor_arc_drag=ok");
+    }
+
+    private static void RunSvgVisibleSelectionRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var lower = scene.AppendPathObjectContours(0,
+            [[new PointF(0, 0), new PointF(100, 0), new PointF(100, 100), new PointF(0, 100)]],
+            0, Color.Gray, Color.Transparent, 4);
+        var upper = scene.AppendPathObjectContours(0,
+            [[new PointF(-10, -10), new PointF(110, -10), new PointF(110, 110), new PointF(-10, 110)],
+             [new PointF(20, 20), new PointF(80, 20), new PointF(80, 80), new PointF(20, 80)]],
+            0, Color.Blue, Color.Transparent, 8);
+        scene.RebuildGeometryIndex();
+        var lowerSnapshot = scene.CreateSnapshot();
+        AssertTimeline(!scene.IsSelectionPointExposed(lower, new PointF(5, 5), 0)
+            && scene.IsSelectionPointExposed(lower, new PointF(50, 50), 0)
+            && scene.GetVisiblePathSelectionPolylines(lower, 0).Length == 0
+            && scene.GetExposedFillBezierSegmentPieces(lower, 0).Length == 0
+            && scene.HitTest(new PointF(50, 50), 0, 0) == lower,
+            "Opaque clothes did not suppress covered body paths, or compound holes hid visible content.");
+        scene.SetLayerLocked(0, true);
+        AssertTimeline(!scene.IsSelectionPointExposed(lower, new PointF(5, 5), 0),
+            "Locking the clothes exposed covered body paths.");
+        scene.SetLayerLocked(0, false);
+        scene.Argb[upper] = Color.FromArgb(128, Color.Blue).ToArgb();
+        AssertTimeline(scene.IsSelectionPointExposed(lower, new PointF(5, 5), 0)
+            && scene.GetVisiblePathSelectionPolylines(lower, 0).Length > 0,
+            "Transparent clothes incorrectly suppressed visible underlying paths.");
+        scene.Argb[upper] = Color.Blue.ToArgb();
+        scene.TransformObjects([upper], point => new PointF(point.X + 500, point.Y));
+        AssertTimeline(scene.IsSelectionPointExposed(lower, new PointF(5, 5), 0),
+            "Moved occluders left stale selection visibility.");
+        scene.RestoreSnapshot(lowerSnapshot);
+        var after = scene.CreateSnapshot();
+        AssertTimeline(after.PathLocalContours[lower].SelectMany(contour => contour)
+            .SequenceEqual(lowerSnapshot.PathLocalContours[lower].SelectMany(contour => contour)),
+            "Visibility queries modified hidden source geometry.");
+        Console.WriteLine("svg_visible_selection=ok,opaque=ok,holes=ok,transparent=ok,locked=ok,move=ok,nonmutating=ok");
+    }
+
     private static void RunImportedSvgBreakApartRegression()
     {
+        RunImportedSvgLocalReferenceRegression();
+        RunSvgVisibleSelectionRegression();
+        RunSvgFillBoundaryEditingRegression();
+        RunSvgNativePaintRegression();
+        RunImportedSvgPathSelectionRegression();
         const string source = """
             <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
               <path fill="#d93654" fill-rule="evenodd" d="M5 5 H115 V75 H5 Z M35 25 H85 V55 H35 Z"/>
@@ -5965,7 +6592,7 @@ internal static partial class Benchmark
                 $"SVG Break Apart produced unexpected parts: {string.Join(',', result.ProducedObjects.Select(index => scene.ShapeKind[index]))}.");
         }
         var fill = result.ProducedObjects.Single(index => scene.Argb[index] == Color.FromArgb(unchecked((int)0xffd93654)).ToArgb());
-        var strokeOutline = result.ProducedObjects.Single(index => scene.Argb[index] == Color.FromArgb(unchecked((int)0xff2474c6)).ToArgb());
+        var strokeOutline = result.ProducedObjects.Single(index => scene.StrokeArgb[index] == Color.FromArgb(unchecked((int)0xff2474c6)).ToArgb());
         var basicResultLayers = result.ProducedObjects.Select(index => (int)scene.ObjectLayer[index]).Distinct().ToArray();
         AssertTimeline(
             result.ProducedObjects.Length == 2
@@ -5980,16 +6607,53 @@ internal static partial class Benchmark
             && !Enumerable.Range(0, scene.ObjectCount).Any(index => scene.ShapeKind[index] == ShapeKind.ImportedSvg)
             && scene.TryGetPathWorldContours(fill, out var contours)
             && contours.Length == 2
-            && scene.TryGetPathWorldContours(strokeOutline, out var strokeContours)
-            && strokeContours.Length > 0
+            && scene.TryGetFreehandBezierWorldNodes(strokeOutline, out var strokeNodes)
+            && strokeNodes.Length == 2
             && scene.Argb[fill] == Color.FromArgb(unchecked((int)0xffd93654)).ToArgb()
-            && scene.Argb[strokeOutline] == Color.FromArgb(unchecked((int)0xff2474c6)).ToArgb()
+            && scene.StrokeArgb[strokeOutline] == Color.FromArgb(unchecked((int)0xff2474c6)).ToArgb()
             && scene.Stroke[fill] == 0
-            && scene.Stroke[strokeOutline] == 0
+            && Math.Abs(scene.Stroke[strokeOutline] - 8f) < 0.01f
             && scene.ObjectSubOrder[fill] < scene.ObjectSubOrder[strokeOutline]
-            && result.ProducedObjects.All(index => scene.ShapeKind[index] == ShapeKind.Path)
-            && result.ProducedObjects.All(index => scene.FillAutoMergeProtected[index]),
-            "SVG Break Apart did not preserve editable fill and expanded stroke-outline geometry.");
+            && scene.ShapeKind[fill] == ShapeKind.Path
+            && scene.ShapeKind[strokeOutline] == ShapeKind.Freeform
+            && scene.FillAutoMergeProtected[fill],
+            "SVG Break Apart did not preserve editable fill and native cubic stroke geometry.");
+
+        var semantic = ImportedSvgBreakApart.Extract("""
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+              <path fill="#ff0000" stroke="#000000" stroke-width="2" stroke-linecap="square" stroke-linejoin="bevel"
+                    d="M10 10 Q30 50 50 10 L50 60 L10 60 M70 10 L90 10 L90 30"/>
+            </svg>
+            """);
+        AssertTimeline(semantic.Parts.OfType<ImportedSvgBreakStroke>().Count() == 2
+            && semantic.Parts.OfType<ImportedSvgBreakStroke>().All(part => !part.Closed
+                && part.Style is { Cap: SvgNativeCap.Square, Join: SvgNativeJoin.Bevel })
+            && semantic.Parts.OfType<ImportedSvgBreakStroke>().First().BezierNodes.Length == 4
+            && semantic.Parts.OfType<ImportedSvgBreakFill>().Single().Contours.Length == 2,
+            "SVG implicit fill closing incorrectly closed stroke subpaths or discarded quadratic controls/styles.");
+
+        var strokeSnapshot = scene.CreateSnapshot();
+        var strokeAssetPath = Path.Combine(Path.GetTempPath(), $"v2d-svg-stroke-{Guid.NewGuid():N}.svg");
+        try
+        {
+            DrawingObjectSvgCodec.Write(strokeAssetPath, "svg-stroke-regression", strokeSnapshot);
+            var decoded = DrawingObjectSvgCodec.Read(strokeAssetPath, "svg-stroke-regression");
+            scene.RestoreSnapshot(decoded);
+            AssertTimeline(scene.GetSvgStrokeStyle(strokeOutline) == strokeSnapshot.SvgStrokeStyles[strokeOutline]
+                && scene.TryGetFreehandBezierWorldNodes(strokeOutline, out var roundTripNodes)
+                && decoded.FreehandBezierLocalNodes[strokeOutline].SequenceEqual(strokeSnapshot.FreehandBezierLocalNodes[strokeOutline])
+                && scene.Stroke[strokeOutline] == strokeSnapshot.Stroke[strokeOutline],
+                "SVG asset save/open changed centerline curves, width or stroke presentation.");
+        }
+        finally { if (File.Exists(strokeAssetPath)) File.Delete(strokeAssetPath); }
+
+        var strokeSymbol = new DrawingObjectDefinition { Name = "SVG stroke composition" };
+        strokeSymbol.Scene.RestoreSnapshot(strokeSnapshot);
+        var composedStroke = new VectorScene();
+        SceneCompositionBuilder.BuildDrawingObjectPreview(composedStroke, strokeSymbol, [strokeSymbol], PointF.Empty, 0, 1f);
+        AssertTimeline(composedStroke.CreateSnapshot().SvgStrokeStyles.Values
+            .SequenceEqual(strokeSnapshot.SvgStrokeStyles.Values),
+            "Scene composition lost SVG stroke cap/join presentation.");
 
         scene.RestoreSnapshot(original);
         AssertTimeline(
@@ -6018,16 +6682,17 @@ internal static partial class Benchmark
             .OrderBy(index => scene.ObjectOrder[index])
             .ThenBy(index => scene.ObjectSubOrder[index])
             .ToArray();
-        var paintOrderColors = paintOrderObjects.Select(index => scene.Argb[index]).ToArray();
+        var paintOrderColors = paintOrderObjects.Select(index => scene.HasFill(index) ? scene.Argb[index] : scene.StrokeArgb[index]).ToArray();
         var wideOutlineBounds = scene.GetObjectWorldBounds(paintOrderObjects[1]);
         var thinOutlineBounds = scene.GetObjectWorldBounds(paintOrderObjects[3]);
         AssertTimeline(
             paintOrderObjects.Length == 4
             && paintOrderResult.Approximations == ImportedSvgBreakApproximation.None
             && paintOrderObjects.All(index => scene.ShapeKind[index] == ShapeKind.Path)
-            && paintOrderObjects.All(index => scene.Stroke[index] == 0)
-            && paintOrderObjects.All(index => scene.FillAutoMergeProtected[index])
-            && paintOrderObjects.Select(index => scene.ObjectLayer[index]).Distinct().Count() == 1
+            && scene.Stroke[paintOrderObjects[1]] == 200f
+            && Math.Abs(scene.Stroke[paintOrderObjects[3]] - 2.5f) < 0.01f
+            && scene.ObjectLayer[paintOrderObjects[2]] < scene.ObjectLayer[paintOrderObjects[1]]
+            && scene.GetSvgStrokeStyle(paintOrderObjects[1]) is { Cap: SvgNativeCap.Butt, Join: SvgNativeJoin.Miter, MiterLimit: 10 }
             && paintOrderColors.SequenceEqual(
             [
                 Color.FromArgb(unchecked((int)0xffd93654)).ToArgb(),
@@ -6037,8 +6702,7 @@ internal static partial class Benchmark
             ])
             && wideOutlineBounds.Width > thinOutlineBounds.Width
             && wideOutlineBounds.Height > thinOutlineBounds.Height
-            && Math.Abs(thinOutlineBounds.Width - 1_253f) <= 2f
-            && Math.Abs(thinOutlineBounds.Height - 703f) <= 2f,
+            ,
             "SVG Break Apart did not preserve per-element fill/stroke paint order with exact stroke outlines.");
 
         const string nonZeroFillSource = """

@@ -113,7 +113,7 @@ internal sealed partial class VectorScene
                 fillColor,
                 strokeColor,
                 Math.Max(3u, atoms / (uint)Math.Max(1, segments.Count)));
-            var index = AppendMaterializedPart(addition);
+            var index = AppendMaterializedPart(addition with { SvgStrokeStyle = GetSvgStrokeStyle(source) });
             if (segment.PartIndex == selectedPart) selectedIndex = index;
         }
 
@@ -588,7 +588,7 @@ internal sealed partial class VectorScene
     {
         var bounds = Normalize(worldBounds);
         return QueryObjects(bounds, frame, limit)
-            .Where(index => ObjectGeometryIntersectsBounds(index, bounds))
+            .Where(index => ObjectGeometryIntersectsBounds(index, bounds) && HasExposedPathFill(index, frame))
             .ToArray();
     }
 
@@ -598,6 +598,7 @@ internal sealed partial class VectorScene
         var result = new List<DrawingElementHit>();
         foreach (var objectIndex in QueryDrawingObjects(bounds, frame, limit))
         {
+            if (!HasExposedPathFill(objectIndex, frame)) continue;
             var shape = ShapeKind[objectIndex];
             if (shape == VectorAnimationEngine.ShapeKind.MixingStroke)
             {

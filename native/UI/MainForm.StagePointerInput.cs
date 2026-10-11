@@ -473,7 +473,9 @@ internal sealed partial class MainForm : Form
         else if (_tool == ToolMode.Fill)
         {
             if (e.Button != MouseButtons.Left || _startWorld is not { } fillWorld) return;
-            var hit = _scene.HitTestElement(_startWorld.Value, _frame, SelectionToleranceWorld());
+            var fillHit = _scene.HitTestFillElement(fillWorld, _frame, SelectionToleranceWorld());
+            var hit = fillHit.IsValid ? fillHit
+                : _scene.HitTestElement(fillWorld, _frame, SelectionToleranceWorld());
             if (TryApplyFillToLine(hit))
             {
                 return;

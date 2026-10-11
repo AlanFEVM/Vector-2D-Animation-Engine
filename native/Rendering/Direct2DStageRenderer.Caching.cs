@@ -1042,11 +1042,13 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     private ID2D1PathGeometry FreehandGeometry(VectorScene scene, int objectIndex, GdiPointF[] localPoints)
     {
+        var exactNodes = scene.GetSvgStrokeStyle(objectIndex) is not null
+            && scene.TryGetFreehandBezierLocalNodes(objectIndex, out var nodes) ? nodes : null;
         var key = (scene, objectIndex);
         _freehandGeometryCache.TryGetValue(key, out var cached);
         if (cached is not null)
         {
-            if (ReferenceEquals(cached.Points, localPoints)) return cached.Geometry;
+            if (ReferenceEquals(cached.Points, localPoints) && ReferenceEquals(cached.Nodes, exactNodes)) return cached.Geometry;
             _freehandGeometryCache.Remove(key);
             _freehandGeometryCachePointCount -= cached.Points.Length;
             cached.Dispose();
@@ -1062,12 +1064,22 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         using (var sink = geometry.Open())
         {
             sink.BeginFigure(new Vector2(localPoints[0].X, localPoints[0].Y), FigureBegin.Hollow);
-            for (var i = 1; i < localPoints.Length; i++) sink.AddLine(new Vector2(localPoints[i].X, localPoints[i].Y));
+            if (exactNodes is not null)
+            {
+                for (var i = 1; i < exactNodes.Length; i++)
+                {
+                    var previous = exactNodes[i - 1];
+                    var node = exactNodes[i];
+                    sink.AddBezier(new BezierSegment(new Vector2(previous.OutgoingControl.X, previous.OutgoingControl.Y),
+                        new Vector2(node.IncomingControl.X, node.IncomingControl.Y), new Vector2(node.Anchor.X, node.Anchor.Y)));
+                }
+            }
+            else for (var i = 1; i < localPoints.Length; i++) sink.AddLine(new Vector2(localPoints[i].X, localPoints[i].Y));
             sink.EndFigure(FigureEnd.Open);
             sink.Close();
         }
 
-        _freehandGeometryCache[key] = new CachedFreehandGeometry(localPoints, geometry);
+        _freehandGeometryCache[key] = new CachedFreehandGeometry(localPoints, geometry, exactNodes);
         _freehandGeometryCachePointCount += localPoints.Length;
         return geometry;
     }
@@ -1125,10 +1137,28 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
         return style;
     }
 
+    private ID2D1StrokeStyle SvgStrokeStyle(VectorScene scene, int index)
+    {
+        if (scene.GetSvgStrokeStyle(index) is not { } key) return RoundStrokeStyle();
+        if (_svgStrokeStyles.TryGetValue(key, out var style)) return style;
+        var cap = key.Cap switch { SvgNativeCap.Round => CapStyle.Round, SvgNativeCap.Square => CapStyle.Square, _ => CapStyle.Flat };
+        var properties = new StrokeStyleProperties
+        {
+            StartCap = cap, EndCap = cap, DashCap = cap,
+            LineJoin = key.Join switch { SvgNativeJoin.Round => LineJoin.Round, SvgNativeJoin.Bevel => LineJoin.Bevel, _ => LineJoin.Miter },
+            MiterLimit = key.MiterLimit, DashStyle = DashStyle.Solid
+        };
+        style = _factory!.CreateStrokeStyle(properties, Array.Empty<float>());
+        _svgStrokeStyles.Add(key, style);
+        return style;
+    }
+
     private void DisposeLineStrokeStyles()
     {
         foreach (var style in _lineStrokeStyles.Values) style.Dispose();
         _lineStrokeStyles.Clear();
+        foreach (var style in _svgStrokeStyles.Values) style.Dispose();
+        _svgStrokeStyles.Clear();
     }
 
     private void PrepareFreehandGeometryCache(

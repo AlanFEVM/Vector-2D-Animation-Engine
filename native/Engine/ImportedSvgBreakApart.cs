@@ -38,7 +38,10 @@ internal sealed record ImportedSvgBreakFill(
     ImportedSvgBreakPaint Paint,
     PointF[][] Contours,
     bool UsesEvenOddFillRule)
-    : ImportedSvgBreakPart(Order, LayerKey, SourceElementName, Paint);
+    : ImportedSvgBreakPart(Order, LayerKey, SourceElementName, Paint)
+{
+    public PathBezierNode[][] BezierContours { get; init; } = [];
+}
 
 internal sealed record ImportedSvgBreakStroke(
     int Order,
@@ -50,7 +53,11 @@ internal sealed record ImportedSvgBreakStroke(
     float Width,
     LineEndpointStyle StartEndpointStyle,
     LineEndpointStyle EndEndpointStyle)
-    : ImportedSvgBreakPart(Order, LayerKey, SourceElementName, Paint);
+    : ImportedSvgBreakPart(Order, LayerKey, SourceElementName, Paint)
+{
+    public PathBezierNode[] BezierNodes { get; init; } = [];
+    public SvgNativeStrokeStyle Style { get; init; }
+}
 
 internal sealed record ImportedSvgBreakResult(
     SizeF IntrinsicSize,
@@ -62,6 +69,7 @@ internal static class ImportedSvgBreakApart
 {
     private const long MaxSourceBytes = 16L * 1024 * 1024;
     private const int MaxXmlDepth = 256;
+    private const int MaxExpandedReferenceElements = 65_536;
     private const int MaxOutputParts = 16_384;
     private const int MaxOutputPoints = 500_000;
     private const int MaxRasterColorParts = 4_096;
@@ -94,13 +102,14 @@ internal static class ImportedSvgBreakApart
     /// The method never mutates a scene and only returns after the complete document has converted.
     /// </summary>
     public static ImportedSvgBreakResult Extract(string source) => Extract(source, null);
+    public static ImportedSvgBreakResult Extract(string source, bool forceStrokeOutlines) => Extract(source, null, forceStrokeOutlines);
 
     /// <summary>
     /// Converts SVG geometry and applies an optional outer transform after the document viewBox.
     /// Composition code can use this overload with the original SVG source instead of decoding an
     /// internal data-image wrapper generated solely for raster composition.
     /// </summary>
-    public static ImportedSvgBreakResult Extract(string source, Matrix? outerTransform)
+    public static ImportedSvgBreakResult Extract(string source, Matrix? outerTransform, bool forceStrokeOutlines = false)
     {
         if (string.IsNullOrWhiteSpace(source)) throw new InvalidDataException("The imported SVG source is empty.");
         var sourceBytes = StrictUtf8.GetBytes(source);
@@ -131,21 +140,28 @@ internal static class ImportedSvgBreakApart
             return RasterizeDocument(document, intrinsicSize, outerTransformClone);
         }
 
+        // Work on a separate tree: a failed vector conversion must still render the original SVG.
+        var vectorDocument = ContainsUse(document) ? (SvgDocument)document.DeepCopy<SvgDocument>() : document;
+        if (!ExpandLocalReferences(vectorDocument, document))
+        {
+            return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+        }
+
         try
         {
-            var state = new ExtractionState();
-            state.PlanDocumentLayers(document);
-            var rootOpacity = Math.Clamp(document.Opacity, 0f, 1f);
+            var state = new ExtractionState { ForceStrokeOutlines = forceStrokeOutlines };
+            state.PlanDocumentLayers(vectorDocument);
+            var rootOpacity = Math.Clamp(vectorDocument.Opacity, 0f, 1f);
             if (rootOpacity < 1f) state.Approximations |= ImportedSvgBreakApproximation.FlattenedGroupOpacity;
-            using var rootViewBox = CreateFragmentViewBoxTransform(document, intrinsicSize);
-            using var rootTransform = GetElementTransform(document);
+            using var rootViewBox = CreateFragmentViewBoxTransform(vectorDocument, intrinsicSize);
+            using var rootTransform = GetElementTransform(vectorDocument);
             IReadOnlyList<Matrix> outerTransforms = outerTransformClone is null
                 ? Array.Empty<Matrix>()
                 : new Matrix[] { outerTransformClone };
             var rootTransforms = ComposeTransformList(rootViewBox, rootTransform, outerTransforms);
             using var rendererBitmap = new Bitmap(1, 1);
             using var renderer = SvgRenderer.FromImage(rendererBitmap);
-            foreach (var child in document.Children)
+            foreach (var child in vectorDocument.Children)
             {
                 ExtractElement(child, rootTransforms, rootOpacity, -1, state, renderer);
             }
@@ -154,16 +170,7 @@ internal static class ImportedSvgBreakApart
             {
                 return RasterizeDocument(document, intrinsicSize, outerTransformClone);
             }
-            var strokeSeen = false;
-            foreach (var part in state.Parts)
-            {
-                if (part is ImportedSvgBreakStroke) strokeSeen = true;
-                else if (strokeSeen && part is ImportedSvgBreakFill)
-                {
-                    state.Approximations |= ImportedSvgBreakApproximation.FlattenedPaintOrder;
-                    break;
-                }
-            }
+            state.PreserveStrokePaintOrder();
             state.CoalesceNonOverlappingLayers();
 
             return new ImportedSvgBreakResult(
@@ -175,6 +182,83 @@ internal static class ImportedSvgBreakApart
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return RasterizeDocument(document, intrinsicSize, outerTransformClone);
+        }
+    }
+
+    private static bool ContainsUse(SvgElement element)
+        => element is SvgUse || element.Children.Any(ContainsUse);
+
+    private static bool ExpandLocalReferences(SvgDocument document, SvgDocument sourceDocument)
+    {
+        var activeReferences = new HashSet<string>(StringComparer.Ordinal);
+        var expandedElements = 0;
+        var expandedPathSegments = 0L;
+        return Expand(document, 0);
+
+        bool Expand(SvgElement element, int depth)
+        {
+            if (depth > MaxXmlDepth)
+            {
+                throw new InvalidDataException($"SVG reference depth must not exceed {MaxXmlDepth}.");
+            }
+            if (IsNonRenderingDefinition(ElementTag(element)) || element is SvgGradientServer) return true;
+
+            if (element is SvgUse use)
+            {
+                var reference = use.ReferencedElement?.OriginalString;
+                // Only same-document geometry is editable. Symbols with viewport semantics and
+                // external references retain the existing appearance conversion.
+                if (reference is null || !reference.StartsWith('#') || reference.Length == 1) return false;
+                var target = sourceDocument.GetElementById(reference[1..]);
+                if (target is null) return false;
+                var targetName = ElementTag(target);
+                if (!IsSupportedGeometry(targetName) && !IsStructuralContainer(targetName)
+                    && target is not SvgTextBase) return false;
+                if (!activeReferences.Add(reference))
+                {
+                    throw new InvalidDataException("The SVG contains a cyclic use reference.");
+                }
+                try
+                {
+                    CountCopy(target);
+                    var copy = target.DeepCopy();
+                    RemoveCopyIds(copy);
+                    use.Children.Add(copy);
+                    return Expand(copy, depth + 1);
+                }
+                finally
+                {
+                    activeReferences.Remove(reference);
+                }
+            }
+
+            foreach (var child in element.Children)
+            {
+                if (!Expand(child, depth + 1)) return false;
+            }
+            return true;
+        }
+
+        void CountCopy(SvgElement element)
+        {
+            if (++expandedElements > MaxExpandedReferenceElements)
+            {
+                throw new InvalidDataException($"SVG expanded references must not exceed {MaxExpandedReferenceElements} elements.");
+            }
+            if (element is SvgPath path) expandedPathSegments += path.PathData?.Count ?? 0;
+            if (expandedPathSegments > MaxOutputPoints)
+            {
+                throw new InvalidDataException($"SVG expanded references must not exceed {MaxOutputPoints} path segments.");
+            }
+            foreach (var child in element.Children) CountCopy(child);
+        }
+
+        void RemoveCopyIds(SvgElement element)
+        {
+            // Styles were resolved when parsing. Copies inherit presentation from this use,
+            // while paint-server and nested-use references still resolve against the definitions.
+            element.ID = null;
+            foreach (var child in element.Children) RemoveCopyIds(child);
         }
     }
 
@@ -215,7 +299,12 @@ internal static class ImportedSvgBreakApart
         if (IsStructuralContainer(name))
         {
             using var transform = GetElementTransform(element);
-            var transforms = ComposeTransformList(transform, null, ancestorTransforms);
+            using var location = element is SvgUse use
+                ? new Matrix(1, 0, 0, 1,
+                    use.X.ToDeviceValue(renderer, UnitRenderingType.Horizontal, use),
+                    use.Y.ToDeviceValue(renderer, UnitRenderingType.Vertical, use))
+                : null;
+            var transforms = ComposeTransformList(location, transform, ancestorTransforms);
             foreach (var child in element.Children)
             {
                 ExtractElement(child, transforms, opacity, layerKey, state, renderer);
@@ -277,6 +366,7 @@ internal static class ImportedSvgBreakApart
         if (sourcePath is null || sourcePath.PointCount == 0) return;
         using var path = (GraphicsPath)sourcePath.Clone();
         foreach (var transform in transforms) path.Transform(transform);
+        var exactFigures = ReadBezierFigures(path);
         path.Flatten(null, FlatteningTolerance);
         var figures = ReadFigures(path, state);
         if (figures.Count == 0) return;
@@ -316,7 +406,15 @@ internal static class ImportedSvgBreakApart
                         elementName,
                         fillPaint,
                         contours,
-                        UsesEvenOddFillRule: true));
+                        UsesEvenOddFillRule: true)
+                    {
+                        // Native compound fills use even-odd. Retain source curves only when
+                        // that rule paints the same region as the SVG's declared fill rule.
+                        BezierContours = exactFigures.All(figure => figure.Nodes.Length >= 3)
+                            && (evenOdd || SameEvenOddRegion(sourceContours, contours))
+                            ? exactFigures.Where(figure => figure.Nodes.Length >= 3).Select(figure => figure.Nodes).ToArray()
+                            : []
+                    });
                 }
             }
         }
@@ -354,6 +452,34 @@ internal static class ImportedSvgBreakApart
             "stroke-miterlimit",
             visual => visual.StrokeMiterLimit,
             4f);
+        var basis = new[] { PointF.Empty, new PointF(1, 0), new PointF(0, 1) };
+        foreach (var transform in transforms) transform.TransformPoints(basis);
+        var dx = new PointF(basis[1].X - basis[0].X, basis[1].Y - basis[0].Y);
+        var dy = new PointF(basis[2].X - basis[0].X, basis[2].Y - basis[0].Y);
+        var sx = Distance(basis[0], basis[1]);
+        var sy = Distance(basis[0], basis[2]);
+        var uniform = Math.Abs(sx - sy) <= Math.Max(sx, sy) * 0.001f
+            && Math.Abs(dx.X * dy.X + dx.Y * dy.Y) <= sx * sy * 0.001f;
+        if (!state.ForceStrokeOutlines && uniform && sx > 0
+            && lineJoin is not (SvgStrokeLineJoin.Arcs or SvgStrokeLineJoin.MiterClip))
+        {
+            var style = new SvgNativeStrokeStyle(
+                lineCap == SvgStrokeLineCap.Round ? SvgNativeCap.Round : lineCap == SvgStrokeLineCap.Square ? SvgNativeCap.Square : SvgNativeCap.Butt,
+                lineJoin == SvgStrokeLineJoin.Round ? SvgNativeJoin.Round : lineJoin == SvgStrokeLineJoin.Bevel ? SvgNativeJoin.Bevel : SvgNativeJoin.Miter,
+                Math.Max(1, miterLimit));
+            for (var figureIndex = 0; figureIndex < exactFigures.Count; figureIndex++)
+            {
+                var figure = exactFigures[figureIndex];
+                if (figure.Nodes.Length < 2) continue;
+                var samples = figures[figureIndex].Points;
+                state.AddPart(new ImportedSvgBreakStroke(state.NextOrder(), layerKey, elementName,
+                    strokePaint, samples, figure.Closed, sourceWidth * sx,
+                    style.Cap == SvgNativeCap.Round ? LineEndpointStyle.Round : LineEndpointStyle.Sharp,
+                    style.Cap == SvgNativeCap.Round ? LineEndpointStyle.Round : LineEndpointStyle.Sharp)
+                { BezierNodes = figure.Nodes, Style = style });
+            }
+            return;
+        }
         using var strokeOutline = CreateStrokeOutline(
             sourcePath,
             sourceWidth,
@@ -381,6 +507,54 @@ internal static class ImportedSvgBreakApart
             strokePaint,
             outlineContours,
             UsesEvenOddFillRule: true));
+    }
+
+    private sealed record BezierFigure(PathBezierNode[] Nodes, bool Closed);
+
+    private static List<BezierFigure> ReadBezierFigures(GraphicsPath path)
+    {
+        var result = new List<BezierFigure>();
+        var nodes = new List<PathBezierNode>();
+        var points = path.PathPoints;
+        var types = path.PathTypes;
+        void Flush(bool closed)
+        {
+            if (closed && nodes.Count > 2 && nodes[^1].Anchor == nodes[0].Anchor)
+            {
+                nodes[0] = nodes[0] with { IncomingControl = nodes[^1].IncomingControl };
+                nodes.RemoveAt(nodes.Count - 1);
+            }
+            if (nodes.Count >= 2) result.Add(new(nodes.ToArray(), closed));
+            nodes.Clear();
+        }
+        for (var i = 0; i < points.Length; i++)
+        {
+            var type = (PathPointType)(types[i] & (byte)PathPointType.PathTypeMask);
+            if (type == PathPointType.Start)
+            {
+                Flush(false);
+                nodes.Add(new(points[i], points[i], points[i]));
+            }
+            else if (type == PathPointType.Bezier)
+            {
+                if (nodes.Count == 0 || i + 2 >= points.Length) throw new InvalidDataException("Malformed SVG curve.");
+                nodes[^1] = nodes[^1] with { OutgoingControl = points[i] };
+                i += 2;
+                nodes.Add(new(points[i], points[i - 1], points[i]));
+            }
+            else nodes.Add(new(points[i], points[i], points[i]));
+            if ((types[i] & (byte)PathPointType.CloseSubpath) != 0) Flush(true);
+        }
+        Flush(false);
+        return result;
+    }
+
+    private static bool SameEvenOddRegion(PointF[][] source, PointF[][] normalized)
+    {
+        static PathsD Paths(PointF[][] contours) => new(contours.Select(contour =>
+            new PathD(contour.Select(point => new PointD(point.X, point.Y)))));
+        var evenOdd = Clipper.BooleanOp(ClipType.Union, Paths(source), new PathsD(), FillRule.EvenOdd, LayerOverlapPrecision);
+        return Clipper.Xor(evenOdd, Paths(normalized), FillRule.EvenOdd, LayerOverlapPrecision).Count == 0;
     }
 
     private static GraphicsPath CreateStrokeOutline(
@@ -875,7 +1049,7 @@ internal static class ImportedSvgBreakApart
         return string.Equals(element.Visibility?.Trim(), "visible", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsStructuralContainer(string name) => name is "g" or "a";
+    private static bool IsStructuralContainer(string name) => name is "g" or "a" or "use";
 
     private static bool IsSupportedGeometry(string name)
     {
@@ -889,6 +1063,7 @@ internal static class ImportedSvgBreakApart
             "SvgDocument" or "SvgFragment" => "svg",
             "SvgGroup" => "g",
             "SvgAnchor" => "a",
+            "SvgUse" => "use",
             "SvgPath" => "path",
             "SvgRectangle" => "rect",
             "SvgCircle" => "circle",
@@ -1060,6 +1235,7 @@ internal static class ImportedSvgBreakApart
         private int _nextOrder;
         private int _unplannedLayerKey = -1;
 
+        public bool ForceStrokeOutlines { get; init; }
         public List<ImportedSvgBreakPart> Parts { get; } = new();
         public ImportedSvgBreakApproximation Approximations { get; set; }
 
@@ -1110,6 +1286,38 @@ internal static class ImportedSvgBreakApart
                 .Select(key => _plannedLayers[key])
                 .OrderBy(layer => layer.Order)
                 .ToArray();
+        }
+
+        public void PreserveStrokePaintOrder()
+        {
+            // Native layers paint all fills before all strokes. Split only where
+            // a subsequent SVG fill would otherwise be painted under an earlier stroke.
+            foreach (var group in Parts.GroupBy(part => part.LayerKey).ToArray())
+            {
+                var original = _plannedLayers[group.Key];
+                var key = group.Key;
+                var strokeSeen = false;
+                foreach (var part in group.OrderBy(part => part.Order))
+                {
+                    if (part is ImportedSvgBreakFill && strokeSeen)
+                    {
+                        key = CreateLayer(original.Name);
+                        strokeSeen = false;
+                    }
+                    var index = Parts.IndexOf(part);
+                    Parts[index] = part switch
+                    {
+                        ImportedSvgBreakFill fill => fill with { LayerKey = key },
+                        ImportedSvgBreakStroke stroke => stroke with { LayerKey = key },
+                        _ => part
+                    };
+                    _usedLayerKeys.Add(key);
+                    strokeSeen |= part is ImportedSvgBreakStroke;
+                }
+            }
+            // Paint order, rather than generated IDs, determines layer stacking.
+            foreach (var group in Parts.GroupBy(part => part.LayerKey))
+                _plannedLayers[group.Key] = _plannedLayers[group.Key] with { Order = group.Min(part => part.Order) };
         }
 
         public void CoalesceNonOverlappingLayers()
@@ -1526,6 +1734,17 @@ internal static class ImportedSvgBreakApart
                 return new PartOccupancy(GeometryBounds.Conservative, new PathsD(), IsConservative: true);
             }
             if (!bounds.HasArea) return null;
+            // Sampling a curve can miss a narrow overlap at a neighboring fill.
+            // Use the exact control hull and miter reach when deciding whether
+            // native fill/stroke passes may share a layer without reordering paint.
+            if (stroke.BezierNodes.Length > 0)
+            {
+                var controlBounds = BoundsFromPoints(stroke.BezierNodes.SelectMany(node =>
+                    new[] { node.Anchor, node.IncomingControl, node.OutgoingControl }));
+                return new PartOccupancy(ExpandBounds(controlBounds,
+                    halfWidth * (stroke.Style.Join == SvgNativeJoin.Miter ? stroke.Style.MiterLimit : 1)),
+                    new PathsD(), IsConservative: true);
+            }
             try
             {
                 var sourcePoints = stroke.Closed
@@ -1543,9 +1762,10 @@ internal static class ImportedSvgBreakApart
                 var geometry = Clipper.InflatePaths(
                     source,
                     halfWidth,
-                    JoinType.Round,
-                    endType,
-                    precision: LayerOverlapPrecision);
+                    stroke.Style.Join == SvgNativeJoin.Round ? JoinType.Round
+                        : stroke.Style.Join == SvgNativeJoin.Bevel ? JoinType.Bevel : JoinType.Miter,
+                    stroke.Style.Cap == SvgNativeCap.Square && !stroke.Closed ? EndType.Square : endType,
+                    miterLimit: stroke.Style.MiterLimit, precision: LayerOverlapPrecision);
                 return geometry.Count == 0
                     ? new PartOccupancy(bounds, new PathsD(), IsConservative: true)
                     : new PartOccupancy(BoundsFromPaths(geometry), geometry, IsConservative: false);

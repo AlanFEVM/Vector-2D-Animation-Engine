@@ -675,6 +675,7 @@ internal sealed partial class StageControl : Control
                     if (strokePath.PointCount > 0)
                     {
                         using var pen = StrokePen(strokeColor, screenStroke);
+                        scene.ApplySvgStrokeStyle(i, pen);
                         var oldMode = g.SmoothingMode;
                         g.SmoothingMode = SmoothingMode.AntiAlias;
                         g.DrawPath(pen, strokePath);
@@ -685,14 +686,20 @@ internal sealed partial class StageControl : Control
                 return;
             }
 
-            DrawPathObject(g, path, brush, strokeColor, scene.Stroke[i], screenStroke, pass);
+            if (scene.GetSvgStrokeStyle(i) is not null && scene.Stroke[i] > 0)
+            {
+                using var svgPen = StrokePen(strokeColor, screenStroke);
+                scene.ApplySvgStrokeStyle(i, svgPen);
+                g.DrawPath(svgPen, path);
+            }
+            else DrawPathObject(g, path, brush, strokeColor, scene.Stroke[i], screenStroke, pass);
             return;
         }
 
         if (IsFreehandShape(shape) && scene.TryGetFreehandLocalPoints(i, out var freehandPoints))
         {
             var color = shape == ShapeKind.BrushStroke ? Color.FromArgb(scene.Argb[i]) : strokeColor;
-            DrawFreehandStroke(g, i, freehandPoints, color, scene.Stroke[i]);
+            DrawFreehandStroke(g, scene, i, freehandPoints, color, scene.Stroke[i]);
             return;
         }
 
@@ -1824,25 +1831,41 @@ internal sealed partial class StageControl : Control
         return Color.FromArgb(stops[^1].Argb);
     }
 
-    private void DrawFreehandStroke(Graphics g, int i, PointF[] localPoints, Color color, float stroke)
+    private void DrawFreehandStroke(Graphics g, VectorScene scene, int i, PointF[] localPoints, Color color, float stroke)
     {
         if (localPoints.Length == 0) return;
-        var screenWidth = Math.Max(0.75f, WorldLengthToScreen(stroke));
+        var screenWidth = Math.Max(scene.GetSvgStrokeStyle(i) is not null ? 0.01f : 0.75f, WorldLengthToScreen(stroke));
         if (localPoints.Length == 1)
         {
-            var point = WorldToScreen(LocalToWorld(i, localPoints[0]));
+            var point = WorldToScreen(ObjectLocalToWorld(scene, i, localPoints[0]));
             using var dot = new SolidBrush(color);
-            g.FillEllipse(dot, point.X - screenWidth * 0.5f, point.Y - screenWidth * 0.5f, screenWidth, screenWidth);
+            if (scene.GetSvgStrokeStyle(i) is { Cap: SvgNativeCap.Square })
+                g.FillRectangle(dot, point.X - screenWidth * 0.5f, point.Y - screenWidth * 0.5f, screenWidth, screenWidth);
+            else g.FillEllipse(dot, point.X - screenWidth * 0.5f, point.Y - screenWidth * 0.5f, screenWidth, screenWidth);
             return;
         }
 
         using var pen = StrokePen(color, screenWidth);
+        scene.ApplySvgStrokeStyle(i, pen);
+        if (scene.GetSvgStrokeStyle(i) is not null && scene.TryGetFreehandBezierWorldNodes(i, out var exactNodes))
+        {
+            using var exactPath = new GraphicsPath();
+            for (var nodeIndex = 1; nodeIndex < exactNodes.Length; nodeIndex++)
+            {
+                var previousNode = exactNodes[nodeIndex - 1];
+                var node = exactNodes[nodeIndex];
+                exactPath.AddBezier(WorldToScreen(previousNode.Anchor), WorldToScreen(previousNode.OutgoingControl),
+                    WorldToScreen(node.IncomingControl), WorldToScreen(node.Anchor));
+            }
+            g.DrawPath(pen, exactPath);
+            return;
+        }
         var oldMode = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var previous = WorldToScreen(LocalToWorld(i, localPoints[0]));
+        var previous = WorldToScreen(ObjectLocalToWorld(scene, i, localPoints[0]));
         for (var p = 1; p < localPoints.Length; p++)
         {
-            var current = WorldToScreen(LocalToWorld(i, localPoints[p]));
+            var current = WorldToScreen(ObjectLocalToWorld(scene, i, localPoints[p]));
             g.DrawLine(pen, previous, current);
             previous = current;
         }

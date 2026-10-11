@@ -185,16 +185,12 @@ internal sealed partial class Direct2DStageRenderer
 
         if (IsFreehandShape(shape))
         {
-            var freehandVectors = GetBoundaryVectors(stage, i);
-            var highlightKind = StageControl.SelectionHighlightForShape(shape);
-            if (freehandVectors.Length == 1)
-            {
-                DrawSelectionDot(freehandVectors[0], primary, highlightKind);
-            }
-            else if (freehandVectors.Length > 1)
-            {
-                DrawSelectionPolyline(freehandVectors, primary, highlightKind);
-            }
+            var world = stage.Scene.GetShapeBoundary(i);
+            var highlightKind = stage.SelectionHighlightForObject(i, StageControl.SelectionHighlightForShape(shape));
+            if (world.Length == 1 && stage.Scene.IsSelectionPointExposed(i, world[0], stage.Frame, strokePass: true))
+                DrawSelectionDot(WorldToVector(stage, world[0]), primary, highlightKind);
+            foreach (var contour in stage.Scene.GetVisiblePathSelectionPolylines(i, stage.Frame, [world], closed: false))
+                DrawSelectionPolyline(contour.Select(point => WorldToVector(stage, point)).ToArray(), primary, highlightKind);
 
             return;
         }
@@ -256,12 +252,13 @@ internal sealed partial class Direct2DStageRenderer
                 return;
             }
 
-            var points = stage.GetSelectedStrokePartPoints(hit)
-                .Select(point => WorldToVector(stage, point))
-                .ToArray();
-            if (points.Length == 1) DrawSelectionDot(points[0], primary, SelectionHighlightKind.Stroke);
-            else if (points.Length > 1) DrawSelectionPolyline(points, primary, SelectionHighlightKind.Stroke);
-            else if (TryDrawSelectionBoundsRect(stage, objectIndex)) return;
+            var world = stage.GetSelectedStrokePartPoints(hit);
+            var highlightKind = stage.SelectionHighlightForObject(objectIndex, SelectionHighlightKind.Stroke);
+            if (world.Length == 1 && stage.Scene.IsSelectionPointExposed(objectIndex, world[0], stage.Frame, strokePass: true))
+                DrawSelectionDot(WorldToVector(stage, world[0]), primary, highlightKind);
+            foreach (var contour in stage.Scene.GetVisiblePathSelectionPolylines(objectIndex, stage.Frame, [world], closed: false))
+                DrawSelectionPolyline(contour.Select(point => WorldToVector(stage, point)).ToArray(), primary, highlightKind);
+            if (world.Length == 0) TryDrawSelectionBoundsRect(stage, objectIndex);
         }
 
         if (hit.Key.Kind == DrawingElementKind.Fill)
@@ -269,10 +266,13 @@ internal sealed partial class Direct2DStageRenderer
             // Primitive closed shapes use the same rectangular bounding box as whole-object
             // selection instead of a contour hugging the shape.
             if (TryDrawSelectionBoundsRect(stage, objectIndex)) return;
-            foreach (var contour in stage.GetSelectedFillPartContours(hit))
+            foreach (var contour in shape == ShapeKind.Path
+                ? stage.Scene.GetVisiblePathSelectionPolylines(objectIndex, stage.Frame, stage.GetSelectedFillPartContours(hit))
+                : stage.GetSelectedFillPartContours(hit))
             {
                 var points = contour.Select(point => WorldToVector(stage, point)).ToArray();
-                if (points.Length >= 3) DrawSelectionPolyline(CloseSelectionPolyline(points), primary, SelectionHighlightKind.Fill);
+                if (points.Length >= 2) DrawSelectionPolyline(shape == ShapeKind.Path ? points : CloseSelectionPolyline(points), primary,
+                    shape == ShapeKind.Path ? SelectionHighlightKind.Fill : SelectionHighlightKind.Fill);
             }
 
             return;
@@ -799,7 +799,7 @@ internal sealed partial class Direct2DStageRenderer
             startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp);
         _target!.DrawGeometry(path, BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()), SelectionOuterGlowWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
         _target.DrawGeometry(path, BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()), SelectionGlowWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
-        _target.DrawGeometry(path, BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()), SelectionLineWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
+        _target!.DrawGeometry(path, BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()), SelectionLineWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
     }
 
     private void DrawSelectionLine(

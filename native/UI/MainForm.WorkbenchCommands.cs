@@ -959,7 +959,8 @@ internal sealed partial class MainForm : Form
         }
 
         PointF[][] contours;
-        var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
+        var fillHit = _scene.HitTestFillElement(world, _frame, SelectionToleranceWorld());
+        var hit = fillHit.IsValid ? fillHit : _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (hit.IsValid && hit.Key.Kind == DrawingElementKind.Fill)
         {
             contours = _scene.GetFillPartContours(hit, _frame);

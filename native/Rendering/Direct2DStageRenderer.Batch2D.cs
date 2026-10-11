@@ -321,6 +321,7 @@ internal sealed partial class Direct2DStageRenderer
     {
         key = default;
         if (stage.IsObjectHiddenForRendering(scene, index)) return false;
+        if (scene.GetSvgStrokeStyle(index) is not null) return false;
         if (scene.HasGradient(index)) return false;
         if (scene.TryGetObjectDistortions(index, out _)) return false;
 
