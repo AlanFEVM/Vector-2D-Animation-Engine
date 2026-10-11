@@ -20,6 +20,7 @@ internal readonly record struct SymbolFilters
 internal readonly record struct SymbolEdgeFilter
 {
     public bool Enabled { get; init; }
+    public int? Quality { get; init; }
     public float BlurX { get; init; }
     public float BlurY { get; init; }
     public float Strength { get; init; }
@@ -34,7 +35,7 @@ internal readonly record struct SymbolEdgeFilter
         Angle = 45, Distance = 4, StartColorArgb = unchecked((int)0xff202040),
         EndColorArgb = unchecked((int)0xffffffff)
     };
-    public bool IsValid => SymbolFilterValidation.Radius(BlurX) && SymbolFilterValidation.Radius(BlurY)
+    public bool IsValid => SymbolFilterValidation.Quality(Quality) && SymbolFilterValidation.Radius(BlurX) && SymbolFilterValidation.Radius(BlurY)
         && SymbolFilterValidation.Strength(Strength) && SymbolFilterValidation.Opacity(Opacity)
         && float.IsFinite(Angle) && Angle >= -360 && Angle <= 360
         && float.IsFinite(Distance) && Distance >= 0 && Distance <= 256;
@@ -43,15 +44,22 @@ internal readonly record struct SymbolEdgeFilter
 internal readonly record struct SymbolBlurFilter
 {
     public bool Enabled { get; init; }
+    public int? Quality { get; init; }
+    // Absent in legacy V2D documents: retain their original floating-point kernel.
+    // Flash stores full kernel widths and quantizes after every axis/pass.
+    public bool FlashCompatible { get; init; }
     public float BlurX { get; init; }
     public float BlurY { get; init; }
     public static SymbolBlurFilter Default => new() { Enabled = true, BlurX = 6, BlurY = 6 };
-    public bool IsValid => SymbolFilterValidation.Radius(BlurX) && SymbolFilterValidation.Radius(BlurY);
+    public bool IsValid => SymbolFilterValidation.Quality(Quality)
+        && float.IsFinite(BlurX) && BlurX >= 0 && BlurX <= (FlashCompatible ? 255 : 128)
+        && float.IsFinite(BlurY) && BlurY >= 0 && BlurY <= (FlashCompatible ? 255 : 128);
 }
 
 internal readonly record struct SymbolGlowFilter
 {
     public bool Enabled { get; init; }
+    public int? Quality { get; init; }
     public float BlurX { get; init; }
     public float BlurY { get; init; }
     public float Strength { get; init; }
@@ -59,13 +67,14 @@ internal readonly record struct SymbolGlowFilter
     public int ColorArgb { get; init; }
     public static SymbolGlowFilter Default => new()
     { Enabled = true, BlurX = 8, BlurY = 8, Strength = 1, Opacity = 1, ColorArgb = unchecked((int)0xffffcc33) };
-    public bool IsValid => SymbolFilterValidation.Radius(BlurX) && SymbolFilterValidation.Radius(BlurY)
+    public bool IsValid => SymbolFilterValidation.Quality(Quality) && SymbolFilterValidation.Radius(BlurX) && SymbolFilterValidation.Radius(BlurY)
         && SymbolFilterValidation.Strength(Strength) && SymbolFilterValidation.Opacity(Opacity);
 }
 
 internal readonly record struct SymbolShadowFilter
 {
     public bool Enabled { get; init; }
+    public int? Quality { get; init; }
     public float BlurX { get; init; }
     public float BlurY { get; init; }
     public float Strength { get; init; }
@@ -76,7 +85,7 @@ internal readonly record struct SymbolShadowFilter
     public static SymbolShadowFilter Default => new()
     { Enabled = true, BlurX = 6, BlurY = 6, Strength = 1, Opacity = 0.7f,
       ColorArgb = unchecked((int)0xff000000), Angle = 45, Distance = 8 };
-    public bool IsValid => SymbolFilterValidation.Radius(BlurX) && SymbolFilterValidation.Radius(BlurY)
+    public bool IsValid => SymbolFilterValidation.Quality(Quality) && SymbolFilterValidation.Radius(BlurX) && SymbolFilterValidation.Radius(BlurY)
         && SymbolFilterValidation.Strength(Strength) && SymbolFilterValidation.Opacity(Opacity)
         && float.IsFinite(Angle) && Angle >= -360 && Angle <= 360
         && float.IsFinite(Distance) && Distance >= 0 && Distance <= 256;
@@ -84,6 +93,11 @@ internal readonly record struct SymbolShadowFilter
 
 internal static class SymbolFilterValidation
 {
+    // Nullable so absent legacy fields preserve the original three-pass rendering.
+    // Explicit zero/out-of-range values are invalid rather than silently defaulted.
+    internal const int LegacyQuality = 3;
+    internal static bool Quality(int? value) => value is null or >= 1 and <= 15;
+    internal static int Passes(int? value) => value ?? LegacyQuality;
     internal static bool Radius(float value) => float.IsFinite(value) && value >= 0 && value <= 128;
     internal static bool Strength(float value) => float.IsFinite(value) && value >= 0 && value <= 10;
     internal static bool Opacity(float value) => float.IsFinite(value) && value >= 0 && value <= 1;

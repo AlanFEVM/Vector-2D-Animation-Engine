@@ -210,6 +210,7 @@ internal static class HotReloadModuleResolver
 
         if (typeName is nameof(LibraryVaultPanel)
             or nameof(ImageImportProgressDialog)
+            or nameof(FlashImportProgressDialog)
             or nameof(HierarchyPanel)
             or nameof(SceneEditorPanel)
             or nameof(ReferenceViewPad)

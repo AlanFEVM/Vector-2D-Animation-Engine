@@ -141,6 +141,7 @@ internal sealed class DrawingObjectSymbolPackage
         public float Alpha { get; init; } = 1;
         public int TintArgb { get; init; } = unchecked((int)0xffffffff);
         public SymbolFilters Filters { get; init; }
+        public LayerBlendMode BlendMode { get; init; } = LayerBlendMode.Normal;
         public SpatialOpticalMaterial? OpticalMaterialOverride { get; init; }
         public decimal PlaybackFps { get; init; } = 30m;
         public DrawingObjectPlaybackMode PlaybackMode { get; init; } = DrawingObjectPlaybackMode.PlayOnce;
@@ -279,7 +280,8 @@ internal sealed class DrawingObjectSymbolPackage
                     || !Enum.IsDefined(instance.PlaybackMode)
                     || instance.StateKeyframes is null
                     || !instance.Filters.IsValid
-                    || instance.StateKeyframes.Any(key => !key.State.Filters.IsValid))
+                    || !Enum.IsDefined(instance.BlendMode)
+                    || instance.StateKeyframes.Any(key => !key.State.Filters.IsValid || !Enum.IsDefined(key.State.BlendMode)))
                 {
                     throw new InvalidDataException("The symbol package contains an invalid nested instance.");
                 }

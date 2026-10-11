@@ -152,6 +152,7 @@ internal static class SceneCompositionBuilder
     {
         public bool IsCollisionTerrain { get; init; }
         public SymbolFilters Filters { get; init; }
+        public bool SuppressSourceOpacity { get; init; }
     }
 
     private readonly record struct SourceFrameKey(VectorScene Source, int Frame);
@@ -371,7 +372,8 @@ internal static class SceneCompositionBuilder
             synchronize: false,
             inheritedOutline: hostOutline,
             inheritedOutlineColorArgb: hostOutline ? container.Scene.LayerColorArgb[hostLayer] : 0);
-        if (layers.Any(layer => layer.Source.HasLayerEffects || layer.Filters.HasEnabled))
+        if (layers.Any(layer => layer.Source.HasLayerEffects || layer.Filters.HasEnabled
+            || layer.BlendMode != LayerBlendMode.Normal))
         {
             throw new InvalidDataException("Break Apart cannot flatten symbols that use folders, masks, blend modes, or filters.");
         }
@@ -776,13 +778,18 @@ internal static class SceneCompositionBuilder
                 parentFps,
                 drawingObject.FrameCount,
                 state);
-            if (state.Filters.HasEnabled && source.LayerCount > 0)
+            // A child blend operates against the symbol's own transparent group,
+            // then the symbol as a whole blends against its parent's backdrop.
+            var isolateAppearance = state.Filters.HasEnabled || state.BlendMode != LayerBlendMode.Normal || state.Alpha != 1f
+                || drawingObject.Instances.Any(child => IsDrawingObjectInstanceActive(drawingObject, child, localFrame)
+                    && child.EvaluateState(localFrame).BlendMode != LayerBlendMode.Normal);
+            if (isolateAppearance && source.LayerCount > 0)
             {
                 var filterGroupId = Guid.NewGuid().ToString("N");
                 layers.Add(new CompositionLayer(
-                    source, 0, localFrame, $"{path} / Filters", transform, spatialTransform,
-                    spatialIsPlanar, extrusionVector, 1f, 1f, unchecked((int)0xffffffff),
-                    SpatialOpticalMaterial.Default, LayerBlendMode.Normal, inheritedOutline,
+                    source, 0, localFrame, $"{path} / Appearance", transform, spatialTransform,
+                    spatialIsPlanar, extrusionVector, state.Alpha, 1f, unchecked((int)0xffffffff),
+                    SpatialOpticalMaterial.Default, state.BlendMode == LayerBlendMode.Normal ? LayerBlendMode.Isolate : state.BlendMode, inheritedOutline,
                     inheritedOutlineColorArgb,
                     new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
                     SyntheticGroup: true, GroupId: filterGroupId, ParentGroupId: inheritedParentGroupId)
@@ -790,6 +797,7 @@ internal static class SceneCompositionBuilder
                     Filters = state.Filters
                 });
                 inheritedParentGroupId = filterGroupId;
+                alpha = inheritedAlpha; // Apply this instance's opacity once to the completed group.
             }
             for (var sourceLayer = 0; sourceLayer < source.LayerCount; sourceLayer++)
             {
@@ -801,6 +809,15 @@ internal static class SceneCompositionBuilder
                 var blendMode = sourceLayer < source.LayerBlendModes.Length
                     ? source.LayerBlendModes[sourceLayer]
                     : LayerBlendMode.Normal;
+                if (blendMode == LayerBlendMode.Normal && source.GetLayerKind(sourceLayer) == DrawingLayerKind.Folder
+                    && drawingObject.Instances.Any(child =>
+                        IsDrawingObjectInstanceActive(drawingObject, child, localFrame)
+                        && child.EvaluateState(localFrame).BlendMode != LayerBlendMode.Normal
+                        && source.IsLayerDescendantOf(Array.IndexOf(source.LayerIds, child.SceneLayerId), sourceLayer)))
+                {
+                    // Keep the folder's existing GDI isolation semantics in spatial batching too.
+                    blendMode = LayerBlendMode.Isolate;
+                }
                 var activeChildren = drawingObject.InstancesInLayer(source.LayerIds[sourceLayer])
                     .Where(childInstance => IsDrawingObjectInstanceActive(drawingObject, childInstance, localFrame))
                     .Select(childInstance => definitionsById.TryGetValue(childInstance.DrawingObjectId, out var child)
@@ -812,7 +829,9 @@ internal static class SceneCompositionBuilder
                     ? inheritedParentGroupId
                     : "";
                 var hostGroupId = "";
-                if (blendMode != LayerBlendMode.Normal && activeChildren.Length > 0)
+                if (activeChildren.Length > 0 && (blendMode != LayerBlendMode.Normal
+                    || sourceParentGroupId.Length == 0 && !string.IsNullOrWhiteSpace(source.LayerParentIds[sourceLayer])
+                    || source.LayerOpacity[sourceLayer] != 1f || inheritedOpacity != 1f))
                 {
                     hostGroupId = Guid.NewGuid().ToString("N");
                     layers.Add(new CompositionLayer(
@@ -824,11 +843,12 @@ internal static class SceneCompositionBuilder
                         spatialTransform,
                         spatialIsPlanar,
                         extrusionVector,
-                        1f,
+                        Math.Clamp(source.LayerOpacity[sourceLayer] * inheritedOpacity, 0f, 1f),
                         1f,
                         unchecked((int)0xffffffff),
                         SpatialOpticalMaterial.Default,
-                        blendMode,
+                        blendMode == LayerBlendMode.Normal && source.LayerOpacity[sourceLayer] * inheritedOpacity != 1f
+                            ? LayerBlendMode.Isolate : blendMode,
                         outline,
                         outlineColorArgb,
                         new SceneCompositionObjectOwner(instance.Id, drawingObject.Id, rootInstanceId),
@@ -848,7 +868,7 @@ internal static class SceneCompositionBuilder
                     spatialTransform,
                     spatialIsPlanar,
                     extrusionVector,
-                    inheritedOpacity,
+                    hostGroupId.Length > 0 ? 1f : inheritedOpacity,
                     alpha,
                     tintArgb,
                     opticalMaterial,
@@ -859,7 +879,8 @@ internal static class SceneCompositionBuilder
                     ParentGroupId: hostGroupId.Length > 0 ? hostGroupId : sourceParentGroupId,
                     Distortions: compositionDistortions)
                 {
-                    IsCollisionTerrain = source.IsCollisionTerrainLayer(sourceLayer)
+                    IsCollisionTerrain = source.IsCollisionTerrainLayer(sourceLayer),
+                    SuppressSourceOpacity = hostGroupId.Length > 0
                 });
                 foreach (var childItem in activeChildren)
                 {
@@ -885,7 +906,7 @@ internal static class SceneCompositionBuilder
                         ancestry,
                         $"{path} / {childInstance.Name}",
                         rootInstanceId,
-                        inheritedOpacity * EffectiveLayerOpacity(source, sourceLayer),
+                        hostGroupId.Length > 0 ? 1f : inheritedOpacity * Math.Clamp(source.LayerOpacity[sourceLayer], 0f, 1f),
                         alpha,
                         tintArgb,
                         opticalMaterial,
@@ -992,20 +1013,6 @@ internal static class SceneCompositionBuilder
         }
     }
 
-    private static float EffectiveLayerOpacity(VectorScene scene, int layer)
-    {
-        var opacity = 1f;
-        var current = layer;
-        var visited = new HashSet<int>();
-        while ((uint)current < scene.LayerCount && visited.Add(current))
-        {
-            opacity *= Math.Clamp(scene.LayerOpacity[current], 0f, 1f);
-            current = scene.GetLayerParentIndex(current);
-            if (current < 0) break;
-        }
-        return opacity;
-    }
-
     private static bool IsDrawingObjectInstanceActive(
         DrawingObjectDefinition drawingObject,
         DrawingObjectInstanceDefinition instance,
@@ -1067,7 +1074,8 @@ internal static class SceneCompositionBuilder
             destination.LayerVisible[destinationLayer] = layer.SyntheticGroup
                 || layer.Source.LayerVisible[layer.SourceLayer];
             destination.LayerOpacity[destinationLayer] = layer.SyntheticGroup
-                ? 1f
+                ? Math.Clamp(layer.InheritedOpacity, 0f, 1f)
+                : layer.SuppressSourceOpacity ? 1f
                 : Math.Clamp(layer.Source.LayerOpacity[layer.SourceLayer] * layer.InheritedOpacity, 0f, 1f);
             destination.LayerBlendModes[destinationLayer] = layer.BlendMode;
             destination.SetLayerSymbolFilters(destinationLayer, layer.Filters);
@@ -2281,8 +2289,8 @@ internal static class SceneCompositionBuilder
             PreparedCompositionKind.Bitmap => destination.AddBitmapObject(
                 item.DestinationLayer,
                 item.Center,
-                item.BitmapObjectData
-                    ?? throw new InvalidOperationException("Prepared bitmap composition is missing its image payload."),
+                (item.BitmapObjectData
+                    ?? throw new InvalidOperationException("Prepared bitmap composition is missing its image payload.")).WithPlacedSize(item.Size),
                 item.Angle),
             PreparedCompositionKind.Text => destination.AppendTextObject(
                 item.DestinationLayer,

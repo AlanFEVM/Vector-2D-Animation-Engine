@@ -26,6 +26,12 @@ internal static partial class Benchmark
             "Difference");
 
         var translucentBackdrop = Color.FromArgb(120, 40, 100, 180);
+        AssertColorNear(
+            LayerBlendCompositor.CompositeColorForRegression(backdrop, source, LayerBlendMode.Invert),
+            Color.FromArgb(255, 191, 127, 63), "Invert opaque backdrop");
+        AssertColorNear(
+            LayerBlendCompositor.CompositeColorForRegression(backdrop, source, LayerBlendMode.Isolate),
+            source, "Isolate source over");
         var translucentSource = Color.FromArgb(180, 220, 80, 30);
         var sourceAlpha = translucentSource.A / 255f * 0.75f;
         var backdropAlpha = translucentBackdrop.A / 255f;

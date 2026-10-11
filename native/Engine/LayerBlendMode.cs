@@ -28,5 +28,7 @@ internal enum LayerBlendMode : byte
     Color = 23,
     Luminosity = 24,
     Subtract = 25,
-    Divide = 26
+    Divide = 26,
+    Isolate = 27,
+    Invert = 28
 }

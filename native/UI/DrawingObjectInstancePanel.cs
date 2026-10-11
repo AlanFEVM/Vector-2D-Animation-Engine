@@ -48,7 +48,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private const int FieldPitch = Theme.InspectorRowHeight;
     private const int FieldLabelOffset = 2;
     private const int FieldRowTop = PanelTitleTop + Theme.InspectorTitleHeight + Theme.GapXs;
-    private const int FieldRowCount = 6;
+    private const int FieldRowCount = 7;
     private const int TintRowTop = FieldRowTop + FieldPitch * FieldRowCount;
     private const int TintRowHeight = 42;
     private const int RestoreButtonTop = TintRowTop + TintRowHeight + Theme.GapXs;
@@ -79,6 +79,14 @@ internal sealed class DrawingObjectInstancePanel : Panel
     {
         DropDownStyle = ComboBoxStyle.DropDownList,
         AccessibleName = "Symbol playback mode"
+    };
+    private sealed record BlendModeItem(LayerBlendMode Mode, string Label)
+    {
+        public override string ToString() => UiLocalization.T(Label);
+    }
+    private readonly ComboBox _blendMode = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Symbol blend mode"
     };
     private readonly ModernNumericUpDown _holdFrame = new()
     {
@@ -178,6 +186,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         AddFieldLabel("Anchor X", RowLabelTop(3));
         AddFieldLabel("Anchor Y", RowLabelTop(4));
         AddFieldLabel("Alpha", RowLabelTop(5));
+        AddFieldLabel("Blend Mode", RowLabelTop(6));
         AddFieldLabel("Original Size", RestoreButtonTop + FieldLabelOffset);
 
         _playbackMode.Items.AddRange([
@@ -191,6 +200,9 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Theme.StyleNumeric(_anchorX);
         Theme.StyleNumeric(_anchorY);
         Theme.StyleComboBox(_playbackMode);
+        Theme.StyleComboBox(_blendMode);
+        foreach (var item in LayerBlendModePanel.BlendModes) _blendMode.Items.Add(new BlendModeItem(item.Mode, item.Label));
+        _blendMode.SelectedIndex = 0;
         Theme.StyleButton(_restoreSize);
         Theme.StyleToolTip(_toolTip);
         _toolTip.SetToolTip(_alpha, UiLocalization.T("Adjust symbol alpha"));
@@ -199,6 +211,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
         Controls.Add(_fps);
         Controls.Add(_playbackMode);
+        Controls.Add(_blendMode);
         Controls.Add(_holdFrame);
         Controls.Add(_anchorX);
         Controls.Add(_anchorY);
@@ -214,6 +227,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
     public event EventHandler<DrawingObjectPlaybackSettingsChangedEventArgs>? PlaybackSettingsChanged;
     public event EventHandler<DrawingObjectAnchorChangedEventArgs>? AnchorChanged;
     public event EventHandler<DrawingObjectAppearanceChangedEventArgs>? AppearanceChanged;
+    public event EventHandler<LayerBlendModeChangedEventArgs>? BlendModeChanged;
     public event EventHandler? AppearanceInteractionStarted;
     public event EventHandler? AppearanceInteractionCompleted;
     public event EventHandler? AppearanceInteractionCanceled;
@@ -250,7 +264,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
         bool canEditAnchor,
         bool alphaMixed = false,
         bool tintMixed = false,
-        bool filtersMixed = false)
+        bool filtersMixed = false,
+        bool blendModeMixed = false)
     {
         _updating = true;
         try
@@ -269,6 +284,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
             _alphaMixed = alphaMixed;
             _tintMixed = tintMixed;
             _filters.SetFilters(state.Filters, filtersMixed);
+            _blendMode.SelectedIndex = blendModeMixed ? -1 : Array.FindIndex(LayerBlendModePanel.BlendModes, item => item.Mode == state.BlendMode);
+            _blendMode.AccessibleDescription = UiLocalization.T(blendModeMixed ? "Mixed" : "Symbol blend mode");
             UpdateAlphaPresentation();
             UpdateTintPresentation();
             UpdateModeState();
@@ -348,6 +365,11 @@ internal sealed class DrawingObjectInstancePanel : Panel
         _alpha.InteractionCompleted += (_, _) => CompleteAlphaInteraction();
         _alpha.InteractionCanceled += (_, _) => CancelAlphaInteraction();
         _tint.Click += (_, _) => ChooseTint();
+        _blendMode.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_updating && _blendMode.SelectedItem is BlendModeItem item)
+                BlendModeChanged?.Invoke(this, new LayerBlendModeChangedEventArgs(item.Mode));
+        };
         _restoreSize.Click += (_, _) => RestoreOriginalSizeRequested?.Invoke(this, EventArgs.Empty);
     }
 
@@ -506,6 +528,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
         _holdFrame.SetBounds(valueLeft, RowTop(2), valueWidth, Theme.ControlHeightCompact);
         _anchorX.SetBounds(valueLeft, RowTop(3), valueWidth, Theme.ControlHeightCompact);
         _anchorY.SetBounds(valueLeft, RowTop(4), valueWidth, Theme.ControlHeightCompact);
+        _blendMode.SetBounds(valueLeft, RowTop(6), valueWidth, Theme.ControlHeightCompact);
         var alphaValueWidth = 44;
         var alphaGap = 4;
         var alphaTop = RowTop(5);

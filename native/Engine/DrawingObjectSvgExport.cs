@@ -52,6 +52,11 @@ internal static class DrawingObjectSvgExport
         {
             throw new InvalidOperationException("The symbol has too many objects to export.");
         }
+        if (Enumerable.Range(0, scene.LayerCount).Any(layer =>
+                scene.IsLayerEffectivelyVisible(layer) && (scene.LayerBlendModes[layer] == LayerBlendMode.Invert
+                    || scene.GetLayerKind(layer) == DrawingLayerKind.Folder
+                        && scene.LayerBlendModes[layer] != LayerBlendMode.Normal)))
+            throw new InvalidOperationException("Portable SVG export cannot preserve this isolated group or inverse blend. Save the V2D project to retain the appearance.");
 
         // Geometry emission is shared with the stored whole-object preview, which
         // works from a snapshot. Active-set and visibility decisions use the live
@@ -251,12 +256,24 @@ internal static class DrawingObjectSvgExport
             }
             if (HasPaint(visual.Stroke, visual.StrokeOpacity) && visual.StrokeWidth.Value > 0)
             {
-                // The emitter uses round joins and either round or butt caps.
+                // Imported native strokes retain SVG caps, joins and miter limits.
+                var cap = visual.StrokeLineCap switch
+                {
+                    SvgStrokeLineCap.Round => LineCap.Round,
+                    SvgStrokeLineCap.Square => LineCap.Square,
+                    _ => LineCap.Flat
+                };
                 using var pen = new Pen(Color.Black, visual.StrokeWidth.Value)
                 {
-                    LineJoin = LineJoin.Round,
-                    StartCap = visual.StrokeLineCap == SvgStrokeLineCap.Round ? LineCap.Round : LineCap.Flat,
-                    EndCap = visual.StrokeLineCap == SvgStrokeLineCap.Round ? LineCap.Round : LineCap.Flat
+                    LineJoin = visual.StrokeLineJoin switch
+                    {
+                        SvgStrokeLineJoin.Round => LineJoin.Round,
+                        SvgStrokeLineJoin.Bevel => LineJoin.Bevel,
+                        _ => LineJoin.Miter
+                    },
+                    StartCap = cap,
+                    EndCap = cap,
+                    MiterLimit = Math.Max(1, visual.StrokeMiterLimit)
                 };
                 // GetBounds(matrix, pen) adds a conservative full pen width on
                 // each side. Measure the actual widened stroke outline instead.

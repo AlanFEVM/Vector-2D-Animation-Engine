@@ -13,27 +13,26 @@ internal static class SymbolFilterRasterizer
 {
     private const int BoxPasses = 3;
 
-    // BlurX/Y are nominal stage-pixel extents, split over three fractional box
-    // passes. Each pass has radius BlurX/Y * pixelScale / 3. This approximates a
-    // Gaussian, varies continuously at subpixel sizes, and has finite support
-    // 3 * ceil(radius). Padding must cover that support, not just the nominal size.
+    // Preserve the original per-pass kernel (radius BlurX/Y * pixelScale / 3).
+    // Quality controls repetitions; missing legacy fields retain three passes.
+    // Padding covers every pass, including fractional kernels and effect chains.
     internal static SymbolFilterPadding GetPadding(SymbolFilters filters, float pixelScale = 1f)
     {
         Validate(filters, pixelScale);
-        int horizontal = filters.Blur.Enabled ? Support(filters.Blur.BlurX, pixelScale) : 0;
-        int vertical = filters.Blur.Enabled ? Support(filters.Blur.BlurY, pixelScale) : 0;
+        int horizontal = filters.Blur.Enabled ? BlurSupport(filters.Blur, filters.Blur.BlurX, pixelScale) : 0;
+        int vertical = filters.Blur.Enabled ? BlurSupport(filters.Blur, filters.Blur.BlurY, pixelScale) : 0;
         if (Visible(filters.Glow.Enabled, filters.Glow.Strength, filters.Glow.Opacity, filters.Glow.ColorArgb))
         {
-            horizontal = checked(horizontal + Support(filters.Glow.BlurX, pixelScale));
-            vertical = checked(vertical + Support(filters.Glow.BlurY, pixelScale));
+            horizontal = checked(horizontal + Support(filters.Glow.BlurX, pixelScale, filters.Glow.Quality));
+            vertical = checked(vertical + Support(filters.Glow.BlurY, pixelScale, filters.Glow.Quality));
         }
 
         int left = horizontal, right = horizontal, top = vertical, bottom = vertical;
         if (Visible(filters.Shadow.Enabled, filters.Shadow.Strength, filters.Shadow.Opacity, filters.Shadow.ColorArgb))
         {
             (double dx, double dy) = ShadowOffset(filters.Shadow, pixelScale);
-            int spreadX = Support(filters.Shadow.BlurX, pixelScale);
-            int spreadY = Support(filters.Shadow.BlurY, pixelScale);
+            int spreadX = Support(filters.Shadow.BlurX, pixelScale, filters.Shadow.Quality);
+            int spreadY = Support(filters.Shadow.BlurY, pixelScale, filters.Shadow.Quality);
             // Cover the unshifted blurred mask as well as its final translation:
             // cropping an intermediate tail would also remove that tail after
             // it moves back inside the image. Bilinear translation reaches both
@@ -47,8 +46,8 @@ internal static class SymbolFilterRasterizer
         {
             if (!edge.Enabled) continue;
             int offset = checked((int)Math.Ceiling((double)edge.Distance * pixelScale));
-            int x = checked(Support(edge.BlurX, pixelScale) + offset);
-            int y = checked(Support(edge.BlurY, pixelScale) + offset);
+            int x = checked(Support(edge.BlurX, pixelScale, edge.Quality) + offset);
+            int y = checked(Support(edge.BlurY, pixelScale, edge.Quality) + offset);
             left = checked(left + x); right = checked(right + x);
             top = checked(top + y); bottom = checked(bottom + y);
         }
@@ -122,8 +121,11 @@ internal static class SymbolFilterRasterizer
             for (int channel = 0; channel < 4; channel++)
             {
                 for (int i = 0; i < count; i++) plane[i] = pixels[i * 4 + channel];
-                Blur(ref plane, ref scratch, width, height,
-                    filters.Blur.BlurX, filters.Blur.BlurY, pixelScale);
+                if (filters.Blur.FlashCompatible)
+                    FlashBlur(ref plane, ref scratch, width, height, filters.Blur, pixelScale);
+                else
+                    Blur(ref plane, ref scratch, width, height,
+                        filters.Blur.BlurX, filters.Blur.BlurY, pixelScale, filters.Blur.Quality);
                 for (int i = 0; i < count; i++) pixels[i * 4 + channel] = plane[i];
             }
         }
@@ -132,7 +134,7 @@ internal static class SymbolFilterRasterizer
         {
             ExtractAlpha(pixels, plane, count);
             Blur(ref plane, ref scratch, width, height,
-                filters.Glow.BlurX, filters.Glow.BlurY, pixelScale);
+                filters.Glow.BlurX, filters.Glow.BlurY, pixelScale, filters.Glow.Quality);
             CompositeBehind(pixels, plane, width, height, filters.Glow.ColorArgb,
                 filters.Glow.Strength, filters.Glow.Opacity, 0, 0);
         }
@@ -142,7 +144,7 @@ internal static class SymbolFilterRasterizer
             // The shadow belongs to the preceding blur-plus-glow result.
             ExtractAlpha(pixels, plane, count);
             Blur(ref plane, ref scratch, width, height,
-                filters.Shadow.BlurX, filters.Shadow.BlurY, pixelScale);
+                filters.Shadow.BlurX, filters.Shadow.BlurY, pixelScale, filters.Shadow.Quality);
             (double dx, double dy) = ShadowOffset(filters.Shadow, pixelScale);
             CompositeBehind(pixels, plane, width, height, filters.Shadow.ColorArgb,
                 filters.Shadow.Strength, filters.Shadow.Opacity, dx, dy);
@@ -156,7 +158,7 @@ internal static class SymbolFilterRasterizer
         {
             if (!effect.Enabled || effect.Strength == 0 || effect.Opacity == 0) return;
             ExtractAlpha(pixels, plane, count);
-            Blur(ref plane, ref scratch, width, height, effect.BlurX, effect.BlurY, pixelScale);
+            Blur(ref plane, ref scratch, width, height, effect.BlurX, effect.BlurY, pixelScale, effect.Quality);
             double angle = effect.Angle * Math.PI / 180;
             double dx = Math.Cos(angle) * effect.Distance * pixelScale;
             double dy = Math.Sin(angle) * effect.Distance * pixelScale;
@@ -213,8 +215,58 @@ internal static class SymbolFilterRasterizer
     private static bool Visible(bool enabled, float strength, float opacity, int colorArgb)
         => enabled && strength > 0 && opacity > 0 && ((uint)colorArgb >> 24) != 0;
 
-    private static int Support(float blur, float pixelScale)
-        => checked(BoxPasses * (int)Math.Ceiling((double)blur * pixelScale / BoxPasses));
+    private static int Support(float blur, float pixelScale, int? quality)
+        => checked(SymbolFilterValidation.Passes(quality) * (int)Math.Ceiling((double)blur * pixelScale / BoxPasses));
+
+    private static int BlurSupport(SymbolBlurFilter filter, float blur, float scale)
+        => filter.FlashCompatible
+            ? SymbolFilterValidation.Passes(filter.Quality) * (int)Math.Ceiling((FlashKernelWidth(blur, scale) - 1) / 2)
+            : Support(blur, scale, filter.Quality);
+
+    // Stage zoom scales the distance between kernel samples; instance transforms
+    // have already been applied to the geometry and must not scale the filter again.
+    internal static double FlashKernelWidth(float blur, float scale)
+        => Math.Clamp((double)(blur - 1) * scale + 1, 1, 255);
+
+    private static void FlashBlur(ref float[] plane, ref float[] scratch,
+        int width, int height, SymbolBlurFilter filter, float scale)
+    {
+        double x = FlashKernelWidth(filter.BlurX, scale), y = FlashKernelWidth(filter.BlurY, scale);
+        for (int pass = 0; pass < SymbolFilterValidation.Passes(filter.Quality); pass++)
+        {
+            if (x > 1) { FlashAxis(plane, scratch, width, height, x, true); (plane, scratch) = (scratch, plane); }
+            if (y > 1) { FlashAxis(plane, scratch, width, height, y, false); (plane, scratch) = (scratch, plane); }
+        }
+    }
+
+    // Fixed byte samples keep sums exact and avoid accumulating roundoff across
+    // quality passes. The fractional edge weight is an 8-bit fixed-point value;
+    // the full (unrounded) width remains the normalization divisor.
+    private static void FlashAxis(float[] input, float[] output, int width, int height, double kernelWidth, bool horizontal)
+    {
+        double radius = (kernelWidth - 1) / 2;
+        int whole = (int)Math.Ceiling(radius) - 1;
+        int weight = (int)Math.Floor((radius - whole) * 255);
+        int length = horizontal ? width : height, lines = horizontal ? height : width;
+        int step = horizontal ? 1 : width;
+        for (int line = 0; line < lines; line++)
+        {
+            int start = horizontal ? line * width : line;
+            long sum = 0;
+            for (int i = 0; i <= Math.Min(whole, length - 1); i++) sum += ToByte(input[start + i * step]);
+            for (int position = 0; position < length; position++)
+            {
+                long before = (long)position - whole - 1, after = (long)position + whole + 1;
+                long weighted = sum * 255;
+                if (before >= 0) weighted += weight * ToByte(input[start + (int)before * step]);
+                if (after < length) weighted += weight * ToByte(input[start + (int)after * step]);
+                output[start + position * step] = (float)Math.Clamp(Math.Floor(weighted / (255 * kernelWidth)), 0, 255) / 255f;
+                long leaving = (long)position - whole;
+                if (leaving >= 0) sum -= ToByte(input[start + (int)leaving * step]);
+                if (after < length) sum += ToByte(input[start + (int)after * step]);
+            }
+        }
+    }
 
     private static (double X, double Y) ShadowOffset(SymbolShadowFilter filter, float scale)
     {
@@ -230,11 +282,11 @@ internal static class SymbolFilterRasterizer
     }
 
     private static void Blur(ref float[] plane, ref float[] scratch,
-        int width, int height, float blurX, float blurY, float scale)
+        int width, int height, float blurX, float blurY, float scale, int? quality)
     {
         double radiusX = (double)blurX * scale / BoxPasses;
         double radiusY = (double)blurY * scale / BoxPasses;
-        for (int pass = 0; pass < BoxPasses; pass++)
+        for (int pass = 0; pass < SymbolFilterValidation.Passes(quality); pass++)
         {
             if (radiusX > 0)
             {

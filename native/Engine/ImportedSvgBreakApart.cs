@@ -103,13 +103,15 @@ internal static class ImportedSvgBreakApart
     /// </summary>
     public static ImportedSvgBreakResult Extract(string source) => Extract(source, null);
     public static ImportedSvgBreakResult Extract(string source, bool forceStrokeOutlines) => Extract(source, null, forceStrokeOutlines);
+    public static ImportedSvgBreakResult Extract(string source, bool forceStrokeOutlines, bool requireExactGeometry)
+        => Extract(source, null, forceStrokeOutlines, requireExactGeometry);
 
     /// <summary>
     /// Converts SVG geometry and applies an optional outer transform after the document viewBox.
     /// Composition code can use this overload with the original SVG source instead of decoding an
     /// internal data-image wrapper generated solely for raster composition.
     /// </summary>
-    public static ImportedSvgBreakResult Extract(string source, Matrix? outerTransform, bool forceStrokeOutlines = false)
+    public static ImportedSvgBreakResult Extract(string source, Matrix? outerTransform, bool forceStrokeOutlines = false, bool requireExactGeometry = false)
     {
         if (string.IsNullOrWhiteSpace(source)) throw new InvalidDataException("The imported SVG source is empty.");
         var sourceBytes = StrictUtf8.GetBytes(source);
@@ -137,6 +139,7 @@ internal static class ImportedSvgBreakApart
         using var outerTransformClone = outerTransform is null ? null : outerTransform.Clone();
         if (requiresRasterFallback)
         {
+            if (requireExactGeometry) throw new InvalidDataException("The SVG uses XML or presentation content that cannot be converted to editable geometry exactly.");
             return RasterizeDocument(document, intrinsicSize, outerTransformClone);
         }
 
@@ -144,12 +147,13 @@ internal static class ImportedSvgBreakApart
         var vectorDocument = ContainsUse(document) ? (SvgDocument)document.DeepCopy<SvgDocument>() : document;
         if (!ExpandLocalReferences(vectorDocument, document))
         {
+            if (requireExactGeometry) throw new InvalidDataException("The SVG contains a reference that cannot be expanded into editable geometry.");
             return RasterizeDocument(document, intrinsicSize, outerTransformClone);
         }
 
         try
         {
-            var state = new ExtractionState { ForceStrokeOutlines = forceStrokeOutlines };
+            var state = new ExtractionState { ForceStrokeOutlines = forceStrokeOutlines, RequireExactGeometry = requireExactGeometry };
             state.PlanDocumentLayers(vectorDocument);
             var rootOpacity = Math.Clamp(vectorDocument.Opacity, 0f, 1f);
             if (rootOpacity < 1f) state.Approximations |= ImportedSvgBreakApproximation.FlattenedGroupOpacity;
@@ -168,10 +172,15 @@ internal static class ImportedSvgBreakApart
 
             if (state.Parts.Count == 0)
             {
+                if (requireExactGeometry) throw new InvalidDataException("The SVG contains no editable vector geometry.");
                 return RasterizeDocument(document, intrinsicSize, outerTransformClone);
             }
             state.PreserveStrokePaintOrder();
             state.CoalesceNonOverlappingLayers();
+            if (requireExactGeometry && (state.Approximations != ImportedSvgBreakApproximation.None
+                || state.Parts.Any(part => part is ImportedSvgBreakFill fill && fill.BezierContours.Length == 0
+                    || part is ImportedSvgBreakStroke stroke && stroke.BezierNodes.Length < 2)))
+                throw new InvalidDataException("The SVG requires flattened, omitted, or approximated geometry; exact editable conversion stopped.");
 
             return new ImportedSvgBreakResult(
                 intrinsicSize,
@@ -179,7 +188,7 @@ internal static class ImportedSvgBreakApart
                 state.Parts.ToArray(),
                 state.Approximations);
         }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
+        catch (Exception exception) when (exception is not OutOfMemoryException && !requireExactGeometry)
         {
             return RasterizeDocument(document, intrinsicSize, outerTransformClone);
         }
@@ -369,6 +378,8 @@ internal static class ImportedSvgBreakApart
         var exactFigures = ReadBezierFigures(path);
         path.Flatten(null, FlatteningTolerance);
         var figures = ReadFigures(path, state);
+        if (state.RequireExactGeometry && exactFigures.Count != figures.Count)
+            throw new InvalidDataException("SVG curve contours cannot be represented completely as editable geometry.");
         if (figures.Count == 0) return;
 
         var fillOpacity = ResolveInheritedPresentation(
@@ -480,6 +491,8 @@ internal static class ImportedSvgBreakApart
             }
             return;
         }
+        if (state.RequireExactGeometry)
+            throw new InvalidDataException("The SVG stroke transform or join requires a flattened outline; exact editable conversion stopped.");
         using var strokeOutline = CreateStrokeOutline(
             sourcePath,
             sourceWidth,
@@ -1236,6 +1249,7 @@ internal static class ImportedSvgBreakApart
         private int _unplannedLayerKey = -1;
 
         public bool ForceStrokeOutlines { get; init; }
+        public bool RequireExactGeometry { get; init; }
         public List<ImportedSvgBreakPart> Parts { get; } = new();
         public ImportedSvgBreakApproximation Approximations { get; set; }
 

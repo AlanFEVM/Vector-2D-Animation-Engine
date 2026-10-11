@@ -29,11 +29,15 @@ internal sealed partial class SymbolFiltersPanel
                 (f,v) => PatchEdge(f, kind, e => e with { Strength = v }), increment: 0.1m);
             AddField(kind, 48, 1, "Opacity", names[(int)kind] + " opacity", 100, "%", f => ReadEdge(f, kind).Opacity * 100,
                 (f,v) => PatchEdge(f, kind, e => e with { Opacity = v / 100 }));
-            if (kind == FilterKind.GradientGlow) continue;
-            AddField(kind, 96, 0, "Angle", names[(int)kind] + " angle", 360, "°", f => ReadEdge(f, kind).Angle,
-                (f,v) => PatchEdge(f, kind, e => e with { Angle = v }), minimum: -360);
-            AddField(kind, 96, 1, "Distance", names[(int)kind] + " distance", 256, "px", f => ReadEdge(f, kind).Distance,
-                (f,v) => PatchEdge(f, kind, e => e with { Distance = v }));
+            if (kind != FilterKind.GradientGlow)
+            {
+                AddField(kind, 96, 0, "Angle", names[(int)kind] + " angle", 360, "°", f => ReadEdge(f, kind).Angle,
+                    (f,v) => PatchEdge(f, kind, e => e with { Angle = v }), minimum: -360);
+                AddField(kind, 96, 1, "Distance", names[(int)kind] + " distance", 256, "px", f => ReadEdge(f, kind).Distance,
+                    (f,v) => PatchEdge(f, kind, e => e with { Distance = v }));
+            }
+            AddQualityField(kind, kind == FilterKind.GradientGlow ? 96 : 144, names[(int)kind] + " quality",
+                f => ReadEdge(f, kind).Quality, (f, v) => PatchEdge(f, kind, e => e with { Quality = v }));
         }
         _selector.SelectedIndexChanged += (_, _) => { CompleteInteraction(); RefreshFields(); LayoutFields(); };
         _selector.SelectedIndex = 0;

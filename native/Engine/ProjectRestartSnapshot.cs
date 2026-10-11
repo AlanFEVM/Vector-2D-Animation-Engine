@@ -143,6 +143,7 @@ internal sealed class InstanceRestartSnapshot
     public float Alpha { get; init; } = 1;
     public int TintArgb { get; init; } = unchecked((int)0xffffffff);
     public SymbolFilters Filters { get; init; }
+    public LayerBlendMode BlendMode { get; init; } = LayerBlendMode.Normal;
     public SpatialOpticalMaterial? OpticalMaterialOverride { get; init; }
     public decimal PlaybackFps { get; init; } = 30m;
     public DrawingObjectPlaybackMode PlaybackMode { get; init; } = DrawingObjectPlaybackMode.PlayOnce;

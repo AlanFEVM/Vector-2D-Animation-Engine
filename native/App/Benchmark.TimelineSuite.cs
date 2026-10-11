@@ -8,6 +8,7 @@ internal static partial class Benchmark
     public static void RunTimelineRegression()
     {
         RunMotionTrackRegression();
+        RunFlashImportRegression();
         RunSymbolFiltersModelRegression();
         if (Math.Abs(TimelineStrip.CursorTimeSeconds(13, 30) - 13d / 30d) > 0.000001
             || TimelineStrip.FormatCursorTimeSeconds(13, 30) != "0.433 s"
@@ -3414,7 +3415,7 @@ internal static partial class Benchmark
         }
         var removedBlendIds = new[] { blendScene.LayerIds[3], blendScene.LayerIds[17] };
         AssertTimeline(
-            blendModes.Length == 27
+            blendModes.Length == 29
             && blendModes.Distinct().Count() == blendModes.Length
             && blendScene.MoveLayer(0, blendScene.LayerCount - 1)
             && blendScene.RemoveLayers(removedBlendIds),

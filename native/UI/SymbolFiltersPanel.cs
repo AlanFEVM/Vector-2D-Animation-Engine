@@ -8,7 +8,7 @@ internal sealed class SymbolFiltersChangedEventArgs(Func<SymbolFilters, SymbolFi
 
 internal sealed partial class SymbolFiltersPanel : Panel
 {
-    private const int LogicalPanelHeight = 380;
+    private const int LogicalPanelHeight = 424;
     private enum FilterKind { Blur, Glow, Shadow, Bevel, GradientBevel, GradientGlow }
     private sealed record NumericField(Label Label, ModernNumericUpDown Input, FilterKind Kind,
         int Row, int Column, Func<SymbolFilters, float> Read,
@@ -48,6 +48,8 @@ internal sealed partial class SymbolFiltersPanel : Panel
             f => f.Blur.BlurX, (f, v) => f with { Blur = f.Blur with { BlurX = v } });
         AddField(FilterKind.Blur, 114, 1, "Blur Y", "Blur vertical radius", 128, "px",
             f => f.Blur.BlurY, (f, v) => f with { Blur = f.Blur with { BlurY = v } });
+        AddQualityField(FilterKind.Blur, 162, "Blur quality",
+            f => f.Blur.Quality, (f, v) => f with { Blur = f.Blur with { Quality = v } });
         AddField(FilterKind.Glow, 196, 0, "Blur X", "Glow horizontal radius", 128, "px",
             f => f.Glow.BlurX, (f, v) => f with { Glow = f.Glow with { BlurX = v } });
         AddField(FilterKind.Glow, 196, 1, "Blur Y", "Glow vertical radius", 128, "px",
@@ -56,6 +58,8 @@ internal sealed partial class SymbolFiltersPanel : Panel
             f => f.Glow.Strength, (f, v) => f with { Glow = f.Glow with { Strength = v } }, increment: 0.1m);
         AddField(FilterKind.Glow, 244, 1, "Opacity", "Glow opacity", 100, "%",
             f => f.Glow.Opacity * 100, (f, v) => f with { Glow = f.Glow with { Opacity = v / 100 } });
+        AddQualityField(FilterKind.Glow, 292, "Glow quality",
+            f => f.Glow.Quality, (f, v) => f with { Glow = f.Glow with { Quality = v } });
         AddField(FilterKind.Shadow, 368, 0, "Blur X", "Shadow horizontal radius", 128, "px",
             f => f.Shadow.BlurX, (f, v) => f with { Shadow = f.Shadow with { BlurX = v } });
         AddField(FilterKind.Shadow, 368, 1, "Blur Y", "Shadow vertical radius", 128, "px",
@@ -68,6 +72,8 @@ internal sealed partial class SymbolFiltersPanel : Panel
             f => f.Shadow.Angle, (f, v) => f with { Shadow = f.Shadow with { Angle = v } }, minimum: -360);
         AddField(FilterKind.Shadow, 464, 1, "Distance", "Shadow distance", 256, "px",
             f => f.Shadow.Distance, (f, v) => f with { Shadow = f.Shadow with { Distance = v } });
+        AddQualityField(FilterKind.Shadow, 512, "Shadow quality",
+            f => f.Shadow.Quality, (f, v) => f with { Shadow = f.Shadow with { Quality = v } });
 
         BuildEffectSelector();
         _blur.CheckedChanged += (_, _) => ToggleFilter(FilterKind.Blur, _blur.Checked);
@@ -97,12 +103,13 @@ internal sealed partial class SymbolFiltersPanel : Panel
 
     private void AddField(FilterKind kind, int row, int column, string label, string accessibleName,
         decimal maximum, string suffix, Func<SymbolFilters, float> read,
-        Func<SymbolFilters, float, SymbolFilters> patch, decimal minimum = 0, decimal increment = 1)
+        Func<SymbolFilters, float, SymbolFilters> patch, decimal minimum = 0, decimal increment = 1,
+        int decimalPlaces = 1, string? toolTip = null)
     {
         var caption = TextLabel(label);
         var input = new ModernNumericUpDown
         {
-            Minimum = minimum, Maximum = maximum, DecimalPlaces = 1, Increment = increment,
+            Minimum = minimum, Maximum = maximum, DecimalPlaces = decimalPlaces, Increment = increment,
             Suffix = suffix, AccessibleName = accessibleName, WheelAdjustsHoveredDigit = true
         };
         Theme.StyleNumeric(input);
@@ -120,7 +127,15 @@ internal sealed partial class SymbolFiltersPanel : Panel
             var value = (float)input.Value;
             ApplyPatch(f => field.Patch(f, value));
         };
-        _toolTip.SetToolTip(input, accessibleName);
+        _toolTip.SetToolTip(input, toolTip ?? accessibleName);
+    }
+
+    private void AddQualityField(FilterKind kind, int row, string accessibleName,
+        Func<SymbolFilters, int?> read, Func<SymbolFilters, int, SymbolFilters> patch)
+    {
+        AddField(kind, row, 0, "Quality", accessibleName, 15, "",
+            f => read(f) ?? 3, (f, v) => patch(f, (int)v), minimum: 1, increment: 1, decimalPlaces: 0,
+            toolTip: "Quality controls the number of filter blur passes (1–15).");
     }
 
     private void ToggleFilter(FilterKind kind, bool enabled)
@@ -348,14 +363,15 @@ internal sealed partial class SymbolFiltersPanel : Panel
         }
         _glowColor.Visible = kind == FilterKind.Glow;
         _shadowColor.Visible = kind == FilterKind.Shadow;
-        _glowColor.SetBounds(left, ScaleLogical(240), width, ScaleLogical(38));
-        _shadowColor.SetBounds(left, ScaleLogical(288), width, ScaleLogical(38));
+        int colorsY = selected.Length == 0 ? 136 : 136 + selected.Max(f => f.Row) - firstRow + 48;
+        _glowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
+        _shadowColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
         bool edge = (int)kind >= 3;
         _startColor.Visible = _endColor.Visible = edge;
         _effectStatus.Visible = edge;
         _effectStatus.SetBounds(left, ScaleLogical(102), width, ScaleLogical(28));
-        _startColor.SetBounds(left, ScaleLogical(288), width, ScaleLogical(38));
-        _endColor.SetBounds(left, ScaleLogical(332), width, ScaleLogical(38));
+        _startColor.SetBounds(left, ScaleLogical(colorsY), width, ScaleLogical(38));
+        _endColor.SetBounds(left, ScaleLogical(colorsY + 44), width, ScaleLogical(38));
     }
 
     private int ScaleLogical(int value) => (int)Math.Round(value * DeviceDpi / 96f);

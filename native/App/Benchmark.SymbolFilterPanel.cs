@@ -2,8 +2,60 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunSymbolFilterQualityPanelRegression()
+    {
+        using var panel = new SymbolFiltersPanel();
+        var filters = new SymbolFilters
+        {
+            Blur = SymbolBlurFilter.Default, Glow = SymbolGlowFilter.Default, Shadow = SymbolShadowFilter.Default,
+            Bevel = SymbolEdgeFilter.Default, GradientBevel = SymbolEdgeFilter.Default, GradientGlow = SymbolEdgeFilter.Default
+        };
+        var selector = (ComboBox)RequireField(typeof(SymbolFiltersPanel), "_selector").GetValue(panel)!;
+        string[] names = ["Blur", "Glow", "Shadow", "Bevel", "Gradient Bevel", "Gradient Glow"];
+        SymbolFilters[] selected = [filters, filters with { Blur = filters.Blur with { BlurX = 21 } }];
+        SymbolFilters[] snapshot = [];
+        int changes = 0, completed = 0;
+        panel.InteractionStarted += (_, _) => snapshot = selected.ToArray();
+        panel.FiltersChanged += (_, e) => { selected = selected.Select(e.Update).ToArray(); changes++; };
+        panel.InteractionCompleted += (_, _) => completed++;
+        panel.InteractionCanceled += (_, _) => selected = snapshot.ToArray();
+        for (int kind = 0; kind < 6; kind++)
+        {
+            selector.SelectedIndex = kind;
+            panel.SetFilters(selected[0], true);
+            var editor = panel.Controls.OfType<ModernNumericUpDown>().Single(control =>
+                control.AccessibleName == UiLocalization.T(names[kind] + " quality"));
+            AssertTimeline(editor.Minimum == 1 && editor.Maximum == 15 && editor.DecimalPlaces == 0
+                && editor.Increment == 1 && editor.Value == 3 && changes == kind,
+                "Quality refresh emitted edits or exposed a non-integer range.");
+            var before = selected.ToArray();
+            editor.Value = 7;
+            for (int i = 0; i < selected.Length; i++)
+                AssertTimeline(selected[i] == SetQuality(before[i], kind, 7), "Quality multi-edit changed unrelated settings.");
+            AssertTimeline(changes == kind + 1 && completed == kind + 1, "Quality edit did not form one transaction.");
+        }
+        var initial = selected.ToArray();
+        var active = panel.Controls.OfType<ModernNumericUpDown>().Single(control =>
+            control.AccessibleName == UiLocalization.T("Gradient Glow quality"));
+        RequireMethod(typeof(ModernNumericUpDown), "BeginStepperInteraction").Invoke(active, null);
+        RequireMethod(typeof(ModernNumericUpDown), "StepValue", [typeof(int), typeof(decimal?)]).Invoke(active, [1, null]);
+        RequireMethod(typeof(ModernNumericUpDown), "EndStepperInteraction", [typeof(bool)]).Invoke(active, [true]);
+        AssertTimeline(selected.SequenceEqual(initial), "Cancel did not restore filter quality.");
+        Console.WriteLine("symbol_filter_quality_panel_multi_cancel=ok");
+        static SymbolFilters SetQuality(SymbolFilters f, int kind, int value) => kind switch
+        {
+            0 => f with { Blur = f.Blur with { Quality = value } },
+            1 => f with { Glow = f.Glow with { Quality = value } },
+            2 => f with { Shadow = f.Shadow with { Quality = value } },
+            3 => f with { Bevel = f.Bevel with { Quality = value } },
+            4 => f with { GradientBevel = f.GradientBevel with { Quality = value } },
+            _ => f with { GradientGlow = f.GradientGlow with { Quality = value } }
+        };
+    }
+
     private static void RunSymbolFiltersPanelRegression()
     {
+        RunSymbolFilterQualityPanelRegression();
         using var panel = new SymbolFiltersPanel();
         var blur = (ModernToggleSwitch)RequireField(typeof(SymbolFiltersPanel), "_blur").GetValue(panel)!;
         var glow = (ModernToggleSwitch)RequireField(typeof(SymbolFiltersPanel), "_glow").GetValue(panel)!;
@@ -173,9 +225,146 @@ internal static partial class Benchmark
             "Disposing the symbol filter panel did not cancel an active transaction.");
         Console.WriteLine("symbol_filters_panel=ok");
         RunSymbolFiltersInspectorUndoRegression();
+        RunSymbolFiltersInspectorUndoRegression(quality: true);
+        RunSymbolBlendInspectorRegression();
     }
 
-    private static void RunSymbolFiltersInspectorUndoRegression()
+    private static void RunSymbolBlendInspectorRegression()
+    {
+        using (var panel = new DrawingObjectInstancePanel())
+        {
+            var blend = (ComboBox)RequireField(typeof(DrawingObjectInstancePanel), "_blendMode").GetValue(panel)!;
+            var state = new DrawingObjectInstanceDefinition().EvaluateState(0) with { BlendMode = LayerBlendMode.Multiply };
+            var changes = new List<LayerBlendMode>();
+            panel.BlendModeChanged += (_, change) => changes.Add(change.BlendMode);
+            void Bind(bool mixed = false) => panel.SetInstance(state, 12, false, PointF.Empty, false, blendModeMixed: mixed);
+            Bind();
+            AssertTimeline(blend.SelectedIndex == Array.FindIndex(LayerBlendModePanel.BlendModes, item => item.Mode == LayerBlendMode.Multiply)
+                && changes.Count == 0, "Binding a symbol blend mode changed the model or selected the wrong mode.");
+            Bind(mixed: true);
+            AssertTimeline(blend.SelectedIndex == -1 && changes.Count == 0
+                && blend.AccessibleDescription == UiLocalization.T("Mixed"),
+                "Mixed symbol blend binding selected a concrete mode or emitted an edit.");
+            blend.SelectedIndex = Array.FindIndex(LayerBlendModePanel.BlendModes, item => item.Mode == LayerBlendMode.Screen);
+            AssertTimeline(changes.SequenceEqual([LayerBlendMode.Screen]),
+                "The symbol blend ComboBox did not map its selected item to Screen.");
+            panel.Enabled = false;
+            Bind();
+            AssertTimeline(!blend.Enabled && changes.Count == 1,
+                "A disabled symbol inspector left its blend editor enabled or emitted an edit during refresh.");
+            panel.Enabled = true;
+            Bind(mixed: true);
+            AssertTimeline(blend.Enabled && blend.SelectedIndex == -1 && changes.Count == 1,
+                "Re-enabling and refreshing the symbol blend inspector changed the selection model.");
+        }
+
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000), Size = new Size(1280, 800)
+        };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var inspector = (DrawingObjectInstancePanel)RequireField(typeof(MainForm), "_drawingObjectInstancePanel").GetValue(form)!;
+        var combo = (ComboBox)RequireField(typeof(DrawingObjectInstancePanel), "_blendMode").GetValue(inspector)!;
+        var undoStack = RequireField(typeof(MainForm), "_sceneTimelineUndoStack").GetValue(form)!;
+        var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
+        var select = RequireMethod(typeof(MainForm), "SetSceneInstanceSelection",
+            [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var updateInspector = RequireMethod(typeof(MainForm), "UpdateInspector");
+        var originalAutoKey = timeline.AutoKeyframeEnabled;
+        try
+        {
+            var source = project.AddDrawingObject("Blend inspector regression");
+            source.Scene.AddObject(0, PointF.Empty, new SizeF(32, 32), 0, 0, Color.Teal, 0, ShapeKind.Rectangle);
+            var scene = project.Scenes[0];
+            var layerId = scene.Layers[0].Id;
+            AssertTimeline(project.TryAddSceneInstance(scene.Id, source.Id, PointF.Empty, 0, layerId, out var created)
+                && created is not null, "Blend inspector regression could not create a symbol instance.");
+            var instanceId = created!.Id;
+            var originalState = created.EvaluateState(0) with
+            {
+                Alpha = 0.65f, TintArgb = Color.CornflowerBlue.ToArgb(),
+                Filters = new SymbolFilters { Glow = SymbolGlowFilter.Default }
+            };
+            created.SetStateAtFrame(0, originalState);
+            var trackId = scene.Timeline.FindTrackByTargetId(layerId)?.Id
+                ?? throw new InvalidOperationException("Blend inspector regression lost its timeline track.");
+            scene.Timeline.SetTrackDuration(trackId, 12);
+            form.Show();
+            tabs.SelectedView = WorkspaceView.SceneEditor;
+            Application.DoEvents();
+            timeline.RefreshTimeline();
+            DrawingObjectInstanceDefinition Instance() => scene.Instances.Single(item => item.Id == instanceId);
+            int UndoCount() => (int)RequireProperty(undoStack.GetType(), "Count",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public).GetValue(undoStack)!;
+            void SelectAtHeldFrame()
+            {
+                timeline.SelectSingleFrame(trackId, 4);
+                select.Invoke(form, [Instance(), false]);
+                updateInspector.Invoke(form, [true]);
+            }
+            void Choose(LayerBlendMode mode) => combo.SelectedIndex = Array.FindIndex(
+                LayerBlendModePanel.BlendModes, item => item.Mode == mode);
+            var refreshEvents = 0;
+            inspector.BlendModeChanged += (_, _) => refreshEvents++;
+            foreach (var autoKey in new[] { false, true })
+            foreach (var mode in new[] { LayerBlendMode.Multiply, LayerBlendMode.Screen })
+            {
+                timeline.AutoKeyframeEnabled = autoKey;
+                var beforeRefresh = refreshEvents;
+                SelectAtHeldFrame();
+                AssertTimeline(ReferenceEquals(timeline.Context, scene) && combo.Enabled
+                    && combo.SelectedIndex == 0 && refreshEvents == beforeRefresh,
+                    "Refreshing the selected symbol blend editor emitted an edit or lost its held state.");
+                var beforeEdit = UndoCount();
+                Choose(mode);
+                var expected = originalState with { BlendMode = mode };
+                AssertTimeline(Instance().EvaluateState(4) == expected
+                    && Instance().EvaluateState(0) == (autoKey ? originalState : expected)
+                    && scene.Timeline.EvaluateExposure(trackId, 4).IsKeyframe == autoKey
+                    && UndoCount() == beforeEdit + 1 && refreshEvents == beforeRefresh + 1,
+                    $"Symbol blend {mode} edited the wrong exposure or did not create one undo entry (Auto Key={autoKey}).");
+                AssertTimeline(undo.Invoke(form, null) is true && UndoCount() == beforeEdit
+                    && Instance().EvaluateState(0) == originalState && Instance().EvaluateState(4) == originalState
+                    && !scene.Timeline.EvaluateExposure(trackId, 4).IsKeyframe,
+                    $"One Undo failed to restore symbol blend {mode} and its held exposure (Auto Key={autoKey}).");
+            }
+
+            AssertTimeline(project.TryAddSceneInstance(scene.Id, source.Id, new PointF(48, 0), 0, layerId, out var second)
+                && second is not null, "Blend inspector regression could not create its second instance.");
+            var secondId = second!.Id;
+            var secondState = second.EvaluateState(0) with { BlendMode = LayerBlendMode.Screen, Alpha = 0.4f };
+            second.SetStateAtFrame(0, secondState);
+            DrawingObjectInstanceDefinition Second() => scene.Instances.Single(item => item.Id == secondId);
+            timeline.AutoKeyframeEnabled = false;
+            timeline.RefreshTimeline();
+            SelectAtHeldFrame();
+            select.Invoke(form, [Second(), true]);
+            var beforeMixedRefresh = refreshEvents;
+            updateInspector.Invoke(form, [true]);
+            AssertTimeline(combo.SelectedIndex == -1 && refreshEvents == beforeMixedRefresh,
+                "A mixed multi-instance blend selection emitted an edit or displayed one concrete mode.");
+            var beforeMultiEdit = UndoCount();
+            Choose(LayerBlendMode.Multiply);
+            AssertTimeline(Instance().EvaluateState(0) == originalState with { BlendMode = LayerBlendMode.Multiply }
+                && Second().EvaluateState(0) == secondState with { BlendMode = LayerBlendMode.Multiply }
+                && UndoCount() == beforeMultiEdit + 1 && refreshEvents == beforeMixedRefresh + 1
+                && !scene.Timeline.EvaluateExposure(trackId, 4).IsKeyframe,
+                "A multi-instance blend edit failed to preserve unrelated values or created multiple undo entries.");
+            AssertTimeline(undo.Invoke(form, null) is true && UndoCount() == beforeMultiEdit
+                && Instance().EvaluateState(0) == originalState && Second().EvaluateState(0) == secondState,
+                "One Undo failed to restore both instances after a mixed blend edit.");
+            Console.WriteLine("symbol_blend_inspector_held_autokey_mixed_undo=ok");
+        }
+        finally
+        {
+            timeline.AutoKeyframeEnabled = originalAutoKey;
+        }
+    }
+
+    private static void RunSymbolFiltersInspectorUndoRegression(bool quality = false)
     {
         using var form = new MainForm
         {
@@ -217,7 +406,7 @@ internal static partial class Benchmark
             Application.DoEvents();
             timeline.RefreshTimeline();
             var strength = inspector.FiltersPanel.Controls.OfType<ModernNumericUpDown>().Single(control =>
-                control.AccessibleName == UiLocalization.T("Glow intensity"));
+                control.AccessibleName == UiLocalization.T(quality ? "Glow quality" : "Glow intensity"));
             DrawingObjectInstanceDefinition Instance() => scene.Instances.Single(item => item.Id == instanceId);
             int UndoCount() => (int)RequireProperty(undoStack.GetType(), "Count",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public).GetValue(undoStack)!;
@@ -243,7 +432,9 @@ internal static partial class Benchmark
             EditTwice(canceled: false);
             var expected = originalState with
             {
-                Filters = originalState.Filters with { Glow = originalState.Filters.Glow with { Strength = 1.2f } }
+                Filters = originalState.Filters with { Glow = quality
+                    ? originalState.Filters.Glow with { Quality = 5 }
+                    : originalState.Filters.Glow with { Strength = 1.2f } }
             };
             AssertTimeline(Instance().EvaluateState(0) == expected && Instance().EvaluateState(4) == expected
                 && !scene.Timeline.EvaluateExposure(trackId, 4).IsKeyframe && UndoCount() == initialUndoCount + 1,
