@@ -3151,7 +3151,7 @@ internal sealed class ColorTargetButton : Control
         var background = !Enabled
             ? Theme.DisabledSurface
             : Selected
-                ? Theme.AccentSurface
+                ? Theme.Mix(Theme.PanelStrong, Theme.AccentSurface, 0.28f)
                 : _hovered
                     ? Theme.PanelHover
                     : Theme.PanelStrong;
@@ -3164,8 +3164,9 @@ internal sealed class ColorTargetButton : Control
                     : Theme.Border;
         using var backgroundBrush = new SolidBrush(background);
         using var border = new Pen(borderColor);
-        e.Graphics.FillRectangle(backgroundBrush, ClientRectangle);
-        e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+        e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
+        Theme.FillUiRectangle(e.Graphics, backgroundBrush, ClientRectangle);
+        Theme.DrawUiRectangle(e.Graphics, border, new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1)));
 
         var swatchSize = Math.Clamp(Height - 18, 20, 30);
         var swatch = new Rectangle(8, Math.Max(5, (Height - swatchSize) / 2), swatchSize, swatchSize);
@@ -3184,6 +3185,8 @@ internal sealed class ColorTargetButton : Control
             : GradientPreviewRenderer.Sample(_gradientStops, 0.5f);
         var swatchBorderColor = Theme.ReadableUiColor(swatchReferenceColor, Theme.BorderHover);
         using (var swatchBorder = new Pen(swatchBorderColor)) e.Graphics.DrawRectangle(swatchBorder, swatch);
+        Theme.PaintControlCorners(this, e.Graphics,
+            new Rectangle(swatch.X, swatch.Y, swatch.Width + 1, swatch.Height + 1), background, swatchBorderColor);
 
         var textLeft = swatch.Right + 8;
         var textWidth = Math.Max(0, Width - textLeft - 8);

@@ -205,7 +205,7 @@ internal sealed class MaterialEditorPanel : UserControl
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
         MinimumSize = new Size(240, 0);
-        Padding = Theme.InspectorSectionPadding;
+        Padding = new Padding(8, Theme.InspectorSectionPaddingVertical, 8, Theme.InspectorSectionPaddingVertical);
         Theme.StyleToolTip(_toolTip);
 
         EnsureGradientPaletteStateLoaded();
@@ -663,6 +663,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private void BuildPersistentHex(TableLayoutPanel content)
     {
         _hexPanel.Dock = DockStyle.Fill;
+        _hexPanel.Margin = Padding.Empty;
         _hexPanel.BackColor = Theme.Panel;
         _hexPanel.Visible = true;
         content.Controls.Add(_hexPanel, 0, 7);
@@ -679,6 +680,8 @@ internal sealed class MaterialEditorPanel : UserControl
         hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         hexRow.Controls.Add(CreateFieldLabel("Hex"), 0, 0);
         _hexText.Dock = DockStyle.Fill;
+        _hexText.Margin = Padding.Empty;
+        _hexText.AccessibleName = "Hex color";
         _hexText.CharacterCasing = CharacterCasing.Upper;
         _hexText.MaxLength = 9;
         Theme.StyleTextBox(_hexText);
@@ -1234,7 +1237,7 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void SetColorEditorExpanded(bool expanded)
     {
-        if (_content is null || _colorEditorExpanded == expanded) return;
+        if (_content is null) return;
         _colorEditorExpanded = expanded;
         _content.SuspendLayout();
         try
@@ -1242,6 +1245,11 @@ internal sealed class MaterialEditorPanel : UserControl
             _content.RowStyles[5].Height = expanded ? Theme.InspectorRowHeight : 0;
             _content.RowStyles[6].Height = expanded ? 236 : 0;
             _content.RowStyles[7].Height = Theme.InspectorRowHeight;
+            foreach (Control control in _content.Controls)
+            {
+                var row = _content.GetRow(control);
+                if (row is 5 or 6) control.Visible = expanded;
+            }
             _colorEditorToggle.Text = "Color";
             if (_colorEditorToggle is SvgIconButton iconButton)
             {

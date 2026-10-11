@@ -267,7 +267,7 @@ internal sealed partial class VectorScene
     {
         if ((uint)objectIndex >= ObjectCount || !HasStroke(objectIndex)) return Array.Empty<DrawingPolylinePartGeometry>();
         var candidates = CollectTopologyCandidates(objectIndex, frame);
-        return BuildBoundaryStrokeParts(objectIndex, candidates)
+        return CachedBoundaryStrokeParts(objectIndex, frame, candidates)
             .Select(part => new DrawingPolylinePartGeometry(part.PartIndex, part.Points.ToArray()))
             .ToArray();
     }
@@ -292,7 +292,7 @@ internal sealed partial class VectorScene
         if (key.Kind == DrawingElementKind.Stroke
             && ShapeKind[key.ObjectIndex] == VectorAnimationEngine.ShapeKind.Line)
         {
-            var splits = StrokeSplits(key.ObjectIndex, candidates);
+            var splits = CachedStrokeSplits(key.ObjectIndex, frame, candidates);
             if (key.PartIndex < 0 || key.PartIndex >= splits.Count - 1) return false;
 
             if (key.PartIndex == 0)
@@ -307,7 +307,7 @@ internal sealed partial class VectorScene
         }
 
         if (key.Kind != DrawingElementKind.BoundaryStroke) return false;
-        var boundary = BuildBoundaryStrokeParts(key.ObjectIndex, candidates)
+        var boundary = CachedBoundaryStrokeParts(key.ObjectIndex, frame, candidates)
             .FirstOrDefault(part => part.PartIndex == key.PartIndex);
         return boundary.Curve is not null || boundary.Points is { Length: 2 };
     }

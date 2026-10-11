@@ -47,8 +47,38 @@ internal enum ButtonVisualRole
     Danger
 }
 
-internal static class Theme
+internal static partial class Theme
 {
+    internal static WindowCornerStyle CornerStyle { get; private set; } = WindowCornerStyle.Square;
+
+    internal static void ConfigureCornerStyle(WindowCornerStyle style)
+    {
+        CornerStyle = Enum.IsDefined(style) ? style : WindowCornerStyle.Square;
+        foreach (var entry in StyledButtons) entry.Key.Invalidate();
+        foreach (var entry in FieldStates) entry.Key.Invalidate();
+        foreach (var entry in RoundedControls) entry.Value.Refresh();
+        foreach (Form form in Application.OpenForms)
+        {
+            if (form is MainForm or ModernDialogForm) ApplyWindowCorners(form);
+            form.Invalidate(true);
+        }
+    }
+
+    internal static void ApplyWindowCorners(Form form)
+    {
+        if (!form.IsHandleCreated || form.IsDisposed) return;
+        try
+        {
+            var preference = CornerStyle == WindowCornerStyle.Square ? 1 : 3;
+            DwmSetWindowAttribute(form.Handle, 33, ref preference, sizeof(int));
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int valueSize);
+
     private readonly record struct RowInteractionProgress(float Hover, float Selection, float Pressed);
 
     public const int ControlHeightCompact = 28;
@@ -246,6 +276,7 @@ internal static class Theme
     internal static void RefreshControlTree(Control root, ThemePalette previousPalette)
     {
         ArgumentNullException.ThrowIfNull(root);
+        RegisterCornerStyles(root);
         root.SuspendLayout();
         try
         {
@@ -847,6 +878,7 @@ internal static class Theme
         {
             Role = role;
             owner.EnabledChanged += (_, _) => ReapplyButtonStyle(owner);
+            owner.Resize += (_, _) => owner.Invalidate();
         }
 
         public ButtonVisualRole Role { get; set; }
@@ -1450,6 +1482,7 @@ internal static class Theme
     private sealed class FieldInteractionState
     {
         private readonly Control _control;
+
         private bool _hovered;
 
         public FieldInteractionState(Control control)

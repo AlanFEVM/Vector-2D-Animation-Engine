@@ -11,6 +11,10 @@ internal sealed class SettingsDialog : ModernDialogForm
     private string _selectedShortcutProfileId;
     private ShortcutProfileRecord[] _customShortcutProfiles;
     private bool _freeTransformShiftProportionalEnabled;
+    private readonly CheckBox _simpleSelectionHighlight = new() { Text = "Simple selection highlight", Dock = DockStyle.Fill, AutoSize = true, ForeColor = Theme.Text };
+    private readonly Button _squareCorners = new SegmentedButton { Text = "Square corners" };
+    private readonly Button _subtleRoundedCorners = new SegmentedButton { Text = "Subtle rounded corners" };
+    private WindowCornerStyle _selectedWindowCornerStyle;
     private readonly CodexIntegrationPanel _codexIntegration = new() { Dock = DockStyle.Fill, Visible = false };
     private UiLanguage _selectedLanguage;
     private ApplicationColorTheme _selectedColorTheme;
@@ -92,13 +96,18 @@ internal sealed class SettingsDialog : ModernDialogForm
         int selectedAccentHueDegrees,
         int selectedAccentSaturationPercent,
         int selectedAccentBrightnessPercent,
-        bool freeTransformShiftProportionalEnabled = true)
-        : base("Settings", new Size(760, 550))
+        bool freeTransformShiftProportionalEnabled = true,
+        bool simpleSelectionHighlightEnabled = false,
+        WindowCornerStyle windowCornerStyle = WindowCornerStyle.Square)
+        : base("Settings", new Size(760, 620))
     {
         var shortcuts = ShortcutProfiles.Normalize(activeShortcutProfileId, customShortcutProfiles);
         _selectedShortcutProfileId = shortcuts.ActiveProfileId;
         _customShortcutProfiles = shortcuts.CustomProfiles.Select(ShortcutProfiles.CloneProfile).ToArray();
         _freeTransformShiftProportionalEnabled = freeTransformShiftProportionalEnabled;
+        _simpleSelectionHighlight.Checked = simpleSelectionHighlightEnabled;
+        _selectedWindowCornerStyle = Enum.IsDefined(windowCornerStyle) ? windowCornerStyle : WindowCornerStyle.Square;
+        _simpleSelectionHighlight.AccessibleName = "Simple selection highlight";
         _selectedLanguage = selectedLanguage;
         _selectedColorTheme = Enum.IsDefined(selectedColorTheme)
             ? selectedColorTheme
@@ -132,7 +141,7 @@ internal sealed class SettingsDialog : ModernDialogForm
             BackColor = Theme.Panel,
             Padding = new Padding(18),
             ColumnCount = 1,
-            RowCount = 8
+            RowCount = 11
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
@@ -141,6 +150,9 @@ internal sealed class SettingsDialog : ModernDialogForm
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var pages = new Panel { Dock = DockStyle.Fill };
@@ -157,7 +169,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         void SelectPage(bool integration)
         {
             if (integration != integrationPageSelected)
-                ClientSize = new Size(ClientSize.Width, (int)Math.Round((integration ? 700 : 550) * DeviceDpi / 96f));
+                ClientSize = new Size(ClientSize.Width, (int)Math.Round((integration ? 700 : 620) * DeviceDpi / 96f));
             integrationPageSelected = integration;
             content.Visible = !integration;
             _codexIntegration.Visible = integration;
@@ -208,6 +220,19 @@ internal sealed class SettingsDialog : ModernDialogForm
         settingsPanels.Controls.Add(operationPreferences, 0, 0);
         settingsPanels.Controls.Add(shortcutProfiles, 1, 0);
         content.Controls.Add(settingsPanels, 0, 6);
+        content.Controls.Add(_simpleSelectionHighlight, 0, 7);
+
+        content.Controls.Add(SectionHeading("Personalization"), 0, 8);
+        var cornerSelector = CreateSegmentedSelector();
+        ConfigureSelectionButton(_squareCorners, "Use square interface corners");
+        ConfigureSelectionButton(_subtleRoundedCorners, "Use subtle rounded interface corners");
+        _squareCorners.Margin = new Padding(0, 0, 2, 0);
+        _subtleRoundedCorners.Margin = new Padding(2, 0, 0, 0);
+        _squareCorners.Click += (_, _) => SelectWindowCornerStyle(WindowCornerStyle.Square);
+        _subtleRoundedCorners.Click += (_, _) => SelectWindowCornerStyle(WindowCornerStyle.SubtleRounded);
+        cornerSelector.Controls.Add(_squareCorners, 0, 0);
+        cornerSelector.Controls.Add(_subtleRoundedCorners, 1, 0);
+        content.Controls.Add(cornerSelector, 0, 9);
 
         var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary);
         var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
@@ -215,6 +240,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         CancelButton = cancel;
 
         SelectColorTheme(_selectedColorTheme);
+        SelectWindowCornerStyle(_selectedWindowCornerStyle);
         SelectLanguage(_selectedLanguage);
         UiLocalization.Watch(this);
     }
@@ -246,8 +272,11 @@ internal sealed class SettingsDialog : ModernDialogForm
     public int SelectedAccentHueDegrees => _selectedAccentHueDegrees;
     public int SelectedAccentSaturationPercent => _selectedAccentSaturationPercent;
     public int SelectedAccentBrightnessPercent => _selectedAccentBrightnessPercent;
+    public bool SimpleSelectionHighlightEnabled => _simpleSelectionHighlight.Checked;
+    public WindowCornerStyle SelectedWindowCornerStyle => _selectedWindowCornerStyle;
     public bool FreeTransformShiftProportionalEnabled => _freeTransformShiftProportionalEnabled;
     internal event EventHandler? ThemePreviewChanged;
+    internal event EventHandler? CornerPreviewChanged;
     public ToolShortcutPreset SelectedPreset => ShortcutProfiles.LegacyPresetForProfile(
         SelectedShortcutProfileId,
         CustomShortcutProfiles);
@@ -362,6 +391,15 @@ internal sealed class SettingsDialog : ModernDialogForm
         button.AccessibleDescription = accessibleDescription;
         button.AccessibleRole = AccessibleRole.RadioButton;
         Theme.StyleSegmentedButton(button);
+    }
+
+    private void SelectWindowCornerStyle(WindowCornerStyle style)
+    {
+        var changed = _selectedWindowCornerStyle != style;
+        _selectedWindowCornerStyle = style;
+        Theme.StyleSegmentedButton(_squareCorners, style == WindowCornerStyle.Square);
+        Theme.StyleSegmentedButton(_subtleRoundedCorners, style == WindowCornerStyle.SubtleRounded);
+        if (changed) CornerPreviewChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void SelectLanguage(UiLanguage language)

@@ -141,7 +141,9 @@ internal sealed partial class MainForm : Form
         if (_tabletPressurePointerId is not null && e.Button == MouseButtons.Left) return;
         if (IsTextEditActive() && !CommitTextEdit()) return;
         _stage.Focus();
-        FlushDeferredPresentationOverlaysForPointerHitTest();
+        var canvasNavigation = e.Button == MouseButtons.Middle
+            || e.Button == MouseButtons.Left && (_spacePanHeld || _tool == ToolMode.Hand);
+        if (!canvasNavigation) FlushDeferredPresentationOverlaysForPointerHitTest();
         if (_brushColorPaletteActive)
         {
             UpdateBrushColorPaletteHover(e.Location);
@@ -2588,7 +2590,11 @@ internal sealed partial class MainForm : Form
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (!hit.IsValid) return false;
         var obj = hit.Key.ObjectIndex;
-        if (obj < 0 || obj >= _scene.ObjectCount || obj == _selectedObject) return false;
+        if (obj < 0 || obj >= _scene.ObjectCount) return false;
+        if (obj == _selectedObject
+            && (_selectedElements.Count == 0
+                || _selectedElements.Any(element => element.Key.ObjectIndex == obj
+                    && element.Key.Kind != DrawingElementKind.BoundaryStroke))) return false;
         if (!_scene.HasFill(obj)
             || !IsFillShape(_scene.ShapeKind[obj])
             || IsWholeObjectOnlyObject(obj)) return false;
@@ -2634,6 +2640,10 @@ internal sealed partial class MainForm : Form
         }
 
         if (bestPart < 0 || best > tolerance) return false;
+        if (_selectedElements.Any(element => element.Key.ObjectIndex == obj
+            && element.Key.Kind == DrawingElementKind.BoundaryStroke
+            && _scene.TryGetExactFillBezierSegmentForBoundary(element, _frame, out var selectedSegment)
+            && selectedSegment.PartIndex == bestPart)) return false;
         objectIndex = obj;
         partIndex = bestPart;
         return true;

@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Vector 2D 动画引擎 · 项目机制百科</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="./vendor/vue.css" onerror="this.href='//cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css'">
+  <style>
+    :root {
+      --accent: #3366cc;
+      --accent-soft: #eaf3ff;
+      --ink: #222222;
+      --ink-light: #54595d;
+      --line: #a2a9b1;
+      --bg-soft: #f8f9fa;
+      --code-bg: #eaecf0;
+      --tip-green: #0a8f6c;
+      --tip-green-bg: #ecfaf4;
+      --note-blue: #2563c9;
+      --note-blue-bg: #edf4fe;
+    }
+    * { -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", -apple-system, sans-serif;
+      color: var(--ink);
+      font-size: 15.5px;
+      line-height: 1.85;
+    }
+    .sidebar {
+      background: #171717;
+      color: #b8b8b8;
+      width: 240px;
+      border-right: 1px solid #000;
+    }
+    .sidebar .app-name {
+      background: transparent;
+      border-bottom: 1px solid #2e2e2e;
+      padding: 16px 14px 12px;
+    }
+    .sidebar .app-name a {
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      background: none;
+      -webkit-background-clip: initial;
+      -webkit-text-fill-color: #fff;
+    }
+    .sidebar > h1 { display: none; }
+    .sidebar-toggle { background: rgba(23,23,23,.95); }
+    .sidebar-toggle span { background-color: #aaa; }
+    .sidebar-nav { padding-top: 2px; }
+    .wiki-tree { padding: 2px 0 10px; }
+    .wiki-tree-cat {
+      display: flex; align-items: center; gap: 7px;
+      margin: 0; padding: 7px 14px;
+      color: #d4d4d4; font-size: 13.5px; font-weight: 700;
+      border-radius: 0; cursor: pointer; user-select: none;
+      transition: background .12s, color .12s;
+    }
+    .wiki-tree-cat:hover { background: #262626; color: #fff; }
+    .wiki-tree-cat .arrow {
+      width: 0; height: 0; flex: 0 0 auto;
+      border-left: 5px solid #7a7a7a;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      transition: transform .12s;
+    }
+    .wiki-tree-cat.open .arrow { transform: rotate(90deg); }
+    .wiki-tree-children { padding: 0 0 4px; }
+    .wiki-tree-children a {
+      display: block; margin: 0; padding: 5px 14px 5px 34px;
+      color: #9c9c9c; font-size: 13px; border-radius: 0;
+      text-decoration: none; transition: background .12s, color .12s;
+    }
+    .wiki-tree-children a:hover { background: #262626; color: #fff; }
+    .wiki-tree-children a.active {
+      color: #fff; background: #2f2f2f; font-weight: 700;
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .search input {
+      background: #262626 !important;
+      border: 1px solid #3a3a3a !important;
+      color: #e6e6e6 !important;
+      border-radius: 4px !important;
+      font-size: 13px;
+    }
+    .search input::placeholder { color: #7a7a7a; }
+    .search .results-panel { background: #202020; }
+    .search .matching-post { border-bottom: 1px solid #2e2e2e; }
+    .search h2 { color: #d4d4d4 !important; }
+    .search .clear-button { color: #9c9c9c; }
+    .content { padding-top: 24px; max-width: 860px; }
+    .markdown-section { max-width: 860px; padding: 24px 28px 80px; }
+    .markdown-section h1 {
+      font-size: 27px; font-weight: 400; color: var(--ink);
+      padding-bottom: 8px; margin-bottom: 18px; border: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .markdown-section h1::after { content: none; }
+    .markdown-section h2 {
+      font-size: 21px; font-weight: 400; color: var(--ink);
+      margin-top: 1.8em; padding: 0 0 5px; border: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .markdown-section h3 { font-size: 17px; font-weight: 700; color: var(--ink); margin-top: 1.4em; }
+    .markdown-section a { color: var(--accent); font-weight: 400; text-decoration: none; border-bottom: none; padding-bottom: 0; transition: color .12s; }
+    .markdown-section a:hover { color: #2a4b8d; text-decoration: underline; }
+    .markdown-section strong { color: var(--ink); }
+    .markdown-section p { margin: .8em 0; }
+    .markdown-section table {
+      display: table; width: auto; min-width: 50%;
+      border-collapse: collapse; border-spacing: 0; border: 1px solid var(--line);
+      margin: 1em 0; font-size: 14px; background: #fff;
+    }
+    .markdown-section thead { background: var(--bg-soft); }
+    .markdown-section th { font-weight: 700; color: var(--ink); background: var(--bg-soft); }
+    .markdown-section th, .markdown-section td { padding: 6px 13px; border: 1px solid var(--line); }
+    .markdown-section tr:last-child td { border-bottom: 1px solid var(--line); }
+    .markdown-section tbody tr:hover { background: inherit; }
+    .markdown-section code {
+      background: var(--code-bg); color: var(--ink); padding: 1px 5px;
+      border-radius: 2px; font-size: .9em; font-family: Consolas, "JetBrains Mono", monospace;
+    }
+    .markdown-section pre { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 2px; padding: 12px 16px; box-shadow: none; }
+    .markdown-section pre > code { color: var(--ink); background: transparent; padding: 0; font-size: 13.5px; line-height: 1.65; }
+    .markdown-section pre::after { content: none; }
+    .markdown-section .tip, .markdown-section .warn, .markdown-section .warning,
+    .markdown-section p.tip, .markdown-section p.warning {
+      border-radius: 2px; padding: 12px 16px; border: 1px solid; border-left-width: 4px;
+      font-style: italic; position: relative; font-size: 14px; line-height: 1.8;
+    }
+    .markdown-section .tip, .markdown-section p.tip { background: var(--tip-green-bg); color: var(--tip-green); border-color: var(--tip-green); }
+    .markdown-section .warn, .markdown-section .warning, .markdown-section p.warning { background: var(--note-blue-bg); color: var(--note-blue); border-color: var(--note-blue); }
+    .markdown-section .tip::before, .markdown-section .warn::before, .markdown-section .warning::before { font-weight: 800; margin-right: 6px; }
+    .markdown-section blockquote { border-left: 3px solid #c8ccd1; background: var(--bg-soft); color: var(--ink-light); border-radius: 0; padding: 8px 16px; margin: 1em 0; }
+    .markdown-section blockquote p { margin: .3em 0; }
+    .markdown-section hr { border-bottom: 1px solid var(--line); }
+    .markdown-section ol, .markdown-section ul { padding-left: 1.6em; }
+    .markdown-section li { margin: .35em 0; }
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 0; }
+    ::-webkit-scrollbar-thumb:hover { background: #a0a0a0; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    .navbar { background: rgba(255,255,255,.95); backdrop-filter: blur(8px); box-shadow: 0 1px 0 var(--line); }
+    .navbar a { color: var(--ink-light); font-weight: 600; }
+    .navbar a:hover { color: var(--accent); }
+    .infobox {
+      float: right; width: 260px; margin: 4px 0 18px 22px;
+      background: var(--bg-soft); border: 1px solid var(--line); border-radius: 2px;
+      overflow: hidden; box-shadow: none; font-size: 13px;
+    }
+    .infobox-title { background: #2f3b47; color: #fff; font-weight: 700; font-size: 15px; padding: 8px 12px; }
+    .infobox table { width: 100%; border: none; margin: 0; font-size: 13px; }
+    .infobox th, .infobox td { border: none; border-bottom: 1px solid #dfe3e8; padding: 7px 11px; text-align: left; }
+    .infobox th { width: 40%; color: var(--ink-light); font-weight: 600; background: transparent; }
+    .infobox tr:last-child th, .infobox tr:last-child td { border-bottom: none; }
+    .infobox a { border-bottom: none; color: var(--accent); }
+    .wiki-footer { margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .wiki-related-label { display: inline-block; margin: 4px 8px 4px 0; color: var(--ink-light); font-weight: 600; font-size: 13px; }
+    .cat-chip {
+      display: inline-block; margin: 4px 6px 4px 0; padding: 2px 9px;
+      border-radius: 2px; background: var(--accent-soft); color: var(--accent);
+      font-size: 13px; border: 1px solid #c5d5f2; text-decoration: none !important;
+    }
+    .cat-chip:hover { background: #dbe7fb; text-decoration: underline !important; }
+    .cat-cat { background: var(--bg-soft); color: var(--ink-light); border-color: var(--line); }
+    @media screen and (max-width: 860px) {
+      .content, .markdown-section { max-width: none; }
+      .infobox { float: none; width: auto; margin: 0 0 16px; }
+    }
+  </style>
+
+  <!-- 先装错误捕获：任何后续脚本报错都直接显示在页面上，避免“加载中”黑盒 -->
+  <script>
+    window.__errs = [];
+    window.addEventListener('error', function (e) {
+      // 捕获阶段：能抓到脚本/样式/图片等资源加载与解析错误（普通冒泡监听抓不到）
+      window.__errs.push({
+        msg: e.message || '',
+        src: (e.target && (e.target.src || e.target.href)) || e.filename || '',
+        tag: (e.target && e.target.tagName) || ''
+      });
+      var a = document.getElementById('app');
+      if (a && /加载中/.test(a.textContent) && e.message) {
+        a.innerHTML = '<pre style="white-space:pre-wrap;color:#c0392b;padding:16px">页面脚本错误：\n'
+          + (e.message || (e.error && e.error.stack) || '未知错误') + '\n'
+          + (e.filename || '') + ' : ' + (e.lineno || '') + '\n'
+          + '（说明：docsify 需要经本地服务器打开，不能直接双击 file:// 打开）</pre>';
+      }
+    }, true);
+  </script>
+
+  <!-- 唯一数据源：分类 / 信息框 / 自动内链表都在此文件，维护只改这里 -->
+  <script src="./wiki-data.js"></script>
+
+  <!-- 配置与插件：必须在 docsify 之前设置好 window.$docsify -->
+  <script>
+    function wikiDtitle(file){ var m = WIKI_META[file]; return (m && m.d) ? m.d : file; }
+    function wikiCatOf(file){ for (var i=0;i<WIKI_CATS.length;i++){ if (WIKI_CATS[i].files.indexOf(file)>=0) return WIKI_CATS[i]; } return null; }
+    function wikiRow(k,v){ return '<tr><th>'+k+'</th><td>'+v+'</td></tr>'; }
+    function wikiBuildInfobox(file){
+      var m = WIKI_META[file] || {};
+      var cat = wikiCatOf(file);
+      var rows = wikiRow('类型', m.t || '词条');
+      if (m.ws) rows += wikiRow('所属工作区', m.ws);
+      if (m.sc) rows += wikiRow('快捷键', m.sc);
+      if (cat) rows += wikiRow('分类', '<a href="#/分类索引.md">'+cat.name+'</a>');
+      if (window.WIKI_DOC_VERSION) rows += wikiRow('文档基准', window.WIKI_DOC_VERSION);
+      return '<div class="infobox"><div class="infobox-title">'+wikiDtitle(file)+'</div><table>'+rows+'</table></div>';
+    }
+    function wikiBuildFooter(file){
+      var cat = wikiCatOf(file);
+      var chips = '';
+      if (cat) {
+        var rel = cat.files.filter(function(f){ return f !== file; }).slice(0, 8);
+        chips = rel.map(function(f){ return '<a class="cat-chip" href="#/'+f+'.md">'+wikiDtitle(f)+'</a>'; }).join('');
+      }
+      var catChip = cat ? '<a class="cat-chip cat-cat" href="#/分类索引.md">分类：'+cat.name+'</a>' : '';
+      return '<div class="wiki-footer"><div class="wiki-related"><span class="wiki-related-label">相关词条</span>'+chips+'</div>'+catChip+'</div>';
+    }
+    function wikiCountFiles(){ var n=0; for (var i=0;i<WIKI_CATS.length;i++) n+=WIKI_CATS[i].files.length; return n; }
+    function wikiBuildCategoryIndex(){
+      var md = '# 分类索引\n\n按主题浏览全部 '+wikiCountFiles()+' 个词条。也可直接用顶部搜索框查找。\n\n';
+      for (var i=0;i<WIKI_CATS.length;i++){
+        var c = WIKI_CATS[i];
+        md += '## '+c.name+'\n\n';
+        md += c.files.map(function(f){ return '- ['+wikiDtitle(f)+']('+f+'.md)'; }).join('\n') + '\n\n';
+      }
+      return md;
+    }
+    window.injectWikiChrome = function (hook, vm) {
+      hook.beforeEach(function (md, next) {
+        var route = '';
+        try { route = decodeURIComponent(String((vm && vm.route) || '').replace(/^#\//, '').split('?')[0]); } catch (e) {}
+        if (route === '分类索引.md') { next(wikiBuildCategoryIndex()); return; }
+        next(md);
+      });
+      hook.afterEach(function (html, next) {
+        var file = '';
+        try { file = decodeURIComponent(String((typeof location !== 'undefined' ? location.hash : '') || '').replace(/^#\//, '').split('?')[0]); } catch (e) {}
+        if (file === '' || file === 'README.md' || file === '分类索引.md') { next(html); return; }
+        next(wikiBuildInfobox(file) + html + wikiBuildFooter(file));
+      });
+    };
+    window.termAutoLink = function (hook, vm) {
+      hook.afterEach(function (html, next) {
+        var self = '__none__';
+        try {
+          var h = (typeof location !== 'undefined' ? location.hash : '') || (vm && vm.route) || '';
+          self = decodeURIComponent(String(h).replace(/^#\//, '').split('?')[0]) || '__none__';
+        } catch (e) { self = '__none__'; }
+        var done = {};
+        var parts = html.split(/(<[^>]*>)/);
+        var skip = 0;
+        var lastOpen = '';
+        var out = parts.map(function (p) {
+          if (p.charAt(0) === '<') {
+            var mm = p.match(/^<\s*(\/?)\s*([a-zA-Z0-9-]+)/);
+            if (mm) {
+              var tag = mm[2].toLowerCase();
+              if (tag === 'code' || tag === 'pre' || tag === 'a' || tag === 'kbd' || tag === 'script' || tag === 'style') {
+                skip += mm[1] ? -1 : 1;
+                if (skip < 0) skip = 0;
+              }
+            }
+            lastOpen = p;
+            return p;
+          }
+          if (skip > 0) return p;
+          if (/^<h[1-6][\s>]/i.test(lastOpen)) return p;
+          var seg = p;
+          var hits = [];
+          for (var i = 0; i < window.WIKI_TERMS.length; i++) {
+            var t = window.WIKI_TERMS[i];
+            if (t.f === self || done[t.f + '|' + t.t]) continue;
+            var idx = seg.indexOf(t.t);
+            if (idx >= 0) hits.push({ idx: idx, t: t });
+          }
+          if (!hits.length) return seg;
+          hits.sort(function (a, b) { return a.idx - b.idx; });
+          var res = '', pos = 0;
+          for (var j = 0; j < hits.length; j++) {
+            var h = hits[j];
+            if (h.idx < pos) continue;
+            res += seg.slice(pos, h.idx) + '<a href="#/' + h.t.f + '">' + h.t.t + '</a>';
+            pos = h.idx + h.t.t.length;
+            done[h.t.f + '|' + h.t.t] = true;
+          }
+          return res + seg.slice(pos);
+        }).join('');
+        next(out);
+      });
+    };
+    var treeState = {};
+    function wikiTreeCurrentFile(){
+      var h = (typeof location !== 'undefined' ? location.hash : '') || '';
+      return decodeURIComponent(String(h).replace(/^#\//,'').split('?')[0]) || '';
+    }
+    function wikiTreeCatKey(file){
+      for (var i=0;i<WIKI_CATS.length;i++){ if (WIKI_CATS[i].files.indexOf(file) >= 0) return WIKI_CATS[i].key; }
+      return null;
+    }
+    function wikiTreeHTML(){
+      var html = '<div class="wiki-tree">';
+      for (var i=0;i<WIKI_CATS.length;i++){
+        var c = WIKI_CATS[i];
+        html += '<div class="wiki-tree-cat" data-key="'+c.key+'"><span class="arrow"></span>'
+              + '<span class="wiki-tree-cat-name">'+c.name+'</span></div><div class="wiki-tree-children">';
+        for (var j=0;j<c.files.length;j++){
+          var f = c.files[j];
+          html += '<a href="#/'+f+'.md">'+wikiDtitle(f)+'</a>';
+        }
+        html += '</div>';
+      }
+      return html + '</div>';
+    }
+    function wikiTreeRefresh(){
+      var nav = document.querySelector('.sidebar-nav');
+      if (!nav || !nav.querySelector('.wiki-tree')) return;
+      var file = wikiTreeCurrentFile();
+      var cur = wikiTreeCatKey(file);
+      nav.querySelectorAll('.wiki-tree-cat').forEach(function(catEl){
+        var key = catEl.getAttribute('data-key');
+        var open = treeState[key];
+        if (open === undefined) open = (key === cur);
+        catEl.classList.toggle('open', open);
+        var kids = catEl.nextElementSibling;
+        if (kids && kids.classList.contains('wiki-tree-children')) kids.style.display = open ? '' : 'none';
+      });
+      nav.querySelectorAll('.wiki-tree-children a').forEach(function(a){
+        var href = a.getAttribute('href') || '';
+        var f = decodeURIComponent(href.replace(/^#\//,'').split('?')[0]);
+        a.classList.toggle('active', f === file);
+      });
+    }
+    function wikiTreeBuild(){
+      var sidebar = document.querySelector('.sidebar');
+      if (!sidebar) return;
+      var nav = sidebar.querySelector('.sidebar-nav');
+      if (!nav){ nav = document.createElement('div'); nav.className = 'sidebar-nav'; sidebar.appendChild(nav); }
+      var searchBox = nav.querySelector('.search');
+      nav.innerHTML = wikiTreeHTML();
+      if (searchBox) nav.insertBefore(searchBox, nav.firstChild);
+      nav.querySelectorAll('.wiki-tree-cat').forEach(function(el){
+        el.addEventListener('click', function(){ var k = el.getAttribute('data-key'); treeState[k] = !el.classList.contains('open'); wikiTreeRefresh(); });
+      });
+      wikiTreeRefresh();
+    }
+    window.wikiSidebarTree = function (hook) {
+      function ensure(){ var nav = document.querySelector('.sidebar-nav'); if (nav && nav.querySelector('.wiki-tree')) wikiTreeRefresh(); else wikiTreeBuild(); }
+      hook.mounted(function(){ setTimeout(ensure, 0); });
+      hook.doneEach(function(){ setTimeout(ensure, 0); });
+    };
+    window.$docsify = {
+      name: '项目机制百科',
+      repo: '',
+      loadSidebar: true,
+      loadNavbar: true,
+      subMaxLevel: 3,
+      auto2top: true,
+      alias: { '/术语总表.md': '/术语总表.md' },
+      search: { placeholder: '搜索机制…', noData: '没有找到结果', depth: 3 },
+      plugins: [window.termAutoLink, window.injectWikiChrome, window.wikiSidebarTree]
+    };
+  </script>
+
+  <!-- docsify 与搜索插件已移至 body 末尾：必须在 #app 与 document.body 就绪后再执行，
+       否则 docsify 初始化读 document.body.clientWidth 会因 document.body 为 null 而抛错。 -->
+
+  <!-- 看门狗：若 3.5 秒仍未渲染，把真实诊断打到页面上 -->
+  <script>
+    setTimeout(function () {
+      var a = document.getElementById('app');
+      if (a && /加载中/.test(a.textContent)) {
+        var d = window.__diag || {};
+        var errs = (window.__errs || []).map(function (x) {
+          return (x.tag || '') + ' ' + (x.src || '') + ' ' + (x.msg || '');
+        }).join('\n') || '无';
+        a.innerHTML = '<pre style="white-space:pre-wrap;color:#c0392b;padding:16px">docsify 未能渲染，诊断信息：\n'
+          + 'Docsify 类型: ' + (typeof Docsify) + '\n'
+          + '$docsify 类型: ' + (typeof window.$docsify) + '\n'
+          + 'WIKI_CATS 类型: ' + (typeof WIKI_CATS) + '\n'
+          + 'WIKI_TERMS 类型: ' + (typeof window.WIKI_TERMS) + '\n'
+          + 'docsify 脚本: ' + (d.docsify || '未记录') + '\n'
+          + 'search 脚本: ' + (d.search || '未记录') + '\n'
+          + '脚本错误: ' + errs + '\n'
+          + '当前地址: ' + location.href + '\n'
+          + '（若地址以 file:// 开头，说明没走本地服务器）</pre>';
+      }
+    }, 3500);
+  </script>
+</head>
+<body>
+  <div id="app">加载中…（若长时间停留在此，说明未通过本地服务器打开，或 vendor/ 与 wiki-data.js 缺失）</div>
+
+  <!-- 顺序：先 search 插件（它会把自身注入 window.$docsify.plugins），再 docsify 本体。
+       必须在 body 末尾、document.body 存在后才执行，否则 docsify 初始化读 document.body.clientWidth 会抛 null。 -->
+  <script src="./vendor/search.min.js" onload="window.__diag=window.__diag||{};window.__diag.search='本地加载成功'" onerror="window.__diag=window.__diag||{};window.__diag.search='本地加载失败→回退CDN';this.src='//cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js'"></script>
+  <script src="./vendor/docsify.min.js" onload="window.__diag=window.__diag||{};window.__diag.docsify='本地加载成功'" onerror="window.__diag=window.__diag||{};window.__diag.docsify='本地加载失败→回退CDN';this.src='//cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js'"></script>
+</body>
+</html>

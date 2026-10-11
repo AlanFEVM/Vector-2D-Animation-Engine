@@ -9637,6 +9637,32 @@ internal static partial class Benchmark
             && !StageControl.ShouldAnimateSelectionHighlight(513, 8_192)
             && !StageControl.ShouldAnimateSelectionHighlight(512, 8_193),
             "Fill and stroke selection highlights did not retain distinct cool/thin and warm/strong styles.");
+        foreach (var primary in new[] { true, false })
+        {
+            var quadratic = StageControl.SelectionLineColor(SelectionHighlightKind.QuadraticStroke, primary, simple: true);
+            var cubic = StageControl.SelectionLineColor(SelectionHighlightKind.Stroke, primary, simple: true);
+            AssertTimeline(quadratic.G - cubic.G >= 60 && quadratic.ToArgb() != cubic.ToArgb(),
+                "Simple quadratic and cubic highlights did not retain visibly distinct yellow and orange colors.");
+            AssertTimeline(quadratic == StageControl.SelectionLineColor(SelectionHighlightKind.QuadraticStroke, primary)
+                && StageControl.SelectionLineColor(SelectionHighlightKind.Fill, primary, simple: true)
+                    == StageControl.SelectionLineColor(SelectionHighlightKind.Fill, primary),
+                "Simple highlight changed quadratic or fill colors.");
+        }
+        var settings = System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>("{}");
+        AssertTimeline(settings is { SimpleSelectionHighlightEnabled: false }, "Legacy settings changed the highlight default.");
+        var simpleSettings = System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>(
+            System.Text.Json.JsonSerializer.Serialize(settings! with { SimpleSelectionHighlightEnabled = true }));
+        AssertTimeline(simpleSettings is { SimpleSelectionHighlightEnabled: true }, "Simple highlight preference did not round-trip.");
+        using var stage = new StageControl(new VectorScene()) { Size = new Size(320, 240) };
+        using var host = new Form();
+        host.Controls.Add(stage);
+        host.Show();
+        stage.SimpleSelectionHighlightEnabled = true;
+        AssertTimeline(!stage.SelectionHighlightAnimating, "Simple selection highlight retained its animation timer.");
+        stage.SimpleSelectionHighlightEnabled = false;
+        AssertTimeline(!stage.SimpleSelectionHighlightEnabled, "Original selection highlight could not be restored.");
+        using var dialog = new SettingsDialog { };
+        AssertTimeline(!dialog.SimpleSelectionHighlightEnabled, "Settings dialog changed the default selection highlight.");
         Console.WriteLine("selection_highlight_style_regression=ok");
     }
 

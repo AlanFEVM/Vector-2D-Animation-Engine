@@ -53,6 +53,10 @@ internal class SvgIconButton : Button
             : Enabled
                 ? Theme.ReadableText(actualBackground, ForeColor)
                 : Theme.ReadableText(actualBackground, Theme.DisabledText);
+        if (toolbar && Theme.IsLight && !active && Enabled && !SystemInformation.HighContrast)
+        {
+            foreground = Theme.Mix(foreground, actualBackground, 0.34f);
+        }
         var borderColor = SystemInformation.HighContrast
             ? active ? SystemColors.HighlightText : SystemColors.ControlText
             : Theme.ReadableUiColor(

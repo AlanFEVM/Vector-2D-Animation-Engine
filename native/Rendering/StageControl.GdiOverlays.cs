@@ -202,14 +202,26 @@ internal sealed partial class StageControl : Control
             foreach (var contour in Scene.GetVisiblePathSelectionPolylines(i, Frame, [world], closed: false))
                 DrawSelectionPolyline(g, contour.Select(WorldToScreen).ToArray(), primary, highlightKind);
         }
+        else if (shape == ShapeKind.Path)
+        {
+            if (Scene.TryGetPathWorldContours(i, out var contours))
+            {
+                var highlightKind = SelectionHighlightForObject(i, SelectionHighlightKind.Fill);
+                foreach (var contour in Scene.GetVisiblePathSelectionPolylines(i, Frame, contours))
+                {
+                    if (contour.Length >= 2)
+                        DrawSelectionPolyline(g, contour.Select(WorldToScreen).ToArray(), primary, highlightKind);
+                }
+            }
+        }
         else
         {
             var worldBounds = Scene.GetObjectWorldBounds(i);
             var rect = WorldToScreenBounds(worldBounds);
             if (rect.Width > 0.001f && rect.Height > 0.001f)
             {
-                g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
-                g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+                if (!SimpleSelectionHighlightEnabled) g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+                if (!SimpleSelectionHighlightEnabled) g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
                 g.DrawRectangle(_drawingObjectSelectionPen, rect.X, rect.Y, rect.Width, rect.Height);
             }
 
@@ -237,8 +249,8 @@ internal sealed partial class StageControl : Control
 
         var rect = WorldToScreenBounds(Scene.GetObjectWorldBounds(objectIndex));
         if (rect.Width <= 0.001f || rect.Height <= 0.001f) return false;
-        g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
-        g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+        if (!SimpleSelectionHighlightEnabled) g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+        if (!SimpleSelectionHighlightEnabled) g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
         g.DrawRectangle(_drawingObjectSelectionPen, rect.X, rect.Y, rect.Width, rect.Height);
         return true;
     }
@@ -1479,8 +1491,8 @@ internal sealed partial class StageControl : Control
         if (!DrawingObjectSelectionVisible) return;
         var rect = WorldToScreenBounds(_drawingObjectSelectionBounds);
         if (rect.Width <= 0 || rect.Height <= 0) return;
-        g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
-        g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+        if (!SimpleSelectionHighlightEnabled) g.DrawRectangle(_drawingObjectSelectionOuterGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
+        if (!SimpleSelectionHighlightEnabled) g.DrawRectangle(_drawingObjectSelectionGlowPen, rect.X, rect.Y, rect.Width, rect.Height);
         g.DrawRectangle(_drawingObjectSelectionPen, rect.X, rect.Y, rect.Width, rect.Height);
         if (DrawingObjectAnchorVisible)
         {
@@ -1571,7 +1583,7 @@ internal sealed partial class StageControl : Control
     {
         var (start, control1, control2, end) = GetBezierScreenPoints(i);
         using var fullPath = BuildCubicPath(start, control1, control2, end);
-        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightForObject(i), primary: false)), 1.2f);
+        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightForObject(i), primary: false, simple: SimpleSelectionHighlightEnabled)), 1.2f);
         g.DrawPath(mutedPen, fullPath);
     }
 
@@ -1602,7 +1614,7 @@ internal sealed partial class StageControl : Control
 
         using var fullPath = BuildPolylineSamplePath(points, 0, 1);
         using var partialPath = BuildPolylineSamplePath(points, startT, endT);
-        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightKind.Stroke, primary: false)), 1.2f);
+        using var mutedPen = new Pen(Color.FromArgb(80, SelectionLineColor(SelectionHighlightKind.Stroke, primary: false, simple: SimpleSelectionHighlightEnabled)), 1.2f);
         g.DrawPath(mutedPen, fullPath);
         DrawSelectionPath(g, partialPath, true, SelectionHighlightKind.Stroke);
     }
@@ -1625,8 +1637,11 @@ internal sealed partial class StageControl : Control
         outer.EndCap = glow.EndCap = line.EndCap = endCap;
         try
         {
-            g.DrawPath(outer, path);
-            g.DrawPath(glow, path);
+            if (!SimpleSelectionHighlightEnabled)
+            {
+                g.DrawPath(outer, path);
+                g.DrawPath(glow, path);
+            }
             g.DrawPath(line, path);
         }
         finally
@@ -1649,8 +1664,10 @@ internal sealed partial class StageControl : Control
             : SelectionHighlightKind.Fill;
     }
 
-    internal static Color SelectionLineColor(SelectionHighlightKind highlightKind, bool primary)
+    internal static Color SelectionLineColor(SelectionHighlightKind highlightKind, bool primary, bool simple = false)
     {
+        if (simple && highlightKind == SelectionHighlightKind.Stroke)
+            return primary ? Color.FromArgb(255, 255, 153, 64) : Color.FromArgb(235, 255, 136, 48);
         return (highlightKind, primary) switch
         {
             (SelectionHighlightKind.QuadraticStroke, true) => Color.FromArgb(255, 255, 222, 82),
@@ -1724,15 +1741,15 @@ internal sealed partial class StageControl : Control
         _selectionOuterGlowPen.Width = SelectionOuterGlowWidth(highlightKind, primary: true, pulse);
         _selectionGlowPen.Color = SelectionGlowColor(highlightKind, primary: true, pulse);
         _selectionGlowPen.Width = SelectionGlowWidth(highlightKind, primary: true, pulse);
-        _selectionPen.Color = SelectionLineColor(highlightKind, primary: true);
-        _selectionPen.Width = SelectionLineWidth(highlightKind, primary: true, pulse);
+        _selectionPen.Color = SelectionLineColor(highlightKind, primary: true, simple: SimpleSelectionHighlightEnabled);
+        _selectionPen.Width = SimpleSelectionHighlightEnabled ? 1.25f : SelectionLineWidth(highlightKind, primary: true, pulse);
 
         _multiSelectionOuterGlowPen.Color = SelectionOuterGlowColor(highlightKind, primary: false, pulse);
         _multiSelectionOuterGlowPen.Width = SelectionOuterGlowWidth(highlightKind, primary: false, pulse);
         _multiSelectionGlowPen.Color = SelectionGlowColor(highlightKind, primary: false, pulse);
         _multiSelectionGlowPen.Width = SelectionGlowWidth(highlightKind, primary: false, pulse);
-        _multiSelectionPen.Color = SelectionLineColor(highlightKind, primary: false);
-        _multiSelectionPen.Width = SelectionLineWidth(highlightKind, primary: false, pulse);
+        _multiSelectionPen.Color = SelectionLineColor(highlightKind, primary: false, simple: SimpleSelectionHighlightEnabled);
+        _multiSelectionPen.Width = SimpleSelectionHighlightEnabled ? 1f : SelectionLineWidth(highlightKind, primary: false, pulse);
     }
 
     private void DrawSelectionPolygon(Graphics g, PointF[] points, bool primary, SelectionHighlightKind highlightKind)
@@ -1758,12 +1775,12 @@ internal sealed partial class StageControl : Control
         var pulseScale = 0.92f + 0.16f * SelectionHighlightPulse;
         var outer = (primary ? 12f : 8f) * pulseScale;
         var glow = (primary ? 7f : 5f) * pulseScale;
-        var line = (primary ? 2.5f : 1.5f) * pulseScale;
+        var line = SimpleSelectionHighlightEnabled ? (primary ? 3f : 2f) : (primary ? 2.5f : 1.5f) * pulseScale;
         using var outerBrush = new SolidBrush(primary ? _selectionOuterGlowPen.Color : _multiSelectionOuterGlowPen.Color);
         using var glowBrush = new SolidBrush(primary ? _selectionGlowPen.Color : _multiSelectionGlowPen.Color);
         using var lineBrush = new SolidBrush(primary ? _selectionPen.Color : _multiSelectionPen.Color);
-        g.FillEllipse(outerBrush, point.X - outer * 0.5f, point.Y - outer * 0.5f, outer, outer);
-        g.FillEllipse(glowBrush, point.X - glow * 0.5f, point.Y - glow * 0.5f, glow, glow);
+        if (!SimpleSelectionHighlightEnabled) g.FillEllipse(outerBrush, point.X - outer * 0.5f, point.Y - outer * 0.5f, outer, outer);
+        if (!SimpleSelectionHighlightEnabled) g.FillEllipse(glowBrush, point.X - glow * 0.5f, point.Y - glow * 0.5f, glow, glow);
         g.FillEllipse(lineBrush, point.X - line * 0.5f, point.Y - line * 0.5f, line, line);
     }
 

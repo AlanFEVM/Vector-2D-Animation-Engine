@@ -203,16 +203,8 @@ internal class ModernDialogForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        try
-        {
-            const int windowCornerPreference = 33;
-            var preference = 2;
-            DwmSetWindowAttribute(Handle, windowCornerPreference, ref preference, sizeof(int));
-        }
-        catch
-        {
-            // Older Windows versions keep the square border and class shadow.
-        }
+        Theme.RegisterCornerStyles(this);
+        Theme.ApplyWindowCorners(this);
     }
 
     protected override void OnShown(EventArgs e)
@@ -302,8 +294,6 @@ internal class ModernDialogForm : Form
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int valueSize);
 }
 
 internal sealed class ModernMessageDialog : ModernDialogForm

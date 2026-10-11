@@ -11,17 +11,28 @@ internal sealed partial class Direct2DStageRenderer
     private const int MaxSelectionOutlines = 512;
     private float _selectionHighlightPulse = 0.5f;
 
+    private bool _simpleSelectionHighlightEnabled;
+
     private void DrawSelection(StageControl stage)
+    {
+        if (TryDrawCachedSelection(stage)) return;
+        DrawSelectionCore(stage);
+    }
+
+    private void DrawSelectionCore(StageControl stage)
     {
         if ((stage.SelectedObject < 0 || stage.SelectedObject >= stage.Scene.ObjectCount)
             && stage.SelectedObjects.Count == 0
             && !HasHoveredLine(stage)
             && !stage.DrawingObjectSelectionVisible)
         {
+            ClearSelectionElementGeometry();
             return;
         }
 
+        _simpleSelectionHighlightEnabled = stage.SimpleSelectionHighlightEnabled;
         _selectionHighlightPulse = stage.SelectionHighlightPulse;
+        PrepareSelectionElementGeometry(stage);
 
         if (stage.SelectedElements.Count > 0)
         {
@@ -195,6 +206,21 @@ internal sealed partial class Direct2DStageRenderer
             return;
         }
 
+        if (shape == ShapeKind.Path)
+        {
+            if (stage.Scene.TryGetPathWorldContours(i, out var contours))
+            {
+                var highlightKind = stage.SelectionHighlightForObject(i, SelectionHighlightKind.Fill);
+                foreach (var contour in stage.Scene.GetVisiblePathSelectionPolylines(i, stage.Frame, contours))
+                {
+                    var points = contour.Select(point => WorldToVector(stage, point)).ToArray();
+                    if (points.Length >= 2)
+                        DrawSelectionPolyline(points, primary, highlightKind);
+                }
+            }
+            return;
+        }
+
         // Fill-type objects: rectangular bounding box (consistent with instance & 3D views).
         DrawSelectionBoundsRect(stage, i);
 
@@ -220,6 +246,7 @@ internal sealed partial class Direct2DStageRenderer
     {
         var objectIndex = hit.Key.ObjectIndex;
         var shape = stage.Scene.ShapeKind[objectIndex];
+        if (TryDrawCachedElementSelection(stage, hit, primary)) return;
         if (hit.Key.Kind == DrawingElementKind.BoundaryStroke
             && DrawPresentedEditableBezierSelection(stage, hit, primary))
         {
@@ -651,8 +678,8 @@ internal sealed partial class Direct2DStageRenderer
         if (right - left <= 0.001f || bottom - top <= 0.001f) return false;
 
         var rect = Rect(left, top, right - left, bottom - top);
-        _target!.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(95, 20, 150, 180).ToArgb()), 3.5f);
-        _target.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(195, 32, 190, 224).ToArgb()), 3f);
+        if (!_simpleSelectionHighlightEnabled) _target!.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(95, 20, 150, 180).ToArgb()), 3.5f);
+        if (!_simpleSelectionHighlightEnabled) _target.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(195, 32, 190, 224).ToArgb()), 3f);
         _target.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(255, 104, 244, 214).ToArgb()), 1.5f);
         return true;
     }
@@ -675,8 +702,8 @@ internal sealed partial class Direct2DStageRenderer
         if (right - left <= 0 || bottom - top <= 0) return;
 
         var rect = Rect(left, top, right - left, bottom - top);
-        _target!.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(95, 20, 150, 180).ToArgb()), 3.5f);
-        _target.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(195, 32, 190, 224).ToArgb()), 3f);
+        if (!_simpleSelectionHighlightEnabled) _target!.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(95, 20, 150, 180).ToArgb()), 3.5f);
+        if (!_simpleSelectionHighlightEnabled) _target.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(195, 32, 190, 224).ToArgb()), 3f);
         _target.DrawRectangle(in rect, BrushFor(GdiColor.FromArgb(255, 104, 244, 214).ToArgb()), 1.5f);
         if (stage.DrawingObjectAnchorVisible)
         {
@@ -797,8 +824,8 @@ internal sealed partial class Direct2DStageRenderer
             LineCapForEndpoint(startStyle),
             LineCapForEndpoint(endStyle),
             startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp);
-        _target!.DrawGeometry(path, BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()), SelectionOuterGlowWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
-        _target.DrawGeometry(path, BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()), SelectionGlowWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
+        if (!_simpleSelectionHighlightEnabled) _target!.DrawGeometry(path, BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()), SelectionOuterGlowWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
+        if (!_simpleSelectionHighlightEnabled) _target.DrawGeometry(path, BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()), SelectionGlowWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
         _target!.DrawGeometry(path, BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()), SelectionLineWidth(highlightKind, primary) * strokeWidthScale, strokeStyle);
     }
 
@@ -814,8 +841,8 @@ internal sealed partial class Direct2DStageRenderer
             LineCapForEndpoint(startStyle),
             LineCapForEndpoint(endStyle),
             startStyle == LineEndpointStyle.Sharp || endStyle == LineEndpointStyle.Sharp);
-        _target!.DrawLine(start, end, BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()), SelectionOuterGlowWidth(highlightKind, primary), strokeStyle);
-        _target.DrawLine(start, end, BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()), SelectionGlowWidth(highlightKind, primary), strokeStyle);
+        if (!_simpleSelectionHighlightEnabled) _target!.DrawLine(start, end, BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()), SelectionOuterGlowWidth(highlightKind, primary), strokeStyle);
+        if (!_simpleSelectionHighlightEnabled) _target.DrawLine(start, end, BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()), SelectionGlowWidth(highlightKind, primary), strokeStyle);
         _target.DrawLine(start, end, BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()), SelectionLineWidth(highlightKind, primary), strokeStyle);
     }
 
@@ -854,9 +881,9 @@ internal sealed partial class Direct2DStageRenderer
         var pulseScale = 0.92f + 0.16f * _selectionHighlightPulse;
         var outer = (primary ? 12f : 8f) * pulseScale;
         var glow = (primary ? 7f : 5f) * pulseScale;
-        var line = (primary ? 2.5f : 1.5f) * pulseScale;
-        _target!.FillEllipse(new Ellipse(point, outer * 0.5f, outer * 0.5f), BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()));
-        _target.FillEllipse(new Ellipse(point, glow * 0.5f, glow * 0.5f), BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()));
+        var line = _simpleSelectionHighlightEnabled ? (primary ? 3f : 2f) : (primary ? 2.5f : 1.5f) * pulseScale;
+        if (!_simpleSelectionHighlightEnabled) _target!.FillEllipse(new Ellipse(point, outer * 0.5f, outer * 0.5f), BrushFor(SelectionOuterGlowColor(highlightKind, primary).ToArgb()));
+        if (!_simpleSelectionHighlightEnabled) _target.FillEllipse(new Ellipse(point, glow * 0.5f, glow * 0.5f), BrushFor(SelectionGlowColor(highlightKind, primary).ToArgb()));
         _target.FillEllipse(new Ellipse(point, line * 0.5f, line * 0.5f), BrushFor(SelectionLineColor(highlightKind, primary).ToArgb()));
     }
 
@@ -866,8 +893,8 @@ internal sealed partial class Direct2DStageRenderer
     private GdiColor SelectionGlowColor(SelectionHighlightKind highlightKind, bool primary) =>
         StageControl.SelectionGlowColor(highlightKind, primary, _selectionHighlightPulse);
 
-    private static GdiColor SelectionLineColor(SelectionHighlightKind highlightKind, bool primary) =>
-        StageControl.SelectionLineColor(highlightKind, primary);
+    private GdiColor SelectionLineColor(SelectionHighlightKind highlightKind, bool primary) =>
+        StageControl.SelectionLineColor(highlightKind, primary, simple: _simpleSelectionHighlightEnabled);
 
     private float SelectionOuterGlowWidth(SelectionHighlightKind highlightKind, bool primary) =>
         StageControl.SelectionOuterGlowWidth(highlightKind, primary, _selectionHighlightPulse);
@@ -876,7 +903,7 @@ internal sealed partial class Direct2DStageRenderer
         StageControl.SelectionGlowWidth(highlightKind, primary, _selectionHighlightPulse);
 
     private float SelectionLineWidth(SelectionHighlightKind highlightKind, bool primary) =>
-        StageControl.SelectionLineWidth(highlightKind, primary, _selectionHighlightPulse);
+        _simpleSelectionHighlightEnabled ? (primary ? 1.25f : 1f) : StageControl.SelectionLineWidth(highlightKind, primary, _selectionHighlightPulse);
 
     private ID2D1PathGeometry BuildPolylineSamplePath(Vector2[] points, float startT, float endT)
     {

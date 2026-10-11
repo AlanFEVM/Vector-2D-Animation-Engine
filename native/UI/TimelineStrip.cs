@@ -5342,12 +5342,12 @@ internal sealed partial class TimelineStrip : Control
                 : Theme.Mix(Theme.Panel, Theme.PanelStrong, 0.34f);
         using var fillBrush = new SolidBrush(fill);
         using var font = Theme.UiFont(8.5f);
-        graphics.FillRectangle(fillBrush, bounds);
+        Theme.FillUiRectangle(graphics, fillBrush, bounds);
         if (hovered || highContrast)
         {
             using var borderPen = new Pen(
                 highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(fill, Theme.BorderHover));
-            graphics.DrawRectangle(borderPen, bounds);
+            Theme.DrawUiRectangle(graphics, borderPen, bounds);
         }
         TextRenderer.DrawText(
             graphics,
@@ -5373,12 +5373,12 @@ internal sealed partial class TimelineStrip : Control
                 ? Theme.PanelHover
                 : Theme.Mix(Theme.Panel, Theme.PanelStrong, 0.34f);
         using var fillBrush = new SolidBrush(fill);
-        graphics.FillRectangle(fillBrush, bounds);
+        Theme.FillUiRectangle(graphics, fillBrush, bounds);
         if (hovered || highContrast)
         {
             using var borderPen = new Pen(
                 highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(fill, Theme.BorderHover));
-            graphics.DrawRectangle(borderPen, bounds);
+            Theme.DrawUiRectangle(graphics, borderPen, bounds);
         }
         _headerIconCache.Draw(
             graphics,
@@ -5396,8 +5396,8 @@ internal sealed partial class TimelineStrip : Control
         using var fillBrush = new SolidBrush(highContrast ? SystemColors.Highlight : Theme.PanelHover);
         using var borderPen = new Pen(
             highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(Theme.PanelHover, Theme.BorderHover));
-        graphics.FillRectangle(fillBrush, bounds);
-        graphics.DrawRectangle(borderPen, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+        Theme.FillUiRectangle(graphics, fillBrush, bounds);
+        Theme.DrawUiRectangle(graphics, borderPen, new Rectangle(bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1));
     }
 
     private bool AreAllLayersVisible()

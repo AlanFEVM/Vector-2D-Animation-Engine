@@ -7069,6 +7069,10 @@ internal static partial class Benchmark
 
     private static void RunTemporaryCanvasPanRegression()
     {
+        RunDenseSelectionPanRenderRegression();
+        RunDenseSelectionWheelRegression();
+        RunCanvasNavigationPreparationRegression();
+        RunSelectedBoundaryPanCacheRegression();
         RunLineEditingPointerRegression();
         RunSelectionMoveCursorRegression();
         AssertTimeline(
@@ -7106,8 +7110,522 @@ internal static partial class Benchmark
             "Stage pan did not preserve the pointer drag delta in screen space.");
     }
 
+    private static void RunDenseSelectionWheelRegression()
+    {
+        var previousGpuPolicy = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        try
+        {
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            using var form = new MainForm { ClientSize = new Size(1920, 1080), ShowInTaskbar = false };
+            var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+            scene.CreateEmpty();
+            var owners = new List<int>();
+            var hits = new List<DrawingElementHit>();
+            for (var index = 0; index < 373; index++)
+            {
+                var center = new PointF(index % 24 * 420 - 4800, index / 24 * 300 - 2250);
+                var owner = scene.AddCurveSegment(0,
+                    new PointF(center.X - 150, center.Y),
+                    new PointF(center.X, center.Y - 160),
+                    new PointF(center.X + 150, center.Y), 12, Color.Transparent, Color.Black, 6);
+                owners.Add(owner);
+                hits.Add(new DrawingElementHit(new DrawingElementKey(owner, DrawingElementKind.Stroke, 0), 0, 0.1f, 0.9f));
+            }
+            scene.CompleteDeferredBuild();
+            form.Show();
+            var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+            stage.BindScene(scene);
+            stage.SetVisibleWorldWidth(14000);
+            stage.SetSelectionState(owners, owners[^1], hits, hits[^1]);
+            stage.Refresh();
+            Application.DoEvents();
+            var wheel = typeof(Control).GetMethod("OnMouseWheel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var anchor = new Point(stage.Width / 2 + 40, stage.Height / 2 - 20);
+            var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+            var builds = renderer.SelectionGeometryBuilds;
+            var selectionCommandBuilds = renderer.SelectionCommandBuilds;
+            var selectionCommandReuses = renderer.SelectionCommandReuses;
+            var timings = new List<double>();
+            var inputTimings = new List<double>();
+            var firstFrameTotalMilliseconds = 0d;
+            var firstFrameInputMilliseconds = 0d;
+            var firstFrameRenderMilliseconds = 0d;
+            var previewUsedTiles = false;
+            var previewSkippedDetails = false;
+            for (var frame = 0; frame < 72; frame++)
+            {
+                var before = stage.ScreenToWorld(anchor);
+                var started = Stopwatch.GetTimestamp();
+                wheel.Invoke(stage, [new MouseEventArgs(MouseButtons.None, 0, anchor.X, anchor.Y, frame % 2 == 0 ? 120 : -120)]);
+                var inputTime = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                var overlayStarted = Stopwatch.GetTimestamp();
+                stage.Refresh();
+                previewUsedTiles |= stage.ZoomLodPreviewActive && stage.LastStats.TileLod;
+                previewSkippedDetails |= stage.ZoomLodPreviewActive && stage.LastDirect2DLodDetailObjectDraws == 0;
+                var refreshMilliseconds = Stopwatch.GetElapsedTime(overlayStarted).TotalMilliseconds;
+                Application.DoEvents();
+                var totalMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                if (frame == 12)
+                {
+                    firstFrameTotalMilliseconds = totalMilliseconds;
+                    firstFrameInputMilliseconds = inputTime;
+                    firstFrameRenderMilliseconds = refreshMilliseconds;
+                }
+                if (frame >= 12)
+                {
+                    timings.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    inputTimings.Add(inputTime);
+                }
+                var after = stage.ScreenToWorld(anchor);
+                AssertTimeline(PointsWithin(before, after, 0.05f), "Wheel input moved the world anchor.");
+            }
+            timings.Sort();
+            Console.WriteLine($"dense_line_wheel:avg_ms={timings.Average():F3},p95_ms={timings[56]:F3},max_ms={timings[^1]:F3},input_avg_ms={inputTimings.Average():F3},drawn={stage.LastStats.DrawnObjects},size={stage.Width}x{stage.Height},gpu={renderer.GpuAdapterName}");
+            Console.WriteLine($"dense_line_wheel_first_frame:total_ms={firstFrameTotalMilliseconds:F3},input_ms={firstFrameInputMilliseconds:F3},render_ms={firstFrameRenderMilliseconds:F3}");
+            Console.WriteLine($"dense_line_wheel_geometry_builds={renderer.SelectionGeometryBuilds - builds},reuses={renderer.SelectionGeometryReuses}");
+            AssertTimeline(previewUsedTiles && previewSkippedDetails,
+                "Dense wheel zoom did not use tile preview without redrawing selected objects.");
+            AssertTimeline(renderer.SelectionCommandBuilds == selectionCommandBuilds
+                && renderer.SelectionCommandReuses - selectionCommandReuses >= 60,
+                "Dense wheel zoom rebuilt its selection command instead of reusing the cached overlay.");
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [false]);
+            stage.Invalidate();
+            stage.Refresh();
+            AssertTimeline(stage.LastFrameUsedDirect2D && stage.LastStats.DrawnObjects == 373 && !stage.LastStats.TileLod,
+                "Wheel zoom did not restore the full-detail Direct2D scene after preview.");
+        }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previousGpuPolicy); }
+    }
+
+    private static void RunCanvasNavigationPreparationRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var pending = RequireField(typeof(MainForm), "_pendingPresentationRefresh");
+        var overlays = Enum.Parse(pending.FieldType, "Overlays");
+        pending.SetValue(form, overlays);
+        var started = Stopwatch.GetTimestamp();
+        RequireMethod(typeof(MainForm), "StageMouseDown").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Middle, 1, 200, 160, 0)]);
+        AssertTimeline(pending.GetValue(form)!.Equals(overlays),
+            "Canvas navigation eagerly prepared overlays for object hit testing.");
+        AssertTimeline((bool)RequireField(typeof(MainForm), "_viewPanning").GetValue(form)!,
+            "Middle-button navigation did not enter canvas pan.");
+        RequireMethod(typeof(MainForm), "StageMouseMove").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Middle, 0, 204, 163, 0)]);
+        Console.WriteLine($"canvas_navigation_first_input_ms={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F3}");
+        RequireMethod(typeof(MainForm), "EndGlobalViewDrag").Invoke(form, null);
+        Console.WriteLine("canvas_navigation_deferred_overlays=passed");
+    }
+
+    private static void RunDenseSelectionPanRenderRegression()
+    {
+        var previousGpuPolicy = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");
+        try
+        {
+            Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", null);
+            RunDenseSelectionPanRenderRegressionCore();
+        }
+        finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previousGpuPolicy); }
+    }
+
+    private static void RunDenseSelectionPanRenderRegressionCore()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var owners = new List<int>();
+        var hits = new List<DrawingElementHit>();
+        for (var index = 0; index < 373; index++)
+        {
+            var center = new PointF(index % 24 * 420 - 4800, index / 24 * 300 - 2250);
+            var contour = Enumerable.Range(0, 16).Select(vertex => new PointF(
+                center.X + 180 * MathF.Cos(vertex * MathF.Tau / 16),
+                center.Y + 180 * MathF.Sin(vertex * MathF.Tau / 16))).ToArray();
+            var owner = scene.AppendPathObjectContours(0, [contour], 2, Color.SlateGray, Color.Black, 16);
+            owners.Add(owner);
+            hits.Add(new DrawingElementHit(new DrawingElementKey(owner, DrawingElementKind.Fill, 0), 0, 0, 1));
+            hits.Add(new DrawingElementHit(new DrawingElementKey(owner, DrawingElementKind.BoundaryStroke, 0), 0, 0, 1));
+        }
+        scene.CompleteDeferredBuild();
+        using var host = new Form { ClientSize = new Size(1920, 1080), ShowInTaskbar = false };
+        using var stage = new StageControl(scene) { Dock = DockStyle.Fill };
+        host.Controls.Add(stage);
+        host.Show();
+        stage.SetVisibleWorldWidth(14000);
+        Application.DoEvents();
+        Measure("unselected");
+        stage.SetSelectionState(owners, owners[^1], hits, hits[^1]);
+        stage.Refresh();
+        var coldGeometryBuilds = ((Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!).SelectionGeometryBuilds;
+        for (var idleFrame = 0; idleFrame < 8; idleFrame++)
+        {
+            RequireMethod(typeof(StageControl), "TickSelectionHighlight").Invoke(stage, null);
+            stage.Refresh();
+        }
+        RequireField(typeof(StageControl), "_selectionHighlightPhase").SetValue(stage, 0f);
+        stage.InvalidateOverlay();
+        stage.Refresh();
+        var firstPanStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        stage.Capture = true;
+        stage.Pan(2, 0);
+        stage.Refresh();
+        Console.WriteLine($"dense_selection_first_pan_ms={System.Diagnostics.Stopwatch.GetElapsedTime(firstPanStarted).TotalMilliseconds:F3}");
+        AssertTimeline(((Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!).SelectionGeometryBuilds == coldGeometryBuilds,
+            "Idle highlights or the first pan rebuilt unchanged geometry.");
+        Measure("selected");
+        var renderer = (Direct2DStageRenderer)RequireField(typeof(StageControl), "_direct2DRenderer").GetValue(stage)!;
+        var builds = renderer.SelectionCommandBuilds;
+        var pulse = stage.SelectionHighlightPulse;
+        RequireMethod(typeof(StageControl), "TickSelectionHighlight").Invoke(stage, null);
+        AssertTimeline(stage.SelectionHighlightPulse == pulse, "Captured pan changed selection pulse.");
+        stage.Pan(30, -20);
+        stage.Refresh();
+        if (renderer.ExplicitGpuDeviceActive)
+        {
+            AssertTimeline(renderer.SelectionCommandBuilds == builds && renderer.SelectionCommandReuses >= 24,
+                "Dense selection pan rebuilt commands instead of replaying them.");
+            var cachedPixels = ReadSelectionPixels("DrawSelection");
+            var rebuiltPixels = ReadSelectionPixels("DrawSelectionCore");
+            var maximumError = 0;
+            long totalError = 0;
+            var changedChannels = 0;
+            for (var index = 0; index < cachedPixels.Length; index++)
+            for (var shift = 0; shift < 32; shift += 8)
+            {
+                var error = Math.Abs((cachedPixels[index] >>> shift & 255) - (rebuiltPixels[index] >>> shift & 255));
+                maximumError = Math.Max(maximumError, error);
+                totalError += error;
+                if (error > 0) changedChannels++;
+            }
+            Console.WriteLine($"dense_selection_pan_pixel_error={maximumError},gpu={renderer.GpuAdapterName},size={stage.Width}x{stage.Height}");
+            Console.WriteLine($"dense_selection_pan_pixel_mean={(double)totalError / (cachedPixels.Length * 4):F6},changed_channels={changedChannels}");
+            RequireMethod(typeof(Direct2DStageRenderer), "ClearSelectionCommands").Invoke(renderer, null);
+            var freshPixels = ReadSelectionPixels("DrawSelection");
+            var freshError = 0;
+            var replayError = 0;
+            for (var index = 0; index < freshPixels.Length; index++)
+            for (var shift = 0; shift < 32; shift += 8)
+            {
+                freshError = Math.Max(freshError, Math.Abs((freshPixels[index] >>> shift & 255) - (rebuiltPixels[index] >>> shift & 255)));
+                replayError = Math.Max(replayError, Math.Abs((freshPixels[index] >>> shift & 255) - (cachedPixels[index] >>> shift & 255)));
+            }
+            Console.WriteLine($"dense_selection_pan_fresh_pixel_error={freshError}");
+            Console.WriteLine($"dense_selection_pan_replay_pixel_error={replayError}");
+            AssertTimeline(replayError <= 8, "Translated selection commands differ from freshly recorded selection pixels.");
+            AssertTimeline(maximumError <= 8 && freshError <= 8
+                && (double)totalError / (cachedPixels.Length * 4) <= 0.001,
+                "Selection commands changed selection coverage beyond Direct2D antialiasing precision.");
+            stage.InvalidateOverlay();
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds, "Overlay updates retained stale commands.");
+            builds = renderer.SelectionCommandBuilds;
+            scene.TransformObjects([owners[0]], point => new PointF(point.X + 20, point.Y));
+            stage.Pan(2, 0);
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds, "Geometry changes retained stale commands.");
+            builds = renderer.SelectionCommandBuilds;
+            stage.SetSelectionState(owners.Take(100), owners[99], hits.Take(200));
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds, "Selection changes retained stale commands.");
+            builds = renderer.SelectionCommandBuilds;
+            stage.ZoomAt(new Point(stage.Width / 2, stage.Height / 2), 1.05f);
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds,
+                "Non-interactive zoom did not rebuild exact selection commands.");
+            builds = renderer.SelectionCommandBuilds;
+            renderer.ReleaseTarget();
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds && stage.LastFrameUsedDirect2D,
+                "Device reset failed to recreate selection commands.");
+            builds = renderer.SelectionCommandBuilds;
+            stage.Scene.LayerOpacity[0] = 0.5f;
+            stage.Pan(2, 0);
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds, "Layer changes retained stale commands.");
+            var previousFrame = stage.Frame;
+            builds = renderer.SelectionCommandBuilds;
+            stage.Frame++;
+            stage.Pan(2, 0);
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds, "Frame changes retained stale commands.");
+            stage.Frame = previousFrame;
+            builds = renderer.SelectionCommandBuilds;
+            host.ClientSize = new Size(1600, 900);
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionCommandBuilds > builds, "Resize retained stale commands.");
+        }
+        stage.Capture = false;
+        scene.LayerOpacity[0] = 1;
+        stage.SetSelectionState(owners, owners[^1], hits, hits[^1]);
+        host.ClientSize = new Size(1920, 1080);
+        stage.SetVisibleWorldWidth(14000);
+        stage.Refresh();
+        MeasureZoom();
+        host.Close();
+
+        int[] ReadSelectionPixels(string drawMethod)
+        {
+            var gpu = (StageGpuDevice)RequireField(typeof(Direct2DStageRenderer), "_gpuDevice").GetValue(renderer)!;
+            var outputProperties = new Vortice.Direct2D1.BitmapProperties1(
+                new Vortice.DCommon.PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Premultiplied),
+                96, 96, Vortice.Direct2D1.BitmapOptions.Target);
+            using var output = gpu.Context.CreateBitmap(new Vortice.Mathematics.SizeI(stage.Width, stage.Height), IntPtr.Zero, 0, outputProperties);
+            using var previousTarget = gpu.Context.Target;
+            var transform = gpu.Context.Transform;
+            gpu.Context.Target = output;
+            gpu.Context.Transform = System.Numerics.Matrix3x2.Identity;
+            gpu.Context.BeginDraw();
+            try
+            {
+                gpu.Context.Clear(new Vortice.Mathematics.Color4(0, 0, 0, 0));
+                RequireMethod(typeof(Direct2DStageRenderer), drawMethod).Invoke(renderer, [stage]);
+            }
+            finally
+            {
+                gpu.Context.EndDraw().CheckError();
+                gpu.Context.Target = previousTarget;
+                gpu.Context.Transform = transform;
+            }
+            var properties = new Vortice.Direct2D1.BitmapProperties1(
+                new Vortice.DCommon.PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Premultiplied),
+                96, 96, Vortice.Direct2D1.BitmapOptions.CpuRead | Vortice.Direct2D1.BitmapOptions.CannotDraw);
+            using var readable = gpu.Context.CreateBitmap(new Vortice.Mathematics.SizeI(stage.Width, stage.Height), IntPtr.Zero, 0, properties);
+            readable.CopyFromBitmap(output).CheckError();
+            var mapped = readable.Map(Vortice.Direct2D1.MapOptions.Read);
+            try
+            {
+                var result = new int[stage.Width * stage.Height];
+                for (var row = 0; row < stage.Height; row++)
+                    System.Runtime.InteropServices.Marshal.Copy(mapped.Bits + (int)mapped.Pitch * row,
+                        result, row * stage.Width, stage.Width);
+                return result;
+            }
+            finally { readable.Unmap(); }
+        }
+
+        void MeasureZoom()
+        {
+            var anchor = new Point(stage.Width / 2 + 40, stage.Height / 2 - 20);
+            var geometryBuilds = renderer.SelectionGeometryBuilds;
+            var commandBuilds = renderer.SelectionCommandBuilds;
+            var zoomPulse = stage.SelectionHighlightPulse;
+            var commandTime = 0d;
+            var presentTime = 0d;
+            var timings = new List<double>();
+            for (var frame = 0; frame < 132; frame++)
+            {
+                var before = stage.ScreenToWorld(anchor);
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                stage.ZoomAt(anchor, frame % 2 == 0 ? 1.12f : 1f / 1.12f, interactivePreview: true);
+                stage.Refresh();
+                RequireMethod(typeof(StageControl), "TickSelectionHighlight").Invoke(stage, null);
+                AssertTimeline(stage.SelectionHighlightPulse == zoomPulse, "Interactive zoom changed selection pulse.");
+                if (frame >= 12)
+                {
+                    timings.Add(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    commandTime += renderer.LastCommandMilliseconds;
+                    presentTime += renderer.LastPresentMilliseconds;
+                }
+                var after = stage.ScreenToWorld(anchor);
+                AssertTimeline(Math.Abs(before.X - after.X) < 0.05f && Math.Abs(before.Y - after.Y) < 0.05f,
+                    "Dense zoom moved the world point under the pointer.");
+            }
+            timings.Sort();
+            var p95 = timings[(int)Math.Ceiling(timings.Count * 0.95) - 1];
+            Console.WriteLine($"dense_zoom_selected:avg_ms={timings.Average():F3},p95_ms={p95:F3},max_ms={timings[^1]:F3},drawn={stage.LastStats.DrawnObjects},frames={timings.Count}");
+            Console.WriteLine($"dense_selection_zoom_budget_met={(timings.Average() <= 16.667 && p95 <= 16.667).ToString().ToLowerInvariant()}");
+            AssertTimeline(timings.Average() <= 16.667 && p95 <= 16.667,
+                "Dense selected-object zoom exceeded the 60 FPS frame-time budget.");
+            AssertTimeline(renderer.SelectionCommandBuilds == commandBuilds,
+                "Dense zoom rebuilt unchanged selection commands during wheel frames.");
+            AssertTimeline(stage.LastStats.TileLod && renderer.LastLodDetailObjectDraws == 0,
+                "Dense all-selected zoom bypassed tile preview or redrew selected object details.");
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [false]);
+            stage.Invalidate();
+            stage.Refresh();
+            Console.WriteLine($"dense_zoom_geometry_builds={renderer.SelectionGeometryBuilds - geometryBuilds},reuses={renderer.SelectionGeometryReuses}");
+            Console.WriteLine($"dense_zoom_commands_ms={commandTime / timings.Count:F3},present_ms={presentTime / timings.Count:F3},details={renderer.LastLodDetailObjectDraws},tiles={stage.LastStats.TileDraws}");
+            AssertTimeline(renderer.SelectionGeometryBuilds == geometryBuilds, "Zoom rebuilt unchanged selection geometry.");
+            AssertTimeline(!stage.SelectionZoomPreviewActive, "Zoom completion retained the selection navigation preview.");
+            AssertTimeline(stage.LastStats.DrawnObjects == 373, "Dense all-selected zoom did not render all objects.");
+            foreach (var factor in new[] { 1.12f, 0.89f, 1.6f, 0.6f })
+            {
+                stage.ZoomAt(anchor, factor, interactivePreview: true);
+                stage.Refresh();
+                var fastPixels = ReadSelectionPixels("DrawSelectionCore");
+                RequireField(typeof(StageControl), "_selectionZoomPreviewActive").SetValue(stage, false);
+                var referencePixels = ReadSelectionPixels("DrawSelectionCore");
+                var error = 0;
+                long total = 0;
+                for (var index = 0; index < fastPixels.Length; index++)
+                for (var shift = 0; shift < 32; shift += 8)
+                {
+                    var delta = Math.Abs((fastPixels[index] >>> shift & 255) - (referencePixels[index] >>> shift & 255));
+                    error = Math.Max(error, delta);
+                    total += delta;
+                }
+                Console.WriteLine($"dense_zoom_pixel_error={error},mean={(double)total / (fastPixels.Length * 4):F6},zoom={stage.Zoom:F3}");
+                AssertTimeline(error <= 8 && (double)total / (fastPixels.Length * 4) <= 0.001,
+                    "Zoom command replay changed selection stroke width or coverage.");
+            }
+            var editBuilds = renderer.SelectionGeometryBuilds;
+            scene.X[owners[0]] += 40;
+            stage.Invalidate();
+            stage.Refresh();
+            AssertTimeline(renderer.SelectionGeometryBuilds > editBuilds, "Raw object edits retained stale world geometry.");
+            stage.SetSelectionState(owners.Take(100), owners[99], hits.Take(200));
+            stage.Refresh();
+            stage.ZoomAt(anchor, 1.12f, interactivePreview: true);
+            AssertTimeline(stage.ZoomLodPreviewActive, "Partial selection disabled the existing zoom LOD policy.");
+            RequireMethod(typeof(StageControl), "EndZoomLodPreview").Invoke(stage, [true]);
+            AssertTimeline(!stage.SelectionZoomPreviewActive && !stage.ZoomLodPreviewActive,
+                "Zoom navigation did not clean up after completion.");
+        }
+
+        void Measure(string label)
+        {
+            for (var warmup = 0; warmup < 12; warmup++) { stage.Pan(1, 0); stage.Refresh(); }
+            var timings = new List<double>();
+            for (var frame = 0; frame < 120; frame++)
+            {
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                stage.Pan(frame % 2 == 0 ? 2 : -2, 0);
+                stage.Refresh();
+                timings.Add(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
+            timings.Sort();
+            var p95 = timings[(int)Math.Ceiling(timings.Count * 0.95) - 1];
+            Console.WriteLine($"dense_pan_{label}:avg_ms={timings.Average():F3},p95_ms={p95:F3},max_ms={timings[^1]:F3},d2d={stage.LastFrameUsedDirect2D},drawn={stage.LastStats.DrawnObjects},frames={timings.Count}");
+            AssertTimeline(stage.LastStats.DrawnObjects == 373, "Dense pan fixture did not render every object.");
+            if (label == "selected")
+                Console.WriteLine($"dense_selection_pan_budget_met={(timings.Average() <= 16.667 && p95 <= 16.667).ToString().ToLowerInvariant()}");
+        }
+    }
+
+    private static void RunSelectedBoundaryPanCacheRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var selected = new List<DrawingElementHit>();
+        for (var index = 0; index < 96; index++)
+        {
+            var owner = scene.AppendObject(0, new PointF(index % 16 * 300, index / 16 * 300),
+                new SizeF(240, 160), 0, 2, Color.CornflowerBlue, Color.Black, 8, ShapeKind.Ellipse);
+            selected.Add(new DrawingElementHit(new DrawingElementKey(owner, DrawingElementKind.BoundaryStroke, 0), 0, 0, 1));
+        }
+        scene.CompleteDeferredBuild();
+        using var stage = new StageControl(scene) { Size = new Size(960, 640) };
+        var lines = new List<DrawingElementKey>();
+        for (var index = 0; index < 96; index++)
+        {
+            var owner = scene.AppendObject(0, new PointF(index % 16 * 300, 2400 + index / 16 * 300),
+                new SizeF(240, 160), 0, 2, Color.Black, Color.Black, 8, ShapeKind.Line);
+            lines.Add(new DrawingElementKey(owner, DrawingElementKind.Stroke, 0));
+        }
+        scene.CompleteDeferredBuild();
+        foreach (var key in lines)
+            AssertTimeline(scene.TryGetLinePartEndpointStyles(key, 0, out _, out _), "Line endpoint fixture was not editable.");
+        var warmedStrokeBuilds = scene.StrokeSplitCacheBuilds;
+        foreach (var hit in selected)
+        {
+            AssertTimeline(scene.TryGetBoundaryBezierSegment(hit, 0, out _), "Ellipse boundary fixture was not editable.");
+            scene.GetBoundaryParts(hit.Key.ObjectIndex, 0);
+            AssertTimeline(scene.TryGetLinePartEndpointStyles(hit.Key, 0, out _, out _), "Boundary endpoint styles were unavailable.");
+        }
+        var warmedBuilds = scene.BoundaryStrokePartCacheBuilds;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        for (var frame = 0; frame < 24; frame++)
+        {
+            stage.Pan(3, -2);
+            foreach (var key in lines)
+                scene.TryGetLinePartEndpointStyles(key, 0, out _, out _);
+            foreach (var hit in selected)
+            {
+                scene.TryGetBoundaryBezierSegment(hit, 0, out _);
+                scene.GetBoundaryParts(hit.Key.ObjectIndex, 0);
+                scene.TryGetLinePartEndpointStyles(hit.Key, 0, out _, out _);
+            }
+        }
+        timer.Stop();
+        AssertTimeline(scene.BoundaryStrokePartCacheBuilds == warmedBuilds,
+            "Canvas pan rebuilt unchanged selected boundary topology.");
+        AssertTimeline(scene.StrokeSplitCacheBuilds == warmedStrokeBuilds,
+            "Canvas pan rebuilt unchanged selected line topology.");
+        scene.TransformObjects([selected[0].Key.ObjectIndex], point => new PointF(point.X + 20, point.Y));
+        scene.TryGetBoundaryBezierSegment(selected[0], 0, out _);
+        AssertTimeline(scene.BoundaryStrokePartCacheBuilds > warmedBuilds, "Geometry edits did not invalidate selected boundary topology.");
+        scene.TryGetLinePartEndpointStyles(lines[0], 0, out _, out _);
+        AssertTimeline(scene.StrokeSplitCacheBuilds > warmedStrokeBuilds, "Geometry edits did not invalidate selected line topology.");
+        Console.WriteLine($"selected_boundary_pan_cache=ok,objects=192,frames=24,rebuilds=0,query_ms={timer.Elapsed.TotalMilliseconds:F3}");
+    }
+
+    private static void RunConsecutiveBoundaryArcPointerRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var settings = (DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!;
+        settings.SnapEnabled = false;
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(1200);
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+        scene.CreateEmpty();
+        var rectangle = scene.AddObject(0, PointF.Empty, new SizeF(400, 300), 0, 0,
+            Color.Teal, Color.Black, 4, ShapeKind.Rectangle);
+        scene.CompleteDeferredBuild();
+        AssertTimeline(scene.TryConvertFillToBezierPath(rectangle, rebuildGeometryIndex: false),
+            "Boundary arc fixture has no editable contour.");
+        scene.TryGetPathBezierWorldContours(rectangle, out var originalContours);
+        var anchors = originalContours[0].Select(node => node.Anchor).ToArray();
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var doubleClick = RequireMethod(typeof(MainForm), "StageMouseDoubleClick");
+        var arcField = RequireField(typeof(MainForm), "_fillEdgeNoUiArc");
+        var preSelectField = RequireField(typeof(MainForm), "_fillEdgePreSelect");
+        foreach (var partIndex in new[] { 0, 2, 1 })
+        {
+            var start = anchors[partIndex];
+            var end = anchors[(partIndex + 1) % anchors.Length];
+            var press = Point.Round(stage.WorldToScreen((start.X + end.X) / 2, (start.Y + end.Y) / 2));
+            var drag = new Point(press.X + 18, press.Y + 18);
+            var clicks = partIndex == 1 ? 2 : 1;
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, clicks, press.X, press.Y, 0)]);
+            AssertTimeline(preSelectField.GetValue(form) is not null,
+                $"Unselected rectangle edge {partIndex} did not arm curvature editing after the previous bend.");
+            if (clicks == 2)
+            {
+                doubleClick.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, press.X, press.Y, 0)]);
+                AssertTimeline(stage.SelectedElements.Count == 1,
+                    "A rapid boundary press selected connected strokes while curvature editing was armed.");
+            }
+            mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, drag.X, drag.Y, 0)]);
+            mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, drag.X + 8, drag.Y + 8, 0)]);
+            AssertTimeline(arcField.GetValue(form) is not null, "Boundary bend became a selection move.");
+            if (clicks == 2)
+                doubleClick.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, drag.X + 8, drag.Y + 8, 0)]);
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, drag.X + 8, drag.Y + 8, 0)]);
+            AssertTimeline(scene.ObjectCount == 1,
+                $"Consecutive boundary bend {partIndex} detached the rectangle: objects={scene.ObjectCount}.");
+            AssertTimeline(scene.TryGetPathBezierWorldContours(rectangle, out var contours)
+                && contours[0].Select(node => node.Anchor).SequenceEqual(anchors),
+                "Consecutive boundary bends moved rectangle anchors.");
+            AssertTimeline(contours[0][partIndex].OutgoingControl != originalContours[0][partIndex].OutgoingControl,
+                $"Rectangle edge {partIndex} did not retain its curvature edit.");
+            AssertTimeline(arcField.GetValue(form) is null && preSelectField.GetValue(form) is null,
+                "Boundary bend retained pointer state after release.");
+        }
+        Console.WriteLine("consecutive_boundary_arc_pointer=ok,rapid_double_click=ok,anchors_unchanged=ok");
+    }
+
     private static void RunLineEditingPointerRegression()
     {
+        RunConsecutiveBoundaryArcPointerRegression();
         using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
         form.CreateControl();
         form.PerformLayout();

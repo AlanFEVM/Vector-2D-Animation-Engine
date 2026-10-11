@@ -4,6 +4,10 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class VectorScene
 {
+    private readonly Dictionary<(int ObjectIndex, int Frame, bool Closed, ulong Signature), PointF[][]> _visibleSelectionCache = new();
+    private long _visibleSelectionGeometryRevision = -1;
+    private long _visibleSelectionSummaryRevision = -1;
+
     // Selection visibility is derived from current paint/layer state. It must not
     // delete source contours or cache only by GeometryRevision (opacity/lock and
     // layer presentation can change independently).
@@ -80,6 +84,41 @@ internal sealed partial class VectorScene
     internal PointF[][] GetVisiblePathSelectionPolylines(int objectIndex, int frame, PointF[][]? contours = null, bool closed = true)
     {
         contours ??= GetDistortedObjectBoundaryContours(objectIndex);
+        var occluders = SelectionFillOccluders(objectIndex, frame, GetObjectWorldBounds(objectIndex), strokePass: !HasFill(objectIndex));
+        if (_visibleSelectionGeometryRevision != GeometryRevision || _visibleSelectionSummaryRevision != SummaryRevision)
+        {
+            _visibleSelectionCache.Clear();
+            _visibleSelectionGeometryRevision = GeometryRevision;
+            _visibleSelectionSummaryRevision = SummaryRevision;
+        }
+        var signature = 14695981039346656037UL;
+        signature = unchecked((signature ^ (HasFill(objectIndex) ? 1UL : 0UL)) * 1099511628211UL);
+        foreach (var contour in contours)
+        {
+            signature = unchecked((signature ^ (uint)contour.Length) * 1099511628211UL);
+            foreach (var point in contour)
+            {
+                signature = unchecked((signature ^ BitConverter.SingleToUInt32Bits(point.X)) * 1099511628211UL);
+                signature = unchecked((signature ^ BitConverter.SingleToUInt32Bits(point.Y)) * 1099511628211UL);
+            }
+        }
+        var occluderContours = new PointF[occluders.Length][][];
+        for (var index = 0; index < occluders.Length; index++)
+        {
+            signature = unchecked((signature ^ (uint)occluders[index]) * 1099511628211UL);
+            occluderContours[index] = SelectionOccluderContours(occluders[index]);
+            foreach (var contour in occluderContours[index])
+            {
+                signature = unchecked((signature ^ (uint)contour.Length) * 1099511628211UL);
+                foreach (var point in contour)
+                {
+                    signature = unchecked((signature ^ BitConverter.SingleToUInt32Bits(point.X)) * 1099511628211UL);
+                    signature = unchecked((signature ^ BitConverter.SingleToUInt32Bits(point.Y)) * 1099511628211UL);
+                }
+            }
+        }
+        var cacheKey = (objectIndex, frame, closed, signature);
+        if (_visibleSelectionCache.TryGetValue(cacheKey, out var cached)) return cached;
         var paths = new Paths64();
         foreach (var contour in contours)
         {
@@ -87,20 +126,22 @@ internal sealed partial class VectorScene
             paths.Add(new Path64((closed ? ClosePolyline(contour) : contour)
                 .Select(point => new Point64(ToClipperCoordinate(point.X), ToClipperCoordinate(point.Y)))));
         }
-        var occluders = SelectionFillOccluders(objectIndex, frame, GetObjectWorldBounds(objectIndex), strokePass: !HasFill(objectIndex));
-        foreach (var candidate in occluders)
+        foreach (var candidateContours in occluderContours)
         {
             if (paths.Count == 0) break;
             var clipper = new Clipper64();
             clipper.AddOpenSubject(paths);
-            clipper.AddClip(ToClipperPaths(SelectionOccluderContours(candidate)));
+            clipper.AddClip(ToClipperPaths(candidateContours));
             var visible = new Paths64();
             if (!clipper.Execute(ClipType.Difference, FillRule.EvenOdd, new Paths64(), visible))
                 throw new InvalidOperationException("Selection outline clipping failed.");
             paths = visible;
         }
-        return paths.Select(path => path.Select(point => new PointF(
+        var result = paths.Select(path => path.Select(point => new PointF(
             (float)(point.X / ClipperCoordinateScale), (float)(point.Y / ClipperCoordinateScale))).ToArray()).ToArray();
+        if (_visibleSelectionCache.Count >= 2048) _visibleSelectionCache.Clear();
+        _visibleSelectionCache[cacheKey] = result;
+        return result;
     }
 
     private bool HasExposedPathFill(int objectIndex, int frame)

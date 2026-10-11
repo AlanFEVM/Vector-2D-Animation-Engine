@@ -49,6 +49,7 @@ internal static class Program
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             var settings = ApplicationSettingsStore.Load();
+            Theme.ConfigureCornerStyle(settings.WindowCornerStyle);
             Theme.ConfigureColorAdjustments(
                 settings.ColorTheme,
                 settings.ThemeHueDegrees,

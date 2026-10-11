@@ -277,8 +277,9 @@ internal sealed class ModernNumericUpDown : UserControl
             SystemInformation.HighContrast
                 ? ContainsFocus ? SystemColors.Highlight : SystemColors.WindowText
                 : ContainsFocus ? Theme.Accent : Theme.Border);
-        e.Graphics.FillRectangle(fill, ClientRectangle);
-        e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+        e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
+        Theme.FillUiRectangle(e.Graphics, fill, ClientRectangle);
+        Theme.DrawUiRectangle(e.Graphics, border, new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1)));
     }
 
     protected override void Dispose(bool disposing)
@@ -915,6 +916,12 @@ internal sealed class ModernNumericUpDown : UserControl
                 highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(background, Theme.Border));
             e.Graphics.FillRectangle(fill, ClientRectangle);
             e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+            if (Parent is ModernNumericUpDown numeric)
+            {
+                Theme.PaintControlCorners(this, e.Graphics,
+                    new Rectangle(-Left, -Top, numeric.Width, numeric.Height),
+                    numeric.Parent?.BackColor ?? Theme.Panel, border.Color);
+            }
 
             var centerX = ClientSize.Width * 0.5f;
             var centerY = ClientSize.Height * 0.5f;

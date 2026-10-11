@@ -880,6 +880,7 @@ internal sealed partial class MainForm : Form
 
         _stage = new StageControl(_scene)
         {
+            SimpleSelectionHighlightEnabled = _applicationSettings.SimpleSelectionHighlightEnabled,
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(_applicationSettings.WorkspaceColorArgb)
         };
@@ -1700,6 +1701,11 @@ internal sealed partial class MainForm : Form
         dialog.ShowDialog(this);
     }
 
+    private void ApplyWindowCornerStyle(WindowCornerStyle style)
+    {
+        Theme.ConfigureCornerStyle(style);
+    }
+
     private void ShowSettings()
     {
         using var dialog = new SettingsDialog(
@@ -1713,8 +1719,12 @@ internal sealed partial class MainForm : Form
             _applicationSettings.AccentHueDegrees,
             _applicationSettings.AccentSaturationPercent,
             _applicationSettings.AccentBrightnessPercent,
-            _applicationSettings.FreeTransformShiftProportionalEnabled);
+            _applicationSettings.FreeTransformShiftProportionalEnabled,
+            _applicationSettings.SimpleSelectionHighlightEnabled,
+            _applicationSettings.WindowCornerStyle);
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
+        void PreviewCorners(object? sender, EventArgs e) => ApplyWindowCornerStyle(dialog.SelectedWindowCornerStyle);
+        dialog.CornerPreviewChanged += PreviewCorners;
         void PreviewTheme(object? sender, EventArgs e)
         {
             ApplyThemePreview(
@@ -1731,6 +1741,8 @@ internal sealed partial class MainForm : Form
         dialog.ThemePreviewChanged += PreviewTheme;
         var dialogResult = dialog.ShowDialog(this);
         dialog.ThemePreviewChanged -= PreviewTheme;
+        dialog.CornerPreviewChanged -= PreviewCorners;
+        ApplyWindowCornerStyle(_applicationSettings.WindowCornerStyle);
         if (dialogResult != DialogResult.OK)
         {
             return;
@@ -1753,7 +1765,9 @@ internal sealed partial class MainForm : Form
             AccentHueDegrees = dialog.SelectedAccentHueDegrees,
             AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
             AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent,
-            FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled
+            SimpleSelectionHighlightEnabled = dialog.SimpleSelectionHighlightEnabled,
+            FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled,
+            WindowCornerStyle = dialog.SelectedWindowCornerStyle
         });
         settings = ApplicationSettingsStore.Normalize(dialog.ApplyCodexSettingsTo(settings));
         if (!ApplicationSettingsStore.TrySave(settings))
@@ -1769,6 +1783,8 @@ internal sealed partial class MainForm : Form
 
         _applicationSettings = settings;
         AppHost.Current?.ApplyCodexBridgeSettings(settings);
+        _stage.SimpleSelectionHighlightEnabled = settings.SimpleSelectionHighlightEnabled;
+        ApplyWindowCornerStyle(settings.WindowCornerStyle);
         Theme.ConfigureColorAdjustments(
             settings.ColorTheme,
             settings.ThemeHueDegrees,
@@ -2234,6 +2250,9 @@ internal sealed partial class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        Theme.ConfigureCornerStyle(_applicationSettings.WindowCornerStyle);
+        Theme.RegisterCornerStyles(this);
+        Theme.ApplyWindowCorners(this);
         InitializeResolutionAwareWindow();
         ApplyMaximizedBounds();
     }

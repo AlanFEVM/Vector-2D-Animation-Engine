@@ -89,12 +89,29 @@ internal sealed class LayerBlendModePanel : Panel
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = false
         };
-        Controls.Add(title);
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.InspectorTitleHeight,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            BackColor = Theme.Panel
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        title.Dock = DockStyle.Fill;
+        title.Margin = Padding.Empty;
+        header.Controls.Add(title, 0, 0);
+        _layerName.Dock = DockStyle.Fill;
+        _layerName.Margin = Padding.Empty;
+        header.Controls.Add(_layerName, 1, 0);
+        Controls.Add(header);
 
         var row = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
+            ColumnCount = 2,
             RowCount = 1,
             BackColor = Theme.Panel,
             Margin = Padding.Empty,
@@ -102,7 +119,6 @@ internal sealed class LayerBlendModePanel : Panel
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104));
         row.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         Controls.Add(row);
         row.BringToFront();
@@ -121,25 +137,15 @@ internal sealed class LayerBlendModePanel : Panel
         foreach (var item in BlendModes) _blendMode.Items.Add(new BlendModeItem(item.Mode, item.Label));
         Theme.StyleComboBox(_blendMode);
         _blendMode.Dock = DockStyle.Fill;
-        _blendMode.Margin = new Padding(0, Theme.InspectorRowMarginVertical, 8, Theme.InspectorRowMarginVertical);
+        _blendMode.Margin = new Padding(0, Theme.InspectorRowMarginVertical, 0, Theme.InspectorRowMarginVertical);
+        _blendMode.DropDownWidth = 220;
         row.Controls.Add(_blendMode, 1, 0);
-
-        _layerName.Dock = DockStyle.Fill;
-        _layerName.Margin = Padding.Empty;
-        row.Controls.Add(_layerName, 2, 0);
 
         _blendMode.SelectedIndexChanged += (_, _) =>
         {
             if (_updating || _blendMode.SelectedItem is not BlendModeItem item) return;
             BlendModeChanged?.Invoke(this, new LayerBlendModeChangedEventArgs(item.Mode));
         };
-        SizeChanged += (_, _) =>
-        {
-            var showLayerName = ClientSize.Width >= 300;
-            row.ColumnStyles[2].Width = showLayerName ? 104 : 0;
-            _layerName.Visible = showLayerName;
-        };
-
         ClearLayer();
     }
 

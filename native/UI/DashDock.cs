@@ -97,8 +97,8 @@ internal sealed class DashDock : UserControl
             SystemInformation.HighContrast
                 ? SystemColors.ControlText
                 : Theme.ReadableUiColor(_workspaceColor, Enabled && (_hovered || _pressed) ? Theme.Accent : Theme.BorderHover));
-        e.Graphics.FillRectangle(swatch, swatchBounds);
-        e.Graphics.DrawRectangle(swatchBorder, swatchBounds);
+        Theme.FillUiRectangle(e.Graphics, swatch, swatchBounds);
+        Theme.DrawUiRectangle(e.Graphics, swatchBorder, swatchBounds);
 
         e.Graphics.SmoothingMode = previousSmoothingMode;
 

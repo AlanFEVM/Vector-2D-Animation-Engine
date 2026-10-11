@@ -555,6 +555,9 @@ internal sealed partial class VectorScene
         return CachedStrokeSplitEntry(strokeIndex, frame, candidates).Splits;
     }
 
+    internal long StrokeSplitCacheBuilds { get; private set; }
+    private const int MaximumStrokeSplitCacheEntries = 1024;
+
     private StrokeSplitCacheEntry CachedStrokeSplitEntry(
         int strokeIndex,
         int frame,
@@ -565,10 +568,11 @@ internal sealed partial class VectorScene
         if (_hitStrokeSplitCache.TryGetValue(cacheKey, out var cached)) return cached;
 
         var splits = StrokeSplits(strokeIndex, candidates).ToArray();
+        StrokeSplitCacheBuilds++;
         var entry = new StrokeSplitCacheEntry(
             splits,
             splits.Select(split => split.T).ToArray());
-        if (_hitStrokeSplitCache.Count >= MaximumTopologyQueryCacheEntries) _hitStrokeSplitCache.Clear();
+        if (_hitStrokeSplitCache.Count >= MaximumStrokeSplitCacheEntries) _hitStrokeSplitCache.Clear();
         _hitStrokeSplitCache[cacheKey] = entry;
         return entry;
     }
@@ -581,6 +585,9 @@ internal sealed partial class VectorScene
         return CachedBoundaryStrokeParts(objectIndex, frame, candidates);
     }
 
+    internal long BoundaryStrokePartCacheBuilds { get; private set; }
+    private const int MaximumBoundaryStrokePartCacheEntries = 1024;
+
     private IReadOnlyList<BoundaryStrokePart> CachedBoundaryStrokeParts(
         int objectIndex,
         int frame,
@@ -591,7 +598,8 @@ internal sealed partial class VectorScene
         if (_hitBoundaryPartCache.TryGetValue(cacheKey, out var cached)) return cached;
 
         var parts = BuildBoundaryStrokeParts(objectIndex, candidates).ToArray();
-        if (_hitBoundaryPartCache.Count >= MaximumTopologyQueryCacheEntries) _hitBoundaryPartCache.Clear();
+        BoundaryStrokePartCacheBuilds++;
+        if (_hitBoundaryPartCache.Count >= MaximumBoundaryStrokePartCacheEntries) _hitBoundaryPartCache.Clear();
         _hitBoundaryPartCache[cacheKey] = parts;
         return parts;
     }

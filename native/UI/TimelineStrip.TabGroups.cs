@@ -251,11 +251,11 @@ internal sealed partial class TimelineStrip
                 fill = Theme.Mix(fill, tint, active ? 0.28f : hovered ? 0.22f : 0.14f);
             }
             using var fillBrush = new SolidBrush(fill);
-            graphics.FillRectangle(fillBrush, tab.Bounds);
+            Theme.FillUiRectangle(graphics, fillBrush, tab.Bounds);
             if (active || hovered)
             {
                 using var tabBorder = new Pen(Theme.ReadableUiColor(fill, active ? Theme.Accent : Theme.BorderHover));
-                graphics.DrawRectangle(tabBorder, tab.Bounds.X, tab.Bounds.Y, tab.Bounds.Width - 1, tab.Bounds.Height - 1);
+                Theme.DrawUiRectangle(graphics, tabBorder, new Rectangle(tab.Bounds.X, tab.Bounds.Y, tab.Bounds.Width - 1, tab.Bounds.Height - 1));
             }
 
             var textColor = Theme.ReadableText(fill, active ? Theme.Text : Theme.Muted);
@@ -281,7 +281,7 @@ internal sealed partial class TimelineStrip
         if (!snapshot.OverflowBounds.IsEmpty && string.Equals(_hoveredTabGroupId, TabGroupOverflowId, StringComparison.Ordinal))
         {
             using var hover = new SolidBrush(Color.FromArgb(35, Theme.Accent));
-            graphics.FillRectangle(hover, snapshot.OverflowBounds);
+            Theme.FillUiRectangle(graphics, hover, snapshot.OverflowBounds);
         }
     }
 

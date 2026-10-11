@@ -264,7 +264,9 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
         {
             using var border = new Pen(Theme.BorderHover);
-            e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, e.ToolStrip.Width - 1), Math.Max(0, e.ToolStrip.Height - 1));
+            Theme.PaintControlCorners(e.ToolStrip, e.Graphics, e.ToolStrip.ClientRectangle,
+                e.ToolStrip.BackColor, border.Color);
+            Theme.DrawUiRectangle(e.Graphics, border, new Rectangle(0, 0, Math.Max(0, e.ToolStrip.Width - 1), Math.Max(0, e.ToolStrip.Height - 1)));
         }
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
@@ -275,7 +277,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             var bounds = Rectangle.Inflate(e.Item.Bounds, -2, -1);
             using var background = new SolidBrush(Theme.AccentSurface);
             using var accent = new SolidBrush(Theme.Accent);
-            e.Graphics.FillRectangle(background, bounds);
+            Theme.FillUiRectangle(e.Graphics, background, bounds);
             e.Graphics.FillRectangle(accent, bounds.Left, bounds.Top, 3, bounds.Height);
         }
 

@@ -14,6 +14,12 @@ internal enum ApplicationColorTheme
     White
 }
 
+internal enum WindowCornerStyle
+{
+    Square,
+    SubtleRounded
+}
+
 internal enum TimelineFrameHeightPreset
 {
     Low,
@@ -55,6 +61,8 @@ internal sealed record ApplicationSettings
     /// default. When disabled, scaling is proportional and Shift temporarily allows free scaling.
     /// </summary>
     public bool FreeTransformShiftProportionalEnabled { get; init; } = true;
+    public bool SimpleSelectionHighlightEnabled { get; init; } = false;
+    public WindowCornerStyle WindowCornerStyle { get; init; } = WindowCornerStyle.Square;
     public int WorkspaceColorArgb { get; init; } = DefaultWorkspaceColorArgb;
     /// <summary>Enables the loopback JSON-RPC bridge used by Codex and MCP clients.</summary>
     public bool CodexIntegrationEnabled { get; init; } = false;
@@ -135,6 +143,9 @@ internal static class ApplicationSettingsStore
         var colorTheme = Enum.IsDefined(settings.ColorTheme)
             ? settings.ColorTheme
             : ApplicationColorTheme.Dark;
+        var cornerStyle = Enum.IsDefined(settings.WindowCornerStyle)
+            ? settings.WindowCornerStyle
+            : WindowCornerStyle.Square;
         var frameHeight = Enum.IsDefined(settings.TimelineFrameHeight)
             ? settings.TimelineFrameHeight
             : TimelineFrameHeightPreset.Medium;
@@ -158,6 +169,7 @@ internal static class ApplicationSettingsStore
             AccentSaturationPercent = NormalizeSaturationPercent(settings.AccentSaturationPercent),
             AccentBrightnessPercent = NormalizeBrightnessPercent(settings.AccentBrightnessPercent),
             TimelineFrameWidth = Math.Clamp(settings.TimelineFrameWidth, 8, 32),
+            WindowCornerStyle = cornerStyle,
             TimelineFrameHeight = frameHeight,
             WorkspaceColorArgb = OpaqueArgb(settings.WorkspaceColorArgb),
             CodexIntegrationPort = Math.Clamp(settings.CodexIntegrationPort, 1024, 65535),

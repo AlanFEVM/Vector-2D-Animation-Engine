@@ -645,7 +645,7 @@ internal sealed partial class StageControl : Control
     private const double MarqueePreviewFrameBudgetMilliseconds = 8;
     private const int MarqueePreviewObjectThreshold = 2_000;
     private const int ZoomLodPreviewObjectThreshold = 320;
-    private const int ZoomLodPreviewIdleMilliseconds = 100;
+    private const int ZoomLodPreviewIdleMilliseconds = 250;
     private const int DistortRasterMaximumDimension = 2048;
     private const int DistortPreviewRasterMaximumDimension = 1024;
     private const long DistortRasterCacheBudgetBytes = 64L * 1024 * 1024;
@@ -1192,6 +1192,19 @@ internal sealed partial class StageControl : Control
         _direct2DRenderer.Reference3DWorkspaceFrameCacheEntryCount;
     internal long Direct2DWorkspaceFrameCacheBytes =>
         _direct2DRenderer.Reference3DWorkspaceFrameCacheBytes;
+    private bool _simpleSelectionHighlightEnabled;
+    internal bool SimpleSelectionHighlightEnabled
+    {
+        get => _simpleSelectionHighlightEnabled;
+        set
+        {
+            if (_simpleSelectionHighlightEnabled == value) return;
+            _simpleSelectionHighlightEnabled = value;
+            UpdateSelectionHighlightAnimation();
+            _direct2DRenderer.InvalidateSelectionCommands();
+            InvalidateOverlay();
+        }
+    }
     internal bool SelectionHighlightAnimating => _selectionHighlightTimer.Enabled;
     internal float SelectionHighlightPulse => 0.5f + 0.5f * MathF.Sin(_selectionHighlightPhase * MathF.Tau);
     internal double LastFrameRenderMilliseconds => _lastFrameRenderMilliseconds;
@@ -1390,9 +1403,13 @@ internal sealed partial class StageControl : Control
     private void RequestStageFrame(
         bool basePresentationChanged,
         bool preserveReference3DWorkspaceFrameCache = false,
-        bool requestPaint = true)
+        bool requestPaint = true,
+        bool preserveSelectionRenderCache = false,
+        bool preserveReference3DRenderPlanCache = false)
     {
-        if (basePresentationChanged) InvalidateReference3DRenderPlanCache();
+        if (!preserveSelectionRenderCache) SelectionRenderRevision++;
+        if (basePresentationChanged && !preserveSelectionRenderCache) SelectionGeometryRevision++;
+        if (basePresentationChanged && !preserveReference3DRenderPlanCache) InvalidateReference3DRenderPlanCache();
         if (basePresentationChanged && !preserveReference3DWorkspaceFrameCache)
         {
             unchecked
@@ -2104,7 +2121,11 @@ internal sealed partial class StageControl : Control
         CompleteReferenceCameraTransitionForDirectInput();
         CameraX -= VectorUnits.FromPixels(dx / Zoom);
         CameraY -= VectorUnits.FromPixels(dy / Zoom);
-        Invalidate();
+        RequestStageFrame(
+            basePresentationChanged: true,
+            preserveReference3DWorkspaceFrameCache: true,
+            preserveSelectionRenderCache: true,
+            preserveReference3DRenderPlanCache: true);
         RaiseViewChanged();
     }
 
@@ -2119,7 +2140,8 @@ internal sealed partial class StageControl : Control
         var objectLodPreview = interactivePreview
             && ShouldUseZoomLodPreview(Scene.ObjectCount, Scene.HasDisplayLayerEffects);
         var distortPreview = interactivePreview && HasSoftwareDistortionForCurrentFrame();
-        if (objectLodPreview || distortPreview)
+        _selectionZoomPreviewActive = interactivePreview && SelectedObjects.Count > 0;
+        if (objectLodPreview || distortPreview || _selectionZoomPreviewActive)
         {
             BeginZoomLodPreview(objectLodPreview, distortPreview);
         }
@@ -2127,8 +2149,13 @@ internal sealed partial class StageControl : Control
         {
             EndZoomLodPreview(invalidate: false);
         }
+        if (!interactivePreview) _direct2DRenderer.InvalidateSelectionCommands();
         RefreshBrushTipCursorScale();
-        Invalidate();
+        RequestStageFrame(
+            basePresentationChanged: true,
+            preserveReference3DWorkspaceFrameCache: true,
+            preserveSelectionRenderCache: true,
+            preserveReference3DRenderPlanCache: true);
         RaiseViewChanged();
     }
 
@@ -4459,7 +4486,7 @@ internal sealed partial class StageControl : Control
         if (_disposingResources || Scene is null) return;
         var hasSelection = _selectedObjects.Any(index =>
             (uint)index < Scene.ObjectCount && !SuppressFillEdgeBezierSelectionOutline(index));
-        if (hasSelection
+        if (!SimpleSelectionHighlightEnabled && hasSelection
             && !HasSoftwareDistortionForCurrentFrame()
             && ShouldAnimateSelectionHighlight(Scene.ObjectCount, Scene.VirtualAtomCount)
             && Visible
@@ -4478,7 +4505,7 @@ internal sealed partial class StageControl : Control
 
     private void TickSelectionHighlight()
     {
-        if (!Visible
+        if (SimpleSelectionHighlightEnabled || !Visible
             || !IsHandleCreated
             || HasSoftwareDistortionForCurrentFrame()
             || !ShouldAnimateSelectionHighlight(Scene.ObjectCount, Scene.VirtualAtomCount)
@@ -4489,9 +4516,10 @@ internal sealed partial class StageControl : Control
             return;
         }
 
+        if (Capture || SelectionZoomPreviewActive) return;
         var elapsed = Stopwatch.GetElapsedTime(_selectionHighlightStartedAt).TotalMilliseconds;
         _selectionHighlightPhase = (float)(elapsed % SelectionHighlightCycleMilliseconds / SelectionHighlightCycleMilliseconds);
-        if (!Capture) InvalidateOverlay();
+        InvalidateOverlay();
     }
 
     internal static bool ShouldAnimateSelectionHighlight(int objectCount, long atomCount)
@@ -4642,6 +4670,8 @@ internal sealed partial class StageControl : Control
 
     internal IReadOnlyList<int> GetLodDetailObjectIndices()
     {
+        if (ZoomLodPreviewActive) return Array.Empty<int>();
+
         List<int>? detail = null;
         HashSet<int>? seen = null;
 
@@ -5151,6 +5181,7 @@ internal sealed partial class StageControl : Control
     {
         _zoomLodPreviewActive = objectLodPreview;
         _distortZoomPreviewActive = distortPreview;
+        _selectionHighlightTimer.Stop();
         _zoomLodPreviewTimer.Stop();
         _zoomLodPreviewTimer.Start();
     }
@@ -5158,10 +5189,16 @@ internal sealed partial class StageControl : Control
     private void EndZoomLodPreview(bool invalidate)
     {
         _zoomLodPreviewTimer.Stop();
-        if (!_zoomLodPreviewActive && !_distortZoomPreviewActive) return;
+        if (!_zoomLodPreviewActive && !_distortZoomPreviewActive && !_selectionZoomPreviewActive) return;
         _zoomLodPreviewActive = false;
         _distortZoomPreviewActive = false;
-        if (invalidate) Invalidate();
+        _selectionZoomPreviewActive = false;
+        UpdateSelectionHighlightAnimation();
+        if (invalidate)
+        {
+            _direct2DRenderer.InvalidateSelectionCommands();
+            RequestStageFrame(basePresentationChanged: true, preserveSelectionRenderCache: true);
+        }
     }
 
     internal static bool ShouldUseZoomLodPreview(int objectCount, bool hasDisplayLayerEffects)

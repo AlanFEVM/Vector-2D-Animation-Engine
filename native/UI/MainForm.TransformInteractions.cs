@@ -33,6 +33,12 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (_fillEdgePreSelect.HasValue
+            || _fillEdgeNoUiArc.HasValue
+            || _arcDragSession is not null
+            || _fillEdgeBezierArmedSession is not null
+            || _fillEdgeBezierEditSession is not null) return;
+
         var world = _stage.ScreenToWorld(e.Location);
         var hit = _scene.HitTestElement(world, _frame, SelectionToleranceWorld());
         if (IsSceneCompositionContext())
