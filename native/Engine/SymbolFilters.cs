@@ -5,16 +5,118 @@ namespace VectorAnimationEngine;
 // at 100% zoom. Effects run in the fixed order blur, glow, shadow, bevel, gradient bevel, gradient glow.
 internal readonly record struct SymbolFilters
 {
+    public SymbolFlashColorTransform ColorTransform { get; init; }
     public SymbolBlurFilter Blur { get; init; }
+    // Imported Flash blur filters run in source order after Blur. The immutable
+    // value object preserves snapshot independence and structural cache equality.
+    public SymbolBlurStack? AdditionalBlurs { get; init; }
+    public SymbolFlashFilterStack? FlashFilters { get; init; }
     public SymbolGlowFilter Glow { get; init; }
     public SymbolShadowFilter Shadow { get; init; }
     public SymbolEdgeFilter Bevel { get; init; }
     public SymbolEdgeFilter GradientBevel { get; init; }
     public SymbolEdgeFilter GradientGlow { get; init; }
     public bool HasEdgeEffects => Bevel.Enabled || GradientBevel.Enabled || GradientGlow.Enabled;
-    public bool HasEnabled => Blur.Enabled || Glow.Enabled || Shadow.Enabled || HasEdgeEffects;
-    public bool IsValid => Blur.IsValid && Glow.IsValid && Shadow.IsValid
+    public bool HasEnabled => ColorTransform.Enabled || Blur.Enabled || AdditionalBlurs?.HasEnabled == true || FlashFilters?.HasEnabled == true || Glow.Enabled || Shadow.Enabled || HasEdgeEffects;
+    public bool IsValid => ColorTransform.IsValid && Blur.IsValid && Glow.IsValid && Shadow.IsValid
+        && (AdditionalBlurs?.IsValid ?? true)
+        && (FlashFilters?.IsValid ?? true)
         && Bevel.IsValid && GradientBevel.IsValid && GradientGlow.IsValid;
+}
+
+// Straight RGB affine transform, applied to the isolated source before its filters.
+// Offsets are normalized channel values; zero-alpha pixels remain transparent.
+internal readonly record struct SymbolFlashColorTransform
+{
+    public bool Enabled { get; init; }
+    public float? AlphaMultiplier { get; init; }
+    public float RedMultiplier { get; init; }
+    public float GreenMultiplier { get; init; }
+    public float BlueMultiplier { get; init; }
+    public float RedOffset { get; init; }
+    public float GreenOffset { get; init; }
+    public float BlueOffset { get; init; }
+    public bool IsValid => !Enabled || SymbolFilterValidation.Opacity(AlphaMultiplier ?? 1) && Valid(RedMultiplier, RedOffset)
+        && Valid(GreenMultiplier, GreenOffset) && Valid(BlueMultiplier, BlueOffset);
+    private static bool Valid(float multiplier, float offset) => float.IsFinite(multiplier)
+        && multiplier is >= -1 and <= 1 && float.IsFinite(offset) && offset is >= -1 and <= 1;
+}
+
+internal enum SymbolFlashFilterKind { Blur, Glow, Shadow }
+
+internal readonly record struct SymbolFlashFilter
+{
+    public SymbolFlashFilterKind Kind { get; init; }
+    public bool Enabled { get; init; }
+    public float BlurX { get; init; }
+    public float BlurY { get; init; }
+    public int Quality { get; init; }
+    public int ColorArgb { get; init; }
+    public float Opacity { get; init; }
+    public float Strength { get; init; }
+    public float Angle { get; init; }
+    public float Distance { get; init; }
+    public bool Inner { get; init; }
+    public bool Knockout { get; init; }
+    public bool HideObject { get; init; }
+    internal SymbolBlurFilter Blur => new() { Enabled = Enabled, FlashCompatible = true, BlurX = BlurX, BlurY = BlurY, Quality = Quality };
+    internal bool IsValid => Enum.IsDefined(Kind) && Blur.IsValid
+        && float.IsFinite(Strength) && Strength is >= 0 and <= 255
+        && SymbolFilterValidation.Opacity(Opacity) && float.IsFinite(Angle)
+        && float.IsFinite(Distance) && Distance is >= -256 and <= 256;
+}
+
+// No mutable array can escape into an instance key, undo snapshot or GPU cache.
+internal sealed class SymbolFlashFilterStack : IEquatable<SymbolFlashFilterStack>
+{
+    private readonly SymbolFlashFilter[] _items;
+    [System.Text.Json.Serialization.JsonConstructor]
+    public SymbolFlashFilterStack(SymbolFlashFilter[] items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Length is < 1 or > 32) throw new ArgumentException("A Flash filter stack must contain 1 to 32 filters.", nameof(items));
+        _items = (SymbolFlashFilter[])items.Clone();
+    }
+    public SymbolFlashFilter[] Items => (SymbolFlashFilter[])_items.Clone();
+    internal int Count => _items.Length;
+    internal SymbolFlashFilter this[int index] => _items[index];
+    internal bool HasEnabled => _items.Any(item => item.Enabled);
+    internal bool IsValid => _items.All(item => item.IsValid);
+    public bool Equals(SymbolFlashFilterStack? other) => other is not null && _items.AsSpan().SequenceEqual(other._items);
+    public override bool Equals(object? other) => other is SymbolFlashFilterStack stack && Equals(stack);
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        foreach (var item in _items) hash.Add(item);
+        return hash.ToHashCode();
+    }
+}
+
+internal sealed class SymbolBlurStack : IEquatable<SymbolBlurStack>
+{
+    internal const int MaximumAdditionalFilters = 31;
+    private readonly SymbolBlurFilter[] _items;
+    [System.Text.Json.Serialization.JsonConstructor]
+    public SymbolBlurStack(SymbolBlurFilter[] items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Length is < 1 or > MaximumAdditionalFilters)
+            throw new ArgumentException("A blur stack must contain 1 to 31 additional filters.", nameof(items));
+        _items = (SymbolBlurFilter[])items.Clone();
+    }
+    public SymbolBlurFilter[] Items => (SymbolBlurFilter[])_items.Clone();
+    internal int Count => _items.Length;
+    internal SymbolBlurFilter this[int index] => _items[index];
+    internal bool HasEnabled => _items.Any(item => item.Enabled);
+    internal bool IsValid => _items.All(item => item.IsValid);
+    public bool Equals(SymbolBlurStack? other) => other is not null && _items.AsSpan().SequenceEqual(other._items);
+    public override bool Equals(object? other) => other is SymbolBlurStack stack && Equals(stack);
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        foreach (var item in _items) hash.Add(item);
+        return hash.ToHashCode();
+    }
 }
 
 internal readonly record struct SymbolEdgeFilter

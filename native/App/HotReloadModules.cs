@@ -68,6 +68,11 @@ internal static class HotReloadModuleResolver
         nameof(SymbolFiltersPanel),
         nameof(SymbolFilters),
         nameof(SymbolBlurFilter),
+        nameof(SymbolBlurStack),
+        nameof(SymbolFlashFilterStack),
+        nameof(SymbolFlashFilter),
+        nameof(SymbolFlashFilterKind),
+        nameof(SymbolFlashColorTransform),
         nameof(SymbolGlowFilter),
         nameof(SymbolShadowFilter),
         nameof(TextSettingsPanel),
@@ -211,6 +216,7 @@ internal static class HotReloadModuleResolver
         if (typeName is nameof(LibraryVaultPanel)
             or nameof(ImageImportProgressDialog)
             or nameof(FlashImportProgressDialog)
+            or nameof(FlashImportErrorDialog)
             or nameof(HierarchyPanel)
             or nameof(SceneEditorPanel)
             or nameof(ReferenceViewPad)
@@ -318,6 +324,11 @@ internal static class HotReloadModuleResolver
         if (typeName is nameof(VectorScene)
             or nameof(SymbolFilters)
             or nameof(SymbolBlurFilter)
+            or nameof(SymbolBlurStack)
+            or nameof(SymbolFlashFilterStack)
+            or nameof(SymbolFlashFilter)
+            or nameof(SymbolFlashFilterKind)
+            or nameof(SymbolFlashColorTransform)
             or nameof(SymbolGlowFilter)
             or nameof(SymbolEdgeFilter)
             or nameof(SymbolShadowFilter)

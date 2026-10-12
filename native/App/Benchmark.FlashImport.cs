@@ -67,6 +67,8 @@ internal static partial class Benchmark
             AssertFlashAnimationProject(reopened, requireEditableGeometry: true);
 
             RunFlashLayerOrderRegression(root);
+            RunFlashErrorReportRegression();
+            RunFlashGuideRegression(root);
             RunFlashDirectZipCompatibilityRegression(root);
             RunFlashBitmapRegression(root);
             RunFlashNativeStructureRegression(root);
@@ -76,6 +78,8 @@ internal static partial class Benchmark
             RunFlashSolidPaintRegression();
             RunFlashDenseShapeRegression(root);
             RunFlashBlendRegression(root);
+            RunFlashBlurStackImportRegression(root);
+            RunFlashStaticTextRegression(root);
             RunFlashEmbeddedImageRegression(root);
             RunFlashSymbolPlaybackRegression(root);
             RunFlashNestedPlaybackRegression(root);
@@ -86,6 +90,115 @@ internal static partial class Benchmark
             Console.WriteLine("flash_import_regression=ok");
         }
         finally { DeleteTemporaryDirectory(root); }
+    }
+
+    private static void RunFlashErrorReportRegression()
+    {
+        Exception captured;
+        try { ThrowSourceFailure(); throw new InvalidOperationException("Expected source failure."); }
+        catch (InvalidDataException exception) { captured = new IOException("Flash conversion failed.", exception); }
+        var report = FlashImportErrorDialog.BuildReport(captured, @"D:\Animations\中文 & long-name.fla", @"D:\Converted\Flash", "Reading and converting the Flash document");
+        AssertTimeline(report.Contains("中文 & long-name.fla", StringComparison.Ordinal)
+            && report.Contains(@"D:\Converted\Flash", StringComparison.Ordinal)
+            && report.Contains(nameof(ThrowSourceFailure), StringComparison.Ordinal)
+            && report.Contains(nameof(InvalidDataException), StringComparison.Ordinal)
+            && report.Contains("Build ID (MVID):", StringComparison.Ordinal)
+            && report.Contains(typeof(FlashDocumentImporter).Assembly.Location, StringComparison.Ordinal),
+            "Flash error report lost source paths, inner exception stack or build identity.");
+        using var dialog = new FlashImportErrorDialog(captured, "source.fla", null, "Reading and converting the Flash document");
+        var details = (TextBox)RequireField(typeof(FlashImportErrorDialog), "_details").GetValue(dialog)!;
+        AssertTimeline(details.ReadOnly && details.Multiline && details.ShortcutsEnabled && details.ScrollBars == ScrollBars.Both
+            && details.ContextMenuStrip is AnimatedContextMenuStrip && details.Text.Contains(nameof(ThrowSourceFailure), StringComparison.Ordinal),
+            "Flash failure details were not selectable, scrollable or did not include the exception stack.");
+        AssertTimeline(HotReloadModuleResolver.Resolve([typeof(FlashImportErrorDialog)]).Includes(HotReloadModule.Workspace),
+            "Flash import error dialog was not routed to its workspace module.");
+        Console.WriteLine("flash_error_report_exception_stack_build_identity_selectable_details=ok");
+        static void ThrowSourceFailure() => throw new InvalidDataException("XFL [Leaf/Layer/frame 1]: Unsupported effect.");
+    }
+
+    private static void RunFlashGuideRegression(string root)
+    {
+        string Document(string edges, string attributes = "", string startMatrix = "", string endMatrix = "tx='100'", string pivot = "") => $"""
+            <DOMDocument xmlns='{FlashFixtureNamespace}'><symbols><Include href='Leaf.xml'/></symbols>
+            <timelines><DOMTimeline name='Guide'><layers>
+            <DOMLayer name='Reference' layerType='guide'><frames><DOMFrame duration='5'><elements><DOMShape><edges><Edge strokeStyle='1' edges='{edges}'/></edges></DOMShape></elements></DOMFrame></frames></DOMLayer>
+            <DOMLayer name='Moving' layerType='guided' parentLayerIndex='0'><frames>
+            <DOMFrame duration='4' tweenType='motion' motionTweenSnap='true' {attributes}><elements><DOMSymbolInstance libraryItemName='Leaf' symbolType='graphic' loop='single frame'><matrix><Matrix {startMatrix}/></matrix>{pivot}</DOMSymbolInstance></elements></DOMFrame>
+            <DOMFrame index='4'><elements><DOMSymbolInstance libraryItemName='Leaf' symbolType='graphic' loop='single frame'><matrix><Matrix {endMatrix}/></matrix>{pivot}</DOMSymbolInstance></elements></DOMFrame>
+            </frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>
+            """;
+        var cases = new[]
+        {
+            (Name: "Curve", Xml: Document("!0 0[1000 2000 2000 0"), X: 50f, Y: 50f, Rotation: 0f),
+            (Name: "Reverse", Xml: Document("!2000 0[1000 2000 0 0"), X: 50f, Y: 50f, Rotation: 0f),
+            (Name: "UnequalSegments", Xml: Document("!200 0|200 1800 !0 0|200 0", endMatrix: "tx='10' ty='90'"), X: 10f, Y: 40f, Rotation: 0f),
+            (Name: "UnevenParameter", Xml: Document("!0 0[200 0 2000 0"), X: 50f, Y: 0f, Rotation: 0f),
+            (Name: "Ease", Xml: Document("!0 0|2000 0", "acceleration='-100'"), X: 25f, Y: 0f, Rotation: 0f),
+            (Name: "OrientPivot", Xml: Document("!0 0[1000 1000 2000 0", "motionTweenOrientToPath='true'", "tx='-5' ty='-7'", "a='0' b='-1' c='1' d='0' tx='93' ty='5'", "<transformationPoint><Point x='5' y='7'/></transformationPoint>"), X: 50f, Y: 25f, Rotation: -45f)
+        };
+        foreach (var item in cases)
+        {
+            var path = Path.Combine(root, "Guide-" + item.Name + ".fla");
+            WriteFlashZipFixture(path, ("DOMDocument.xml", item.Xml), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+            var before = File.ReadAllBytes(path); var imported = FlashDocumentImporter.Load(path);
+            AssertTimeline(imported.Diagnostics.Any(d => d.Code == "guide-motion-baked")
+                && imported.Diagnostics.Any(d => d.Code == "guide-layer-omitted"), "Guide baking was not reported.");
+            Check(imported.Project);
+            var manifest = ProjectVaultStore.Save(imported.Project, Path.Combine(root, "GuideSaved-" + item.Name, "Guide.v2dProject"));
+            Check(ProjectVaultStore.Load(manifest));
+            AssertTimeline(File.ReadAllBytes(path).SequenceEqual(before), "Guide conversion changed its source.");
+            void Check(VectorProject project)
+            {
+                var scene = project.Scenes[0];
+                AssertTimeline(scene.Layers.Count == 1 && scene.Layers[0].Name == "Moving", "Guide artwork or source layer index leaked into the export.");
+                var moving = scene.Instances.Single(instance => instance.Name == "Leaf" && instance.EvaluateState(2).Visible);
+                var state = moving.EvaluateState(2);
+                var track = scene.Timeline.FindTrackByTargetId(scene.Layers[0].Id)!;
+                AssertTimeline(Enumerable.Range(0, 5).All(frame => track.Keyframes.Any(key => key.Frame == frame))
+                    && Enumerable.Range(1, 3).All(frame => moving.StateKeyframes.Any(key => key.Frame == frame)),
+                    "Baked guide frames were not materialized as editable timeline and instance keys.");
+                var anchor = item.Name == "OrientPivot" ? new System.Numerics.Vector2(5, 7) : System.Numerics.Vector2.Zero;
+                var offset = System.Numerics.Vector2.TransformNormal(anchor, DrawingObjectInstanceDefinition.CreateLinearTransform(state));
+                AssertTimeline(MathF.Abs(VectorUnits.ToPixels(state.X) + offset.X - item.X) < 0.02f
+                    && MathF.Abs(VectorUnits.ToPixels(state.Y) + offset.Y - item.Y) < 0.02f
+                    && MathF.Abs(state.RotationZ - item.Rotation) < 0.02f, "Guide arc-length position, orientation or transformation-point compensation changed.");
+                var composed = new VectorScene();
+                SceneCompositionBuilder.Build(composed, scene, project.DrawingObjects, 2, imported.Fps);
+                AssertTimeline(composed.ObjectCount == 1, "Guide baking lost visible content or rendered reference artwork.");
+            }
+        }
+        foreach (var invalid in new[]
+        {
+            Document("!0 0|2000 0 !1000 0|1000 1000"),
+            Document("!0 0|1000 0|2000 0 !1000 0|1000 1000"),
+            Document("!0 0|2000 0|0 0"),
+            Document("!0 0|2000 0", endMatrix: "tx='90'"),
+            Document("!0 0|2000 0").Replace("duration='5'", "duration='2'", StringComparison.Ordinal)
+        })
+        {
+            var path = Path.Combine(root, "GuideRejected.fla");
+            WriteFlashZipFixture(path, ("DOMDocument.xml", invalid), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+            ExpectInvalidData(() => FlashDocumentImporter.Load(path), "Ambiguous guide motion was silently accepted.");
+        }
+        var reference = Path.Combine(root, "ReferenceOnly.fla");
+        var referenceXml = FlashAnimationFixture().Replace("name=\"Hidden\"", "name=\"Hidden\" layerType=\"guide\"", StringComparison.Ordinal);
+        WriteFlashZipFixture(reference, ("DOMDocument.xml", referenceXml), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+        AssertTimeline(FlashDocumentImporter.Load(reference).Project.Scenes[0].Layers.Count == 1, "Unbound reference guide was not omitted.");
+        var folderXml = Document("!0 0|2000 0")
+            .Replace("<DOMLayer name='Reference'", "<DOMLayer name='Folder' layerType='folder'/><DOMLayer parentLayerIndex='0' name='Reference'", StringComparison.Ordinal)
+            .Replace("layerType='guided' parentLayerIndex='0'", "layerType='guided' parentLayerIndex='1'", StringComparison.Ordinal);
+        var folderPath = Path.Combine(root, "GuideFolder.fla");
+        WriteFlashZipFixture(folderPath, ("DOMDocument.xml", folderXml), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+        var folderProject = FlashDocumentImporter.Load(folderPath).Project;
+        CheckFolder(folderProject);
+        CheckFolder(ProjectVaultStore.Load(ProjectVaultStore.Save(folderProject, Path.Combine(root, "GuideFolderSaved", "Guide.v2dProject"))));
+        void CheckFolder(VectorProject project)
+        {
+            var group = project.DrawingObjects.Single(symbol => symbol.Name == "Guide / Folder");
+            AssertTimeline(group.Scene.LayerNames.SequenceEqual(new[] { "Folder", "Moving" })
+                && group.Scene.LayerParentIds[1] == group.Scene.LayerIds[0], "Omitting a guide broke its exported folder hierarchy.");
+        }
+        Console.WriteLine("flash_guide_bake_arc_length_ease_orientation_pivot_save_composition=ok");
     }
 
     private static void RunFlashBlendRegression(string root)
@@ -129,18 +242,120 @@ internal static partial class Benchmark
         var filtered = Path.Combine(root, "FilterPreflight.fla");
         var xml = FlashAnimationFixture().Replace("<DOMSymbolInstance ", "<DOMShape><edges><Edge edges='invalid'/></edges></DOMShape><DOMSymbolInstance ", StringComparison.Ordinal)
             .Replace("libraryItemName=\"Leaf\"", "libraryItemName=\"Leaf\" blendMode=\"add\"", StringComparison.Ordinal)
-            .Replace("<matrix>", "<filters><GlowFilter blurX='20' blurY='20' quality='3'/></filters><matrix>", StringComparison.Ordinal);
+            .Replace("<matrix>", "<filters><GradientGlowFilter blurX='20' blurY='20' quality='3'/></filters><matrix>", StringComparison.Ordinal);
         WriteFlashZipFixture(filtered, ("DOMDocument.xml", xml), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
         var before = File.ReadAllBytes(filtered);
         try { FlashDocumentImporter.Load(filtered); throw new InvalidOperationException("Unsupported Flash filter was omitted."); }
         catch (InvalidDataException exception)
         {
-            AssertTimeline(exception.Message.Contains("GlowFilter", StringComparison.Ordinal)
+            AssertTimeline(exception.Message.Contains("GradientGlowFilter", StringComparison.Ordinal)
                 && exception.Message.Contains("quality=3", StringComparison.Ordinal)
                 && exception.Message.Contains("frame 1", StringComparison.Ordinal),
                 "Effect preflight did not identify the exact filter and frame before geometry conversion.");
         }
         AssertTimeline(File.ReadAllBytes(filtered).SequenceEqual(before), "Effect preflight changed the source FLA.");
+    }
+
+    private static void RunFlashStaticTextRegression(string root)
+    {
+        var path = Path.Combine(root, "StaticText.fla");
+        var xml = $"<DOMDocument xmlns='{FlashFixtureNamespace}'><timelines><DOMTimeline name='Text'><layers><DOMLayer name='Text'><frames><DOMFrame><elements><DOMStaticText width='240' height='80'><matrix><Matrix tx='12' ty='8'/></matrix><textRuns><DOMTextRun><characters>Hello&#13;Flash</characters><textAttrs><DOMTextAttrs face='V2D Missing Font Regression' size='25' fillColor='#33CCFF'/></textAttrs></DOMTextRun></textRuns></DOMStaticText></elements></DOMFrame></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>";
+        WriteFlashZipFixture(path, ("DOMDocument.xml", xml));
+        var imported = FlashDocumentImporter.Load(path);
+        AssertTimeline(imported.Diagnostics.Any(item => item.Code == "text-font-missing")
+            && imported.Diagnostics.Any(item => item.Code == "text-layout-mapped"), "Static text font/layout changes were not disclosed.");
+        var saved = ProjectVaultStore.Save(imported.Project, Path.Combine(root, "StaticTextSaved", "Text.v2dProject"));
+        var reopened = ProjectVaultStore.Load(saved);
+        var scene = new VectorScene();
+        SceneCompositionBuilder.Build(scene, reopened.Scenes[0], reopened.DrawingObjects, 0, imported.Fps);
+        AssertTimeline(scene.ObjectCount == 1 && scene.TryGetTextObjectData(0, out var data)
+            && data.Content == "Hello\nFlash" && data.FontFamilyName == "V2D Missing Font Regression"
+            && data.FontSizePoints == 18.75f, "Static text lost its content, requested font or size after Save/Open/composition.");
+        Console.WriteLine("flash_static_text_import_save_composition=ok");
+    }
+
+    private static void RunFlashBlurStackImportRegression(string root)
+    {
+        var path = Path.Combine(root, "BlurStack.fla");
+        const string stack = "<filters><BlurFilter blurX='5.5' blurY='3' quality='2'/><BlurFilter blurX='255' blurY='255' quality='15' isEnabled='false'/><BlurFilter blurX='2' blurY='7.75' quality='15'/></filters>";
+        var document = FlashAnimationFixture().Replace("<matrix>", stack + "<matrix>", StringComparison.Ordinal);
+        WriteFlashZipFixture(path, ("DOMDocument.xml", document), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+        var original = File.ReadAllBytes(path);
+        var imported = FlashDocumentImporter.Load(path);
+        var filters = imported.Project.Scenes[0].Instances.Single(item => item.Name == "Leaf" && item.EvaluateState(0).Visible).EvaluateState(0).Filters;
+        AssertTimeline(filters.Blur.FlashCompatible && filters.Blur.BlurX == 5.5f && filters.Blur.Quality == 2
+            && filters.AdditionalBlurs is { Count: 2 } && !filters.AdditionalBlurs[0].Enabled
+            && filters.AdditionalBlurs[1].BlurY == 7.75f && filters.AdditionalBlurs[1].Quality == 15,
+            "Flash import merged, reordered or discarded a heterogeneous blur stack.");
+        var saved = ProjectVaultStore.Save(imported.Project, Path.Combine(root, "BlurStackSaved", "BlurStack.v2dProject"));
+        var reopened = ProjectVaultStore.Load(saved);
+        AssertTimeline(reopened.Scenes[0].Instances.Single(item => item.Name == "Leaf" && item.EvaluateState(0).Visible).EvaluateState(0).Filters == filters,
+            "Imported blur stack changed after Save/Open.");
+        var scene = new VectorScene();
+        SceneCompositionBuilder.Build(scene, reopened.Scenes[0], reopened.DrawingObjects, 0, imported.Fps);
+        AssertTimeline(Enumerable.Range(0, scene.LayerCount).Any(layer => scene.GetLayerSymbolFilters(layer) == filters),
+            "Imported blur stack did not reach isolated composition.");
+        AssertTimeline(File.ReadAllBytes(path).SequenceEqual(original), "Blur stack import changed its source.");
+        foreach (var invalid in new[] { stack.Replace("quality='2'", "quality='16'", StringComparison.Ordinal),
+            "<filters>" + string.Concat(Enumerable.Repeat("<BlurFilter/>", 33)) + "</filters>" })
+        {
+            WriteFlashZipFixture(path, ("DOMDocument.xml", FlashAnimationFixture().Replace("<matrix>", invalid + "<matrix>", StringComparison.Ordinal)),
+                ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+            ExpectInvalidData(() => FlashDocumentImporter.Load(path), "Invalid or excessive blur stack was accepted.");
+        }
+        Console.WriteLine("flash_blur_stack_import_save_composition=ok");
+        var mixed = "<filters><GlowFilter blurX='6' blurY='4' color='#FFFFCC' alpha='0.7' strength='2' inner='true' knockout='true'/><BlurFilter blurX='2' blurY='5'/><DropShadowFilter distance='3.5' angle='-137' hideObject='true'/></filters>";
+        WriteFlashZipFixture(path, ("DOMDocument.xml", FlashAnimationFixture().Replace("<matrix>", mixed + "<matrix>", StringComparison.Ordinal)),
+            ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+        imported = FlashDocumentImporter.Load(path);
+        var chain = imported.Project.Scenes[0].Instances.First(item => item.Name == "Leaf").EvaluateState(0).Filters;
+        AssertTimeline(chain.FlashFilters is { Count: 3 } && chain.FlashFilters[0].Inner && chain.FlashFilters[0].Knockout
+            && chain.FlashFilters[1].Kind == SymbolFlashFilterKind.Blur && chain.FlashFilters[2].HideObject,
+            "Mixed Flash filter order or flags were discarded.");
+        var mixedSaved = ProjectVaultStore.Save(imported.Project, Path.Combine(root, "MixedFiltersSaved", "Mixed.v2dProject"));
+        AssertTimeline(ProjectVaultStore.Load(mixedSaved).Scenes[0].Instances.First(item => item.Name == "Leaf").EvaluateState(0).Filters == chain,
+            "Mixed Flash filters changed after Save/Open.");
+        Console.WriteLine("flash_mixed_filter_import_save=ok");
+        foreach (var color in new[] { "brightness='1'", "brightness='-1'",
+            "tintMultiplier='0.5' tintColor='#33CCFF'", "redMultiplier='0.5' greenOffset='128' blueOffset='-64'" })
+        {
+            WriteFlashZipFixture(path, ("DOMDocument.xml", FlashAnimationFixture().Replace("<matrix>",
+                $"<color><Color {color}/></color>" + mixed + "<matrix>", StringComparison.Ordinal)),
+                ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+            var project = FlashDocumentImporter.Load(path).Project;
+            var actual = project.Scenes[0].Instances.First(item => item.Name == "Leaf").EvaluateState(0).Filters;
+            AssertTimeline(actual.ColorTransform.Enabled && actual.FlashFilters is { Count: 3 }, "Flash color transform or filters were discarded.");
+            if (color == "brightness='1'") AssertTimeline(actual.ColorTransform.RedMultiplier == 0 && actual.ColorTransform.BlueOffset == 1, "Flash white brightness is incorrect.");
+            var colorSaved = ProjectVaultStore.Save(project, Path.Combine(root, "ColorSaved-" + project.Id, "Color.v2dProject"));
+            AssertTimeline(ProjectVaultStore.Load(colorSaved).Scenes[0].Instances.First(item => item.Name == "Leaf").EvaluateState(0).Filters == actual,
+                "Imported color transform changed after Save/Open.");
+        }
+        Console.WriteLine("flash_color_transform_import_save=ok");
+    }
+
+    private static void RunFlashBlurStackPixelRegression()
+    {
+        var first = new SymbolBlurFilter { Enabled = true, FlashCompatible = true, BlurX = 5.5f, BlurY = 3, Quality = 2 };
+        var second = new SymbolBlurFilter { Enabled = true, FlashCompatible = true, BlurX = 2, BlurY = 7.75f, Quality = 3 };
+        var filters = new SymbolFilters { Blur = first, AdditionalBlurs = new SymbolBlurStack([first with { Enabled = false, BlurX = 255 }, second]) };
+        var a = SymbolFilterRasterizer.GetPadding(new SymbolFilters { Blur = first });
+        var b = SymbolFilterRasterizer.GetPadding(new SymbolFilters { Blur = second });
+        AssertTimeline(SymbolFilterRasterizer.GetPadding(filters) == new SymbolFilterPadding(a.Left + b.Left, a.Top + b.Top, a.Right + b.Right, a.Bottom + b.Bottom),
+            "Blur chain padding omitted intermediate support or counted a disabled filter.");
+        foreach (var scale in new[] { 0.75f, 1f, 1.35f })
+        {
+            using var actual = new Bitmap(160, 160, PixelFormat.Format32bppPArgb);
+            using (var g = Graphics.FromImage(actual))
+            using (var brush = new SolidBrush(Color.FromArgb(137, 220, 71, 39))) g.FillRectangle(brush, 65, 67, 23, 19);
+            using var expected = actual.Clone(new Rectangle(0, 0, 160, 160), PixelFormat.Format32bppPArgb);
+            SymbolFilterRasterizer.Apply(actual, filters, scale);
+            SymbolFilterRasterizer.Apply(expected, new SymbolFilters { Blur = first }, scale);
+            SymbolFilterRasterizer.Apply(expected, new SymbolFilters { Blur = second }, scale);
+            for (int y = 0; y < actual.Height; y++)
+            for (int x = 0; x < actual.Width; x++)
+                AssertTimeline(actual.GetPixel(x, y) == expected.GetPixel(x, y), "Blur stack changed sequential Flash blur pixels.");
+        }
+        Console.WriteLine("flash_blur_stack_sequential_pixels_padding=ok");
     }
 
     private static void RunFlashBitmapRegression(string root)
@@ -690,6 +905,16 @@ internal static partial class Benchmark
                 && stroke.G > 240 && stroke.R < 10 && stroke.B < 10,
                 "Flash gradient direction or solid stroke colour was lost in the rendered result.");
         }
+        var vectorPath = Path.Combine(root, "GradientVector.fla");
+        WriteFlashZipFixture(vectorPath, ("DOMDocument.xml", FlashShapeDocument(gradientStroke)));
+        var vector = FlashDocumentImporter.Load(vectorPath);
+        AssertTimeline(vector.Diagnostics.Any(item => item.Code == "gradient-vector-retained"), "Gradient vector retention was not disclosed.");
+        var vectorSaved = ProjectVaultStore.Save(vector.Project, Path.Combine(root, "GradientVectorSaved", "Gradient.v2dProject"));
+        var vectorScene = new VectorScene();
+        var vectorProject = ProjectVaultStore.Load(vectorSaved);
+        SceneCompositionBuilder.Build(vectorScene, vectorProject.Scenes[0], vectorProject.DrawingObjects, 0, vector.Fps);
+        AssertTimeline(vectorScene.ObjectCount > 0 && Enumerable.Range(0, vectorScene.ObjectCount).All(i => vectorScene.TryGetImportedSvgSource(i, out _)),
+            "Gradient vector objects were flattened or dropped after Save/Open.");
     }
 
     private static void RunFlashSolidPaintRegression()
@@ -981,6 +1206,27 @@ internal static partial class Benchmark
             AssertTimeline(destination.ObjectCount == 1, "Flash classic tween lost its visible symbol.");
             AssertFlashBounds(destination, 0, new RectangleF(frame * 10, 0, 10, 10));
         }
+        var easedDocument = tweenDocument
+            .Replace("duration=\"3\" tweenType=\"motion\"><elements>", "duration=\"3\" tweenType=\"motion\" motionTweenSnap=\"true\"><tweens><CustomEase target='all'><Point/><Point x='0.3333333333333333'/><Point x='0.6666666666666667' y='1'/><Point x='1' y='1'/></CustomEase></tweens><elements>", StringComparison.Ordinal)
+            .Replace("index=\"3\"><elements>", "index=\"3\" tweenType=\"motion\"><elements>", StringComparison.Ordinal)
+            .Replace("<matrix><Matrix tx=\"30\"/></matrix>", "<filters><BlurFilter blurX='9' blurY='6' quality='3'/></filters><color><Color brightness='1'/></color><matrix><Matrix tx=\"30\"/></matrix>", StringComparison.Ordinal);
+        WriteFlashZipFixture(tweenPath, ("DOMDocument.xml", easedDocument), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+        var eased = FlashDocumentImporter.Load(tweenPath);
+        var actor = eased.Project.Scenes[0].Instances.First(item => item.Name == "Leaf");
+        var middle = actor.EvaluateState(1);
+        const float expected = 7f / 27;
+        AssertTimeline(Math.Abs(VectorUnits.ToPixels(middle.X) - 30 * expected) < 0.001f
+            && Math.Abs(middle.Filters.Blur.BlurX - 9 * expected) < 0.001f
+            && Math.Abs(middle.Filters.ColorTransform.RedOffset - expected) < 0.001f,
+            "CustomEase or missing blur/color endpoint interpolation changed baked frame output.");
+        AssertTimeline(eased.Project.Scenes[0].Instances.Single(item => item.Name == "Leaf" && item.EvaluateState(3).Visible).EvaluateState(3).Filters.Blur.BlurX == 9, "Terminal motion marker lost its endpoint.");
+        Console.WriteLine("flash_custom_ease_filter_color_tween=ok");
+        var namedDocument = tweenDocument.Replace("duration=\"3\" tweenType=\"motion\"><elements>",
+            "duration=\"3\" tweenType=\"motion\"><tweens><Ease target='all' method='cubicOut'/></tweens><elements>", StringComparison.Ordinal);
+        WriteFlashZipFixture(tweenPath, ("DOMDocument.xml", namedDocument), ("LIBRARY/Leaf.xml", FlashSymbolFixture()));
+        var named = FlashDocumentImporter.Load(tweenPath);
+        AssertTimeline(Math.Abs(VectorUnits.ToPixels(named.Project.Scenes[0].Instances.First(item => item.Name == "Leaf").EvaluateState(1).X) - 30 * 19f / 27) < 0.001f,
+            "Flash cubicOut was replaced by linear easing.");
     }
 
     private static void RunFlashNestedPlaybackRegression(string root)

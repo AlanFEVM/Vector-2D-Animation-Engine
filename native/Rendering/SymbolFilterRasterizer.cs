@@ -21,6 +21,14 @@ internal static class SymbolFilterRasterizer
         Validate(filters, pixelScale);
         int horizontal = filters.Blur.Enabled ? BlurSupport(filters.Blur, filters.Blur.BlurX, pixelScale) : 0;
         int vertical = filters.Blur.Enabled ? BlurSupport(filters.Blur, filters.Blur.BlurY, pixelScale) : 0;
+        if (filters.AdditionalBlurs is { } stack)
+            for (int i = 0; i < stack.Count; i++)
+            {
+                var item = stack[i];
+                if (!item.Enabled) continue;
+                horizontal = checked(horizontal + BlurSupport(item, item.BlurX, pixelScale));
+                vertical = checked(vertical + BlurSupport(item, item.BlurY, pixelScale));
+            }
         if (Visible(filters.Glow.Enabled, filters.Glow.Strength, filters.Glow.Opacity, filters.Glow.ColorArgb))
         {
             horizontal = checked(horizontal + Support(filters.Glow.BlurX, pixelScale, filters.Glow.Quality));
@@ -51,6 +59,21 @@ internal static class SymbolFilterRasterizer
             left = checked(left + x); right = checked(right + x);
             top = checked(top + y); bottom = checked(bottom + y);
         }
+        if (filters.FlashFilters is { } flash)
+            for (int i = 0; i < flash.Count; i++)
+            {
+                var item = flash[i];
+                if (!item.Enabled) continue;
+                int x = BlurSupport(item.Blur, item.BlurX, pixelScale);
+                int y = BlurSupport(item.Blur, item.BlurY, pixelScale);
+                double angle = item.Angle * Math.PI / 180;
+                double dx = item.Kind == SymbolFlashFilterKind.Shadow ? Math.Cos(angle) * item.Distance * pixelScale : 0;
+                double dy = item.Kind == SymbolFlashFilterKind.Shadow ? Math.Sin(angle) * item.Distance * pixelScale : 0;
+                left = checked(left + x + (int)Math.Max(0, -Math.Floor(dx)));
+                right = checked(right + x + (int)Math.Max(0, Math.Ceiling(dx)));
+                top = checked(top + y + (int)Math.Max(0, -Math.Floor(dy)));
+                bottom = checked(bottom + y + (int)Math.Max(0, Math.Ceiling(dy)));
+            }
         return new(left, top, right, bottom);
     }
 
@@ -65,9 +88,10 @@ internal static class SymbolFilterRasterizer
             throw new ArgumentException(
                 "Symbol filters require a Format32bppPArgb bitmap.", nameof(surface));
         bool blur = filters.Blur.Enabled && (filters.Blur.BlurX > 0 || filters.Blur.BlurY > 0);
+        blur |= filters.AdditionalBlurs?.HasEnabled == true;
         bool glow = Visible(filters.Glow.Enabled, filters.Glow.Strength, filters.Glow.Opacity, filters.Glow.ColorArgb);
         bool shadow = Visible(filters.Shadow.Enabled, filters.Shadow.Strength, filters.Shadow.Opacity, filters.Shadow.ColorArgb);
-        if (!blur && !glow && !shadow && !filters.HasEdgeEffects) return null;
+        if (!filters.ColorTransform.Enabled && !blur && !glow && !shadow && !filters.HasEdgeEffects && filters.FlashFilters?.HasEnabled != true) return null;
 
         // Read alpha without allocating a viewport-sized pixel array. Every
         // nonzero alpha (including 1/255) contributes to the exact content bounds.
@@ -114,6 +138,14 @@ internal static class SymbolFilterRasterizer
             pixels[p + 1] = Math.Min(bytes[p + 1] / 255f, alpha);
             pixels[p + 2] = Math.Min(bytes[p + 2] / 255f, alpha);
             pixels[p + 3] = alpha;
+            if (filters.ColorTransform is { Enabled: true } transform && alpha > 0)
+            {
+                pixels[p] = Math.Clamp(pixels[p] / alpha * transform.BlueMultiplier + transform.BlueOffset, 0, 1) * alpha;
+                pixels[p + 1] = Math.Clamp(pixels[p + 1] / alpha * transform.GreenMultiplier + transform.GreenOffset, 0, 1) * alpha;
+                pixels[p + 2] = Math.Clamp(pixels[p + 2] / alpha * transform.RedMultiplier + transform.RedOffset, 0, 1) * alpha;
+                float opacity = transform.AlphaMultiplier ?? 1;
+                for (int channel = 0; channel < 4; channel++) pixels[p + channel] *= opacity;
+            }
         }
 
         if (blur)
@@ -121,13 +153,17 @@ internal static class SymbolFilterRasterizer
             for (int channel = 0; channel < 4; channel++)
             {
                 for (int i = 0; i < count; i++) plane[i] = pixels[i * 4 + channel];
-                if (filters.Blur.FlashCompatible)
-                    FlashBlur(ref plane, ref scratch, width, height, filters.Blur, pixelScale);
-                else
-                    Blur(ref plane, ref scratch, width, height,
-                        filters.Blur.BlurX, filters.Blur.BlurY, pixelScale, filters.Blur.Quality);
+                ApplyBlur(filters.Blur);
+                if (filters.AdditionalBlurs is { } chain)
+                    for (int i = 0; i < chain.Count; i++) ApplyBlur(chain[i]);
                 for (int i = 0; i < count; i++) pixels[i * 4 + channel] = plane[i];
             }
+        }
+        void ApplyBlur(SymbolBlurFilter item)
+        {
+            if (!item.Enabled) return;
+            if (item.FlashCompatible) FlashBlur(ref plane, ref scratch, width, height, item, pixelScale);
+            else Blur(ref plane, ref scratch, width, height, item.BlurX, item.BlurY, pixelScale, item.Quality);
         }
 
         if (glow)
@@ -153,6 +189,42 @@ internal static class SymbolFilterRasterizer
         ApplyEdge(filters.Bevel, false, false);
         ApplyEdge(filters.GradientBevel, true, false);
         ApplyEdge(filters.GradientGlow, true, true);
+        if (filters.FlashFilters is { } flash)
+            for (int i = 0; i < flash.Count; i++)
+            {
+                var item = flash[i];
+                if (!item.Enabled) continue;
+                if (item.Kind == SymbolFlashFilterKind.Blur)
+                {
+                    for (int channel = 0; channel < 4; channel++)
+                    {
+                        for (int p = 0; p < count; p++) plane[p] = pixels[p * 4 + channel];
+                        ApplyBlur(item.Blur);
+                        for (int p = 0; p < count; p++) pixels[p * 4 + channel] = plane[p];
+                    }
+                    continue;
+                }
+                ExtractAlpha(pixels, plane, count);
+                ApplyBlur(item.Blur);
+                double angle = item.Angle * Math.PI / 180;
+                double dx = item.Kind == SymbolFlashFilterKind.Shadow ? Math.Cos(angle) * item.Distance * pixelScale : 0;
+                double dy = item.Kind == SymbolFlashFilterKind.Shadow ? Math.Sin(angle) * item.Distance * pixelScale : 0;
+                uint color = (uint)item.ColorArgb;
+                for (int y = 0; y < height; y++)
+                for (int x = 0; x < width; x++)
+                {
+                    int p = (y * width + x) * 4;
+                    float originalAlpha = pixels[p + 3];
+                    float mask = Sample(plane, width, height, x - dx, y - dy);
+                    float coverage = Math.Clamp((item.Inner ? 1 - mask : mask) * item.Strength * item.Opacity * (color >> 24) / 255f, 0, 1);
+                    float alpha = coverage * (item.Inner ? originalAlpha : item.HideObject ? 1 : 1 - originalAlpha);
+                    float keep = item.Knockout || item.HideObject ? 0 : item.Inner ? 1 - coverage : 1;
+                    pixels[p] = ToByte(pixels[p] * keep + (color & 255) / 255f * alpha) / 255f;
+                    pixels[p + 1] = ToByte(pixels[p + 1] * keep + ((color >> 8) & 255) / 255f * alpha) / 255f;
+                    pixels[p + 2] = ToByte(pixels[p + 2] * keep + ((color >> 16) & 255) / 255f * alpha) / 255f;
+                    pixels[p + 3] = ToByte(originalAlpha * keep + alpha) / 255f;
+                }
+            }
 
         void ApplyEdge(SymbolEdgeFilter effect, bool gradient, bool glowEffect)
         {

@@ -83,7 +83,21 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
             }
             finally { pin.Free(); }
             Texture current = _input!;
+            if (filters.ColorTransform is { Enabled: true } transform)
+            {
+                var target = Available(current, null);
+                Dispatch(current, null, target, new(new(width, height, 8, 0), default,
+                    new(transform.BlueMultiplier, transform.GreenMultiplier, transform.RedMultiplier, transform.AlphaMultiplier ?? 1),
+                    new(transform.BlueOffset, transform.GreenOffset, transform.RedOffset, 0)));
+                current = target;
+            }
             if (filters.Blur.Enabled) current = Blur(current, null, filters.Blur.BlurX, filters.Blur.BlurY, filters.Blur.Quality, filters.Blur.FlashCompatible);
+            if (filters.AdditionalBlurs is { } chain)
+                for (int i = 0; i < chain.Count; i++)
+                {
+                    var item = chain[i];
+                    if (item.Enabled) current = Blur(current, null, item.BlurX, item.BlurY, item.Quality, item.FlashCompatible);
+                }
             if (Visible(filters.Glow.Enabled, filters.Glow.Strength, filters.Glow.Opacity, filters.Glow.ColorArgb))
                 Behind(filters.Glow.BlurX, filters.Glow.BlurY, filters.Glow.ColorArgb, filters.Glow.Strength, filters.Glow.Opacity, 0, 0, filters.Glow.Quality);
             if (Visible(filters.Shadow.Enabled, filters.Shadow.Strength, filters.Shadow.Opacity, filters.Shadow.ColorArgb))
@@ -96,6 +110,26 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
             Edge(filters.Bevel, 3);
             Edge(filters.GradientBevel, 4);
             Edge(filters.GradientGlow, 5);
+            if (filters.FlashFilters is { } flash)
+                for (int i = 0; i < flash.Count; i++)
+                {
+                    var item = flash[i];
+                    if (!item.Enabled) continue;
+                    if (item.Kind == SymbolFlashFilterKind.Blur)
+                    {
+                        current = Blur(current, null, item.BlurX, item.BlurY, item.Quality, true);
+                        continue;
+                    }
+                    var mask = Blur(current, current, item.BlurX, item.BlurY, item.Quality, true);
+                    var target = Available(current, mask);
+                    double angle = item.Angle * Math.PI / 180;
+                    double distance = item.Kind == SymbolFlashFilterKind.Shadow ? item.Distance * (double)scale : 0;
+                    int options = (item.Inner ? 1 : 0) | (item.Knockout ? 2 : 0) | (item.HideObject ? 4 : 0);
+                    var tint = ColorVector(item.ColorArgb); tint.W *= item.Opacity;
+                    Dispatch(current, mask, target, new(new(width, height, 7, options), default, tint,
+                        new((float)(Math.Cos(angle) * distance), (float)(Math.Sin(angle) * distance), item.Strength, 0)));
+                    current = target;
+                }
             Dispatch(current, null, _output!, new(new(width, height, 2, 0), default, default, default));
             _context!.CopyResource(_readback!, _output!.Resource);
             var mapped = _context.Map(_readback!, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
@@ -431,6 +465,20 @@ internal sealed class SymbolFilterGpuRasterizer : IDisposable
                 float alpha = lerp(lerp(Alpha(a), Alpha(a+int2(1,0)), f.x), lerp(Alpha(a+int2(0,1)), Alpha(a+1), f.x), f.y);
                 float behind = saturate(alpha * effect.z) * tint.w * (1 - value.w);
                 value += float4(tint.xyz, 1) * behind;
+            } else if (bounds.z == 7) {
+                int options = (int)bounds.w;
+                bool inner = (options & 1) != 0;
+                bool knockout = (options & 2) != 0;
+                bool hide = (options & 4) != 0;
+                float alpha = SampleAlpha((float2)p - effect.xy);
+                float coverage = saturate((inner ? 1 - alpha : alpha) * effect.z * tint.w);
+                float added = coverage * (inner ? value.w : hide ? 1 : 1 - value.w);
+                float keep = knockout || hide ? 0 : inner ? 1 - coverage : 1;
+                value = floor(saturate(value * keep + float4(tint.xyz, 1) * added) * 255 + 0.5) / 255;
+                value.xyz = min(value.xyz, value.www);
+            } else if (bounds.z == 8) {
+                value.xyz = value.w > 0 ? saturate(value.xyz / value.w * tint.xyz + effect.xyz) * value.w : 0;
+                value *= tint.w;
             } else if (bounds.z >= 3) {
                 bool glow = bounds.z == 5;
                 float signal = glow ? Alpha(p) : SampleAlpha((float2)p + effect.xy) - SampleAlpha((float2)p - effect.xy);

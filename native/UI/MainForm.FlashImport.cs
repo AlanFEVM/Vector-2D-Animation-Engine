@@ -15,12 +15,15 @@ internal sealed partial class MainForm
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
         FlashDocumentImportResult? imported = null;
+        string? destinationDirectory = null;
+        var failureStage = "Checking the Flash source";
         Cursor = Cursors.WaitCursor;
         try
         {
             if (FlashLegacyConversionBridge.IsLegacyBinaryFla(dialog.FileName))
             {
                 Cursor = Cursors.Default;
+                failureStage = "Preparing the Adobe conversion bridge";
                 PrepareLegacyFlashBridge(dialog.FileName);
                 return;
             }
@@ -32,11 +35,13 @@ internal sealed partial class MainForm
             };
             Cursor = Cursors.Default;
             if (destination.ShowDialog(this) != DialogResult.OK) return;
-            var destinationDirectory = ValidateFlashProjectDirectory(destination.SelectedPath);
+            failureStage = "Validating the destination folder";
+            destinationDirectory = ValidateFlashProjectDirectory(destination.SelectedPath);
 
             // Parse the complete source before asking to replace or touching the live document.
             Cursor = Cursors.Default;
             Exception? importError = null;
+            failureStage = "Reading and converting the Flash document";
             using (var progress = new FlashImportProgressDialog())
             {
                 var sourcePath = Path.GetFullPath(dialog.FileName);
@@ -49,7 +54,7 @@ internal sealed partial class MainForm
                 progress.ShowDialog(this);
                 if (progress.CancellationRequested) return;
             }
-            if (importError is not null) throw new InvalidDataException(importError.Message, importError);
+            if (importError is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(importError).Throw();
             if (imported is null) throw new InvalidDataException("The Flash import did not produce a project.");
             if (imported.Diagnostics.Count > 0)
             {
@@ -66,6 +71,7 @@ internal sealed partial class MainForm
                     MessageBoxIcon.Warning) != DialogResult.OK) return;
             }
             if (!TryContinueAfterUnsavedChanges()) return;
+            failureStage = "Saving the converted V2D project";
             string? manifestPath = null;
             Exception? saveError = null;
             using (var saving = new FlashImportProgressDialog())
@@ -79,11 +85,12 @@ internal sealed partial class MainForm
                 };
                 saving.ShowDialog(this);
             }
-            if (saveError is not null) throw new IOException(saveError.Message, saveError);
+            if (saveError is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(saveError).Throw();
             if (manifestPath is null) throw new IOException("The converted project was not saved.");
 
             StopPlayback();
             FinishPointerInteractionForFrameChange();
+            failureStage = "Opening the converted V2D project";
             LoadProjectDocument(ProjectVaultStore.Load(manifestPath), manifestPath);
             _workspaceTabs.SelectedView = WorkspaceView.SceneEditor;
             ApplyProjectPlaybackSettingsToCurrentContext();
@@ -107,10 +114,9 @@ internal sealed partial class MainForm
         catch (Exception exception)
         {
             AppLog.Error($"Unable to import Flash project: {dialog.FileName}", exception);
-            ModernMessageDialog.Show(this,
-                UiLocalization.T("The Flash project could not be imported.") + "\r\n\r\n" + exception.Message
-                + "\r\n\r\n" + UiLocalization.T("Conversion stopped. The source file and current project were not replaced."),
-                UiLocalization.T("Flash Import"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            using var failure = new FlashImportErrorDialog(exception, dialog.FileName, destinationDirectory, failureStage);
+            Cursor = Cursors.Default;
+            failure.ShowDialog(this);
         }
         finally
         {
@@ -194,7 +200,13 @@ internal sealed partial class MainForm
                 + $"\r\n\r\n{plan.ScriptPath}\r\n\r\n{plan.ExpectedManifestPath}",
                 UiLocalization.T("Flash Import"), MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
-        catch (Exception exception) { ShowProjectFileError("The Flash project could not be imported.", exception); }
+        catch (Exception exception)
+        {
+            AppLog.Error($"Unable to prepare Flash visual bridge: {dialog.FileName}", exception);
+            using var failure = new FlashImportErrorDialog(exception, dialog.FileName, folder.SelectedPath, "Preparing the Adobe conversion bridge");
+            Cursor = Cursors.Default;
+            failure.ShowDialog(this);
+        }
         finally { Cursor = Cursors.Default; }
     }
 

@@ -5,6 +5,59 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static SymbolFlashFilter RegressionFlashGlow => new()
+    { Kind = SymbolFlashFilterKind.Glow, Enabled = true, BlurX = 5.5f, BlurY = 3, Quality = 2,
+      ColorArgb = Color.Yellow.ToArgb(), Opacity = 0.75f, Strength = 1.5f };
+
+    private static void RunFlashFilterOrderPixelRegression()
+    {
+        using (var white = Draw())
+        {
+            SymbolFilterRasterizer.Apply(white, new SymbolFilters { ColorTransform = new SymbolFlashColorTransform
+                { Enabled = true, RedOffset = 1, GreenOffset = 1, BlueOffset = 1 } });
+            AssertTimeline(white.GetPixel(80, 80).ToArgb() == Color.White.ToArgb() && white.GetPixel(0, 0).A == 0,
+                "Flash brightness changed transparency or failed to turn source pixels white.");
+        }
+        var glow = RegressionFlashGlow;
+        using (var translucent = Draw())
+        {
+            SymbolFilterRasterizer.Apply(translucent, new SymbolFilters { ColorTransform = new SymbolFlashColorTransform
+                { Enabled = true, AlphaMultiplier = 0.25f, RedMultiplier = 1, GreenMultiplier = 1, BlueMultiplier = 1 },
+                FlashFilters = new SymbolFlashFilterStack([glow with { BlurX = 0, BlurY = 0, Strength = 4, Opacity = 1 }]) });
+            AssertTimeline(translucent.GetPixel(80, 80).A == 255, "Flash alpha multiplier was applied after the glow instead of before its alpha mask.");
+        }
+        var blur = glow with { Kind = SymbolFlashFilterKind.Blur, BlurX = 3.75f, BlurY = 7, Quality = 2 };
+        using var ordered = Draw();
+        using var sequential = Draw();
+        using var reversed = Draw();
+        SymbolFilterRasterizer.Apply(ordered, new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([glow, blur]) });
+        SymbolFilterRasterizer.Apply(sequential, new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([glow]) });
+        SymbolFilterRasterizer.Apply(sequential, new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([blur]) });
+        SymbolFilterRasterizer.Apply(reversed, new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([blur, glow]) });
+        bool differs = false;
+        for (int y = 0; y < ordered.Height; y++)
+        for (int x = 0; x < ordered.Width; x++)
+        {
+            AssertTimeline(ordered.GetPixel(x, y) == sequential.GetPixel(x, y), "Flash filter stack changed sequential output.");
+            differs |= ordered.GetPixel(x, y) != reversed.GetPixel(x, y);
+        }
+        AssertTimeline(differs, "Flash filter source order was lost.");
+        foreach (bool inner in new[] { false, true })
+        {
+            using var knocked = Draw();
+            SymbolFilterRasterizer.Apply(knocked, new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([
+                glow with { BlurX = 0, BlurY = 0, Inner = inner, Knockout = true }]) });
+            AssertTimeline(knocked.GetPixel(80, 80).A == 0, "Knockout retained the original opaque fill.");
+        }
+        Console.WriteLine("flash_filter_order_inner_knockout_pixels=ok");
+        static Bitmap Draw()
+        {
+            var bitmap = new Bitmap(160, 160, PixelFormat.Format32bppPArgb);
+            using var g = Graphics.FromImage(bitmap);
+            g.FillRectangle(Brushes.Red, 66, 66, 28, 28);
+            return bitmap;
+        }
+    }
     private static SymbolFilters RegressionSymbolFilters => new()
     {
         Blur = SymbolBlurFilter.Default,
@@ -211,7 +264,14 @@ internal static partial class Benchmark
         RunSymbolBlendModelRegression();
         var filters = RegressionSymbolFilters with
         {
+            ColorTransform = new SymbolFlashColorTransform { Enabled = true, AlphaMultiplier = 0.37f, RedMultiplier = 0.75f,
+                GreenMultiplier = 0.5f, BlueMultiplier = -0.25f, RedOffset = 0.1f, GreenOffset = -0.2f, BlueOffset = 0.7f },
             Blur = SymbolBlurFilter.Default with { Quality = 1 },
+            AdditionalBlurs = new SymbolBlurStack([new SymbolBlurFilter
+                { Enabled = true, FlashCompatible = true, BlurX = 7.5f, BlurY = 3, Quality = 2 },
+                new SymbolBlurFilter { Enabled = false, FlashCompatible = true, BlurX = 255, BlurY = 255, Quality = 15 }]),
+            FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow, RegressionFlashGlow with
+                { Kind = SymbolFlashFilterKind.Shadow, Inner = true, Knockout = true, Angle = -137, Distance = 3.5f }]),
             Glow = RegressionSymbolFilters.Glow with { Quality = 2 },
             Shadow = RegressionSymbolFilters.Shadow with { Quality = 15 },
             Bevel = SymbolEdgeFilter.Default with { Quality = 4 },
@@ -222,6 +282,11 @@ internal static partial class Benchmark
         var state = instance.EvaluateState(0);
         AssertTimeline(state.Filters == filters && instance.Clone().Filters == filters,
             "Symbol filters were lost by base-state evaluation or cloning.");
+        var exported = filters.AdditionalBlurs!.Items;
+        exported[0] = default;
+        AssertTimeline(filters.AdditionalBlurs[0].Enabled
+            && filters.AdditionalBlurs.Equals(new SymbolBlurStack(filters.AdditionalBlurs.Items)),
+            "Blur stack exposed mutable snapshot state or lost structural equality.");
         AssertTimeline(!instance.SetStateAtFrame(0, state with
             { Filters = filters with { Blur = filters.Blur with { BlurX = float.NaN } } })
             && instance.Filters == filters, "Invalid filter parameters mutated an instance.");
@@ -371,6 +436,8 @@ internal static partial class Benchmark
     private static void RunSymbolFiltersRenderRegression()
     {
         RunSymbolFilterQualityRegression();
+        RunFlashBlurStackPixelRegression();
+        RunFlashFilterOrderPixelRegression();
         RunSymbolBlendRenderRegression();
         AssertNormalCompositingFastPath();
         AssertEdgeFilters();
@@ -588,9 +655,27 @@ internal static partial class Benchmark
             using var gpu = new SymbolFilterGpuRasterizer();
             var cases = new[]
             {
+                new SymbolFilters { ColorTransform = new SymbolFlashColorTransform
+                    { Enabled = true, RedOffset = 1, GreenOffset = 1, BlueOffset = 1 } },
+                new SymbolFilters { ColorTransform = new SymbolFlashColorTransform
+                    { Enabled = true, AlphaMultiplier = 0.37f, RedMultiplier = 0.75f, GreenMultiplier = 0.5f, BlueMultiplier = -0.25f,
+                      RedOffset = 0.1f, GreenOffset = -0.2f, BlueOffset = 0.7f },
+                    FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow]) },
+                new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow]) },
+                new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow with { Inner = true }]) },
+                new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow with { Knockout = true }]) },
+                new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow with { Inner = true, Knockout = true }]) },
+                new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow with
+                    { Kind = SymbolFlashFilterKind.Shadow, Distance = 3.5f, Angle = -137, HideObject = true }]) },
+                new SymbolFilters { FlashFilters = new SymbolFlashFilterStack([RegressionFlashGlow, RegressionFlashGlow with
+                    { Kind = SymbolFlashFilterKind.Blur, BlurX = 4.75f, BlurY = 2, Quality = 2 }]) },
                 new SymbolFilters { Bevel = SymbolEdgeFilter.Default },
                 new SymbolFilters { Blur = SymbolBlurFilter.Default with { Quality = 1 } },
                 new SymbolFilters { Blur = SymbolBlurFilter.Default with { Quality = 15 } },
+                new SymbolFilters { Blur = new SymbolBlurFilter
+                    { Enabled = true, FlashCompatible = true, BlurX = 5.5f, BlurY = 3, Quality = 2 },
+                    AdditionalBlurs = new SymbolBlurStack([new SymbolBlurFilter
+                        { Enabled = true, FlashCompatible = true, BlurX = 2, BlurY = 7.75f, Quality = 3 }]) },
                 new SymbolFilters { Glow = SymbolGlowFilter.Default with { Quality = 2 } },
                 new SymbolFilters { Shadow = SymbolShadowFilter.Default with { Quality = 5 } },
                 new SymbolFilters { Bevel = SymbolEdgeFilter.Default with { Quality = 1 } },
