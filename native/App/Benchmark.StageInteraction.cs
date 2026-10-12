@@ -7110,6 +7110,8 @@ internal static partial class Benchmark
         RunDenseSelectionPanRenderRegression();
         RunDenseSelectionWheelRegression();
         RunCanvasNavigationPreparationRegression();
+        RunDenseToolNavigationRegression();
+        RunDenseToolWheelNavigationRegression();
         RunSelectedBoundaryPanCacheRegression();
         RunLineEditingPointerRegression();
         RunSelectionMoveCursorRegression();
@@ -7267,6 +7269,283 @@ internal static partial class Benchmark
             RunDenseSelectionPanRenderRegressionCore();
         }
         finally { Environment.SetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU", previousGpuPolicy); }
+    }
+
+    private static void RunDenseToolNavigationRegression()
+    {
+        using var form = new MainForm
+        {
+            Size = new Size(1280, 800), ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-30_000, -30_000)
+        };
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        scene.CreateEmpty();
+        for (var index = 0; index < 8000; index++)
+        {
+            scene.AddObject(0, new PointF(index % 100 * 160 - 8000, index / 100 * 160 - 6400),
+                new SizeF(120, 120), 0, 0, Color.Coral, Color.Black, 6, ShapeKind.Rectangle);
+        }
+        scene.CompleteDeferredBuild();
+        form.Show();
+        Application.DoEvents();
+        stage.BindScene(scene);
+        stage.SetVisibleWorldWidth(16000);
+        var view = stage.CaptureViewState();
+        var toolField = RequireField(typeof(MainForm), "_tool");
+        var panField = RequireField(typeof(MainForm), "_viewPanning");
+        var zoomField = RequireField(typeof(MainForm), "_viewZooming");
+        var spaceHeld = RequireField(typeof(MainForm), "_spacePanHeld");
+        var pendingHover = RequireField(typeof(MainForm), "_pendingHoverScreen");
+        var down = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var up = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var hover = RequireMethod(typeof(MainForm), "ApplyPendingHoverFeedback");
+        var start = new Point(stage.Width / 2, stage.Height / 2);
+        var revision = scene.GeometryRevision;
+        var timings = new List<double>();
+        void Pointer(System.Reflection.MethodInfo method, MouseButtons button, Point point) =>
+            method.Invoke(form, [stage, new MouseEventArgs(button, 1, point.X, point.Y, 0)]);
+        void AssertNoToolFeedback(string operation) => AssertTimeline(
+            !stage.FillPreviewVisible && !stage.FillToolCursorVisible && !stage.BrushTipCursorVisible
+            && RequireField(typeof(MainForm), "_snapPointCandidate").GetValue(form) is null,
+            $"{operation} ran tool hover/preview work during navigation.");
+        try
+        {
+            foreach (var tool in Enum.GetValues<ToolMode>())
+            {
+                toolField.SetValue(form, tool);
+                foreach (var mode in new[] { "middle-pan", "middle-zoom", "space-pan" })
+                {
+                    stage.RestoreViewState(view);
+                    // Seed feedback so navigation must clear stale visuals as well as skip queries.
+                    stage.SetFillPreview([[new PointF(-100, -100), new PointF(100, -100), new PointF(0, 100)]], Color.Coral);
+                    stage.SetFillToolCursor(start, Color.Coral);
+                    pendingHover.SetValue(form, start);
+                    var button = mode == "space-pan" ? MouseButtons.Left : MouseButtons.Middle;
+                    spaceHeld.SetValue(form, mode == "space-pan");
+                    Pointer(down, button, start);
+                    if (mode == "middle-zoom")
+                    {
+                        panField.SetValue(form, false);
+                        zoomField.SetValue(form, true);
+                    }
+                    AssertNoToolFeedback($"{tool}/{mode} start");
+                    var origin = stage.WorldToScreen(0, 0);
+                    var zoom = stage.CaptureViewState().Zoom;
+                    for (var step = 1; step <= 64; step++)
+                    {
+                        var point = new Point(start.X + step, start.Y + step);
+                        var started = Stopwatch.GetTimestamp();
+                        Pointer(move, button, point);
+                        timings.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                        AssertNoToolFeedback($"{tool}/{mode} move");
+                        // Simulate a delayed feedback callback that was queued before navigation.
+                        pendingHover.SetValue(form, point);
+                        AssertTimeline(hover.Invoke(form, null) is false,
+                            $"{tool}/{mode} executed deferred tool hit testing.");
+                        RequireMethod(typeof(MainForm), "ApplyToolCursor").Invoke(form, null);
+                        RequireMethod(typeof(MainForm), "UpdateFillHoverPreview").Invoke(form, [point]);
+                        AssertNoToolFeedback($"{tool}/{mode} callback");
+                    }
+                    var after = stage.WorldToScreen(0, 0);
+                    AssertTimeline(mode == "middle-zoom"
+                        ? stage.CaptureViewState().Zoom < zoom
+                        : Math.Abs(after.X - origin.X - 64) < 0.05f && Math.Abs(after.Y - origin.Y - 64) < 0.05f,
+                        $"{tool}/{mode} did not apply the navigation delta.");
+                    Pointer(up, button, new Point(start.X + 64, start.Y + 64));
+                    spaceHeld.SetValue(form, false);
+                    AssertTimeline(RequireField(typeof(MainForm), "_lastMouse").GetValue(form) is null
+                        && !stage.Capture && panField.GetValue(form) is false && zoomField.GetValue(form) is false,
+                        $"{tool}/{mode} did not release its navigation session.");
+                }
+            }
+            toolField.SetValue(form, ToolMode.Fill);
+            stage.RestoreViewState(view);
+            var fillScreen = Point.Round(stage.WorldToScreen(scene.X[0], scene.Y[0]));
+            RequireMethod(typeof(MainForm), "UpdateInteractionCursor").Invoke(form, [fillScreen]);
+            AssertTimeline(stage.FillPreviewVisible && stage.FillToolCursorVisible,
+                "Fill hover did not resume after navigation.");
+            Pointer(down, MouseButtons.Middle, start);
+            stage.Capture = false;
+            RequireMethod(typeof(MainForm), "FinishLostPointerCapture").Invoke(form, null);
+            AssertTimeline(panField.GetValue(form) is false
+                && RequireField(typeof(MainForm), "_lastMouse").GetValue(form) is null,
+                "Capture loss left tool navigation active.");
+            AssertTimeline(scene.GeometryRevision == revision && scene.ObjectCount == 8000,
+                "Tool navigation modified the dense scene.");
+            var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+            tabs.SelectedView = WorkspaceView.SceneEditor;
+            Application.DoEvents();
+            var dimensionButton = (Button)RequireField(typeof(MainForm), "_sceneDimensionButton").GetValue(form)!;
+            dimensionButton.PerformClick();
+            Application.DoEvents();
+            AssertTimeline(stage.ReferenceDimension == SceneDimension.ThreeD,
+                "Navigation fixture did not switch the workspace to 3D.");
+            var orbitBefore = stage.CaptureViewState();
+            Pointer(down, MouseButtons.Middle, start);
+            AssertTimeline(RequireField(typeof(MainForm), "_viewOrbiting").GetValue(form) is true,
+                "Middle navigation did not enter reference orbit.");
+            Pointer(move, MouseButtons.Middle, new Point(start.X + 20, start.Y + 10));
+            var orbitAfter = stage.CaptureViewState();
+            AssertTimeline(Math.Abs(orbitAfter.ReferenceYaw - orbitBefore.ReferenceYaw - 0.2f) < 0.001f
+                && Math.Abs(orbitAfter.ReferencePitch - orbitBefore.ReferencePitch - 0.1f) < 0.001f,
+                "Reference orbit did not retain its pointer delta.");
+            Pointer(up, MouseButtons.Middle, start);
+            dimensionButton.PerformClick();
+            Application.DoEvents();
+            Pointer(down, MouseButtons.Middle, start);
+            AssertTimeline(RequireField(typeof(MainForm), "_viewReferencePanning").GetValue(form) is true,
+                "Middle navigation did not enter 2D reference pan.");
+            var referenceBefore = stage.CaptureViewState();
+            Pointer(move, MouseButtons.Middle, new Point(start.X + 20, start.Y + 10));
+            var referenceAfter = stage.CaptureViewState();
+            AssertTimeline(referenceAfter.ReferenceTargetX != referenceBefore.ReferenceTargetX
+                || referenceAfter.ReferenceTargetY != referenceBefore.ReferenceTargetY
+                || referenceAfter.ReferenceTargetZ != referenceBefore.ReferenceTargetZ,
+                "Reference pan was intercepted by tool routing.");
+            Pointer(up, MouseButtons.Middle, start);
+            timings.Sort();
+            Console.WriteLine($"dense_tool_navigation=ok,objects=8000,tools={Enum.GetValues<ToolMode>().Length},input_avg_ms={timings.Average():F3},input_p95_ms={timings[(int)(timings.Count * 0.95)]:F3},input_max_ms={timings[^1]:F3}");
+        }
+        finally
+        {
+            spaceHeld.SetValue(form, false);
+            RequireMethod(typeof(MainForm), "EndGlobalViewDrag").Invoke(form, null);
+        }
+    }
+
+    private static void RunDenseToolWheelNavigationRegression()
+    {
+        using var form = new MainForm
+        {
+            Size = new Size(1280, 800), ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-30_000, -30_000)
+        };
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        scene.CreateEmpty();
+        for (var index = 0; index < 8000; index++)
+            scene.AddObject(0, new PointF(index % 100 * 160 - 8000, index / 100 * 160 - 6400),
+                new SizeF(120, 120), 0, 0, Color.Coral, Color.Black, 6, ShapeKind.Rectangle);
+        scene.CompleteDeferredBuild();
+        form.Show();
+        Application.DoEvents();
+        stage.BindScene(scene);
+        stage.SetVisibleWorldWidth(16000);
+        var view = stage.CaptureViewState();
+        var revision = scene.GeometryRevision;
+        var anchor = new Point(stage.Width / 2 + 40, stage.Height / 2 - 20);
+        var tool = RequireField(typeof(MainForm), "_tool");
+        var active = RequireField(typeof(MainForm), "_transientViewNavigationActive");
+        var pending = RequireField(typeof(MainForm), "_pendingHoverScreen");
+        var wheel = RequireMethod(typeof(Control), "OnMouseWheel");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var tick = RequireMethod(typeof(MainForm), "TickViewNavigationIdle");
+        var end = RequireMethod(typeof(MainForm), "EndTransientViewNavigation");
+        var timings = new List<double>();
+        void Scroll(int delta) => wheel.Invoke(stage, [new MouseEventArgs(MouseButtons.None, 0, anchor.X, anchor.Y, delta)]);
+        void AssertSuspended(string label) => AssertTimeline(active.GetValue(form) is true
+            && !stage.FillPreviewVisible && !stage.FillToolCursorVisible && !stage.BrushTipCursorVisible
+            && RequireField(typeof(MainForm), "_snapPointCandidate").GetValue(form) is null,
+            $"{label} ran tool feedback during wheel navigation.");
+        try
+        {
+            foreach (var mode in Enum.GetValues<ToolMode>())
+            {
+                tool.SetValue(form, mode);
+                stage.RestoreViewState(view);
+                stage.SetFillPreview([[new PointF(-100, -100), new PointF(100, -100), new PointF(0, 100)]], Color.Coral);
+                stage.SetFillToolCursor(anchor, Color.Coral);
+                for (var step = 0; step < 64; step++)
+                {
+                    var world = stage.ScreenToWorld(anchor);
+                    var started = Stopwatch.GetTimestamp();
+                    Scroll(step % 2 == 0 ? 120 : -120);
+                    move.Invoke(form, [stage, new MouseEventArgs(MouseButtons.None, 0, anchor.X + step % 2, anchor.Y, 0)]);
+                    pending.SetValue(form, anchor);
+                    RequireMethod(typeof(MainForm), "ApplyPendingHoverFeedback").Invoke(form, null);
+                    RequireMethod(typeof(MainForm), "UpdateInteractionCursor").Invoke(form, [anchor]);
+                    RequireMethod(typeof(MainForm), "ApplyToolCursor").Invoke(form, null);
+                    timings.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    AssertSuspended(mode.ToString());
+                    AssertTimeline(PointsWithin(world, stage.ScreenToWorld(anchor), 0.05f),
+                        "Wheel zoom moved its world anchor.");
+                }
+                AssertTimeline(Math.Abs(stage.Zoom - view.Zoom) < 0.001f, "Reverse wheel steps drifted in zoom.");
+                tick.Invoke(form, null);
+                AssertSuspended("early idle tick");
+                RequireField(typeof(MainForm), "_lastViewNavigationInput").SetValue(form,
+                    Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+                tick.Invoke(form, null);
+                AssertTimeline(active.GetValue(form) is false, "Wheel idle did not release tool feedback.");
+            }
+            Scroll(60);
+            Scroll(60);
+            var split = stage.Zoom;
+            stage.RestoreViewState(view);
+            Scroll(120);
+            AssertTimeline(Math.Abs(stage.Zoom - split) < 0.001f, "Partial wheel deltas did not compose.");
+            Scroll(-120);
+            Scroll(0);
+            end.Invoke(form, [false]);
+            Scroll(0);
+            AssertTimeline(active.GetValue(form) is false, "Zero wheel delta started navigation.");
+            tool.SetValue(form, ToolMode.Fill);
+            Scroll(120);
+            var deferred = RequireField(typeof(MainForm), "_pendingPresentationRefresh");
+            var overlays = Enum.Parse(deferred.FieldType, "Overlays");
+            deferred.SetValue(form, overlays);
+            RequireMethod(typeof(MainForm), "PostDeferredPresentationRefresh").Invoke(form, null);
+            var generation = RequireField(typeof(MainForm), "_presentationRefreshGeneration").GetValue(form)!;
+            RequireMethod(typeof(MainForm), "ApplyDeferredPresentationRefresh").Invoke(form, [generation]);
+            AssertTimeline(deferred.GetValue(form)!.Equals(overlays),
+                "Wheel navigation eagerly rebuilt queued presentation overlays.");
+            stage.SetPenAnchorGuides(PointF.Empty, true, true, true, false);
+            Scroll(120);
+            AssertTimeline(!stage.PenAnchorGuidesVisible, "Wheel navigation retained stale pen snap guides.");
+            var fillScreen = Point.Round(stage.WorldToScreen(scene.X[4050], scene.Y[4050]));
+            RequireMethod(typeof(MainForm), "UpdateInteractionCursor").Invoke(form, [fillScreen]);
+            AssertSuspended("fill before idle");
+            end.Invoke(form, [false]);
+            RequireMethod(typeof(MainForm), "UpdateInteractionCursor").Invoke(form, [fillScreen]);
+            AssertTimeline(stage.FillPreviewVisible && stage.FillToolCursorVisible, "Fill did not resume after wheel idle.");
+            Scroll(120);
+            RequireMethod(typeof(MainForm), "StageMouseDown").Invoke(form,
+                [stage, new MouseEventArgs(MouseButtons.Middle, 1, anchor.X, anchor.Y, 0)]);
+            AssertTimeline(active.GetValue(form) is false && RequireField(typeof(MainForm), "_viewPanning").GetValue(form) is true,
+                "Pointer down did not take over wheel navigation.");
+            RequireMethod(typeof(MainForm), "EndGlobalViewDrag").Invoke(form, null);
+            Scroll(120);
+            RequireMethod(typeof(MainForm), "FinishPointerInteractionForContextChange").Invoke(form, null);
+            AssertTimeline(active.GetValue(form) is false, "Context switch retained wheel navigation.");
+            RequireMethod(typeof(MainForm), "ZoomActiveView").Invoke(form, [1.12f]);
+            AssertSuspended("toolbar zoom");
+            AssertTimeline(scene.GeometryRevision == revision && scene.ObjectCount == 8000, "Wheel navigation edited scene content.");
+            RequireMethod(typeof(Form), "OnDeactivate").Invoke(form, [EventArgs.Empty]);
+            AssertTimeline(active.GetValue(form) is false, "Window deactivation retained wheel navigation.");
+            var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+            tabs.SelectedView = WorkspaceView.SceneEditor;
+            Application.DoEvents();
+            var dimension = (Button)RequireField(typeof(MainForm), "_sceneDimensionButton").GetValue(form)!;
+            foreach (var viewDimension in new[] { SceneDimension.TwoD, SceneDimension.ThreeD })
+            {
+                if (stage.ReferenceDimension != viewDimension) dimension.PerformClick();
+                Application.DoEvents();
+                var referenceBefore = stage.CaptureReferenceCameraFrameForPersistence();
+                Scroll(120);
+                Scroll(-120);
+                var referenceAfter = stage.CaptureReferenceCameraFrameForPersistence();
+                AssertTimeline(CameraParametersNear(referenceBefore, referenceAfter)
+                    && ReferenceTargetDistance(referenceBefore, referenceAfter) < 0.01f,
+                    "Reference wheel reversal changed camera parameters or target.");
+                AssertSuspended($"reference {viewDimension}");
+                end.Invoke(form, [false]);
+            }
+            timings.Sort();
+            Console.WriteLine($"dense_tool_wheel=ok,objects=8000,tools=26,input_avg_ms={timings.Average():F3},input_p95_ms={timings[(int)(timings.Count * 0.95)]:F3},input_max_ms={timings[^1]:F3},idle_restore=ok,reverse=ok,partial_delta=ok");
+        }
+        finally { end.Invoke(form, [false]); }
     }
 
     private static void RunDenseSelectionPanRenderRegressionCore()

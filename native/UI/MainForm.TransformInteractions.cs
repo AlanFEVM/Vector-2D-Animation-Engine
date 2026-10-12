@@ -113,6 +113,8 @@ internal sealed partial class MainForm : Form
     private void StageMouseMove(object? sender, MouseEventArgs e)
     {
         if (HandleReferenceCameraRightLookMouseMove(e)) return;
+        if (UpdateCanvasViewDrag(e)) return;
+        if (_transientViewNavigationActive && _lastMouse is null) return;
 
         if (_brushColorPaletteActive)
         {
@@ -366,38 +368,6 @@ internal sealed partial class MainForm : Form
                 _stage.RotateReferenceCamera(dx, dy);
             }
 
-            return;
-        }
-
-        if (_viewReferencePanning)
-        {
-            _stage.PanReferenceCamera(dx, dy);
-            return;
-        }
-
-        if (_viewReferenceZooming)
-        {
-            _stage.DollyReferenceCameraByPixels(dy);
-            return;
-        }
-
-        if (_viewPanning)
-        {
-            _stage.Pan(dx, dy);
-            return;
-        }
-
-        if (_viewZooming)
-        {
-            var factor = Math.Clamp(Math.Exp(-dy * 0.01), 0.2, 5.0);
-            _stage.ZoomAt(e.Location, (float)factor, interactivePreview: true);
-            UpdateStatusBar();
-            return;
-        }
-
-        if (_viewOrbiting)
-        {
-            _stage.RotateReferenceCamera(dx, dy);
             return;
         }
 
@@ -2725,6 +2695,7 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteractionForFrameChange()
     {
+        EndTransientViewNavigation(restoreFeedback: false);
         CancelReferenceCameraRightLook();
         CancelTemporaryCanvasPan();
         if (CancelLassoPointerForLifecycle()) return;
@@ -2804,6 +2775,7 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteractionForContextChange()
     {
+        EndTransientViewNavigation(restoreFeedback: false);
         CancelReferenceCameraRightLook();
         CancelReferenceCameraKeyboardNavigation();
         CancelTemporaryCanvasPan();
@@ -3363,6 +3335,7 @@ internal sealed partial class MainForm : Form
 
     private void PostDeferredPresentationRefresh()
     {
+        if (CanvasViewDragActive || _transientViewNavigationActive) return;
         if (_pendingPresentationRefresh == DeferredPresentationRefresh.None
             || _postedPresentationRefreshGeneration == _presentationRefreshGeneration
             || IsDisposed
@@ -3409,6 +3382,7 @@ internal sealed partial class MainForm : Form
             _postedPresentationRefreshGeneration = -1;
         }
         if (IsDisposed || Disposing || generation != _presentationRefreshGeneration) return;
+        if (CanvasViewDragActive || _transientViewNavigationActive) return;
 
         var refreshes = _pendingPresentationRefresh;
         var refreshLineEndpointStyles = _pendingInspectorRefreshLineEndpointStyles;
@@ -3517,6 +3491,7 @@ internal sealed partial class MainForm : Form
     {
         if (_pendingHoverScreen is not { } screen) return false;
         _pendingHoverScreen = null;
+        if (CanvasNavigationFeedbackSuspended) return false;
         UpdateHoveredLineControls(screen);
         UpdateInteractionCursor(screen);
         return true;

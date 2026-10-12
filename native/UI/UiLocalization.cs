@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 
 namespace VectorAnimationEngine;
 
@@ -32,6 +32,36 @@ internal static class UiLocalization
     private static readonly IReadOnlyDictionary<string, string> SimplifiedChinese =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            ["Drag timeline tabs left or right: left is lower, right is higher."] = "左右拖拽时间轴标签排序：左侧底层，右侧上层。",
+            ["Drag to reorder · Left: bottom  →  Right: top"] = "拖拽调整层级 · 左侧：底层  →  右侧：顶层",
+            ["{0}/32 custom groups · Ctrl+Left/Right to reorder"] = "{0}/32 个自定义分组 · Ctrl+左/右方向键调整层级",
+            ["Move this layer or layer group to '{0}'? Linked folder children and mask contents will move together."] = "确定将此图层或图层组移入“{0}”分组吗？关联的文件夹子图层和遮罩内容将一同移动。",
+            ["Layer group order"] = "图层分组排序",
+            ["Layer group order..."] = "图层分组排序...",
+            ["Move left / lower"] = "向左 / 降低",
+            ["Move right / higher"] = "向右 / 升高",
+            ["Stage order preview"] = "舞台叠放顺序预览",
+            ["Stage order: top to bottom · {0}/32 custom groups"] = "舞台叠放顺序：从上到下 · {0}/32 个自定义分组",
+            ["Ctrl+Left/Right changes the group order"] = "Ctrl+左/右方向键调整分组顺序",
+            ["Drag tags left or right. Larger numbers are higher on the stage.\nLeft: bottom  →  Right: top. Layer order within each group is preserved."] = "左右拖拽分组标签，序号越大，在舞台上越靠上层。\n左侧：底层  →  右侧：顶层。组内保留图层上下顺序。",
+            ["Command"] = "命令",
+            ["Shortcut command map"] = "快捷键命令列表",
+            ["Toggle Inspector"] = "显示或隐藏检查器",
+            ["Toggle Timeline"] = "显示或隐藏时间轴",
+            ["Save Project As"] = "工程另存为",
+            ["Convert to Symbol"] = "转换为元件",
+            ["Play / Stop"] = "播放 / 停止",
+            ["Previous Frame"] = "上一帧",
+            ["Next Frame"] = "下一帧",
+            ["First Playback Frame"] = "播放范围首帧",
+            ["Last Playback Frame"] = "播放范围末帧",
+            ["Insert Frame"] = "插入帧",
+            ["Remove Frame"] = "删除帧",
+            ["Insert Keyframe"] = "插入关键帧",
+            ["Clear Keyframe"] = "清除关键帧",
+            ["Insert Blank Keyframe"] = "插入空白关键帧",
+            ["Decrease Drawing Width"] = "减小绘制宽度",
+            ["Increase Drawing Width"] = "增大绘制宽度",
             ["Symbol blend mode"] = "元件混合模式",
             ["Isolated Group"] = "隔离组",
             ["Invert"] = "反相",
@@ -383,6 +413,10 @@ internal static class UiLocalization
             ["Aurora"] = "极光",
             ["Basic Drawing"] = "基础绘制",
             ["Basic Shading"] = "基础着色",
+            ["Shading"] = "着色",
+            ["Width"] = "宽度",
+            ["Gradient stop position"] = "色标位置",
+            ["{0}, {1} stops"] = "{0}，{1} 个色标",
             ["Basic Shapes"] = "基础形状",
             ["Behavior"] = "行为",
             ["Benchmark Preset"] = "基准预设",
@@ -800,6 +834,7 @@ internal static class UiLocalization
             ["Motion track first frame"] = "运动轨起始帧",
             ["Motion track last frame"] = "运动轨结束帧",
             ["Show the selected symbol's motion track on the Stage"] = "在舞台显示所选元件的运动轨",
+            ["Place a symbol instance from the Vault in the current workspace to enable motion track."] = "请从 Vault 放入元件实例到当前工作区，以启用运动轨。",
             ["Open"] = "打开",
             ["Open Project"] = "打开工程",
             ["Open Project..."] = "打开工程...",
@@ -1141,6 +1176,49 @@ internal static class UiLocalization
             ["Selected: None"] = "已选择：无",
             ["Atoms: -"] = "原子：-",
             ["Image import settings"] = "图片导入设置",
+            ["Basic settings"] = "常用设置",
+            ["Advanced settings"] = "高级设置",
+            ["Pixel art"] = "像素风",
+            ["Image display"] = "显示方式",
+            ["Maximum resolution"] = "最大分辨率",
+            ["Decoded resolution"] = "解码分辨率",
+            ["Placement scale"] = "放置比例",
+            ["Keep transparent background"] = "保留透明背景",
+            ["Image preview"] = "图片预览",
+            ["Edit image"] = "编辑图片",
+            ["Crop the image while keeping the original file"] = "裁剪图片并保留原文件",
+            ["Crop selection"] = "裁剪选区",
+            ["Free crop"] = "自由裁剪",
+            ["Original ratio"] = "原始比例",
+            ["Crop ratio"] = "裁剪比例",
+            ["Precise crop"] = "精确裁剪",
+            ["Drag the edges to crop. Drag the image to compose; scroll to zoom."] = "拖动边框裁剪；拖动图片调整构图，滚轮缩放。",
+            ["Drag the edges to crop. Drag the image to compose; scroll to zoom. This crop applies to the whole batch."] = "拖动边框裁剪；拖动图片调整构图，滚轮缩放。裁剪应用于整批。",
+            ["Crop left"] = "左侧位置",
+            ["Crop top"] = "顶部位置",
+            ["Crop width"] = "裁剪宽度",
+            ["Crop height"] = "裁剪高度",
+            ["Restore full image"] = "恢复整图",
+            ["Confirm crop"] = "确认裁剪",
+            ["The image could not be opened for editing."] = "无法打开此图片进行编辑。",
+            ["Appearance settings keep object sizes. Cropping or changing placement scale updates all uses of this image."] = "显示设置不改变对象大小；裁剪或调整放置比例会更新此素材的所有引用。",
+            ["Drag to select, move the selection or adjust its corners. The original image is kept."] = "拖动选取区域、移动选区或调整四角。原图完整保留，可随时恢复。",
+            ["Drag to select, move the selection or adjust its corners. The relative crop applies to every image in this batch."] = "拖动选取区域、移动选区或调整四角。相对裁剪区域应用于整批图片。",
+            ["Use pixel fields for precise cropping; arrow keys move the selection."] = "像素输入框支持精确裁剪；方向键移动选区。",
+            ["Loading preview..."] = "正在加载预览…",
+            ["Ready to import. You can move and resize the image on stage later."] = "可以直接导入，之后可在舞台上移动和缩放图片。",
+            ["Adjust image appearance here. Existing object sizes are kept unless you change placement scale."] = "在此调整显示效果；只有改变放置比例，才会调整已有对象尺寸。",
+            ["Import {0} images. These settings apply to the whole batch; the preview shows the first image."] = "导入 {0} 张图片；设置应用于整批，预览显示第一张。",
+            ["Smooth for photos and artwork; Pixel art keeps hard pixel edges."] = "照片和插画用平滑显示；像素风保留清晰的像素边缘。",
+            ["Limits decoded pixels, keeps the source file and does not resize placed objects."] = "限制解码分辨率，保留源文件，不改变已放置对象的尺寸。",
+            ["100% keeps the current import scale. Changes scale all uses of this image proportionally."] = "100% 保持当前导入比例；修改后按比例调整所有使用此图片的对象。",
+            ["100% uses the default import size. Image resolution and placement size are independent."] = "100% 使用默认导入大小；图片分辨率与放置尺寸互相独立。",
+            ["Decoded: {0} × {1} px\nBase placement: {2} × {3} vu"] = "解码尺寸：{0} × {1} 像素\n基础放置尺寸：{2} × {3} 矢量单位",
+            ["This image keeps its legacy power-of-two sizing setting."] = "此图片保留旧的二次幂尺寸设置。",
+            ["Show or hide advanced image import settings"] = "展开或收起图片导入高级设置",
+            ["Image scale (pixels/unit)"] = "放置大小（像素/单位）",
+            ["Image resolution limit"] = "图片分辨率上限",
+            ["Use the current settings to import. A higher pixels-per-unit value makes the image larger on stage."] = "可直接使用当前设置导入。每单位像素数越大，图片放到舞台后越大。",
             ["Texture"] = "纹理",
             ["Filter mode"] = "过滤模式",
             ["Pixels per unit"] = "每单位像素",
@@ -1424,6 +1502,15 @@ internal static class UiLocalization
 
     private static string TranslateDynamic(string text)
     {
+        const string groupOrderCountSuffix = "/32 custom groups · Ctrl+Left/Right to reorder";
+        if (text.EndsWith(groupOrderCountSuffix, StringComparison.Ordinal)
+            && int.TryParse(text[..^groupOrderCountSuffix.Length], out var groupCount))
+            return $"{groupCount}/32 个自定义分组 · Ctrl+左/右方向键调整层级";
+        if (text.StartsWith("Stage order: top to bottom · ", StringComparison.Ordinal))
+            return text.Replace("Stage order: top to bottom · ", "舞台叠放顺序：从上到下 · ", StringComparison.Ordinal)
+                .Replace(" custom groups", " 个自定义分组", StringComparison.Ordinal);
+        if (text.Contains(" · Layers", StringComparison.Ordinal) || text.Contains(" · Terrain", StringComparison.Ordinal))
+            return text.Replace(" · Layers", " · 图层", StringComparison.Ordinal).Replace(" · Terrain", " · 地形", StringComparison.Ordinal);
         var translated = text
             .Replace("    Frame ", "    帧 ", StringComparison.Ordinal)
             .Replace(" Animation FPS ", " 动画 FPS ", StringComparison.Ordinal)

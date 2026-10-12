@@ -136,7 +136,8 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
                 Font,
                 new Size(MaximumWidth, ItemHeight),
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width;
-            var hasShortcut = item is ToolStripMenuItem { ShortcutKeys: not Keys.None };
+            var hasShortcut = item is ToolStripMenuItem menuItem
+                && (menuItem.ShortcutKeys != Keys.None || !string.IsNullOrEmpty(menuItem.ShortcutKeyDisplayString));
             var shortcutWidth = hasShortcut ? ShortcutColumnWidth : 0;
             var contentWidth = textWidth + shortcutWidth + (hasShortcut ? ShortcutGap : 0);
             width = Math.Max(width, Math.Min(MaximumWidth, contentWidth + ItemHorizontalPadding * 2));

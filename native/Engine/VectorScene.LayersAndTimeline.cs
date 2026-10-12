@@ -365,7 +365,13 @@ internal sealed partial class VectorScene
         }
     }
 
-    public int AddLayer(string? name = null) => InsertLayer(DrawingLayerKind.Drawing, LayerCount, name);
+    public int AddLayer(string? name = null)
+    {
+        var index = InsertLayer(DrawingLayerKind.Drawing, LayerCount, name);
+        var id = LayerIds[index];
+        Timeline.RefreshTabGroupLayerOrder();
+        return Array.IndexOf(LayerIds, id);
+    }
 
     public int AddFolderLayer(string? name = null)
     {
@@ -373,11 +379,16 @@ internal sealed partial class VectorScene
         if (contentLayer < 0) return AddLayer(name);
 
         var parentId = LayerParentIds[contentLayer];
+        var groupId = Timeline.FindTrackByTargetId(LayerIds[contentLayer])?.TabGroupId ?? AnimationTimeline.DefaultTabGroupId;
         var folderLayer = InsertLayer(DrawingLayerKind.Folder, contentLayer, name ?? $"Folder {LayerCount:0000}");
         LayerParentIds[folderLayer] = parentId;
         LayerParentIds[contentLayer + 1] = LayerIds[folderLayer];
         ActiveLayer = contentLayer + 1;
-        return folderLayer;
+        var folderId = LayerIds[folderLayer];
+        if (Timeline.TabGroupOrderingEnabled && Timeline.FindTrackByTargetId(folderId) is { } folderTrack)
+            Timeline.SetTrackTabGroup(folderTrack.Id, groupId);
+        Timeline.RefreshTabGroupLayerOrder();
+        return Array.IndexOf(LayerIds, folderId);
     }
 
     public int AddMaskLayer(string? name = null)
@@ -386,11 +397,16 @@ internal sealed partial class VectorScene
         if (contentLayer < 0) return AddLayer(name);
 
         var parentId = LayerParentIds[contentLayer];
+        var groupId = Timeline.FindTrackByTargetId(LayerIds[contentLayer])?.TabGroupId ?? AnimationTimeline.DefaultTabGroupId;
         var maskLayer = InsertLayer(DrawingLayerKind.Mask, contentLayer, name ?? $"Mask {LayerCount:0000}");
         LayerParentIds[maskLayer] = parentId;
         LayerMaskIds[contentLayer + 1] = LayerIds[maskLayer];
         ActiveLayer = maskLayer;
-        return maskLayer;
+        var maskId = LayerIds[maskLayer];
+        if (Timeline.TabGroupOrderingEnabled && Timeline.FindTrackByTargetId(maskId) is { } maskTrack)
+            Timeline.SetTrackTabGroup(maskTrack.Id, groupId);
+        Timeline.RefreshTabGroupLayerOrder();
+        return Array.IndexOf(LayerIds, maskId);
     }
 
     public bool TryGetCollisionTerrainLayer(out int layer)
@@ -456,7 +472,9 @@ internal sealed partial class VectorScene
             ? GetUniqueCollisionTerrainLayerName()
             : name.Trim();
         var layer = InsertLayer(DrawingLayerKind.Mask, LayerCount, layerName);
+        var layerId = LayerIds[layer];
         PrepareCollisionTerrainLayer(layer, layerName);
+        layer = Array.IndexOf(LayerIds, layerId);
         ActiveLayer = layer;
         return layer;
     }
@@ -492,6 +510,7 @@ internal sealed partial class VectorScene
         {
             track.IsCollisionTerrain = true;
             Timeline.SetTrackTabGroup(track.Id, AnimationTimeline.TerrainTabGroupId);
+            layer = Array.IndexOf(LayerIds, track.TargetId);
             if (frame >= track.Duration) Timeline.SetTrackDuration(track.Id, frame + 1);
             Timeline.InsertKeyframe(track.Id, frame);
             RefreshLegacyExposureBounds(layer);
@@ -555,7 +574,7 @@ internal sealed partial class VectorScene
 
         RebuildGeometryIndex();
         RebuildSummaries();
-        return index;
+        return Array.IndexOf(LayerIds, layerId);
     }
 
     private int ResolveObjectLayer(int requestedLayer)
@@ -698,6 +717,13 @@ internal sealed partial class VectorScene
         var insertAt = Math.Clamp(destinationIndex, 0, remaining.Count);
         remaining.InsertRange(insertAt, block);
         if (remaining.SequenceEqual(ordered)) return false;
+        var changed = ApplyLayerOrder(remaining);
+        Timeline.RefreshTabGroupLayerOrder();
+        return changed;
+    }
+
+    private bool ApplyLayerOrder(IReadOnlyList<int> remaining)
+    {
         var destinationBySource = new int[LayerCount];
         for (var destination = 0; destination < remaining.Count; destination++)
         {
@@ -1628,7 +1654,8 @@ internal sealed partial class VectorScene
         {
             Tracks = layerTracks.Concat(additionalTracks).ToArray(),
             TabGroups = previousTimelineSnapshot.TabGroups,
-            ActiveTabGroupId = previousTimelineSnapshot.ActiveTabGroupId
+            ActiveTabGroupId = previousTimelineSnapshot.ActiveTabGroupId,
+            TabGroupOrderingEnabled = previousTimelineSnapshot.TabGroupOrderingEnabled
         });
         SynchronizeTimelineTracks();
     }

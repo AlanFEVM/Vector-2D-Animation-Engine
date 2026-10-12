@@ -272,7 +272,7 @@ internal sealed partial class TimelineStrip
                 labelFont,
                 new Rectangle(bounds.Left + 3, bounds.Top, labelWidth, bounds.Height - 1),
                 Theme.ReadableText(Theme.Top, Theme.AccentLabel),
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
 
         graphics.Restore(state);

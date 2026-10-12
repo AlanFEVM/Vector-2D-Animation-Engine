@@ -3094,7 +3094,7 @@ internal sealed class ColorTargetButton : Control
             true);
         BackColor = Theme.PanelStrong;
         ForeColor = Theme.Text;
-        Font = Theme.UiFont();
+        Font = Theme.UiFont(Theme.InspectorLabelFontSize);
         Cursor = Cursors.Hand;
         TabStop = true;
         AccessibleName = text;
@@ -3165,11 +3165,13 @@ internal sealed class ColorTargetButton : Control
         using var backgroundBrush = new SolidBrush(background);
         using var border = new Pen(borderColor);
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
-        Theme.FillUiRectangle(e.Graphics, backgroundBrush, ClientRectangle);
-        Theme.DrawUiRectangle(e.Graphics, border, new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1)));
+        Theme.PaintUiSurface(e.Graphics, backgroundBrush, border, ClientRectangle);
 
-        var swatchSize = Math.Clamp(Height - 18, 20, 30);
-        var swatch = new Rectangle(8, Math.Max(5, (Height - swatchSize) / 2), swatchSize, swatchSize);
+        var inset = Math.Max(1, (int)Math.Round(6 * DeviceDpi / 96f));
+        var hasDetail = !string.IsNullOrWhiteSpace(DetailText);
+        var narrow = hasDetail && Width < 140 * DeviceDpi / 96f;
+        var swatchSize = Math.Min(Height - inset * 2, (int)Math.Round((narrow ? 12 : 24) * DeviceDpi / 96f));
+        var swatch = new Rectangle(inset, narrow ? inset : (Height - swatchSize) / 2, Math.Max(1, swatchSize), Math.Max(1, swatchSize));
         DrawChecker(e.Graphics, swatch);
         if (_gradientKind == GradientKind.Solid)
         {
@@ -3188,9 +3190,18 @@ internal sealed class ColorTargetButton : Control
         Theme.PaintControlCorners(this, e.Graphics,
             new Rectangle(swatch.X, swatch.Y, swatch.Width + 1, swatch.Height + 1), background, swatchBorderColor);
 
-        var textLeft = swatch.Right + 8;
-        var textWidth = Math.Max(0, Width - textLeft - 8);
-        var titleBounds = new Rectangle(textLeft, 5, textWidth, Math.Max(0, Height / 2 - 3));
+        var textLeft = swatch.Right + inset;
+        var textWidth = Math.Max(0, Width - textLeft - inset);
+        const TextFormatFlags textFlags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+            | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis
+            | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping
+            | TextFormatFlags.PreserveGraphicsTranslateTransform;
+        using var detailFont = Theme.UiFont(Theme.InspectorDetailFontSize);
+        var titleHeight = (int)Math.Ceiling(Font.GetHeight(DeviceDpi));
+        var detailHeight = hasDetail
+            ? (int)Math.Ceiling(detailFont.GetHeight(DeviceDpi)) : 0;
+        var textTop = Math.Max(0, (Height - titleHeight - detailHeight) / 2);
+        var titleBounds = new Rectangle(textLeft, textTop, textWidth, titleHeight);
         var titleColor = !Enabled
             ? Theme.ReadableText(background, Theme.DisabledText)
             : Theme.ReadableText(background, Selected ? Theme.AccentLabel : Theme.Text);
@@ -3200,22 +3211,22 @@ internal sealed class ColorTargetButton : Control
             Font,
             titleBounds,
             titleColor,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            textFlags);
 
-        if (!string.IsNullOrWhiteSpace(DetailText))
+        if (hasDetail)
         {
-            var detailBounds = new Rectangle(textLeft, Height / 2 - 1, textWidth, Math.Max(0, Height / 2 - 4));
-            using var detailFont = Theme.UiFont(8.2f);
+            var detailBounds = new Rectangle(narrow ? inset : textLeft, textTop + titleHeight,
+                narrow ? Width - inset * 2 : textWidth, detailHeight);
             var detailColor = !Enabled
                 ? Theme.ReadableText(background, Theme.DisabledText)
-                : Theme.ReadableText(background, Selected ? Theme.AccentLabel : Theme.Muted);
+                : Theme.ReadableText(background, Theme.Muted);
             TextRenderer.DrawText(
                 e.Graphics,
                 UiLocalization.T(DetailText),
                 detailFont,
                 detailBounds,
                 detailColor,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                textFlags);
         }
 
         if (Enabled && Focused && ShowFocusCues)

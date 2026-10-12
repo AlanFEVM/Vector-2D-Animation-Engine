@@ -58,6 +58,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         _lightView = _lights.AsReadOnly();
         _shotView = _shots.AsReadOnly();
         _instanceIndex = new LayeredInstanceIndex(_instanceView);
+        _timeline.ApplyTabGroupLayerOrder = ApplyTabGroupLayerOrder;
+        _timeline.AssignTabGroupToLayerBlock = AssignTabGroupToLayerBlock;
         var firstLayer = new SceneLayerDefinition { Name = "Layer 0001" };
         _layers.Add(firstLayer);
         _timeline.SynchronizeTracks([firstLayer.Id], Math.Max(1, initialFrameCount), populateNewTracks: false);
@@ -891,6 +893,7 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         _layers.Add(layer);
         ActiveLayerId = layer.Id;
         SynchronizeTimelineTracks();
+        _timeline.RefreshTabGroupLayerOrder();
         return layer;
     }
 
@@ -930,6 +933,10 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         SynchronizeTimelineTracks();
         var track = _timeline.FindTrackByTargetId(maskLayer.Id);
         if (track is not null) _timeline.InsertBlankKeyframe(track.Id, 0);
+        if (_timeline.TabGroupOrderingEnabled && track is not null
+            && _timeline.FindTrackByTargetId(contentLayer.Id) is { } contentTrack)
+            _timeline.SetTrackTabGroup(track.Id, contentTrack.TabGroupId);
+        _timeline.RefreshTabGroupLayerOrder();
         return maskLayer;
     }
 
@@ -1005,6 +1012,7 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         _layers.RemoveAt(sourceIndex);
         _layers.Insert(destinationIndex, layer);
         SynchronizeTimelineTracks();
+        _timeline.RefreshTabGroupLayerOrder();
         return true;
     }
 

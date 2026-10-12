@@ -1,4 +1,4 @@
-using System.Drawing.Drawing2D;
+﻿using System.Drawing.Drawing2D;
 
 namespace VectorAnimationEngine;
 
@@ -24,11 +24,26 @@ internal sealed partial class TimelineStrip
         UseMnemonic = false
     };
     private readonly AnimatedContextMenuStrip _tabGroupContextMenu = new();
+    private readonly SvgIconButton _tabGroupOrderButton = new(SvgIconKind.Settings)
+    {
+        AccessibleName = "Layer group order", TabStop = true, Visible = false
+    };
     private readonly AnimatedContextMenuStrip _tabGroupOverflowMenu = new();
     private readonly ToolStripMenuItem _moveLayerToTabGroupMenuItem = new(UiLocalization.T("Move to tab group"));
     private string? _hoveredTabGroupId;
     private string? _focusedTabGroupId;
     private string _tabGroupToolTipText = "";
+    private string? _pressedTabGroupId;
+    private string[] _tabGroupDragOriginalOrder = [];
+    private Point _tabGroupDragOrigin;
+    private Point _tabGroupDragPointer;
+    private bool _draggingTabGroup;
+    private int _tabGroupDropIndex = -1;
+    private int _tabGroupDropMarkerX;
+    private int _tabGroupDragWindowStart;
+    private Rectangle _tabGroupDragSourceBounds;
+    private int _tabGroupDragGrabOffset;
+    private readonly System.Windows.Forms.Timer _tabGroupDragScrollTimer = new() { Interval = 220 };
 
     private readonly record struct TabGroupItem(string Id, string Name, bool BuiltIn);
 
@@ -62,8 +77,13 @@ internal sealed partial class TimelineStrip
 
     private void InitializeTabGroupUi()
     {
+        _tabGroupDragScrollTimer.Tick += (_, _) => ScrollTabGroupsDuringDrag();
         Theme.StyleToolbarButton(_tabGroupAddButton);
         Theme.StyleToolbarButton(_tabGroupOverflowButton);
+        Theme.StyleToolbarButton(_tabGroupOrderButton);
+        _layerControlToolTip.SetToolTip(_tabGroupOrderButton, UiLocalization.T("Layer group order"));
+        _tabGroupOrderButton.Click += (_, _) => EditTimelineTabGroupOrder();
+        Controls.Add(_tabGroupOrderButton);
         _tabGroupOverflowButton.Width = ScaleTimelineMetric(30);
         _tabGroupOverflowButton.Height = ScaleTimelineMetric(24);
         _layerControlToolTip.SetToolTip(_tabGroupAddButton, UiLocalization.T("Create timeline tab group"));
@@ -80,6 +100,8 @@ internal sealed partial class TimelineStrip
 
     private void DisposeTabGroupUi()
     {
+        CancelTabGroupDrag();
+        _tabGroupDragScrollTimer.Dispose();
         ClearTabGroupMenuItems(_tabGroupContextMenu.Items);
         ClearTabGroupMenuItems(_tabGroupOverflowMenu.Items);
         _tabGroupContextMenu.Dispose();
@@ -116,24 +138,29 @@ internal sealed partial class TimelineStrip
     private Rectangle TabGroupBarBounds() =>
         new(0, ToolbarHeaderHeight, Math.Max(0, Width), TabGroupRowHeight);
 
+    private static bool UsesCompactTabGroupLabel(string id) =>
+        !string.Equals(id, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal);
+
     private TabGroupLayoutSnapshot BuildTabGroupLayout()
     {
+        using var tabFont = Theme.UiFont(8);
+        var settingsLeft = Math.Max(0, Width - ScaleTimelineMetric(34));
         var addBounds = new Rectangle(
-            Math.Max(0, Width - ScaleTimelineMetric(30) - ScaleTimelineMetric(8)),
-            ToolbarHeaderHeight + Math.Max(1, (TabGroupRowHeight - ScaleTimelineMetric(24)) / 2),
+            Math.Max(0, settingsLeft - ScaleTimelineMetric(30)),
+            ToolbarHeaderHeight + ScaleTimelineMetric(7),
             ScaleTimelineMetric(26),
-            ScaleTimelineMetric(24));
-        var right = Math.Max(0, addBounds.Left - ScaleTimelineMetric(6));
+            Math.Max(1, TabGroupRowHeight - ScaleTimelineMetric(7) - 1));
+        var right = Math.Max(0, addBounds.Left - ScaleTimelineMetric(4));
         var left = ScaleTimelineMetric(8);
         var items = TabGroupItems();
         var widths = items
             .Select(item => Math.Clamp(
                 TextRenderer.MeasureText(
                     item.Name,
-                    Font,
+                    UsesCompactTabGroupLabel(item.Id) ? tabFont : Font,
                     Size.Empty,
-                    TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleTimelineMetric(22),
-                ScaleTimelineMetric(54),
+                    TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleTimelineMetric(18),
+                ScaleTimelineMetric(48),
                 ScaleTimelineMetric(178)))
             .ToArray();
 
@@ -142,13 +169,34 @@ internal sealed partial class TimelineStrip
         var overflowWidth = ScaleTimelineMetric(32);
         if (overflowRequired) right = Math.Max(left, right - overflowWidth - ScaleTimelineMetric(4));
 
+        var windowStart = _draggingTabGroup ? _tabGroupDragWindowStart : 0;
+        if (!_draggingTabGroup && _timeline?.TabGroupOrderingEnabled == true && overflowRequired)
+        {
+            // Keep a contiguous slice of the true ordinal order when revealing an active overflow tab.
+            var activeIndex = items.ToList().FindIndex(item => item.Id == _timeline.ActiveTabGroupId);
+            var available = Math.Max(0, right - left - widths[0] - ScaleTimelineMetric(4));
+            var used = 0;
+            for (var index = activeIndex; index > 0; index--)
+            {
+                var required = widths[index] + (used == 0 ? 0 : ScaleTimelineMetric(4));
+                if (used > 0 && used + required > available) break;
+                used += required;
+                windowStart = index - 1;
+            }
+        }
         var visible = new List<TabGroupTabLayout>(items.Count);
         var overflow = new List<TabGroupItem>();
         var x = left;
+        var windowFull = false;
         for (var index = 0; index < items.Count; index++)
         {
+            if (index > 0 && index <= windowStart)
+            {
+                overflow.Add(items[index]);
+                continue;
+            }
             var width = widths[index];
-            if (x + width <= right || visible.Count == 0 && index == 0)
+            if (!windowFull && (x + width <= right || visible.Count == 0 && index == 0))
             {
                 if (visible.Count == 0 && x + width > right)
                 {
@@ -160,7 +208,8 @@ internal sealed partial class TimelineStrip
                     visible.Add(new TabGroupTabLayout(
                         items[index].Id,
                         items[index].Name,
-                        new Rectangle(x, ToolbarHeaderHeight + ScaleTimelineMetric(3), width, Math.Max(1, TabGroupRowHeight - ScaleTimelineMetric(6))),
+                        new Rectangle(x, ToolbarHeaderHeight + ScaleTimelineMetric(UsesCompactTabGroupLabel(items[index].Id) ? 7 : 3),
+                            width, Math.Max(1, TabGroupRowHeight - ScaleTimelineMetric(UsesCompactTabGroupLabel(items[index].Id) ? 7 : 3) - 1)),
                         items[index].BuiltIn));
                     x += width + ScaleTimelineMetric(4);
                     continue;
@@ -168,6 +217,7 @@ internal sealed partial class TimelineStrip
             }
 
             overflow.Add(items[index]);
+            if (_draggingTabGroup || _timeline?.TabGroupOrderingEnabled == true) windowFull = true;
         }
 
         if (overflow.Count == 0 && visible.Count < items.Count)
@@ -178,13 +228,13 @@ internal sealed partial class TimelineStrip
         var overflowBounds = overflow.Count == 0
             ? Rectangle.Empty
             : new Rectangle(
-                Math.Max(left, addBounds.Left - overflowWidth - ScaleTimelineMetric(6)),
+                Math.Max(left, addBounds.Left - overflowWidth - ScaleTimelineMetric(36)),
                 ToolbarHeaderHeight + Math.Max(1, (TabGroupRowHeight - ScaleTimelineMetric(24)) / 2),
                 overflowWidth,
                 ScaleTimelineMetric(24));
 
         var activeId = _timeline?.ActiveTabGroupId;
-        if (!overflowBounds.IsEmpty
+        if (!_draggingTabGroup && _timeline?.TabGroupOrderingEnabled != true && !overflowBounds.IsEmpty
             && visible.Count > 0
             && activeId is not null
             && !visible.Any(tab => string.Equals(tab.Id, activeId, StringComparison.Ordinal)))
@@ -193,12 +243,18 @@ internal sealed partial class TimelineStrip
             var activeItem = items.FirstOrDefault(item => string.Equals(item.Id, activeId, StringComparison.Ordinal));
             if (!string.IsNullOrWhiteSpace(activeItem.Id))
             {
-                visible[^1] = new TabGroupTabLayout(activeItem.Id, activeItem.Name, last.Bounds, activeItem.BuiltIn);
+                var top = ToolbarHeaderHeight + ScaleTimelineMetric(UsesCompactTabGroupLabel(activeItem.Id) ? 7 : 3);
+                var bounds = new Rectangle(last.Bounds.Left, top, last.Bounds.Width, ToolbarHeaderHeight + TabGroupRowHeight - 1 - top);
+                visible[^1] = new TabGroupTabLayout(activeItem.Id, activeItem.Name, bounds, activeItem.BuiltIn);
                 overflow.RemoveAll(item => string.Equals(item.Id, activeItem.Id, StringComparison.Ordinal));
                 overflow.Insert(0, new TabGroupItem(last.Id, last.Name, last.BuiltIn));
             }
         }
 
+        // Add follows the tabs; settings stays at the far right, with overflow beside it.
+        var actionLeft = visible.Count == 0 ? left : visible[^1].Bounds.Right + ScaleTimelineMetric(4);
+        addBounds.X = Math.Min(actionLeft, right + ScaleTimelineMetric(4));
+        if (!overflowBounds.IsEmpty) overflowBounds.X = Math.Max(0, settingsLeft - ScaleTimelineMetric(36));
         return new TabGroupLayoutSnapshot(visible, overflow, overflowBounds, addBounds);
     }
 
@@ -207,7 +263,7 @@ internal sealed partial class TimelineStrip
         var bar = TabGroupBarBounds();
         if (!clipBounds.IntersectsWith(bar)) return;
 
-        var background = Theme.Mix(Theme.Top, Theme.PanelStrong, 0.36f);
+        var background = SystemInformation.HighContrast ? SystemColors.Control : Theme.Panel;
         using var backgroundBrush = new SolidBrush(background);
         using var borderPen = new Pen(Theme.ReadableUiColor(background, Theme.Border), 1f);
         graphics.FillRectangle(backgroundBrush, bar);
@@ -230,36 +286,62 @@ internal sealed partial class TimelineStrip
                     Math.Max(24, bar.Width - ScaleTimelineMetric(38)),
                     bar.Height),
                 Theme.ReadableText(background, Theme.Text),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             return;
         }
 
         var activeId = _timeline?.ActiveTabGroupId;
         var snapshot = BuildTabGroupLayout();
-        foreach (var tab in snapshot.VisibleTabs)
+        using var tabFont = Theme.UiFont(8);
+        var paintTabs = snapshot.VisibleTabs.ToList();
+        if (_draggingTabGroup && _tabGroupDropIndex >= 0)
         {
-            var customColor = GetTabGroupColor(tab.Id);
+            // Stable hit targets prevent oscillation while the painted neighbours make room.
+            var previewIds = _tabGroupDragOriginalOrder.Where(id => id != _pressedTabGroupId).ToList();
+            previewIds.Insert(_tabGroupDropIndex, _pressedTabGroupId!);
+            paintTabs = paintTabs.OrderBy(tab => tab.Id == AnimationTimeline.AllTabGroupId ? -1 : previewIds.IndexOf(tab.Id)).ToList();
+            var x = ScaleTimelineMetric(8);
+            for (var index = 0; index < paintTabs.Count; index++)
+            {
+                var tab = paintTabs[index];
+                paintTabs[index] = tab with { Bounds = new Rectangle(x, tab.Bounds.Top, tab.Bounds.Width, tab.Bounds.Height) };
+                x += tab.Bounds.Width + ScaleTimelineMetric(4);
+            }
+        }
+        foreach (var tab in paintTabs)
+        {
+            if (_draggingTabGroup && tab.Id == _pressedTabGroupId)
+            {
+                using var placeholder = new Pen(Theme.ReadableUiColor(background, Theme.Border)) { DashStyle = DashStyle.Dot };
+                graphics.DrawRectangle(placeholder, Rectangle.Inflate(tab.Bounds, -1, -1));
+                continue;
+            }
+            Color? customColor = tab.Id == AnimationTimeline.AllTabGroupId ? null : GetTabGroupDisplayColor(tab.Id);
             var active = string.Equals(activeId, tab.Id, StringComparison.Ordinal);
-            var hovered = string.Equals(_hoveredTabGroupId, tab.Id, StringComparison.Ordinal);
+            var hovered = string.Equals(_hoveredTabGroupId, tab.Id, StringComparison.Ordinal)
+                || _draggingTabGroup && string.Equals(_pressedTabGroupId, tab.Id, StringComparison.Ordinal);
             var fill = active
-                ? Theme.Mix(background, Theme.AccentSurface, Theme.IsLight ? 0.62f : 0.34f)
+                ? hovered ? Theme.AccentHoverSurface : Theme.AccentSurface
                 : hovered
-                    ? Theme.Mix(background, Theme.PanelHover, 0.76f)
+                    ? Theme.PanelHover
                     : background;
-            if (customColor is { } tint)
+            if (!SystemInformation.HighContrast && customColor is { } tint)
             {
                 fill = Theme.Mix(fill, tint, active ? 0.28f : hovered ? 0.22f : 0.14f);
             }
+            if (SystemInformation.HighContrast) fill = active || hovered ? SystemColors.Highlight : SystemColors.Control;
             using var fillBrush = new SolidBrush(fill);
-            Theme.FillUiRectangle(graphics, fillBrush, tab.Bounds);
-            if (active || hovered)
+            FillTabGroupSurface(graphics, fillBrush, tab.Bounds);
+            if (SystemInformation.HighContrast && (active || hovered))
             {
                 using var tabBorder = new Pen(Theme.ReadableUiColor(fill, active ? Theme.Accent : Theme.BorderHover));
                 Theme.DrawUiRectangle(graphics, tabBorder, new Rectangle(tab.Bounds.X, tab.Bounds.Y, tab.Bounds.Width - 1, tab.Bounds.Height - 1));
             }
 
-            var textColor = Theme.ReadableText(fill, active ? Theme.Text : Theme.Muted);
-            var textBounds = Rectangle.Inflate(tab.Bounds, -ScaleTimelineMetric(9), 0);
+            var textColor = SystemInformation.HighContrast
+                ? !Enabled ? SystemColors.GrayText : active || hovered ? SystemColors.HighlightText : SystemColors.ControlText
+                : Theme.ReadableText(fill, !Enabled ? Theme.DisabledText : active ? Theme.AccentLabel : Theme.Text);
+            var textBounds = Rectangle.Inflate(tab.Bounds, -ScaleTimelineMetric(7), 0);
             if (customColor is { } swatchColor)
             {
                 var side = ScaleTimelineMetric(4);
@@ -272,10 +354,41 @@ internal sealed partial class TimelineStrip
             TextRenderer.DrawText(
                 graphics,
                 tab.Name,
-                Font,
+                UsesCompactTabGroupLabel(tab.Id) ? tabFont : Font,
                 textBounds,
                 textColor,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
+            if (Focused && ShowFocusCues && string.Equals(_focusedTabGroupId, tab.Id, StringComparison.Ordinal))
+                ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(tab.Bounds, -ScaleTimelineMetric(3), -ScaleTimelineMetric(3)), textColor, fill);
+        }
+
+        if (_draggingTabGroup)
+        {
+            var ghost = _tabGroupDragSourceBounds;
+            ghost.X = Math.Clamp(_tabGroupDragPointer.X - _tabGroupDragGrabOffset, 0, Math.Max(0, Width - ghost.Width));
+            var ghostColor = SystemInformation.HighContrast ? SystemColors.Highlight : Theme.AccentHoverSurface;
+            using var ghostBrush = new SolidBrush(ghostColor);
+            using var ghostBorder = new Pen(Theme.ReadableUiColor(ghostColor, Theme.Accent));
+            FillTabGroupSurface(graphics, ghostBrush, ghost);
+            Theme.DrawUiRectangle(graphics, ghostBorder, Rectangle.Inflate(ghost, -1, -1));
+            var name = TabGroupItems().FirstOrDefault(item => item.Id == _pressedTabGroupId).Name;
+            TextRenderer.DrawText(graphics, name, tabFont, Rectangle.Inflate(ghost, -ScaleTimelineMetric(7), 0),
+                SystemInformation.HighContrast ? SystemColors.HighlightText : Theme.ReadableText(ghostColor, Theme.Text),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+        if (_draggingTabGroup && _tabGroupDropIndex >= 0)
+        {
+            var placeholderTab = paintTabs.FirstOrDefault(tab => tab.Id == _pressedTabGroupId);
+            if (!placeholderTab.Bounds.IsEmpty) _tabGroupDropMarkerX = placeholderTab.Bounds.Left;
+            var markerColor = Theme.ReadableUiColor(background, Theme.Accent);
+            using var markerPen = new Pen(markerColor, ScaleTimelineMetric(2));
+            using var markerBrush = new SolidBrush(markerColor);
+            var top = bar.Top + ScaleTimelineMetric(2);
+            var bottom = bar.Bottom - ScaleTimelineMetric(3);
+            graphics.DrawLine(markerPen, _tabGroupDropMarkerX, top, _tabGroupDropMarkerX, bottom);
+            var half = ScaleTimelineMetric(4);
+            graphics.FillPolygon(markerBrush, new Point[] { new Point(_tabGroupDropMarkerX - half, top),
+                new Point(_tabGroupDropMarkerX + half, top), new Point(_tabGroupDropMarkerX, top + half) });
         }
 
         if (!snapshot.OverflowBounds.IsEmpty && string.Equals(_hoveredTabGroupId, TabGroupOverflowId, StringComparison.Ordinal))
@@ -285,12 +398,42 @@ internal sealed partial class TimelineStrip
         }
     }
 
+    private void FillTabGroupSurface(Graphics graphics, Brush brush, Rectangle bounds)
+    {
+        if (!Theme.UsesRoundedCorners)
+        {
+            graphics.FillRectangle(brush, bounds);
+            return;
+        }
+
+        // Tab surfaces meet the bottom separator with square lower corners.
+        var diameter = Math.Min(ScaleTimelineMetric(8), Math.Min(bounds.Width, bounds.Height));
+        using var outline = new GraphicsPath();
+        outline.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+        outline.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+        outline.AddLine(bounds.Right, bounds.Top + diameter / 2f, bounds.Right, bounds.Bottom);
+        outline.AddLine(bounds.Right, bounds.Bottom, bounds.Left, bounds.Bottom);
+        outline.CloseFigure();
+        var state = graphics.Save();
+        try
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.FillPath(brush, outline);
+        }
+        finally { graphics.Restore(state); }
+    }
+
     private void LayoutTabGroupControls(TimelineLayout layout)
     {
         var snapshot = BuildTabGroupLayout();
         var showAdd = !_shotFilterActive && _timeline is not null && !snapshot.AddBounds.IsEmpty;
         var showOverflow = !_shotFilterActive && _timeline is not null && !snapshot.OverflowBounds.IsEmpty;
         _tabGroupAddButton.Visible = showAdd;
+        _tabGroupAddButton.Enabled = _timeline?.CanCreateTabGroup == true;
+        _tabGroupOrderButton.Visible = showAdd;
+        _tabGroupOrderButton.Bounds = new Rectangle(Math.Max(0, Width - ScaleTimelineMetric(34)),
+            ToolbarHeaderHeight + Math.Max(1, (TabGroupRowHeight - ScaleTimelineMetric(24)) / 2),
+            ScaleTimelineMetric(26), ScaleTimelineMetric(24));
         _tabGroupOverflowButton.Visible = showOverflow;
         if (showAdd && _tabGroupAddButton.Bounds != snapshot.AddBounds) _tabGroupAddButton.Bounds = snapshot.AddBounds;
         if (showOverflow && _tabGroupOverflowButton.Bounds != snapshot.OverflowBounds)
@@ -331,11 +474,113 @@ internal sealed partial class TimelineStrip
         if (id is not null)
         {
             _focusedTabGroupId = id;
-            _timeline.SetActiveTabGroup(id);
             Focus();
+            if (id == AnimationTimeline.AllTabGroupId) _timeline.SetActiveTabGroup(id);
+            else
+            {
+                _pressedTabGroupId = id;
+                _tabGroupDragOriginalOrder = _timeline.TabGroups.Select(group => group.Id).ToArray();
+                _tabGroupDragOrigin = _tabGroupDragPointer = point;
+                _tabGroupDragSourceBounds = BuildTabGroupLayout().VisibleTabs.First(tab => tab.Id == id).Bounds;
+                _tabGroupDragGrabOffset = point.X - _tabGroupDragSourceBounds.Left;
+                Capture = true;
+            }
         }
 
         return true;
+    }
+
+    private bool HandleTabGroupDragMove(Point point)
+    {
+        if (_pressedTabGroupId is null) return false;
+        _tabGroupDragPointer = point;
+        if (!_draggingTabGroup)
+        {
+            var dragSize = SystemInformation.DragSize;
+            var threshold = new Rectangle(_tabGroupDragOrigin.X - dragSize.Width / 2,
+                _tabGroupDragOrigin.Y - dragSize.Height / 2, dragSize.Width, dragSize.Height);
+            if (threshold.Contains(point)) return true;
+            var visibleCount = BuildTabGroupLayout().VisibleTabs.Count(tab => tab.Id != AnimationTimeline.AllTabGroupId);
+            var sourceIndex = Array.IndexOf(_tabGroupDragOriginalOrder, _pressedTabGroupId);
+            _tabGroupDragWindowStart = Math.Max(0, sourceIndex - Math.Max(1, visibleCount) + 1);
+            _draggingTabGroup = true;
+            SetTabGroupToolTip("");
+            _tabGroupDragScrollTimer.Start();
+        }
+        UpdateTabGroupDropTarget();
+        return true;
+    }
+
+    private void UpdateTabGroupDropTarget()
+    {
+        _tabGroupDropIndex = -1;
+        if (!_shotFilterActive && TabGroupBarBounds().Contains(_tabGroupDragPointer)
+            && _timeline.TabGroups.Select(group => group.Id).SequenceEqual(_tabGroupDragOriginalOrder))
+        {
+            var remaining = _tabGroupDragOriginalOrder.Where(id => id != _pressedTabGroupId).ToList();
+            var tabs = BuildTabGroupLayout().VisibleTabs;
+            foreach (var tab in tabs)
+            {
+                if (tab.Id == AnimationTimeline.AllTabGroupId) continue;
+                var after = _tabGroupDragPointer.X >= tab.Bounds.Left + tab.Bounds.Width / 2;
+                if (tab.Id == _pressedTabGroupId)
+                    _tabGroupDropIndex = Array.IndexOf(_tabGroupDragOriginalOrder, tab.Id);
+                else
+                    _tabGroupDropIndex = remaining.IndexOf(tab.Id) + (after ? 1 : 0);
+                _tabGroupDropMarkerX = after ? tab.Bounds.Right + ScaleTimelineMetric(2) : tab.Bounds.Left - ScaleTimelineMetric(2);
+                if (!after) break;
+            }
+        }
+        Cursor = _tabGroupDropIndex >= 0 ? Cursors.SizeAll : Cursors.No;
+        Invalidate(TabGroupBarBounds());
+    }
+
+    private void ScrollTabGroupsDuringDrag()
+    {
+        if (!_draggingTabGroup || !TabGroupBarBounds().Contains(_tabGroupDragPointer)) return;
+        var tabs = BuildTabGroupLayout().VisibleTabs.Where(tab => tab.Id != AnimationTimeline.AllTabGroupId).ToArray();
+        if (tabs.Length == 0) return;
+        var next = _tabGroupDragWindowStart;
+        if (_tabGroupDragPointer.X <= tabs[0].Bounds.Left + ScaleTimelineMetric(12)) next--;
+        else if (_tabGroupDragPointer.X >= tabs[^1].Bounds.Right - ScaleTimelineMetric(12)
+            && tabs[^1].Id != _tabGroupDragOriginalOrder[^1]) next++;
+        next = Math.Clamp(next, 0, Math.Max(0, _tabGroupDragOriginalOrder.Length - 1));
+        if (next == _tabGroupDragWindowStart) return;
+        _tabGroupDragWindowStart = next;
+        UpdateTabGroupDropTarget();
+    }
+
+    private bool CompleteTabGroupDrag(Point point)
+    {
+        if (_pressedTabGroupId is not { } id) return false;
+        var dragged = _draggingTabGroup;
+        if (dragged)
+        {
+            _tabGroupDragPointer = point;
+            UpdateTabGroupDropTarget();
+        }
+        var ordered = _tabGroupDragOriginalOrder.Where(candidate => candidate != id).ToList();
+        var commit = dragged && _tabGroupDropIndex >= 0;
+        if (commit) ordered.Insert(_tabGroupDropIndex, id);
+        var changed = commit && !ordered.SequenceEqual(_tabGroupDragOriginalOrder);
+        CancelTabGroupDrag();
+        if (changed) PerformTabGroupEdit(() => _timeline.SetTabGroupOrder(ordered));
+        else if (!dragged && TabGroupAt(point, out _) == id) _timeline.SetActiveTabGroup(id);
+        return true;
+    }
+
+    private void CancelTabGroupDrag()
+    {
+        if (_pressedTabGroupId is null) return;
+        _pressedTabGroupId = null;
+        _draggingTabGroup = false;
+        _tabGroupDragOriginalOrder = [];
+        _tabGroupDropIndex = -1;
+        _tabGroupDragWindowStart = 0;
+        _tabGroupDragScrollTimer.Stop();
+        Capture = false;
+        Cursor = Cursors.Default;
+        Invalidate(TabGroupBarBounds());
     }
 
     private bool TryShowTabGroupContextMenu(Point point)
@@ -377,6 +622,7 @@ internal sealed partial class TimelineStrip
         delete.Click += (_, _) => DeleteTimelineTabGroup(id);
         _tabGroupContextMenu.Items.Add(rename);
         _tabGroupContextMenu.Items.Add(delete);
+        _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(UiLocalization.T("Layer group order..."), null, (_, _) => EditTimelineTabGroupOrder()));
         AddTabGroupColorCommands(_tabGroupContextMenu.Items, id);
         _tabGroupContextMenu.Show(this, point);
     }
@@ -385,6 +631,8 @@ internal sealed partial class TimelineStrip
     {
         if (_shotFilterActive) return;
         ClearTabGroupMenuItems(_tabGroupOverflowMenu.Items);
+        _tabGroupOverflowMenu.Items.Add(new ToolStripMenuItem(UiLocalization.T("Layer group order..."), null, (_, _) => EditTimelineTabGroupOrder()));
+        _tabGroupOverflowMenu.Items.Add(new ToolStripSeparator());
         foreach (var item in TabGroupItems())
         {
             var menuItem = new ToolStripMenuItem(item.Name)
@@ -518,7 +766,7 @@ internal sealed partial class TimelineStrip
 
     private void CreateTimelineTabGroup()
     {
-        if (_timeline is null) return;
+        if (_timeline is null || !_timeline.CanCreateTabGroup) return;
         if (!TabGroupNameDialog.TryAsk(DialogOwner, UiLocalization.T("New Timeline Tab Group"), UiLocalization.T("Group name"), "", out var name)) return;
 
         var createdId = string.Empty;
@@ -529,6 +777,16 @@ internal sealed partial class TimelineStrip
             return createdId.Length > 0;
         });
         if (createdId.Length > 0) _focusedTabGroupId = createdId;
+    }
+
+    private void EditTimelineTabGroupOrder()
+    {
+        if (_shotFilterActive || _timeline is null) return;
+        var names = Enumerable.Range(0, TrackCount).ToDictionary(
+            index => _timeline.Tracks[index].TargetId, index => GetTrackName(index), StringComparer.Ordinal);
+        using var dialog = new TimelineTabGroupOrderDialog(_timeline, names);
+        if (dialog.ShowDialog(DialogOwner) != DialogResult.OK) return;
+        PerformTabGroupEdit(() => _timeline.SetTabGroupOrder(dialog.OrderedIds));
     }
 
     private void RenameTimelineTabGroup(string id)
@@ -628,13 +886,14 @@ internal sealed partial class TimelineStrip
             .Distinct()
             .ToArray();
         if (candidates.Length == 0) return;
+        var trackIds = candidates.Select(index => _timeline.Tracks[index].Id).ToArray();
 
         PerformTabGroupEdit(() =>
         {
             var changed = false;
-            foreach (var index in candidates)
+            foreach (var trackId in trackIds)
             {
-                changed |= _timeline.SetTrackTabGroup(_timeline.Tracks[index].Id, groupId);
+                changed |= _timeline.SetTrackTabGroup(trackId, groupId);
             }
 
             return changed;
@@ -658,6 +917,12 @@ internal sealed partial class TimelineStrip
 
     private bool TryHandleTabGroupKey(KeyEventArgs e)
     {
+        if (_pressedTabGroupId is not null && e.KeyCode == Keys.Escape)
+        {
+            CancelTabGroupDrag();
+            e.Handled = e.SuppressKeyPress = true;
+            return true;
+        }
         if (_shotFilterActive) return false;
         if (!Focused
             || _focusedTabGroupId is null
@@ -686,6 +951,7 @@ internal sealed partial class TimelineStrip
 
     protected override void OnLostFocus(EventArgs e)
     {
+        CancelTabGroupDrag();
         _focusedTabGroupId = null;
         base.OnLostFocus(e);
     }
@@ -719,6 +985,12 @@ internal sealed partial class TimelineStrip
             null => "",
             _ => TabGroupItems().FirstOrDefault(item => string.Equals(item.Id, _hoveredTabGroupId, StringComparison.Ordinal)).Name
         };
+        if (_hoveredTabGroupId is { } groupId && groupId != TabGroupOverflowId && groupId != AnimationTimeline.AllTabGroupId)
+        {
+            var ordinal = _timeline.TabGroups.ToList().FindIndex(group => group.Id == groupId) + 1;
+            tooltip = $"{ordinal} · {tooltip}";
+            tooltip += $"\n{UiLocalization.T("Drag timeline tabs left or right: left is lower, right is higher.")}";
+        }
         SetTabGroupToolTip(UiLocalization.T(tooltip));
     }
 

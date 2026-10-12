@@ -91,21 +91,30 @@ internal sealed partial class TimelineStrip : Control
         // divider that slides with the gutter would read as the header itself moving.
         graphics.DrawLine(borderPen, layout.TrackLeft - 1, HeaderHeight, layout.TrackLeft - 1, layout.ScrollTop);
         graphics.DrawLine(softPen, 0, layout.RowTop - 1, Width, layout.RowTop - 1);
-        graphics.DrawLine(borderPen, 0, Height - 1, Width, Height - 1);
         DrawHeightResizeHandle(graphics);
         DrawGutterSplitterHandle(graphics, layout);
 
         var allBounds = AllButtonBounds(layout);
         var soloBounds = SoloButtonBounds(layout);
         var addLayerBounds = AddLayerButtonBounds(layout);
-        var titleRight = Math.Max(42, addLayerBounds.Left - 6);
-        TextRenderer.DrawText(
-            graphics,
-                UiLocalization.T(_shotFilterActive ? "Cameras" : "Timeline"),
-                titleFont,
+        var addFolderLayerBounds = AddFolderLayerButtonBounds(layout);
+        if (_shotFilterActive)
+        {
+            var titleRight = Math.Max(42, addFolderLayerBounds.Left - 6);
+            TextRenderer.DrawText(
+                graphics, UiLocalization.T("Cameras"), titleFont,
                 Rectangle.FromLTRB(10, 1, titleRight, ToolbarHeaderHeight - 1),
                 Theme.ReadableText(Theme.Panel, Theme.Text),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
+        }
+        else
+        {
+            SvgIcons.Draw(graphics, SvgIconKind.TimelineTitle, TimelineTitleIconBounds(),
+                SystemInformation.HighContrast ? SystemColors.ControlText
+                    : Theme.ReadableUiColor(Theme.Panel, Theme.IsLight
+                        ? Theme.Mix(Theme.Panel, Theme.Text, 0.55f)
+                        : Theme.Muted));
+        }
 
         if (!_shotFilterActive)
         {
@@ -124,6 +133,11 @@ internal sealed partial class TimelineStrip : Control
                 addLayerBounds,
                 SvgIconKind.Add,
                 _hoveredHeaderCommand == HeaderCommand.AddLayer);
+            DrawHeaderIconButton(
+                graphics,
+                addFolderLayerBounds,
+                SvgIconKind.FilledFolder,
+                _hoveredHeaderCommand == HeaderCommand.AddFolderLayer);
         }
 
         var frameStatusBounds = HeaderFrameStatusBounds(layout);
@@ -155,7 +169,7 @@ internal sealed partial class TimelineStrip : Control
                 Font,
                 Rectangle.FromLTRB(summaryLeft, 1, frameSummaryRight, ToolbarHeaderHeight - 1),
                 Theme.ReadableText(Theme.Panel, Theme.Muted),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
         if (showTime)
         {
@@ -165,35 +179,31 @@ internal sealed partial class TimelineStrip : Control
                 Font,
                 Rectangle.FromLTRB(timeLeft, 1, summaryRight, ToolbarHeaderHeight - 1),
                 Theme.ReadableText(Theme.Panel, Theme.AccentLabel),
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
 
         DrawTabGroupBar(graphics, layout, clipBounds);
     }
 
+    private Rectangle TimelineTitleIconBounds()
+    {
+        var size = Math.Min(ScaleTimelineMetric(26), ToolbarHeaderHeight - ScaleTimelineMetric(4));
+        return new Rectangle(ScaleTimelineMetric(8), (ToolbarHeaderHeight - size) / 2, size, size);
+    }
+
     private Rectangle HeaderFrameStatusBounds(TimelineLayout layout)
     {
-        var frameWidthControlsBounds = FrameWidthControlsBounds(layout, Rectangle.Empty);
-        var frameHeightControlsBounds = FrameHeightControlsBounds(layout, frameWidthControlsBounds);
-        var onionControlsBounds = OnionSkinControlsBounds(
-            layout,
-            frameHeightControlsBounds.IsEmpty
-                ? frameWidthControlsBounds
-                : frameHeightControlsBounds);
-        var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
-        var motionTrackBounds = MotionTrackControlsBounds(layout);
-        var firstControlsLeft = Math.Min(
-            frameWidthControlsBounds.IsEmpty ? layout.TrackRight : frameWidthControlsBounds.Left,
-            Math.Min(
-                frameHeightControlsBounds.IsEmpty ? layout.TrackRight : frameHeightControlsBounds.Left,
-                onionControlsBounds.IsEmpty ? layout.TrackRight : onionControlsBounds.Left));
-        // The motion-track toggle sits between Auto Key and the onion-skin group, so the frame-status
-        // summary and its right-aligned time text must stop before it; otherwise the time text is
-        // painted on top of the toggle's label and the two strings overlap.
-        if (!motionTrackBounds.IsEmpty) firstControlsLeft = Math.Min(firstControlsLeft, motionTrackBounds.Left);
-        var left = autoKeyframeBounds.IsEmpty
-            ? layout.TrackLeft + ScaleTimelineMetric(8)
-            : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
+        var left = HeaderControlsLeft();
+        foreach (Control control in Controls)
+        {
+            if (control.Visible && (ReferenceEquals(control, _autoKeyframeToggle)
+                || ReferenceEquals(control, _motionTrackToggle) || ReferenceEquals(control, _onionSkinToggle)
+                || ReferenceEquals(control, _onionNextFrames)))
+                left = Math.Max(left, control.Right + ScaleTimelineMetric(8));
+        }
+        var firstControlsLeft = layout.TrackRight;
+        if (_frameWidthLabel.Visible) firstControlsLeft = Math.Min(firstControlsLeft, _frameWidthLabel.Left);
+        if (_frameHeightLabel.Visible) firstControlsLeft = Math.Min(firstControlsLeft, _frameHeightLabel.Left);
         var right = Math.Max(left, firstControlsLeft - ScaleTimelineMetric(8));
         return Rectangle.FromLTRB(left, 0, right, ToolbarHeaderHeight);
     }
@@ -217,11 +227,17 @@ internal sealed partial class TimelineStrip : Control
             ? Theme.Accent
             : Theme.ReadableUiColor(Theme.Panel, Theme.Muted);
         using var line = new Pen(color, 1.2f);
+        var state = graphics.Save();
+        foreach (Control control in Controls)
+        {
+            if (control.Visible) graphics.ExcludeClip(control.Bounds);
+        }
         graphics.DrawLine(line, left, y, left + width, y);
         for (var x = left + 4; x < left + width - 2; x += 6)
         {
             graphics.DrawLine(line, x, y - 2, x, y + 2);
         }
+        graphics.Restore(state);
     }
 
     /// <summary>
@@ -283,7 +299,7 @@ internal sealed partial class TimelineStrip : Control
                         Math.Max(24, layout.TrackLeft - ScaleTimelineMetric(38)),
                         RulerHeight),
                     Theme.ReadableText(Theme.Top, Theme.Text),
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             }
             else
             {
@@ -329,7 +345,7 @@ internal sealed partial class TimelineStrip : Control
                 Font,
                 new Rectangle(LayerControlsWidth + 7, HeaderHeight, Math.Max(20, layout.TrackLeft - LayerControlsWidth - 19), RulerHeight),
                 Theme.ReadableText(Theme.Top, Theme.Muted),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             }
         }
 
@@ -371,7 +387,7 @@ internal sealed partial class TimelineStrip : Control
                     : inTimelineRange
                         ? Theme.ReadableText(textBackground, Theme.Muted)
                         : Theme.ReadableText(textBackground, Theme.DisabledText),
-                TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding);
+                TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
 
         graphics.DrawLine(gridPen, layout.TrackRight - 1, HeaderHeight, layout.TrackRight - 1, layout.RowTop);
@@ -601,6 +617,36 @@ internal sealed partial class TimelineStrip : Control
         return center < layout.TrackLeft || center >= layout.TrackRight ? float.NaN : center;
     }
 
+    private bool UsesTabGroupRowColor(int trackIndex) => !_shotFilterActive
+        && _timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId && IsTrackLayer(trackIndex);
+
+    private Color GetLayerItemColor(int trackIndex)
+    {
+        if (!UsesTabGroupRowColor(trackIndex)) return GetTrackColor(trackIndex);
+        return GetTabGroupDisplayColor(_timeline.Tracks[trackIndex].TabGroupId);
+    }
+
+    private Color GetTabGroupDisplayColor(string id)
+    {
+        if (GetTabGroupColor(id) is { } custom) return custom;
+        if (id == AnimationTimeline.DefaultTabGroupId) return Theme.Accent;
+        if (id == AnimationTimeline.TerrainTabGroupId) return Color.FromArgb(179, 151, 91);
+        // Stable IDs keep fallback colours unchanged when groups move or are renamed.
+        uint hash = 2166136261;
+        foreach (var character in id) hash = unchecked((hash ^ character) * 16777619);
+        return (hash % 8) switch
+        {
+            0 => Color.FromArgb(107, 167, 219),
+            1 => Color.FromArgb(181, 133, 215),
+            2 => Color.FromArgb(218, 145, 110),
+            3 => Color.FromArgb(107, 180, 146),
+            4 => Color.FromArgb(211, 128, 153),
+            5 => Color.FromArgb(152, 166, 105),
+            6 => Color.FromArgb(123, 152, 218),
+            _ => Color.FromArgb(102, 180, 188)
+        };
+    }
+
     private void DrawTrackRows(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
         using var rowBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(29, 32, 35), Theme.Panel));
@@ -608,9 +654,6 @@ internal sealed partial class TimelineStrip : Control
             Color.FromArgb(32, 35, 38),
             Theme.Mix(Theme.Panel, Theme.PanelStrong, 0.38f)));
         using var activeRowBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(40, 46, 51), Theme.AccentSurface));
-        using var selectedLayerRowBrush = new SolidBrush(ThemeNeutral(
-            Color.FromArgb(38, 92, 139, 174),
-            Color.FromArgb(34, Theme.Accent)));
         using var activeEdgeBrush = new SolidBrush(Theme.Accent);
         using var populatedExposureBrush = new SolidBrush(Color.FromArgb(62, 78, 126, 154));
         using var blankExposureBrush = new SolidBrush(Color.FromArgb(42, 105, 116, 122));
@@ -653,7 +696,7 @@ internal sealed partial class TimelineStrip : Control
                 Font,
                 layout.GridBounds,
                 Theme.ReadableText(BackColor, Theme.Muted),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             return;
         }
 
@@ -685,37 +728,39 @@ internal sealed partial class TimelineStrip : Control
                     new Rectangle(3, y + 3, Math.Max(1, layout.TrackRight - 6), _rowHeight));
             }
             var active = trackIndex == activeTrack;
-            FillAlignedRectangle(
-                graphics,
-                active ? activeRowBrush : visibleRow % 2 == 0 ? rowBrush : alternateRowBrush,
-                rowBounds);
+            if (UsesTabGroupRowColor(trackIndex))
+            {
+                // A group keeps one base colour across the gutter and the grid;
+                // active/selected rows still retain their normal state feedback.
+                using var groupRowBrush = new SolidBrush(LayerItemBackgroundColor(
+                    GetLayerItemColor(trackIndex), active, IsTrackSelected(trackIndex), alternate: false));
+                FillAlignedRectangle(graphics, groupRowBrush, rowBounds);
+            }
+            else
+            {
+                FillAlignedRectangle(
+                    graphics,
+                    active ? activeRowBrush : visibleRow % 2 == 0 ? rowBrush : alternateRowBrush,
+                    rowBounds);
+            }
             var visible = IsTrackVisible(trackIndex);
             if (paintLayerGutter)
             {
                 var selectedLayer = IsTrackSelected(trackIndex);
                 var layerItemBackground = LayerItemBackgroundColor(
-                    GetTrackColor(trackIndex),
+                    GetLayerItemColor(trackIndex),
                     active,
                     selectedLayer,
-                    visibleRow % 2 != 0);
+                    !UsesTabGroupRowColor(trackIndex) && visibleRow % 2 != 0);
                 var layerItemBounds = new Rectangle(0, y, Math.Max(0, layout.TrackLeft), _rowHeight);
                 using (var layerItemBrush = new SolidBrush(layerItemBackground))
                 {
                     graphics.FillRectangle(layerItemBrush, layerItemBounds);
                 }
-                if (selectedLayer && !active)
-                {
-                    graphics.FillRectangle(selectedLayerRowBrush, 3, y + 1, Math.Max(0, layout.TrackLeft - 3), _rowHeight - 2);
-                }
                 if (active) graphics.FillRectangle(activeEdgeBrush, 0, y, 3, _rowHeight);
 
                 var locked = IsTrackLocked(trackIndex);
-                var textBackground = selectedLayer && !active
-                    ? Theme.Mix(
-                        layerItemBackground,
-                        Theme.IsLight ? Theme.Accent : Color.FromArgb(92, 139, 174),
-                        Theme.IsLight ? 34f / 255f : 38f / 255f)
-                    : layerItemBackground;
+                var textBackground = layerItemBackground;
                 var preferredTextColor = !visible || locked ? Theme.Muted : active ? Theme.Text : Theme.Muted;
                 var outlined = IsTrackOutlined(trackIndex);
                 if (!IsSceneLightTrack(trackIndex) && !IsSceneShotTrack(trackIndex))
@@ -725,7 +770,7 @@ internal sealed partial class TimelineStrip : Control
                     DrawOutlineSwatch(
                         graphics,
                         new Rectangle(LockColumnRight, y, OutlineColumnWidth, _rowHeight),
-                        GetTrackColor(trackIndex),
+                        GetLayerItemColor(trackIndex),
                         outlined);
                 }
                 var layerDepth = GetTrackDisplayDepth(trackIndex);
@@ -739,7 +784,7 @@ internal sealed partial class TimelineStrip : Control
                     Font,
                     new Rectangle(labelLeft + 15, y, Math.Max(16, layout.TrackLeft - labelLeft - VerticalScrollWidth - 20), _rowHeight),
                     Theme.ReadableText(textBackground, preferredTextColor),
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             }
 
             DrawTrackCells(
@@ -852,7 +897,7 @@ internal sealed partial class TimelineStrip : Control
         using var shadow = new SolidBrush(Color.FromArgb(88, Color.Black));
         using var fill = new SolidBrush(Color.FromArgb(238, Theme.PanelStrong));
         using var border = new Pen(Color.FromArgb(232, Theme.Accent), 1.2f);
-        using var colorBar = new SolidBrush(GetTrackColor(sourceTrack));
+        using var colorBar = new SolidBrush(GetLayerItemColor(sourceTrack));
         graphics.FillRectangle(shadow, bounds.X + 2, bounds.Y + 2, bounds.Width, bounds.Height);
         graphics.FillRectangle(fill, bounds);
         graphics.FillRectangle(colorBar, bounds.X, bounds.Y, 4, bounds.Height);
@@ -864,7 +909,7 @@ internal sealed partial class TimelineStrip : Control
             Font,
             new Rectangle(bounds.X + 26, bounds.Y, Math.Max(16, bounds.Width - 31), bounds.Height),
             Theme.ReadableText(Theme.PanelStrong, Theme.Text),
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
     }
 
     private void DrawTrackCells(
@@ -1693,7 +1738,7 @@ internal sealed partial class TimelineStrip : Control
     {
         return kind switch
         {
-            TimelineLayerFeedbackKind.Add => new TimelineLayerFeedbackStyle(Color.FromArgb(79, 179, 162), 360),
+            TimelineLayerFeedbackKind.Add => new TimelineLayerFeedbackStyle(Theme.AccentLabel, 360),
             TimelineLayerFeedbackKind.Remove => new TimelineLayerFeedbackStyle(Color.FromArgb(232, 104, 104), 320),
             _ => new TimelineLayerFeedbackStyle(Theme.Accent, 320)
         };
@@ -1712,7 +1757,7 @@ internal sealed partial class TimelineStrip : Control
                 _timeline.Tracks[trackIndex].Id,
                 visiblePosition,
                 GetTrackName(trackIndex),
-                GetTrackColor(trackIndex)));
+                GetLayerItemColor(trackIndex)));
         }
 
         return result.ToArray();
@@ -1823,8 +1868,8 @@ internal sealed partial class TimelineStrip : Control
         }
 
         var reveal = new RectangleF(bounds.Left, bounds.Top + hiddenHeight, bounds.Width, revealHeight);
-        using var highlight = new SolidBrush(WithOpacity(style.Color, fade * 0.18f));
-        using var edge = new Pen(WithOpacity(style.Color, fade), 1.4f);
+        using var highlight = new SolidBrush(WithOpacity(style.Color, fade * 0.07f));
+        using var edge = new Pen(WithOpacity(style.Color, fade * 0.32f), 1f);
         using var accent = new SolidBrush(WithOpacity(style.Color, fade));
         graphics.FillRectangle(highlight, reveal);
         graphics.DrawLine(edge, reveal.Left, reveal.Top, reveal.Right, reveal.Top);
@@ -1865,7 +1910,7 @@ internal sealed partial class TimelineStrip : Control
                     Math.Max(16, trackLeft - LayerControlsWidth - 28),
                     ghost.Height)),
                 textColor,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
     }
 
@@ -1931,6 +1976,8 @@ internal sealed partial class TimelineStrip : Control
 
     private void DrawHorizontalScroll(Graphics graphics, TimelineLayout layout)
     {
+        var graphicsState = graphics.Save();
+        graphics.SmoothingMode = SmoothingMode.None;
         var scroll = GetHorizontalScrollGeometry(layout);
         using var backgroundBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(20, 23, 25), Theme.Top));
         using var buttonBrush = new SolidBrush(ThemeNeutral(Color.FromArgb(35, 40, 43), Theme.PanelStrong));
@@ -1946,6 +1993,7 @@ internal sealed partial class TimelineStrip : Control
 
         DrawHorizontalArrow(graphics, scroll.DecreaseButton, pointsLeft: true, arrowBrush);
         DrawHorizontalArrow(graphics, scroll.IncreaseButton, pointsLeft: false, arrowBrush);
+        graphics.Restore(graphicsState);
     }
 
     private void DrawVerticalScroll(Graphics graphics, TimelineLayout layout)

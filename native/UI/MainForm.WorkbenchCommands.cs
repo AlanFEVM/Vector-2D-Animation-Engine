@@ -595,6 +595,7 @@ internal sealed partial class MainForm : Form
 
     private void ApplyToolCursor()
     {
+        if (CanvasNavigationFeedbackSuspended && !_spacePanHeld) return;
         if (ApplyTemporaryCanvasPanCursor())
         {
             ClearShotFramingFeedback();
@@ -683,6 +684,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateInteractionCursor(Point screen)
     {
+        if (_transientViewNavigationActive && _lastMouse is null) return;
         if (ApplyTemporaryCanvasPanCursor())
         {
             ClearShotFramingFeedback();
@@ -940,7 +942,8 @@ internal sealed partial class MainForm : Form
 
     private void UpdateFillHoverPreview(Point screen)
     {
-        if (_tool != ToolMode.Fill || IsSceneCompositionContext() || IsScene3DView())
+        if (_tool != ToolMode.Fill || CanvasNavigationFeedbackSuspended
+            || IsSceneCompositionContext() || IsScene3DView())
         {
             ClearFillHoverPreview();
             return;
@@ -1457,24 +1460,8 @@ internal sealed partial class MainForm : Form
             }
         };
 
-        _stage.MouseWheel += (_, e) =>
-        {
-            if (ReferenceCameraRightLookSessionActive) return;
-            if (_lassoPointerActive) return;
-            if (IsSceneReferenceView())
-            {
-                if (_stage.ReferenceDimension == SceneDimension.TwoD || IsControlPressed())
-                {
-                    _stage.ZoomReferenceCamera(MathF.Pow(1f / StageControl.ReferenceWheelDollyBase, e.Delta / 120f));
-                }
-                else _stage.DollyReferenceCamera(e.Delta);
-                UpdateStatusBar();
-                return;
-            }
-
-            _stage.ZoomAt(e.Location, e.Delta > 0 ? 1.12f : 0.89f, interactivePreview: true);
-            UpdateStatusBar();
-        };
+        _stage.MouseWheel += StageMouseWheel;
+        _viewNavigationIdleTimer.Tick += (_, _) => TickViewNavigationIdle();
         _stage.FrameRendered += StageFrameRendered;
         _stage.ViewChanged += (_, _) => UpdateTextEditorPresentation();
         _stage.PenPointerInput += StagePenPointerInput;
@@ -1504,6 +1491,7 @@ internal sealed partial class MainForm : Form
         _stage.DragDrop += StageDragDrop;
         Deactivate += (_, _) =>
         {
+            EndTransientViewNavigation(restoreFeedback: false);
             CancelReferenceCameraRightLook();
             CancelReferenceCameraKeyboardNavigation();
             CommitTextEdit();
@@ -2352,6 +2340,18 @@ internal sealed partial class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        var physicalKeyData = keyData;
+        var profile = ShortcutProfiles.ResolveProfile(
+            _applicationSettings.ActiveShortcutProfileId,
+            _applicationSettings.CustomShortcutProfiles);
+        if (_workspaceTabs.TrySelectWorkspaceShortcut(keyData)) return true;
+        if (ContainsFocusedEditor(this)
+            && (keyData is (Keys.Control | Keys.A) or (Keys.Control | Keys.X) or (Keys.Control | Keys.C)
+                or (Keys.Control | Keys.V) or (Keys.Control | Keys.Z) or Keys.Delete
+                || (keyData & (Keys.Control | Keys.Alt)) == Keys.None
+                    && (keyData & Keys.KeyCode) is >= Keys.D0 and <= Keys.Z))
+            return base.ProcessCmdKey(ref msg, physicalKeyData);
+        keyData = ShortcutProfiles.ResolveWorkbenchKey(profile, keyData);
         if (keyData == Keys.F1)
         {
             ToggleInspectorPanel();
@@ -2362,7 +2362,6 @@ internal sealed partial class MainForm : Form
             ToggleTimelinePanel();
             return true;
         }
-        if (_workspaceTabs.TrySelectWorkspaceShortcut(keyData)) return true;
         var focusedEditor = ContainsFocusedEditor(this);
         var interactiveControlFocused = ContainsFocusedInteractiveControl(this);
         var commandButtonFocused = ContainsFocusedButton(this);
@@ -2393,7 +2392,7 @@ internal sealed partial class MainForm : Form
             if (focusedEditor || interactiveControlFocused)
             {
                 CancelSpatialTransformKeyboard();
-                return base.ProcessCmdKey(ref msg, keyData);
+                return base.ProcessCmdKey(ref msg, physicalKeyData);
             }
             if (HandleSpatialTransformShortcut(keyData)) return true;
         }
@@ -2456,7 +2455,7 @@ internal sealed partial class MainForm : Form
             && !_shotDirectorPanel.ContainsFocus
             && !IsShotDirectorContext()
             && !ContainsFocusedTextEditor(this);
-        if (_timeline.ContainsFocus)
+        if (_timeline.ContainsFocus && !ContainsFocusedTextEditor(this) && _materialEditSession is null)
         {
             if (keyData == (Keys.Control | Keys.A))
             {
@@ -2577,8 +2576,8 @@ internal sealed partial class MainForm : Form
             }
             if (keyData == Keys.Escape && CancelTraditionalPenPath()) return true;
             if (keyData == Keys.Escape && CancelPenCurve()) return true;
-            if (!(commandButtonFocused && keyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
-            if (TryActivateConfiguredToolShortcut(keyData)) return true;
+            if (!(commandButtonFocused && physicalKeyData == Keys.Enter) && HandleTimelineShortcut(keyData)) return true;
+            if (TryActivateConfiguredToolShortcut(physicalKeyData)) return true;
             if (keyData == Keys.OemOpenBrackets && AdjustFreehandWidth(increase: false)) return true;
             if (keyData == Keys.Oem6 && AdjustFreehandWidth(increase: true)) return true;
             if (!commandButtonFocused && keyData == Keys.Tab && CycleActiveToolGroup(reverse: false)) return true;
@@ -2608,7 +2607,7 @@ internal sealed partial class MainForm : Form
             && MoveSelectedDrawingObjectsInStack(drawingObjectStackDirection)) return true;
 
         if (keyData == Keys.Delete && stageDeleteEnabled && DeleteSelectedObject()) return true;
-        return base.ProcessCmdKey(ref msg, keyData);
+        return base.ProcessCmdKey(ref msg, physicalKeyData);
     }
 
 }

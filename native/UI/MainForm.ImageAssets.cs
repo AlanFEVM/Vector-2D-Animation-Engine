@@ -174,20 +174,15 @@ internal sealed partial class MainForm
         }
         var settings = asset.ImportSettings;
         string Row(string label, object value) => $"{UiLocalization.T(label)}: {value}";
-        string Flag(bool value) => UiLocalization.T(value ? "Yes" : "No");
+        var decoded = settings.ResolveStoredPixelSize(asset.PixelSize);
         var summary = string.Join(Environment.NewLine, new[]
         {
             asset.Name, asset.SourcePath, $"{asset.PixelWidth} × {asset.PixelHeight}",
-            Row("Filter mode", UiLocalization.T(settings.FilterMode.ToString())),
+            Row("Image display", UiLocalization.T(settings.FilterMode == ImageFilterMode.Point ? "Pixel art" : "Smooth")),
             Row("Pixels per unit", settings.PixelsPerUnit),
-            Row("Max size (pixels)", settings.MaxSize),
-            Row("Non power of two", Flag(settings.NonPowerOfTwoScale)),
-            Row("Compression", settings.Compression),
-            Row("Compression quality", settings.CompressionQuality),
-            Row("Alpha source", settings.AlphaSource),
-            Row("Generate mipmaps", Flag(settings.Mipmaps)),
-            Row("Read/Write enabled", Flag(settings.ReadWriteEnabled)),
-            $"{UiLocalization.T("Pivot X")}: {settings.PivotX:0.###} / {UiLocalization.T("Pivot Y")}: {settings.PivotY:0.###}"
+            Row("Maximum resolution", settings.MaxSize),
+            Row("Decoded resolution", $"{decoded.Width:0} × {decoded.Height:0} px"),
+            Row("Keep transparent background", UiLocalization.T(settings.AlphaSource == ImageAlphaSource.FromInput ? "Yes" : "No"))
         });
         _imageInspector.SetState(new(asset.Id, summary));
     }
@@ -222,7 +217,8 @@ internal sealed partial class MainForm
                     {
                         using var settings = new ImageImportSettingsDialog(
                             UiLocalization.T("Image Import Settings"), Path.GetFileName(path),
-                            width, height, pixelsPerUnit, BitmapImageImportSettings.Default);
+                            width, height, pixelsPerUnit, BitmapImageImportSettings.Default,
+                            path, batchCount: fileNames.Count);
                         return settings.ShowDialog(progress) == DialogResult.OK ? settings.Settings : null;
                     }, progress.Report, () => progress.CancellationRequested);
             }
@@ -370,7 +366,7 @@ internal sealed partial class MainForm
                 probe.PixelWidth,
                 probe.PixelHeight,
                 probe.NaturalPixelsPerUnit,
-                BitmapImageImportSettings.Default);
+                BitmapImageImportSettings.Default, probe.FullPath);
             if (settingsDialog.ShowDialog(this) != DialogResult.OK) return null;
             settings = settingsDialog.Settings;
         }
@@ -538,9 +534,7 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// Scales a placed quad to the decoded raster's aspect ratio. The stored decode can be
-    /// smaller than the source under MaxSize or the power-of-two rule; without this the
-    /// image would be stretched to the nominal size and lose its aspect ratio.
+    /// Keeps placement independent of decode density while preserving legacy aspect changes.
     /// </summary>
     private static SizeF ScalePlacedSizeForDecode(
         SizeF placedSize,
@@ -548,13 +542,16 @@ internal sealed partial class MainForm
         BitmapImageRaster raster)
     {
         if (asset.PixelWidth <= 0 || asset.PixelHeight <= 0) return placedSize;
+        var crop = asset.ImportSettings.ResolveCropPixelBounds(asset.PixelWidth, asset.PixelHeight);
         var scale = Math.Min(
-            raster.PixelWidth / (float)asset.PixelWidth,
-            raster.PixelHeight / (float)asset.PixelHeight);
-        if (scale <= 0 || !float.IsFinite(scale) || scale >= 0.9999f) return placedSize;
+            raster.PixelWidth / (float)crop.Width,
+            raster.PixelHeight / (float)crop.Height);
+        if (scale <= 0 || !float.IsFinite(scale)) return placedSize;
+        // Resolution limits affect pixel density, not the object's size. Preserve only
+        // legacy aspect changes caused by independent power-of-two axis rounding.
         return new SizeF(
-            Math.Max(1, VectorUnits.Quantize(placedSize.Width * scale)),
-            Math.Max(1, VectorUnits.Quantize(placedSize.Height * scale)));
+            Math.Max(1, VectorUnits.Quantize(placedSize.Width * raster.PixelWidth / crop.Width / scale)),
+            Math.Max(1, VectorUnits.Quantize(placedSize.Height * raster.PixelHeight / crop.Height / scale)));
     }
 
     private void EditImageAssetImportSettings(string assetId)
@@ -568,9 +565,10 @@ internal sealed partial class MainForm
             asset.PixelWidth,
             asset.PixelHeight,
             asset.NaturalPixelsPerUnit,
-            asset.ImportSettings);
+            asset.ImportSettings, ResolveImageAssetPath(asset), isEditing: true);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var settings = dialog.Settings;
+        if (settings == asset.ImportSettings) return;
 
         var storedPixelSize = settings.ResolveStoredPixelSize(new SizeF(asset.PixelWidth, asset.PixelHeight));
         var storedWidth = Math.Max(1, (int)storedPixelSize.Width);
@@ -589,8 +587,8 @@ internal sealed partial class MainForm
         if (!_project.TryApplyImageImportSettings(
                 asset.Id,
                 settings,
-                storedWidth,
-                storedHeight,
+                previousWidth,
+                previousHeight,
                 asset.Sha256))
         {
             ShowImageAssetError(
@@ -600,7 +598,7 @@ internal sealed partial class MainForm
         }
 
         var refreshed = FindImageAsset(asset.Id)!;
-        if (!ApplyImageImportSettingsToPlacements(refreshed))
+        if (!ApplyImageImportSettingsToPlacements(refreshed, previousSettings))
         {
             _project.TryApplyImageImportSettings(
                 asset.Id,
@@ -627,20 +625,37 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// Re-derives every placed quad for one image from the asset's current settings.
+    /// Preserves each object's custom scale while applying density and crop-size changes.
     /// Returns false when any scene rejects the update so the caller can roll back.
     /// </summary>
-    private bool ApplyImageImportSettingsToPlacements(ImageAssetDefinition asset)
+    private bool ApplyImageImportSettingsToPlacements(ImageAssetDefinition asset, BitmapImageImportSettings previousSettings)
     {
-        var placedSize = asset.ResolvePlacedSize();
+        var scale = asset.ImportSettings.PixelsPerUnit / (float)previousSettings.PixelsPerUnit;
+        var oldCrop = previousSettings.ResolveCropPixelBounds(asset.PixelWidth, asset.PixelHeight);
+        var newCrop = asset.ImportSettings.ResolveCropPixelBounds(asset.PixelWidth, asset.PixelHeight);
+        var scaleX = scale * newCrop.Width / oldCrop.Width;
+        var scaleY = scale * newCrop.Height / oldCrop.Height;
+        if (Math.Abs(scaleX - 1f) < 0.00001f && Math.Abs(scaleY - 1f) < 0.00001f) return true;
+        var applied = new List<(VectorScene Scene, VectorSceneSnapshot Snapshot)>();
+        var visited = new HashSet<VectorScene>(ReferenceEqualityComparer.Instance);
         foreach (var scene in EnumerateProjectScenes())
         {
-            foreach (var objectIndex in scene.FindBitmapObjectsUsingImageAsset(asset.Id))
+            if (!visited.Add(scene)) continue;
+            var objects = scene.FindBitmapObjectsUsingImageAsset(asset.Id);
+            if (objects.Length == 0) continue;
+            applied.Add((scene, scene.CreateSnapshot()));
+            foreach (var objectIndex in objects)
             {
                 if (!scene.TryGetBitmapObjectData(objectIndex, out var existing)) continue;
-                if (existing.PlacedSize.Equals(placedSize)) continue;
+                var placedSize = new SizeF(
+                    Math.Max(1, VectorUnits.Quantize(scene.Width[objectIndex] * scaleX)),
+                    Math.Max(1, VectorUnits.Quantize(scene.Height[objectIndex] * scaleY)));
                 if (!scene.TryUpdateBitmapObject(objectIndex, existing.WithPlacedSize(placedSize)))
                 {
+                    foreach (var change in applied)
+                    {
+                        change.Scene.RestoreSnapshot(change.Snapshot);
+                    }
                     return false;
                 }
             }

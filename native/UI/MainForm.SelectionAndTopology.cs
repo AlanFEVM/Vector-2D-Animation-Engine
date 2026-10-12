@@ -532,6 +532,7 @@ internal sealed partial class MainForm : Form
     private void BeginGlobalViewDrag(MouseEventArgs e, bool referencePan = false)
     {
         CancelLassoPointerForLifecycle();
+        ClearCanvasNavigationFeedback();
         _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
         _stage.Capture = true;
         _lastMouse = e.Location;
@@ -684,6 +685,7 @@ internal sealed partial class MainForm : Form
     private bool BeginTemporaryCanvasPanPointer(Point location)
     {
         if (!_spacePanHeld || _spacePanPointerActive) return false;
+        ClearCanvasNavigationFeedback();
         _spacePanPointerActive = true;
         _stage.Capture = true;
         _lastMouse = location;
@@ -693,6 +695,95 @@ internal sealed partial class MainForm : Form
         _stage.ClearFillToolCursor();
         ClearFillHoverPreview();
         _stage.Cursor = Cursors.SizeAll;
+        return true;
+    }
+
+    private bool CanvasViewDragActive =>
+        _viewPanning || _viewZooming || _viewOrbiting || _viewReferencePanning || _viewReferenceZooming;
+
+    private readonly System.Windows.Forms.Timer _viewNavigationIdleTimer = new() { Interval = 250 };
+    private bool _transientViewNavigationActive;
+    private long _lastViewNavigationInput;
+    private bool CanvasNavigationFeedbackSuspended =>
+        CanvasViewDragActive || _transientViewNavigationActive || _spacePanHeld;
+
+    private void BeginTransientViewNavigation()
+    {
+        // Preserve live drawing/edit sessions; only suppress idle tool feedback.
+        if (_lastMouse is not null || _tabletPressurePointerId is not null) return;
+        _transientViewNavigationActive = true;
+        _lastViewNavigationInput = Stopwatch.GetTimestamp();
+        ClearCanvasNavigationFeedback();
+        _viewNavigationIdleTimer.Stop();
+        _viewNavigationIdleTimer.Start();
+    }
+
+    private void EndTransientViewNavigation(bool restoreFeedback)
+    {
+        _viewNavigationIdleTimer.Stop();
+        if (!_transientViewNavigationActive) return;
+        _transientViewNavigationActive = false;
+        if (restoreFeedback) PostDeferredPresentationRefresh();
+        if (!restoreFeedback || IsDisposed || Disposing || CanvasViewDragActive || _lastMouse is not null) return;
+        var screen = _stage.PointToClient(Cursor.Position);
+        if (_stage.ClientRectangle.Contains(screen))
+            StageMouseMove(_stage, new MouseEventArgs(MouseButtons.None, 0, screen.X, screen.Y, 0));
+    }
+
+    private void TickViewNavigationIdle()
+    {
+        if (_transientViewNavigationActive
+            && Stopwatch.GetElapsedTime(_lastViewNavigationInput).TotalMilliseconds < 250) return;
+        EndTransientViewNavigation(restoreFeedback: true);
+    }
+
+    private void StageMouseWheel(object? sender, MouseEventArgs e)
+    {
+        if (e.Delta == 0 || ReferenceCameraRightLookSessionActive || _lassoPointerActive) return;
+        BeginTransientViewNavigation();
+        if (IsSceneReferenceView())
+        {
+            if (_stage.ReferenceDimension == SceneDimension.TwoD || IsControlPressed())
+                _stage.ZoomReferenceCamera(MathF.Pow(1f / StageControl.ReferenceWheelDollyBase, e.Delta / 120f));
+            else _stage.DollyReferenceCamera(e.Delta);
+        }
+        else _stage.ZoomAt(e.Location, MathF.Pow(1.12f, e.Delta / 120f), interactivePreview: true);
+        UpdateStatusBar();
+    }
+
+    private void ClearCanvasNavigationFeedback()
+    {
+        _pendingHoverScreen = null;
+        _stage.ClearBrushTipCursor();
+        _stage.ClearFillToolCursor();
+        ClearFillHoverPreview();
+        _stage.ClearHoveredLineElement();
+        _stage.ClearPenAnchorGuides();
+        _stage.SetMotionTrackHover(-1);
+        ClearMotionTrackHoverHint();
+        ClearShotFramingFeedback();
+        _stage.SetSceneLightGizmoHover(SceneLightGizmoHandleHit.None);
+        _stage.SetSpatialTransformHover(SpatialTransformHandleHit.None);
+        ClearSnapPointPresentation();
+    }
+
+    private bool UpdateCanvasViewDrag(MouseEventArgs e)
+    {
+        if (!CanvasViewDragActive || _lastMouse is not { } previous) return false;
+        var dx = e.X - previous.X;
+        var dy = e.Y - previous.Y;
+        _lastMouse = e.Location;
+        // Navigation owns this move before tool hover, snapping or geometry queries.
+        if (_viewReferencePanning) _stage.PanReferenceCamera(dx, dy);
+        else if (_viewReferenceZooming) _stage.DollyReferenceCameraByPixels(dy);
+        else if (_viewPanning) _stage.Pan(dx, dy);
+        else if (_viewZooming)
+        {
+            var factor = Math.Clamp(Math.Exp(-dy * 0.01), 0.2, 5.0);
+            _stage.ZoomAt(e.Location, (float)factor, interactivePreview: true);
+            UpdateStatusBar();
+        }
+        else if (_viewOrbiting) _stage.RotateReferenceCamera(dx, dy);
         return true;
     }
 

@@ -8,14 +8,16 @@ internal enum ShortcutCommandKind
     LineGroup,
     BrushGroup,
     PaintGroup,
-    Vault
+    Vault,
+    Workbench
 }
 
 internal sealed record ShortcutCommandDefinition(
     string Id,
     string DisplayName,
     ShortcutCommandKind Kind,
-    ToolMode? Tool = null);
+    ToolMode? Tool = null,
+    Keys DefaultKey = Keys.None);
 
 internal sealed record ShortcutGestureRecord
 {
@@ -75,6 +77,33 @@ internal static class ShortcutCommandIds
     public const string BrushGroup = "tool-group.brush";
     public const string PaintGroup = "tool-group.paint";
     public const string ToggleVault = "view.vault.toggle";
+    public const string ToggleInspector = "view.inspector.toggle";
+    public const string ToggleTimeline = "view.timeline.toggle";
+    public const string NewProject = "file.new";
+    public const string OpenProject = "file.open";
+    public const string SaveProject = "file.save";
+    public const string SaveProjectAs = "file.save-as";
+    public const string Undo = "edit.undo";
+    public const string SelectAll = "edit.select-all";
+    public const string Cut = "edit.cut";
+    public const string Copy = "edit.copy";
+    public const string Paste = "edit.paste";
+    public const string Delete = "edit.delete";
+    public const string ConvertToSymbol = "edit.convert-to-symbol";
+    public const string BringForward = "edit.bring-forward";
+    public const string SendBackward = "edit.send-backward";
+    public const string Playback = "timeline.playback";
+    public const string PreviousFrame = "timeline.previous-frame";
+    public const string NextFrame = "timeline.next-frame";
+    public const string FirstFrame = "timeline.first-frame";
+    public const string LastFrame = "timeline.last-frame";
+    public const string InsertFrame = "timeline.insert-frame";
+    public const string RemoveFrame = "timeline.remove-frame";
+    public const string InsertKeyframe = "timeline.insert-keyframe";
+    public const string ClearKeyframe = "timeline.clear-keyframe";
+    public const string InsertBlankKeyframe = "timeline.insert-blank-keyframe";
+    public const string DecreaseWidth = "drawing.decrease-width";
+    public const string IncreaseWidth = "drawing.increase-width";
 }
 
 internal static class ShortcutProfiles
@@ -118,7 +147,34 @@ internal static class ShortcutProfiles
         new(ShortcutCommandIds.LineGroup, "Line group", ShortcutCommandKind.LineGroup),
         new(ShortcutCommandIds.BrushGroup, "Brush group", ShortcutCommandKind.BrushGroup),
         new(ShortcutCommandIds.PaintGroup, "Fill group", ShortcutCommandKind.PaintGroup),
-        new(ShortcutCommandIds.ToggleVault, "Vault", ShortcutCommandKind.Vault)
+        new(ShortcutCommandIds.ToggleVault, "Vault", ShortcutCommandKind.Vault),
+        Workbench(ShortcutCommandIds.ToggleInspector, "Toggle Inspector", Keys.F1),
+        Workbench(ShortcutCommandIds.ToggleTimeline, "Toggle Timeline", Keys.F2),
+        Workbench(ShortcutCommandIds.NewProject, "New Project", Keys.Control | Keys.N),
+        Workbench(ShortcutCommandIds.OpenProject, "Open Project", Keys.Control | Keys.O),
+        Workbench(ShortcutCommandIds.SaveProject, "Save Project", Keys.Control | Keys.S),
+        Workbench(ShortcutCommandIds.SaveProjectAs, "Save Project As", Keys.Control | Keys.Shift | Keys.S),
+        Workbench(ShortcutCommandIds.Undo, "Undo", Keys.Control | Keys.Z),
+        Workbench(ShortcutCommandIds.SelectAll, "Select All", Keys.Control | Keys.A),
+        Workbench(ShortcutCommandIds.Cut, "Cut", Keys.Control | Keys.X),
+        Workbench(ShortcutCommandIds.Copy, "Copy", Keys.Control | Keys.C),
+        Workbench(ShortcutCommandIds.Paste, "Paste", Keys.Control | Keys.V),
+        Workbench(ShortcutCommandIds.Delete, "Delete", Keys.Delete),
+        Workbench(ShortcutCommandIds.ConvertToSymbol, "Convert to Symbol", Keys.F8),
+        Workbench(ShortcutCommandIds.BringForward, "Bring Forward", Keys.Control | Keys.Up),
+        Workbench(ShortcutCommandIds.SendBackward, "Send Backward", Keys.Control | Keys.Down),
+        Workbench(ShortcutCommandIds.Playback, "Play / Stop", Keys.Enter),
+        Workbench(ShortcutCommandIds.PreviousFrame, "Previous Frame", Keys.Oemcomma),
+        Workbench(ShortcutCommandIds.NextFrame, "Next Frame", Keys.OemPeriod),
+        Workbench(ShortcutCommandIds.FirstFrame, "First Playback Frame", Keys.Shift | Keys.Oemcomma),
+        Workbench(ShortcutCommandIds.LastFrame, "Last Playback Frame", Keys.Shift | Keys.OemPeriod),
+        Workbench(ShortcutCommandIds.InsertFrame, "Insert Frame", Keys.F5),
+        Workbench(ShortcutCommandIds.RemoveFrame, "Remove Frame", Keys.Shift | Keys.F5),
+        Workbench(ShortcutCommandIds.InsertKeyframe, "Insert Keyframe", Keys.F6),
+        Workbench(ShortcutCommandIds.ClearKeyframe, "Clear Keyframe", Keys.Shift | Keys.F6),
+        Workbench(ShortcutCommandIds.InsertBlankKeyframe, "Insert Blank Keyframe", Keys.F7),
+        Workbench(ShortcutCommandIds.DecreaseWidth, "Decrease Drawing Width", Keys.OemOpenBrackets),
+        Workbench(ShortcutCommandIds.IncreaseWidth, "Increase Drawing Width", Keys.Oem6)
     ];
 
     private static readonly IReadOnlyDictionary<string, ShortcutCommandDefinition> CommandsById =
@@ -380,7 +436,7 @@ internal static class ShortcutProfiles
         foreach (var gesture in gestures ?? [])
         {
             if (normalizedGestures.Count >= MaximumGesturesPerCommand) break;
-            if (!TryGetKeyData(gesture, out var keyData) || IsReservedGesture(keyData))
+            if (!TryGetKeyData(gesture, out var keyData) || !IsGestureAllowed(commandId, keyData))
             {
                 error = "The shortcut is invalid or reserved.";
                 return false;
@@ -534,36 +590,36 @@ internal static class ShortcutProfiles
     public static bool IsReservedGesture(Keys keyData)
     {
         if (GetWorkspaceShortcutIndex(keyData) >= 0) return true;
-        return keyData is Keys.F1
-            or Keys.F2
-            or (Keys.Alt | Keys.F4)
-            or (Keys.Control | Keys.N)
-            or (Keys.Control | Keys.O)
-            or (Keys.Control | Keys.S)
-            or (Keys.Control | Keys.Shift | Keys.S)
+        return keyData is (Keys.Alt | Keys.F4)
             or Keys.Space
             or Keys.Escape
             or Keys.Enter
-            or Keys.Oemcomma
-            or Keys.OemPeriod
-            or (Keys.Shift | Keys.Oemcomma)
-            or (Keys.Shift | Keys.OemPeriod)
-            or Keys.F5
-            or (Keys.Shift | Keys.F5)
-            or Keys.F6
-            or (Keys.Shift | Keys.F6)
-            or Keys.F7
-            or Keys.OemOpenBrackets
-            or Keys.Oem6
             or Keys.Tab
-            or (Keys.Shift | Keys.Tab)
-            or (Keys.Control | Keys.Z)
-            or (Keys.Control | Keys.X)
-            or (Keys.Control | Keys.C)
-            or (Keys.Control | Keys.V)
-            or (Keys.Control | Keys.Up)
-            or (Keys.Control | Keys.Down)
-            or Keys.Delete;
+            or (Keys.Shift | Keys.Tab);
+    }
+
+    public static bool IsGestureAllowed(string commandId, Keys keyData)
+    {
+        if (!TryGetCommand(commandId, out var command)) return false;
+        if (command.Kind == ShortcutCommandKind.Workbench && command.DefaultKey != keyData
+            && HasContextualFixedShortcutConflict(keyData)) return false;
+        return !IsReservedGesture(keyData)
+            || commandId == ShortcutCommandIds.Playback && keyData == Keys.Enter;
+    }
+
+    public static Keys ResolveWorkbenchKey(ShortcutProfileRecord profile, Keys keyData)
+    {
+        var commandId = ToolShortcutMap.ResolveCommandId(profile, keyData);
+        if (TryGetCommand(commandId, out var command) && command.Kind == ShortcutCommandKind.Workbench)
+            return command.DefaultKey;
+        return CommandCatalog.Any(candidate => candidate.DefaultKey == keyData && keyData != Keys.None)
+            ? Keys.None
+            : keyData;
+    }
+
+    public static string FormatCommandGestures(ShortcutProfileRecord profile, string commandId)
+    {
+        return FormatGestures(profile.Bindings.FirstOrDefault(binding => binding.CommandId == commandId)?.Gestures ?? []);
     }
 
     public static bool HasContextualFixedShortcutConflict(Keys keyData)
@@ -591,7 +647,15 @@ internal static class ShortcutProfiles
 
     internal static ShortcutProfileRecord CloneProfile(ShortcutProfileRecord profile)
     {
-        return profile with { Bindings = CloneBindings(profile.Bindings) };
+        var bindings = CloneBindings(profile.Bindings).ToList();
+        foreach (var command in CommandCatalog.Where(command => command.Kind == ShortcutCommandKind.Workbench))
+        {
+            if (bindings.Any(binding => binding.CommandId == command.Id)) continue;
+            var occupied = bindings.Any(binding => binding.Gestures.Any(gesture =>
+                TryGetKeyData(gesture, out var keyData) && keyData == command.DefaultKey));
+            bindings.Add(occupied ? new ShortcutBindingRecord { CommandId = command.Id } : Bind(command.Id, command.DefaultKey));
+        }
+        return profile with { Bindings = bindings.ToArray() };
     }
 
     private static bool TryNormalizeCustomProfile(
@@ -639,7 +703,7 @@ internal static class ShortcutProfiles
             foreach (var gesture in (binding.Gestures ?? []).Take(MaximumGesturesPerCommand))
             {
                 if (!TryGetKeyData(gesture, out var keyData)
-                    || IsReservedGesture(keyData)
+                    || !IsGestureAllowed(commandId, keyData)
                     || !commandGestures.Add(keyData))
                 {
                     warnings.Add($"Profile '{name}' contained an invalid, reserved, or duplicate shortcut.");
@@ -663,13 +727,13 @@ internal static class ShortcutProfiles
             });
         }
 
-        normalized = new ShortcutProfileRecord
+        normalized = CloneProfile(new ShortcutProfileRecord
         {
             Id = id,
             Name = name,
             BasedOnProfileId = NormalizeOptionalId(profile.BasedOnProfileId),
             Bindings = bindings.ToArray()
-        };
+        });
         return true;
     }
 
@@ -685,6 +749,11 @@ internal static class ShortcutProfiles
     private static ShortcutCommandDefinition Tool(string id, string displayName, ToolMode tool)
     {
         return new ShortcutCommandDefinition(id, displayName, ShortcutCommandKind.Tool, tool);
+    }
+
+    private static ShortcutCommandDefinition Workbench(string id, string displayName, Keys defaultKey)
+    {
+        return new ShortcutCommandDefinition(id, displayName, ShortcutCommandKind.Workbench, DefaultKey: defaultKey);
     }
 
     private static ShortcutBindingRecord Bind(string commandId, params Keys[] gestures)

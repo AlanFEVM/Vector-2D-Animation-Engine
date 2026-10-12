@@ -99,6 +99,7 @@ internal static class HotReloadModuleResolver
         nameof(ImageCompression),
         nameof(ImageAlphaSource),
         nameof(ImageImportSettingsDialog),
+        nameof(ImageCropDialog),
         nameof(ImageImportProgressDialog),
         nameof(TextGeometry),
         nameof(TextFontStyle),
@@ -208,7 +209,7 @@ internal static class HotReloadModuleResolver
             return HotReloadModule.Rendering;
         }
 
-        if (typeName is nameof(TimelineStrip) or nameof(LayerColorDialog) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
+        if (typeName is nameof(TimelineStrip) or nameof(TimelineTabGroupOrderDialog) or nameof(LayerColorDialog) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
         {
             return HotReloadModule.Timeline;
         }
@@ -293,6 +294,7 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(AnimatedContextMenuStrip)
+            or nameof(ImageCropDialog)
             or nameof(ModernDialogForm)
             or nameof(ModernMessageDialog)
             or nameof(ProfessionalColorPickerDialog)

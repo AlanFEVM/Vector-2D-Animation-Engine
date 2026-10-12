@@ -59,6 +59,8 @@ internal sealed class ModernNumericUpDown : UserControl
     private bool _stepperInteractionChanged;
     private bool _hovered;
     private string _suffix = string.Empty;
+    private bool _showSuffix;
+    private Rectangle _suffixBounds;
 
     public ModernNumericUpDown()
     {
@@ -191,6 +193,21 @@ internal sealed class ModernNumericUpDown : UserControl
             if (string.Equals(_suffix, next, StringComparison.Ordinal)) return;
             _suffix = next;
             UpdateEditorAccessibility();
+            LayoutChildren();
+            Invalidate();
+        }
+    }
+
+    [DefaultValue(false)]
+    public bool ShowSuffix
+    {
+        get => _showSuffix;
+        set
+        {
+            if (_showSuffix == value) return;
+            _showSuffix = value;
+            LayoutChildren();
+            Invalidate();
         }
     }
 
@@ -276,10 +293,19 @@ internal sealed class ModernNumericUpDown : UserControl
         using var border = new Pen(
             SystemInformation.HighContrast
                 ? ContainsFocus ? SystemColors.Highlight : SystemColors.WindowText
-                : ContainsFocus ? Theme.Accent : Theme.Border);
+                : ContainsFocus || IsScrubbing || _stepperInteracting ? Theme.Accent
+                    : _hovered ? Theme.BorderHover : Theme.Mix(ResolveVisualColor(), Theme.Border, 0.72f),
+            Math.Max(1f, DeviceDpi / 96f));
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
-        Theme.FillUiRectangle(e.Graphics, fill, ClientRectangle);
-        Theme.DrawUiRectangle(e.Graphics, border, new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1)));
+        Theme.PaintUiSurface(e.Graphics, fill, border, ClientRectangle);
+        if (!_suffixBounds.IsEmpty)
+        {
+            TextRenderer.DrawText(e.Graphics, Suffix, Font, _suffixBounds,
+                SystemInformation.HighContrast ? ForeColor
+                    : Theme.ReadableText(ResolveVisualColor(), Enabled ? Theme.Muted : Theme.DisabledText),
+                TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping);
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -305,16 +331,24 @@ internal sealed class ModernNumericUpDown : UserControl
         if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
         var border = ScaleLogicalPixels(1);
         var buttonWidth = Math.Min(ClientSize.Width, ScaleLogicalPixels(LogicalStepperWidth));
-        var buttonLeft = Math.Max(border, ClientSize.Width - buttonWidth - border);
-        var availableHeight = Math.Max(2, ClientSize.Height - border * 2);
+        // Keep child HWND painting inside the outer stroke and rounded corners.
+        var stepperInset = ScaleLogicalPixels(4);
+        var buttonLeft = Math.Max(border, ClientSize.Width - buttonWidth - stepperInset);
+        var suffixWidth = ShowSuffix && !string.IsNullOrEmpty(Suffix)
+            ? TextRenderer.MeasureText(Suffix, Font, Size.Empty, TextFormatFlags.NoPadding).Width + ScaleLogicalPixels(3)
+            : 0;
+        _suffixBounds = suffixWidth > 0
+            ? new Rectangle(buttonLeft - suffixWidth, border, suffixWidth, ClientSize.Height - border * 2)
+            : Rectangle.Empty;
+        var availableHeight = Math.Max(2, ClientSize.Height - stepperInset * 2);
         var increaseHeight = Math.Max(1, availableHeight / 2);
         _editor.SetBounds(
             border + ScaleLogicalPixels(4),
             Math.Max(border, (ClientSize.Height - TextRenderer.MeasureText("0", Font).Height) / 2),
-            Math.Max(1, buttonLeft - border - ScaleLogicalPixels(4)),
+            Math.Max(1, buttonLeft - suffixWidth - border - ScaleLogicalPixels(4)),
             Math.Max(1, TextRenderer.MeasureText("0", Font).Height));
-        _increaseButton.SetBounds(buttonLeft, border, buttonWidth, increaseHeight);
-        _decreaseButton.SetBounds(buttonLeft, border + increaseHeight, buttonWidth, Math.Max(1, availableHeight - increaseHeight));
+        _increaseButton.SetBounds(buttonLeft, stepperInset, buttonWidth, increaseHeight);
+        _decreaseButton.SetBounds(buttonLeft, stepperInset + increaseHeight, buttonWidth, Math.Max(1, availableHeight - increaseHeight));
     }
 
     private void HandleEditorMouseDown(object? sender, MouseEventArgs e)
@@ -904,35 +938,27 @@ internal sealed class ModernNumericUpDown : UserControl
                 ? !Enabled
                     ? SystemColors.Control
                     : _pressed || _hovered ? SystemColors.Highlight : SystemColors.Control
-                : !Enabled
-                    ? Theme.DisabledSurface
-                    : _pressed
-                        ? Theme.AccentSurface
-                        : _hovered
-                            ? Theme.PanelHover
-                            : Theme.PanelStrong;
+                : Parent is ModernNumericUpDown owner
+                    ? !Enabled ? owner.ResolveVisualColor()
+                        : _pressed ? Theme.Mix(owner.ResolveVisualColor(), Theme.AccentSurface, 0.65f)
+                        : _hovered ? Theme.Mix(owner.ResolveVisualColor(), Theme.PanelHover, 0.55f)
+                        : owner.ResolveVisualColor()
+                    : Theme.Field;
             using var fill = new SolidBrush(background);
-            using var border = new Pen(
-                highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(background, Theme.Border));
             e.Graphics.FillRectangle(fill, ClientRectangle);
-            e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-            if (Parent is ModernNumericUpDown numeric)
-            {
-                Theme.PaintControlCorners(this, e.Graphics,
-                    new Rectangle(-Left, -Top, numeric.Width, numeric.Height),
-                    numeric.Parent?.BackColor ?? Theme.Panel, border.Color);
-            }
-
             var centerX = ClientSize.Width * 0.5f;
             var centerY = ClientSize.Height * 0.5f;
-            var size = Math.Max(2f, Math.Min(ClientSize.Width, ClientSize.Height) * 0.22f);
+            var size = Math.Min(3f * DeviceDpi / 96f, Math.Min(ClientSize.Width, ClientSize.Height) * 0.24f);
             var sign = Direction > 0 ? 1f : -1f;
             var foreground = highContrast
                 ? Enabled ? _pressed || _hovered ? SystemColors.HighlightText : SystemColors.ControlText : SystemColors.GrayText
-                : Theme.ReadableText(background, Enabled ? Theme.Text : Theme.DisabledText);
+                : Theme.ReadableText(background, !Enabled ? Theme.DisabledText
+                    : _hovered || _pressed ? Theme.AccentLabel : Theme.Muted);
             using var chevron = new Pen(foreground, Math.Max(1f, DeviceDpi / 96f))
             {
-                LineJoin = LineJoin.Round
+                LineJoin = LineJoin.Round,
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round
             };
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.DrawLines(chevron,

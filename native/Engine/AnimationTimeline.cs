@@ -685,7 +685,8 @@ internal sealed partial class AnimationTimeline
         {
             Tracks = _tracks.Select(track => track.CreateSnapshot()).ToArray(),
             TabGroups = _tabGroups.ToArray(),
-            ActiveTabGroupId = _activeTabGroupId
+            ActiveTabGroupId = _activeTabGroupId,
+            TabGroupOrderingEnabled = TabGroupOrderingEnabled
         };
     }
 
@@ -832,7 +833,7 @@ internal sealed partial class AnimationTimeline
         _tracks.AddRange(synchronized);
         RebuildLookups();
         OnChanged();
-        if (tabGroupsChanged) OnTabGroupsChanged();
+        if (tabGroupsChanged) OnTabGroupsChanged(applyLayerOrder: false);
     }
 
     private void RebuildLookups()
@@ -894,6 +895,7 @@ internal sealed class AnimationTimelineSnapshot
     public AnimationTimelineTrackSnapshot[] Tracks { get; init; } = [];
     public TimelineTabGroup[] TabGroups { get; init; } = [];
     public string ActiveTabGroupId { get; init; } = AnimationTimeline.DefaultTabGroupId;
+    public bool TabGroupOrderingEnabled { get; init; }
 }
 
 internal sealed class AnimationTimelineTrackSnapshot

@@ -220,6 +220,11 @@ internal static partial class Theme
 
     public static Font UiFont(float size = 9.5f, FontStyle style = FontStyle.Regular) => new("Segoe UI", size, style);
 
+    public const float InspectorTitleFontSize = 10f;
+    public const float InspectorSectionFontSize = 9f;
+    public const float InspectorLabelFontSize = 8.5f;
+    public const float InspectorDetailFontSize = 8f;
+
     public static void ConfigureHues(int themeHueDegrees, int accentHueDegrees)
     {
         ConfigureColorAdjustments(
@@ -850,11 +855,15 @@ internal static partial class Theme
         // Empty lets FlatButtonAdapter use the animated BackColor instead of replacing it with a native hot color.
         if (!button.FlatAppearance.MouseOverBackColor.IsEmpty) button.FlatAppearance.MouseOverBackColor = Color.Empty;
         if (!button.FlatAppearance.MouseDownBackColor.IsEmpty) button.FlatAppearance.MouseDownBackColor = Color.Empty;
+        var disclosure = button is SvgIconButton { IsDisclosureHeader: true };
+        var fontSize = disclosure ? InspectorSectionFontSize
+            : button is SegmentedButton { CompactText: true } ? InspectorLabelFontSize : 9.5f;
+        var fontStyle = disclosure ? FontStyle.Bold : FontStyle.Regular;
         if (!string.Equals(button.Font.Name, "Segoe UI", StringComparison.Ordinal)
-            || Math.Abs(button.Font.Size - 9.5f) > 0.01f
-            || button.Font.Style != FontStyle.Regular)
+            || Math.Abs(button.Font.Size - fontSize) > 0.01f
+            || button.Font.Style != fontStyle)
         {
-            button.Font = UiFont();
+            button.Font = UiFont(fontSize, fontStyle);
         }
 
         if (button.TextAlign != ContentAlignment.MiddleCenter) button.TextAlign = ContentAlignment.MiddleCenter;
@@ -901,9 +910,13 @@ internal static partial class Theme
         box.FlatStyle = FlatStyle.Flat;
         box.Font = UiFont();
         box.DrawMode = DrawMode.OwnerDrawFixed;
-        box.ItemHeight = 26;
-        if (StyledComboBoxes.TryGetValue(box, out _)) return;
-        StyledComboBoxes.Add(box, new object());
+        box.ItemHeight = Math.Max(20 * box.DeviceDpi / 96, box.Font.Height + 4);
+        if (StyledComboBoxes.TryGetValue(box, out var comboState))
+        {
+            if (comboState is ComboBoxSurfaceAdapter adapter) adapter.RefreshSelectionHeight();
+            return;
+        }
+        StyledComboBoxes.Add(box, new ComboBoxSurfaceAdapter(box));
         box.DrawItem += DrawComboBoxItem;
         ConfigureFieldInteraction(box);
     }
@@ -1073,7 +1086,7 @@ internal static partial class Theme
                 font,
                 bounds,
                 ReadableText(PanelStrong, Text),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         };
     }
 
@@ -1103,7 +1116,14 @@ internal static partial class Theme
     private static void DrawComboBoxItem(object? sender, DrawItemEventArgs e)
     {
         if (sender is not ComboBox box) return;
-        var selected = (e.State & DrawItemState.Selected) != 0;
+        // The surface adapter owns the entire closed selector. Native selection
+        // redraws must not paint a second text/background rectangle over it.
+        if (box.DropDownStyle == ComboBoxStyle.DropDownList
+            && (e.State & DrawItemState.ComboBoxEdit) != 0
+            && StyledComboBoxes.TryGetValue(box, out var state)
+            && state is ComboBoxSurfaceAdapter) return;
+        var selected = (e.State & DrawItemState.Selected) != 0
+            && (e.State & DrawItemState.ComboBoxEdit) == 0;
         var focused = (e.State & DrawItemState.Focus) != 0;
         var highContrast = SystemInformation.HighContrast;
         var background = highContrast
@@ -1133,7 +1153,7 @@ internal static partial class Theme
                 : box.Enabled
                     ? ReadableText(background, Text)
                     : ReadableText(background, DisabledText),
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         if (focused && e.Index >= 0)
         {
             using var focus = new Pen(
@@ -1167,7 +1187,7 @@ internal static partial class Theme
             list.Enabled
                 ? ReadableText(background, Text)
                 : ReadableText(background, DisabledText),
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         if ((e.State & DrawItemState.Focus) != 0 && list.Focused)
         {
             ControlPaint.DrawFocusRectangle(
@@ -1300,7 +1320,7 @@ internal static partial class Theme
             tree.Font,
             textBounds,
             color,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         if (markerCount > 0)
         {
             var measuredTextWidth = TextRenderer.MeasureText(
@@ -1398,7 +1418,7 @@ internal static partial class Theme
             e.Font ?? SystemFonts.MessageBoxFont,
             bounds,
             ReadableText(PanelStrong, Muted),
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
     }
 
     private static void DrawListViewItem(object? sender, DrawListViewItemEventArgs e)
@@ -1453,12 +1473,12 @@ internal static partial class Theme
             list.Enabled
                 ? ReadableText(backgroundColor, item.ForeColor.IsEmpty ? Text : item.ForeColor)
                 : ReadableText(backgroundColor, DisabledText),
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         if (e.ColumnIndex == list.Columns.Count - 1 && item.Focused && list.Focused)
         {
             var focusBounds = Rectangle.Inflate(item.Bounds, -4, -2);
             var graphicsState = e.Graphics.Save();
-            e.Graphics.SetClip(list.ClientRectangle, System.Drawing.Drawing2D.CombineMode.Replace);
+            e.Graphics.SetClip(list.ClientRectangle, System.Drawing.Drawing2D.CombineMode.Intersect);
             ControlPaint.DrawFocusRectangle(
                 e.Graphics,
                 focusBounds,

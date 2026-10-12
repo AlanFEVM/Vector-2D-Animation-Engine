@@ -204,7 +204,7 @@ internal static class BitmapImageRasterizer
         var storedSize = ResolveDecodeSize(fullPath, settings);
         var contentSha256 = ComputeSha256(fullPath);
         var key = new BitmapImageRasterKey(
-            $"{contentSha256}:{settings.FilterMode}:{settings.AlphaSource}", storedSize.Width, storedSize.Height);
+            FormattableString.Invariant($"{contentSha256}:{settings.FilterMode}:{settings.AlphaSource}:{settings.CropX:R}:{settings.CropY:R}:{settings.CropWidth:R}:{settings.CropHeight:R}"), storedSize.Width, storedSize.Height);
 
         lock (CacheSync)
         {
@@ -348,7 +348,7 @@ internal static class BitmapImageRasterizer
             graphics.DrawImage(
                 source,
                 new Rectangle(0, 0, size.Width, size.Height),
-                new Rectangle(0, 0, source.Width, source.Height),
+                settings.ResolveCropPixelBounds(source.Width, source.Height),
                 GraphicsUnit.Pixel);
             return target;
         }

@@ -571,6 +571,7 @@ internal sealed partial class VectorProject
             {
                 TabGroups = sourceTimeline.TabGroups.ToArray(),
                 ActiveTabGroupId = sourceTimeline.ActiveTabGroupId,
+                TabGroupOrderingEnabled = sourceTimeline.TabGroupOrderingEnabled,
                 Tracks = sourceTimeline.Tracks.Select(track => new AnimationTimelineTrackSnapshot
                 {
                     Id = track.Id,

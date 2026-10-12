@@ -25,6 +25,7 @@ internal sealed partial class MainForm : Form
         ITimelineContext Context,
         AnimationTimelineSnapshot Timeline,
         VectorSceneSnapshot? Drawing,
+        SceneLayerSnapshot? SceneLayers,
         TimelineSelectionSnapshot Selection,
         int Frame);
 
@@ -40,7 +41,7 @@ internal sealed partial class MainForm : Form
             _ => null
         };
         _timelineTabGroupEdit = new TimelineTabGroupEditSession(
-            context, context.Timeline.CreateSnapshot(), drawing?.CreateSnapshot(),
+            context, context.Timeline.CreateSnapshot(), drawing?.CreateSnapshot(), (context as SceneDefinition)?.CreateLayerSnapshot(),
             _timeline.CaptureSelectionSnapshot(), _frame);
     }
 
@@ -51,12 +52,13 @@ internal sealed partial class MainForm : Form
         if (session is null || !ReferenceEquals(session.Context, _timeline.Context)) return;
         var current = session.Context.Timeline.CreateSnapshot();
         if (session.Timeline.TabGroups.SequenceEqual(current.TabGroups)
+            && session.Timeline.TabGroupOrderingEnabled == current.TabGroupOrderingEnabled
             && session.Timeline.Tracks.Select(track => (track.Id, track.TabGroupId))
                 .SequenceEqual(current.Tracks.Select(track => (track.Id, track.TabGroupId)))) return;
 
         if (session.Context is SceneDefinition scene)
         {
-            PushSceneTimelineUndo(scene, session.Timeline,
+            PushSceneTimelineUndo(scene, session.Timeline, session.SceneLayers,
                 playheadFrame: session.Frame, timelineSelection: session.Selection);
         }
         else if (session.Drawing is not null)
@@ -65,6 +67,13 @@ internal sealed partial class MainForm : Form
                 playheadFrame: session.Frame, timelineSelection: session.Selection);
         }
         _timeline.RefreshTimeline();
+        if (session.Context is SceneDefinition) RebuildSceneComposition();
+        else
+        {
+            if (session.Context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
+            _hierarchyPanel.RefreshScene();
+            _stage.Invalidate();
+        }
     }
 
     internal static bool BlocksModelCommandDuringPointerInteraction(Keys keyData)
@@ -126,7 +135,12 @@ internal sealed partial class MainForm : Form
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
-        if (e.KeyCode == Keys.F5)
+        var profile = ShortcutProfiles.ResolveProfile(
+            _applicationSettings.ActiveShortcutProfileId,
+            _applicationSettings.CustomShortcutProfiles);
+        if (profile.Bindings.Any(binding => binding.CommandId is ShortcutCommandIds.InsertFrame or ShortcutCommandIds.RemoveFrame
+            && binding.Gestures.Any(gesture => ShortcutProfiles.TryGetKeyData(gesture, out var keyData)
+                && (keyData & Keys.KeyCode) == e.KeyCode)))
         {
             // Releasing the held insert/remove shortcut settles the coalesced gesture: the deferred
             // timeline, shot, and inspector refresh runs once instead of once per key repeat.
@@ -2327,7 +2341,26 @@ internal sealed partial class MainForm : Form
         context.SynchronizeTimelineTracks();
         var track = context.Timeline.FindTrack(trackId);
         var targetTrack = context.Timeline.FindTrack(targetTrackId);
-        if (track is null || targetTrack is null) return;
+        if (track is null || targetTrack is null || track.Id == targetTrack.Id) return;
+        if (context.Timeline.TabGroupOrderingEnabled
+            && context.Timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId
+            && !string.Equals(track.TabGroupId, targetTrack.TabGroupId, StringComparison.Ordinal))
+        {
+            var destinationGroup = context.Timeline.TabGroups.FirstOrDefault(group => group.Id == targetTrack.TabGroupId);
+            var destinationName = targetTrack.TabGroupId switch
+            {
+                AnimationTimeline.DefaultTabGroupId => UiLocalization.T("Layers"),
+                AnimationTimeline.TerrainTabGroupId => UiLocalization.T("Terrain"),
+                _ => destinationGroup?.Name ?? targetTrack.TabGroupId
+            };
+            if (ModernMessageDialog.Show(
+                    this,
+                    string.Format(UiLocalization.T("Move this layer or layer group to '{0}'? Linked folder children and mask contents will move together."), destinationName),
+                    UiLocalization.T("Move to tab group"),
+                    MessageBoxButtons.OKCancel,
+                    MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
+        }
 
         var drawingScene = context switch
         {
@@ -2350,6 +2383,8 @@ internal sealed partial class MainForm : Form
                     placement,
                     moveOutOfMask);
             if (!changed) return;
+            if (drawingScene.Timeline.TabGroupOrderingEnabled)
+                drawingScene.Timeline.SetTrackTabGroup(track.Id, targetTrack.TabGroupId);
             PushUndoSnapshot(snapshot);
             _timeline.RefreshTimeline();
             RebuildDrawingObjectUnderlay();
@@ -2385,6 +2420,8 @@ internal sealed partial class MainForm : Form
             changedScene |= _project.TryMoveSceneLayer(sceneDefinition.Id, sceneSourceLayer.Id, sceneDestinationLayer);
         }
         if (!changedScene) return;
+        if (sceneDefinition.Timeline.TabGroupOrderingEnabled)
+            sceneDefinition.Timeline.SetTrackTabGroup(track.Id, targetTrack.TabGroupId);
         PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot);
         _timeline.RefreshTimeline();
         RebuildSceneComposition();

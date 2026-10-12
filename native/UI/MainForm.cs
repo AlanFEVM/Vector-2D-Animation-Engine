@@ -271,11 +271,11 @@ internal sealed partial class MainForm : Form
     private readonly ToolStripSeparator _transformActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _bringForwardMenuItem = new("Bring Forward")
     {
-        ShortcutKeys = Keys.Control | Keys.Up
+        Tag = ShortcutCommandIds.BringForward
     };
     private readonly ToolStripMenuItem _sendBackwardMenuItem = new("Send Backward")
     {
-        ShortcutKeys = Keys.Control | Keys.Down
+        Tag = ShortcutCommandIds.SendBackward
     };
     private readonly ToolStripSeparator _stackActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _convertLineToFillMenuItem = new("Convert Line to Fill");
@@ -934,6 +934,7 @@ internal sealed partial class MainForm : Form
         _timer.Tick += (_, _) => Tick();
         _timer.Start();
 
+        RefreshShortcutMenuDisplay();
         if (_restartState is not null)
         {
             StartPosition = FormStartPosition.Manual;
@@ -988,6 +989,7 @@ internal sealed partial class MainForm : Form
         _stageContextMenu.Items.Add(_importSymbolFileMenuItem);
         _stageContextMenu.Opening += (_, _) =>
         {
+            RefreshShortcutMenuDisplay();
             _stageContextMenuLineObject = -1;
             _stageContextMenuNestedInstanceId = "";
             _stageContextMenuBreakApartObjects = [];
@@ -1463,13 +1465,14 @@ internal sealed partial class MainForm : Form
     private void ZoomActiveView(float factor)
     {
         if (!float.IsFinite(factor) || factor <= 0f) return;
+        BeginTransientViewNavigation();
         if (_stage.RendersReferenceProjection)
         {
             _stage.ZoomReferenceCamera(factor);
             return;
         }
 
-        _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), factor);
+        _stage.ZoomAt(new Point(_stage.Width / 2, _stage.Height / 2), factor, interactivePreview: true);
     }
 
     private void BuildEraserOptionsStrip(Panel metrics)
@@ -1530,9 +1533,9 @@ internal sealed partial class MainForm : Form
 
     private void BuildMainMenu()
     {
-        var newProject = new ToolStripMenuItem("New Project") { ShortcutKeys = Keys.Control | Keys.N };
+        var newProject = new ToolStripMenuItem("New Project") { Tag = ShortcutCommandIds.NewProject };
         newProject.Click += (_, _) => CreateNewProjectFromCommand();
-        var openProject = new ToolStripMenuItem("Open Project...") { ShortcutKeys = Keys.Control | Keys.O };
+        var openProject = new ToolStripMenuItem("Open Project...") { Tag = ShortcutCommandIds.OpenProject };
         openProject.Click += (_, _) => OpenProjectFromDialog();
         var importFlash = new ToolStripMenuItem("Import Flash Project...");
         importFlash.Click += (_, _) => ImportFlashProjectFromDialog();
@@ -1542,9 +1545,9 @@ internal sealed partial class MainForm : Form
         importSvg.Click += (_, _) => ImportSvgFromDialog();
         var importImage = new ToolStripMenuItem("Import Image...");
         importImage.Click += (_, _) => ImportImageAsset();
-        var saveProject = new ToolStripMenuItem("Save Project") { ShortcutKeys = Keys.Control | Keys.S };
+        var saveProject = new ToolStripMenuItem("Save Project") { Tag = ShortcutCommandIds.SaveProject };
         saveProject.Click += (_, _) => SaveProject();
-        var saveProjectAs = new ToolStripMenuItem("Save Project As...") { ShortcutKeys = Keys.Control | Keys.Shift | Keys.S };
+        var saveProjectAs = new ToolStripMenuItem("Save Project As...") { Tag = ShortcutCommandIds.SaveProjectAs };
         saveProjectAs.Click += (_, _) => SaveProjectAs();
         var renameProject = new ToolStripMenuItem("Rename Project...");
         renameProject.Click += (_, _) => BeginProjectTitleEdit();
@@ -1571,9 +1574,27 @@ internal sealed partial class MainForm : Form
         });
         _mainMenu.Opening += (_, _) =>
         {
+            RefreshShortcutMenuDisplay();
             importSvg.Enabled = CanImportSvg();
             importImage.Enabled = CanPlaceImage();
         };
+    }
+
+    private void RefreshShortcutMenuDisplay()
+    {
+        var profile = ShortcutProfiles.ResolveProfile(
+            _applicationSettings.ActiveShortcutProfileId,
+            _applicationSettings.CustomShortcutProfiles);
+        foreach (var menu in new[] { _mainMenu, _stageContextMenu })
+        {
+            foreach (ToolStripItem item in menu.Items)
+            {
+                if (item is ToolStripMenuItem menuItem && menuItem.Tag is string commandId
+                    && ShortcutProfiles.TryGetCommand(commandId, out _))
+                    menuItem.ShortcutKeyDisplayString = ShortcutProfiles.FormatCommandGestures(profile, commandId);
+            }
+        }
+        _timeline.UpdateShortcutDisplay(profile);
     }
 
     private bool CanImportSvg()
@@ -1788,6 +1809,7 @@ internal sealed partial class MainForm : Form
         }
 
         _applicationSettings = settings;
+        RefreshShortcutMenuDisplay();
         AppHost.Current?.ApplyCodexBridgeSettings(settings);
         _stage.SimpleSelectionHighlightEnabled = settings.SimpleSelectionHighlightEnabled;
         ApplyWindowCornerStyle(settings.WindowCornerStyle);
@@ -2299,6 +2321,7 @@ internal sealed partial class MainForm : Form
             _vaultDrawerTimer.Dispose();
             _workspacePanelAnimationTimer.Dispose();
             _lineDragPreviewTimer.Dispose();
+            _viewNavigationIdleTimer.Dispose();
             _instanceAppearancePreviewTimer.Dispose();
             _referenceCameraKeyboardTimer.Dispose();
             _timer.Dispose();

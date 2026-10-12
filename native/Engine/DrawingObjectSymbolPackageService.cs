@@ -619,7 +619,8 @@ internal static class DrawingObjectSymbolPackageService
                 Tweens = track.Tweens.ToArray()
             }).ToArray(),
             TabGroups = timeline.TabGroups.ToArray(),
-            ActiveTabGroupId = timeline.ActiveTabGroupId
+            ActiveTabGroupId = timeline.ActiveTabGroupId,
+            TabGroupOrderingEnabled = timeline.TabGroupOrderingEnabled
         };
     }
 

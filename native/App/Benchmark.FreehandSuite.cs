@@ -6,6 +6,7 @@ internal static partial class Benchmark
 {
     public static void RunFreehandStress()
     {
+        RunShortcutProfileExpansionRegression();
         RunMarqueeUndoTopologyRegression();
         RunLinkedFillBoundaryRegression();
         RunShapeToolRegression();

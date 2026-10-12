@@ -26,6 +26,7 @@ internal sealed partial class MainForm : Form
 
         if (e.Kind == StageControl.PenPointerEventKind.Down)
         {
+            EndTransientViewNavigation(restoreFeedback: false);
             if (_tool != ToolMode.PressureBrush
                 || !AllowsPressureBrushPointerInput(
                     _workspaceTabs.SelectedView,
@@ -135,6 +136,7 @@ internal sealed partial class MainForm : Form
 
     private void StageMouseDown(object? sender, MouseEventArgs e)
     {
+        EndTransientViewNavigation(restoreFeedback: false);
         if (HandleReferenceCameraRightLookMouseDown(e)) return;
         CancelReferenceCameraKeyboardNavigation();
         _pendingHoverScreen = null;

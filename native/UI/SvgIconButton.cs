@@ -2,6 +2,8 @@ namespace VectorAnimationEngine;
 
 internal sealed class SegmentedButton : Button
 {
+    public bool CompactText { get; set; }
+
     protected override AccessibleObject CreateAccessibilityInstance() => new ButtonStateAccessibleObject(this);
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -29,6 +31,11 @@ internal class SvgIconButton : Button
 
     public bool ShowsToolGroupIndicator { get; set; }
 
+    // Disclosure headers express expansion through the chevron, not a selected toolbar surface.
+    public bool IsDisclosureHeader { get; set; }
+
+    public bool IsOverlayIcon { get; set; }
+
     protected override AccessibleObject CreateAccessibilityInstance() => new ButtonStateAccessibleObject(this);
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -39,21 +46,48 @@ internal class SvgIconButton : Button
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        if (IsOverlayIcon && Parent is { } parent)
+        {
+            var state = e.Graphics.Save();
+            try
+            {
+                e.Graphics.TranslateTransform(-Left, -Top);
+                var parentArgs = new PaintEventArgs(e.Graphics, Bounds);
+                InvokePaintBackground(parent, parentArgs);
+                InvokePaint(parent, parentArgs);
+            }
+            finally { e.Graphics.Restore(state); }
+            var hovered = UiMotion.HoverProgress(this) > 0.05f || Capture;
+            var color = !Enabled ? Theme.DisabledText : hovered ? Theme.AccentLabel : Color.FromArgb(235, 35, 35, 35);
+            var outline = ClientRectangle;
+            outline.Offset(ScaleLogical(1), ScaleLogical(1));
+            _iconCache.Draw(e.Graphics, Icon, outline, Color.FromArgb(220, Color.White));
+            _iconCache.Draw(e.Graphics, Icon, ClientRectangle, color);
+            if (Focused && ShowFocusCues)
+                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -ScaleLogical(2), -ScaleLogical(2)));
+            return;
+        }
         var active = UiMotion.IsActive(this);
         var hover = UiMotion.HoverProgress(this);
         var role = Theme.ButtonRoleFor(this);
         var toolbar = role == ButtonVisualRole.Toolbar;
         var borderless = role is ButtonVisualRole.Toolbar or ButtonVisualRole.Segmented;
         var parentBack = Parent?.BackColor ?? Theme.Top;
-        using var background = new SolidBrush(BackColor);
         var fillsButton = !borderless || active || hover > 0.01f || Capture;
-        var actualBackground = fillsButton ? BackColor : parentBack;
+        var actualBackground = IsDisclosureHeader
+            ? !Enabled ? parentBack : Capture ? Theme.Mix(parentBack, Theme.PanelHover, 0.8f)
+                : Theme.Mix(parentBack, Theme.PanelHover, hover * 0.55f)
+            : fillsButton ? BackColor : parentBack;
+        if (IsDisclosureHeader && SystemInformation.HighContrast)
+            actualBackground = Enabled && (Capture || hover > 0.01f) ? SystemColors.Highlight : SystemColors.Control;
         var foreground = SystemInformation.HighContrast
-            ? Enabled ? ForeColor : SystemColors.GrayText
+            ? IsDisclosureHeader
+                ? !Enabled ? SystemColors.GrayText : actualBackground == SystemColors.Highlight ? SystemColors.HighlightText : SystemColors.ControlText
+                : Enabled ? ForeColor : SystemColors.GrayText
             : Enabled
                 ? Theme.ReadableText(actualBackground, ForeColor)
                 : Theme.ReadableText(actualBackground, Theme.DisabledText);
-        if (toolbar && Theme.IsLight && !active && Enabled && !SystemInformation.HighContrast)
+        if (!IsDisclosureHeader && toolbar && Theme.IsLight && !active && Enabled && !SystemInformation.HighContrast)
         {
             foreground = Theme.Mix(foreground, actualBackground, 0.34f);
         }
@@ -65,15 +99,10 @@ internal class SvgIconButton : Button
         var borderWidth = Math.Max(1f, DeviceDpi / 96f);
         using var border = new Pen(borderColor, borderWidth);
         e.Graphics.Clear(parentBack);
-        if (fillsButton)
-        {
-            e.Graphics.FillRectangle(background, ClientRectangle);
-        }
-        if (!borderless || active || hover > 0.05f || Focused)
-        {
-            e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-        }
-        if (toolbar && active)
+        var drawsBorder = !IsDisclosureHeader && (!borderless || active || hover > 0.05f || Focused);
+        using var surface = new SolidBrush(actualBackground);
+        Theme.PaintUiSurface(e.Graphics, surface, drawsBorder ? border : null, ClientRectangle);
+        if (!IsDisclosureHeader && toolbar && active)
         {
             using var activeBar = new SolidBrush(SystemInformation.HighContrast ? SystemColors.HighlightText : Theme.Accent);
             var barInset = ScaleLogical(4);
@@ -86,17 +115,19 @@ internal class SvgIconButton : Button
         }
 
         var hasLabel = !string.IsNullOrWhiteSpace(Text);
-        var iconSlot = hasLabel ? Math.Min(ScaleLogical(Theme.IconButtonSize), Height) : Width;
-        var iconBounds = hasLabel
+        var iconSlot = IsDisclosureHeader ? ScaleLogical(22) : hasLabel ? Math.Min(ScaleLogical(Theme.IconButtonSize), Height) : Width;
+        var iconBounds = IsDisclosureHeader
+            ? new Rectangle(ScaleLogical(3), (Height - ScaleLogical(16)) / 2, ScaleLogical(16), ScaleLogical(16))
+            : hasLabel
             ? new Rectangle(ScaleLogical(2), 0, iconSlot, Height)
             : ClientRectangle;
         _iconCache.Draw(e.Graphics, Icon, iconBounds, foreground);
         if (hasLabel)
         {
             var textBounds = new Rectangle(
-                iconSlot + ScaleLogical(8),
+                iconSlot + ScaleLogical(IsDisclosureHeader ? 2 : 8),
                 ScaleLogical(1),
-                Math.Max(0, Width - iconSlot - ScaleLogical(14)),
+                Math.Max(0, Width - iconSlot - ScaleLogical(IsDisclosureHeader ? 8 : 14)),
                 Math.Max(0, Height - ScaleLogical(2)));
             TextRenderer.DrawText(
                 e.Graphics,
@@ -104,7 +135,7 @@ internal class SvgIconButton : Button
                 Font,
                 textBounds,
                 foreground,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
         if (ShowsToolGroupIndicator)
         {
@@ -288,9 +319,62 @@ internal sealed class SvgToggleButton : CheckBox
 
     public SvgIconKind Icon { get; set; }
 
+    public bool IconOnly { get; set; }
+
+    public bool ShowCheckedBackground { get; set; }
+
+    public int IconSize { get; set; }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var parentBack = Parent?.BackColor ?? Theme.Panel;
+        if (IconOnly)
+        {
+            if (Parent is TimelineStrip) parentBack = Theme.Panel;
+            e.Graphics.Clear(parentBack);
+            var iconBackground = parentBack;
+            if (ShowCheckedBackground && (Checked || Capture || _hoverProgress > 0.01f))
+            {
+                var emphasis = Checked ? Theme.IsLight ? 0.16f : 0.22f : _hoverProgress * 0.08f;
+                if (Capture && Enabled) emphasis += 0.04f;
+                iconBackground = SystemInformation.HighContrast
+                    ? Checked ? SystemColors.Highlight : SystemColors.Control
+                    : Theme.Mix(parentBack, Theme.Text, Enabled ? emphasis : emphasis * 0.5f);
+                var inset = Math.Max(1, (int)Math.Round(DeviceDpi / 96f));
+                var side = Math.Max(1, Math.Min(Width, Height) - inset * 2);
+                var surfaceBounds = new RectangleF((Width - side) / 2f, (Height - side) / 2f, side, side);
+                using var surfaceBrush = new SolidBrush(iconBackground);
+                using var surfacePath = new System.Drawing.Drawing2D.GraphicsPath();
+                var diameter = Math.Min(side, 10f * DeviceDpi / 96f);
+                if (SystemInformation.HighContrast) surfacePath.AddRectangle(surfaceBounds);
+                else
+                {
+                    surfacePath.AddArc(surfaceBounds.Left, surfaceBounds.Top, diameter, diameter, 180, 90);
+                    surfacePath.AddArc(surfaceBounds.Right - diameter, surfaceBounds.Top, diameter, diameter, 270, 90);
+                    surfacePath.AddArc(surfaceBounds.Right - diameter, surfaceBounds.Bottom - diameter, diameter, diameter, 0, 90);
+                    surfacePath.AddArc(surfaceBounds.Left, surfaceBounds.Bottom - diameter, diameter, diameter, 90, 90);
+                    surfacePath.CloseFigure();
+                }
+                var state = e.Graphics.Save();
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                e.Graphics.FillPath(surfaceBrush, surfacePath);
+                e.Graphics.Restore(state);
+            }
+            var color = SystemInformation.HighContrast
+                ? !Enabled ? SystemColors.GrayText : Checked
+                    ? ShowCheckedBackground ? SystemColors.HighlightText : SystemColors.Highlight
+                    : SystemColors.ControlText
+                : Theme.ReadableText(iconBackground, !Enabled ? Theme.DisabledText
+                    : Checked || Capture || _hoverProgress > 0.05f
+                        ? ShowCheckedBackground ? Theme.Text : Theme.AccentLabel
+                        : Theme.Muted);
+            var size = Math.Min(Math.Min(Width, Height), Math.Max(1, (int)Math.Round(IconSize * DeviceDpi / 96f)));
+            var bounds = new Rectangle((Width - size) / 2, (Height - size) / 2, size, size);
+            _iconCache.Draw(e.Graphics, Icon, bounds, color);
+            if (Focused && ShowFocusCues)
+                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3), color, parentBack);
+            return;
+        }
         var baseBack = Checked ? Theme.AccentSurface : parentBack;
         var hoverBack = Checked ? Theme.AccentHoverSurface : Theme.PanelStrong;
         var back = Enabled
@@ -308,7 +392,6 @@ internal sealed class SvgToggleButton : CheckBox
             : Enabled
                 ? Theme.ReadableText(actualBackground, Checked ? Theme.AccentLabel : Theme.Text)
                 : Theme.ReadableText(actualBackground, Theme.DisabledText);
-        using var background = new SolidBrush(back);
         var borderColor = SystemInformation.HighContrast
             ? Checked ? SystemColors.HighlightText : SystemColors.ControlText
             : Theme.ReadableUiColor(
@@ -316,14 +399,8 @@ internal sealed class SvgToggleButton : CheckBox
                 Checked ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, _hoverProgress * 0.45f));
         using var border = new Pen(borderColor);
         e.Graphics.Clear(parentBack);
-        if (fillsButton)
-        {
-            e.Graphics.FillRectangle(background, ClientRectangle);
-        }
-        if (Checked || _hoverProgress > 0.05f || Focused)
-        {
-            e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-        }
+        using var surface = new SolidBrush(actualBackground);
+        Theme.PaintUiSurface(e.Graphics, surface, Checked || _hoverProgress > 0.05f || Focused ? border : null, ClientRectangle);
         if (Checked)
         {
             using var activeBar = new SolidBrush(SystemInformation.HighContrast ? SystemColors.HighlightText : Theme.Accent);

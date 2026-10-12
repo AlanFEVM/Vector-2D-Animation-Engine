@@ -136,8 +136,8 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
     {
         _commandList.Dock = DockStyle.Fill;
         _commandList.Margin = Padding.Empty;
-        _commandList.AccessibleName = "Tool shortcut map";
-        _commandList.Columns.Add("Tool", 420);
+        _commandList.AccessibleName = "Shortcut command map";
+        _commandList.Columns.Add("Command", 420);
         _commandList.Columns.Add("Shortcut", 190, HorizontalAlignment.Center);
         Theme.StyleListView(_commandList);
         _commandList.HeaderStyle = ColumnHeaderStyle.None;
@@ -170,7 +170,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
-        header.Controls.Add(HeaderLabel("Tool", ContentAlignment.MiddleLeft), 0, 0);
+        header.Controls.Add(HeaderLabel("Command", ContentAlignment.MiddleLeft), 0, 0);
         header.Controls.Add(HeaderLabel("Shortcut", ContentAlignment.MiddleCenter), 1, 0);
         table.Controls.Add(header, 0, 0);
         table.Controls.Add(_commandList, 0, 1);
@@ -360,7 +360,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         if (profile is null || commandId is null) return;
         ShortcutProfiles.TryGetCommand(commandId, out var command);
         var current = profile.Bindings.FirstOrDefault(binding => binding.CommandId == commandId)?.Gestures.FirstOrDefault();
-        using var dialog = new ShortcutCaptureDialog(command.DisplayName, current);
+        using var dialog = new ShortcutCaptureDialog(command.Id, command.DisplayName, current);
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Gesture is null) return;
 
         var conflictId = ShortcutProfiles.FindConflictCommandId(profile, commandId, dialog.Gesture);
@@ -555,9 +555,12 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         private readonly Label _error = new();
         private readonly Button _apply;
 
-        public ShortcutCaptureDialog(string commandName, ShortcutGestureRecord? current)
+        private readonly string _commandId;
+
+        public ShortcutCaptureDialog(string commandId, string commandName, ShortcutGestureRecord? current)
             : base("Assign Shortcut", new Size(460, 250))
         {
+            _commandId = commandId;
             DialogContent.Controls.Add(new Label
             {
                 Text = commandName,
@@ -604,7 +607,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
                 SetError("Invalid shortcut");
                 return;
             }
-            if (ShortcutProfiles.IsReservedGesture(keyData))
+            if (!ShortcutProfiles.IsGestureAllowed(_commandId, keyData))
             {
                 SetError("This shortcut is reserved by the application.");
                 return;
@@ -655,7 +658,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (keyData is Keys.Tab or (Keys.Shift | Keys.Tab) or Keys.Escape or Keys.Enter)
+            if (keyData is Keys.Tab or (Keys.Shift | Keys.Tab) or Keys.Escape)
             {
                 return base.ProcessCmdKey(ref msg, keyData);
             }

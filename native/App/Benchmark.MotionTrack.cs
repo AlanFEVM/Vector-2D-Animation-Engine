@@ -23,6 +23,7 @@ internal static partial class Benchmark
         RunMotionTrackRangeAndEmptyRegression();
         RunMotionTrackAvailabilityContractRegression();
         RunMotionTrackHeaderLayoutRegression();
+        RunMotionTrackBasicDrawingToggleRegression();
         RunMotionTrackSceneInteractionRegression();
         Console.WriteLine("motion_track_regression=ok");
     }
@@ -112,7 +113,9 @@ internal static partial class Benchmark
                     rebuild.Invoke(form, [false, false]);
                     var instance = scene.Instances.Single(item => item.Id == instanceId);
                     select.Invoke(form, [instance, false]);
-                    toggle.Invoke(form, null);
+                    var motionToggle = (SvgToggleButton)RequireField(typeof(TimelineStrip), "_motionTrackToggle").GetValue(timeline)!;
+                    AssertTimeline(motionToggle.Enabled, "Scene motion-track icon remained disabled after adding an instance.");
+                    RequireMethod(typeof(CheckBox), "OnClick", [typeof(EventArgs)]).Invoke(motionToggle, [EventArgs.Empty]);
                     setRange.Invoke(form, [0, 4]);
                     AssertTimeline(timeline.MotionTrackEnabled && stage.MotionTrackVisible,
                         $"Scene motion track did not become available in {dimension}/{projection}.");
@@ -249,8 +252,27 @@ internal static partial class Benchmark
     /// </summary>
     private static void RunMotionTrackHeaderLayoutRegression()
     {
+        foreach (var iconSize in new[] { 22, 28, 44, 66 })
+        {
+            using var motionBitmap = SvgIcons.CreateBitmap(SvgIconKind.MotionTrack,
+                new Size(iconSize, iconSize), Color.White);
+            using var onionBitmap = SvgIcons.CreateBitmap(SvgIconKind.OnionSkin,
+                new Size(iconSize, iconSize), Color.White);
+            var motionPixels = VisiblePixels(motionBitmap);
+            var onionPixels = VisiblePixels(onionBitmap);
+            AssertTimeline(onionPixels.Left > 0 && onionPixels.Top > 0
+                && onionPixels.Right < iconSize && onionPixels.Bottom < iconSize
+                && Math.Abs(onionPixels.Left + onionPixels.Right - iconSize) <= 1
+                && Math.Abs(onionPixels.Top + onionPixels.Bottom - iconSize) <= 1
+                && Math.Abs(motionPixels.Left + motionPixels.Right - iconSize) <= 1
+                && Math.Abs(motionPixels.Top + motionPixels.Bottom - iconSize) <= 1,
+                $"Reference icons are clipped or misaligned at {iconSize}px.");
+        }
+        Console.WriteLine("reference_icon_visible_size_alignment=ok");
+        var originalLanguage = UiLocalization.CurrentLanguage;
         var scene = new VectorScene();
         scene.CreateEmpty(1, 12);
+        scene.SetOnionSkinEnabled(false);
         using var host = new Form { ClientSize = new Size(1480, 200) };
         using var strip = new TimelineStrip(scene) { Dock = DockStyle.Fill };
         host.Controls.Add(strip);
@@ -258,8 +280,97 @@ internal static partial class Benchmark
         try
         {
             var autoKeyframe = (Control)RequireField(typeof(TimelineStrip), "_autoKeyframeToggle").GetValue(strip)!;
-            var motionTrack = (Control)RequireField(typeof(TimelineStrip), "_motionTrackToggle").GetValue(strip)!;
-            var onionSkin = (Control)RequireField(typeof(TimelineStrip), "_onionSkinToggle").GetValue(strip)!;
+            var motionTrack = (SvgToggleButton)RequireField(typeof(TimelineStrip), "_motionTrackToggle").GetValue(strip)!;
+            var onionSkin = (SvgToggleButton)RequireField(typeof(TimelineStrip), "_onionSkinToggle").GetValue(strip)!;
+            var gutterWidth = RequireField(typeof(TimelineStrip), "_gutterWidth");
+            AssertTimeline((int)gutterWidth.GetValue(strip)! == 360,
+                "Timeline layer column must default to the wider 360px gutter.");
+            var originalAutoKeyframeBounds = autoKeyframe.Bounds;
+            RequireMethod(typeof(TimelineStrip), "BeginGutterSplitterDrag", [typeof(Point)])
+                .Invoke(strip, [new Point(360, 100)]);
+            RequireMethod(typeof(TimelineStrip), "UpdateGutterSplitterDrag", [typeof(int)])
+                .Invoke(strip, [420]);
+            AssertTimeline((int)gutterWidth.GetValue(strip)! == 420
+                && autoKeyframe.Bounds == originalAutoKeyframeBounds,
+                "Wider default layer column must remain draggable without moving toolbar controls.");
+            RequireMethod(typeof(TimelineStrip), "UpdateGutterSplitterDrag", [typeof(int)])
+                .Invoke(strip, [360]);
+            RequireMethod(typeof(TimelineStrip), "EndGutterSplitterDrag").Invoke(strip, null);
+            Console.WriteLine("timeline_default_gutter_width_and_drag=ok");
+            AssertTimeline(
+                motionTrack.Icon == SvgIconKind.MotionTrack && onionSkin.Icon == SvgIconKind.OnionSkin
+                && motionTrack.Text.Length == 0 && onionSkin.Text.Length == 0
+                && motionTrack.IconOnly && onionSkin.IconOnly
+                && motionTrack.ShowCheckedBackground && onionSkin.ShowCheckedBackground
+                && motionTrack.IconSize == 22 && onionSkin.IconSize == 22
+                && motionTrack.AccessibleRole == AccessibleRole.CheckButton
+                && onionSkin.AccessibleRole == AccessibleRole.CheckButton,
+                "Timeline reference toggles must be icon-only accessible check buttons.");
+            var onionClicks = 0;
+            var motionClicks = 0;
+            strip.OnionSkinToggleRequested += (_, _) =>
+            {
+                onionClicks++;
+                scene.ToggleOnionSkin();
+                strip.RefreshOnionSkinControls();
+            };
+            strip.MotionTrackToggleRequested += (_, _) =>
+            {
+                motionClicks++;
+                strip.MotionTrackEnabled = !strip.MotionTrackEnabled;
+                strip.MotionTrackRangeVisible = strip.MotionTrackEnabled;
+                strip.RefreshMotionTrackControls();
+            };
+            strip.MotionTrackToggleAvailable = true;
+            strip.RefreshOnionSkinControls();
+            strip.RefreshMotionTrackControls();
+            AssertTimeline(onionClicks == 0 && motionClicks == 0,
+                "Refreshing reference icons emitted toggle requests.");
+            foreach (var referenceSource in new[] { motionTrack, onionSkin })
+            {
+                using var referenceToggle = new SvgToggleButton(referenceSource.Icon, referenceSource.AccessibleName!)
+                {
+                    IconOnly = true,
+                    ShowCheckedBackground = true,
+                    IconSize = referenceSource.IconSize,
+                    Size = referenceSource.Size
+                };
+                var originalBounds = referenceToggle.Bounds;
+                using var uncheckedBitmap = new Bitmap(referenceToggle.Width, referenceToggle.Height);
+                referenceToggle.DrawToBitmap(uncheckedBitmap, new Rectangle(Point.Empty, referenceToggle.Size));
+                referenceToggle.Checked = true;
+                using var checkedBitmap = new Bitmap(referenceToggle.Width, referenceToggle.Height);
+                referenceToggle.DrawToBitmap(checkedBitmap, new Rectangle(Point.Empty, referenceToggle.Size));
+                var surfaceBottom = new Point(referenceToggle.Width / 2, referenceToggle.Height - 4);
+                var surfaceSide = new Point((referenceToggle.Width - referenceToggle.Height) / 2 + 3, referenceToggle.Height / 2);
+                AssertTimeline(uncheckedBitmap.GetPixel(surfaceBottom.X, surfaceBottom.Y).ToArgb() == Theme.Panel.ToArgb()
+                    && checkedBitmap.GetPixel(surfaceBottom.X, surfaceBottom.Y).ToArgb() != Theme.Panel.ToArgb()
+                    && checkedBitmap.GetPixel(surfaceSide.X, surfaceSide.Y).ToArgb() != Theme.Panel.ToArgb()
+                    && checkedBitmap.GetPixel(0, referenceToggle.Height / 2).ToArgb() == Theme.Panel.ToArgb()
+                    && checkedBitmap.GetPixel(0, 0).ToArgb() == Theme.Panel.ToArgb()
+                    && referenceToggle.Bounds == originalBounds,
+                    "Checked reference icons must show an inset square background without an underline or layout shift.");
+                referenceToggle.Checked = false;
+            }
+            Console.WriteLine("reference_icon_checked_square_background=ok");
+            Click(onionSkin);
+            Click(motionTrack);
+            AssertTimeline(onionClicks == 1 && motionClicks == 1
+                && scene.OnionSkinEnabled && strip.MotionTrackEnabled
+                && onionSkin.Checked == scene.OnionSkinEnabled
+                && motionTrack.Checked == strip.MotionTrackEnabled,
+                "Reference icon clicks did not mirror the editing state.");
+            Click(onionSkin);
+            Click(motionTrack);
+            AssertTimeline(onionClicks == 2 && motionClicks == 2
+                && onionSkin.Checked == scene.OnionSkinEnabled
+                && motionTrack.Checked == strip.MotionTrackEnabled,
+                "Reference icons failed to toggle back.");
+            strip.MotionTrackToggleAvailable = false;
+            strip.RefreshMotionTrackControls();
+            Click(motionTrack);
+            AssertTimeline(motionClicks == 2 && !motionTrack.Enabled,
+                "Unavailable motion icon emitted a toggle request.");
             var refresh = RequireMethod(
                 typeof(TimelineStrip),
                 "RefreshMotionTrackControls",
@@ -274,15 +385,65 @@ internal static partial class Benchmark
 
             foreach (var labels in labelSets)
             {
+                UiLocalization.SetLanguage(labels.Tag == "zh" ? UiLanguage.SimplifiedChinese : UiLanguage.English);
+                UiLocalization.Watch(strip);
                 autoKeyframe.Text = labels.AutoKeyframe;
-                motionTrack.Text = labels.MotionTrack;
-                onionSkin.Text = labels.OnionSkin;
+                motionTrack.AccessibleName = labels.MotionTrack;
+                onionSkin.AccessibleName = labels.OnionSkin;
 
-                foreach (var width in new[] { 1480, 1280, 1120, 1024, 900 })
+                Rectangle? pinnedOnionBounds = null;
+                Rectangle? pinnedMotionBounds = null;
+                foreach (var width in new[] { 1480, 1280, 1120, 1024, 960, 950, 900, 880, 861, 840, 765, 700, 600, 480, 420, 360 })
                 {
                     host.ClientSize = new Size(width, 200);
                     refresh.Invoke(strip, null);
                     Application.DoEvents();
+                    var onionBounds = onionSkin.Bounds;
+                    var motionBounds = motionTrack.Bounds;
+                    pinnedOnionBounds ??= onionBounds;
+                    pinnedMotionBounds ??= motionBounds;
+                    AssertTimeline(onionBounds == pinnedOnionBounds && motionBounds == pinnedMotionBounds
+                        && motionTrack.Left == autoKeyframe.Right + (int)Math.Round(8 * strip.DeviceDpi / 96f)
+                        && onionSkin.Left == motionTrack.Right,
+                        $"Reference toggles were not pinned beside Auto Key at width {width} ({labels.Tag}).");
+                    var rangeInputs = new[] { "_onionPreviousFrames", "_onionNextFrames" }
+                        .Select(name => (Control)RequireField(typeof(TimelineStrip), name).GetValue(strip)!).ToArray();
+                    var rangeBounds = rangeInputs.Select(input => input.Bounds).ToArray();
+                    var rangeVisible = rangeInputs.Select(input => input.Visible).ToArray();
+                    foreach (var enabled in new[] { true, false })
+                    {
+                        strip.MotionTrackEnabled = enabled;
+                        strip.MotionTrackRangeVisible = enabled;
+                        refresh.Invoke(strip, null);
+                        Application.DoEvents();
+                        AssertTimeline(onionSkin.Visible == (onionBounds.Right <= strip.ClientSize.Width)
+                            && onionSkin.Bounds == onionBounds
+                            && motionTrack.Bounds == motionBounds,
+                            $"Reference toggles moved or disappeared after a range-mode change at width {width} ({labels.Tag}).");
+                        AssertTimeline(rangeInputs.Select(input => input.Visible).SequenceEqual(rangeVisible)
+                            && rangeInputs.Select(input => input.Bounds).SequenceEqual(rangeBounds),
+                            $"Reference range inputs moved after a mode change at width {width} ({labels.Tag}).");
+                        foreach (var available in new[] { true, false })
+                        {
+                            strip.MotionTrackToggleAvailable = available;
+                            refresh.Invoke(strip, null);
+                            AssertTimeline(onionSkin.Bounds == onionBounds && motionTrack.Bounds == motionBounds,
+                                $"Reference toggles moved after availability changed at width {width} ({labels.Tag}).");
+                        }
+                        foreach (var button in new[] { onionSkin, motionTrack }.Where(button => button.Visible))
+                        {
+                            foreach (var point in new[]
+                            {
+                                new Point(button.Left + 1, button.Top + button.Height / 2),
+                                new Point(button.Left + button.Width / 2, button.Top + button.Height / 2),
+                                new Point(button.Right - 2, button.Top + button.Height / 2)
+                            })
+                            {
+                                AssertTimeline(ReferenceEquals(strip.GetChildAtPoint(point), button),
+                                    $"The {button.Icon} icon is blocked at width {width} ({labels.Tag}), range mode {enabled}.");
+                            }
+                        }
+                    }
 
                     // The toggle is the feature's only entry point, so it must survive every width.
                     AssertTimeline(
@@ -308,15 +469,93 @@ internal static partial class Benchmark
                                 + $"{placed[first].Control.Bounds} versus {placed[second].Control.Bounds}.");
                         }
                     }
+                    var headerControls = strip.Controls.Cast<Control>()
+                        .Where(control => control.Visible && control.Top < autoKeyframe.Bottom).ToArray();
+                    for (var first = 0; first < headerControls.Length; first++)
+                    {
+                        AssertTimeline(headerControls[first].Right <= strip.ClientSize.Width,
+                            $"A header control overflowed at width {width} ({labels.Tag}).");
+                        for (var second = first + 1; second < headerControls.Length; second++)
+                            AssertTimeline(!headerControls[first].Bounds.IntersectsWith(headerControls[second].Bounds),
+                                $"Header controls overlapped at width {width} ({labels.Tag}).");
+                    }
                 }
             }
         }
         finally
         {
             host.Close();
+            UiLocalization.SetLanguage(originalLanguage);
         }
 
         Console.WriteLine("motion_track_header_layout=ok");
+
+        static void Click(SvgToggleButton button)
+        {
+            if (button.Enabled)
+                RequireMethod(typeof(CheckBox), "OnClick", [typeof(EventArgs)]).Invoke(button, [EventArgs.Empty]);
+        }
+
+        static Rectangle VisiblePixels(Bitmap bitmap)
+        {
+            var visible = Rectangle.Empty;
+            for (var pixelY = 0; pixelY < bitmap.Height; pixelY++)
+                for (var pixelX = 0; pixelX < bitmap.Width; pixelX++)
+                    if (bitmap.GetPixel(pixelX, pixelY).A >= 32)
+                        visible = visible.IsEmpty ? new Rectangle(pixelX, pixelY, 1, 1)
+                            : Rectangle.Union(visible, new Rectangle(pixelX, pixelY, 1, 1));
+            return visible;
+        }
+    }
+
+    private static void RunMotionTrackBasicDrawingToggleRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            Size = new Size(1280, 800)
+        };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var toggle = (SvgToggleButton)RequireField(typeof(TimelineStrip), "_motionTrackToggle").GetValue(timeline)!;
+        var onion = (SvgToggleButton)RequireField(typeof(TimelineStrip), "_onionSkinToggle").GetValue(timeline)!;
+        var rebuild = RequireMethod(typeof(MainForm), "RebuildOnionSkinPreview");
+        var click = RequireMethod(typeof(CheckBox), "OnClick", [typeof(EventArgs)]);
+        form.Show();
+        Application.DoEvents();
+        try
+        {
+            rebuild.Invoke(form, null);
+            AssertTimeline(!toggle.Enabled && !toggle.Checked
+                && toggle.AccessibleDescription == UiLocalization.T("Place a symbol instance from the Vault in the current workspace to enable motion track."),
+                "A workspace without instances did not explain why motion track is disabled.");
+            var container = project.DrawingObjects[0];
+            var child = project.AddDrawingObject("Motion target");
+            child.Scene.AddObject(0, PointF.Empty, new SizeF(100, 80), 0, 0, Color.CornflowerBlue, 2, ShapeKind.Rectangle);
+            AssertTimeline(project.TryAddDrawingObjectInstance(container.Id, child.Id, new PointF(100, 100), out _),
+                "Basic Drawing motion-track fixture could not add an instance.");
+            rebuild.Invoke(form, null);
+            AssertTimeline(toggle.Enabled && timeline.MotionTrackToggleAvailable,
+                "Motion-track icon remained disabled after adding a Basic Drawing instance.");
+            click.Invoke(toggle, [EventArgs.Empty]);
+            AssertTimeline(toggle.Checked && timeline.MotionTrackEnabled && stage.MotionTrackVisible && onion.Checked,
+                "Clicking the Basic Drawing icon did not enable motion track alongside onion skin.");
+            click.Invoke(onion, [EventArgs.Empty]);
+            AssertTimeline(!onion.Checked && toggle.Checked && timeline.MotionTrackEnabled,
+                "Disabling onion skin also disabled motion track.");
+            click.Invoke(toggle, [EventArgs.Empty]);
+            AssertTimeline(!toggle.Checked && !timeline.MotionTrackEnabled,
+                "Basic Drawing motion-track icon did not turn off.");
+        }
+        finally
+        {
+            RequireField(typeof(MainForm), "_projectDirty").SetValue(form, false);
+            form.Hide();
+        }
+        Console.WriteLine("motion_track_basic_drawing_toggle=ok");
     }
 
     /// <summary>

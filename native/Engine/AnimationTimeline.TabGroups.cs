@@ -9,6 +9,11 @@ internal sealed partial class AnimationTimeline
     public const string AllTabGroupId = "all";
 
     private const int MaximumTabGroupNameLength = 80;
+    public const int MaximumCustomTabGroups = 32;
+    public bool CanCreateTabGroup => _tabGroups.Count < MaximumCustomTabGroups + 2;
+    public bool TabGroupOrderingEnabled { get; private set; }
+    internal Action? ApplyTabGroupLayerOrder { get; set; }
+    internal Action<string, string>? AssignTabGroupToLayerBlock { get; set; }
     private readonly List<TimelineTabGroup> _tabGroups = CreateDefaultTabGroups();
     private string _activeTabGroupId = DefaultTabGroupId;
 
@@ -21,11 +26,11 @@ internal sealed partial class AnimationTimeline
     public string CreateTabGroup(string name)
     {
         var normalized = NormalizeTabGroupName(name);
-        if (normalized.Length == 0) return string.Empty;
+        if (normalized.Length == 0 || !CanCreateTabGroup) return string.Empty;
 
         var id = NewTabGroupId();
         _tabGroups.Add(new TimelineTabGroup(id, normalized));
-        OnTabGroupsChanged();
+        OnTabGroupsChanged(applyLayerOrder: false);
         return id;
     }
 
@@ -38,8 +43,28 @@ internal sealed partial class AnimationTimeline
         if (string.Equals(_tabGroups[index].Name, normalized, StringComparison.Ordinal)) return false;
 
         _tabGroups[index] = _tabGroups[index] with { Name = normalized };
+        OnTabGroupsChanged(applyLayerOrder: false);
+        return true;
+    }
+
+    // IDs arrive in ascending order: the rightmost group is the topmost group.
+    public bool SetTabGroupOrder(IReadOnlyList<string> ids)
+    {
+        if (ids.Count != _tabGroups.Count || ids.Distinct(StringComparer.Ordinal).Count() != ids.Count
+            || ids.Any(id => !IsKnownTabGroupId(id))) return false;
+        if (TabGroupOrderingEnabled && ids.SequenceEqual(_tabGroups.Select(group => group.Id))) return false;
+        var byId = _tabGroups.ToDictionary(group => group.Id, StringComparer.Ordinal);
+        _tabGroups.Clear();
+        _tabGroups.AddRange(ids.Select(id => byId[id]));
+        TabGroupOrderingEnabled = true;
         OnTabGroupsChanged();
         return true;
+    }
+
+    internal int TabGroupOrdinal(string id) => Math.Max(0, FindTabGroupIndex(id));
+    internal void RefreshTabGroupLayerOrder()
+    {
+        if (TabGroupOrderingEnabled) OnTabGroupsChanged();
     }
 
     public bool SetTabGroupColor(string id, int? colorArgb)
@@ -49,7 +74,7 @@ internal sealed partial class AnimationTimeline
         if (index < 0 || _tabGroups[index].ColorArgb == normalized) return false;
 
         _tabGroups[index] = _tabGroups[index] with { ColorArgb = normalized };
-        OnTabGroupsChanged();
+        OnTabGroupsChanged(applyLayerOrder: false);
         return true;
     }
 
@@ -96,6 +121,12 @@ internal sealed partial class AnimationTimeline
         var track = FindTrack(trackId);
         if (track is null || string.Equals(track.TabGroupId, groupId, StringComparison.Ordinal)) return false;
         track.TabGroupId = groupId;
+        if (TabGroupOrderingEnabled && !_applyingTabGroupOrder)
+        {
+            _applyingTabGroupOrder = true;
+            try { AssignTabGroupToLayerBlock?.Invoke(track.TargetId, groupId); }
+            finally { _applyingTabGroupOrder = false; }
+        }
         OnTabGroupsChanged();
         return true;
     }
@@ -110,17 +141,19 @@ internal sealed partial class AnimationTimeline
         if (string.Equals(_activeTabGroupId, groupId, StringComparison.Ordinal)) return false;
 
         _activeTabGroupId = groupId;
-        OnTabGroupsChanged();
+        OnTabGroupsChanged(applyLayerOrder: false);
         return true;
     }
 
     private bool ResetTabGroups()
     {
         var changed = !string.Equals(_activeTabGroupId, DefaultTabGroupId, StringComparison.Ordinal)
+            || TabGroupOrderingEnabled
             || !_tabGroups.SequenceEqual(CreateDefaultTabGroups());
         _tabGroups.Clear();
         _tabGroups.AddRange(CreateDefaultTabGroups());
         _activeTabGroupId = DefaultTabGroupId;
+        TabGroupOrderingEnabled = false;
         return changed;
     }
 
@@ -152,6 +185,15 @@ internal sealed partial class AnimationTimeline
                 _tabGroups.Add(new TimelineTabGroup(group.Id, name, NormalizeTabGroupColor(group.ColorArgb)));
             }
         }
+        // Preserve array order, including movable built-in groups. Missing built-ins
+        // keep their legacy defaults; old projects are not silently reordered.
+        var order = supplied.Where(group => group is not null && !string.IsNullOrWhiteSpace(group.Id)).Select(group => group.Id)
+            .Distinct(StringComparer.Ordinal).Select((id, index) => (id, index))
+            .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
+        _tabGroups.Sort((left, right) =>
+            order.GetValueOrDefault(left.Id, -2 + (left.Id == TerrainTabGroupId ? 1 : 0))
+                .CompareTo(order.GetValueOrDefault(right.Id, -2 + (right.Id == TerrainTabGroupId ? 1 : 0))));
+        TabGroupOrderingEnabled = snapshot.TabGroupOrderingEnabled;
 
         var requestedActiveGroupId = snapshot.ActiveTabGroupId ?? DefaultTabGroupId;
         _activeTabGroupId = string.Equals(requestedActiveGroupId, AllTabGroupId, StringComparison.Ordinal)
@@ -228,5 +270,16 @@ internal sealed partial class AnimationTimeline
         return id;
     }
 
-    private void OnTabGroupsChanged() => TabGroupsChanged?.Invoke(this, EventArgs.Empty);
+    private bool _applyingTabGroupOrder;
+    private void OnTabGroupsChanged(bool applyLayerOrder = true)
+    {
+        if (_applyingTabGroupOrder) return;
+        if (TabGroupOrderingEnabled && applyLayerOrder)
+        {
+            _applyingTabGroupOrder = true;
+            try { ApplyTabGroupLayerOrder?.Invoke(); }
+            finally { _applyingTabGroupOrder = false; }
+        }
+        TabGroupsChanged?.Invoke(this, EventArgs.Empty);
+    }
 }

@@ -8,49 +8,45 @@ internal static partial class Theme
     private sealed class RoundedControlState
     {
         private readonly Control _control;
-        private Region? _appliedRegion;
 
         internal RoundedControlState(Control control)
         {
             _control = control;
-            control.Resize += RefreshRegion;
-            control.Disposed += (_, _) =>
-            {
-                control.Resize -= RefreshRegion;
-                RestoreRegion();
-            };
-            ApplyRegion();
+            // Only ordinary buttons need a paint adapter. Custom controls draw their
+            // own surfaces; containers, content and splitters must never be clipped.
+            if (control is Button and not SvgIconButton) control.Paint += PaintButton;
         }
 
         internal void Refresh()
         {
             if (_control.IsDisposed) return;
-            if (UsesRoundedCorners) ApplyRegion();
-            else RestoreRegion();
+            _control.Invalidate();
         }
 
-        private void RefreshRegion(object? sender, EventArgs args) => Refresh();
-
-        private void ApplyRegion()
+        private void PaintButton(object? sender, PaintEventArgs e)
         {
-            if (!UsesRoundedCorners || _control.Width <= 0 || _control.Height <= 0) return;
-            if (_appliedRegion is not null && !ReferenceEquals(_control.Region, _appliedRegion)) return;
-            if (_appliedRegion is null && _control.Region is not null) return;
-            var path = CreateUiOutline(new RectangleF(0, 0, _control.Width, _control.Height), _control.DeviceDpi);
-            var nextRegion = new Region(path);
-            var previousRegion = _appliedRegion;
-            _appliedRegion = nextRegion;
-            _control.Region = nextRegion;
-            if (previousRegion is not null) previousRegion.Dispose();
-        }
-
-        private void RestoreRegion()
-        {
-            if (_appliedRegion is null) return;
-            var appliedRegion = _appliedRegion;
-            _appliedRegion = null;
-            if (!_control.IsDisposed && ReferenceEquals(_control.Region, appliedRegion)) _control.Region = null;
-            appliedRegion.Dispose();
+            if (!UsesRoundedCorners || _control is not Button button) return;
+            var parentBackground = GetCornerBackground(button);
+            using var outside = new SolidBrush(parentBackground);
+            e.Graphics.FillRectangle(outside, button.ClientRectangle);
+            using var fill = new SolidBrush(button.BackColor);
+            using var border = new Pen(button.FlatAppearance.BorderColor, Math.Max(1f, button.DeviceDpi / 96f));
+            PaintUiSurface(e.Graphics, fill, button.FlatAppearance.BorderSize > 0 ? border : null, button.ClientRectangle);
+            var textBounds = Rectangle.Inflate(button.ClientRectangle, -4, -2);
+            var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis
+                | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform;
+            flags |= button.TextAlign is ContentAlignment.MiddleLeft or ContentAlignment.TopLeft or ContentAlignment.BottomLeft
+                ? TextFormatFlags.Left
+                : button.TextAlign is ContentAlignment.MiddleRight or ContentAlignment.TopRight or ContentAlignment.BottomRight
+                    ? TextFormatFlags.Right : TextFormatFlags.HorizontalCenter;
+            if (!button.UseMnemonic) flags |= TextFormatFlags.NoPrefix;
+            if (!SystemInformation.MenuAccessKeysUnderlined && !button.Focused) flags |= TextFormatFlags.HidePrefix;
+            if (button.RightToLeft == RightToLeft.Yes) flags |= TextFormatFlags.RightToLeft;
+            TextRenderer.DrawText(e.Graphics, button.Text, button.Font, textBounds,
+                ReadableText(button.BackColor, button.Enabled ? button.ForeColor : DisabledText), flags);
+            if (button.Focused)
+                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(button.ClientRectangle, -4, -4),
+                    ReadableUiColor(button.BackColor, AccentLabel), button.BackColor);
         }
     }
 
@@ -59,16 +55,12 @@ internal static partial class Theme
     internal static void RegisterCornerStyles(Control root)
     {
         if (root.IsDisposed) return;
-        if (root is not Form)
+        if (root is Button and not SvgIconButton)
             RoundedControls.GetValue(root, static control => new RoundedControlState(control));
 
-        if (root is Control container)
-        {
-            container.ControlAdded -= RegisterCornerStyleOnAdded;
-            container.ControlAdded += RegisterCornerStyleOnAdded;
-        }
+        root.ControlAdded -= RegisterCornerStyleOnAdded;
+        root.ControlAdded += RegisterCornerStyleOnAdded;
         foreach (Control child in root.Controls) RegisterCornerStyles(child);
-        if (root is ToolStrip strip) RegisterToolStripCorners(strip);
     }
 
     private static void RegisterCornerStyleOnAdded(object? sender, ControlEventArgs args)
@@ -81,12 +73,6 @@ internal static partial class Theme
         for (var parent = control.Parent; parent is not null; parent = parent.Parent)
             if (parent.BackColor != Color.Transparent && parent.BackColor.A > 0) return parent.BackColor;
         return SystemColors.Control;
-    }
-
-    internal static void RegisterToolStripCorners(ToolStrip strip)
-    {
-        if (strip.IsDisposed || RoundedControls.TryGetValue(strip, out _)) return;
-        RoundedControls.GetValue(strip, static control => new RoundedControlState(control));
     }
 
     internal static bool UsesRoundedCorners => CornerStyle == WindowCornerStyle.SubtleRounded && !SystemInformation.HighContrast;
@@ -140,6 +126,32 @@ internal static partial class Theme
         finally { graphics.Restore(saved); }
     }
 
+    // Keep the complete hit rectangle. The stroke is inset so neither its straight
+    // edges nor its antialiased corners are cut off by the control's client bounds.
+    internal static void PaintUiSurface(Graphics graphics, Brush fill, Pen? border, Rectangle bounds)
+    {
+        if (!UsesRoundedCorners)
+        {
+            graphics.FillRectangle(fill, bounds);
+            if (border is not null) graphics.DrawRectangle(border, bounds.X, bounds.Y,
+                Math.Max(0, bounds.Width - 1), Math.Max(0, bounds.Height - 1));
+            return;
+        }
+        var inset = border?.Width / 2f ?? 0f;
+        var surface = new RectangleF(bounds.X + inset, bounds.Y + inset,
+            bounds.Width - inset * 2f, bounds.Height - inset * 2f);
+        if (surface.Width <= 0 || surface.Height <= 0) return;
+        using var outline = CreateUiOutline(surface, graphics.DpiX);
+        var saved = graphics.Save();
+        try
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.FillPath(fill, outline);
+            if (border is not null) graphics.DrawPath(border, outline);
+        }
+        finally { graphics.Restore(saved); }
+    }
+
     internal static void PaintControlCorners(Control control, Graphics graphics, Rectangle bounds, Color background, Color? border)
     {
         if (!UsesRoundedCorners || bounds.Width <= 2 || bounds.Height <= 2) return;
@@ -147,9 +159,12 @@ internal static partial class Theme
         var saved = graphics.Save();
         try
         {
-            graphics.SetClip(outline, CombineMode.Exclude);
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var outside = new GraphicsPath(FillMode.Alternate);
+            outside.AddRectangle(bounds);
+            outside.AddPath(outline, false);
             using var fill = new SolidBrush(background);
-            graphics.FillRectangle(fill, bounds);
+            graphics.FillPath(fill, outside);
         }
         finally { graphics.Restore(saved); }
         if (border is not { } borderColor) return;

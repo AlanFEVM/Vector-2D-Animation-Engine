@@ -607,5 +607,7 @@ internal sealed partial class VectorScene : ITimelineContext
     public VectorScene()
     {
         Timeline.Changed += (_, _) => InvalidateQueryActiveKeyframes();
+        Timeline.ApplyTabGroupLayerOrder = ApplyTabGroupLayerOrder;
+        Timeline.AssignTabGroupToLayerBlock = AssignTabGroupToLayerBlock;
     }
 }

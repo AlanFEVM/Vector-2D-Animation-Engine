@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 
 namespace VectorAnimationEngine;
@@ -135,11 +135,17 @@ internal static partial class Benchmark
 
         RunFixedStepBatchRegression();
         RunPlaybackSchedulerCoalescingRegression();
+        RunTimelinePaintClippingRegression();
+        RunTimelineNativeResizeRegression();
+        RunTimelineBottomEdgeRegression();
         RunDenseTimelinePlaybackUiRegression();
         RunTimelineEditingHighlightRegression();
         RunNewLayerFrameSelectionRegression();
+        RunTimelineFolderLayerHeaderButtonRegression();
+        RunTimelineFolderDisclosureDoubleClickRegression();
         RunTimelineExposureRegression();
         RunTimelineTweenRegression();
+        RunShortcutProfileExpansionRegression();
         RunTimelineShortcutAdvanceRegression();
         RunTimelineTailKeyframeInsertionRegression();
         RunTimelineUndoPlayheadRegression();
@@ -152,6 +158,7 @@ internal static partial class Benchmark
         RunTimelineTrackSynchronizationRegression();
         RunTimelineSnapshotRegression();
         RunTimelineTabGroupRegression();
+        RunTimelineTabGroupOrderRegression();
         RunSceneShotRegression();
         RunSceneShotTimelineRegression();
         RunShotFramingGizmoRegression();
@@ -246,6 +253,24 @@ internal static partial class Benchmark
                 "Terrain tab filtering retained ordinary layers or hidden frame selections.");
             timeline.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
             AssertTimeline(Rows().Length == scene.LayerCount, "All layers tab did not restore the full timeline list.");
+            var getItemColor = RequireMethod(typeof(TimelineStrip), "GetLayerItemColor", [typeof(int)]);
+            Color ItemColor(string targetId) => (Color)getItemColor.Invoke(strip, [timeline.Tracks.ToList().FindIndex(item => item.TargetId == targetId)])!;
+            AssertTimeline(ItemColor(track.TargetId).ToArgb() == groupColor
+                && ItemColor(scene.LayerIds[firstTerrain]).ToArgb() == terrainColor
+                && ItemColor(scene.LayerIds[secondTerrain]).ToArgb() == terrainColor,
+                "All view did not use consistent custom group colours.");
+            timeline.SetActiveTabGroup(AnimationTimeline.TerrainTabGroupId);
+            AssertTimeline(ItemColor(scene.LayerIds[firstTerrain]) == scene.GetLayerColor(firstTerrain)
+                && ItemColor(scene.LayerIds[secondTerrain]) == scene.GetLayerColor(secondTerrain),
+                "Individual group view replaced original layer colours.");
+            timeline.SetActiveTabGroup(AnimationTimeline.DefaultTabGroupId);
+            AssertTimeline(ItemColor(scene.LayerIds[0]) == scene.GetLayerColor(0), "Layers view changed the layer colour presentation.");
+            timeline.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
+            timeline.SetTabGroupColor(AnimationTimeline.TerrainTabGroupId, null);
+            var fallback = ItemColor(scene.LayerIds[firstTerrain]);
+            AssertTimeline(ItemColor(scene.LayerIds[secondTerrain]) == fallback, "Group fallback differed between member layers.");
+            timeline.SetTabGroupColor(AnimationTimeline.TerrainTabGroupId, terrainColor);
+
         }
         AssertTimeline(modelChanged == 0
             && scene.GeometryRevision == geometryRevision && scene.ActiveContentRevision == contentRevision
@@ -314,6 +339,259 @@ internal static partial class Benchmark
             && editorTimeline.Context.Timeline.TabGroups.Single(item => item.Id == AnimationTimeline.DefaultTabGroupId).ColorArgb is null,
             "Tab group color editing did not undo independently of group creation.");
         Console.WriteLine("timeline_tab_groups=ok");
+    }
+
+    private static void RunTimelineTabGroupOrderRegression()
+    {
+        var project = VectorProject.CreateEmpty();
+        var drawing = project.DrawingObjects[0];
+        var scene = drawing.Scene;
+        scene.CreateEmpty(4, 8);
+        var originalIds = scene.LayerIds.ToArray();
+        for (var layer = 0; layer < 4; layer++)
+            scene.AddObject(layer, PointF.Empty, new SizeF(60, 60), 0, 0, Color.Coral, 10, ShapeKind.Rectangle);
+        var timeline = scene.Timeline;
+        var low = timeline.CreateTabGroup("Background");
+        var high = timeline.CreateTabGroup("Foreground");
+        var stableTrack = timeline.FindTrackByTargetId(originalIds[2])!;
+        timeline.InsertKeyframe(stableTrack.Id, 4);
+        timeline.SetTrackTabGroup(timeline.Tracks[0].Id, low);
+        timeline.SetTrackTabGroup(timeline.Tracks[1].Id, high);
+        timeline.SetTrackTabGroup(timeline.Tracks[2].Id, low);
+        timeline.SetTrackTabGroup(timeline.Tracks[3].Id, high);
+        var order = new[] { AnimationTimeline.DefaultTabGroupId, AnimationTimeline.TerrainTabGroupId, low, high };
+        AssertTimeline(!timeline.SetTabGroupOrder([low, low, high, "missing"])
+            && timeline.SetTabGroupOrder(order) && !timeline.SetTabGroupOrder(order),
+            "Group order did not validate a full ID permutation or reject a no-op.");
+        var expected = new[] { originalIds[1], originalIds[3], originalIds[0], originalIds[2] };
+        AssertTimeline(scene.LayerIds.SequenceEqual(expected)
+            && timeline.FindTrack(stableTrack.Id)?.Keyframes.Any(key => key.Frame == 4) == true,
+            "Group sorting lost stable tracks, keys, or within-group layer order.");
+        using (var strip = new TimelineStrip(drawing) { Size = new Size(800, 280) })
+        {
+            timeline.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
+            var rows = (IEnumerable<int>)RequireMethod(typeof(TimelineStrip), "VisibleTrackIndices", Type.EmptyTypes).Invoke(strip, null)!;
+            AssertTimeline(rows.Select(index => timeline.Tracks[index].TargetId).SequenceEqual(expected),
+                "All view did not match the group stacking order.");
+            using var dialog = new TimelineTabGroupOrderDialog(timeline, scene.LayerIds.Select((id, index) => (id, index))
+                .ToDictionary(item => item.id, item => scene.LayerNames[item.index]));
+            AssertTimeline(dialog.OrderedIds.SequenceEqual(order), "The order dialog did not use model order.");
+            RequireField(typeof(TimelineTabGroupOrderDialog), "_selectedId").SetValue(dialog, high);
+            RequireMethod(typeof(TimelineTabGroupOrderDialog), "MoveSelected", [typeof(int)]).Invoke(dialog, [-1]);
+            AssertTimeline(dialog.OrderedIds.SequenceEqual([AnimationTimeline.DefaultTabGroupId, AnimationTimeline.TerrainTabGroupId, high, low])
+                && timeline.TabGroups.Select(group => group.Id).SequenceEqual(order),
+                "Dialog movement mutated the live timeline before confirmation.");
+        }
+        var renderOrder = new SceneRenderOrderBuffer();
+        renderOrder.Collect(scene, new RectangleF(-100, -100, 200, 200), 0);
+        var drawn = new List<string>();
+        renderOrder.Draw(scene, int.MaxValue, index => drawn.Add(scene.LayerIds[scene.ObjectLayer[index]]), _ => { });
+        AssertTimeline(drawn.SequenceEqual(expected.Reverse()), "Stage paint order did not place larger group ordinals on top.");
+        var snapshot = scene.CreateSnapshot();
+        timeline.SetTabGroupOrder(order.Reverse().ToArray());
+        scene.RestoreSnapshot(snapshot);
+        AssertTimeline(scene.LayerIds.SequenceEqual(expected) && timeline.TabGroups.Select(group => group.Id).SequenceEqual(order),
+            "Group snapshot restore lost built-in order or layer stacking.");
+        var root = CreateTemporaryDirectory("timeline-group-order");
+        try
+        {
+            var path = Path.Combine(root, "Ordered.v2dProject");
+            ProjectVaultStore.Save(project, path);
+            var loaded = ProjectVaultStore.Load(path).DrawingObjects[0].Scene;
+            AssertTimeline(loaded.Timeline.TabGroupOrderingEnabled && loaded.LayerIds.SequenceEqual(expected)
+                && loaded.Timeline.TabGroups.Select(group => group.Id).SequenceEqual(order),
+                "Save/Open lost group order or stage layer order.");
+        }
+        finally { DeleteTemporaryDirectory(root); }
+        timeline.SetActiveTabGroup(low);
+        var added = scene.AddLayer("New background layer");
+        AssertTimeline(timeline.FindTrackByTargetId(scene.LayerIds[added])?.TabGroupId == low
+            && scene.LayerIds.Take(2).SequenceEqual(expected.Take(2)), "New layers escaped their group ordering.");
+        var folder = scene.AddFolderLayer("Background folder");
+        var folderId = scene.LayerIds[folder];
+        var folderTrack = timeline.FindTrackByTargetId(folderId)!;
+        timeline.SetTrackTabGroup(folderTrack.Id, high);
+        AssertTimeline(scene.LayerParentIds.Count(id => id == folderId) == 1
+            && timeline.Tracks.Where(track => scene.LayerParentIds[Array.IndexOf(scene.LayerIds, track.TargetId)] == folderId)
+                .All(track => track.TabGroupId == high), "A folder was split across groups.");
+        var mask = scene.AddMaskLayer("Linked mask");
+        var maskId = scene.LayerIds[mask];
+        var maskTrack = timeline.FindTrackByTargetId(maskId)!;
+        timeline.SetTrackTabGroup(maskTrack.Id, low);
+        AssertTimeline(scene.LayerMaskIds.Any(id => id == maskId), "Group sorting lost a mask link.");
+
+        var composition = project.Scenes[0];
+        var firstSceneId = composition.Layers[0].Id;
+        var secondSceneLayer = composition.AddLayer(project, "Upper scene layer");
+        var sceneTimeline = composition.Timeline;
+        var sceneHigh = sceneTimeline.CreateTabGroup("Scene foreground");
+        sceneTimeline.SetTrackTabGroup(sceneTimeline.FindTrackByTargetId(secondSceneLayer.Id)!.Id, sceneHigh);
+        sceneTimeline.SetTabGroupOrder([AnimationTimeline.DefaultTabGroupId, AnimationTimeline.TerrainTabGroupId, sceneHigh]);
+        AssertTimeline(composition.Layers.Select(layer => layer.Id).SequenceEqual([secondSceneLayer.Id, firstSceneId]),
+            "Scene Building group sorting did not reorder scene layers.");
+        AssertTimeline(project.TryAddSceneInstance(composition.Id, drawing.Id, PointF.Empty, 0, firstSceneId, out var lowerInstance)
+            && lowerInstance is not null, "Could not create the lower group composition fixture.");
+        AssertTimeline(project.TryAddSceneInstance(composition.Id, drawing.Id, PointF.Empty, 0, secondSceneLayer.Id, out var upperInstance)
+            && upperInstance is not null, "Could not create the upper group composition fixture.");
+        var flattened = new VectorScene();
+        var owners = SceneCompositionBuilder.Build(flattened, composition, project.DrawingObjects, 0);
+        var flattenedOrder = new SceneRenderOrderBuffer();
+        flattenedOrder.Collect(flattened, new RectangleF(-100, -100, 200, 200), 0);
+        var instancePaintOrder = new List<string>();
+        flattenedOrder.Draw(flattened, int.MaxValue, index => instancePaintOrder.Add(owners.ObjectOwners[index].RootInstanceId), _ => { });
+        AssertTimeline(instancePaintOrder.Count > 0 && instancePaintOrder[^1] == upperInstance!.Id
+            && instancePaintOrder[0] == lowerInstance!.Id, "Scene group stacking lost composition paint order or owner provenance.");
+        var restarted = VectorProject.RestoreRestartSnapshot(project.CreateRestartSnapshot());
+        AssertTimeline(restarted.Scenes[0].Timeline.TabGroupOrderingEnabled
+            && restarted.Scenes[0].Layers.Select(layer => layer.Id).SequenceEqual(composition.Layers.Select(layer => layer.Id)),
+            "Restart restore lost Scene Building group ordering.");
+        composition.AddMaskLayer(project, secondSceneLayer.Id);
+        var sceneMask = composition.Layers.First(layer => layer.Kind == SceneLayerKind.Mask);
+        sceneTimeline.SetTrackTabGroup(sceneTimeline.FindTrackByTargetId(secondSceneLayer.Id)!.Id, sceneHigh);
+        AssertTimeline(sceneTimeline.FindTrackByTargetId(sceneMask.Id)?.TabGroupId == sceneHigh,
+            "Scene mask/content assignment did not move together.");
+
+        var limit = new AnimationTimeline();
+        for (var index = 0; index < 32; index++) AssertTimeline(limit.CreateTabGroup($"Group {index}").Length > 0, "A permitted group was rejected.");
+        AssertTimeline(!limit.CanCreateTabGroup && limit.CreateTabGroup("Overflow").Length == 0 && limit.TabGroups.Count == 34,
+            "The 32 custom-group limit was not enforced.");
+        limit.RemoveTabGroup(limit.TabGroups[^1].Id);
+        AssertTimeline(limit.CanCreateTabGroup && limit.CreateTabGroup("Replacement").Length > 0, "Deleting a group did not release capacity.");
+
+        using var form = new MainForm();
+        var editor = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var editorGroups = editor.Context.Timeline.TabGroups.Select(group => group.Id).ToArray();
+        RequireMethod(typeof(MainForm), "BeginTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        editor.Context.Timeline.SetTabGroupOrder(editorGroups.Reverse().ToArray());
+        RequireMethod(typeof(MainForm), "CompleteTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+            && !editor.Context.Timeline.TabGroupOrderingEnabled
+            && editor.Context.Timeline.TabGroups.Select(group => group.Id).SequenceEqual(editorGroups),
+            "Group ordering did not undo as one editor command.");
+        var formProject = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var editorScene = formProject.Scenes[0];
+        editorScene.AddLayer(formProject, "Undo second layer");
+        var sceneLayerIds = editorScene.Layers.Select(layer => layer.Id).ToArray();
+        editor.BindContext(editorScene);
+        var editorGroup = editorScene.Timeline.CreateTabGroup("Undo scene order");
+        editorScene.Timeline.SetTrackTabGroup(editorScene.Timeline.Tracks[0].Id, editorGroup);
+        RequireMethod(typeof(MainForm), "BeginTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        editorScene.Timeline.SetTabGroupOrder(editorScene.Timeline.TabGroups.Select(group => group.Id).ToArray());
+        RequireMethod(typeof(MainForm), "CompleteTimelineTabGroupEdit", Type.EmptyTypes).Invoke(form, null);
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+            && !editorScene.Timeline.TabGroupOrderingEnabled
+            && editorScene.Layers.Select(layer => layer.Id).SequenceEqual(sceneLayerIds),
+            "Scene group ordering did not restore the scene layer snapshot on undo.");
+        RunTimelineTabGroupBarDragRegression();
+        Console.WriteLine("timeline_tab_group_order=ok");
+    }
+
+    private static void RunTimelineTabGroupBarDragRegression()
+    {
+        var drawing = VectorProject.CreateEmpty().DrawingObjects[0];
+        var scene = drawing.Scene;
+        scene.CreateEmpty(2, 8);
+        var ids = scene.LayerIds.ToArray();
+        var timeline = scene.Timeline;
+        var first = timeline.CreateTabGroup("First");
+        var second = timeline.CreateTabGroup("Second");
+        timeline.SetTrackTabGroup(timeline.Tracks[0].Id, first);
+        timeline.SetTrackTabGroup(timeline.Tracks[1].Id, second);
+        var original = timeline.TabGroups.Select(group => group.Id).ToArray();
+        timeline.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
+        using var host = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000), ClientSize = new Size(800, 280) };
+        using var strip = new TimelineStrip(drawing) { Dock = DockStyle.Fill };
+        host.Controls.Add(strip);
+        host.Show();
+        Application.DoEvents();
+        var starts = 0;
+        var completes = 0;
+        strip.TabGroupEditStarting += (_, _) => starts++;
+        strip.TabGroupEditCompleted += (_, _) => completes++;
+        var initialLayout = RequireMethod(typeof(TimelineStrip), "BuildTabGroupLayout", Type.EmptyTypes).Invoke(strip, null)!;
+        var initialTabs = (System.Collections.IEnumerable)initialLayout.GetType().GetProperty("VisibleTabs")!.GetValue(initialLayout)!;
+        var lastTabRight = initialTabs.Cast<object>().Max(tab => ((Rectangle)tab.GetType().GetProperty("Bounds")!.GetValue(tab)!).Right);
+        var addButton = (Control)RequireField(typeof(TimelineStrip), "_tabGroupAddButton").GetValue(strip)!;
+        var settingsButton = (SvgIconButton)RequireField(typeof(TimelineStrip), "_tabGroupOrderButton").GetValue(strip)!;
+        AssertTimeline(addButton.Left > lastTabRight && addButton.Left - lastTabRight <= 8
+            && settingsButton.Right <= strip.Width && settingsButton.Left > addButton.Right && addButton.Top == initialTabs.Cast<object>().Select(tab => (Rectangle)tab.GetType().GetProperty("Bounds")!.GetValue(tab)!).Last().Top,
+            "Group add/settings controls did not follow their tab/end anchors.");
+        Rectangle Bounds(string id)
+        {
+            var snapshot = RequireMethod(typeof(TimelineStrip), "BuildTabGroupLayout", Type.EmptyTypes).Invoke(strip, null)!;
+            var tabs = (System.Collections.IEnumerable)snapshot.GetType().GetProperty("VisibleTabs")!.GetValue(snapshot)!;
+            foreach (var tab in tabs)
+                if ((string)tab!.GetType().GetProperty("Id")!.GetValue(tab)! == id)
+                {
+                    if (id == first || id == second)
+                        AssertTimeline((string)tab.GetType().GetProperty("Name")!.GetValue(tab)! == (id == first ? "First" : "Second"),
+                            "Group tabs displayed an ordinal instead of the group name.");
+                    return (Rectangle)tab.GetType().GetProperty("Bounds")!.GetValue(tab)!;
+                }
+            throw new InvalidOperationException($"Expected visible group {id}.");
+        }
+        Point Center(string id) { var b = Bounds(id); return new Point(b.Left + b.Width / 2, b.Top + b.Height / 2); }
+        void Mouse(string name, Point point) => RequireMethod(typeof(TimelineStrip), name, [typeof(MouseEventArgs)])
+            .Invoke(strip, [new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0)]);
+        void Begin(string id, Point target) { Mouse("OnMouseDown", Center(id)); Mouse("OnMouseMove", target); }
+        var target = new Point(Bounds(second).Right - 1, Center(second).Y);
+        Begin(first, target);
+        AssertTimeline(timeline.TabGroups.Select(group => group.Id).SequenceEqual(original)
+            && scene.LayerIds.SequenceEqual(ids), "Tab drag mutated stacking before release.");
+        Mouse("OnMouseUp", target);
+        AssertTimeline(timeline.TabGroups.Select(group => group.Id).SequenceEqual([original[0], original[1], second, first])
+            && scene.LayerIds.SequenceEqual(ids) && starts == 1 && completes == 1
+            && timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId,
+            "Dragging a timeline tab did not commit one command or preserve the All view.");
+        target = new Point(Bounds(second).Left + 1, Center(second).Y);
+        Begin(first, target);
+        Mouse("OnMouseUp", target);
+        AssertTimeline(timeline.TabGroups.Select(group => group.Id).SequenceEqual(original)
+            && scene.LayerIds.SequenceEqual(ids.Reverse()), "Dragging left did not lower the group on the stage.");
+        var committed = starts;
+        Mouse("OnMouseMove", Center(first));
+        AssertTimeline(((string)RequireField(typeof(TimelineStrip), "_tabGroupToolTipText").GetValue(strip)!).StartsWith("3 · First", StringComparison.Ordinal),
+            "Group ordinal was missing from the hover tip.");
+        Begin(first, new Point(Bounds(second).Right - 1, Center(second).Y));
+        RequireMethod(typeof(TimelineStrip), "OnKeyDown", [typeof(KeyEventArgs)]).Invoke(strip, [new KeyEventArgs(Keys.Escape)]);
+        Mouse("OnMouseUp", target);
+        AssertTimeline(starts == committed && timeline.TabGroups.Select(group => group.Id).SequenceEqual(original),
+            "Esc did not cancel the timeline tab drag.");
+        Begin(first, new Point(Bounds(second).Right - 1, Center(second).Y));
+        strip.Capture = false;
+        AssertTimeline(starts == committed && RequireField(typeof(TimelineStrip), "_pressedTabGroupId").GetValue(strip) is null,
+            "Lost capture left a pending tab drag.");
+        Begin(first, new Point(Bounds(second).Right - 1, Center(second).Y));
+        Mouse("OnMouseUp", new Point(100, 200));
+        AssertTimeline(starts == committed && timeline.TabGroups.Select(group => group.Id).SequenceEqual(original),
+            "Releasing outside the tab bar committed a reorder.");
+        Mouse("OnMouseDown", Center(second));
+        Mouse("OnMouseUp", Center(second));
+        AssertTimeline(timeline.ActiveTabGroupId == second && starts == committed, "A tab click no longer selected the filter.");
+        Mouse("OnMouseDown", Center(AnimationTimeline.AllTabGroupId));
+        Mouse("OnMouseMove", Center(first));
+        Mouse("OnMouseUp", Center(first));
+        AssertTimeline(timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId && starts == committed,
+            "All participated in tab ordering.");
+        for (var index = 2; index < 32; index++) timeline.CreateTabGroup($"Long group {index}");
+        host.ClientSize = new Size(360, 280);
+        strip.PerformLayout();
+        var beforeOverflowDrag = timeline.TabGroups.Select(group => group.Id).ToArray();
+        Begin(AnimationTimeline.DefaultTabGroupId, new Point(260, Center(AnimationTimeline.DefaultTabGroupId).Y));
+        var scroll = RequireMethod(typeof(TimelineStrip), "ScrollTabGroupsDuringDrag", Type.EmptyTypes);
+        for (var index = 0; index < 40; index++) scroll.Invoke(strip, null);
+        Mouse("OnMouseUp", new Point(260, Center(AnimationTimeline.AllTabGroupId).Y));
+        AssertTimeline(timeline.TabGroups[^1].Id == AnimationTimeline.DefaultTabGroupId && starts == committed + 1,
+            "Tab edge scrolling did not allow moving a group beyond hidden tabs.");
+        timeline.SetActiveTabGroup(AnimationTimeline.DefaultTabGroupId);
+        var visibleLast = Center(AnimationTimeline.DefaultTabGroupId);
+        Begin(AnimationTimeline.DefaultTabGroupId, new Point(Bounds(AnimationTimeline.AllTabGroupId).Right + 1, visibleLast.Y));
+        for (var index = 0; index < 40; index++) scroll.Invoke(strip, null);
+        Mouse("OnMouseUp", new Point(Bounds(AnimationTimeline.AllTabGroupId).Right + 1, visibleLast.Y));
+        AssertTimeline(timeline.TabGroups.Select(group => group.Id).SequenceEqual(beforeOverflowDrag),
+            "Tab edge scrolling did not restore the group to the left end.");
+        Console.WriteLine("timeline_tab_group_bar_drag=ok");
     }
 
     private static void RunFixedStepBatchRegression()
@@ -385,6 +663,195 @@ internal static partial class Benchmark
 
         Console.WriteLine($"timeline_playback_scheduler_interval_ms={MainForm.PlaybackSchedulerIntervalMilliseconds}");
         Console.WriteLine("timeline_playback_tick_gate=ok");
+    }
+
+    private static void RunTimelinePaintClippingRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(16, 120);
+        using var strip = new TimelineStrip(scene);
+        var onPaint = RequireMethod(typeof(TimelineStrip), "OnPaint");
+        var sentinel = Color.Magenta.ToArgb();
+        foreach (var size in new[] { new Size(1280, 192), new Size(1280, 460), new Size(760, 222), new Size(360, 340), new Size(1280, 192) })
+        {
+            strip.Size = size;
+            strip.RefreshTimelineForHeightResize();
+            strip.PerformLayout();
+            using var complete = new Bitmap(size.Width, size.Height);
+            using (var graphics = Graphics.FromImage(complete))
+            {
+                using var paint = new PaintEventArgs(graphics, strip.ClientRectangle);
+                onPaint.Invoke(strip, [paint]);
+            }
+            var clips = new[]
+            {
+                new Rectangle(12, 12, 7, 9),
+                new Rectangle(size.Width / 2, 0, 3, size.Height),
+                new Rectangle(0, size.Height - 23, size.Width, 5),
+                new Rectangle(0, 100, 19, 3)
+            };
+            var completePixels = new int[checked(size.Width * size.Height)];
+            var partialPixels = new int[completePixels.Length];
+            CopyBitmapPixels(complete, completePixels);
+            foreach (var clip in clips)
+            {
+                using var partial = new Bitmap(size.Width, size.Height);
+                using (var graphics = Graphics.FromImage(partial))
+                {
+                    graphics.Clear(Color.Magenta);
+                    graphics.SetClip(clip);
+                    using var paint = new PaintEventArgs(graphics, clip);
+                    onPaint.Invoke(strip, [paint]);
+                }
+                CopyBitmapPixels(partial, partialPixels);
+                for (var pixelY = 0; pixelY < size.Height; pixelY++)
+                {
+                    for (var pixelX = 0; pixelX < size.Width; pixelX++)
+                    {
+                        var pixelIndex = pixelY * size.Width + pixelX;
+                        var expected = clip.Contains(pixelX, pixelY) ? completePixels[pixelIndex] : sentinel;
+                        var actual = partialPixels[pixelIndex];
+                        if (actual == expected) continue;
+                        AssertTimeline(false,
+                            $"Timeline partial painting corrupted pixels: size={size}, clip={clip}, x={pixelX}, y={pixelY}, expected={expected:X8}, actual={actual:X8}.");
+                    }
+                }
+            }
+        }
+        Console.WriteLine("timeline_resize_paint_clipping=ok");
+    }
+
+    private static void RunTimelineBottomEdgeRegression()
+    {
+        var previousTheme = Theme.ColorTheme;
+        var previousHue = Theme.ThemeHueDegrees;
+        var previousSaturation = Theme.ThemeSaturationPercent;
+        var previousBrightness = Theme.ThemeBrightnessPercent;
+        var previousAccentHue = Theme.AccentHueDegrees;
+        var previousAccentSaturation = Theme.AccentSaturationPercent;
+        var previousAccentBrightness = Theme.AccentBrightnessPercent;
+        try
+        {
+            foreach (var colorTheme in new[] { ApplicationColorTheme.White, ApplicationColorTheme.Dark })
+            {
+                Theme.Configure(colorTheme, 0, 0);
+                var scene = new VectorScene();
+                scene.CreateEmpty(1, 120);
+                using var strip = new TimelineStrip(scene) { Size = new Size(760, 280) };
+                var onPaint = RequireMethod(typeof(TimelineStrip), "OnPaint");
+                using var bitmap = new Bitmap(strip.Width, strip.Height);
+                using var graphics = Graphics.FromImage(bitmap);
+                using (var paint = new PaintEventArgs(graphics, strip.ClientRectangle))
+                    onPaint.Invoke(strip, [paint]);
+                for (var pixelX = 4; pixelX < 100; pixelX++)
+                    AssertTimeline(bitmap.GetPixel(pixelX, strip.Height - 1).ToArgb() == strip.BackColor.ToArgb(),
+                        "Timeline gutter bottom painted a duplicate divider above the status bar.");
+                var expectedPixels = new int[checked(strip.Width * strip.Height)];
+                var actualPixels = new int[expectedPixels.Length];
+                CopyBitmapPixels(bitmap, expectedPixels);
+                var bottomBand = new Rectangle(0, strip.Height - 16, strip.Width, 16);
+                graphics.SetClip(bottomBand);
+                for (var repaint = 0; repaint < 8; repaint++)
+                {
+                    using var paint = new PaintEventArgs(graphics, bottomBand);
+                    onPaint.Invoke(strip, [paint]);
+                }
+                CopyBitmapPixels(bitmap, actualPixels);
+                AssertTimeline(expectedPixels.SequenceEqual(actualPixels),
+                    "Repeated timeline bottom-band paints accumulated dark edge pixels.");
+            }
+        }
+        finally
+        {
+            Theme.ConfigureColorAdjustments(previousTheme, previousHue, previousSaturation, previousBrightness,
+                previousAccentHue, previousAccentSaturation, previousAccentBrightness);
+        }
+        Console.WriteLine("timeline_bottom_edge_single_divider=ok,light_dark=ok,repeated_paint=ok");
+    }
+
+    private sealed class TimelineResizeMessageObserver : NativeWindow, IDisposable
+    {
+        private readonly Control _control;
+        internal List<int> ResizeFlags { get; } = [];
+        internal List<Rectangle> NativeBounds { get; } = [];
+
+        internal TimelineResizeMessageObserver(Control control)
+        {
+            _control = control;
+            AssignHandle(control.Handle);
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == 0x0047 && message.LParam != IntPtr.Zero)
+            {
+                var positionOffset = IntPtr.Size * 2;
+                var positionFlags = System.Runtime.InteropServices.Marshal.ReadInt32(message.LParam, positionOffset + sizeof(int) * 4);
+                var left = (positionFlags & 0x0002) != 0 ? _control.Left
+                    : System.Runtime.InteropServices.Marshal.ReadInt32(message.LParam, positionOffset);
+                var top = (positionFlags & 0x0002) != 0 ? _control.Top
+                    : System.Runtime.InteropServices.Marshal.ReadInt32(message.LParam, positionOffset + sizeof(int));
+                var width = (positionFlags & 0x0001) != 0 ? _control.Width
+                    : System.Runtime.InteropServices.Marshal.ReadInt32(message.LParam, positionOffset + sizeof(int) * 2);
+                var height = (positionFlags & 0x0001) != 0 ? _control.Height
+                    : System.Runtime.InteropServices.Marshal.ReadInt32(message.LParam, positionOffset + sizeof(int) * 3);
+                NativeBounds.Add(new Rectangle(left, top, width, height));
+            }
+            base.WndProc(ref message);
+            if (message.Msg != 0x0046 || message.LParam == IntPtr.Zero) return;
+            var flags = System.Runtime.InteropServices.Marshal.ReadInt32(message.LParam, IntPtr.Size * 2 + sizeof(int) * 4);
+            if ((flags & 0x0001) == 0) ResizeFlags.Add(flags);
+        }
+
+        public void Dispose() => ReleaseHandle();
+    }
+
+    private static void RunTimelineNativeResizeRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty(16, 120);
+        using var form = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000),
+            ClientSize = new Size(960, 720)
+        };
+        using var strip = new TimelineStrip(scene) { Dock = DockStyle.Bottom, Height = 192 };
+        using var status = new Panel { Dock = DockStyle.Bottom, Height = 28 };
+        form.Controls.Add(strip);
+        form.Controls.Add(status);
+        form.Show();
+        Application.DoEvents();
+        var bottom = strip.Bottom;
+        using var observer = new TimelineResizeMessageObserver(strip);
+        RequireField(typeof(TimelineStrip), "_draggingHeightResize").SetValue(strip, true);
+        var pendingHeight = RequireField(typeof(TimelineStrip), "_pendingHeightResize");
+        var applyPendingHeight = RequireMethod(typeof(TimelineStrip), "ApplyPendingHeightResize");
+        foreach (var height in new[] { 224, 360, 460, 300, 192 })
+        {
+            pendingHeight.SetValue(strip, height);
+            applyPendingHeight.Invoke(strip, null);
+            AssertTimeline(strip.Height == height,
+                "Timeline height drag did not apply the pending size.");
+            AssertTimeline(strip.Bottom == bottom && strip.Bottom <= status.Top,
+                "Native timeline resize moved its bottom edge into the status bar.");
+        }
+        RequireField(typeof(TimelineStrip), "_heightResizeStartHeight").SetValue(strip, strip.Height);
+        pendingHeight.SetValue(strip, 460);
+        applyPendingHeight.Invoke(strip, null);
+        var escape = new KeyEventArgs(Keys.Escape);
+        RequireMethod(typeof(TimelineStrip), "OnKeyDown").Invoke(strip, [escape]);
+        AssertTimeline(strip.Height == 192 && strip.Bottom == bottom && escape.Handled
+            && !(bool)RequireField(typeof(TimelineStrip), "_draggingHeightResize").GetValue(strip)!,
+            "Canceling timeline height drag did not restore its anchored bounds.");
+        AssertTimeline(observer.ResizeFlags.Count >= 5 && observer.ResizeFlags.All(flags => (flags & 0x0100) != 0),
+            "Native timeline resize copied stale bottom-scrollbar pixels before repainting: "
+            + string.Join(",", observer.ResizeFlags.Select(flags => flags.ToString("X4"))));
+        AssertTimeline(observer.NativeBounds.Count >= 5 && observer.NativeBounds.All(bounds => bounds.Bottom == bottom),
+            "Timeline native resizing exposed its parent background before docking completed: expected bottom="
+            + bottom + ", bounds=" + string.Join(";", observer.NativeBounds));
+        Console.WriteLine("timeline_native_resize_no_stale_pixel_copy=ok,bottom_anchor=ok,cancel=ok");
     }
 
     private static void RunDenseTimelinePlaybackUiRegression()
@@ -548,6 +1015,55 @@ internal static partial class Benchmark
                 && strip.Context.Timeline.Tracks.Select(track => track.Id).ToHashSet().SetEquals(oldTrackIds),
                 $"Undoing {command} did not restore the original frame selection and layers (scene={sceneWorkspace}).");
         }
+    }
+
+    private static void RunTimelineFolderLayerHeaderButtonRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        using var strip = new TimelineStrip(scene) { Size = new Size(760, 240) };
+        _ = strip.Handle;
+
+        var layout = RequireMethod(typeof(TimelineStrip), "CreateLayout", Type.EmptyTypes).Invoke(strip, null)!;
+        var bounds = (Rectangle)RequireMethod(typeof(TimelineStrip), "AddFolderLayerButtonBounds")
+            .Invoke(strip, [layout])!;
+        var folderRequests = 0;
+        var drawingRequests = 0;
+        strip.AddFolderLayerRequested += (_, _) => folderRequests++;
+        strip.AddLayerRequested += (_, _) => drawingRequests++;
+        RequireMethod(typeof(TimelineStrip), "OnMouseDown").Invoke(
+            strip,
+            [new MouseEventArgs(MouseButtons.Left, 1, bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2, 0)]);
+
+        AssertTimeline(folderRequests == 1 && drawingRequests == 0,
+            "The timeline header folder button did not request exactly one folder layer.");
+        Console.WriteLine("timeline_folder_layer_header_button=ok");
+    }
+
+    private static void RunTimelineFolderDisclosureDoubleClickRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var folderLayer = scene.AddFolderLayer("Folder");
+        using var strip = new TimelineStrip(scene) { Size = new Size(760, 240) };
+        _ = strip.Handle;
+
+        var layout = RequireMethod(typeof(TimelineStrip), "CreateLayout", Type.EmptyTypes).Invoke(strip, null)!;
+        var rowTop = (int)layout.GetType().GetProperty("RowTop")!.GetValue(layout)!;
+        var folderTrack = scene.Timeline.Tracks
+            .Select((track, index) => (track, index))
+            .Single(item => string.Equals(item.track.TargetId, scene.LayerIds[folderLayer], StringComparison.Ordinal)).index;
+        var disclosure = (Rectangle)RequireMethod(typeof(TimelineStrip), "LayerGroupDisclosureBounds")
+            .Invoke(strip, [folderTrack, rowTop])!;
+        var center = new Point(disclosure.Left + disclosure.Width / 2, disclosure.Top + disclosure.Height / 2);
+        var renameRequests = 0;
+        strip.LayerRenameRequested += (_, _) => renameRequests++;
+        RequireMethod(typeof(TimelineStrip), "OnMouseDown").Invoke(strip, [new MouseEventArgs(MouseButtons.Left, 1, center.X, center.Y, 0)]);
+        RequireMethod(typeof(TimelineStrip), "OnMouseDoubleClick").Invoke(strip, [new MouseEventArgs(MouseButtons.Left, 2, center.X, center.Y, 0)]);
+
+        AssertTimeline(renameRequests == 0,
+            "Repeated clicks on a folder disclosure entered layer rename after the rows were reflowed.");
+        Console.WriteLine("timeline_folder_disclosure_double_click_no_rename=ok");
     }
 
     private static void RunTimelineEditingHighlightRegression()

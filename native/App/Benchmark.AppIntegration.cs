@@ -6,6 +6,8 @@ internal static partial class Benchmark
 {
     private static void RunUiRefreshStabilityRegression()
     {
+        RunConfiguredWorkbenchShortcutRegression();
+        RunUiCornerRenderingRegression();
         RunImmediateColorEditingRegression();
         RunUiCompositionRegression();
         RunInspectorCompositionWorkspaceRegression();
@@ -324,6 +326,143 @@ internal static partial class Benchmark
                 "Drawing components did not return after switching workspaces.");
         }
         Console.WriteLine("inspector_workspace_composition=ok,mask_roundtrips=3,shape_host_intent=ok");
+    }
+
+    private static void RunShortcutProfileExpansionRegression()
+    {
+        var builtIn = ShortcutProfiles.GetBuiltInProfile(ToolShortcutPreset.TraditionalFlash);
+        var legacy = ShortcutProfiles.CreateCustomProfile("Legacy shortcut regression", builtIn) with
+        {
+            Bindings = builtIn.Bindings.Where(binding =>
+                ShortcutProfiles.TryGetCommand(binding.CommandId, out var command)
+                && command.Kind != ShortcutCommandKind.Workbench).ToArray()
+        };
+        var migrated = ShortcutProfiles.Normalize(legacy.Id, [legacy]).CustomProfiles.Single();
+        AssertTimeline(ShortcutProfiles.Commands.Count <= ShortcutProfiles.MaximumBindingsPerProfile,
+            "Shortcut command catalog exceeded the persistence limit.");
+        foreach (var command in ShortcutProfiles.Commands.Where(command => command.Kind == ShortcutCommandKind.Workbench))
+        {
+            AssertTimeline(ToolShortcutMap.ResolveCommandId(migrated, command.DefaultKey) == command.Id,
+                $"Legacy profile did not inherit {command.Id}.");
+            ShortcutProfiles.TryCreateGesture(Keys.Control | Keys.Alt | Keys.F12, out var gesture);
+            AssertTimeline(ShortcutProfiles.TrySetBinding(migrated, command.Id, [gesture], false,
+                out var remapped, out _, out _), $"Could not remap {command.Id}.");
+            AssertTimeline(ShortcutProfiles.ResolveWorkbenchKey(remapped, Keys.Control | Keys.Alt | Keys.F12) == command.DefaultKey
+                && ShortcutProfiles.ResolveWorkbenchKey(remapped, command.DefaultKey) == Keys.None,
+                $"Old or new gesture resolved incorrectly for {command.Id}.");
+            AssertTimeline(ShortcutProfiles.TrySetBinding(remapped, command.Id, [], false,
+                out var cleared, out _, out _), $"Could not clear {command.Id}.");
+            var settings = ApplicationSettingsStore.Normalize(System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>(
+                System.Text.Json.JsonSerializer.Serialize(new ApplicationSettings
+                {
+                    ActiveShortcutProfileId = cleared.Id,
+                    CustomShortcutProfiles = [cleared]
+                }))!);
+            var restored = ShortcutProfiles.ResolveProfile(settings.ActiveShortcutProfileId, settings.CustomShortcutProfiles);
+            AssertTimeline(!restored.Bindings.Single(binding => binding.CommandId == command.Id).Gestures.Any(),
+                $"Cleared {command.Id} was restored after settings round trip.");
+        }
+        ShortcutProfiles.TryCreateGesture(Keys.Control | Keys.S, out var saveGesture);
+        AssertTimeline(!ShortcutProfiles.TrySetBinding(migrated, ShortcutCommandIds.ToolStar, [saveGesture], false,
+            out _, out var conflictId, out _) && conflictId == ShortcutCommandIds.SaveProject,
+            "Default workbench binding did not participate in conflict detection.");
+        AssertTimeline(ShortcutProfiles.TrySetBinding(migrated, ShortcutCommandIds.ToolStar, [saveGesture], true,
+            out var replaced, out _, out _) && ShortcutProfiles.ResolveWorkbenchKey(replaced, Keys.Control | Keys.S) == Keys.None
+            && ToolShortcutMap.ResolveCommandId(replaced, Keys.Control | Keys.S) == ShortcutCommandIds.ToolStar,
+            "Replacing a workbench shortcut did not remove its original action.");
+        AssertTimeline(ShortcutProfiles.IsReservedGesture(Keys.Space)
+            && ShortcutProfiles.IsReservedGesture(Keys.Escape)
+            && ShortcutProfiles.IsReservedGesture(Keys.Control | Keys.D1)
+            && !ShortcutProfiles.IsGestureAllowed(ShortcutCommandIds.ToolStar, Keys.Enter),
+            "Interaction and workspace keys lost their reservation.");
+        Console.WriteLine("shortcut_profile_expansion=ok,commands=27,migration=ok,clear_roundtrip=ok,conflicts=ok");
+    }
+
+    private static void RunConfiguredWorkbenchShortcutRegression()
+    {
+        using var form = new MainForm();
+        var profile = ShortcutProfiles.CreateCustomProfile("Workbench routing regression",
+            ShortcutProfiles.GetBuiltInProfile(ToolShortcutPreset.TraditionalFlash));
+        ShortcutProfiles.TryCreateGesture(Keys.Control | Keys.Alt | Keys.F12, out var gesture);
+        AssertTimeline(ShortcutProfiles.TrySetBinding(profile, ShortcutCommandIds.InsertFrame, [gesture], false,
+            out profile, out _, out _), "Could not configure custom Insert Frame shortcut.");
+        RequireField(typeof(MainForm), "_applicationSettings").SetValue(form, new ApplicationSettings
+        {
+            ActiveShortcutProfileId = profile.Id, CustomShortcutProfiles = [profile]
+        });
+        var shortcut = RequireMethod(typeof(MainForm), "ProcessCmdKey", [typeof(Message).MakeByRefType(), typeof(Keys)]);
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var frameCount = timeline.Context.FrameCount;
+        shortcut.Invoke(form, [new Message(), Keys.F5]);
+        AssertTimeline(timeline.Context.FrameCount == frameCount, "Original Insert Frame shortcut remained active.");
+        AssertTimeline(shortcut.Invoke(form, [new Message(), Keys.Control | Keys.Alt | Keys.F12]) is true
+            && timeline.Context.FrameCount > frameCount, "Custom Insert Frame shortcut did not reach the timeline command.");
+        var editedFrameCount = timeline.Context.FrameCount;
+        RequireField(typeof(MainForm), "_freehandDrawing").SetValue(form, true);
+        shortcut.Invoke(form, [new Message(), Keys.Control | Keys.Alt | Keys.F12]);
+        RequireField(typeof(MainForm), "_freehandDrawing").SetValue(form, false);
+        AssertTimeline(timeline.Context.FrameCount == editedFrameCount, "Custom shortcut bypassed active-pointer protection.");
+        RequireMethod(typeof(MainForm), "RefreshShortcutMenuDisplay").Invoke(form, null);
+        var insertMenu = (ToolStripMenuItem)RequireField(typeof(TimelineStrip), "_insertFramesMenuItem").GetValue(timeline)!;
+        AssertTimeline(insertMenu.ShortcutKeys == Keys.None && insertMenu.ShortcutKeyDisplayString?.Contains("F12") == true,
+            "Timeline menu kept a fixed shortcut or stale display.");
+        Console.WriteLine("configured_workbench_shortcut_routing=ok,pointer_guard=ok,menu_display=ok");
+    }
+
+    private static void RunUiCornerRenderingRegression()
+    {
+        var previousStyle = Theme.CornerStyle;
+        try
+        {
+            using var host = new Panel { Size = new Size(200, 100) };
+            using var divider = new Panel { Dock = DockStyle.Top, Height = 1 };
+            using var button = new Button { Bounds = new Rectangle(8, 8, 90, 28), Text = "Corners" };
+            host.Controls.Add(divider);
+            host.Controls.Add(button);
+            using var customRegion = new Region(new Rectangle(0, 0, 140, 80));
+            host.Region = customRegion;
+            Theme.StyleButton(button);
+            Theme.RegisterCornerStyles(host);
+            var bounds = button.Bounds;
+            var handle = button.Handle;
+            foreach (var style in new[] { WindowCornerStyle.SubtleRounded, WindowCornerStyle.Square, WindowCornerStyle.SubtleRounded })
+            {
+                Theme.ConfigureCornerStyle(style);
+                AssertTimeline(ReferenceEquals(host.Region, customRegion) && divider.Region is null
+                    && button.Region is null && button.Bounds == bounds && button.Handle == handle,
+                    "Corner preference clipped content/dividers, replaced an animation region or changed button layout/handle.");
+            }
+            using var dynamicButton = new Button();
+            host.Controls.Add(dynamicButton);
+            AssertTimeline(dynamicButton.Region is null, "Dynamic corner registration changed the hit region.");
+            foreach (var dpi in new[] { 96f, 144f, 192f })
+            {
+                using var bitmap = new Bitmap(80, 48);
+                bitmap.SetResolution(dpi, dpi);
+                using var graphics = Graphics.FromImage(bitmap);
+                graphics.Clear(Color.Black);
+                graphics.SetClip(new Rectangle(4, 4, 60, 36));
+                using var fill = new SolidBrush(Color.White);
+                using var border = new Pen(Color.White, dpi / 96f);
+                Theme.PaintUiSurface(graphics, fill, border, new Rectangle(4, 4, 60, 36));
+                AssertTimeline(bitmap.GetPixel(0, 0).ToArgb() == Color.Black.ToArgb()
+                    && bitmap.GetPixel(30, 20).ToArgb() == Color.White.ToArgb(),
+                    "Corner surface escaped the repaint clip or lost its opaque interior.");
+                if (!SystemInformation.HighContrast)
+                {
+                    var blended = false;
+                    for (var y = 4; y < 4 + (int)(8 * dpi / 96f); y++)
+                    for (var x = 4; x < 4 + (int)(8 * dpi / 96f); x++)
+                    {
+                        var pixel = bitmap.GetPixel(x, y);
+                        blended |= pixel.R > 0 && pixel.R < 255;
+                    }
+                    AssertTimeline(blended, "Rounded surface had a binary stair-step edge instead of antialiasing.");
+                }
+            }
+        }
+        finally { Theme.ConfigureCornerStyle(previousStyle); }
+        Console.WriteLine("ui_corner_rendering_regression=ok");
     }
 
     private static void RunUiCompositionRegression()

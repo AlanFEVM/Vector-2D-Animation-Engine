@@ -86,6 +86,12 @@ internal readonly record struct BitmapImageImportSettings
     public float PivotY { get; init; } = 0.5f;
     public ImageAlphaSource AlphaSource { get; init; } = ImageAlphaSource.FromInput;
     public bool GenerateMipmapsForAlpha { get; init; } = true;
+    // Relative source bounds keep batch imports and relinking independent of resolution.
+    // Missing members in older documents retain the full-image defaults.
+    public float CropX { get; init; }
+    public float CropY { get; init; }
+    public float CropWidth { get; init; } = 1f;
+    public float CropHeight { get; init; } = 1f;
 
     public static BitmapImageImportSettings Default => new();
 
@@ -97,7 +103,22 @@ internal readonly record struct BitmapImageImportSettings
         && MaxSize is >= MinimumMaxSize and <= MaximumMaxSize
         && CompressionQuality is >= MinimumCompressionQuality and <= MaximumCompressionQuality
         && float.IsFinite(PivotX) && PivotX is >= 0f and <= 1f
-        && float.IsFinite(PivotY) && PivotY is >= 0f and <= 1f;
+        && float.IsFinite(PivotY) && PivotY is >= 0f and <= 1f
+        && float.IsFinite(CropX) && CropX is >= 0f and < 1f
+        && float.IsFinite(CropY) && CropY is >= 0f and < 1f
+        && float.IsFinite(CropWidth) && CropWidth is > 0f and <= 1f
+        && float.IsFinite(CropHeight) && CropHeight is > 0f and <= 1f
+        && CropX + CropWidth <= 1.000001f && CropY + CropHeight <= 1.000001f;
+
+    public Rectangle ResolveCropPixelBounds(int width, int height)
+    {
+        if (!IsValid || width < 1 || height < 1) return Rectangle.Empty;
+        var left = Math.Clamp((int)MathF.Round(CropX * width), 0, width - 1);
+        var top = Math.Clamp((int)MathF.Round(CropY * height), 0, height - 1);
+        var right = Math.Clamp((int)MathF.Round((CropX + CropWidth) * width), left + 1, width);
+        var bottom = Math.Clamp((int)MathF.Round((CropY + CropHeight) * height), top + 1, height);
+        return Rectangle.FromLTRB(left, top, right, bottom);
+    }
 
     /// <summary>
     /// Applies the settings that change stored pixels and reports the pixel size the
@@ -113,6 +134,8 @@ internal readonly record struct BitmapImageImportSettings
             return SizeF.Empty;
         }
 
+        sourcePixelSize = ResolveCropPixelBounds((int)sourcePixelSize.Width, (int)sourcePixelSize.Height).Size;
+        if (sourcePixelSize.IsEmpty) return SizeF.Empty;
         var scale = Math.Min(1f, MaxSize / Math.Max(sourcePixelSize.Width, sourcePixelSize.Height));
         var width = Math.Max(1, (int)MathF.Round(sourcePixelSize.Width * scale));
         var height = Math.Max(1, (int)MathF.Round(sourcePixelSize.Height * scale));
@@ -131,6 +154,7 @@ internal readonly record struct BitmapImageImportSettings
     /// </summary>
     public SizeF ResolvePlacedSize(SizeF storedPixelSize, float naturalPixelsPerUnit)
     {
+        storedPixelSize = ResolveCropPixelBounds((int)storedPixelSize.Width, (int)storedPixelSize.Height).Size;
         var density = Math.Clamp(
             float.IsFinite(naturalPixelsPerUnit) && naturalPixelsPerUnit > 0 ? naturalPixelsPerUnit : PixelsPerUnit,
             MinimumPixelsPerUnit,

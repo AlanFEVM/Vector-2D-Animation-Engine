@@ -56,6 +56,7 @@ internal enum SvgIconKind
     AmbientLight,
     Folder,
     FolderPlus,
+    FilledFolder,
     Open,
     Add,
     Remove,
@@ -70,7 +71,12 @@ internal enum SvgIconKind
     Info,
     Warning,
     Error,
-    Question
+    Question,
+    EditImage,
+    OnionSkin,
+    MotionTrack,
+    TimelineTitle,
+    Settings
 }
 
 internal static class SvgIcons
@@ -118,9 +124,126 @@ internal static class SvgIcons
         using var thinPen = new Pen(Color.FromArgb(primaryTool ? 205 : 170, color), (primaryTool ? 1.35f : 1.1f) * scale) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
         using var fill = new SolidBrush(Color.FromArgb(primaryTool ? 72 : 42, color));
         using var solidFill = new SolidBrush(color);
+        var referenceSize = Math.Min(bounds.Width, bounds.Height) * 24f / Theme.ControlHeightCompact;
+        var referenceBounds = new RectangleF(
+            bounds.X + (bounds.Width - referenceSize) / 2f,
+            bounds.Y + (bounds.Height - referenceSize) / 2f,
+            referenceSize, referenceSize);
+        if (kind is SvgIconKind.MotionTrack or SvgIconKind.OnionSkin)
+            referenceBounds.Offset(-0.5f, -0.5f);
 
         switch (kind)
         {
+            case SvgIconKind.TimelineTitle:
+            {
+                // Preserve the supplied SVG's 1024-unit geometry in the shared icon bounds.
+                const float svgToIcon = 24f / 1024f;
+                void FillRoundedBar(float x, float y, float width, float height, float radius)
+                {
+                    var bar = Rect(referenceBounds, x * svgToIcon, y * svgToIcon,
+                        width * svgToIcon, height * svgToIcon);
+                    var diameter = radius * 2f * referenceSize / 1024f;
+                    using var path = new GraphicsPath();
+                    path.AddArc(bar.Left, bar.Top, diameter, diameter, 180, 90);
+                    path.AddArc(bar.Right - diameter, bar.Top, diameter, diameter, 270, 90);
+                    path.AddArc(bar.Right - diameter, bar.Bottom - diameter, diameter, diameter, 0, 90);
+                    path.AddArc(bar.Left, bar.Bottom - diameter, diameter, diameter, 90, 90);
+                    path.CloseFigure();
+                    g.FillPath(solidFill, path);
+                }
+
+                FillRoundedBar(172.76f, 63.83f, 71.72f, 179.29f, 35.86f);
+                FillRoundedBar(172.76f, 458.24f, 71.72f, 179.29f, 35.86f);
+                FillRoundedBar(172.76f, 780.94f, 71.72f, 179.29f, 35.86f);
+                foreach (var centerY in new[] { 350.68f, 709.23f })
+                {
+                    using var ring = new GraphicsPath(FillMode.Alternate);
+                    ring.AddEllipse(Rect(referenceBounds, (208.62f - 143.42f) * svgToIcon,
+                        (centerY - 143.42f) * svgToIcon, 286.84f * svgToIcon, 286.84f * svgToIcon));
+                    ring.AddEllipse(Rect(referenceBounds, (208.62f - 71.71f) * svgToIcon,
+                        (centerY - 71.71f) * svgToIcon, 143.42f * svgToIcon, 143.42f * svgToIcon));
+                    g.FillPath(solidFill, ring);
+                }
+                FillRoundedBar(387.89f, 278.96f, 573.70f, 71.72f, 35.86f);
+                FillRoundedBar(387.90f, 386.54f, 286.83f, 71.70f, 33.80f);
+                FillRoundedBar(387.89f, 637.51f, 573.70f, 71.72f, 35.86f);
+                FillRoundedBar(387.90f, 745.10f, 286.83f, 71.70f, 33.80f);
+                break;
+            }
+            case SvgIconKind.MotionTrack:
+            {
+                using var trackPen = new Pen(color, referenceSize / 12f)
+                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                using var trackPath = new GraphicsPath();
+                trackPath.AddLine(P(referenceBounds, 8.1f, 5.8f), P(referenceBounds, 16.4f, 5.8f));
+                trackPath.AddBezier(P(referenceBounds, 16.4f, 5.8f), P(referenceBounds, 20.53f, 5.8f),
+                    P(referenceBounds, 20.53f, 12), P(referenceBounds, 16.4f, 12));
+                trackPath.AddLine(P(referenceBounds, 16.4f, 12), P(referenceBounds, 7.6f, 12));
+                trackPath.AddBezier(P(referenceBounds, 7.6f, 12), P(referenceBounds, 3.47f, 12),
+                    P(referenceBounds, 3.47f, 18.2f), P(referenceBounds, 7.6f, 18.2f));
+                trackPath.AddLine(P(referenceBounds, 7.6f, 18.2f), P(referenceBounds, 15.9f, 18.2f));
+                g.DrawPath(trackPen, trackPath);
+                g.DrawEllipse(trackPen, Rect(referenceBounds, 4.5f, 4, 3.6f, 3.6f));
+                g.DrawEllipse(trackPen, Rect(referenceBounds, 15.9f, 16.4f, 3.6f, 3.6f));
+                break;
+            }
+            case SvgIconKind.OnionSkin:
+            {
+                var iconSize = referenceSize;
+                var iconBounds = referenceBounds;
+                using var rearPen = new Pen(Color.FromArgb((int)(color.A * 0.72f), color), iconSize / 12f)
+                { LineJoin = LineJoin.Miter };
+                using var frontPen = new Pen(color, iconSize / 12f) { LineJoin = LineJoin.Miter };
+                using var rearPath = new GraphicsPath();
+                rearPath.AddLines(new[]
+                {
+                    P(iconBounds, 12, 6), P(iconBounds, 14, 4),
+                    P(iconBounds, 22, 12), P(iconBounds, 14, 20),
+                    P(iconBounds, 12, 18)
+                });
+                using var frontPath = new GraphicsPath();
+                frontPath.AddPolygon(new[]
+                {
+                    P(iconBounds, 10, 4), P(iconBounds, 18, 12),
+                    P(iconBounds, 10, 20), P(iconBounds, 2, 12)
+                });
+                g.DrawPath(rearPen, rearPath);
+                g.DrawPath(frontPen, frontPath);
+                break;
+            }
+            case SvgIconKind.EditImage:
+            {
+                var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'><path fill='#{color.R:X2}{color.G:X2}{color.B:X2}' d='M526.41 117.029v58.514a7.314 7.314 0 0 1-7.315 7.314H219.429a36.571 36.571 0 0 0-35.987 29.989l-0.585 6.583V804.57a36.571 36.571 0 0 0 29.989 35.987l6.583 0.585H804.57a36.571 36.571 0 0 0 35.987-29.989l0.585-6.583v-317.44a7.314 7.314 0 0 1 7.314-7.314h58.514a7.314 7.314 0 0 1 7.315 7.314v317.44a109.714 109.714 0 0 1-99.182 109.203l-10.533 0.512H219.43a109.714 109.714 0 0 1-109.203-99.182l-0.512-10.533V219.43a109.714 109.714 0 0 1 99.182-109.203l10.533-0.512h299.666a7.314 7.314 0 0 1 7.314 7.315z m307.345 31.817l41.4 41.399a7.314 7.314 0 0 1 0 10.313L419.985 655.726a7.314 7.314 0 0 1-10.313 0l-41.399-41.4a7.314 7.314 0 0 1 0-10.312l455.168-455.168a7.314 7.314 0 0 1 10.313 0z'/></svg>";
+                var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
+                using var bitmap = document.Draw(Math.Max(1, (int)r.Width), Math.Max(1, (int)r.Height));
+                g.DrawImage(bitmap, r);
+                break;
+            }
+            case SvgIconKind.Settings:
+            {
+                // Eight teeth and a clear center ring remain readable in compact toolbar slots.
+                var teeth = new PointF[32];
+                for (var tooth = 0; tooth < 8; tooth++)
+                {
+                    for (var corner = 0; corner < 4; corner++)
+                    {
+                        var angle = (-90f + tooth * 45f + (corner switch
+                        {
+                            0 => -22.5f,
+                            1 => -12f,
+                            2 => 12f,
+                            _ => 22.5f
+                        })) * MathF.PI / 180f;
+                        var radius = corner is 1 or 2 ? 10f : 7.5f;
+                        teeth[tooth * 4 + corner] = P(r,
+                            12f + MathF.Cos(angle) * radius,
+                            12f + MathF.Sin(angle) * radius);
+                    }
+                }
+                DrawPolygon(g, pen, teeth);
+                g.DrawEllipse(pen, Rect(r, 8, 8, 8, 8));
+                break;
+            }
             case SvgIconKind.Menu:
                 g.DrawLine(pen, P(r, 4, 6), P(r, 20, 6));
                 g.DrawLine(pen, P(r, 4, 12), P(r, 20, 12));
@@ -425,6 +548,36 @@ internal static class SvgIcons
                 g.DrawLine(thinPen, P(r, 15, 12), P(r, 15, 18));
                 g.DrawLine(thinPen, P(r, 12, 15), P(r, 18, 15));
                 break;
+            case SvgIconKind.FilledFolder:
+            {
+                // Two filled paths reproduce the user's folder mark in the shared 24-unit icon space.
+                var folderCenterX = referenceBounds.X + referenceBounds.Width * 0.5f;
+                var folderCenterY = referenceBounds.Y + referenceBounds.Height * 0.5f;
+                var folderTransform = g.Save();
+                g.TranslateTransform(folderCenterX, folderCenterY);
+                g.ScaleTransform(0.72f, 0.72f);
+                g.TranslateTransform(-folderCenterX, -folderCenterY);
+                using var back = new GraphicsPath();
+                back.StartFigure();
+                back.AddBezier(P(referenceBounds, 13.448f, 5.916f), P(referenceBounds, 13.057f, 4.981f), P(referenceBounds, 12.510f, 3.978f), P(referenceBounds, 11.877f, 3.690f));
+                back.AddBezier(P(referenceBounds, 11.877f, 3.690f), P(referenceBounds, 10.604f, 3.111f), P(referenceBounds, 2.729f, 3.864f), P(referenceBounds, 1.746f, 4.788f));
+                back.AddBezier(P(referenceBounds, 1.746f, 4.788f), P(referenceBounds, 0.926f, 5.562f), P(referenceBounds, 2.360f, 14.041f), P(referenceBounds, 2.857f, 17.350f));
+                back.AddBezier(P(referenceBounds, 2.857f, 17.350f), P(referenceBounds, 3.028f, 14.041f), P(referenceBounds, 3.859f, 8.096f), P(referenceBounds, 4.869f, 7.162f));
+                back.AddBezier(P(referenceBounds, 4.869f, 7.162f), P(referenceBounds, 5.563f, 6.532f), P(referenceBounds, 9.538f, 6.148f), P(referenceBounds, 13.448f, 5.916f));
+                back.CloseFigure();
+                g.FillPath(solidFill, back);
+
+                using var front = new GraphicsPath();
+                front.StartFigure();
+                front.AddBezier(P(referenceBounds, 22.357f, 7.047f), P(referenceBounds, 21.720f, 6.063f), P(referenceBounds, 6.959f, 6.583f), P(referenceBounds, 5.568f, 7.858f));
+                front.AddBezier(P(referenceBounds, 5.568f, 7.858f), P(referenceBounds, 4.178f, 9.133f), P(referenceBounds, 3.137f, 19.842f), P(referenceBounds, 3.658f, 20.247f));
+                front.AddBezier(P(referenceBounds, 3.658f, 20.247f), P(referenceBounds, 4.178f, 20.652f), P(referenceBounds, 20.279f, 20.652f), P(referenceBounds, 20.793f, 19.842f));
+                front.AddBezier(P(referenceBounds, 20.793f, 19.842f), P(referenceBounds, 21.316f, 19.031f), P(referenceBounds, 22.995f, 8.032f), P(referenceBounds, 22.357f, 7.047f));
+                front.CloseFigure();
+                g.FillPath(solidFill, front);
+                g.Restore(folderTransform);
+                break;
+            }
             case SvgIconKind.Open:
                 DrawRectangle(g, thinPen, Rect(r, 3, 5, 13, 14));
                 g.DrawLine(pen, P(r, 9, 12), P(r, 21, 12));
