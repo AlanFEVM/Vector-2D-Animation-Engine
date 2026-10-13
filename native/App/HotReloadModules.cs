@@ -209,7 +209,9 @@ internal static class HotReloadModuleResolver
             return HotReloadModule.Rendering;
         }
 
-        if (typeName is nameof(TimelineStrip) or nameof(TimelineTabGroupOrderDialog) or nameof(LayerColorDialog) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
+        if (typeName is nameof(TimelineStrip) or nameof(TimelineParentRequestedEventArgs)
+            or nameof(TimelineMotionParentLink) or nameof(TimelineTabGroupOrderDialog)
+            or nameof(LayerColorDialog) or nameof(PlaybackSettingsPanel) or nameof(AnimationTimeline))
         {
             return HotReloadModule.Timeline;
         }

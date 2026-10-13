@@ -335,7 +335,7 @@ internal sealed partial class MainForm : Form
         {
             return;
         }
-        var instances = SelectedSceneInstances();
+        var instances = MotionTransformInstances();
         if (instances.Count == 0) return;
 
         ClearInstanceTimelineEditTracking();

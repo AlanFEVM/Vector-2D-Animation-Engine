@@ -92,6 +92,7 @@ internal sealed partial class VectorScene
 
         foreach (var i in eligibleCandidates)
         {
+            if (!IsObjectSelectable(i, frame)) continue;
             if (!ObjectMayContainHitPoint(i, world, toleranceWorld)) continue;
             var hit = HitElement(world, i, eligibleCandidates, frame, toleranceWorld);
             if (!hit.IsValid || !IsSelectionHitExposed(hit, world, frame)) continue;

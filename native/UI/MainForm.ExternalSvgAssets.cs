@@ -53,7 +53,8 @@ internal sealed partial class MainForm
             }
 
             if (_project.ExternalSvgAssets.Any(asset =>
-                    string.Equals(asset.SourcePath, path, StringComparison.OrdinalIgnoreCase)))
+                    string.Equals(asset.OriginalSourcePath, path, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(asset.SourcePath, path, StringComparison.OrdinalIgnoreCase)))
             {
                 skipped++;
                 continue;
@@ -165,6 +166,11 @@ internal sealed partial class MainForm
 
     private string? ResolveExternalSvgAssetPath(ExternalSvgAssetDefinition asset)
     {
+        if (File.Exists(asset.SourcePath))
+        {
+            ProjectTemporaryResources.RejectReparsePath(asset.SourcePath);
+            return asset.SourcePath;
+        }
         if (!string.IsNullOrWhiteSpace(_projectManifestPath)
             && !string.IsNullOrWhiteSpace(asset.ProjectRelativePath))
         {
@@ -284,6 +290,9 @@ internal sealed partial class MainForm
         try
         {
             fullPath = Path.GetFullPath(fileName);
+            ProjectTemporaryResources.RejectReparsePath(fullPath);
+            if (new FileInfo(fullPath).Length > 128L * 1024 * 1024)
+                throw new InvalidDataException("SVG exceeds the supported size limit.");
             var imported = ImportedSvgRasterizer.Load(fullPath);
             var validationScale = Math.Min(
                 1f,
@@ -292,9 +301,8 @@ internal sealed partial class MainForm
                 imported.Source,
                 Math.Max(1, imported.IntrinsicSize.Width * validationScale),
                 Math.Max(1, imported.IntrinsicSize.Height * validationScale));
-            sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-                    System.Text.Encoding.UTF8.GetBytes(imported.Source)))
-                .ToLowerInvariant();
+            using var source = File.OpenRead(fullPath);
+            sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(source)).ToLowerInvariant();
             return true;
         }
         catch (Exception exception)

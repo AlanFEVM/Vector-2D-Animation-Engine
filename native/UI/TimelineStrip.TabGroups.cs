@@ -1,4 +1,4 @@
-﻿using System.Drawing.Drawing2D;
+using System.Drawing.Drawing2D;
 
 namespace VectorAnimationEngine;
 
@@ -81,8 +81,9 @@ internal sealed partial class TimelineStrip
         Theme.StyleToolbarButton(_tabGroupAddButton);
         Theme.StyleToolbarButton(_tabGroupOverflowButton);
         Theme.StyleToolbarButton(_tabGroupOrderButton);
-        _layerControlToolTip.SetToolTip(_tabGroupOrderButton, UiLocalization.T("Layer group order"));
-        _tabGroupOrderButton.Click += (_, _) => EditTimelineTabGroupOrder();
+        _tabGroupOrderButton.AccessibleName = UiLocalization.T("Timeline tab group actions");
+        _layerControlToolTip.SetToolTip(_tabGroupOrderButton, UiLocalization.T("Timeline tab group actions"));
+        _tabGroupOrderButton.Click += (_, _) => ShowTabGroupSettingsMenu();
         Controls.Add(_tabGroupOrderButton);
         _tabGroupOverflowButton.Width = ScaleTimelineMetric(30);
         _tabGroupOverflowButton.Height = ScaleTimelineMetric(24);
@@ -147,9 +148,9 @@ internal sealed partial class TimelineStrip
         var settingsLeft = Math.Max(0, Width - ScaleTimelineMetric(34));
         var addBounds = new Rectangle(
             Math.Max(0, settingsLeft - ScaleTimelineMetric(30)),
-            ToolbarHeaderHeight + ScaleTimelineMetric(7),
+            ToolbarHeaderHeight + Math.Max(1, (TabGroupRowHeight - ScaleTimelineMetric(24)) / 2),
             ScaleTimelineMetric(26),
-            Math.Max(1, TabGroupRowHeight - ScaleTimelineMetric(7) - 1));
+            ScaleTimelineMetric(24));
         var right = Math.Max(0, addBounds.Left - ScaleTimelineMetric(4));
         var left = ScaleTimelineMetric(8);
         var items = TabGroupItems();
@@ -251,10 +252,8 @@ internal sealed partial class TimelineStrip
             }
         }
 
-        // Add follows the tabs; settings stays at the far right, with overflow beside it.
-        var actionLeft = visible.Count == 0 ? left : visible[^1].Bounds.Right + ScaleTimelineMetric(4);
-        addBounds.X = Math.Min(actionLeft, right + ScaleTimelineMetric(4));
-        if (!overflowBounds.IsEmpty) overflowBounds.X = Math.Max(0, settingsLeft - ScaleTimelineMetric(36));
+        // Keep creation and settings together; overflow stays to their left.
+        if (!overflowBounds.IsEmpty) overflowBounds.X = Math.Max(0, addBounds.Left - ScaleTimelineMetric(36));
         return new TabGroupLayoutSnapshot(visible, overflow, overflowBounds, addBounds);
     }
 
@@ -627,6 +626,50 @@ internal sealed partial class TimelineStrip
         _tabGroupContextMenu.Show(this, point);
     }
 
+    private void ShowTabGroupSettingsMenu()
+    {
+        if (_shotFilterActive || _timeline is null) return;
+        ClearTabGroupMenuItems(_tabGroupContextMenu.Items);
+        _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(
+            UiLocalization.T("Layer group order..."), null, (_, _) => EditTimelineTabGroupOrder()));
+        _tabGroupContextMenu.Items.Add(new ToolStripSeparator());
+        var activeGroup = TabGroupItems().FirstOrDefault(item => item.Id == _timeline.ActiveTabGroupId);
+        if (activeGroup.Id != AnimationTimeline.AllTabGroupId && !string.IsNullOrEmpty(activeGroup.Id))
+        {
+            AddTabGroupColorCommands(_tabGroupContextMenu.Items, activeGroup.Id);
+            _tabGroupContextMenu.Items.Add(new ToolStripSeparator());
+            _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(
+                UiLocalization.T("Rename tab group..."), null, (_, _) => RenameTimelineTabGroup(activeGroup.Id)) { Enabled = !activeGroup.BuiltIn });
+            _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(
+                UiLocalization.T("Delete tab group"), null, (_, _) => DeleteTimelineTabGroup(activeGroup.Id)) { Enabled = !activeGroup.BuiltIn });
+            _tabGroupContextMenu.Show(this, new Point(_tabGroupOrderButton.Left, _tabGroupOrderButton.Bottom));
+            return;
+        }
+        foreach (var group in TabGroupItems().Where(item => item.Id != AnimationTimeline.AllTabGroupId))
+        {
+            var options = new ToolStripMenuItem(group.Name)
+            {
+                Checked = group.Id == _timeline.ActiveTabGroupId
+            };
+            FitTabGroupMenuText(options);
+            SetTabGroupMenuSwatch(options, group.Id);
+            AddTabGroupColorCommands(options.DropDownItems, group.Id);
+            options.DropDownItems.Add(new ToolStripSeparator());
+            options.DropDownItems.Add(new ToolStripMenuItem(
+                UiLocalization.T("Rename tab group..."), null, (_, _) => RenameTimelineTabGroup(group.Id))
+            {
+                Enabled = !group.BuiltIn
+            });
+            options.DropDownItems.Add(new ToolStripMenuItem(
+                UiLocalization.T("Delete tab group"), null, (_, _) => DeleteTimelineTabGroup(group.Id))
+            {
+                Enabled = !group.BuiltIn
+            });
+            _tabGroupContextMenu.Items.Add(options);
+        }
+        _tabGroupContextMenu.Show(this, new Point(_tabGroupOrderButton.Left, _tabGroupOrderButton.Bottom));
+    }
+
     private void ShowTabGroupOverflowMenu()
     {
         if (_shotFilterActive) return;
@@ -873,6 +916,20 @@ internal sealed partial class TimelineStrip
         }
     }
 
+    internal bool ConfirmTabGroupMove(string groupId)
+    {
+        if (_timeline.ActiveTabGroupId != AnimationTimeline.AllTabGroupId) return true;
+        var group = TabGroupItems().FirstOrDefault(item => item.Id == groupId);
+        if (string.IsNullOrEmpty(group.Id)) return false;
+        return ModernMessageDialog.Show(
+            DialogOwner,
+            string.Format(UiLocalization.T("Move this layer or layer group to '{0}'? Linked folder children and mask contents will move together."), group.Name),
+            UiLocalization.T("Move to tab group"),
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button2) == DialogResult.OK;
+    }
+
     private void MoveSelectedTracksToTabGroup(string groupId)
     {
         if (_shotFilterActive
@@ -886,7 +943,9 @@ internal sealed partial class TimelineStrip
             .Distinct()
             .ToArray();
         if (candidates.Length == 0) return;
+        var changesGroup = candidates.Any(index => _timeline.Tracks[index].TabGroupId != groupId);
         var trackIds = candidates.Select(index => _timeline.Tracks[index].Id).ToArray();
+        if (!changesGroup || !ConfirmTabGroupMove(groupId)) return;
 
         PerformTabGroupEdit(() =>
         {

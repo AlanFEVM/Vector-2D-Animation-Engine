@@ -54,7 +54,7 @@ internal sealed partial class VectorProject
             id,
             name,
             sourcePath,
-            ImageAssetManagedRelativePath(id, BitmapImageFormats.ExtensionFor(importSettings.Compression)),
+            ImageAssetManagedRelativePath(id, Path.GetExtension(sourcePath ?? "")),
             sha256,
             pixelWidth,
             pixelHeight,
@@ -119,8 +119,12 @@ internal sealed partial class VectorProject
             return false;
         }
 
+        var originalSourcePath = normalizedSourcePath;
+        if (!ProjectTemporaryResources.TryCopy(Id, normalizedSourcePath, normalizedSha256,
+                BitmapImageFormats.MaximumSourceBytes, out normalizedSourcePath)) return false;
         asset = new ImageAssetDefinition
         {
+            OriginalSourcePath = originalSourcePath,
             Id = id,
             Name = normalizedName,
             SourcePath = normalizedSourcePath,
@@ -220,6 +224,11 @@ internal sealed partial class VectorProject
             return false;
         }
 
+        var originalSourcePath = normalizedSourcePath;
+        if (!ProjectTemporaryResources.TryCopy(Id, normalizedSourcePath,
+                normalizedSha256, BitmapImageFormats.MaximumSourceBytes, out normalizedSourcePath)) return false;
+        normalizedRelativePath = ImageAssetManagedRelativePath(asset.Id, Path.GetExtension(normalizedSourcePath));
+        asset.OriginalSourcePath = originalSourcePath;
         asset.SourcePath = normalizedSourcePath;
         asset.ProjectRelativePath = normalizedRelativePath;
         asset.Sha256 = normalizedSha256;
@@ -236,7 +245,8 @@ internal sealed partial class VectorProject
         {
             Id = asset.Id,
             Name = asset.Name,
-            SourcePath = asset.SourcePath,
+            OriginalSourcePath = asset.OriginalSourcePath,
+            SourcePath = ProjectTemporaryResources.SnapshotSource(Id, asset.SourcePath, asset.Sha256, BitmapImageFormats.MaximumSourceBytes),
             ProjectRelativePath = asset.ProjectRelativePath,
             Sha256 = asset.Sha256,
             PixelWidth = asset.PixelWidth,
@@ -274,6 +284,7 @@ internal sealed partial class VectorProject
             {
                 Id = snapshot.Id,
                 Name = normalizedName,
+                OriginalSourcePath = snapshot.OriginalSourcePath,
                 SourcePath = normalizedSourcePath,
                 ProjectRelativePath = normalizedRelativePath,
                 Sha256 = normalizedSha256,

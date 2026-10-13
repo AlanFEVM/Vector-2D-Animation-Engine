@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -2342,25 +2342,11 @@ internal sealed partial class MainForm : Form
         var track = context.Timeline.FindTrack(trackId);
         var targetTrack = context.Timeline.FindTrack(targetTrackId);
         if (track is null || targetTrack is null || track.Id == targetTrack.Id) return;
-        if (context.Timeline.TabGroupOrderingEnabled
-            && context.Timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId
-            && !string.Equals(track.TabGroupId, targetTrack.TabGroupId, StringComparison.Ordinal))
-        {
-            var destinationGroup = context.Timeline.TabGroups.FirstOrDefault(group => group.Id == targetTrack.TabGroupId);
-            var destinationName = targetTrack.TabGroupId switch
-            {
-                AnimationTimeline.DefaultTabGroupId => UiLocalization.T("Layers"),
-                AnimationTimeline.TerrainTabGroupId => UiLocalization.T("Terrain"),
-                _ => destinationGroup?.Name ?? targetTrack.TabGroupId
-            };
-            if (ModernMessageDialog.Show(
-                    this,
-                    string.Format(UiLocalization.T("Move this layer or layer group to '{0}'? Linked folder children and mask contents will move together."), destinationName),
-                    UiLocalization.T("Move to tab group"),
-                    MessageBoxButtons.OKCancel,
-                    MessageBoxIcon.Question,
-                    MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
-        }
+        var changesGroup = !string.Equals(track.TabGroupId, targetTrack.TabGroupId, StringComparison.Ordinal);
+        var transferGroup = changesGroup && (context.Timeline.TabGroupOrderingEnabled
+            || context.Timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId);
+        var destinationGroupId = targetTrack.TabGroupId;
+        if (transferGroup && !_timeline.ConfirmTabGroupMove(destinationGroupId)) return;
 
         var drawingScene = context switch
         {
@@ -2373,6 +2359,13 @@ internal sealed partial class MainForm : Form
             var sourceLayer = Array.IndexOf(drawingScene.LayerIds, track.TargetId);
             var targetLayer = Array.IndexOf(drawingScene.LayerIds, targetTrack.TargetId);
             if (sourceLayer < 0 || targetLayer < 0 || sourceLayer == targetLayer) return;
+            if (placement != TimelineLayerDropPlacement.Mask)
+            {
+                var requestedParent = placement == TimelineLayerDropPlacement.Inside
+                    ? targetLayer : drawingScene.GetLayerParentIndex(targetLayer);
+                if (drawingScene.IsLayerDescendantOf(targetLayer, sourceLayer)
+                    || !drawingScene.CanSetLayerParent(sourceLayer, requestedParent)) return;
+            }
             var snapshot = drawingScene.CreateSnapshot();
             var changed = placement == TimelineLayerDropPlacement.Mask
                 ? LinkTimelineMaskLayers(drawingScene, track.TargetId, targetTrack.TargetId)
@@ -2382,9 +2375,8 @@ internal sealed partial class MainForm : Form
                     targetTrack.TargetId,
                     placement,
                     moveOutOfMask);
+            if (transferGroup) changed |= drawingScene.Timeline.SetTrackTabGroup(track.Id, destinationGroupId);
             if (!changed) return;
-            if (drawingScene.Timeline.TabGroupOrderingEnabled)
-                drawingScene.Timeline.SetTrackTabGroup(track.Id, targetTrack.TabGroupId);
             PushUndoSnapshot(snapshot);
             _timeline.RefreshTimeline();
             RebuildDrawingObjectUnderlay();
@@ -2419,9 +2411,8 @@ internal sealed partial class MainForm : Form
         {
             changedScene |= _project.TryMoveSceneLayer(sceneDefinition.Id, sceneSourceLayer.Id, sceneDestinationLayer);
         }
+        if (transferGroup) changedScene |= sceneDefinition.Timeline.SetTrackTabGroup(track.Id, destinationGroupId);
         if (!changedScene) return;
-        if (sceneDefinition.Timeline.TabGroupOrderingEnabled)
-            sceneDefinition.Timeline.SetTrackTabGroup(track.Id, targetTrack.TabGroupId);
         PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot);
         _timeline.RefreshTimeline();
         RebuildSceneComposition();
@@ -4123,7 +4114,7 @@ internal sealed partial class MainForm : Form
             ? _scene.CreateWholeObjectTranslationSnapshot()
             : _scene.CreateSnapshot();
         PushUndoSnapshot(snapshot);
-        MaterializeAutomaticKeyframesForCanvasEdit();
+        MaterializeAutomaticKeyframesForCanvasEdit(DrawingMotionEditTargets());
         _undoCapturedForPointerEdit = true;
         _pointerUndoSnapshot = snapshot;
         _pointerUndoSnapshotWithSharedGeometry = shareGeometry ? snapshot : null;

@@ -569,6 +569,9 @@ internal sealed partial class VectorProject
         {
             duplicate.Timeline.RestoreSnapshot(new AnimationTimelineSnapshot
             {
+                MotionParents = sourceTimeline.MotionParents.Select(link => new TimelineMotionParentLink(
+                    instanceIdMap.GetValueOrDefault(link.ChildTargetId, link.ChildTargetId),
+                    instanceIdMap.GetValueOrDefault(link.ParentTargetId, link.ParentTargetId))).ToArray(),
                 TabGroups = sourceTimeline.TabGroups.ToArray(),
                 ActiveTabGroupId = sourceTimeline.ActiveTabGroupId,
                 TabGroupOrderingEnabled = sourceTimeline.TabGroupOrderingEnabled,

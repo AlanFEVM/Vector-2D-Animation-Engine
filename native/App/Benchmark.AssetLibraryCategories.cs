@@ -24,7 +24,7 @@ internal static partial class Benchmark
         try
         {
             var project = VectorProject.CreateEmpty();
-            var sha256 = new string('a', 64);
+            var sha256 = BitmapImageRasterizer.ComputeSha256(sourcePath);
             AssertTimeline(
                 project.TryAddExternalSvgAsset(
                     "Linked Logo",
@@ -48,11 +48,15 @@ internal static partial class Benchmark
             AssertTimeline(
                 restartLink.Id == linked!.Id
                 && restartLink.Name == "Linked Logo"
-                && restartLink.SourcePath == Path.GetFullPath(sourcePath)
-                && restartLink.ProjectRelativePath == "assets/linked-logo.svg"
+                && File.Exists(restartLink.SourcePath)
+                && restartLink.SourcePath != Path.GetFullPath(sourcePath)
+                && restartLink.ProjectRelativePath == $".Vault/ExternalSvg/{linked.Id}.svg"
                 && restartLink.LastKnownSha256 == sha256,
                 "Editor restart JSON did not preserve the external SVG asset link.");
 
+            AssertTimeline(restartLink.OriginalSourcePath == Path.GetFullPath(sourcePath),
+                "Restart lost the original path used for duplicate import detection.");
+            File.Delete(sourcePath);
             ProjectVaultStore.Save(project, manifestPath);
             var manifest = JsonNode.Parse(File.ReadAllText(manifestPath))?.AsObject()
                 ?? throw new InvalidOperationException("External SVG regression could not parse the project manifest.");
@@ -67,8 +71,24 @@ internal static partial class Benchmark
             var vaultRestored = ProjectVaultStore.Load(manifestPath);
             AssertTimeline(
                 vaultRestored.ExternalSvgAssets.Single().Id == linked.Id
-                && !File.Exists(vaultRestored.ExternalSvgAssets.Single().SourcePath),
-                "A missing external SVG source prevented project load or removed its retained link.");
+                && File.Exists(vaultRestored.ExternalSvgAssets.Single().SourcePath),
+                "A deleted original SVG broke the managed project resource.");
+            var secondRoot = Path.Combine(temporaryRoot, "save-as");
+            var secondManifest = Path.Combine(secondRoot, "Renamed.v2dProject");
+            ProjectVaultStore.Save(project, secondManifest);
+            ProjectVaultStore.Save(project, secondManifest);
+            AssertTimeline(project.ExternalSvgAssets.Single().SourcePath.StartsWith(secondRoot),
+                "Save As did not rebind SVG resources.");
+            var movedRoot = Path.Combine(temporaryRoot, "moved");
+            Directory.Move(secondRoot, movedRoot);
+            var movedManifest = Path.Combine(movedRoot, "Renamed.v2dProject");
+            var moved = ProjectVaultStore.Load(movedManifest);
+            AssertTimeline(File.Exists(moved.ExternalSvgAssets.Single().SourcePath), "Moving the package broke SVG resources.");
+            var originalManifestBytes = File.ReadAllBytes(movedManifest);
+            File.AppendAllText(moved.ExternalSvgAssets.Single().SourcePath, " ");
+            AssertTimeline(ThrowsInvalidData(() => ProjectVaultStore.Save(moved, movedManifest))
+                && File.ReadAllBytes(movedManifest).SequenceEqual(originalManifestBytes),
+                "A checksum failure modified the committed manifest.");
 
             var legacyRoot = Path.Combine(temporaryRoot, "legacy");
             var legacyManifestPath = Path.Combine(legacyRoot, "Legacy.v2dProject");

@@ -1206,6 +1206,7 @@ internal static class DrawingObjectSvgCodec
 
     private static void ValidateTimeline(AnimationTimelineSnapshot? timeline, int formatVersion)
     {
+        if (timeline is not null) AnimationTimeline.ValidateMotionParents(timeline);
         if (timeline is null) return;
         if (timeline.Tracks is null) throw new InvalidDataException("Timeline metadata is missing tracks.");
         var tabGroupIds = ValidateTimelineTabGroups(timeline);

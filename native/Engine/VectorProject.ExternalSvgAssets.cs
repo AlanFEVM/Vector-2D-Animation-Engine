@@ -37,8 +37,13 @@ internal sealed partial class VectorProject
         while (FindDrawingObject(id) is not null
                || _externalSvgAssets.Any(candidate => string.Equals(candidate.Id, id, StringComparison.Ordinal)));
 
+        var originalSourcePath = normalizedSourcePath;
+        if (!ProjectTemporaryResources.TryCopy(Id, normalizedSourcePath,
+                normalizedSha256, 128L * 1024 * 1024, out normalizedSourcePath)) return false;
+        normalizedRelativePath = $".Vault/ExternalSvg/{id}.svg";
         asset = new ExternalSvgAssetDefinition
         {
+            OriginalSourcePath = originalSourcePath,
             Id = id,
             Name = normalizedName,
             SourcePath = normalizedSourcePath,
@@ -85,6 +90,11 @@ internal sealed partial class VectorProject
             return true;
         }
 
+        var originalSourcePath = normalizedSourcePath;
+        if (!ProjectTemporaryResources.TryCopy(Id, normalizedSourcePath,
+                normalizedSha256, 128L * 1024 * 1024, out normalizedSourcePath)) return false;
+        normalizedRelativePath = $".Vault/ExternalSvg/{asset.Id}.svg";
+        asset.OriginalSourcePath = originalSourcePath;
         asset.SourcePath = normalizedSourcePath;
         asset.ProjectRelativePath = normalizedRelativePath;
         asset.LastKnownSha256 = normalizedSha256;
@@ -98,7 +108,8 @@ internal sealed partial class VectorProject
         {
             Id = asset.Id,
             Name = asset.Name,
-            SourcePath = asset.SourcePath,
+            OriginalSourcePath = asset.OriginalSourcePath,
+            SourcePath = ProjectTemporaryResources.SnapshotSource(Id, asset.SourcePath, asset.LastKnownSha256, 128L * 1024 * 1024),
             ProjectRelativePath = asset.ProjectRelativePath,
             LastKnownSha256 = asset.LastKnownSha256,
             CreatedAt = asset.CreatedAt
@@ -129,6 +140,7 @@ internal sealed partial class VectorProject
             {
                 Id = snapshot.Id,
                 Name = normalizedName,
+                OriginalSourcePath = snapshot.OriginalSourcePath,
                 SourcePath = normalizedSourcePath,
                 ProjectRelativePath = normalizedRelativePath,
                 LastKnownSha256 = normalizedSha256,

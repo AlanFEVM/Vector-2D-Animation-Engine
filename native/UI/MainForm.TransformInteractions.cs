@@ -716,7 +716,7 @@ internal sealed partial class MainForm : Form
 
     private void MoveSelectedSceneInstance(PointF world)
     {
-        var instances = SelectedSceneInstances();
+        var instances = MotionTransformInstances();
         if (instances.Count == 0) return;
         var spatialSession = _spatialTransformEditSession;
         if (spatialSession is not null && _sceneSnapMoveStartPointer is { } snapStart)
@@ -769,7 +769,7 @@ internal sealed partial class MainForm : Form
     private void ApplySceneInstanceTransform(PointF world)
     {
         var instance = SelectedSceneInstance();
-        var instances = SelectedSceneInstances();
+        var instances = MotionTransformInstances();
         if (instance is null || instances.Count == 0 || _activeTransformHandle == TransformHandleKind.None) return;
 
         if (_activeTransformHandle == TransformHandleKind.Move)
@@ -1044,7 +1044,7 @@ internal sealed partial class MainForm : Form
         _sceneInstanceTransformPreviews.Clear();
         var compositionScene = ActiveInstanceCompositionScene();
         var compositionResult = ActiveInstanceCompositionResult();
-        foreach (var instance in SelectedSceneInstances())
+        foreach (var instance in MotionTransformInstances())
         {
             var indices = Enumerable.Range(0, compositionScene.ObjectCount)
                 .Where(index =>
@@ -1744,7 +1744,8 @@ internal sealed partial class MainForm : Form
             if (materialized.Changed) QueueDeferredPresentationRefresh(DeferredPresentationRefresh.Hierarchy);
         }
 
-        _drawingTransformSession = _scene.BeginTransformSession(_selectedObjects);
+        _drawingTransformSession = _scene.BeginTransformSession(
+            _scene.ExpandMotionTransformObjects(_selectedObjects, _frame));
         session = _drawingTransformSession;
         return true;
     }

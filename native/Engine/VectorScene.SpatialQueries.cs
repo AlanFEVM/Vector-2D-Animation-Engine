@@ -1635,9 +1635,8 @@ internal sealed partial class VectorScene
 
     private int CellForWorld(float x, float y)
     {
-        var ix = (int)((x + StageWidth * 0.5f) / StageWidth * IndexColumns);
-        var iy = (int)((y + StageHeight * 0.5f) / StageHeight * IndexRows);
-        if ((uint)ix >= IndexColumns || (uint)iy >= IndexRows) return -1;
+        var ix = (int)Math.Clamp((x + StageWidth * 0.5f) / StageWidth * IndexColumns, 0, IndexColumns - 1);
+        var iy = (int)Math.Clamp((y + StageHeight * 0.5f) / StageHeight * IndexRows, 0, IndexRows - 1);
         return iy * IndexColumns + ix;
     }
 

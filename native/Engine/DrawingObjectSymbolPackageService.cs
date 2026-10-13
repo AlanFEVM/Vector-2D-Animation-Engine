@@ -608,6 +608,7 @@ internal static class DrawingObjectSymbolPackageService
     {
         return new AnimationTimelineSnapshot
         {
+            MotionParents = timeline.MotionParents.ToArray(),
             Tracks = timeline.Tracks.Select(track => new AnimationTimelineTrackSnapshot
             {
                 Id = track.Id,

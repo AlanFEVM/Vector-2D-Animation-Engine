@@ -1,4 +1,4 @@
-namespace VectorAnimationEngine;
+﻿namespace VectorAnimationEngine;
 
 internal sealed record TimelineTabGroup(string Id, string Name, int? ColorArgb = null);
 
@@ -121,7 +121,7 @@ internal sealed partial class AnimationTimeline
         var track = FindTrack(trackId);
         if (track is null || string.Equals(track.TabGroupId, groupId, StringComparison.Ordinal)) return false;
         track.TabGroupId = groupId;
-        if (TabGroupOrderingEnabled && !_applyingTabGroupOrder)
+        if (!_applyingTabGroupOrder)
         {
             _applyingTabGroupOrder = true;
             try { AssignTabGroupToLayerBlock?.Invoke(track.TargetId, groupId); }

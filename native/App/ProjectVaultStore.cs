@@ -10,7 +10,7 @@ internal static class ProjectVaultStore
     internal const string ProjectExtension = ".v2dProject";
 
     private const int MinimumReadableManifestFormatVersion = 1;
-    private const int ManifestFormatVersion = 5;
+    private const int ManifestFormatVersion = 6;
     /// <summary>
     /// Format 5 added the managed image asset library (.Vault/Images).
     /// </summary>
@@ -168,6 +168,8 @@ internal static class ProjectVaultStore
                 var imageRelativePath = imageAsset.ProjectRelativePath;
                 var imagePath = ResolveExpectedRelativePath(stagingRoot, imageRelativePath, imageRelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
+                ProjectTemporaryResources.RejectReparsePath(imageAsset.SourcePath);
+                ValidateMaximumFileSize(imageAsset.SourcePath, MaxImageAssetBytes, "image asset");
                 File.Copy(imageAsset.SourcePath, imagePath, overwrite: true);
                 FlushFileToDisk(imagePath);
                 ValidateMaximumFileSize(imagePath, MaxImageAssetBytes, "image asset");
@@ -193,6 +195,27 @@ internal static class ProjectVaultStore
                 });
             }
 
+            var svgEntries = new List<ExternalSvgAssetDescriptor>();
+            foreach (var asset in snapshot.ExternalSvgAssets)
+            {
+                ProjectTemporaryResources.RejectReparsePath(asset.SourcePath);
+                ValidateMaximumFileSize(asset.SourcePath, MaxSvgAssetBytes, "SVG asset");
+                var relative = $".Vault/ExternalSvg/{asset.Id}.svg";
+                var destination = ResolveExpectedRelativePath(stagingRoot, relative, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(asset.SourcePath, destination);
+                FlushFileToDisk(destination);
+                var hash = ComputeSha256(destination);
+                if (asset.ProjectRelativePath.StartsWith(".Vault/ExternalSvg/", StringComparison.Ordinal)
+                    && !string.Equals(hash, asset.LastKnownSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"SVG asset '{asset.Name}' changed on disk.");
+                svgEntries.Add(new ExternalSvgAssetDescriptor
+                {
+                    Id = asset.Id, Name = asset.Name, SourcePath = asset.SourcePath,
+                    ProjectRelativePath = relative, LastKnownSha256 = hash, CreatedAt = asset.CreatedAt
+                });
+            }
+
             var manifest = new ProjectManifest
             {
                 FormatVersion = ManifestFormatVersion,
@@ -213,7 +236,7 @@ internal static class ProjectVaultStore
                 },
                 AssetTags = snapshot.AssetTags.Select(AssetTagDescriptor.From).ToArray(),
                 AssetFolders = snapshot.AssetFolders.Select(AssetFolderDescriptor.From).ToArray(),
-                ExternalSvgAssets = snapshot.ExternalSvgAssets.Select(ExternalSvgAssetDescriptor.From).ToArray(),
+                ExternalSvgAssets = svgEntries.ToArray(),
                 ImageAssets = imageEntries.ToArray(),
                 DrawingObjects = drawingEntries.ToArray(),
                 Scenes = sceneEntries.ToArray()
@@ -225,6 +248,15 @@ internal static class ProjectVaultStore
             ValidateMaximumFileSize(stagingManifest, MaxManifestBytes, "project manifest");
             _ = LoadValidatedProject(stagingManifest);
             CommitManagedFiles(stagingRoot, backupRoot, projectRoot, fullManifestPath, snapshot.Id);
+            foreach (var asset in project.ImageAssets)
+                asset.SourcePath = Path.Combine(projectRoot, asset.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            foreach (var asset in project.ExternalSvgAssets)
+            {
+                var entry = svgEntries.Single(item => item.Id == asset.Id);
+                asset.ProjectRelativePath = entry.ProjectRelativePath;
+                asset.LastKnownSha256 = entry.LastKnownSha256;
+                asset.SourcePath = Path.Combine(projectRoot, entry.ProjectRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            }
             return fullManifestPath;
         }
         catch (ProjectSaveRecoveryException)
@@ -373,6 +405,25 @@ internal static class ProjectVaultStore
             };
         }
 
+        var externalSvgAssets = manifest.ExternalSvgAssets.Select(item => item.ToSnapshot()).ToArray();
+        if (manifest.FormatVersion >= 6)
+        {
+            for (var index = 0; index < externalSvgAssets.Length; index++)
+            {
+                var entry = manifest.ExternalSvgAssets[index];
+                var expected = $".Vault/ExternalSvg/{entry.Id}.svg";
+                var path = ResolveExpectedRelativePath(projectRoot, entry.ProjectRelativePath, expected);
+                projectBytes = AddProjectBytes(projectBytes,
+                    ValidateFile(path, entry.LastKnownSha256, MaxSvgAssetBytes, "SVG asset"));
+                externalSvgAssets[index] = new ExternalSvgAssetRestartSnapshot
+                {
+                    Id = entry.Id, Name = entry.Name, SourcePath = path,
+                    ProjectRelativePath = expected, LastKnownSha256 = entry.LastKnownSha256,
+                    CreatedAt = entry.CreatedAt
+                };
+            }
+        }
+
         var snapshot = new ProjectRestartSnapshot
         {
             Id = manifest.Project.Id,
@@ -383,7 +434,7 @@ internal static class ProjectVaultStore
             PlaybackEndFrame = manifest.Project.PlaybackEndFrame,
             AssetTags = manifest.AssetTags.Select(item => item.ToSnapshot()).ToArray(),
             AssetFolders = manifest.AssetFolders.Select(item => item.ToSnapshot()).ToArray(),
-            ExternalSvgAssets = manifest.ExternalSvgAssets.Select(item => item.ToSnapshot()).ToArray(),
+            ExternalSvgAssets = externalSvgAssets,
             ImageAssets = imageAssets,
             DrawingObjects = drawings,
             Scenes = scenes
@@ -1891,6 +1942,7 @@ internal static class ProjectVaultStore
         IEnumerable<string> targetIds)
     {
         if (timeline.Tracks is null) throw new InvalidDataException("Timeline tracks are missing.");
+        AnimationTimeline.ValidateMotionParents(timeline);
         var tabGroupIds = ValidateTimelineTabGroups(timeline);
         var requiredTargets = targetIds.ToHashSet(StringComparer.Ordinal);
         ValidateUniqueIds(timeline.Tracks.Select(item => item?.Id), "timeline track");
@@ -2110,7 +2162,7 @@ internal static class ProjectVaultStore
         $"{VaultDirectoryName}/{VaultImageDirectoryName}/{id}";
 
     private static string TimelineFileExtension(int manifestFormatVersion) =>
-        manifestFormatVersion == ManifestFormatVersion
+        manifestFormatVersion >= 5
             ? CompressedTimelineFileExtension
             : LegacyTimelineFileExtension;
 
@@ -2296,7 +2348,7 @@ internal static class ProjectVaultStore
         out int decodedBytes)
         where T : class
     {
-        if (manifestFormatVersion != ManifestFormatVersion)
+        if (manifestFormatVersion < 5)
         {
             var legacyLength = new FileInfo(path).Length;
             if (legacyLength > int.MaxValue)

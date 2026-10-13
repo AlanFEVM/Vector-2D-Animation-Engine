@@ -75,6 +75,7 @@ internal enum SvgIconKind
     EditImage,
     OnionSkin,
     MotionTrack,
+    LayerParenting,
     TimelineTitle,
     Settings
 }
@@ -134,6 +135,36 @@ internal static class SvgIcons
 
         switch (kind)
         {
+            case SvgIconKind.LayerParenting:
+            {
+                using var outline = new GraphicsPath(FillMode.Alternate);
+                void RoundedBox(float left, float top, float width, float height, float radius)
+                {
+                    var box = Rect(referenceBounds, left * 24f / 1024f, top * 24f / 1024f,
+                        width * 24f / 1024f, height * 24f / 1024f);
+                    var diameter = radius * 2f * referenceSize / 1024f;
+                    outline.StartFigure();
+                    outline.AddArc(box.Left, box.Top, diameter, diameter, 180, 90);
+                    outline.AddArc(box.Right - diameter, box.Top, diameter, diameter, 270, 90);
+                    outline.AddArc(box.Right - diameter, box.Bottom - diameter, diameter, diameter, 0, 90);
+                    outline.AddArc(box.Left, box.Bottom - diameter, diameter, diameter, 90, 90);
+                    outline.CloseFigure();
+                }
+                RoundedBox(96, 128, 832, 320, 96);
+                RoundedBox(160, 192, 704, 192, 32);
+                RoundedBox(352, 576, 576, 320, 96);
+                RoundedBox(416, 640, 448, 192, 32);
+                g.FillPath(solidFill, outline);
+                using var connectorPen = new Pen(color, referenceSize * 64f / 1024f)
+                { LineJoin = LineJoin.Round };
+                using var connector = new GraphicsPath();
+                connector.AddLine(P(referenceBounds, 4.5f, 10), P(referenceBounds, 4.5f, 15.75f));
+                connector.AddBezier(P(referenceBounds, 4.5f, 15.75f), P(referenceBounds, 4.5f, 17),
+                    P(referenceBounds, 4.75f, 17.25f), P(referenceBounds, 6, 17.25f));
+                connector.AddLine(P(referenceBounds, 6, 17.25f), P(referenceBounds, 8.25f, 17.25f));
+                g.DrawPath(connectorPen, connector);
+                break;
+            }
             case SvgIconKind.TimelineTitle:
             {
                 // Preserve the supplied SVG's 1024-unit geometry in the shared icon bounds.

@@ -6598,6 +6598,131 @@ internal static partial class Benchmark
         Console.WriteLine("svg_visible_selection=ok,opaque=ok,holes=ok,transparent=ok,locked=ok,move=ok,nonmutating=ok");
     }
 
+    private static void RunMultiLayerSelectionRegression()
+    {
+        RunOutsideStageBitmapSelectionRegression();
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(1600);
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+        scene.CreateEmpty(layers: 2);
+        var upper = scene.AddObject(0, new PointF(-250, 0), new SizeF(200, 200), 0, 0,
+            Color.Teal, Color.Transparent, 4, ShapeKind.Rectangle);
+        var lower = scene.AddObject(1, new PointF(250, 0), new SizeF(200, 200), 0, 0,
+            Color.Coral, Color.Transparent, 4, ShapeKind.Rectangle);
+        scene.CompleteDeferredBuild();
+        scene.ActiveLayer = 0;
+        var mouseDown = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var mouseMove = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var mouseUp = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var clearSelection = RequireMethod(typeof(MainForm), "ClearSelection", [typeof(bool)]);
+
+        void Click(PointF world)
+        {
+            var screen = Point.Round(stage.WorldToScreen(world.X, world.Y));
+            mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+        }
+
+        Click(new PointF(250, 0));
+        AssertTimeline(stage.SelectedObjects.SequenceEqual([lower]) && scene.ActiveLayer == 1,
+            "Clicking visible content on a non-active layer did not select it and focus its timeline layer.");
+        clearSelection.Invoke(form, [false]);
+        var start = Point.Round(stage.WorldToScreen(-450, -200));
+        var end = Point.Round(stage.WorldToScreen(450, 200));
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, end.X, end.Y, 0)]);
+        mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]);
+        AssertTimeline(stage.SelectedObjects.Order().SequenceEqual(new[] { upper, lower }.Order()),
+            "Marquee selection omitted visible content from another layer.");
+
+        clearSelection.Invoke(form, [false]);
+        scene.TransformObjects([upper], point => new PointF(point.X + 500, point.Y));
+        scene.Argb[upper] = Color.FromArgb(128, Color.Teal).ToArgb();
+        scene.SetLayerLocked(0, true);
+        AssertTimeline(scene.HitTest(new PointF(250, 0), 0, 0) == lower,
+            "A locked translucent upper layer blocked hit testing of visible unlocked lower-layer content.");
+        Click(new PointF(250, 0));
+        AssertTimeline(stage.SelectedObjects.SequenceEqual([lower]) && scene.ActiveLayer == 1,
+            "A locked upper layer blocked the actual Stage pointer selection of lower-layer content.");
+        scene.Argb[upper] = Color.Teal.ToArgb();
+        AssertTimeline(scene.HitTest(new PointF(250, 0), 0, 0) < 0,
+            "Skipping locked hits exposed lower-layer content hidden by an opaque upper layer.");
+        scene.SetLayerLocked(0, false);
+        AssertTimeline(scene.HitTest(new PointF(250, 0), 0, 0) == upper,
+            "Unlocked upper-layer content lost its normal hit priority.");
+        Console.WriteLine("multi_layer_selection=ok,pointer=ok,marquee=ok,locked_fallback=ok,opaque_occlusion=ok");
+    }
+
+    private static void RunOutsideStageBitmapSelectionRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        scene.CreateEmpty(layers: 2);
+        var data = new BitmapObjectData { ImageAssetId = "outside-stage-image", PlacedSize = new SizeF(3000, 4000) };
+        scene.AddBitmapObject(0, PointF.Empty, data);
+        var right = scene.StageWidth * 0.5f + 6000;
+        var bottom = scene.StageHeight * 0.5f + 6000;
+        var centers = new[]
+        {
+            new PointF(right, 0), new PointF(-right, 0),
+            new PointF(0, bottom), new PointF(0, -bottom),
+            new PointF(right, bottom), new PointF(-right, -bottom),
+            new PointF(scene.StageWidth * 0.5f, 0)
+        };
+        var objects = centers.Select(center => scene.AddBitmapObject(1, center, data)).ToArray();
+        void CheckQueries(VectorScene target)
+        {
+            for (var index = 0; index < centers.Length; index++)
+            {
+                var center = centers[index];
+                AssertTimeline(target.HitTest(center, 0, 0) == objects[index]
+                    && target.HasSelectableObjectAt(center, 0, 0)
+                    && target.QueryDrawingObjects(new RectangleF(center.X - 2000, center.Y - 2500, 4000, 5000), 0)
+                        .SequenceEqual([objects[index]]),
+                    $"Visible bitmap outside the Stage bounds was omitted from hit/marquee queries at {center}.");
+            }
+        }
+        CheckQueries(scene);
+        scene.RebuildGeometryIndex();
+        CheckQueries(scene);
+        var restored = new VectorScene();
+        restored.RestoreSnapshot(scene.CreateSnapshot());
+        CheckQueries(restored);
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(scene.StageWidth * 3);
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+        scene.ActiveLayer = 0;
+        var screen = Point.Round(stage.WorldToScreen(right, 0));
+        RequireMethod(typeof(MainForm), "StageMouseDown").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+        RequireMethod(typeof(MainForm), "StageMouseUp").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+        AssertTimeline(stage.SelectedObjects.SequenceEqual([objects[0]]) && scene.ActiveLayer == 1,
+            "The visible off-Stage bitmap on layer 0001 could not be selected by the Stage pointer.");
+        RequireMethod(typeof(MainForm), "ClearSelection", [typeof(bool)]).Invoke(form, [false]);
+        var start = Point.Round(stage.WorldToScreen(right - 2500, -3000));
+        var end = Point.Round(stage.WorldToScreen(right + 2500, 3000));
+        RequireMethod(typeof(MainForm), "StageMouseDown").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, start.X, start.Y, 0)]);
+        RequireMethod(typeof(MainForm), "StageMouseMove").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 0, end.X, end.Y, 0)]);
+        RequireMethod(typeof(MainForm), "StageMouseUp").Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]);
+        AssertTimeline(stage.SelectedObjects.SequenceEqual([objects[0]]),
+            "The visible off-Stage bitmap could not be selected by a Stage marquee.");
+        Console.WriteLine("outside_stage_bitmap_selection=ok,incremental=ok,rebuild=ok,snapshot=ok,pointer=ok,marquee=ok");
+    }
+
     private static void RunImportedSvgBreakApartRegression()
     {
         RunImportedSvgLocalReferenceRegression();

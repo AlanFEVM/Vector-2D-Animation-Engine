@@ -1652,6 +1652,9 @@ internal sealed partial class VectorScene
             });
         Timeline.RestoreSnapshot(new AnimationTimelineSnapshot
         {
+            MotionParents = previousTimelineSnapshot.MotionParents
+                .Where(link => layerTracks.Any(track => track.TargetId == link.ChildTargetId)
+                    && layerTracks.Any(track => track.TargetId == link.ParentTargetId)).ToArray(),
             Tracks = layerTracks.Concat(additionalTracks).ToArray(),
             TabGroups = previousTimelineSnapshot.TabGroups,
             ActiveTabGroupId = previousTimelineSnapshot.ActiveTabGroupId,

@@ -67,10 +67,12 @@ internal sealed partial class MainForm
                 // A placement and its distortion must move together from the same
                 // pointer-down baseline. Moving only X/Y leaves visible pixels outside
                 // the persisted source envelope, where inverse hit testing cannot find them.
+                var motionTargets = _scene.ExpandMotionTransformObjects(_selectedMoveStarts.Keys, _frame);
                 if (_drawingTransformSession is null
-                    && _selectedMoveStarts.Keys.Any(index => _scene.TryGetObjectDistortionsView(index, out _)))
+                    && (motionTargets.Length > _selectedMoveStarts.Count
+                        || _selectedMoveStarts.Keys.Any(index => _scene.TryGetObjectDistortionsView(index, out _))))
                 {
-                    _drawingTransformSession = _scene.BeginTransformSession(_selectedMoveStarts.Keys);
+                    _drawingTransformSession = _scene.BeginTransformSession(motionTargets);
                 }
                 if (_drawingTransformSession is { } translationSession)
                 {

@@ -875,6 +875,7 @@ internal sealed partial class TimelineStrip : Control
     public void BindContext(ITimelineContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+        CancelMotionParentingDrag();
         CancelTabGroupDrag();
         var hadSelectedTween = _selectedTween is not null;
         CancelCommandFeedback();
@@ -1278,13 +1279,13 @@ internal sealed partial class TimelineStrip : Control
         UpdateEditingHighlightAnimation();
         _editingSelectionVisualBounds = Rectangle.Empty;
         DrawShell(graphics, layout, e.ClipRectangle);
-        DrawRuler(graphics, layout, e.ClipRectangle);
-        DrawTrackRows(graphics, layout, e.ClipRectangle);
+        DrawParentingTimelineContent(graphics, layout, e.ClipRectangle);
         DrawLayerFeedback(graphics, layout);
         DrawCommandFeedback(graphics, layout);
         DrawPlayhead(graphics, layout);
         DrawHorizontalScroll(graphics, layout);
         DrawVerticalScroll(graphics, layout);
+        DrawMotionParenting(graphics, layout);
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -1342,6 +1343,7 @@ internal sealed partial class TimelineStrip : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        if (HandleMotionParentingMouseDown(e)) return;
         if (!TabGroupBarBounds().Contains(e.Location)) _focusedTabGroupId = null;
         if (e.Button == MouseButtons.Left && HeightResizeHandleBounds().Contains(e.Location))
         {
@@ -1453,6 +1455,9 @@ internal sealed partial class TimelineStrip : Control
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
+        var parentingLayout = CreateLayout();
+        if (MotionParentToggleBounds(parentingLayout).Contains(e.Location)
+            || MotionParentingColumnWidth > 0 && MotionParentColumnBounds(parentingLayout).Contains(e.Location)) return;
         if (e.Button != MouseButtons.Left) return;
         if (IsGroupDisclosureDoubleClick(e.Location)) return;
         if (_shotFilterActive) return;
@@ -1486,6 +1491,7 @@ internal sealed partial class TimelineStrip : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (HandleMotionParentingMouseMove(e.Location)) return;
         if (HandleTabGroupDragMove(e.Location)) return;
         if (_draggingHeightResize)
         {
@@ -1641,6 +1647,7 @@ internal sealed partial class TimelineStrip : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (HandleMotionParentingKeyDown(e)) return;
         if (TryHandleTabGroupKey(e)) return;
         if (e.Control && e.KeyCode == Keys.A)
         {
@@ -2028,6 +2035,7 @@ internal sealed partial class TimelineStrip : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (CompleteMotionParentingDrag(e)) return;
         if (e.Button != MouseButtons.Left) return;
         if (CompleteTabGroupDrag(e.Location)) return;
         if (_draggingGutterSplitter)
@@ -2046,6 +2054,7 @@ internal sealed partial class TimelineStrip : Control
         base.OnMouseCaptureChanged(e);
         if (!Capture)
         {
+            CancelMotionParentingDrag();
             CancelTabGroupDrag();
             EndMouseDrag(canceled: true);
         }
@@ -3347,11 +3356,14 @@ internal sealed partial class TimelineStrip : Control
         if (sourceIndex < 0 || _layerDropTrack >= TrackCount) return;
         var targetTrackId = _timeline.Tracks[_layerDropTrack].Id;
         if (string.Equals(_draggedLayerTrackId, targetTrackId, StringComparison.Ordinal)) return;
-        LayerMoveRequested?.Invoke(this, new TimelineLayerMoveRequestedEventArgs(
+        var move = new TimelineLayerMoveRequestedEventArgs(
             _draggedLayerTrackId,
             targetTrackId,
             _layerDropPlacement,
-            ShouldMoveLayerOutOfMaskOnDrag(IsTrackMaskedContent(sourceIndex), _layerDropPlacement)));
+            ShouldMoveLayerOutOfMaskOnDrag(IsTrackMaskedContent(sourceIndex), _layerDropPlacement));
+        // Finish capture before a modal confirmation can cancel or re-enter the drag session.
+        EndMouseDrag(canceled: false);
+        LayerMoveRequested?.Invoke(this, move);
     }
 
     internal static bool ShouldMoveLayerOutOfMaskOnDrag(
@@ -4856,8 +4868,9 @@ internal sealed partial class TimelineStrip : Control
     {
         // The gutter honours the width the operator dragged it to, but never gives up the frames it
         // would take to show a usable timeline.
-        var availableGutter = Math.Max(MinimumGutterWidth, Width - _frameCellWidth * 5);
+        var availableGutter = Math.Max(MinimumGutterWidth, Width - _frameCellWidth * 5 - MotionParentingColumnWidth);
         var trackLeft = Math.Clamp(_gutterWidth, MinimumGutterWidth, Math.Min(MaximumGutterWidth, availableGutter));
+        trackLeft += MotionParentingColumnWidth;
         var trackRight = Math.Max(trackLeft + 1, Width - 1);
         var rowTop = HeaderHeight + RulerHeight;
         var scrollTop = Math.Max(rowTop, Height - HorizontalScrollHeight);

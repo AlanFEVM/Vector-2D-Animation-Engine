@@ -1166,6 +1166,7 @@ internal sealed partial class MainForm : Form
             e.TargetTrackId,
             e.Placement,
             e.MoveOutOfMask);
+        InitializeTimelineParenting();
         _timeline.RemoveLayersRequested += (_, _) => RemoveTimelineLayers();
         _timeline.LayerRenameRequested += (_, _) => RenameTimelineLayer();
         _timeline.LayerColorRequested += (_, _) => ChooseTimelineLayerColor();
@@ -1618,28 +1619,23 @@ internal sealed partial class MainForm : Form
 
     private bool SaveProjectAs()
     {
-        using var dialog = new FolderBrowserDialog
+        if (!CommitTextEdit()) return false;
+        using var dialog = new SaveFileDialog
         {
-            Description = UiLocalization.T("Choose or create a folder for the project asset library."),
-            UseDescriptionForTitle = true,
-            ShowNewFolderButton = true,
-            SelectedPath = !string.IsNullOrWhiteSpace(_projectManifestPath)
+            Title = UiLocalization.T("Save Project As"),
+            Filter = $"{UiLocalization.T("Vector 2D Project")} (*{ProjectVaultStore.ProjectExtension})|*{ProjectVaultStore.ProjectExtension}",
+            DefaultExt = ProjectVaultStore.ProjectExtension.TrimStart('.'),
+            AddExtension = true,
+            OverwritePrompt = true,
+            FileName = string.IsNullOrWhiteSpace(_projectManifestPath)
+                ? SafeProjectFileName(_project.Name) + ProjectVaultStore.ProjectExtension
+                : Path.GetFileName(_projectManifestPath),
+            InitialDirectory = !string.IsNullOrWhiteSpace(_projectManifestPath)
                 ? Path.GetDirectoryName(_projectManifestPath) ?? ""
                 : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
         };
-        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath)) return false;
-
-        var currentDirectory = string.IsNullOrWhiteSpace(_projectManifestPath)
-            ? ""
-            : Path.GetDirectoryName(_projectManifestPath) ?? "";
-        var fileName = string.Equals(
-                Path.GetFullPath(dialog.SelectedPath),
-                Path.GetFullPath(string.IsNullOrWhiteSpace(currentDirectory) ? dialog.SelectedPath : currentDirectory),
-                StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(_projectManifestPath)
-                ? Path.GetFileName(_projectManifestPath)
-                : SafeProjectFileName(_project.Name) + ProjectVaultStore.ProjectExtension;
-        return SaveProjectTo(Path.Combine(dialog.SelectedPath, fileName));
+        if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+        return SaveProjectTo(dialog.FileName);
     }
 
     private bool SaveProjectTo(string manifestPath)
@@ -1654,6 +1650,8 @@ internal sealed partial class MainForm : Form
             SetProjectDirty(false);
             CaptureActiveSceneOpticsSaveCheckpoint();
             AppLog.Info($"Saved project asset library: {_projectManifestPath}");
+            ModernMessageDialog.Show(this, _projectManifestPath, UiLocalization.T("Save Project"),
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
             return true;
         }
         catch (Exception ex)
@@ -1695,6 +1693,9 @@ internal sealed partial class MainForm : Form
         InvalidateSceneCompositionCache();
         _project.Changed -= ProjectChanged;
         _project = project;
+        ProjectTemporaryResources.Ensure(project.Id);
+        foreach (var asset in project.ImageAssets) ProjectTemporaryResources.Adopt(asset.SourcePath);
+        foreach (var asset in project.ExternalSvgAssets) ProjectTemporaryResources.Adopt(asset.SourcePath);
         _project.Changed += ProjectChanged;
         _projectManifestPath = manifestPath;
         _projectDirty = dirty;

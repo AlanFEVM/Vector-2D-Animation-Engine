@@ -67,11 +67,7 @@ internal sealed partial class MainForm
             return true;
         }
 
-        // Unsaved projects and restart handoff need a durable source until Save copies
-        // these pixels into .Vault/Images. Do not use a disposable temporary file.
-        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Vector2DAnimationEngine", "ClipboardImages");
-        Directory.CreateDirectory(directory);
+        var directory = ProjectTemporaryResources.Ensure(_project.Id);
         var sourcePath = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".png");
         ImageAssetDefinition? asset = null;
         var placed = false;
@@ -98,11 +94,9 @@ internal sealed partial class MainForm
         }
         finally
         {
-            if (!placed)
-            {
-                if (asset is not null) _project.TryRemoveImageAsset(asset.Id, out _);
-                File.Delete(sourcePath);
-            }
+            if (!placed && asset is not null) _project.TryRemoveImageAsset(asset.Id, out _);
+            ProjectTemporaryResources.RejectReparsePath(sourcePath);
+            File.Delete(sourcePath);
         }
     }
 
@@ -261,7 +255,7 @@ internal sealed partial class MainForm
         var cancelled = false;
         var errors = new List<string>();
         BitmapImageImportSettings? sharedSettings = null;
-        var existingPaths = new HashSet<string>(_project.ImageAssets.Select(asset => asset.SourcePath),
+        var existingPaths = new HashSet<string>(_project.ImageAssets.SelectMany(asset => new[] { asset.OriginalSourcePath, asset.SourcePath }),
             StringComparer.OrdinalIgnoreCase);
         _libraryVaultPanel.BeginProjectObjectUpdate();
         try
@@ -901,6 +895,11 @@ internal sealed partial class MainForm
     /// </summary>
     private string? ResolveImageAssetPath(ImageAssetDefinition asset)
     {
+        if (File.Exists(asset.SourcePath))
+        {
+            ProjectTemporaryResources.RejectReparsePath(asset.SourcePath);
+            return asset.SourcePath;
+        }
         if (!string.IsNullOrWhiteSpace(_projectManifestPath)
             && !string.IsNullOrWhiteSpace(asset.ProjectRelativePath))
         {
@@ -973,7 +972,8 @@ internal sealed partial class MainForm
         fileName = files[0];
         var dropped = fileName;
         asset = _project.ImageAssets.FirstOrDefault(candidate =>
-            string.Equals(candidate.SourcePath, dropped, StringComparison.OrdinalIgnoreCase));
+            string.Equals(candidate.OriginalSourcePath, dropped, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(candidate.SourcePath, dropped, StringComparison.OrdinalIgnoreCase));
         return true;
     }
 

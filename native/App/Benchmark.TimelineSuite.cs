@@ -7,6 +7,7 @@ internal static partial class Benchmark
 {
     public static void RunTimelineRegression()
     {
+        RunTimelineParentingRegression();
         RunMotionTrackRegression();
         RunFlashImportRegression();
         RunSymbolFiltersModelRegression();
@@ -482,8 +483,89 @@ internal static partial class Benchmark
             && !editorScene.Timeline.TabGroupOrderingEnabled
             && editorScene.Layers.Select(layer => layer.Id).SequenceEqual(sceneLayerIds),
             "Scene group ordering did not restore the scene layer snapshot on undo.");
+        RunTimelineTabGroupTransferConfirmationRegression();
         RunTimelineTabGroupBarDragRegression();
         Console.WriteLine("timeline_tab_group_order=ok");
+    }
+
+    private static void RunTimelineTabGroupTransferConfirmationRegression()
+    {
+        using var form = new MainForm();
+        var strip = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var drawing = project.DrawingObjects[0];
+        drawing.Scene.CreateEmpty(3, 8);
+        strip.BindContext(drawing);
+        var timeline = drawing.Scene.Timeline;
+        var group = timeline.CreateTabGroup("Transfer destination");
+        var source = timeline.Tracks[0];
+        var target = timeline.Tracks[1];
+        timeline.SetTrackTabGroup(target.Id, group);
+        timeline.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
+        var move = RequireMethod(typeof(MainForm), "MoveTimelineLayer", [typeof(string), typeof(string), typeof(TimelineLayerDropPlacement), typeof(bool)]);
+        void Move() => move.Invoke(form, [source.Id, target.Id, TimelineLayerDropPlacement.Before, false]);
+        var dialogCount = 0;
+        void WithDialog(DialogResult result, Action command, bool escape = false)
+        {
+            Exception? failure = null;
+            using var timer = new System.Windows.Forms.Timer { Interval = 20 };
+            var ticks = 0;
+            timer.Tick += (_, _) =>
+            {
+                var dialog = Application.OpenForms.Cast<Form>().FirstOrDefault(candidate => candidate is ModernMessageDialog);
+                if (dialog is null)
+                {
+                    if (++ticks < 100) return;
+                    timer.Stop();
+                    failure = new InvalidOperationException("Expected cross-group confirmation never appeared.");
+                    return;
+                }
+                timer.Stop();
+                dialogCount++;
+                if (escape)
+                {
+                    if (dialog.CancelButton is Button cancel) cancel.PerformClick();
+                    else { failure = new InvalidOperationException("Confirmation has no cancel action."); dialog.DialogResult = DialogResult.Cancel; }
+                }
+                else
+                {
+                    IEnumerable<Control> Children(Control root) => root.Controls.Cast<Control>()
+                        .SelectMany(child => new[] { child }.Concat(Children(child)));
+                    var action = Children(dialog).OfType<Button>().FirstOrDefault(button => button.DialogResult == result);
+                    if (action is null) { failure = new InvalidOperationException("Confirmation action missing."); dialog.DialogResult = DialogResult.Cancel; }
+                    else action.PerformClick();
+                }
+            };
+            timer.Start();
+            command();
+            timer.Stop();
+            if (failure is not null) throw failure;
+        }
+        var order = drawing.Scene.LayerIds.ToArray();
+        WithDialog(DialogResult.Cancel, Move);
+        AssertTimeline(dialogCount == 1 && source.TabGroupId == AnimationTimeline.DefaultTabGroupId
+            && drawing.Scene.LayerIds.SequenceEqual(order) && !timeline.TabGroupOrderingEnabled,
+            "Cancel modified an unsorted project's group or stack.");
+        WithDialog(DialogResult.Cancel, Move, escape: true);
+        AssertTimeline(dialogCount == 2 && source.TabGroupId == AnimationTimeline.DefaultTabGroupId
+            && drawing.Scene.LayerIds.SequenceEqual(order), "Escape/default cancel accepted a group transfer.");
+        WithDialog(DialogResult.OK, Move);
+        AssertTimeline(dialogCount == 3 && source.TabGroupId == group,
+            "Confirming an adjacent no-op layer placement failed to transfer its group.");
+        AssertTimeline(RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes).Invoke(form, null) is true
+            && timeline.FindTrack(source.Id)!.TabGroupId == AnimationTimeline.DefaultTabGroupId
+            && drawing.Scene.LayerIds.SequenceEqual(order), "Group transfer did not undo as one command.");
+        strip.SelectSingleLayerTarget(source.TargetId);
+        var menuMove = RequireMethod(typeof(TimelineStrip), "MoveSelectedTracksToTabGroup", [typeof(string)]);
+        WithDialog(DialogResult.Cancel, () => menuMove.Invoke(strip, [group]));
+        AssertTimeline(timeline.FindTrack(source.Id)!.TabGroupId == AnimationTimeline.DefaultTabGroupId,
+            "Cancelling the context-menu group transfer changed membership.");
+        WithDialog(DialogResult.OK, () => menuMove.Invoke(strip, [group]));
+        AssertTimeline(timeline.FindTrack(source.Id)!.TabGroupId == group, "Context-menu confirmation did not transfer membership.");
+        var previousDialogCount = dialogCount;
+        menuMove.Invoke(strip, [group]);
+        AssertTimeline(dialogCount == previousDialogCount, "A same-group move prompted.");
+        Console.WriteLine("timeline_tab_group_transfer_confirmation=ok");
     }
 
     private static void RunTimelineTabGroupBarDragRegression()

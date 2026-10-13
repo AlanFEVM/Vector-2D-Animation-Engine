@@ -60,6 +60,7 @@ internal static class EditorRestartStore
                 Window = RestartWindowBounds.From(state.WindowBounds),
                 WindowState = state.WindowState
             };
+            file.TemporaryRoots = ProjectTemporaryResources.PreserveForRestart(expiresUtc);
             WriteJsonAtomically(StatePath, file, MaxStateBytes);
             WriteJsonAtomically(TokenSidecarPath, new EditorRestartTokenFile
             {
@@ -111,6 +112,7 @@ internal static class EditorRestartStore
                 return false;
             }
 
+            ProjectTemporaryResources.AdoptRoots(file.TemporaryRoots ?? []);
             state = new EditorRestartState
             {
                 Project = VectorProject.RestoreRestartSnapshot(file.Project),
@@ -143,6 +145,7 @@ internal static class EditorRestartStore
     public static void CompletePreparedConsume(string? requestedToken)
     {
         if (!IsCanonicalToken(requestedToken)) return;
+        ProjectTemporaryResources.CompleteRestart();
         DeletePending();
         AppLog.Info("Completed the editor restart-state handoff after the main window became ready");
     }
@@ -224,6 +227,7 @@ internal static class EditorRestartStore
         public int Version { get; init; }
         public string Token { get; init; } = "";
         public DateTimeOffset ExpiresUtc { get; init; }
+        public string[]? TemporaryRoots { get; set; }
         public ProjectRestartSnapshot? Project { get; init; }
         public string? ProjectManifestPath { get; init; }
         public bool ProjectDirty { get; init; }

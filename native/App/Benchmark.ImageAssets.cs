@@ -130,6 +130,7 @@ internal static partial class Benchmark
             AssertTimeline(imageScene.TryGetBitmapObjectData(placed, out var uncut) && uncut.VisibleContours is null,
                 "Undo did not restore the uncut image.");
             imageScene.RestoreSnapshot(afterErase);
+            File.Delete(sourcePath);
             ProjectVaultStore.Save(project, manifestPath);
             // The managed file is named after the asset id, not the content hash.
             var managedPath = Path.Combine(temporaryRoot, ".Vault", "Images", $"{asset!.Id}.png");

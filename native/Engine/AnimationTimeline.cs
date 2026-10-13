@@ -645,6 +645,7 @@ internal sealed partial class AnimationTimeline
 
     public void Clear()
     {
+        _motionParents.Clear();
         var hadTracks = _tracks.Count > 0;
         _tracks.Clear();
         _tracksById.Clear();
@@ -684,6 +685,7 @@ internal sealed partial class AnimationTimeline
         return new AnimationTimelineSnapshot
         {
             Tracks = _tracks.Select(track => track.CreateSnapshot()).ToArray(),
+            MotionParents = CreateMotionParentSnapshot(),
             TabGroups = _tabGroups.ToArray(),
             ActiveTabGroupId = _activeTabGroupId,
             TabGroupOrderingEnabled = TabGroupOrderingEnabled
@@ -693,6 +695,7 @@ internal sealed partial class AnimationTimeline
     public void RestoreSnapshot(AnimationTimelineSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        ValidateMotionParents(snapshot);
         _tracks.Clear();
         _tracksById.Clear();
         _tracksByTargetId.Clear();
@@ -717,6 +720,7 @@ internal sealed partial class AnimationTimeline
         }
 
         RebuildLookups();
+        RestoreMotionParents(snapshot);
         OnChanged();
         OnTabGroupsChanged();
     }
@@ -832,6 +836,7 @@ internal sealed partial class AnimationTimeline
         _tracks.Clear();
         _tracks.AddRange(synchronized);
         RebuildLookups();
+        SynchronizeMotionParents();
         OnChanged();
         if (tabGroupsChanged) OnTabGroupsChanged(applyLayerOrder: false);
     }
@@ -892,6 +897,7 @@ internal sealed partial class AnimationTimeline
 
 internal sealed class AnimationTimelineSnapshot
 {
+    public TimelineMotionParentLink[] MotionParents { get; init; } = [];
     public AnimationTimelineTrackSnapshot[] Tracks { get; init; } = [];
     public TimelineTabGroup[] TabGroups { get; init; } = [];
     public string ActiveTabGroupId { get; init; } = AnimationTimeline.DefaultTabGroupId;

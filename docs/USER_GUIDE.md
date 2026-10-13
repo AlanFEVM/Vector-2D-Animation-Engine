@@ -1,4 +1,4 @@
-﻿# Vector 2D Animation Engine 用户指南
+# Vector 2D Animation Engine 用户指南
 
 本文档描述当前代码对应的操作行为，重点说明工作流、交互规则和排查方法。具体版本的新增、修复和兼容性差异请查看[文档索引](README.md)中的 Release History。
 
@@ -7,6 +7,34 @@
 初次使用时，可悬停顶部工作区标签查看用途与快捷键：先在“基础绘图”绘制元件（Ctrl+1），再到“场景与动画”装配并制作关键帧动画（Ctrl+2），需要相机构图时使用“镜头与导演”（Ctrl+3）。吸附栏的网格、对象、对齐和角度按钮提供用途与开关状态提示；总吸附关闭时会说明前置条件，数值框会解释单位和步长。提示随中英文语言与当前设置更新，不改变已选的吸附选项。
 
 ## 使用本指南
+
+时间轴分组栏右侧集中放置新建分组加号与分组设置按钮，与上方新建图层加号分开。分组设置提供当前分组的颜色、恢复默认颜色、重命名、删除和排序；选择“全部”时可按分组进入这些操作。内置分组不能重命名或删除。
+
+The timeline group bar keeps the create-group plus beside group settings on the right, separate from the add-layer plus above. Settings exposes group color, color reset, rename, delete and ordering; in All, choose a group submenu. Built-in groups cannot be renamed or deleted.
+
+### 时间轴父子关系（二维编辑跟随）
+
+关系栏使用简短的“父子关系 / Parent links”表头，完整说明可通过悬停查看。节点与图层行对齐，折线箭头指向父层；当前行及其祖先链突出显示，便于区分同一父层下的不同子层。
+
+The gutter is expanded by default and uses the compact “Parent links” header with a full hover description. Nodes align with layer rows, elbow arrows point to parent layers, and the active row and its ancestor chain are highlighted without highlighting sibling links.
+
+时间轴提供默认展开的独立父子关系栏，使用两层相连的图标切换显示。从子图层节点拖到父图层节点建立关系；右键节点可解除关系或定位父层。关系线与文件夹缩进分开，不改变图层绘制顺序、文件夹归属、曝光或补间。普通内容层可以建立多级关系；新增或更换父级只允许同一时间轴分组（TabGroup）内操作，在“全部”视图中也不能跨组绑定；不允许自绑定、循环或跨时间轴引用。已有关系不会因本限制自动删除，仍可解除。折叠或筛选隐藏了父层时，关系仍保留并显示提示。
+
+Adding or changing a parent is allowed only between layers in the same timeline tab group, including in All view. Existing links are preserved and can still be detached.
+
+关系编辑支持撤销和工程保存重开，删除父层会清理关联关系。基础绘图中，使用选择工具整体拖动父层对象，或用自由变换移动、旋转、缩放，会对后代图层当前曝光内容应用同一次变换；子层仍可独立编辑。隐藏的后代内容也参与跟随，父子同时选中不会重复变换。Auto Key 开启时，为受影响的后代内容层同时准备当前帧关键帧；关闭时编辑各层当前持有的 Cel。场景二维视图的选择拖动与自由变换会联动后代层的实例。绑定和解除关系本身不改变位置。
+
+在子图层节点上右键选择“解除父子关系”，只解除该层与其父层的连接，保留该层自己的子级连接和内容位置；可通过撤销恢复。
+
+Right-click a child layer node and choose “Remove layer parent” to detach only that layer from its parent. Its own child links and content positions are preserved; Undo restores the removed link.
+
+基础绘图中的元件实例也支持实例之间的父子编辑跟随：拖动父层实例会移动后代层实例，移动子层不会反向移动祖先层。
+
+Nested instances in Basic Drawing also support linked instance edits: dragging a parent-layer instance moves descendant-layer instances without moving ancestor layers when a child is edited.
+
+**当前实现是编辑联动，不是独立图层变换轨道**：变换结果写入后代的几何或实例状态，保存、命中和撤销使用实际变换后的内容。播放时不会仅根据父层已有动画动态生成子层运动；形状/节点编辑、属性数值编辑、3D 操作尚不属于此联动入口。
+
+The timeline parenting gutter stores parent links independently of folders and paint order. Whole-object drag and Free Transform in Basic Drawing propagate the edit to descendant layers; scene 2D pointer transforms include descendant instances. These are persisted edit-time transforms, not runtime inheritance of existing parent animation. Binding and detaching preserve positions. Node edits, numeric property edits and 3D operations are outside these linked edit paths.
 
 在镜头属性的“宽高比”中，可选择 **16:9、9:16、4:3、3:2、1:1、4:5、21:9**，或使用默认的“跟随场景”。每个镜头独立保存比例，切换比例不会修改场景尺寸；比例在目标关键帧处切换，位置和镜头参数继续按原有补间规则变化。“重置相机”同时恢复为跟随场景。
 
@@ -239,6 +267,12 @@ Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填�
 - `Freehand Lasso`：按住左键拖动绘制自定义边界，松开提交；短促单击或退化路径不会改变选择。两种套索都支持按住 `Shift` 追加选择。
 - 打开元件后，在 Basic Drawing 内可沿实际套索边界选出局部填色、线段和描边；完整圈住的填色也可与线段同时选择。切换到 `Select` 后可移动所选内容；取消未编辑的选区会恢复临时切分，圈选和移动均可撤销。元件实例、导入的 SVG、文字及带扭曲包络的对象仍按整体圈选；混合画笔按连通色块选择。Scene & Animation 的 2D 前视图支持套索，侧视与顶视保留投影选择工具。
 - 在舞台选择绘制元素或整体对象时，时间轴会自动激活其实际所在图层；目标位于折叠文件夹或当前滚动范围外时，会自动展开并滚动到该图层。
+- 点选和框选不限于活动图层。锁定图层不会抢占点选命中；下层内容仍可在未被不透明填色遮挡的位置选中，包括透过锁定的半透明上层。锁定的不透明填色仍保留遮挡，不会穿透选择完全隐藏的内容。
+- 画布尺寸不是选择边界：平移或缩小视图后，画布外可见的图片和绘制对象仍可点选、框选；无需先移动回画布内。
+
+  Click and marquee selection are not restricted to the active layer. Locked layers do not claim click hits, so exposed lower-layer content remains selectable through translucent locked layers. Opaque locked fills still occlude hidden content.
+
+  Canvas dimensions do not restrict selection: visible images and drawing objects outside the canvas remain selectable by click and marquee after panning or zooming out.
 - 空白处拖框：普通对象需完整落入框内；选择框穿过 Line 或 Pencil 时，会沿框边把描边拆成框内与框外的开放曲线，并只选中框内部分。Mixing Brush 只选择与框选范围实际着色相交的连通岛，外接矩形中的透明区域不会误选；按 `Shift` 追加选择。
 - 拖动已选对象：移动。指针悬停在已选直线、描边、填色或整体对象的主体上，以及整体移动期间，显示四向交叉箭头；移动已选边界描边或运动轨锚点时同样显示该光标。端点和曲率编辑使用十字光标，缩放手柄使用对应方向的双向箭头。
 - 舞台获得焦点时按 `Ctrl+A`：仅全选当前帧实际曝光、可见且未锁定的内容；不会跨帧选择。Basic Drawing 优先选择本地对象，该帧没有本地对象时选择实际可见的嵌套实例；Scene & Animation 选择当前帧实际可见的可编辑场景实例。
@@ -349,11 +383,11 @@ Lab 模式提供可按 0.1 步进编辑的 `L*`（0 到 100）、`a*` 和 `b*`�
 
 直接按住时间轴顶部的分组标签左右拖拽，也可调整分组排序。标签只显示名称，悬浮提示显示序号。拖拽标签跟随鼠标，相邻标签让位，高亮竖线标出落点，松开后同步修改“全部”列表和舞台层级；左侧分组更低，右侧分组更高。拖到标签栏边缘可翻动被折叠的标签，按 `Esc`、失去鼠标捕获或在标签栏外松开则取消，普通点击仍切换筛选。`All` 固定且不可拖动。
 
-分组排序支持一次撤销并随工程保存。旧工程在首次确认排序前保持原来的叠放顺序；启用排序后，调整归属和新增图层会保持分组层级，在“全部”视图中跨组拖动图层或图层组时，会先弹出二次确认；点击“确定”移入目标组，取消则保留原位置，同组内排序无需确认。文件夹及其子图层、遮罩及其关联内容作为整体归属同一个分组，调整其中任一成员归属会移动整个关联块，保留文件夹与遮罩关系。切换分组标签仍只改变列表筛选，不改变舞台内容。
+分组排序支持一次撤销并随工程保存。旧工程在首次确认排序前保持原来的叠放顺序；启用排序后，调整归属和新增图层会保持分组层级，在“全部”视图中跨组拖动图层或图层组，或通过右键“移动到分组”改变归属时，会先弹出二次确认，无需先启用分组排序；点击“确定”移入目标组，取消则保留原位置，同组内排序无需确认。文件夹及其子图层、遮罩及其关联内容作为整体归属同一个分组，调整其中任一成员归属会移动整个关联块，保留文件夹与遮罩关系。切换分组标签仍只改变列表筛选，不改变舞台内容。
 
 Drag group tabs directly on the timeline’s top tab bar to reorder them. Tabs show names only, with ordinals in hover tips. The dragged tab follows the pointer and neighbours make room; the insertion line shows the destination; releasing updates the All list and stage stacking in one undoable command. Left is lower and right is higher. Hold at the bar edges to reveal hidden tabs. Esc, losing capture, or releasing outside the bar cancels. Clicking still switches filters, and All stays fixed.
 
-The add-group `+` follows the last visible group tab, with the settings gear fixed at the far right of the tab bar. The group order dialog is available from the settings gear or the tab context/overflow menu. The compact dialog has one horizontal tag strip, ordered from left (bottom) to right (top), with ordinals and member layers in hover tips. Confirming updates both the All list and stage stacking while preserving the layer order within each group. `Ctrl+Left/Right` provides keyboard reordering. Up to 32 custom groups can be created per timeline, in addition to Layers and Terrain. All is a view, not a sortable group. Sorting is saved and undoable; Cancel leaves the project unchanged. In All view, moving a layer or layer group to another group asks for confirmation before changing the document; Cancel keeps the original placement. Reordering within the same group does not prompt. Folder children and linked mask/content layers move together. Legacy projects keep their original stack until sorting is confirmed.
+The add-group `+` follows the last visible group tab, with the settings gear fixed at the far right of the tab bar. The group order dialog is available from the settings gear or the tab context/overflow menu. The compact dialog has one horizontal tag strip, ordered from left (bottom) to right (top), with ordinals and member layers in hover tips. Confirming updates both the All list and stage stacking while preserving the layer order within each group. `Ctrl+Left/Right` provides keyboard reordering. Up to 32 custom groups can be created per timeline, in addition to Layers and Terrain. All is a view, not a sortable group. Sorting is saved and undoable; Cancel leaves the project unchanged. In All view, dragging a layer or layer group into another group or using Move to tab group asks for confirmation before changing the document, including projects that have not enabled group sorting; Cancel keeps the original placement. Reordering within the same group does not prompt. Folder children and linked mask/content layers move together. Legacy projects keep their original stack until sorting is confirmed.
 
 右键 TabGroup 标签可设置自定义颜色或恢复默认颜色；普通图层组、地形组和自定义组均支持，`All` 保持主题默认外观。颜色显示在标签及分组菜单的色样中。“全部”视图内同组图层使用一致的行底色与色块，优先采用分组自定义颜色；未设置时使用稳定的分组识别色，选中状态仍有高亮。切换到“图层”、地形或自定义分组视图时保留各图层原有颜色显示。分组识别色仅用于时间轴，不改变原始图层颜色、舞台材质或渲染。溢出菜单中也可调整分组颜色。颜色选择器中调整立即生效，关闭或按 `Esc` 保留当前颜色；颜色随工程保存，一次调色以及恢复默认均可撤销。
 

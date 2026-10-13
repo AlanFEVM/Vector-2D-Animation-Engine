@@ -165,6 +165,7 @@ internal sealed class AppHost : ApplicationContext
             _codexBridge.Dispose();
             _hotReloadCoordinator.Dispose();
             CloseStartupBanner();
+            ProjectTemporaryResources.Cleanup();
         }
         if (Current == this) Current = null;
         base.Dispose(disposing);

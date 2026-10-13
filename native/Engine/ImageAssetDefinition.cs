@@ -11,6 +11,7 @@ internal sealed class ImageAssetDefinition
     public string Name { get; internal set; } = "Image";
 
     /// <summary>Original file the image was imported from. Retained for diagnostics and Relink.</summary>
+    public string OriginalSourcePath { get; internal set; } = "";
     public string SourcePath { get; internal set; } = "";
     /// <summary>Managed copy relative to the project root, for example <c>.Vault/Images/&lt;id&gt;.png</c>.</summary>
     public string ProjectRelativePath { get; internal set; } = "";
