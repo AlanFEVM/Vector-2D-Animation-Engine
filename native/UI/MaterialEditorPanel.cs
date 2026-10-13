@@ -131,7 +131,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly ModernNumericUpDown[] _channelValues = [new(), new(), new(), new()];
     private readonly Panel _channelsPanel = new();
     private readonly Panel _hexPanel = new();
-    private readonly TextBox _hexText = new();
+    private readonly ModernTextInput _hexText = new();
     private readonly TraditionalColorPlane _traditionalPlane = new();
     private readonly VerticalColorComponentSlider _primaryComponent = new();
     private readonly ComboBox _harmonyRule = new() { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -205,7 +205,7 @@ internal sealed class MaterialEditorPanel : UserControl
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
         MinimumSize = new Size(240, 0);
-        Padding = new Padding(8, Theme.InspectorSectionPaddingVertical, 8, Theme.InspectorSectionPaddingVertical);
+        Padding = new Padding(4, Theme.InspectorSectionPaddingVertical + 4, 8, Theme.InspectorSectionPaddingVertical + 4);
         Theme.StyleToolTip(_toolTip);
 
         EnsureGradientPaletteStateLoaded();
@@ -412,7 +412,7 @@ internal sealed class MaterialEditorPanel : UserControl
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorTitleHeight));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 126));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeightCompact + 16));
@@ -424,16 +424,7 @@ internal sealed class MaterialEditorPanel : UserControl
         _content = content;
 
         // TODO: Replace this basic shading editor with the full material system.
-        content.Controls.Add(new Label
-        {
-            Text = "Shading",
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(Theme.InspectorTitleFontSize, FontStyle.Bold),
-            Margin = Padding.Empty,
-            TextAlign = ContentAlignment.MiddleLeft
-        }, 0, 0);
+        content.Controls.Add(InspectorModuleStyle.CreateTitle("Shading"), 0, 0);
 
         BuildTargetRow(content);
         BuildGradientSettings(content);
@@ -444,6 +435,13 @@ internal sealed class MaterialEditorPanel : UserControl
         BuildPersistentHex(content);
         BuildPalettePopup();
         BuildLineEndpointStyle(content);
+        // Keep fields at their existing inset while the module title sits closer to the edge.
+        foreach (Control section in content.Controls)
+        {
+            if (content.GetRow(section) == 0) continue;
+            var margin = section.Margin;
+            section.Margin = new Padding(margin.Left + 4, margin.Top, margin.Right, margin.Bottom);
+        }
         ConfigureChannelMode();
         RefreshModeButtons();
         _channelsPanel.Visible = true;
@@ -587,7 +585,7 @@ internal sealed class MaterialEditorPanel : UserControl
             Margin = new Padding(8, 0, 0, 0)
         };
         harmony.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        harmony.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        harmony.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeightCompact + 6));
         harmony.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var ruleRow = new TableLayoutPanel
         {
@@ -598,14 +596,17 @@ internal sealed class MaterialEditorPanel : UserControl
             Margin = Padding.Empty
         };
         ruleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        ruleRow.AutoSize = true;
+        ruleRow.AutoSize = false;
+        ruleRow.Height = Theme.ControlHeightCompact + 6;
         ruleRow.AutoSizeMode = AutoSizeMode.GrowAndShrink;
         var harmonyLabel = CreateFieldLabel("Harmony");
         harmonyLabel.Font = Theme.UiFont(8.5f);
         harmonyLabel.Margin = Padding.Empty;
         harmonyLabel.AutoEllipsis = true;
         harmony.Controls.Add(harmonyLabel, 0, 0);
-        _harmonyRule.Dock = DockStyle.Fill;
+        _harmonyRule.Dock = DockStyle.None;
+        _harmonyRule.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        _harmonyRule.Width = 156;
         _harmonyRule.Margin = new Padding(0, 3, 0, 3);
         _harmonyRule.AccessibleName = "Color harmony rule";
         _harmonyRule.Items.AddRange(HarmonyRules.Select(rule => (object)rule.Label).ToArray());
@@ -613,10 +614,26 @@ internal sealed class MaterialEditorPanel : UserControl
         Theme.StyleComboBox(_harmonyRule);
         _harmonyRule.Font = Theme.UiFont(8.8f);
         _harmonyRule.DropDownWidth = 176;
+
         _harmonyRule.SelectedIndexChanged += (_, _) => HarmonyRuleChanged();
         _toolTip.SetToolTip(_harmonyRule, "Choose a color harmony rule");
         ruleRow.Controls.Add(_harmonyRule, 0, 0);
         harmony.Controls.Add(ruleRow, 0, 1);
+        void LayoutHarmonyRule()
+        {
+            var gap = Math.Max(1, (int)Math.Round(3f * _harmonyRule.DeviceDpi / 96f));
+            var rowHeight = _harmonyRule.Height + gap * 2;
+            if (Math.Abs(harmony.RowStyles[1].Height - rowHeight) > 0.1f)
+                harmony.RowStyles[1].Height = rowHeight;
+            var width = Math.Max(1, Math.Min(ruleRow.ClientSize.Width,
+                (int)Math.Round(156f * _harmonyRule.DeviceDpi / 96f)));
+            if (_harmonyRule.Width != width) _harmonyRule.Width = width;
+            _harmonyRule.Margin = new Padding(0, gap, 0, gap);
+        }
+        _harmonyRule.SizeChanged += (_, _) => LayoutHarmonyRule();
+        _harmonyRule.DpiChangedAfterParent += (_, _) => LayoutHarmonyRule();
+        ruleRow.Resize += (_, _) => LayoutHarmonyRule();
+        LayoutHarmonyRule();
 
         _harmonyGrid.Dock = DockStyle.Fill;
         _harmonyGrid.Margin = new Padding(0, 1, 0, 0);
@@ -679,6 +696,7 @@ internal sealed class MaterialEditorPanel : UserControl
             Margin = Padding.Empty,
             Padding = new Padding(0, Theme.InspectorRowMarginVertical, 0, Theme.InspectorRowMarginVertical)
         };
+        hexRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
         hexRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         hexRow.Controls.Add(CreateFieldLabel("Hex"), 0, 0);
@@ -692,6 +710,20 @@ internal sealed class MaterialEditorPanel : UserControl
         _hexText.Leave += (_, _) => CommitHexText();
         hexRow.Controls.Add(_hexText, 1, 0);
         _hexPanel.Controls.Add(hexRow);
+        void LayoutHexRow()
+        {
+            var gap = Math.Max(1, (int)Math.Round(Theme.InspectorRowMarginVertical * _hexText.DeviceDpi / 96f));
+            hexRow.Padding = new Padding(0, gap, 0, gap);
+            var height = Math.Max(InspectorHeight(Theme.InspectorRowHeight),
+                _hexText.PreferredFieldHeight + hexRow.Padding.Vertical);
+            if (Math.Abs(content.RowStyles[7].Height - height) <= 0.1f) return;
+            content.RowStyles[7].Height = height;
+            UpdatePanelHeight();
+        }
+        _hexText.FontChanged += (_, _) => LayoutHexRow();
+        _hexText.DpiChangedAfterParent += (_, _) => LayoutHexRow();
+        hexRow.Layout += (_, _) => LayoutHexRow();
+        LayoutHexRow();
     }
 
     private void ConfigureChannelRow(TableLayoutPanel channels, int index)
@@ -1286,7 +1318,7 @@ internal sealed class MaterialEditorPanel : UserControl
         {
             _content.RowStyles[5].Height = expanded ? InspectorHeight(Theme.InspectorRowHeight) : 0;
             _content.RowStyles[6].Height = expanded ? InspectorHeight(260) : 0;
-            _content.RowStyles[7].Height = InspectorHeight(Theme.InspectorRowHeight);
+            _content.RowStyles[7].Height = Math.Max(InspectorHeight(Theme.InspectorRowHeight), _hexText.PreferredFieldHeight + (int)Math.Ceiling(Theme.InspectorRowMarginVertical * 2f * _hexText.DeviceDpi / 96f));
             foreach (Control control in _content.Controls)
             {
                 var row = _content.GetRow(control);
@@ -2284,8 +2316,7 @@ internal sealed class MaterialEditorPanel : UserControl
         section.Paint += (_, e) =>
         {
             var y = Math.Max(1, section.Padding.Top / 2);
-            using var line = new Pen(SystemInformation.HighContrast
-                ? SystemColors.WindowText : Theme.Mix(Theme.Panel, Theme.Border, 0.55f));
+            using var line = new Pen(InspectorModuleStyle.DividerColor, section.DeviceDpi / 96f);
             e.Graphics.DrawLine(line, 0, y, Math.Max(0, section.ClientSize.Width - 1), y);
         };
         section.Resize += (_, _) => section.Invalidate();

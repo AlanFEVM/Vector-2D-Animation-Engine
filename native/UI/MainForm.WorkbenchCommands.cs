@@ -1118,6 +1118,7 @@ internal sealed partial class MainForm : Form
         _timeline.FrameSelectionChanged += (_, _) => SynchronizeSelectionFromTimelineFrames();
         _timeline.CurrentFrameChanged += (_, _) =>
         {
+            SetToolStripText(_timelineFrameStatus, _timeline.FrameStatusText);
             if (_syncingFrame) return;
             StopPlayback();
             SetFrame(_timeline.CurrentFrame);
@@ -2106,23 +2107,25 @@ internal sealed partial class MainForm : Form
     private void UpdatePerformanceMetrics()
     {
         var stats = _stage.LastStats;
-        SetLabelText(_fps, _hasRenderRateSample ? $"FPS {_renderFps:0}" : "FPS --");
-        SetLabelText(
-            _draw,
-            stats.TileLod
-                ? stats.VisibleObjects > 0 || stats.DrawnObjects > 0
-                    ? $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)} + Tiles {CompactFormat.Number(stats.TileDraws)}"
-                    : $"Tiles {CompactFormat.Number(stats.TileDraws)}"
-                : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}");
+        SetToolStripText(_drawStatus, stats.TileLod
+            ? stats.VisibleObjects > 0 || stats.DrawnObjects > 0
+                ? $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)} + Tiles {CompactFormat.Number(stats.TileDraws)}"
+                : $"Tiles {CompactFormat.Number(stats.TileDraws)}"
+            : $"Draw {CompactFormat.Number(stats.DrawnObjects)} / {CompactFormat.Number(stats.VisibleObjects)}");
         var totalAtoms = _scene.VirtualAtomCount;
         if (_stage.UnderlayScene is { } underlay && !ReferenceEquals(underlay, _scene)) totalAtoms += underlay.VirtualAtomCount;
-        SetLabelText(_atoms, $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(totalAtoms)}");
-        SetLabelText(_zoom, $"Zoom {_stage.ActiveViewZoom * 100:0}%");
+        SetToolStripText(_atomsStatus, $"Atoms {CompactFormat.Number(stats.VisibleAtoms)} / {CompactFormat.Number(totalAtoms)}");
         UpdateStatusBar();
     }
 
     private void UpdateStatusBar()
     {
+        _renderFpsStatus.ForeColor = Theme.SecondaryText;
+        _animationFpsStatus.ForeColor = Theme.SecondaryText;
+        _drawStatus.ForeColor = Theme.SecondaryText;
+        _atomsStatus.ForeColor = Theme.SecondaryText;
+        _zoomStatus.ForeColor = Theme.SecondaryText;
+        _timelineFrameStatus.ForeColor = Theme.SecondaryText;
         SetToolStripText(
             _renderFpsStatus,
             _hasRenderRateSample ? $"Render FPS {_renderFps:0}" : "Render FPS --");
@@ -2130,6 +2133,7 @@ internal sealed partial class MainForm : Form
             _animationFpsStatus,
             $"UPS {(_hasUpdateRateSample ? $"{_updatesPerSecond:0}" : "--")}/{TargetUps:0}  Animation FPS {FormatPlaybackFps(_playbackSettings.Fps)}");
         SetToolStripText(_zoomStatus, $"Zoom {_stage.ActiveViewZoom * 100:0}%");
+        SetToolStripText(_timelineFrameStatus, _timeline.FrameStatusText);
     }
 
     private static string FormatPlaybackFps(decimal playbackFps)

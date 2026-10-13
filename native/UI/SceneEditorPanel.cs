@@ -49,7 +49,7 @@ internal sealed class SceneEditorPanel : UserControl
     public SceneEditorPanel()
     {
         BackColor = Theme.Panel;
-        Padding = new Padding(10);
+        Padding = new Padding(4, 10, 8, 16);
         MinimumSize = new Size(240, 260);
         _cameraProjection.Items.AddRange(["Orthographic", "Perspective"]);
         Theme.StyleComboBox(_cameraProjection);
@@ -64,7 +64,7 @@ internal sealed class SceneEditorPanel : UserControl
     public event EventHandler<SceneSelectionChangedEventArgs>? SceneSelectionChanged;
     public event EventHandler<DrawingObjectOpenRequestedEventArgs>? DrawingObjectOpenRequested;
 
-    public int PreferredPanelHeight => 300;
+    public int PreferredPanelHeight => 340;
 
     public void BindProject(
         IReadOnlyList<SceneDefinition> scenes,
@@ -91,20 +91,12 @@ internal sealed class SceneEditorPanel : UserControl
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorTitleHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
-        var title = new Label
-        {
-            Text = "Scene & Animation",
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
+        var title = InspectorModuleStyle.CreateTitle("Scene & Animation");
         root.Controls.Add(title, 0, 0);
 
         var content = new TableLayoutPanel
@@ -113,11 +105,11 @@ internal sealed class SceneEditorPanel : UserControl
             BackColor = Theme.Panel,
             ColumnCount = 2,
             RowCount = 2,
-            Padding = new Padding(0, 8, 0, 0)
+            Padding = new Padding(4, 8, 0, 0), Margin = Padding.Empty
         };
-        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 2; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        for (var i = 0; i < 2; i++) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         root.Controls.Add(content, 0, 1);
 
         AddRow(content, "Scene", _sceneName, 0);
@@ -129,11 +121,11 @@ internal sealed class SceneEditorPanel : UserControl
             BackColor = Theme.Panel,
             ColumnCount = 1,
             RowCount = 4,
-            Padding = new Padding(0, 8, 0, 0)
+            Padding = new Padding(4, 8, 0, 0), Margin = Padding.Empty
         };
-        managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         managers.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        managers.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         managers.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         root.Controls.Add(managers, 0, 2);
 
@@ -303,7 +295,7 @@ internal sealed class SceneEditorPanel : UserControl
             Dock = DockStyle.Fill,
             ForeColor = Theme.Text,
             BackColor = Theme.Panel,
-            Font = Theme.UiFont(9.5f, FontStyle.Bold),
+            Font = Theme.UiFont(9f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft
         };
         var actions = new FlowLayoutPanel
@@ -332,7 +324,9 @@ internal sealed class SceneEditorPanel : UserControl
     private static void ConfigureList(ListBox list)
     {
         list.Dock = DockStyle.Fill;
+        list.Margin = new Padding(0, 4, 0, 8);
         Theme.StyleListBox(list);
+        list.IntegralHeight = false;
     }
 
     private static void AddRow(TableLayoutPanel parent, string label, Control value, int row)
@@ -349,6 +343,8 @@ internal sealed class SceneEditorPanel : UserControl
             Margin = new Padding(0, 3, 8, 3)
         }, 0, row);
 
+        value.Dock = DockStyle.Fill;
+        value.Margin = new Padding(0, 6, 0, 6);
         parent.Controls.Add(value, 1, row);
     }
 

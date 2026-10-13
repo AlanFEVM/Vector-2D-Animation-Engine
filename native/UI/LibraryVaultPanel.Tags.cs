@@ -253,12 +253,13 @@ internal sealed partial class LibraryVaultPanel
         }
         if (_project is null || drawingObject is null || _project.AssetTags.Count == 0) return;
 
-        var tagMenu = (ToolStripDropDownMenu)setTags.DropDown;
+        if (setTags.DropDown is not AnimatedContextMenuStrip) setTags.DropDown = new AnimatedContextMenuStrip();
+        var tagMenu = (AnimatedContextMenuStrip)setTags.DropDown;
         tagMenu.BackColor = Theme.PanelStrong;
         tagMenu.ForeColor = Theme.Text;
         tagMenu.Font = _projectObjectMenu.Font;
         tagMenu.Renderer = _projectObjectMenu.Renderer;
-        tagMenu.Padding = new Padding(6, 5, 6, 5);
+        tagMenu.Padding = new Padding(7);
         tagMenu.ShowCheckMargin = true;
         tagMenu.ShowImageMargin = true;
         var menuWidth = Math.Clamp(

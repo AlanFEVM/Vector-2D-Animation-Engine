@@ -13,6 +13,7 @@ internal sealed class DashDock : UserControl
     private bool _hovered;
     private bool _pressed;
     private bool _compact;
+    private bool _compactHeight;
 
     public DashDock()
     {
@@ -53,7 +54,7 @@ internal sealed class DashDock : UserControl
         {
             var side = ScaleLogical(26);
             return new Rectangle(Compact ? Math.Max(1, (Width - side) / 2 - ScaleLogical(1)) : ScaleLogical(12),
-                ScaleLogical(11), side, side);
+                Math.Max(0, (Height - side) / 2), side, side);
         }
     }
 
@@ -79,9 +80,20 @@ internal sealed class DashDock : UserControl
         Invalidate();
     }
 
+    public bool CompactHeight
+    {
+        get => _compactHeight;
+        set
+        {
+            _compactHeight = value;
+            ApplyResponsiveSize();
+            Invalidate();
+        }
+    }
+
     public override Size GetPreferredSize(Size proposedSize) => new(
         ScaleLogical(Compact ? CompactDockWidth : PreferredDockWidth),
-        ScaleLogical(PreferredDockHeight));
+        ScaleLogical(CompactHeight ? 32 : PreferredDockHeight));
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -96,7 +108,7 @@ internal sealed class DashDock : UserControl
         using var swatchBorder = new Pen(
             SystemInformation.HighContrast
                 ? SystemColors.ControlText
-                : Theme.ReadableUiColor(_workspaceColor, Enabled && (_hovered || _pressed) ? Theme.Accent : Theme.BorderHover));
+                : Theme.ControlOutline);
         Theme.FillUiRectangle(e.Graphics, swatch, swatchBounds);
         Theme.DrawUiRectangle(e.Graphics, swatchBorder, swatchBounds);
 
@@ -108,12 +120,12 @@ internal sealed class DashDock : UserControl
             var textWidth = Math.Max(0, Width - textLeft - ScaleLogical(12));
             var titleBounds = new Rectangle(
                 textLeft,
-                ScaleLogical(5),
+                ScaleLogical(CompactHeight ? 0 : 5),
                 textWidth,
-                ScaleLogical(20));
+                ScaleLogical(CompactHeight ? 16 : 20));
             var titleColor = SystemInformation.HighContrast
                 ? Enabled ? SystemColors.ControlText : SystemColors.GrayText
-                : Theme.ReadableText(surfaceColor, Enabled ? Theme.Text : Theme.DisabledText);
+                : Theme.ReadableText(surfaceColor, Enabled ? Theme.SecondaryText : Theme.DisabledText);
             TextRenderer.DrawText(
                 e.Graphics,
                 UiLocalization.T("Workspace color"),
@@ -125,12 +137,12 @@ internal sealed class DashDock : UserControl
             using var detailFont = Theme.UiFont(8.2f);
             var detailBounds = new Rectangle(
                 textLeft,
-                ScaleLogical(24),
+                ScaleLogical(CompactHeight ? 16 : 24),
                 textWidth,
-                ScaleLogical(18));
+                ScaleLogical(CompactHeight ? 16 : 18));
             var detailColor = SystemInformation.HighContrast
                 ? Enabled ? SystemColors.ControlText : SystemColors.GrayText
-                : Theme.ReadableText(surfaceColor, Enabled ? Theme.Muted : Theme.DisabledText);
+                : Theme.ReadableText(surfaceColor, Enabled ? Theme.SecondaryText : Theme.DisabledText);
             TextRenderer.DrawText(
                 e.Graphics,
                 ToHex(_workspaceColor),
@@ -142,7 +154,7 @@ internal sealed class DashDock : UserControl
 
         if (Enabled && Focused && ShowFocusCues)
         {
-            var focusInset = ScaleLogical(4);
+            var focusInset = ScaleLogical(CompactHeight ? 2 : 4);
             ControlPaint.DrawFocusRectangle(
                 e.Graphics,
                 Rectangle.Inflate(swatchBounds, focusInset, focusInset),
@@ -259,7 +271,7 @@ internal sealed class DashDock : UserControl
     {
         var size = new Size(
             ScaleLogical(Compact ? CompactDockWidth : PreferredDockWidth),
-            ScaleLogical(PreferredDockHeight));
+            ScaleLogical(CompactHeight ? 32 : PreferredDockHeight));
         MinimumSize = size;
         MaximumSize = size;
         Size = size;

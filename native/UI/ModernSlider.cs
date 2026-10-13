@@ -166,28 +166,24 @@ internal sealed class ModernSlider : Control
         var enabled = Enabled;
         var highContrast = SystemInformation.HighContrast;
         var controlBackground = Theme.EffectiveBackground(this);
+        // Keep the slider layered like a CSS control: a quiet track, an accent
+        // progress surface, and a compact thumb. Avoid ReadableUiColor here;
+        // promoting the whole rail to white makes dark themes feel inverted.
         var railColor = highContrast
             ? enabled ? SystemColors.ControlDark : SystemColors.Control
             : enabled
-                ? Theme.Mix(Theme.Field, Theme.Border, 0.72f + _hoverProgress * 0.12f)
-                : Theme.Mix(Theme.Field, Theme.DisabledSurface, 0.78f);
+                ? Theme.Mix(Theme.PanelStrong, Theme.Border, 0.72f - _hoverProgress * 0.08f)
+                : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.72f);
         var fillColor = highContrast
             ? enabled ? SystemColors.Highlight : SystemColors.GrayText
             : enabled
-                ? Theme.Mix(Theme.Accent, Theme.Text, _hoverProgress * 0.08f)
-                : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.45f);
+                ? Theme.Mix(Theme.AccentSurface, Theme.Accent, 0.24f + _hoverProgress * 0.10f)
+                : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.42f);
         var thumbColor = highContrast
             ? enabled ? SystemColors.Highlight : SystemColors.GrayText
             : enabled
-                ? Theme.Mix(Theme.Accent, Theme.Text, 0.10f + _hoverProgress * 0.08f)
-                : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.58f);
-
-        if (!highContrast)
-        {
-            railColor = Theme.ReadableUiColor(controlBackground, railColor);
-            fillColor = Theme.ReadableUiColor(railColor, fillColor);
-            thumbColor = Theme.ReadableUiColor(railColor, thumbColor);
-        }
+                ? Theme.Mix(Theme.PanelStrong, Theme.PanelHover, 0.72f + _hoverProgress * 0.12f)
+                : Theme.DisabledSurface;
 
         DrawTicks(graphics, rail, enabled);
 
@@ -244,9 +240,7 @@ internal sealed class ModernSlider : Control
         using var thumbBorder = new Pen(
             highContrast
                 ? enabled ? SystemColors.HighlightText : SystemColors.GrayText
-                : Theme.ReadableUiColor(
-                    thumbColor,
-                    enabled ? Theme.Mix(Theme.Accent, Theme.Text, 0.24f) : Theme.DisabledText),
+                : (enabled ? Theme.ControlOutline : Theme.Mix(Theme.DisabledSurface, Theme.Border, 0.55f)),
             Math.Max(1f, Logical(1)));
         graphics.FillEllipse(thumbBrush, thumbBounds);
         graphics.DrawEllipse(thumbBorder, thumbBounds);
@@ -600,9 +594,7 @@ internal sealed class ModernSlider : Control
         using var tickPen = new Pen(
             SystemInformation.HighContrast
                 ? enabled ? SystemColors.WindowText : SystemColors.GrayText
-                : Theme.ReadableUiColor(
-                    Theme.EffectiveBackground(this),
-                    enabled ? Theme.Border : Theme.DisabledText),
+                : (enabled ? Theme.Mix(Theme.ControlOutline, Theme.Muted, 0.28f) : Theme.ControlOutline),
             Math.Max(1f, Logical(1)));
 
         for (long offset = 0; offset <= range; offset += step)

@@ -10,7 +10,7 @@ internal class ProfessionalColorPickerDialog : ModernDialogForm
     private readonly ModernNumericUpDown _red = CreateChannelInput("Red channel", new Padding(0, 4, 8, 4));
     private readonly ModernNumericUpDown _green = CreateChannelInput("Green channel", new Padding(0, 4, 8, 4));
     private readonly ModernNumericUpDown _blue = CreateChannelInput("Blue channel", new Padding(0, 4, 8, 4));
-    private readonly TextBox _hex = new();
+    private readonly ModernTextInput _hex = new();
     private readonly ColorPaletteGrid _presets = new();
     private readonly Panel _originalPreview = new();
     private readonly Panel _currentPreview = new();

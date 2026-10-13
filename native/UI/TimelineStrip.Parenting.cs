@@ -10,6 +10,7 @@ internal sealed class TimelineParentRequestedEventArgs(string trackId, string pa
 
 internal sealed partial class TimelineStrip
 {
+    private const int MotionParentToolbarWidth = AddLayerButtonWidth;
     private bool _motionParentingAvailable;
     private bool _motionParentingVisible;
     private string? _motionParentDragTrackId;
@@ -34,8 +35,13 @@ internal sealed partial class TimelineStrip
     private int MotionParentingColumnWidth => MotionParentingAvailable && MotionParentingVisible ? ScaleTimelineMetric(112) : 0;
     private static string ParentingText(string english, string chinese) => UiLocalization.CurrentLanguage == UiLanguage.SimplifiedChinese ? chinese : UiLocalization.T(english);
     private static string ParentingTitle => ParentingText("Layer parenting (2D edit following)", "图层父子关系（二维编辑跟随）");
-    private Rectangle MotionParentToggleBounds(TimelineLayout layout) => MotionParentingAvailable
-        ? new Rectangle(layout.TrackLeft - MotionParentingColumnWidth - ScaleTimelineMetric(34), HeaderHeight + 2, ScaleTimelineMetric(26), Math.Max(0, RulerHeight - 4)) : Rectangle.Empty;
+    private Rectangle MotionParentToggleBounds(TimelineLayout layout)
+    {
+        if (!MotionParentingAvailable) return Rectangle.Empty;
+        var addLayer = AddLayerButtonBounds(layout);
+        return new Rectangle(addLayer.Right + ScaleTimelineMetric(2), addLayer.Top,
+            addLayer.Width, addLayer.Height);
+    }
     private Rectangle MotionParentColumnBounds(TimelineLayout layout) => new(layout.TrackLeft - MotionParentingColumnWidth, HeaderHeight,
         Math.Max(0, MotionParentingColumnWidth - VerticalScrollWidth), Math.Max(0, layout.RowBottom - HeaderHeight));
 
@@ -68,10 +74,9 @@ internal sealed partial class TimelineStrip
         if (!MotionParentingAvailable) return;
         var toggle = MotionParentToggleBounds(layout);
         using var panel = new SolidBrush(Theme.Top);
-        graphics.FillRectangle(panel, toggle);
-        SvgIcons.Draw(graphics, SvgIconKind.LayerParenting, Rectangle.Inflate(toggle, -4, -4),
-            Enabled && MotionParentingVisible ? Theme.Accent : Theme.Muted);
-        if (Focused) ControlPaint.DrawFocusRectangle(graphics, toggle, Theme.Text, Theme.Top);
+        _headerIconCache.Draw(graphics, SvgIconKind.LayerParenting, toggle,
+            Theme.ReadableUiColor(Theme.Panel, Enabled && MotionParentingVisible ? Theme.Accent : Theme.Muted));
+        if (Focused) ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(toggle, -2, -2), Theme.Text, Theme.Panel);
         if (MotionParentingColumnWidth == 0) return;
         var bounds = MotionParentColumnBounds(layout);
         var state = graphics.Save();

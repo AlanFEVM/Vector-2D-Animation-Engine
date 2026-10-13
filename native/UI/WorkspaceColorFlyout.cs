@@ -112,7 +112,7 @@ internal sealed class WorkspaceColorPickerPanel : UserControl
     private readonly ModernNumericUpDown _red = CreateChannelInput("Red channel", new Padding(0, 5, 4, 5));
     private readonly ModernNumericUpDown _green = CreateChannelInput("Green channel", new Padding(0, 5, 4, 5));
     private readonly ModernNumericUpDown _blue = CreateChannelInput("Blue channel", new Padding(0, 5, 4, 5));
-    private readonly TextBox _hex = new();
+    private readonly ModernTextInput _hex = new();
     private readonly ColorPaletteGrid _presets = new();
     private readonly Panel _originalPreview = new();
     private readonly Panel _newPreview = new();

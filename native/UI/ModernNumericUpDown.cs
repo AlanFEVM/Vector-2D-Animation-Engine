@@ -293,8 +293,7 @@ internal sealed class ModernNumericUpDown : UserControl
         using var border = new Pen(
             SystemInformation.HighContrast
                 ? ContainsFocus ? SystemColors.Highlight : SystemColors.WindowText
-                : ContainsFocus || IsScrubbing || _stepperInteracting ? Theme.Accent
-                    : _hovered ? Theme.BorderHover : Theme.Mix(ResolveVisualColor(), Theme.Border, 0.72f),
+                : Theme.ControlOutline,
             Math.Max(1f, DeviceDpi / 96f));
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
         Theme.PaintUiSurface(e.Graphics, fill, border, ClientRectangle);

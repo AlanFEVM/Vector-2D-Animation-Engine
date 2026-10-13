@@ -7,6 +7,9 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
     private readonly Button _renameProfile = new() { Text = "Rename" };
     private readonly Button _deleteProfile = new() { Text = "Delete" };
     private readonly ListView _commandList = new();
+    private readonly ListView _categoryList = new();
+    private readonly TableLayoutPanel _commandHeader = new();
+    private string _selectedCategoryId = "all";
     private readonly Button _assignShortcut = new() { Text = "Assign" };
     private readonly Button _clearShortcut = new() { Text = "Clear" };
     private readonly Label _feedback = new();
@@ -100,7 +103,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         profileRow.Controls.Add(_deleteProfile, 4, 0);
         layout.Controls.Add(profileRow, 0, 0);
 
-        layout.Controls.Add(CreateCommandTable(), 0, 1);
+        layout.Controls.Add(CreateCommandBrowser(), 0, 1);
 
         var actionRow = new TableLayoutPanel
         {
@@ -132,6 +135,78 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         layout.Controls.Add(_feedback, 0, 3);
     }
 
+    private Control CreateCommandBrowser()
+    {
+        var browser = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty
+        };
+        browser.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 154));
+        browser.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        browser.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        _categoryList.Dock = DockStyle.Fill;
+        _categoryList.Margin = Padding.Empty;
+        _categoryList.AccessibleName = "Shortcut categories";
+        _categoryList.Columns.Add("Category", 140);
+        Theme.StyleListView(_categoryList);
+        _categoryList.HeaderStyle = ColumnHeaderStyle.None;
+        _categoryList.ClientSizeChanged += (_, _) =>
+            _categoryList.Columns[0].Width = Math.Max(80, _categoryList.ClientSize.Width - 8);
+        foreach (var (id, label) in new (string, string)[]
+        {
+            ("all", "All"),
+            ("file", "Project Files"),
+            ("edit", "Editing"),
+            ("tool", "Drawing Tools"),
+            ("tool-group", "Tool Groups"),
+            ("drawing", "Drawing"),
+            ("view", "View"),
+            ("timeline", "Timeline")
+        })
+        {
+            _categoryList.Items.Add(new ListViewItem(UiLocalization.T(label)) { Tag = id });
+        }
+        _categoryList.Items[0].Selected = true;
+        _categoryList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_categoryList.SelectedItems.Count != 1) return;
+            _selectedCategoryId = (string)_categoryList.SelectedItems[0].Tag!;
+            RefreshCommandList();
+            SetFeedback("");
+        };
+
+        var categories = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.Panel,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0, 0, 8, 0)
+        };
+        categories.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        categories.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        categories.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        categories.Controls.Add(HeaderLabel("Category", ContentAlignment.MiddleLeft), 0, 0);
+        categories.Controls.Add(_categoryList, 0, 1);
+        browser.Controls.Add(categories, 0, 0);
+        browser.Controls.Add(CreateCommandTable(), 1, 0);
+        return browser;
+    }
+
+    private static string CommandCategory(ShortcutCommandDefinition command)
+    {
+        if (command.Kind == ShortcutCommandKind.Tool) return "tool";
+        if (command.Kind == ShortcutCommandKind.Vault) return "view";
+        if (command.Kind != ShortcutCommandKind.Workbench) return "tool-group";
+        var separator = command.Id.IndexOf('.');
+        return separator >= 0 ? command.Id[..separator] : "all";
+    }
+
     private Control CreateCommandTable()
     {
         _commandList.Dock = DockStyle.Fill;
@@ -159,14 +234,12 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         table.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var header = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Theme.PanelStrong,
-            ColumnCount = 3,
-            RowCount = 1,
-            Margin = Padding.Empty
-        };
+        var header = _commandHeader;
+        header.Dock = DockStyle.Fill;
+        header.BackColor = Theme.PanelStrong;
+        header.ColumnCount = 3;
+        header.RowCount = 1;
+        header.Margin = Padding.Empty;
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
@@ -267,6 +340,7 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
             _commandList.Items.Clear();
             foreach (var command in ShortcutProfiles.Commands)
             {
+                if (_selectedCategoryId != "all" && CommandCategory(command) != _selectedCategoryId) continue;
                 var binding = profile.Bindings.FirstOrDefault(candidate =>
                     string.Equals(candidate.CommandId, command.Id, StringComparison.Ordinal));
                 var shortcut = ShortcutProfiles.FormatGestures(binding?.Gestures);
@@ -275,12 +349,15 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
                 _commandList.Items.Add(row);
                 if (string.Equals(command.Id, selectedCommandId, StringComparison.Ordinal)) row.Selected = true;
             }
+            if (_commandList.SelectedItems.Count == 0 && _commandList.Items.Count > 0)
+                _commandList.Items[0].Selected = true;
         }
         finally
         {
             _commandList.EndUpdate();
         }
         ResizeShortcutColumns();
+        RefreshEditState();
     }
 
     private void RefreshEditState()
@@ -479,10 +556,14 @@ internal sealed class ShortcutProfileEditorPanel : UserControl
 
     private void ResizeShortcutColumns()
     {
-        if (_commandList.Columns.Count < 2 || _commandList.ClientSize.Width < 260) return;
-        const int shortcutWidth = 190;
-        _commandList.Columns[0].Width = Math.Max(100, _commandList.ClientSize.Width - shortcutWidth - 28);
+        if (_commandList.Columns.Count < 2 || _commandHeader.ColumnStyles.Count < 3) return;
+        var scale = DeviceDpi / 96f;
+        var availableWidth = Math.Max(1, _commandList.ClientSize.Width - (int)Math.Round(24 * scale));
+        var shortcutWidth = Math.Min((int)Math.Round(190 * scale), Math.Max(1, availableWidth * 2 / 5));
+        _commandList.Columns[0].Width = Math.Max(1, availableWidth - shortcutWidth);
         _commandList.Columns[1].Width = shortcutWidth;
+        _commandHeader.ColumnStyles[1].Width = shortcutWidth;
+        _commandHeader.ColumnStyles[2].Width = Math.Max(0, _commandHeader.ClientSize.Width - availableWidth);
     }
 
     private sealed record ProfileItem(string Id, string DisplayName)

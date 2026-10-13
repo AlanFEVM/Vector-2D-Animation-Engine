@@ -158,10 +158,6 @@ internal sealed partial class MainForm : Form
     private readonly Stopwatch _metricsClock = Stopwatch.StartNew();
     private FixedStepBatcher _updateBatcher = new(TargetUps);
     private readonly DrawSettings _drawSettings = new();
-    private readonly Label _fps = MetricLabel("FPS --", 76);
-    private readonly Label _draw = MetricLabel("Draw 0", 210);
-    private readonly Label _atoms = MetricLabel("Atoms 0", 210);
-    private readonly Label _zoom = MetricLabel("Zoom 100%", 112);
     private readonly Dictionary<ToolMode, Button> _toolButtons = new();
     private bool? _lastDrawingToolsBlocked;
     private readonly ToolMode[] _shapeTools = [ToolMode.Rectangle, ToolMode.Ellipse, ToolMode.Triangle, ToolMode.Polygon, ToolMode.Star];
@@ -199,7 +195,10 @@ internal sealed partial class MainForm : Form
     private readonly StatusStrip _statusBar = new();
     private readonly ToolStripStatusLabel _renderFpsStatus = StatusLabel("Render FPS --");
     private readonly ToolStripStatusLabel _animationFpsStatus = StatusLabel("UPS --/300  Animation FPS 30");
+    private readonly ToolStripStatusLabel _drawStatus = StatusLabel("Draw 0");
+    private readonly ToolStripStatusLabel _atomsStatus = StatusLabel("Atoms 0");
     private readonly ToolStripStatusLabel _zoomStatus = StatusLabel("Zoom 100%");
+    private readonly ToolStripStatusLabel _timelineFrameStatus = StatusLabel("");
     private readonly ToolStripStatusLabel _devReloadStatus = StatusLabel("Module Reload On");
     private Panel? _topBar;
     private Label? _topPlaybackFpsLabel;
@@ -241,6 +240,7 @@ internal sealed partial class MainForm : Form
     private readonly MaterialEditorPanel _materialEditor = new();
     private readonly DrawingObjectInstancePanel _drawingObjectInstancePanel = new();
     private readonly HierarchyPanel _hierarchyPanel = new();
+    private HierarchyWindow? _hierarchyWindow;
     private readonly SceneEditorPanel _sceneEditorPanel = new();
     private readonly Button _sceneDimensionButton = new()
     {
@@ -1167,7 +1167,6 @@ internal sealed partial class MainForm : Form
         _propertiesPanelButton.Click += (_, _) => ToggleInspectorPanel();
         _propertiesPanelButton.MouseEnter += (_, _) => _toolTip.ShowFor(_propertiesPanelButton, "Properties (F1)");
         _propertiesPanelButton.MouseLeave += (_, _) => _toolTip.HideTip();
-        top.Controls.Add(_propertiesPanelButton);
         _timelinePanelButton = new SvgIconButton(SvgIconKind.TimelinePanel)
         {
             Left = 324,
@@ -1179,13 +1178,9 @@ internal sealed partial class MainForm : Form
         _timelinePanelButton.Click += (_, _) => ToggleTimelinePanel();
         _timelinePanelButton.MouseEnter += (_, _) => _toolTip.ShowFor(_timelinePanelButton, "Timeline (F2)");
         _timelinePanelButton.MouseLeave += (_, _) => _toolTip.HideTip();
-        top.Controls.Add(_timelinePanelButton);
-        _dashDock.Left = 366;
-        _dashDock.Top = 1;
         _dashDock.WorkspaceColorRequested += (_, _) => ChooseWorkspaceColor();
         _workspaceColorFlyout.ColorPreviewChanged += (_, _) => PreviewWorkspaceColor(_workspaceColorFlyout.Color);
         _workspaceColorFlyout.ColorEditingCompleted += (_, _) => CommitWorkspaceColor(_workspaceColorFlyout.Color);
-        top.Controls.Add(_dashDock);
         var playbackFpsLabel = new Label
         {
             Text = "FPS",
@@ -1246,7 +1241,7 @@ internal sealed partial class MainForm : Form
         _drawingObjectRow.Margin = Padding.Empty;
         _drawingObjectRow.Padding = Padding.Empty;
         _drawingObjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _drawingObjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, _drawSnappingStrip.Width + 12));
+        _drawingObjectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, DrawSnappingStrip.PreferredStripWidth + 12));
         _drawingObjectRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _workspaceHeader.Controls.Add(_drawingObjectRow);
         _drawingObjectTabs.Dock = DockStyle.Fill;
@@ -1298,13 +1293,6 @@ internal sealed partial class MainForm : Form
         stagePanel.BringToFront();
         var metrics = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = Theme.Top };
         PaintBottomBorder(metrics);
-        metrics.Controls.Add(_fps);
-        _draw.Left = 92;
-        metrics.Controls.Add(_draw);
-        _atoms.Left = 310;
-        metrics.Controls.Add(_atoms);
-        _zoom.Left = 540;
-        metrics.Controls.Add(_zoom);
         BuildEraserOptionsStrip(metrics);
         Theme.StyleButton(_sceneDimensionButton);
         _sceneDimensionButton.Top = 3;
@@ -1340,6 +1328,37 @@ internal sealed partial class MainForm : Form
         metrics.Controls.Add(_sceneProjectionButton);
         metrics.Controls.Add(zoomIn);
         metrics.Controls.Add(zoomOut);
+        var workbenchActions = new Panel { BackColor = Theme.Top, Height = _workspaceTabs.Height };
+        workbenchActions.Controls.Add(_propertiesPanelButton);
+        workbenchActions.Controls.Add(_timelinePanelButton);
+        _dashDock.CompactHeight = true;
+        workbenchActions.Controls.Add(_dashDock);
+        _workspaceHeader.Controls.Add(workbenchActions);
+        void LayoutWorkbenchActions()
+        {
+            var available = _workspaceTabs.WorkbenchActionsBounds;
+            var gap = ScaleResponsive(6, DeviceDpi / 96d);
+            var buttonsWidth = _propertiesPanelButton.Width + _timelinePanelButton.Width + gap * 2;
+            _dashDock.Compact = available.Width < buttonsWidth + ScaleResponsive(DashDock.PreferredDockWidth, DeviceDpi / 96d);
+            workbenchActions.Width = buttonsWidth + _dashDock.Width;
+            workbenchActions.Height = Math.Max(_dashDock.Height, Math.Max(_propertiesPanelButton.Height, _timelinePanelButton.Height));
+            workbenchActions.Visible = available.Width >= workbenchActions.Width;
+            workbenchActions.Left = Math.Clamp(
+                (_workspaceHeader.ClientSize.Width - workbenchActions.Width) / 2,
+                available.Left,
+                Math.Max(available.Left, available.Right - workbenchActions.Width));
+            workbenchActions.Top = (_workspaceHeader.Height - workbenchActions.Height) / 2;
+            _propertiesPanelButton.SetBounds(0, (workbenchActions.Height - _propertiesPanelButton.Height) / 2, _propertiesPanelButton.Width, _propertiesPanelButton.Height);
+            _timelinePanelButton.Left = _propertiesPanelButton.Right + gap;
+            _timelinePanelButton.Top = _propertiesPanelButton.Top;
+            _dashDock.Left = _timelinePanelButton.Right + gap;
+            _dashDock.Top = (workbenchActions.Height - _dashDock.Height) / 2;
+            if (_workspaceHeader.Controls.GetChildIndex(workbenchActions) != 0) workbenchActions.BringToFront();
+        }
+        _workspaceTabs.Layout += (_, _) => LayoutWorkbenchActions();
+        _workspaceHeader.Layout += (_, _) => LayoutWorkbenchActions();
+        workbenchActions.BringToFront();
+        LayoutWorkbenchActions();
         void LayoutMetricActions()
         {
             const int rightInset = 6;
@@ -1359,13 +1378,17 @@ internal sealed partial class MainForm : Form
 
             zoomIn.Left = right - zoomIn.Width;
             zoomOut.Left = zoomIn.Left - actionGap - zoomOut.Width;
-            _zoom.Visible = _zoom.Right + actionGap <= zoomOut.Left;
-            _atoms.Visible = _atoms.Right + actionGap <= zoomOut.Left;
-            _draw.Visible = _draw.Right + actionGap <= (_atoms.Visible ? _atoms.Left : zoomOut.Left);
+            var contentRight = zoomOut.Left - actionGap;
+            if (_eraserOptionsStrip.Visible)
+            {
+                _eraserOptionsStrip.Left = Math.Max(0, contentRight - _eraserOptionsStrip.Width);
+                contentRight = _eraserOptionsStrip.Left - actionGap;
+            }
         }
         metrics.Resize += (_, _) => LayoutMetricActions();
         _sceneDimensionButton.VisibleChanged += (_, _) => LayoutMetricActions();
         _sceneProjectionButton.VisibleChanged += (_, _) => LayoutMetricActions();
+        _eraserOptionsStrip.VisibleChanged += (_, _) => LayoutMetricActions();
         LayoutMetricActions();
         _eraserOptionsStrip.BringToFront();
         stagePanel.Controls.Add(_stage);
@@ -1432,7 +1455,8 @@ internal sealed partial class MainForm : Form
         body.Resize += (_, _) => LayoutVaultDrawer();
         LayoutVaultDrawer();
         RefreshToolButtons();
-        _workspaceTabs.BringToFront();
+        workbenchActions.BringToFront();
+        LayoutWorkbenchActions();
 
         InitializeShotDirector();
         Controls.Add(_timeline);
@@ -1493,16 +1517,6 @@ internal sealed partial class MainForm : Form
         _eraseFillOption.CheckedChanged += (_, _) => ApplyEraserOptions();
         metrics.Controls.Add(_eraserOptionsStrip);
 
-        void PositionStrip()
-        {
-            var anchoredLeft = Math.Max(0, metrics.ClientSize.Width - _eraserOptionsStrip.Width - 92);
-            _eraserOptionsStrip.Left = anchoredLeft < _zoom.Right
-                ? Math.Max(0, _zoom.Left)
-                : anchoredLeft;
-        }
-
-        metrics.Resize += (_, _) => PositionStrip();
-        PositionStrip();
         SyncEraserOptions();
     }
 
@@ -1553,22 +1567,31 @@ internal sealed partial class MainForm : Form
         renameProject.Click += (_, _) => BeginProjectTitleEdit();
         var settings = new ToolStripMenuItem("Settings...");
         settings.Click += (_, _) => ShowSettings();
+        var windows = new ToolStripMenuItem("Window");
+        var hierarchy = new ToolStripMenuItem("Hierarchy");
+        hierarchy.Click += (_, _) =>
+        {
+            _hierarchyWindow?.ToggleFor(this);
+            hierarchy.Checked = _hierarchyWindow?.Visible == true;
+        };
+        windows.DropDownItems.Add(hierarchy);
+        windows.DropDownOpening += (_, _) => hierarchy.Checked = _hierarchyWindow?.Visible == true;
         var releaseNotes = new ToolStripMenuItem("Release Notes...");
         releaseNotes.Click += (_, _) => ShowReleaseNotes();
+        var projectFiles = new ToolStripMenuItem("Project Files") { DropDown = new AnimatedContextMenuStrip() };
+        projectFiles.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs, renameProject
+        });
+        var imports = new ToolStripMenuItem("Import") { DropDown = new AnimatedContextMenuStrip() };
+        imports.DropDownItems.AddRange(new ToolStripItem[] { importFlash, flashVisualBridge, importSvg, importImage });
         _mainMenu.Items.AddRange(new ToolStripItem[]
         {
-            newProject,
-            openProject,
-            importFlash,
-            flashVisualBridge,
-            importSvg,
-            importImage,
-            new ToolStripSeparator(),
-            saveProject,
-            saveProjectAs,
-            renameProject,
+            projectFiles,
+            imports,
             new ToolStripSeparator(),
             settings,
+            windows,
             new ToolStripSeparator(),
             releaseNotes
         });
@@ -1586,15 +1609,20 @@ internal sealed partial class MainForm : Form
             _applicationSettings.ActiveShortcutProfileId,
             _applicationSettings.CustomShortcutProfiles);
         foreach (var menu in new[] { _mainMenu, _stageContextMenu })
+            RefreshItems(menu.Items);
+        _timeline.UpdateShortcutDisplay(profile);
+
+        void RefreshItems(ToolStripItemCollection items)
         {
-            foreach (ToolStripItem item in menu.Items)
+            foreach (ToolStripItem item in items)
             {
-                if (item is ToolStripMenuItem menuItem && menuItem.Tag is string commandId
+                if (item is not ToolStripMenuItem menuItem) continue;
+                if (menuItem.Tag is string commandId
                     && ShortcutProfiles.TryGetCommand(commandId, out _))
                     menuItem.ShortcutKeyDisplayString = ShortcutProfiles.FormatCommandGestures(profile, commandId);
+                if (menuItem.HasDropDownItems) RefreshItems(menuItem.DropDownItems);
             }
         }
-        _timeline.UpdateShortcutDisplay(profile);
     }
 
     private bool CanImportSvg()
@@ -1868,6 +1896,8 @@ internal sealed partial class MainForm : Form
             accentSaturationPercent,
             accentBrightnessPercent);
         Theme.RefreshControlTree(this, previousPalette);
+        if (_hierarchyWindow is { IsDisposed: false })
+            Theme.RefreshControlTree(_hierarchyWindow, previousPalette);
         if (previewDialog is not null && !previewDialog.IsDisposed)
         {
             Theme.RefreshControlTree(previewDialog, previousPalette);
@@ -2320,6 +2350,7 @@ internal sealed partial class MainForm : Form
             _paintToolGroup.HideTimer.Dispose();
             _vaultDrawerTimer.Dispose();
             _workspacePanelAnimationTimer.Dispose();
+            _inspectorTransition?.Dispose();
             _lineDragPreviewTimer.Dispose();
             _viewNavigationIdleTimer.Dispose();
             _instanceAppearancePreviewTimer.Dispose();
@@ -2328,6 +2359,7 @@ internal sealed partial class MainForm : Form
             _stageContextMenu.Dispose();
             DisposeScene3DContextMenu();
             _mainMenu.Dispose();
+            _hierarchyWindow?.Dispose();
             _workspaceColorFlyout.Dispose();
             _toolTip.Dispose();
             _textEditorOwnedFont?.Dispose();
@@ -2402,7 +2434,14 @@ internal sealed partial class MainForm : Form
         _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_animationFpsStatus);
         _statusBar.Items.Add(StatusSeparator());
+        _statusBar.Items.Add(_drawStatus);
+        _statusBar.Items.Add(StatusSeparator());
+        _statusBar.Items.Add(_atomsStatus);
+        _statusBar.Items.Add(StatusSeparator());
         _statusBar.Items.Add(_zoomStatus);
+        _statusBar.Items.Add(StatusSeparator());
+        _statusBar.Items.Add(_timelineFrameStatus);
+        SetToolStripText(_timelineFrameStatus, _timeline.FrameStatusText);
         if (IsModuleHotReloadEnabled())
         {
             _statusBar.Items.Add(StatusSeparator());

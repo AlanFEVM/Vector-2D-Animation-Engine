@@ -67,6 +67,15 @@ internal sealed partial class TimelineStrip : Control
         Invalidate(Rectangle.FromLTRB(left, HeaderHeight, right, layout.RowBottom));
     }
 
+    private void DrawHeaderDividers(Graphics graphics)
+    {
+        // Fill inside the header after content painting, so fractional strokes
+        // cannot fade or be overwritten along the ruler boundary.
+        var thickness = Math.Max(1, (int)Math.Ceiling(1.5f * DeviceDpi / 96f));
+        using var brush = new SolidBrush(Theme.ControlOutline);
+        FillAlignedRectangle(graphics, brush, new Rectangle(0, ToolbarHeaderHeight - thickness, Width, thickness));
+        FillAlignedRectangle(graphics, brush, new Rectangle(0, HeaderHeight - thickness, Width, thickness));
+    }
     private void DrawShell(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
     {
         using var headerBrush = new SolidBrush(Theme.Panel);
@@ -85,8 +94,6 @@ internal sealed partial class TimelineStrip : Control
         {
             FillAlignedRectangle(graphics, gutterBrush, gutterPaintBounds);
         }
-        graphics.DrawLine(borderPen, 0, ToolbarHeaderHeight - 1, Width, ToolbarHeaderHeight - 1);
-        graphics.DrawLine(borderPen, 0, HeaderHeight - 1, Width, HeaderHeight - 1);
         // The seam starts below the tab-group row: the toolbar header above it is pinned chrome, so a
         // divider that slides with the gutter would read as the header itself moving.
         graphics.DrawLine(borderPen, layout.TrackLeft - 1, HeaderHeight, layout.TrackLeft - 1, layout.ScrollTop);
@@ -111,9 +118,7 @@ internal sealed partial class TimelineStrip : Control
         {
             SvgIcons.Draw(graphics, SvgIconKind.TimelineTitle, TimelineTitleIconBounds(),
                 SystemInformation.HighContrast ? SystemColors.ControlText
-                    : Theme.ReadableUiColor(Theme.Panel, Theme.IsLight
-                        ? Theme.Mix(Theme.Panel, Theme.Text, 0.55f)
-                        : Theme.Muted));
+                    : Theme.ReadableUiColor(Theme.Panel, Theme.Mix(Theme.Panel, Theme.Text, 0.5f)));
         }
 
         if (!_shotFilterActive)
@@ -140,12 +145,7 @@ internal sealed partial class TimelineStrip : Control
                 _hoveredHeaderCommand == HeaderCommand.AddFolderLayer);
         }
 
-        var frameStatusBounds = HeaderFrameStatusBounds(layout);
-        var summaryRight = frameStatusBounds.Right;
-        var contextName = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
-        var name = ResolveTimelineHeaderLabel(contextName);
-        var summaryLeft = frameStatusBounds.Left;
-        var summaryWidth = Math.Max(0, summaryRight - summaryLeft);
+        DrawToolbarGroupSeparators(graphics, layout);
         var timeText = FormatCursorTimeSeconds(CurrentFrame, PlaybackFps);
         var timeWidth = TextRenderer.MeasureText(
                 timeText,
@@ -153,31 +153,23 @@ internal sealed partial class TimelineStrip : Control
                 Size.Empty,
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width
             + ScaleTimelineMetric(8);
-        var showTime = summaryWidth >= ScaleTimelineMetric(116);
-        var timeLeft = showTime ? Math.Max(summaryLeft, summaryRight - timeWidth) : summaryRight;
-        var frameSummaryRight = showTime ? Math.Max(summaryLeft, timeLeft - ScaleTimelineMetric(6)) : summaryRight;
-        var frameSummaryWidth = Math.Max(0, frameSummaryRight - summaryLeft);
-        var frameLabel = UiLocalization.T("Frame");
-        var frameSummary = frameSummaryWidth < ScaleTimelineMetric(210)
-            ? $"{frameLabel} {CurrentFrame} / {Math.Max(0, FrameCount - 1)}"
-            : $"{UiLocalization.T(name)}    {frameLabel} {CurrentFrame} / {Math.Max(0, FrameCount - 1)}";
-        if (frameSummaryWidth >= ScaleTimelineMetric(64))
-        {
-            TextRenderer.DrawText(
-                graphics,
-                frameSummary,
-                Font,
-                Rectangle.FromLTRB(summaryLeft, 1, frameSummaryRight, ToolbarHeaderHeight - 1),
-                Theme.ReadableText(Theme.Panel, Theme.Muted),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
-        }
+        var timeRight = layout.TrackRight - ScaleTimelineMetric(8);
+        if (_frameWidthLabel.Visible) timeRight = Math.Min(timeRight, _frameWidthLabel.Left - ScaleTimelineMetric(8));
+        if (_frameHeightLabel.Visible) timeRight = Math.Min(timeRight, _frameHeightLabel.Left - ScaleTimelineMetric(8));
+        var animationRight = Controls.Cast<Control>()
+            .Where(control => control.Visible && (ReferenceEquals(control, _autoKeyframeToggle)
+                || ReferenceEquals(control, _motionTrackToggle) || ReferenceEquals(control, _onionSkinToggle)
+                || ReferenceEquals(control, _onionNextFrames)))
+            .Select(control => control.Right).DefaultIfEmpty(HeaderControlsLeft()).Max();
+        var showTime = timeRight - animationRight >= timeWidth + ScaleTimelineMetric(24);
+        var timeLeft = timeRight - timeWidth;
         if (showTime)
         {
             TextRenderer.DrawText(
                 graphics,
                 timeText,
                 Font,
-                Rectangle.FromLTRB(timeLeft, 1, summaryRight, ToolbarHeaderHeight - 1),
+                Rectangle.FromLTRB(timeLeft, 1, timeRight, ToolbarHeaderHeight - 1),
                 Theme.ReadableText(Theme.Panel, Theme.AccentLabel),
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
@@ -185,27 +177,43 @@ internal sealed partial class TimelineStrip : Control
         DrawTabGroupBar(graphics, layout, clipBounds);
     }
 
+    private void DrawToolbarGroupSeparators(Graphics graphics, TimelineLayout layout)
+    {
+        var inset = ScaleTimelineMetric(14);
+        var top = inset;
+        var bottom = ToolbarHeaderHeight - inset;
+        if (bottom <= top) return;
+        using var separator = new Pen(SystemInformation.HighContrast
+            ? SystemColors.ControlText : Theme.Border, Math.Max(1f, DeviceDpi / 96f))
+        { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        void DrawSeparator(int x)
+        {
+            if (x > 0 && x < layout.TrackRight) graphics.DrawLine(separator, x, top, x, bottom);
+        }
+        if (!_shotFilterActive)
+        {
+            DrawSeparator(TimelineTitleIconBounds().Right + ScaleTimelineMetric(8));
+            DrawSeparator(SoloButtonBounds(layout).Left - ScaleTimelineMetric(8));
+            DrawSeparator(AllButtonBounds(layout).Right + ScaleTimelineMetric(10));
+        }
+        if (_autoKeyframeToggle.Visible)
+            DrawSeparator(_autoKeyframeToggle.Left - ScaleTimelineMetric(12));
+        else if (_motionTrackToggle.Visible)
+            DrawSeparator(_motionTrackToggle.Left - ScaleTimelineMetric(12));
+        else if (_onionSkinToggle.Visible)
+            DrawSeparator(_onionSkinToggle.Left - ScaleTimelineMetric(12));
+        if (_onionPreviousFrames.Visible && _onionSkinToggle.Visible)
+            DrawSeparator(_onionSkinToggle.Right + ScaleTimelineMetric(12));
+        if (_onionNextFrames.Visible)
+            DrawSeparator(_onionNextFrames.Right + ScaleTimelineMetric(12));
+        else if (_onionSkinToggle.Visible)
+            DrawSeparator(_onionSkinToggle.Right + ScaleTimelineMetric(12));
+    }
+
     private Rectangle TimelineTitleIconBounds()
     {
         var size = Math.Min(ScaleTimelineMetric(26), ToolbarHeaderHeight - ScaleTimelineMetric(4));
         return new Rectangle(ScaleTimelineMetric(8), (ToolbarHeaderHeight - size) / 2, size, size);
-    }
-
-    private Rectangle HeaderFrameStatusBounds(TimelineLayout layout)
-    {
-        var left = HeaderControlsLeft();
-        foreach (Control control in Controls)
-        {
-            if (control.Visible && (ReferenceEquals(control, _autoKeyframeToggle)
-                || ReferenceEquals(control, _motionTrackToggle) || ReferenceEquals(control, _onionSkinToggle)
-                || ReferenceEquals(control, _onionNextFrames)))
-                left = Math.Max(left, control.Right + ScaleTimelineMetric(8));
-        }
-        var firstControlsLeft = layout.TrackRight;
-        if (_frameWidthLabel.Visible) firstControlsLeft = Math.Min(firstControlsLeft, _frameWidthLabel.Left);
-        if (_frameHeightLabel.Visible) firstControlsLeft = Math.Min(firstControlsLeft, _frameHeightLabel.Left);
-        var right = Math.Max(left, firstControlsLeft - ScaleTimelineMetric(8));
-        return Rectangle.FromLTRB(left, 0, right, ToolbarHeaderHeight);
     }
 
     internal static double CursorTimeSeconds(int frame, decimal playbackFps)

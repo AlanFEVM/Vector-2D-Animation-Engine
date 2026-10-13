@@ -19,7 +19,11 @@ internal static partial class Theme
             box.MouseLeave += (_, _) => { _hovered = false; box.Invalidate(); };
             box.GotFocus += (_, _) => box.Invalidate();
             box.LostFocus += (_, _) => box.Invalidate();
-            box.DropDown += (_, _) => box.Invalidate();
+            box.DropDown += (_, _) =>
+            {
+                box.DropDownHeight = box.ItemHeight * Math.Min(8, Math.Max(1, box.Items.Count)) + 2;
+                box.Invalidate();
+            };
             box.DropDownClosed += (_, _) => box.Invalidate();
             box.EnabledChanged += (_, _) => box.Invalidate();
             box.SelectedIndexChanged += (_, _) => box.Invalidate();
@@ -92,7 +96,7 @@ internal static partial class Theme
             var foreground = highContrast ? _box.Enabled ? SystemColors.WindowText : SystemColors.GrayText
                 : ReadableText(background, _box.Enabled ? Text : DisabledText);
             var outline = highContrast ? active ? SystemColors.Highlight : SystemColors.WindowText
-                : active ? Accent : _hovered && _box.Enabled ? BorderHover : Mix(background, Border, 0.72f);
+                : ControlOutline;
             var scale = _box.DeviceDpi / 96f;
             graphics.Clear(_box.Parent?.BackColor ?? Panel);
             using var fill = new SolidBrush(background);
@@ -104,13 +108,13 @@ internal static partial class Theme
             var padding = (int)Math.Round(7 * scale);
             var rtl = _box.RightToLeft == RightToLeft.Yes;
             var bounds = new Rectangle(rtl ? arrowWidth : padding, 1,
-                Math.Max(0, _box.Width - arrowWidth - padding), Math.Max(0, _box.Height - 2));
+                Math.Max(0, _box.ClientSize.Width - arrowWidth - padding), Math.Max(0, _box.ClientSize.Height - 2));
             var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
             flags |= rtl ? TextFormatFlags.Right | TextFormatFlags.RightToLeft : TextFormatFlags.Left;
             var label = _box.SelectedIndex >= 0 ? _box.GetItemText(_box.SelectedItem) : _box.Text;
             TextRenderer.DrawText(graphics, UiLocalization.T(label), _box.Font, bounds, foreground, flags);
-            var x = rtl ? arrowWidth / 2f : _box.Width - arrowWidth / 2f;
-            var y = _box.Height / 2f;
+            var x = rtl ? arrowWidth / 2f : _box.ClientSize.Width - arrowWidth / 2f;
+            var y = _box.ClientSize.Height / 2f;
             var arrowColor = highContrast ? foreground
                 : ReadableText(background, !_box.Enabled ? DisabledText : active ? AccentLabel : Muted);
             using var arrow = new SolidBrush(arrowColor);

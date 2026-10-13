@@ -84,6 +84,7 @@ internal static class HotReloadModuleResolver
         nameof(SceneEditorPanel),
         nameof(LibraryVaultPanel),
         nameof(HierarchyPanel),
+        nameof(HierarchyWindow),
         nameof(ShotDirectorPanel),
         nameof(ReferenceViewPad),
         nameof(WorkspaceTabs),
@@ -221,6 +222,7 @@ internal static class HotReloadModuleResolver
             or nameof(FlashImportProgressDialog)
             or nameof(FlashImportErrorDialog)
             or nameof(HierarchyPanel)
+            or nameof(HierarchyWindow)
             or nameof(SceneEditorPanel)
             or nameof(ReferenceViewPad)
             or nameof(ReferenceViewRequestedEventArgs)
@@ -251,6 +253,8 @@ internal static class HotReloadModuleResolver
             or nameof(UiDrawingHelpers)
             or nameof(SvgIconButton)
             or nameof(ThemedScrollPanel)
+            or nameof(InspectorTransitionOverlay)
+            or nameof(InspectorModuleStyle)
             or nameof(UiComposition)
             or nameof(UiSection)
             or nameof(SelectionSummaryPanel)
@@ -315,6 +319,7 @@ internal static class HotReloadModuleResolver
             or nameof(CodexBridgeProtocol)
             or nameof(ShortcutProfileEditorPanel)
             or nameof(UiLocalization)
+            or nameof(ModernTextInput)
             or nameof(Theme)
             or nameof(ApplicationColorTheme)
             or nameof(ApplicationSettingsStore)

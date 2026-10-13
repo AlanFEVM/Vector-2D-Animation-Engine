@@ -115,7 +115,7 @@ internal sealed class WorkspaceTabs : UserControl
 
         _gridLabel.Text = "Grid";
         _gridLabel.Dock = DockStyle.Fill;
-        _gridLabel.ForeColor = Theme.Muted;
+        _gridLabel.ForeColor = Theme.SecondaryText;
         _gridLabel.BackColor = Theme.Top;
         _gridLabel.Font = Theme.UiFont(8.5f, FontStyle.Bold);
         _gridLabel.TextAlign = ContentAlignment.MiddleLeft;
@@ -152,7 +152,7 @@ internal sealed class WorkspaceTabs : UserControl
 
         _gridOpacityValue.Text = "10%";
         _gridOpacityValue.Dock = DockStyle.Fill;
-        _gridOpacityValue.ForeColor = Theme.Muted;
+        _gridOpacityValue.ForeColor = Theme.SecondaryText;
         _gridOpacityValue.BackColor = Theme.Top;
         _gridOpacityValue.Font = Theme.UiFont(8.5f);
         _gridOpacityValue.TextAlign = ContentAlignment.MiddleRight;
@@ -318,6 +318,12 @@ internal sealed class WorkspaceTabs : UserControl
             }
         }
     }
+
+    internal Rectangle WorkbenchActionsBounds => Rectangle.FromLTRB(
+        _buttons.Values.Max(button => button.Right) + ScaleLogical(12),
+        0,
+        Math.Max(0, _tabStrip.ClientSize.Width - ScaleLogical(8)),
+        ClientSize.Height);
 
     private void AddWorkspaceButton(WorkspaceView view, string text, string tip)
     {

@@ -2544,14 +2544,14 @@ internal sealed partial class MainForm : Form
             var layer = Array.IndexOf(drawingScene.LayerIds, activeTargetId);
             if ((uint)layer < drawingScene.LayerCount && layer < drawingScene.LayerBlendModes.Length)
             {
-                _layerBlendModePanel.SetLayer(drawingScene.LayerNames[layer], drawingScene.LayerBlendModes[layer]);
+                _layerBlendModePanel.SetLayer(drawingScene.LayerNames[layer], drawingScene.LayerBlendModes[layer], drawingScene.GetLayerColor(layer));
                 return;
             }
         }
         else if (context is SceneDefinition sceneDefinition
             && sceneDefinition.FindLayer(activeTargetId) is { } sceneLayer)
         {
-            _layerBlendModePanel.SetLayer(sceneLayer.Name, sceneLayer.BlendMode);
+            _layerBlendModePanel.SetLayer(sceneLayer.Name, sceneLayer.BlendMode, Color.FromArgb(sceneLayer.ColorArgb));
             return;
         }
 
@@ -2792,6 +2792,7 @@ internal sealed partial class MainForm : Form
 
     private void RefreshTimelineLayerDisplay(ITimelineContext context)
     {
+        RefreshLayerBlendModePanel();
         _timeline.Invalidate();
         if (context is SceneDefinition) RebuildSceneComposition();
         else if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();

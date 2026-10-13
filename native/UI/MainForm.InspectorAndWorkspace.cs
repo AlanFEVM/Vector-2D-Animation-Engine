@@ -927,10 +927,10 @@ internal sealed partial class MainForm : Form
         _devReloadStatus.Text = $"{UiLocalization.T(text)} #{generation}";
         _devReloadStatus.ForeColor = state switch
         {
-            HotReloadUiState.Applied => Theme.Accent,
+            HotReloadUiState.Applied => Theme.SecondaryText,
             HotReloadUiState.Failed => Theme.Danger,
             HotReloadUiState.Recovering => Theme.Warning,
-            _ => Theme.Muted
+            _ => Theme.SecondaryText
         };
     }
 
@@ -953,6 +953,9 @@ internal sealed partial class MainForm : Form
         foreach (Control child in control.Controls) InvalidateControlTree(child);
     }
 
+    private InspectorTransitionOverlay? _inspectorTransition;
+    private WorkspaceView? _displayedInspectorWorkspace;
+
     private void ShowWorkspace(WorkspaceView view)
     {
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
@@ -974,6 +977,13 @@ internal sealed partial class MainForm : Form
         var shotDirector = view == WorkspaceView.ShotDirector;
         var sceneWorkspace = sceneEdit || shotDirector;
         var inspector = _basicInspectorPage.Parent;
+        var animateInspector = false;
+        if (_displayedInspectorWorkspace is { } previousView && previousView != view && Visible)
+        {
+            _inspectorTransition ??= new InspectorTransitionOverlay(_inspectorHost);
+            animateInspector = _inspectorTransition.Begin();
+        }
+        var switchedInspector = false;
         SuspendLayout();
         inspector?.SuspendLayout();
         _basicInspectorPage.SuspendContentLayout();
@@ -981,7 +991,7 @@ internal sealed partial class MainForm : Form
         try
         {
             PlaceDrawingObjectInstancePanel(sceneWorkspace);
-            _workspaceHeader.Height = basicDrawing ? 74 : 38;
+            _workspaceHeader.Height = ScaleResponsive(74, DeviceDpi / 96d);
             _drawingObjectRow.Visible = basicDrawing;
             _sceneDimensionButton.Visible = sceneWorkspace;
             _timeline.Visible = true;
@@ -1036,6 +1046,8 @@ internal sealed partial class MainForm : Form
             UpdateSceneSpatialControlsVisibility();
             UpdateSpatialTransformPanelState();
             RefreshSceneOpticsInspector();
+            switchedInspector = true;
+            _displayedInspectorWorkspace = view;
         }
         finally
         {
@@ -1043,6 +1055,11 @@ internal sealed partial class MainForm : Form
             _sceneEditPage.ResumeContentLayout(performLayout: sceneWorkspace);
             inspector?.ResumeLayout(performLayout: true);
             ResumeLayout(performLayout: true);
+            if (animateInspector)
+            {
+                if (switchedInspector) _inspectorTransition?.Complete();
+                else _inspectorTransition?.Cancel();
+            }
         }
     }
 
@@ -1659,7 +1676,6 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private static Label MetricLabel(string text, int width) => new() { Text = text, Left = 8, Top = 6, Width = width, Height = 22, ForeColor = Theme.Muted, BackColor = Theme.Top, Font = Theme.UiFont(8.8f), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
     private static CheckBox EraserTargetOption(string text, string accessibleName) => new()
     {
         Text = text,
@@ -1672,7 +1688,7 @@ internal sealed partial class MainForm : Form
         Font = Theme.UiFont(),
         Margin = new Padding(0, 2, 10, 0)
     };
-    private static ToolStripStatusLabel StatusLabel(string text) => new() { Text = text, ForeColor = Theme.Muted, Spring = false, Margin = new Padding(0, 0, 10, 0) };
+    private static ToolStripStatusLabel StatusLabel(string text) => new() { Text = text, ForeColor = Theme.SecondaryText, Spring = false, Margin = new Padding(0, 0, 10, 0) };
     private static ToolStripStatusLabel StatusSeparator() => new() { Text = "|", ForeColor = Theme.Border, Margin = new Padding(0, 0, 10, 0) };
     private static bool IsModuleHotReloadEnabled() => Environment.GetEnvironmentVariable("V2D_DEV_HOT_RELOAD") == "1";
     private static Label FieldLabel(string text) => new()

@@ -95,6 +95,7 @@ The model stores scene data in packed arrays, uses spatial indices and determini
 UI components can be composed from source using flat section lists in
 `MainForm.UiComposition.cs`. See [UI composition](docs/UI_COMPOSITION.md) for the
 layout API, component state/event contracts, and examples for AI-assisted changes.
+The same document records shared inspector module titles and boundaries in `InspectorModuleStyle`, used by `LayerBlendModePanel` and `MaterialEditorPanel`.
 
 ## Validation
 

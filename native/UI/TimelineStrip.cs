@@ -1,4 +1,4 @@
-﻿using System.Drawing.Drawing2D;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
 namespace VectorAnimationEngine;
@@ -337,10 +337,13 @@ internal sealed partial class TimelineStrip : Control
     private readonly ModernNumericUpDown _frameWidthInput = CreateFrameWidthInput();
     private readonly Label _frameHeightLabel = CreateHeaderLabel("Frame height", "Timeline frame height");
     private readonly ComboBox _frameHeightInput = CreateFrameHeightInput();
-    private readonly ModernToggleSwitch _autoKeyframeToggle = new()
+    private readonly SvgToggleButton _autoKeyframeToggle = new(SvgIconKind.AutoKeyframe, "Automatically insert a keyframe before canvas edits")
     {
+        IconOnly = true,
+        ShowCheckedBackground = true,
+        IconSize = 22,
         AutoSize = false,
-        Text = "Auto Key",
+        AccessibleRole = AccessibleRole.CheckButton,
         AccessibleName = "Automatically insert a keyframe before canvas edits",
         Height = Theme.ControlHeightCompact
     };
@@ -816,6 +819,16 @@ internal sealed partial class TimelineStrip : Control
         }
     }
 
+    public string FrameStatusText
+    {
+        get
+        {
+            var contextName = _sceneDefinition?.Name ?? _drawingObjectDefinition?.Name ?? "Drawing Timeline";
+            var name = ResolveTimelineHeaderLabel(contextName);
+            return $"{UiLocalization.T(name)}    {UiLocalization.T("Frame")} {CurrentFrame} / {Math.Max(0, FrameCount - 1)}";
+        }
+    }
+
     public bool IsPlaying
     {
         get => _isPlaying;
@@ -1286,6 +1299,7 @@ internal sealed partial class TimelineStrip : Control
         DrawHorizontalScroll(graphics, layout);
         DrawVerticalScroll(graphics, layout);
         DrawMotionParenting(graphics, layout);
+        DrawHeaderDividers(graphics);
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -4775,7 +4789,7 @@ internal sealed partial class TimelineStrip : Control
     private void InvalidateFrameTransition(int previousFrame, int nextFrame)
     {
         var layout = CreateLayout();
-        var headerBounds = HeaderFrameStatusBounds(layout);
+        var headerBounds = new Rectangle(0, 0, Width, ToolbarHeaderHeight);
         if (headerBounds.Width > 0 && headerBounds.Height > 0) Invalidate(headerBounds);
         InvalidateRulerFrameColumn(layout, previousFrame);
         InvalidateRulerFrameColumn(layout, nextFrame);
@@ -4941,7 +4955,7 @@ internal sealed partial class TimelineStrip : Control
         var all = AllButtonBounds(layout);
         var width = ScaleTimelineMetric(SoloButtonWidth);
         var height = ScaleTimelineMetric(24);
-        return new Rectangle(Math.Max(4, all.Left - width - ScaleTimelineMetric(4)),
+        return new Rectangle(Math.Max(4, all.Left - width - ScaleTimelineMetric(2)),
             (ToolbarHeaderHeight - height) / 2, width, height);
     }
 
@@ -4950,7 +4964,7 @@ internal sealed partial class TimelineStrip : Control
         var solo = SoloButtonBounds(layout);
         var width = ScaleTimelineMetric(AddLayerButtonWidth);
         var height = ScaleTimelineMetric(24);
-        return new Rectangle(Math.Max(4, solo.Left - width - ScaleTimelineMetric(4)),
+        return new Rectangle(Math.Max(4, solo.Left - width - ScaleTimelineMetric(16 + MotionParentToolbarWidth + 2)),
             (ToolbarHeaderHeight - height) / 2, width, height);
     }
 
@@ -4958,7 +4972,7 @@ internal sealed partial class TimelineStrip : Control
     {
         var addLayer = AddLayerButtonBounds(layout);
         return new Rectangle(
-            Math.Max(4, addLayer.Left - addLayer.Width - ScaleTimelineMetric(4)),
+            Math.Max(4, addLayer.Left - addLayer.Width - ScaleTimelineMetric(2)),
             addLayer.Top,
             addLayer.Width,
             addLayer.Height);
@@ -4969,7 +4983,7 @@ internal sealed partial class TimelineStrip : Control
         // The compact group follows the title icon and stays independent of the draggable gutter.
         var width = ScaleTimelineMetric(AllButtonWidth);
         var height = ScaleTimelineMetric(24);
-        return new Rectangle(Math.Max(4, HeaderControlsLeft() - width - ScaleTimelineMetric(12)),
+        return new Rectangle(Math.Max(4, HeaderControlsLeft() - width - ScaleTimelineMetric(20)),
             (ToolbarHeaderHeight - height) / 2, width, height);
     }
 
@@ -5104,10 +5118,7 @@ internal sealed partial class TimelineStrip : Control
         _headerLayoutKey = layoutKey;
 
         var frameWidthBounds = FrameWidthControlsBounds(layout, Rectangle.Empty);
-        var referenceControlsRight = MotionTrackClusterFloor(layout)
-            + (MotionTrackClusterFloor(layout) + OnionSkinControlsWidth() <= layout.TrackRight - ScaleTimelineMetric(8)
-                ? OnionSkinControlsWidth() : OnionSkinToggleWidth())
-            + ScaleTimelineMetric(8);
+        var referenceControlsRight = AnimationControlsLeft(layout) + AnimationControlsWidth() + ScaleTimelineMetric(8);
         if (onionSkinAvailable && frameWidthBounds.Left < referenceControlsRight) frameWidthBounds = Rectangle.Empty;
         var showFrameWidth = !frameWidthBounds.IsEmpty;
         SetControlVisible(_frameWidthLabel, showFrameWidth);
@@ -5169,7 +5180,7 @@ internal sealed partial class TimelineStrip : Control
             if (left + controlsWidth > right) return Rectangle.Empty;
         }
 
-        return new Rectangle(left, ScaleTimelineMetric(2), controlsWidth, Math.Max(Theme.ControlHeightCompact, ToolbarHeaderHeight - ScaleTimelineMetric(4)));
+        return new Rectangle(left, ToolbarControlTop, controlsWidth, ToolbarControlHeight);
     }
 
     /// <summary>
@@ -5179,10 +5190,6 @@ internal sealed partial class TimelineStrip : Control
     private int MotionTrackClusterFootprint() => MotionTrackToggleWidth();
 
     /// <summary>
-    /// Leftmost x the motion-track toggle may occupy: immediately right of Auto Key, which is pinned
-    /// to the track's left edge.
-    /// </summary>
-    /// <summary>
     /// Left edge the header control row is measured from. It is deliberately independent of the live
     /// gutter width: dragging the layer-name column below must not shift — or drop — the toggle row
     /// above the frames, in either direction.
@@ -5190,14 +5197,31 @@ internal sealed partial class TimelineStrip : Control
     private int HeaderControlsLeft() => _shotFilterActive
         ? CameraHeaderAnchorWidth + ScaleTimelineMetric(8)
         : TimelineTitleIconBounds().Right
-            + ScaleTimelineMetric(8 + AddLayerButtonWidth + 4 + AddLayerButtonWidth + 4 + SoloButtonWidth + 4 + AllButtonWidth + 12);
+            + ScaleTimelineMetric(16 + AddLayerButtonWidth + 2 + AddLayerButtonWidth + 2 + MotionParentToolbarWidth + 16 + SoloButtonWidth + 2 + AllButtonWidth + 20);
 
+    // Keep the animation group centered independently of the draggable layer gutter.
     private int MotionTrackSlotLeft(TimelineLayout layout)
     {
         var autoKeyframeBounds = AutoKeyframeControlsBounds(layout);
         return autoKeyframeBounds.IsEmpty
-            ? HeaderControlsLeft()
-            : autoKeyframeBounds.Right + ScaleTimelineMetric(8);
+            ? AnimationControlsLeft(layout)
+            : autoKeyframeBounds.Right + ScaleTimelineMetric(6);
+    }
+
+    private int AnimationControlsWidth()
+    {
+        var width = IsAutoKeyframeAvailable() ? AutoKeyframeToggleWidth() : 0;
+        if (IsOnionSkinControlsAvailable())
+            width += (width > 0 ? ScaleTimelineMetric(6) : 0) + MotionTrackToggleWidth() + ScaleTimelineMetric(6) + OnionSkinControlsWidth();
+        return width;
+    }
+
+    private int AnimationControlsLeft(TimelineLayout layout)
+    {
+        var width = AnimationControlsWidth();
+        var minimumLeft = HeaderControlsLeft();
+        var maximumLeft = Math.Max(minimumLeft, layout.TrackRight - width - ScaleTimelineMetric(8));
+        return Math.Clamp((ClientSize.Width - width) / 2, minimumLeft, maximumLeft);
     }
 
     /// <summary>
@@ -5206,22 +5230,22 @@ internal sealed partial class TimelineStrip : Control
     /// </summary>
     private int MotionTrackClusterFloor(TimelineLayout layout)
     {
-        return MotionTrackSlotLeft(layout) + MotionTrackClusterFootprint();
+        return MotionTrackSlotLeft(layout) + MotionTrackClusterFootprint() + ScaleTimelineMetric(6);
     }
 
     private Rectangle AutoKeyframeControlsBounds(TimelineLayout layout)
     {
         if (!IsAutoKeyframeAvailable()) return Rectangle.Empty;
         var controlsWidth = AutoKeyframeToggleWidth();
-        var idealLeft = HeaderControlsLeft();
+        var idealLeft = AnimationControlsLeft(layout);
         var maximumLeft = Math.Max(
-            HeaderControlsLeft(),
+            idealLeft,
             layout.TrackRight - controlsWidth - ScaleTimelineMetric(2));
         return new Rectangle(
             Math.Min(idealLeft, maximumLeft),
-            ScaleTimelineMetric(2),
+            ToolbarControlTop,
             controlsWidth,
-            Math.Max(Theme.ControlHeightCompact, ToolbarHeaderHeight - ScaleTimelineMetric(4)));
+            ToolbarControlHeight);
     }
 
     private Rectangle FrameWidthControlsBounds(TimelineLayout layout, Rectangle rightControlsBounds)
@@ -5233,9 +5257,9 @@ internal sealed partial class TimelineStrip : Control
         if (right - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112)) return Rectangle.Empty;
         return new Rectangle(
             right - controlsWidth,
-            ScaleTimelineMetric(2),
+            ToolbarControlTop,
             controlsWidth,
-            Math.Max(Theme.ControlHeightCompact, ToolbarHeaderHeight - ScaleTimelineMetric(4)));
+            ToolbarControlHeight);
     }
 
     private Rectangle FrameHeightControlsBounds(TimelineLayout layout, Rectangle rightControlsBounds)
@@ -5247,9 +5271,9 @@ internal sealed partial class TimelineStrip : Control
         if (right - layout.TrackLeft < controlsWidth + ScaleTimelineMetric(112)) return Rectangle.Empty;
         return new Rectangle(
             right - controlsWidth,
-            ScaleTimelineMetric(2),
+            ToolbarControlTop,
             controlsWidth,
-            Math.Max(Theme.ControlHeightCompact, ToolbarHeaderHeight - ScaleTimelineMetric(4)));
+            ToolbarControlHeight);
     }
 
     private void LayoutOnionSkinControls(TimelineLayout layout, bool available, Rectangle rightControlsBounds)
@@ -5269,12 +5293,12 @@ internal sealed partial class TimelineStrip : Control
         var previousLabelWidth = OnionSkinLabelWidth(_onionPreviousLabel);
         var nextLabelWidth = OnionSkinLabelWidth(_onionNextLabel);
         var numericWidth = OnionSkinNumericWidth();
-        var gap = ScaleTimelineMetric(6);
+        var gap = ScaleTimelineMetric(8);
         var inputHeight = Math.Min(bounds.Height, ScaleTimelineMetric(Theme.ControlHeightCompact));
         var inputTop = bounds.Top + (bounds.Height - inputHeight) / 2;
         SetControlBounds(_onionSkinToggle, new Rectangle(left, bounds.Top, toggleWidth, bounds.Height));
         if (!rangeVisible) return;
-        left += toggleWidth + gap;
+        left += toggleWidth + ScaleTimelineMetric(24);
         SetControlBounds(_onionPreviousLabel, new Rectangle(left, bounds.Top, previousLabelWidth, bounds.Height));
         left += previousLabelWidth;
         SetControlBounds(_onionPreviousFrames, new Rectangle(left, inputTop, numericWidth, inputHeight));
@@ -5306,18 +5330,19 @@ internal sealed partial class TimelineStrip : Control
         if (layout.TrackRight - left < controlsWidth) return Rectangle.Empty;
         return new Rectangle(
             left,
-            ScaleTimelineMetric(2),
+            ToolbarControlTop,
             controlsWidth,
-            Math.Max(Theme.ControlHeightCompact, ToolbarHeaderHeight - ScaleTimelineMetric(4)));
+            ToolbarControlHeight);
     }
 
     private int MotionTrackToggleWidth()
     {
-        return ScaleTimelineMetric(Theme.IconButtonSize);
+        return ScaleTimelineMetric(32);
     }
 
     private void LayoutAutoKeyframeControl(TimelineLayout layout)
     {
+        _layerControlToolTip.SetToolTip(_autoKeyframeToggle, UiLocalization.T("Automatically insert a keyframe before canvas edits"));
         var available = IsAutoKeyframeAvailable();
         if (_autoKeyframeToggle.Enabled != available) _autoKeyframeToggle.Enabled = available;
         var bounds = available ? AutoKeyframeControlsBounds(layout) : Rectangle.Empty;
@@ -5374,20 +5399,18 @@ internal sealed partial class TimelineStrip : Control
 
     private int OnionSkinControlsWidth()
     {
-        var gap = ScaleTimelineMetric(6);
+        var gap = ScaleTimelineMetric(8);
         return OnionSkinToggleWidth()
             + OnionSkinLabelWidth(_onionPreviousLabel)
             + OnionSkinNumericWidth()
             + OnionSkinLabelWidth(_onionNextLabel)
             + OnionSkinNumericWidth()
-            + gap * 2;
+            + ScaleTimelineMetric(24) + gap;
     }
 
     private int AutoKeyframeToggleWidth()
     {
-        return Math.Max(
-            ScaleTimelineMetric(96),
-            _autoKeyframeToggle.GetPreferredSize(Size.Empty).Width + ScaleTimelineMetric(2));
+        return ScaleTimelineMetric(32);
     }
 
     private int FrameWidthControlsWidth()
@@ -5431,28 +5454,26 @@ internal sealed partial class TimelineStrip : Control
 
     private int OnionSkinToggleWidth()
     {
-        return ScaleTimelineMetric(Theme.IconButtonSize);
+        return ScaleTimelineMetric(32);
     }
 
     private int OnionSkinLabelWidth(Label label)
     {
         var relativeText = UiLocalization.T(ReferenceEquals(label, _onionPreviousLabel) ? "Prev" : "Next");
         var absoluteText = UiLocalization.T(ReferenceEquals(label, _onionPreviousLabel) ? "Start" : "End");
-        var relativeWidth = TextRenderer.MeasureText(relativeText, label.Font, Size.Empty,
-            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
-        var absoluteWidth = TextRenderer.MeasureText(absoluteText, label.Font, Size.Empty,
-            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
-        return Math.Max(Math.Max(relativeWidth, absoluteWidth), TextRenderer.MeasureText(
-                label.Text,
+        return TextRenderer.MeasureText(
+                MotionTrackRangeVisible ? absoluteText : relativeText,
                 label.Font,
                 Size.Empty,
-                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width)
-            + ScaleTimelineMetric(8);
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width
+            + ScaleTimelineMetric(4);
     }
 
-    private int OnionSkinNumericWidth() => Math.Max(ScaleTimelineMetric(64),
-        TextRenderer.MeasureText(MaximumMotionTrackFrame.ToString(), _onionPreviousFrames.Font,
-            Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleTimelineMetric(28));
+    private int OnionSkinNumericWidth() => MotionTrackRangeVisible
+        ? Math.Max(ScaleTimelineMetric(64),
+            TextRenderer.MeasureText(MaximumMotionTrackFrame.ToString(), _onionPreviousFrames.Font,
+                Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleTimelineMetric(28))
+        : ScaleTimelineMetric(48);
 
     private int ScaleTimelineMetric(int logicalPixels)
     {

@@ -6,19 +6,19 @@ namespace VectorAnimationEngine;
 internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 {
     private const int ItemHeight = 30;
-    private const int MinimumWidth = 300;
-    private const int MaximumWidth = 360;
+    private const int MinimumWidth = 224;
+    private const int MaximumWidth = 480;
     private const int OpeningDurationMilliseconds = 180;
     private const int OpeningOffsetPixels = 6;
     private const int ItemHorizontalPadding = 11;
     private const int ShortcutGap = 18;
-    private const int ShortcutColumnWidth = 72;
 
     private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 16 };
     private Point _targetLocation;
     private Point _openingStartLocation;
     private long _animationStartedAt;
     private ToolStripItem? _hoveredItem;
+    private int ScaleMenu(int value) => Math.Max(1, (int)Math.Round(value * DeviceDpi / 96f));
 
     public AnimatedContextMenuStrip()
     {
@@ -26,7 +26,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         BackColor = Theme.PanelStrong;
         ForeColor = Theme.Text;
         Font = Theme.UiFont(9.5f);
-        Padding = new Padding(6, 5, 6, 5);
+        Padding = new Padding(7, 7, 7, 7);
         RestoreMinimumSize();
         ShowImageMargin = false;
         ShowCheckMargin = false;
@@ -48,7 +48,21 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             };
         };
         _animationTimer.Tick += (_, _) => TickOpeningAnimation();
+        SizeChanged += (_, _) => RefreshMenuRegion();
         UiLocalization.Watch(this);
+    }
+
+    private void RefreshMenuRegion()
+    {
+        var oldRegion = Region;
+        if (!Theme.UsesRoundedCorners || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            Region = null;
+        else
+        {
+            using var outline = ContextMenuRenderer.RoundedPath(ClientRectangle, 4f * DeviceDpi / 96f);
+            Region = new Region(outline);
+        }
+        oldRegion?.Dispose();
     }
 
     protected override void OnOpening(CancelEventArgs e)
@@ -58,7 +72,12 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         RestoreMinimumSize();
         AutoSize = true;
         base.OnOpening(e);
-        if (!e.Cancel) LayoutItems();
+        if (!e.Cancel)
+        {
+            foreach (ToolStripItem item in Items) StyleItem(item);
+            LayoutItems();
+            RefreshMenuRegion();
+        }
     }
 
     protected override void OnOpened(EventArgs e)
@@ -78,7 +97,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             };
         }
 
-        if (!Visible || !SystemInformation.IsMenuAnimationEnabled) return;
+        if (!Visible || OwnerItem is not null || !UiMotion.AnimationsEnabled) return;
 
         _targetLocation = Location;
         _openingStartLocation = new Point(_targetLocation.X, _targetLocation.Y + OpeningOffsetPixels);
@@ -122,48 +141,60 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 
     private void LayoutItems()
     {
+        Padding = new Padding(ScaleMenu(7));
         ShowImageMargin = Items.OfType<ToolStripItem>().Any(item => item.Image is not null);
         ShowCheckMargin = Items.OfType<ToolStripMenuItem>().Any(item => item.Checked || item.CheckOnClick);
-
-        var width = MinimumWidth;
-        foreach (ToolStripItem item in Items)
+        var visibleItems = Items.Cast<ToolStripItem>().Where(item => item.Available).ToArray();
+        var width = ScaleMenu(MinimumWidth);
+        foreach (var item in visibleItems)
         {
             if (item is ToolStripSeparator) continue;
-
             StyleItem(item);
-            var textWidth = TextRenderer.MeasureText(
-                item.Text,
-                Font,
-                new Size(MaximumWidth, ItemHeight),
-                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width;
-            var hasShortcut = item is ToolStripMenuItem menuItem
-                && (menuItem.ShortcutKeys != Keys.None || !string.IsNullOrEmpty(menuItem.ShortcutKeyDisplayString));
-            var shortcutWidth = hasShortcut ? ShortcutColumnWidth : 0;
-            var contentWidth = textWidth + shortcutWidth + (hasShortcut ? ShortcutGap : 0);
-            width = Math.Max(width, Math.Min(MaximumWidth, contentWidth + ItemHorizontalPadding * 2));
+            var textWidth = TextRenderer.MeasureText(item.Text, Font, Size.Empty,
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
+            var shortcut = item is ToolStripMenuItem menu ? menu.ShortcutKeyDisplayString : "";
+            var shortcutWidth = string.IsNullOrEmpty(shortcut) ? 0
+                : TextRenderer.MeasureText(shortcut, Font, Size.Empty,
+                    TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleMenu(ShortcutGap);
+            var adornments = ShowImageMargin || ShowCheckMargin ? ScaleMenu(32) : 0;
+            var arrowWidth = item is ToolStripMenuItem { HasDropDownItems: true } ? ScaleMenu(24) : ScaleMenu(8);
+            width = Math.Max(width, Math.Min(ScaleMenu(MaximumWidth),
+                textWidth + shortcutWidth + adornments + arrowWidth + ScaleMenu(ItemHorizontalPadding * 2)));
         }
-
-        foreach (ToolStripItem item in Items)
+        foreach (var item in visibleItems)
         {
+            item.AutoSize = false;
             if (item is ToolStripSeparator)
             {
-                item.AutoSize = false;
-                item.Margin = new Padding(7, 5, 7, 5);
-                item.Size = new Size(width - 14, 1);
-                continue;
+                item.Margin = new Padding(ScaleMenu(7), ScaleMenu(5), ScaleMenu(7), ScaleMenu(5));
+                item.Size = new Size(width - ScaleMenu(14), ScaleMenu(1));
             }
-
-            item.AutoSize = false;
-            item.Margin = Padding.Empty;
-            item.Padding = new Padding(ItemHorizontalPadding, 0, ItemHorizontalPadding, 0);
-            item.Size = new Size(width, ItemHeight);
+            else
+            {
+                item.Margin = Padding.Empty;
+                item.Padding = new Padding(ScaleMenu(ItemHorizontalPadding), 0, ScaleMenu(ItemHorizontalPadding), 0);
+                item.Size = new Size(width, ScaleMenu(ItemHeight));
+            }
         }
-
         PerformLayout();
+    }
+
+    private void EnsureSubmenu(ToolStripMenuItem owner)
+    {
+        var previous = owner.DropDown;
+        if (previous is AnimatedContextMenuStrip) return;
+        // Keep the command instances, checked state, tags and their event handlers.
+        var children = previous.Items.Cast<ToolStripItem>().ToArray();
+        previous.Items.Clear();
+        var styled = new AnimatedContextMenuStrip();
+        owner.DropDown = styled;
+        styled.Items.AddRange(children);
+        previous.Dispose();
     }
 
     private void StyleItem(ToolStripItem item)
     {
+        if (item is ToolStripMenuItem submenu) EnsureSubmenu(submenu);
         item.BackColor = Theme.PanelStrong;
         item.ForeColor = item.Enabled ? Theme.Text : Theme.DisabledText;
         item.Font = Font;
@@ -216,7 +247,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
         if (_animationTimer.Enabled) _animationTimer.Stop();
     }
 
-    private void RestoreMinimumSize() => MinimumSize = new Size(MinimumWidth, 0);
+    private void RestoreMinimumSize() => MinimumSize = new Size(ScaleMenu(MinimumWidth), 0);
 
     private static float EaseOutBack(float value)
     {
@@ -262,37 +293,67 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             e.Graphics.FillRectangle(background, e.AffectedBounds);
         }
 
+        public static GraphicsPath RoundedPath(RectangleF bounds, float radius)
+        {
+            var path = new GraphicsPath();
+            var diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
+            if (diameter <= 0) { path.AddRectangle(bounds); return path; }
+            path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
         protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
         {
-            using var border = new Pen(Theme.BorderHover);
-            Theme.PaintControlCorners(e.ToolStrip, e.Graphics, e.ToolStrip.ClientRectangle,
-                e.ToolStrip.BackColor, border.Color);
-            Theme.DrawUiRectangle(e.Graphics, border, new Rectangle(0, 0, Math.Max(0, e.ToolStrip.Width - 1), Math.Max(0, e.ToolStrip.Height - 1)));
+            var scale = e.ToolStrip.DeviceDpi / 96f;
+            var bounds = new RectangleF(0.5f, 0.5f, Math.Max(1, e.ToolStrip.Width - 1), Math.Max(1, e.ToolStrip.Height - 1));
+            using var path = RoundedPath(bounds, Theme.UsesRoundedCorners ? 4f * scale : 0);
+            using var border = new Pen(SystemInformation.HighContrast ? SystemColors.WindowText
+                : Theme.ControlOutline);
+            var state = e.Graphics.Save();
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.DrawPath(border, path);
+            e.Graphics.Restore(state);
         }
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            base.OnRenderMenuItemBackground(e);
+            // Renderer callbacks use item-local coordinates, unlike invalidation rectangles.
             if (!e.Item.Enabled || !e.Item.Selected) return;
-
-            var bounds = Rectangle.Inflate(e.Item.Bounds, -2, -1);
-            using var background = new SolidBrush(Theme.AccentSurface);
-            using var accent = new SolidBrush(Theme.Accent);
-            Theme.FillUiRectangle(e.Graphics, background, bounds);
-            e.Graphics.FillRectangle(accent, bounds.Left, bounds.Top, 3, bounds.Height);
+            var scale = e.ToolStrip.DeviceDpi / 96f;
+            var bounds = new RectangleF(2f * scale, scale,
+                Math.Max(1, e.Item.Width - 4f * scale), Math.Max(1, e.Item.Height - 2f * scale));
+            using var path = RoundedPath(bounds, Theme.UsesRoundedCorners ? 4f * scale : 0);
+            using var background = new SolidBrush(SystemInformation.HighContrast
+                ? SystemColors.Highlight : Theme.MenuSelectionSurface);
+            var state = e.Graphics.Save();
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.FillPath(background, path);
+            e.Graphics.Restore(state);
         }
 
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
+            var shortcut = e.Item is ToolStripMenuItem menu
+                && !string.IsNullOrEmpty(menu.ShortcutKeyDisplayString)
+                && e.Text == menu.ShortcutKeyDisplayString;
+            e.TextColor = SystemInformation.HighContrast
+                ? !e.Item.Enabled ? SystemColors.GrayText : e.Item.Selected ? SystemColors.HighlightText : SystemColors.MenuText
+                : Theme.ReadableText(e.Item.Selected && e.Item.Enabled ? Theme.MenuSelectionSurface : Theme.PanelStrong,
+                    !e.Item.Enabled ? Theme.DisabledText : shortcut ? Theme.Muted : Theme.Text);
             base.OnRenderItemText(e);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
         {
-            var bounds = e.Item.Bounds;
-            using var line = new Pen(Theme.Border);
-            var y = bounds.Top + bounds.Height / 2;
-            e.Graphics.DrawLine(line, bounds.Left, y, bounds.Right, y);
+            var scale = e.ToolStrip.DeviceDpi / 96f;
+            using var line = new Pen(SystemInformation.HighContrast ? SystemColors.WindowText
+                : Theme.Mix(Theme.PanelStrong, Theme.Border, 0.55f));
+            var y = e.Item.Height / 2f;
+            e.Graphics.DrawLine(line, 4f * scale, y, Math.Max(4f * scale, e.Item.Width - 4f * scale), y);
         }
 
         protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
@@ -300,7 +361,8 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             var bounds = e.ArrowRectangle;
             var centerX = bounds.Left + bounds.Width / 2f;
             var centerY = bounds.Top + bounds.Height / 2f;
-            using var arrow = new SolidBrush(e.Item?.Enabled == true ? Theme.Muted : Theme.DisabledText);
+            using var arrow = new SolidBrush(Theme.ReadableUiColor(e.Item?.Selected == true ? Theme.MenuSelectionSurface : Theme.PanelStrong,
+                e.Item?.Enabled == true ? Theme.Muted : Theme.DisabledText));
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.FillPolygon(arrow,
             [

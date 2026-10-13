@@ -93,9 +93,7 @@ internal class SvgIconButton : Button
         }
         var borderColor = SystemInformation.HighContrast
             ? active ? SystemColors.HighlightText : SystemColors.ControlText
-            : Theme.ReadableUiColor(
-                actualBackground,
-                active ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, hover * 0.42f));
+            : Theme.ControlOutline;
         var borderWidth = Math.Max(1f, DeviceDpi / 96f);
         using var border = new Pen(borderColor, borderWidth);
         e.Graphics.Clear(parentBack);
@@ -394,9 +392,7 @@ internal sealed class SvgToggleButton : CheckBox
                 : Theme.ReadableText(actualBackground, Theme.DisabledText);
         var borderColor = SystemInformation.HighContrast
             ? Checked ? SystemColors.HighlightText : SystemColors.ControlText
-            : Theme.ReadableUiColor(
-                actualBackground,
-                Checked ? Theme.Accent : Theme.Mix(Theme.Border, Theme.Accent, _hoverProgress * 0.45f));
+            : Theme.ControlOutline;
         using var border = new Pen(borderColor);
         e.Graphics.Clear(parentBack);
         using var surface = new SolidBrush(actualBackground);

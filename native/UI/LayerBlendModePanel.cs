@@ -8,11 +8,11 @@ internal sealed class LayerBlendModeChangedEventArgs(LayerBlendMode blendMode) :
 internal sealed class LayerBlendModePanel : Panel
 {
     private const int PanelPaddingTop = 6;
-    private const int PanelPaddingBottom = 8;
+    private const int PanelPaddingBottom = 16;
     private const int PanelPaddingHorizontal = 12;
     private const int PanelHeight = PanelPaddingTop
         + Theme.InspectorTitleHeight
-        + Theme.InspectorContentPaddingTop
+        + Theme.InspectorContentPaddingTop + 4
         + Theme.InspectorRowHeight
         + PanelPaddingBottom;
 
@@ -54,12 +54,17 @@ internal sealed class LayerBlendModePanel : Panel
         (LayerBlendMode.Invert, "Invert")
     ];
 
+    private readonly ToolTip _toolTip = new();
+    private readonly Panel _layerColorMark = new() { BackColor = Color.Transparent, TabStop = false };
+    private Color _layerColor = Color.Empty;
     private readonly Label _layerName = new()
     {
-        ForeColor = Theme.Muted,
+        ForeColor = Theme.Text,
         BackColor = Color.Transparent,
+        Font = Theme.UiFont(9f),
         AutoEllipsis = true,
-        TextAlign = ContentAlignment.MiddleRight
+        TextAlign = ContentAlignment.TopLeft,
+        AccessibleName = "Current layer"
     };
     private readonly ComboBox _blendMode = new()
     {
@@ -71,43 +76,51 @@ internal sealed class LayerBlendModePanel : Panel
 
     public LayerBlendModePanel()
     {
+        SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer, true);
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Height = PanelHeight;
         MinimumSize = new Size(248, PanelHeight);
-        Padding = new Padding(PanelPaddingHorizontal, PanelPaddingTop, PanelPaddingHorizontal, PanelPaddingBottom);
+        Padding = new Padding(PanelPaddingHorizontal - 8, 0, PanelPaddingHorizontal, PanelPaddingBottom);
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Layer";
-
-        var title = new Label
+        Theme.StyleToolTip(_toolTip);
+        _layerColorMark.Paint += (_, e) =>
         {
-            Text = "Layer",
-            Dock = DockStyle.Top,
-            Height = Theme.InspectorTitleHeight,
-            ForeColor = Theme.Text,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = false
+            if (_layerColor.IsEmpty) return;
+            var scale = _layerColorMark.DeviceDpi / 96f;
+            var diameter = Math.Min(8f * scale, _layerColorMark.ClientSize.Width);
+            using var brush = new SolidBrush(_layerColor);
+            var state = e.Graphics.Save();
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            e.Graphics.FillEllipse(brush, (_layerColorMark.ClientSize.Width - diameter) / 2f,
+                3f * scale, diameter, diameter);
+            e.Graphics.Restore(state);
         };
+
+        var title = InspectorModuleStyle.CreateTitle("Layer");
         var header = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             Height = Theme.InspectorTitleHeight,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             Margin = Padding.Empty,
             BackColor = Theme.Panel
         };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 12));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        title.Dock = DockStyle.Fill;
-        title.Margin = Padding.Empty;
+        title.AutoSize = true;
+        title.Margin = new Padding(0, 0, 10, 0);
         header.Controls.Add(title, 0, 0);
+        _layerColorMark.Dock = DockStyle.Fill;
+        _layerColorMark.Margin = Padding.Empty;
+        header.Controls.Add(_layerColorMark, 1, 0);
         _layerName.Dock = DockStyle.Fill;
-        _layerName.Margin = Padding.Empty;
-        header.Controls.Add(_layerName, 1, 0);
+        _layerName.Margin = new Padding(4, 0, 0, 0);
+        header.Controls.Add(_layerName, 2, 0);
         Controls.Add(header);
 
         var row = new TableLayoutPanel
@@ -117,7 +130,7 @@ internal sealed class LayerBlendModePanel : Panel
             RowCount = 1,
             BackColor = Theme.Panel,
             Margin = Padding.Empty,
-            Padding = new Padding(0, Theme.InspectorContentPaddingTop, 0, 0)
+            Padding = new Padding(8, Theme.InspectorContentPaddingTop + 10, 0, 0)
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -151,16 +164,35 @@ internal sealed class LayerBlendModePanel : Panel
         ClearLayer();
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _toolTip.Dispose();
+        base.Dispose(disposing);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        InspectorModuleStyle.DrawBottomDivider(this, e.Graphics);
+    }
+
     public event EventHandler<LayerBlendModeChangedEventArgs>? BlendModeChanged;
 
     public int PreferredPanelHeight => PanelHeight;
 
-    public void SetLayer(string layerName, LayerBlendMode blendMode)
+    public void SetLayer(string layerName, LayerBlendMode blendMode, Color layerColor)
     {
         _updating = true;
         try
         {
-            _layerName.Text = layerName;
+            if (_layerName.Text != layerName) _layerName.Text = layerName;
+            _layerName.AccessibleDescription = layerName;
+            if (_toolTip.GetToolTip(_layerName) != layerName) _toolTip.SetToolTip(_layerName, layerName);
+            if (_layerColor != layerColor)
+            {
+                _layerColor = layerColor;
+                _layerColorMark.Invalidate();
+            }
             _blendMode.SelectedIndex = Array.FindIndex(BlendModes, item => item.Mode == blendMode);
             if (_blendMode.SelectedIndex < 0) _blendMode.SelectedIndex = 0;
             _blendMode.Enabled = true;
@@ -177,6 +209,13 @@ internal sealed class LayerBlendModePanel : Panel
         try
         {
             _layerName.Text = "-";
+            _layerName.AccessibleDescription = "";
+            _toolTip.SetToolTip(_layerName, "");
+            if (!_layerColor.IsEmpty)
+            {
+                _layerColor = Color.Empty;
+                _layerColorMark.Invalidate();
+            }
             _blendMode.SelectedIndex = 0;
             _blendMode.Enabled = false;
         }

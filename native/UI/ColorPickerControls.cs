@@ -939,13 +939,7 @@ internal sealed class TraditionalColorPlane : Control
             e.Graphics.FillRectangle(disabledOverlay, field);
         }
 
-        var borderColor = !Enabled
-            ? Theme.Border
-            : Focused
-                ? Theme.Accent
-                : _hovered
-                    ? Theme.BorderHover
-                    : Theme.Border;
+        var borderColor = Theme.ControlOutline;
         using (var border = new Pen(borderColor))
         {
             e.Graphics.DrawRectangle(border, field.X, field.Y, field.Width - 1, field.Height - 1);
@@ -1424,13 +1418,7 @@ internal sealed class VerticalColorComponentSlider : Control
             e.Graphics.FillRectangle(disabledOverlay, rail);
         }
 
-        var borderColor = !Enabled
-            ? Theme.Border
-            : Focused
-                ? Theme.Accent
-                : _hovered
-                    ? Theme.BorderHover
-                    : Theme.Border;
+        var borderColor = Theme.ControlOutline;
         using (var border = new Pen(borderColor))
         {
             e.Graphics.DrawRectangle(border, rail.X, rail.Y, rail.Width - 1, rail.Height - 1);
@@ -3155,13 +3143,7 @@ internal sealed class ColorTargetButton : Control
                 : _hovered
                     ? Theme.PanelHover
                     : Theme.PanelStrong;
-        var borderColor = !Enabled
-            ? Theme.Border
-            : Selected
-                ? Theme.Accent
-                : _hovered
-                    ? Theme.BorderHover
-                    : Theme.Border;
+        var borderColor = Theme.ControlOutline;
         using var backgroundBrush = new SolidBrush(background);
         using var border = new Pen(borderColor);
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
@@ -3182,10 +3164,7 @@ internal sealed class ColorTargetButton : Control
         {
             GradientPreviewRenderer.Draw(e.Graphics, swatch, _gradientKind, _gradientStops);
         }
-        var swatchReferenceColor = _gradientKind == GradientKind.Solid
-            ? SwatchColor
-            : GradientPreviewRenderer.Sample(_gradientStops, 0.5f);
-        var swatchBorderColor = Theme.ReadableUiColor(swatchReferenceColor, Theme.BorderHover);
+        var swatchBorderColor = Theme.ControlOutline;
         using (var swatchBorder = new Pen(swatchBorderColor)) e.Graphics.DrawRectangle(swatchBorder, swatch);
         Theme.PaintControlCorners(this, e.Graphics,
             new Rectangle(swatch.X, swatch.Y, swatch.Width + 1, swatch.Height + 1), background, swatchBorderColor);

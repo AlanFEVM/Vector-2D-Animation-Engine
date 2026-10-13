@@ -34,8 +34,9 @@ internal sealed partial class MainForm
         UiComposition.MountVertical(_sceneEditPage.Content,
         [
             new(_sceneEditorPanel, _sceneEditorPanel.PreferredPanelHeight),
-            new(_playbackSettings, 188)
-        ], _hierarchyPanel);
+            new(_playbackSettings, _playbackSettings.PreferredPanelHeight)
+        ]);
+        _hierarchyWindow = new HierarchyWindow(_hierarchyPanel, ProcessCmdKey);
         BuildSceneOpticsInspectorPanels();
 
         _animationPage.Dock = DockStyle.Fill;
@@ -47,6 +48,14 @@ internal sealed partial class MainForm
         _layerBlendModePanel.Height = _layerBlendModePanel.PreferredPanelHeight;
         inspector.Controls.Add(_layerBlendModePanel);
         _layerBlendModePanel.SendToBack();
+        // Complete the module boundary across the host's outer content gutters.
+        inspector.Paint += (_, e) =>
+        {
+            if (_layerBlendModePanel.Visible)
+                InspectorModuleStyle.DrawDivider(inspector, e.Graphics, _layerBlendModePanel.Bottom);
+        };
+        inspector.Layout += (_, _) => inspector.Invalidate();
+        _layerBlendModePanel.VisibleChanged += (_, _) => inspector.Invalidate();
         ShowWorkspace(WorkspaceView.BasicDrawing);
     }
 
@@ -95,7 +104,7 @@ internal sealed partial class MainForm
             _imageInspector, _textSettingsPanel, _materialEditor, _brushTipPanel,
             _mixingBrushSettingsPanel, _drawSettingsPanel, _shapeSettingsPanel,
             _drawingObjectInstancePanel, _sceneEditorPanel, _playbackSettings
-        ], _hierarchyPanel);
+        ]);
 
     private void ArrangeSceneInspectorSections()
     {
@@ -109,6 +118,6 @@ internal sealed partial class MainForm
         [
             _tweenCurveEditorPanel, _drawingObjectInstancePanel, _spatialMaterialPanel,
             _sceneLightingPanel, _sceneEditorPanel, _playbackSettings
-        ], _hierarchyPanel);
+        ]);
     }
 }

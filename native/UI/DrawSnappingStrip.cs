@@ -2,6 +2,8 @@ namespace VectorAnimationEngine;
 
 internal sealed class DrawSnappingStrip : UserControl
 {
+    public const int PreferredStripWidth = 320;
+    public const int CompactStripWidth = 188;
     private readonly DrawSettings _settings;
     private readonly ToolTip _toolTip = new();
     private readonly SvgToggleButton _snap = Toggle("Snap", SvgIconKind.Snap);
@@ -36,7 +38,7 @@ internal sealed class DrawSnappingStrip : UserControl
     public DrawSnappingStrip(DrawSettings settings)
     {
         _settings = settings;
-        Width = 320;
+        Width = PreferredStripWidth;
         Height = 36;
         MinimumSize = new Size(0, 36);
         BackColor = Theme.Top;
@@ -48,7 +50,7 @@ internal sealed class DrawSnappingStrip : UserControl
         Theme.StyleToolTip(_toolTip);
 
         BuildUi();
-        foreach (var control in new Control[] { _snap, _snapGrid, _snapObjects, _alignment, _angleSnap, _gridSize, _angleStep })
+        foreach (var control in new Control[] { _snap, _snapGrid, _snapObjects, _adhesion, _alignment, _angleSnap, _gridSize, _angleStep })
         {
             control.MouseEnter += (_, _) => RefreshHelp();
             control.Enter += (_, _) => RefreshHelp();
@@ -65,6 +67,14 @@ internal sealed class DrawSnappingStrip : UserControl
             _toolTip.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    public void SetCompact(bool compact)
+    {
+        _gridSize.Visible = !compact;
+        _angleStep.Visible = !compact;
+        foreach (var separator in Controls[0].Controls.OfType<Panel>())
+            separator.Visible = !compact;
     }
 
     private void BuildUi()
@@ -175,6 +185,7 @@ internal sealed class DrawSnappingStrip : UserControl
         SetToggleHelp(_snap, "Enable or pause snapping. Your individual snap options are kept.", false);
         SetToggleHelp(_snapGrid, "Place points on the grid. Set the spacing with the vu field.", true);
         SetToggleHelp(_snapObjects, "Snap to nearby object points while drawing or moving.", true);
+        SetToggleHelp(_adhesion, "Tight fit", false);
         SetToggleHelp(_alignment, "Use alignment guides while drawing.", true);
         SetToggleHelp(_angleSnap, "Constrain angles to the step in the degrees field.", true);
         SetHelp(_gridSize, UiLocalization.T("Grid spacing in vector units (vu). Smaller values give a finer grid."));
@@ -196,5 +207,11 @@ internal sealed class DrawSnappingStrip : UserControl
         if (_toolTip.GetToolTip(control) != description) _toolTip.SetToolTip(control, description);
     }
 
-    private static SvgToggleButton Toggle(string name, SvgIconKind icon) => new(icon, name);
+    private static SvgToggleButton Toggle(string name, SvgIconKind icon) => new(icon, name)
+    {
+        IconOnly = true,
+        ShowCheckedBackground = true,
+        IconSize = 20,
+        AutoSize = false
+    };
 }

@@ -77,7 +77,8 @@ internal enum SvgIconKind
     MotionTrack,
     LayerParenting,
     TimelineTitle,
-    Settings
+    Settings,
+    AutoKeyframe
 }
 
 internal static class SvgIcons
@@ -135,6 +136,18 @@ internal static class SvgIcons
 
         switch (kind)
         {
+            case SvgIconKind.AutoKeyframe:
+            {
+                using var autoPen = new Pen(color, referenceSize / 14f)
+                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                g.DrawLines(autoPen, new[] { P(referenceBounds, 14, 10), P(referenceBounds, 17, 2), P(referenceBounds, 20, 10) });
+                g.DrawLine(autoPen, P(referenceBounds, 15, 7), P(referenceBounds, 19, 7));
+                var keyBounds = Rect(referenceBounds, 3, 12, 18, 9);
+                g.FillRectangle(solidFill, keyBounds);
+                using var keyDot = new SolidBrush(Theme.Top);
+                g.FillEllipse(keyDot, Rect(referenceBounds, 10, 14.5f, 4, 4));
+                break;
+            }
             case SvgIconKind.LayerParenting:
             {
                 using var outline = new GraphicsPath(FillMode.Alternate);

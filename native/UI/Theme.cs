@@ -369,7 +369,7 @@ internal static partial class Theme
 
     private static bool IsFieldControl(Control control)
     {
-        return control is TextBoxBase or ComboBox or NumericUpDown or ModernNumericUpDown;
+        return control is TextBoxBase or ModernTextInput or ComboBox or NumericUpDown or ModernNumericUpDown;
     }
 
     private static Color RemapFieldColor(Color color, ThemePalette from, ThemePalette to)
@@ -668,6 +668,14 @@ internal static partial class Theme
             (int)Math.Round(from.B + (to.B - from.B) * amount));
     }
 
+    internal static Color SecondaryText => SystemInformation.HighContrast
+        ? SystemColors.ControlText : Mix(Top, Text, 0.58f);
+
+    internal static Color ControlOutline => SystemInformation.HighContrast
+        ? SystemColors.WindowText : Mix(Panel, Border, 0.55f);
+
+    internal static Color MenuSelectionSurface => Mix(PanelStrong, Accent, 0.28f);
+
     internal static Color ReadableText(Color background, Color preferred)
     {
         return ReadableColor(background, preferred, 4.5d);
@@ -797,7 +805,7 @@ internal static partial class Theme
         var normalColor = role switch
         {
             ButtonVisualRole.Toolbar => button.Parent?.BackColor ?? Top,
-            ButtonVisualRole.Segmented => active ? AccentSurface : Panel,
+            ButtonVisualRole.Segmented => active ? AccentSurface : Mix(Panel, Text, 0.065f),
             ButtonVisualRole.Primary => Accent,
             ButtonVisualRole.Danger => DangerSurface,
             _ => active ? AccentSurface : PanelStrong
@@ -805,7 +813,7 @@ internal static partial class Theme
         var hoverColor = role switch
         {
             ButtonVisualRole.Toolbar => active ? AccentHoverSurface : PanelStrong,
-            ButtonVisualRole.Segmented => active ? AccentHoverSurface : PanelStrong,
+            ButtonVisualRole.Segmented => active ? AccentHoverSurface : Mix(Panel, Text, 0.10f),
             ButtonVisualRole.Primary => Mix(Accent, IsLight ? Color.Black : Color.White, 0.09f),
             ButtonVisualRole.Danger => DangerHoverSurface,
             _ => active ? AccentHoverSurface : PanelHover
@@ -813,7 +821,7 @@ internal static partial class Theme
         var pressedColor = role switch
         {
             ButtonVisualRole.Toolbar => active ? AccentPressedSurface : Panel,
-            ButtonVisualRole.Segmented => active ? AccentPressedSurface : Top,
+            ButtonVisualRole.Segmented => active ? AccentPressedSurface : Mix(Panel, Text, 0.045f),
             ButtonVisualRole.Primary => Mix(Accent, Color.Black, 0.18f),
             ButtonVisualRole.Danger => DangerPressedSurface,
             _ => active ? AccentPressedSurface : Panel
@@ -824,12 +832,7 @@ internal static partial class Theme
             ButtonVisualRole.Danger => DangerText,
             _ => active ? AccentLabel : Text
         };
-        var borderColor = role switch
-        {
-            ButtonVisualRole.Primary => Accent,
-            ButtonVisualRole.Danger => Danger,
-            _ => active ? Accent : Border
-        };
+        var borderColor = ControlOutline;
         var borderSize = role is ButtonVisualRole.Toolbar or ButtonVisualRole.Segmented ? 0 : 1;
 
         if (SystemInformation.HighContrast)
@@ -894,12 +897,21 @@ internal static partial class Theme
         public bool Active { get; set; }
     }
 
+    public static void StyleTextBox(ModernTextInput box)
+    {
+        box.Font = UiFont();
+        box.Height = Math.Max(box.Height, box.PreferredFieldHeight);
+        box.RefreshTheme();
+    }
     public static void StyleTextBox(TextBox box)
     {
         box.BackColor = Field;
         box.ForeColor = Text;
         box.BorderStyle = BorderStyle.FixedSingle;
+        box.AutoSize = false;
+        if (!box.Multiline) box.Height = Math.Max(box.Height, (int)Math.Round(ControlHeightCompact * box.DeviceDpi / 96f));
         box.Font = UiFont();
+        StyleNativeFrame(box);
         ConfigureFieldInteraction(box);
     }
 
@@ -910,7 +922,10 @@ internal static partial class Theme
         box.FlatStyle = FlatStyle.Flat;
         box.Font = UiFont();
         box.DrawMode = DrawMode.OwnerDrawFixed;
-        box.ItemHeight = Math.Max(20 * box.DeviceDpi / 96, box.Font.Height + 4);
+        box.ItemHeight = Math.Max(30 * box.DeviceDpi / 96, box.Font.Height + 8);
+        box.IntegralHeight = false;
+        box.MaxDropDownItems = 8;
+        box.DropDownHeight = box.ItemHeight * Math.Min(8, Math.Max(1, box.Items.Count)) + 2;
         if (StyledComboBoxes.TryGetValue(box, out var comboState))
         {
             if (comboState is ComboBoxSurfaceAdapter adapter) adapter.RefreshSelectionHeight();
@@ -948,6 +963,7 @@ internal static partial class Theme
         list.DrawMode = DrawMode.OwnerDrawFixed;
         list.ItemHeight = 28;
         list.IntegralHeight = false;
+        StyleNativeFrame(list);
         StyleNativeScrollBars(list);
         if (StyledListBoxes.TryGetValue(list, out _)) return;
         var state = new ListBoxInteractionState(list);
@@ -1126,23 +1142,26 @@ internal static partial class Theme
             && (e.State & DrawItemState.ComboBoxEdit) == 0;
         var focused = (e.State & DrawItemState.Focus) != 0;
         var highContrast = SystemInformation.HighContrast;
+        var surface = highContrast ? SystemColors.Window : PanelStrong;
         var background = highContrast
             ? selected ? SystemColors.Highlight : SystemColors.Window
-            : selected ? AccentSurface : box.BackColor;
-        using var backgroundBrush = new SolidBrush(background);
+            : selected ? MenuSelectionSurface : surface;
+        using var backgroundBrush = new SolidBrush(surface);
         e.Graphics.FillRectangle(backgroundBrush, e.Bounds);
-
         if (selected)
         {
-            using var accent = new SolidBrush(highContrast ? SystemColors.HighlightText : Accent);
-            e.Graphics.FillRectangle(accent, e.Bounds.Left, e.Bounds.Top, 3, e.Bounds.Height);
+            var scale = box.DeviceDpi / 96f;
+            var bounds = new RectangleF(e.Bounds.Left + 4 * scale, e.Bounds.Top + 2 * scale,
+                Math.Max(1, e.Bounds.Width - 8 * scale), Math.Max(1, e.Bounds.Height - 4 * scale));
+            using var fill = new SolidBrush(background);
+            FillUiRectangle(e.Graphics, fill, bounds);
         }
 
         var text = e.Index >= 0 && e.Index < box.Items.Count
             ? box.GetItemText(box.Items[e.Index])
             : box.Text;
         text = UiLocalization.T(text);
-        var textBounds = Rectangle.Inflate(e.Bounds, -10, 0);
+        var textBounds = Rectangle.Inflate(e.Bounds, -(int)Math.Round(12f * box.DeviceDpi / 96f), 0);
         TextRenderer.DrawText(
             e.Graphics,
             text,
@@ -1239,7 +1258,7 @@ internal static partial class Theme
                         : selected
                             ? AccentPressedSurface
                             : PanelStrong;
-                var borderColor = expandHovered || selected ? Accent : Border;
+                var borderColor = ControlOutline;
                 using (var button = new SolidBrush(buttonColor))
                 using (var border = new Pen(borderColor))
                 {

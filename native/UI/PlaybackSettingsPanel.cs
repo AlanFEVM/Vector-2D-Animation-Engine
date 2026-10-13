@@ -55,8 +55,8 @@ internal sealed class PlaybackSettingsPanel : Panel
         BackColor = Theme.Panel;
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
-        Padding = new Padding(12);
-        MinimumSize = new Size(236, 178);
+        Padding = new Padding(4, 10, 8, 16);
+        MinimumSize = new Size(236, 204);
 
         BuildUi();
         HookEvents();
@@ -128,40 +128,50 @@ internal sealed class PlaybackSettingsPanel : Panel
         if (notifyChanged) RaiseFrameRangeChanged();
     }
 
-    protected override void OnResize(EventArgs eventargs)
-    {
-        base.OnResize(eventargs);
-        LayoutFields();
-    }
+    public int PreferredPanelHeight => 204;
 
     private void BuildUi()
     {
-        Controls.Add(new Label
+        var root = new TableLayoutPanel
         {
-            Text = "Playback",
-            Left = 12,
-            Top = 10,
-            Width = 180,
-            Height = 24,
-            ForeColor = Theme.Text,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        });
-
-        AddFieldLabel("FPS", 42);
-        AddFieldLabel("Loop", 76);
-        AddFieldLabel("Start", 110);
-        AddFieldLabel("End", 144);
-
+            Dock = DockStyle.Fill, BackColor = Theme.Panel,
+            ColumnCount = 1, RowCount = 2, Margin = Padding.Empty
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorTitleHeight));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.Controls.Add(InspectorModuleStyle.CreateTitle("Playback"), 0, 0);
+        var fields = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, BackColor = Theme.Panel,
+            ColumnCount = 2, RowCount = 4, Margin = Padding.Empty,
+            Padding = new Padding(4, 8, 0, 0)
+        };
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Theme.StyleNumeric(_fps);
         Theme.StyleNumeric(_startFrame);
         Theme.StyleNumeric(_endFrame);
-        Controls.Add(_fps);
-        Controls.Add(_loop);
-        Controls.Add(_startFrame);
-        Controls.Add(_endFrame);
-        LayoutFields();
+        _loop.Text = "";
+        _loop.AccessibleName = "Loop";
+        string[] labels = ["FPS", "Loop", "Start", "End"];
+        Control[] editors = [_fps, _loop, _startFrame, _endFrame];
+        for (var i = 0; i < editors.Length; i++)
+        {
+            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            fields.Controls.Add(new Label
+            {
+                Text = labels[i], Dock = DockStyle.Fill,
+                ForeColor = Theme.Muted, BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 4, 8, 4), AutoEllipsis = true
+            }, 0, i);
+            editors[i].Dock = DockStyle.Fill;
+            editors[i].Margin = new Padding(0, 4, 0, 4);
+            fields.Controls.Add(editors[i], 1, i);
+        }
+        root.Controls.Add(fields, 0, 1);
+        Controls.Add(root);
     }
 
     private void HookEvents()
@@ -205,33 +215,6 @@ internal sealed class PlaybackSettingsPanel : Panel
 
             RaiseFrameRangeChanged();
         };
-    }
-
-    private void LayoutFields()
-    {
-        var valueLeft = Math.Max(88, ClientSize.Width - Padding.Right - 96);
-        var valueWidth = Math.Max(80, ClientSize.Width - valueLeft - Padding.Right);
-
-        _fps.SetBounds(valueLeft, 40, valueWidth, 28);
-        _loop.SetBounds(valueLeft, 72, valueWidth, 28);
-        _startFrame.SetBounds(valueLeft, 104, valueWidth, 28);
-        _endFrame.SetBounds(valueLeft, 136, valueWidth, 28);
-    }
-
-    private void AddFieldLabel(string text, int top)
-    {
-        Controls.Add(new Label
-        {
-            Text = text,
-            Left = 12,
-            Top = top,
-            Width = 72,
-            Height = 24,
-            ForeColor = Theme.Muted,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(),
-            TextAlign = ContentAlignment.MiddleLeft
-        });
     }
 
     private void RaiseFrameRangeChanged()

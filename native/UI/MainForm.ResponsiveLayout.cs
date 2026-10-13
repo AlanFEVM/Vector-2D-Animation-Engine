@@ -216,12 +216,13 @@ internal sealed partial class MainForm
 
             _inspectorHost.Width = _inspectorPanelOpen ? metrics.InspectorWidth : 0;
             _inspectorHost.Visible = _inspectorPanelOpen;
-            var availableDrawingObjectRowWidth = Math.Max(0, ClientSize.Width - metrics.InspectorWidth);
-            var showDrawingSnapping = availableDrawingObjectRowWidth >= ScaleResponsive(680, DeviceDpi / 96d);
-            _drawSnappingStrip.Visible = showDrawingSnapping;
-            _drawingObjectRow.ColumnStyles[1].Width = showDrawingSnapping
-                ? _drawSnappingStrip.Width + ScaleResponsive(12, DeviceDpi / 96d)
-                : 0;
+            var availableDrawingObjectRowWidth = Math.Max(0, ClientSize.Width - _inspectorHost.Width);
+            var compactSnapping = availableDrawingObjectRowWidth < ScaleResponsive(680, DeviceDpi / 96d);
+            _drawSnappingStrip.Visible = true;
+            _drawSnappingStrip.SetCompact(compactSnapping);
+            _drawingObjectRow.ColumnStyles[1].Width = ScaleResponsive(
+                (compactSnapping ? DrawSnappingStrip.CompactStripWidth : DrawSnappingStrip.PreferredStripWidth) + 12,
+                DeviceDpi / 96d);
             if (_timelinePanelOpen)
             {
                 _timeline.MinimumSize = _timelinePanelMinimumSize;
@@ -284,12 +285,7 @@ internal sealed partial class MainForm
             editor.Top = Math.Max(0, (_topBar.ClientSize.Height - editor.PreferredHeight) / 2);
         }
 
-        var availableAfterDash = _restartWindowButton.Left - _dashDock.Left - 14;
-        _dashDock.Visible = availableAfterDash >= ScaleResponsive(DashDock.CompactDockWidth, DeviceDpi / 96d);
-        _dashDock.Compact = availableAfterDash < ScaleResponsive(
-            DashDock.PreferredDockWidth + 158,
-            DeviceDpi / 96d);
-        var fpsFits = _dashDock.Visible && _dashDock.Right + ScaleResponsive(8, DeviceDpi / 96d)
+        var fpsFits = (_projectTitleLabel?.Right ?? ScaleResponsive(274, DeviceDpi / 96d)) + ScaleResponsive(8, DeviceDpi / 96d)
             <= _restartWindowButton.Left - _topPlaybackFps.Width - _topPlaybackFpsLabel.Width - 18;
         _topPlaybackFps.Visible = fpsFits;
         _topPlaybackFpsLabel.Visible = fpsFits;

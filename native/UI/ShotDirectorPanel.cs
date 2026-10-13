@@ -92,8 +92,8 @@ internal sealed class ShotDirectorFramingEventArgs(string shotId, SceneShotSetti
 /// </summary>
 internal sealed partial class ShotDirectorPanel : UserControl
 {
-    internal const int TitleHeight = 28;
-    internal const int ToolbarHeight = 34;
+    internal const int TitleHeight = Theme.InspectorTitleHeight;
+    internal const int ToolbarHeight = 40;
     internal const int DetailHeight = 250;
     internal const int CardWidth = 208;
     internal const int CardHeight = 112;
@@ -101,23 +101,18 @@ internal sealed partial class ShotDirectorPanel : UserControl
     internal const int GridPadding = 10;
     internal const int ScrollBarWidth = 9;
 
-    private const int InspectorPadding = 12;
-    private const int RowHeight = 27;
+    private const int InspectorPadding = 8;
+    private const int RowHeight = 28;
+    private const int RowStep = 36;
     private const int AxisLabelHeight = 14;
-    private const int AxisRowGap = 4;
-    private const int LabelWidth = 82;
+    private const int AxisRowGap = 10;
+    private const int LabelWidth = 90;
     private const int ListWidth = 214;
     private const int NarrowLayoutThreshold = 520;
     private const int NarrowListHeight = 176;
 
-    private readonly Label _title = new()
-    {
-        Text = "Cameras",
-        ForeColor = Theme.Text,
-        BackColor = Theme.Panel,
-        Font = Theme.UiFont(10, FontStyle.Bold),
-        TextAlign = ContentAlignment.MiddleLeft
-    };
+    private readonly ToolTip _help = new();
+    private readonly Label _title = InspectorModuleStyle.CreateTitle("Cameras");
     private readonly Label _summary = new()
     {
         ForeColor = Theme.Muted,
@@ -152,14 +147,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         SelectionMode = SelectionMode.One
     };
     private readonly Panel _inspector = new() { BackColor = Theme.Panel, AutoScroll = true };
-    private readonly Label _inspectorTitle = new()
-    {
-        Text = "Camera",
-        ForeColor = Theme.Text,
-        BackColor = Theme.Panel,
-        Font = Theme.UiFont(10, FontStyle.Bold),
-        AutoEllipsis = true
-    };
+    private readonly Label _inspectorTitle = InspectorModuleStyle.CreateTitle("Camera");
     private readonly Label _frameInfo = new() { ForeColor = Theme.Muted, BackColor = Theme.Panel, AutoEllipsis = true };
     private readonly TextBox _nameEditor = new() { BorderStyle = BorderStyle.FixedSingle };
     private readonly TextBox _detailEditor = new() { BorderStyle = BorderStyle.FixedSingle };
@@ -206,6 +194,12 @@ internal sealed partial class ShotDirectorPanel : UserControl
         MinimumSize = new Size(240, 320);
         TabStop = true;
 
+        Theme.StyleToolTip(_help);
+        _summary.Visible = false;
+        _frameInfo.Visible = false;
+        _title.Dock = DockStyle.None;
+        _inspectorTitle.Dock = DockStyle.None;
+        _inspectorTitle.AutoEllipsis = true;
         BuildToolbar();
         BuildInspector(cameraEditors);
         Controls.Add(_cameraList);
@@ -293,7 +287,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
 
         UpdateCommandStates();
         UpdateEditors();
-        _summary.Text = BuildSummaryText();
+        RefreshSummary();
         Invalidate();
     }
 
@@ -305,7 +299,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _cameraList.Invalidate();
     }
 
-    public void RefreshSummary() => _summary.Text = BuildSummaryText();
+    public void RefreshSummary() => _help.SetToolTip(_title, BuildSummaryText());
 
     public void SetSelectedShotFraming(SceneShotSettings settings, bool editable)
     {
@@ -657,17 +651,18 @@ internal sealed partial class ShotDirectorPanel : UserControl
         var shot = ActiveShot();
         if (shot is null)
         {
-            _frameInfo.Text = UiLocalization.T("Select a camera to edit its 3D parameters");
+            _help.SetToolTip(_inspectorTitle, "");
             return;
         }
 
-        _frameInfo.Text = string.Format(
+        var frameInfo = string.Format(
             CultureInfo.CurrentCulture,
             UiLocalization.T("Frame {0} / {1} · {2} keys · {3} tweens"),
             Math.Max(0, _state.CurrentFrame),
             Math.Max(0, _state.FrameCount - 1),
             shot.KeyframeCount,
             shot.TweenCount);
+        _help.SetToolTip(_inspectorTitle, frameInfo);
     }
 
     private void LocateShot(string shotId)
@@ -719,8 +714,8 @@ internal sealed partial class ShotDirectorPanel : UserControl
         base.OnLayout(e);
         var titleHeight = ScaleMetric(TitleHeight);
         var toolbarHeight = ScaleMetric(ToolbarHeight);
-        _title.SetBounds(10, 2, ScaleMetric(94), titleHeight - ScaleMetric(4));
-        _summary.SetBounds(ScaleMetric(108), 2, Math.Max(0, Width - ScaleMetric(118)), titleHeight - ScaleMetric(4));
+        _title.SetBounds(ScaleMetric(4), 0, Math.Max(0, Width - ScaleMetric(12)), ScaleMetric(Theme.InspectorTitleHeight));
+        _summary.SetBounds(ScaleMetric(108), ScaleMetric(8), Math.Max(0, Width - ScaleMetric(116)), ScaleMetric(24));
         _toolbar.SetBounds(0, titleHeight, Width, toolbarHeight);
         var contentTop = titleHeight + toolbarHeight;
         var narrowLayout = Width < ScaleMetric(NarrowLayoutThreshold);
@@ -736,7 +731,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
                 listTop,
                 Math.Max(0, Width - ScaleMetric(16)),
                 listHeight);
-            var inspectorTop = _cameraList.Bottom + ScaleMetric(8);
+            var inspectorTop = _cameraList.Bottom + ScaleMetric(16);
             _inspector.SetBounds(
                 0,
                 inspectorTop,
@@ -759,22 +754,20 @@ internal sealed partial class ShotDirectorPanel : UserControl
         }
 
         var left = ScaleMetric(InspectorPadding);
-        var right = Math.Max(left + 80, _inspector.ClientSize.Width - ScaleMetric(InspectorPadding));
-        var y = ScaleMetric(8);
-        _inspectorTitle.SetBounds(left, y, Math.Max(0, right - left), ScaleMetric(22));
-        y += ScaleMetric(24);
-        _frameInfo.SetBounds(left, y, Math.Max(0, right - left), ScaleMetric(20));
-        y += ScaleMetric(24);
+        var right = Math.Max(left + 80, _inspector.ClientSize.Width - ScaleMetric(8));
+        var y = ScaleMetric(10);
+        _inspectorTitle.SetBounds(ScaleMetric(4), y, Math.Max(0, right - ScaleMetric(4)), ScaleMetric(Theme.InspectorTitleHeight));
+        y += ScaleMetric(32);
 
-        LayoutSingleEditor(_nameEditor, y, right); y += ScaleMetric(RowHeight);
-        LayoutSingleEditor(_detailEditor, y, right); y += ScaleMetric(RowHeight);
-        LayoutSingleEditor(_kindEditor, y, right); y += ScaleMetric(RowHeight);
-        LayoutSingleEditor(_projectionEditor, y, right); y += ScaleMetric(RowHeight);
-        LayoutSingleEditor(_aspectRatioEditor, y, right); y += ScaleMetric(RowHeight + 4);
+        LayoutSingleEditor(_nameEditor, y, right); y += ScaleMetric(RowStep);
+        LayoutSingleEditor(_detailEditor, y, right); y += ScaleMetric(RowStep);
+        LayoutSingleEditor(_kindEditor, y, right); y += ScaleMetric(RowStep);
+        LayoutSingleEditor(_projectionEditor, y, right); y += ScaleMetric(RowStep);
+        LayoutSingleEditor(_aspectRatioEditor, y, right); y += ScaleMetric(RowStep + 4);
         LayoutAxisRow(y, right, _positionX, _positionY, _positionZ); y += ScaleMetric(AxisLabelHeight + RowHeight + AxisRowGap);
         LayoutAxisRow(y, right, _rotationX, _rotationY, _rotationZ); y += ScaleMetric(AxisLabelHeight + RowHeight + AxisRowGap);
-        LayoutSingleEditor(_focalLength, y, right); y += ScaleMetric(RowHeight);
-        LayoutSingleEditor(_orthographicSize, y, right); y += ScaleMetric(RowHeight + 8);
+        LayoutSingleEditor(_focalLength, y, right); y += ScaleMetric(RowStep);
+        LayoutSingleEditor(_orthographicSize, y, right); y += ScaleMetric(RowStep + 8);
         _resetCameraButton.SetBounds(left, y, Math.Max(96, right - left), ScaleMetric(26));
         y += ScaleMetric(34);
         if (_curveEditor is { Visible: true } curveEditor)
@@ -829,6 +822,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing) _help.Dispose();
         base.Dispose(disposing);
     }
 

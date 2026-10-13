@@ -4,7 +4,7 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class TimelineStrip
 {
-    private const int ToolbarHeaderLogicalHeight = 34;
+    private const int ToolbarHeaderLogicalHeight = 48;
     private const int TabGroupRowLogicalHeight = 30;
     private const string TabGroupOverflowId = "__timeline_tab_group_overflow__";
 
@@ -60,6 +60,10 @@ internal sealed partial class TimelineStrip
         Rectangle AddBounds);
 
     private int ToolbarHeaderHeight => ScaleTimelineMetric(ToolbarHeaderLogicalHeight);
+
+    private int ToolbarControlHeight => ScaleTimelineMetric(Theme.ControlHeightCompact);
+
+    private int ToolbarControlTop => (ToolbarHeaderHeight - ToolbarControlHeight) / 2;
 
     private int TabGroupRowHeight => ScaleTimelineMetric(TabGroupRowLogicalHeight);
 
@@ -264,9 +268,7 @@ internal sealed partial class TimelineStrip
 
         var background = SystemInformation.HighContrast ? SystemColors.Control : Theme.Panel;
         using var backgroundBrush = new SolidBrush(background);
-        using var borderPen = new Pen(Theme.ReadableUiColor(background, Theme.Border), 1f);
         graphics.FillRectangle(backgroundBrush, bar);
-        graphics.DrawLine(borderPen, bar.Left, bar.Bottom - 1, bar.Right, bar.Bottom - 1);
 
         if (_shotFilterActive)
         {
