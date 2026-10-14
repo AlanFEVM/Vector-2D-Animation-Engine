@@ -7,6 +7,7 @@ internal static partial class Benchmark
 {
     private static void RunProjectDocumentStructureRegression()
     {
+        RunOpenCanvasSymbolRegression();
         var project = new VectorProject();
         AssertTimeline(
             project.DrawingObjects.Count == 1
@@ -478,6 +479,66 @@ internal static partial class Benchmark
             "Regenerating drawing geometry did not migrate nested instances onto valid drawing layers.");
 
         RunSceneInstanceStackRegression();
+    }
+
+    private static void RunOpenCanvasSymbolRegression()
+    {
+        var project = new VectorProject();
+        var openCanvas = project.GetOrCreateOpenCanvas();
+        AssertTimeline(project.GetNextSymbolName() == "001",
+            "The unused initial symbol consumed the first open-canvas symbol number.");
+        openCanvas.Scene.AddObject(0, PointF.Empty, new SizeF(80, 60), 0, 0, Color.Coral, 6, ShapeKind.Rectangle);
+        openCanvas.Scene.AddObject(0, new PointF(240, 0), new SizeF(40, 30), 0, 0, Color.Teal, 4, ShapeKind.Ellipse);
+        var selection = openCanvas.Scene.CreateStaticSelectionScene([0], 0);
+        var symbol = project.AddSymbolFromOpenCanvasSelection(selection);
+
+        AssertTimeline(
+            openCanvas.IsOpenCanvas
+            && ReferenceEquals(openCanvas, project.GetOrCreateOpenCanvas())
+            && openCanvas.Scene.ObjectCount == 2
+            && symbol.Scene.ObjectCount == 1
+            && symbol.Name == "001"
+            && project.GetNextSymbolName() == "002"
+            && symbol.Scene.ShapeKind[0] == ShapeKind.Rectangle
+            && project.DrawingObjects.Count == 3
+            && !project.CanContainDrawingObject(project.DrawingObjects[0].Id, openCanvas.Id)
+            && project.CanContainDrawingObject(project.DrawingObjects[0].Id, symbol.Id)
+            && !project.TryAddSceneInstance(project.Scenes[0].Id, openCanvas.Id, PointF.Empty, 0, out _),
+            "Open canvas selection did not produce an isolated reusable symbol.");
+
+        var restarted = VectorProject.RestoreRestartSnapshot(
+            EditorRestartStore.RoundTripProjectSnapshot(project.CreateRestartSnapshot()));
+        AssertTimeline(restarted.GetOrCreateOpenCanvas().Id == openCanvas.Id
+            && restarted.GetOrCreateOpenCanvas().Scene.ObjectCount == 2
+            && restarted.DrawingObjects.Single(item => item.Id == symbol.Id).Scene.ObjectCount == 1,
+            "Editor restart lost open canvas content or generated symbol identity.");
+
+        var temporaryRoot = CreateTemporaryDirectory("open-canvas-symbol-regression");
+        var manifestPath = Path.Combine(temporaryRoot, "OpenCanvas.v2dProject");
+        try
+        {
+            ProjectVaultStore.Save(project, manifestPath);
+            var restored = ProjectVaultStore.Load(manifestPath);
+            AssertTimeline(restored.GetOrCreateOpenCanvas().Id == openCanvas.Id
+                && restored.GetOrCreateOpenCanvas().Scene.ObjectCount == 2
+                && restored.DrawingObjects.Single(item => item.Id == symbol.Id).Scene.ObjectCount == 1,
+                "Save/Open lost open canvas content or copied unselected geometry into the symbol.");
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(temporaryRoot);
+        }
+        AssertTimeline(project.TryRemoveDrawingObject(symbol.Id, out _)
+            && openCanvas.Scene.ObjectCount == 2
+            && !project.TryRemoveDrawingObject(project.DrawingObjects[0].Id, out _)
+            && !project.TryRemoveDrawingObject(openCanvas.Id, out _)
+            && !project.TryDuplicateDrawingObject(openCanvas.Id, out _),
+            "Generated-symbol removal changed the open canvas or removed the last reusable symbol.");
+        AssertTimeline(project.GetNextSymbolName() == "001",
+            "Removing the generated symbol did not release its default number.");
+        var namedSymbol = project.AddSymbolFromOpenCanvasSelection(selection, "  Custom Symbol  ");
+        AssertTimeline(namedSymbol.Name == "Custom Symbol" && project.GetNextSymbolName() == "002",
+            "A confirmed custom symbol name was not trimmed or consumed the wrong default number.");
     }
 
     private static void RunSceneInstanceStackRegression()

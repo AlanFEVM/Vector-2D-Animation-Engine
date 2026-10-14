@@ -44,13 +44,24 @@ internal sealed class ModernTextInput : UserControl
         }
     }
 
+    private bool _searchAppearance;
+    public bool SearchAppearance
+    {
+        get => _searchAppearance;
+        set { if (_searchAppearance == value) return; _searchAppearance = value; PerformLayout(); Invalidate(); }
+    }
+
+    public bool ShowFocusIndicator { get; set; } = true;
+
+    public string PlaceholderText { get => _editor.PlaceholderText; set => _editor.PlaceholderText = value; }
+
     public int MaxLength { get => _editor.MaxLength; set => _editor.MaxLength = value; }
     public CharacterCasing CharacterCasing { get => _editor.CharacterCasing; set => _editor.CharacterCasing = value; }
     public bool ReadOnly { get => _editor.ReadOnly; set => _editor.ReadOnly = value; }
     public void SelectAll() => _editor.SelectAll();
 
     internal int PreferredFieldHeight => Math.Max(
-        (int)Math.Ceiling(Theme.ControlHeightCompact * DeviceDpi / 96f),
+        (int)Math.Ceiling((SearchAppearance ? 34 : Theme.ControlHeightCompact) * DeviceDpi / 96f),
         (_editor?.PreferredHeight ?? Font.Height) + (int)Math.Ceiling(10f * DeviceDpi / 96f));
 
     public override Size GetPreferredSize(Size proposedSize) =>
@@ -75,8 +86,9 @@ internal sealed class ModernTextInput : UserControl
         var inset = Math.Max(2, (int)Math.Round(8f * DeviceDpi / 96f));
         _editor.Font = Font;
         var editorHeight = Math.Min(_editor.PreferredHeight, Math.Max(1, ClientSize.Height - 4));
-        _editor.SetBounds(inset, Math.Max(2, (ClientSize.Height - editorHeight) / 2),
-            Math.Max(1, ClientSize.Width - inset * 2), editorHeight);
+        var leftInset = SearchAppearance ? (int)Math.Ceiling(32f * DeviceDpi / 96f) : inset;
+        _editor.SetBounds(leftInset, Math.Max(2, (ClientSize.Height - editorHeight) / 2),
+            Math.Max(1, ClientSize.Width - leftInset - inset), editorHeight);
         _editor.AccessibleName = AccessibleName;
         _editor.AccessibleDescription = AccessibleDescription;
     }
@@ -117,9 +129,40 @@ internal sealed class ModernTextInput : UserControl
         // square-corner path at fractional DPI. The child editor stays inside.
         var surfaceBounds = Rectangle.Inflate(ClientRectangle, -1, -1);
         if (surfaceBounds.Width > 0 && surfaceBounds.Height > 0)
-            Theme.PaintUiSurface(e.Graphics, fill, border, surfaceBounds);
-        if (ContainsFocus && ShowFocusCues)
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3),
+        {
+            if (SearchAppearance && Theme.UsesRoundedCorners && !highContrast)
+            {
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                var diameter = Math.Min(surfaceBounds.Height - 2f, 16f * DeviceDpi / 96f);
+                var box = RectangleF.Inflate(surfaceBounds, -border.Width / 2f, -border.Width / 2f);
+                path.AddArc(box.Left, box.Top, diameter, diameter, 180, 90);
+                path.AddArc(box.Right - diameter, box.Top, diameter, diameter, 270, 90);
+                path.AddArc(box.Right - diameter, box.Bottom - diameter, diameter, diameter, 0, 90);
+                path.AddArc(box.Left, box.Bottom - diameter, diameter, diameter, 90, 90);
+                path.CloseFigure();
+                var state = e.Graphics.Save();
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                e.Graphics.FillPath(fill, path);
+                e.Graphics.DrawPath(border, path);
+                e.Graphics.Restore(state);
+            }
+            else Theme.PaintUiSurface(e.Graphics, fill, border, surfaceBounds);
+        }
+        if (SearchAppearance)
+        {
+            var scale = DeviceDpi / 96f;
+            using var searchPen = new Pen(highContrast ? SystemColors.WindowText
+                : Enabled ? Theme.SecondaryText : Theme.DisabledText, 1.5f * scale)
+            { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
+            var state = e.Graphics.Save();
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var top = ClientSize.Height / 2f - 6f * scale;
+            e.Graphics.DrawEllipse(searchPen, 10f * scale, top, 10f * scale, 10f * scale);
+            e.Graphics.DrawLine(searchPen, 18.5f * scale, top + 8.5f * scale, 23f * scale, top + 13f * scale);
+            e.Graphics.Restore(state);
+        }
+        if (ShowFocusIndicator && ContainsFocus && ShowFocusCues)
+            Theme.DrawKeyboardFocus(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3),
                 highContrast ? SystemColors.WindowText : Theme.Muted, surface);
     }
 

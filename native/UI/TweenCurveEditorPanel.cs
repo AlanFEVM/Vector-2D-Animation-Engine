@@ -339,7 +339,7 @@ internal sealed class TweenCurveEditor : Control
         e.Graphics.DrawRectangle(border, 0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
         if (Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -3, -3),
                 Theme.ReadableUiColor(chartBackground, Theme.AccentLabel),

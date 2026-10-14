@@ -513,6 +513,7 @@ internal sealed partial class VectorScene : ITimelineContext
         public SvgNativeStrokeStyle? SvgStrokeStyle { get; init; }
         public GradientPaintData? GradientPaint { get; init; }
         public bool QuadraticEditing { get; init; }
+        public bool FillBoundaryLinkDetached { get; init; }
         public bool FillAutoMergeProtected { get; init; }
         public PathBezierNode[][] BezierContours { get; init; } = [];
         public PathBezierNode[] OpenBezierNodes { get; init; } = [];

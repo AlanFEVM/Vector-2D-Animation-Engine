@@ -135,7 +135,7 @@ internal sealed class ModernToggleSwitch : CheckBox
             var focusBounds = Rectangle.Inflate(ClientRectangle, -ScaleLogical(1), -ScaleLogical(1));
             if (focusBounds.Width > 0 && focusBounds.Height > 0)
             {
-                ControlPaint.DrawFocusRectangle(
+                Theme.DrawKeyboardFocus(
                     graphics,
                     focusBounds,
                     Theme.ReadableUiColor(controlBackground, colors.Text),

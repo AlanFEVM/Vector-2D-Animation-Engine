@@ -5,6 +5,8 @@ internal sealed partial class MainForm
 {
     private void BuildInspectorPages(Control inspector)
     {
+        _basicInspectorPage.ShowScrollBar = false;
+        _sceneEditPage.ShowScrollBar = false;
         _basicInspectorPage.Dock = DockStyle.Fill;
         _basicInspectorPage.BackColor = Theme.Panel;
         _basicInspectorPage.ContentPadding = new Padding(0, 0, 2, 0);

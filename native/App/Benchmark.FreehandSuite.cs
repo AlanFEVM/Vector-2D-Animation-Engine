@@ -9,6 +9,7 @@ internal static partial class Benchmark
         RunShortcutProfileExpansionRegression();
         RunMarqueeUndoTopologyRegression();
         RunLinkedFillBoundaryRegression();
+        RunFillBoundaryCubicDistortionFollowRegression();
         RunShapeToolRegression();
         RunLineCornerDragRegression();
         RunLineEndpointCurveRegression();

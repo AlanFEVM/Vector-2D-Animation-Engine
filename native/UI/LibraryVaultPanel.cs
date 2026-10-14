@@ -89,7 +89,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
     private readonly ToolTip _toolTip = new();
     private readonly List<VaultItem> _vaultItems = [];
     private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 220 };
-    private readonly SvgIconButton _newFolderButton = new(SvgIconKind.FolderPlus)
+    private readonly SvgIconButton _newFolderButton = new(SvgIconKind.TimelineFolder)
     {
         AccessibleName = "New Folder"
     };
@@ -138,10 +138,10 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         public IReadOnlyList<Color> TrailingColors { get; set; } = [];
         public SvgIconKind LeadingIcon => ExternalSvgAsset is not null
-            ? ExternalSvgMissing ? SvgIconKind.Warning : SvgIconKind.Vault
+            ? ExternalSvgMissing ? SvgIconKind.Warning : SvgIconKind.AssetSvg
             : ImageAsset is not null
-                ? ImageAssetMissing ? SvgIconKind.Warning : SvgIconKind.Image
-                : Folder is not null ? SvgIconKind.Folder : SvgIconKind.Objects;
+                ? ImageAssetMissing ? SvgIconKind.Warning : SvgIconKind.AssetImage
+                : Folder is not null ? SvgIconKind.AssetFolder : SvgIconKind.AssetSymbol;
     }
     private readonly record struct ProjectRowsFingerprint(
         int ObjectCount,
@@ -209,7 +209,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
-        Padding = new Padding(8);
+        Padding = new Padding(12, 8, 12, 12);
 
         Theme.StyleToolTip(_toolTip);
         BuildVaultWorkspace();
@@ -225,6 +225,15 @@ internal sealed partial class LibraryVaultPanel : UserControl
             RefreshProjectObjects();
         };
         UiLocalization.Watch(this);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        // Paint on the drawer content itself so the child cannot cover the seam.
+        using var seam = new SolidBrush(Theme.ControlOutline);
+        var thickness = Math.Max(1, (int)Math.Ceiling(DeviceDpi / 96f));
+        e.Graphics.FillRectangle(seam, 0, 0, ClientSize.Width, thickness);
     }
 
     public void BindScene(VectorScene scene, Func<int> selectedObjectProvider)
@@ -362,9 +371,9 @@ internal sealed partial class LibraryVaultPanel : UserControl
             Padding = Padding.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
 
@@ -378,21 +387,14 @@ internal sealed partial class LibraryVaultPanel : UserControl
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
-        header.Controls.Add(new Label
-        {
-            Text = "Project Assets",
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(9.5f, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true,
-            Margin = new Padding(2, 0, 0, 0)
-        }, 0, 0);
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
+        var title = InspectorModuleStyle.CreateTitle("Project Assets");
+        title.TextAlign = ContentAlignment.MiddleLeft;
+        title.AutoEllipsis = true;
+        header.Controls.Add(title, 0, 0);
         _vaultSummary.Dock = DockStyle.Fill;
-        _vaultSummary.ForeColor = Theme.Muted;
+        _vaultSummary.ForeColor = Theme.SecondaryText;
         _vaultSummary.BackColor = Theme.Panel;
         _vaultSummary.Font = Theme.UiFont(8.5f);
         _vaultSummary.TextAlign = ContentAlignment.MiddleRight;
@@ -401,16 +403,16 @@ internal sealed partial class LibraryVaultPanel : UserControl
         _vaultSummary.AccessibleName = "Project asset count";
         header.Controls.Add(_vaultSummary, 1, 0);
         _newFolderButton.Dock = DockStyle.Fill;
-        _newFolderButton.Margin = new Padding(1, 3, 1, 3);
+        _newFolderButton.Margin = new Padding(2);
         _newFolderButton.Click += (_, _) => RequestPrimaryAssetCreation();
         header.Controls.Add(_newFolderButton, 2, 0);
         Theme.StyleToolbarButton(_newFolderButton);
         _toolTip.SetToolTip(_newFolderButton, "New Folder");
 
-        _openButton = new SvgIconButton(SvgIconKind.Open)
+        _openButton = new SvgIconButton(SvgIconKind.AssetOpen)
         {
             Dock = DockStyle.Fill,
-            Margin = new Padding(1, 3, 0, 3),
+            Margin = new Padding(2),
             AccessibleName = "Open selected symbol"
         };
         _openButton.Click += (_, _) => OpenSelectedVaultItem();
@@ -422,7 +424,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         layout.Controls.Add(BuildAssetFilterBar(), 0, 2);
 
         _contentHost.Dock = DockStyle.Fill;
-        _contentHost.BackColor = Theme.Border;
+        _contentHost.BackColor = Theme.ControlOutline;
         _contentHost.Margin = Padding.Empty;
         _contentHost.Padding = new Padding(0, 1, 0, 0);
         layout.Controls.Add(_contentHost, 0, 3);
@@ -505,12 +507,12 @@ internal sealed partial class LibraryVaultPanel : UserControl
         rename.Click += (_, _) => RaiseSelectedProjectRenameRequest();
         var duplicate = new ToolStripMenuItem("Duplicate");
         duplicate.Click += (_, _) => RaiseSelectedProjectDuplicateRequest();
-        var exportSvg = new ToolStripMenuItem("Export SVG...")
+        var exportSvg = new ToolStripMenuItem("Export SVG")
         {
             AccessibleName = "Export the selected symbol as an SVG file"
         };
         exportSvg.Click += (_, _) => RaiseSelectedDrawingObjectSvgExportRequest();
-        var exportSymbol = new ToolStripMenuItem("Export Symbol File...")
+        var exportSymbol = new ToolStripMenuItem("Export Symbol File")
         {
             AccessibleName = "Export the selected symbol as a re-importable symbol file"
         };
@@ -523,7 +525,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         {
             if (e.CloseReason == ToolStripDropDownCloseReason.ItemClicked) e.Cancel = true;
         };
-        var manageTags = new ToolStripMenuItem("Manage Tags...");
+        var manageTags = new ToolStripMenuItem("Manage Tags");
         manageTags.Click += (_, _) => RaiseSelectedAssetTagsRequest();
         var delete = new ToolStripMenuItem("Delete");
         delete.Click += (_, _) => RaiseProjectObjectAssetRequest(DrawingObjectDeleteRequested);

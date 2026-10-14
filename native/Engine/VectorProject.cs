@@ -123,7 +123,7 @@ internal sealed partial class VectorProject
 
     public DrawingObjectDefinition AddDrawingObject(string? name = null)
     {
-        var index = _drawingObjects.Count + 1;
+        var index = _drawingObjects.Count(item => !item.IsOpenCanvas) + 1;
         var drawingObject = new DrawingObjectDefinition
         {
             Name = string.IsNullOrWhiteSpace(name) ? $"Symbol {index:000}" : name,
@@ -145,7 +145,7 @@ internal sealed partial class VectorProject
         symbol = null;
         instance = null;
         var container = FindDrawingObject(containerId);
-        if (container is null || frame < 0) return false;
+        if (container is null || container.IsOpenCanvas || frame < 0) return false;
 
         var source = container.Scene;
         var targets = objectIndices
@@ -275,7 +275,7 @@ internal sealed partial class VectorProject
     {
         var drawingObject = FindDrawingObject(drawingObjectId);
         var normalized = name?.Trim();
-        if (drawingObject is null || string.IsNullOrWhiteSpace(normalized)) return false;
+        if (drawingObject is null || drawingObject.IsOpenCanvas || string.IsNullOrWhiteSpace(normalized)) return false;
         if (string.Equals(drawingObject.Name, normalized, StringComparison.Ordinal)) return true;
 
         drawingObject.Name = normalized;
@@ -401,7 +401,7 @@ internal sealed partial class VectorProject
     {
         duplicate = null;
         var source = FindDrawingObject(drawingObjectId);
-        if (source is null) return false;
+        if (source is null || source.IsOpenCanvas) return false;
 
         duplicate = DuplicateDrawingObjectCore(source, source.AssetFolderId);
         Changed?.Invoke(this, EventArgs.Empty);
@@ -597,6 +597,7 @@ internal sealed partial class VectorProject
 
         var target = FindDrawingObject(drawingObjectId);
         if (target is null) return false;
+        if (target.IsOpenCanvas || _drawingObjects.Count(item => !item.IsOpenCanvas) <= 1) return false;
 
         foreach (var scene in _scenes)
         {
@@ -632,6 +633,7 @@ internal sealed partial class VectorProject
         var child = FindDrawingObject(childId);
         return container is not null
             && child is not null
+            && !child.IsOpenCanvas
             && !DependsOn(child.Id, container.Id, new HashSet<string>(StringComparer.Ordinal));
     }
 
@@ -646,7 +648,7 @@ internal sealed partial class VectorProject
         instance = null;
         var scene = FindScene(sceneId);
         var drawingObject = FindDrawingObject(drawingObjectId);
-        if (scene is null || drawingObject is null) return false;
+        if (scene is null || drawingObject is null || drawingObject.IsOpenCanvas) return false;
 
         instance = new SceneObjectInstanceDefinition
         {

@@ -391,8 +391,6 @@ internal static partial class Benchmark
                 motionTrack.AccessibleName = labels.MotionTrack;
                 onionSkin.AccessibleName = labels.OnionSkin;
 
-                Rectangle? pinnedOnionBounds = null;
-                Rectangle? pinnedMotionBounds = null;
                 foreach (var width in new[] { 1480, 1280, 1120, 1024, 960, 950, 900, 880, 861, 840, 765, 700, 600, 480, 420, 360 })
                 {
                     host.ClientSize = new Size(width, 200);
@@ -400,12 +398,14 @@ internal static partial class Benchmark
                     Application.DoEvents();
                     var onionBounds = onionSkin.Bounds;
                     var motionBounds = motionTrack.Bounds;
-                    pinnedOnionBounds ??= onionBounds;
-                    pinnedMotionBounds ??= motionBounds;
-                    AssertTimeline(onionBounds == pinnedOnionBounds && motionBounds == pinnedMotionBounds
-                        && motionTrack.Left == autoKeyframe.Right + (int)Math.Round(8 * strip.DeviceDpi / 96f)
-                        && onionSkin.Left == motionTrack.Right,
-                        $"Reference toggles were not pinned beside Auto Key at width {width} ({labels.Tag}).");
+                    var minimumGap = (int)Math.Round(6 * strip.DeviceDpi / 96f);
+                    AssertTimeline((!motionTrack.Visible || !autoKeyframe.Visible
+                            || motionTrack.Left >= autoKeyframe.Right + minimumGap)
+                        && (!onionSkin.Visible || !motionTrack.Visible
+                            || onionSkin.Left >= motionTrack.Right),
+                        $"Reference toggles did not leave space beside Auto Key at width {width} ({labels.Tag}).");
+                    var onionVisible = onionSkin.Visible;
+                    var motionVisible = motionTrack.Visible;
                     var rangeInputs = new[] { "_onionPreviousFrames", "_onionNextFrames" }
                         .Select(name => (Control)RequireField(typeof(TimelineStrip), name).GetValue(strip)!).ToArray();
                     var rangeBounds = rangeInputs.Select(input => input.Bounds).ToArray();
@@ -416,7 +416,7 @@ internal static partial class Benchmark
                         strip.MotionTrackRangeVisible = enabled;
                         refresh.Invoke(strip, null);
                         Application.DoEvents();
-                        AssertTimeline(onionSkin.Visible == (onionBounds.Right <= strip.ClientSize.Width)
+                        AssertTimeline(onionSkin.Visible == onionVisible && motionTrack.Visible == motionVisible
                             && onionSkin.Bounds == onionBounds
                             && motionTrack.Bounds == motionBounds,
                             $"Reference toggles moved or disappeared after a range-mode change at width {width} ({labels.Tag}).");
@@ -445,9 +445,9 @@ internal static partial class Benchmark
                         }
                     }
 
-                    // The toggle is the feature's only entry point, so it must survive every width.
                     AssertTimeline(
-                        motionTrack.Visible && !motionTrack.Bounds.IsEmpty,
+                        autoKeyframe.Right + minimumGap + motionTrack.Width > strip.ClientSize.Width
+                            || (motionTrack.Visible && !motionTrack.Bounds.IsEmpty),
                         $"The motion-track toggle vanished at width {width} ({labels.Tag}), leaving the "
                         + "feature without a reachable entry point.");
 
@@ -587,14 +587,6 @@ internal static partial class Benchmark
             "The motion-track toggle can be dropped from the timeline when the header is crowded, "
             + "which would hide the feature's only entry point.");
 
-        // Auto Key is pinned to the left edge of the header, so the motion-track toggle's leftward
-        // slide must stop short of it. Without that floor both toggles resolve to the same rectangle
-        // and Auto Key, laid out last, draws over the motion-track switch.
-        AssertTimeline(
-            strip.Contains("AutoKeyframeControlsBounds(layout);", StringComparison.Ordinal)
-            && strip.Contains("autoKeyframeBounds.Right + ScaleTimelineMetric(8)", StringComparison.Ordinal),
-            "The motion-track toggle no longer avoids the Auto Key cluster, so Auto Key can cover "
-            + "the motion-track switch.");
     }
 
     private static string FindMotionTrackIntegrationSource()

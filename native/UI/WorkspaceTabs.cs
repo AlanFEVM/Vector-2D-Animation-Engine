@@ -34,7 +34,7 @@ internal sealed class WorkspaceTabs : UserControl
 {
     private const int TopNavigationHeight = 38;
     private const int PreferredWorkspaceButtonWidth = 116;
-    private const int ExpandedGridControlsWidth = 260;
+    private const int ExpandedGridControlsWidth = 244;
     private const int CompactGridControlsWidth = 40;
     private const int ExpandedGridBreakpoint = 660;
 
@@ -117,8 +117,9 @@ internal sealed class WorkspaceTabs : UserControl
         _gridLabel.Dock = DockStyle.Fill;
         _gridLabel.ForeColor = Theme.SecondaryText;
         _gridLabel.BackColor = Theme.Top;
-        _gridLabel.Font = Theme.UiFont(8.5f, FontStyle.Bold);
+        _gridLabel.Font = Theme.UiFont(8.5f);
         _gridLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _gridLabel.Margin = Padding.Empty;
         _gridControls.Controls.Add(_gridLabel, 0, 0);
 
         Theme.StyleToolbarButton(_gridTypeButton);
@@ -128,7 +129,8 @@ internal sealed class WorkspaceTabs : UserControl
         _gridTypeButton.Click += (_, _) =>
         {
             RefreshGridTypePresentation();
-            _gridTypeMenu.Show(_gridTypeButton, new Point(0, _gridTypeButton.Height + 2));
+            DropDownToggle.Toggle(_gridTypeMenu,
+                () => _gridTypeMenu.Show(_gridTypeButton, new Point(0, _gridTypeButton.Height + 2)));
         };
         _toolTip.SetToolTip(_gridTypeButton, "Grid type");
         _cartesianGridItem.Click += (_, _) => WorldGridType = VectorAnimationEngine.WorldGridType.Cartesian;
@@ -156,6 +158,7 @@ internal sealed class WorkspaceTabs : UserControl
         _gridOpacityValue.BackColor = Theme.Top;
         _gridOpacityValue.Font = Theme.UiFont(8.5f);
         _gridOpacityValue.TextAlign = ContentAlignment.MiddleRight;
+        _gridOpacityValue.Margin = Padding.Empty;
         _gridControls.Controls.Add(_gridOpacityValue, 3, 0);
         Controls.Add(_gridControls);
 

@@ -64,7 +64,7 @@ internal class SvgIconButton : Button
             _iconCache.Draw(e.Graphics, Icon, outline, Color.FromArgb(220, Color.White));
             _iconCache.Draw(e.Graphics, Icon, ClientRectangle, color);
             if (Focused && ShowFocusCues)
-                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -ScaleLogical(2), -ScaleLogical(2)));
+                Theme.DrawKeyboardFocus(e.Graphics, Rectangle.Inflate(ClientRectangle, -ScaleLogical(2), -ScaleLogical(2)));
             return;
         }
         var active = UiMotion.IsActive(this);
@@ -153,7 +153,7 @@ internal class SvgIconButton : Button
         if (Focused && ShowFocusCues)
         {
             var focusInset = ScaleLogical(3);
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -focusInset, -focusInset),
                 SystemInformation.HighContrast
@@ -331,7 +331,7 @@ internal sealed class SvgToggleButton : CheckBox
             if (Parent is TimelineStrip) parentBack = Theme.Panel;
             e.Graphics.Clear(parentBack);
             var iconBackground = parentBack;
-            if (ShowCheckedBackground && (Checked || Capture || _hoverProgress > 0.01f))
+            if (ShowCheckedBackground && (Checked || Capture || _hoverProgress > 0.01f || Focused))
             {
                 var emphasis = Checked ? Theme.IsLight ? 0.16f : 0.22f : _hoverProgress * 0.08f;
                 if (Capture && Enabled) emphasis += 0.04f;
@@ -370,7 +370,7 @@ internal sealed class SvgToggleButton : CheckBox
             var bounds = new Rectangle((Width - size) / 2, (Height - size) / 2, size, size);
             _iconCache.Draw(e.Graphics, Icon, bounds, color);
             if (Focused && ShowFocusCues)
-                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3), color, parentBack);
+                Theme.DrawKeyboardFocus(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3), color, parentBack);
             return;
         }
         var baseBack = Checked ? Theme.AccentSurface : parentBack;
@@ -405,7 +405,7 @@ internal sealed class SvgToggleButton : CheckBox
         _iconCache.Draw(e.Graphics, Icon, ClientRectangle, fore);
         if (Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -3, -3),
                 SystemInformation.HighContrast

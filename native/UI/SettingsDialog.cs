@@ -11,7 +11,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     private string _selectedShortcutProfileId;
     private ShortcutProfileRecord[] _customShortcutProfiles;
     private bool _freeTransformShiftProportionalEnabled;
-    private readonly CheckBox _simpleSelectionHighlight = new() { Text = "Simple selection highlight", Dock = DockStyle.Fill, AutoSize = true, ForeColor = Theme.Text };
+    private readonly ModernToggleSwitch _simpleSelectionHighlight = new() { Text = "Simple selection highlight", Dock = DockStyle.Fill, AutoSize = true, ForeColor = Theme.Text };
     private readonly Button _squareCorners = new SegmentedButton { Text = "Square corners" };
     private readonly Button _subtleRoundedCorners = new SegmentedButton { Text = "Subtle rounded corners" };
     private WindowCornerStyle _selectedWindowCornerStyle;
@@ -99,7 +99,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         bool freeTransformShiftProportionalEnabled = true,
         bool simpleSelectionHighlightEnabled = false,
         WindowCornerStyle windowCornerStyle = WindowCornerStyle.Square)
-        : base("Settings", new Size(760, 620))
+        : base("Settings", new Size(820, 700))
     {
         var shortcuts = ShortcutProfiles.Normalize(activeShortcutProfileId, customShortcutProfiles);
         _selectedShortcutProfileId = shortcuts.ActiveProfileId;
@@ -139,38 +139,26 @@ internal sealed class SettingsDialog : ModernDialogForm
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Panel,
-            Padding = new Padding(18),
+            Padding = new Padding(24, 16, 24, 20),
             ColumnCount = 1,
             RowCount = 11
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 128));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        foreach (var height in new[] { 32, 46, 154, 16, 48, 36, 46, 40, 32, 46 })
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var pages = new Panel { Dock = DockStyle.Fill };
         pages.Controls.Add(content);
         pages.Controls.Add(_codexIntegration);
-        var navigation = new TableLayoutPanel { Dock = DockStyle.Top, Height = 38, ColumnCount = 2, RowCount = 1 };
+        var navigation = new TableLayoutPanel { Dock = DockStyle.Top, Height = 54, Padding = new Padding(24, 10, 24, 6), ColumnCount = 2, RowCount = 1 };
         navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         var general = new SegmentedButton { Text = "General", Dock = DockStyle.Fill };
         var codex = new SegmentedButton { Text = "Codex / MCP", Dock = DockStyle.Fill };
         ConfigureSelectionButton(general, "General");
         ConfigureSelectionButton(codex, "Codex / MCP");
-        var integrationPageSelected = false;
         void SelectPage(bool integration)
         {
-            if (integration != integrationPageSelected)
-                ClientSize = new Size(ClientSize.Width, (int)Math.Round((integration ? 700 : 620) * DeviceDpi / 96f));
-            integrationPageSelected = integration;
             content.Visible = !integration;
             _codexIntegration.Visible = integration;
             Theme.StyleSegmentedButton(general, active: !integration);
@@ -197,7 +185,6 @@ internal sealed class SettingsDialog : ModernDialogForm
         content.Controls.Add(colorThemeSelector, 0, 1);
         content.Controls.Add(CreateColorAdjustmentLayout(), 0, 2);
 
-        content.Controls.Add(SectionHeading("Language"), 0, 3);
         var languageSelector = CreateSegmentedSelector();
         ConfigureSelectionButton(_englishLanguage, "Use the English interface");
         ConfigureSelectionButton(_chineseLanguage, "使用简体中文界面");
@@ -207,12 +194,12 @@ internal sealed class SettingsDialog : ModernDialogForm
         _chineseLanguage.Click += (_, _) => SelectLanguage(UiLanguage.SimplifiedChinese);
         languageSelector.Controls.Add(_englishLanguage, 0, 0);
         languageSelector.Controls.Add(_chineseLanguage, 1, 0);
-        content.Controls.Add(languageSelector, 0, 4);
+        content.Controls.Add(CreateOptionRow("Language", languageSelector), 0, 4);
 
         content.Controls.Add(SectionHeading("More settings"), 0, 5);
         var settingsPanels = CreateSegmentedSelector();
-        var operationPreferences = CreatePanelButton("Operation preferences...", "Open operation preferences");
-        var shortcutProfiles = CreatePanelButton("Shortcut profiles...", "Open shortcut profiles");
+        var operationPreferences = CreatePanelButton("Operation preferences", "Open operation preferences");
+        var shortcutProfiles = CreatePanelButton("Shortcut profiles", "Open shortcut profiles");
         operationPreferences.Margin = new Padding(0, 0, 4, 0);
         shortcutProfiles.Margin = new Padding(4, 0, 0, 0);
         operationPreferences.Click += (_, _) => OpenOperationPreferences();
@@ -222,7 +209,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         content.Controls.Add(settingsPanels, 0, 6);
         content.Controls.Add(_simpleSelectionHighlight, 0, 7);
 
-        content.Controls.Add(SectionHeading("Personalization"), 0, 8);
+        content.Controls.Add(new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty }, 0, 8);
         var cornerSelector = CreateSegmentedSelector();
         ConfigureSelectionButton(_squareCorners, "Use square interface corners");
         ConfigureSelectionButton(_subtleRoundedCorners, "Use subtle rounded interface corners");
@@ -232,7 +219,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         _subtleRoundedCorners.Click += (_, _) => SelectWindowCornerStyle(WindowCornerStyle.SubtleRounded);
         cornerSelector.Controls.Add(_squareCorners, 0, 0);
         cornerSelector.Controls.Add(_subtleRoundedCorners, 1, 0);
-        content.Controls.Add(cornerSelector, 0, 9);
+        content.Controls.Add(CreateOptionRow("Personalization", cornerSelector), 0, 9);
 
         var save = AddDialogAction("Save", DialogResult.OK, DialogActionStyle.Primary);
         var cancel = AddDialogAction("Cancel", DialogResult.Cancel);
@@ -323,8 +310,8 @@ internal sealed class SettingsDialog : ModernDialogForm
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _themeColorAdjustment.Margin = new Padding(0, 0, 4, 6);
-        _highlightColorAdjustment.Margin = new Padding(4, 0, 0, 6);
+        _themeColorAdjustment.Margin = new Padding(0, 4, 14, 10);
+        _highlightColorAdjustment.Margin = new Padding(14, 4, 0, 10);
         layout.Controls.Add(_themeColorAdjustment, 0, 0);
         layout.Controls.Add(_highlightColorAdjustment, 1, 0);
         return layout;
@@ -350,7 +337,7 @@ internal sealed class SettingsDialog : ModernDialogForm
             RowCount = 1,
             Margin = Padding.Empty
         };
-        selector.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        selector.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
         selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         selector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         selector.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -366,6 +353,26 @@ internal sealed class SettingsDialog : ModernDialogForm
             Margin = Padding.Empty
         }, 0, 0);
         return selector;
+    }
+
+    private static TableLayoutPanel CreateOptionRow(string title, Control options)
+    {
+        var row = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1,
+            Margin = Padding.Empty, BackColor = Theme.Panel
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        row.Controls.Add(new Label
+        {
+            Text = title, Dock = DockStyle.Fill, Margin = Padding.Empty,
+            ForeColor = Theme.SecondaryText, Font = Theme.UiFont(),
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 0);
+        row.Controls.Add(options, 1, 0);
+        return row;
     }
 
     private static TableLayoutPanel CreateSegmentedSelector()
@@ -566,9 +573,9 @@ internal sealed class SettingsDialog : ModernDialogForm
                 "%",
                 $"{accessiblePrefix} brightness in percent",
                 "Adjust brightness");
-            layout.Controls.Add(CreateChannelRow("H", "Hue", _hueSlider, _hueInput, "°"), 0, 1);
-            layout.Controls.Add(CreateChannelRow("S", "Saturation", _saturationSlider, _saturationInput, "%"), 0, 2);
-            layout.Controls.Add(CreateChannelRow("B", "Brightness", _brightnessSlider, _brightnessInput, "%"), 0, 3);
+            layout.Controls.Add(CreateChannelRow("H", "Hue", _hueSlider, _hueInput), 0, 1);
+            layout.Controls.Add(CreateChannelRow("S", "Saturation", _saturationSlider, _saturationInput), 0, 2);
+            layout.Controls.Add(CreateChannelRow("B", "Brightness", _brightnessSlider, _brightnessInput), 0, 3);
 
             _hueSlider.ValueChanged += (_, _) => SetChannel(Channel.Hue, _hueSlider.Value);
             _saturationSlider.ValueChanged += (_, _) => SetChannel(Channel.Saturation, _saturationSlider.Value);
@@ -623,22 +630,20 @@ internal sealed class SettingsDialog : ModernDialogForm
             string symbol,
             string channelName,
             ColorComponentSlider slider,
-            ModernNumericUpDown input,
-            string unit)
+            ModernNumericUpDown input)
         {
             var row = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 BackColor = Theme.Panel,
-                ColumnCount = 4,
+                ColumnCount = 3,
                 RowCount = 1,
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 22));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 16));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76));
             row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             row.Controls.Add(new Label
             {
@@ -653,16 +658,6 @@ internal sealed class SettingsDialog : ModernDialogForm
             }, 0, 0);
             row.Controls.Add(slider, 1, 0);
             row.Controls.Add(input, 2, 0);
-            row.Controls.Add(new Label
-            {
-                Text = unit,
-                Dock = DockStyle.Fill,
-                ForeColor = Theme.Muted,
-                BackColor = Theme.Panel,
-                Font = Theme.UiFont(8.5f),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Margin = Padding.Empty
-            }, 3, 0);
             return row;
         }
 

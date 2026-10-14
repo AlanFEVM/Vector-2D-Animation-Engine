@@ -2874,6 +2874,7 @@ internal sealed partial class VectorScene
             var atoms = AtomCount[objectIndex];
             var strokeWidth = Stroke[objectIndex];
             var strokeColor = Color.FromArgb(StrokeArgb[objectIndex]);
+            var detachedSubOrder = ReplacementSubOrders(objectIndex, 1, preserveSourceSubOrder: true)[0];
             if (!HasStroke(objectIndex))
             {
                 // A fill-only source has no stroke to inherit, and a zero-width transparent
@@ -2899,7 +2900,7 @@ internal sealed partial class VectorScene
 
             ObjectKeyframeFrame[created] = ObjectKeyframeFrame[objectIndex];
             ObjectOrder[created] = ObjectOrder[objectIndex];
-            ObjectSubOrder[created] = ObjectSubOrder[objectIndex];
+            ObjectSubOrder[created] = detachedSubOrder;
             // The pulled segment starts coincident with the source boundary; mark it so the
             // fill-boundary link capture skips it and it stays fully independent (Animate
             // behavior: reshaping the fill afterwards never drags the torn piece along).
@@ -3280,6 +3281,7 @@ internal sealed partial class VectorScene
                 endStyle);
             if (secondObject < 0) throw new InvalidOperationException("The second line segment was invalid.");
             QuadraticLineEditing[secondObject] = IsQuadraticLine(objectIndex);
+            FillBoundaryLinkDetached[secondObject] = FillBoundaryLinkDetached[objectIndex];
             ObjectLayer[secondObject] = layer;
             ObjectKeyframeFrame[secondObject] = keyframeFrame;
             ObjectOrder[secondObject] = order;

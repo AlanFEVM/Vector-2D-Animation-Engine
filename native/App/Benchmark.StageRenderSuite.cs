@@ -8457,6 +8457,7 @@ internal static partial class Benchmark
         RunWorldGridRegression();
         RunDenseOverlapLodRegression();
         RunLinkedFillBoundaryRegression();
+        RunFillBoundaryCubicDistortionFollowRegression();
         RunShapeToolRegression();
         RunReleaseNotesRegression();
         RunHotReloadModuleRoutingRegression();

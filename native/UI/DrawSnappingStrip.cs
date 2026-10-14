@@ -2,8 +2,8 @@ namespace VectorAnimationEngine;
 
 internal sealed class DrawSnappingStrip : UserControl
 {
-    public const int PreferredStripWidth = 320;
-    public const int CompactStripWidth = 188;
+    public const int PreferredStripWidth = 372;
+    public const int CompactStripWidth = 212;
     private readonly DrawSettings _settings;
     private readonly ToolTip _toolTip = new();
     private readonly SvgToggleButton _snap = Toggle("Snap", SvgIconKind.Snap);
@@ -18,8 +18,9 @@ internal sealed class DrawSnappingStrip : UserControl
         Maximum = 10000,
         DecimalPlaces = 0,
         Increment = 8,
-        Width = 64,
+        Width = 76,
         Suffix = "vu",
+        UseSecondaryText = true,
         AccessibleName = "Grid vu"
     };
     private readonly ModernNumericUpDown _angleStep = new()
@@ -28,8 +29,9 @@ internal sealed class DrawSnappingStrip : UserControl
         Maximum = 90,
         DecimalPlaces = 0,
         Increment = 1,
-        Width = 54,
-        Suffix = "degrees",
+        Width = 68,
+        Suffix = "°",
+        UseSecondaryText = true,
         AccessibleName = "Angle snap degrees"
     };
     private bool _updating;
@@ -85,7 +87,7 @@ internal sealed class DrawSnappingStrip : UserControl
             BackColor = Theme.Top,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Padding = new Padding(4, 4, 4, 4),
+            Padding = new Padding(6, 4, 6, 4),
             Margin = Padding.Empty
         };
         Controls.Add(strip);
@@ -98,7 +100,8 @@ internal sealed class DrawSnappingStrip : UserControl
         AddSeparator(strip);
 
         Theme.StyleNumeric(_gridSize);
-        _gridSize.Margin = new Padding(0, 0, 2, 0);
+        _gridSize.Height = 28;
+        _gridSize.Margin = new Padding(0, 0, 4, 0);
         _gridSize.TabIndex = strip.Controls.Count;
         _gridSize.ValueChanged += (_, _) => UpdateSettings();
         _toolTip.SetToolTip(_gridSize, "Grid vu");
@@ -106,6 +109,7 @@ internal sealed class DrawSnappingStrip : UserControl
 
         AddToggle(strip, _angleSnap);
         Theme.StyleNumeric(_angleStep);
+        _angleStep.Height = 28;
         _angleStep.Margin = Padding.Empty;
         _angleStep.TabIndex = strip.Controls.Count;
         _angleStep.ValueChanged += (_, _) => UpdateSettings();
@@ -150,9 +154,9 @@ internal sealed class DrawSnappingStrip : UserControl
 
     private void AddToggle(FlowLayoutPanel parent, SvgToggleButton toggle)
     {
-        toggle.Width = 28;
+        toggle.Width = 30;
         toggle.Height = 28;
-        toggle.Margin = new Padding(0, 0, 2, 0);
+        toggle.Margin = new Padding(0, 0, 3, 0);
         toggle.FlatAppearance.BorderSize = 0;
         toggle.TabIndex = parent.Controls.Count;
         toggle.CheckedChanged += (_, _) => UpdateSettings();
@@ -211,7 +215,7 @@ internal sealed class DrawSnappingStrip : UserControl
     {
         IconOnly = true,
         ShowCheckedBackground = true,
-        IconSize = 20,
+        IconSize = 28,
         AutoSize = false
     };
 }

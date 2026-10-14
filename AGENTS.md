@@ -60,12 +60,20 @@ MCP 不是独立业务模型：按工具实际修改的项目、时间轴、空�
 
 ## 验证门槛
 
-- 产品、launcher、Release Manager 或发布修改使用 `$vector2d-validate-change` 选择最小充分套件。现有回归位于 `native/App/Benchmark*.cs`；不要假设存在独立测试工程或 CI。
+### 回归验证准则
+
+1. 新功能模块的引入，以及算法或性能优化，需要跑一次回归验证。
+2. 用户明确要求回归验证时，执行回归验证。
+3. 当 Agent 判断需要用户执行回归验证时，不得自行执行；发送 `========//需要确认执行回归验证//========` 并结束当前对话，只有用户明确回复“允许回归验证”后才执行。第 1 条触发的回归需求也遵循此确认流程；用户已明确要求执行回归验证时按第 2 条处理。
+4. UI 位置调整、多语言调整、更新日志编写等指令，不跑回归验证；用户明确要求时按第 2 条处理。
+5. 功能微调、已有功能拓展、非软件底层基线修改，均跳过回归验证；若实际包含第 1 条所述变更或用户明确要求，则按相应条款处理。
+
+- 上述准则优先于技能或其他流程中的默认回归执行要求。仅在满足执行条件后，使用 `$vector2d-validate-change` 选择最小充分回归套件；不得因产品、launcher、Release Manager 或发布文件发生修改而自动跑回归。现有回归位于 `native/App/Benchmark*.cs`；不要假设存在独立测试工程或 CI。
 - 先用 `.agents\skills\vector2d-validate-change\scripts\invoke-validation.ps1 -Suite <suite> -Plan` 检查计划，再由单一验证负责人运行。`-Plan` 不构建、不获取验证锁，也不是测试通过。
 - 根据 [benchmark-map.md](.agents/skills/vector2d-validate-change/references/benchmark-map.md) 和当前 `Program.cs` 核对真实入口与调用覆盖。新增回归接入已有 suite；新增 CLI 模式同步检查验证脚本、suite map 与 workflow 检查。不要仅凭 `Benchmark.*.cs` 文件存在声称用例已运行。
 - 性能与渲染验收串行执行，记录夹具、实际可见内容、视图/分辨率、渲染设备/回退、预热和缓存条件。按现有用例检查平均值/P95/最大值等指标；机器有竞争负载时明确性能结论的限制。`Stress` 与 `Render` 不并发。
 - 修复优先验证可观察失败行为及受影响契约。相关检查通过后，不无理由重复全套验证；纯说明文档变更无需产品构建。视觉与交互未实际检查时明确标注，不以编译成功替代。
-- 修改 `AGENTS.md` 或 `.agents/` 后运行 `.agents\skills\vector2d-coordinate-agents\scripts\test-agent-workflow.ps1` 和 `git diff --check`。失败时区分本次引入与原有工作树问题，不顺手修复无关基线。
+- 修改 `AGENTS.md` 或 `.agents/` 后运行 `.agents\skills\vector2d-coordinate-agents\scripts\test-agent-workflow.ps1` 和 `git diff --check`。这些仅为 Agent 指南、脚本和差异的静态检查（含 `-Plan` 检查），不执行产品构建或回归，不属于上述回归验证。失败时区分本次引入与原有工作树问题，不顺手修复无关基线。
 - `bin/`、`obj/`、运行时、验证输出、截图、发布产物以及任务无关的 graphify 缓存不得混入提交，除非用户明确要求。
 
 ## 发布边界

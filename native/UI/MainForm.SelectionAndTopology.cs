@@ -617,6 +617,7 @@ internal sealed partial class MainForm : Form
 
     private bool ConvertSelectedDrawingObjectsToSymbol()
     {
+        if (IsOpenDrawingScope) return AddOpenCanvasSelectionToSymbol();
         if (_workspaceTabs.SelectedView != WorkspaceView.BasicDrawing
             || DrawingToolsBlocked()
             || IsSceneCompositionContext()
@@ -639,6 +640,7 @@ internal sealed partial class MainForm : Form
         }
 
         var wasProjectDirty = _projectDirty;
+        if (!TryAskNewSymbolName(out var name)) return false;
         var sceneSnapshot = CreateCanvasMutationSnapshot(initialTargets, layers);
         var instanceSnapshot = container.CreateInstanceSnapshot();
         if (!TryPrepareSelectedDrawingObjectsForCommand(sceneSnapshot, out var targets)
@@ -657,6 +659,8 @@ internal sealed partial class MainForm : Form
             return false;
         }
 
+        _project.TryRenameDrawingObject(symbol.Id, name);
+        instance.Name = $"{name} Instance {container.Instances.Count:000}";
         PushUndoSnapshot(
             sceneSnapshot,
             container,

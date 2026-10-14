@@ -283,6 +283,8 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (e.Button != MouseButtons.Left) return;
+
         _stage.Capture = true;
         _lastMouse = e.Location;
         _startScreen = e.Location;
@@ -364,7 +366,7 @@ internal sealed partial class MainForm : Form
             }
 
             _stage.ClearHoveredLineElement();
-            if (!_additiveSelection && _selectedObject >= 0)
+            if (!_forceMarqueeOnPointerDown && !_additiveSelection && _selectedObject >= 0)
             {
                 _activeHandle = _stage.HitTestHandle(e.Location, _selectedObject);
                 if (_activeHandle != EditHandleKind.None)
@@ -1188,6 +1190,7 @@ internal sealed partial class MainForm : Form
 
     private void CompleteArcDrag(Point screen, MouseButtons button)
     {
+        if (button == MouseButtons.Left) UpdateArcDrag(screen);
         var session = _arcDragSession;
         _arcDragSession = null;
         if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
@@ -1479,6 +1482,7 @@ internal sealed partial class MainForm : Form
 
     private void CompleteCornerDrag(Point screen, MouseButtons button)
     {
+        if (button == MouseButtons.Left) UpdateCornerDrag(screen);
         var session = _cornerDragSession;
         _cornerDragSession = null;
         if (session is null || !ReferenceEquals(session.Scene, _scene)) return;
@@ -1956,6 +1960,10 @@ internal sealed partial class MainForm : Form
         if (resetCurvature)
         {
             currentSegment = ResetBezierCurvature(start, end);
+        }
+        else if (world == session.PointerStart)
+        {
+            currentSegment = new CubicDrawingPreviewSegment(start, control1, control2, end);
         }
         else
         {
@@ -2689,6 +2697,8 @@ internal sealed partial class MainForm : Form
         return (null, null, null, null);
     }
 
+    private float _fillEdgeNoUiArcParameter;
+
     private void BeginFillEdgeNoUiArc((int ObjectIndex, int PartIndex) candidate, PointF world)
     {
         _fillEdgePreSelect = null;
@@ -2702,24 +2712,32 @@ internal sealed partial class MainForm : Form
 
         var (start, control1, control2, end) = ResolveWorldSegment(contours, part);
         if (start is null) return;
+        var pointerStart = _startWorld ?? world;
+        if (!_scene.TryGetClosestPointOnPathBezierSegment(obj, part, pointerStart,
+                out var parameter, out _, out _)) return;
 
         var snapshot = CreateCanvasGeometryMutationSnapshot([obj]);
         _fillEdgeSuppressOverlay = true;
         _stage.ClearFillEdgeBezierOverlay();
-        _fillEdgeNoUiArc = (obj, part, start.Value, control1!.Value, control2!.Value, end!.Value, world, snapshot);
+        _fillEdgeNoUiArcParameter = Math.Clamp(parameter, 0.05f, 0.95f);
+        _fillEdgeNoUiArc = (obj, part, start.Value, control1!.Value, control2!.Value, end!.Value, pointerStart, snapshot);
+        UpdateFillEdgeNoUiArc(world);
     }
 
     private void UpdateFillEdgeNoUiArc(PointF world)
     {
         var arc = _fillEdgeNoUiArc;
         if (arc is null) return;
-        var control = VectorUnits.Quantize(SnapDrawingPoint(world));
+        var target = world == arc.Value.PointerStart ? world : SnapDrawingPoint(world);
+        var influence = 3f * _fillEdgeNoUiArcParameter * (1f - _fillEdgeNoUiArcParameter);
+        var dx = (target.X - arc.Value.PointerStart.X) / influence;
+        var dy = (target.Y - arc.Value.PointerStart.Y) / influence;
         _scene.SetPathBezierSegmentForPreview(
             arc.Value.ObjectIndex,
             arc.Value.PartIndex,
             arc.Value.Start,
-            control,
-            control,
+            new PointF(arc.Value.Control1.X + dx, arc.Value.Control1.Y + dy),
+            new PointF(arc.Value.Control2.X + dx, arc.Value.Control2.Y + dy),
             arc.Value.End,
             preserveStraightAdjacentSegments: false,
             handle: EditHandleKind.BezierControl);
@@ -2774,7 +2792,8 @@ internal sealed partial class MainForm : Form
         UpdateInspector();
         SetSelection(newObject);
         _fillEdgeDetachPending = null;
-        _fillEdgeDetachMoving = (newObject, world, snapshot);
+        _fillEdgeDetachMoving = (newObject, _startWorld ?? world, snapshot);
+        UpdateFillEdgeDetachMove(world);
         _stage.Invalidate();
     }
 

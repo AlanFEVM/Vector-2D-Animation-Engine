@@ -9,7 +9,7 @@ internal sealed partial class MainForm
         AccessibleDescription = "Create a semi-transparent polygon collision terrain mask"
     };
     private readonly ToolStripSeparator _randomFractureMenuSeparator = new();
-    private readonly ToolStripMenuItem _randomFractureMenuItem = new("Random Fracture...")
+    private readonly ToolStripMenuItem _randomFractureMenuItem = new("Random Fracture")
     {
         AccessibleName = "Random Fracture"
     };

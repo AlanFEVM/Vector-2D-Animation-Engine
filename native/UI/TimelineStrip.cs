@@ -189,8 +189,8 @@ internal sealed partial class TimelineStrip : Control
     private const int LockColumnRight = VisibilityColumnWidth + LockColumnWidth;
     private const int LayerControlsWidth = LockColumnRight + OutlineColumnWidth;
     private const int AddLayerButtonWidth = 26;
-    private const int SoloButtonWidth = 48;
-    private const int AllButtonWidth = 42;
+    private const int SoloButtonWidth = 28;
+    private const int AllButtonWidth = 28;
     private const int HeightResizeHandleHeight = 6;
     private static readonly TimelineFrameTransformMode[] FrameTransformHandleModes =
     [
@@ -337,7 +337,7 @@ internal sealed partial class TimelineStrip : Control
     private readonly ModernNumericUpDown _frameWidthInput = CreateFrameWidthInput();
     private readonly Label _frameHeightLabel = CreateHeaderLabel("Frame height", "Timeline frame height");
     private readonly ComboBox _frameHeightInput = CreateFrameHeightInput();
-    private readonly SvgToggleButton _autoKeyframeToggle = new(SvgIconKind.AutoKeyframe, "Automatically insert a keyframe before canvas edits")
+    private readonly SvgToggleButton _autoKeyframeToggle = new(SvgIconKind.LinearAutoKeyframe, "Automatically insert a keyframe before canvas edits")
     {
         IconOnly = true,
         ShowCheckedBackground = true,
@@ -481,11 +481,11 @@ internal sealed partial class TimelineStrip : Control
         _moveLayerUpMenuItem = new ToolStripMenuItem("Move Layer Up", null, (_, _) => RequestLayerMove(-1));
         _moveLayerDownMenuItem = new ToolStripMenuItem("Move Layer Down", null, (_, _) => RequestLayerMove(1));
         _removeLayersMenuItem = new ToolStripMenuItem("Delete Layer", null, (_, _) => RemoveLayersRequested?.Invoke(this, EventArgs.Empty));
-        _renameLayerMenuItem = new ToolStripMenuItem("Rename Layer...", null, (_, _) => LayerRenameRequested?.Invoke(this, EventArgs.Empty))
+        _renameLayerMenuItem = new ToolStripMenuItem("Rename Layer", null, (_, _) => LayerRenameRequested?.Invoke(this, EventArgs.Empty))
         {
             ShortcutKeys = Keys.Shift | Keys.F2
         };
-        _layerColorMenuItem = new ToolStripMenuItem("Layer Color...", null, (_, _) => LayerColorRequested?.Invoke(this, EventArgs.Empty));
+        _layerColorMenuItem = new ToolStripMenuItem("Layer Color", null, (_, _) => LayerColorRequested?.Invoke(this, EventArgs.Empty));
         _lockLayerMenuItem = new ToolStripMenuItem("Lock Layer", null, (_, _) => LayerLockRequested?.Invoke(this, EventArgs.Empty));
         _outlineLayerMenuItem = new ToolStripMenuItem("Show Layer as Outline", null, (_, _) => LayerOutlineRequested?.Invoke(this, EventArgs.Empty));
         _showSelectedLayersMenuItem = new ToolStripMenuItem("Show Selected Layers", null, (_, _) => SetSelectedTrackVisibility(true));
@@ -900,6 +900,8 @@ internal sealed partial class TimelineStrip : Control
             _timeline.TabGroupsChanged -= HandleTabGroupsChanged;
         }
 
+        if (!ReferenceEquals(_context, context)) _soloVisibilityRequested = false;
+        ClearMotionParentHover();
         _context = context;
         _vectorScene = context as VectorScene;
         _drawingObjectDefinition = context as DrawingObjectDefinition;
@@ -1134,7 +1136,7 @@ internal sealed partial class TimelineStrip : Control
         var accessibleName = absolute ? absoluteAccessibleName : relativeAccessibleName;
         var localizedText = UiLocalization.T(text);
         if (!string.Equals(label.Text, localizedText, StringComparison.Ordinal)) label.Text = localizedText;
-        var color = absolute ? Theme.AccentLabel : Theme.Muted;
+        var color = absolute ? Theme.AccentLabel : Theme.SecondaryText;
         if (label.ForeColor != color) label.ForeColor = color;
         if (!string.Equals(label.AccessibleName, accessibleName, StringComparison.Ordinal))
         {
@@ -1618,6 +1620,7 @@ internal sealed partial class TimelineStrip : Control
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        ClearMotionParentHover();
         Cursor = Cursors.Default;
         _hoveringGutterSplitter = false;
         SetLayerControlToolTip("");
@@ -3231,7 +3234,7 @@ internal sealed partial class TimelineStrip : Control
         _hideSelectedLayersMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
         _renameLayerMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection;
         _layerColorMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
-        _layerColorMenuItem.Text = selectedLayerCount > 1 ? "Layer Color for Selected..." : "Layer Color...";
+        _layerColorMenuItem.Text = selectedLayerCount > 1 ? "Layer Color for Selected" : "Layer Color";
         _lockLayerMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0 && DrawingScene() is not null;
         _lockLayerMenuItem.Text = selectedLayerCount > 1
             ? allSelectedLayersLocked ? "Unlock Selected Layers" : "Lock Selected Layers"
@@ -4588,6 +4591,7 @@ internal sealed partial class TimelineStrip : Control
             return;
         }
 
+        _soloVisibilityRequested = true;
         var targetId = _timeline.Tracks[trackIndex].TargetId;
 
         var drawingScene = DrawingScene();
@@ -4613,6 +4617,7 @@ internal sealed partial class TimelineStrip : Control
 
     private void ShowAllTracks()
     {
+        _soloVisibilityRequested = false;
         var drawingScene = DrawingScene();
         if (drawingScene is not null)
         {
@@ -4964,7 +4969,7 @@ internal sealed partial class TimelineStrip : Control
         var solo = SoloButtonBounds(layout);
         var width = ScaleTimelineMetric(AddLayerButtonWidth);
         var height = ScaleTimelineMetric(24);
-        return new Rectangle(Math.Max(4, solo.Left - width - ScaleTimelineMetric(16 + MotionParentToolbarWidth + 2)),
+        return new Rectangle(Math.Max(4, solo.Left - width - ScaleTimelineMetric(12 + MotionParentToolbarWidth + 2)),
             (ToolbarHeaderHeight - height) / 2, width, height);
     }
 
@@ -5020,7 +5025,7 @@ internal sealed partial class TimelineStrip : Control
             AutoSize = false,
             Height = Theme.ControlHeightCompact,
             BackColor = Theme.Panel,
-            ForeColor = Theme.Muted,
+            ForeColor = Theme.SecondaryText,
             Font = Theme.UiFont(8.5f),
             TextAlign = ContentAlignment.MiddleLeft,
             AccessibleName = accessibleName
@@ -5197,7 +5202,7 @@ internal sealed partial class TimelineStrip : Control
     private int HeaderControlsLeft() => _shotFilterActive
         ? CameraHeaderAnchorWidth + ScaleTimelineMetric(8)
         : TimelineTitleIconBounds().Right
-            + ScaleTimelineMetric(16 + AddLayerButtonWidth + 2 + AddLayerButtonWidth + 2 + MotionParentToolbarWidth + 16 + SoloButtonWidth + 2 + AllButtonWidth + 20);
+            + ScaleTimelineMetric(12 + AddLayerButtonWidth + 2 + AddLayerButtonWidth + 2 + MotionParentToolbarWidth + 12 + SoloButtonWidth + 2 + AllButtonWidth + 20);
 
     // Keep the animation group centered independently of the draggable layer gutter.
     private int MotionTrackSlotLeft(TimelineLayout layout)
@@ -5461,19 +5466,22 @@ internal sealed partial class TimelineStrip : Control
     {
         var relativeText = UiLocalization.T(ReferenceEquals(label, _onionPreviousLabel) ? "Prev" : "Next");
         var absoluteText = UiLocalization.T(ReferenceEquals(label, _onionPreviousLabel) ? "Start" : "End");
-        return TextRenderer.MeasureText(
-                MotionTrackRangeVisible ? absoluteText : relativeText,
-                label.Font,
-                Size.Empty,
-                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width
-            + ScaleTimelineMetric(4);
+        var relativeWidth = TextRenderer.MeasureText(
+            relativeText,
+            label.Font,
+            Size.Empty,
+            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
+        var absoluteWidth = TextRenderer.MeasureText(
+            absoluteText,
+            label.Font,
+            Size.Empty,
+            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
+        return Math.Max(relativeWidth, absoluteWidth) + ScaleTimelineMetric(4);
     }
 
-    private int OnionSkinNumericWidth() => MotionTrackRangeVisible
-        ? Math.Max(ScaleTimelineMetric(64),
+    private int OnionSkinNumericWidth() => Math.Max(ScaleTimelineMetric(64),
             TextRenderer.MeasureText(MaximumMotionTrackFrame.ToString(), _onionPreviousFrames.Font,
-                Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleTimelineMetric(28))
-        : ScaleTimelineMetric(48);
+                Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleTimelineMetric(28));
 
     private int ScaleTimelineMetric(int logicalPixels)
     {
@@ -5516,26 +5524,69 @@ internal sealed partial class TimelineStrip : Control
         bool hovered)
     {
         var highContrast = SystemInformation.HighContrast;
-        var fill = highContrast
-            ? hovered ? SystemColors.Highlight : SystemColors.Control
-            : hovered
-                ? Theme.PanelHover
-                : Theme.Panel;
-        using var fillBrush = new SolidBrush(fill);
-        Theme.FillUiRectangle(graphics, fillBrush, bounds);
-        if (hovered || highContrast)
-        {
-            using var borderPen = new Pen(
-                highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(fill, Theme.BorderHover));
-            Theme.DrawUiRectangle(graphics, borderPen, bounds);
-        }
+        var allVisible = AreAllLayersVisible();
+        var soloSelected = IsOnlyActiveTrackVisible() && (!allVisible || _soloVisibilityRequested);
+        var selected = icon == SvgIconKind.AllLayersVisible ? allVisible && !soloSelected
+            : icon == SvgIconKind.SoloLayerVisible && soloSelected;
+        var fill = DrawToolbarCapsule(graphics, bounds, selected, hovered);
+        var iconSize = Math.Min(ScaleTimelineMetric(20), Math.Min(bounds.Width, bounds.Height));
+        var iconBounds = new Rectangle(bounds.Left + (bounds.Width - iconSize) / 2,
+            bounds.Top + (bounds.Height - iconSize) / 2, iconSize, iconSize);
         _headerIconCache.Draw(
             graphics,
             icon,
-            bounds,
+            iconBounds,
             highContrast
-                ? hovered ? SystemColors.HighlightText : SystemColors.ControlText
-                : Theme.ReadableText(fill, hovered ? Theme.Text : Theme.Muted));
+                ? selected ? SystemColors.HighlightText : SystemColors.ControlText
+                : Theme.ReadableText(fill, selected || hovered ? Theme.Text : Theme.Muted));
+    }
+
+    private Color DrawToolbarCapsule(Graphics graphics, Rectangle bounds, bool selected, bool hovered)
+    {
+        var pressed = hovered && MouseButtons == MouseButtons.Left;
+        var background = Theme.Panel;
+        if (!selected && !hovered && !pressed) return background;
+        var emphasis = selected ? Theme.IsLight ? 0.16f : 0.22f : 0.08f;
+        if (pressed) emphasis += 0.04f;
+        background = SystemInformation.HighContrast
+            ? selected ? SystemColors.Highlight : SystemColors.Control
+            : Theme.Mix(Theme.Panel, Theme.Text, Enabled ? emphasis : emphasis * 0.5f);
+        var inset = Math.Max(1, ScaleTimelineMetric(1));
+        var side = Math.Max(1, Math.Min(bounds.Width, bounds.Height) - inset * 2);
+        var surface = new RectangleF(bounds.Left + (bounds.Width - side) / 2f,
+            bounds.Top + (bounds.Height - side) / 2f, side, side);
+        using var brush = new SolidBrush(background);
+        using var path = new GraphicsPath();
+        var diameter = Math.Min(side, 10f * DeviceDpi / 96f);
+        if (SystemInformation.HighContrast) path.AddRectangle(surface);
+        else
+        {
+            path.AddArc(surface.Left, surface.Top, diameter, diameter, 180, 90);
+            path.AddArc(surface.Right - diameter, surface.Top, diameter, diameter, 270, 90);
+            path.AddArc(surface.Right - diameter, surface.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(surface.Left, surface.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+        }
+        var state = graphics.Save();
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.FillPath(brush, path);
+        graphics.Restore(state);
+        return background;
+    }
+
+    private bool _soloVisibilityRequested;
+
+    private bool IsOnlyActiveTrackVisible()
+    {
+        var active = GetActiveTrackIndex();
+        if (active < 0 || active >= TrackCount || IsTrackFolder(active)
+            || IsSceneLightTrack(active) || IsSceneShotTrack(active) || !IsTrackVisible(active)) return false;
+        for (var index = 0; index < TrackCount; index++)
+        {
+            if (index != active && !IsTrackFolder(index) && !IsSceneLightTrack(index)
+                && !IsSceneShotTrack(index) && IsTrackVisible(index)) return false;
+        }
+        return true;
     }
 
     private void DrawMasterControlCell(Graphics graphics, Rectangle bounds, HeaderCommand command)

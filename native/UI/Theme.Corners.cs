@@ -5,6 +5,21 @@ namespace VectorAnimationEngine;
 
 internal static partial class Theme
 {
+    // Keyboard focus uses a short solid underline instead of a dotted rectangle.
+    internal static void DrawKeyboardFocus(Graphics graphics, Rectangle bounds) =>
+        DrawKeyboardFocus(graphics, bounds, SecondaryText, Panel);
+
+    internal static void DrawKeyboardFocus(Graphics graphics, Rectangle bounds, Color foreground, Color background)
+    {
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        var thickness = Math.Max(1f, graphics.DpiY / 96f);
+        var width = Math.Min(bounds.Width, Math.Max(8, bounds.Width / 3));
+        var left = bounds.Left + (bounds.Width - width) / 2f;
+        using var brush = new SolidBrush(SystemInformation.HighContrast
+            ? SystemColors.Highlight : Mix(background, foreground, 0.65f));
+        graphics.FillRectangle(brush, left, bounds.Bottom - thickness, width, thickness);
+    }
+
     private sealed class RoundedControlState
     {
         private readonly Control _control;
@@ -45,7 +60,7 @@ internal static partial class Theme
             TextRenderer.DrawText(e.Graphics, button.Text, button.Font, textBounds,
                 ReadableText(button.BackColor, button.Enabled ? button.ForeColor : DisabledText), flags);
             if (button.Focused)
-                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(button.ClientRectangle, -4, -4),
+                Theme.DrawKeyboardFocus(e.Graphics, Rectangle.Inflate(button.ClientRectangle, -4, -4),
                     ReadableUiColor(button.BackColor, AccentLabel), button.BackColor);
         }
     }
@@ -55,7 +70,7 @@ internal static partial class Theme
     internal static void RegisterCornerStyles(Control root)
     {
         if (root.IsDisposed) return;
-        if (root is Button and not SvgIconButton)
+        if (root is Button and not SvgIconButton and not DrawingScopeButton)
             RoundedControls.GetValue(root, static control => new RoundedControlState(control));
 
         root.ControlAdded -= RegisterCornerStyleOnAdded;

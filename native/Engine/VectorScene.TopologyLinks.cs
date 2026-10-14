@@ -96,7 +96,7 @@ internal sealed partial class VectorScene
             var contours = ShapeBoundaryContours(fillObjectIndex);
             if (!TryGetEditableFillBezierContours(fillObjectIndex, out var originalBezierContours)) continue;
             PointF[][]? originalContours = null;
-            var exactMatch = false;
+            var captured = false;
             var exactStrokeCurves = ShapeKind[lineObjectIndex] == VectorAnimationEngine.ShapeKind.Line
                 || GetSvgStrokeStyle(lineObjectIndex) is not null
                     ? LinkedStrokeCurves(lineObjectIndex) : [];
@@ -105,18 +105,31 @@ internal sealed partial class VectorScene
                 if (!TryFindLinkedFillBezierSegment(originalBezierContours, curve,
                     out var exactContourIndex, out var exactBezierSegmentIndex,
                     out var exactSampledSegmentIndex, out var exactSampledSegmentCount, out var exactReversed,
-                    out var boundaryStartT, out var boundaryEndT)) continue;
+                    out var boundaryStartT, out var boundaryEndT, out var exactBezierSegmentCount)) continue;
                 originalContours ??= CloneContours(contours);
+                if (exactBezierSegmentCount > 1)
+                {
+                    // The stroke spans a run of consecutive boundary segments
+                    // (e.g. after a fill-edge Bezier edit re-segmented the
+                    // shared edge). Store a non-exact link so updates replace
+                    // the whole run with the stroke curve.
+                    links.Add(new FillBoundaryLineLink(lineObjectIndex, fillObjectIndex, originalContours,
+                        CloneBezierContours(originalBezierContours), exactContourIndex,
+                        exactSampledSegmentIndex, exactSampledSegmentCount, exactBezierSegmentIndex,
+                        exactBezierSegmentCount, exactReversed, strokeSegment));
+                    captured = true;
+                    continue;
+                }
                 links.Add(new FillBoundaryLineLink(lineObjectIndex, fillObjectIndex, originalContours,
                     CloneBezierContours(originalBezierContours), exactContourIndex,
                     exactSampledSegmentIndex, exactSampledSegmentCount, exactBezierSegmentIndex, 1,
                     exactReversed, strokeSegment, curve, boundaryStartT, boundaryEndT));
-                exactMatch = true;
+                captured = true;
             }
             // Imported curves must never fall back to sampled endpoint matching:
             // a short or partially split stroke can otherwise replace an unrelated
             // complete fill edge, including when the pointer has not moved.
-            if (exactMatch || GetSvgStrokeStyle(lineObjectIndex) is not null) continue;
+            if (captured || GetSvgStrokeStyle(lineObjectIndex) is not null) continue;
 
             var exactMatches = new List<(int ContourIndex, int SegmentIndex, bool Reversed)>();
             for (var contourIndex = 0; contourIndex < contours.Length; contourIndex++)
@@ -1224,38 +1237,156 @@ internal sealed partial class VectorScene
         }
     }
 
+    private const float FillBezierRunParameterTolerance = 0.01f;
+
     private static bool TryFindLinkedFillBezierSegment(
         IReadOnlyList<PathBezierNode[]> contours, CubicBoundarySegment stroke,
         out int contourIndex, out int segmentIndex, out int sampleIndex, out int sampleCount,
-        out bool reversed, out float startT, out float endT)
+        out bool reversed, out float startT, out float endT, out int bezierSegmentCount)
     {
         startT = 0;
         endT = 1;
         if (TryFindCoincidentFillBezierSegment(contours, stroke.Start, stroke.Control1, stroke.Control2, stroke.End,
-            out contourIndex, out segmentIndex, out sampleIndex, out sampleCount, out reversed)) return true;
+            out contourIndex, out segmentIndex, out sampleIndex, out sampleCount, out reversed))
+        {
+            bezierSegmentCount = 1;
+            return true;
+        }
+
+        var preparedStroke = PrepareBezierCurve(stroke);
         for (var ci = 0; ci < contours.Count; ci++)
         {
             var contour = contours[ci];
-            var offset = 0;
-            for (var si = 0; si < contour.Length; si++)
+            var nodeCount = contour.Length;
+            var curves = new CubicBoundarySegment[nodeCount];
+            var sampleCounts = new int[nodeCount];
+            var sampleOffsets = new int[nodeCount];
+            var totalSamples = 0;
+            for (var si = 0; si < nodeCount; si++)
             {
                 var current = contour[si];
-                var next = contour[(si + 1) % contour.Length];
-                var curve = new CubicBoundarySegment(current.Anchor, current.OutgoingControl, next.IncomingControl, next.Anchor);
-                var count = Math.Max(1, SampleCubicSegment(curve).Length - 1);
-                if (TryGetBezierSubcurveInterval(PrepareBezierCurve(curve), stroke, out startT, out endT))
-                {
-                    var part = CubicSubcurve(curve.Start, curve.Control1, curve.Control2, curve.End, startT, endT);
-                    reversed = Distance(stroke.Start, part.End) < Distance(stroke.Start, part.Start);
-                    contourIndex = ci;
-                    segmentIndex = si;
-                    sampleIndex = offset;
-                    sampleCount = count;
-                    return true;
-                }
-                offset += count;
+                var next = contour[(si + 1) % nodeCount];
+                curves[si] = new CubicBoundarySegment(
+                    current.Anchor,
+                    current.OutgoingControl,
+                    next.IncomingControl,
+                    next.Anchor);
+                sampleCounts[si] = Math.Max(1, SampleCubicSegment(curves[si]).Length - 1);
+                sampleOffsets[si] = totalSamples;
+                totalSamples += sampleCounts[si];
+            }
+
+            for (var si = 0; si < nodeCount; si++)
+            {
+                if (!TryGetBezierSubcurveInterval(PrepareBezierCurve(curves[si]), stroke, out startT, out endT)) continue;
+                var part = CubicSubcurve(curves[si].Start, curves[si].Control1, curves[si].Control2, curves[si].End, startT, endT);
+                reversed = Distance(stroke.Start, part.End) < Distance(stroke.Start, part.Start);
+                contourIndex = ci;
+                segmentIndex = si;
+                sampleIndex = sampleOffsets[si];
+                sampleCount = sampleCounts[si];
+                bezierSegmentCount = 1;
+                return true;
+            }
+
+            // A stroke may span several consecutive boundary segments after a
+            // fill-edge Bezier edit re-segmented the shared edge with extra
+            // anchors. Match a whole-segment run that tiles the stroke from
+            // end to end so the link survives the re-segmentation.
+            if (nodeCount >= 2
+                && TryFindLinkedFillBezierSegmentRun(preparedStroke, contour, curves, sampleCounts, sampleOffsets,
+                    out var runSegmentIndex, out var runLength, out var runSampleIndex,
+                    out var runSampleCount, out var runReversed))
+            {
+                contourIndex = ci;
+                segmentIndex = runSegmentIndex;
+                sampleIndex = runSampleIndex;
+                sampleCount = runSampleCount;
+                reversed = runReversed;
+                startT = 0;
+                endT = 1;
+                bezierSegmentCount = runLength;
+                return true;
             }
         }
+
+        contourIndex = -1;
+        segmentIndex = -1;
+        sampleIndex = -1;
+        sampleCount = 0;
+        reversed = false;
+        bezierSegmentCount = 0;
+        return false;
+    }
+
+    private static bool TryFindLinkedFillBezierSegmentRun(
+        PreparedBezierCurve stroke,
+        IReadOnlyList<PathBezierNode> contour,
+        CubicBoundarySegment[] curves,
+        int[] sampleCounts,
+        int[] sampleOffsets,
+        out int segmentIndex,
+        out int segmentRunLength,
+        out int sampleIndex,
+        out int sampleCount,
+        out bool reversed)
+    {
+        var nodeCount = contour.Count;
+        segmentIndex = -1;
+        segmentRunLength = 0;
+        sampleIndex = -1;
+        sampleCount = 0;
+        reversed = false;
+        for (var si = 0; si < nodeCount - 1; si++)
+        {
+            if (!TryGetBezierSubcurveInterval(stroke, curves[si], out var from, out var to)) continue;
+            bool forward;
+            if (from <= FillBezierRunParameterTolerance) forward = true;
+            else if (to >= 1f - FillBezierRunParameterTolerance) forward = false;
+            else continue;
+
+            var cursor = forward ? to : from;
+            var runLength = 1;
+            var complete = forward
+                ? to >= 1f - FillBezierRunParameterTolerance
+                : from <= FillBezierRunParameterTolerance;
+            while (!complete && si + runLength < nodeCount)
+            {
+                if (!TryGetBezierSubcurveInterval(stroke, curves[si + runLength], out var nextFrom, out var nextTo)
+                    || nextTo <= nextFrom)
+                {
+                    break;
+                }
+
+                if (forward)
+                {
+                    if (Math.Abs(nextFrom - cursor) > FillBezierRunParameterTolerance) break;
+                    cursor = nextTo;
+                }
+                else
+                {
+                    if (Math.Abs(nextTo - cursor) > FillBezierRunParameterTolerance) break;
+                    cursor = nextFrom;
+                }
+
+                runLength++;
+                complete = forward
+                    ? cursor >= 1f - FillBezierRunParameterTolerance
+                    : cursor <= FillBezierRunParameterTolerance;
+            }
+
+            if (!complete) continue;
+            segmentIndex = si;
+            segmentRunLength = runLength;
+            sampleIndex = sampleOffsets[si];
+            sampleCount = 0;
+            for (var offset = 0; offset < runLength; offset++) sampleCount += sampleCounts[si + offset];
+            var startAnchor = contour[si].Anchor;
+            var endAnchor = contour[(si + runLength) % nodeCount].Anchor;
+            reversed = Distance(stroke.Curve.Start, endAnchor) < Distance(stroke.Curve.Start, startAnchor);
+            return true;
+        }
+
         return false;
     }
 
@@ -1414,13 +1545,48 @@ internal sealed partial class VectorScene
         }
 
         var sampledContour = sampledContours[contourIndex];
-        if (contour.Length == sampledContour.Length - 1
-            && sampledSegmentIndex >= 0
+        if (sampledSegmentIndex >= 0
             && sampledSegmentCount > 0
-            && sampledSegmentIndex < contour.Length
-            && sampledSegmentIndex + sampledSegmentCount <= contour.Length)
+            && sampledContour.Length > 0)
         {
-            return (sampledSegmentIndex, sampledSegmentCount);
+            // Map the matched sampled span onto whole Bezier segments by
+            // accumulating per-segment sample counts. Re-segmented contours no
+            // longer map 1:1 onto sampled segments, so require the span to
+            // align with segment boundaries and reject partial overlaps.
+            var totalSamples = 0;
+            for (var si = 0; si < contour.Length; si++)
+            {
+                var current = contour[si];
+                var next = contour[(si + 1) % contour.Length];
+                totalSamples += Math.Max(1, SampleCubicSegment(new CubicBoundarySegment(
+                    current.Anchor,
+                    current.OutgoingControl,
+                    next.IncomingControl,
+                    next.Anchor)).Length - 1);
+            }
+
+            if (sampledContour.Length - 1 == totalSamples)
+            {
+                var target = sampledSegmentIndex + sampledSegmentCount;
+                var offset = 0;
+                var startSegment = -1;
+                for (var si = 0; si < contour.Length; si++)
+                {
+                    if (offset == sampledSegmentIndex) startSegment = si;
+                    var current = contour[si];
+                    var next = contour[(si + 1) % contour.Length];
+                    offset += Math.Max(1, SampleCubicSegment(new CubicBoundarySegment(
+                        current.Anchor,
+                        current.OutgoingControl,
+                        next.IncomingControl,
+                        next.Anchor)).Length - 1);
+                    if (startSegment >= 0)
+                    {
+                        if (offset == target) return (startSegment, si - startSegment + 1);
+                        if (offset > target) break;
+                    }
+                }
+            }
         }
 
         return (-1, 0);

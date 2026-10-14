@@ -4,7 +4,7 @@ internal sealed partial class MainForm
 {
     private void AddExternalSvgAssetLink()
     {
-        using var dialog = CreateExternalSvgAssetDialog("Add SVG Link...");
+        using var dialog = CreateExternalSvgAssetDialog("Add SVG Link");
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (!TryValidateExternalSvgAssetFile(dialog.FileName, out var path, out var sha256, out var error))
         {
@@ -115,7 +115,7 @@ internal sealed partial class MainForm
         var asset = FindExternalSvgAsset(assetId);
         if (asset is null) return;
 
-        using var dialog = CreateExternalSvgAssetDialog("Relocate SVG Link...");
+        using var dialog = CreateExternalSvgAssetDialog("Relocate SVG Link");
         var currentDirectory = Path.GetDirectoryName(ResolveExternalSvgAssetPath(asset) ?? asset.SourcePath);
         if (!string.IsNullOrWhiteSpace(currentDirectory) && Directory.Exists(currentDirectory))
         {

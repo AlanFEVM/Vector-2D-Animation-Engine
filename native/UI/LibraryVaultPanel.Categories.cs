@@ -26,11 +26,11 @@ internal sealed partial class LibraryVaultPanel
 
     private readonly Dictionary<AssetCategory, SegmentedButton> _assetCategoryButtons = [];
     private readonly ToolStripMenuItem _useExternalSvgAssetMenuItem = new("Use");
-    private readonly ToolStripMenuItem _relocateExternalSvgAssetMenuItem = new("Relocate...");
+    private readonly ToolStripMenuItem _relocateExternalSvgAssetMenuItem = new("Relocate");
     private readonly ToolStripMenuItem _deleteExternalSvgAssetMenuItem = new("Delete");
     private readonly ToolStripMenuItem _useImageAssetMenuItem = new("Place");
-    private readonly ToolStripMenuItem _imageImportSettingsMenuItem = new("Import Settings...");
-    private readonly ToolStripMenuItem _relinkImageAssetMenuItem = new("Relink...");
+    private readonly ToolStripMenuItem _imageImportSettingsMenuItem = new("Import Settings");
+    private readonly ToolStripMenuItem _relinkImageAssetMenuItem = new("Relink");
     private readonly ToolStripMenuItem _deleteImageAssetMenuItem = new("Delete");
     private Func<ExternalSvgAssetDefinition, bool>? _externalSvgAssetAvailabilityProvider;
     private Func<ImageAssetDefinition, bool>? _imageAssetAvailabilityProvider;
@@ -88,7 +88,7 @@ internal sealed partial class LibraryVaultPanel
             ColumnCount = 4,
             RowCount = 1,
             Margin = Padding.Empty,
-            Padding = new Padding(0, 2, 0, 3),
+            Padding = new Padding(0, 2, 0, 8),
             AccessibleName = "Asset categories",
             AccessibleRole = AccessibleRole.Grouping
         };
@@ -118,7 +118,7 @@ internal sealed partial class LibraryVaultPanel
             Text = text,
             TextAlign = ContentAlignment.MiddleCenter,
             AutoEllipsis = true,
-            Margin = new Padding(column == 0 ? 0 : 2, 0, 0, 0),
+            Margin = new Padding(column == 0 ? 0 : 4, 0, 0, 0),
             AccessibleName = text,
             AccessibleRole = AccessibleRole.RadioButton,
             Tag = category,
@@ -164,12 +164,12 @@ internal sealed partial class LibraryVaultPanel
         var hosted = externalSvg || images;
         _assetTagFilter.Enabled = !hosted;
         _manageTagsButton.Enabled = !hosted && SelectedProjectDrawingObject() is not null;
-        _newFolderButton.Icon = hosted ? SvgIconKind.Add : SvgIconKind.FolderPlus;
+        _newFolderButton.Icon = images ? SvgIconKind.ImportImage : externalSvg ? SvgIconKind.AssetAdd : SvgIconKind.TimelineFolder;
         _newFolderButton.AccessibleName = UiLocalization.T(
             externalSvg ? "Add SVG Link" : images ? "Import Image" : "New Folder");
         _toolTip.SetToolTip(
             _newFolderButton,
-            UiLocalization.T(externalSvg ? "Add SVG Link..." : images ? "Import Image..." : "New Folder"));
+            UiLocalization.T(externalSvg ? "Add SVG Link" : images ? "Import Image" : "New Folder"));
         if (_openButton is not null)
         {
             _openButton.AccessibleName = UiLocalization.T(
@@ -204,6 +204,7 @@ internal sealed partial class LibraryVaultPanel
 
     private bool DrawingObjectMatchesActiveCategory(DrawingObjectDefinition drawingObject)
     {
+        if (drawingObject.IsOpenCanvas) return false;
         var threeDimensional = DrawingObjectAssetKinds.IsThreeDimensional(drawingObject.Kind);
         return _activeAssetCategory switch
         {

@@ -42,7 +42,11 @@ internal sealed partial class VectorScene
         var keyframesBySourceStack = new Dictionary<(ushort Layer, long Order), int>();
 
         void AddAddition(int source, MaterializedPartAddition addition) => additions.Add(
-            addition with { SvgStrokeStyle = GetSvgStrokeStyle(source) });
+            addition with
+            {
+                SvgStrokeStyle = GetSvgStrokeStyle(source),
+                FillBoundaryLinkDetached = FillBoundaryLinkDetached[source]
+            });
 
         foreach (var group in keys.GroupBy(key => key.ObjectIndex).OrderBy(group => group.Key))
         {
@@ -834,6 +838,7 @@ internal sealed partial class VectorScene
             ObjectOrder[index] = addition.Order;
             ObjectSubOrder[index] = addition.SubOrder;
             FillAutoMergeProtected[index] = addition.FillAutoMergeProtected;
+            FillBoundaryLinkDetached[index] = addition.FillBoundaryLinkDetached;
             QuadraticLineEditing[index] = addition.QuadraticEditing && ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line;
             ApplyGradientPaint(index, addition.GradientPaint);
         }

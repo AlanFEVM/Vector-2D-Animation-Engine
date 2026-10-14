@@ -925,7 +925,7 @@ internal static partial class Theme
         box.ItemHeight = Math.Max(30 * box.DeviceDpi / 96, box.Font.Height + 8);
         box.IntegralHeight = false;
         box.MaxDropDownItems = 8;
-        box.DropDownHeight = box.ItemHeight * Math.Min(8, Math.Max(1, box.Items.Count)) + 2;
+        UpdateComboBoxDropDownHeight(box);
         if (StyledComboBoxes.TryGetValue(box, out var comboState))
         {
             if (comboState is ComboBoxSurfaceAdapter adapter) adapter.RefreshSelectionHeight();
@@ -934,6 +934,13 @@ internal static partial class Theme
         StyledComboBoxes.Add(box, new ComboBoxSurfaceAdapter(box));
         box.DrawItem += DrawComboBoxItem;
         ConfigureFieldInteraction(box);
+    }
+
+    // Recompute after the item list changes; a combo styled before population
+    // otherwise keeps a one-row dropdown height forever.
+    internal static void UpdateComboBoxDropDownHeight(ComboBox box)
+    {
+        box.DropDownHeight = box.ItemHeight * Math.Min(8, Math.Max(1, box.Items.Count)) + 2;
     }
 
     public static void StyleNumeric(NumericUpDown input)
@@ -1209,7 +1216,7 @@ internal static partial class Theme
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         if ((e.State & DrawItemState.Focus) != 0 && list.Focused)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(e.Bounds, -2, -2),
                 SystemInformation.HighContrast ? SystemColors.HighlightText : ReadableUiColor(background, AccentLabel),
@@ -1383,7 +1390,7 @@ internal static partial class Theme
             }
             else
             {
-                ControlPaint.DrawFocusRectangle(e.Graphics, focusBounds, ReadableUiColor(backgroundColor, AccentLabel), background.Color);
+                Theme.DrawKeyboardFocus(e.Graphics, focusBounds, ReadableUiColor(backgroundColor, AccentLabel), background.Color);
             }
         }
     }
@@ -1498,7 +1505,7 @@ internal static partial class Theme
             var focusBounds = Rectangle.Inflate(item.Bounds, -4, -2);
             var graphicsState = e.Graphics.Save();
             e.Graphics.SetClip(list.ClientRectangle, System.Drawing.Drawing2D.CombineMode.Intersect);
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 focusBounds,
                 ReadableUiColor(backgroundColor, AccentLabel),

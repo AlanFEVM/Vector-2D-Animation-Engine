@@ -84,9 +84,7 @@ internal sealed class WindowChromeButton : Control
         switch (Kind)
         {
             case WindowChromeButtonKind.Restart:
-                g.DrawArc(pen, cx - 6, cy - 6, 12, 12, 42, 280);
-                g.DrawLine(pen, cx + 6, cy - 3, cx + 6, cy - 7);
-                g.DrawLine(pen, cx + 6, cy - 7, cx + 2, cy - 7);
+                DrawRestartIcon(g, pen, cx, cy);
                 break;
             case WindowChromeButtonKind.Minimize:
                 g.DrawLine(pen, cx - 5, cy + 4, cx + 5, cy + 4);
@@ -103,6 +101,33 @@ internal sealed class WindowChromeButton : Control
                 g.DrawLine(pen, cx + 5, cy - 5, cx - 5, cy + 5);
                 break;
         }
+    }
+
+    // Circular arrow with the gap at the top right. The chevron tip sits exactly
+    // on the arc endpoint and points along the clockwise travel direction, so the
+    // arrow can never detach from the ring.
+    private static void DrawRestartIcon(System.Drawing.Graphics g, System.Drawing.Pen pen, float cx, float cy)
+    {
+        const float radius = 6f;
+        const float startAngle = 42f;
+        const float sweepAngle = 280f;
+        g.DrawArc(pen, cx - radius, cy - radius, radius * 2f, radius * 2f, startAngle, sweepAngle);
+
+        var end = (startAngle + sweepAngle) * MathF.PI / 180f;
+        var tip = new PointF(cx + radius * MathF.Cos(end), cy + radius * MathF.Sin(end));
+        var tangent = new PointF(-MathF.Sin(end), MathF.Cos(end));
+        const float length = 4.2f;
+        var spread = 27f * MathF.PI / 180f;
+        PointF Blade(float angle)
+        {
+            var cos = MathF.Cos(angle);
+            var sin = MathF.Sin(angle);
+            return new PointF(
+                tip.X - length * (tangent.X * cos - tangent.Y * sin),
+                tip.Y - length * (tangent.X * sin + tangent.Y * cos));
+        }
+        g.DrawLine(pen, tip, Blade(spread));
+        g.DrawLine(pen, tip, Blade(-spread));
     }
 
     private Color GetBackColor()

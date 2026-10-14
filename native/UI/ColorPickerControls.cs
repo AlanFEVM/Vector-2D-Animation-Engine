@@ -171,7 +171,7 @@ internal sealed class ColorComponentSlider : Control
         if (Enabled && Focused && ShowFocusCues)
         {
             var focus = Rectangle.Inflate(rail, 3, 3);
-            ControlPaint.DrawFocusRectangle(e.Graphics, focus, Theme.ReadableUiColor(BackColor, Theme.Accent), BackColor);
+            Theme.DrawKeyboardFocus(e.Graphics, focus, Theme.ReadableUiColor(BackColor, Theme.Accent), BackColor);
         }
     }
 
@@ -621,7 +621,7 @@ internal sealed class HsvColorPlane : Control
 
         if (Enabled && Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(field, 2, 2),
                 Theme.ReadableUiColor(BackColor, Theme.Accent),
@@ -953,7 +953,7 @@ internal sealed class TraditionalColorPlane : Control
         if (Enabled && Focused && ShowFocusCues)
         {
             var focusBounds = Rectangle.Inflate(field, 2, 2);
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 focusBounds,
                 Theme.ReadableUiColor(BackColor, Theme.Accent),
@@ -1431,7 +1431,7 @@ internal sealed class VerticalColorComponentSlider : Control
         if (Enabled && Focused && ShowFocusCues)
         {
             var focusBounds = Rectangle.Inflate(rail, 2, 2);
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 focusBounds,
                 Theme.ReadableUiColor(BackColor, Theme.Accent),
@@ -1907,7 +1907,7 @@ internal sealed class HarmonyColorWheel : Control
 
         if (Enabled && Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(bounds, 2, 2),
                 Theme.ReadableUiColor(BackColor, Theme.Accent),
@@ -2678,7 +2678,7 @@ internal sealed class GradientPresetGrid : Control
         var previewColor = GradientPreviewRenderer.Sample(preset.Stops, 0.5f);
         var preferredBorder = selected ? Theme.Accent : hovered || focused ? Theme.Text : Theme.Border;
         using var border = new Pen(
-            Theme.ReadableUiColor(previewColor, preferredBorder),
+            selected || hovered || focused ? Theme.ReadableUiColor(previewColor, preferredBorder) : Theme.ControlOutline,
             selected ? 2f : 1f);
         graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
         if (preset.Kind is GradientKind.Radial or GradientKind.ShapeRadial)
@@ -2800,7 +2800,7 @@ internal sealed class GradientStopStrip : Control
         for (var index = 0; index < _stops.Length; index++) DrawStop(e.Graphics, index, StopPoint(index));
         if (Enabled && Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -2, -2),
                 Theme.ReadableUiColor(BackColor, Theme.Text),
@@ -3210,7 +3210,7 @@ internal sealed class ColorTargetButton : Control
 
         if (Enabled && Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -3, -3),
                 Theme.ReadableUiColor(background, Theme.Text),
@@ -3396,7 +3396,7 @@ internal sealed class ColorPaletteGrid : Control
         if (Enabled && Focused && ShowFocusCues)
         {
             var focusBackground = Theme.EffectiveBackground(this);
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -1, -1),
                 Theme.ReadableUiColor(focusBackground, Theme.Accent),
@@ -3535,7 +3535,7 @@ internal sealed class ColorPaletteGrid : Control
         var hovered = index == _hoverIndex;
         var preferredBorder = selected ? Theme.Accent : hovered || focused ? Theme.Text : Theme.Border;
         using var border = new Pen(
-            Theme.ReadableUiColor(color, preferredBorder),
+            selected || hovered || focused ? Theme.ReadableUiColor(color, preferredBorder) : Theme.ControlOutline,
             selected ? 2f : 1f);
         graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
         if (selected)

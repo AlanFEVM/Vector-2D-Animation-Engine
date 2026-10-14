@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using System.Globalization;
 
 namespace VectorAnimationEngine;
@@ -155,13 +156,7 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly Button _endSharpEndpointStyle = new SegmentedButton { Text = "Sharp" };
     private readonly Button _endRoundEndpointStyle = new SegmentedButton { Text = "Round" };
     private readonly ToolTip _toolTip = new();
-    private readonly ToolStripDropDown _paletteDropDown = new()
-    {
-        AutoClose = true,
-        AutoSize = false,
-        BackColor = Theme.PanelStrong,
-        Padding = new Padding(4)
-    };
+    private readonly PalettePopupDropDown _paletteDropDown = new();
     private TableLayoutPanel? _content;
     private TableLayoutPanel? _targetRow;
     private TableLayoutPanel? _materialSettings;
@@ -772,18 +767,12 @@ internal sealed class MaterialEditorPanel : UserControl
             ColumnCount = 1,
             RowCount = 8,
             Margin = Padding.Empty,
-            Padding = new Padding(4),
-            Size = new Size(278, 330)
+            Padding = new Padding(12),
+            Size = new Size(320, 430)
         };
         palette.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        palette.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        foreach (var height in new[] { 26, 56, 30, 52, 30, 32, 30, 150 })
+            palette.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
 
         palette.Controls.Add(CreatePalettePopupLabel("Colors"), 0, 0);
         ConfigurePaletteGrid(_builtInGrid);
@@ -791,6 +780,9 @@ internal sealed class MaterialEditorPanel : UserControl
         palette.Controls.Add(_builtInGrid, 0, 1);
 
         _recentPaletteTitle.BackColor = Theme.PanelStrong;
+        _recentPaletteTitle.ForeColor = Theme.SecondaryText;
+        _recentPaletteTitle.Font = Theme.UiFont(8.5f, FontStyle.Bold);
+        _recentPaletteTitle.Margin = Padding.Empty;
         palette.Controls.Add(_recentPaletteTitle, 0, 2);
         var recent = new TableLayoutPanel
         {
@@ -828,6 +820,9 @@ internal sealed class MaterialEditorPanel : UserControl
             Margin = Padding.Empty
         };
         _customPaletteTitle.BackColor = Theme.PanelStrong;
+        _customPaletteTitle.ForeColor = Theme.SecondaryText;
+        _customPaletteTitle.Font = Theme.UiFont(8.5f, FontStyle.Bold);
+        _customPaletteTitle.Margin = Padding.Empty;
         customHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         customHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
         customHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
@@ -878,7 +873,8 @@ internal sealed class MaterialEditorPanel : UserControl
         _gradientPresetGrid.HoverCleared += (_, _) => _toolTip.SetToolTip(_gradientPresetGrid, string.Empty);
         palette.Controls.Add(_gradientPresetGrid, 0, 7);
 
-        _paletteDropDown.Renderer = new ToolStripProfessionalRenderer(new PalettePopupColorTable());
+        _paletteDropDown.Renderer = new PalettePopupRenderer();
+        UiLocalization.Watch(palette);
         _paletteDropDown.Size = new Size(palette.Width + 8, palette.Height + 8);
         _paletteDropDown.Items.Add(new ToolStripControlHost(palette)
         {
@@ -902,8 +898,8 @@ internal sealed class MaterialEditorPanel : UserControl
         grid.Dock = DockStyle.Fill;
         grid.BackColor = Theme.PanelStrong;
         grid.Margin = Padding.Empty;
-        grid.SwatchSize = 18;
-        grid.Gap = 4;
+        grid.SwatchSize = 22;
+        grid.Gap = 6;
         grid.ColorSelected += (_, e) => SelectPaletteColor(e.Color);
         grid.HoveredColorChanged += (_, e) => _toolTip.SetToolTip(grid, ToHex(e.Color));
         grid.HoverCleared += (_, _) => _toolTip.SetToolTip(grid, string.Empty);
@@ -921,17 +917,21 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private void TogglePalettePopup()
     {
-        if (_paletteDropDown.Visible)
-        {
-            _paletteDropDown.Close();
-            return;
-        }
+        DropDownToggle.Toggle(_paletteDropDown, ShowPalettePopup);
+    }
 
+    private void ShowPalettePopup()
+    {
         RefreshRuntimePalettes();
         _gradientPresetGrid.SetSelection(_gradientKind, _gradientStops);
-        _paletteDropDown.Show(
-            _paletteButton,
-            new Point(Math.Max(0, _paletteButton.Width - _paletteDropDown.Width), _paletteButton.Height));
+        var anchor = _paletteButton.RectangleToScreen(_paletteButton.ClientRectangle);
+        var workingArea = Screen.FromControl(_paletteButton).WorkingArea;
+        var x = Math.Clamp(anchor.Right - _paletteDropDown.Width, workingArea.Left,
+            Math.Max(workingArea.Left, workingArea.Right - _paletteDropDown.Width));
+        var y = anchor.Bottom;
+        if (y + _paletteDropDown.Height > workingArea.Bottom) y = anchor.Top - _paletteDropDown.Height;
+        y = Math.Clamp(y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - _paletteDropDown.Height));
+        _paletteDropDown.Show(new Point(x, y));
     }
 
     private void ClosePalettePopup()
@@ -2351,15 +2351,82 @@ internal sealed class MaterialEditorPanel : UserControl
 
     private static Label CreatePalettePopupLabel(string text)
     {
-        var label = CreateSectionLabel(text);
+        var label = InspectorModuleStyle.CreateTitle(text);
+        label.Dock = DockStyle.Fill;
+        label.Margin = Padding.Empty;
         label.BackColor = Theme.PanelStrong;
+        label.ForeColor = Theme.SecondaryText;
+        label.Font = Theme.UiFont(8.5f, FontStyle.Bold);
         return label;
+    }
+
+    // Rounded-corner palette flyout. Follows the same approach as
+    // AnimatedContextMenuStrip: clip the window with a rounded Region while
+    // Theme.UsesRoundedCorners is active and paint a matching rounded border.
+    private sealed class PalettePopupDropDown : ToolStripDropDown
+    {
+        public PalettePopupDropDown()
+        {
+            AutoClose = true;
+            AutoSize = false;
+            BackColor = Theme.PanelStrong;
+            Padding = new Padding(4);
+        }
+
+        private void RefreshRegion()
+        {
+            var oldRegion = Region;
+            if (!Theme.UsesRoundedCorners || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+                Region = null;
+            else
+            {
+                using var outline = Theme.CreateUiOutline(ClientRectangle, DeviceDpi);
+                Region = new Region(outline);
+            }
+            oldRegion?.Dispose();
+        }
+
+        protected override void OnOpened(EventArgs e)
+        {
+            base.OnOpened(e);
+            RefreshRegion();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            RefreshRegion();
+        }
+    }
+
+    private sealed class PalettePopupRenderer : ToolStripProfessionalRenderer
+    {
+        public PalettePopupRenderer() : base(new PalettePopupColorTable())
+        {
+            RoundedEdges = false;
+        }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+        {
+            if (!Theme.UsesRoundedCorners)
+            {
+                base.OnRenderToolStripBorder(e);
+                return;
+            }
+            var bounds = new RectangleF(0.5f, 0.5f, Math.Max(1, e.ToolStrip.Width - 1), Math.Max(1, e.ToolStrip.Height - 1));
+            using var path = Theme.CreateUiOutline(bounds, e.ToolStrip.DeviceDpi);
+            using var border = new Pen(SystemInformation.HighContrast ? SystemColors.WindowText : Theme.ControlOutline);
+            var state = e.Graphics.Save();
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.DrawPath(border, path);
+            e.Graphics.Restore(state);
+        }
     }
 
     private sealed class PalettePopupColorTable : ProfessionalColorTable
     {
         public override Color ToolStripDropDownBackground => Theme.PanelStrong;
-        public override Color ToolStripBorder => Theme.BorderHover;
+        public override Color ToolStripBorder => Theme.ControlOutline;
     }
 
     private static bool RemoveColor(List<Color> colors, Color color)

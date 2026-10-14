@@ -123,25 +123,25 @@ internal sealed partial class TimelineStrip : Control
 
         if (!_shotFilterActive)
         {
-            DrawHeaderButton(
+            DrawHeaderIconButton(
                 graphics,
                 soloBounds,
-                UiLocalization.T("Solo"),
+                SvgIconKind.SoloLayerVisible,
                 _hoveredHeaderCommand == HeaderCommand.Solo);
-            DrawHeaderButton(
+            DrawHeaderIconButton(
                 graphics,
                 allBounds,
-                UiLocalization.T("All"),
+                SvgIconKind.AllLayersVisible,
                 _hoveredHeaderCommand == HeaderCommand.All);
             DrawHeaderIconButton(
                 graphics,
                 addLayerBounds,
-                SvgIconKind.Add,
+                SvgIconKind.AssetAdd,
                 _hoveredHeaderCommand == HeaderCommand.AddLayer);
             DrawHeaderIconButton(
                 graphics,
                 addFolderLayerBounds,
-                SvgIconKind.FilledFolder,
+                SvgIconKind.TimelineFolder,
                 _hoveredHeaderCommand == HeaderCommand.AddFolderLayer);
         }
 
@@ -192,8 +192,8 @@ internal sealed partial class TimelineStrip : Control
         }
         if (!_shotFilterActive)
         {
-            DrawSeparator(TimelineTitleIconBounds().Right + ScaleTimelineMetric(8));
-            DrawSeparator(SoloButtonBounds(layout).Left - ScaleTimelineMetric(8));
+            DrawSeparator(TimelineTitleIconBounds().Right + ScaleTimelineMetric(6));
+            DrawSeparator(SoloButtonBounds(layout).Left - ScaleTimelineMetric(6));
             DrawSeparator(AllButtonBounds(layout).Right + ScaleTimelineMetric(10));
         }
         if (_autoKeyframeToggle.Visible)
@@ -212,7 +212,7 @@ internal sealed partial class TimelineStrip : Control
 
     private Rectangle TimelineTitleIconBounds()
     {
-        var size = Math.Min(ScaleTimelineMetric(26), ToolbarHeaderHeight - ScaleTimelineMetric(4));
+        var size = Math.Min(ScaleTimelineMetric(22), ToolbarHeaderHeight - ScaleTimelineMetric(4));
         return new Rectangle(ScaleTimelineMetric(8), (ToolbarHeaderHeight - size) / 2, size, size);
     }
 
@@ -228,47 +228,42 @@ internal sealed partial class TimelineStrip : Control
 
     private void DrawHeightResizeHandle(Graphics graphics)
     {
-        var y = Math.Max(2, HeightResizeHandleHeight / 2);
-        var width = Math.Min(66, Math.Max(28, Width / 8));
-        var left = Math.Max(0, (Width - width) / 2);
-        var color = _draggingHeightResize
-            ? Theme.Accent
-            : Theme.ReadableUiColor(Theme.Panel, Theme.Muted);
-        using var line = new Pen(color, 1.2f);
+        var scale = DeviceDpi / 96f;
+        var y = Math.Max(2f * scale, HeightResizeHandleHeight / 2f);
+        var color = SystemInformation.HighContrast ? SystemColors.ControlText
+            : _draggingHeightResize ? Theme.Accent : Theme.ControlOutline;
+        using var dots = new SolidBrush(color);
         var state = graphics.Save();
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
         foreach (Control control in Controls)
         {
             if (control.Visible) graphics.ExcludeClip(control.Bounds);
         }
-        graphics.DrawLine(line, left, y, left + width, y);
-        for (var x = left + 4; x < left + width - 2; x += 6)
-        {
-            graphics.DrawLine(line, x, y - 2, x, y + 2);
-        }
+        var diameter = 2f * scale;
+        for (var index = -1; index <= 1; index++)
+            graphics.FillEllipse(dots, Width / 2f + index * 5f * scale - diameter / 2f,
+                y - diameter / 2f, diameter, diameter);
         graphics.Restore(state);
     }
 
-    /// <summary>
-    /// Grip on the gutter's right edge. It is always visible so the column reads as resizable, and it
-    /// brightens on hover and while dragging to confirm the grab.
-    /// </summary>
     private void DrawGutterSplitterHandle(Graphics graphics, TimelineLayout layout)
     {
         var bounds = GutterSplitterBounds(layout);
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
-
+        var scale = DeviceDpi / 96f;
         var active = _draggingGutterSplitter || _hoveringGutterSplitter;
-        var color = active ? Theme.Accent : Theme.ReadableUiColor(Theme.Panel, Theme.Muted);
+        var color = SystemInformation.HighContrast ? SystemColors.ControlText
+            : active ? Theme.Accent : Theme.ControlOutline;
         var centerX = layout.TrackLeft - 1f;
-
-        using var line = new Pen(color, active ? 1.8f : 1.2f);
-        graphics.DrawLine(line, centerX, bounds.Top, centerX, bounds.Bottom);
-
-        // Three ribs in the layer header row advertise the seam without sitting on a data row.
         var middle = bounds.Top + RulerHeight * 0.5f;
-        graphics.DrawLine(line, centerX - 2.5f, middle - 4f, centerX + 2.5f, middle - 4f);
-        graphics.DrawLine(line, centerX - 2.5f, middle, centerX + 2.5f, middle);
-        graphics.DrawLine(line, centerX - 2.5f, middle + 4f, centerX + 2.5f, middle + 4f);
+        using var dots = new SolidBrush(color);
+        var state = graphics.Save();
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var diameter = (active ? 2.5f : 2f) * scale;
+        for (var index = -1; index <= 1; index++)
+            graphics.FillEllipse(dots, centerX - diameter / 2f,
+                middle + index * 5f * scale - diameter / 2f, diameter, diameter);
+        graphics.Restore(state);
     }
 
     private void DrawRuler(Graphics graphics, TimelineLayout layout, Rectangle clipBounds)
@@ -352,7 +347,7 @@ internal sealed partial class TimelineStrip : Control
                 UiLocalization.T("Layer"),
                 Font,
                 new Rectangle(LayerControlsWidth + 7, HeaderHeight, Math.Max(20, layout.TrackLeft - LayerControlsWidth - 19), RulerHeight),
-                Theme.ReadableText(Theme.Top, Theme.Muted),
+                SystemInformation.HighContrast ? SystemColors.ControlText : Theme.SecondaryText,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             }
         }
@@ -755,21 +750,35 @@ internal sealed partial class TimelineStrip : Control
             if (paintLayerGutter)
             {
                 var selectedLayer = IsTrackSelected(trackIndex);
-                var layerItemBackground = LayerItemBackgroundColor(
-                    GetLayerItemColor(trackIndex),
-                    active,
-                    selectedLayer,
-                    !UsesTabGroupRowColor(trackIndex) && visibleRow % 2 != 0);
+                var neutralGutter = SystemInformation.HighContrast ? SystemColors.Window : Theme.Panel;
+                var highlighted = active || selectedLayer;
+                var rowHovered = _hoverTrack == trackIndex;
+                var layerItemBackground = SystemInformation.HighContrast
+                    ? highlighted ? SystemColors.Highlight : SystemColors.Window
+                    : highlighted ? Theme.Mix(Theme.PanelStrong, Theme.Accent, active ? 0.16f : 0.09f)
+                    : rowHovered ? Theme.Mix(Theme.Panel, Theme.Text, 0.045f) : neutralGutter;
                 var layerItemBounds = new Rectangle(0, y, Math.Max(0, layout.TrackLeft), _rowHeight);
-                using (var layerItemBrush = new SolidBrush(layerItemBackground))
+                using (var baseBrush = new SolidBrush(neutralGutter))
+                    FillAlignedRectangle(graphics, baseBrush, layerItemBounds);
+                var inset = ScaleTimelineMetric(2);
+                var surfaceBounds = Rectangle.Inflate(layerItemBounds, -inset, -inset);
+                if (surfaceBounds.Width > 0 && surfaceBounds.Height > 0)
                 {
-                    graphics.FillRectangle(layerItemBrush, layerItemBounds);
+                    using var surfaceBrush = new SolidBrush(layerItemBackground);
+                    Theme.FillUiRectangle(graphics, surfaceBrush, surfaceBounds);
                 }
-                if (active) graphics.FillRectangle(activeEdgeBrush, 0, y, 3, _rowHeight);
+                if (active)
+                {
+                    using var colorMarker = new SolidBrush(GetLayerItemColor(trackIndex));
+                    graphics.FillRectangle(colorMarker, ScaleTimelineMetric(3), y + ScaleTimelineMetric(5),
+                        ScaleTimelineMetric(2), Math.Max(1, _rowHeight - ScaleTimelineMetric(10)));
+                }
 
                 var locked = IsTrackLocked(trackIndex);
                 var textBackground = layerItemBackground;
-                var preferredTextColor = !visible || locked ? Theme.Muted : active ? Theme.Text : Theme.Muted;
+                var preferredTextColor = SystemInformation.HighContrast
+                    ? highlighted ? SystemColors.HighlightText : SystemColors.WindowText
+                    : !visible || locked ? Theme.SecondaryText : Theme.Text;
                 var outlined = IsTrackOutlined(trackIndex);
                 if (!IsSceneLightTrack(trackIndex) && !IsSceneShotTrack(trackIndex))
                 {
@@ -790,7 +799,7 @@ internal sealed partial class TimelineStrip : Control
                     graphics,
                     UiLocalization.T(GetTrackName(trackIndex)),
                     Font,
-                    new Rectangle(labelLeft + 15, y, Math.Max(16, layout.TrackLeft - labelLeft - VerticalScrollWidth - 20), _rowHeight),
+                    new Rectangle(labelLeft + ScaleTimelineMetric(18), y, Math.Max(1, layout.TrackLeft - labelLeft - VerticalScrollWidth - ScaleTimelineMetric(24)), _rowHeight),
                     Theme.ReadableText(textBackground, preferredTextColor),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             }
@@ -961,7 +970,7 @@ internal sealed partial class TimelineStrip : Control
         using var cameraTweenCenterPen = cameraTrack
             ? new Pen(Color.FromArgb(150, cameraColor.R, cameraColor.G, cameraColor.B), 1f)
             : null;
-        var (firstColumn, lastColumnExclusive) = VisibleFramePaintRange(layout, clipBounds);
+        var (firstColumn, lastColumnExclusive) = VisibleFramePaintRange(layout, Rectangle.Inflate(clipBounds, 2, 2));
         var maximumSelectableFrame = MaximumSelectableFrame(layout);
         var exposure = TimelineExposure.None(_firstVisibleFrame + firstColumn);
         var exposureEndFrame = _firstVisibleFrame + firstColumn - 1;
@@ -970,7 +979,7 @@ internal sealed partial class TimelineStrip : Control
             var frame = _firstVisibleFrame + column;
             var x = layout.TrackLeft + column * _frameCellWidth;
             var cellBounds = new Rectangle(x, y, _frameCellWidth, _rowHeight);
-            if (!graphics.IsVisible(cellBounds)) continue;
+            if (!graphics.IsVisible(Rectangle.Inflate(cellBounds, 2, 2))) continue;
             var inTimelineRange = frame <= EndFrame;
             var inSelectableRange = frame <= maximumSelectableFrame;
             if (inSelectableRange)

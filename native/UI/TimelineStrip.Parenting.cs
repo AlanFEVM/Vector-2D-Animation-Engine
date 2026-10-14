@@ -13,6 +13,7 @@ internal sealed partial class TimelineStrip
     private const int MotionParentToolbarWidth = AddLayerButtonWidth;
     private bool _motionParentingAvailable;
     private bool _motionParentingVisible;
+    private bool _motionParentToggleHovered;
     private string? _motionParentDragTrackId;
     private Point _motionParentPointer;
     private string? _motionParentHoverTrackId;
@@ -74,9 +75,14 @@ internal sealed partial class TimelineStrip
         if (!MotionParentingAvailable) return;
         var toggle = MotionParentToggleBounds(layout);
         using var panel = new SolidBrush(Theme.Top);
-        _headerIconCache.Draw(graphics, SvgIconKind.LayerParenting, toggle,
-            Theme.ReadableUiColor(Theme.Panel, Enabled && MotionParentingVisible ? Theme.Accent : Theme.Muted));
-        if (Focused) ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(toggle, -2, -2), Theme.Text, Theme.Panel);
+        var hovered = _motionParentToggleHovered;
+        var surface = DrawToolbarCapsule(graphics, toggle, Enabled && MotionParentingVisible, hovered);
+        var iconSize = Math.Min(ScaleTimelineMetric(20), Math.Min(toggle.Width, toggle.Height));
+        var iconBounds = new Rectangle(toggle.Left + (toggle.Width - iconSize) / 2,
+            toggle.Top + (toggle.Height - iconSize) / 2, iconSize, iconSize);
+        _headerIconCache.Draw(graphics, SvgIconKind.LinearLayerParenting, iconBounds,
+            SystemInformation.HighContrast ? MotionParentingVisible ? SystemColors.HighlightText : SystemColors.ControlText
+                : Theme.ReadableText(surface, Enabled && (MotionParentingVisible || hovered) ? Theme.Text : Theme.Muted));
         if (MotionParentingColumnWidth == 0) return;
         var bounds = MotionParentColumnBounds(layout);
         var state = graphics.Save();
@@ -205,9 +211,28 @@ internal sealed partial class TimelineStrip
         return true;
     }
 
+    private void ClearMotionParentHover()
+    {
+        if (!_motionParentToggleHovered && _motionParentHoverTrackId is null) return;
+        _motionParentToggleHovered = false;
+        _motionParentHoverTrackId = null;
+        Invalidate();
+    }
+
     private bool HandleMotionParentingMouseMove(Point point)
     {
         var layout = CreateLayout();
+        var toggleHovered = MotionParentToggleBounds(layout).Contains(point);
+        if (_motionParentToggleHovered != toggleHovered)
+        {
+            _motionParentToggleHovered = toggleHovered;
+            Invalidate(MotionParentToggleBounds(layout));
+        }
+        if (toggleHovered && _hoveredHeaderCommand != HeaderCommand.None)
+        {
+            _hoveredHeaderCommand = HeaderCommand.None;
+            Invalidate(new Rectangle(0, 0, Width, ToolbarHeaderHeight));
+        }
         if (_motionParentDragTrackId is not null)
         {
             if (!Enabled || MotionParentingColumnWidth == 0 || TrackIndexForId(_motionParentDragTrackId) < 0)

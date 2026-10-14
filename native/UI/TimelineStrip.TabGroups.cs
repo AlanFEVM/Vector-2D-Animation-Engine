@@ -87,14 +87,14 @@ internal sealed partial class TimelineStrip
         Theme.StyleToolbarButton(_tabGroupOrderButton);
         _tabGroupOrderButton.AccessibleName = UiLocalization.T("Timeline tab group actions");
         _layerControlToolTip.SetToolTip(_tabGroupOrderButton, UiLocalization.T("Timeline tab group actions"));
-        _tabGroupOrderButton.Click += (_, _) => ShowTabGroupSettingsMenu();
+        _tabGroupOrderButton.Click += (_, _) => EditTimelineTabGroupOrder();
         Controls.Add(_tabGroupOrderButton);
         _tabGroupOverflowButton.Width = ScaleTimelineMetric(30);
         _tabGroupOverflowButton.Height = ScaleTimelineMetric(24);
         _layerControlToolTip.SetToolTip(_tabGroupAddButton, UiLocalization.T("Create timeline tab group"));
         _layerControlToolTip.SetToolTip(_tabGroupOverflowButton, UiLocalization.T("More timeline tab groups"));
         _tabGroupAddButton.Click += (_, _) => CreateTimelineTabGroup();
-        _tabGroupOverflowButton.Click += (_, _) => ShowTabGroupOverflowMenu();
+        _tabGroupOverflowButton.Click += (_, _) => DropDownToggle.Toggle(_tabGroupOverflowMenu, ShowTabGroupOverflowMenu);
         _tabGroupContextMenu.AccessibleName = "Timeline tab group actions";
         _tabGroupOverflowMenu.AccessibleName = "Timeline tab groups";
         _layerContextMenu.Items.Add(_moveLayerToTabGroupMenuItem);
@@ -360,7 +360,7 @@ internal sealed partial class TimelineStrip
                 textColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
             if (Focused && ShowFocusCues && string.Equals(_focusedTabGroupId, tab.Id, StringComparison.Ordinal))
-                ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(tab.Bounds, -ScaleTimelineMetric(3), -ScaleTimelineMetric(3)), textColor, fill);
+                Theme.DrawKeyboardFocus(graphics, Rectangle.Inflate(tab.Bounds, -ScaleTimelineMetric(3), -ScaleTimelineMetric(3)), textColor, fill);
         }
 
         if (_draggingTabGroup)
@@ -609,7 +609,7 @@ internal sealed partial class TimelineStrip
         if (string.IsNullOrWhiteSpace(item.Id)) return;
 
         var builtIn = item.BuiltIn;
-        var rename = new ToolStripMenuItem(UiLocalization.T("Rename tab group..."))
+        var rename = new ToolStripMenuItem(UiLocalization.T("Rename tab group"))
         {
             Enabled = !builtIn,
             AccessibleName = "Rename timeline tab group"
@@ -623,60 +623,16 @@ internal sealed partial class TimelineStrip
         delete.Click += (_, _) => DeleteTimelineTabGroup(id);
         _tabGroupContextMenu.Items.Add(rename);
         _tabGroupContextMenu.Items.Add(delete);
-        _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(UiLocalization.T("Layer group order..."), null, (_, _) => EditTimelineTabGroupOrder()));
+        _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(UiLocalization.T("Layer group order"), null, (_, _) => EditTimelineTabGroupOrder()));
         AddTabGroupColorCommands(_tabGroupContextMenu.Items, id);
         _tabGroupContextMenu.Show(this, point);
-    }
-
-    private void ShowTabGroupSettingsMenu()
-    {
-        if (_shotFilterActive || _timeline is null) return;
-        ClearTabGroupMenuItems(_tabGroupContextMenu.Items);
-        _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(
-            UiLocalization.T("Layer group order..."), null, (_, _) => EditTimelineTabGroupOrder()));
-        _tabGroupContextMenu.Items.Add(new ToolStripSeparator());
-        var activeGroup = TabGroupItems().FirstOrDefault(item => item.Id == _timeline.ActiveTabGroupId);
-        if (activeGroup.Id != AnimationTimeline.AllTabGroupId && !string.IsNullOrEmpty(activeGroup.Id))
-        {
-            AddTabGroupColorCommands(_tabGroupContextMenu.Items, activeGroup.Id);
-            _tabGroupContextMenu.Items.Add(new ToolStripSeparator());
-            _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(
-                UiLocalization.T("Rename tab group..."), null, (_, _) => RenameTimelineTabGroup(activeGroup.Id)) { Enabled = !activeGroup.BuiltIn });
-            _tabGroupContextMenu.Items.Add(new ToolStripMenuItem(
-                UiLocalization.T("Delete tab group"), null, (_, _) => DeleteTimelineTabGroup(activeGroup.Id)) { Enabled = !activeGroup.BuiltIn });
-            _tabGroupContextMenu.Show(this, new Point(_tabGroupOrderButton.Left, _tabGroupOrderButton.Bottom));
-            return;
-        }
-        foreach (var group in TabGroupItems().Where(item => item.Id != AnimationTimeline.AllTabGroupId))
-        {
-            var options = new ToolStripMenuItem(group.Name)
-            {
-                Checked = group.Id == _timeline.ActiveTabGroupId
-            };
-            FitTabGroupMenuText(options);
-            SetTabGroupMenuSwatch(options, group.Id);
-            AddTabGroupColorCommands(options.DropDownItems, group.Id);
-            options.DropDownItems.Add(new ToolStripSeparator());
-            options.DropDownItems.Add(new ToolStripMenuItem(
-                UiLocalization.T("Rename tab group..."), null, (_, _) => RenameTimelineTabGroup(group.Id))
-            {
-                Enabled = !group.BuiltIn
-            });
-            options.DropDownItems.Add(new ToolStripMenuItem(
-                UiLocalization.T("Delete tab group"), null, (_, _) => DeleteTimelineTabGroup(group.Id))
-            {
-                Enabled = !group.BuiltIn
-            });
-            _tabGroupContextMenu.Items.Add(options);
-        }
-        _tabGroupContextMenu.Show(this, new Point(_tabGroupOrderButton.Left, _tabGroupOrderButton.Bottom));
     }
 
     private void ShowTabGroupOverflowMenu()
     {
         if (_shotFilterActive) return;
         ClearTabGroupMenuItems(_tabGroupOverflowMenu.Items);
-        _tabGroupOverflowMenu.Items.Add(new ToolStripMenuItem(UiLocalization.T("Layer group order..."), null, (_, _) => EditTimelineTabGroupOrder()));
+        _tabGroupOverflowMenu.Items.Add(new ToolStripMenuItem(UiLocalization.T("Layer group order"), null, (_, _) => EditTimelineTabGroupOrder()));
         _tabGroupOverflowMenu.Items.Add(new ToolStripSeparator());
         foreach (var item in TabGroupItems())
         {
@@ -706,7 +662,7 @@ internal sealed partial class TimelineStrip
                 _tabGroupOverflowMenu.Items.Add(options);
                 if (item.BuiltIn) continue;
                 var rename = new ToolStripMenuItem(
-                    string.Format(UiLocalization.T("Rename '{0}'..."), item.Name))
+                    string.Format(UiLocalization.T("Rename '{0}'"), item.Name))
                 {
                     AccessibleName = $"Rename {item.Name} timeline tab group"
                 };
@@ -756,7 +712,7 @@ internal sealed partial class TimelineStrip
     private void AddTabGroupColorCommands(ToolStripItemCollection items, string id)
     {
         if (id == AnimationTimeline.AllTabGroupId) return;
-        var choose = new ToolStripMenuItem(UiLocalization.T("Tab group color..."));
+        var choose = new ToolStripMenuItem(UiLocalization.T("Tab group color"));
         SetTabGroupMenuSwatch(choose, id);
         choose.Click += (_, _) => EditTabGroupColor(id);
         var reset = new ToolStripMenuItem(UiLocalization.T("Reset tab group color"))
@@ -829,9 +785,24 @@ internal sealed partial class TimelineStrip
         if (_shotFilterActive || _timeline is null) return;
         var names = Enumerable.Range(0, TrackCount).ToDictionary(
             index => _timeline.Tracks[index].TargetId, index => GetTrackName(index), StringComparer.Ordinal);
-        using var dialog = new TimelineTabGroupOrderDialog(_timeline, names);
+        using var dialog = new TimelineTabGroupOrderDialog(_timeline, names, initialName =>
+            TabGroupNameDialog.TryAsk(DialogOwner, UiLocalization.T("Rename Timeline Tab Group"),
+                UiLocalization.T("Group name"), initialName, out var name) ? name : null);
         if (dialog.ShowDialog(DialogOwner) != DialogResult.OK) return;
-        PerformTabGroupEdit(() => _timeline.SetTabGroupOrder(dialog.OrderedIds));
+        PerformTabGroupEdit(() =>
+        {
+            var changed = false;
+            var groups = dialog.Groups;
+            foreach (var old in _timeline.TabGroups.ToArray())
+                if (!groups.Any(group => group.Id == old.Id)) changed |= _timeline.RemoveTabGroup(old.Id);
+            foreach (var group in groups)
+            {
+                if (!IsBuiltInTabGroup(group.Id)) changed |= _timeline.RenameTabGroup(group.Id, group.Name);
+                changed |= _timeline.SetTabGroupColor(group.Id, group.ColorArgb);
+            }
+            changed |= _timeline.SetTabGroupOrder(dialog.OrderedIds);
+            return changed;
+        });
     }
 
     private void RenameTimelineTabGroup(string id)
@@ -1076,11 +1047,11 @@ internal sealed partial class TimelineStrip
 
     private sealed class TabGroupNameDialog : ModernDialogForm
     {
-        private readonly TextBox _input = new();
+        private readonly ModernTextInput _input = new() { ShowFocusIndicator = false };
         private string _value = "";
 
         private TabGroupNameDialog(string title, string label, string initialValue)
-            : base(title, new Size(440, 224))
+            : base(title, NameDialogSize)
         {
             DialogContent.Controls.Add(new Label
             {
@@ -1093,7 +1064,7 @@ internal sealed partial class TimelineStrip
                 TextAlign = ContentAlignment.MiddleLeft
             });
             _input.Dock = DockStyle.Top;
-            _input.Height = 30;
+            _input.Height = _input.PreferredFieldHeight;
             _input.AccessibleName = "Timeline tab group name";
             Theme.StyleTextBox(_input);
             _input.Text = initialValue;

@@ -395,6 +395,7 @@ internal sealed partial class MainForm
                     layerCount = drawingObject.Scene.LayerCount,
                     active = index == _activeDrawingObjectIndex
                 })
+                .Where(drawingObject => drawingObject.kind != "OpenCanvas")
                 .ToArray()
         };
     }
@@ -412,7 +413,8 @@ internal sealed partial class MainForm
     private object CodexDocumentDuplicateSymbol(JsonElement arguments)
     {
         var symbolId = CodexDocumentRequiredString(arguments, "symbolId");
-        if (_drawingObjects.All(item => !string.Equals(item.Id, symbolId, StringComparison.Ordinal)))
+        if (_drawingObjects.All(item => !string.Equals(item.Id, symbolId, StringComparison.Ordinal)
+                || item.IsOpenCanvas))
         {
             throw new ArgumentException("The symbol was not found.");
         }
@@ -431,7 +433,8 @@ internal sealed partial class MainForm
         var name = CodexDocumentNormalizeName(
             arguments.GetProperty("name").GetString(),
             "name");
-        var symbol = _drawingObjects.FirstOrDefault(item => string.Equals(item.Id, symbolId, StringComparison.Ordinal))
+        var symbol = _drawingObjects.FirstOrDefault(item => !item.IsOpenCanvas
+            && string.Equals(item.Id, symbolId, StringComparison.Ordinal))
             ?? throw new ArgumentException("The symbol was not found.");
         if (string.Equals(symbol.Name, name, StringComparison.Ordinal))
         {
@@ -608,7 +611,8 @@ internal sealed partial class MainForm
     {
         var scene = CodexDocumentRequireSceneEditorContext();
         var symbolId = CodexDocumentRequiredString(arguments, "symbolId");
-        if (_drawingObjects.All(item => !string.Equals(item.Id, symbolId, StringComparison.Ordinal)))
+        if (_drawingObjects.All(item => !string.Equals(item.Id, symbolId, StringComparison.Ordinal)
+                || item.IsOpenCanvas))
         {
             throw new ArgumentException("The symbol was not found.");
         }
@@ -776,7 +780,8 @@ internal sealed partial class MainForm
     {
         var index = _drawingObjects
             .Select((drawingObject, index) => (drawingObject, index))
-            .FirstOrDefault(item => string.Equals(item.drawingObject.Id, drawingObjectId, StringComparison.Ordinal),
+            .FirstOrDefault(item => !item.drawingObject.IsOpenCanvas
+                && string.Equals(item.drawingObject.Id, drawingObjectId, StringComparison.Ordinal),
                 (null!, -1))
             .index;
         if (index < 0) throw new ArgumentException("The symbol was not found.");

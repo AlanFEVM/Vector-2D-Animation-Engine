@@ -12,6 +12,8 @@ internal enum DialogActionStyle
 
 internal class ModernDialogForm : Form
 {
+    protected static Size ManagementDialogSize => new(1000, 640);
+    protected static Size NameDialogSize => new(440, 224);
     private const int OpeningMotionDurationMilliseconds = 140;
     private readonly System.Windows.Forms.Timer _motionTimer = new() { Interval = 15 };
     private readonly Stopwatch _motionWatch = new();

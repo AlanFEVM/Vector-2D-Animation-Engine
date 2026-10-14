@@ -331,6 +331,6 @@ internal sealed class ImageCropDialog : ModernDialogForm
         g.DrawLine(handle, _frame.Right, _frame.Y + _frame.Height / 2 - length / 2, _frame.Right, _frame.Y + _frame.Height / 2 + length / 2);
         g.DrawLine(handle, _frame.X + _frame.Width / 2 - length / 2, _frame.Top, _frame.X + _frame.Width / 2 + length / 2, _frame.Top);
         g.DrawLine(handle, _frame.X + _frame.Width / 2 - length / 2, _frame.Bottom, _frame.X + _frame.Width / 2 + length / 2, _frame.Bottom);
-        if (_canvas.Focused) ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(_canvas.ClientRectangle, -3, -3));
+        if (_canvas.Focused) Theme.DrawKeyboardFocus(g, Rectangle.Inflate(_canvas.ClientRectangle, -3, -3));
     }
 }

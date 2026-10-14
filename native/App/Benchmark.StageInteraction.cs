@@ -8047,11 +8047,20 @@ internal static partial class Benchmark
                     "A rapid boundary press selected connected strokes while curvature editing was armed.");
             }
             mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, drag.X, drag.Y, 0)]);
+            AssertTimeline(scene.TryGetPathBezierWorldContours(rectangle, out var firstDragContours)
+                && firstDragContours[0][partIndex].OutgoingControl != originalContours[0][partIndex].OutgoingControl,
+                "The first boundary drag sample did not update the curve.");
+            mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, press.X, press.Y, 0)]);
+            AssertTimeline(scene.TryGetPathBezierWorldContours(rectangle, out var returnedContours)
+                && returnedContours[0][partIndex].OutgoingControl == originalContours[0][partIndex].OutgoingControl
+                && returnedContours[0][(partIndex + 1) % anchors.Length].IncomingControl
+                    == originalContours[0][(partIndex + 1) % anchors.Length].IncomingControl,
+                "Returning a boundary bend to the press position did not restore its original controls.");
             mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, drag.X + 8, drag.Y + 8, 0)]);
             AssertTimeline(arcField.GetValue(form) is not null, "Boundary bend became a selection move.");
             if (clicks == 2)
                 doubleClick.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, drag.X + 8, drag.Y + 8, 0)]);
-            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, drag.X + 8, drag.Y + 8, 0)]);
+            mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, drag.X + 16, drag.Y + 16, 0)]);
             AssertTimeline(scene.ObjectCount == 1,
                 $"Consecutive boundary bend {partIndex} detached the rectangle: objects={scene.ObjectCount}.");
             AssertTimeline(scene.TryGetPathBezierWorldContours(rectangle, out var contours)
@@ -8059,15 +8068,74 @@ internal static partial class Benchmark
                 "Consecutive boundary bends moved rectangle anchors.");
             AssertTimeline(contours[0][partIndex].OutgoingControl != originalContours[0][partIndex].OutgoingControl,
                 $"Rectangle edge {partIndex} did not retain its curvature edit.");
+            AssertTimeline(contours[0][partIndex].OutgoingControl != firstDragContours[0][partIndex].OutgoingControl,
+                "Boundary bending ignored the final release displacement.");
             AssertTimeline(arcField.GetValue(form) is null && preSelectField.GetValue(form) is null,
                 "Boundary bend retained pointer state after release.");
         }
-        Console.WriteLine("consecutive_boundary_arc_pointer=ok,rapid_double_click=ok,anchors_unchanged=ok");
+        scene.TryGetPathBezierWorldContours(rectangle, out var beforeDetach);
+        var detachedPart = 1;
+        var detachedNode = beforeDetach[0][detachedPart];
+        var nextDetachedNode = beforeDetach[0][(detachedPart + 1) % anchors.Length];
+        var detachWorld = new PointF(
+            (detachedNode.Anchor.X + 3 * detachedNode.OutgoingControl.X
+                + 3 * nextDetachedNode.IncomingControl.X + nextDetachedNode.Anchor.X) / 8,
+            (detachedNode.Anchor.Y + 3 * detachedNode.OutgoingControl.Y
+                + 3 * nextDetachedNode.IncomingControl.Y + nextDetachedNode.Anchor.Y) / 8);
+        var detachPress = Point.Round(stage.WorldToScreen(detachWorld.X, detachWorld.Y));
+        stage.ClearHoveredLineElement();
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, detachPress.X, detachPress.Y, 0)]);
+        var pendingDetach = RequireField(typeof(MainForm), "_fillEdgeDetachPending");
+        var movingDetach = RequireField(typeof(MainForm), "_fillEdgeDetachMoving");
+        AssertTimeline(pendingDetach.GetValue(form) is not null,
+            "Moving an edge after three bends did not arm independent detachment.");
+        doubleClick.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, detachPress.X, detachPress.Y, 0)]);
+        AssertTimeline(stage.SelectedElements.Count == 1,
+            "A rapid detach press expanded selection to connected boundaries.");
+        var detachRelease = new Point(detachPress.X + 35, detachPress.Y - 25);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, detachRelease.X, detachRelease.Y, 0)]);
+        mouseUp.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, detachRelease.X, detachRelease.Y, 0)]);
+        AssertTimeline(scene.ObjectCount == 2 && pendingDetach.GetValue(form) is null
+            && movingDetach.GetValue(form) is null && !stage.Capture,
+            "Detaching after three bends retained its pointer session.");
+        scene.TryGetPathBezierWorldContours(rectangle, out var afterDetach);
+        AssertTimeline(beforeDetach[0].SequenceEqual(afterDetach[0]),
+            "Detaching after three bends moved the original fill boundary.");
+        var detachedLine = scene.ObjectCount - 1;
+        scene.TryGetLineEndpoint(detachedLine, true, out var releasedStart);
+        scene.TryGetLineEndpoint(detachedLine, false, out var releasedEnd);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.None, 0, detachRelease.X + 70, detachRelease.Y + 50, 0)]);
+        RequireMethod(typeof(MainForm), "FlushLineDragPreview").Invoke(form, null);
+        AssertTimeline(scene.TryGetLineEndpoint(detachedLine, true, out var hoveredStart)
+            && scene.TryGetLineEndpoint(detachedLine, false, out var hoveredEnd)
+            && releasedStart == hoveredStart && releasedEnd == hoveredEnd,
+            "A detached edge kept following the mouse after release.");
+
+        RequireMethod(typeof(MainForm), "ClearSelection").Invoke(form, [false]);
+        var captureNode = afterDetach[0][0];
+        var nextCaptureNode = afterDetach[0][1];
+        var captureWorld = new PointF(
+            (captureNode.Anchor.X + 3 * captureNode.OutgoingControl.X
+                + 3 * nextCaptureNode.IncomingControl.X + nextCaptureNode.Anchor.X) / 8,
+            (captureNode.Anchor.Y + 3 * captureNode.OutgoingControl.Y
+                + 3 * nextCaptureNode.IncomingControl.Y + nextCaptureNode.Anchor.Y) / 8);
+        var capturePress = Point.Round(stage.WorldToScreen(captureWorld.X, captureWorld.Y));
+        mouseDown.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, capturePress.X, capturePress.Y, 0)]);
+        mouseMove.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 0, capturePress.X - 20, capturePress.Y - 15, 0)]);
+        AssertTimeline(arcField.GetValue(form) is not null, "Capture-loss fixture did not begin a boundary bend.");
+        stage.Capture = false;
+        RequireMethod(typeof(MainForm), "FinishLostPointerCapture").Invoke(form, null);
+        scene.TryGetPathBezierWorldContours(rectangle, out var afterCaptureLoss);
+        AssertTimeline(arcField.GetValue(form) is null && preSelectField.GetValue(form) is null
+            && afterDetach[0].SequenceEqual(afterCaptureLoss[0]),
+            "Capture loss left a boundary bend following the pointer or failed to restore the fill.");
+        Console.WriteLine("consecutive_boundary_arc_pointer=ok,rapid_double_click=ok,anchors_unchanged=ok,detach_release=ok,capture_loss=ok");
     }
 
     private static void RunLineEditingPointerRegression()
     {
         RunConsecutiveBoundaryArcPointerRegression();
+        RunLinePointerReleaseRegression();
         using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
         form.CreateControl();
         form.PerformLayout();
@@ -8180,6 +8248,135 @@ internal static partial class Benchmark
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
         Console.WriteLine("line_editing_pointer_regression=ok");
+    }
+
+    private static void RunLinePointerReleaseRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        ((DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!).SnapEnabled = false;
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(1200);
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+        scene.CreateEmpty();
+        var line = scene.AddLineSegment(scene.ActiveLayer, new PointF(-180, 0), new PointF(180, 0),
+            12, Color.Transparent, Color.Black, 6);
+        scene.QuadraticLineEditing[line] = true;
+        scene.CompleteDeferredBuild();
+        var original = scene.CreateSnapshot();
+        var setSelection = RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)]);
+        var down = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var up = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var finish = RequireMethod(typeof(MainForm), "FinishPointerInteraction");
+        var startScreen = RequireField(typeof(MainForm), "_startScreen");
+        var startWorld = RequireField(typeof(MainForm), "_startWorld");
+        var undoStack = RequireField(typeof(MainForm), "_undoStack").GetValue(form)!;
+        var undoCount = RequireProperty(undoStack.GetType(), "Count",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+
+        Point Screen(PointF world) => Point.Round(stage.WorldToScreen(world.X, world.Y));
+        void Pointer(System.Reflection.MethodInfo method, Point screen)
+            => method.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+        void RestoreLine()
+        {
+            finish.Invoke(form, null);
+            scene.RestoreSnapshot(original);
+            setSelection.Invoke(form, [line, false]);
+        }
+
+        setSelection.Invoke(form, [line, false]);
+        var press = Screen(new PointF(-100, 0));
+        var intermediate = new Point(press.X + 20, press.Y + 15);
+        var release = new Point(press.X + 47, press.Y + 31);
+        var undoBefore = (int)undoCount.GetValue(undoStack)!;
+        Pointer(down, press);
+        Pointer(move, intermediate);
+        Pointer(up, release);
+        var pressWorld = stage.ScreenToWorld(press);
+        var releaseWorld = stage.ScreenToWorld(release);
+        AssertTimeline(scene.TryGetLineEndpoint(line, true, out var movedStart)
+            && PointsWithin(movedStart, VectorUnits.Quantize(new PointF(
+                -180 + releaseWorld.X - pressWorld.X, releaseWorld.Y - pressWorld.Y)), 0.01f)
+            && scene.IsLineStraight(line), "Line movement did not commit the release position without a final move event.");
+        AssertTimeline((int)undoCount.GetValue(undoStack)! == undoBefore + 1,
+            "A single line drag created more than one undo entry.");
+
+        RestoreLine();
+        Pointer(down, press);
+        Pointer(move, intermediate);
+        Pointer(move, press);
+        RequireMethod(typeof(MainForm), "FlushLineDragPreview").Invoke(form, null);
+        AssertTimeline(scene.TryGetLineEndpoint(line, true, out var returnedStart)
+            && PointsWithin(returnedStart, new PointF(-180, 0), 0.01f),
+            "Returning the pointer to its press position retained the previous translation.");
+        Pointer(up, press);
+
+        RestoreLine();
+        Pointer(down, press);
+        Pointer(move, intermediate);
+        Pointer(up, press);
+        AssertTimeline(scene.TryGetLineEndpoint(line, true, out returnedStart)
+            && PointsWithin(returnedStart, new PointF(-180, 0), 0.01f),
+            "Releasing at the press position did not restore the original line.");
+
+        RestoreLine();
+        var control = Screen(PointF.Empty);
+        release = new Point(control.X + 13, control.Y - 23);
+        Pointer(down, control);
+        Pointer(up, release);
+        AssertTimeline(scene.TryGetLineQuadraticControl(line, out var finalControl)
+            && PointsWithin(finalControl, VectorUnits.Quantize(stage.ScreenToWorld(release)), 0.01f),
+            "The curve control ignored a release position without a move event.");
+
+        RestoreLine();
+        RequireMethod(typeof(MainForm), "ClearSelection").Invoke(form, [false]);
+        press = Screen(PointF.Empty);
+        release = new Point(press.X + 12, press.Y - 27);
+        pressWorld = stage.ScreenToWorld(press);
+        startScreen.SetValue(form, press);
+        startWorld.SetValue(form, pressWorld);
+        AssertTimeline(RequireMethod(typeof(MainForm), "BeginArcDrag").Invoke(form, [pressWorld, line]) is true,
+            "Release-only arc regression did not start.");
+        var arcSession = RequireField(typeof(MainForm), "_arcDragSession").GetValue(form)!;
+        var parameter = (float)RequireProperty(arcSession.GetType(), "Parameter",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(arcSession)!;
+        var expectedControl = MainForm.ResolveQuadraticArcDragControl(PointF.Empty,
+            pressWorld, stage.ScreenToWorld(release), parameter);
+        undoBefore = (int)undoCount.GetValue(undoStack)!;
+        Pointer(up, release);
+        AssertTimeline(scene.TryGetLineQuadraticControl(line, out finalControl)
+            && PointsWithin(finalControl, expectedControl, 0.01f),
+            "Arc bending ignored the release-only displacement.");
+        AssertTimeline((int)undoCount.GetValue(undoStack)! == undoBefore + 1,
+            "Release-only arc bending did not create exactly one undo entry.");
+
+        RestoreLine();
+        startScreen.SetValue(form, press);
+        startWorld.SetValue(form, pressWorld);
+        AssertTimeline(RequireMethod(typeof(MainForm), "BeginLineCornerDrag").Invoke(form, [line, 0.5f]) is true,
+            "Release-only corner regression did not start.");
+        var cornerSession = RequireField(typeof(MainForm), "_cornerDragSession").GetValue(form)!;
+        var firstLine = (int)RequireProperty(cornerSession.GetType(), "FirstObjectIndex",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(cornerSession)!;
+        var secondLine = (int)RequireProperty(cornerSession.GetType(), "SecondObjectIndex",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(cornerSession)!;
+        Pointer(up, release);
+        var expectedAnchor = VectorUnits.Quantize(stage.ScreenToWorld(release));
+        AssertTimeline(scene.TryGetLineEndpoint(firstLine, false, out var firstAnchor)
+            && scene.TryGetLineEndpoint(secondLine, true, out var secondAnchor)
+            && PointsWithin(firstAnchor, expectedAnchor, 0.01f)
+            && PointsWithin(secondAnchor, expectedAnchor, 0.01f)
+            && scene.IsLineStraight(firstLine) && scene.IsLineStraight(secondLine),
+            "The corner gesture did not place both shared endpoints at the release position.");
+        AssertTimeline(RequireField(typeof(MainForm), "_arcDragSession").GetValue(form) is null
+            && RequireField(typeof(MainForm), "_cornerDragSession").GetValue(form) is null
+            && !stage.Capture, "Line editing retained a session or mouse capture after release.");
+        Console.WriteLine("line_pointer_release_regression=ok");
     }
 
     private static void RunSelectionMoveCursorRegression()

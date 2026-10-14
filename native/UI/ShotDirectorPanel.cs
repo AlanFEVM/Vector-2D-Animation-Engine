@@ -93,7 +93,7 @@ internal sealed class ShotDirectorFramingEventArgs(string shotId, SceneShotSetti
 internal sealed partial class ShotDirectorPanel : UserControl
 {
     internal const int TitleHeight = Theme.InspectorTitleHeight;
-    internal const int ToolbarHeight = 40;
+    internal const int ToolbarHeight = 34;
     internal const int DetailHeight = 250;
     internal const int CardWidth = 208;
     internal const int CardHeight = 112;
@@ -127,30 +127,30 @@ internal sealed partial class ShotDirectorPanel : UserControl
         WrapContents = false,
         BackColor = Theme.Panel,
         Margin = Padding.Empty,
-        Padding = new Padding(6, 3, 6, 0)
+        Padding = new Padding(8, 3, 8, 0)
     };
-    private readonly Button _addShotButton = new() { Text = "New camera", AutoSize = false, Width = 104, Height = 26 };
-    private readonly Button _locateButton = new() { Text = "Locate", AutoSize = false, Width = 68, Height = 26 };
-    private readonly SvgIconButton _moveUpButton = new(SvgIconKind.ChevronUp) { Width = 30, Height = 26 };
-    private readonly SvgIconButton _moveDownButton = new(SvgIconKind.ChevronDown) { Width = 30, Height = 26 };
-    private readonly SvgIconButton _removeButton = new(SvgIconKind.Remove) { Width = 30, Height = 26 };
+    private readonly Button _addShotButton = new() { Text = "New camera", AutoSize = false, Width = 88, Height = 26 };
+    private readonly Button _locateButton = new() { Text = "Locate", AutoSize = false, Width = 56, Height = 26 };
+    private readonly SvgIconButton _moveUpButton = new(SvgIconKind.ChevronUp) { Width = 26, Height = 26 };
+    private readonly SvgIconButton _moveDownButton = new(SvgIconKind.ChevronDown) { Width = 26, Height = 26 };
+    private readonly SvgIconButton _removeButton = new(SvgIconKind.Remove) { Width = 26, Height = 26 };
 
     private readonly ListBox _cameraList = new()
     {
         DrawMode = DrawMode.OwnerDrawFixed,
         IntegralHeight = false,
-        BorderStyle = BorderStyle.FixedSingle,
-        BackColor = Theme.App,
+        BorderStyle = BorderStyle.None,
+        BackColor = Theme.PanelStrong,
         ForeColor = Theme.Text,
-        ItemHeight = 58,
+        ItemHeight = 48,
         HorizontalScrollbar = false,
         SelectionMode = SelectionMode.One
     };
-    private readonly Panel _inspector = new() { BackColor = Theme.Panel, AutoScroll = true };
+    private readonly ThemedScrollPanel _inspector = new() { BackColor = Theme.Panel, ShowScrollBar = false };
     private readonly Label _inspectorTitle = InspectorModuleStyle.CreateTitle("Camera");
     private readonly Label _frameInfo = new() { ForeColor = Theme.Muted, BackColor = Theme.Panel, AutoEllipsis = true };
-    private readonly TextBox _nameEditor = new() { BorderStyle = BorderStyle.FixedSingle };
-    private readonly TextBox _detailEditor = new() { BorderStyle = BorderStyle.FixedSingle };
+    private readonly ModernTextInput _nameEditor = new();
+    private readonly ModernTextInput _detailEditor = new();
     private readonly ComboBox _kindEditor = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _aspectRatioEditor = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _projectionEditor = new() { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -243,7 +243,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         {
             DetachTweenCurveEditor();
             _curveEditor = editor;
-            _inspector.Controls.Add(editor);
+            _inspector.Content.Controls.Add(editor);
         }
 
         editor.Dock = DockStyle.None;
@@ -260,7 +260,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         if (_curveEditor is null || editor is not null && !ReferenceEquals(_curveEditor, editor)) return;
         var detached = _curveEditor;
         _curveEditor = null;
-        _inspector.Controls.Remove(detached);
+        _inspector.Content.Controls.Remove(detached);
         detached.Visible = false;
         detached.Parent = null;
         PerformLayout();
@@ -336,9 +336,9 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Theme.StyleToolbarButton(_moveUpButton);
         Theme.StyleToolbarButton(_moveDownButton);
         Theme.StyleToolbarButton(_removeButton);
-        _addShotButton.Margin = new Padding(6, 0, 0, 0);
-        _locateButton.Margin = new Padding(8, 0, 0, 0);
-        _moveUpButton.Margin = new Padding(8, 0, 0, 0);
+        _addShotButton.Margin = new Padding(0, 0, 0, 0);
+        _locateButton.Margin = new Padding(6, 0, 0, 0);
+        _moveUpButton.Margin = new Padding(6, 0, 0, 0);
         _moveDownButton.Margin = new Padding(2, 0, 0, 0);
         _removeButton.Margin = new Padding(2, 0, 0, 0);
         _toolbar.Controls.Add(_addShotButton);
@@ -387,8 +387,8 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _nameEditor.AccessibleName = "Camera name";
         _detailEditor.AccessibleName = "Camera description";
 
-        _inspector.Controls.Add(_inspectorTitle);
-        _inspector.Controls.Add(_frameInfo);
+        _inspector.Content.Controls.Add(_inspectorTitle);
+        _inspector.Content.Controls.Add(_frameInfo);
         AddEditor(_nameEditor, "Name");
         AddEditor(_detailEditor, "Description");
         AddEditor(_kindEditor, "Type");
@@ -398,7 +398,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         AddAxisEditors("Rotation", [_rotationX, _rotationY, _rotationZ], ["X", "Y", "Z"]);
         AddEditor(_focalLength, "Focal length");
         AddEditor(_orthographicSize, "Ortho size");
-        _inspector.Controls.Add(_resetCameraButton);
+        _inspector.Content.Controls.Add(_resetCameraButton);
 
         _nameEditor.Enter += (_, _) => ShotEditStarted?.Invoke(this, EventArgs.Empty);
         _nameEditor.Leave += (_, _) => CompleteTextEdit();
@@ -441,26 +441,26 @@ internal sealed partial class ShotDirectorPanel : UserControl
         var fieldLabel = CreateInspectorLabel(label);
         fieldLabel.Tag = editor;
         editor.Tag = fieldLabel;
-        _inspector.Controls.Add(fieldLabel);
-        _inspector.Controls.Add(editor);
+        _inspector.Content.Controls.Add(fieldLabel);
+        _inspector.Content.Controls.Add(editor);
     }
 
     private void AddAxisEditors(string label, IReadOnlyList<ModernNumericUpDown> editors, IReadOnlyList<string> axisLabels)
     {
         var rowLabel = CreateInspectorLabel(label);
         rowLabel.Tag = editors.ToArray();
-        _inspector.Controls.Add(rowLabel);
+        _inspector.Content.Controls.Add(rowLabel);
         foreach (var editor in editors)
         {
             editor.Tag = rowLabel;
-            _inspector.Controls.Add(editor);
+            _inspector.Content.Controls.Add(editor);
         }
         for (var index = 0; index < editors.Count; index++)
         {
             var axisLabel = CreateInspectorLabel(axisLabels[index]);
             axisLabel.Tag = editors[index];
             axisLabel.TextAlign = ContentAlignment.MiddleCenter;
-            _inspector.Controls.Add(axisLabel);
+            _inspector.Content.Controls.Add(axisLabel);
         }
     }
 
@@ -690,18 +690,18 @@ internal sealed partial class ShotDirectorPanel : UserControl
         e.DrawBackground();
         if (e.Index < 0 || e.Index >= _cameraList.Items.Count || _cameraList.Items[e.Index] is not ShotDirectorItem shot) return;
         var selected = (e.State & DrawItemState.Selected) != 0;
-        var background = selected ? Theme.AccentSurface : e.Index % 2 == 0 ? Theme.App : Theme.PanelStrong;
+        var background = selected ? Theme.Mix(Theme.PanelStrong, Theme.Accent, 0.16f) : Theme.PanelStrong;
         using var fill = new SolidBrush(background);
         e.Graphics.FillRectangle(fill, e.Bounds);
         var shotColor = Color.FromArgb(shot.ColorArgb);
         using var bar = new SolidBrush(Color.FromArgb(255, shotColor.R, shotColor.G, shotColor.B));
-        e.Graphics.FillRectangle(bar, e.Bounds.Left, e.Bounds.Top, 4, e.Bounds.Height);
+        e.Graphics.FillRectangle(bar, e.Bounds.Left + ScaleMetric(2), e.Bounds.Top + ScaleMetric(7), ScaleMetric(2), Math.Max(1, e.Bounds.Height - ScaleMetric(14)));
         var projection = shot.Framing.Projection == CameraProjection.Perspective ? "Perspective" : "Orthographic";
         var title = string.Format(CultureInfo.CurrentCulture, "{0}.  {1}", e.Index + 1, shot.Name);
-        var meta = string.Format(CultureInfo.CurrentCulture, "{0} · {1} keys · {2} tweens", projection, shot.KeyframeCount, shot.TweenCount);
+        var meta = UiLocalization.T(projection);
         var textColor = Theme.ReadableText(background, Theme.Text);
-        TextRenderer.DrawText(e.Graphics, title, Theme.UiFont(9.5f, FontStyle.Bold), new Rectangle(e.Bounds.Left + 12, e.Bounds.Top + 7, e.Bounds.Width - 18, 20), textColor, TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-        TextRenderer.DrawText(e.Graphics, meta, Font, new Rectangle(e.Bounds.Left + 12, e.Bounds.Top + 29, e.Bounds.Width - 18, 18), Theme.ReadableText(background, Theme.Muted), TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(e.Graphics, title, Theme.UiFont(9f), new Rectangle(e.Bounds.Left + ScaleMetric(12), e.Bounds.Top + ScaleMetric(5), e.Bounds.Width - ScaleMetric(18), ScaleMetric(20)), textColor, TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(e.Graphics, meta, Font, new Rectangle(e.Bounds.Left + ScaleMetric(12), e.Bounds.Top + ScaleMetric(25), e.Bounds.Width - ScaleMetric(18), ScaleMetric(18)), Theme.ReadableText(background, Theme.SecondaryText), TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         if (_state.CurrentFrame >= shot.StartFrame && _state.CurrentFrame <= shot.EndFrame)
         {
             using var marker = new Pen(Theme.Danger, 1.5f);
@@ -712,6 +712,12 @@ internal sealed partial class ShotDirectorPanel : UserControl
     protected override void OnLayout(LayoutEventArgs e)
     {
         base.OnLayout(e);
+        _cameraList.ItemHeight = ScaleMetric(48);
+        _toolbar.Padding = new Padding(ScaleMetric(8), ScaleMetric(3), ScaleMetric(8), 0);
+        _addShotButton.Size = new Size(ScaleMetric(88), ScaleMetric(26));
+        _locateButton.Size = new Size(ScaleMetric(56), ScaleMetric(26));
+        foreach (var button in new[] { _moveUpButton, _moveDownButton, _removeButton })
+            button.Size = new Size(ScaleMetric(26), ScaleMetric(26));
         var titleHeight = ScaleMetric(TitleHeight);
         var toolbarHeight = ScaleMetric(ToolbarHeight);
         _title.SetBounds(ScaleMetric(4), 0, Math.Max(0, Width - ScaleMetric(12)), ScaleMetric(Theme.InspectorTitleHeight));
@@ -731,7 +737,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
                 listTop,
                 Math.Max(0, Width - ScaleMetric(16)),
                 listHeight);
-            var inspectorTop = _cameraList.Bottom + ScaleMetric(16);
+            var inspectorTop = _cameraList.Bottom + ScaleMetric(12);
             _inspector.SetBounds(
                 0,
                 inspectorTop,
@@ -755,7 +761,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
 
         var left = ScaleMetric(InspectorPadding);
         var right = Math.Max(left + 80, _inspector.ClientSize.Width - ScaleMetric(8));
-        var y = ScaleMetric(10);
+        var y = 0;
         _inspectorTitle.SetBounds(ScaleMetric(4), y, Math.Max(0, right - ScaleMetric(4)), ScaleMetric(Theme.InspectorTitleHeight));
         y += ScaleMetric(32);
 
@@ -768,7 +774,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         LayoutAxisRow(y, right, _rotationX, _rotationY, _rotationZ); y += ScaleMetric(AxisLabelHeight + RowHeight + AxisRowGap);
         LayoutSingleEditor(_focalLength, y, right); y += ScaleMetric(RowStep);
         LayoutSingleEditor(_orthographicSize, y, right); y += ScaleMetric(RowStep + 8);
-        _resetCameraButton.SetBounds(left, y, Math.Max(96, right - left), ScaleMetric(26));
+        _resetCameraButton.SetBounds(left, y, Math.Min(right - left, ScaleMetric(112)), ScaleMetric(26));
         y += ScaleMetric(34);
         if (_curveEditor is { Visible: true } curveEditor)
         {
@@ -777,14 +783,15 @@ internal sealed partial class ShotDirectorPanel : UserControl
             y += curveHeight + ScaleMetric(14);
         }
 
-        _inspector.AutoScrollMinSize = new Size(0, y + ScaleMetric(24));
+        _inspector.Content.PerformLayout();
     }
 
     private void LayoutSingleEditor(Control editor, int y, int right)
     {
         if (editor.Tag is not Label fieldLabel) return;
         fieldLabel.SetBounds(ScaleMetric(InspectorPadding), y, ScaleMetric(LabelWidth), ScaleMetric(RowHeight));
-        editor.SetBounds(ScaleMetric(InspectorPadding + LabelWidth + 6), y, Math.Max(80, right - ScaleMetric(InspectorPadding + LabelWidth + 6)), ScaleMetric(RowHeight));
+        var fieldHeight = editor is ModernTextInput input ? Math.Max(ScaleMetric(RowHeight), input.PreferredFieldHeight) : ScaleMetric(RowHeight);
+        editor.SetBounds(ScaleMetric(InspectorPadding + LabelWidth + 6), y, Math.Max(80, right - ScaleMetric(InspectorPadding + LabelWidth + 6)), fieldHeight);
     }
 
     private void LayoutAxisRow(int y, int right, params ModernNumericUpDown[] editors)
@@ -804,7 +811,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         {
             var x = start + index * (width + gap);
             editors[index].SetBounds(x, editorY, width, ScaleMetric(RowHeight));
-            var axisLabel = _inspector.Controls.Cast<Control>()
+            var axisLabel = _inspector.Content.Controls.Cast<Control>()
                 .OfType<Label>()
                 .FirstOrDefault(label => ReferenceEquals(label.Tag, editors[index]));
             axisLabel?.SetBounds(x, y, width, axisLabelHeight);

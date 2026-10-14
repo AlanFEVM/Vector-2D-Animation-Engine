@@ -20,6 +20,8 @@ internal sealed class NumericInteractionEventArgs : EventArgs
 
 internal sealed class ModernNumericUpDown : UserControl
 {
+    public bool UseSecondaryText { get; set; }
+
     private const int LogicalDeadZonePixels = 4;
     private const int LogicalPixelsPerIncrement = 4;
     private const int LogicalStepperWidth = 18;
@@ -774,7 +776,7 @@ internal sealed class ModernNumericUpDown : UserControl
         if (BackColor != background) BackColor = background;
         var foreground = SystemInformation.HighContrast
             ? Enabled ? SystemColors.WindowText : SystemColors.GrayText
-            : Theme.ReadableText(background, Enabled ? Theme.Text : Theme.DisabledText);
+            : Theme.ReadableText(background, Enabled ? UseSecondaryText ? Theme.SecondaryText : Theme.Text : Theme.DisabledText);
         if (ForeColor != foreground) ForeColor = foreground;
         if (_editor.BackColor != background) _editor.BackColor = background;
         if (_editor.ForeColor != foreground) _editor.ForeColor = foreground;

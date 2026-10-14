@@ -319,6 +319,7 @@ internal static class HotReloadModuleResolver
             or nameof(CodexBridgeProtocol)
             or nameof(ShortcutProfileEditorPanel)
             or nameof(UiLocalization)
+            or nameof(DrawingScopeButton)
             or nameof(ModernTextInput)
             or nameof(Theme)
             or nameof(ApplicationColorTheme)

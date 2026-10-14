@@ -30,8 +30,8 @@ internal sealed class AnimatedToolTip : Control
 
         _message = UiLocalization.T(message);
         using var g = CreateGraphics();
-        var textSize = TextRenderer.MeasureText(g, _message, Font, new Size(320, 32), TextFormatFlags.NoPadding);
-        Size = new Size(Math.Max(92, textSize.Width + 24), 34);
+        var textSize = TextRenderer.MeasureText(g, _message, Font, Size.Empty, TextFormatFlags.NoPadding);
+        Size = new Size(Math.Max(92, textSize.Width + 28), 34);
         var screen = anchor.PointToScreen(new Point(anchor.Width + 12, (anchor.Height - Height) / 2));
         var location = form.PointToClient(screen);
         if (location.X + Width > form.ClientSize.Width - 8)
@@ -70,7 +70,7 @@ internal sealed class AnimatedToolTip : Control
         _message = message;
         var textSize = TextRenderer.MeasureText(message, Font, new Size(maxWidth - 24, 0),
             TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
-        Size = new Size(Math.Min(maxWidth, Math.Max(92, textSize.Width + 24)), textSize.Height + 20);
+        Size = new Size(Math.Min(maxWidth, Math.Max(92, textSize.Width + 28)), textSize.Height + 20);
         var location = form.PointToClient(anchor.PointToScreen(
             new Point(point.X + (int)(20 * scale), point.Y + (int)(24 * scale))));
         var viewport = form.RectangleToClient(anchor.RectangleToScreen(anchor.ClientRectangle));
@@ -98,7 +98,7 @@ internal sealed class AnimatedToolTip : Control
         var textFont = Theme.UiFont(8.5f, FontStyle.Bold);
         var textSize = TextRenderer.MeasureText(message, textFont, Size.Empty, TextFormatFlags.NoPadding);
         Font = textFont;
-        Size = new Size(textSize.Width + (int)(12 * scale), Math.Max((int)(22 * scale), textSize.Height + (int)(6 * scale)));
+        Size = new Size(textSize.Width + (int)(12 * scale) + 6, Math.Max((int)(22 * scale), textSize.Height + (int)(6 * scale)));
 
         var location = form.PointToClient(anchor.PointToScreen(
             new Point(point.X + (int)(12 * scale), point.Y + (int)(12 * scale))));
@@ -118,6 +118,15 @@ internal sealed class AnimatedToolTip : Control
         if (_progress < 1f && !_timer.Enabled) _timer.Start();
     }
 
+    protected override void OnResize(EventArgs eventargs)
+    {
+        base.OnResize(eventargs);
+        // Clip the control to the rounded shape so the square corners of the
+        // underlying control never leak out around the painted rounded fill.
+        Region?.Dispose();
+        Region = new Region(RoundedRect(new RectangleF(0, 0, Width, Height), _compact ? 3 : 7));
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         if (_progress <= 0.01f || string.IsNullOrWhiteSpace(_message)) return;
@@ -127,25 +136,19 @@ internal sealed class AnimatedToolTip : Control
         var alpha = (int)Math.Clamp(235 * EaseOut(_progress), 0, 235);
         var parentBackground = Theme.EffectiveBackground(this);
         var tooltipBackground = Theme.Mix(parentBackground, Theme.PanelStrong, alpha / 255f);
-        var borderAlpha = (int)Math.Clamp(220 * _progress, 0, 220);
         var textAlpha = (int)Math.Clamp(255 * _progress, 0, 255);
         using var bg = new SolidBrush(Color.FromArgb(alpha, Theme.PanelStrong));
-        using var border = new Pen(
-            Color.FromArgb(borderAlpha, Theme.ReadableUiColor(tooltipBackground, Theme.Accent)),
-            1);
-        using var text = new SolidBrush(
-            Color.FromArgb(textAlpha, Theme.ReadableText(tooltipBackground, Theme.Text)));
-        var rect = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
-        using var path = RoundedRect(rect, _compact ? 3 : 7);
+        using var path = RoundedRect(new RectangleF(0, 0, Width, Height), _compact ? 3 : 7);
         g.FillPath(bg, path);
-        g.DrawPath(border, path);
-        using var format = new StringFormat
-        {
-            LineAlignment = StringAlignment.Center,
-            Alignment = StringAlignment.Near
-        };
+        // TextRenderer matches the MeasureText sizing calls exactly; DrawString
+        // renders CJK text wider and wraps short labels like "文本工具".
         var padding = _compact ? 6 : 12;
-        g.DrawString(_message, Font, text, new RectangleF(padding, 0, Width - padding * 2, Height), format);
+        var textRect = new Rectangle(padding, 0, Math.Max(1, Width - padding * 2), Height);
+        TextRenderer.DrawText(
+            g, _message, Font, textRect,
+            Color.FromArgb(textAlpha, Theme.ReadableText(tooltipBackground, Theme.Text)),
+            TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix
+            | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
     }
 
     protected override void Dispose(bool disposing)

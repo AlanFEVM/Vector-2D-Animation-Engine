@@ -218,8 +218,9 @@ internal sealed partial class MainForm : Form
         Minimum = 1,
         Maximum = 120,
         Value = 30,
-        DecimalPlaces = 3,
-        Increment = 0.001m,
+        DecimalPlaces = 1,
+        Increment = 0.1m,
+        UseSecondaryText = true,
         WheelAdjustsHoveredDigit = true,
         Suffix = "fps",
         Width = 88,
@@ -282,9 +283,9 @@ internal sealed partial class MainForm : Form
     private readonly ToolStripSeparator _lineActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _mergeAndSimplifyLinesMenuItem = new("Merge and Simplify Lines");
     private readonly ToolStripSeparator _symbolExportMenuSeparator = new();
-    private readonly ToolStripMenuItem _exportSymbolSvgMenuItem = new("Export Symbol as SVG...");
-    private readonly ToolStripMenuItem _exportSymbolFileMenuItem = new("Export Symbol File...");
-    private readonly ToolStripMenuItem _importSymbolFileMenuItem = new("Import Symbol File...");
+    private readonly ToolStripMenuItem _exportSymbolSvgMenuItem = new("Export Symbol as SVG");
+    private readonly ToolStripMenuItem _exportSymbolFileMenuItem = new("Export Symbol File");
+    private readonly ToolStripMenuItem _importSymbolFileMenuItem = new("Import Symbol File");
     private readonly Panel _inspectorHost = new();
     private readonly LayerBlendModePanel _layerBlendModePanel = new();
     private readonly ThemedScrollPanel _basicInspectorPage = new();
@@ -1107,7 +1108,8 @@ internal sealed partial class MainForm : Form
         Theme.StyleToolbarButton(menuButton);
         menuButton.MouseEnter += (_, _) => _toolTip.ShowFor(menuButton, "Main menu");
         menuButton.MouseLeave += (_, _) => _toolTip.HideTip();
-        menuButton.Click += (_, _) => _mainMenu.Show(menuButton, new Point(0, menuButton.Height + 4));
+        menuButton.Click += (_, _) => DropDownToggle.Toggle(_mainMenu,
+            () => _mainMenu.Show(menuButton, new Point(0, menuButton.Height + 4)));
         top.Controls.Add(menuButton);
         BuildMainMenu();
         var mark = new Label { Text = "V2", Left = 52, Top = 10, Width = 30, Height = 30, ForeColor = Theme.Accent, BackColor = Theme.Top, Font = Theme.UiFont(10.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
@@ -1184,9 +1186,11 @@ internal sealed partial class MainForm : Form
         var playbackFpsLabel = new Label
         {
             Text = "FPS",
-            Width = 34,
+            AutoSize = true,
+            MinimumSize = new Size(40, Theme.ControlHeightCompact),
+            Width = 40,
             Height = Theme.ControlHeightCompact,
-            ForeColor = Theme.Muted,
+            ForeColor = Theme.SecondaryText,
             BackColor = Color.Transparent,
             Font = Theme.UiFont(),
             TextAlign = ContentAlignment.MiddleRight,
@@ -1547,25 +1551,30 @@ internal sealed partial class MainForm : Form
 
     private void BuildMainMenu()
     {
+        _mainMenu.TrailingImages = true;
         var newProject = new ToolStripMenuItem("New Project") { Tag = ShortcutCommandIds.NewProject };
         newProject.Click += (_, _) => CreateNewProjectFromCommand();
-        var openProject = new ToolStripMenuItem("Open Project...") { Tag = ShortcutCommandIds.OpenProject };
+        var openProject = new ToolStripMenuItem("Open Project") { Tag = ShortcutCommandIds.OpenProject };
         openProject.Click += (_, _) => OpenProjectFromDialog();
-        var importFlash = new ToolStripMenuItem("Import Flash Project...");
+        var importFlash = new ToolStripMenuItem("Import Flash Project");
         importFlash.Click += (_, _) => ImportFlashProjectFromDialog();
-        var flashVisualBridge = new ToolStripMenuItem("Create Flash Visual Bridge...");
+        var flashVisualBridge = new ToolStripMenuItem("Create Flash Visual Bridge");
         flashVisualBridge.Click += (_, _) => PrepareFlashVisualBridgeFromDialog();
-        var importSvg = new ToolStripMenuItem("Import SVG...");
+        var importSvg = new ToolStripMenuItem("Import SVG");
         importSvg.Click += (_, _) => ImportSvgFromDialog();
-        var importImage = new ToolStripMenuItem("Import Image...");
+        var importImage = new ToolStripMenuItem("Import Image");
         importImage.Click += (_, _) => ImportImageAsset();
         var saveProject = new ToolStripMenuItem("Save Project") { Tag = ShortcutCommandIds.SaveProject };
         saveProject.Click += (_, _) => SaveProject();
-        var saveProjectAs = new ToolStripMenuItem("Save Project As...") { Tag = ShortcutCommandIds.SaveProjectAs };
+        var saveProjectAs = new ToolStripMenuItem("Save Project As") { Tag = ShortcutCommandIds.SaveProjectAs };
         saveProjectAs.Click += (_, _) => SaveProjectAs();
-        var renameProject = new ToolStripMenuItem("Rename Project...");
+        var renameProject = new ToolStripMenuItem("Rename Project");
         renameProject.Click += (_, _) => BeginProjectTitleEdit();
-        var settings = new ToolStripMenuItem("Settings...");
+        var settings = new ToolStripMenuItem("Settings");
+        var acknowledgements = new ToolStripMenuItem("Acknowledgements");
+        acknowledgements.Click += (_, _) => ModernMessageDialog.Show(this,
+            UiLocalization.T("Special thanks to") + "\n\n聪明尼", UiLocalization.T("Acknowledgements"),
+            MessageBoxButtons.OK, MessageBoxIcon.None);
         settings.Click += (_, _) => ShowSettings();
         var windows = new ToolStripMenuItem("Window");
         var hierarchy = new ToolStripMenuItem("Hierarchy");
@@ -1576,7 +1585,7 @@ internal sealed partial class MainForm : Form
         };
         windows.DropDownItems.Add(hierarchy);
         windows.DropDownOpening += (_, _) => hierarchy.Checked = _hierarchyWindow?.Visible == true;
-        var releaseNotes = new ToolStripMenuItem("Release Notes...");
+        var releaseNotes = new ToolStripMenuItem("Release Notes");
         releaseNotes.Click += (_, _) => ShowReleaseNotes();
         var projectFiles = new ToolStripMenuItem("Project Files") { DropDown = new AnimatedContextMenuStrip() };
         projectFiles.DropDownItems.AddRange(new ToolStripItem[]
@@ -1593,7 +1602,8 @@ internal sealed partial class MainForm : Form
             settings,
             windows,
             new ToolStripSeparator(),
-            releaseNotes
+            releaseNotes,
+            acknowledgements
         });
         _mainMenu.Opening += (_, _) =>
         {
@@ -1739,6 +1749,7 @@ internal sealed partial class MainForm : Form
         DrawingObjectDefinition? drawingObject)
     {
         return drawingObject is not null
+            && !drawingObject.IsOpenCanvas
             && drawingObject.Scene.ObjectCount == 0
             && drawingObject.Instances.Count == 0;
     }
@@ -2485,6 +2496,27 @@ internal sealed partial class MainForm : Form
         };
     }
 
+    // Floating flyout panel: clip to the theme's rounded outline so square
+    // corners never leak, then stroke the same rounded path as the border.
+    private static void PaintRoundedFlyoutBorder(Control control)
+    {
+        control.SizeChanged += (_, _) =>
+        {
+            using var outline = Theme.CreateUiOutline(
+                new RectangleF(0, 0, control.Width, control.Height), control.DeviceDpi);
+            var oldRegion = control.Region;
+            control.Region = new Region(outline);
+            oldRegion?.Dispose();
+        };
+        control.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Theme.Border);
+            Theme.DrawUiRectangle(
+                e.Graphics, pen,
+                new RectangleF(0.5f, 0.5f, control.Width - 1, control.Height - 1));
+        };
+    }
+
     private static void AddField(TableLayoutPanel parent, string label, Control input, int row)
     {
         parent.Controls.Add(FieldLabel(label), 0, row);
@@ -2513,6 +2545,8 @@ internal sealed partial class MainForm : Form
                     AddDrawingObjectTab(_activeDrawingObjectIndex);
                 }
                 var button = _activeDrawingObjectTabButton!;
+                if (button is DrawingScopeButton drawingScopeButton)
+                    drawingScopeButton.CurrentScope = !drawingObject.IsOpenCanvas;
                 if (!Equals(button.Tag, drawingObject.Id))
                 {
                     _toolTip.HideTip();
@@ -2522,7 +2556,8 @@ internal sealed partial class MainForm : Form
                 }
                 if (button.Text != drawingObject.Name) button.Text = drawingObject.Name;
                 button.AccessibleName = drawingObject.Name;
-                var width = ScaleDrawingObjectTabMetric(drawingObject.Name.Length > 10 ? 132 : 108);
+                var width = button is DrawingScopeButton scopeButton
+                    ? scopeButton.PreferredScopeWidth : button.Width;
                 if (button.Width != width) button.Width = width;
                 if (_drawingObjectTabs.Controls.GetChildIndex(button) != 0)
                     _drawingObjectTabs.Controls.SetChildIndex(button, 0);
@@ -2539,10 +2574,9 @@ internal sealed partial class MainForm : Form
     private void AddDrawingObjectTab(int index)
     {
         var drawingObject = _drawingObjects[index];
-        var button = new SegmentedButton
+        var button = new DrawingScopeButton
         {
             Text = drawingObject.Name,
-            Width = ScaleDrawingObjectTabMetric(drawingObject.Name.Length > 10 ? 132 : 108),
             Height = ScaleDrawingObjectTabMetric(28),
             Margin = new Padding(0, 0, ScaleDrawingObjectTabMetric(6), 0),
             Tag = drawingObject.Id,
@@ -2550,16 +2584,9 @@ internal sealed partial class MainForm : Form
             AccessibleName = drawingObject.Name,
             AccessibleRole = AccessibleRole.PageTab
         };
-        Theme.StyleSegmentedButton(button);
-        button.Click += (_, _) =>
-        {
-            for (var currentIndex = 0; currentIndex < _drawingObjects.Count; currentIndex++)
-            {
-                if (!Equals(button.Tag, _drawingObjects[currentIndex].Id)) continue;
-                SelectDrawingObject(currentIndex);
-                break;
-            }
-        };
+        button.Width = button.PreferredScopeWidth;
+        button.CurrentScope = !drawingObject.IsOpenCanvas;
+        button.Click += (_, _) => SwitchDrawingScope(button.CurrentScope);
         button.MouseEnter += (_, _) =>
         {
             var current = _drawingObjects.FirstOrDefault(item => Equals(button.Tag, item.Id));
@@ -2571,7 +2598,7 @@ internal sealed partial class MainForm : Form
         button.MouseMove += (_, e) =>
         {
             var current = _drawingObjects.FirstOrDefault(item => Equals(button.Tag, item.Id));
-            if (e.Button != MouseButtons.Left || current is null || current.Kind == "Scene") return;
+            if (e.Button != MouseButtons.Left || current is null || current.Kind == "Scene" || current.IsOpenCanvas) return;
             if (Math.Abs(e.X - dragStart.X) < SystemInformation.DragSize.Width / 2 && Math.Abs(e.Y - dragStart.Y) < SystemInformation.DragSize.Height / 2) return;
             var dragData = new DataObject();
             dragData.SetData(typeof(DrawingObjectDragData), new DrawingObjectDragData(_project.Id, current.Id));
@@ -2820,8 +2847,14 @@ internal sealed partial class MainForm : Form
 
     private void AddDrawingObject()
     {
+        if (IsOpenDrawingScope)
+        {
+            AddOpenCanvasSelectionToSymbol();
+            return;
+        }
         if (!CommitTextEdit()) return;
-        _project.AddDrawingObject();
+        if (!TryAskNewSymbolName(out var name)) return;
+        _project.AddDrawingObject(name);
         SelectDrawingObject(_drawingObjects.Count - 1);
     }
 
@@ -2959,7 +2992,7 @@ internal sealed partial class MainForm : Form
         }
 
         if (index < 0) return;
-        if (_drawingObjects.Count <= 1)
+        if (_drawingObjects.Count(item => !item.IsOpenCanvas) <= 1)
         {
             ModernMessageDialog.Show(
                 this,
@@ -3340,6 +3373,8 @@ internal sealed partial class MainForm : Form
     {
         if (index < 0 || index >= _drawingObjects.Count) return;
         if (!CommitTextEdit()) return;
+        if (!_drawingObjects[index].IsOpenCanvas)
+            _currentScopeDrawingObjectId = _drawingObjects[index].Id;
         _activeDrawingObjectIndex = index;
         if (IsSceneWorkspaceSelected) BindSceneEditStage(resetView: false);
         else BindActiveDrawingObjectScene(resetView: true);
@@ -3360,6 +3395,8 @@ internal sealed partial class MainForm : Form
         }
 
         if (index < 0) return false;
+        if (!_drawingObjects[index].IsOpenCanvas)
+            _currentScopeDrawingObjectId = _drawingObjects[index].Id;
 
         StopPlayback();
         FinishPointerInteractionForFrameChange();
@@ -3442,7 +3479,7 @@ internal sealed partial class MainForm : Form
             Visible = false
         };
         group.Flyout = flyout;
-        PaintFullBorder(flyout);
+        PaintRoundedFlyoutBorder(flyout);
         flyout.MouseEnter += (_, _) => ShowToolPairFlyout(group);
         flyout.MouseLeave += (_, _) => ScheduleToolPairFlyoutHideAfter(group, 350);
         overlayParent.Controls.Add(flyout);
@@ -3575,7 +3612,7 @@ internal sealed partial class MainForm : Form
             Padding = new Padding(4),
             Visible = false
         };
-        PaintFullBorder(_shapeToolFlyout);
+        PaintRoundedFlyoutBorder(_shapeToolFlyout);
         _shapeToolFlyout.MouseEnter += (_, _) => ShowShapeToolFlyout();
         _shapeToolFlyout.MouseLeave += (_, _) => StartShapeFlyoutVisibilityCheck();
         overlayParent.Controls.Add(_shapeToolFlyout);
@@ -3719,7 +3756,7 @@ internal sealed partial class MainForm : Form
             Padding = new Padding(4),
             Visible = false
         };
-        PaintFullBorder(_lineToolFlyout);
+        PaintRoundedFlyoutBorder(_lineToolFlyout);
         _lineToolFlyout.MouseEnter += (_, _) => ShowLineToolFlyout();
         _lineToolFlyout.MouseLeave += (_, _) => ScheduleLineToolFlyoutHideAfter(350);
         overlayParent.Controls.Add(_lineToolFlyout);
@@ -3783,7 +3820,7 @@ internal sealed partial class MainForm : Form
             Padding = new Padding(4),
             Visible = false
         };
-        PaintFullBorder(_brushToolFlyout);
+        PaintRoundedFlyoutBorder(_brushToolFlyout);
         _brushToolFlyout.MouseEnter += (_, _) => ShowBrushToolFlyout();
         _brushToolFlyout.MouseLeave += (_, _) => ScheduleBrushToolFlyoutHideAfter(350);
         overlayParent.Controls.Add(_brushToolFlyout);

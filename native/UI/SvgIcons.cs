@@ -78,7 +78,22 @@ internal enum SvgIconKind
     LayerParenting,
     TimelineTitle,
     Settings,
-    AutoKeyframe
+    AutoKeyframe,
+    ImportImage,
+    AssetFolder,
+    AssetFolderPlus,
+    AssetOpen,
+    AssetAdd,
+    AssetTags,
+    AssetSymbol,
+    AssetImage,
+    AssetSvg,
+    SoloLayerVisible,
+    AllLayersVisible,
+    LinearAutoKeyframe,
+    LinearLayerParenting,
+    TimelineFolder,
+    Acknowledgements
 }
 
 internal static class SvgIcons
@@ -196,22 +211,22 @@ internal static class SvgIcons
                     g.FillPath(solidFill, path);
                 }
 
-                FillRoundedBar(172.76f, 63.83f, 71.72f, 179.29f, 35.86f);
-                FillRoundedBar(172.76f, 458.24f, 71.72f, 179.29f, 35.86f);
-                FillRoundedBar(172.76f, 780.94f, 71.72f, 179.29f, 35.86f);
+                FillRoundedBar(172.76f, 63.83f, 85.33f, 179.29f, 35.86f);
+                FillRoundedBar(172.76f, 458.24f, 85.33f, 179.29f, 35.86f);
+                FillRoundedBar(172.76f, 780.94f, 85.33f, 179.29f, 35.86f);
                 foreach (var centerY in new[] { 350.68f, 709.23f })
                 {
                     using var ring = new GraphicsPath(FillMode.Alternate);
                     ring.AddEllipse(Rect(referenceBounds, (208.62f - 143.42f) * svgToIcon,
                         (centerY - 143.42f) * svgToIcon, 286.84f * svgToIcon, 286.84f * svgToIcon));
-                    ring.AddEllipse(Rect(referenceBounds, (208.62f - 71.71f) * svgToIcon,
-                        (centerY - 71.71f) * svgToIcon, 143.42f * svgToIcon, 143.42f * svgToIcon));
+                    ring.AddEllipse(Rect(referenceBounds, (208.62f - 64f) * svgToIcon,
+                        (centerY - 64f) * svgToIcon, 128f * svgToIcon, 128f * svgToIcon));
                     g.FillPath(solidFill, ring);
                 }
-                FillRoundedBar(387.89f, 278.96f, 573.70f, 71.72f, 35.86f);
-                FillRoundedBar(387.90f, 386.54f, 286.83f, 71.70f, 33.80f);
-                FillRoundedBar(387.89f, 637.51f, 573.70f, 71.72f, 35.86f);
-                FillRoundedBar(387.90f, 745.10f, 286.83f, 71.70f, 33.80f);
+                FillRoundedBar(387.89f, 278.96f, 573.70f, 85.33f, 35.86f);
+                FillRoundedBar(387.90f, 386.54f, 286.83f, 85.33f, 33.80f);
+                FillRoundedBar(387.89f, 637.51f, 573.70f, 85.33f, 35.86f);
+                FillRoundedBar(387.90f, 745.10f, 286.83f, 85.33f, 33.80f);
                 break;
             }
             case SvgIconKind.MotionTrack:
@@ -808,6 +823,156 @@ internal static class SvgIcons
                 DrawChevron(g, thinPen, P(r, 19, 7), 1);
                 DrawChevron(g, pen, P(r, 5, 18), 3);
                 break;
+            case SvgIconKind.TimelineFolder:
+            {
+                var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024' fill='#{color.R:X2}{color.G:X2}{color.B:X2}' fill-opacity='{(color.A / 255f).ToString(System.Globalization.CultureInfo.InvariantCulture)}'><path stroke='#{color.R:X2}{color.G:X2}{color.B:X2}' stroke-width='18' stroke-linejoin='round' d='M111.104 388.096h25.088V165.888c0-18.432 15.36-33.792 33.792-33.792h250.368c9.728 0 19.456 4.608 25.6 12.288l116.224 126.464h292.352c18.432 0 33.28 14.848 33.792 33.28v83.456h25.6c18.432 0 33.28 14.848 33.28 33.28 0 2.048 0 3.584-0.512 5.632l-53.248 431.616c-1.536 10.24-7.168 18.944-15.36 24.576a32.8704 32.8704 0 0 1-23.552 9.728H169.984c-8.704 0-16.896-3.072-23.04-9.216-8.704-6.144-14.336-15.36-15.872-26.112L77.824 425.472c-2.56-17.92 10.24-34.816 28.672-36.864h1.024l3.584-0.512z m92.16 0h617.984v-49.664h-273.92V337.92c-9.216 0-17.92-4.096-24.064-10.752L405.504 199.68H203.264v188.416zM875.52 455.168H148.992l45.056 365.568h635.904l45.568-365.568z'/></svg>";
+                var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
+                using var bitmap = document.Draw(Math.Max(1, (int)referenceSize), Math.Max(1, (int)referenceSize));
+                g.DrawImage(bitmap, referenceBounds);
+                break;
+            }
+            case SvgIconKind.SoloLayerVisible:
+            case SvgIconKind.AllLayersVisible:
+            case SvgIconKind.LinearAutoKeyframe:
+            case SvgIconKind.LinearLayerParenting:
+            {
+                using var outline = new Pen(color, referenceSize / 12f)
+                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                PointF V(float x, float y) => P(referenceBounds, x, y);
+                if (kind is SvgIconKind.SoloLayerVisible or SvgIconKind.AllLayersVisible)
+                {
+                    PointF[] layer = kind == SvgIconKind.SoloLayerVisible
+                        ? [V(4, 12), V(12, 8), V(20, 12), V(12, 16)]
+                        : [V(2, 7), V(10, 3), V(18, 7), V(10, 11)];
+                    g.DrawPolygon(outline, layer);
+                    if (kind == SvgIconKind.AllLayersVisible)
+                    {
+                        g.DrawLines(outline, [V(2, 10.5f), V(10, 14.5f), V(18, 10.5f)]);
+                        g.DrawLines(outline, [V(2, 14), V(10, 18), V(12, 17)]);
+                    }
+                    using var eye = new GraphicsPath();
+                    eye.AddBezier(V(13, 20), V(15.5f, 16.5f), V(20.5f, 16.5f), V(23, 20));
+                    eye.AddBezier(V(23, 20), V(20.5f, 23.5f), V(15.5f, 23.5f), V(13, 20));
+                    g.DrawPath(outline, eye);
+                    g.DrawEllipse(outline, Rect(referenceBounds, 16.75f, 18.75f, 2.5f, 2.5f));
+                }
+                else if (kind == SvgIconKind.LinearAutoKeyframe)
+                {
+                    g.DrawLines(outline, [V(12, 10), V(15.5f, 2), V(19, 10)]);
+                    g.DrawLine(outline, V(13.5f, 7), V(17.5f, 7));
+                    g.DrawRectangle(outline, Rect(referenceBounds, 3, 13, 18, 8));
+                    g.DrawEllipse(outline, Rect(referenceBounds, 10.5f, 15.5f, 3, 3));
+                }
+                else
+                {
+                    g.DrawRectangle(outline, Rect(referenceBounds, 3, 3, 18, 6));
+                    g.DrawRectangle(outline, Rect(referenceBounds, 9, 15, 12, 6));
+                    g.DrawLines(outline, [V(5, 9), V(5, 18), V(9, 18)]);
+                }
+                break;
+            }
+            case SvgIconKind.AssetFolder:
+            case SvgIconKind.AssetFolderPlus:
+            case SvgIconKind.AssetOpen:
+            case SvgIconKind.AssetAdd:
+            case SvgIconKind.AssetTags:
+            case SvgIconKind.AssetSymbol:
+            case SvgIconKind.AssetImage:
+            case SvgIconKind.AssetSvg:
+            {
+                // Match the supplied import mark: 24-unit canvas, rounded 1.65-unit strokes.
+                using var assetPen = new Pen(color, kind == SvgIconKind.AssetAdd ? referenceSize / 12f : referenceSize * 1.65f / 24f)
+                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+                PointF A(float x, float y) => P(referenceBounds, x, y);
+                void Line(float x1, float y1, float x2, float y2) =>
+                    g.DrawLine(assetPen, A(x1, y1), A(x2, y2));
+                void RoundedFrame(float x, float y, float w, float h)
+                {
+                    using var path = new GraphicsPath();
+                    var box = Rect(referenceBounds, x, y, w, h);
+                    var diameter = referenceSize * 4f / 24f;
+                    path.AddArc(box.Left, box.Top, diameter, diameter, 180, 90);
+                    path.AddArc(box.Right - diameter, box.Top, diameter, diameter, 270, 90);
+                    path.AddArc(box.Right - diameter, box.Bottom - diameter, diameter, diameter, 0, 90);
+                    path.AddArc(box.Left, box.Bottom - diameter, diameter, diameter, 90, 90);
+                    path.CloseFigure();
+                    g.DrawPath(assetPen, path);
+                }
+                switch (kind)
+                {
+                    case SvgIconKind.AssetFolder:
+                    case SvgIconKind.AssetFolderPlus:
+                    {
+                        using var path = new GraphicsPath();
+                        path.AddLine(A(3, 19), A(3, 6));
+                        path.AddBezier(A(3, 6), A(3, 4), A(4, 3), A(6, 3));
+                        path.AddLine(A(6, 3), A(9, 3));
+                        path.AddLine(A(9, 3), A(12, 6));
+                        path.AddLine(A(12, 6), A(19, 6));
+                        path.AddBezier(A(19, 6), A(21, 6), A(21, 7), A(21, 9));
+                        path.AddLine(A(21, 9), A(21, 19));
+                        path.AddBezier(A(21, 19), A(21, 21), A(20, 21), A(18, 21));
+                        path.AddLine(A(18, 21), A(6, 21));
+                        path.AddBezier(A(6, 21), A(4, 21), A(3, 21), A(3, 19));
+                        path.CloseFigure();
+                        g.DrawPath(assetPen, path);
+                        if (kind == SvgIconKind.AssetFolderPlus)
+                        { Line(12, 10, 12, 17); Line(8.5f, 13.5f, 15.5f, 13.5f); }
+                        break;
+                    }
+                    case SvgIconKind.AssetOpen:
+                    {
+                        using var frame = new GraphicsPath();
+                        frame.AddLine(A(12, 3), A(6, 3));
+                        frame.AddBezier(A(6, 3), A(4, 3), A(3, 4), A(3, 6));
+                        frame.AddLine(A(3, 6), A(3, 18));
+                        frame.AddBezier(A(3, 18), A(3, 20), A(4, 21), A(6, 21));
+                        frame.AddLine(A(6, 21), A(12, 21));
+                        g.DrawPath(assetPen, frame);
+                        Line(10, 12, 21, 12);
+                        g.DrawLines(assetPen, [A(17, 8), A(21, 12), A(17, 16)]);
+                        break;
+                    }
+                    case SvgIconKind.AssetAdd:
+                        Line(12, 3, 12, 21); Line(3, 12, 21, 12);
+                        break;
+                    case SvgIconKind.AssetTags:
+                        g.DrawPolygon(assetPen, [A(3, 3), A(12, 3), A(21, 12), A(12, 21), A(3, 12)]);
+                        g.FillEllipse(solidFill, Rect(referenceBounds, 6, 6, 2.5f, 2.5f));
+                        break;
+                    case SvgIconKind.AssetSymbol:
+                        RoundedFrame(3, 3, 12, 12); RoundedFrame(9, 9, 12, 12);
+                        break;
+                    case SvgIconKind.AssetImage:
+                        RoundedFrame(3, 3, 18, 18);
+                        g.FillEllipse(solidFill, Rect(referenceBounds, 6.5f, 6.5f, 3.5f, 3.5f));
+                        g.DrawLines(assetPen, [A(3, 17), A(9, 11), A(14, 16), A(17, 13), A(21, 17)]);
+                        break;
+                    case SvgIconKind.AssetSvg:
+                        RoundedFrame(3, 3, 18, 18);
+                        g.DrawLines(assetPen, [A(9, 8), A(5.5f, 12), A(9, 16)]);
+                        g.DrawLines(assetPen, [A(15, 8), A(18.5f, 12), A(15, 16)]);
+                        break;
+                }
+                break;
+            }
+            case SvgIconKind.Acknowledgements:
+            {
+                var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024' fill='#{color.R:X2}{color.G:X2}{color.B:X2}'><path d='M512 180.195556Q443.178667 128 355.555556 128q-111.800889 0-190.919112 78.336Q85.333333 284.842667 85.333333 395.975111q0 301.368889 406.215111 523.235556 2.346667 1.28 4.835556 2.275555 2.474667 0.967111 5.063111 1.635556 2.588444 0.654222 5.233778 0.995555 2.645333 0.327111 5.319111 0.327111t5.319111-0.327111q2.645333-0.341333 5.233778-0.995555 2.588444-0.668444 5.077333-1.635556 2.474667-0.995556 4.835556-2.275555Q938.666667 697.358222 938.666667 395.989333q0-111.132444-79.303111-189.639111Q780.245333 128 668.444444 128q-87.623111 0-156.444444 52.195556z m-287.331556 86.784Q278.855111 213.333333 355.555556 213.333333q72.248889 0 126.435555 53.646223 1.464889 1.464889 3.086222 2.773333 1.621333 1.322667 3.356445 2.460444 1.735111 1.152 3.569778 2.133334 1.848889 0.981333 3.768888 1.763555 1.92 0.796444 3.911112 1.393778 1.991111 0.611556 4.039111 1.009778 2.048 0.398222 4.124444 0.611555 2.076444 0.199111 4.152889 0.199111t4.152889-0.199111q2.076444-0.213333 4.124444-0.611555 2.033778-0.398222 4.039111-0.995556 1.991111-0.611556 3.911112-1.408 1.934222-0.782222 3.768888-1.763555 1.848889-0.981333 3.569778-2.133334 1.735111-1.137778 3.356445-2.460444 1.621333-1.308444 3.100444-2.773333Q596.195556 213.333333 668.444444 213.333333q76.714667 0 130.887112 53.646223Q853.333333 320.455111 853.333333 395.975111q0 243.555556-341.333333 436.977778-341.333333-193.422222-341.333333-436.977778 0-75.52 54.001777-128.995555z m493.824 147.797333q-4.593778 40.803556-40.362666 84.380444l65.962666 54.129778q51.768889-63.089778 59.192889-128.952889 7.623111-67.598222-31.488-133.262222l-73.315555 43.648q24.405333 40.988444 20.010666 80.071111z'/></svg>";
+                var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
+                using var bitmap = document.Draw(Math.Max(1, (int)referenceSize), Math.Max(1, (int)referenceSize));
+                g.DrawImage(bitmap, referenceBounds);
+                break;
+            }
+            case SvgIconKind.ImportImage:
+            {
+                // Keep the supplied image/upload geometry; theme color comes from the button.
+                var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024' fill='#{color.R:X2}{color.G:X2}{color.B:X2}' fill-opacity='{(color.A / 255f).ToString(System.Globalization.CultureInfo.InvariantCulture)}'><path d='M721.984 599.68a73.664 73.664 0 0 1 92.032 0l136 108.8a35.2 35.2 0 0 1-44.032 55.04l-102.784-82.368V928a35.2 35.2 0 1 1-70.4 0v-246.848L630.016 763.52a35.2 35.2 0 0 1-44.032-55.04l136-108.8zM386.56 295.808a81.664 81.664 0 1 1 0 163.392 81.664 81.664 0 0 1 0-163.392z'/><path d='M730.88 112a181.12 181.12 0 0 1 181.184 181.184L912 512l-0.192 1.536a33.92 33.92 0 0 1-0.448 4.032c-0.128 0.896-0.256 1.856-0.512 2.752a35.136 35.136 0 0 1-2.56 7.04c-0.256 0.512-0.32 1.024-0.64 1.536-0.192 0.384-0.512 0.704-0.768 1.088a33.664 33.664 0 0 1-6.4 7.808 34.112 34.112 0 0 1-8.96 6.016l-3.008 1.216c-1.024 0.32-2.048 0.704-3.136 0.96a34.816 34.816 0 0 1-7.296 1.088l-1.28 0.128-1.344-0.128a34.752 34.752 0 0 1-13.952-3.52c-0.512-0.256-1.088-0.384-1.536-0.64-150.08-81.792-309.888-29.376-439.488 52.096-64 40.192-118.272 86.144-156.608 122.176a1036.672 1036.672 0 0 0-55.936 56.768l-2.816 3.2-0.64 0.768-0.192 0.192-5.12 4.928c-0.896 0.64-1.856 1.152-2.752 1.728 18.944 33.92 55.104 56.768 96.704 56.768h218.944a35.2 35.2 0 0 1 0 70.4h-218.88a181.12 181.12 0 0 1-181.184-181.12V293.12a181.12 181.12 0 0 1 181.12-181.12h437.76z m-437.76 70.4c-61.12 0-110.72 49.6-110.72 110.72v405.44a1147.264 1147.264 0 0 1 200.576-163.2c123.648-77.696 291.136-141.696 458.56-78.208l0.128-164.032a110.72 110.72 0 0 0-110.72-110.72H293.12z'/></svg>";
+                var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
+                using var bitmap = document.Draw(Math.Max(1, (int)referenceSize), Math.Max(1, (int)referenceSize));
+                g.DrawImage(bitmap, referenceBounds);
+                break;
+            }
             case SvgIconKind.Image:
                 DrawRectangle(g, pen, Rect(r, 3, 5, 18, 14));
                 g.DrawEllipse(thinPen, Rect(r, 6, 8, 3, 3));

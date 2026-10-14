@@ -401,7 +401,8 @@ internal sealed class SceneLightingPanel : UserControl
 
     private void HookEvents()
     {
-        _add.Click += (_, _) => _addMenu.Show(_add, new Point(0, _add.Height));
+        _add.Click += (_, _) => DropDownToggle.Toggle(_addMenu,
+            () => _addMenu.Show(_add, new Point(0, _add.Height)));
         _duplicate.Click += (_, _) => RaiseCommand(DuplicateRequested);
         _remove.Click += (_, _) => RaiseCommand(RemoveRequested);
         _reset.Click += (_, _) => RaiseCommand(ResetRequested);
@@ -742,7 +743,7 @@ internal sealed class SceneLightingPanel : UserControl
                 | TextFormatFlags.NoPrefix);
         if ((e.State & DrawItemState.Focus) != 0 && list.Focused)
         {
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(e.Bounds, -2, -2),
                 SystemInformation.HighContrast

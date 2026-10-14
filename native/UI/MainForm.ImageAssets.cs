@@ -184,7 +184,7 @@ internal sealed partial class MainForm
     private void ImportImageAsset()
     {
         if (!EnsureImagePlacementAllowed()) return;
-        using var dialog = CreateImageAssetDialog("Import Image...");
+        using var dialog = CreateImageAssetDialog("Import Image");
         dialog.Multiselect = true;
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         ImportImageAssetsFromFiles(dialog.FileNames);

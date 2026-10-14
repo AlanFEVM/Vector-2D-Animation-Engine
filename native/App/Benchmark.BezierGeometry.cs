@@ -6,6 +6,7 @@ internal static partial class Benchmark
 {
     private static void RunBoundaryBezierHandleRegression()
     {
+        RunDetachedBoundarySplitIndependenceRegression();
         static PointF Mix(PointF first, PointF second, float amount) => new(
             first.X + (second.X - first.X) * amount,
             first.Y + (second.Y - first.Y) * amount);
@@ -2320,6 +2321,50 @@ internal static partial class Benchmark
     // The neighbour shares layer/cel and material so the same-color merge path has to reason about
     // the flipped winding as well: that path rebuilds its boundary through Clipper and reassigns
     // contour depth from Clipper.IsPositive.
+    private static void RunDetachedBoundarySplitIndependenceRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var fill = scene.AddObject(0, PointF.Empty, new SizeF(600, 400), 0, 6,
+            Color.Teal, Color.White, 12, ShapeKind.Rectangle);
+        AssertTimeline(scene.SplitOutSegmentAsNewObject(fill, 0, out var detached),
+            "Detached boundary fixture could not separate its top edge.");
+        AssertTimeline(scene.ObjectOrder[detached] == scene.ObjectOrder[fill]
+            && scene.ObjectSubOrder[detached] != scene.ObjectSubOrder[fill],
+            "Detached boundary and source fill share the same editing identity.");
+        var original = scene.CreateSnapshot();
+        scene.AddLineSegment(0, new PointF(0, -300), new PointF(0, -100),
+            6, Color.Transparent, Color.Black, 6);
+        scene.CompleteDeferredBuild();
+        var hit = scene.HitTestElement(new PointF(-150, -200), 0, 2);
+        AssertTimeline(hit.IsValid && hit.Key.ObjectIndex == detached
+            && hit.Key.Kind == DrawingElementKind.Stroke,
+            "Detached boundary fixture did not hit its split stroke.");
+        var result = scene.MaterializeSelectedParts([hit.Key], 0);
+        AssertTimeline(result.Success && result.Changed,
+            "Detached boundary fixture did not materialize its intersection.");
+        var replacements = Enumerable.Range(0, scene.ObjectCount)
+            .Where(index => scene.ShapeKind[index] == ShapeKind.Line
+                && scene.StrokeArgb[index] == Color.White.ToArgb()).ToArray();
+        AssertTimeline(replacements.Length == 2
+            && replacements.All(index => scene.FillBoundaryLinkDetached[index]
+                && scene.CaptureFillBoundaryLineLinks(index, 0).Length == 0),
+            "Intersection materialization reattached a separated boundary to its fill.");
+        scene.TryGetPathBezierWorldContours(fill, out var beforeMove);
+        scene.TranslateObjectsForPreview(replacements, 40, -30);
+        scene.TryGetPathBezierWorldContours(fill, out var afterMove);
+        AssertTimeline(beforeMove.SelectMany(contour => contour).SequenceEqual(afterMove.SelectMany(contour => contour)),
+            "Moving materialized detached boundary parts changed their former fill.");
+
+        scene.RestoreSnapshot(original);
+        AssertTimeline(scene.SplitLineAt(detached, 0.5f, out var split)
+            && scene.FillBoundaryLinkDetached[split.FirstObjectIndex]
+            && scene.FillBoundaryLinkDetached[split.SecondObjectIndex]
+            && scene.CaptureFillBoundaryLineLinks(split.SecondObjectIndex, 0).Length == 0,
+            "Explicit line splitting lost detached-boundary independence.");
+        Console.WriteLine("detached_boundary_split_independence=ok");
+    }
+
     private static void RunFlipCompoundFillHoleRegression()
     {
         static PointF[] Rect(float left, float top, float right, float bottom) =>

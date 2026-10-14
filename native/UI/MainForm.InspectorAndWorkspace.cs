@@ -1626,7 +1626,7 @@ internal sealed partial class MainForm : Form
     {
         private readonly TextBox _input = new();
 
-        private DrawingObjectNameDialog(string title, string label, string initialValue)
+        private DrawingObjectNameDialog(string title, string label, string initialValue, string actionText)
             : base(title, new Size(440, 224))
         {
             var prompt = new Label
@@ -1651,7 +1651,7 @@ internal sealed partial class MainForm : Form
             _input.BringToFront();
 
             var save = AddDialogAction(
-                "Rename",
+                actionText,
                 DialogResult.OK,
                 DialogActionStyle.Primary,
                 () => !string.IsNullOrWhiteSpace(_input.Text));
@@ -1667,9 +1667,9 @@ internal sealed partial class MainForm : Form
             UiLocalization.Watch(this);
         }
 
-        public static bool TryAsk(IWin32Window owner, string title, string label, string initialValue, out string value)
+        public static bool TryAsk(IWin32Window owner, string title, string label, string initialValue, out string value, string actionText = "Rename")
         {
-            using var dialog = new DrawingObjectNameDialog(title, label, initialValue);
+            using var dialog = new DrawingObjectNameDialog(title, label, initialValue, actionText);
             var accepted = dialog.ShowDialog(owner) == DialogResult.OK;
             value = accepted ? dialog._input.Text.Trim() : string.Empty;
             return accepted;

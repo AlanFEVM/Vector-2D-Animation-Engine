@@ -9,7 +9,7 @@ internal sealed class ShortcutProfilesDialog : ModernDialogForm
     }
 
     public ShortcutProfilesDialog(string activeShortcutProfileId, IEnumerable<ShortcutProfileRecord>? customShortcutProfiles)
-        : base("Shortcut profiles", new Size(760, 620))
+        : base("Shortcut profiles", new Size(860, 680))
     {
         AccessibleName = "Shortcut profiles";
         var layout = new TableLayoutPanel
@@ -36,7 +36,9 @@ internal sealed class ShortcutProfilesDialog : ModernDialogForm
             Dock = DockStyle.Fill,
             ForeColor = Theme.Muted,
             BackColor = Theme.Panel,
+            Font = Theme.UiFont(8.8f),
             TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(2, 0, 0, 0),
             Margin = Padding.Empty
         }, 0, 1);
         AcceptButton = AddDialogAction("OK", DialogResult.OK, DialogActionStyle.Primary);

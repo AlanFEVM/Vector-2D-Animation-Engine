@@ -155,7 +155,7 @@ internal sealed class DashDock : UserControl
         if (Enabled && Focused && ShowFocusCues)
         {
             var focusInset = ScaleLogical(CompactHeight ? 2 : 4);
-            ControlPaint.DrawFocusRectangle(
+            Theme.DrawKeyboardFocus(
                 e.Graphics,
                 Rectangle.Inflate(swatchBounds, focusInset, focusInset),
                 SystemInformation.HighContrast

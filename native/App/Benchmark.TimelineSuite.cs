@@ -1322,6 +1322,7 @@ internal static partial class Benchmark
                 after.Save(Path.Combine(captureDirectory, $"timeline-release-{width}.png"));
             }
             strip.ClearSelectionFromEmptyArea();
+            RequireMethod(typeof(TimelineStrip), "SetFirstVisibleFrame").Invoke(strip, [0, true]);
             Mouse("OnMouseDown", Cell(1, 0));
             events.Clear();
             Mouse("OnMouseMove", Cell(5, 1));
@@ -1896,7 +1897,8 @@ internal static partial class Benchmark
         var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
         var director = (ShotDirectorPanel)RequireField(typeof(MainForm), "_shotDirectorPanel").GetValue(form)!;
         var button = (Button)RequireField(typeof(ShotDirectorPanel), "_addShotButton").GetValue(director)!;
-        var editor = (TextBox)RequireField(typeof(ShotDirectorPanel), "_nameEditor").GetValue(director)!;
+        var nameEditor = (ModernTextInput)RequireField(typeof(ShotDirectorPanel), "_nameEditor").GetValue(director)!;
+        var editor = nameEditor.Controls.OfType<TextBox>().Single();
         var command = RequireMethod(typeof(MainForm), "ProcessCmdKey", [typeof(Message).MakeByRefType(), typeof(Keys)]);
         foreach (Control focus in new Control[] { stage, button, timeline })
         {

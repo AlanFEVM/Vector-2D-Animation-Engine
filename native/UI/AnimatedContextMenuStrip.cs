@@ -5,6 +5,15 @@ namespace VectorAnimationEngine;
 
 internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
 {
+    internal bool TrailingImages { get; set; }
+    private readonly Dictionary<ToolStripItem, SvgIconKind> _trailingIcons = new();
+
+    internal void SetTrailingIcon(ToolStripItem item, SvgIconKind kind)
+    {
+        _trailingIcons[item] = kind;
+        Invalidate();
+    }
+
     private const int ItemHeight = 30;
     private const int MinimumWidth = 224;
     private const int MaximumWidth = 480;
@@ -46,6 +55,10 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             {
                 if (ReferenceEquals(_hoveredItem, e.Item)) SetHoveredItem(null);
             };
+        };
+        ItemRemoved += (_, e) =>
+        {
+            if (e.Item is not null) _trailingIcons.Remove(e.Item);
         };
         _animationTimer.Tick += (_, _) => TickOpeningAnimation();
         SizeChanged += (_, _) => RefreshMenuRegion();
@@ -142,7 +155,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
     private void LayoutItems()
     {
         Padding = new Padding(ScaleMenu(7));
-        ShowImageMargin = Items.OfType<ToolStripItem>().Any(item => item.Image is not null);
+        ShowImageMargin = !TrailingImages && Items.OfType<ToolStripItem>().Any(item => item.Image is not null);
         ShowCheckMargin = Items.OfType<ToolStripMenuItem>().Any(item => item.Checked || item.CheckOnClick);
         var visibleItems = Items.Cast<ToolStripItem>().Where(item => item.Available).ToArray();
         var width = ScaleMenu(MinimumWidth);
@@ -156,7 +169,7 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             var shortcutWidth = string.IsNullOrEmpty(shortcut) ? 0
                 : TextRenderer.MeasureText(shortcut, Font, Size.Empty,
                     TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + ScaleMenu(ShortcutGap);
-            var adornments = ShowImageMargin || ShowCheckMargin ? ScaleMenu(32) : 0;
+            var adornments = ShowImageMargin || ShowCheckMargin || (TrailingImages && _trailingIcons.ContainsKey(item)) ? ScaleMenu(32) : 0;
             var arrowWidth = item is ToolStripMenuItem { HasDropDownItems: true } ? ScaleMenu(24) : ScaleMenu(8);
             width = Math.Max(width, Math.Min(ScaleMenu(MaximumWidth),
                 textWidth + shortcutWidth + adornments + arrowWidth + ScaleMenu(ItemHorizontalPadding * 2)));
@@ -335,6 +348,18 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             e.Graphics.Restore(state);
         }
 
+        protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+        {
+            using var fill = new SolidBrush(Theme.PanelStrong);
+            e.Graphics.FillRectangle(fill, e.AffectedBounds);
+        }
+
+        protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e)
+        {
+            if (e.ToolStrip is AnimatedContextMenuStrip { TrailingImages: true }) return;
+            base.OnRenderItemImage(e);
+        }
+
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
             var shortcut = e.Item is ToolStripMenuItem menu
@@ -345,6 +370,18 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
                 : Theme.ReadableText(e.Item.Selected && e.Item.Enabled ? Theme.MenuSelectionSurface : Theme.PanelStrong,
                     !e.Item.Enabled ? Theme.DisabledText : shortcut ? Theme.Muted : Theme.Text);
             base.OnRenderItemText(e);
+            if (!shortcut && e.ToolStrip is AnimatedContextMenuStrip { TrailingImages: true } owner
+                && owner._trailingIcons.TryGetValue(e.Item, out var icon))
+            {
+                var scale = e.ToolStrip.DeviceDpi / 96f;
+                var side = (int)Math.Round(20 * scale);
+                var textWidth = TextRenderer.MeasureText(e.Graphics, e.Text, e.TextFont, Size.Empty,
+                    TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
+                var left = Math.Min(e.Item.Width - side - (int)(12 * scale),
+                    e.TextRectangle.Left + textWidth + (int)(8 * scale));
+                SvgIcons.Draw(e.Graphics, icon,
+                    new Rectangle(left, (e.Item.Height - side) / 2, side, side), e.TextColor);
+            }
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)

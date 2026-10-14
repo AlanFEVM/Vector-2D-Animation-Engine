@@ -47,6 +47,21 @@ internal sealed class ThemedScrollPanel : UserControl
         _content.MouseWheel += ContentMouseWheel;
     }
 
+    private bool _showScrollBar = true;
+    public bool ShowScrollBar
+    {
+        get => _showScrollBar;
+        set
+        {
+            if (_showScrollBar == value) return;
+            _showScrollBar = value;
+            _draggingThumb = false;
+            Capture = false;
+            UpdateScrollMetrics();
+            Invalidate();
+        }
+    }
+
     public Panel Content => _content;
 
     public Padding ContentPadding
@@ -92,7 +107,7 @@ internal sealed class ThemedScrollPanel : UserControl
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        if (MaximumScroll <= 0) return;
+        if (!ShowScrollBar || MaximumScroll <= 0) return;
 
         var track = ScrollTrackBounds();
         var thumb = ScrollThumbBounds(track);
@@ -106,7 +121,7 @@ internal sealed class ThemedScrollPanel : UserControl
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button != MouseButtons.Left || MaximumScroll <= 0) return;
+        if (!ShowScrollBar || e.Button != MouseButtons.Left || MaximumScroll <= 0) return;
 
         var track = ScrollTrackBounds();
         if (!track.Contains(e.Location)) return;
@@ -129,7 +144,7 @@ internal sealed class ThemedScrollPanel : UserControl
     {
         base.OnMouseMove(e);
         var track = ScrollTrackBounds();
-        var hovered = MaximumScroll > 0 && track.Contains(e.Location);
+        var hovered = ShowScrollBar && MaximumScroll > 0 && track.Contains(e.Location);
         if (_scrollBarHovered != hovered)
         {
             _scrollBarHovered = hovered;
@@ -259,7 +274,7 @@ internal sealed class ThemedScrollPanel : UserControl
         _updatingLayout = true;
         try
         {
-            _viewport.Bounds = new Rectangle(0, 0, Math.Max(0, ClientSize.Width - ScrollRailWidth), ClientSize.Height);
+            _viewport.Bounds = new Rectangle(0, 0, Math.Max(0, ClientSize.Width - (ShowScrollBar ? ScrollRailWidth : 0)), ClientSize.Height);
             var viewportSize = _viewport.ClientSize;
             if (viewportSize.Width <= 0 || viewportSize.Height <= 0) return;
 
@@ -315,7 +330,7 @@ internal sealed class ThemedScrollPanel : UserControl
     private Rectangle ScrollTrackBounds()
     {
         var height = Math.Max(0, ClientSize.Height - ScrollRailInset * 2);
-        return new Rectangle(ClientSize.Width - ScrollRailWidth + ScrollRailInset, ScrollRailInset, 6, height);
+        return new Rectangle(ClientSize.Width - (ShowScrollBar ? ScrollRailWidth : 0) + ScrollRailInset, ScrollRailInset, 6, height);
     }
 
     private Rectangle ScrollThumbBounds(Rectangle track)

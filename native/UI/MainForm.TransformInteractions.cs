@@ -35,6 +35,8 @@ internal sealed partial class MainForm : Form
 
         if (_fillEdgePreSelect.HasValue
             || _fillEdgeNoUiArc.HasValue
+            || _fillEdgeDetachPending.HasValue
+            || _fillEdgeDetachMoving.HasValue
             || _arcDragSession is not null
             || _fillEdgeBezierArmedSession is not null
             || _fillEdgeBezierEditSession is not null) return;
@@ -267,7 +269,7 @@ internal sealed partial class MainForm : Form
             if (ShouldUpdateFillEdgeBezierPointer(
                     e.Button,
                     fillEdgeSession.IncludesAnchorInsertion,
-                    PointerMovedFromStart(e.Location)))
+                    PointerMovedFromStart(e.Location) || fillEdgeSession.BoundaryGeometryChanged))
             {
                 QueueFillEdgeBezierPointer(_stage.ScreenToWorld(e.Location));
             }
@@ -348,7 +350,7 @@ internal sealed partial class MainForm : Form
                 || _tool == ToolMode.Distort && _distortVisualHandleActive)
             && e.Button == MouseButtons.Left)
         {
-            if (!PointerMovedFromStart(e.Location)) return;
+            if (!PointerMovedFromStart(e.Location) && !_geometryDirty && !_distortPreviewChanged) return;
             QueueDrawingTransformPointer(_stage.ScreenToWorld(e.Location));
             return;
         }
@@ -403,7 +405,7 @@ internal sealed partial class MainForm : Form
         {
             if (!ShouldUpdateSelectionPointer(
                     _activeHandle,
-                    PointerMovedFromStart(e.Location),
+                    PointerMovedFromStart(e.Location) || _undoCapturedForPointerEdit,
                     PointerDragExceeded(e.Location)))
             {
                 return;
@@ -2326,14 +2328,24 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (e.Button == MouseButtons.Left && PointerDragExceeded(e.Location))
+        {
+            if (_fillEdgeDetachPending is { } detachPending)
+                BeginFillEdgeDetach(detachPending, _stage.ScreenToWorld(e.Location));
+            else if (_fillEdgePreSelect is { } preSelect)
+                BeginFillEdgeNoUiArc(preSelect, _stage.ScreenToWorld(e.Location));
+        }
+
         if (_fillEdgeNoUiArc.HasValue)
         {
+            if (e.Button == MouseButtons.Left) UpdateFillEdgeNoUiArc(_stage.ScreenToWorld(e.Location));
             CompleteFillEdgeNoUiArc();
             return;
         }
 
         if (_fillEdgeDetachMoving.HasValue)
         {
+            if (e.Button == MouseButtons.Left) UpdateFillEdgeDetachMove(_stage.ScreenToWorld(e.Location));
             CompleteFillEdgeDetach();
             return;
         }
@@ -2423,6 +2435,52 @@ internal sealed partial class MainForm : Form
             UpdateProjectedSceneMovePointer(e);
             CompleteProjectedSceneMovePointer();
             return;
+        }
+
+        if (e.Button == MouseButtons.Left
+            && _tool == ToolMode.Select
+            && _pendingClickSelection.IsValid
+            && PointerDragExceeded(e.Location))
+        {
+            var hit = _pendingClickSelection;
+            _pendingClickSelection = DrawingElementHit.None;
+            SetSelection(hit, deferPresentation: true);
+            _pointerHitWasAlreadySelected = true;
+            CaptureEditStart(hit.Key.ObjectIndex);
+        }
+
+        if (e.Button == MouseButtons.Left
+            && _tool == ToolMode.Select
+            && _selectedObject >= 0
+            && _selectedStart is not null
+            && !_forceMarqueeOnPointerDown
+            && !_marqueeSelecting
+            && _fillEdgeBezierArmedSession is null
+            && _fillEdgeBezierEditSession is null
+            && _lineBranchDragSession is null
+            && _arcDragSession is null
+            && _cornerDragSession is null
+            && (PointerMovedFromStart(e.Location) || _undoCapturedForPointerEdit))
+        {
+            QueueMoveSelectedFromPointer(_stage.ScreenToWorld(e.Location));
+        }
+
+        if (e.Button == MouseButtons.Left
+            && (_tool is ToolMode.Transform or ToolMode.Distort)
+            && SelectedSceneInstance() is null
+            && (_activeTransformHandle != TransformHandleKind.None
+                || _tool == ToolMode.Distort && _distortVisualHandleActive)
+            && (PointerMovedFromStart(e.Location) || _geometryDirty || _distortPreviewChanged))
+        {
+            QueueDrawingTransformPointer(_stage.ScreenToWorld(e.Location));
+        }
+
+        if (_fillEdgeBezierEditSession is { } releaseFillEdgeSession
+            && ShouldUpdateFillEdgeBezierPointer(e.Button,
+                releaseFillEdgeSession.IncludesAnchorInsertion,
+                PointerMovedFromStart(e.Location) || releaseFillEdgeSession.BoundaryGeometryChanged))
+        {
+            QueueFillEdgeBezierPointer(_stage.ScreenToWorld(e.Location));
         }
 
         FlushLineDragPreview();
@@ -2560,6 +2618,21 @@ internal sealed partial class MainForm : Form
         }
 
         if (CancelLassoPointerForLifecycle()) return;
+
+        if (_fillEdgeNoUiArc is { } boundaryArc)
+        {
+            _fillEdgeNoUiArc = null;
+            RestoreCanvasMutationSnapshot(boundaryArc.Snapshot);
+            FinishPointerInteraction();
+            _stage.Invalidate();
+            return;
+        }
+
+        if (_fillEdgeDetachMoving.HasValue)
+        {
+            CompleteFillEdgeDetach();
+            return;
+        }
 
         FinalizePendingMarqueeSelectionCancellation();
         if (_shotFramingPointerSession is not null)
@@ -2754,6 +2827,10 @@ internal sealed partial class MainForm : Form
             || _traditionalPenAnchorEditing
             || _penSegmentDragging
             || _gradientEditSnapshot is not null
+            || _fillEdgePreSelect.HasValue
+            || _fillEdgeNoUiArc.HasValue
+            || _fillEdgeDetachPending.HasValue
+            || _fillEdgeDetachMoving.HasValue
             || _fillEdgeBezierArmedSession is not null
             || _fillEdgeBezierEditSession is not null
             || _lineBranchDragSession is not null
@@ -2857,6 +2934,8 @@ internal sealed partial class MainForm : Form
 
     private void FinishPointerInteraction()
     {
+        CancelArmedFillEdgeBezierPointer();
+        _fillEdgePreSelect = null;
         CancelReferenceCameraRightLook();
         _sceneSnapMoveStartPointer = null;
         _stage.ClearSceneSnapIndicator();

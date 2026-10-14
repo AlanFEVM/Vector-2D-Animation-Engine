@@ -1648,4 +1648,151 @@ internal static partial class Benchmark
         Console.WriteLine("line_endpoint_curve_regression=ok");
     }
 
+    private static void RunFillBoundaryCubicDistortionFollowRegression()
+    {
+        RunFillBoundaryCubicDistortionFollowCase(resegmentEdge: false);
+        RunFillBoundaryCubicDistortionFollowCase(resegmentEdge: true);
+    }
+
+    private static void RunFillBoundaryCubicDistortionFollowCase(bool resegmentEdge)
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var fill = scene.AddObject(
+            0,
+            PointF.Empty,
+            new SizeF(200, 100),
+            0,
+            0,
+            Color.Teal,
+            Color.Transparent,
+            12,
+            ShapeKind.Rectangle);
+        var left = new PointF(-100, -50);
+        var right = new PointF(100, -50);
+        var line = scene.AddCubicCurveSegment(
+            0,
+            left,
+            left,
+            right,
+            right,
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.White,
+            12);
+        if (!scene.TryConvertFillToBezierPath(fill))
+        {
+            throw new InvalidOperationException("A rectangle fill could not be converted to an editable Bezier path.");
+        }
+
+        var parts = scene.GetPathBezierSegmentParts(fill);
+        var topPart = parts.Single(part =>
+            (PointsNear(part.Start, left) && PointsNear(part.End, right))
+            || (PointsNear(part.Start, right) && PointsNear(part.End, left)));
+        var strokeLinks = scene.CaptureFillBoundaryStrokeLinks(fill, topPart.PartIndex, 0);
+        var raised1 = new PointF(-60, -140);
+        var raised2 = new PointF(60, -140);
+        var initialContours = scene.GetObjectBoundaryContours(fill);
+        if (strokeLinks.Length != 1
+            || strokeLinks[0].LineObjectIndex != line
+            || !scene.SetPathBezierSegment(
+                fill,
+                topPart.PartIndex,
+                topPart.Start,
+                raised1,
+                raised2,
+                topPart.End,
+                rebuildGeometryIndex: false)
+            || !scene.UpdateFillBoundaryStrokeLinks(
+                strokeLinks,
+                topPart.Start,
+                raised1,
+                raised2,
+                topPart.End,
+                rebuildGeometryIndex: false))
+        {
+            throw new InvalidOperationException(
+                $"Bending a linked fill edge did not commit the distorted boundary segment, strokeLinks={strokeLinks.Length}.");
+        }
+
+        scene.NormalizeFillBoundaryOverlaps(fill, initialContours, rebuildGeometryIndex: false);
+        if (!scene.TryGetPathBezierSegment(fill, topPart.PartIndex, out var finalSegment))
+        {
+            throw new InvalidOperationException("Bending a linked fill edge lost the edited boundary segment.");
+        }
+        scene.UpdateFillBoundaryStrokeLinks(
+            strokeLinks,
+            finalSegment.Start,
+            finalSegment.Control1,
+            finalSegment.Control2,
+            finalSegment.End,
+            rebuildGeometryIndex: false);
+        scene.CompleteDeferredBuild();
+
+        if (resegmentEdge
+            && !scene.TryInsertPathBezierAnchor(fill, topPart.PartIndex, 0.4f, out _, out _, rebuildGeometryIndex: true))
+        {
+            throw new InvalidOperationException("Materializing a fill edge neighborhood could not insert a boundary anchor.");
+        }
+
+        const float dx = 40f;
+        const float dy = -30f;
+        var baselineLinks = scene.CaptureFillBoundaryLineLinks(line, 0);
+        if (baselineLinks.Length != 1 || baselineLinks[0].FillObjectIndex != fill)
+        {
+            throw new InvalidOperationException(
+                $"A distorted fill edge lost its boundary line link: links={baselineLinks.Length}.");
+        }
+        if (resegmentEdge && baselineLinks[0].BezierSegmentCount != 2)
+        {
+            throw new InvalidOperationException(
+                $"A re-segmented fill edge linked its boundary line to a single segment instead of the full run:"
+                + $" bezier={baselineLinks[0].BezierSegmentIndex}+{baselineLinks[0].BezierSegmentCount}.");
+        }
+
+        scene.X[line] = VectorUnits.Quantize(scene.X[line] + dx);
+        scene.Y[line] = VectorUnits.Quantize(scene.Y[line] + dy);
+        scene.CurveControlX[line] = VectorUnits.Quantize(scene.CurveControlX[line] + dx);
+        scene.CurveControlY[line] = VectorUnits.Quantize(scene.CurveControlY[line] + dy);
+        scene.CurveControl2X[line] = VectorUnits.Quantize(scene.CurveControl2X[line] + dx);
+        scene.CurveControl2Y[line] = VectorUnits.Quantize(scene.CurveControl2Y[line] + dy);
+        if (!scene.TryGetLineCubic(line, out var movedStart, out var moved1, out var moved2, out var movedEnd))
+        {
+            throw new InvalidOperationException("Moving a distorted boundary line lost its cubic curve.");
+        }
+
+        if (!scene.UpdateFillBoundaryLineLinks(baselineLinks, rebuildGeometryIndex: true))
+        {
+            throw new InvalidOperationException("Moving a distorted boundary line did not update the linked fill contour.");
+        }
+        scene.CompleteDeferredBuild();
+
+        var afterParts = scene.GetPathBezierSegmentParts(fill);
+        var topAfter = afterParts.Single(part =>
+            (PointsNear(part.Start, movedStart) && PointsNear(part.End, movedEnd))
+            || (PointsNear(part.Start, movedEnd) && PointsNear(part.End, movedStart)));
+        if (!PointsNear(topAfter.Control1, moved1) || !PointsNear(topAfter.Control2, moved2))
+        {
+            throw new InvalidOperationException(
+                $"Moving a distorted boundary line did not move the linked fill edge with it:"
+                + $" ({topAfter.Control1})-({topAfter.Control2}) != ({moved1})-({moved2}).");
+        }
+
+        var bottomStart = new PointF(-100, 50);
+        var bottomEnd = new PointF(100, 50);
+        var bottomAfter = afterParts.Single(part =>
+            (PointsNear(part.Start, bottomStart) && PointsNear(part.End, bottomEnd))
+            || (PointsNear(part.Start, bottomEnd) && PointsNear(part.End, bottomStart)));
+        var bottomControlsReversed = PointsNear(bottomAfter.Start, bottomEnd);
+        var expectedBottom1 = bottomControlsReversed ? new PointF(33, 50) : new PointF(-33, 50);
+        var expectedBottom2 = bottomControlsReversed ? new PointF(-33, 50) : new PointF(33, 50);
+        if (!PointsNear(bottomAfter.Control1, expectedBottom1)
+            || !PointsNear(bottomAfter.Control2, expectedBottom2))
+        {
+            throw new InvalidOperationException(
+                $"Moving a distorted boundary line disturbed unrelated fill contour segments:"
+                + $" ({bottomAfter.Control1})-({bottomAfter.Control2}).");
+        }
+    }
+
 }
