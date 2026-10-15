@@ -1707,6 +1707,32 @@ internal sealed partial class MainForm : Form
             : SaveFolderProjectAs(targetPath);
     }
 
+    // 「另存为开发模式」：保持旧的另存为行为，保存为传统文件夹工程
+    // （.v2dProject + .Vault + .TimeLine），便于直接查看和编辑工程目录内的文件。
+    private bool SaveProjectAsDevelopmentFolder()
+    {
+        if (!CommitTextEdit()) return false;
+        using var dialog = new SaveFileDialog
+        {
+            Title = UiLocalization.T("Save Project As Development Folder"),
+            Filter = $"{UiLocalization.T("Vector 2D Project Folder")} (*{ProjectVaultStore.ProjectExtension})|*{ProjectVaultStore.ProjectExtension}",
+            DefaultExt = ProjectVaultStore.ProjectExtension.TrimStart('.'),
+            AddExtension = true,
+            OverwritePrompt = true,
+            // 单文件容器模式下工作区清单固定叫 Project.v2dProject，此时默认用工程名。
+            FileName = string.IsNullOrWhiteSpace(_projectPackagePath) && !string.IsNullOrWhiteSpace(_projectManifestPath)
+                ? Path.GetFileName(_projectManifestPath)
+                : SafeProjectFileName(_project.Name) + ProjectVaultStore.ProjectExtension,
+            InitialDirectory = !string.IsNullOrWhiteSpace(_projectPackagePath)
+                ? Path.GetDirectoryName(_projectPackagePath) ?? ""
+                : !string.IsNullOrWhiteSpace(_projectManifestPath)
+                    ? Path.GetDirectoryName(_projectManifestPath) ?? ""
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return false;
+        return SaveFolderProjectAs(dialog.FileName);
+    }
+
     private bool SaveFolderProjectAs(string manifestPath)
     {
         // 另存为传统文件夹工程后离开单文件模式。

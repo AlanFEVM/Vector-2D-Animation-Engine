@@ -928,6 +928,7 @@ internal static class UiLocalization
             ["Save changes to the current project before continuing?"] = "继续之前是否保存当前工程的更改？",
             ["Save Project"] = "保存工程",
             ["Save Project As"] = "工程另存为",
+            ["Save Project As Development Folder"] = "另存为开发模式",
             ["Retry"] = "重试",
             ["Abort"] = "中止",
             ["Ignore"] = "忽略",

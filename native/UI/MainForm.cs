@@ -1576,6 +1576,8 @@ internal sealed partial class MainForm : Form
         saveProject.Click += (_, _) => SaveProject();
         var saveProjectAs = new ToolStripMenuItem("Save Project As") { Tag = ShortcutCommandIds.SaveProjectAs };
         saveProjectAs.Click += (_, _) => SaveProjectAs();
+        var saveProjectAsDevelopment = new ToolStripMenuItem("Save Project As Development Folder");
+        saveProjectAsDevelopment.Click += (_, _) => SaveProjectAsDevelopmentFolder();
         var renameProject = new ToolStripMenuItem("Rename Project");
         renameProject.Click += (_, _) => BeginProjectTitleEdit();
         var settings = new ToolStripMenuItem("Settings");
@@ -1598,7 +1600,7 @@ internal sealed partial class MainForm : Form
         var projectFiles = new ToolStripMenuItem("Project Files") { DropDown = new AnimatedContextMenuStrip() };
         projectFiles.DropDownItems.AddRange(new ToolStripItem[]
         {
-            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs, renameProject
+            newProject, openProject, new ToolStripSeparator(), saveProject, saveProjectAs, saveProjectAsDevelopment, renameProject
         });
         var imports = new ToolStripMenuItem("Import") { DropDown = new AnimatedContextMenuStrip() };
         imports.DropDownItems.AddRange(new ToolStripItem[] { importFlash, flashVisualBridge, importSvg, importImage });
