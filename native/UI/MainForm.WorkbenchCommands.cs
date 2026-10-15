@@ -1547,6 +1547,7 @@ internal sealed partial class MainForm : Form
     {
         AppLog.Info("Creating new empty project");
         AssignProjectDocument(VectorProject.CreateEmpty(), "", dirty: false);
+        _projectPackagePath = "";
         _libraryVaultPanel.BindProject(_project, () => _frame);
         _sceneEditStage.CreateEmpty();
         _drawingObjectUnderlayStage.CreateEmpty();
@@ -1579,29 +1580,66 @@ internal sealed partial class MainForm : Form
         using var dialog = new OpenFileDialog
         {
             Title = UiLocalization.T("Open Project"),
-            Filter = $"{UiLocalization.T("Vector 2D Project")} (*{ProjectVaultStore.ProjectExtension})|*{ProjectVaultStore.ProjectExtension}|{UiLocalization.T("All files")} (*.*)|*.*",
+            Filter = $"{UiLocalization.T("Vector 2D Project")} (*{ProjectPackageStore.PackageExtension};*{ProjectVaultStore.ProjectExtension})|*{ProjectPackageStore.PackageExtension};*{ProjectVaultStore.ProjectExtension}|{UiLocalization.T("All files")} (*.*)|*.*",
             CheckFileExists = true,
             Multiselect = false
         };
-        if (!string.IsNullOrWhiteSpace(_projectManifestPath))
-        {
-            dialog.InitialDirectory = Path.GetDirectoryName(_projectManifestPath) ?? "";
-        }
+        var initialDirectory = !string.IsNullOrWhiteSpace(_projectPackagePath)
+            ? Path.GetDirectoryName(_projectPackagePath)
+            : !string.IsNullOrWhiteSpace(_projectManifestPath)
+                ? Path.GetDirectoryName(_projectManifestPath)
+                : "";
+        if (!string.IsNullOrWhiteSpace(initialDirectory)) dialog.InitialDirectory = initialDirectory;
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        OpenProjectFile(dialog.FileName, promptUnsaved: false);
+    }
+
+    /// <summary>
+    /// 应用启动或单实例激活时打开命令行/管道传入的工程路径。
+    /// </summary>
+    internal void OpenStartupProject(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (!CommitTextEdit()) return;
+        OpenProjectFile(path, promptUnsaved: true);
+    }
+
+    private void OpenProjectFile(string fileName, bool promptUnsaved)
+    {
+        if (promptUnsaved && !TryContinueAfterUnsavedChanges()) return;
 
         Cursor = Cursors.WaitCursor;
         try
         {
-            SessionBreadcrumbs.Record("Project", $"Opening {dialog.FileName}");
-            var project = ProjectVaultStore.Load(dialog.FileName);
+            var fullPath = Path.GetFullPath(fileName);
+            SessionBreadcrumbs.Record("Project", $"Opening {fullPath}");
+            VectorProject project;
+            string manifestPath;
+            string packagePath;
+            if (ProjectPackageStore.IsPackagePath(fullPath))
+            {
+                var (packagedProject, workspaceManifestPath) = ProjectPackageStore.OpenPackage(fullPath);
+                project = packagedProject;
+                manifestPath = workspaceManifestPath;
+                packagePath = fullPath;
+            }
+            else
+            {
+                project = ProjectVaultStore.Load(fullPath);
+                manifestPath = fullPath;
+                packagePath = "";
+            }
+
             StopPlayback();
             FinishPointerInteractionForFrameChange();
-            LoadProjectDocument(project, Path.GetFullPath(dialog.FileName));
-            AppLog.Info($"Opened project asset library: {dialog.FileName}");
+            LoadProjectDocument(project, manifestPath);
+            _projectPackagePath = packagePath;
+            UpdateProjectTitle();
+            AppLog.Info($"Opened project: {fullPath}");
         }
         catch (Exception ex)
         {
-            AppLog.Error($"Unable to open project: {dialog.FileName}", ex);
+            AppLog.Error($"Unable to open project: {fileName}", ex);
             ShowProjectFileError("The project could not be opened.", ex);
         }
         finally
@@ -1613,6 +1651,11 @@ internal sealed partial class MainForm : Form
     private bool SaveProject()
     {
         if (!CommitTextEdit()) return false;
+        if (!string.IsNullOrWhiteSpace(_projectPackagePath))
+        {
+            return SaveProjectPackageTo(_projectPackagePath);
+        }
+
         return string.IsNullOrWhiteSpace(_projectManifestPath)
             ? SaveProjectAs()
             : SaveProjectTo(_projectManifestPath);
@@ -1624,19 +1667,51 @@ internal sealed partial class MainForm : Form
         using var dialog = new SaveFileDialog
         {
             Title = UiLocalization.T("Save Project As"),
-            Filter = $"{UiLocalization.T("Vector 2D Project")} (*{ProjectVaultStore.ProjectExtension})|*{ProjectVaultStore.ProjectExtension}",
-            DefaultExt = ProjectVaultStore.ProjectExtension.TrimStart('.'),
-            AddExtension = true,
+            Filter = $"{UiLocalization.T("Vector 2D Project Package")} (*{ProjectPackageStore.PackageExtension})|*{ProjectPackageStore.PackageExtension}|{UiLocalization.T("Vector 2D Project Folder")} (*{ProjectVaultStore.ProjectExtension})|*{ProjectVaultStore.ProjectExtension}",
+            DefaultExt = ProjectPackageStore.PackageExtension.TrimStart('.'),
+            AddExtension = false,
             OverwritePrompt = true,
-            FileName = string.IsNullOrWhiteSpace(_projectManifestPath)
-                ? SafeProjectFileName(_project.Name) + ProjectVaultStore.ProjectExtension
-                : Path.GetFileName(_projectManifestPath),
-            InitialDirectory = !string.IsNullOrWhiteSpace(_projectManifestPath)
-                ? Path.GetDirectoryName(_projectManifestPath) ?? ""
-                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+            FilterIndex = 1,
+            FileName = SafeProjectFileName(_project.Name) + ProjectPackageStore.PackageExtension,
+            InitialDirectory = !string.IsNullOrWhiteSpace(_projectPackagePath)
+                ? Path.GetDirectoryName(_projectPackagePath) ?? ""
+                : !string.IsNullOrWhiteSpace(_projectManifestPath)
+                    ? Path.GetDirectoryName(_projectManifestPath) ?? ""
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return false;
-        return SaveProjectTo(dialog.FileName);
+
+        var usePackage = dialog.FilterIndex == 1;
+        var requiredExtension = usePackage
+            ? ProjectPackageStore.PackageExtension
+            : ProjectVaultStore.ProjectExtension;
+        var targetPath = dialog.FileName;
+        if (!string.Equals(Path.GetExtension(targetPath), requiredExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            targetPath = Path.ChangeExtension(targetPath, requiredExtension.TrimStart('.'));
+            // 对话框只按用户实际输入的文件名做了覆盖确认，补扩展名后需再确认一次。
+            if (File.Exists(targetPath)
+                && ModernMessageDialog.Show(
+                    this,
+                    UiLocalization.T("A file with this name already exists. Replace it?"),
+                    UiLocalization.T("Save Project As"),
+                    MessageBoxButtons.OKCancel,
+                    MessageBoxIcon.Warning) != DialogResult.OK)
+            {
+                return false;
+            }
+        }
+
+        return usePackage
+            ? SaveProjectPackageTo(targetPath)
+            : SaveFolderProjectAs(targetPath);
+    }
+
+    private bool SaveFolderProjectAs(string manifestPath)
+    {
+        // 另存为传统文件夹工程后离开单文件模式。
+        _projectPackagePath = "";
+        return SaveProjectTo(manifestPath);
     }
 
     private bool SaveProjectTo(string manifestPath)
@@ -1667,8 +1742,40 @@ internal sealed partial class MainForm : Form
         }
     }
 
+    private bool SaveProjectPackageTo(string packagePath)
+    {
+        Cursor = Cursors.WaitCursor;
+        try
+        {
+            SessionBreadcrumbs.Record("Project", $"Saving package {packagePath}");
+            FinishPointerInteractionForFrameChange();
+            RefreshPendingSceneLightTweenMaterializations();
+            var fullPackagePath = Path.GetFullPath(packagePath);
+            _projectManifestPath = ProjectPackageStore.SavePackage(_project, fullPackagePath);
+            _projectPackagePath = fullPackagePath;
+            SetProjectDirty(false);
+            CaptureActiveSceneOpticsSaveCheckpoint();
+            AppLog.Info($"Saved packaged project: {fullPackagePath}");
+            ModernMessageDialog.Show(this, fullPackagePath, UiLocalization.T("Save Project"),
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Unable to save project package: {packagePath}", ex);
+            ShowProjectFileError("The project could not be saved.", ex);
+            return false;
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
     private void LoadProjectDocument(VectorProject project, string manifestPath)
     {
+        // 默认按文件夹/未保存工程处理；单文件入口会在调用后设置 _projectPackagePath。
+        _projectPackagePath = "";
         AssignProjectDocument(project, manifestPath, dirty: false);
         _libraryVaultPanel.BindProject(_project, () => _frame);
         _sceneEditStage.CreateEmpty();
@@ -1765,6 +1872,7 @@ internal sealed partial class MainForm : Form
     {
         AppLog.Info("Restoring editor restart session");
         AssignProjectDocument(state.Project, state.ProjectManifestPath, state.ProjectDirty);
+        _projectPackagePath = state.ProjectPackagePath;
         _libraryVaultPanel.BindProject(_project, () => _frame);
         _sceneEditStage.CreateEmpty();
         _drawingObjectUnderlayStage.CreateEmpty();
@@ -1839,6 +1947,7 @@ internal sealed partial class MainForm : Form
         {
             Project = _project,
             ProjectManifestPath = _projectManifestPath,
+            ProjectPackagePath = _projectPackagePath,
             ProjectDirty = _projectDirty,
             ActiveSceneIndex = _activeSceneIndex,
             ActiveDrawingObjectIndex = _activeDrawingObjectIndex,

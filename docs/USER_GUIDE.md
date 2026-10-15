@@ -105,7 +105,7 @@ VectorAnimationEngine-<version>-win-x64.exe
 4. 使用 `Select` 选择对象并拖动；需要缩放、旋转或倾斜时切换 `Free Transform`。
 5. 在底部时间轴点击 `+` 新建图层，使用 `F6` 创建关键帧，拖动红色播放头切换帧。
 6. 按 `Enter` 播放或暂停。
-7. 使用 `Ctrl+S` 保存工程；首次保存请选择一个专用文件夹。
+7. 使用 `Ctrl+S` 保存工程；首次保存默认生成单个 `.v2d` 工程文件，选择保存位置即可。
 
 机制：绘制内容总是写入“当前元件 > 当前活动图层 > 当前 Cel”。如果操作没有出现在预期位置，优先检查当前工作区、活动图层、播放头和图层锁定状态。
 
@@ -977,7 +977,17 @@ Flash guide 层的参考图不参与导出，会从 V2D 图层中省略，并报
 
 这些路径覆盖 Flash 8 到 Animate 的格式代际；它们不等于已经用每一版本的真实 FLA 验证，也不等于所有 Flash 功能都能无损转移。[Adobe 的格式及旧功能转换说明](https://helpx.adobe.com/animate/desktop/multimedia-and-video/opening-cs6-files-cc.html)、[SVG 导出 API](https://github.com/AdobeDocs/developers-animatesdk-docs/blob/master/Document_object/docu6074.md)。
 
-首次保存请选择或新建专用文件夹。工程采用目录结构，而不是单个压缩包：
+首次保存默认生成单个 `.v2d` 工程文件（类似 FLA 的单文件容器），复制、分享或移动工程时只需要处理这一个文件，素材不会在文件夹里散开。`.v2d` 内部打包了与传统文件夹工程完全相同的结构：
+
+```text
+Project Name.v2d          ← 一个文件就是完整工程（ZIP 容器）
+  └─ Project.v2dProject
+     .Vault/
+       Images/
+     .TimeLine/
+```
+
+需要直接查看或处理内部文件时，也可以在“工程另存为”中选择传统文件夹工程（`.v2dProject`）：
 
 ```text
 Project Folder/
@@ -989,6 +999,7 @@ Project Folder/
 
 机制：
 
+- `.v2d` 是单文件容器，打开时自动解包到系统 LocalAppData 下的托管工作区编辑，保存时原子写回容器；旧版文件夹工程仍可正常打开，也可以另存为 `.v2d`，两种格式互相转换不丢失数据。
 - `.v2dProject` 保存工程索引、播放设置和校验信息。
 - 元件吸附点作为元件级静态数据保存在 `.v2dProject`，不写入图层或时间轴文件。
 - `.Vault` 保存可逆 SVG 绘制资产：普通 SVG 预览保持可用，内部可编辑场景数据采用 Brotli 无损压缩，不降低几何精度或画质。
@@ -997,7 +1008,8 @@ Project Folder/
 - 外部 SVG 素材只在 `.v2dProject` 中保存稳定 ID、绝对/工程相对源路径和最后已知 SHA-256；源文件保持在原位置，不会复制到 `.Vault`。
 - 图片素材把导入的字节复制到 `.Vault/Images`，并按内容的 SHA-256 校验托管副本；源文件丢失不会阻止打开工程。
 - 保存时先写入临时内容并完整校验，再替换原工程；中断后会通过事务日志恢复。
-- 打开工程会先校验路径和存储文件的 SHA-256，再按受限大小解压并校验 ID、引用和时间轴，成功后才替换当前工程；损坏、截断或解压后超出限制的数据会被拒绝。
+- 打开工程会先校验路径和存储文件的 SHA-256，再按受限大小解压并校验 ID、引用和时间轴，成功后才替换当前工程；损坏、截断或解压后超出限制的数据会被拒绝。`.v2d` 容器额外拒绝路径穿越、重解析点和任何不在工程结构内的条目。
+- 首次启动会在当前用户注册表（HKCU，无需管理员权限）注册 `.v2d` 扩展名、工程图标与双击打开；之后在资源管理器双击 `.v2d` 即可启动软件并打开工程，软件已运行时会在原窗口中打开。
 
 操作提示：
 
@@ -1066,8 +1078,8 @@ url = "http://127.0.0.1:43521/mcp/"
 | `editor_undo` | 使用现有撤销历史撤销当前上下文的最近编辑 |
 | `settings_get` | 读取软件设置与可修改字段的 Schema；不返回令牌 |
 | `settings_update` | 部分更新并持久化语言、主题、主题/高亮 HSB、时间轴格尺寸、自动关键帧和工作区背景色 |
-| `project_open` | 从绝对 `.v2dProject` 路径 `path` 打开工程 |
-| `project_save` | 保存到当前路径；首次保存需提供专用工程目录中的绝对 `path` |
+| `project_open` | 从绝对 `path` 打开工程，支持 `.v2d` 单文件容器与 `.v2dProject` 文件夹清单 |
+| `project_save` | 保存到当前路径；首次保存需提供绝对 `path`，扩展名 `.v2d` 保存为单文件容器，`.v2dProject` 保存为文件夹工程 |
 | `project_new` | 创建空工程 |
 | `animation_import_bundle` | 从绝对 JSON 路径 `path` 导入 SVG 帧、嵌套元件和实例动画，建立新工程 |
 
@@ -1119,7 +1131,7 @@ url = "http://127.0.0.1:43521/mcp/"
 
 `animation_import_bundle` 的版本 1 文件包含 `version`、`name`、`fps`、`frameCount`、`width`、`height`、`symbols` 和 `scene`。每个元件用唯一 `key`、显示 `name`、`frameCount` 定义；可选 `frames` 中每项包含零基 `frame`、相对于 JSON 所在目录的 SVG `path`、`width` 和 `height`。SVG 帧保持到下一个关键帧。元件及场景的 `instances` 通过 `symbol` 引用先前定义的元件，按从底到顶的顺序声明；每项包含 `name`，可设置 `playbackMode: "Loop"`、位置、缩放、旋转、显隐，以及 `keys` 中逐帧的变换。关键帧未指定的字段继承前一状态，车轮或踏蹬等循环元件可以被多个实例共享。SVG 默认以原点居中，尺寸与位置使用相同坐标单位。
 
-导入器先在独立文档中校验并构建完整动画，通过后才替换当前工程；未保存内容默认受到保护，可先 `project_save` 或显式传入 `discardUnsaved`。SVG 必须位于 JSON 目录内，不允许目录逃逸、重解析点、脚本或外部引用。导入完成后仍需调用 `project_save` 保存为原生 `.v2dProject` 工程。
+导入器先在独立文档中校验并构建完整动画，通过后才替换当前工程；未保存内容默认受到保护，可先 `project_save` 或显式传入 `discardUnsaved`。SVG 必须位于 JSON 目录内，不允许目录逃逸、重解析点、脚本或外部引用。导入完成后仍需调用 `project_save` 保存为原生 `.v2d` 单文件工程或 `.v2dProject` 文件夹工程。
 
 所有编辑器工具都在 UI 线程执行；拖拽、文本编辑或模态窗口打开期间，修改操作返回忙碌错误。工具切换仍受当前工作区、图层锁定等规则约束。打开和新建工程遇到未保存内容时默认拒绝；应先保存，或显式传入 `"discardUnsaved": true`。参数错误和操作失败返回 `isError: true`，不会弹出无人操作的文件对话框。连接开关、令牌和修改权限只通过软件设置窗口调整。
 
@@ -1280,7 +1292,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 - Outline 和 Onion Skin 都是编辑辅助，不修改工程几何。
 - Scene 实例引用源元件；修改源会影响所有引用。
 - Mask 先裁切，Blend Mode 后合成。
-- 保存工程时保持整个工程文件夹结构完整。
+- 保存为文件夹工程时保持整个工程文件夹结构完整；保存为 `.v2d` 时只需保管这一个文件，系统托管工作区会自动维护。
 
 ## 17. 源码发布管理器
 

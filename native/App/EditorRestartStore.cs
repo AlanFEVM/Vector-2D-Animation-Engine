@@ -50,6 +50,7 @@ internal static class EditorRestartStore
                 ExpiresUtc = expiresUtc,
                 Project = state.Project.CreateRestartSnapshot(),
                 ProjectManifestPath = state.ProjectManifestPath,
+                ProjectPackagePath = state.ProjectPackagePath,
                 ProjectDirty = state.ProjectDirty,
                 ActiveSceneIndex = state.ActiveSceneIndex,
                 ActiveDrawingObjectIndex = state.ActiveDrawingObjectIndex,
@@ -117,6 +118,7 @@ internal static class EditorRestartStore
             {
                 Project = VectorProject.RestoreRestartSnapshot(file.Project),
                 ProjectManifestPath = file.ProjectManifestPath ?? "",
+                ProjectPackagePath = file.ProjectPackagePath ?? "",
                 ProjectDirty = file.ProjectDirty,
                 ActiveSceneIndex = file.ActiveSceneIndex,
                 ActiveDrawingObjectIndex = file.ActiveDrawingObjectIndex,
@@ -230,6 +232,7 @@ internal static class EditorRestartStore
         public string[]? TemporaryRoots { get; set; }
         public ProjectRestartSnapshot? Project { get; init; }
         public string? ProjectManifestPath { get; init; }
+        public string? ProjectPackagePath { get; init; }
         public bool ProjectDirty { get; init; }
         public int ActiveSceneIndex { get; init; }
         public int ActiveDrawingObjectIndex { get; init; }

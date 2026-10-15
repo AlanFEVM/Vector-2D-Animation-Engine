@@ -27,6 +27,7 @@ internal static class Program
 
         if (TryRunBenchmark(args) || TryValidateReleaseNotes(args)) return;
 
+        var startupProjectPath = TryGetStartupProjectPath(args);
         var restartToken = EditorRestartStore.GetRequestedToken(args);
         var instanceWait = string.IsNullOrWhiteSpace(restartToken)
             ? TimeSpan.Zero
@@ -37,6 +38,7 @@ internal static class Program
         }
         if (!SingleInstanceLease.TryAcquire(instanceWait, out var instanceLease))
         {
+            InstanceActivation.Forward(startupProjectPath);
             AppLog.Warn(instanceWait > TimeSpan.Zero
                 ? "The previous native instance did not exit before the editor-restart startup timed out."
                 : "A native application instance is already active; skipping duplicate startup.");
@@ -59,6 +61,8 @@ internal static class Program
                 settings.AccentSaturationPercent,
                 settings.AccentBrightnessPercent);
             UiLocalization.SetLanguage(settings.Language);
+            ProjectFileAssociation.Ensure();
+            ProjectPackageStore.CleanupStaleWorkspaces();
             var inputFocusDismissalFilter = new InputFocusDismissalFilter();
             Application.AddMessageFilter(inputFocusDismissalFilter);
             using (instanceLease)
@@ -69,7 +73,7 @@ internal static class Program
                     Action? completeRestartHandoff = restartPrepared
                         ? () => EditorRestartStore.CompletePreparedConsume(restartToken)
                         : null;
-                    Application.Run(new AppHost(restartState, completeRestartHandoff));
+                    Application.Run(new AppHost(restartState, completeRestartHandoff, startupProjectPath));
                 }
                 finally
                 {
@@ -181,6 +185,37 @@ internal static class Program
         {
             // A terminating path may be unable to show UI; the log already has the report path.
         }
+    }
+
+    /// <summary>
+    /// 识别命令行中双击打开的工程文件（.v2d 单文件容器或旧版 .v2dProject 清单）。
+    /// 形如 --option 的开关参数一律忽略。
+    /// </summary>
+    private static string? TryGetStartupProjectPath(IReadOnlyList<string> args)
+    {
+        foreach (var argument in args)
+        {
+            if (string.IsNullOrWhiteSpace(argument) || argument.StartsWith('-')) continue;
+            string fullPath;
+            try
+            {
+                if (!File.Exists(argument)) continue;
+                fullPath = Path.GetFullPath(argument);
+            }
+            catch
+            {
+                continue;
+            }
+
+            var extension = Path.GetExtension(fullPath);
+            if (string.Equals(extension, ProjectPackageStore.PackageExtension, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ProjectVaultStore.ProjectExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                return fullPath;
+            }
+        }
+
+        return null;
     }
 
     private static bool TryRunBenchmark(IReadOnlyList<string> args)

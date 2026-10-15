@@ -88,9 +88,13 @@ internal sealed partial class MainForm
     /// </summary>
     private string ExportInitialDirectory()
     {
-        if (!string.IsNullOrWhiteSpace(_projectManifestPath))
+        // 单文件工程导出到容器所在目录，而不是 LocalAppData 下的托管工作区。
+        var referencePath = !string.IsNullOrWhiteSpace(_projectPackagePath)
+            ? _projectPackagePath
+            : _projectManifestPath;
+        if (!string.IsNullOrWhiteSpace(referencePath))
         {
-            var directory = Path.GetDirectoryName(_projectManifestPath);
+            var directory = Path.GetDirectoryName(referencePath);
             if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory)) return directory;
         }
 

@@ -13,12 +13,17 @@ internal sealed class AppHost : ApplicationContext
     private readonly HotReloadCoordinator _hotReloadCoordinator;
     private Action? _completeRestartHandoff;
     private readonly CodexBridgeServer _codexBridge;
+    private string? _startupProjectPath;
+    private CancellationTokenSource? _activationCancellation;
 
     public static AppHost? Current { get; private set; }
     internal string CodexBridgeStatus => _codexBridge.Status;
     internal void ApplyCodexBridgeSettings(ApplicationSettings settings) => _codexBridge.Apply(settings);
 
-    public AppHost(EditorRestartState? restartState = null, Action? completeRestartHandoff = null)
+    public AppHost(
+        EditorRestartState? restartState = null,
+        Action? completeRestartHandoff = null,
+        string? startupProjectPath = null)
     {
         _codexBridge = new CodexBridgeServer((name, arguments, cancellation) =>
         {
@@ -28,12 +33,13 @@ internal sealed class AppHost : ApplicationContext
         });
         _hotReloadCoordinator = new HotReloadCoordinator(GetReadyMainForm, ApplyHotReloadBatch);
         _completeRestartHandoff = completeRestartHandoff;
+        _startupProjectPath = startupProjectPath;
         Current = this;
         AppLog.Info("Creating application host");
         _startupBanner = new StartupBannerForm();
         _startupBanner.Show();
         Application.DoEvents();
-        ShowMainForm(restartState);
+        ShowMainForm(restartState, startupProjectPath);
     }
 
     public static void EnqueueHotReload(HotReloadPlan plan)
@@ -108,7 +114,41 @@ internal sealed class AppHost : ApplicationContext
         _completeRestartHandoff = null;
         LauncherShutdownSignal.NotifyMainWindowReady();
         _codexBridge.Apply(form.CodexApplicationSettings);
+        StartActivationServer(form);
+        if (_startupProjectPath is { } startupProjectPath)
+        {
+            _startupProjectPath = null;
+            try
+            {
+                form.OpenStartupProject(startupProjectPath);
+            }
+            catch (Exception exception)
+            {
+                AppLog.Error("Failed to open the project requested at startup", exception);
+            }
+        }
         if (deferredPlan is { } plan) _hotReloadCoordinator.Enqueue(plan);
+    }
+
+    private void StartActivationServer(MainForm form)
+    {
+        if (_activationCancellation is not null) return;
+        _activationCancellation = new CancellationTokenSource();
+        InstanceActivation.StartServer(path =>
+        {
+            // 进程内重启会替换 MainForm，始终解析当前就绪窗口，避免投递到已关闭的旧窗口。
+            if (GetReadyMainForm() is not MainForm activeForm
+                || activeForm.IsDisposed
+                || !activeForm.IsHandleCreated)
+            {
+                return;
+            }
+
+            activeForm.BeginInvoke(() =>
+            {
+                if (!activeForm.IsDisposed) activeForm.OpenStartupProject(path);
+            });
+        }, _activationCancellation.Token);
     }
 
     private bool TryRequestDetachedEditorProcessRestart()
@@ -162,6 +202,8 @@ internal sealed class AppHost : ApplicationContext
     {
         if (disposing)
         {
+            _activationCancellation?.Cancel();
+            _activationCancellation?.Dispose();
             _codexBridge.Dispose();
             _hotReloadCoordinator.Dispose();
             CloseStartupBanner();
@@ -171,12 +213,13 @@ internal sealed class AppHost : ApplicationContext
         base.Dispose(disposing);
     }
 
-    private void ShowMainForm(EditorRestartState? restartState = null)
+    private void ShowMainForm(EditorRestartState? restartState = null, string? startupProjectPath = null)
     {
         SetMainFormUnavailable();
         var form = restartState is null
             ? new VectorAnimationEngine.MainForm()
             : VectorAnimationEngine.MainForm.CreateForRestart(restartState);
+        _startupProjectPath ??= startupProjectPath;
         AppLog.Info("Showing main form");
         MainForm = form;
         _mainForm = form;

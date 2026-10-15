@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 
 namespace VectorAnimationEngine;
 
@@ -1136,6 +1136,9 @@ internal static class UiLocalization
             ["Unsaved Project"] = "未保存的工程",
             ["Untitled Project"] = "未命名工程",
             ["Vector 2D Project"] = "Vector 2D 工程",
+            ["A file with this name already exists. Replace it?"] = "同名文件已存在，是否替换？",
+            ["Vector 2D Project Package"] = "Vector 2D 单文件工程",
+            ["Vector 2D Project Folder"] = "Vector 2D 文件夹工程",
             ["Vault"] = "素材库",
             ["Vault load failed"] = "素材库加载失败",
             ["Vault is empty"] = "素材库为空",

@@ -8,6 +8,8 @@ internal sealed class EditorRestartState
 {
     public required VectorProject Project { get; init; }
     public string ProjectManifestPath { get; init; } = "";
+    /// <summary>单文件 .v2d 容器路径；空字符串表示文件夹工程或尚未保存。</summary>
+    public string ProjectPackagePath { get; init; } = "";
     public bool ProjectDirty { get; init; }
     public required int ActiveSceneIndex { get; init; }
     public required int ActiveDrawingObjectIndex { get; init; }
@@ -130,6 +132,12 @@ internal sealed partial class MainForm : Form
 
     private VectorProject _project = VectorProject.CreateEmpty();
     private string _projectManifestPath = "";
+    /// <summary>
+    /// 单文件工程（.v2d）容器的用户可见路径；空字符串表示当前工程来自传统文件夹或尚未保存。
+    /// 保存到容器时 _projectManifestPath 指向 LocalAppData 下的托管工作区清单，
+    /// 用户提示、另存为与重启状态以本字段为准。
+    /// </summary>
+    private string _projectPackagePath = "";
     private bool _projectDirty;
     private ApplicationSettings _applicationSettings = ApplicationSettingsStore.Load();
     private VectorScene _scene;

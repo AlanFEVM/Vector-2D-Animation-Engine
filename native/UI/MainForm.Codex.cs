@@ -99,10 +99,19 @@ internal sealed partial class MainForm
             case "project_open":
                 RequireCodexProjectReplacement(arguments);
                 var path = CodexProjectPath(arguments.GetProperty("path").GetString()!);
-                var project = ProjectVaultStore.Load(path);
                 StopPlayback();
                 FinishPointerInteractionForFrameChange();
-                LoadProjectDocument(project, path);
+                if (ProjectPackageStore.IsPackagePath(path))
+                {
+                    var (packagedProject, packagedManifestPath) = ProjectPackageStore.OpenPackage(path);
+                    LoadProjectDocument(packagedProject, packagedManifestPath);
+                    _projectPackagePath = path;
+                }
+                else
+                {
+                    LoadProjectDocument(ProjectVaultStore.Load(path), path);
+                    _projectPackagePath = "";
+                }
                 return GetCodexProjectInfo();
             case "project_new":
                 RequireCodexProjectReplacement(arguments);
@@ -111,15 +120,27 @@ internal sealed partial class MainForm
                 CreateNewProject();
                 return GetCodexProjectInfo();
             case "project_save":
+                var defaultDestination = !string.IsNullOrWhiteSpace(_projectPackagePath)
+                    ? _projectPackagePath
+                    : _projectManifestPath;
                 var destination = arguments.TryGetProperty("path", out var supplied)
-                    ? supplied.GetString()! : _projectManifestPath;
+                    ? supplied.GetString()! : defaultDestination;
                 destination = CodexProjectPath(destination);
                 StopPlayback();
                 FinishPointerInteractionForFrameChange();
                 RefreshPendingSceneLightTweenMaterializations();
-                // Use the store directly so errors become tool results without
+                // Use the stores directly so errors become tool results without
                 // opening a modal file-error dialog on an unattended request.
-                _projectManifestPath = ProjectVaultStore.Save(_project, destination);
+                if (ProjectPackageStore.IsPackagePath(destination))
+                {
+                    _projectManifestPath = ProjectPackageStore.SavePackage(_project, destination);
+                    _projectPackagePath = destination;
+                }
+                else
+                {
+                    _projectManifestPath = ProjectVaultStore.Save(_project, destination);
+                    _projectPackagePath = "";
+                }
                 SetProjectDirty(false);
                 CaptureActiveSceneOpticsSaveCheckpoint();
                 return GetCodexProjectInfo();
@@ -162,7 +183,11 @@ internal sealed partial class MainForm
 
     private object GetCodexProjectInfo() => new
     {
-        _project.Id, _project.Name, path = _projectManifestPath, dirty = _projectDirty,
+        _project.Id,
+        _project.Name,
+        path = string.IsNullOrWhiteSpace(_projectPackagePath) ? _projectManifestPath : _projectPackagePath,
+        packagePath = _projectPackagePath,
+        dirty = _projectDirty,
         scenes = _scenes.Select(s => new { s.Id, s.Name, s.Dimension, s.FrameCount }).ToArray(),
         drawingObjects = _drawingObjects.Select(d => new { d.Id, d.Name, d.Kind, d.FrameCount,
             objectCount = d.Scene.ObjectCount, layerCount = d.Scene.LayerCount }).ToArray()
@@ -206,9 +231,14 @@ internal sealed partial class MainForm
 
     private static string CodexProjectPath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)
-            || !string.Equals(Path.GetExtension(path), ProjectVaultStore.ProjectExtension, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Provide an absolute .v2dProject manifest path in a dedicated project folder.");
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
+            throw new ArgumentException("Provide an absolute .v2d package path or a .v2dProject manifest path.");
+        var extension = Path.GetExtension(path);
+        if (!string.Equals(extension, ProjectVaultStore.ProjectExtension, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ProjectPackageStore.PackageExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Provide an absolute .v2d package path or a .v2dProject manifest path.");
+        }
         return Path.GetFullPath(path);
     }
 }

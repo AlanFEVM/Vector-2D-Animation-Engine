@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Numerics;
 
 namespace VectorAnimationEngine;
@@ -2800,6 +2801,59 @@ internal static partial class Benchmark
                 && !Directory.Exists(installedPaths.BackupRoot)
                 && !File.Exists(installedPaths.JournalPath),
                 "Installed project-save recovery did not preserve the complete new file set and clean recovery files.");
+
+            // 单文件容器（.v2d）往返：保存为 ZIP 容器、重新打开、再次保存后结构必须保持一致。
+            var packagePath = Path.Combine(temporaryRoot, "Packaged Library.v2d");
+            var packagedWorkspaceManifest = ProjectPackageStore.SavePackage(project, packagePath);
+            using (var archive = ZipFile.OpenRead(packagePath))
+            {
+                var entryNames = archive.Entries
+                    .Select(entry => entry.FullName.Replace('\\', '/'))
+                    .ToArray();
+                AssertTimeline(
+                    File.Exists(packagePath)
+                    && entryNames.Count(name => !name.Contains('/')
+                        && name.EndsWith(ProjectVaultStore.ProjectExtension, StringComparison.OrdinalIgnoreCase)) == 1
+                    && entryNames.Any(name => name.StartsWith(".Vault/", StringComparison.Ordinal))
+                    && entryNames.Any(name => name.StartsWith(".TimeLine/", StringComparison.Ordinal))
+                    && entryNames.All(name => !name.Contains("..", StringComparison.Ordinal)),
+                    "The single-file project package is missing its manifest/Vault entries or contains unsafe names.");
+            }
+
+            var (packagedProject, reopenedManifestPath) = ProjectPackageStore.OpenPackage(packagePath);
+            AssertTimeline(
+                packagedProject.Id == project.Id
+                && packagedProject.Name == project.Name
+                && packagedProject.DrawingObjects.Count == project.DrawingObjects.Count
+                && packagedProject.Scenes.Count == project.Scenes.Count
+                && string.Equals(reopenedManifestPath, packagedWorkspaceManifest, StringComparison.OrdinalIgnoreCase),
+                "A packaged project did not reopen with the same document structure and workspace.");
+
+            ProjectPackageStore.SavePackage(packagedProject, packagePath);
+            var (repackagedProject, _) = ProjectPackageStore.OpenPackage(packagePath);
+            AssertTimeline(
+                repackagedProject.Id == project.Id
+                && repackagedProject.Name == project.Name
+                && repackagedProject.DrawingObjects.Count == project.DrawingObjects.Count,
+                "Re-saving an opened packaged project did not preserve the document.");
+
+            // 恶意容器：包含路径穿越条目的 ZIP 必须被拒绝解包。
+            var maliciousPackagePath = Path.Combine(temporaryRoot, "Malicious.v2d");
+            using (var maliciousStream = new FileStream(maliciousPackagePath, FileMode.Create, FileAccess.Write))
+            using (var maliciousArchive = new ZipArchive(maliciousStream, ZipArchiveMode.Create))
+            {
+                var evilEntry = maliciousArchive.CreateEntry("Project.v2dProject");
+                using var evilWriter = new StreamWriter(evilEntry.Open());
+                evilWriter.Write("{}");
+                var escapeEntry = maliciousArchive.CreateEntry("../Escaped.txt");
+                using var escapeWriter = new StreamWriter(escapeEntry.Open());
+                escapeWriter.Write("escape");
+            }
+
+            var maliciousRejected = false;
+            try { ProjectPackageStore.OpenPackage(maliciousPackagePath); }
+            catch (InvalidDataException) { maliciousRejected = true; }
+            AssertTimeline(maliciousRejected, "A package with path traversal entries was extracted instead of rejected.");
         }
         finally
         {
