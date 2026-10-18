@@ -274,10 +274,10 @@ internal sealed partial class MainForm : Form
     private readonly AnimatedContextMenuStrip _mainMenu = new();
     private readonly ToolStripMenuItem _deleteNestedInstanceMenuItem = new("Delete");
     private readonly ToolStripMenuItem _breakApartMenuItem = new("Break Apart");
-    private readonly ToolStripSeparator _deleteNestedInstanceMenuSeparator = new();
+    private readonly ToolStripMenuItem _lineGroupMenuItem = new("Line");
+    private readonly ToolStripMenuItem _transformGroupMenuItem = new("Transform");
     private readonly ToolStripMenuItem _flipHorizontalMenuItem = new("Flip Horizontal");
     private readonly ToolStripMenuItem _flipVerticalMenuItem = new("Flip Vertical");
-    private readonly ToolStripSeparator _transformActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _bringForwardMenuItem = new("Bring Forward")
     {
         Tag = ShortcutCommandIds.BringForward
@@ -286,11 +286,9 @@ internal sealed partial class MainForm : Form
     {
         Tag = ShortcutCommandIds.SendBackward
     };
-    private readonly ToolStripSeparator _stackActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _convertLineToFillMenuItem = new("Convert Line to Fill");
-    private readonly ToolStripSeparator _lineActionsMenuSeparator = new();
     private readonly ToolStripMenuItem _mergeAndSimplifyLinesMenuItem = new("Merge and Simplify Lines");
-    private readonly ToolStripSeparator _symbolExportMenuSeparator = new();
+    private readonly ToolStripMenuItem _symbolGroupMenuItem = new("Symbol");
     private readonly ToolStripMenuItem _exportSymbolSvgMenuItem = new("Export Symbol as SVG");
     private readonly ToolStripMenuItem _exportSymbolFileMenuItem = new("Export Symbol File");
     private readonly ToolStripMenuItem _importSymbolFileMenuItem = new("Import Symbol File");
@@ -479,6 +477,9 @@ internal sealed partial class MainForm : Form
     private bool _spacePanKeyDown;
     private bool _spacePanHeld;
     private bool _spacePanPointerActive;
+    private bool _altKeyDown;
+    private bool _altEyedropperHeld;
+    private bool _eyedropperSamplesGradient;
     private bool _marqueeSelecting;
     private bool _marqueeSelectionCancellationPending;
     private bool _detachedSelectionForMove;
@@ -760,6 +761,9 @@ internal sealed partial class MainForm : Form
         public PointF Control1 { get; init; }
         public PointF Control2 { get; init; }
         public PointF PointerStart { get; init; }
+        /// <summary>
+        /// Always empty for Line arcs: bending a Line must never reshape a coincident fill.
+        /// </summary>
         public required FillBoundaryLineLink[] FillBoundaryLinks { get; init; }
         public bool DragExceeded { get; set; }
     }
@@ -785,8 +789,8 @@ internal sealed partial class MainForm : Form
         /// <summary>Freeform node state captured when the drag started.</summary>
         public PathBezierNode BaseCorner { get; init; }
         /// <summary>
-        /// Fill boundaries coincident with the dragged stroke, captured while the geometry was
-        /// still straight so fills follow the corner while it is dragged.
+        /// Fill boundaries coincident with the dragged stroke. Line/Freeform corner drags never
+        /// populate it: stroke edits are independent of any fill.
         /// </summary>
         public FillBoundaryLineLink[] FillBoundaryLinks { get; init; } = Array.Empty<FillBoundaryLineLink>();
         public bool DragExceeded { get; set; }
@@ -960,20 +964,42 @@ internal sealed partial class MainForm : Form
     public event EventHandler<EditorRestartRequestedEventArgs>? RestartRequested;
     public event EventHandler? ProcessRestartRequested;
 
+    // The canvas menu keeps one flat action per task (Delete, Break Apart) and folds
+    // related commands into four groups so similar operations are no longer scattered
+    // across the whole list. Each group only appears when it has a usable command.
     private void BuildStageContextMenu()
     {
-        _stageContextMenu.Items.Add(_deleteNestedInstanceMenuItem);
-        _stageContextMenu.Items.Add(_breakApartMenuItem);
-        _stageContextMenu.Items.Add(_deleteNestedInstanceMenuSeparator);
-        _stageContextMenu.Items.Add(_flipHorizontalMenuItem);
-        _stageContextMenu.Items.Add(_flipVerticalMenuItem);
-        _stageContextMenu.Items.Add(_transformActionsMenuSeparator);
-        _stageContextMenu.Items.Add(_bringForwardMenuItem);
-        _stageContextMenu.Items.Add(_sendBackwardMenuItem);
-        _stageContextMenu.Items.Add(_stackActionsMenuSeparator);
-        _stageContextMenu.Items.Add(_convertLineToFillMenuItem);
-        _stageContextMenu.Items.Add(_lineActionsMenuSeparator);
-        _stageContextMenu.Items.Add(_mergeAndSimplifyLinesMenuItem);
+        _lineGroupMenuItem.DropDown = new AnimatedContextMenuStrip();
+        _lineGroupMenuItem.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _convertLineToFillMenuItem,
+            _mergeAndSimplifyLinesMenuItem
+        });
+        _transformGroupMenuItem.DropDown = new AnimatedContextMenuStrip();
+        _transformGroupMenuItem.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _flipHorizontalMenuItem,
+            _flipVerticalMenuItem,
+            new ToolStripSeparator(),
+            _bringForwardMenuItem,
+            _sendBackwardMenuItem
+        });
+        _symbolGroupMenuItem.DropDown = new AnimatedContextMenuStrip();
+        _symbolGroupMenuItem.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _exportSymbolSvgMenuItem,
+            _exportSymbolFileMenuItem,
+            new ToolStripSeparator(),
+            _importSymbolFileMenuItem
+        });
+        _stageContextMenu.Items.AddRange(new ToolStripItem[]
+        {
+            _deleteNestedInstanceMenuItem,
+            _breakApartMenuItem,
+            _lineGroupMenuItem,
+            _transformGroupMenuItem,
+            _symbolGroupMenuItem
+        });
         _deleteNestedInstanceMenuItem.Click += (_, _) =>
             DeleteNestedDrawingObjectInstance(_stageContextMenuNestedInstanceId);
         _breakApartMenuItem.Click += (_, _) => BreakApartStageSelection();
@@ -992,10 +1018,6 @@ internal sealed partial class MainForm : Form
             if (ActiveDrawingObject() is { } drawingObject) ExportDrawingObjectSymbolPackage(drawingObject.Id);
         };
         _importSymbolFileMenuItem.Click += (_, _) => ImportDrawingObjectSymbolPackage();
-        _stageContextMenu.Items.Add(_symbolExportMenuSeparator);
-        _stageContextMenu.Items.Add(_exportSymbolSvgMenuItem);
-        _stageContextMenu.Items.Add(_exportSymbolFileMenuItem);
-        _stageContextMenu.Items.Add(_importSymbolFileMenuItem);
         _stageContextMenu.Opening += (_, _) =>
         {
             RefreshShortcutMenuDisplay();
@@ -1055,16 +1077,6 @@ internal sealed partial class MainForm : Form
             _deleteNestedInstanceMenuItem.Visible = canDeleteNestedInstance;
             _breakApartMenuItem.Visible = breakApartWorkspace && hasBreakApartTarget;
             _breakApartMenuItem.Enabled = canBreakInstances || canBreakObject;
-            _deleteNestedInstanceMenuSeparator.Visible = canDeleteNestedInstance || _breakApartMenuItem.Visible;
-            _flipHorizontalMenuItem.Visible = true;
-            _flipVerticalMenuItem.Visible = true;
-            _transformActionsMenuSeparator.Visible = true;
-            _bringForwardMenuItem.Visible = true;
-            _sendBackwardMenuItem.Visible = true;
-            _stackActionsMenuSeparator.Visible = !canDeleteNestedInstance;
-            _convertLineToFillMenuItem.Visible = !canDeleteNestedInstance;
-            _lineActionsMenuSeparator.Visible = !canDeleteNestedInstance;
-            _mergeAndSimplifyLinesMenuItem.Visible = !canDeleteNestedInstance;
             var containsNonFlippableObject = !canDeleteNestedInstance
                 && drawingTargets.Any(IsWholeObjectOnlyObject);
             _flipHorizontalMenuItem.Enabled = commandTargetCount > 0 && !containsNonFlippableObject;
@@ -1076,12 +1088,8 @@ internal sealed partial class MainForm : Form
             // Exporting a whole symbol is a document action, so it stays available
             // regardless of which drawing tools are active.
             var exportSymbol = ActiveDrawingObject();
-            _symbolExportMenuSeparator.Visible = exportSymbol is not null;
-            _exportSymbolSvgMenuItem.Visible = exportSymbol is not null;
             _exportSymbolSvgMenuItem.Enabled = exportSymbol is not null;
-            _exportSymbolFileMenuItem.Visible = exportSymbol is not null;
             _exportSymbolFileMenuItem.Enabled = exportSymbol is not null;
-            _importSymbolFileMenuItem.Visible = true;
             if (TryGetStageContextLineObject(_stageContextMenuLocation, out var objectIndex))
             {
                 _stageContextMenuLineObject = objectIndex;
@@ -1095,7 +1103,12 @@ internal sealed partial class MainForm : Form
                 ? 1
                 : selectedLines.Length;
             _convertLineToFillMenuItem.Enabled = targetCount > 0;
-            _convertLineToFillMenuItem.Text = targetCount > 1 ? "Convert Lines to Fill" : "Convert Line to Fill";
+            _convertLineToFillMenuItem.Text = UiLocalization.T(
+                targetCount > 1 ? "Convert Lines to Fill" : "Convert Line to Fill");
+
+            _lineGroupMenuItem.Visible = _convertLineToFillMenuItem.Enabled || _mergeAndSimplifyLinesMenuItem.Enabled;
+            _transformGroupMenuItem.Visible = !canDeleteNestedInstance;
+            _symbolGroupMenuItem.Visible = true;
         };
         BuildRandomFractureContextMenu();
     }
@@ -1582,9 +1595,7 @@ internal sealed partial class MainForm : Form
         renameProject.Click += (_, _) => BeginProjectTitleEdit();
         var settings = new ToolStripMenuItem("Settings");
         var acknowledgements = new ToolStripMenuItem("Acknowledgements");
-        acknowledgements.Click += (_, _) => ModernMessageDialog.Show(this,
-            UiLocalization.T("Special thanks to") + "\n\n聪明尼", UiLocalization.T("Acknowledgements"),
-            MessageBoxButtons.OK, MessageBoxIcon.None);
+        acknowledgements.Click += (_, _) => ShowAcknowledgements();
         settings.Click += (_, _) => ShowSettings();
         var windows = new ToolStripMenuItem("Window");
         var hierarchy = new ToolStripMenuItem("Hierarchy");
@@ -1774,6 +1785,12 @@ internal sealed partial class MainForm : Form
     private void ShowReleaseNotes()
     {
         using var dialog = new ReleaseNotesDialog();
+        dialog.ShowDialog(this);
+    }
+
+    private void ShowAcknowledgements()
+    {
+        using var dialog = new AcknowledgementsDialog();
         dialog.ShowDialog(this);
     }
 
@@ -2702,6 +2719,13 @@ internal sealed partial class MainForm : Form
     private static bool IsAltPressed()
     {
         return (ModifierKeys & Keys.Alt) == Keys.Alt || (GetKeyState(VkMenu) & 0x8000) != 0;
+    }
+
+    private static bool IsAltKeyDown()
+    {
+        // Alt arrives as a system key: WinForms suppresses the matching KeyUp, so the held state
+        // cannot rely on KeyDown/KeyUp alone. The polling fallback covers a missed key edge.
+        return (GetKeyState(VkMenu) & 0x8000) == 0;
     }
 
     private static bool IsShiftPressed()

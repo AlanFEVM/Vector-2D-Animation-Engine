@@ -240,6 +240,7 @@ internal static class Program
 
         _ = ReleaseNotesCatalog.AllEntries;
         _ = ReleaseNotesCatalog.Current;
+        _ = ReleaseNotesCatalog.Acknowledgements;
         AppLog.Info($"Embedded release notes validated for version {ReleaseNotesCatalog.CurrentVersion}.");
         AppLog.Flush();
         return true;

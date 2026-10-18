@@ -13,6 +13,19 @@ internal sealed partial class TimelineStrip : Control
         ? SystemColors.Highlight
         : Theme.IsLight ? Color.FromArgb(172, 88, 0) : Color.FromArgb(255, 190, 76);
 
+    // The playhead follows the application accent instead of a fixed amber, so it reads as part of the
+    // themed workbench. The glow is blended toward the plain text color and the handle is nudged a step
+    // away from it, which separates the handle from its halo without inventing a second color family.
+    // High contrast keeps the system highlight/highlight-text pair; the frame chip picks its ink with
+    // Theme.ReadableText, so every accent hue stays readable.
+    private static Color PlayheadColor => SystemInformation.HighContrast
+        ? SystemColors.Highlight
+        : Theme.Accent;
+
+    private static Color PlayheadAccentColor => SystemInformation.HighContrast
+        ? SystemColors.HighlightText
+        : ThemeNeutral(Theme.Mix(Theme.Accent, Theme.Text, 0.22f), Theme.AccentLabel);
+
     private float EditingHighlightPulse => _editingHighlightTimer.Enabled
         ? 0.5f - 0.5f * MathF.Cos(_editingHighlightPhase * MathF.Tau)
         : 0.5f;
@@ -1977,18 +1990,91 @@ internal sealed partial class TimelineStrip : Control
         if (centerX < layout.TrackLeft || centerX >= layout.TrackRight) return;
 
         var pulse = EditingHighlightPulse;
-        var playhead = EditingHighlightEdgeColor;
-        using var glowPen = new Pen(Color.FromArgb((int)Math.Round(42 + pulse * 68), playhead), 4.5f + pulse * 2.5f);
-        using var linePen = new Pen(playhead, 1.5f + pulse * 0.35f);
-        using var fillBrush = new SolidBrush(playhead);
+        var playhead = PlayheadColor;
+        var accent = PlayheadAccentColor;
+        using var glowPen = new Pen(Color.FromArgb((int)Math.Round(30 + pulse * 48), playhead), 5f + pulse * 3f);
+        using var playheadPen = new Pen(playhead, 1.5f + pulse * 0.35f);
+        using var playheadBrush = new SolidBrush(playhead);
         if (Enabled && !SystemInformation.HighContrast) graphics.DrawLine(glowPen, centerX, HeaderHeight, centerX, layout.RowBottom);
-        graphics.DrawLine(linePen, centerX, HeaderHeight, centerX, layout.RowBottom);
-        _playheadHandlePoints[0] = new PointF(centerX - 5, HeaderHeight);
-        _playheadHandlePoints[1] = new PointF(centerX + 5, HeaderHeight);
-        _playheadHandlePoints[2] = new PointF(centerX + 5, HeaderHeight + 8);
-        _playheadHandlePoints[3] = new PointF(centerX, HeaderHeight + 13);
-        _playheadHandlePoints[4] = new PointF(centerX - 5, HeaderHeight + 8);
-        graphics.FillPolygon(fillBrush, _playheadHandlePoints);
+        graphics.DrawLine(playheadPen, centerX, HeaderHeight, centerX, layout.RowBottom);
+
+        // Rounded shoulder on top of the line, then a short neck and the pointer tip on the ruler: the
+        // themed corner language replaces the former flat triangle, so the marker reads like the rest of
+        // the workbench chrome instead of a separate highlight style.
+        var tab = new RectangleF(centerX - 5f, HeaderHeight, 10f, 8f);
+        _playheadHandlePoints[0] = new PointF(tab.Left, tab.Top);
+        _playheadHandlePoints[1] = new PointF(tab.Right, tab.Top);
+        _playheadHandlePoints[2] = new PointF(tab.Right, tab.Bottom - 1f);
+        _playheadHandlePoints[3] = new PointF(centerX, tab.Bottom + 5f);
+        _playheadHandlePoints[4] = new PointF(tab.Left, tab.Bottom - 1f);
+        var smoothingMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var tipBrush = new SolidBrush(accent))
+        {
+            graphics.FillPolygon(tipBrush, _playheadHandlePoints);
+            Theme.FillUiRectangle(graphics, tipBrush, tab);
+        }
+        graphics.SmoothingMode = smoothingMode;
+
+        DrawPlayheadFrameLabel(graphics, layout, centerX, playhead, accent);
+    }
+
+    private void DrawPlayheadFrameLabel(Graphics graphics, TimelineLayout layout, float centerX, Color playhead, Color accent)
+    {
+        if (layout.TrackRight - layout.TrackLeft < ScaleTimelineMetric(64)) return;
+
+        var label = CurrentFrame.ToString(CultureInfo.CurrentCulture);
+        using var font = Theme.UiFont(7.5f, FontStyle.Bold);
+        var textSize = TextRenderer.MeasureText(
+            label,
+            font,
+            new Size(int.MaxValue, int.MaxValue),
+            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        var height = ScaleTimelineMetric(15);
+        var bullet = ScaleTimelineMetric(4);
+        var gap = ScaleTimelineMetric(4);
+        var padding = ScaleTimelineMetric(4);
+        var width = padding + bullet + gap + textSize.Width + padding;
+        var top = HeaderHeight + 3;
+
+        // Prefer the slot after the handle; flip to the left of the line when the label would leave the
+        // track area, and skip it entirely rather than clip half a number against the gutter.
+        var left = centerX + ScaleTimelineMetric(8);
+        if (left + width > layout.TrackRight - ScaleTimelineMetric(2)) left = centerX - ScaleTimelineMetric(8) - width;
+        if (left < layout.TrackLeft || left + width > layout.TrackRight) return;
+
+        // A solid accent chip: the marker color itself carries the badge, so the counter stays the
+        // strongest reading of the playhead frame while the number resolves to readable ink. Text and ink
+        // are contrasted against the same color the chip is painted with.
+        var bounds = new RectangleF(left, top, width, height);
+        using var chip = new SolidBrush(playhead);
+        Theme.FillUiRectangle(graphics, chip, bounds);
+        using var border = new Pen(Color.FromArgb(150, accent), 1f);
+        Theme.DrawUiRectangle(graphics, border, bounds);
+
+        var dot = new RectangleF(left + padding, top + height / 2f - bullet / 2f, bullet, bullet);
+        var smoothingMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        Theme.FillUiRectangle(graphics, chip, dot);
+        graphics.SmoothingMode = smoothingMode;
+        using (var dotInk = new SolidBrush(Theme.ReadableText(playhead, accent)))
+        {
+            var dotInset = ScaleTimelineMetric(1);
+            graphics.FillRectangle(dotInk, dot.Left + dotInset, dot.Top + dotInset, dot.Width - dotInset * 2, dot.Height - dotInset * 2);
+        }
+
+        var textBounds = Rectangle.Round(RectangleF.FromLTRB(
+            dot.Right + gap,
+            top,
+            bounds.Right - padding,
+            bounds.Bottom));
+        TextRenderer.DrawText(
+            graphics,
+            label,
+            font,
+            textBounds,
+            Theme.ReadableText(playhead, accent),
+            TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
     }
 
     private void DrawHorizontalScroll(Graphics graphics, TimelineLayout layout)

@@ -4372,6 +4372,13 @@ internal sealed partial class MainForm : Form
         var instanceSnapshot = _clipboardDrawingObjectInstances.Count > 0
             ? container.CreateInstanceSnapshot()
             : null;
+        // The whole paste is one append batch, so the spatial index and summaries are completed
+        // once for the run instead of once per pasted object, and the undo snapshot is only taken
+        // after every Append* call has finished.
+        using var bulkAppend = _scene.BeginBulkObjectAppend(
+            _clipboardObjects.Count,
+            _clipboardObjects.Select(item =>
+                Math.Clamp(item.Layer, 0, Math.Max(0, _scene.LayerCount - 1))).ToArray());
         var pasted = new List<int>(_clipboardObjects.Count);
         foreach (var item in _clipboardObjects)
         {
@@ -4503,6 +4510,8 @@ internal sealed partial class MainForm : Form
         }
 
         var pastedInstances = PasteCopiedDrawingObjectInstances(container);
+        // The batch must be complete before the snapshot, selection or merge sees the new objects.
+        bulkAppend.Dispose();
         if (pasted.Count == 0 && pastedInstances.Count == 0)
         {
             if (instanceSnapshot is not null) container.RestoreInstanceSnapshot(instanceSnapshot);

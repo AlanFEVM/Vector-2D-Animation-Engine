@@ -4,6 +4,16 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
+    // Single source for the four typed light commands; the light-menu regression
+    // iterates this order when checking labels, icons and tags.
+    internal static readonly SceneLightKind[] Scene3DLightMenuKinds =
+    [
+        SceneLightKind.Directional,
+        SceneLightKind.Point,
+        SceneLightKind.Area,
+        SceneLightKind.Ambient
+    ];
+
     private readonly AnimatedContextMenuStrip _scene3DContextMenu = new();
     private readonly ToolStripMenuItem _addSceneLightContextMenuItem = new("Add light");
     private readonly Dictionary<SceneLightKind, Bitmap> _scene3DLightMenuIcons = [];
@@ -20,13 +30,7 @@ internal sealed partial class MainForm
         _addSceneLightContextMenuItem.Image = _scene3DAddLightMenuIcon;
         _addSceneLightContextMenuItem.AccessibleName = "Add light";
 
-        foreach (var kind in new[]
-                 {
-                     SceneLightKind.Directional,
-                     SceneLightKind.Point,
-                     SceneLightKind.Area,
-                     SceneLightKind.Ambient
-                 })
+        foreach (var kind in Scene3DLightMenuKinds)
         {
             var icon = SvgIcons.CreateBitmap(SceneLightContextIcon(kind), new Size(18, 18), Theme.Text, DeviceDpi);
             _scene3DLightMenuIcons.Add(kind, icon);

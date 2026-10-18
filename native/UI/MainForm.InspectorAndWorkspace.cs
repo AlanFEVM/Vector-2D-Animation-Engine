@@ -429,8 +429,20 @@ internal sealed partial class MainForm : Form
 
     private Color ActiveColor()
     {
+        // The gradient preview the eyedropper just captured can lead the material editor's single
+        // fill color (a multi-stop gradient has no one color); the Fill tool must keep painting
+        // that sampled gradient, so its first stop is the canvas-facing fill color.
+        if (_eyedropperSamplesGradient
+            && _materialEditor.GradientEnabled
+            && UsesFillPaintPreview(_tool))
+        {
+            var stops = _materialEditor.GradientStops;
+            if (stops.Length > 0) return Color.FromArgb(stops[0].Argb);
+        }
         return _materialEditor.Fill;
     }
+
+    private static bool UsesFillPaintPreview(ToolMode tool) => tool is ToolMode.Fill or ToolMode.InkBottle;
 
     private void ApplyGradientToSelection(GradientChangedEventArgs gradient)
     {

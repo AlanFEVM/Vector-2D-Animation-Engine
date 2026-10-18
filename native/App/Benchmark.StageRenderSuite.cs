@@ -8439,6 +8439,7 @@ internal static partial class Benchmark
         RunSelectionHighlightStyleRegression();
         RunSelectionUsabilityRegression();
         RunTemporaryCanvasPanRegression();
+        RunTemporaryEyedropperRegression();
         RunImmediateMarqueeOverlayRegression();
         RunSceneToolPaletteVisibilityRegression();
         RunMotionTrackSceneInteractionRegression();

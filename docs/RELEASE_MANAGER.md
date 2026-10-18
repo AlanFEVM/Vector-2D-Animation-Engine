@@ -23,7 +23,7 @@ scripts\publish-release-manager.ps1
 工具会自动定位当前仓库并读取：
 
 - `Directory.Build.props`：当前源码和程序集版本。
-- `release/release-notes.json`：全部版本的双语程序内公告。
+- `release/release-notes.json`：全部版本的双语程序内公告，以及双语鸣谢。
 - `scripts/publish-single-exe.ps1`：唯一正式发布入口。
 
 ## 管理版本
@@ -38,6 +38,16 @@ scripts\publish-release-manager.ps1
 `New version` 以当前最高版本的下一个补丁号建立草稿，并生成中英文占位内容。添加、删除和移动分区时会同步维护中英文结构；在条目编辑框中增加或删除行时，另一语言会补齐或移除对应位置的占位条目。两个语言必须拥有相同数量的分区和条目；标题、摘要、分区及条目都不能为空。草稿可以保存，但包含占位内容时不能正式发布。
 
 `Delete` 只修改当前草稿状态，点击 `Save Version` 后才写入源码。关闭带 `*` 的窗口前会要求确认是否放弃未保存修改。
+
+## 管理鸣谢
+
+`Acknowledgements` 页编辑程序菜单 `Acknowledgements` 打开的鸣谢内容，与版本无关，因此更换或删除版本时不受影响。可用控件：
+
+- `Include acknowledgements`：关闭时保存的清单不再包含 `acknowledgements` 节点，程序回退到内置默认鸣谢；重新开启会以默认鸣谢内容重建。
+- `English / 简体中文`：分别编辑标题、摘要、分组标题和名单，每个分组条目为一行一个人名。
+- `Add / Remove / Move` 图标：添加、删除和调整分组顺序；添加分组时同时为中英文各建一个分组，删除时同时删除两语言同一位置的分组。至少保留一个分组，若要完全隐藏鸣谢请关闭 `Include acknowledgements`。
+
+鸣谢位于 `release/release-notes.json` 顶层的 `acknowledgements` 节点，与版本公告同样要求中英文分组数和条目数一致；保存前会做这项校验，若外部文件缺少该节点也能正常打开并使用默认鸣谢。改动与版本内容共用同一份草稿状态，同样只在 `Save Version` 时写入源码。
 
 ## 保存与显示
 
@@ -55,7 +65,7 @@ scripts\publish-release-manager.ps1
 - `Show in application` 已开启。
 - 公告版本不高于当前程序集版本。
 
-因此可以隐藏当前版本公告，也可以提前管理未来版本，而不会让较旧的正式包显示未来公告。`Preview` 使用正式编辑器的 `ReleaseNotesPanel` 渲染所选语言，预览结果与发布包内一致。
+因此可以隐藏当前版本公告，也可以提前管理未来版本，而不会让较旧的正式包显示未来公告。`Preview` 使用正式编辑器的 `ReleaseNotesPanel` 渲染所选语言，并在所选版本公告之后附加当前草稿中的鸣谢，预览结果与发布包内一致。预览直接读取内存中的草稿，编辑标题、摘要、分区或鸣谢后无需先保存即可切到 `Preview` 查看最终效果；发布前的保存与指纹校验仍按原规则执行。
 
 ## 发布版本
 
@@ -77,6 +87,6 @@ scripts\publish-release-manager.ps1
 
 ## 数据职责
 
-- `release/release-notes.json` 是程序内双语公告的唯一数据源，并作为资源嵌入正式编辑器。
+- `release/release-notes.json` 是程序内双语公告和鸣谢的唯一数据源，并作为资源嵌入正式编辑器。
 - `docs/RELEASE_NOTES_<version>.md` 是对应历史发布包的阅读文档，不由 Release Manager 自动覆盖。
 - 正式发布始终通过 `scripts/publish-single-exe.ps1`，不得把其他构建结果复制到发布目录冒充正式包。

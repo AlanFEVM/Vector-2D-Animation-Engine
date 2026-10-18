@@ -311,6 +311,7 @@ internal static class HotReloadModuleResolver
             or nameof(ReleaseNotesCatalog)
             or nameof(ReleaseNotesDialog)
             or nameof(ReleaseNotesPanel)
+            or nameof(AcknowledgementsDialog)
             or nameof(SettingsDialog)
             or nameof(OperationPreferencesDialog)
             or nameof(ShortcutProfilesDialog)

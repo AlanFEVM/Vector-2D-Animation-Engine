@@ -199,7 +199,7 @@ internal sealed class ReleaseDocumentStore
         ]
     };
 
-    private static LocalizedReleaseNote ToLocalizedReleaseNote(ReleaseNotesManifestLocale locale) => new(
+    internal static LocalizedReleaseNote ToLocalizedReleaseNote(ReleaseNotesManifestLocale locale) => new(
         locale.Title,
         locale.Summary,
         locale.Sections

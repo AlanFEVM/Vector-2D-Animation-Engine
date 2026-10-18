@@ -19,6 +19,7 @@ internal sealed partial class MainForm : Form
             SessionBreadcrumbs.Record("Tool", $"Activated {tool}");
         }
         CancelTemporaryCanvasPan();
+        CancelTemporaryEyedropper();
         CancelGradientPointer(restore: true);
         HideBrushColorPalette();
         // A tool switch ends any in-flight anchor drag or box selection: their pointer-up and
@@ -632,6 +633,16 @@ internal sealed partial class MainForm : Form
             _stage.Cursor = _tool == ToolMode.Hand ? Cursors.SizeAll : Cursors.Default;
             return;
         }
+        if (_altEyedropperHeld && IsAltEyedropperTool(_tool))
+        {
+            // The temporary eyedropper is only a stage pointer mode; it never changes the tool
+            // highlight or the workspace tool list, so the cursor has to say so explicitly.
+            _stage.ClearBrushTipCursor();
+            _stage.ClearFillToolCursor();
+            ClearFillHoverPreview();
+            _stage.Cursor = Cursors.Cross;
+            return;
+        }
         if (_tool == ToolMode.Text)
         {
             _stage.ClearBrushTipCursor();
@@ -650,6 +661,13 @@ internal sealed partial class MainForm : Form
 
         if (_tool == ToolMode.Fill)
         {
+            if (EffectiveStageTool() == ToolMode.Eyedropper)
+            {
+                _stage.ClearFillToolCursor();
+                ClearFillHoverPreview();
+                _stage.Cursor = Cursors.Cross;
+                return;
+            }
             _stage.ClearBrushTipCursor();
             if (_stage.ClientRectangle.Contains(screen))
             {
@@ -805,6 +823,13 @@ internal sealed partial class MainForm : Form
 
         if (_tool == ToolMode.Fill)
         {
+            if (EffectiveStageTool() == ToolMode.Eyedropper)
+            {
+                _stage.ClearFillToolCursor();
+                ClearFillHoverPreview();
+                _stage.Cursor = Cursors.Cross;
+                return;
+            }
             _stage.SetFillToolCursor(screen, ActiveColor());
             UpdateFillHoverPreview(screen);
             _stage.Cursor = Cursors.Cross;
@@ -1277,7 +1302,12 @@ internal sealed partial class MainForm : Form
         _materialEditor.ContinuousEditCompleted += (_, _) => CompleteMaterialContinuousEdit();
         _materialEditor.ContinuousEditCanceled += (_, _) => CancelMaterialContinuousEdit();
         _materialEditor.LineEndpointStyleChanged += (_, e) => ApplyLineEndpointStyle(e.EndpointStyle, e.StartEndpoint);
-        _materialEditor.GradientChanged += (_, e) => ApplyGradientToSelection(e);
+        _materialEditor.GradientChanged += (_, e) =>
+        {
+            // Any manual gradient edit (including disabling it) supersedes an eyedropper sample.
+            _eyedropperSamplesGradient = false;
+            ApplyGradientToSelection(e);
+        };
         _drawingObjectInstancePanel.PlaybackSettingsChanged += (_, e) =>
             ApplyDrawingObjectPlaybackSettings(e);
         _drawingObjectInstancePanel.AnchorChanged += (_, e) =>
@@ -1300,6 +1330,7 @@ internal sealed partial class MainForm : Form
         _materialEditor.MaterialChanged += (_, e) =>
         {
             if (IsSceneCompositionContext()) return;
+            if (e.FillChanged || e.ApplyAll) _eyedropperSamplesGradient = false;
             if (ApplyMaterialToTextDraft(e)) return;
             if (e.StrokeWidthChanged)
             {
@@ -1501,6 +1532,7 @@ internal sealed partial class MainForm : Form
             if (_spatialTransformKeyboardActive) CancelSpatialTransformKeyboard();
             else FinishLostPointerCapture();
             CancelTemporaryCanvasPan();
+            CancelTemporaryEyedropper();
             ClearShotFramingFeedback();
         };
     }

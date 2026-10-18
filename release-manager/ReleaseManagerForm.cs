@@ -15,6 +15,7 @@ internal sealed class ReleaseManagerForm : Form
     private readonly Button _saveButton = new();
     private readonly ReleaseManagerTabControl _tabs = new();
     private readonly TabPage _editorPage = new();
+    private readonly TabPage _acknowledgementsPage = new();
     private readonly TabPage _previewPage = new();
     private readonly TabPage _publishPage = new();
     private readonly TextBox _versionBox = new();
@@ -31,6 +32,18 @@ internal sealed class ReleaseManagerForm : Form
     private readonly SvgIconButton _removeSectionButton = new(SvgIconKind.Remove);
     private readonly SvgIconButton _moveSectionUpButton = new(SvgIconKind.ChevronUp);
     private readonly SvgIconButton _moveSectionDownButton = new(SvgIconKind.ChevronDown);
+    private readonly ModernToggleSwitch _acknowledgementToggle = new();
+    private readonly Button _acknowledgementEnglishButton = new();
+    private readonly Button _acknowledgementChineseButton = new();
+    private readonly TextBox _acknowledgementTitleBox = new();
+    private readonly TextBox _acknowledgementSummaryBox = new();
+    private readonly ListBox _acknowledgementSectionList = new();
+    private readonly TextBox _acknowledgementSectionHeadingBox = new();
+    private readonly TextBox _acknowledgementSectionItemsBox = new();
+    private readonly SvgIconButton _addAcknowledgementSectionButton = new(SvgIconKind.Add);
+    private readonly SvgIconButton _removeAcknowledgementSectionButton = new(SvgIconKind.Remove);
+    private readonly SvgIconButton _moveAcknowledgementSectionUpButton = new(SvgIconKind.ChevronUp);
+    private readonly SvgIconButton _moveAcknowledgementSectionDownButton = new(SvgIconKind.ChevronDown);
     private readonly Button _previewEnglishButton = new();
     private readonly Button _previewChineseButton = new();
     private readonly Panel _previewHost = new();
@@ -51,10 +64,12 @@ internal sealed class ReleaseManagerForm : Form
     private ReleaseNotesManifestRelease? _selectedRelease;
     private Version _sourceVersion = new();
     private UiLanguage _editorLanguage = UiLanguage.English;
+    private UiLanguage _acknowledgementLanguage = UiLanguage.English;
     private UiLanguage _previewLanguage = UiLanguage.English;
     private bool _updating;
     private bool _dirty;
     private bool _publishing;
+    private bool _showAcknowledgementsInPreview = true;
     private CancellationTokenSource? _publishCancellation;
 
     public ReleaseManagerForm()
@@ -222,18 +237,20 @@ internal sealed class ReleaseManagerForm : Form
         _tabs.AccessibleName = T("Release workflow", "发布工作区");
 
         _editorPage.Text = T("Content", "内容");
+        _acknowledgementsPage.Text = T("Acknowledgements", "鸣谢");
         _previewPage.Text = T("Preview", "预览");
         _publishPage.Text = T("Publish", "发布");
-        foreach (var page in new[] { _editorPage, _previewPage, _publishPage })
+        foreach (var page in new[] { _editorPage, _acknowledgementsPage, _previewPage, _publishPage })
         {
             page.BackColor = Theme.Panel;
             page.ForeColor = Theme.Text;
             page.Padding = new Padding(14);
         }
         _editorPage.Controls.Add(BuildEditor());
+        _acknowledgementsPage.Controls.Add(BuildAcknowledgementsEditor());
         _previewPage.Controls.Add(BuildPreview());
         _publishPage.Controls.Add(BuildPublish());
-        _tabs.TabPages.AddRange([_editorPage, _previewPage, _publishPage]);
+        _tabs.TabPages.AddRange([_editorPage, _acknowledgementsPage, _previewPage, _publishPage]);
         return _tabs;
     }
 
@@ -412,6 +429,157 @@ internal sealed class ReleaseManagerForm : Form
         StyleTextBox(_sectionItemsBox, multiline: true);
         _sectionItemsBox.Dock = DockStyle.Fill;
         details.Controls.Add(_sectionItemsBox, 0, 3);
+        split.Panel2.Controls.Add(details);
+        return split;
+    }
+
+    private Control BuildAcknowledgementsEditor()
+    {
+        var layout = new TableLayoutPanel
+        {
+            BackColor = Theme.Panel,
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            RowCount = 7
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        layout.Controls.Add(BuildAcknowledgementHeader(), 0, 0);
+        layout.Controls.Add(BuildLocaleSelector(_acknowledgementEnglishButton, _acknowledgementChineseButton), 0, 1);
+        layout.Controls.Add(
+            BuildLabeledTextBox(T("Title", "标题"), _acknowledgementTitleBox, multiline: false),
+            0,
+            2);
+        layout.Controls.Add(
+            BuildLabeledTextBox(T("Summary", "摘要"), _acknowledgementSummaryBox, multiline: true),
+            0,
+            3);
+        layout.Controls.Add(BuildAcknowledgementSectionToolbar(), 0, 4);
+        layout.Controls.Add(BuildAcknowledgementSectionEditor(), 0, 5);
+        layout.Controls.Add(BuildAcknowledgementFooter(), 0, 6);
+        return layout;
+    }
+
+    private Control BuildAcknowledgementHeader()
+    {
+        var layout = new TableLayoutPanel
+        {
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            RowCount = 1
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        _acknowledgementToggle.Text = T("Include acknowledgements", "包含鸣谢");
+        _acknowledgementToggle.Dock = DockStyle.Fill;
+        _acknowledgementToggle.AccessibleName = _acknowledgementToggle.Text;
+        layout.Controls.Add(_acknowledgementToggle, 1, 0);
+        return layout;
+    }
+
+    private Control BuildAcknowledgementFooter()
+    {
+        var note = CreateLabel(
+            T(
+                "Saved with the release notes and shown in the application and preview.",
+                "与更新说明一同保存，并显示在程序与预览中。"),
+            8.8f,
+            FontStyle.Regular,
+            Theme.Muted);
+        note.Dock = DockStyle.Fill;
+        note.AccessibleRole = AccessibleRole.StaticText;
+        return note;
+    }
+
+    private Control BuildAcknowledgementSectionToolbar()
+    {
+        var layout = new TableLayoutPanel
+        {
+            BackColor = Theme.Panel,
+            ColumnCount = 2,
+            Dock = DockStyle.Fill,
+            RowCount = 1
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.Controls.Add(CreateSectionLabel(T("ACKNOWLEDGEMENT SECTIONS", "鸣谢分组")), 0, 0);
+
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            BackColor = Theme.Panel,
+            Dock = DockStyle.Right,
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = Padding.Empty,
+            WrapContents = false
+        };
+        ConfigureIconButton(_addAcknowledgementSectionButton, T("Add acknowledgement section", "添加鸣谢分组"));
+        ConfigureIconButton(_removeAcknowledgementSectionButton, T("Remove acknowledgement section", "删除鸣谢分组"));
+        ConfigureIconButton(_moveAcknowledgementSectionUpButton, T("Move acknowledgement section up", "上移鸣谢分组"));
+        ConfigureIconButton(_moveAcknowledgementSectionDownButton, T("Move acknowledgement section down", "下移鸣谢分组"));
+        actions.Controls.AddRange([
+            _addAcknowledgementSectionButton,
+            _removeAcknowledgementSectionButton,
+            _moveAcknowledgementSectionUpButton,
+            _moveAcknowledgementSectionDownButton
+        ]);
+        layout.Controls.Add(actions, 1, 0);
+        return layout;
+    }
+
+    private Control BuildAcknowledgementSectionEditor()
+    {
+        var split = new SplitContainer
+        {
+            BackColor = Theme.Border,
+            Dock = DockStyle.Fill,
+            FixedPanel = FixedPanel.Panel1,
+            Size = new Size(620, 300),
+            Panel1MinSize = 180,
+            Panel2MinSize = 300,
+            SplitterDistance = 225,
+            SplitterWidth = 1
+        };
+        split.Panel1.BackColor = Theme.Panel;
+        split.Panel1.Padding = new Padding(0, 0, 10, 0);
+        split.Panel2.BackColor = Theme.Panel;
+        split.Panel2.Padding = new Padding(10, 0, 0, 0);
+
+        _acknowledgementSectionList.Dock = DockStyle.Fill;
+        _acknowledgementSectionList.FormattingEnabled = true;
+        _acknowledgementSectionList.AccessibleName = T("Acknowledgement sections", "鸣谢分组");
+        Theme.StyleListBox(_acknowledgementSectionList);
+        split.Panel1.Controls.Add(_acknowledgementSectionList);
+
+        var details = new TableLayoutPanel
+        {
+            BackColor = Theme.Panel,
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            RowCount = 4
+        };
+        details.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        details.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        details.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        details.Controls.Add(CreateFieldLabel(T("Section heading", "分组标题")), 0, 0);
+        StyleTextBox(_acknowledgementSectionHeadingBox, multiline: false);
+        _acknowledgementSectionHeadingBox.Dock = DockStyle.Fill;
+        _acknowledgementSectionHeadingBox.Margin = new Padding(0, 0, 0, 6);
+        details.Controls.Add(_acknowledgementSectionHeadingBox, 0, 1);
+        details.Controls.Add(CreateFieldLabel(T("Names (one per line)", "名单（每行一人）")), 0, 2);
+        StyleTextBox(_acknowledgementSectionItemsBox, multiline: true);
+        _acknowledgementSectionItemsBox.Dock = DockStyle.Fill;
+        details.Controls.Add(_acknowledgementSectionItemsBox, 0, 3);
         split.Panel2.Controls.Add(details);
         return split;
     }
@@ -608,15 +776,26 @@ internal sealed class ReleaseManagerForm : Form
         _chineseButton.Click += (_, _) => SetEditorLanguage(UiLanguage.SimplifiedChinese);
         _previewEnglishButton.Click += (_, _) => SetPreviewLanguage(UiLanguage.English);
         _previewChineseButton.Click += (_, _) => SetPreviewLanguage(UiLanguage.SimplifiedChinese);
+        _acknowledgementToggle.CheckedChanged += (_, _) => SetAcknowledgementsIncluded(_acknowledgementToggle.Checked);
+        _acknowledgementEnglishButton.Click += (_, _) => SetAcknowledgementLanguage(UiLanguage.English);
+        _acknowledgementChineseButton.Click += (_, _) => SetAcknowledgementLanguage(UiLanguage.SimplifiedChinese);
+        _acknowledgementTitleBox.TextChanged += (_, _) => UpdateAcknowledgementLocale();
+        _acknowledgementSummaryBox.TextChanged += (_, _) => UpdateAcknowledgementLocale();
+        _acknowledgementSectionList.SelectedIndexChanged += (_, _) => LoadSelectedAcknowledgementSection();
+        _acknowledgementSectionList.Format += (_, args) =>
+        {
+            if (args.ListItem is ReleaseNotesManifestSection section) args.Value = DisplaySectionHeading(section);
+        };
+        _acknowledgementSectionHeadingBox.TextChanged += (_, _) => UpdateAcknowledgementSection();
+        _acknowledgementSectionItemsBox.TextChanged += (_, _) => UpdateAcknowledgementSection();
+        _addAcknowledgementSectionButton.Click += (_, _) => AddAcknowledgementSection();
+        _removeAcknowledgementSectionButton.Click += (_, _) => RemoveAcknowledgementSection();
+        _moveAcknowledgementSectionUpButton.Click += (_, _) => MoveAcknowledgementSection(-1);
+        _moveAcknowledgementSectionDownButton.Click += (_, _) => MoveAcknowledgementSection(1);
         _sectionList.SelectedIndexChanged += (_, _) => LoadSelectedSection();
         _sectionList.Format += (_, args) =>
         {
-            if (args.ListItem is ReleaseNotesManifestSection section)
-            {
-                args.Value = string.IsNullOrWhiteSpace(section.Heading)
-                    ? T("Untitled section", "未命名分区")
-                    : section.Heading;
-            }
+            if (args.ListItem is ReleaseNotesManifestSection section) args.Value = DisplaySectionHeading(section);
         };
         _sectionHeadingBox.TextChanged += (_, _) => UpdateSelectedSection();
         _sectionItemsBox.TextChanged += (_, _) => UpdateSelectedSection();
@@ -639,6 +818,16 @@ internal sealed class ReleaseManagerForm : Form
         _toolTip.SetToolTip(_removeSectionButton, T("Remove selected section", "删除所选分区"));
         _toolTip.SetToolTip(_moveSectionUpButton, T("Move selected section up", "上移所选分区"));
         _toolTip.SetToolTip(_moveSectionDownButton, T("Move selected section down", "下移所选分区"));
+        _toolTip.SetToolTip(_addAcknowledgementSectionButton, T("Add acknowledgement section", "添加鸣谢分组"));
+        _toolTip.SetToolTip(
+            _removeAcknowledgementSectionButton,
+            T("Remove selected acknowledgement section", "删除所选鸣谢分组"));
+        _toolTip.SetToolTip(
+            _moveAcknowledgementSectionUpButton,
+            T("Move selected acknowledgement section up", "上移所选鸣谢分组"));
+        _toolTip.SetToolTip(
+            _moveAcknowledgementSectionDownButton,
+            T("Move selected acknowledgement section down", "下移所选鸣谢分组"));
     }
 
     private void LoadDocument()
@@ -647,6 +836,7 @@ internal sealed class ReleaseManagerForm : Form
         _sourceVersion = _store.LoadSourceVersion();
         _outputDirectoryBox.Text = Path.Combine(_store.RepositoryRoot, "artifacts", "release");
         RefreshVersionList(_sourceVersion.ToString(3));
+        RefreshAcknowledgementEditor();
         SetDirty(false);
         SetStatus(string.Format(
             CultureInfo.CurrentCulture,
@@ -685,6 +875,7 @@ internal sealed class ReleaseManagerForm : Form
             var hasRelease = release is not null;
             _editorPage.Enabled = hasRelease && !_publishing;
             _deleteVersionButton.Enabled = hasRelease && !_publishing;
+            _acknowledgementsPage.Enabled = !_publishing;
             _versionBox.Text = release?.Version ?? string.Empty;
             _releaseDateBox.Text = release?.ReleaseDate ?? string.Empty;
             _visibleToggle.Checked = release?.ShowInApplication ?? false;
@@ -936,6 +1127,243 @@ internal sealed class ReleaseManagerForm : Form
         sections.Insert(newIndex, section);
     }
 
+    private string DisplaySectionHeading(ReleaseNotesManifestSection section) =>
+        string.IsNullOrWhiteSpace(section.Heading)
+            ? T("Untitled section", "未命名分区")
+            : section.Heading;
+
+    private ReleaseNotesManifestLocale? SelectedAcknowledgementLocale
+    {
+        get
+        {
+            var locales = _document.Acknowledgements?.Locales;
+            if (locales is null) return null;
+            return _acknowledgementLanguage == UiLanguage.SimplifiedChinese
+                ? locales.SimplifiedChinese
+                : locales.English;
+        }
+    }
+
+    private void RefreshAcknowledgementEditor()
+    {
+        _updating = true;
+        try
+        {
+            var included = _document.Acknowledgements is not null;
+            _acknowledgementToggle.Checked = included;
+            _acknowledgementEnglishButton.Enabled = included && !_publishing;
+            _acknowledgementChineseButton.Enabled = included && !_publishing;
+            _acknowledgementTitleBox.Enabled = included && !_publishing;
+            _acknowledgementSummaryBox.Enabled = included && !_publishing;
+            _addAcknowledgementSectionButton.Enabled = included && !_publishing;
+            _acknowledgementSectionList.Enabled = included && !_publishing;
+            Theme.StyleSegmentedButton(_acknowledgementEnglishButton, _acknowledgementLanguage == UiLanguage.English);
+            Theme.StyleSegmentedButton(
+                _acknowledgementChineseButton,
+                _acknowledgementLanguage == UiLanguage.SimplifiedChinese);
+            var locale = SelectedAcknowledgementLocale;
+            _acknowledgementTitleBox.Text = locale?.Title ?? string.Empty;
+            _acknowledgementSummaryBox.Text = locale?.Summary ?? string.Empty;
+            RefreshAcknowledgementSectionList(locale?.Sections.FirstOrDefault());
+        }
+        finally
+        {
+            _updating = false;
+        }
+        LoadSelectedAcknowledgementSection();
+    }
+
+    private void SetAcknowledgementsIncluded(bool included)
+    {
+        if (_updating) return;
+        if (included)
+        {
+            _document.Acknowledgements ??= new ReleaseNotesManifestAcknowledgements
+            {
+                Locales = new ReleaseNotesManifestLocales
+                {
+                    English = CreateAcknowledgementLocale(ReleaseAcknowledgementDefaults.English),
+                    SimplifiedChinese = CreateAcknowledgementLocale(ReleaseAcknowledgementDefaults.SimplifiedChinese)
+                }
+            };
+        }
+        else
+        {
+            _document.Acknowledgements = null;
+        }
+
+        RefreshAcknowledgementEditor();
+        SetDirty(true);
+        RefreshPreview();
+    }
+
+    private static ReleaseNotesManifestLocale CreateAcknowledgementLocale(LocalizedReleaseNote localized) => new()
+    {
+        Title = localized.Title,
+        Summary = localized.Summary,
+        Sections = localized.Sections
+            .Select(section => new ReleaseNotesManifestSection
+            {
+                Heading = section.Heading,
+                Items = section.Items.ToList()
+            })
+            .ToList()
+    };
+
+    private void SetAcknowledgementLanguage(UiLanguage language)
+    {
+        if (_acknowledgementLanguage == language) return;
+        _acknowledgementLanguage = language;
+        RefreshAcknowledgementEditor();
+    }
+
+    private void UpdateAcknowledgementLocale()
+    {
+        if (_updating || SelectedAcknowledgementLocale is not { } locale) return;
+        locale.Title = _acknowledgementTitleBox.Text;
+        locale.Summary = _acknowledgementSummaryBox.Text;
+        SetDirty(true);
+    }
+
+    private void RefreshAcknowledgementSectionList(ReleaseNotesManifestSection? selection)
+    {
+        var locale = SelectedAcknowledgementLocale;
+        _acknowledgementSectionList.BeginUpdate();
+        try
+        {
+            _acknowledgementSectionList.Items.Clear();
+            if (locale is not null)
+            {
+                foreach (var section in locale.Sections) _acknowledgementSectionList.Items.Add(section);
+            }
+            if (selection is not null && _acknowledgementSectionList.Items.Contains(selection))
+            {
+                _acknowledgementSectionList.SelectedItem = selection;
+            }
+            else if (_acknowledgementSectionList.Items.Count > 0)
+            {
+                _acknowledgementSectionList.SelectedIndex = 0;
+            }
+        }
+        finally
+        {
+            _acknowledgementSectionList.EndUpdate();
+        }
+    }
+
+    private void LoadSelectedAcknowledgementSection()
+    {
+        var section = _acknowledgementSectionList.SelectedItem as ReleaseNotesManifestSection;
+        _updating = true;
+        try
+        {
+            _acknowledgementSectionHeadingBox.Text = section?.Heading ?? string.Empty;
+            _acknowledgementSectionItemsBox.Lines = section?.Items.ToArray() ?? [];
+            var enabled = section is not null && !_publishing && _document.Acknowledgements is not null;
+            _acknowledgementSectionHeadingBox.Enabled = enabled;
+            _acknowledgementSectionItemsBox.Enabled = enabled;
+            _removeAcknowledgementSectionButton.Enabled = enabled;
+            _moveAcknowledgementSectionUpButton.Enabled = enabled && _acknowledgementSectionList.SelectedIndex > 0;
+            _moveAcknowledgementSectionDownButton.Enabled = enabled
+                && _acknowledgementSectionList.SelectedIndex < _acknowledgementSectionList.Items.Count - 1;
+        }
+        finally
+        {
+            _updating = false;
+        }
+    }
+
+    private void UpdateAcknowledgementSection()
+    {
+        if (_updating || _acknowledgementSectionList.SelectedItem is not ReleaseNotesManifestSection section) return;
+        section.Heading = _acknowledgementSectionHeadingBox.Text;
+        section.Items = _acknowledgementSectionItemsBox.Lines
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .ToList();
+        _acknowledgementSectionList.Refresh();
+        SetDirty(true);
+    }
+
+    private void AddAcknowledgementSection()
+    {
+        var locales = _document.Acknowledgements?.Locales;
+        if (locales is null) return;
+        var englishSection = new ReleaseNotesManifestSection
+        {
+            Heading = "Contributors",
+            Items = ["Contributor name"]
+        };
+        var chineseSection = new ReleaseNotesManifestSection
+        {
+            Heading = "贡献者",
+            Items = ["贡献者姓名"]
+        };
+        locales.English.Sections.Add(englishSection);
+        locales.SimplifiedChinese.Sections.Add(chineseSection);
+        var selectedSection = _acknowledgementLanguage == UiLanguage.SimplifiedChinese
+            ? chineseSection
+            : englishSection;
+        RefreshAcknowledgementSectionList(selectedSection);
+        LoadSelectedAcknowledgementSection();
+        SetDirty(true);
+        _acknowledgementSectionHeadingBox.Focus();
+        _acknowledgementSectionHeadingBox.SelectAll();
+    }
+
+    private void RemoveAcknowledgementSection()
+    {
+        var locales = _document.Acknowledgements?.Locales;
+        if (locales is null || _acknowledgementSectionList.SelectedItem is not ReleaseNotesManifestSection) return;
+        var sectionIndex = _acknowledgementSectionList.SelectedIndex;
+        var sectionCount = SelectedAcknowledgementLocale?.Sections.Count ?? 0;
+        if (sectionIndex < 0 || sectionIndex >= sectionCount) return;
+
+        var englishCount = locales.English.Sections.Count;
+        var chineseCount = locales.SimplifiedChinese.Sections.Count;
+        if (sectionCount == 1 && englishCount == 1 && chineseCount == 1)
+        {
+            ModernMessageDialog.Show(
+                this,
+                T(
+                    "Acknowledgements need at least one section. Turn off Include acknowledgements to hide them.",
+                    "鸣谢至少需要一个分组。如需隐藏鸣谢，请关闭“包含鸣谢”。"),
+                T("Acknowledgements", "鸣谢"),
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        if (sectionIndex < englishCount) locales.English.Sections.RemoveAt(sectionIndex);
+        if (sectionIndex < chineseCount) locales.SimplifiedChinese.Sections.RemoveAt(sectionIndex);
+        var locale = SelectedAcknowledgementLocale;
+        var nextSelection = locale is null || locale.Sections.Count == 0
+            ? null
+            : locale.Sections[Math.Min(sectionIndex, locale.Sections.Count - 1)];
+        RefreshAcknowledgementSectionList(nextSelection);
+        LoadSelectedAcknowledgementSection();
+        SetDirty(true);
+    }
+
+    private void MoveAcknowledgementSection(int offset)
+    {
+        var locales = _document.Acknowledgements?.Locales;
+        if (locales is null) return;
+        var locale = SelectedAcknowledgementLocale;
+        if (locale is null) return;
+        var oldIndex = _acknowledgementSectionList.SelectedIndex;
+        var newIndex = oldIndex + offset;
+        if (oldIndex < 0 || newIndex < 0 || newIndex >= locale.Sections.Count) return;
+        if (newIndex < locales.English.Sections.Count) MoveSection(locales.English.Sections, oldIndex, newIndex);
+        if (newIndex < locales.SimplifiedChinese.Sections.Count)
+        {
+            MoveSection(locales.SimplifiedChinese.Sections, oldIndex, newIndex);
+        }
+        RefreshAcknowledgementSectionList(locale.Sections[newIndex]);
+        LoadSelectedAcknowledgementSection();
+        SetDirty(true);
+    }
+
     private void SaveDocument()
     {
         if (_publishing || _selectedRelease is null) return;
@@ -1007,7 +1435,10 @@ internal sealed class ReleaseManagerForm : Form
         {
             if (_selectedRelease is null) throw new InvalidDataException(T("Select a version to preview.", "请选择要预览的版本。"));
             var entry = ReleaseDocumentStore.ToReleaseNoteEntry(_selectedRelease);
-            var panel = new ReleaseNotesPanel([entry], _previewLanguage)
+            var acknowledgedBy = _showAcknowledgementsInPreview
+                ? ToAcknowledgementEntry(_document.Acknowledgements)
+                : null;
+            var panel = new ReleaseNotesPanel([entry], acknowledgedBy, _previewLanguage)
             {
                 Dock = DockStyle.Fill,
                 Margin = Padding.Empty
@@ -1019,6 +1450,14 @@ internal sealed class ReleaseManagerForm : Form
             _previewStatus.Text = exception.Message;
             _previewHost.Controls.Add(_previewStatus);
         }
+    }
+
+    private static ReleaseAcknowledgementEntry ToAcknowledgementEntry(ReleaseNotesManifestAcknowledgements? acknowledgements)
+    {
+        if (acknowledgements is null) return ReleaseAcknowledgementDefaults.Entry;
+        return new ReleaseAcknowledgementEntry(
+            ReleaseDocumentStore.ToLocalizedReleaseNote(acknowledgements.Locales.English),
+            ReleaseDocumentStore.ToLocalizedReleaseNote(acknowledgements.Locales.SimplifiedChinese));
     }
 
     private void RefreshPublishState()
@@ -1159,6 +1598,8 @@ internal sealed class ReleaseManagerForm : Form
         _publishing = publishing;
         _versionPane.Enabled = !publishing;
         _editorPage.Enabled = !publishing && _selectedRelease is not null;
+        _acknowledgementsPage.Enabled = !publishing;
+        RefreshAcknowledgementEditor();
         _saveButton.Enabled = !publishing;
         _browseOutputButton.Enabled = !publishing;
         _outputDirectoryBox.Enabled = !publishing;

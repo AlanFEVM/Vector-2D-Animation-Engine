@@ -13,7 +13,7 @@
             {
               "heading": "Highlights",
               "items": [
-                "Added Shots & Directing with multiple cameras, framing controls and camera keyframe tweens.",
+                "Added Shots \u0026 Directing with multiple cameras, framing controls and camera keyframe tweens.",
                 "Added symbol filters including blur, glow, shadow and bevel, with GPU acceleration.",
                 "Added standalone SVG export and import/export of editable .V2DSymbol packages.",
                 "Added a local Codex / MCP interface for project editing and animation bundle import.",
@@ -935,5 +935,33 @@
         }
       }
     }
-  ]
+  ],
+  "acknowledgements": {
+    "locales": {
+      "en": {
+        "title": "Acknowledgements",
+        "summary": "Thank you to everyone who contributed to Vector 2D Animation Engine.",
+        "sections": [
+          {
+            "heading": "Contributors",
+            "items": [
+              "DD_1345"
+            ]
+          }
+        ]
+      },
+      "zh-CN": {
+        "title": "鸣谢",
+        "summary": "感谢所有为 Vector 2D Animation Engine 做出贡献的成员。",
+        "sections": [
+          {
+            "heading": "贡献者",
+            "items": [
+              "聪明尼"
+            ]
+          }
+        ]
+      }
+    }
+  }
 }

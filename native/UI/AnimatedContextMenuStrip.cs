@@ -90,12 +90,15 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
             foreach (ToolStripItem item in Items) StyleItem(item);
             LayoutItems();
             RefreshMenuRegion();
+            CaptureProbeState();
+            ProbeLayout("opening");
         }
     }
 
     protected override void OnOpened(EventArgs e)
     {
         base.OnOpened(e);
+        ProbeLayout("opened");
         const string hoverRoutingTag = "VectorAnimationEngine.AnimatedContextMenuStrip.HoverRouting";
         foreach (ToolStripItem item in Items)
         {
@@ -261,6 +264,39 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
     }
 
     private void RestoreMinimumSize() => MinimumSize = new Size(ScaleMenu(MinimumWidth), 0);
+
+    internal static void ProbeLayout(string phase)
+    {
+        if (!MenuLayoutDiagnostics.Enabled) return;
+
+        var dpi = _probeInstance?.DeviceDpi ?? 0;
+        MenuLayoutDiagnostics.Write($"[MenuProbe] {phase} dpi={dpi} client={_probeBounds} x={_probeLocation.X} y={_probeLocation.Y} padding={_probePadding} min={_probeMinimum} items={_probeItems}");
+    }
+
+    private static string _probeBounds = "n/a";
+    private static string _probePadding = "n/a";
+    private static string _probeItems = "n/a";
+    private static string _probeMinimum = "n/a";
+    private static Point _probeLocation;
+    private static AnimatedContextMenuStrip? _probeInstance;
+
+    private void CaptureProbeState()
+    {
+        _probeInstance = this;
+        _probeBounds = ClientRectangle.ToString();
+        _probeLocation = Location;
+        _probePadding = new Padding(Left, Top, Right, Bottom).ToString();
+        _probeMinimum = MinimumSize.ToString();
+        var parts = new List<string>();
+        foreach (ToolStripItem item in Items)
+        {
+            var internalRect = item is ToolStripDropDownItem dropDown
+                ? dropDown.DropDown.GetType().Name + "@" + dropDown.DropDown.Location.ToString()
+                : string.Empty;
+            parts.Add($"{item.GetType().Name}('{item.Text}') bounds={item.Bounds} margin={item.Margin} padding={item.Padding} size={item.Size} dd={internalRect}");
+        }
+        _probeItems = string.Join(" | ", parts);
+    }
 
     private static float EaseOutBack(float value)
     {

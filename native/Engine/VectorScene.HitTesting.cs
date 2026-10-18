@@ -357,17 +357,23 @@ internal sealed partial class VectorScene
     {
         if (!TryInverseMapObjectHitPoint(i, world, toleranceWorld, out var sourceWorld)) return DrawingElementHit.None;
         var shape = ShapeKind.Length > i ? ShapeKind[i] : VectorAnimationEngine.ShapeKind.Rectangle;
+        var distortedHitGeometry = UsesDistortedHitGeometry(i);
         if (shape == VectorAnimationEngine.ShapeKind.MixingStroke
             && TryGetMixingBrushLocalRegion(i, out var mixingRegion))
         {
-            var local = WorldToLocal(i, sourceWorld);
+            var local = WorldToLocal(i, distortedHitGeometry ? world : sourceWorld);
             return mixingRegion.TryHitConnectedComponent(local, toleranceWorld, out var partIndex)
                 ? new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, partIndex), 0, 0, 1)
                 : DrawingElementHit.None;
         }
         if (IsWholeObjectShape(shape))
         {
-            return HitObject(sourceWorld, i, toleranceWorld)
+            // Imported SVG and bitmap shapes are queried through the world contours
+            // FillWorldContours builds from MapObjectPoint, i.e. already deformed.
+            var wholeObjectPoint = shape is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Bitmap
+                ? world
+                : sourceWorld;
+            return HitObject(wholeObjectPoint, i, toleranceWorld)
                 ? new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, 0), 0, 0, 1)
                 : DrawingElementHit.None;
         }
@@ -380,9 +386,15 @@ internal sealed partial class VectorScene
         IReadOnlyList<int>? topologyCandidates = null;
         if (HasStroke(i))
         {
+            // ShapeBoundaryContours is source space; the deformed boundary is what the user
+            // sees, and a warp bend pushes the visible stroke off the source outline.
+            var strokePoint = distortedHitGeometry ? world : sourceWorld;
+            var boundaryContours = distortedHitGeometry
+                ? GetDistortedObjectBoundaryContours(i)
+                : ShapeBoundaryContours(i);
             var hitRadius = Math.Max(Stroke[i] * 0.5f, 1) + toleranceWorld;
-            var nearBoundary = ShapeBoundaryContours(i).Any(contour =>
-                DistanceToPolyline(sourceWorld, contour) <= hitRadius + BooleanBezierMaximumErrorUnits);
+            var nearBoundary = boundaryContours.Any(contour =>
+                DistanceToPolyline(strokePoint, contour) <= hitRadius + BooleanBezierMaximumErrorUnits);
             if (nearBoundary)
             {
                 topologyCandidates = CollectTopologyCandidates(i, frame);
@@ -391,10 +403,11 @@ internal sealed partial class VectorScene
             }
         }
 
-        if (!HasFill(i) || !FillContainsRawPoint(i, sourceWorld)) return DrawingElementHit.None;
+        var fillPoint = distortedHitGeometry ? world : sourceWorld;
+        if (!HasFill(i) || !FillContainsRawPoint(i, fillPoint)) return DrawingElementHit.None;
         if (!OwnsFillUnit(world, i, hitCandidates)) return DrawingElementHit.None;
         topologyCandidates ??= CollectTopologyCandidates(i, frame);
-        var part = FillPartIndex(sourceWorld, i, frame, topologyCandidates);
+        var part = FillPartIndex(fillPoint, i, frame, topologyCandidates);
         if (part < 0) return DrawingElementHit.None;
         return new DrawingElementHit(new DrawingElementKey(i, DrawingElementKind.Fill, part), 0, 0, 1);
     }
@@ -412,6 +425,8 @@ internal sealed partial class VectorScene
             var shape = ShapeKind.Length > candidate ? ShapeKind[candidate] : VectorAnimationEngine.ShapeKind.Rectangle;
             if (!IsFillShape(shape) || !HasFill(candidate)) continue;
             if (!ObjectMayContainHitPoint(candidate, sample, 0)) continue;
+            // Stack ownership is decided where the fills are painted, and distorted fills
+            // are painted in their deformed area, so this stays a deformed-space test.
             if (!FillContainsPoint(candidate, sample)) continue;
             if (owner < 0 || CompareObjectStack(candidate, owner) > 0)
             {

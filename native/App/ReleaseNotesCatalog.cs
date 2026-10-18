@@ -88,6 +88,42 @@ internal sealed class ReleaseNoteEntry
         language == UiLanguage.SimplifiedChinese ? SimplifiedChinese : English;
 }
 
+internal sealed class ReleaseAcknowledgementEntry
+{
+    public ReleaseAcknowledgementEntry(
+        LocalizedReleaseNote english,
+        LocalizedReleaseNote simplifiedChinese)
+    {
+        ArgumentNullException.ThrowIfNull(english);
+        ArgumentNullException.ThrowIfNull(simplifiedChinese);
+
+        English = english;
+        SimplifiedChinese = simplifiedChinese;
+    }
+
+    public LocalizedReleaseNote English { get; }
+    public LocalizedReleaseNote SimplifiedChinese { get; }
+
+    public LocalizedReleaseNote ContentFor(UiLanguage language) =>
+        language == UiLanguage.SimplifiedChinese ? SimplifiedChinese : English;
+}
+
+internal static class ReleaseAcknowledgementDefaults
+{
+    public static LocalizedReleaseNote English { get; } = new(
+        "Acknowledgements",
+        "Thank you to everyone who contributed to Vector 2D Animation Engine.",
+        new ReleaseNoteSection("Contributors", "聪明尼"));
+
+    public static LocalizedReleaseNote SimplifiedChinese { get; } = new(
+        "鸣谢",
+        "感谢所有为 Vector 2D Animation Engine 做出贡献的成员。",
+        new ReleaseNoteSection("贡献者", "聪明尼"));
+
+    public static ReleaseAcknowledgementEntry Entry { get; } =
+        new(English, SimplifiedChinese);
+}
+
 internal sealed class ReleaseNotesManifestDocument
 {
     [JsonPropertyName("schemaVersion")]
@@ -97,6 +133,16 @@ internal sealed class ReleaseNotesManifestDocument
     [JsonPropertyName("releases")]
     [JsonRequired]
     public List<ReleaseNotesManifestRelease> Releases { get; set; } = [];
+
+    [JsonPropertyName("acknowledgements")]
+    public ReleaseNotesManifestAcknowledgements? Acknowledgements { get; set; }
+}
+
+internal sealed class ReleaseNotesManifestAcknowledgements
+{
+    [JsonPropertyName("locales")]
+    [JsonRequired]
+    public ReleaseNotesManifestLocales Locales { get; set; } = new();
 }
 
 internal sealed class ReleaseNotesManifestRelease
@@ -173,6 +219,7 @@ internal static class ReleaseNotesManifestCodec
     private static readonly JsonSerializerOptions WriteOptions = new(ReadOptions)
     {
         Encoder = JavaScriptEncoder.Create(UnicodeRanges.All),
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         WriteIndented = true
     };
 
@@ -271,6 +318,8 @@ internal static class ReleaseNotesManifestCodec
             errors.Add($"releases must contain the current application version {FormatVersion(requiredVersion)}.");
         }
 
+        ValidateAcknowledgements(document.Acknowledgements, errors);
+
         return Array.AsReadOnly(errors.ToArray());
     }
 
@@ -311,30 +360,39 @@ internal static class ReleaseNotesManifestCodec
             SchemaVersion = document.SchemaVersion,
             Releases = document.Releases
                 .OrderByDescending(release => Version.Parse(release.Version))
-                .ToList()
+                .ToList(),
+            Acknowledgements = document.Acknowledgements
         };
+    }
+
+    private static void ValidateAcknowledgements(
+        ReleaseNotesManifestAcknowledgements? acknowledgements,
+        ICollection<string> errors)
+    {
+        if (acknowledgements is null) return;
+        ValidateLocales(acknowledgements.Locales, "acknowledgements", errors);
     }
 
     private static void ValidateLocales(
         ReleaseNotesManifestLocales? locales,
-        string releasePath,
+        string scopePath,
         ICollection<string> errors)
     {
         if (locales is null)
         {
-            errors.Add($"{releasePath}.locales must contain en and zh-CN.");
+            errors.Add($"{scopePath}.locales must contain en and zh-CN.");
             return;
         }
 
-        ValidateLocale(locales.English, $"{releasePath}.locales.en", errors);
-        ValidateLocale(locales.SimplifiedChinese, $"{releasePath}.locales.zh-CN", errors);
+        ValidateLocale(locales.English, $"{scopePath}.locales.en", errors);
+        ValidateLocale(locales.SimplifiedChinese, $"{scopePath}.locales.zh-CN", errors);
 
         var englishSections = locales.English?.Sections;
         var chineseSections = locales.SimplifiedChinese?.Sections;
         if (englishSections is null || chineseSections is null) return;
         if (englishSections.Count != chineseSections.Count)
         {
-            errors.Add($"{releasePath}.locales must have the same section count in en and zh-CN.");
+            errors.Add($"{scopePath}.locales must have the same section count in en and zh-CN.");
             return;
         }
 
@@ -345,7 +403,7 @@ internal static class ReleaseNotesManifestCodec
             if (englishItemCount != chineseItemCount)
             {
                 errors.Add(
-                    $"{releasePath}.locales section {index.ToString(CultureInfo.InvariantCulture)} must have the same item count in en and zh-CN.");
+                    $"{scopePath}.locales section {index.ToString(CultureInfo.InvariantCulture)} must have the same item count in en and zh-CN.");
             }
         }
     }
@@ -411,7 +469,8 @@ internal static class ReleaseNotesCatalog
     private sealed record CatalogState(
         IReadOnlyList<ReleaseNoteEntry> AllEntries,
         IReadOnlyList<ReleaseNoteEntry> VisibleEntries,
-        ReleaseNoteEntry Current);
+        ReleaseNoteEntry Current,
+        ReleaseAcknowledgementEntry Acknowledgements);
 
     private static readonly Version ApplicationVersion = ReadApplicationVersion();
     private static readonly CatalogState State = LoadCatalog(ApplicationVersion);
@@ -422,6 +481,7 @@ internal static class ReleaseNotesCatalog
     public static Version CurrentVersion => ApplicationVersion;
     public static ReleaseNoteEntry Latest => State.AllEntries[0];
     public static Version LatestVersion => Latest.Version;
+    public static ReleaseAcknowledgementEntry Acknowledgements => State.Acknowledgements;
 
     private static CatalogState LoadCatalog(Version currentVersion)
     {
@@ -442,10 +502,16 @@ internal static class ReleaseNotesCatalog
                 .Where(entry => entry.ShowInApplication && entry.Version <= currentVersion)
                 .ToArray();
             var current = allEntries.Single(entry => entry.Version == currentVersion);
+            var acknowledgements = document.Acknowledgements is null
+                ? ReleaseAcknowledgementDefaults.Entry
+                : new ReleaseAcknowledgementEntry(
+                    ToRuntimeLocale(document.Acknowledgements.Locales.English),
+                    ToRuntimeLocale(document.Acknowledgements.Locales.SimplifiedChinese));
             return new CatalogState(
                 Array.AsReadOnly(allEntries),
                 Array.AsReadOnly(visibleEntries),
-                current);
+                current,
+                acknowledgements);
         }
         catch (Exception exception) when (exception is JsonException or InvalidDataException or NotSupportedException)
         {

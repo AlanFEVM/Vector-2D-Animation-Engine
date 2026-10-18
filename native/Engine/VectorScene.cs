@@ -78,6 +78,7 @@ internal sealed partial class VectorScene : ITimelineContext
     private Func<IReadOnlyList<string>>? _additionalTimelineTargets;
     private Func<string, int, bool>? _externalLayerKeyframeContent;
     private int[]? _deferredAppendKeyframes;
+    private BulkObjectAppend? _bulkObjectAppend;
     private int[] _queryActiveKeyframes = [];
     private int _queryActiveFrame = int.MinValue;
     private Dictionary<int, List<int>>? _spatialAppendCells;

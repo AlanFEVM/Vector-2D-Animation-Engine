@@ -25,7 +25,9 @@ internal sealed partial class VectorScene
 
             var shape = ShapeKind[objectIndex];
             if (IsWholeObjectShape(shape)
-                && HitObject(sourceWorld, objectIndex, toleranceWorld))
+                && HitObject(shape is VectorAnimationEngine.ShapeKind.ImportedSvg or VectorAnimationEngine.ShapeKind.Bitmap
+                    ? world
+                    : sourceWorld, objectIndex, toleranceWorld))
             {
                 if (IsSelectionPointExposed(objectIndex, world, frame, strokePass: HasStroke(objectIndex))) return true;
             }
@@ -39,6 +41,8 @@ internal sealed partial class VectorScene
                 continue;
             }
 
+            // Paint and stroke editing both resolve against source geometry, so the
+            // cursor must not report "selectable" over pixels the warp moved elsewhere.
             if (HasStroke(objectIndex)
                 && ShapeBoundaryContours(objectIndex).Any(contour => DistanceToPolyline(sourceWorld, contour) <= hitRadius))
             {
@@ -3521,7 +3525,8 @@ internal sealed partial class VectorScene
             oppositeEndpoint,
             Lerp(start, control, 2f / 3f),
             Lerp(end, control, 2f / 3f),
-            keepStraight);
+            keepStraight,
+            preserveCurvature: false);
     }
 
     public void SetLineEndpoint(
@@ -3531,11 +3536,21 @@ internal sealed partial class VectorScene
         PointF oppositeEndpoint,
         PointF control1,
         PointF control2,
-        bool keepStraight)
+        bool keepStraight,
+        bool preserveCurvature = false)
     {
         if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return;
         var start = startEndpoint ? endpoint : oppositeEndpoint;
         var end = startEndpoint ? oppositeEndpoint : endpoint;
+
+        // The re-expression has to read the chord that is still stored: the endpoint assignments below
+        // would otherwise make the displacement zero and leave the previous controls pointing at the
+        // old chord, which is what bowed a straight line while its endpoint was dragged.
+        if (!keepStraight && preserveCurvature)
+        {
+            _ = TryMapMovedLineEndpointControls(objectIndex, startEndpoint, endpoint, ref control1, ref control2);
+        }
+
         var center = Midpoint(start, end);
         X[objectIndex] = center.X;
         Y[objectIndex] = center.Y;
@@ -3547,11 +3562,122 @@ internal sealed partial class VectorScene
             control1 = Lerp(start, end, 1f / 3f);
             control2 = Lerp(start, end, 2f / 3f);
         }
+
         CurveControlX[objectIndex] = VectorUnits.Quantize(control1.X);
         CurveControlY[objectIndex] = VectorUnits.Quantize(control1.Y);
         CurveControl2X[objectIndex] = VectorUnits.Quantize(control2.X);
         CurveControl2Y[objectIndex] = VectorUnits.Quantize(control2.Y);
         InvalidateDeferredTopologyQueries();
+    }
+
+    /// <summary>
+    /// Re-expresses the current cubic of a line after one endpoint moved, so that moving an endpoint
+    /// never changes the line's curvature. A straight chord maps onto the exact new chord, so a line
+    /// drawn as a line reads as a line on every frame of an endpoint drag instead of bowing while the
+    /// pointer moves. A curved line keeps the bend at the moved endpoint: the control that belongs to
+    /// that endpoint follows it rigidly, leaving the tangent there exactly as it was.
+    /// </summary>
+    public bool TryMapMovedLineEndpointControls(
+        int objectIndex,
+        bool startEndpoint,
+        PointF newEndpoint,
+        ref PointF control1,
+        ref PointF control2)
+    {
+        if ((uint)objectIndex >= ObjectCount || ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line) return false;
+        if (!TryGetLineCubic(objectIndex, out var start, out var existingC1, out var existingC2, out var end)) return false;
+        var startX = startEndpoint ? newEndpoint.X : start.X;
+        var startY = startEndpoint ? newEndpoint.Y : start.Y;
+        var endX = startEndpoint ? end.X : newEndpoint.X;
+        var endY = startEndpoint ? end.Y : newEndpoint.Y;
+        (control1, control2) = MapEndpointMoveControls(
+            startEndpoint,
+            start.X,
+            start.Y,
+            end.X,
+            end.Y,
+            existingC1,
+            existingC2,
+            startX,
+            startY,
+            endX,
+            endY,
+            QuadraticLineEditing.Length > objectIndex && QuadraticLineEditing[objectIndex]);
+        return true;
+    }
+
+    /// <summary>
+    /// Re-expresses a cubic after one endpoint moved onto <c>(newStart, newEnd)</c> without changing
+    /// the line's curvature. A straight chord maps onto the exact new chord, which is what keeps a
+    /// line perfectly straight on every drag frame for both the cubic and the quadratic line
+    /// encoding. A curved line keeps the bend it had at the moved endpoint: the control belonging to
+    /// that endpoint follows the pointer, so the moved endpoint's tangent is unchanged.
+    /// </summary>
+    internal static (PointF Control1, PointF Control2) MapEndpointMoveControls(
+        bool startEndpoint,
+        float startX,
+        float startY,
+        float endX,
+        float endY,
+        PointF control1,
+        PointF control2,
+        float newStartX,
+        float newStartY,
+        float newEndX,
+        float newEndY,
+        bool quadratic)
+    {
+        // The displacement of the endpoint the caller is dragging, which is the end of the chord when
+        // the end endpoint moved and the start of the chord otherwise.
+        var dX = startEndpoint ? newStartX - startX : newEndX - endX;
+        var dY = startEndpoint ? newStartY - startY : newEndY - endY;
+        var chordLength = Distance(new PointF(startX, startY), new PointF(endX, endY));
+        if (!float.IsFinite(chordLength) || chordLength <= 0f)
+        {
+            // A collapsed chord has no direction to stay straight along, so only the control that
+            // belongs to the moved endpoint follows it.
+            return startEndpoint
+                ? (new PointF(control1.X + dX, control1.Y + dY), control2)
+                : (control1, new PointF(control2.X + dX, control2.Y + dY));
+        }
+
+        if (IsStraightBezierSegment(
+                new PointF(startX, startY),
+                control1,
+                control2,
+                new PointF(endX, endY)))
+        {
+            // Straightness is decided by the chord that is still stored, never by whatever the moved
+            // endpoint dragged a control into, so the segment cannot drift into a bow part way
+            // through the drag. Both line encodings land on the exact new chord.
+            return (
+                new PointF(
+                    newStartX + (newEndX - newStartX) / 3f,
+                    newStartY + (newEndY - newStartY) / 3f),
+                new PointF(
+                    newStartX + (newEndX - newStartX) * 2f / 3f,
+                    newStartY + (newEndY - newStartY) * 2f / 3f));
+        }
+
+        if (quadratic)
+        {
+            // A quadratic line keeps one handle that the two cubic controls both rotate around. The
+            // moved endpoint carries that handle rigidly (weight 1) while the far control takes two
+            // thirds of the same sweep, which is the only pair that preserves the quadratic's bow
+            // instead of flattening or over-bending it.
+            var startWeight = startEndpoint ? 1f : 2f / 3f;
+            var endWeight = startEndpoint ? 2f / 3f : 1f;
+            return (
+                new PointF(control1.X + startWeight * dX, control1.Y + startWeight * dY),
+                new PointF(control2.X + endWeight * dX, control2.Y + endWeight * dY));
+        }
+
+        // Cubic: only the control that belongs to the moved endpoint follows it, so the tangent at
+        // the endpoint being adjusted is exactly the one that was drawn and the far half of the
+        // curve keeps its own shape.
+        return startEndpoint
+            ? (new PointF(control1.X + dX, control1.Y + dY), control2)
+            : (control1, new PointF(control2.X + dX, control2.Y + dY));
     }
 
     public bool TryGetLineCubic(

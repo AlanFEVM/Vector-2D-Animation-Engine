@@ -199,4 +199,17 @@ internal sealed partial class VectorScene
         }
         return result.ToArray();
     }
+
+    /// <summary>
+    /// True when the point samples the object's <em>deformed</em> geometry instead of its
+    /// source geometry. Fill/paint always lands in the deformed area (the renderer warps the
+    /// pixels), so every sample that decides "may this world point touch this object" has to
+    /// be warped too. Evaluated per object because this is the hit-test hot path and most
+    /// scenes hold no distort envelopes at all.
+    /// </summary>
+    private bool UsesDistortedHitGeometry(int objectIndex) =>
+        _objectDistortions.ContainsKey(objectIndex)
+        && ShapeKind[objectIndex] != VectorAnimationEngine.ShapeKind.Line
+        && !IsTopologyStrokeShape(ShapeKind[objectIndex]);
+
 }

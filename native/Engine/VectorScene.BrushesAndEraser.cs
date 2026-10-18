@@ -16,6 +16,14 @@ internal sealed partial class VectorScene
     {
         var index = AppendPathObjectContours(layer, worldContours, stroke, color, strokeColor, atoms);
         if (index < 0) return -1;
+        if (_bulkObjectAppend is not null)
+        {
+            // Inside a bulk append the run is indexed once at commit instead of rebuilding the
+            // whole scene geometry for every contour object.
+            CompleteIncrementalObjectAppends([index]);
+            return index;
+        }
+
         RebuildGeometryIndex();
         RebuildSummaries();
         return index;
@@ -249,7 +257,10 @@ internal sealed partial class VectorScene
 
         var index = AppendFreehandStroke(layer, points, stroke, color, atoms);
         if (index < 0) return -1;
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         AddObjectToSummariesIncremental(index, color);
         return index;
     }
@@ -263,7 +274,10 @@ internal sealed partial class VectorScene
     {
         var index = AppendFreehandBezierStroke(layer, worldNodes, stroke, color, atoms);
         if (index < 0) return -1;
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         AddObjectToSummariesIncremental(index, color);
         return index;
     }
@@ -318,7 +332,10 @@ internal sealed partial class VectorScene
     {
         var index = AppendMixingBrushStroke(layer, worldSamples, atoms);
         if (index < 0) return -1;
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         AddObjectToSummariesIncremental(index, Color.FromArgb(Argb[index]));
         return index;
     }
@@ -330,7 +347,10 @@ internal sealed partial class VectorScene
     {
         var index = AppendMixingBrushRegion(layer, worldRegion, atoms);
         if (index < 0) return -1;
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         AddObjectToSummariesIncremental(index, Color.FromArgb(Argb[index]));
         return index;
     }

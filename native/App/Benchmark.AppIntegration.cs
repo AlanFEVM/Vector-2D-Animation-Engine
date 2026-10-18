@@ -975,6 +975,22 @@ internal static partial class Benchmark
                     throw new InvalidOperationException(
                         $"The {language} release-notes panel did not expose the zero-visible-entry state.");
                 }
+
+                var acknowledgement = ReleaseNotesCatalog.Acknowledgements.ContentFor(language);
+                using var acknowledgementPanel = new ReleaseNotesPanel(
+                    ReleaseNotesCatalog.Acknowledgements,
+                    language);
+                acknowledgementPanel.CreateControl();
+                acknowledgementPanel.PerformLayout();
+                if (acknowledgementPanel.AccessibleName != UiLocalization.T("Acknowledgements", language)
+                    || !Descendants(acknowledgementPanel).OfType<Label>().Any(label => label.Text == acknowledgement.Title)
+                    || !Descendants(acknowledgementPanel).OfType<Label>().Any(label => label.Text == acknowledgement.Summary)
+                    || !Descendants(acknowledgementPanel).OfType<Label>().Any(label =>
+                        label.Text == "\u2022  " + acknowledgement.Sections[0].Items[0]))
+                {
+                    throw new InvalidOperationException(
+                        $"The {language} acknowledgement panel did not expose its localized title, summary and contributor.");
+                }
             }
         }
         finally
@@ -1035,7 +1051,8 @@ internal static partial class Benchmark
         var releaseNotes = HotReloadModuleResolver.Resolve([
             typeof(ReleaseNotesCatalog),
             typeof(ReleaseNotesDialog),
-            typeof(ReleaseNotesPanel)]);
+            typeof(ReleaseNotesPanel),
+            typeof(AcknowledgementsDialog)]);
         var referenceWorkspace = HotReloadModuleResolver.Resolve([
             typeof(ReferenceViewPad),
             typeof(ReferenceViewRequestedEventArgs)]);

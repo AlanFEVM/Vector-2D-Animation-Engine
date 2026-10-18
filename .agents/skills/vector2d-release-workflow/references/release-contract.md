@@ -4,6 +4,7 @@
 
 - `Directory.Build.props` owns the current source/assembly version.
 - `release/release-notes.json` owns bilingual in-app notes; versioned Markdown remains historical documentation.
+- The optional top-level `acknowledgements` node owns the bilingual acknowledgements shown in the application; when it is absent both the application and Release Manager fall back to the built-in default list.
 - English and Simplified Chinese entries keep matching section/item structure and contain no publish placeholders.
 - Release Manager refuses to save or publish when source fingerprints changed after load.
 

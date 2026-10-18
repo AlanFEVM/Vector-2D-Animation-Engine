@@ -2,17 +2,16 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class MainForm
 {
-    private readonly ToolStripSeparator _collisionTerrainMenuSeparator = new();
     private readonly ToolStripMenuItem _collisionTerrainMenuItem = new("Add Collision Terrain")
     {
         AccessibleName = "Add Collision Terrain",
         AccessibleDescription = "Create a semi-transparent polygon collision terrain mask"
     };
-    private readonly ToolStripSeparator _randomFractureMenuSeparator = new();
     private readonly ToolStripMenuItem _randomFractureMenuItem = new("Random Fracture")
     {
         AccessibleName = "Random Fracture"
     };
+    private readonly ToolStripMenuItem _fractureGroupMenuItem = new("Fracture");
     private VectorScene? _randomFracturePreviewScene;
     private int _randomFractureDialogObject = -1;
     private int _randomFractureDialogFrame = -1;
@@ -23,10 +22,13 @@ internal sealed partial class MainForm
 
     private void BuildRandomFractureContextMenu()
     {
-        _stageContextMenu.Items.Add(_collisionTerrainMenuSeparator);
-        _stageContextMenu.Items.Add(_collisionTerrainMenuItem);
-        _stageContextMenu.Items.Add(_randomFractureMenuSeparator);
-        _stageContextMenu.Items.Add(_randomFractureMenuItem);
+        _fractureGroupMenuItem.DropDown = new AnimatedContextMenuStrip();
+        _fractureGroupMenuItem.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _collisionTerrainMenuItem,
+            _randomFractureMenuItem
+        });
+        _stageContextMenu.Items.Add(_fractureGroupMenuItem);
         _collisionTerrainMenuItem.Click += (_, _) => AddRandomFractureCollisionTerrain();
         _randomFractureMenuItem.Click += (_, _) => ShowRandomFractureDialog();
         _stageContextMenu.Opening += (_, _) =>
@@ -38,12 +40,10 @@ internal sealed partial class MainForm
             var targets = canOffer ? SelectedActiveDrawingObjectIndices() : [];
             var canFracture = targets.Length == 1
                 && _scene.CanRandomFracture(targets[0], _frame, out _);
-            _collisionTerrainMenuSeparator.Visible = canOfferTerrain;
-            _collisionTerrainMenuItem.Visible = canOfferTerrain;
             _collisionTerrainMenuItem.Enabled = canOfferTerrain;
-            _randomFractureMenuSeparator.Visible = canOffer;
-            _randomFractureMenuItem.Visible = canOffer;
             _randomFractureMenuItem.Enabled = canFracture;
+            // Both commands are drawing-only, so an empty group would be noise.
+            _fractureGroupMenuItem.Visible = canOfferTerrain || canFracture;
         };
     }
 

@@ -271,7 +271,21 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_tool == ToolMode.Eyedropper)
+        if (_altEyedropperHeld && IsAltEyedropperTool(_tool) && !IsAltPressed())
+        {
+            ReleaseTemporaryEyedropper();
+        }
+        else if (_tool == ToolMode.Fill
+            && IsAltPressed()
+            && !_altEyedropperHeld
+            && TryHoldTemporaryEyedropper())
+        {
+            // The key edge was not routed (for example Alt was already held when the window was
+            // activated), so the temporary eyedropper starts from the pointer press instead.
+            _stage.Cursor = Cursors.Cross;
+        }
+
+        if (EffectiveStageTool() == ToolMode.Eyedropper)
         {
             ApplyEyedropper(e);
             return;
@@ -583,20 +597,13 @@ internal sealed partial class MainForm : Form
     private void ApplyEyedropper(MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
-        var hit = _scene.HitTestElement(_stage.ScreenToWorld(e.Location), _frame, SelectionToleranceWorld());
-        if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= _scene.ObjectCount) return;
-
-        var objectIndex = hit.Key.ObjectIndex;
-        if (IsImportedSvgObject(objectIndex)) return;
-        var strokeTarget = hit.Key.Kind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke;
-        var color = Color.FromArgb(strokeTarget ? _scene.StrokeArgb[objectIndex] : _scene.Argb[objectIndex]);
-        var samplesGradient = _scene.HasGradient(objectIndex)
-            && (strokeTarget ? _scene.ShapeKind[objectIndex] == ShapeKind.Line : IsFillShape(_scene.ShapeKind[objectIndex]));
-        var gradientKind = samplesGradient ? _scene.GetGradientKind(objectIndex) : GradientKind.Solid;
-        var gradientStops = samplesGradient
-            ? _scene.GetGradientStops(objectIndex)
-            : [new GradientStop(0, color), new GradientStop(1, color)];
-        if (gradientStops.Length > 0) color = Color.FromArgb(gradientStops[0].Argb);
+        var sampled = SampleEyedropperMaterial(_stage.ScreenToWorld(e.Location));
+        if (sampled is null) return;
+        var sample = sampled.Value;
+        var color = sample.Color;
+        var strokeTarget = sample.StrokeTarget;
+        var gradientKind = sample.Kind;
+        var gradientStops = sample.Stops;
 
         _materialEditor.SetGradientPreviewTarget(strokeTarget);
         _materialEditor.SetMaterial(
@@ -605,6 +612,49 @@ internal sealed partial class MainForm : Form
             _materialEditor.StrokeWidth,
             color.A / 255f);
         _materialEditor.SetGradient(gradientKind, gradientStops);
+        // A multi-stop gradient has no single material color; the gradient preview is the source of
+        // truth for the Fill tool until a solid color replaces it.
+        _eyedropperSamplesGradient = gradientKind != GradientKind.Solid;
+
+        // A drag press can start from a mouse-move that never opened the selection loop, so the
+        // fill-tool preview could still be showing: the eyedropper owns the pixels now.
+        _stage.ClearFillToolCursor();
+        ClearFillHoverPreview();
+    }
+
+    internal static EyedropperMaterialSample SampleEyedropperMaterial(
+        VectorScene scene,
+        int frame,
+        PointF world,
+        float tolerance,
+        Func<int, bool> isImportedSvgObject)
+    {
+        var hit = scene.HitTestElement(world, frame, tolerance);
+        if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= scene.ObjectCount) return EyedropperMaterialSample.None;
+
+        var objectIndex = hit.Key.ObjectIndex;
+        if (isImportedSvgObject(objectIndex)) return EyedropperMaterialSample.None;
+        var strokeTarget = hit.Key.Kind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke;
+        var color = Color.FromArgb(strokeTarget ? scene.StrokeArgb[objectIndex] : scene.Argb[objectIndex]);
+        var samplesGradient = scene.HasGradient(objectIndex)
+            && (strokeTarget ? scene.ShapeKind[objectIndex] == ShapeKind.Line : IsFillShape(scene.ShapeKind[objectIndex]));
+        var gradientKind = samplesGradient ? scene.GetGradientKind(objectIndex) : GradientKind.Solid;
+        var gradientStops = samplesGradient
+            ? scene.GetGradientStops(objectIndex)
+            : [new GradientStop(0, color), new GradientStop(1, color)];
+        if (gradientStops.Length > 0) color = Color.FromArgb(gradientStops[0].Argb);
+        return new EyedropperMaterialSample(strokeTarget, color, gradientKind, gradientStops, IsValid: true);
+    }
+
+    private EyedropperMaterialSample? SampleEyedropperMaterial(PointF world)
+    {
+        var sample = SampleEyedropperMaterial(
+            _scene,
+            _frame,
+            world,
+            SelectionToleranceWorld(),
+            IsImportedSvgObject);
+        return sample.IsValid ? sample : null;
     }
 
     private bool TryApplyFillToLine(DrawingElementHit hit)

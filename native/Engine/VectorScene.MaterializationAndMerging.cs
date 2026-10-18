@@ -1432,9 +1432,10 @@ internal sealed partial class VectorScene
         if (sourceKeys.Length == 0) return [];
 
         var resultKeys = new HashSet<(ushort Layer, int Keyframe, long Order, double SubOrder)>();
+        var mergeIndex = CreateStackKeyIndex();
         foreach (var key in sourceKeys)
         {
-            var source = FindObjectByStackKey(key.Layer, key.Keyframe, key.Order, key.SubOrder);
+            var source = mergeIndex.Find(key.Layer, key.Keyframe, key.Order, key.SubOrder);
             if (source < 0 || !IsFillShape(ShapeKind[source])) continue;
             var merged = MergeMatchingShapeGradientFillsAround(source, frame);
             if ((uint)merged < ObjectCount)
@@ -1527,6 +1528,63 @@ internal sealed partial class VectorScene
         }
         return -1;
     }
+
+    /// <summary>
+    /// First-match linear lookup kept as the fallback for ambiguous stack keys.
+    /// </summary>
+    internal int LookupStackKeyLinearly(int layer, int keyframe, long order)
+    {
+        for (var index = 0; index < ObjectCount; index++)
+        {
+            if (ObjectLayer[index] == layer
+                && ObjectKeyframeFrame[index] == keyframe
+                && ObjectOrder[index] == order)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// First-match linear lookup kept as the fallback for ambiguous stack keys.
+    /// </summary>
+    internal int LookupStackKeyLinearly(int layer, int keyframe, long order, double subOrder)
+    {
+        for (var index = 0; index < ObjectCount; index++)
+        {
+            if (ObjectLayer[index] == layer
+                && ObjectKeyframeFrame[index] == keyframe
+                && ObjectOrder[index] == order
+                && ObjectSubOrder[index].Equals(subOrder))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// First-match linear lookup kept as the fallback for ambiguous stack keys.
+    /// </summary>
+    internal int LookupStackKeyLinearly(long order, double subOrder)
+    {
+        for (var index = 0; index < ObjectCount; index++)
+        {
+            if (ObjectOrder[index] == order && ObjectSubOrder[index].Equals(subOrder)) return index;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Optional index over the current object table for callers that resolve many stack keys in a
+    /// row, typically while merging a large fill selection. It refreshes itself whenever the object
+    /// table revision changes, so it stays valid across the merges it is interleaved with.
+    /// </summary>
+    internal StackKeyIndex CreateStackKeyIndex() => new(this);
 
     private int FindObjectByStackKey(int layer, int keyframe, long order, double subOrder)
     {
@@ -1661,9 +1719,10 @@ internal sealed partial class VectorScene
         if (sourceKeys.Length == 0) return [];
 
         var resultKeys = new HashSet<(ushort Layer, int Keyframe, long Order, double SubOrder)>();
+        var keyIndex = CreateStackKeyIndex();
         foreach (var key in sourceKeys)
         {
-            var source = FindObjectByStackKey(key.Layer, key.Keyframe, key.Order, key.SubOrder);
+            var source = keyIndex.Find(key.Layer, key.Keyframe, key.Order, key.SubOrder);
 
             if (source < 0 || !IsFillShape(ShapeKind[source])) continue;
             var merged = MergeSameColorFillsAround(source, connectNearby, frame);

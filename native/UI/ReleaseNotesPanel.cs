@@ -17,6 +17,19 @@ internal sealed class ReleaseNotesPanel : UserControl
     }
 
     internal ReleaseNotesPanel(IReadOnlyList<ReleaseNoteEntry> entries, UiLanguage language)
+        : this(entries, acknowledgedBy: null, language)
+    {
+    }
+
+    internal ReleaseNotesPanel(ReleaseAcknowledgementEntry? acknowledgedBy, UiLanguage language)
+        : this(entries: [], acknowledgedBy, language)
+    {
+    }
+
+    internal ReleaseNotesPanel(
+        IReadOnlyList<ReleaseNoteEntry> entries,
+        ReleaseAcknowledgementEntry? acknowledgedBy,
+        UiLanguage language)
     {
         ArgumentNullException.ThrowIfNull(entries);
 
@@ -31,6 +44,13 @@ internal sealed class ReleaseNotesPanel : UserControl
                 CultureInfo.CurrentCulture,
                 UiLocalization.T("Release notes for version {0}", _language),
                 entries[0].Version);
+        if (acknowledgedBy is not null && entries.Count == 0)
+        {
+            AccessibleName = UiLocalization.T("Acknowledgements", _language);
+            AccessibleDescription = UiLocalization.T(
+                "Use arrow keys, Page Up, Page Down, Home, or End to read the acknowledgements.",
+                _language);
+        }
 
         _focusFrame.BackColor = Theme.Border;
         _focusFrame.Dock = DockStyle.Fill;
@@ -48,6 +68,12 @@ internal sealed class ReleaseNotesPanel : UserControl
         _scrollHost.AccessibleDescription = UiLocalization.T(
             "Use arrow keys, Page Up, Page Down, Home, or End to read the release notes.",
             _language);
+        if (acknowledgedBy is not null && entries.Count == 0)
+        {
+            _scrollHost.AccessibleDescription = UiLocalization.T(
+                "Use arrow keys, Page Up, Page Down, Home, or End to read the acknowledgements.",
+                _language);
+        }
         _scrollHost.Enter += (_, _) => _focusFrame.BackColor = Theme.Accent;
         _scrollHost.Leave += (_, _) => _focusFrame.BackColor = Theme.Border;
         _scrollHost.Resize += (_, _) => UpdateWrappingWidths();
@@ -69,7 +95,7 @@ internal sealed class ReleaseNotesPanel : UserControl
         _content.SuspendLayout();
         try
         {
-            if (entries.Count == 0)
+            if (entries.Count == 0 && acknowledgedBy is null)
             {
                 AddLabel(
                     UiLocalization.T("No release notes are enabled for this build.", _language),
@@ -83,6 +109,12 @@ internal sealed class ReleaseNotesPanel : UserControl
                 {
                     if (index > 0) AddEntrySeparator();
                     AddEntry(entries[index]);
+                }
+
+                if (acknowledgedBy is not null)
+                {
+                    if (entries.Count > 0) AddEntrySeparator();
+                    AddAcknowledgement(acknowledgedBy);
                 }
             }
         }
@@ -114,6 +146,21 @@ internal sealed class ReleaseNotesPanel : UserControl
             UiLocalization.T("Released: {0}", _language),
             dateValue);
         AddLabel(releaseDateText, Theme.UiFont(9), Theme.Muted, new Padding(0, 0, 0, 12));
+        AddContent(localized);
+    }
+
+    private void AddAcknowledgement(ReleaseAcknowledgementEntry acknowledgedBy)
+    {
+        AddLabel(
+            UiLocalization.T("Acknowledgements", _language),
+            Theme.UiFont(12.5f, FontStyle.Bold),
+            Theme.AccentLabel,
+            new Padding(0, 0, 0, 12));
+        AddContent(acknowledgedBy.ContentFor(_language));
+    }
+
+    private void AddContent(LocalizedReleaseNote localized)
+    {
         AddLabel(localized.Title, Theme.UiFont(10.5f, FontStyle.Bold), Theme.Text, new Padding(0, 0, 0, 8));
         AddLabel(localized.Summary, Theme.UiFont(9.5f), Theme.Text, new Padding(0, 0, 0, 18));
 

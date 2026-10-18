@@ -25,6 +25,7 @@ internal sealed partial class MainForm
         var snapshotMilliseconds = 0d;
         var materializeMilliseconds = 0d;
         var modelFrameReady = false;
+        var translatesIndependentStroke = false;
         try
         {
             var snapshotStartedAt = firstMove ? Stopwatch.GetTimestamp() : 0;
@@ -46,11 +47,19 @@ internal sealed partial class MainForm
                 {
                     return;
                 }
-                if (!_independentMarqueeStrokeMove) CaptureFillBoundaryLineLinks();
-                if (!editsFreehandBezier && !_independentMarqueeStrokeMove) CaptureLineEndpointFillIntersections();
+                // Curvature edits (curve handles, Pencil segment handles) must keep a coincident
+                // fill's contour following the stroke; every other stroke handle edit - endpoint,
+                // pivot and whole-stroke moves - never touches a fill.
+                var editsStrokeCurvature = IsCurvatureHandleEdit() || editsFreehandBezier;
+                // Endpoint and pivot drags edit the stroke alone: a coincident fill's boundary is a
+                // separate object and never follows the stroke.
+                var editsIndependentStroke = !_independentMarqueeStrokeMove
+                    && IsFillIndependentEditShape(_scene, _selectedObject)
+                    && !editsStrokeCurvature;
+                if (!editsIndependentStroke) CaptureFillBoundaryLineLinks();
+                if (!editsFreehandBezier && !editsIndependentStroke) CaptureLineEndpointFillIntersections();
                 ApplyHandleDrag(world, resetBezierCurvature);
-                if (synchronizeLinkedFills
-                    && !_independentMarqueeStrokeMove)
+                if (synchronizeLinkedFills && !editsIndependentStroke)
                 {
                     SynchronizeLinkedFillBoundaries();
                 }
@@ -61,7 +70,11 @@ internal sealed partial class MainForm
                 {
                     return;
                 }
-                if (!_independentMarqueeStrokeMove) CaptureFillBoundaryLineLinks();
+                // Whole-stroke and whole-vertex moves never reshape a coincident fill; only a
+                // selection that mixes in other shapes keeps the existing boundary support.
+                translatesIndependentStroke = !_independentMarqueeStrokeMove
+                    && _selectedMoveStarts.Keys.All(index => IsFillIndependentEditShape(_scene, index));
+                if (!translatesIndependentStroke) CaptureFillBoundaryLineLinks();
                 var dxWorld = world.X - _startWorld.Value.X;
                 var dyWorld = world.Y - _startWorld.Value.Y;
                 // A placement and its distortion must move together from the same
@@ -121,7 +134,7 @@ internal sealed partial class MainForm
                     TranslateGradientFromEditStart(_selectedObject, dxWorld, dyWorld);
                 }
 
-                if (synchronizeLinkedFills && !_independentMarqueeStrokeMove) SynchronizeLinkedFillBoundaries();
+                if (synchronizeLinkedFills && !translatesIndependentStroke) SynchronizeLinkedFillBoundaries();
             }
 
             if (_activeHandle == EditHandleKind.None) InvalidatePointerTopologyQueries();
@@ -309,6 +322,22 @@ internal sealed partial class MainForm
             && hit.EndT >= 1f - DrawingTopologyRules.UnitIntersectionTolerance;
     }
 
+    /// <summary>
+    /// Strokes that are edited as pure geometry. Moving, endpoint-dragging or reshaping them must
+    /// not create, split or reshape any fill: a fill whose contour happens to coincide with the
+    /// stroke stays exactly where it is.
+    /// </summary>
+    internal static bool IsFillIndependentEditShape(VectorScene scene, int objectIndex) =>
+        scene.IsFillIndependentStrokeShape(objectIndex);
+
+    /// <summary>
+    /// True for handles that change a stroke's shape: the two cubic Bezier handles, or, for a
+    /// quadratic line, its single bezier handle. Endpoints, pivots and free transforms only move the
+    /// stroke and therefore edit it without touching any fill.
+    /// </summary>
+    private bool IsCurvatureHandleEdit() =>
+        _activeHandle is EditHandleKind.BezierControl or EditHandleKind.BezierControl2;
+
     private void CaptureFillBoundaryLineLinks()
     {
         if (_fillBoundaryLineLinksCaptured) return;
@@ -320,9 +349,7 @@ internal sealed partial class MainForm
         var editedLines = _selectedMoveStarts.Keys
             .Concat(_lineEndpointEditStarts.Select(edit => edit.ObjectIndex))
             .Append(_selectedObject)
-            .Where(index => (uint)index < _scene.ObjectCount
-                && (_scene.ShapeKind[index] is ShapeKind.Line or ShapeKind.Freeform
-                    || _scene.ShapeKind[index] == ShapeKind.Path && !_scene.HasFill(index) && _scene.HasStroke(index)))
+            .Where(index => IsFillIndependentEditShape(_scene, index))
             .Distinct();
         foreach (var lineObjectIndex in editedLines)
         {

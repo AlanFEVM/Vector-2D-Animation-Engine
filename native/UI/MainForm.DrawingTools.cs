@@ -2208,96 +2208,19 @@ internal sealed partial class MainForm : Form
 
         foreach (var edit in _lineEndpointEditStarts)
         {
-            var dx = snapped.X - edit.OriginalEndpoint.X;
-            var dy = snapped.Y - edit.OriginalEndpoint.Y;
-            var control1 = edit.StartEndpoint
-                ? new PointF(edit.Control1.X + dx, edit.Control1.Y + dy)
-                : edit.Control1;
-            var control2 = edit.StartEndpoint
-                ? edit.Control2
-                : new PointF(edit.Control2.X + dx, edit.Control2.Y + dy);
-            var curved = ShouldCurveDraggedLineEndpoint(edit, primaryEditIndex);
-            if (_scene.IsQuadraticLine(edit.ObjectIndex))
-            {
-                var originalStart = edit.StartEndpoint ? edit.OriginalEndpoint : edit.OppositeEndpoint;
-                var quadratic = new PointF(
-                    1.5f * edit.Control1.X - 0.5f * originalStart.X,
-                    1.5f * edit.Control1.Y - 0.5f * originalStart.Y);
-                var control = new PointF(quadratic.X + dx * (curved ? 1f : 0.5f), quadratic.Y + dy * (curved ? 1f : 0.5f));
-                _scene.SetLineEndpoint(edit.ObjectIndex, edit.StartEndpoint, snapped, edit.OppositeEndpoint,
-                    control, edit.KeepStraight && !curved);
-                continue;
-            }
-            var (draggedControl, oppositeControl) = ResolveLineEndpointDragControls(
-                edit.StartEndpoint,
-                curved,
-                edit.OriginalEndpoint,
-                snapped,
-                edit.OppositeEndpoint,
-                edit.StartEndpoint ? control1 : control2,
-                edit.StartEndpoint ? control2 : control1);
+            // Moving an endpoint must never change the line's curvature: the engine re-expresses the
+            // stored cubic around the moved endpoint, which keeps a straight chord exactly straight on
+            // every frame of the drag and leaves a curved line's bend where it was captured.
             _scene.SetLineEndpoint(
                 edit.ObjectIndex,
                 edit.StartEndpoint,
                 snapped,
                 edit.OppositeEndpoint,
-                edit.StartEndpoint ? draggedControl : oppositeControl,
-                edit.StartEndpoint ? oppositeControl : draggedControl,
-                edit.KeepStraight && !curved);
+                edit.Control1,
+                edit.Control2,
+                keepStraight: edit.KeepStraight,
+                preserveCurvature: !edit.KeepStraight);
         }
-    }
-
-    /// <summary>
-    /// Dragging the endpoint handle of a line that owns that endpoint alone converts the line into a
-    /// cubic Bezier: the endpoint follows the pointer while its own control handle travels with it, so
-    /// the segment curves instead of staying a rubber band. An endpoint shared with another line's
-    /// endpoint is excluded, because bending it would also have to bend the neighbour that is being
-    /// dragged along.
-    /// </summary>
-    private bool ShouldCurveDraggedLineEndpoint(LineEndpointEditStart edit, int primaryEditIndex)
-    {
-        if (!edit.KeepStraight || _lineEndpointEditStarts.Count != 1 || primaryEditIndex < 0)
-        {
-            return false;
-        }
-
-        return _selectedObject == edit.ObjectIndex
-            && _scene.ShapeKind[edit.ObjectIndex] == ShapeKind.Line;
-    }
-
-    /// <summary>
-    /// Applies a dragged line endpoint plus the control point that should travel with it. Converting
-    /// only happens while the line still has its straight control points on the chord: the control
-    /// handle takes the pointer offset and the offset is mirrored onto the opposite control, which
-    /// turns the straight chord into a curve that bends with the dragged handle. A line that is
-    /// already curved keeps its own shape and only moves its endpoint.
-    /// </summary>
-    internal static (PointF DraggedControl, PointF OppositeControl) ResolveLineEndpointDragControls(
-        bool endpointIsStart,
-        bool curveOnDrag,
-        PointF originalEndpoint,
-        PointF endpoint,
-        PointF oppositeEndpoint,
-        PointF translatedControl,
-        PointF oppositeControl)
-    {
-        if (!curveOnDrag) return (translatedControl, oppositeControl);
-
-        var start = endpointIsStart ? originalEndpoint : oppositeEndpoint;
-        var end = endpointIsStart ? oppositeEndpoint : originalEndpoint;
-        var dx = endpoint.X - originalEndpoint.X;
-        var dy = endpoint.Y - originalEndpoint.Y;
-        var originalDraggedControl = new PointF(translatedControl.X - dx, translatedControl.Y - dy);
-        if (!VectorScene.IsStraightBezierSegment(start,
-            endpointIsStart ? originalDraggedControl : oppositeControl,
-            endpointIsStart ? oppositeControl : originalDraggedControl, end))
-        {
-            return (translatedControl, oppositeControl);
-        }
-
-        return (
-            translatedControl,
-            new PointF(oppositeControl.X + dx, oppositeControl.Y + dy));
     }
 
     private PointF ResolveDrawingLineEndpoint(PointF world)

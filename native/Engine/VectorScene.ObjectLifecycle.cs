@@ -312,7 +312,10 @@ internal sealed partial class VectorScene
         int shapeVertexCount = 0)
     {
         var index = AppendObject(layer, center, size, angle, stroke, color, strokeColor, atoms, shapeKind, shapeVertexCount);
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         var summaryColor = ShapeKind[index] is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform
             ? strokeColor
             : color;
@@ -339,7 +342,10 @@ internal sealed partial class VectorScene
         string? name = null)
     {
         var index = AppendImportedSvgObject(layer, center, size, angle, source, name);
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         AddObjectToSummariesIncremental(index, Color.FromArgb(128, 128, 128));
         return index;
     }
@@ -396,7 +402,10 @@ internal sealed partial class VectorScene
         // Keep the spatial index and overview summaries in sync so the placed image can
         // be hit-tested and selected. The packed append only stores the object arrays;
         // every other Add* variant performs this step (see AddImportedSvgObject).
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         AddObjectToSummariesIncremental(index, Color.FromArgb(unchecked((int)0xffffffff)));
         return index;
     }
@@ -1313,7 +1322,10 @@ internal sealed partial class VectorScene
             atoms,
             startEndpointStyle,
             endEndpointStyle);
-        AppendObjectToSpatialIndex(index);
+        if (!TryDeferObjectIndex(index))
+        {
+            AppendObjectToSpatialIndex(index);
+        }
         AddObjectToSummariesIncremental(index, strokeColor);
         return index;
     }
@@ -1539,6 +1551,74 @@ internal sealed partial class VectorScene
 
         EnsureObjectCapacity(ObjectCount + Math.Max(0, expectedObjectCount));
         _deferredAppendKeyframes = keyframes;
+    }
+
+    /// <summary>
+    /// Appends several objects in one go - pasting, stamping, dropping a bundle - instead of going
+    /// through the interactive Add* entry points one object at a time. While the batch is open the
+    /// Add* calls only append packed object data plus summary cells; the spatial index is written
+    /// once for the whole contiguous run. Without a batch each Add* call has to rewrite the spatial
+    /// index whenever the new object is no longer the only pending tail object, which is what makes
+    /// pasting hundreds of objects quadratic.
+    /// </summary>
+    internal DeferredObjectAppend BeginBulkObjectAppend(int expectedObjectCount, IReadOnlyList<int> populatedLayers)
+    {
+        if (_bulkObjectAppend is not null) throw new InvalidOperationException("A bulk object append is already active.");
+        BeginDeferredAppend(expectedObjectCount, populatedLayers);
+        _bulkObjectAppend = new BulkObjectAppend(ObjectCount);
+        return new DeferredObjectAppend(this);
+    }
+
+    private bool TryDeferObjectIndex(int objectIndex)
+    {
+        if (_bulkObjectAppend is not { } append) return false;
+        if (append.TryAdd(objectIndex)) return true;
+        // A nested append broke the contiguous run; finish it before falling back to the
+        // interactive path for this object.
+        CompleteBulkObjectAppend();
+        return false;
+    }
+
+    private void CompleteBulkObjectAppend()
+    {
+        var append = _bulkObjectAppend;
+        if (append is null) return;
+        _bulkObjectAppend = null;
+        append.Complete(this);
+    }
+
+    private sealed class BulkObjectAppend(int firstIndex)
+    {
+        private readonly List<int> _indices = new(16);
+
+        public bool TryAdd(int objectIndex)
+        {
+            if (objectIndex < 0 || firstIndex + _indices.Count != objectIndex) return false;
+            _indices.Add(objectIndex);
+            return true;
+        }
+
+        public void Complete(VectorScene scene)
+        {
+            if (_indices.Count > 0) scene.CompleteIncrementalObjectAppends(_indices);
+            _indices.Clear();
+        }
+    }
+
+    internal readonly struct DeferredObjectAppend : IDisposable
+    {
+        private readonly VectorScene _scene;
+
+        internal DeferredObjectAppend(VectorScene scene)
+        {
+            _scene = scene;
+        }
+
+        public void Dispose()
+        {
+            if (_scene._bulkObjectAppend is not null) _scene.CompleteBulkObjectAppend();
+            _scene.EndDeferredAppend();
+        }
     }
 
     internal void EndDeferredAppend()

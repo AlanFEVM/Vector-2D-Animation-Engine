@@ -1559,10 +1559,10 @@ internal static partial class Benchmark
         Console.WriteLine("line_corner_drag_regression=ok");
     }
 
-    // Dragging a line's own endpoint handle converts the line into a cubic Bezier: the endpoint
-    // follows the pointer while its control handle travels with it, so the segment bends instead of
-    // staying a rubber band. An already-curved line only moves, and a line that shares the endpoint
-    // with another line stays straight so the connection is not broken.
+    // Dragging a line's endpoint never changes the line's curvature: a line that is straight when the
+    // drag starts is a straight chord on every frame of the drag (both the quadratic Line-tool
+    // encoding and the plain cubic encoding), and a curved line keeps the bend at the endpoint being
+    // adjusted instead of following the pointer frame by frame.
     private static void RunLineEndpointCurveRegression()
     {
         RunLineEditingModeRegression();
@@ -1570,60 +1570,161 @@ internal static partial class Benchmark
         var control1 = new PointF(100f / 3f, 0);
         var control2 = new PointF(200f / 3f, 0);
         var end = new PointF(100, 0);
+        var moved = new PointF(0, 60);
 
-        // Straight line, start endpoint dragged to (0, 60): control1 follows the endpoint and
-        // control2 mirrors the same offset, which makes the segment curved.
-        var (draggedControl, oppositeControl) = MainForm.ResolveLineEndpointDragControls(
+        // A straight line dragged by its endpoint stays straight; the controls follow the new chord.
+        var (straightFirst, straightSecond) = MapMovedEndpoint(
             endpointIsStart: true,
-            curveOnDrag: true,
             originalEndpoint: start,
-            endpoint: new PointF(0, 60),
+            endpoint: moved,
             oppositeEndpoint: end,
-            translatedControl: new PointF(100f / 3f, 60),
-            oppositeControl: control2);
-        if (PointsWithin(draggedControl, new PointF(100f / 3f, 60), 0.01f) == false
-            || PointsWithin(oppositeControl, new PointF(200f / 3f, 60), 0.01f) == false)
+            originalControl1: control1,
+            originalControl2: control2);
+        if (!VectorScene.IsStraightBezierSegment(moved, straightFirst, straightSecond, end)
+            || !PointsWithin(straightFirst, new PointF(100f / 3f, 40), 0.01f)
+            || !PointsWithin(straightSecond, new PointF(200f / 3f, 20), 0.01f))
         {
-            throw new InvalidOperationException("Dragging a line endpoint did not carry its control handles with the pointer.");
+            throw new InvalidOperationException("Dragging a line endpoint gave a straight line curvature.");
         }
 
-        if (VectorScene.IsStraightBezierSegment(start, draggedControl, oppositeControl, new PointF(0, 60)))
+        // The Line tool stores every line as a quadratic, so the drag has to stay straight frame after
+        // frame, not only once the pointer is released. A shared-handle mapping used to bow the line
+        // from the second frame on because it moved both cubic controls by the same offset.
+        var dragScene = new VectorScene();
+        dragScene.CreateEmpty();
+        var dragLine = dragScene.AddLineSegment(
+            dragScene.ActiveLayer,
+            start,
+            end,
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Black,
+            6);
+        dragScene.QuadraticLineEditing[dragLine] = true;
+        for (var frame = 1; frame <= 16; frame++)
         {
-            throw new InvalidOperationException("Dragging a line endpoint handle did not convert the segment into a cubic Bezier.");
+            var pointer = new PointF(0, frame * 4f);
+            var (frameFirst, frameSecond) = MapMovedEndpoint(
+                endpointIsStart: true,
+                originalEndpoint: start,
+                endpoint: pointer,
+                oppositeEndpoint: end,
+                originalControl1: control1,
+                originalControl2: control2,
+                quadratic: true);
+            dragScene.SetLineEndpoint(
+                dragLine,
+                startEndpoint: true,
+                pointer,
+                end,
+                frameFirst,
+                frameSecond,
+                keepStraight: false,
+                preserveCurvature: true);
+            AssertLineEndpointDragStayedStraight(dragScene, dragLine, pointer, end, frame);
+
+            // The explicit straight path the editor takes for a line that started straight has to
+            // agree with the curved-line mapping above.
+            dragScene.QuadraticLineEditing[dragLine] = true;
+            dragScene.SetLineEndpoint(
+                dragLine,
+                startEndpoint: true,
+                pointer,
+                end,
+                frameFirst,
+                frameSecond,
+                keepStraight: true,
+                preserveCurvature: false);
+            AssertLineEndpointDragStayedStraight(dragScene, dragLine, pointer, end, frame);
         }
 
-        // The same drag with the conversion disabled keeps the original straight chord.
-        var (keptDragged, keptOpposite) = MainForm.ResolveLineEndpointDragControls(
-            endpointIsStart: true,
-            curveOnDrag: false,
-            originalEndpoint: start,
-            endpoint: new PointF(0, 60),
-            oppositeEndpoint: end,
-            translatedControl: new PointF(100f / 3f, 60),
-            oppositeControl: control2);
-        if (!PointsWithin(keptOpposite, control2, 0.01f))
-        {
-            throw new InvalidOperationException("A connected line endpoint drag introduced curvature instead of keeping the chord straight.");
-        }
-
-        // An already-curved line keeps its own shape and only moves the dragged endpoint.
+        // A curved cubic line keeps the bend at the moved endpoint: its tangent and the far half of
+        // the curve are left exactly where they were drawn.
         var curvedControl1 = new PointF(20, 40);
-        var (curvedDragged, curvedOpposite) = MainForm.ResolveLineEndpointDragControls(
+        var curvedControl2 = new PointF(70, 30);
+        var (curvedFirst, curvedSecond) = MapMovedEndpoint(
             endpointIsStart: true,
-            curveOnDrag: true,
             originalEndpoint: start,
-            endpoint: new PointF(0, 60),
+            endpoint: moved,
             oppositeEndpoint: end,
-            translatedControl: new PointF(20, 100),
-            oppositeControl: curvedControl1);
-        if (!PointsWithin(curvedDragged, new PointF(20, 100), 0.01f)
-            || !PointsWithin(curvedOpposite, curvedControl1, 0.01f)
-            || VectorScene.IsStraightBezierSegment(start, curvedDragged, curvedOpposite, new PointF(0, 60)))
+            originalControl1: curvedControl1,
+            originalControl2: curvedControl2);
+        if (VectorScene.IsStraightBezierSegment(moved, curvedFirst, curvedSecond, end)
+            || !PointsWithin(curvedSecond, curvedControl2, 0.01f)
+            || !PointsWithin(
+                new PointF(curvedFirst.X - moved.X, curvedFirst.Y - moved.Y),
+                new PointF(curvedControl1.X - start.X, curvedControl1.Y - start.Y),
+                0.01f))
         {
-            throw new InvalidOperationException("Dragging an endpoint of an already-curved line changed its curve instead of only moving the endpoint.");
+            throw new InvalidOperationException("Dragging an endpoint of a curved line changed the anchored side or the dragged endpoint's tangent.");
         }
 
-        // The shape has to survive a real scene mutation, not just the pure helper.
+        // The end endpoint uses the mirrored mapping and keeps the start control's curvature.
+        var (endFirst, endSecond) = MapMovedEndpoint(
+            endpointIsStart: false,
+            originalEndpoint: end,
+            endpoint: new PointF(100, 60),
+            oppositeEndpoint: start,
+            originalControl1: curvedControl1,
+            originalControl2: curvedControl2);
+        if (!PointsWithin(endFirst, curvedControl1, 0.01f)
+            || VectorScene.IsStraightBezierSegment(start, endFirst, endSecond, new PointF(100, 60))
+            || !PointsWithin(
+                new PointF(endSecond.X - 100, endSecond.Y - 60),
+                new PointF(curvedControl2.X - end.X, curvedControl2.Y - end.Y),
+                0.01f))
+        {
+            throw new InvalidOperationException("Dragging the end endpoint of a curved line changed the anchored side or the dragged endpoint's tangent.");
+        }
+
+        // A curved quadratic line keeps its single handle rigidly attached to the moved endpoint, so
+        // the bow it had before the drag survives in the scene as well.
+        var quadraticScene = new VectorScene();
+        quadraticScene.CreateEmpty();
+        var quadraticLine = quadraticScene.AddLineSegment(
+            quadraticScene.ActiveLayer,
+            start,
+            end,
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Black,
+            6);
+        quadraticScene.QuadraticLineEditing[quadraticLine] = true;
+        quadraticScene.SetLineQuadraticControl(quadraticLine, new PointF(50, 55));
+        if (!quadraticScene.TryGetLineQuadraticControl(quadraticLine, out var handleBefore)
+            || !quadraticScene.TryGetLineCubic(quadraticLine, out var quadStart, out var quadFirst, out var quadSecond, out var quadEnd))
+        {
+            throw new InvalidOperationException("The curved quadratic line fixture did not expose its handle.");
+        }
+
+        var (quadMappedFirst, quadMappedSecond) = MapMovedEndpoint(
+            endpointIsStart: true,
+            originalEndpoint: quadStart,
+            endpoint: moved,
+            oppositeEndpoint: quadEnd,
+            originalControl1: quadFirst,
+            originalControl2: quadSecond,
+            quadratic: true);
+        quadraticScene.SetLineEndpoint(
+            quadraticLine,
+            startEndpoint: true,
+            moved,
+            quadEnd,
+            quadMappedFirst,
+            quadMappedSecond,
+            keepStraight: false,
+            preserveCurvature: true);
+        if (!quadraticScene.TryGetLineQuadraticControl(quadraticLine, out var handleAfter)
+            || !PointsWithin(
+                new PointF(handleAfter.X - moved.X, handleAfter.Y - moved.Y),
+                new PointF(handleBefore.X - quadStart.X, handleBefore.Y - quadStart.Y),
+                2f)
+            || quadraticScene.IsLineStraight(quadraticLine))
+        {
+            throw new InvalidOperationException("Dragging the endpoint of a curved quadratic line changed the bow it kept on its handle.");
+        }
+
+        // The shape has to survive a real scene mutation of a cubic line, not just the pure helper.
         var scene = new VectorScene();
         scene.CreateEmpty();
         var line = scene.AddLineSegment(
@@ -1634,18 +1735,113 @@ internal static partial class Benchmark
             Color.Transparent,
             Color.Black,
             6);
-        var moved = new PointF(0, 60);
-        scene.SetLineEndpoint(line, startEndpoint: true, moved, end, draggedControl, oppositeControl, keepStraight: false);
-        if (scene.IsLineStraight(line)
-            || !scene.TryGetLineEndpoint(line, startEndpoint: true, out var movedStart)
-            || !PointsWithin(movedStart, moved, 0.01f)
-            || !scene.TryGetLineEndpoint(line, startEndpoint: false, out var keptEnd)
-            || !PointsWithin(keptEnd, end, 0.01f))
+        scene.SetLineEndpoint(line, startEndpoint: true, start, end, curvedControl1, curvedControl2, keepStraight: false);
+        var (sceneFirst, sceneSecond) = MapMovedEndpoint(
+            endpointIsStart: true,
+            originalEndpoint: start,
+            endpoint: moved,
+            oppositeEndpoint: end,
+            originalControl1: curvedControl1,
+            originalControl2: curvedControl2);
+        scene.SetLineEndpoint(line, startEndpoint: true, moved, end, sceneFirst, sceneSecond, keepStraight: false, preserveCurvature: true);
+        if (!scene.TryGetLineCubic(line, out var liveStart, out var liveFirst, out var liveSecond, out var liveEnd)
+            || scene.IsLineStraight(line)
+            || !PointsWithin(liveStart, moved, 0.05f)
+            || !PointsWithin(liveEnd, end, 0.05f)
+            || !PointsWithin(liveFirst, sceneFirst, 1.5f)
+            || !PointsWithin(liveSecond, sceneSecond, 1.5f))
         {
-            throw new InvalidOperationException("The line endpoint curve drag did not produce a curved line with a fixed opposite endpoint.");
+            throw new InvalidOperationException("The line endpoint edit did not keep the curve while moving the endpoint and fixing the opposite endpoint.");
+        }
+
+        // Straight lines stay straight through the same scene path, even if the caller hands in a
+        // stale translated control handle.
+        var straightScene = new VectorScene();
+        straightScene.CreateEmpty();
+        var straightLine = straightScene.AddLineSegment(
+            straightScene.ActiveLayer,
+            start,
+            end,
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Black,
+            6);
+        straightScene.SetLineEndpoint(
+            straightLine,
+            startEndpoint: true,
+            moved,
+            end,
+            control1,
+            control2,
+            keepStraight: false,
+            preserveCurvature: true);
+        if (!straightScene.IsLineStraight(straightLine)
+            || !straightScene.TryGetLineEndpoint(straightLine, startEndpoint: true, out var straightMovedStart)
+            || !PointsWithin(straightMovedStart, moved, 0.05f)
+            || !PointsWithin(
+                new PointF(straightScene.CurveControlX[straightLine], straightScene.CurveControlY[straightLine]),
+                straightFirst,
+                1.5f))
+        {
+            throw new InvalidOperationException("A straight line edited by its endpoint gained curvature or did not reach the pointer.");
         }
 
         Console.WriteLine("line_endpoint_curve_regression=ok");
+    }
+
+    private static (PointF Control1, PointF Control2) MapMovedEndpoint(
+        bool endpointIsStart,
+        PointF originalEndpoint,
+        PointF endpoint,
+        PointF oppositeEndpoint,
+        PointF originalControl1,
+        PointF originalControl2,
+        bool quadratic = false)
+    {
+        var start = endpointIsStart ? originalEndpoint : oppositeEndpoint;
+        var end = endpointIsStart ? oppositeEndpoint : originalEndpoint;
+        return VectorScene.MapEndpointMoveControls(
+            endpointIsStart,
+            start.X,
+            start.Y,
+            end.X,
+            end.Y,
+            originalControl1,
+            originalControl2,
+            endpointIsStart ? endpoint.X : start.X,
+            endpointIsStart ? endpoint.Y : start.Y,
+            endpointIsStart ? end.X : endpoint.X,
+            endpointIsStart ? end.Y : endpoint.Y,
+            quadratic);
+    }
+
+    private static void AssertLineEndpointDragStayedStraight(
+        VectorScene scene,
+        int line,
+        PointF dragged,
+        PointF opposite,
+        int frame)
+    {
+        var expectedFirst = new PointF(
+            dragged.X + (opposite.X - dragged.X) / 3f,
+            dragged.Y + (opposite.Y - dragged.Y) / 3f);
+        var expectedSecond = new PointF(
+            dragged.X + (opposite.X - dragged.X) * 2f / 3f,
+            dragged.Y + (opposite.Y - dragged.Y) * 2f / 3f);
+        var straight = scene.IsLineStraight(line);
+        var hasCubic = scene.TryGetLineCubic(line, out var start, out var first, out var second, out var end);
+        if (!straight
+            || !hasCubic
+            || !PointsWithin(start, dragged, 0.05f)
+            || !PointsWithin(end, opposite, 0.05f)
+            || !PointsWithin(first, expectedFirst, 1.5f)
+            || !PointsWithin(second, expectedSecond, 1.5f))
+        {
+            throw new InvalidOperationException(
+                $"A straight line left its chord while its endpoint was dragged on frame {frame}: " +
+                $"straight={straight}, hasCubic={hasCubic}, start={start}, first={first}, second={second}, end={end}, " +
+                $"expectedFirst={expectedFirst}, expectedSecond={expectedSecond}, dragged={dragged}, opposite={opposite}.");
+        }
     }
 
     private static void RunFillBoundaryCubicDistortionFollowRegression()

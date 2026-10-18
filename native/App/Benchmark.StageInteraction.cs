@@ -7275,6 +7275,122 @@ internal static partial class Benchmark
             "Stage pan did not preserve the pointer drag delta in screen space.");
     }
 
+    private static void RunTemporaryEyedropperRegression()
+    {
+        RunTemporaryEyedropperPolicyRegression();
+    }
+
+    // Holding Alt over the Fill tool borrows the Eyedropper without switching tools: the press must
+    // sample, releasing Alt returns to Fill painting, and a running pointer gesture keeps the button.
+    private static void RunTemporaryEyedropperPolicyRegression()
+    {
+        // Only the Fill tool owns the Alt borrow; the dedicated Eyedropper tool is not affected.
+        var altTools = Enum.GetValues<ToolMode>()
+            .Where(tool => MainForm.IsAltEyedropperTool(tool))
+            .ToArray();
+        AssertTimeline(
+            altTools.Length == 1 && altTools[0] == ToolMode.Fill,
+            "Alt borrowed the eyedropper from a tool other than Fill.");
+
+        // Routing: Alt-down on Fill samples as the Eyedropper, Alt-up paints as Fill again, and the
+        // borrow never leaks into another tool.
+        AssertTimeline(
+            MainForm.EffectiveToolForAltEyedropper(ToolMode.Fill, eyedropperHeld: true) == ToolMode.Eyedropper
+            && MainForm.EffectiveToolForAltEyedropper(ToolMode.Fill, eyedropperHeld: false) == ToolMode.Fill
+            && MainForm.EffectiveToolForAltEyedropper(ToolMode.Eyedropper, eyedropperHeld: true) == ToolMode.Eyedropper
+            && MainForm.EffectiveToolForAltEyedropper(ToolMode.Select, eyedropperHeld: true) == ToolMode.Select
+            && MainForm.EffectiveToolForAltEyedropper(ToolMode.Pen, eyedropperHeld: true) == ToolMode.Pen,
+            "Alt eyedropper routing did not swap Fill for Eyedropper and back.");
+
+        // Preconditions: a held Alt with no editor focus and an idle pointer starts the borrow.
+        AssertTimeline(
+            MainForm.CanStartTemporaryEyedropper(
+                tool: ToolMode.Fill,
+                altKeyDown: true,
+                editorFocused: false,
+                windowVisible: true,
+                pointerInteractionActive: false),
+            "Alt over the Fill tool did not start the temporary eyedropper.");
+
+        // Alt without the key, a focused text editor, a hidden window, or a gesture that already
+        // owns the button must all keep painting.
+        AssertTimeline(
+            !MainForm.CanStartTemporaryEyedropper(ToolMode.Fill, altKeyDown: false, false, true, false)
+            && !MainForm.CanStartTemporaryEyedropper(ToolMode.Fill, true, true, true, false)
+            && !MainForm.CanStartTemporaryEyedropper(ToolMode.Fill, true, false, false, false)
+            && !MainForm.CanStartTemporaryEyedropper(ToolMode.Fill, true, false, true, true)
+            && !MainForm.CanStartTemporaryEyedropper(ToolMode.Pen, true, false, true, false),
+            "The temporary eyedropper stole the Alt key from an editor, a hidden window, a running gesture, or another tool.");
+
+        Console.WriteLine("alt_eyedropper_policy=ok");
+        RunEyedropperGradientAndAlphaSampleRegression();
+    }
+
+    // The eyedropper must bring back a whole gradient (kind plus every stop position and color,
+    // alpha included) and the press point's alpha, not only the object's nominal fill color.
+    private static void RunEyedropperGradientAndAlphaSampleRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        // A square whose fill is the gradient and whose stroke stays a plain alpha color.
+        var square = new PointF[]
+        {
+            new(-40, -40), new(40, -40), new(40, 40), new(-40, 40), new(-40, -40)
+        };
+        var objectIndex = scene.AddPathObject(
+            0,
+            square,
+            stroke: 2f,
+            color: Color.FromArgb(96, 200, 40, 90),
+            strokeColor: Color.FromArgb(64, 20, 60, 220),
+            atoms: 16);
+        AssertTimeline(objectIndex >= 0, "The eyedropper sample fixture could not be created.");
+
+        var stops = new[]
+        {
+            new GradientStop(0f, Color.FromArgb(200, 240, 90, 30)),
+            new GradientStop(0.35f, Color.FromArgb(128, 240, 220, 60)),
+            new GradientStop(1f, Color.FromArgb(40, 30, 60, 220))
+        };
+        scene.SetGradientPaint(objectIndex, GradientKind.Linear, stops);
+
+        var noImportedSvg = new Func<int, bool>(_ => false);
+        var fillSample = MainForm.SampleEyedropperMaterial(
+            scene, frame: 0, world: PointF.Empty, tolerance: 4f, noImportedSvg);
+        AssertTimeline(fillSample.IsValid && !fillSample.StrokeTarget,
+            "The eyedropper did not sample the fill slot of the hit object.");
+
+        var sampledStops = fillSample.Stops;
+        var gradientKept = fillSample.Kind == GradientKind.Linear
+            && sampledStops.Length == stops.Length
+            && sampledStops.Select(stop => stop.Position).SequenceEqual(stops.Select(stop => stop.Position))
+            && sampledStops.Select(stop => stop.Argb).SequenceEqual(stops.Select(stop => stop.Argb));
+        AssertTimeline(gradientKept,
+            $"The eyedropper lost the gradient profile: kind={fillSample.Kind}, stops={string.Join(", ", sampledStops.Select(stop => $"@{stop.Position:0.##}:{stop.Argb:X8}"))}.");
+
+        // Alpha rides along with each stop, and the representative color is the first stop including
+        // its alpha, so the Fill tool can keep painting the sampled material.
+        AssertTimeline(
+            Color.FromArgb(fillSample.Color.ToArgb()).ToArgb() == stops[0].Argb
+            && Color.FromArgb(fillSample.Color.ToArgb()).A == 200
+            && sampledStops.All(stop => Color.FromArgb(stop.Argb).A is > 0 and < 255),
+            "The eyedropper dropped the sampled alpha channel.");
+
+        // A miss must not fabricate a sample; the Fill tool keeps its current material.
+        var miss = MainForm.SampleEyedropperMaterial(
+            scene, frame: 0, world: new PointF(2_000, 2_000), tolerance: 4f, noImportedSvg);
+        AssertTimeline(!miss.IsValid,
+            "The eyedropper reported a sample where no object was hit.");
+
+        // Imported SVG objects stay out of the sample because their paint is not a native material.
+        var importedSvgSample = MainForm.SampleEyedropperMaterial(
+            scene, frame: 0, world: PointF.Empty, tolerance: 4f, _ => true);
+        AssertTimeline(!importedSvgSample.IsValid,
+            "The eyedropper sampled an imported SVG object instead of leaving the material untouched.");
+
+        Console.WriteLine("alt_eyedropper_gradient_alpha=ok");
+    }
+
     private static void RunDenseSelectionWheelRegression()
     {
         var previousGpuPolicy = Environment.GetEnvironmentVariable("VECTOR_DISABLE_EXPLICIT_GPU");

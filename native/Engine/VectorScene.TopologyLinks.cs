@@ -26,6 +26,28 @@ internal sealed partial class VectorScene
             && !string.IsNullOrEmpty(LayerParentIds[ObjectLayer[stroke]])
             && LayerParentIds[ObjectLayer[stroke]] == LayerParentIds[ObjectLayer[fill]];
 
+    /// <summary>
+    /// Same spatial query and same candidate filter as the first loop of
+    /// <see cref="CaptureFillBoundaryLineLinks"/>, without contour sampling or cloning. False means
+    /// that call would return no link at all.
+    /// </summary>
+    private bool HasFillCandidateInBounds(RectangleF bounds, int frame, int lineObjectIndex)
+    {
+        foreach (var fillObjectIndex in QueryObjects(bounds, frame))
+        {
+            if (fillObjectIndex != lineObjectIndex
+                && CanLinkFillBoundaryLayers(lineObjectIndex, fillObjectIndex)
+                && ObjectKeyframeFrame[fillObjectIndex] == ObjectKeyframeFrame[lineObjectIndex]
+                && HasFill(fillObjectIndex)
+                && IsObjectActive(fillObjectIndex, frame))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private (int SegmentIndex, CubicBoundarySegment Curve)[] LinkedStrokeCurves(int index)
     {
         if (ShapeKind[index] == VectorAnimationEngine.ShapeKind.Line)
@@ -75,15 +97,20 @@ internal sealed partial class VectorScene
             return Array.Empty<FillBoundaryLineLink>();
         }
 
+        // A large batch move captures links for every selected line, and sampling the stroke plus
+        // cloning fill contours is the expensive half of this query. Reject a stroke that cannot
+        // touch any fill on its layer before paying for either.
+        var queryBounds = GetObjectWorldBounds(lineObjectIndex);
+        queryBounds.Inflate(ConnectedStrokeEndpointToleranceUnits, ConnectedStrokeEndpointToleranceUnits);
+        if (!HasFillCandidateInBounds(queryBounds, frame, lineObjectIndex)) return Array.Empty<FillBoundaryLineLink>();
+
+        var links = new List<FillBoundaryLineLink>();
         var linePoints = StrokeSamples(lineObjectIndex)
             .Select(sample => VectorUnits.Quantize(sample.Point))
             .ToArray();
         if (linePoints.Length < 2) return Array.Empty<FillBoundaryLineLink>();
         var reverseLinePoints = linePoints.Reverse().ToArray();
 
-        var links = new List<FillBoundaryLineLink>();
-        var queryBounds = GetObjectWorldBounds(lineObjectIndex);
-        queryBounds.Inflate(ConnectedStrokeEndpointToleranceUnits, ConnectedStrokeEndpointToleranceUnits);
         foreach (var fillObjectIndex in QueryObjects(queryBounds, frame))
         {
             if (fillObjectIndex == lineObjectIndex || !CanLinkFillBoundaryLayers(lineObjectIndex, fillObjectIndex)
@@ -416,6 +443,25 @@ internal sealed partial class VectorScene
         }
 
         return links.ToArray();
+    }
+
+    /// <summary>
+    /// True when the object is geometry that is edited independently of any fill: a Line, a
+    /// Freeform stroke, or an unfilled stroked path. Dragging, moving or transforming such a stroke
+    /// never creates, splits or reshapes a fill; only dragging its own curvature handles keeps a
+    /// coincident fill contour in sync, which the caller decides.
+    /// </summary>
+    internal bool IsFillIndependentStrokeShape(int objectIndex)
+    {
+        if ((uint)objectIndex >= ObjectCount) return false;
+        if (ShapeKind[objectIndex] is VectorAnimationEngine.ShapeKind.Line or VectorAnimationEngine.ShapeKind.Freeform)
+        {
+            return true;
+        }
+
+        return ShapeKind[objectIndex] == VectorAnimationEngine.ShapeKind.Path
+            && !HasFill(objectIndex)
+            && HasStroke(objectIndex);
     }
 
     public bool UpdateFillBoundaryLineLinks(
@@ -837,22 +883,18 @@ internal sealed partial class VectorScene
                 continue;
             }
 
-            var dx = anchor.X - line.OriginalEndpoint.X;
-            var dy = anchor.Y - line.OriginalEndpoint.Y;
-            var control1 = line.StartEndpoint
-                ? new PointF(line.Control1.X + dx, line.Control1.Y + dy)
-                : line.Control1;
-            var control2 = line.StartEndpoint
-                ? line.Control2
-                : new PointF(line.Control2.X + dx, line.Control2.Y + dy);
+            // A connected line is dragged by its endpoint, not reshaped: the cubic is re-expressed
+            // around the moved endpoint so the neighbour keeps the curvature it had without
+            // straightening a curved segment or bowing a straight one.
             SetLineEndpoint(
                 line.ObjectIndex,
                 line.StartEndpoint,
                 anchor,
                 line.OppositeEndpoint,
-                control1,
-                control2,
-                line.KeepStraight);
+                line.Control1,
+                line.Control2,
+                line.KeepStraight,
+                preserveCurvature: true);
             changed = true;
         }
 

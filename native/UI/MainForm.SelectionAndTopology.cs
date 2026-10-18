@@ -23,10 +23,13 @@ internal sealed partial class MainForm : Form
             .Concat(additionalFillKeys ?? Array.Empty<DrawingStackKey>())
             .Distinct()
             .ToArray();
+        if (fillKeys.Length == 0) return false;
         var changed = false;
+        var mergeIndex = _scene.CreateStackKeyIndex();
         foreach (var key in fillKeys)
         {
-            var source = FindObjectByStackKey(key);
+            if (_scene.ObjectCount == 0) break;
+            var source = mergeIndex.Find(key.Order, key.SubOrder);
             if (source < 0 || !IsFillShape(_scene.ShapeKind[source])) continue;
             var beforeCount = _scene.ObjectCount;
             var merged = _scene.MergeSameColorFillsAround(source, connectNearby, frame: _frame);
@@ -35,7 +38,7 @@ internal sealed partial class MainForm : Form
             changed |= _scene.ObjectCount != beforeCount || merged != source;
         }
 
-        if (fillKeys.Length == 0 || !changed) return false;
+        if (!changed) return false;
         var mergedSelection = Enumerable.Range(0, _scene.ObjectCount)
             .Where(index => retainedKeys.Contains(new DrawingStackKey(_scene.ObjectOrder[index], _scene.ObjectSubOrder[index])))
             .ToArray();
@@ -815,6 +818,91 @@ internal sealed partial class MainForm : Form
         _spacePanKeyDown = false;
         ReleaseTemporaryCanvasPan();
     }
+
+    internal static bool IsAltEyedropperTool(ToolMode tool)
+    {
+        return tool == ToolMode.Fill;
+    }
+
+    // Holding Alt over the Fill tool must not steal the button from a gesture that already owns
+    // the pointer, nor start while a text editor has the keyboard.
+    internal static bool CanStartTemporaryEyedropper(
+        ToolMode tool,
+        bool altKeyDown,
+        bool editorFocused,
+        bool windowVisible,
+        bool pointerInteractionActive)
+    {
+        return altKeyDown
+            && windowVisible
+            && !editorFocused
+            && !pointerInteractionActive
+            && IsAltEyedropperTool(tool);
+    }
+
+    internal static ToolMode EffectiveToolForAltEyedropper(ToolMode tool, bool eyedropperHeld)
+    {
+        return eyedropperHeld && IsAltEyedropperTool(tool) ? ToolMode.Eyedropper : tool;
+    }
+
+    private bool IsTemporaryEyedropperActive()
+    {
+        return _altEyedropperHeld && IsAltEyedropperTool(_tool);
+    }
+
+    private ToolMode EffectiveStageTool()
+    {
+        return EffectiveToolForAltEyedropper(_tool, _altEyedropperHeld);
+    }
+
+    private bool TryHoldTemporaryEyedropper()
+    {
+        if (_altKeyDown) return _altEyedropperHeld;
+        _altKeyDown = true;
+        if (IsTemporaryEyedropperActive()) return true;
+        // A pointer gesture that is already running (pan, lasso, gradient handle, spatial drag)
+        // owns the button; the eyedropper must not interrupt it.
+        var pointerInteractionActive = _spacePanKeyDown
+            || _spacePanPointerActive
+            || _lassoPointerActive
+            || _lastMouse is not null
+            || _freehandDrawing
+            || _marqueeSelecting
+            || _gradientHandle != GradientHandleKind.None
+            || _gradientEditSnapshot is not null
+            || _spatialTransformPointerSession is not null;
+        if (!CanStartTemporaryEyedropper(
+                tool: _tool,
+                altKeyDown: true,
+                editorFocused: ContainsFocusedEditor(this),
+                windowVisible: !IsDisposed && Visible,
+                pointerInteractionActive: pointerInteractionActive))
+        {
+            _altKeyDown = false;
+            return false;
+        }
+
+        _altEyedropperHeld = true;
+        HideBrushColorPalette();
+        _stage.ClearBrushTipCursor();
+        _stage.ClearFillToolCursor();
+        ClearFillHoverPreview();
+        _stage.Cursor = Cursors.Cross;
+        return true;
+    }
+    private void ReleaseTemporaryEyedropper()
+    {
+        _altKeyDown = false;
+        if (!_altEyedropperHeld) return;
+        _altEyedropperHeld = false;
+        RefreshInteractionCursorAtPointer();
+    }
+
+    private void CancelTemporaryEyedropper()
+    {
+        ReleaseTemporaryEyedropper();
+    }
+
 
     private bool ApplyTemporaryCanvasPanCursor()
     {

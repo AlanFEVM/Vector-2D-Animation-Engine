@@ -239,8 +239,18 @@ internal sealed partial class MainForm : Form
         }
         else if (_tool == ToolMode.Fill)
         {
-            _stage.SetFillToolCursor(e.Location, ActiveColor());
-            UpdateFillHoverPreview(e.Location);
+            if (EffectiveStageTool() == ToolMode.Eyedropper)
+            {
+                // Holding Alt over the canvas turns the fill pointer into a live eyedropper.
+                _stage.ClearFillToolCursor();
+                ClearFillHoverPreview();
+                _stage.Cursor = Cursors.Cross;
+            }
+            else
+            {
+                _stage.SetFillToolCursor(e.Location, ActiveColor());
+                UpdateFillHoverPreview(e.Location);
+            }
         }
 
         if (_gradientHandle != GradientHandleKind.None && e.Button == MouseButtons.Left)
@@ -2400,6 +2410,15 @@ internal sealed partial class MainForm : Form
         if (_spacePanPointerActive)
         {
             EndTemporaryCanvasPanPointer();
+            return;
+        }
+
+        if (_eyedropperSamplesGradient)
+        {
+            // The temporary eyedropper handed a gradient to the fill tool; releasing Alt brings the
+            // fill pointer back already previewing that gradient instead of the last solid color.
+            _eyedropperSamplesGradient = false;
+            UpdateInteractionCursor(e.Location);
             return;
         }
 
