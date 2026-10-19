@@ -12,8 +12,6 @@ internal sealed partial class MainForm
     private const int ResponsiveReferenceDpi = 96;
     private const int ResponsiveMinimumLogicalWidth = 760;
     private const int ResponsiveMinimumLogicalHeight = 520;
-    private const int ResponsiveDefaultMinimumLogicalWidth = 1120;
-    private const int ResponsiveDefaultMinimumLogicalHeight = 720;
     private const int ResponsiveInitialLogicalWidth = 1480;
     private const int ResponsiveInitialLogicalHeight = 920;
 
@@ -31,23 +29,13 @@ internal sealed partial class MainForm
     {
         dpi = Math.Max(ResponsiveReferenceDpi, dpi);
         var scale = dpi / (double)ResponsiveReferenceDpi;
-        var logicalWorkingWidth = Math.Max(1, (int)Math.Floor(workingArea.Width / scale));
-        var logicalWorkingHeight = Math.Max(1, (int)Math.Floor(workingArea.Height / scale));
         var logicalClientWidth = Math.Max(1, (int)Math.Floor(clientSize.Width / scale));
 
-        var minimumLogicalWidth = Math.Min(
-            ResponsiveDefaultMinimumLogicalWidth,
-            Math.Max(
-                Math.Min(ResponsiveMinimumLogicalWidth, logicalWorkingWidth),
-                (int)Math.Round(logicalWorkingWidth * 0.75)));
-        var minimumLogicalHeight = Math.Min(
-            ResponsiveDefaultMinimumLogicalHeight,
-            Math.Max(
-                Math.Min(ResponsiveMinimumLogicalHeight, logicalWorkingHeight),
-                (int)Math.Round(logicalWorkingHeight * 0.75)));
+        // A minimum derived from the whole monitor prevents a half-screen window on larger
+        // desktops. Keep the workbench's logical lower bound independent of monitor size.
         var minimumSize = new Size(
-            Math.Min(workingArea.Width, ScaleResponsive(minimumLogicalWidth, scale)),
-            Math.Min(workingArea.Height, ScaleResponsive(minimumLogicalHeight, scale)));
+            Math.Max(1, Math.Min(workingArea.Width, ScaleResponsive(ResponsiveMinimumLogicalWidth, scale))),
+            Math.Max(1, Math.Min(workingArea.Height, ScaleResponsive(ResponsiveMinimumLogicalHeight, scale))));
 
         var outerMargin = ScaleResponsive(24, scale);
         var availableWidth = Math.Max(1, workingArea.Width - outerMargin * 2);
@@ -323,6 +311,13 @@ internal sealed partial class MainForm
                     Bounds = NormalizeRestartWindowBounds(Bounds, [screen.WorkingArea], MinimumSize);
                 }
                 ApplyMaximizedBounds();
+                // Normalizing a restored or cross-monitor window can change ClientSize.
+                // Size the panels from the resulting window rather than the previous bounds.
+                metrics = CalculateResponsiveWindowMetrics(
+                    screen.WorkingArea,
+                    DeviceDpi,
+                    ClientSize,
+                    Math.Max(_timelinePanelMinimumSize.Height, _timelinePanelPreferredHeight));
                 ApplyResponsiveWorkbenchLayout(metrics);
             }));
         }

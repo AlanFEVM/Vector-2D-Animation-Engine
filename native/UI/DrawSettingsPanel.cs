@@ -3,7 +3,7 @@ namespace VectorAnimationEngine;
 internal sealed class DrawSettingsPanel : UserControl
 {
     private readonly DrawSettings _settings;
-    private readonly Label _title = new();
+    private readonly Label _title = InspectorModuleStyle.CreateTitle("Draw Settings");
     private readonly ComboBox _shape = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ToolTip _toolTip = new();
     private readonly SvgToggleButton _keepRatio = Toggle("Ratio", SvgIconKind.Ratio);
@@ -102,10 +102,6 @@ internal sealed class DrawSettingsPanel : UserControl
         _title.Text = "Draw Settings";
         _title.Dock = DockStyle.Top;
         _title.Height = Theme.InspectorTitleHeight;
-        _title.ForeColor = Theme.Text;
-        _title.BackColor = Theme.Panel;
-        _title.Font = Theme.UiFont(10, FontStyle.Bold);
-        _title.TextAlign = ContentAlignment.MiddleLeft;
         _title.AutoEllipsis = true;
         Controls.Add(_title);
 
@@ -310,6 +306,12 @@ internal sealed class DrawSettingsPanel : UserControl
 
     private void NotifyPreferredHeightChanged()
     {
+        if (_content is not null)
+        {
+            _content.Dock = DockStyle.Top;
+            _content.Height = Theme.InspectorContentPaddingTop
+                + (int)_content.RowStyles.Cast<RowStyle>().Sum(style => style.Height);
+        }
         MinimumSize = new Size(248, _pencilPresentation ? PreferredHeight : PreferredHeight - 12);
         PreferredHeightChanged?.Invoke(this, EventArgs.Empty);
     }

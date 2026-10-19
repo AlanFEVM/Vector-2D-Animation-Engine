@@ -42,8 +42,8 @@ internal sealed class DrawingObjectAppearanceChangedEventArgs(
 
 internal sealed class DrawingObjectInstancePanel : Panel
 {
-    // Absolute field geometry. Rows reuse the shared inspector pitch so this panel keeps the
-    // same vertical rhythm as the docked settings panels above and below it.
+    // Logical field geometry. Convert every row and label together when the panel is laid out,
+    // including after WinForms scales a hidden panel for a different monitor.
     private const int PanelTitleTop = 6;
     private const int FieldPitch = Theme.InspectorRowHeight;
     private const int FieldLabelOffset = 2;
@@ -54,6 +54,8 @@ internal sealed class DrawingObjectInstancePanel : Panel
     private const int RestoreButtonTop = TintRowTop + TintRowHeight + Theme.GapXs;
     private const int FiltersButtonHeight = 30;
     private const int PanelHeight = RestoreButtonTop + Theme.ControlHeightCompact + Theme.GapXs;
+    private readonly Label _title;
+    private readonly List<(Label Label, int Top)> _fieldLabels = [];
     private readonly SymbolFiltersPanel _filters = new();
     private readonly Button _showFilters = new() { Text = "Symbol Filters", AccessibleName = "Symbol Filters" };
     private Form? _filtersWindow;
@@ -161,24 +163,16 @@ internal sealed class DrawingObjectInstancePanel : Panel
         Font = Theme.UiFont();
         Padding = new Padding(12, 8, 12, 10);
         Height = PreferredPanelHeight;
-        MinimumSize = new Size(248, PreferredPanelHeight);
+        MinimumSize = new Size(0, PreferredPanelHeight);
         Controls.Add(_showFilters);
         Theme.StyleButton(_showFilters);
         _showFilters.Click += (_, _) => ShowFiltersWindow();
 
-        Controls.Add(new Label
-        {
-            Text = "Symbol Instance",
-            Left = 12,
-            Top = PanelTitleTop,
-            Width = 210,
-            Height = Theme.InspectorTitleHeight,
-            ForeColor = Theme.Text,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        });
+        _title = InspectorModuleStyle.CreateTitle("Symbol Instance");
+        _title.Dock = DockStyle.None;
+        _title.SetBounds(12, PanelTitleTop, 210, Theme.InspectorTitleHeight);
+        _title.AutoEllipsis = true;
+        Controls.Add(_title);
 
         AddFieldLabel("Playback FPS", RowLabelTop(0));
         AddFieldLabel("Mode", RowLabelTop(1));
@@ -233,7 +227,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
     public event EventHandler? AppearanceInteractionCanceled;
     public event EventHandler? RestoreOriginalSizeRequested;
 
-    public int PreferredPanelHeight => PanelHeight + 40;
+    public int PreferredPanelHeight => ScaleLayout(PanelHeight + FiltersButtonHeight + 10);
 
     public void SetInstance(
         DrawingObjectInstanceDefinition instance,
@@ -299,6 +293,14 @@ internal sealed class DrawingObjectInstancePanel : Panel
     protected override void OnResize(EventArgs eventargs)
     {
         base.OnResize(eventargs);
+        LayoutFields();
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        MinimumSize = new Size(0, PreferredPanelHeight);
+        Height = PreferredPanelHeight;
         LayoutFields();
     }
 
@@ -516,39 +518,57 @@ internal sealed class DrawingObjectInstancePanel : Panel
 
     private void LayoutFields()
     {
+        // Resize can run during base construction, before this panel's children exist.
+        if (_title is null) return;
+        var left = ScaleLayout(12);
+        var right = Math.Max(left, ClientSize.Width - ScaleLayout(12));
+        var contentWidth = Math.Max(1, right - left);
+        var fieldHeight = ScaleLayout(Theme.ControlHeightCompact);
+        var valueWidth = Math.Min(ScaleLayout(136),
+            Math.Max(1, contentWidth - Math.Min(ScaleLayout(100), contentWidth / 2)));
+        var valueLeft = right - valueWidth;
+        _title.SetBounds(left, ScaleLayout(PanelTitleTop), contentWidth, ScaleLayout(Theme.InspectorTitleHeight));
+        foreach (var (label, top) in _fieldLabels)
+        {
+            label.SetBounds(left, ScaleLayout(top),
+                Math.Max(0, valueLeft - left - ScaleLayout(2)), ScaleLayout(24));
+        }
         _showFilters.SetBounds(
-            12,
-            PanelHeight,
-            Math.Max(1, ClientSize.Width - 24),
-            FiltersButtonHeight);
-        var valueLeft = Math.Max(112, ClientSize.Width - Padding.Right - 136);
-        var valueWidth = Math.Max(96, ClientSize.Width - valueLeft - Padding.Right);
-        _fps.SetBounds(valueLeft, RowTop(0), valueWidth, Theme.ControlHeightCompact);
-        _playbackMode.SetBounds(valueLeft, RowTop(1), valueWidth, Theme.ControlHeightCompact);
-        _holdFrame.SetBounds(valueLeft, RowTop(2), valueWidth, Theme.ControlHeightCompact);
-        _anchorX.SetBounds(valueLeft, RowTop(3), valueWidth, Theme.ControlHeightCompact);
-        _anchorY.SetBounds(valueLeft, RowTop(4), valueWidth, Theme.ControlHeightCompact);
-        _blendMode.SetBounds(valueLeft, RowTop(6), valueWidth, Theme.ControlHeightCompact);
-        var alphaValueWidth = 44;
-        var alphaGap = 4;
-        var alphaTop = RowTop(5);
+            left,
+            ScaleLayout(PanelHeight),
+            contentWidth,
+            ScaleLayout(FiltersButtonHeight));
+        _fps.SetBounds(valueLeft, ScaleLayout(RowTop(0)), valueWidth, fieldHeight);
+        _playbackMode.SetBounds(valueLeft, ScaleLayout(RowTop(1)), valueWidth, fieldHeight);
+        _holdFrame.SetBounds(valueLeft, ScaleLayout(RowTop(2)), valueWidth, fieldHeight);
+        _anchorX.SetBounds(valueLeft, ScaleLayout(RowTop(3)), valueWidth, fieldHeight);
+        _anchorY.SetBounds(valueLeft, ScaleLayout(RowTop(4)), valueWidth, fieldHeight);
+        _blendMode.SetBounds(valueLeft, ScaleLayout(RowTop(6)), valueWidth, fieldHeight);
+        var alphaValueWidth = Math.Min(ScaleLayout(44), valueWidth / 2);
+        var alphaGap = Math.Min(ScaleLayout(4), Math.Max(0, valueWidth - alphaValueWidth - 1));
+        var alphaTop = ScaleLayout(RowTop(5));
+        // This inspector shares its value column with the percentage label; the slider's
+        // standalone 72px minimum would otherwise push that label out of a narrow column.
+        _alpha.MinimumSize = new Size(0, ScaleLayout(24));
         _alpha.SetBounds(
             valueLeft,
             alphaTop,
-            Math.Max(72, valueWidth - alphaValueWidth - alphaGap),
-            Theme.ControlHeightCompact);
+            Math.Max(1, valueWidth - alphaValueWidth - alphaGap),
+            fieldHeight);
         _alphaValue.SetBounds(
             _alpha.Right + alphaGap,
             alphaTop,
             Math.Max(0, valueLeft + valueWidth - _alpha.Right - alphaGap),
-            Theme.ControlHeightCompact);
-        _tint.SetBounds(Padding.Left, TintRowTop, Math.Max(96, ClientSize.Width - Padding.Horizontal), TintRowHeight);
+            fieldHeight);
+        _tint.SetBounds(left, ScaleLayout(TintRowTop), contentWidth, ScaleLayout(TintRowHeight));
         _restoreSize.SetBounds(
-            ClientSize.Width - Padding.Right - Theme.ControlHeightCompact,
-            RestoreButtonTop,
-            Theme.ControlHeightCompact,
-            Theme.ControlHeightCompact);
+            Math.Max(left, right - fieldHeight),
+            ScaleLayout(RestoreButtonTop),
+            Math.Min(contentWidth, fieldHeight),
+            fieldHeight);
     }
+
+    private int ScaleLayout(int value) => (int)Math.Round(value * DeviceDpi / 96f);
 
     private static int RowTop(int row) => FieldRowTop + FieldPitch * row;
 
@@ -571,6 +591,7 @@ internal sealed class DrawingObjectInstancePanel : Panel
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
         };
+        _fieldLabels.Add((label, top));
         Controls.Add(label);
         return label;
     }

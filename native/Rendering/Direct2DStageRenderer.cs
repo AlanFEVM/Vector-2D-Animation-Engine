@@ -3681,6 +3681,30 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private void DrawFreehandPreview(StageControl stage)
     {
         if (!stage.FreehandPreviewVisible || stage.FreehandPreviewPoints.Count == 0) return;
+        if (stage.PressurePreviewLayers.Count > 0)
+        {
+            foreach (var layer in stage.PressurePreviewLayers)
+            {
+                using var path = _factory!.CreatePathGeometry();
+                using (var sink = path.Open())
+                {
+                    sink.SetFillMode(Vortice.Direct2D1.FillMode.Alternate);
+                    foreach (var contour in layer.Contours)
+                    {
+                        if (contour.Length < 3) continue;
+                        sink.BeginFigure(WorldToVector(stage, contour[0]), FigureBegin.Filled);
+                        for (var index = 1; index < contour.Length; index++)
+                        {
+                            sink.AddLine(WorldToVector(stage, contour[index]));
+                        }
+                        sink.EndFigure(FigureEnd.Closed);
+                    }
+                    sink.Close();
+                }
+                _target!.FillGeometry(path, BrushFor(layer.Color.ToArgb()));
+            }
+            return;
+        }
         var brush = BrushFor(stage.FreehandPreviewColor.ToArgb());
         var width = Math.Max(0.75f, stage.WorldLengthToScreen(stage.FreehandPreviewStroke));
         var variableWidth = stage.FreehandPreviewDiameters.Count == stage.FreehandPreviewPoints.Count;

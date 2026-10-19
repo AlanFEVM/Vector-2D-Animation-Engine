@@ -20,6 +20,7 @@ internal sealed class ImageInspectorPanel : UserControl
     public ImageInspectorPanel()
     {
         BackColor = Theme.Panel;
+        Padding = Theme.InspectorSectionPadding;
         Height = PreferredHeight;
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = UiLocalization.T("Image Import Settings");
@@ -31,10 +32,14 @@ internal sealed class ImageInspectorPanel : UserControl
         Controls.Add(_summary);
         Controls.Add(_edit);
         _edit.SendToBack();
+        var title = InspectorModuleStyle.CreateTitle("Image Import Settings");
+        title.Dock = DockStyle.Top;
+        Controls.Add(title);
+        _summary.BringToFront();
         SetState(null);
     }
 
-    public int PreferredHeight => 300;
+    public int PreferredHeight => 260;
     public event EventHandler<ImageSettingsRequestedEventArgs>? SettingsRequested;
 
     public void SetState(ImageInspectorState? state)

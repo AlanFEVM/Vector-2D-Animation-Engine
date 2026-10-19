@@ -134,16 +134,8 @@ internal sealed class TextSettingsPanel : UserControl
     {
         SuspendLayout();
 
-        var title = new Label
-        {
-            Text = "Text",
-            Dock = DockStyle.Top,
-            Height = Theme.InspectorTitleHeight,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(10, System.Drawing.FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
+        var title = InspectorModuleStyle.CreateTitle("Text");
+        title.Dock = DockStyle.Top;
         Controls.Add(title);
 
         var content = new TableLayoutPanel

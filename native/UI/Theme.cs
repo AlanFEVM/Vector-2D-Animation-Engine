@@ -1147,7 +1147,8 @@ internal static partial class Theme
             && state is ComboBoxSurfaceAdapter) return;
         var selected = (e.State & DrawItemState.Selected) != 0
             && (e.State & DrawItemState.ComboBoxEdit) == 0;
-        var focused = (e.State & DrawItemState.Focus) != 0;
+        var focused = (e.State & (DrawItemState.Focus | DrawItemState.NoFocusRect)) == DrawItemState.Focus
+            && ComboBoxSurfaceAdapter.KeyboardFocusVisible(box);
         var highContrast = SystemInformation.HighContrast;
         var surface = highContrast ? SystemColors.Window : PanelStrong;
         var background = highContrast
@@ -1180,12 +1181,11 @@ internal static partial class Theme
                     ? ReadableText(background, Text)
                     : ReadableText(background, DisabledText),
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
-        if (focused && e.Index >= 0)
+        if (focused && selected && e.Index >= 0)
         {
-            using var focus = new Pen(
-                highContrast ? SystemColors.HighlightText : ReadableUiColor(background, Accent));
-            var focusBounds = Rectangle.Inflate(e.Bounds, -1, -1);
-            e.Graphics.DrawRectangle(focus, focusBounds);
+            var inset = Math.Max(1, (int)Math.Round(4f * box.DeviceDpi / 96f));
+            DrawKeyboardFocus(e.Graphics, Rectangle.Inflate(e.Bounds, -inset, -inset),
+                highContrast ? SystemColors.HighlightText : ReadableUiColor(background, Accent), background);
         }
     }
 
@@ -1228,7 +1228,8 @@ internal static partial class Theme
     {
         if (sender is not TreeView tree || e.Node is null) return;
         StyledTreeViews.TryGetValue(tree, out var state);
-        var selected = tree.SelectedNode == e.Node;
+        var multiSelected = state?.IsMultiSelected(e.Node) == true;
+        var selected = multiSelected || tree.SelectedNode == e.Node;
         var hovered = state?.HoverNode == e.Node;
         var progress = state?.ProgressFor(e.Node, selected, hovered)
             ?? new RowInteractionProgress(hovered ? 1f : 0f, selected ? 1f : 0f, 0f);
@@ -1405,6 +1406,20 @@ internal static partial class Theme
         if (StyledTreeViews.TryGetValue(tree, out var state)) state.RowsChanged();
     }
 
+    /// <summary>
+    /// Opts a styled tree into manual multi-selection. The owning control keeps the
+    /// authoritative node set and reports it through <see cref="SetTreeViewMultiSelection"/>.
+    /// </summary>
+    internal static void EnableTreeViewMultiSelect(TreeView tree, bool enabled = true)
+    {
+        if (StyledTreeViews.TryGetValue(tree, out var state)) state.MultiSelectEnabled = enabled;
+    }
+
+    internal static void SetTreeViewMultiSelection(TreeView tree, IEnumerable<TreeNode> nodes)
+    {
+        if (StyledTreeViews.TryGetValue(tree, out var state)) state.SetMultiSelection(nodes);
+    }
+
     internal static void RefreshListViewRowInteraction(ListView list)
     {
         if (StyledListViews.TryGetValue(list, out var state)) state.RowsChanged();
@@ -1551,6 +1566,11 @@ internal static partial class Theme
 
         private void Refresh()
         {
+            if (_control is ComboBox { DropDownStyle: ComboBoxStyle.DropDownList })
+            {
+                _control.Invalidate();
+                return;
+            }
             var color = !_control.Enabled ? DisabledSurface : _control.ContainsFocus ? FieldFocus : _hovered ? FieldHover : Field;
             if (_control.BackColor != color) _control.BackColor = color;
             if (_control.ForeColor != (_control.Enabled ? Text : DisabledText)) _control.ForeColor = _control.Enabled ? Text : DisabledText;
@@ -1648,6 +1668,26 @@ internal static partial class Theme
         public TreeNode? PressedExpandNode { get; private set; }
         public bool UseCustomExpandButtons { get; }
         public bool UseSolidFocusCue { get; set; }
+        public bool MultiSelectEnabled { get; set; }
+
+        private readonly HashSet<TreeNode> _multiSelection = new();
+
+        /// <summary>
+        /// Rows the owning control marked as selected in addition to
+        /// <see cref="TreeView.SelectedNode"/>. They render with the same accent treatment.
+        /// </summary>
+        public bool IsMultiSelected(TreeNode node) => MultiSelectEnabled && _multiSelection.Contains(node);
+
+        public void SetMultiSelection(IEnumerable<TreeNode> nodes)
+        {
+            var next = new HashSet<TreeNode>(nodes);
+            if (!MultiSelectEnabled) next.Clear();
+            var changed = new HashSet<TreeNode>(_multiSelection);
+            changed.SymmetricExceptWith(next);
+            _multiSelection.Clear();
+            _multiSelection.UnionWith(next);
+            foreach (var node in changed) InvalidateNode(node);
+        }
 
         public void ConfigureRowMotion(bool animateRows)
         {

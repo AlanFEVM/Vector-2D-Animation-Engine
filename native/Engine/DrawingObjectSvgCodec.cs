@@ -888,6 +888,20 @@ internal static class DrawingObjectSvgCodec
 
     private static void ValidateImportedSvgSources(VectorSceneSnapshot snapshot)
     {
+        if (snapshot.ImportedSvgAssetIds is null)
+        {
+            throw new InvalidDataException("Imported SVG asset reference metadata is missing.");
+        }
+        foreach (var (index, assetId) in snapshot.ImportedSvgAssetIds)
+        {
+            if ((uint)index >= snapshot.ObjectCount
+                || snapshot.ShapeKind[index] != ShapeKind.ImportedSvg
+                || !VectorScene.IsValidImportedSvgAssetId(assetId))
+            {
+                throw new InvalidDataException("Imported SVG asset reference metadata is invalid.");
+            }
+        }
+
         if (snapshot.ImportedSvgSources is null)
         {
             throw new InvalidDataException("Imported SVG source metadata is missing.");

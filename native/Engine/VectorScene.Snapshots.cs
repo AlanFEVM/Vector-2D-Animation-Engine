@@ -107,6 +107,7 @@ internal sealed partial class VectorScene
                 item => cloneGeometry ? item.Value.DeepClone() : item.Value),
             ImportedSvgSources = _importedSvgSources.ToDictionary(item => item.Key, item => item.Value),
             ImportedSvgNames = _importedSvgNames.ToDictionary(item => item.Key, item => item.Value),
+            ImportedSvgAssetIds = _importedSvgAssetIds.ToDictionary(item => item.Key, item => item.Value),
             BitmapObjects = _bitmapObjects.ToDictionary(item => item.Key, item => item.Value),
             TextObjects = _textObjects.ToDictionary(item => item.Key, item => item.Value),
             ObjectDistortions = _objectDistortions.ToDictionary(
@@ -385,6 +386,12 @@ internal sealed partial class VectorScene
             _importedSvgNames[item.Key] = item.Value;
         }
 
+        _importedSvgAssetIds.Clear();
+        foreach (var item in snapshot.ImportedSvgAssetIds)
+        {
+            _importedSvgAssetIds[item.Key] = item.Value;
+        }
+
         _bitmapObjects.Clear();
         foreach (var item in snapshot.BitmapObjects)
         {
@@ -442,11 +449,22 @@ internal sealed partial class VectorScene
     private static void ValidateImportedSvgSnapshotPayload(VectorSceneSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        if (snapshot.ImportedSvgSources is null || snapshot.ImportedSvgNames is null)
+        if (snapshot.ImportedSvgSources is null || snapshot.ImportedSvgNames is null || snapshot.ImportedSvgAssetIds is null)
         {
             throw new InvalidOperationException("The scene snapshot is missing imported SVG source metadata.");
         }
 
+
+        foreach (var item in snapshot.ImportedSvgAssetIds)
+        {
+            if ((uint)item.Key >= snapshot.ObjectCount
+                || item.Key >= snapshot.ShapeKind.Length
+                || snapshot.ShapeKind[item.Key] != VectorAnimationEngine.ShapeKind.ImportedSvg
+                || !IsValidImportedSvgAssetId(item.Value))
+            {
+                throw new InvalidOperationException("The scene snapshot contains invalid imported SVG asset references.");
+            }
+        }
 
         foreach (var item in snapshot.ImportedSvgNames)
         {

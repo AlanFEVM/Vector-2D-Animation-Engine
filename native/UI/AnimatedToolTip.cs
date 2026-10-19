@@ -10,6 +10,7 @@ internal sealed class AnimatedToolTip : Control
     private Point _targetLocation;
     private string _message = "";
     private bool _compact;
+    private bool _frameLabel;
 
     public AnimatedToolTip()
     {
@@ -23,6 +24,7 @@ internal sealed class AnimatedToolTip : Control
 
     public void ShowFor(Control anchor, string message)
     {
+        _frameLabel = false;
         _compact = false;
         Font = Theme.UiFont(9.5f, FontStyle.Bold);
         if (anchor.FindForm() is not { } form) return;
@@ -60,6 +62,7 @@ internal sealed class AnimatedToolTip : Control
     /// <summary>Shows a multiline canvas hint near the pointer without restarting its animation.</summary>
     public void ShowAt(Control anchor, Point point, string message)
     {
+        _frameLabel = false;
         _compact = false;
         Font = Theme.UiFont(9.5f, FontStyle.Bold);
         if (anchor.FindForm() is not { } form) return;
@@ -92,6 +95,7 @@ internal sealed class AnimatedToolTip : Control
     {
         if (anchor.FindForm() is not { } form) return;
         if (Parent != form) Parent = form;
+        _frameLabel = false;
         _compact = true;
 
         var scale = Math.Max(1f, anchor.DeviceDpi / 96f);
@@ -116,6 +120,17 @@ internal sealed class AnimatedToolTip : Control
         BringToFront();
         Invalidate();
         if (_progress < 1f && !_timer.Enabled) _timer.Start();
+    }
+
+    public void ShowFrameAt(Control anchor, Point point, int frame)
+    {
+        // Keep the original tooltip size, placement and animation; only replace its frame content.
+        var description = $"{UiLocalization.T("Frame")} {frame}";
+        ShowCompactAt(anchor, point, description);
+        _message = frame.ToString(System.Globalization.CultureInfo.CurrentCulture);
+        _frameLabel = true;
+        AccessibleName = description;
+        Invalidate();
     }
 
     protected override void OnResize(EventArgs eventargs)
@@ -144,6 +159,23 @@ internal sealed class AnimatedToolTip : Control
         // renders CJK text wider and wraps short labels like "文本工具".
         var padding = _compact ? 6 : 12;
         var textRect = new Rectangle(padding, 0, Math.Max(1, Width - padding * 2), Height);
+        if (_frameLabel)
+        {
+            // Match the timeline's small square and number without changing the tooltip surface.
+            var scale = DeviceDpi / 96f;
+            var dotSize = Math.Max(1, (int)Math.Round(2f * scale));
+            var gap = Math.Max(1, (int)Math.Round(4f * scale));
+            var ink = Color.FromArgb(textAlpha, Theme.ReadableText(tooltipBackground, Theme.Text));
+            using var dotBrush = new SolidBrush(ink);
+            g.FillRectangle(dotBrush, textRect.Left, (Height - dotSize) / 2f, dotSize, dotSize);
+            textRect.X += dotSize + gap;
+            textRect.Width = Math.Max(1, textRect.Width - dotSize - gap);
+            using var frameFont = Theme.UiFont(7.5f, FontStyle.Bold);
+            TextRenderer.DrawText(g, _message, frameFont, textRect, ink,
+                TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix
+                | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            return;
+        }
         TextRenderer.DrawText(
             g, _message, Font, textRect,
             Color.FromArgb(textAlpha, Theme.ReadableText(tooltipBackground, Theme.Text)),

@@ -35,16 +35,8 @@ internal sealed class BrushTipPanel : UserControl
         Padding = Theme.InspectorSectionPadding;
         MinimumSize = new Size(280, PreferredHeight);
 
-        var title = new Label
-        {
-            Text = "Brush Tip",
-            Dock = DockStyle.Top,
-            Height = Theme.InspectorTitleHeight,
-            BackColor = Theme.Panel,
-            ForeColor = Theme.Text,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
+        var title = InspectorModuleStyle.CreateTitle("Brush Tip");
+        title.Dock = DockStyle.Top;
         _content = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,

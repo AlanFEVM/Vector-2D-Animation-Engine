@@ -1232,6 +1232,8 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.ExternalSvgAssetUseRequested += (_, e) => UseExternalSvgAssetLink(e.AssetId);
         _libraryVaultPanel.ExternalSvgAssetRelocateRequested += (_, e) => RelocateExternalSvgAssetLink(e.AssetId);
         _libraryVaultPanel.ExternalSvgAssetDeleteRequested += (_, e) => DeleteExternalSvgAssetLink(e.AssetId);
+        _libraryVaultPanel.ExternalSvgAssetUpdateRequested += (_, e) => UpdateSvgAssetFromSource(e.AssetId);
+        _libraryVaultPanel.ExternalSvgAssetDuplicateRequested += (_, e) => DuplicateSharedAsset(e.AssetId, svg: true);
         _libraryVaultPanel.SetExternalSvgAssetAvailabilityProvider(asset =>
             ResolveExternalSvgAssetPath(asset) is not null);
         _libraryVaultPanel.ImageAssetAddRequested += (_, _) => ImportImageAsset();
@@ -1240,6 +1242,8 @@ internal sealed partial class MainForm : Form
         _libraryVaultPanel.ImageAssetImportSettingsRequested += (_, e) => EditImageAssetImportSettings(e.AssetId);
         _libraryVaultPanel.ImageAssetRelinkRequested += (_, e) => RelinkImageAsset(e.AssetId);
         _libraryVaultPanel.ImageAssetDeleteRequested += (_, e) => DeleteImageAsset(e.AssetId);
+        _libraryVaultPanel.ImageAssetUpdateRequested += (_, e) => UpdateImageAssetFromSource(e.AssetId);
+        _libraryVaultPanel.ImageAssetDuplicateRequested += (_, e) => DuplicateSharedAsset(e.AssetId, svg: false);
         _libraryVaultPanel.SetImageAssetAvailabilityProvider(asset => ResolveImageAssetPath(asset) is not null);
         _libraryVaultPanel.SetImageAssetPreviewProvider(asset =>
         {
@@ -1951,6 +1955,7 @@ internal sealed partial class MainForm : Form
             .ToArray();
         if (selected.Length > 0) SetSelection(selected);
         else ClearSelection();
+        RestoreMotionTrackRestartState(state.MotionTrack);
         SetProjectDirty(state.ProjectDirty);
     }
 
@@ -2012,6 +2017,7 @@ internal sealed partial class MainForm : Form
             Workspace = _workspaceTabs.SelectedView,
             Frame = _frame,
             SelectedObjects = _selectedObjects.ToArray(),
+            MotionTrack = CaptureMotionTrackRestartState(),
             StageView = _stage.CaptureViewState(),
             WindowBounds = restartWindowBounds,
             WindowState = restartWindowState
@@ -2034,6 +2040,7 @@ internal sealed partial class MainForm : Form
     {
         ResetCanvasUndoHistory();
         _sceneTimelineUndoStack.Clear();
+        _sharedAssetUndoStack.Clear();
     }
 
     private void ResetCanvasUndoHistory()
@@ -2612,6 +2619,8 @@ internal sealed partial class MainForm : Form
             SaveProjectAs();
             return true;
         }
+        if (keyData == (Keys.Control | Keys.Z) && _libraryVaultPanel.ContainsFocus
+            && !focusedEditor && _materialEditSession is null && UndoLastEdit()) return true;
         var canvasShortcutsEnabled = _materialEditSession is null
             && !focusedEditor
             && !IsShotDirectorContext()
@@ -2623,6 +2632,7 @@ internal sealed partial class MainForm : Form
             focusedEditor,
             _materialEditSession is not null);
         var stageDeleteEnabled = _materialEditSession is null
+            && (!interactiveControlFocused || commandButtonFocused)
             && !_timeline.ContainsFocus
             && !_shotDirectorPanel.ContainsFocus
             && !IsShotDirectorContext()

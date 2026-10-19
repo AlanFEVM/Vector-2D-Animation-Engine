@@ -1485,7 +1485,8 @@ internal static partial class Benchmark
 
     // Ctrl+dragging a Line produces two independent Line objects that share the corner vertex, and
     // dragging moves that shared endpoint under the pointer. It must not turn the line into a single
-    // freeform path, and neither segment may bend: the result has to read as two straight segments.
+    // freeform path. A straight source stays two straight segments; a curved quadratic source keeps
+    // both arcs (Animate-style corner) instead of collapsing them into chords.
     private static void RunLineCornerDragRegression()
     {
         var scene = new VectorScene();
@@ -1556,7 +1557,229 @@ internal static partial class Benchmark
             throw new InvalidOperationException("Ctrl+dragging a Line corner moved the segments' opposite endpoints.");
         }
 
-        Console.WriteLine("line_corner_drag_regression=ok");
+        // A curved quadratic Line keeps its arcs through the same gesture. The single control of
+        // each half stays where the split put it, so the dragged point becomes a corner between two
+        // curved segments instead of straightening them.
+        var curvedScene = new VectorScene();
+        curvedScene.CreateEmpty();
+        var curvedSource = curvedScene.AddCurveSegment(
+            curvedScene.ActiveLayer,
+            new PointF(0, 0),
+            new PointF(200, -240),
+            new PointF(400, 0),
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Black,
+            6);
+        curvedScene.QuadraticLineEditing[curvedSource] = true;
+        if (!curvedScene.SplitLineAt(curvedSource, 0.5f, out var curvedSplit))
+        {
+            throw new InvalidOperationException("The curved Line corner split was refused.");
+        }
+
+        // SetLineCurve quantizes the split endpoints, so the reconstructed shared point can sit a
+        // fraction of a unit away from the exact de Casteljau anchor.
+        var curvedAnchor = curvedSplit.Anchor;
+        if (!curvedScene.TryGetLineEndpoint(curvedSplit.FirstObjectIndex, startEndpoint: true, out var curvedFirstOpposite)
+            || !curvedScene.TryGetLineEndpoint(curvedSplit.SecondObjectIndex, startEndpoint: false, out var curvedSecondOpposite)
+            || !curvedScene.TryGetLineEndpoint(curvedSplit.FirstObjectIndex, startEndpoint: false, out var curvedFirstShared)
+            || !curvedScene.TryGetLineEndpoint(curvedSplit.SecondObjectIndex, startEndpoint: true, out var curvedSecondShared)
+            || !curvedScene.TryGetLineQuadraticControl(curvedSplit.FirstObjectIndex, out var curvedFirstControl)
+            || !curvedScene.TryGetLineQuadraticControl(curvedSplit.SecondObjectIndex, out var curvedSecondControl))
+        {
+            throw new InvalidOperationException("The curved Line corner split lost an endpoint or a quadratic control.");
+        }
+
+        if (!PointsWithin(curvedFirstShared, curvedAnchor, 1f)
+            || !PointsWithin(curvedSecondShared, curvedAnchor, 1f))
+        {
+            throw new InvalidOperationException(
+                $"The curved Line corner split put its shared anchor at {curvedFirstShared} / {curvedSecondShared} instead of {curvedAnchor}.");
+        }
+
+        if (!curvedScene.TryGetLineCubic(
+                curvedSplit.FirstObjectIndex,
+                out var firstSplitStart,
+                out var firstSplitControl1,
+                out var firstSplitControl2,
+                out var firstSplitEnd)
+            || !curvedScene.TryGetLineCubic(
+                curvedSplit.SecondObjectIndex,
+                out var secondSplitStart,
+                out var secondSplitControl1,
+                out var secondSplitControl2,
+                out var secondSplitEnd))
+        {
+            throw new InvalidOperationException("The curved Line corner split lost its cubic geometry.");
+        }
+
+        if (curvedScene.IsLineStraight(curvedSplit.FirstObjectIndex)
+            || curvedScene.IsLineStraight(curvedSplit.SecondObjectIndex))
+        {
+            throw new InvalidOperationException("The curved Line corner split was straight when the corner drag started.");
+        }
+
+        var curvedDragged = new PointF(200, 120);
+        MainForm.SetSplitLineCornerAnchor(
+            curvedScene,
+            curvedSplit.FirstObjectIndex,
+            false,
+            curvedFirstOpposite,
+            curvedSplit.SecondObjectIndex,
+            true,
+            curvedSecondOpposite,
+            curvedDragged);
+        if (!curvedScene.TryGetLineEndpoint(curvedSplit.FirstObjectIndex, startEndpoint: false, out curvedFirstShared)
+            || !curvedScene.TryGetLineEndpoint(curvedSplit.SecondObjectIndex, startEndpoint: true, out curvedSecondShared)
+            || !PointsWithin(curvedFirstShared, curvedDragged, 0.01f)
+            || !PointsWithin(curvedSecondShared, curvedDragged, 0.01f)
+            || !curvedScene.TryGetLineQuadraticControl(curvedSplit.FirstObjectIndex, out var curvedFirstMoved)
+            || !curvedScene.TryGetLineQuadraticControl(curvedSplit.SecondObjectIndex, out var curvedSecondMoved)
+            || !PointsWithin(curvedFirstMoved, curvedFirstControl, 0.1f)
+            || !PointsWithin(curvedSecondMoved, curvedSecondControl, 0.1f)
+            || !curvedScene.IsQuadraticLine(curvedSplit.FirstObjectIndex)
+            || !curvedScene.IsQuadraticLine(curvedSplit.SecondObjectIndex)
+            || curvedScene.IsLineStraight(curvedSplit.FirstObjectIndex)
+            || curvedScene.IsLineStraight(curvedSplit.SecondObjectIndex))
+        {
+            throw new InvalidOperationException(
+                "Ctrl+dragging a curved Line corner straightened an arc or moved its single control.");
+        }
+
+        if (!curvedScene.TryGetLineEndpoint(curvedSplit.FirstObjectIndex, startEndpoint: true, out var curvedFirstAfter)
+            || !curvedScene.TryGetLineEndpoint(curvedSplit.SecondObjectIndex, startEndpoint: false, out var curvedSecondAfter)
+            || !PointsWithin(curvedFirstAfter, curvedFirstOpposite, 0.01f)
+            || !PointsWithin(curvedSecondAfter, curvedSecondOpposite, 0.01f))
+        {
+            throw new InvalidOperationException("Ctrl+dragging a curved Line corner moved the segments' opposite endpoints.");
+        }
+
+        MainForm.SetSplitLineCornerAnchor(
+            curvedScene,
+            curvedSplit.FirstObjectIndex,
+            false,
+            curvedFirstOpposite,
+            curvedSplit.SecondObjectIndex,
+            true,
+            curvedSecondOpposite,
+            curvedAnchor);
+        if (!curvedScene.TryGetLineCubic(
+                curvedSplit.FirstObjectIndex,
+                out var firstReturnedStart,
+                out var firstReturnedControl1,
+                out var firstReturnedControl2,
+                out var firstReturnedEnd)
+            || !curvedScene.TryGetLineCubic(
+                curvedSplit.SecondObjectIndex,
+                out var secondReturnedStart,
+                out var secondReturnedControl1,
+                out var secondReturnedControl2,
+                out var secondReturnedEnd)
+            || !PointsWithin(firstReturnedStart, firstSplitStart, 1f)
+            || !PointsWithin(firstReturnedControl1, firstSplitControl1, 1f)
+            || !PointsWithin(firstReturnedControl2, firstSplitControl2, 1f)
+            || !PointsWithin(firstReturnedEnd, firstSplitEnd, 1f)
+            || !PointsWithin(secondReturnedStart, secondSplitStart, 1f)
+            || !PointsWithin(secondReturnedControl1, secondSplitControl1, 1f)
+            || !PointsWithin(secondReturnedControl2, secondSplitControl2, 1f)
+            || !PointsWithin(secondReturnedEnd, secondSplitEnd, 1f))
+        {
+            throw new InvalidOperationException("Dragging a curved Line corner back did not restore its split geometry.");
+        }
+
+        // Passing through a collinear frame must not permanently straighten a curved half.
+        var firstGestureGeometry = MainForm.CaptureSplitLineCornerGeometry(curvedScene, curvedSplit.FirstObjectIndex);
+        var secondGestureGeometry = MainForm.CaptureSplitLineCornerGeometry(curvedScene, curvedSplit.SecondObjectIndex);
+        // This point lies past the first quadratic control on the ray from its fixed endpoint.
+        var flatAnchor = new PointF(
+            curvedFirstOpposite.X + 2f * (curvedFirstControl.X - curvedFirstOpposite.X),
+            curvedFirstOpposite.Y + 2f * (curvedFirstControl.Y - curvedFirstOpposite.Y));
+        MainForm.ApplySplitLineCornerAnchor(
+            curvedScene, curvedSplit.FirstObjectIndex, false, curvedFirstOpposite,
+            curvedSplit.SecondObjectIndex, true, curvedSecondOpposite, flatAnchor,
+            firstGestureGeometry, secondGestureGeometry);
+        if (!curvedScene.IsLineStraight(curvedSplit.FirstObjectIndex))
+        {
+            throw new InvalidOperationException("The corner gesture fixture did not pass through a straight frame.");
+        }
+        MainForm.ApplySplitLineCornerAnchor(
+            curvedScene, curvedSplit.FirstObjectIndex, false, curvedFirstOpposite,
+            curvedSplit.SecondObjectIndex, true, curvedSecondOpposite, curvedAnchor,
+            firstGestureGeometry, secondGestureGeometry);
+        if (curvedScene.IsLineStraight(curvedSplit.FirstObjectIndex)
+            || !curvedScene.TryGetLineQuadraticControl(curvedSplit.FirstObjectIndex, out var restoredControl)
+            || !PointsWithin(restoredControl, curvedFirstControl, 1f)
+            || !curvedScene.IsQuadraticLine(curvedSplit.FirstObjectIndex)
+            || !curvedScene.IsQuadraticLine(curvedSplit.SecondObjectIndex))
+        {
+            throw new InvalidOperationException("A collinear corner drag frame lost the original quadratic arc or editing type.");
+        }
+
+        // The same rule covers cubic Lines (Pen and imported strokes): both handles stay put while
+        // the shared corner moves, so a cubic arc is not reduced to a chord either.
+        var cubicScene = new VectorScene();
+        cubicScene.CreateEmpty();
+        var cubicSource = cubicScene.AddCubicCurveSegment(
+            cubicScene.ActiveLayer,
+            new PointF(0, 0),
+            new PointF(100, -160),
+            new PointF(300, -160),
+            new PointF(400, 0),
+            VectorUnits.StrokePointsToUnits(2),
+            Color.Transparent,
+            Color.Black,
+            6);
+        if (!cubicScene.SplitLineAt(cubicSource, 0.5f, out var cubicSplit)
+            || !cubicScene.TryGetLineEndpoint(cubicSplit.FirstObjectIndex, startEndpoint: true, out var cubicFirstOpposite)
+            || !cubicScene.TryGetLineEndpoint(cubicSplit.SecondObjectIndex, startEndpoint: false, out var cubicSecondOpposite)
+            || !cubicScene.TryGetLineCubic(
+                cubicSplit.FirstObjectIndex,
+                out _,
+                out var cubicFirstControl1,
+                out var cubicFirstControl2,
+                out _)
+            || !cubicScene.TryGetLineCubic(
+                cubicSplit.SecondObjectIndex,
+                out _,
+                out var cubicSecondControl1,
+                out var cubicSecondControl2,
+                out _))
+        {
+            throw new InvalidOperationException("The curved cubic Line corner split lost its geometry.");
+        }
+
+        MainForm.SetSplitLineCornerAnchor(
+            cubicScene,
+            cubicSplit.FirstObjectIndex,
+            false,
+            cubicFirstOpposite,
+            cubicSplit.SecondObjectIndex,
+            true,
+            cubicSecondOpposite,
+            new PointF(200, 120));
+        if (!cubicScene.TryGetLineCubic(
+                cubicSplit.FirstObjectIndex,
+                out _,
+                out var cubicFirstMoved1,
+                out var cubicFirstMoved2,
+                out _)
+            || !cubicScene.TryGetLineCubic(
+                cubicSplit.SecondObjectIndex,
+                out _,
+                out var cubicSecondMoved1,
+                out var cubicSecondMoved2,
+                out _)
+            || !PointsWithin(cubicFirstMoved1, cubicFirstControl1, 1f)
+            || !PointsWithin(cubicFirstMoved2, cubicFirstControl2, 1f)
+            || !PointsWithin(cubicSecondMoved1, cubicSecondControl1, 1f)
+            || !PointsWithin(cubicSecondMoved2, cubicSecondControl2, 1f)
+            || cubicScene.IsLineStraight(cubicSplit.FirstObjectIndex)
+            || cubicScene.IsLineStraight(cubicSplit.SecondObjectIndex))
+        {
+            throw new InvalidOperationException("Ctrl+dragging a curved cubic Line corner straightened an arc or moved a handle.");
+        }
+
+        Console.WriteLine("line_corner_drag_regression=ok,curved_quadratic=ok,curved_cubic=ok");
     }
 
     // Dragging a line's endpoint never changes the line's curvature: a line that is straight when the

@@ -45,6 +45,8 @@ internal sealed class ThemedScrollPanel : UserControl
         _content.ControlRemoved += ContentControlRemoved;
         _content.Layout += (_, _) => UpdateScrollMetrics();
         _content.MouseWheel += ContentMouseWheel;
+        // The panel itself can hold focus (programmatic Focus), so it must also react.
+        MouseWheel += ContentMouseWheel;
     }
 
     private bool _showScrollBar = true;
@@ -60,6 +62,17 @@ internal sealed class ThemedScrollPanel : UserControl
             UpdateScrollMetrics();
             Invalidate();
         }
+    }
+
+    /// <summary>
+    /// Opt-in: lets a host park focus on the panel itself. TabStop stays false, so the
+    /// panel never joins tab navigation, but wheel input routed to the focused control
+    /// stays inside the scroll host instead of escaping to an outer panel.
+    /// </summary>
+    public bool ContentFocusable
+    {
+        get => GetStyle(ControlStyles.Selectable);
+        set => SetStyle(ControlStyles.Selectable, value);
     }
 
     public Panel Content => _content;
@@ -102,6 +115,12 @@ internal sealed class ThemedScrollPanel : UserControl
     {
         base.OnLayout(e);
         UpdateScrollMetrics();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible) UpdateScrollMetrics();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -212,15 +231,29 @@ internal sealed class ThemedScrollPanel : UserControl
 
     private void ContentControlAdded(object? sender, ControlEventArgs e)
     {
-        if (e.Control is { } control) AttachMouseWheelHandler(control);
+        if (e.Control is { } control)
+        {
+            AttachMouseWheelHandler(control);
+            control.SizeChanged += ContentGeometryChanged;
+            control.VisibleChanged += ContentGeometryChanged;
+            control.MarginChanged += ContentGeometryChanged;
+        }
         UpdateScrollMetrics();
     }
 
     private void ContentControlRemoved(object? sender, ControlEventArgs e)
     {
-        if (e.Control is { } control) DetachMouseWheelHandler(control);
+        if (e.Control is { } control)
+        {
+            DetachMouseWheelHandler(control);
+            control.SizeChanged -= ContentGeometryChanged;
+            control.VisibleChanged -= ContentGeometryChanged;
+            control.MarginChanged -= ContentGeometryChanged;
+        }
         UpdateScrollMetrics();
     }
+
+    private void ContentGeometryChanged(object? sender, EventArgs e) => UpdateScrollMetrics();
 
     private void AttachMouseWheelHandler(Control control)
     {
@@ -251,7 +284,13 @@ internal sealed class ThemedScrollPanel : UserControl
     protected override void Dispose(bool disposing)
     {
         if (disposing)
-            foreach (Control child in _content.Controls) DetachMouseWheelHandler(child);
+            foreach (Control child in _content.Controls)
+            {
+                DetachMouseWheelHandler(child);
+                child.SizeChanged -= ContentGeometryChanged;
+                child.VisibleChanged -= ContentGeometryChanged;
+                child.MarginChanged -= ContentGeometryChanged;
+            }
         base.Dispose(disposing);
     }
 
@@ -261,11 +300,22 @@ internal sealed class ThemedScrollPanel : UserControl
         if (sender is TextBoxBase or ComboBox or NumericUpDown or ListBox or ListView or TreeView) return;
         if (MaximumScroll <= 0 || e.Delta == 0) return;
 
+        ScrollWheel(e.Delta);
+        // Stop the gesture here: letting it bubble would scroll an outer scroll panel
+        // at the same time and the wheel would appear to move the wrong list.
+        if (e is HandledMouseEventArgs handled) handled.Handled = true;
+    }
+
+    /// <summary>Scrolls by one wheel gesture. Hosts call this to forward wheel input
+    /// that lands on controls outside this panel (e.g. overlay buttons).</summary>
+    public void ScrollWheel(int delta)
+    {
+        if (delta == 0) return;
         var lines = SystemInformation.MouseWheelScrollLines;
         var amount = lines == -1
             ? Math.Max(ScrollLineHeight, _viewport.ClientSize.Height - ScrollLineHeight)
             : Math.Max(ScrollLineHeight, lines * ScrollLineHeight);
-        SetScrollPosition(_scrollOffset - Math.Sign(e.Delta) * amount);
+        SetScrollPosition(_scrollOffset - Math.Sign(delta) * amount);
     }
 
     private void UpdateScrollMetrics()
@@ -284,8 +334,8 @@ internal sealed class ThemedScrollPanel : UserControl
             _content.PerformLayout();
 
             // A layout pass can update an auto-sized child such as the material editor.
-            var updatedRequiredHeight = RequiredContentHeight();
-            if (updatedRequiredHeight > _content.Height)
+            var updatedRequiredHeight = Math.Max(viewportSize.Height, RequiredContentHeight());
+            if (updatedRequiredHeight != _content.Height)
             {
                 _content.Height = updatedRequiredHeight;
                 _content.PerformLayout();

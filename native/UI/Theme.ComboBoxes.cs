@@ -39,8 +39,18 @@ internal static partial class Theme
             // CB_SETITEMHEIGHT(-1) sizes the closed selector independently of
             // popup rows. A tall popup row must not clip a compact inspector row.
             var height = Math.Max(_box.Font.Height + 2, (int)Math.Round(16f * _box.DeviceDpi / 96f));
-            SetComboItemHeight(_box.Handle, 0x0153, new IntPtr(-1), new IntPtr(height));
+            SendComboMessage(_box.Handle, 0x0153, new IntPtr(-1), new IntPtr(height));
             _box.Invalidate();
+        }
+
+        internal static bool KeyboardFocusVisible(ComboBox box)
+        {
+            // Follow WinForms' keyboard-cue state. A hovered native popup row
+            // can report Focus too, even when focus cues are hidden for mouse use.
+            const int wmQueryUiState = 0x0129;
+            const int hideFocus = 0x0001;
+            return box.IsHandleCreated
+                && (SendComboMessage(box.Handle, wmQueryUiState, IntPtr.Zero, IntPtr.Zero).ToInt64() & hideFocus) == 0;
         }
 
         protected override void WndProc(ref Message message)
@@ -91,8 +101,8 @@ internal static partial class Theme
             var active = _box.Focused || _box.DroppedDown;
             var background = highContrast ? SystemColors.Window
                 : !_box.Enabled ? DisabledSurface
-                : _box.DroppedDown ? Mix(_box.BackColor, AccentSurface, 0.28f)
-                : _hovered ? Mix(_box.BackColor, PanelHover, 0.35f) : _box.BackColor;
+                : _box.DroppedDown ? Mix(FieldFocus, AccentSurface, 0.28f)
+                : _box.Focused ? FieldFocus : _hovered ? FieldHover : _box.BackColor;
             var foreground = highContrast ? _box.Enabled ? SystemColors.WindowText : SystemColors.GrayText
                 : ReadableText(background, _box.Enabled ? Text : DisabledText);
             var outline = highContrast ? active ? SystemColors.Highlight : SystemColors.WindowText
@@ -144,6 +154,6 @@ internal static partial class Theme
         private static extern bool EndComboPaint(IntPtr window, ref ComboPaintState state);
 
         [DllImport("user32.dll", EntryPoint = "SendMessageW")]
-        private static extern IntPtr SetComboItemHeight(IntPtr window, int message, IntPtr index, IntPtr height);
+        private static extern IntPtr SendComboMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
     }
 }

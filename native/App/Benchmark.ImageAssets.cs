@@ -10,6 +10,8 @@ internal static partial class Benchmark
     private static void RunImageAssetPersistenceRegression()
     {
         RunImageImportDialogRegression();
+        RunImageDisplayDetectionRegression();
+        RunImageBatchPreviewRegression();
         RunImageCropRegression();
         var temporaryRoot = CreateTemporaryDirectory("image-asset-regression");
         var importDirectory = Path.Combine(temporaryRoot, "imports");
@@ -284,6 +286,10 @@ internal static partial class Benchmark
 
     private static void RunImageImportDialogRegression()
     {
+        var routing = HotReloadModuleResolver.Resolve([typeof(ImageImportSettingsDialog), typeof(ImageCropDialog),
+            typeof(ImageBatchFile), typeof(ImageBatchImportSelection), typeof(ImageDisplayDetector)]);
+        AssertTimeline(routing.Modules == HotReloadModule.Workspace && routing.RequiresProcessRestart,
+            "Image import types lost their workspace hot-reload route or structural restart policy.");
         var legacy = BitmapImageImportSettings.Default with
         {
             FilterMode = ImageFilterMode.Trilinear, PixelsPerUnit = 321, MaxSize = 128,
@@ -342,6 +348,246 @@ internal static partial class Benchmark
         Console.WriteLine("image_import_dialog_regression=passed");
     }
 
+    private static void RunImageDisplayDetectionRegression()
+    {
+        using var sprite = new Bitmap(32, 32);
+        using (var graphics = Graphics.FromImage(sprite))
+        {
+            graphics.Clear(Color.Transparent);
+            using var brush = new SolidBrush(Color.OrangeRed);
+            graphics.FillRectangle(brush, 4, 4, 24, 24);
+        }
+        AssertTimeline(ImageDisplayDetector.Detect(sprite) == ImageFilterMode.Point,
+            "A hard-edged sprite with binary alpha was not detected as pixel art.");
+        using var lowContrast = new Bitmap(16, 16);
+        Color[] mutedPalette = [Color.FromArgb(81, 85, 81), Color.FromArgb(109, 114, 107), Color.FromArgb(122, 128, 119)];
+        string[] sourceRows =
+        [
+            "..0..2..0.00.0..",
+            "..0.2...0.0..00.",
+            "..000...001.2.0.",
+            "...10.2..0122..0",
+            "..01020..00....0",
+            "..1.0....110...1",
+            "..1..0...101..11",
+            "..1..01.01.1..1.",
+            "..20.2120.11.01.",
+            "..21..220.1..1..",
+            "2.10.0010.1.01..",
+            ".22100.0..0.10.2",
+            "...10...0.1.102.",
+            "..211.2.1.1.1...",
+            ".2..12..2.1.0...",
+            "..000..02.0101.."
+        ];
+        for (var row = 0; row < sourceRows.Length; row++)
+            for (var column = 0; column < sourceRows[row].Length; column++)
+                if (sourceRows[row][column] != '.')
+                    lowContrast.SetPixel(column, row, mutedPalette[sourceRows[row][column] - '0']);
+        AssertTimeline(ImageDisplayDetector.Detect(lowContrast) == ImageFilterMode.Point,
+            "A low-contrast 16x16 sprite was treated as a gradient solely because its palette colors are close.");
+        using var enlarged = new Bitmap(128, 128);
+        using (var graphics = Graphics.FromImage(enlarged))
+        {
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            graphics.DrawImage(lowContrast, new Rectangle(Point.Empty, enlarged.Size),
+                new Rectangle(Point.Empty, lowContrast.Size), GraphicsUnit.Pixel);
+        }
+        AssertTimeline(ImageDisplayDetector.Detect(enlarged) == ImageFilterMode.Point,
+            "Integer enlargement changed the classification of a low-contrast sprite.");
+        using var screenshot = new Bitmap(1143, 971);
+        using (var graphics = Graphics.FromImage(screenshot))
+        {
+            graphics.Clear(Color.White);
+            using var panelBrush = new SolidBrush(Color.LightGray);
+            using var actionBrush = new SolidBrush(Color.DarkOrange);
+            graphics.FillRectangle(panelBrush, 100, 100, 900, 700);
+            graphics.FillRectangle(actionBrush, 700, 700, 300, 60);
+        }
+        for (var row = 0; row < 16; row++)
+            for (var column = 0; column < 16; column++)
+                screenshot.SetPixel(column, row, Color.FromArgb(column * 13, row * 13, (column + row) * 7));
+        AssertTimeline(ImageDisplayDetector.Detect(screenshot) == ImageFilterMode.Bilinear,
+            "A large flat UI screenshot lost its fine color detail during sampling and was classified as pixel art.");
+        using var largeSprite = new Bitmap(1024, 1024);
+        using (var graphics = Graphics.FromImage(largeSprite))
+        {
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            graphics.DrawImage(lowContrast, new Rectangle(Point.Empty, largeSprite.Size),
+                new Rectangle(Point.Empty, lowContrast.Size), GraphicsUnit.Pixel);
+        }
+        AssertTimeline(ImageDisplayDetector.Detect(largeSprite) == ImageFilterMode.Bilinear,
+            "The automatic size limit did not apply to a large integer-scaled pixel-art image.");
+        foreach (var size in new[] { new Size(256, 256), new Size(257, 256), new Size(256, 257),
+            new Size(257, 32), new Size(32, 257) })
+        {
+            using var boundarySprite = new Bitmap(size.Width, size.Height);
+            using (var graphics = Graphics.FromImage(boundarySprite))
+            {
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                graphics.DrawImage(lowContrast, new Rectangle(Point.Empty, size),
+                    new Rectangle(Point.Empty, lowContrast.Size), GraphicsUnit.Pixel);
+            }
+            var expectedFilter = Math.Max(size.Width, size.Height) > 256
+                ? ImageFilterMode.Bilinear : ImageFilterMode.Point;
+            AssertTimeline(ImageDisplayDetector.Detect(boundarySprite) == expectedFilter,
+                $"The automatic size limit was not applied consistently at {size.Width}x{size.Height}.");
+        }
+        using var dithered = new Bitmap(16, 16);
+        using var smallGradient = new Bitmap(16, 16);
+        using var uniqueColors = new Bitmap(8, 8);
+        using var translucentSprite = new Bitmap(16, 16);
+        for (var row = 0; row < 16; row++)
+            for (var column = 0; column < 16; column++)
+            {
+                dithered.SetPixel(column, row, mutedPalette[(column + row) % 2]);
+                smallGradient.SetPixel(column, row, Color.FromArgb(column * 8, column * 8, column * 8));
+                translucentSprite.SetPixel(column, row, Color.FromArgb(128, mutedPalette[(column / 2 + row / 2) % 3]));
+                if (row < 8 && column < 8)
+                    uniqueColors.SetPixel(column, row, Color.FromArgb(column * 29, row * 29, (column * 43 + row * 17) % 256));
+            }
+        AssertTimeline(ImageDisplayDetector.Detect(dithered) == ImageFilterMode.Point,
+            "Low-contrast dithering was mistaken for a continuous gradient.");
+        AssertTimeline(ImageDisplayDetector.Detect(smallGradient) == ImageFilterMode.Bilinear,
+            "A 16x16 continuous gradient was classified as pixel art merely because it is small.");
+        AssertTimeline(ImageDisplayDetector.Detect(uniqueColors) == ImageFilterMode.Bilinear,
+            "A small image with mostly unique colors was incorrectly treated as a coherent pixel-art palette.");
+        AssertTimeline(ImageDisplayDetector.Detect(translucentSprite) == ImageFilterMode.Bilinear,
+            "Low-contrast detection dropped the existing soft-alpha safeguard.");
+        using var gradient = new Bitmap(64, 64);
+        for (var row = 0; row < gradient.Height; row++)
+            for (var column = 0; column < gradient.Width; column++)
+                gradient.SetPixel(column, row, Color.FromArgb(column * 4, column * 4, column * 4));
+        AssertTimeline(ImageDisplayDetector.Detect(gradient) == ImageFilterMode.Bilinear,
+            "A smooth low-palette gradient was misclassified as pixel art.");
+        using var transparent = new Bitmap(32, 32);
+        AssertTimeline(ImageDisplayDetector.Detect(transparent) == ImageFilterMode.Bilinear,
+            "An empty image was incorrectly assigned a pixel-art display mode.");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var cancelled = false;
+        try { ImageDisplayDetector.Detect(sprite, cancellation.Token); }
+        catch (OperationCanceledException) { cancelled = true; }
+        AssertTimeline(cancelled, "Image display detection ignored cancellation.");
+        Console.WriteLine("image_display_detection_regression=passed");
+    }
+
+    private static void RunImageBatchPreviewRegression()
+    {
+        var root = CreateTemporaryDirectory("image-batch-preview");
+        var previousContext = SynchronizationContext.Current;
+        using var context = new WindowsFormsSynchronizationContext();
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            var files = new List<ImageBatchFile>();
+            for (var index = 0; index < 80; index++)
+            {
+                var path = Path.Combine(root, $"sprite-{index:D3}.png");
+                WriteFixturePng(path, 32, 24);
+                files.Add(new ImageBatchFile(path, Path.GetFileName(path), 32, 24, 96, ImageFilterMode.Point));
+            }
+            var invalidPath = Path.Combine(root, "corrupt.png");
+            File.WriteAllText(invalidPath, "invalid image");
+            files.Insert(10, new ImageBatchFile(invalidPath, "corrupt.png", 32, 24, 96));
+            var type = typeof(ImageImportSettingsDialog);
+            using var dialog = new ImageImportSettingsDialog("Import", files[0].Name, 32, 24, 96,
+                BitmapImageImportSettings.Default, files[0].Path, batchCount: files.Count, batchFiles: files);
+            dialog.StartPosition = FormStartPosition.Manual;
+            dialog.Location = new Point(-20000, -20000);
+            dialog.Show();
+            Application.DoEvents();
+            var setFile = RequireMethod(type, "SetBatchFile", [typeof(int)]);
+            var setStrip = RequireMethod(type, "SetStripMode", [typeof(bool)]);
+            var loadStrip = RequireMethod(type, "LoadStripThumbnailsAsync", Type.EmptyTypes);
+            var remove = RequireMethod(type, "RemoveBatchFiles", [typeof(IReadOnlyList<int>)]);
+            var finish = RequireMethod(type, "FinishStripFill", Type.EmptyTypes);
+            var items = (System.Collections.IList)RequireField(type, "_thumbItems").GetValue(dialog)!;
+            var scroll = (ThemedScrollPanel)RequireField(type, "_stripScroll").GetValue(dialog)!;
+            var outerScroll = (ThemedScrollPanel)RequireField(type, "_scroll").GetValue(dialog)!;
+            var mode = (ComboBox)RequireField(type, "_displayMode").GetValue(dialog)!;
+            AssertTimeline(dialog.AutomaticDisplay && dialog.Settings.FilterMode == ImageFilterMode.Point,
+                "A new batch did not use its per-image automatic display suggestions.");
+            setFile.Invoke(dialog, [50]);
+            setStrip.Invoke(dialog, [true]);
+            WaitForLoad((Task)loadStrip.Invoke(dialog, null)!);
+            AssertTimeline(items.Cast<Control>().All(item =>
+                item.GetType().GetProperty("Loading")!.GetValue(item) is false),
+                "A corrupt thumbnail left this or later files permanently loading.");
+            AssertTimeline(items[0]!.GetType().GetProperty("Thumbnail")!.GetValue(items[0]) is Bitmap,
+                "The batch grid did not display a decoded thumbnail.");
+            var survivor = items[2];
+            scroll.RestoreScrollPosition(100);
+            remove.Invoke(dialog, [new[] { 0, 1 }]);
+            finish.Invoke(dialog, null);
+            AssertTimeline(ReferenceEquals(items[0], survivor) && items.Count == files.Count - 2
+                && (string?)RequireField(type, "_sourcePath").GetValue(dialog) == files[50].Path,
+                "Deleting earlier thumbnails rebuilt surviving controls or switched the active file.");
+            var position = scroll.ScrollPosition;
+            var outerPosition = outerScroll.ScrollPosition;
+            var wheel = new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, -120);
+            RequireMethod(typeof(Control), "OnMouseWheel", [typeof(MouseEventArgs)]).Invoke(scroll, [wheel]);
+            AssertTimeline(wheel.Handled && scroll.ScrollPosition > position && outerScroll.ScrollPosition == outerPosition,
+                "The thumbnail grid lost wheel routing after deletion or scrolled the outer settings panel.");
+            RequireMethod(type, "SetAdvancedExpanded", [typeof(bool)]).Invoke(dialog, [true]);
+            var bounds = mode.Bounds;
+            var windowSize = dialog.Size;
+            mode.SelectedIndex = 0;
+            dialog.PerformLayout();
+            mode.SelectedIndex = 1;
+            dialog.PerformLayout();
+            AssertTimeline(mode.Bounds == bounds && dialog.Size == windowSize,
+                "Changing image display mode moved the selector or resized the settings dialog.");
+            var pending = (Task)loadStrip.Invoke(dialog, null)!;
+            dialog.Dispose();
+            WaitForLoad(pending);
+            using var single = new ImageImportSettingsDialog("Import", files[0].Name, 32, 24, 96,
+                BitmapImageImportSettings.Default, files[0].Path, batchFiles: [files[0]]);
+            AssertTimeline(single.RemainingBatchFiles.SequenceEqual(new[] { files[0].Path }),
+                "The single-image import dialog dropped the only pending file.");
+            var popupType = typeof(LibraryVaultPanel).GetNestedType("VaultPreviewForm", BindingFlags.NonPublic)!;
+            using var popup = (Form)Activator.CreateInstance(popupType, true)!;
+            var project = VectorProject.CreateEmpty();
+            var pointSettings = BitmapImageImportSettings.Default with { FilterMode = ImageFilterMode.Point };
+            AssertTimeline(project.TryAddImageAssetFromSource("Pixel sprite", files[0].Path,
+                BitmapImageRasterizer.ComputeSha256(files[0].Path), 32, 24, 96, pointSettings, out var asset),
+                "Could not prepare a pixel-art popup fixture.");
+            var showImage = RequireMethod(popupType, "ShowImageAsset",
+                [typeof(ImageAssetDefinition), typeof(BitmapImageRaster)], BindingFlags.Instance | BindingFlags.Public);
+            var raster = BitmapImageRasterizer.Decode(files[0].Path, pointSettings);
+            showImage.Invoke(popup, [asset, raster]);
+            var picture = (PictureBox)RequireField(popupType, "_imagePreview").GetValue(popup)!;
+            var filterProperty = picture.GetType().GetProperty("PointFilter")!;
+            AssertTimeline(filterProperty.GetValue(picture) is true, "The Vault popup ignored the pixel-art display mode.");
+            project.TryApplyImageImportSettings(asset!.Id, pointSettings with { FilterMode = ImageFilterMode.Bilinear },
+                32, 24, asset.Sha256);
+            showImage.Invoke(popup, [asset, raster]);
+            AssertTimeline(filterProperty.GetValue(picture) is false, "The Vault popup retained the previous image's pixel-art filter.");
+            RequireMethod(popupType, "HideImagePreview", Type.EmptyTypes).Invoke(popup, null);
+            Console.WriteLine("image_batch_preview_regression=passed");
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previousContext);
+            DeleteTemporaryDirectory(root);
+        }
+
+        static void WaitForLoad(Task task)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            while (!task.IsCompleted && watch.Elapsed < TimeSpan.FromSeconds(30))
+            {
+                Application.DoEvents();
+                Thread.Sleep(1);
+            }
+            AssertTimeline(task.IsCompleted, "Batch preview loading did not finish within 30 seconds.");
+            task.GetAwaiter().GetResult();
+        }
+    }
+
     private static void RunImageCropRegression()
     {
         var root = CreateTemporaryDirectory("image-crop-regression");
@@ -364,21 +610,37 @@ internal static partial class Benchmark
                     && leftBitmap.Bitmap.GetPixel(16, 12).ToArgb() == Color.OrangeRed.ToArgb()
                     && rightBitmap.Bitmap.GetPixel(16, 12).ToArgb() == Color.CornflowerBlue.ToArgb(),
                     "Cropping decoded the wrong pixels or reused another selection's cache.");
+            var fullSettings = settings with { CropWidth = 1, CropHeight = 1 };
+            var horizontal = BitmapImageRasterizer.Decode(path, fullSettings with { FlipHorizontal = true });
+            var vertical = BitmapImageRasterizer.Decode(path, fullSettings with { FlipVertical = true });
+            var both = BitmapImageRasterizer.Decode(path, fullSettings with { FlipHorizontal = true, FlipVertical = true });
+            using (var horizontalBitmap = horizontal.AcquireBitmap())
+            using (var verticalBitmap = vertical.AcquireBitmap())
+            using (var bothBitmap = both.AcquireBitmap())
+                AssertTimeline(!ReferenceEquals(horizontal, vertical) && !ReferenceEquals(vertical, both)
+                    && horizontal.PixelWidth == 64 && horizontal.PixelHeight == 48
+                    && horizontalBitmap.Bitmap.GetPixel(56, 8).ToArgb() == Color.OrangeRed.ToArgb()
+                    && horizontalBitmap.Bitmap.GetPixel(8, 8).ToArgb() == Color.CornflowerBlue.ToArgb()
+                    && verticalBitmap.Bitmap.GetPixel(8, 40).ToArgb() == Color.OrangeRed.ToArgb()
+                    && bothBitmap.Bitmap.GetPixel(56, 40).ToArgb() == Color.OrangeRed.ToArgb(),
+                    "Image flips used the wrong axis, changed dimensions, or shared a different orientation's raster cache.");
             var project = VectorProject.CreateEmpty();
-            AssertTimeline(project.TryAddImageAssetFromSource("Crop", path, originalHash, 64, 48, 96, settings, out var asset),
+            var persistedSettings = settings with { FlipHorizontal = true, FlipVertical = true };
+            AssertTimeline(project.TryAddImageAssetFromSource("Crop", path, originalHash, 64, 48, 96, persistedSettings, out var asset),
                 "Could not prepare cropped asset.");
             var manifestPath = Path.Combine(root, "Crop.v2dProject");
             ProjectVaultStore.Save(project, manifestPath);
             File.Delete(path);
             var restored = ProjectVaultStore.Load(manifestPath).ImageAssets.Single();
-            AssertTimeline(restored.ImportSettings == settings && restored.PixelWidth == 64 && restored.PixelHeight == 48
+            AssertTimeline(restored.ImportSettings == persistedSettings && restored.PixelWidth == 64 && restored.PixelHeight == 48
                 && BitmapImageRasterizer.ComputeSha256(restored.SourcePath) == originalHash
                 && BitmapImageRasterizer.Decode(restored.SourcePath, settings with { CropWidth = 1, CropHeight = 1 }).PixelWidth == 64,
                 "Saving cropped images lost the crop or modified the original managed file.");
             var legacyJson = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(BitmapImageImportSettings.Default))!.AsObject();
-            foreach (var member in new[] { "CropX", "CropY", "CropWidth", "CropHeight" }) legacyJson.Remove(member);
+            foreach (var member in new[] { "CropX", "CropY", "CropWidth", "CropHeight", "FlipHorizontal", "FlipVertical" }) legacyJson.Remove(member);
             var legacy = System.Text.Json.JsonSerializer.Deserialize<BitmapImageImportSettings>(legacyJson.ToJsonString());
-            AssertTimeline(legacy.IsValid && legacy.ResolveCropPixelBounds(64, 48) == new Rectangle(0, 0, 64, 48),
+            AssertTimeline(legacy.IsValid && !legacy.FlipHorizontal && !legacy.FlipVertical
+                && legacy.ResolveCropPixelBounds(64, 48) == new Rectangle(0, 0, 64, 48),
                 "Legacy image settings without crop fields no longer restore the full image.");
             using var image = new Bitmap(64, 48);
             using var parent = new ImageImportSettingsDialog("Import", "Crop", 64, 48, 96, settings);
@@ -389,6 +651,17 @@ internal static partial class Benchmark
             fields[2].Value = 64;
             AssertTimeline(editor.Selection == new Rectangle(54, 0, 10, 24) && parent.Settings == settings,
                 "Precise crop fields escaped source bounds or mutated the parent before confirmation.");
+            var selectionBeforeFlip = editor.Selection;
+            var toggleFlip = RequireMethod(typeof(ImageCropDialog), "ToggleFlip", [typeof(bool)]);
+            toggleFlip.Invoke(editor, [true]);
+            toggleFlip.Invoke(editor, [false]);
+            AssertTimeline(editor.FlipHorizontal && editor.FlipVertical && editor.Selection == selectionBeforeFlip,
+                "Flipping changed the selected source pixels instead of mirroring the cropped result.");
+            toggleFlip.Invoke(editor, [true]);
+            toggleFlip.Invoke(editor, [false]);
+            AssertTimeline(!editor.FlipHorizontal && !editor.FlipVertical && editor.Selection == selectionBeforeFlip
+                && !typeof(Form).IsAssignableFrom(typeof(ImageCropDialog)),
+                "Repeated flips did not restore the crop, or the image editor still creates a separate window.");
             var thumbnail = (Bitmap?)RequireMethod(typeof(ImageImportSettingsDialog), "LoadThumbnail",
                 [typeof(string), typeof(BitmapImageImportSettings), typeof(CancellationToken)], BindingFlags.Static | BindingFlags.NonPublic)
                 .Invoke(null, [restored.SourcePath, settings, CancellationToken.None]);

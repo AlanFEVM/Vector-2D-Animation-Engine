@@ -1,3 +1,6 @@
+using System.Text;
+using System.Xml;
+
 namespace VectorAnimationEngine;
 
 internal sealed partial class VectorProject
@@ -87,17 +90,26 @@ internal sealed partial class VectorProject
             && string.Equals(asset.ProjectRelativePath, normalizedRelativePath, StringComparison.Ordinal)
             && string.Equals(asset.LastKnownSha256, normalizedSha256, StringComparison.Ordinal))
         {
+            if (!TryReadManagedSvgSource(normalizedSourcePath, out var unchangedSource)) return false;
+            if (!TryPrepareSvgAssetSourceUpdates(asset.Id, unchangedSource, out var unchangedUpdates)) return false;
+            foreach (var (scene, updates) in unchangedUpdates) scene.ApplyImportedSvgAssetSourceUpdate(updates);
+            if (unchangedUpdates.Any(item => item.Updates.Count > 0)) Changed?.Invoke(this, EventArgs.Empty);
             return true;
         }
 
         var originalSourcePath = normalizedSourcePath;
         if (!ProjectTemporaryResources.TryCopy(Id, normalizedSourcePath,
                 normalizedSha256, 128L * 1024 * 1024, out normalizedSourcePath)) return false;
+        // Read the managed copy before changing either metadata or any existing placement.
+        // The UI validates the SVG before entering this transaction.
+        if (!TryReadManagedSvgSource(normalizedSourcePath, out var source)) return false;
+        if (!TryPrepareSvgAssetSourceUpdates(asset.Id, source, out var preparedUpdates)) return false;
         normalizedRelativePath = $".Vault/ExternalSvg/{asset.Id}.svg";
         asset.OriginalSourcePath = originalSourcePath;
         asset.SourcePath = normalizedSourcePath;
         asset.ProjectRelativePath = normalizedRelativePath;
         asset.LastKnownSha256 = normalizedSha256;
+        foreach (var (scene, updates) in preparedUpdates) scene.ApplyImportedSvgAssetSourceUpdate(updates);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -152,7 +164,7 @@ internal sealed partial class VectorProject
         _externalSvgAssets.AddRange(restored);
     }
 
-    private ExternalSvgAssetDefinition? FindExternalSvgAsset(string? id)
+    internal ExternalSvgAssetDefinition? FindExternalSvgAsset(string? id)
     {
         if (string.IsNullOrWhiteSpace(id)) return null;
         ExternalSvgAssetDefinition? result = null;
@@ -163,6 +175,43 @@ internal sealed partial class VectorProject
             result = asset;
         }
         return result;
+    }
+
+    private static bool TryReadManagedSvgSource(string path, out string source)
+    {
+        source = "";
+        try
+        {
+            const int maximumCharacters = 8 * 1024 * 1024;
+            using var reader = new StreamReader(path, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false);
+            var buffer = new char[maximumCharacters + 1];
+            var length = reader.ReadBlock(buffer, 0, buffer.Length);
+            if (length > maximumCharacters) return false;
+            source = VectorScene.NormalizeImportedSvgAssetSource(new string(buffer, 0, length));
+            return !string.IsNullOrWhiteSpace(source);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    private bool TryPrepareSvgAssetSourceUpdates(string assetId, string source,
+        out List<(VectorScene Scene, Dictionary<int, string> Updates)> prepared)
+    {
+        prepared = [];
+        try
+        {
+            foreach (var (_, scene) in EnumerateAssetScenes())
+                prepared.Add((scene, scene.PrepareImportedSvgAssetSourceUpdate(assetId, source)));
+            return true;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or XmlException or ArgumentException)
+        {
+            prepared.Clear();
+            return false;
+        }
     }
 
     private static bool TryNormalizeExternalSvgAssetName(string? name, out string normalized)

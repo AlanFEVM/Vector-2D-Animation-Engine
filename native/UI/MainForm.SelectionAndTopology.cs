@@ -868,15 +868,23 @@ internal sealed partial class MainForm : Form
             || _lastMouse is not null
             || _freehandDrawing
             || _marqueeSelecting
+            || _traditionalPenPointerDown
+            || _penSegmentDragging
             || _gradientHandle != GradientHandleKind.None
             || _gradientEditSnapshot is not null
-            || _spatialTransformPointerSession is not null;
+            || _spatialTransformPointerSession is not null
+            || _viewPanning
+            || _viewZooming
+            || _viewOrbiting
+            || _viewReferencePanning
+            || _viewReferenceZooming;
         if (!CanStartTemporaryEyedropper(
                 tool: _tool,
                 altKeyDown: true,
                 editorFocused: ContainsFocusedEditor(this),
                 windowVisible: !IsDisposed && Visible,
-                pointerInteractionActive: pointerInteractionActive))
+                pointerInteractionActive: pointerInteractionActive)
+            || _materialEditSession is not null)
         {
             _altKeyDown = false;
             return false;
@@ -893,6 +901,9 @@ internal sealed partial class MainForm : Form
     private void ReleaseTemporaryEyedropper()
     {
         _altKeyDown = false;
+        // The gradient carry-over belongs to the sample gesture: ending the eyedropper (Alt release,
+        // tool switch, deactivation) must not leave it able to swallow the next stage mouse-up.
+        _eyedropperSamplesGradient = false;
         if (!_altEyedropperHeld) return;
         _altEyedropperHeld = false;
         RefreshInteractionCursorAtPointer();

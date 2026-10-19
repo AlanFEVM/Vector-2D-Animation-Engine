@@ -3,18 +3,22 @@ using System.Drawing.Drawing2D;
 namespace VectorAnimationEngine;
 
 /// <summary>Visual crop editor. The frame stays still while the image pans/zooms beneath it.</summary>
-internal sealed class ImageCropDialog : ModernDialogForm
+internal sealed class ImageCropDialog : UserControl
 {
     private readonly Bitmap _image;
+    private readonly ImageFilterMode _filterMode;
     private readonly Size _sourceSize;
     private readonly CropCanvas _canvas = new() { Dock = DockStyle.Fill, TabStop = true, BackColor = Color.FromArgb(24, 24, 24) };
     private readonly ModernNumericUpDown[] _values = new ModernNumericUpDown[4];
     private readonly SegmentedButton[] _ratioButtons = new SegmentedButton[7];
     private int _ratioIndex;
-    private readonly Label _sizeLabel = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, ForeColor = Theme.Muted };
+    private readonly Label _sizeLabel = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, ForeColor = Theme.DisabledText };
     private readonly TableLayoutPanel _layout = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
     private readonly TableLayoutPanel _fields = new() { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 2, Visible = false };
     private readonly SvgIconButton _precision = new(SvgIconKind.ChevronDown);
+    private readonly SvgIconButton _flipHorizontal = new(SvgIconKind.FlipHorizontal);
+    private readonly SvgIconButton _flipVertical = new(SvgIconKind.FlipVertical);
+    private readonly ToolTip _toolTip = new();
     private Rectangle _selection;
     private RectangleF _imageBounds;
     private RectangleF _frame;
@@ -29,24 +33,31 @@ internal sealed class ImageCropDialog : ModernDialogForm
         2 => 1f, 3 => 4f / 3, 4 => 3f / 4, 5 => 16f / 9, 6 => 9f / 16, _ => 0f };
 
     public ImageCropDialog(Bitmap image, Size sourceSize, BitmapImageImportSettings settings, bool batch)
-        : base(UiLocalization.T("Edit image"), new Size(800, 680))
     {
+        AutoScaleMode = AutoScaleMode.Dpi;
+        BackColor = Theme.Panel;
+        Font = Theme.UiFont();
+        Dock = DockStyle.Fill;
+        Padding = new Padding(20, 12, 20, 12);
         _image = image;
+        _filterMode = settings.FilterMode;
         _sourceSize = sourceSize;
         _selection = settings.ResolveCropPixelBounds(sourceSize.Width, sourceSize.Height);
         if (_selection.IsEmpty) _selection = new Rectangle(Point.Empty, sourceSize);
-        MinimumSize = new Size(560, 540);
+        FlipHorizontal = settings.FlipHorizontal;
+        FlipVertical = settings.FlipVertical;
+        if (FlipHorizontal) _selection.X = _sourceSize.Width - _selection.Right;
+        if (FlipVertical) _selection.Y = _sourceSize.Height - _selection.Bottom;
         AccessibleName = "Edit image";
-        DialogContent.Padding = new Padding(16, 10, 16, 10);
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, batch ? 54 : 36));
+        _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, batch ? 54 : 44));
         _layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
         _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
-        DialogContent.Controls.Add(_layout);
-        _layout.Controls.Add(new Label { Dock = DockStyle.Fill, ForeColor = Theme.Muted, Text = batch
-            ? "Drag the edges to crop. Drag the image to compose; scroll to zoom. This crop applies to the whole batch."
+        Controls.Add(_layout);
+        _layout.Controls.Add(new Label { Dock = DockStyle.Fill, ForeColor = Theme.DisabledText, Text = batch
+            ? "Drag the edges to crop. Drag the image to compose; scroll to zoom. Edits apply only to this image."
             : "Drag the edges to crop. Drag the image to compose; scroll to zoom." }, 0, 0);
         _canvas.AccessibleName = "Crop selection";
         _canvas.Paint += PaintCanvas;
@@ -69,7 +80,7 @@ internal sealed class ImageCropDialog : ModernDialogForm
         string[] ratioNames = ["Free crop", "Original ratio", "1:1", "4:3", "3:4", "16:9", "9:16"];
         for (var i = 0; i < 7; i++)
         {
-            ratios.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, i < 2 ? 21 : 11.6f));
+            ratios.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, i == 0 ? 20 : i == 1 ? 24 : 11.2f));
             var index = i;
             var button = new SegmentedButton { Dock = DockStyle.Fill, Text = ratioNames[i], AccessibleName = ratioNames[i], Margin = new Padding(1), CompactText = true };
             _ratioButtons[i] = button;
@@ -82,6 +93,19 @@ internal sealed class ImageCropDialog : ModernDialogForm
         var zoomIn = new SvgIconButton(SvgIconKind.ZoomIn) { Dock = DockStyle.Fill, AccessibleName = "Zoom in" };
         Theme.StyleToolbarButton(zoomOut); Theme.StyleToolbarButton(zoomIn);
         zoomOut.Click += (_, _) => Zoom(1 / 1.2f); zoomIn.Click += (_, _) => Zoom(1.2f);
+        _flipHorizontal.AccessibleName = "Flip horizontally";
+        _flipVertical.AccessibleName = "Flip vertically";
+        _toolTip.SetToolTip(_flipHorizontal, UiLocalization.T("Flip horizontally"));
+        _toolTip.SetToolTip(_flipVertical, UiLocalization.T("Flip vertically"));
+        Theme.StyleToolbarButton(_flipHorizontal, FlipHorizontal);
+        Theme.StyleToolbarButton(_flipVertical, FlipVertical);
+        _flipHorizontal.Click += (_, _) => ToggleFlip(true);
+        _flipVertical.Click += (_, _) => ToggleFlip(false);
+        var flips = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
+        _flipHorizontal.Size = _flipVertical.Size = new Size(34, 30);
+        flips.Controls.Add(_flipHorizontal);
+        flips.Controls.Add(_flipVertical);
+        tools.Controls.Add(flips, 0, 1);
         tools.Controls.Add(zoomOut, 1, 1); tools.Controls.Add(zoomIn, 2, 1); tools.Controls.Add(_sizeLabel, 3, 1);
         _layout.Controls.Add(tools, 0, 2);
         var secondary = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
@@ -109,14 +133,48 @@ internal sealed class ImageCropDialog : ModernDialogForm
             var index = i; _values[i].ValueChanged += (_, _) => UpdateFromFields(index); _fields.Controls.Add(_values[i], i, 1);
         }
         _layout.Controls.Add(_fields, 0, 4);
-        AcceptButton = AddDialogAction("Confirm crop", DialogResult.OK, DialogActionStyle.Primary);
-        CancelButton = AddDialogAction("Cancel", DialogResult.Cancel);
-        Deactivate += (_, _) => EndDrag(true);
         SetSelection(_selection);
         UiLocalization.Watch(this);
     }
 
-    public Rectangle Selection => _selection;
+    public Rectangle Selection => new(FlipHorizontal ? _sourceSize.Width - _selection.Right : _selection.X,
+        FlipVertical ? _sourceSize.Height - _selection.Bottom : _selection.Y, _selection.Width, _selection.Height);
+    public bool FlipHorizontal { get; private set; }
+    public bool FlipVertical { get; private set; }
+    internal void CancelInteraction() => EndDrag(true);
+
+    private void ToggleFlip(bool horizontal)
+    {
+        EndDrag(true);
+        if (horizontal)
+        {
+            FlipHorizontal = !FlipHorizontal;
+            _selection.X = _sourceSize.Width - _selection.Right;
+            _imageBounds.X = _frame.Left + _frame.Right - _imageBounds.Right;
+        }
+        else
+        {
+            FlipVertical = !FlipVertical;
+            _selection.Y = _sourceSize.Height - _selection.Bottom;
+            _imageBounds.Y = _frame.Top + _frame.Bottom - _imageBounds.Bottom;
+        }
+        Theme.StyleToolbarButton(_flipHorizontal, FlipHorizontal);
+        Theme.StyleToolbarButton(_flipVertical, FlipVertical);
+        SyncFields();
+        _canvas.Invalidate();
+    }
+
+    protected override void OnLeave(EventArgs e)
+    {
+        EndDrag(true);
+        base.OnLeave(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _toolTip.Dispose();
+        base.Dispose(disposing);
+    }
     private RectangleF ImageBounds() => _imageBounds;
     private RectangleF SelectionBounds() => _frame;
 
@@ -235,9 +293,11 @@ internal sealed class ImageCropDialog : ModernDialogForm
     private void ApplyRatio()
     {
         EndDrag(true); var ratio = AspectRatio; if (ratio <= 0) return;
-        var width = Math.Min(_selection.Width, _selection.Height * ratio); var height = width / ratio;
-        SetSelection(new Rectangle(_selection.X + (int)MathF.Round((_selection.Width - width) / 2),
-            _selection.Y + (int)MathF.Round((_selection.Height - height) / 2), Math.Max(1, (int)MathF.Round(width)), Math.Max(1, (int)MathF.Round(height))));
+        // Preset ratios always reset to the full source image, never continue from the
+        // current (possibly already cropped) selection.
+        var width = Math.Min(_sourceSize.Width, _sourceSize.Height * ratio); var height = width / ratio;
+        SetSelection(new Rectangle((int)MathF.Round((_sourceSize.Width - width) / 2),
+            (int)MathF.Round((_sourceSize.Height - height) / 2), Math.Max(1, (int)MathF.Round(width)), Math.Max(1, (int)MathF.Round(height))));
     }
 
     private void SetRatio(int index)
@@ -313,7 +373,18 @@ internal sealed class ImageCropDialog : ModernDialogForm
         var g = e.Graphics; g.Clear(_canvas.BackColor);
         using var tile = new HatchBrush(HatchStyle.LargeCheckerBoard, Color.FromArgb(62, 62, 62), Color.FromArgb(46, 46, 46));
         g.FillRectangle(tile, _imageBounds);
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(_image, _imageBounds);
+        var pointFilter = _filterMode == ImageFilterMode.Point;
+        g.InterpolationMode = pointFilter ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = pointFilter ? PixelOffsetMode.Half : PixelOffsetMode.HighQuality;
+        var imageState = g.Save();
+        try
+        {
+            g.TranslateTransform(FlipHorizontal ? _imageBounds.Left + _imageBounds.Right : 0,
+                FlipVertical ? _imageBounds.Top + _imageBounds.Bottom : 0);
+            g.ScaleTransform(FlipHorizontal ? -1 : 1, FlipVertical ? -1 : 1);
+            g.DrawImage(_image, _imageBounds, new RectangleF(0, 0, _image.Width, _image.Height), GraphicsUnit.Pixel);
+        }
+        finally { g.Restore(imageState); }
         using var outside = new Region(_canvas.ClientRectangle); outside.Exclude(_frame);
         using var shade = new SolidBrush(Color.FromArgb(165, Color.Black)); g.FillRegion(shade, outside);
         using var border = new Pen(Color.White, Math.Max(1f, DeviceDpi / 96f));

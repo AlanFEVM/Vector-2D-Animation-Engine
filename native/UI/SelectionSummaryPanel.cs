@@ -17,12 +17,8 @@ internal sealed class SelectionSummaryPanel : UserControl
         Height = PreferredHeight;
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = UiLocalization.T("Inspector");
-        var title = new Label
-        {
-            Text = UiLocalization.T("Inspector"), Dock = DockStyle.Top,
-            Height = Theme.InspectorTitleHeight, ForeColor = Theme.Text, BackColor = Theme.Panel,
-            Font = Theme.UiFont(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft
-        };
+        var title = InspectorModuleStyle.CreateTitle(UiLocalization.T("Inspector"));
+        title.Dock = DockStyle.Top;
         var content = new TableLayoutPanel
         {
             Dock = DockStyle.Fill, BackColor = Theme.Panel, ColumnCount = 1, RowCount = 4,

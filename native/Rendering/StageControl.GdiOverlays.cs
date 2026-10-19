@@ -625,6 +625,35 @@ internal sealed partial class StageControl : Control
     private void DrawFreehandPreview(Graphics g)
     {
         if (!FreehandPreviewVisible || FreehandPreviewPoints.Count == 0) return;
+        if (PressurePreviewLayers.Count > 0)
+        {
+            var previousMode = g.SmoothingMode;
+            try
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                foreach (var layer in PressurePreviewLayers)
+                {
+                    using var path = new GraphicsPath(FillMode.Alternate);
+                    foreach (var contour in layer.Contours)
+                    {
+                        if (contour.Length < 3) continue;
+                        var screenPoints = new PointF[contour.Length];
+                        for (var index = 0; index < contour.Length; index++)
+                        {
+                            screenPoints[index] = WorldToScreen(contour[index]);
+                        }
+                        path.AddPolygon(screenPoints);
+                    }
+                    using var fill = new SolidBrush(layer.Color);
+                    g.FillPath(fill, path);
+                }
+            }
+            finally
+            {
+                g.SmoothingMode = previousMode;
+            }
+            return;
+        }
         var screenWidth = Math.Max(0.75f, WorldLengthToScreen(FreehandPreviewStroke));
         var variableWidth = FreehandPreviewDiameters.Count == FreehandPreviewPoints.Count;
         var oldMode = g.SmoothingMode;

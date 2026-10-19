@@ -1265,6 +1265,7 @@ internal sealed partial class VectorProject
             ValidateRestoredSceneShotTimeline(project._scenes[index]);
         }
 
+        project.ValidateSvgAssetReferences();
         return project;
     }
 

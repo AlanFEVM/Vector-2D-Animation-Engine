@@ -80,7 +80,20 @@ internal static class ApplicationSettingsStore
         WriteIndented = true
     };
 
-    private static string SettingsPath => Path.Combine(
+    private const string SettingsPathEnvironmentVariable = "V2D_APPLICATION_SETTINGS_PATH";
+
+    private static string SettingsPath
+    {
+        get
+        {
+            var configuredPath = Environment.GetEnvironmentVariable(SettingsPathEnvironmentVariable);
+            return string.IsNullOrWhiteSpace(configuredPath)
+                ? DefaultSettingsPath
+                : Path.GetFullPath(configuredPath);
+        }
+    }
+
+    private static string DefaultSettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Vector2DAnimationEngine",
         "settings.json");
@@ -89,8 +102,12 @@ internal static class ApplicationSettingsStore
     {
         try
         {
-            if (!File.Exists(SettingsPath)) return Normalize(new ApplicationSettings());
-            var settings = JsonSerializer.Deserialize<ApplicationSettings>(File.ReadAllText(SettingsPath));
+            var path = SettingsPath;
+            // A development workspace starts with the existing user preferences.
+            // Its first save writes the new location without changing the original file.
+            if (!File.Exists(path)) path = DefaultSettingsPath;
+            if (!File.Exists(path)) return Normalize(new ApplicationSettings());
+            var settings = JsonSerializer.Deserialize<ApplicationSettings>(File.ReadAllText(path));
             if (settings is null)
             {
                 AppLog.Warn("Application settings were empty; using defaults.");
@@ -108,13 +125,15 @@ internal static class ApplicationSettingsStore
 
     public static bool TrySave(ApplicationSettings settings)
     {
-        var temporaryPath = SettingsPath + ".tmp";
+        string? temporaryPath = null;
         try
         {
-            var directory = Path.GetDirectoryName(SettingsPath)!;
+            var path = SettingsPath;
+            temporaryPath = path + ".tmp";
+            var directory = Path.GetDirectoryName(path)!;
             Directory.CreateDirectory(directory);
             File.WriteAllText(temporaryPath, JsonSerializer.Serialize(Normalize(settings), JsonOptions));
-            File.Move(temporaryPath, SettingsPath, overwrite: true);
+            File.Move(temporaryPath, path, overwrite: true);
             return true;
         }
         catch (Exception ex)
@@ -122,7 +141,7 @@ internal static class ApplicationSettingsStore
             AppLog.Error("Could not save application settings.", ex);
             try
             {
-                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+                if (temporaryPath is not null && File.Exists(temporaryPath)) File.Delete(temporaryPath);
             }
             catch
             {

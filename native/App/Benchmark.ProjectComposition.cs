@@ -2155,6 +2155,13 @@ internal static partial class Benchmark
             Workspace = WorkspaceView.BasicDrawing,
             Frame = 5,
             SelectedObjects = [rootLine],
+            MotionTrack = new MotionTrackRestartState
+            {
+                InstanceId = nested.Id,
+                FirstFrame = 0,
+                LastFrame = 5,
+                SelectedFrames = [0, 5]
+            },
             StageView = new StageViewState(
                 12,
                 -8,
@@ -2223,6 +2230,9 @@ internal static partial class Benchmark
                 && consumedState.ProjectManifestPath == editorState.ProjectManifestPath
                 && consumedState.ProjectDirty
                 && consumedState.Frame == editorState.Frame
+                && consumedState.MotionTrack is { FirstFrame: 0, LastFrame: 5 } motionTrack
+                && motionTrack.InstanceId == nested.Id
+                && motionTrack.SelectedFrames.SequenceEqual([0, 5])
                 && !File.Exists(pendingPaths.StatePath)
                 && !File.Exists(pendingPaths.TokenSidecarPath)
                 && !EditorRestartStore.TryConsume(restartToken, out _),

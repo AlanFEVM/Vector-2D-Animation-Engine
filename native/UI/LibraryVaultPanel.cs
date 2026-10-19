@@ -103,6 +103,10 @@ internal sealed partial class LibraryVaultPanel : UserControl
     private int _hoverIndex = -1;
     private TreeNode? _hoverProjectNode;
     private bool _syncingSelection;
+    private readonly HashSet<TreeNode> _multiSelectedNodes = new();
+    private TreeNode? _treeSelectionAnchor;
+    private bool _treeMouseSelectionActive;
+    private bool _applyingTreeSelection;
     private bool _projectRowsDirty = true;
     private int _projectObjectUpdateDepth;
     private ProjectRowsFingerprint _projectRowsFingerprint;
@@ -581,7 +585,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         {
             if (e.Button != MouseButtons.Right) return;
             HidePreview();
-            _projectObjects.SelectedNode = _projectObjects.GetNodeAt(e.Location);
+            ApplyProjectTreeClickSelection(_projectObjects.GetNodeAt(e.Location), Keys.None);
         };
     }
 
@@ -592,10 +596,13 @@ internal sealed partial class LibraryVaultPanel : UserControl
             useCustomExpandButtons: true,
             animateRows: true,
             useSolidFocusCue: true);
+        Theme.EnableTreeViewMultiSelect(_projectObjects);
         _projectObjects.AllowDrop = true;
         _projectObjects.Dock = DockStyle.Fill;
         _projectObjects.Margin = Padding.Empty;
-        _projectObjects.AfterSelect += (_, _) => ProjectTreeSelectionChanged();
+        _projectObjects.AfterSelect += (_, e) => ProjectTreeAfterSelect(e);
+        _projectObjects.MouseDown += ProjectTreeSelectionMouseDown;
+        _projectObjects.MouseUp += ProjectTreeSelectionMouseUp;
         _projectObjects.NodeMouseDoubleClick += (_, e) =>
         {
             if (e.Node.Tag is VaultRow { Folder: not null })
@@ -737,6 +744,15 @@ internal sealed partial class LibraryVaultPanel : UserControl
     {
         if (node?.Tag is not VaultRow row || _project is null) return;
         HidePreview();
+        // The drag owns the gesture now; drop any pending click-selection and make sure the
+        // dragged row is part of the selection it is dragging.
+        _treeMouseSelectionActive = false;
+        if (!_multiSelectedNodes.Contains(node))
+        {
+            SetMultiSelection([node]);
+            _treeSelectionAnchor = node;
+            ProjectTreeSelectionChanged();
+        }
         if (row.ExternalSvgAsset is { } externalSvgAsset)
         {
             if (row.ExternalSvgMissing) return;
@@ -1155,6 +1171,9 @@ internal sealed partial class LibraryVaultPanel : UserControl
         try
         {
             _syncingSelection = true;
+            SetMultiSelection(null);
+            _treeSelectionAnchor = null;
+            _treeMouseSelectionActive = false;
             _projectObjects.Nodes.Clear();
             RefreshAssetTagFilterItems();
             PrepareAssetFilterCache();
@@ -1423,6 +1442,163 @@ internal sealed partial class LibraryVaultPanel : UserControl
         UpdateActionButtons();
     }
 
+    private void ProjectTreeAfterSelect(TreeViewEventArgs e)
+    {
+        if (_applyingTreeSelection || _syncingSelection) return;
+        // Native TreeView selection can precede the managed MouseDown event.
+        if (e.Action == TreeViewAction.ByMouse) return;
+        // A mouse selection is finalized on mouse-up so Ctrl/Shift intent is not lost.
+        if (_treeMouseSelectionActive) return;
+        if (e.Action == TreeViewAction.ByKeyboard && (ModifierKeys & Keys.Shift) != 0)
+        {
+            ApplyProjectTreeClickSelection(e.Node, ModifierKeys);
+            return;
+        }
+        // Keyboard navigation and programmatic selection collapse back to a single row.
+        var node = _projectObjects.SelectedNode;
+        SetMultiSelection(node is null || node.Tag is not VaultRow ? null : [node]);
+        _treeSelectionAnchor = node;
+        ProjectTreeSelectionChanged();
+    }
+
+    private void ProjectTreeSelectionMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || e.Clicks != 1) return;
+        _treeMouseSelectionActive = true;
+    }
+
+    private void ProjectTreeSelectionMouseUp(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || !_treeMouseSelectionActive) return;
+        _treeMouseSelectionActive = false;
+        var node = _projectObjects.GetNodeAt(e.X, e.Y);
+        if (node is not null && Theme.IsTreeExpandGlyphHit(_projectObjects, node, e.Location)) return;
+        ApplyProjectTreeClickSelection(node, ModifierKeys);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_projectObjects.Focused)
+        {
+            if (keyData == (Keys.Control | Keys.A))
+            {
+                var visible = new List<TreeNode>();
+                CollectVisibleAssetNodes(_projectObjects.Nodes, visible);
+                SetMultiSelection(visible);
+                SetProjectTreeSelectedNode(_projectObjects.SelectedNode ?? visible.FirstOrDefault());
+                _treeSelectionAnchor ??= _projectObjects.SelectedNode;
+                ProjectTreeSelectionChanged();
+                HidePreview();
+                return true;
+            }
+            if (keyData == Keys.Enter)
+            {
+                if (_projectObjects.SelectedNode is { Tag: VaultRow { Folder: not null } } folder)
+                    folder.Toggle();
+                else OpenSelectedVaultItem();
+                HidePreview();
+                return true;
+            }
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private void ApplyProjectTreeClickSelection(TreeNode? node, Keys modifiers)
+    {
+        if (_syncingSelection) return;
+        if (node is not null && node.Tag is not VaultRow) node = null;
+        if (node is null)
+        {
+            if ((modifiers & (Keys.Control | Keys.Alt)) == 0)
+            {
+                SetMultiSelection(null);
+                SetProjectTreeSelectedNode(null);
+                ProjectTreeSelectionChanged();
+            }
+            return;
+        }
+
+        var ctrl = (modifiers & Keys.Control) == Keys.Control;
+        var shift = (modifiers & Keys.Shift) == Keys.Shift;
+        HashSet<TreeNode> next;
+        if ((modifiers & Keys.Alt) != 0)
+        {
+            next = new HashSet<TreeNode>(_multiSelectedNodes);
+            if (shift && _treeSelectionAnchor is not null)
+                next.ExceptWith(SelectProjectTreeRange(_treeSelectionAnchor, node));
+            else next.Remove(node);
+        }
+        else if (shift && _treeSelectionAnchor is not null)
+        {
+            next = SelectProjectTreeRange(_treeSelectionAnchor, node);
+            if (ctrl) next.UnionWith(_multiSelectedNodes);
+        }
+        else if (ctrl)
+        {
+            next = new HashSet<TreeNode>(_multiSelectedNodes);
+            if (!next.Add(node)) next.Remove(node);
+            _treeSelectionAnchor = node;
+        }
+        else
+        {
+            next = new HashSet<TreeNode> { node };
+            _treeSelectionAnchor = node;
+        }
+
+        SetMultiSelection(next);
+        // Keep the focused row inside the selection so single-item actions still have a target.
+        SetProjectTreeSelectedNode(next.Contains(node) ? node : next.FirstOrDefault());
+        ProjectTreeSelectionChanged();
+    }
+
+    private HashSet<TreeNode> SelectProjectTreeRange(TreeNode anchor, TreeNode node)
+    {
+        var visible = new List<TreeNode>();
+        CollectVisibleAssetNodes(_projectObjects.Nodes, visible);
+        var start = visible.IndexOf(anchor);
+        var end = visible.IndexOf(node);
+        var range = new HashSet<TreeNode>();
+        if (start < 0 || end < 0)
+        {
+            range.Add(node);
+            return range;
+        }
+
+        if (start > end) (start, end) = (end, start);
+        for (var index = start; index <= end; index++) range.Add(visible[index]);
+        return range;
+    }
+
+    private static void CollectVisibleAssetNodes(TreeNodeCollection nodes, List<TreeNode> target)
+    {
+        foreach (TreeNode node in nodes)
+        {
+            if (node.Tag is VaultRow) target.Add(node);
+            if (node.IsExpanded) CollectVisibleAssetNodes(node.Nodes, target);
+        }
+    }
+
+    private void SetMultiSelection(IEnumerable<TreeNode>? nodes)
+    {
+        _multiSelectedNodes.Clear();
+        if (nodes is not null) _multiSelectedNodes.UnionWith(nodes);
+        Theme.SetTreeViewMultiSelection(_projectObjects, _multiSelectedNodes);
+    }
+
+    private void SetProjectTreeSelectedNode(TreeNode? node)
+    {
+        if (ReferenceEquals(_projectObjects.SelectedNode, node)) return;
+        _applyingTreeSelection = true;
+        try
+        {
+            _projectObjects.SelectedNode = node;
+        }
+        finally
+        {
+            _applyingTreeSelection = false;
+        }
+    }
+
     private void ProjectTreeSelectionChanged()
     {
         if (_syncingSelection) return;
@@ -1631,7 +1807,7 @@ internal sealed partial class LibraryVaultPanel : UserControl
         private readonly Label _kind = new();
         private readonly Label _metadata = new();
         private readonly Label _detail = new();
-        private readonly PictureBox _imagePreview = new();
+        private readonly PreviewPictureBox _imagePreview = new();
         private VectorScene? _contentScene;
         private VectorScene? _contentUnderlay;
         private int _contentFrame;
@@ -1776,6 +1952,9 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _contentScene = null;
             _contentUnderlay = null;
             _contentFrame = 0;
+            // Pixel-art assets must scale with nearest-neighbor in the popup preview too,
+            // matching the in-library thumbnails.
+            _imagePreview.PointFilter = asset.ImportSettings.FilterMode == ImageFilterMode.Point;
             ShowImagePreview(raster?.Pixels, raster?.PixelWidth ?? 0, raster?.PixelHeight ?? 0, raster?.Stride ?? 0);
             _emptyState.Text = raster is null
                 ? UiLocalization.T("Image unavailable")
@@ -1848,6 +2027,34 @@ internal sealed partial class LibraryVaultPanel : UserControl
             _imagePreview.Image = null;
             previous?.Dispose();
             _imagePreview.Visible = false;
+        }
+
+        /// <summary>PictureBox that can scale pixel-art previews with nearest-neighbor
+        /// sampling; smooth images keep the default interpolation untouched.</summary>
+        private sealed class PreviewPictureBox : PictureBox
+        {
+            private bool _pointFilter;
+
+            public bool PointFilter
+            {
+                get => _pointFilter;
+                set
+                {
+                    if (_pointFilter == value) return;
+                    _pointFilter = value;
+                    Invalidate();
+                }
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                if (_pointFilter)
+                {
+                    e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                    e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                }
+                base.OnPaint(e);
+            }
         }
 
         public void ShowVaultItem(VaultItem item)

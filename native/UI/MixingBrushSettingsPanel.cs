@@ -36,17 +36,8 @@ internal sealed class MixingBrushSettingsPanel : UserControl
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Mixing brush settings";
 
-        var title = new Label
-        {
-            Text = "Mixing",
-            Dock = DockStyle.Top,
-            Height = Theme.InspectorTitleHeight,
-            BackColor = Color.Transparent,
-            ForeColor = Theme.Text,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        };
+        var title = InspectorModuleStyle.CreateTitle("Mixing");
+        title.Dock = DockStyle.Top;
 
         var content = new TableLayoutPanel
         {

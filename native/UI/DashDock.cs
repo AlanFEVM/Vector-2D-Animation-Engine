@@ -14,6 +14,7 @@ internal sealed class DashDock : UserControl
     private bool _pressed;
     private bool _compact;
     private bool _compactHeight;
+    private bool _applyingResponsiveSize;
 
     public DashDock()
     {
@@ -165,6 +166,12 @@ internal sealed class DashDock : UserControl
         }
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyResponsiveSize();
+    }
+
     protected override void OnDpiChangedAfterParent(EventArgs e)
     {
         base.OnDpiChangedAfterParent(e);
@@ -269,12 +276,26 @@ internal sealed class DashDock : UserControl
 
     private void ApplyResponsiveSize()
     {
+        if (_applyingResponsiveSize) return;
         var size = new Size(
             ScaleLogical(Compact ? CompactDockWidth : PreferredDockWidth),
             ScaleLogical(CompactHeight ? 32 : PreferredDockHeight));
-        MinimumSize = size;
-        MaximumSize = size;
-        Size = size;
+        if (MinimumSize == size && MaximumSize == size && Size == size) return;
+        // Drop the previous fixed-size constraints before switching compact mode or DPI.
+        // Otherwise one of those constraints can clamp the new preferred size.
+        _applyingResponsiveSize = true;
+        try
+        {
+            MinimumSize = Size.Empty;
+            MaximumSize = Size.Empty;
+            MinimumSize = size;
+            MaximumSize = size;
+            Size = size;
+        }
+        finally
+        {
+            _applyingResponsiveSize = false;
+        }
     }
 
     private static string ToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";

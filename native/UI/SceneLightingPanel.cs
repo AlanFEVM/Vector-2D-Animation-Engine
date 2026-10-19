@@ -250,16 +250,7 @@ internal sealed class SceneLightingPanel : UserControl
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var index = 0; index < 4; index++) row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
-        row.Controls.Add(new Label
-        {
-            Text = "Lighting",
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Text,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        }, 0, 0);
+        row.Controls.Add(InspectorModuleStyle.CreateTitle("Lighting"), 0, 0);
         ConfigureHeaderButton(_add, "Add light");
         ConfigureHeaderButton(_duplicate, "Duplicate light");
         ConfigureHeaderButton(_remove, "Remove light");

@@ -207,13 +207,18 @@ internal sealed partial class MainForm
             try
             {
                 result = await ImportImageAssetsBatchAsync(fileNames,
-                    (path, width, height, pixelsPerUnit) =>
+                    entries =>
                     {
+                        var first = entries[0];
                         using var settings = new ImageImportSettingsDialog(
-                            UiLocalization.T("Image Import Settings"), Path.GetFileName(path),
-                            width, height, pixelsPerUnit, BitmapImageImportSettings.Default,
-                            path, batchCount: fileNames.Count);
-                        return settings.ShowDialog(progress) == DialogResult.OK ? settings.Settings : null;
+                            UiLocalization.T("Image Import Settings"), first.Name,
+                            first.PixelWidth, first.PixelHeight, first.NaturalPixelsPerUnit,
+                            BitmapImageImportSettings.Default,
+                            first.Path, batchCount: entries.Count, batchFiles: entries);
+                        return settings.ShowDialog(progress) == DialogResult.OK
+                            ? new ImageBatchImportSelection(settings.SharedSettings, settings.RemainingBatchFiles,
+                                settings.AutomaticDisplay, settings.BatchSettings)
+                            : null;
                     }, progress.Report, () => progress.CancellationRequested);
             }
             catch (Exception exception)
@@ -245,8 +250,8 @@ internal sealed partial class MainForm
 
     private async Task<ImageImportBatchResult> ImportImageAssetsBatchAsync(
         IReadOnlyList<string> fileNames,
-        Func<string, int, int, float, BitmapImageImportSettings?> chooseSettings,
-        Action<int, string> report,
+        Func<IReadOnlyList<ImageBatchFile>, ImageBatchImportSelection?> chooseSettings,
+        Action<int, int, string> report,
         Func<bool> cancellationRequested)
     {
         var imported = 0;
@@ -254,40 +259,103 @@ internal sealed partial class MainForm
         var failed = 0;
         var cancelled = false;
         var errors = new List<string>();
-        BitmapImageImportSettings? sharedSettings = null;
         var existingPaths = new HashSet<string>(_project.ImageAssets.SelectMany(asset => new[] { asset.OriginalSourcePath, asset.SourcePath }),
             StringComparer.OrdinalIgnoreCase);
+        var prepared = new Dictionary<string, (ImageFileProbe Probe, string Sha256, ImageFilterMode SuggestedFilter)>(StringComparer.OrdinalIgnoreCase);
+        var pending = new List<string>();
         _libraryVaultPanel.BeginProjectObjectUpdate();
         try
         {
+            // Probe every file before the settings dialog opens so the batch preview can
+            // switch between images and let the user remove files before importing.
             for (var index = 0; index < fileNames.Count; index++)
             {
                 if (cancellationRequested()) { cancelled = true; break; }
                 var fileName = fileNames[index];
-                report(index, fileName);
+                report(index, fileNames.Count, fileName);
                 try
                 {
                     var fullPath = Path.GetFullPath(fileName);
-                    if (existingPaths.Contains(fullPath))
+                    if (existingPaths.Contains(fullPath) || prepared.ContainsKey(fullPath))
                     {
+                        // Same file twice in one batch: already imported or already pending.
                         skipped++;
                     }
                     else
                     {
-                        var prepared = await Task.Run(() => PrepareImageImport(fullPath));
-                        if (cancellationRequested()) { cancelled = true; break; }
-                        if (sharedSettings is null)
-                        {
-                            var probe = prepared.Probe;
-                            sharedSettings = chooseSettings(probe.FullPath, probe.PixelWidth,
-                                probe.PixelHeight, probe.NaturalPixelsPerUnit);
-                            if (sharedSettings is null) { cancelled = true; break; }
-                        }
-                        if (cancellationRequested()) { cancelled = true; break; }
+                        prepared[fullPath] = await Task.Run(() => PrepareImageImport(fullPath));
+                        pending.Add(fullPath);
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException
+                    or NotSupportedException or UnauthorizedAccessException
+                    or System.Runtime.InteropServices.ExternalException or OutOfMemoryException)
+                {
+                    failed++;
+                    var detail = $"{fileName}: {exception.Message}";
+                    if (errors.Count < 5) errors.Add(detail);
+                    AppLog.Warn($"Image batch import failed: {detail}");
+                }
+                report(index + 1, fileNames.Count, fileName);
+                await Task.Yield();
+            }
+            if (!cancelled && fileNames.Count > 0)
+            {
+                report(fileNames.Count, fileNames.Count, fileNames[^1]);
+                await Task.Yield();
+            }
+
+            BitmapImageImportSettings? sharedSettings = null;
+            IReadOnlyDictionary<string, BitmapImageImportSettings>? perFileSettings = null;
+            var automaticDisplay = false;
+            List<string> remaining = pending;
+            if (!cancelled && pending.Count > 0)
+            {
+                if (cancellationRequested())
+                {
+                    cancelled = true;
+                }
+                else
+                {
+                    var entries = pending.Select(fullPath =>
+                    {
+                        var probe = prepared[fullPath].Probe;
+                        return new ImageBatchFile(fullPath, Path.GetFileName(fullPath),
+                            probe.PixelWidth, probe.PixelHeight, probe.NaturalPixelsPerUnit, prepared[fullPath].SuggestedFilter);
+                    }).ToList();
+                    var chosen = chooseSettings(entries);
+                    if (chosen is null)
+                    {
+                        cancelled = true;
+                    }
+                    else
+                    {
+                        sharedSettings = chosen.Settings;
+                        perFileSettings = chosen.PerFileSettings;
+                        automaticDisplay = chosen.AutomaticDisplay;
+                        var remainingSet = new HashSet<string>(chosen.RemainingFiles, StringComparer.OrdinalIgnoreCase);
+                        remaining = pending.Where(remainingSet.Contains).ToList();
+                        skipped += pending.Count - remaining.Count;
+                    }
+                }
+            }
+
+            if (!cancelled && sharedSettings is not null)
+            {
+                for (var index = 0; index < remaining.Count; index++)
+                {
+                    if (cancellationRequested()) { cancelled = true; break; }
+                    var fullPath = remaining[index];
+                    report(index, remaining.Count, fullPath);
+                    try
+                    {
                         if (!CanPlaceImage()) throw new InvalidOperationException(
                             UiLocalization.T("The image metadata is invalid or the library is full."));
-                        var asset = RegisterImageAsset(prepared.Probe, sharedSettings.Value,
-                            prepared.Sha256, deferRefresh: true, showError: detail =>
+                        var settings = perFileSettings is not null && perFileSettings.TryGetValue(fullPath, out var fileSettings)
+                            ? fileSettings : sharedSettings.Value;
+                        if (automaticDisplay) settings = settings with { FilterMode = prepared[fullPath].SuggestedFilter };
+                        var asset = RegisterImageAsset(prepared[fullPath].Probe, settings,
+                            prepared[fullPath].Sha256, deferRefresh: true, showError: detail =>
                                 throw new InvalidDataException(detail));
                         if (asset is not null)
                         {
@@ -295,19 +363,24 @@ internal sealed partial class MainForm
                             imported++;
                         }
                     }
+                    catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException
+                        or NotSupportedException or UnauthorizedAccessException
+                        or System.Runtime.InteropServices.ExternalException or OutOfMemoryException
+                        or InvalidOperationException)
+                    {
+                        failed++;
+                        var detail = $"{fullPath}: {exception.Message}";
+                        if (errors.Count < 5) errors.Add(detail);
+                        AppLog.Warn($"Image batch import failed: {detail}");
+                    }
+                    report(index + 1, remaining.Count, fullPath);
+                    await Task.Yield();
                 }
-                catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException
-                    or NotSupportedException or UnauthorizedAccessException
-                    or System.Runtime.InteropServices.ExternalException or OutOfMemoryException
-                    or InvalidOperationException)
+                if (!cancelled && remaining.Count > 0)
                 {
-                    failed++;
-                    var detail = $"{fileName}: {exception.Message}";
-                    if (errors.Count < 5) errors.Add(detail);
-                    AppLog.Warn($"Image batch import failed: {detail}");
+                    report(remaining.Count, remaining.Count, remaining[^1]);
+                    await Task.Yield();
                 }
-                report(index + 1, fileName);
-                await Task.Yield();
             }
         }
         finally
@@ -317,12 +390,12 @@ internal sealed partial class MainForm
         return new ImageImportBatchResult(imported, skipped, failed, cancelled, errors);
     }
 
-    private static (ImageFileProbe Probe, string Sha256) PrepareImageImport(string fullPath)
+    private static (ImageFileProbe Probe, string Sha256, ImageFilterMode SuggestedFilter) PrepareImageImport(string fullPath)
     {
         if (!BitmapImageRasterizer.TryProbe(fullPath, out var width, out var height,
                 out var pixelsPerUnit, out var error)) throw new InvalidDataException(error);
         return (new ImageFileProbe(fullPath, width, height, pixelsPerUnit),
-            BitmapImageRasterizer.ComputeSha256(fullPath));
+            BitmapImageRasterizer.ComputeSha256(fullPath), ImageDisplayDetector.Detect(fullPath));
     }
 
     /// <summary>
@@ -576,6 +649,7 @@ internal sealed partial class MainForm
         // Capture the previous state so a placement failure can roll the asset back;
         // otherwise the library would advertise settings the canvas does not reflect.
         var previousSettings = asset.ImportSettings;
+        var assetUndo = CaptureSharedAssetUndo(asset.Id);
         var previousWidth = asset.PixelWidth;
         var previousHeight = asset.PixelHeight;
         if (!_project.TryApplyImageImportSettings(
@@ -616,6 +690,7 @@ internal sealed partial class MainForm
         MarkProjectDirty();
         AppLog.Info(
             $"Applied image import settings: {asset.Name} ({settings.FilterMode}, {settings.PixelsPerUnit:0.##} PPU)");
+        PushSharedAssetUndo(assetUndo);
     }
 
     /// <summary>
@@ -662,109 +737,12 @@ internal sealed partial class MainForm
     {
         var asset = FindImageAsset(assetId);
         if (asset is null) return;
-
-        using var dialog = CreateImageAssetDialog("Relink Image...");
-        var currentPath = ResolveImageAssetPath(asset);
-        var currentDirectory = currentPath is null ? null : Path.GetDirectoryName(currentPath);
-        if (!string.IsNullOrWhiteSpace(currentDirectory) && Directory.Exists(currentDirectory))
-        {
-            dialog.InitialDirectory = currentDirectory;
-        }
+        using var dialog = CreateImageAssetDialog("Replace Source...");
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
-        string fullPath;
-        try
-        {
-            fullPath = Path.GetFullPath(dialog.FileName);
-        }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            ShowImageAssetError("The image could not be relinked.", exception.Message);
-            return;
-        }
-
-        if (!BitmapImageRasterizer.TryProbe(fullPath, out var pixelWidth, out var pixelHeight, out _, out var error))
-        {
-            ShowImageAssetError("The image could not be relinked.", error);
-            return;
-        }
-
-        string sha256;
-        try
-        {
-            sha256 = BitmapImageRasterizer.ComputeSha256(fullPath);
-        }
-        catch (Exception exception)
-        {
-            ShowImageAssetError("The image could not be relinked.", exception.Message);
-            return;
-        }
-
-        // Relink re-points the managed copy at a different file while keeping the asset id
-        // and every existing placement intact.
-        if (!_project.TryRelinkImageAsset(
-                asset.Id,
-                fullPath,
-                VectorProject.ImageAssetManagedRelativePath(
-                    asset.Id,
-                    BitmapImageFormats.ExtensionFor(asset.ImportSettings.Compression)),
-                sha256,
-                pixelWidth,
-                pixelHeight,
-                asset.NaturalPixelsPerUnit))
-        {
-            ShowImageAssetError("The image could not be relinked.", "The selected file is not a valid image.");
-            return;
-        }
-
-        BitmapImageRasterizer.ClearCache();
-        _libraryVaultPanel.RefreshProjectObjects();
-        _stage.Invalidate();
-        MarkProjectDirty();
-        AppLog.Info($"Relinked image asset: {asset.Name} -> {fullPath}");
+        UpdateImageAssetFromPath(asset, dialog.FileName);
     }
 
-    private void DeleteImageAsset(string assetId)
-    {
-        var asset = FindImageAsset(assetId);
-        if (asset is null) return;
-
-        var placements = 0;
-        var visited = new HashSet<VectorScene>(ReferenceEqualityComparer.Instance);
-        foreach (var scene in EnumerateProjectScenes())
-        {
-            if (!visited.Add(scene)) continue;
-            placements += scene.FindBitmapObjectsUsingImageAsset(assetId).Length;
-        }
-        var message = placements > 0
-            ? string.Format(
-                UiLocalization.T("Remove image \"{0}\" from the library and delete {1} placed instance(s)?"),
-                asset.Name,
-                placements)
-            : string.Format(UiLocalization.T("Remove image \"{0}\" from the library?"), asset.Name);
-        if (ModernMessageDialog.Show(
-                this,
-                message,
-                UiLocalization.T("Images"),
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question) != DialogResult.Yes)
-        {
-            return;
-        }
-
-        // Placements must go first: a bitmap object whose asset is gone cannot be drawn or
-        // saved, so the objects and the asset are removed as one user-visible action.
-        RemoveBitmapPlacementsEverywhere(assetId);
-        if (!_project.TryRemoveImageAsset(asset.Id, out _)) return;
-
-        BitmapImageRasterizer.ClearCache();
-        _libraryVaultPanel.RefreshProjectObjects();
-        _hierarchyPanel.RefreshScene();
-        UpdateInspector();
-        _stage.Invalidate();
-        MarkProjectDirty();
-        AppLog.Info($"Removed image asset: {asset.Name}");
-    }
+    private void DeleteImageAsset(string assetId) => DeleteSharedAsset(assetId, svg: false);
 
     /// <summary>
     /// Every scene a bitmap object can live in: each symbol's drawing scene plus each
@@ -774,16 +752,7 @@ internal sealed partial class MainForm
     /// </summary>
     private IEnumerable<VectorScene> EnumerateProjectScenes()
     {
-        foreach (var drawingObject in _project.DrawingObjects) yield return drawingObject.Scene;
-        foreach (var sceneDefinition in _project.Scenes)
-        {
-            yield return _sceneEditStage;
-            foreach (var layer in sceneDefinition.Layers)
-            {
-                var maskScene = sceneDefinition.FindMaskScene(layer.Id);
-                if (maskScene is not null) yield return maskScene;
-            }
-        }
+        foreach (var (_, scene) in _project.EnumerateAssetScenes()) yield return scene;
     }
 
     private void RemoveBitmapPlacementsEverywhere(string assetId)

@@ -437,7 +437,7 @@ internal static partial class Benchmark
 
         AssertTimeline(
             desktop.InitialSize == new Size(1480, 920)
-            && desktop.MinimumSize == new Size(1120, 720)
+            && desktop.MinimumSize == new Size(760, 520)
             && desktop.InspectorWidth == 324
             && desktop.VaultWidth == 306
             && desktop.TimelineHeight == 192

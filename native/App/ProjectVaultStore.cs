@@ -10,7 +10,7 @@ internal static class ProjectVaultStore
     internal const string ProjectExtension = ".v2dProject";
 
     private const int MinimumReadableManifestFormatVersion = 1;
-    private const int ManifestFormatVersion = 6;
+    private const int ManifestFormatVersion = 7;
     /// <summary>
     /// Format 5 added the managed image asset library (.Vault/Images).
     /// </summary>
@@ -185,6 +185,7 @@ internal static class ProjectVaultStore
                     Id = imageAsset.Id,
                     Name = imageAsset.Name,
                     SourcePath = imageAsset.SourcePath,
+                    OriginalSourcePath = imageAsset.OriginalSourcePath,
                     ProjectRelativePath = imageRelativePath,
                     Sha256 = sha256,
                     PixelWidth = imageAsset.PixelWidth,
@@ -212,6 +213,7 @@ internal static class ProjectVaultStore
                 svgEntries.Add(new ExternalSvgAssetDescriptor
                 {
                     Id = asset.Id, Name = asset.Name, SourcePath = asset.SourcePath,
+                    OriginalSourcePath = asset.OriginalSourcePath,
                     ProjectRelativePath = relative, LastKnownSha256 = hash, CreatedAt = asset.CreatedAt
                 });
             }
@@ -361,6 +363,7 @@ internal static class ProjectVaultStore
                 Id = entry.Id,
                 Name = entry.Name,
                 SourcePath = imagePath,
+                OriginalSourcePath = entry.OriginalSourcePath,
                 ProjectRelativePath = entry.ProjectRelativePath,
                 Sha256 = entry.Sha256,
                 PixelWidth = entry.PixelWidth,
@@ -418,6 +421,7 @@ internal static class ProjectVaultStore
                 externalSvgAssets[index] = new ExternalSvgAssetRestartSnapshot
                 {
                     Id = entry.Id, Name = entry.Name, SourcePath = path,
+                    OriginalSourcePath = entry.OriginalSourcePath,
                     ProjectRelativePath = expected, LastKnownSha256 = entry.LastKnownSha256,
                     CreatedAt = entry.CreatedAt
                 };
@@ -439,6 +443,11 @@ internal static class ProjectVaultStore
             DrawingObjects = drawings,
             Scenes = scenes
         };
+        if (manifest.FormatVersion < 7
+            && (drawings.Any(drawing => drawing.Scene.ImportedSvgAssetIds.Count > 0)
+                || scenes.Any(scene => scene.Layers.Layers.Any(layer =>
+                    layer.MaskScene is { } mask && mask.ImportedSvgAssetIds.Count > 0))))
+            throw new InvalidDataException("Older project formats cannot contain shared SVG references.");
         ValidateRestartSnapshot(snapshot, projectRoot);
         return VectorProject.RestoreRestartSnapshot(snapshot);
     }
@@ -1024,6 +1033,7 @@ internal static class ProjectVaultStore
     {
         foreach (var asset in assets)
         {
+            ValidateImageOriginalSourcePath(asset?.OriginalSourcePath);
             if (asset is null
                 || !IsSafeStableId(asset.Id)
                 || string.IsNullOrWhiteSpace(asset.Name)
@@ -1089,6 +1099,7 @@ internal static class ProjectVaultStore
                 asset.ProjectRelativePath,
                 asset.LastKnownSha256,
                 projectRoot);
+            ValidateExternalSvgOriginalSourcePath(asset.OriginalSourcePath);
         }
     }
 
@@ -1109,6 +1120,7 @@ internal static class ProjectVaultStore
                 asset.ProjectRelativePath,
                 asset.LastKnownSha256,
                 projectRoot);
+            ValidateExternalSvgOriginalSourcePath(asset.OriginalSourcePath);
         }
     }
 
@@ -1116,6 +1128,7 @@ internal static class ProjectVaultStore
     {
         foreach (var asset in assets)
         {
+            ValidateImageOriginalSourcePath(asset?.OriginalSourcePath);
             if (asset is null
                 || !IsSafeStableId(asset.Id)
                 || string.IsNullOrWhiteSpace(asset.Name)
@@ -1255,6 +1268,7 @@ internal static class ProjectVaultStore
         ValidateRestartSnapshotImageAssets(snapshot.ImageAssets, projectRoot);
         var assetTagIds = snapshot.AssetTags.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         var drawingIds = snapshot.DrawingObjects.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var svgAssetIds = snapshot.ExternalSvgAssets.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
         if (drawingIds.Overlaps(snapshot.ExternalSvgAssets.Select(item => item.Id))
             || drawingIds.Overlaps(snapshot.ImageAssets.Select(item => item.Id)))
         {
@@ -1277,6 +1291,7 @@ internal static class ProjectVaultStore
                 throw new InvalidDataException("A symbol snapshot is invalid.");
             }
             ValidateSnapPoints(drawing.SnapPoints, drawing.Id);
+            ValidateImportedSvgAssetReferences(drawing.Scene, svgAssetIds);
             ValidateInstances(drawing.Instances, drawingIds, $"symbol '{drawing.Id}'");
         }
         foreach (var scene in snapshot.Scenes)
@@ -1287,6 +1302,8 @@ internal static class ProjectVaultStore
             }
             ValidateInstances(scene.Instances, drawingIds, $"scene '{scene.Id}'");
             var (layerIds, contentLayerIds) = ValidateSceneLayerSnapshot(scene.Layers, scene.Id);
+            foreach (var layer in scene.Layers.Layers)
+                if (layer.MaskScene is { } mask) ValidateImportedSvgAssetReferences(mask, svgAssetIds);
             var lightIds = ValidateSceneLights(scene.Lights, layerIds, scene.Instances, scene.Id);
             ValidateInstanceLayerReferences(scene.Instances, contentLayerIds, scene.Id);
             ValidateSceneLayerInstanceAssignments(scene.Layers, scene.Instances, scene.Id);
@@ -1296,6 +1313,38 @@ internal static class ProjectVaultStore
             ValidateSceneShotTimeline(scene.Timeline, scene.Shots, scene.Id);
         }
         ValidateAcyclicDrawingGraph(graph);
+    }
+
+    private static void ValidateImportedSvgAssetReferences(
+        VectorSceneSnapshot snapshot, IReadOnlySet<string> assetIds)
+    {
+        if (snapshot.ImportedSvgAssetIds is null || snapshot.ImportedSvgSources is null || snapshot.ShapeKind is null)
+            throw new InvalidDataException("The SVG asset reference metadata is missing.");
+        foreach (var (index, assetId) in snapshot.ImportedSvgAssetIds)
+        {
+            if ((uint)index >= snapshot.ObjectCount || index >= snapshot.ShapeKind.Length
+                || snapshot.ShapeKind[index] != ShapeKind.ImportedSvg
+                || !IsSafeStableId(assetId) || !assetIds.Contains(assetId)
+                || !snapshot.ImportedSvgSources.TryGetValue(index, out var source)
+                || string.IsNullOrWhiteSpace(source))
+                throw new InvalidDataException("An SVG object references an invalid or missing library resource.");
+        }
+    }
+
+    private static void ValidateImageOriginalSourcePath(string? path)
+    {
+        if (path is null || path.Length > VectorProject.MaxImageAssetPathLength || path.IndexOf('\0') >= 0
+            || path.Length > 0 && (!Path.IsPathFullyQualified(path)
+                || !BitmapImageFormats.IsSupportedExtension(Path.GetExtension(path))))
+            throw new InvalidDataException("An image resource update source path is invalid.");
+    }
+
+    private static void ValidateExternalSvgOriginalSourcePath(string? path)
+    {
+        if (path is null || path.Length > VectorProject.MaxExternalSvgAssetPathLength || path.IndexOf('\0') >= 0
+            || path.Length > 0 && (!Path.IsPathFullyQualified(path)
+                || !string.Equals(Path.GetExtension(path), ".svg", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException("An SVG resource update source path is invalid.");
     }
 
     private static void ValidateSnapPoints(
@@ -1690,6 +1739,7 @@ internal static class ProjectVaultStore
             || SceneMaskDictionaryInvalid(snapshot.MixingStrokeLocalRegions, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.ImportedSvgSources, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.ImportedSvgNames, snapshot.ObjectCount)
+            || SceneMaskDictionaryInvalid(snapshot.ImportedSvgAssetIds, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.BitmapObjects, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.TextObjects, snapshot.ObjectCount)
             || SceneMaskDictionaryInvalid(snapshot.ObjectDistortions, snapshot.ObjectCount)
@@ -2468,6 +2518,7 @@ internal static class ProjectVaultStore
             MixingStrokeLocalRegions = source.MixingStrokeLocalRegions,
             ImportedSvgSources = source.ImportedSvgSources,
             ImportedSvgNames = source.ImportedSvgNames,
+            ImportedSvgAssetIds = source.ImportedSvgAssetIds.ToDictionary(item => item.Key, item => item.Value),
             BitmapObjects = source.BitmapObjects,
             TextObjects = source.TextObjects,
             ObjectDistortions = source.ObjectDistortions
@@ -2578,6 +2629,7 @@ internal static class ProjectVaultStore
         public string Id { get; init; } = "";
         public string Name { get; init; } = "SVG";
         public string SourcePath { get; init; } = "";
+        public string OriginalSourcePath { get; init; } = "";
         public string ProjectRelativePath { get; init; } = "";
         public string LastKnownSha256 { get; init; } = "";
         public DateTime CreatedAt { get; init; }
@@ -2587,6 +2639,7 @@ internal static class ProjectVaultStore
             Id = snapshot.Id,
             Name = snapshot.Name,
             SourcePath = snapshot.SourcePath,
+            OriginalSourcePath = snapshot.OriginalSourcePath,
             ProjectRelativePath = snapshot.ProjectRelativePath,
             LastKnownSha256 = snapshot.LastKnownSha256,
             CreatedAt = snapshot.CreatedAt
@@ -2597,6 +2650,7 @@ internal static class ProjectVaultStore
             Id = Id,
             Name = Name,
             SourcePath = SourcePath,
+            OriginalSourcePath = OriginalSourcePath,
             ProjectRelativePath = ProjectRelativePath,
             LastKnownSha256 = LastKnownSha256,
             CreatedAt = CreatedAt
@@ -2608,6 +2662,7 @@ internal static class ProjectVaultStore
         public string Id { get; init; } = "";
         public string Name { get; init; } = "Image";
         public string SourcePath { get; init; } = "";
+        public string OriginalSourcePath { get; init; } = "";
         public string ProjectRelativePath { get; init; } = "";
         public string Sha256 { get; init; } = "";
         public int PixelWidth { get; init; }

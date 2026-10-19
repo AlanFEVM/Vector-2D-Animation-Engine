@@ -5,12 +5,13 @@ internal sealed class ImageImportProgressDialog : ModernDialogForm
     private readonly ProgressBar _progress = new() { Style = ProgressBarStyle.Continuous };
     private readonly Label _status = new();
     private readonly Label _fileName = new();
+    private readonly ToolTip _nameTip = new();
     private readonly Button _cancelButton;
-    private readonly int _total;
+    private int _total;
     private bool _completed;
 
     public ImageImportProgressDialog(int total)
-        : base(UiLocalization.T("Importing images"), new Size(560, 270))
+        : base(UiLocalization.T("Importing images"), new Size(660, 270))
     {
         _total = Math.Max(1, total);
         AccessibleName = UiLocalization.T("Importing images");
@@ -23,8 +24,9 @@ internal sealed class ImageImportProgressDialog : ModernDialogForm
             Margin = Padding.Empty
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        // Taller rows keep long counts and file names from clipping at high DPI.
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         ConfigureLabel(_status, Theme.Text);
@@ -48,17 +50,27 @@ internal sealed class ImageImportProgressDialog : ModernDialogForm
                 return _completed;
             });
         CancelButton = _cancelButton;
-        Report(0, "");
+        Report(0, _total, "");
     }
 
     public bool CancellationRequested { get; private set; }
 
-    public void Report(int completed, string fileName)
+    /// <summary>
+    /// Reports one completed step. Each phase passes its own file count, so the probe
+    /// phase and the write phase each reach 100% before the dialog moves on.
+    /// </summary>
+    public void Report(int completed, int total, string fileName)
     {
+        _total = Math.Max(1, total);
+        _progress.Maximum = _total;
         _progress.Value = Math.Clamp(completed, 0, _total);
+        // Thousands separators keep large batches readable; the tooltip carries the
+        // full path when the file-name row has to ellipsize.
         _status.Text = string.Format(UiLocalization.T("{0} / {1} images ({2:P0})"),
-            completed, _total, completed / (double)_total);
-        _fileName.Text = fileName;
+            completed.ToString("N0"), _total.ToString("N0"), completed / (double)_total);
+        _fileName.Text = Path.GetFileName(fileName);
+        _fileName.AccessibleDescription = fileName;
+        _nameTip.SetToolTip(_fileName, fileName);
     }
 
     public void Complete()
@@ -85,6 +97,12 @@ internal sealed class ImageImportProgressDialog : ModernDialogForm
             DialogResult = DialogResult.None;
         }
         base.OnFormClosing(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _nameTip.Dispose();
+        base.Dispose(disposing);
     }
 
     private static void ConfigureLabel(Label label, Color color)

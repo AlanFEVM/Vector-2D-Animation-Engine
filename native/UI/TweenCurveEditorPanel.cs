@@ -10,7 +10,7 @@ internal sealed class TweenCurveCommittedEventArgs(TweenCurveAnchor[] anchors) :
 
 internal sealed class TweenCurveEditorPanel : Panel
 {
-    private readonly Label _title = new();
+    private readonly Label _title = InspectorModuleStyle.CreateTitle("Tween Curve");
     private readonly Label _summary = new();
     private readonly TweenCurveEditor _editor = new();
     private readonly SvgIconButton _addAnchor = new(SvgIconKind.Add);
@@ -40,9 +40,6 @@ internal sealed class TweenCurveEditorPanel : Panel
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
         _title.Dock = DockStyle.Fill;
-        _title.Font = Theme.UiFont(10, FontStyle.Bold);
-        _title.ForeColor = Theme.Text;
-        _title.TextAlign = ContentAlignment.MiddleLeft;
         _title.AutoEllipsis = true;
 
         _summary.Dock = DockStyle.Fill;

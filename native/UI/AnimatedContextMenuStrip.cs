@@ -405,6 +405,13 @@ internal sealed class AnimatedContextMenuStrip : ContextMenuStrip
                 ? !e.Item.Enabled ? SystemColors.GrayText : e.Item.Selected ? SystemColors.HighlightText : SystemColors.MenuText
                 : Theme.ReadableText(e.Item.Selected && e.Item.Enabled ? Theme.MenuSelectionSurface : Theme.PanelStrong,
                     !e.Item.Enabled ? Theme.DisabledText : shortcut ? Theme.Muted : Theme.Text);
+            // DropDownMenu's native text rectangle is based on its preferred row
+            // metrics. Our fixed, DPI-scaled rows can be taller, so center text
+            // against the same actual item height used by the selection and arrow.
+            var textBounds = e.TextRectangle;
+            e.TextRectangle = new Rectangle(textBounds.X, 0, textBounds.Width, e.Item.Height);
+            e.TextFormat = (e.TextFormat & ~(TextFormatFlags.Bottom | TextFormatFlags.WordBreak))
+                | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
             base.OnRenderItemText(e);
             if (!shortcut && e.ToolStrip is AnimatedContextMenuStrip { TrailingImages: true } owner
                 && owner._trailingIcons.TryGetValue(e.Item, out var icon))

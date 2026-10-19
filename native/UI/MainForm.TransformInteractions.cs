@@ -26,6 +26,16 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (e.Button == MouseButtons.Left
+            && _motionTrackEnabled
+            && _tool is ToolMode.Select or ToolMode.Transform
+            && (_motionTrackDragSession is not null
+                || _motionTrackMarqueeActive
+                || _stage.MotionTrackVisible && _stage.HitTestMotionTrackAnchor(e.Location) >= 0))
+        {
+            return;
+        }
+
         if (e.Button != MouseButtons.Left
             || _forceMarqueeOnPointerDown
             || IsScene3DView())
@@ -2417,8 +2427,10 @@ internal sealed partial class MainForm : Form
         {
             // The temporary eyedropper handed a gradient to the fill tool; releasing Alt brings the
             // fill pointer back already previewing that gradient instead of the last solid color.
+            // The sample click never opened a pointer interaction, but the up still settles it:
+            // leaving _lastMouse/_startScreen behind would keep the canvas "busy" for navigation.
             _eyedropperSamplesGradient = false;
-            UpdateInteractionCursor(e.Location);
+            FinishPointerInteraction();
             return;
         }
 

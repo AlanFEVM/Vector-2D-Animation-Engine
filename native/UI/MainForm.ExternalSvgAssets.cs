@@ -4,7 +4,7 @@ internal sealed partial class MainForm
 {
     private void AddExternalSvgAssetLink()
     {
-        using var dialog = CreateExternalSvgAssetDialog("Add SVG Link");
+        using var dialog = CreateExternalSvgAssetDialog("Import SVG Asset");
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (!TryValidateExternalSvgAssetFile(dialog.FileName, out var path, out var sha256, out var error))
         {
@@ -101,13 +101,13 @@ internal sealed partial class MainForm
             ModernMessageDialog.Show(
                 this,
                 UiLocalization.T("Open a Basic Drawing or scene mask drawing layer before using an SVG link."),
-                UiLocalization.T("External SVG"),
+                UiLocalization.T("SVG Assets"),
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
         }
 
-        ImportSvgFile(path, center);
+        ImportSharedSvgFile(path, center, asset.Id);
     }
 
     private void RelocateExternalSvgAssetLink(string assetId)
@@ -115,50 +115,17 @@ internal sealed partial class MainForm
         var asset = FindExternalSvgAsset(assetId);
         if (asset is null) return;
 
-        using var dialog = CreateExternalSvgAssetDialog("Relocate SVG Link");
+        using var dialog = CreateExternalSvgAssetDialog("Replace Source...");
         var currentDirectory = Path.GetDirectoryName(ResolveExternalSvgAssetPath(asset) ?? asset.SourcePath);
         if (!string.IsNullOrWhiteSpace(currentDirectory) && Directory.Exists(currentDirectory))
         {
             dialog.InitialDirectory = currentDirectory;
         }
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (!TryValidateExternalSvgAssetFile(dialog.FileName, out var path, out var sha256, out var error))
-        {
-            ShowExternalSvgAssetError("The SVG link could not be relocated.", error);
-            return;
-        }
-        if (!_project.TryRelocateExternalSvgAsset(
-                asset.Id,
-                path,
-                ProjectRelativeExternalSvgPath(path),
-                sha256))
-        {
-            ShowExternalSvgAssetError("The SVG link could not be relocated.", "The selected path is invalid.");
-            return;
-        }
-
-        _libraryVaultPanel.RefreshProjectObjects();
-        AppLog.Info($"Relocated external SVG asset link: {asset.Name} -> {path}");
+        UpdateSvgAssetFromPath(asset, dialog.FileName);
     }
 
-    private void DeleteExternalSvgAssetLink(string assetId)
-    {
-        var asset = FindExternalSvgAsset(assetId);
-        if (asset is null) return;
-        if (ModernMessageDialog.Show(
-                this,
-                string.Format(UiLocalization.T("Remove SVG link \"{0}\" from the library?"), asset.Name),
-                UiLocalization.T("External SVG"),
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question) != DialogResult.Yes
-            || !_project.TryRemoveExternalSvgAsset(asset.Id, out _))
-        {
-            return;
-        }
-
-        _libraryVaultPanel.RefreshProjectObjects();
-        AppLog.Info($"Removed external SVG asset link: {asset.Name}");
-    }
+    private void DeleteExternalSvgAssetLink(string assetId) => DeleteSharedAsset(assetId, svg: true);
 
     private ExternalSvgAssetDefinition? FindExternalSvgAsset(string assetId) =>
         _project.ExternalSvgAssets.FirstOrDefault(asset =>
@@ -317,7 +284,7 @@ internal sealed partial class MainForm
         ModernMessageDialog.Show(
             this,
             $"{UiLocalization.T(message)}\r\n\r\n{detail}",
-            UiLocalization.T("External SVG"),
+            UiLocalization.T("SVG Assets"),
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
     }

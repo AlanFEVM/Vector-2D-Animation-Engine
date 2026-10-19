@@ -8252,6 +8252,7 @@ internal static partial class Benchmark
     {
         RunConsecutiveBoundaryArcPointerRegression();
         RunLinePointerReleaseRegression();
+        RunConnectedAnchorCurveDragRegression();
         using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
         form.CreateControl();
         form.PerformLayout();
@@ -8364,6 +8365,154 @@ internal static partial class Benchmark
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
         Console.WriteLine("line_editing_pointer_regression=ok");
+    }
+
+    private static void RunConnectedAnchorCurveDragRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        ((DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!).SnapEnabled = false;
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(1200);
+        RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+        scene.CreateEmpty();
+        var outerStart = new PointF(-240, 0);
+        var quadraticControl = new PointF(-120, 120);
+        var outerEnd = new PointF(240, 240);
+        var quadratic = scene.AddCurveSegment(scene.ActiveLayer, outerStart,
+            quadraticControl, PointF.Empty, 12, Color.Transparent, Color.Black, 6);
+        scene.QuadraticLineEditing[quadratic] = true;
+        var cubic = scene.AddCubicCurveSegment(scene.ActiveLayer, PointF.Empty,
+            new PointF(120, 0), new PointF(240, 120), outerEnd,
+            12, Color.Transparent, Color.Black, 6);
+        var straightEnd = new PointF(-240, 240);
+        var straight = scene.AddLineSegment(scene.ActiveLayer, PointF.Empty, straightEnd,
+            12, Color.Transparent, Color.Black, 6);
+        scene.CompleteDeferredBuild();
+        scene.TryGetLineCubic(cubic, out _, out var originalC1, out var originalC2, out _);
+        var endpointFixture = scene.CreateSnapshot();
+        RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)])
+            .Invoke(form, [quadratic, false]);
+        var down = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var up = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var flush = RequireMethod(typeof(MainForm), "FlushLineDragPreview");
+        var undoStack = RequireField(typeof(MainForm), "_undoStack").GetValue(form)!;
+        var undoCount = RequireProperty(undoStack.GetType(), "Count",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        var undoBefore = (int)undoCount.GetValue(undoStack)!;
+
+        void Pointer(System.Reflection.MethodInfo method, PointF world)
+        {
+            var screen = Point.Round(stage.WorldToScreen(world.X, world.Y));
+            method.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
+            if (method == move) flush.Invoke(form, null);
+        }
+        void AssertGeometry(PointF anchor)
+        {
+            AssertTimeline(scene.TryGetLineEndpoint(quadratic, false, out var qAnchor)
+                && scene.TryGetLineEndpoint(cubic, true, out var cAnchor)
+                && scene.TryGetLineEndpoint(straight, true, out var sAnchor)
+                && PointsWithin(qAnchor, anchor, 0.1f) && PointsWithin(cAnchor, anchor, 0.1f)
+                && PointsWithin(sAnchor, anchor, 0.1f),
+                "Ordinary anchor dragging did not move all connected endpoints together.");
+            AssertTimeline(scene.TryGetLineEndpoint(quadratic, true, out var qOuter)
+                && scene.TryGetLineEndpoint(cubic, false, out var cOuter)
+                && scene.TryGetLineEndpoint(straight, false, out var sOuter)
+                && PointsWithin(qOuter, outerStart, 0.1f) && PointsWithin(cOuter, outerEnd, 0.1f)
+                && PointsWithin(sOuter, straightEnd, 0.1f), "Shared anchor dragging moved an outer endpoint.");
+            AssertTimeline(scene.TryGetLineQuadraticControl(quadratic, out var qControl)
+                && PointsWithin(qControl, quadraticControl, 1.5f)
+                && scene.IsQuadraticLine(quadratic) && !scene.IsQuadraticLine(cubic),
+                "Shared corner dragging moved the quadratic control or changed its degree.");
+            AssertTimeline(scene.TryGetLineCubic(cubic, out _, out var c1, out var c2, out _)
+                && PointsWithin(c1, originalC1, 0.01f) && PointsWithin(c2, originalC2, 0.01f)
+                && scene.IsLineStraight(straight),
+                "Shared corner dragging moved cubic controls or bent an originally straight segment.");
+        }
+
+        Pointer(down, PointF.Empty);
+        Pointer(move, new PointF(-240, -120));
+        AssertGeometry(new PointF(-240, -120));
+        AssertTimeline(scene.TryGetLineCubic(cubic, out var leftAnchor, out var leftControl, out _, out _)
+            && leftControl.X > leftAnchor.X,
+            "Dragging the shared corner left did not turn its outgoing tangent right.");
+        Pointer(move, new PointF(240, -120));
+        AssertGeometry(new PointF(240, -120));
+        AssertTimeline(scene.TryGetLineCubic(cubic, out var rightAnchor, out var rightControl, out _, out _)
+            && rightControl.X < rightAnchor.X,
+            "Dragging the shared corner right did not reverse its outgoing tangent.");
+        Pointer(move, new PointF(-240, -120));
+        AssertGeometry(new PointF(-240, -120));
+        Pointer(move, new PointF(0, 240));
+        AssertGeometry(new PointF(0, 240));
+        AssertTimeline(scene.IsLineStraight(quadratic), "Shared anchor fixture did not pass through a flat curve.");
+        Pointer(move, new PointF(0, 360));
+        AssertGeometry(new PointF(0, 360));
+        AssertTimeline(!scene.IsLineStraight(quadratic), "A temporarily flat curve could not bend in the opposite direction.");
+        Pointer(move, PointF.Empty);
+        AssertGeometry(PointF.Empty);
+        AssertTimeline(!scene.IsLineStraight(quadratic), "Returning a shared anchor failed to restore its original bend.");
+        Pointer(up, new PointF(0, 330));
+        AssertGeometry(new PointF(0, 330));
+        AssertTimeline((int)undoCount.GetValue(undoStack)! == undoBefore + 1 && !stage.Capture,
+            "A shared anchor gesture did not commit exactly one undo entry and release mouse capture.");
+        foreach (var (objectIndex, startEndpoint) in new[]
+        {
+            (quadratic, true), (cubic, false), (straight, false)
+        })
+        {
+            scene.RestoreSnapshot(endpointFixture);
+            RequireMethod(typeof(MainForm), "SetSelection", [typeof(int), typeof(bool)])
+                .Invoke(form, [objectIndex, false]);
+            scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var endpoint);
+            scene.TryGetLineEndpoint(objectIndex, !startEndpoint, out var opposite);
+            scene.TryGetLineCubic(objectIndex, out _, out var capturedC1, out var capturedC2, out _);
+            var neighbor = objectIndex == cubic ? quadratic : cubic;
+            scene.TryGetLineCubic(neighbor, out var neighborStart, out var neighborC1,
+                out var neighborC2, out var neighborEnd);
+            var movedEndpoint = new PointF(endpoint.X - 60, endpoint.Y + 120);
+            Pointer(down, endpoint);
+            Pointer(move, movedEndpoint);
+            AssertTimeline(scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var actual)
+                && PointsWithin(actual, movedEndpoint, 0.1f)
+                && scene.TryGetLineEndpoint(objectIndex, !startEndpoint, out var fixedOpposite)
+                && PointsWithin(fixedOpposite, opposite, 0.1f),
+                "Dragging an outer endpoint failed to keep the opposite endpoint fixed.");
+            if (objectIndex == quadratic)
+            {
+                AssertTimeline(scene.TryGetLineQuadraticControl(quadratic, out var control)
+                    && PointsWithin(control, new PointF(quadraticControl.X - 30, quadraticControl.Y + 60), 1.5f)
+                    && scene.IsQuadraticLine(quadratic),
+                    "Dragging a free quadratic endpoint failed to carry its curve body with the endpoint.");
+            }
+            else if (objectIndex == cubic)
+            {
+                AssertTimeline(scene.TryGetLineCubic(cubic, out _, out var c1, out var c2, out _)
+                    && PointsWithin(c1, new PointF(capturedC1.X - 20, capturedC1.Y + 40), 1f)
+                    && PointsWithin(c2, new PointF(capturedC2.X - 40, capturedC2.Y + 80), 1f)
+                    && !scene.IsQuadraticLine(cubic),
+                    "Dragging a free cubic endpoint failed to distribute motion over the curve body.");
+            }
+            else AssertTimeline(scene.IsLineStraight(straight), "Dragging a free straight endpoint bent the line.");
+            AssertTimeline(scene.TryGetLineCubic(neighbor, out var nStart, out var nC1, out var nC2, out var nEnd)
+                && PointsWithin(nStart, neighborStart, 0.1f) && PointsWithin(nEnd, neighborEnd, 0.1f)
+                && PointsWithin(nC1, neighborC1, 0.01f) && PointsWithin(nC2, neighborC2, 0.01f),
+                "Dragging an outer endpoint changed the neighboring segment.");
+            Pointer(move, endpoint);
+            AssertTimeline(scene.TryGetLineCubic(objectIndex, out _, out var restoredC1, out var restoredC2, out _)
+                && PointsWithin(restoredC1, capturedC1, 1f) && PointsWithin(restoredC2, capturedC2, 1f),
+                "Returning an outer endpoint to its press position did not restore the curve.");
+            Pointer(up, movedEndpoint);
+            AssertTimeline(scene.TryGetLineEndpoint(objectIndex, startEndpoint, out actual)
+                && PointsWithin(actual, movedEndpoint, 0.1f) && !stage.Capture,
+                "Outer endpoint dragging ignored the release position or retained mouse capture.");
+        }
+        Console.WriteLine("connected_anchor_curve_drag=ok,corner_swing=ok,reverse_bend=ok,outer_endpoints_fixed=ok,return_to_origin=ok,outer_endpoint_reshaping=ok");
     }
 
     private static void RunLinePointerReleaseRegression()
@@ -8492,7 +8641,67 @@ internal static partial class Benchmark
         AssertTimeline(RequireField(typeof(MainForm), "_arcDragSession").GetValue(form) is null
             && RequireField(typeof(MainForm), "_cornerDragSession").GetValue(form) is null
             && !stage.Capture, "Line editing retained a session or mouse capture after release.");
-        Console.WriteLine("line_pointer_release_regression=ok");
+        // Edit snapping should engage only close to another object, independently of zoom.
+        var settings = (DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!;
+        settings.SnapEnabled = true;
+        settings.SnapToObjects = true;
+        settings.SnapToGrid = false;
+        var resolveSnap = RequireMethod(typeof(MainForm), "ResolveLineEndpointSnap");
+        foreach (var visibleWidth in new[] { 1200f, 6000f })
+        {
+            RestoreLine();
+            stage.SetVisibleWorldWidth(visibleWidth);
+            var target = new PointF(400, 300);
+            scene.AddLineSegment(scene.ActiveLayer, target, new PointF(600, 300),
+                12, Color.Transparent, Color.Black, 6);
+            scene.CompleteDeferredBuild();
+            var distant = new PointF(target.X, target.Y + stage.ScreenLengthToWorld(20));
+            var editSnap = ((PointF Point, bool SnappedToObject))resolveSnap.Invoke(form,
+                [distant, scene.ActiveLayer, true])!;
+            var drawingSnap = ((PointF Point, bool SnappedToObject))resolveSnap.Invoke(form,
+                [distant, scene.ActiveLayer, false])!;
+            AssertTimeline(!editSnap.SnappedToObject
+                && PointsWithin(editSnap.Point, VectorUnits.Quantize(distant), 0.01f)
+                && drawingSnap.SnappedToObject && PointsWithin(drawingSnap.Point, target, 0.1f),
+                "Endpoint editing inherited the drawing tool's wide magnetic radius.");
+            var close = new PointF(target.X, target.Y + stage.ScreenLengthToWorld(4));
+            editSnap = ((PointF Point, bool SnappedToObject))resolveSnap.Invoke(form,
+                [close, scene.ActiveLayer, true])!;
+            AssertTimeline(editSnap.SnappedToObject && PointsWithin(editSnap.Point, target, 0.1f),
+                "Endpoint editing lost close-range object snapping.");
+            RequireMethod(typeof(MainForm), "BuildLineEndpointSnapCache").Invoke(form, [scene.ActiveLayer]);
+            editSnap = ((PointF Point, bool SnappedToObject))resolveSnap.Invoke(form,
+                [distant, scene.ActiveLayer, true])!;
+            AssertTimeline(!editSnap.SnappedToObject, "Cached endpoint snapping restored the wide edit radius.");
+        }
+
+        RestoreLine();
+        stage.SetVisibleWorldWidth(1200);
+        var offsetPress = new PointF(0, 5);
+        startWorld.SetValue(form, offsetPress);
+        startScreen.SetValue(form, Screen(offsetPress));
+        AssertTimeline(RequireMethod(typeof(MainForm), "BeginLineCornerDrag").Invoke(form, [line, 0.5f]) is true,
+            "Corner self-snap fixture did not start.");
+        cornerSession = RequireField(typeof(MainForm), "_cornerDragSession").GetValue(form)!;
+        cornerSession.GetType().GetProperty("DragExceeded")!.SetValue(cornerSession, true);
+        firstLine = (int)RequireProperty(cornerSession.GetType(), "FirstObjectIndex",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(cornerSession)!;
+        secondLine = (int)RequireProperty(cornerSession.GetType(), "SecondObjectIndex",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).GetValue(cornerSession)!;
+        var updateCorner = RequireMethod(typeof(MainForm), "UpdateSplitLineCornerDrag");
+        updateCorner.Invoke(form, [cornerSession, new PointF(0, 11)]);
+        AssertTimeline(scene.TryGetLineEndpoint(firstLine, false, out firstAnchor)
+            && scene.TryGetLineEndpoint(secondLine, true, out secondAnchor)
+            && PointsWithin(firstAnchor, new PointF(0, 6), 0.1f)
+            && PointsWithin(secondAnchor, new PointF(0, 6), 0.1f),
+            "Corner dragging snapped to its own segments or discarded the pointer grab offset.");
+        updateCorner.Invoke(form, [cornerSession, offsetPress]);
+        AssertTimeline(scene.TryGetLineEndpoint(firstLine, false, out firstAnchor)
+            && PointsWithin(firstAnchor, PointF.Empty, 0.1f),
+            "Returning an offset corner grab to its press position failed to restore the anchor.");
+        RequireMethod(typeof(MainForm), "CancelCornerDrag").Invoke(form, [true]);
+        finish.Invoke(form, null);
+        Console.WriteLine("line_pointer_release_regression=ok,edit_snap_radius=ok,corner_self_snap_excluded=ok,corner_grab_offset=ok");
     }
 
     private static void RunSelectionMoveCursorRegression()

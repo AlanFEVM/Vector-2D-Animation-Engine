@@ -92,6 +92,8 @@ internal readonly record struct BitmapImageImportSettings
     public float CropY { get; init; }
     public float CropWidth { get; init; } = 1f;
     public float CropHeight { get; init; } = 1f;
+    public bool FlipHorizontal { get; init; }
+    public bool FlipVertical { get; init; }
 
     public static BitmapImageImportSettings Default => new();
 

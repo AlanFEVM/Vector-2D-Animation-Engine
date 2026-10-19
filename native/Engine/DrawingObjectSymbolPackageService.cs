@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace VectorAnimationEngine;
 
 /// <summary>
@@ -32,6 +35,7 @@ internal static class DrawingObjectSymbolPackageService
             ?? throw new InvalidOperationException("The symbol is not available in the current project.");
 
         var closure = CollectClosure(project, root);
+        var svgAssets = CaptureSvgAssets(project, closure);
         var tagNames = project.AssetTags.ToDictionary(
             tag => tag.Id,
             tag => tag.Name,
@@ -68,6 +72,7 @@ internal static class DrawingObjectSymbolPackageService
             RootSymbolName = root.Name,
             RootSymbolId = root.Id,
             Symbols = symbols,
+            ExternalSvgAssets = svgAssets,
             Folders = folders,
             Tags = referencedTags.Values
                 .OrderBy(tag => tag.Name, StringComparer.OrdinalIgnoreCase)
@@ -112,6 +117,7 @@ internal static class DrawingObjectSymbolPackageService
         {
             geometry[symbol.Id] = DecodeGeometry(symbol);
         }
+        ValidateSvgAssetReferences(package, geometry.Values);
 
         // Library metadata is merged next because symbols are placed into folders as
         // they are created. Both merges are additive and idempotent: re-importing the
@@ -120,8 +126,14 @@ internal static class DrawingObjectSymbolPackageService
         var tagIds = MergeTags(project, package);
 
         var imported = new Dictionary<string, DrawingObjectDefinition>(StringComparer.Ordinal);
+        var importedSvgAssets = new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
+            foreach (var asset in package.ExternalSvgAssets)
+                importedSvgAssets.Add(asset.Id, ImportSvgAsset(project, asset));
+            foreach (var snapshot in geometry.Values)
+                foreach (var index in snapshot.ImportedSvgAssetIds.Keys.ToArray())
+                    snapshot.ImportedSvgAssetIds[index] = importedSvgAssets[snapshot.ImportedSvgAssetIds[index]];
             foreach (var symbol in ordered)
             {
                 // AddDrawingObject always mints a fresh identifier, which is exactly the
@@ -151,7 +163,83 @@ internal static class DrawingObjectSymbolPackageService
             // additive and emptied-of-symbols, so leaving them is harmless and keeps
             // this path free of destructive project surgery.
             foreach (var drawingObject in imported.Values) RemoveUnconditionally(project, drawingObject.Id);
+            foreach (var assetId in importedSvgAssets.Values) project.TryRemoveExternalSvgAsset(assetId, out _);
             throw;
+        }
+    }
+
+    private static DrawingObjectSymbolPackage.ExternalSvgPackageEntry[] CaptureSvgAssets(
+        VectorProject project, IEnumerable<DrawingObjectDefinition> symbols)
+    {
+        var assets = new Dictionary<string, DrawingObjectSymbolPackage.ExternalSvgPackageEntry>(StringComparer.Ordinal);
+        foreach (var symbol in symbols)
+        {
+            var snapshot = symbol.Scene.CreateSnapshot();
+            foreach (var (index, id) in snapshot.ImportedSvgAssetIds)
+            {
+                var asset = project.FindExternalSvgAsset(id)
+                    ?? throw new InvalidOperationException("A symbol references a missing SVG library resource.");
+                if (!snapshot.ImportedSvgSources.TryGetValue(index, out var source) || string.IsNullOrWhiteSpace(source))
+                    throw new InvalidOperationException("A shared SVG object has no source payload.");
+                source = VectorScene.ResolveImportedSvgAssetSource(source);
+                if (assets.TryGetValue(id, out var existing))
+                {
+                    if (!string.Equals(existing.Source, source, StringComparison.Ordinal))
+                        throw new InvalidOperationException("Shared SVG instances contain inconsistent resource payloads.");
+                    continue;
+                }
+                assets.Add(id, new DrawingObjectSymbolPackage.ExternalSvgPackageEntry
+                {
+                    Id = id, Name = asset.Name, Source = source
+                });
+            }
+        }
+        return assets.Values.ToArray();
+    }
+
+    private static void ValidateSvgAssetReferences(
+        DrawingObjectSymbolPackage package, IEnumerable<VectorSceneSnapshot> snapshots)
+    {
+        var assets = package.ExternalSvgAssets.ToDictionary(asset => asset.Id, StringComparer.Ordinal);
+        var referenced = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var snapshot in snapshots)
+        {
+            if (snapshot.ImportedSvgAssetIds is null)
+                throw new InvalidDataException("The symbol package SVG reference metadata is missing.");
+            foreach (var (index, id) in snapshot.ImportedSvgAssetIds)
+            {
+                if (package.FormatVersion < 2 || (uint)index >= snapshot.ObjectCount
+                    || index >= snapshot.ShapeKind.Length || snapshot.ShapeKind[index] != ShapeKind.ImportedSvg
+                    || !assets.TryGetValue(id, out var asset)
+                    || !snapshot.ImportedSvgSources.TryGetValue(index, out var source)
+                    || !string.Equals(VectorScene.ResolveImportedSvgAssetSource(source),
+                        VectorScene.ResolveImportedSvgAssetSource(asset.Source), StringComparison.Ordinal))
+                    throw new InvalidDataException("The symbol package contains an invalid SVG resource reference.");
+                referenced.Add(id);
+            }
+        }
+        if (referenced.Count != assets.Count)
+            throw new InvalidDataException("The symbol package contains unreferenced SVG resources.");
+    }
+
+    private static string ImportSvgAsset(
+        VectorProject project, DrawingObjectSymbolPackage.ExternalSvgPackageEntry entry)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"v2d-symbol-svg-{Guid.NewGuid():N}.svg");
+        try
+        {
+            var bytes = new UTF8Encoding(false).GetBytes(entry.Source);
+            File.WriteAllBytes(path, bytes);
+            var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            if (!project.TryAddExternalSvgAsset(entry.Name, path, "", hash, out var asset) || asset is null)
+                throw new InvalidDataException("The symbol package SVG resource could not be imported.");
+            // The temporary interchange file is not an external update source.
+            asset.OriginalSourcePath = "";
+            return asset.Id;
+        }
+        finally
+        {
+            TryDelete(path, null);
         }
     }
 

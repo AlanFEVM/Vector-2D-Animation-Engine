@@ -627,13 +627,32 @@ internal sealed partial class MainForm : Form
         int frame,
         PointF world,
         float tolerance,
-        Func<int, bool> isImportedSvgObject)
+        Func<int, bool> isImportedSvgObject,
+        Func<string, BitmapImageRaster?>? bitmapImageResolver = null)
     {
         var hit = scene.HitTestElement(world, frame, tolerance);
         if (!hit.IsValid || (uint)hit.Key.ObjectIndex >= scene.ObjectCount) return EyedropperMaterialSample.None;
 
         var objectIndex = hit.Key.ObjectIndex;
         if (isImportedSvgObject(objectIndex)) return EyedropperMaterialSample.None;
+        if (scene.ShapeKind[objectIndex] == ShapeKind.Bitmap)
+        {
+            // A placed image carries no meaningful fill colour: its visible colour lives in the
+            // decoded pixels, so transparent or unreadable pixels sample as "no material".
+            if (!scene.TryGetBitmapObjectData(objectIndex, out var bitmapData)
+                || !TrySampleBitmapPixel(scene, objectIndex, world, bitmapData, bitmapImageResolver, out var pixel))
+            {
+                return EyedropperMaterialSample.None;
+            }
+
+            return new EyedropperMaterialSample(
+                false,
+                pixel,
+                GradientKind.Solid,
+                [new GradientStop(0, pixel), new GradientStop(1, pixel)],
+                IsValid: true);
+        }
+
         var strokeTarget = hit.Key.Kind is DrawingElementKind.Stroke or DrawingElementKind.BoundaryStroke;
         var color = Color.FromArgb(strokeTarget ? scene.StrokeArgb[objectIndex] : scene.Argb[objectIndex]);
         var samplesGradient = scene.HasGradient(objectIndex)
@@ -646,6 +665,59 @@ internal sealed partial class MainForm : Form
         return new EyedropperMaterialSample(strokeTarget, color, gradientKind, gradientStops, IsValid: true);
     }
 
+    /// <summary>
+    /// Maps a world point onto the decoded pixel buffer of a placed image and reads that pixel.
+    /// Distortion is undone first, then the object-local rotation is inverted, so the result
+    /// matches what the renderer draws under the pointer. Transparent pixels and points outside
+    /// the image report no sample instead of falling back to the object's unused fill colour.
+    /// </summary>
+    private static bool TrySampleBitmapPixel(
+        VectorScene scene,
+        int objectIndex,
+        PointF world,
+        BitmapObjectData data,
+        Func<string, BitmapImageRaster?>? bitmapImageResolver,
+        out Color color)
+    {
+        color = Color.Empty;
+        if (bitmapImageResolver is null || string.IsNullOrWhiteSpace(data.ImageAssetId)) return false;
+        var width = scene.Width[objectIndex];
+        var height = scene.Height[objectIndex];
+        if (!(width > 0) || !(height > 0)) return false;
+        if (!scene.TryInverseMapObjectPoint(objectIndex, world, out var sourceWorld)) return false;
+
+        var dx = sourceWorld.X - scene.X[objectIndex];
+        var dy = sourceWorld.Y - scene.Y[objectIndex];
+        var angle = scene.Angle[objectIndex];
+        var cos = MathF.Cos(angle);
+        var sin = MathF.Sin(angle);
+        var localX = dx * cos + dy * sin;
+        var localY = -dx * sin + dy * cos;
+        var u = localX / width + 0.5f;
+        var v = localY / height + 0.5f;
+        if (!float.IsFinite(u) || u < 0f || u >= 1f) return false;
+        if (!float.IsFinite(v) || v < 0f || v >= 1f) return false;
+
+        var raster = bitmapImageResolver(data.ImageAssetId);
+        if (raster is null) return false;
+        raster = BitmapImageRasterizer.ApplyObjectClip(raster, data);
+        var pixelX = Math.Min((int)(u * raster.PixelWidth), raster.PixelWidth - 1);
+        var pixelY = Math.Min((int)(v * raster.PixelHeight), raster.PixelHeight - 1);
+        var offset = pixelY * raster.Stride + pixelX * 4;
+        var alpha = raster.Pixels[offset + 3];
+        if (alpha == 0) return false;
+        // The buffer is premultiplied BGRA; undo the premultiply so the sampled colour can be
+        // stored back as straight ARGB material. The object's own opacity is not folded in:
+        // the eyedropper reports the image's pixel, not the composited canvas.
+        var scale = 255f / alpha;
+        color = Color.FromArgb(
+            alpha,
+            Math.Min(255, (int)MathF.Round(raster.Pixels[offset + 2] * scale)),
+            Math.Min(255, (int)MathF.Round(raster.Pixels[offset + 1] * scale)),
+            Math.Min(255, (int)MathF.Round(raster.Pixels[offset] * scale)));
+        return true;
+    }
+
     private EyedropperMaterialSample? SampleEyedropperMaterial(PointF world)
     {
         var sample = SampleEyedropperMaterial(
@@ -653,7 +725,8 @@ internal sealed partial class MainForm : Form
             _frame,
             world,
             SelectionToleranceWorld(),
-            IsImportedSvgObject);
+            IsImportedSvgObject,
+            imageAssetId => _stage.TryDecodeBitmapImage(imageAssetId, out var raster) ? raster : null);
         return sample.IsValid ? sample : null;
     }
 
@@ -1358,8 +1431,10 @@ internal sealed partial class MainForm : Form
 
     /// <summary>
     /// Ctrl+dragging a Line splits it at the grabbed point into two independent Line objects and
-    /// starts moving the anchor they share. Both endpoints stay on the pointer, so the gesture reads
-    /// as pulling a new corner vertex between two segments rather than bending one path.
+    /// starts moving the anchor they share. The dragged anchor follows the pointer while each
+    /// opposite endpoint stays put, so the gesture reads as pulling a new corner vertex between two
+    /// segments rather than bending one path. Straight segments stay straight; curved segments keep
+    /// the curvature the split gave them.
     /// </summary>
     private bool BeginLineCornerDrag(int objectIndex, float parameter)
     {
@@ -1376,7 +1451,7 @@ internal sealed partial class MainForm : Form
         }
 
         // Capture after the split so links reference the surviving segments; each segment's
-        // straight points still coincide with the fill edges that follow the dragged corner.
+        // endpoints still coincide with the fill edges that follow the dragged corner.
         var fillBoundaryLinks = _scene.CaptureFillBoundaryLineLinks(split.FirstObjectIndex, _frame)
             .Concat(_scene.CaptureFillBoundaryLineLinks(split.SecondObjectIndex, _frame))
             .ToArray();
@@ -1392,6 +1467,8 @@ internal sealed partial class MainForm : Form
             SecondSharedIsStart = true,
             SecondOppositeEndpoint = secondOpposite,
             BaseAnchor = split.Anchor,
+            FirstLineGeometry = CaptureSplitLineCornerGeometry(_scene, split.FirstObjectIndex),
+            SecondLineGeometry = CaptureSplitLineCornerGeometry(_scene, split.SecondObjectIndex),
             FillBoundaryLinks = fillBoundaryLinks,
             DragExceeded = false
         };
@@ -1470,13 +1547,18 @@ internal sealed partial class MainForm : Form
 
     /// <summary>
     /// Moves the endpoint shared by the two segments the line corner gesture produced. Each object
-    /// keeps its own opposite endpoint, so both stay straight lines meeting on the pointer.
+    /// keeps its own opposite endpoint; straight segments stay chords on the pointer while curved
+    /// segments keep the arcs the split gave them.
     /// </summary>
     private void UpdateSplitLineCornerDrag(CornerDragSession session, PointF world)
     {
         var layer = _scene.ObjectLayer[session.FirstObjectIndex];
-        var (anchor, _) = ResolveLineEndpointSnap(VectorUnits.Quantize(world), layer, excludeEditedLines: false);
-        SetSplitLineCornerAnchor(
+        var pointerStart = _startWorld ?? session.BaseAnchor;
+        var adjusted = MoveHandleWithPointer(session.BaseAnchor, pointerStart, world);
+        var anchor = world == pointerStart
+            ? session.BaseAnchor
+            : ResolveLineEndpointSnap(adjusted, layer, excludeEditedLines: true).Point;
+        ApplySplitLineCornerAnchor(
             _scene,
             session.FirstObjectIndex,
             session.FirstSharedIsStart,
@@ -1484,7 +1566,9 @@ internal sealed partial class MainForm : Form
             session.SecondObjectIndex,
             session.SecondSharedIsStart,
             session.SecondOppositeEndpoint,
-            anchor);
+            anchor,
+            session.FirstLineGeometry,
+            session.SecondLineGeometry);
         if (session.FillBoundaryLinks.Length > 0)
         {
             _scene.UpdateFillBoundaryLineLinks(session.FillBoundaryLinks, rebuildGeometryIndex: false);
@@ -1497,8 +1581,11 @@ internal sealed partial class MainForm : Form
 
     /// <summary>
     /// Places the shared endpoint of a split Line corner onto <paramref name="anchor"/> and leaves
-    /// the two opposite endpoints untouched. Both segments are kept straight, so the corner stays a
-    /// polyline vertex however far the pointer travels.
+    /// the two opposite endpoints untouched. A segment that was straight stays the exact new chord,
+    /// so a straight corner remains a polyline vertex. A segment that was curved keeps the
+    /// curvature it had at the split (Animate-style corner): a quadratic half keeps its single
+    /// control in world space and a cubic half keeps both handles, so the arcs never collapse into
+    /// straight chords while the corner is dragged.
     /// </summary>
     internal static void SetSplitLineCornerAnchor(
         VectorScene scene,
@@ -1510,24 +1597,68 @@ internal sealed partial class MainForm : Form
         PointF secondOppositeEndpoint,
         PointF anchor)
     {
-        // keepStraight derives both control points from the new endpoints, so the control
-        // arguments are placeholders.
+        ApplySplitLineCornerAnchor(
+            scene, firstObjectIndex, firstSharedIsStart, firstOppositeEndpoint,
+            secondObjectIndex, secondSharedIsStart, secondOppositeEndpoint, anchor,
+            CaptureSplitLineCornerGeometry(scene, firstObjectIndex),
+            CaptureSplitLineCornerGeometry(scene, secondObjectIndex));
+    }
+
+    internal readonly record struct SplitLineCornerGeometry(
+        PointF Control1, PointF Control2, PointF? QuadraticControl, bool Straight);
+
+    internal static SplitLineCornerGeometry CaptureSplitLineCornerGeometry(VectorScene scene, int objectIndex)
+    {
+        scene.TryGetLineCubic(objectIndex, out _, out var control1, out var control2, out _);
+        PointF? quadratic = scene.IsQuadraticLine(objectIndex)
+            && scene.TryGetLineQuadraticControl(objectIndex, out var control) ? control : null;
+        return new SplitLineCornerGeometry(control1, control2, quadratic, scene.IsLineStraight(objectIndex));
+    }
+
+    internal static void ApplySplitLineCornerAnchor(
+        VectorScene scene,
+        int firstObjectIndex,
+        bool firstSharedIsStart,
+        PointF firstOppositeEndpoint,
+        int secondObjectIndex,
+        bool secondSharedIsStart,
+        PointF secondOppositeEndpoint,
+        PointF anchor,
+        SplitLineCornerGeometry firstGeometry,
+        SplitLineCornerGeometry secondGeometry)
+    {
+        SetSplitLineCornerEndpoint(scene, firstObjectIndex, firstSharedIsStart, firstOppositeEndpoint, anchor, firstGeometry);
+        SetSplitLineCornerEndpoint(scene, secondObjectIndex, secondSharedIsStart, secondOppositeEndpoint, anchor, secondGeometry);
+    }
+
+    private static void SetSplitLineCornerEndpoint(
+        VectorScene scene,
+        int objectIndex,
+        bool sharedIsStart,
+        PointF oppositeEndpoint,
+        PointF anchor,
+        SplitLineCornerGeometry geometry)
+    {
+        // Always use the gesture-start controls and straightness. A curved segment can temporarily
+        // become collinear; that must not turn the rest of this gesture into a straight drag.
+        var control1 = geometry.Control1;
+        var control2 = geometry.Control2;
+        if (!geometry.Straight && geometry.QuadraticControl is { } quadratic)
+        {
+            var start = sharedIsStart ? anchor : oppositeEndpoint;
+            var end = sharedIsStart ? oppositeEndpoint : anchor;
+            control1 = Lerp(start, quadratic, 2f / 3f);
+            control2 = Lerp(end, quadratic, 2f / 3f);
+        }
+
         scene.SetLineEndpoint(
-            firstObjectIndex,
-            firstSharedIsStart,
+            objectIndex,
+            sharedIsStart,
             anchor,
-            firstOppositeEndpoint,
-            anchor,
-            anchor,
-            keepStraight: true);
-        scene.SetLineEndpoint(
-            secondObjectIndex,
-            secondSharedIsStart,
-            anchor,
-            secondOppositeEndpoint,
-            anchor,
-            anchor,
-            keepStraight: true);
+            oppositeEndpoint,
+            control1,
+            control2,
+            keepStraight: geometry.Straight);
     }
 
     private void CompleteCornerDrag(Point screen, MouseButtons button)

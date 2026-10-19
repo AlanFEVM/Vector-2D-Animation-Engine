@@ -204,7 +204,7 @@ internal static class BitmapImageRasterizer
         var storedSize = ResolveDecodeSize(fullPath, settings);
         var contentSha256 = ComputeSha256(fullPath);
         var key = new BitmapImageRasterKey(
-            FormattableString.Invariant($"{contentSha256}:{settings.FilterMode}:{settings.AlphaSource}:{settings.CropX:R}:{settings.CropY:R}:{settings.CropWidth:R}:{settings.CropHeight:R}"), storedSize.Width, storedSize.Height);
+            FormattableString.Invariant($"{contentSha256}:{settings.FilterMode}:{settings.AlphaSource}:{settings.CropX:R}:{settings.CropY:R}:{settings.CropWidth:R}:{settings.CropHeight:R}:{settings.FlipHorizontal}:{settings.FlipVertical}"), storedSize.Width, storedSize.Height);
 
         lock (CacheSync)
         {
@@ -345,6 +345,8 @@ internal static class BitmapImageRasterizer
                 ? InterpolationMode.NearestNeighbor
                 : InterpolationMode.HighQualityBicubic;
             graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.TranslateTransform(settings.FlipHorizontal ? size.Width : 0, settings.FlipVertical ? size.Height : 0);
+            graphics.ScaleTransform(settings.FlipHorizontal ? -1 : 1, settings.FlipVertical ? -1 : 1);
             graphics.DrawImage(
                 source,
                 new Rectangle(0, 0, size.Width, size.Height),

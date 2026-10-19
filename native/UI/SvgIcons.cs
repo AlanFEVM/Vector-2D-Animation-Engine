@@ -93,7 +93,9 @@ internal enum SvgIconKind
     LinearAutoKeyframe,
     LinearLayerParenting,
     TimelineFolder,
-    Acknowledgements
+    Acknowledgements,
+    FlipHorizontal,
+    FlipVertical
 }
 
 internal static class SvgIcons
@@ -273,6 +275,18 @@ internal static class SvgIcons
             case SvgIconKind.EditImage:
             {
                 var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'><path fill='#{color.R:X2}{color.G:X2}{color.B:X2}' d='M526.41 117.029v58.514a7.314 7.314 0 0 1-7.315 7.314H219.429a36.571 36.571 0 0 0-35.987 29.989l-0.585 6.583V804.57a36.571 36.571 0 0 0 29.989 35.987l6.583 0.585H804.57a36.571 36.571 0 0 0 35.987-29.989l0.585-6.583v-317.44a7.314 7.314 0 0 1 7.314-7.314h58.514a7.314 7.314 0 0 1 7.315 7.314v317.44a109.714 109.714 0 0 1-99.182 109.203l-10.533 0.512H219.43a109.714 109.714 0 0 1-109.203-99.182l-0.512-10.533V219.43a109.714 109.714 0 0 1 99.182-109.203l10.533-0.512h299.666a7.314 7.314 0 0 1 7.314 7.315z m307.345 31.817l41.4 41.399a7.314 7.314 0 0 1 0 10.313L419.985 655.726a7.314 7.314 0 0 1-10.313 0l-41.399-41.4a7.314 7.314 0 0 1 0-10.312l455.168-455.168a7.314 7.314 0 0 1 10.313 0z'/></svg>";
+                var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
+                using var bitmap = document.Draw(Math.Max(1, (int)r.Width), Math.Max(1, (int)r.Height));
+                g.DrawImage(bitmap, r);
+                break;
+            }
+            case SvgIconKind.FlipHorizontal:
+            case SvgIconKind.FlipVertical:
+            {
+                var data = kind == SvgIconKind.FlipHorizontal
+                    ? "M928 896H546.304V128zM97.92 896h381.44V128L97.92 896z m334.08-49.92H170.24l261.76-518.4v518.4z"
+                    : "M896.896 927.04V545.344h-768zM128.896 478.4l768 0.064v-381.44l-768 381.376z m199.68-47.424l518.4-261.696v261.76l-518.4-0.064z";
+                var xml = $"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'><path fill='#{color.R:X2}{color.G:X2}{color.B:X2}' d='{data}'/></svg>";
                 var document = Svg.SvgDocument.FromSvg<Svg.SvgDocument>(xml);
                 using var bitmap = document.Draw(Math.Max(1, (int)r.Width), Math.Max(1, (int)r.Height));
                 g.DrawImage(bitmap, r);

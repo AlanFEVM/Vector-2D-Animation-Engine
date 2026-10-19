@@ -102,6 +102,7 @@ internal static class HotReloadModuleResolver
         nameof(ImageImportSettingsDialog),
         nameof(ImageCropDialog),
         nameof(ImageImportProgressDialog),
+        nameof(AssetDeleteDialog),
         nameof(TextGeometry),
         nameof(TextFontStyle),
         nameof(TextHorizontalAlignment),
@@ -218,7 +219,13 @@ internal static class HotReloadModuleResolver
         }
 
         if (typeName is nameof(LibraryVaultPanel)
+            or nameof(AssetDeleteDialog)
+            or nameof(ImageImportSettingsDialog)
+            or nameof(ImageCropDialog)
             or nameof(ImageImportProgressDialog)
+            or nameof(ImageBatchFile)
+            or nameof(ImageBatchImportSelection)
+            or nameof(ImageDisplayDetector)
             or nameof(FlashImportProgressDialog)
             or nameof(FlashImportErrorDialog)
             or nameof(HierarchyPanel)

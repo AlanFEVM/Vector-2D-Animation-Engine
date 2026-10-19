@@ -20,7 +20,7 @@ internal sealed partial class SymbolFiltersPanel : Panel
     private readonly ModernToggleSwitch _shadow = FilterToggle("Drop Shadow");
     private readonly ColorTargetButton _glowColor = new("Glow color");
     private readonly ColorTargetButton _shadowColor = new("Shadow color");
-    private readonly Label _title = TextLabel("Symbol Filters", bold: true);
+    private readonly Label _title = InspectorModuleStyle.CreateTitle("Symbol Filters");
     private readonly Label _order = TextLabel("Order: Blur → Glow → Drop Shadow");
     private readonly Label _selectionHint = TextLabel("Combine effects. Sizes are stage pixels.");
     private readonly ToolTip _toolTip = new();
@@ -41,6 +41,7 @@ internal sealed partial class SymbolFiltersPanel : Panel
         Height = PreferredPanelHeight;
         MinimumSize = new Size(248, PreferredPanelHeight);
         AccessibleName = "Symbol Filters";
+        _title.Dock = DockStyle.None;
         Theme.StyleToolTip(_toolTip);
         Controls.AddRange([_title, _order, _selectionHint, _blur, _glow, _shadow, _glowColor, _shadowColor]);
 

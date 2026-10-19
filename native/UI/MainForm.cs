@@ -16,6 +16,7 @@ internal sealed class EditorRestartState
     public required WorkspaceView Workspace { get; init; }
     public required int Frame { get; init; }
     public required int[] SelectedObjects { get; init; }
+    public MotionTrackRestartState? MotionTrack { get; init; }
     public required StageViewState StageView { get; init; }
     public required Rectangle WindowBounds { get; init; }
     public required FormWindowState WindowState { get; init; }
@@ -66,7 +67,7 @@ internal readonly record struct LineEndpointSnapCandidate(int ObjectIndex, Point
 
 internal readonly record struct TimelineBlankKeyframeRangePlan(int[] ExtensionFrames, int BlankFrame);
 
-internal sealed partial class MainForm : Form
+internal sealed partial class MainForm : Form, IMessageFilter
 {
     [Flags]
     private enum DeferredPresentationRefresh
@@ -87,6 +88,8 @@ internal sealed partial class MainForm : Form
     private const int WmNcLeftButtonDown = 0x00A1;
     private const int WmDisplayChange = 0x007E;
     private const int WmSettingChange = 0x001A;
+    private const int WmSysKeyDown = 0x0104;
+    private const int WmSysKeyUp = 0x0105;
     private const int HtClient = 1;
     private const int HtCaption = 2;
     private const int HtLeft = 10;
@@ -106,11 +109,18 @@ internal sealed partial class MainForm : Form
     private const int PlaybackTimerIntervalMs = 8;
     private const float EndpointConnectionToleranceUnits = 1.25f;
     private const float LineEndpointSnapRadiusPixels = 32f;
+    private const float LineEndpointEditSnapRadiusPixels = 8f;
     private const float EndpointConnectionTolerancePixels = 5f;
     private const int MaxUndoSnapshots = 32;
     private const long MaxUndoSnapshotBytes = 128L * 1024 * 1024;
     private const float PasteOffsetUnits = 96f;
     private const float FreehandSampleSpacingPixels = 1.25f;
+    /// <summary>
+    /// Time constant for the simulated pressure speed channel. A single pointer-event
+    /// interval is far too noisy to drive stroke width and makes the width step at every
+    /// event boundary, which reads as a wave along long continuous strokes.
+    /// </summary>
+    private const float FreehandSpeedSmoothingSeconds = 0.06f;
     private const int MaxFreehandPreviewPoints = 256;
     private const int MaxStampBrushPreviewPoints = 96;
     private const int MaxInteractiveLineMergeCandidates = 64;
@@ -479,6 +489,7 @@ internal sealed partial class MainForm : Form
     private bool _spacePanPointerActive;
     private bool _altKeyDown;
     private bool _altEyedropperHeld;
+    private bool _altEyedropperFilterAttached;
     private bool _eyedropperSamplesGradient;
     private bool _marqueeSelecting;
     private bool _marqueeSelectionCancellationPending;
@@ -551,6 +562,7 @@ internal sealed partial class MainForm : Form
     private float _tabletPressureLastValue = float.NaN;
     private long _freehandStartedTimestamp;
     private long _freehandLastSampleTimestamp;
+    private float _freehandSmoothedSpeed = float.NaN;
     private bool _vaultDrawerOpen;
     private int _vaultDrawerVisibleWidth;
     private int _vaultDrawerAnimationFromWidth;
@@ -598,9 +610,7 @@ internal sealed partial class MainForm : Form
         bool StartEndpoint,
         PointF OriginalEndpoint,
         PointF OppositeEndpoint,
-        PointF Control1,
-        PointF Control2,
-        bool KeepStraight);
+        SplitLineCornerGeometry Geometry);
 
     private readonly record struct DrawingStackKey(long Order, double SubOrder);
 
@@ -784,6 +794,8 @@ internal sealed partial class MainForm : Form
         public required bool SecondSharedIsStart { get; init; }
         public required PointF SecondOppositeEndpoint { get; init; }
         public required PointF BaseAnchor { get; init; }
+        public SplitLineCornerGeometry FirstLineGeometry { get; init; }
+        public SplitLineCornerGeometry SecondLineGeometry { get; init; }
         /// <summary>Freeform node being dragged; unused by a split Line corner.</summary>
         public int NodeIndex { get; init; } = -1;
         /// <summary>Freeform node state captured when the drag started.</summary>
@@ -885,7 +897,7 @@ internal sealed partial class MainForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         Width = 1480;
         Height = 920;
-        MinimumSize = new Size(1120, 720);
+        MinimumSize = new Size(ResponsiveMinimumLogicalWidth, ResponsiveMinimumLogicalHeight);
         Padding = new Padding(1);
         BackColor = Theme.Border;
         Font = Theme.UiFont();
@@ -1372,7 +1384,7 @@ internal sealed partial class MainForm : Form
                 (_workspaceHeader.ClientSize.Width - workbenchActions.Width) / 2,
                 available.Left,
                 Math.Max(available.Left, available.Right - workbenchActions.Width));
-            workbenchActions.Top = (_workspaceHeader.Height - workbenchActions.Height) / 2;
+            workbenchActions.Top = _workspaceTabs.Top + (_workspaceTabs.Height - workbenchActions.Height) / 2;
             _propertiesPanelButton.SetBounds(0, (workbenchActions.Height - _propertiesPanelButton.Height) / 2, _propertiesPanelButton.Width, _propertiesPanelButton.Height);
             _timelinePanelButton.Left = _propertiesPanelButton.Right + gap;
             _timelinePanelButton.Top = _propertiesPanelButton.Top;
@@ -1684,11 +1696,14 @@ internal sealed partial class MainForm : Form
         ImportSvgFile(dialog.FileName, center: null);
     }
 
-    private void ImportSvgFile(string fileName, PointF? center)
+    private void ImportSvgFile(string fileName, PointF? center) => ImportSharedSvgFile(fileName, center, null);
+
+    private void ImportSharedSvgFile(string fileName, PointF? center, string? sharedAssetId)
     {
         if (!CanImportSvg()) return;
         Cursor = Cursors.WaitCursor;
         VectorSceneSnapshot? snapshot = null;
+        string? addedSvgAssetId = null;
         try
         {
             // Fully parse and validate before auto-keyframing or otherwise mutating the scene.
@@ -1707,7 +1722,21 @@ internal sealed partial class MainForm : Form
                 viewport.Left + viewport.Width * 0.5f,
                 viewport.Top + viewport.Height * 0.5f);
             var size = ImportedSvgInitialSize(imported.IntrinsicSize, viewport);
-            var svgName = ImportedSvgDisplayName(fileName);
+            var svgName = sharedAssetId is null ? ImportedSvgDisplayName(fileName)
+                : FindExternalSvgAsset(sharedAssetId)?.Name ?? ImportedSvgDisplayName(fileName);
+            var previousSvgAssetIds = _project.ExternalSvgAssets.Select(asset => asset.Id).ToHashSet(StringComparer.Ordinal);
+            var registeredAsset = sharedAssetId is null
+                ? RegisterSharedSvgFile(fileName)
+                : FindExternalSvgAsset(sharedAssetId);
+            if (registeredAsset is null) throw new InvalidDataException("The SVG asset could not be registered.");
+            if (!previousSvgAssetIds.Contains(registeredAsset.Id)) addedSvgAssetId = registeredAsset.Id;
+            if (sharedAssetId is null)
+            {
+                var managedPath = ResolveExternalSvgAssetPath(registeredAsset)
+                    ?? throw new FileNotFoundException(registeredAsset.Name);
+                imported = ImportedSvgRasterizer.Load(managedPath);
+                size = ImportedSvgInitialSize(imported.IntrinsicSize, viewport);
+            }
             var drawingObject = _workspaceTabs.SelectedView == WorkspaceView.BasicDrawing
                 ? ActiveDrawingObject()
                 : null;
@@ -1719,6 +1748,8 @@ internal sealed partial class MainForm : Form
                 size,
                 imported.Source,
                 svgName);
+            if (!_scene.TrySetImportedSvgAsset(objectIndex, registeredAsset.Id))
+                throw new InvalidOperationException("The SVG placement could not reference its library asset.");
             PushUndoSnapshot(
                 snapshot,
                 drawingObject: renameDrawingObject ? drawingObject : null,
@@ -1740,6 +1771,11 @@ internal sealed partial class MainForm : Form
         catch (Exception exception)
         {
             if (snapshot is not null) RestoreCanvasMutationSnapshot(snapshot);
+            if (addedSvgAssetId is not null)
+            {
+                _project.TryRemoveExternalSvgAsset(addedSvgAssetId, out _);
+                _libraryVaultPanel.RefreshProjectObjects();
+            }
             AppLog.Error($"Unable to import SVG: {fileName}", exception);
             ModernMessageDialog.Show(
                 this,
@@ -2351,6 +2387,11 @@ internal sealed partial class MainForm : Form
         Theme.ApplyWindowCorners(this);
         InitializeResolutionAwareWindow();
         ApplyMaximizedBounds();
+        if (!_altEyedropperFilterAttached)
+        {
+            Application.AddMessageFilter(this);
+            _altEyedropperFilterAttached = true;
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -2378,6 +2419,12 @@ internal sealed partial class MainForm : Form
     {
         if (disposing)
         {
+            if (_altEyedropperFilterAttached)
+            {
+                Application.RemoveMessageFilter(this);
+                _altEyedropperFilterAttached = false;
+            }
+
             CancelRandomFracturePreview();
             StopPlaybackCompositionPreload();
             PersistTimelineFrameWidth();
@@ -2445,6 +2492,22 @@ internal sealed partial class MainForm : Form
         }
 
         base.WndProc(ref m);
+    }
+
+    bool IMessageFilter.PreFilterMessage(ref Message m)
+    {
+        // Alt is a system key, so WinForms swallows the matching KeyUp and never reports the held
+        // state through OnKeyDown/OnKeyUp. The raw system-key edge is the only reliable place to
+        // switch the fill tool into its temporary eyedropper and back. A thread-level filter is
+        // required because WM_SYSKEY* goes to the focused window, which is the stage control while
+        // the user draws, not this form. The message is never swallowed so Alt+F4, Alt+Tab, and
+        // the system menu keep working.
+        if (m.Msg is not (WmSysKeyDown or WmSysKeyUp) || (int)m.WParam != VkMenu) return false;
+        if (IsDisposed || Disposing || !Visible || !ContainsFocus) return false;
+
+        if (m.Msg == WmSysKeyDown) TryHoldTemporaryEyedropper();
+        else ReleaseTemporaryEyedropper();
+        return false;
     }
 
     private static Point GetPointFromLParam(IntPtr lParam)
@@ -2719,13 +2782,6 @@ internal sealed partial class MainForm : Form
     private static bool IsAltPressed()
     {
         return (ModifierKeys & Keys.Alt) == Keys.Alt || (GetKeyState(VkMenu) & 0x8000) != 0;
-    }
-
-    private static bool IsAltKeyDown()
-    {
-        // Alt arrives as a system key: WinForms suppresses the matching KeyUp, so the held state
-        // cannot rely on KeyDown/KeyUp alone. The polling fallback covers a missed key edge.
-        return (GetKeyState(VkMenu) & 0x8000) == 0;
     }
 
     private static bool IsShiftPressed()

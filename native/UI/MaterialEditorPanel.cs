@@ -151,10 +151,10 @@ internal sealed class MaterialEditorPanel : UserControl
     private readonly ModernNumericUpDown _strokeWidth = new() { Suffix = UiLocalization.T("pt"), ShowSuffix = true };
     private readonly Label _strokeWidthLabel = CreateFieldLabel("Width");
     private readonly Panel _lineEndpointStylePanel = new();
-    private readonly Button _startSharpEndpointStyle = new SegmentedButton { Text = "Sharp" };
-    private readonly Button _startRoundEndpointStyle = new SegmentedButton { Text = "Round" };
-    private readonly Button _endSharpEndpointStyle = new SegmentedButton { Text = "Sharp" };
-    private readonly Button _endRoundEndpointStyle = new SegmentedButton { Text = "Round" };
+    private readonly Button _startSharpEndpointStyle = new SegmentedButton { Text = "Sharp", CompactText = true };
+    private readonly Button _startRoundEndpointStyle = new SegmentedButton { Text = "Round", CompactText = true };
+    private readonly Button _endSharpEndpointStyle = new SegmentedButton { Text = "Sharp", CompactText = true };
+    private readonly Button _endRoundEndpointStyle = new SegmentedButton { Text = "Round", CompactText = true };
     private readonly ToolTip _toolTip = new();
     private readonly PalettePopupDropDown _paletteDropDown = new();
     private TableLayoutPanel? _content;
@@ -264,7 +264,7 @@ internal sealed class MaterialEditorPanel : UserControl
         var stylesChanged = _startEndpointStyle != nextStartStyle || _endEndpointStyle != nextEndStyle;
         var visibilityChanged = _lineEndpointStyleVisible != visible;
         var panelVisibilityChanged = _lineEndpointStylePanel.Visible != visible;
-        var desiredRowHeight = visible ? InspectorHeight(76) : 0f;
+        var desiredRowHeight = visible ? InspectorHeight(Theme.InspectorRowHeight * 2) : 0f;
         var rowHeightChanged = _content is not null
             && _content.RowStyles.Count > 8
             && Math.Abs(_content.RowStyles[8].Height - desiredRowHeight) > 0.001f;
@@ -414,7 +414,7 @@ internal sealed class MaterialEditorPanel : UserControl
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight * 2));
         Controls.Add(content);
         _content = content;
 
@@ -1496,8 +1496,8 @@ internal sealed class MaterialEditorPanel : UserControl
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         _lineEndpointStylePanel.Controls.Add(row);
 
         row.Controls.Add(CreateFieldLabel("Start join"), 0, 0);

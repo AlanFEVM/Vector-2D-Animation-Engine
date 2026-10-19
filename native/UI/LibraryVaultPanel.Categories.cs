@@ -26,11 +26,15 @@ internal sealed partial class LibraryVaultPanel
 
     private readonly Dictionary<AssetCategory, SegmentedButton> _assetCategoryButtons = [];
     private readonly ToolStripMenuItem _useExternalSvgAssetMenuItem = new("Use");
-    private readonly ToolStripMenuItem _relocateExternalSvgAssetMenuItem = new("Relocate");
+    private readonly ToolStripMenuItem _relocateExternalSvgAssetMenuItem = new(UiLocalization.T("Replace Source..."));
+    private readonly ToolStripMenuItem _updateExternalSvgAssetMenuItem = new(UiLocalization.T("Update from Source"));
+    private readonly ToolStripMenuItem _duplicateExternalSvgAssetMenuItem = new(UiLocalization.T("Create Independent Copy"));
     private readonly ToolStripMenuItem _deleteExternalSvgAssetMenuItem = new("Delete");
     private readonly ToolStripMenuItem _useImageAssetMenuItem = new("Place");
     private readonly ToolStripMenuItem _imageImportSettingsMenuItem = new("Import Settings");
-    private readonly ToolStripMenuItem _relinkImageAssetMenuItem = new("Relink");
+    private readonly ToolStripMenuItem _relinkImageAssetMenuItem = new(UiLocalization.T("Replace Source..."));
+    private readonly ToolStripMenuItem _updateImageAssetMenuItem = new(UiLocalization.T("Update from Source"));
+    private readonly ToolStripMenuItem _duplicateImageAssetMenuItem = new(UiLocalization.T("Create Independent Copy"));
     private readonly ToolStripMenuItem _deleteImageAssetMenuItem = new("Delete");
     private Func<ExternalSvgAssetDefinition, bool>? _externalSvgAssetAvailabilityProvider;
     private Func<ImageAssetDefinition, bool>? _imageAssetAvailabilityProvider;
@@ -43,12 +47,16 @@ internal sealed partial class LibraryVaultPanel
     public event EventHandler<AssetFileImportRequestedEventArgs>? ExternalSvgAssetFilesDropped;
     public event EventHandler<ExternalSvgAssetRequestedEventArgs>? ExternalSvgAssetUseRequested;
     public event EventHandler<ExternalSvgAssetRequestedEventArgs>? ExternalSvgAssetRelocateRequested;
+    public event EventHandler<ExternalSvgAssetRequestedEventArgs>? ExternalSvgAssetUpdateRequested;
+    public event EventHandler<ExternalSvgAssetRequestedEventArgs>? ExternalSvgAssetDuplicateRequested;
     public event EventHandler<ExternalSvgAssetRequestedEventArgs>? ExternalSvgAssetDeleteRequested;
     public event EventHandler? ImageAssetAddRequested;
     public event EventHandler<AssetFileImportRequestedEventArgs>? ImageAssetFilesDropped;
     public event EventHandler<ImageAssetRequestedEventArgs>? ImageAssetPlaceRequested;
     public event EventHandler<ImageAssetRequestedEventArgs>? ImageAssetImportSettingsRequested;
     public event EventHandler<ImageAssetRequestedEventArgs>? ImageAssetRelinkRequested;
+    public event EventHandler<ImageAssetRequestedEventArgs>? ImageAssetUpdateRequested;
+    public event EventHandler<ImageAssetRequestedEventArgs>? ImageAssetDuplicateRequested;
     public event EventHandler<ImageAssetRequestedEventArgs>? ImageAssetDeleteRequested;
 
     public void SetImageAssetAvailabilityProvider(
@@ -100,7 +108,7 @@ internal sealed partial class LibraryVaultPanel
 
         AddAssetCategoryButton(layout, AssetCategory.BasicSymbols, "Basic Symbols", 0);
         AddAssetCategoryButton(layout, AssetCategory.ThreeDimensionalSymbols, "3D Symbols", 1);
-        AddAssetCategoryButton(layout, AssetCategory.ExternalSvg, "External SVG", 2);
+        AddAssetCategoryButton(layout, AssetCategory.ExternalSvg, UiLocalization.T("SVG Assets"), 2);
         AddAssetCategoryButton(layout, AssetCategory.Images, "Images", 3);
         RefreshAssetCategoryPresentation();
         return layout;
@@ -166,21 +174,21 @@ internal sealed partial class LibraryVaultPanel
         _manageTagsButton.Enabled = !hosted && SelectedProjectDrawingObject() is not null;
         _newFolderButton.Icon = images ? SvgIconKind.ImportImage : externalSvg ? SvgIconKind.AssetAdd : SvgIconKind.TimelineFolder;
         _newFolderButton.AccessibleName = UiLocalization.T(
-            externalSvg ? "Add SVG Link" : images ? "Import Image" : "New Folder");
+            externalSvg ? "Import SVG Asset" : images ? "Import Image" : "New Folder");
         _toolTip.SetToolTip(
             _newFolderButton,
-            UiLocalization.T(externalSvg ? "Add SVG Link" : images ? "Import Image" : "New Folder"));
+            UiLocalization.T(externalSvg ? "Import SVG Asset" : images ? "Import Image" : "New Folder"));
         if (_openButton is not null)
         {
             _openButton.AccessibleName = UiLocalization.T(
                 externalSvg
-                    ? "Use selected SVG link"
+                    ? "Place selected SVG"
                     : images ? "Place selected image" : "Open selected symbol");
             _toolTip.SetToolTip(
                 _openButton,
                 UiLocalization.T(
                     externalSvg
-                        ? "Use selected SVG link"
+                        ? "Place selected SVG"
                         : images ? "Place selected image" : "Open selected symbol"));
         }
         _newFolderButton.Invalidate();
@@ -230,7 +238,7 @@ internal sealed partial class LibraryVaultPanel
             var displayPath = ExternalSvgAssetDisplayPath(asset);
             var item = new VaultItem
             {
-                Kind = "External SVG",
+                Kind = UiLocalization.T("SVG Assets"),
                 Name = asset.Name,
                 Detail = missing ? "Missing link" : displayPath,
                 Payload = displayPath,
@@ -378,6 +386,12 @@ internal sealed partial class LibraryVaultPanel
         _relinkImageAssetMenuItem.Click += (_, _) => RaiseSelectedImageAssetRequest(
             ImageAssetRelinkRequested,
             requireAvailable: false);
+        _updateImageAssetMenuItem.Click += (_, _) => RaiseSelectedImageAssetRequest(
+            ImageAssetUpdateRequested,
+            requireAvailable: false);
+        _duplicateImageAssetMenuItem.Click += (_, _) => RaiseSelectedImageAssetRequest(
+            ImageAssetDuplicateRequested,
+            requireAvailable: true);
         _deleteImageAssetMenuItem.Click += (_, _) => RaiseSelectedImageAssetRequest(
             ImageAssetDeleteRequested,
             requireAvailable: false);
@@ -386,6 +400,8 @@ internal sealed partial class LibraryVaultPanel
             _useImageAssetMenuItem,
             _imageImportSettingsMenuItem,
             _relinkImageAssetMenuItem,
+            _updateImageAssetMenuItem,
+            _duplicateImageAssetMenuItem,
             _deleteImageAssetMenuItem
         });
     }
@@ -399,6 +415,10 @@ internal sealed partial class LibraryVaultPanel
         _imageImportSettingsMenuItem.Enabled = imageSelected;
         _relinkImageAssetMenuItem.Visible = imageSelected;
         _relinkImageAssetMenuItem.Enabled = imageSelected;
+        _updateImageAssetMenuItem.Visible = imageSelected;
+        _updateImageAssetMenuItem.Enabled = imageSelected;
+        _duplicateImageAssetMenuItem.Visible = imageSelected;
+        _duplicateImageAssetMenuItem.Enabled = ImageRowCanBeUsed(selected);
         _deleteImageAssetMenuItem.Visible = imageSelected;
         _deleteImageAssetMenuItem.Enabled = imageSelected;
     }
@@ -424,6 +444,12 @@ internal sealed partial class LibraryVaultPanel
         _relocateExternalSvgAssetMenuItem.Click += (_, _) => RaiseSelectedExternalSvgAssetRequest(
             ExternalSvgAssetRelocateRequested,
             requireAvailable: false);
+        _updateExternalSvgAssetMenuItem.Click += (_, _) => RaiseSelectedExternalSvgAssetRequest(
+            ExternalSvgAssetUpdateRequested,
+            requireAvailable: false);
+        _duplicateExternalSvgAssetMenuItem.Click += (_, _) => RaiseSelectedExternalSvgAssetRequest(
+            ExternalSvgAssetDuplicateRequested,
+            requireAvailable: true);
         _deleteExternalSvgAssetMenuItem.Click += (_, _) => RaiseSelectedExternalSvgAssetRequest(
             ExternalSvgAssetDeleteRequested,
             requireAvailable: false);
@@ -431,6 +457,8 @@ internal sealed partial class LibraryVaultPanel
         {
             _useExternalSvgAssetMenuItem,
             _relocateExternalSvgAssetMenuItem,
+            _updateExternalSvgAssetMenuItem,
+            _duplicateExternalSvgAssetMenuItem,
             _deleteExternalSvgAssetMenuItem
         });
     }
@@ -442,6 +470,10 @@ internal sealed partial class LibraryVaultPanel
         _useExternalSvgAssetMenuItem.Enabled = ExternalSvgRowCanBeUsed(selected);
         _relocateExternalSvgAssetMenuItem.Visible = externalSvgSelected;
         _relocateExternalSvgAssetMenuItem.Enabled = externalSvgSelected;
+        _updateExternalSvgAssetMenuItem.Visible = externalSvgSelected;
+        _updateExternalSvgAssetMenuItem.Enabled = externalSvgSelected;
+        _duplicateExternalSvgAssetMenuItem.Visible = externalSvgSelected;
+        _duplicateExternalSvgAssetMenuItem.Enabled = ExternalSvgRowCanBeUsed(selected);
         _deleteExternalSvgAssetMenuItem.Visible = externalSvgSelected;
         _deleteExternalSvgAssetMenuItem.Enabled = externalSvgSelected;
     }
@@ -465,6 +497,6 @@ internal sealed partial class LibraryVaultPanel
         AssetCategory.BasicSymbols => "No basic symbols",
         AssetCategory.ThreeDimensionalSymbols => "No 3D symbols",
         AssetCategory.Images => "No images",
-        _ => "No external SVG links"
+        _ => UiLocalization.T("No SVG assets")
     };
 }

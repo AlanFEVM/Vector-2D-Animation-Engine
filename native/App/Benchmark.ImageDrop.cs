@@ -177,10 +177,15 @@ internal static partial class Benchmark
     private static void RunImageImportProgressRegression()
     {
         using var dialog = new ImageImportProgressDialog(3000);
-        dialog.Report(1500, new string('x', 200) + ".png");
+        dialog.Report(1500, 3000, new string('x', 200) + ".png");
         var progress = (ProgressBar)RequireField(typeof(ImageImportProgressDialog), "_progress").GetValue(dialog)!;
         AssertTimeline(progress.Maximum == 3000 && progress.Value == 1500,
             "Image import progress lost its batch size or processed count.");
+        dialog.Report(1, 1, Path.Combine(Path.GetTempPath(), new string('p', 180), "sprite.png"));
+        var fileName = (Label)RequireField(typeof(ImageImportProgressDialog), "_fileName").GetValue(dialog)!;
+        AssertTimeline(progress.Maximum == 1 && progress.Value == 1 && fileName.Text == "sprite.png"
+            && fileName.AccessibleDescription!.EndsWith("sprite.png", StringComparison.Ordinal),
+            "Changing import phases lost the total or hid the filename behind its long directory path.");
         var closing = new FormClosingEventArgs(CloseReason.UserClosing, false);
         RequireMethod(typeof(ImageImportProgressDialog), "OnFormClosing", [typeof(FormClosingEventArgs)])
             .Invoke(dialog, [closing]);
@@ -201,8 +206,9 @@ internal static partial class Benchmark
         try
         {
             var import = RequireMethod(typeof(MainForm), "ImportImageAssetsBatchAsync",
-                [typeof(IReadOnlyList<string>), typeof(Func<string, int, int, float, BitmapImageImportSettings?>),
-                 typeof(Action<int, string>), typeof(Func<bool>)]);
+                [typeof(IReadOnlyList<string>),
+                 typeof(Func<IReadOnlyList<ImageBatchFile>, ImageBatchImportSelection?>),
+                 typeof(Action<int, int, string>), typeof(Func<bool>)]);
             var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
             var panel = (LibraryVaultPanel)RequireField(typeof(MainForm), "_libraryVaultPanel").GetValue(form)!;
             var depth = RequireField(typeof(LibraryVaultPanel), "_projectObjectUpdateDepth");
@@ -215,8 +221,8 @@ internal static partial class Benchmark
                 changed++;
             };
             Task Run(IReadOnlyList<string> files,
-                Func<string, int, int, float, BitmapImageImportSettings?> settings,
-                Action<int, string> report, Func<bool> cancelled)
+                Func<IReadOnlyList<ImageBatchFile>, ImageBatchImportSelection?> settings,
+                Action<int, int, string> report, Func<bool> cancelled)
             {
                 SynchronizationContext.SetSynchronizationContext(context);
                 var task = (Task)import.Invoke(form, [files, settings, report, cancelled])!;
@@ -250,28 +256,53 @@ internal static partial class Benchmark
             var settingsCalls = 0;
             var processed = 0;
             var sharedSettings = BitmapImageImportSettings.Default with { PixelsPerUnit = 250 };
-            var result = Result(Run(files, (_, _, _, _) => { settingsCalls++; return sharedSettings; },
-                (count, _) => processed = count, () => false));
+            var result = Result(Run(files, entries =>
+                {
+                    settingsCalls++;
+                    return new ImageBatchImportSelection(sharedSettings, entries.Select(entry => entry.Path).ToList());
+                },
+                (count, _, _) => processed = count, () => false));
             AssertTimeline(Count(result, "Imported") == 3000 && Count(result, "Skipped") == 2
-                && Count(result, "Failed") == 1 && !Cancelled(result) && processed == files.Count
+                && Count(result, "Failed") == 1 && !Cancelled(result) && processed == 3000
                 && settingsCalls == 1 && project.ImageAssets.Count == 3000 && changed == 3000
                 && project.ImageAssets.All(asset => asset.ImportSettings == sharedSettings)
                 && project.ImageAssets.Select(asset => asset.Id).Distinct().Count() == 3000,
                 "The 3000-image batch lost shared settings, stable IDs, duplicate skipping or failure isolation.");
 
+            // Only react during the write phase: the probe phase reports the same counts
+            // for the same file list before the settings dialog has been shown.
             var stop = false;
-            result = Result(Run([imagePath, secondImagePath], (_, _, _, _) => sharedSettings,
-                (count, _) => stop = count == 1, () => stop));
+            var settingsShown = false;
+            result = Result(Run([imagePath, secondImagePath], entries =>
+                {
+                    settingsShown = true;
+                    return new ImageBatchImportSelection(sharedSettings, entries.Select(entry => entry.Path).ToList());
+                },
+                (count, _, _) => stop = settingsShown && count == 1, () => stop));
             AssertTimeline(Count(result, "Imported") == 1 && Cancelled(result)
                 && project.ImageAssets.Count == 3001,
                 "Cancelling a batch did not keep completed imports and stop subsequent files.");
-            result = Result(Run([secondImagePath], (_, _, _, _) => null, (_, _) => { }, () => false));
+            result = Result(Run([secondImagePath],
+                entries => null,
+                (_, _, _) => { }, () => false));
             AssertTimeline(Count(result, "Imported") == 0 && Cancelled(result)
                 && project.ImageAssets.Count == 3001,
                 "Cancelling shared import settings modified the project or continued the batch.");
-            result = Result(Run([secondImagePath], (_, _, _, _) => sharedSettings, (_, _) => { }, () => true));
+            result = Result(Run([secondImagePath],
+                entries => new ImageBatchImportSelection(sharedSettings, entries.Select(entry => entry.Path).ToList()),
+                (_, _, _) => { }, () => true));
             AssertTimeline(Count(result, "Imported") == 0 && Cancelled(result),
                 "An already-cancelled image batch started importing files.");
+            result = Result(Run([secondImagePath],
+                entries => new ImageBatchImportSelection(sharedSettings, entries.Select(entry => entry.Path).ToList(), true),
+                (_, _, _) => { }, () => false));
+            AssertTimeline(Count(result, "Imported") == 1 && project.ImageAssets.Count == 3002
+                && project.ImageAssets.Last().ImportSettings.FilterMode == ImageFilterMode.Point,
+                "A single-image batch lost its pending file or ignored automatic pixel-art detection.");
+            result = Result(Run([], entries => throw new InvalidOperationException("Empty batches must not show settings."),
+                (_, _, _) => { }, () => false));
+            AssertTimeline(Count(result, "Imported") == 0 && !Cancelled(result),
+                "An empty image batch indexed a nonexistent file or appeared cancelled.");
             Console.WriteLine("image_import_batch_3000_regression=passed");
         }
         finally

@@ -21,9 +21,11 @@ internal static partial class Benchmark
         RunMotionTrackAnimatedContentRegression();
         RunMotionTrackAnchorGlowRegression();
         RunMotionTrackRangeAndEmptyRegression();
+        RunMotionTrackLifecycleResilienceRegression();
         RunMotionTrackAvailabilityContractRegression();
         RunMotionTrackHeaderLayoutRegression();
         RunMotionTrackBasicDrawingToggleRegression();
+        RunMotionTrackRapidFrameEditingRegression();
         RunMotionTrackSceneInteractionRegression();
         Console.WriteLine("motion_track_regression=ok");
     }
@@ -155,6 +157,13 @@ internal static partial class Benchmark
                     var target = new Point(start.X + 30, start.Y - 20);
                     pointerDown.Invoke(form, [stage, Mouse(start, MouseButtons.Left)]);
                     pointerDown.Invoke(form, [stage, Mouse(start, MouseButtons.Left)]);
+                    RequireMethod(typeof(MainForm), "StageMouseDoubleClick").Invoke(form,
+                        [stage, new MouseEventArgs(MouseButtons.Left, 2, start.X, start.Y, 0)]);
+                    AssertTimeline(workspace.SelectedView == WorkspaceView.SceneEditor
+                        && ReferenceEquals(timeline.Context, scene)
+                        && stage.MotionTrackVisible
+                        && RequireField(typeof(MainForm), "_motionTrackDragSession").GetValue(form) is not null,
+                        $"Rapid anchor clicks entered symbol editing or cancelled the drag in {dimension}/{projection}.");
                     pointerMove.Invoke(form, [stage, Mouse(target, MouseButtons.Left)]);
                     pointerUp.Invoke(form, [stage, Mouse(target, MouseButtons.Left)]);
                     AssertTimeline(stage.TryGetMotionTrackAnchorScreenPoint(0, out var moved)
@@ -508,6 +517,146 @@ internal static partial class Benchmark
         }
     }
 
+    private static void RunMotionTrackRapidFrameEditingRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            Size = new Size(1280, 800)
+        };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var workspace = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var container = project.DrawingObjects[0];
+        var child = project.AddDrawingObject("Rapid motion target");
+        child.Scene.AddObject(0, PointF.Empty, new SizeF(600, 400),
+            0, 0, Color.CornflowerBlue, 2, ShapeKind.Rectangle);
+        AssertTimeline(project.TryAddDrawingObjectInstance(container.Id, child.Id,
+            PointF.Empty, out var instance) && instance is not null,
+            "Rapid motion-track fixture could not place its instance.");
+        EnsureMotionTrackDuration(container, 12);
+        var instanceId = instance!.Id;
+        instance.SetStateAtFrame(1, instance.EvaluateState(0) with { X = 150, Y = 40 });
+        var down = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var up = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var doubleClick = RequireMethod(typeof(MainForm), "StageMouseDoubleClick");
+        var shortcut = RequireMethod(typeof(MainForm), "HandleTimelineShortcut");
+        var selectAnchor = RequireMethod(typeof(MainForm), "SelectMotionTrackAnchor");
+        var committedStates = new Dictionary<int, InstanceFrameState>();
+        form.Show();
+        Application.DoEvents();
+        try
+        {
+            RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]).Invoke(form, [ToolMode.Select]);
+            RequireMethod(typeof(MainForm), "RebuildDrawingObjectUnderlay").Invoke(form, null);
+            ((PlaybackSettingsPanel)RequireField(typeof(MainForm), "_playbackSettings").GetValue(form)!)
+                .SetFrameRange(0, 11, notifyChanged: false);
+            RequireMethod(typeof(MainForm), "ToggleTimelineMotionTrack").Invoke(form, null);
+            RequireMethod(typeof(MainForm), "SetMotionTrackRange").Invoke(form, [0, 4]);
+            timeline.AutoKeyframeEnabled = true;
+            for (var frame = 0; frame < 2; frame++)
+            {
+                selectAnchor.Invoke(form, [frame, false, false]);
+                AssertTimeline(stage.TryGetMotionTrackAnchorScreenPoint(frame, out var anchor),
+                    $"Rapid motion-track fixture cannot locate frame {frame}.");
+                var start = Point.Round(anchor);
+                down.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, start.X, start.Y, 0)]);
+                AssertTimeline(ReferenceEquals(timeline.Context, container)
+                    && RequireField(typeof(MainForm), "_motionTrackDragSession").GetValue(form) is not null,
+                    $"Rapid anchor fixture did not arm frame {frame} before the double-click.");
+                doubleClick.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, start.X, start.Y, 0)]);
+                AssertTimeline(workspace.SelectedView == WorkspaceView.BasicDrawing
+                    && ReferenceEquals(timeline.Context, container)
+                    && stage.MotionTrackVisible
+                    && RequireField(typeof(MainForm), "_motionTrackDragSession").GetValue(form) is not null,
+                    $"Rapid anchor double-click entered the nested symbol or cancelled frame {frame}.");
+                var end = new Point(start.X + 30, start.Y + 15);
+                var before = container.Instances.Single(item => item.Id == instanceId).EvaluateState(frame);
+                move.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]);
+                up.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, end.X, end.Y, 0)]);
+                var committed = container.Instances.Single(item => item.Id == instanceId).EvaluateState(frame);
+                committedStates.Add(frame, committed);
+                AssertTimeline(committed != before,
+                    $"Rapid frame {frame} drag did not record its placement.");
+                AssertTimeline((bool)shortcut.Invoke(form, [Keys.OemPeriod])!,
+                    "The next-frame shortcut was not handled.");
+                AssertTimeline(container.Instances.Single(item => item.Id == instanceId).EvaluateState(frame) == committed
+                    && (int)RequireField(typeof(MainForm), "_frame").GetValue(form)! == frame + 1
+                    && timeline.MotionTrackEnabled && stage.MotionTrackVisible
+                    && timeline.MotionTrackRangeFirst == 0 && timeline.MotionTrackRangeLast == 4,
+                    $"The next-frame shortcut reset the committed placement or track after frame {frame}.");
+            }
+            selectAnchor.Invoke(form, [1, false, false]);
+            AssertTimeline(stage.TryGetMotionTrackAnchorScreenPoint(1, out var interruptedAnchor),
+                "The interrupted rapid drag lost its anchor.");
+            var interruptedStart = Point.Round(interruptedAnchor);
+            down.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, interruptedStart.X, interruptedStart.Y, 0)]);
+            move.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, interruptedStart.X + 40, interruptedStart.Y + 20, 0)]);
+            AssertTimeline(RequireField(typeof(MainForm), "_motionTrackDragSession").GetValue(form) is not null
+                && container.Instances.Single(item => item.Id == instanceId).EvaluateState(1) != committedStates[1],
+                "The interruption fixture did not move its active drag.");
+            shortcut.Invoke(form, [Keys.OemPeriod]);
+            up.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, interruptedStart.X + 40, interruptedStart.Y + 20, 0)]);
+            AssertTimeline(committedStates.All(pair => container.Instances.Single(item => item.Id == instanceId)
+                    .EvaluateState(pair.Key) == pair.Value)
+                && RequireField(typeof(MainForm), "_motionTrackDragSession").GetValue(form) is null
+                && timeline.MotionTrackEnabled && stage.MotionTrackVisible
+                && timeline.MotionTrackRangeFirst == 0 && timeline.MotionTrackRangeLast == 4,
+                $"An interrupted drag or late mouse-up reset the previously committed two-frame motion: "
+                + $"states={string.Join(";", committedStates.Select(pair => $"{pair.Key}:{pair.Value.Position} -> {container.Instances.Single(item => item.Id == instanceId).EvaluateState(pair.Key).Position}"))}, "
+                + $"session={RequireField(typeof(MainForm), "_motionTrackDragSession").GetValue(form)}, "
+                + $"enabled={timeline.MotionTrackEnabled}, visible={stage.MotionTrackVisible}, range={timeline.MotionTrackRangeFirst}..{timeline.MotionTrackRangeLast}.");
+            var currentFrame = (int)RequireField(typeof(MainForm), "_frame").GetValue(form)!;
+            AssertRestartPreservesTrack(visible: true);
+            var currentState = container.Instances.Single(item => item.Id == instanceId).EvaluateState(currentFrame);
+            var body = Point.Round(stage.WorldToScreen(currentState.X + 200, currentState.Y + 100));
+            AssertTimeline(stage.HitTestMotionTrackAnchor(body) < 0,
+                "The ordinary symbol double-click fixture overlapped a motion-track anchor.");
+            doubleClick.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 2, body.X, body.Y, 0)]);
+            AssertTimeline(ReferenceEquals(timeline.Context, child) && timeline.MotionTrackEnabled,
+                "Protecting motion-track double-clicks blocked ordinary symbol navigation or reset the track.");
+            AssertRestartPreservesTrack(visible: false);
+        }
+        finally
+        {
+            RequireField(typeof(MainForm), "_projectDirty").SetValue(form, false);
+            form.Hide();
+        }
+        Console.WriteLine("motion_track_rapid_frame_editing=ok");
+
+        void AssertRestartPreservesTrack(bool visible)
+        {
+            var state = form.CaptureEditorRestartStateForRecovery();
+            AssertTimeline(state.MotionTrack is { } motion && motion.InstanceId == instanceId
+                && motion.FirstFrame == 0 && motion.LastFrame == 4
+                && motion.SelectedFrames.SequenceEqual([1]),
+                "Capturing an editor restart lost the motion-track session.");
+            using var restored = MainForm.CreateForRestart(state);
+            var restoredTimeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(restored)!;
+            var restoredStage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(restored)!;
+            var restoreTrack = RequireMethod(typeof(MainForm), "RestoreMotionTrackRestartState");
+            restoreTrack.Invoke(restored, [state.MotionTrack! with { FirstFrame = 4, LastFrame = 0 }]);
+            restoreTrack.Invoke(restored, [state.MotionTrack! with { LastFrame = int.MaxValue }]);
+            restoreTrack.Invoke(restored, [state.MotionTrack! with { InstanceId = "" }]);
+            restoreTrack.Invoke(restored, [state.MotionTrack! with { SelectedFrames = [-1, 1, 5, int.MaxValue] }]);
+            AssertTimeline(restoredTimeline.MotionTrackEnabled && restoredStage.MotionTrackVisible == visible
+                && RequireField(typeof(MainForm), "_motionTrackDragSession").GetValue(restored) is null
+                && RequireField(typeof(MainForm), "_motionTrackPinnedInstanceId").GetValue(restored) is string target
+                && target == instanceId
+                && (int)RequireField(typeof(MainForm), "_motionTrackRangeFirst").GetValue(restored)! == 0
+                && (int)RequireField(typeof(MainForm), "_motionTrackRangeLast").GetValue(restored)! == 4
+                && ((HashSet<int>)RequireField(typeof(MainForm), "_motionTrackSelectedFrames").GetValue(restored)!).SetEquals([1])
+                && committedStates.All(pair => container.Instances.Single(item => item.Id == instanceId)
+                    .EvaluateState(pair.Key) == pair.Value),
+                "Editor restart reset the visible/dormant motion track or resumed a stale drag.");
+            RequireField(typeof(MainForm), "_projectDirty").SetValue(restored, false);
+        }
+    }
+
     private static void RunMotionTrackBasicDrawingToggleRegression()
     {
         using var form = new MainForm
@@ -556,6 +705,242 @@ internal static partial class Benchmark
             form.Hide();
         }
         Console.WriteLine("motion_track_basic_drawing_toggle=ok");
+    }
+
+    /// <summary>
+    /// Guards the motion track's lifecycle. An enabled track must survive every refresh path that runs
+    /// during ordinary editing — workspace switches, navigation, deselection, rapid rebuilds and
+    /// gestures that are interrupted mid-flight — because those refreshes used to derive availability
+    /// from the live selection and silently cleared the anchor selection and the frozen frame window
+    /// whenever the target happened to be out of the active context. Only an explicit toggle-off
+    /// may discard that state, including while deletion can still be undone.
+    /// </summary>
+    private static void RunMotionTrackLifecycleResilienceRegression()
+    {
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            Size = new Size(1280, 800)
+        };
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var workspace = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var toggleButton = (SvgToggleButton)RequireField(typeof(TimelineStrip), "_motionTrackToggle")
+            .GetValue(timeline)!;
+        var selectedFrames = (HashSet<int>)RequireField(typeof(MainForm), "_motionTrackSelectedFrames")
+            .GetValue(form)!;
+        var enabledField = RequireField(typeof(MainForm), "_motionTrackEnabled");
+        var pinnedField = RequireField(typeof(MainForm), "_motionTrackPinnedInstanceId");
+        var rangeInstanceField = RequireField(typeof(MainForm), "_motionTrackRangeInstanceId");
+        var rangeFirstField = RequireField(typeof(MainForm), "_motionTrackRangeFirst");
+        var rangeLastField = RequireField(typeof(MainForm), "_motionTrackRangeLast");
+        var dragSessionField = RequireField(typeof(MainForm), "_motionTrackDragSession");
+        var marqueeField = RequireField(typeof(MainForm), "_motionTrackMarqueeActive");
+        var toggle = RequireMethod(typeof(MainForm), "ToggleTimelineMotionTrack");
+        var rebuildOnionSkin = RequireMethod(typeof(MainForm), "RebuildOnionSkinPreview");
+        var select = RequireMethod(typeof(MainForm), "SetSceneInstanceSelection",
+            [typeof(DrawingObjectInstanceDefinition), typeof(bool)]);
+        var setRange = RequireMethod(typeof(MainForm), "SetMotionTrackRange");
+        var clearSelection = RequireMethod(typeof(MainForm), "ClearSelection", [typeof(bool)]);
+        var activateTool = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var abortPointerSession = RequireMethod(typeof(MainForm), "AbortMotionTrackPointerSession");
+        var beginMarquee = RequireMethod(typeof(MainForm), "TryBeginMotionTrackMarquee", [typeof(Point)]);
+        var beginDrag = RequireMethod(typeof(MainForm), "TryBeginMotionTrackDrag", [typeof(Point)]);
+        var click = RequireMethod(typeof(CheckBox), "OnClick", [typeof(EventArgs)]);
+
+        // Two instances, so "the selection no longer resolves" can be told apart from "the track
+        // silently switched to whatever other instance the context happens to offer first".
+        var symbol = project.DrawingObjects[0];
+        symbol.SetAnchor(new PointF(20, -30));
+        symbol.Scene.AddObject(0, new PointF(240, 120), new SizeF(320, 180),
+            0, 0, Color.CornflowerBlue, 4, ShapeKind.Rectangle);
+        var scene = project.Scenes[0];
+        AssertTimeline(project.TryAddSceneInstance(scene.Id, symbol.Id, new PointF(900, 250), 0, out var first)
+            && first is not null, "Motion-track lifecycle fixture could not add its first instance.");
+        AssertTimeline(project.TryAddSceneInstance(scene.Id, symbol.Id, new PointF(1400, 420), 0, out var second)
+            && second is not null, "Motion-track lifecycle fixture could not add its second instance.");
+        var secondId = second!.Id;
+        var secondTrack = scene.Timeline.FindTrackByTargetId(second.SceneLayerId)!;
+        second.SetStateAtFrame(0, second.EvaluateState(0) with { Z = 600 });
+        scene.Timeline.InsertKeyframe(secondTrack.Id, 4);
+        // The frozen window is asserted literally below, so it is derived from the track's real length
+        // instead of assuming the instance lands on a scene that is at least five frames long.
+        var lastValid = Math.Max(0, secondTrack.Duration - 1);
+        var frozenFirst = 0;
+        var frozenLast = Math.Min(4, lastValid);
+
+        form.Show();
+        Application.DoEvents();
+        try
+        {
+            workspace.SelectedView = WorkspaceView.SceneEditor;
+            activateTool.Invoke(form, [ToolMode.Select]);
+            rebuildOnionSkin.Invoke(form, null);
+            select.Invoke(form, [second, false]);
+            toggle.Invoke(form, null);
+            AssertTimeline((bool)enabledField.GetValue(form)!
+                && string.Equals((string?)pinnedField.GetValue(form), secondId, StringComparison.Ordinal)
+                && timeline.MotionTrackEnabled && stage.MotionTrackVisible,
+                "Motion-track lifecycle fixture could not switch its track on.");
+
+            setRange.Invoke(form, [frozenFirst, frozenLast]);
+            selectedFrames.Clear();
+            selectedFrames.Add(0);
+            stage.SetMotionTrackSelection(selectedFrames);
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("the initial range and anchor selection");
+
+            // Ordinary editing refreshes: each one of these used to be able to tear the track down.
+            for (var index = 0; index < 6; index++)
+            {
+                rebuildOnionSkin.Invoke(form, null);
+                AssertTrackHeld($"ordinary refresh {index + 1}");
+            }
+
+            // Rapid consecutive rebuilds must not accumulate a drift into the reset path either.
+            for (var index = 0; index < 24; index++) rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("24 consecutive onion-skin rebuilds");
+
+            // An interrupted gesture: a box selection that is interrupted by a tool switch, then an
+            // anchor drag that is interrupted the same way, must both leave the track untouched.
+            AssertTimeline((bool)beginMarquee.Invoke(form, [new Point(40, 40)])!
+                && (bool)marqueeField.GetValue(form)!,
+                "Motion-track lifecycle fixture could not arm its box selection.");
+            abortPointerSession.Invoke(form, null);
+            AssertTimeline(!(bool)marqueeField.GetValue(form)!
+                && dragSessionField.GetValue(form) is null,
+                "An interrupted box selection left the motion-track pointer session armed.");
+            AssertTrackHeld("an interrupted box selection");
+
+            AssertTimeline(stage.TryGetMotionTrackAnchorScreenPoint(0, out var anchorPoint),
+                "Motion-track interruption fixture has no visible anchor.");
+            var dragPoint = Point.Round(anchorPoint);
+            AssertTimeline((bool)beginDrag.Invoke(form, [dragPoint])!,
+                "Motion-track drag did not arm its pointer session.");
+            var activeSession = dragSessionField.GetValue(form);
+            AssertTimeline(!(bool)beginDrag.Invoke(form, [dragPoint])!
+                && ReferenceEquals(activeSession, dragSessionField.GetValue(form)),
+                "A repeated pointer-down replaced the active motion-track drag.");
+            var startState = second.EvaluateState(0);
+            RequireMethod(typeof(MainForm), "UpdateMotionTrackDrag").Invoke(form,
+                [new Point(dragPoint.X + 25, dragPoint.Y + 15)]);
+            AssertTimeline(scene.Instances.Single(item => item.Id == secondId).EvaluateState(0) != startState,
+                "The interrupted motion-track drag did not mutate its fixture.");
+            abortPointerSession.Invoke(form, null);
+            AssertTimeline(dragSessionField.GetValue(form) is null,
+                "An interrupted anchor drag left the motion-track pointer session armed.");
+            AssertTimeline(scene.Instances.Single(item => item.Id == secondId).EvaluateState(0) == startState,
+                "An interrupted anchor drag did not restore its original state.");
+            AssertTrackHeld("an interrupted anchor drag");
+
+            // Leaving the context that owns the instance: the track goes dormant (nothing to draw)
+            // but keeps every bit of state, and the toggle stays clickable so it can still be turned
+            // off. This is the case the bug report was about.
+            workspace.SelectedView = WorkspaceView.BasicDrawing;
+            Application.DoEvents();
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("switching to a workspace without a trackable instance");
+            AssertTimeline(!stage.MotionTrackVisible
+                && toggleButton.Enabled && toggleButton.Checked,
+                "A dormant motion track either kept drawing or lost its entry point.");
+
+            // Coming back re-attaches the very same track, selection and frozen window.
+            workspace.SelectedView = WorkspaceView.SceneEditor;
+            Application.DoEvents();
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("returning to the owning workspace");
+            AssertTimeline(stage.MotionTrackVisible,
+                "The motion track did not re-attach after returning to its workspace.");
+
+            // Deselecting the tracked instance must not hand the track to the other instance: doing so
+            // would re-seed the frozen window around the playhead and move every anchor.
+            clearSelection.Invoke(form, [false]);
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("clearing the Stage selection");
+            AssertTimeline(string.Equals((string?)rangeInstanceField.GetValue(form), secondId,
+                    StringComparison.Ordinal),
+                "Clearing the Stage selection re-targeted the motion track to another instance.");
+
+            select.Invoke(form, [first, false]);
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("selecting a different instance");
+
+            var instanceSnapshot = scene.CreateInstanceSnapshot();
+            var timelineSnapshot = scene.Timeline.CreateSnapshot();
+            AssertTimeline(project.TryRemoveSceneInstance(scene.Id, secondId, out _),
+                "Motion-track lifecycle fixture could not remove its tracked instance.");
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("removing the target before undo");
+            AssertTimeline(!stage.MotionTrackVisible && toggleButton.Enabled,
+                "A missing target left a visible stale track or an unreachable toggle.");
+            setRange.Invoke(form, [int.MinValue, int.MaxValue]);
+            AssertTrackHeld("an out-of-context range event");
+            scene.RestoreInstanceSnapshot(instanceSnapshot);
+            scene.Timeline.RestoreSnapshot(timelineSnapshot);
+            scene.SynchronizeTimelineTracks();
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("restoring the removed target");
+            AssertTimeline(stage.MotionTrackVisible,
+                "Restoring the target did not restore its motion-track overlay.");
+
+            for (var frame = 0; frame <= frozenLast; frame++)
+            {
+                RequireMethod(typeof(MainForm), "SetFrame",
+                    [typeof(int), typeof(bool), typeof(bool), typeof(bool)])
+                    .Invoke(form, [frame, true, true, false]);
+                AssertTrackHeld($"advancing playback to frame {frame}");
+            }
+
+            RequireMethod(typeof(MainForm), "TogglePlayback").Invoke(form, null);
+            AssertTimeline((bool)RequireField(typeof(MainForm), "_playing").GetValue(form)!,
+                "Motion-track playback fixture did not start playback.");
+            rebuildOnionSkin.Invoke(form, null);
+            AssertTrackHeld("starting playback");
+            RequireMethod(typeof(MainForm), "StopPlayback").Invoke(form, null);
+            AssertTrackHeld("stopping playback");
+
+            // Rapid consecutive toggle clicks: the operator's own reset may only happen every other
+            // click, and must land the whole feature in a coherent state each time.
+            AssertTimeline(toggleButton.Enabled, "The motion-track toggle became unreachable after a reset.");
+            for (var index = 0; index < 4; index++)
+            {
+                click.Invoke(toggleButton, [EventArgs.Empty]);
+                var expected = index % 2 != 0;
+                AssertTimeline((bool)enabledField.GetValue(form)! == expected
+                    && timeline.MotionTrackEnabled == expected
+                    && toggleButton.Checked == expected,
+                    $"Rapid motion-track toggling desynchronized at click {index + 1}.");
+                if (!expected)
+                {
+                    AssertTimeline(selectedFrames.Count == 0
+                        && (int)rangeFirstField.GetValue(form)! == -1
+                        && (int)rangeLastField.GetValue(form)! == -1,
+                        $"Switching the motion track off left stale state at click {index + 1}.");
+                }
+            }
+        }
+        finally
+        {
+            RequireField(typeof(MainForm), "_projectDirty").SetValue(form, false);
+            form.Hide();
+        }
+
+        Console.WriteLine("motion_track_lifecycle_resilience=ok");
+
+        void AssertTrackHeld(string context)
+        {
+            AssertTimeline((bool)enabledField.GetValue(form)!
+                && string.Equals((string?)pinnedField.GetValue(form), secondId, StringComparison.Ordinal)
+                && string.Equals((string?)rangeInstanceField.GetValue(form), secondId,
+                    StringComparison.Ordinal)
+                && (int)rangeFirstField.GetValue(form)! == frozenFirst
+                && (int)rangeLastField.GetValue(form)! == frozenLast
+                && selectedFrames.SetEquals([0]),
+                $"Motion track lost its enabled state, frozen range or anchor selection after {context}.");
+        }
     }
 
     /// <summary>

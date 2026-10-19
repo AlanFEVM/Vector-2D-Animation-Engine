@@ -912,6 +912,7 @@ internal sealed partial class MainForm : Form
         _freehandPencilPreviewUpdatedAt = 0;
         _freehandStartedTimestamp = Stopwatch.GetTimestamp();
         _freehandLastSampleTimestamp = _freehandStartedTimestamp;
+        _freehandSmoothedSpeed = float.NaN;
         if (_freehandPressureBrush)
         {
             var sample = new PressureBrushSample(
@@ -925,6 +926,7 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
+        _smoothedPressurePreview.Clear();
         _freehandStrokeUnits = Math.Max(VectorUnits.MinimumStrokeUnits, ActiveStrokeUnits());
         _freehandColor = _freehandErasing
             ? Color.FromArgb(150, 255, 120, 120)
@@ -975,7 +977,15 @@ internal sealed partial class MainForm : Form
         var end = _stage.ScreenToWorld(screen);
         var steps = Math.Max(1, (int)MathF.Ceiling(distancePixels / 2f));
         var sampleSeconds = Math.Max(0.001, Stopwatch.GetElapsedTime(_freehandLastSampleTimestamp, sampleTimestamp).TotalSeconds);
-        var speed = Math.Clamp((float)(distancePixels / sampleSeconds), 0, 5000);
+        var instantSpeed = Math.Clamp((float)(distancePixels / sampleSeconds), 0, 5000);
+        // Low-pass the speed in the time domain: a raw per-event derivative is dominated by
+        // pointer-event jitter and cadence, and because every interpolated sub-sample used to
+        // inherit one shared value the simulated width stepped at each event boundary. On long
+        // stretches those steps read as a wave, so blend and then ramp across the segment.
+        var previousSpeed = float.IsNaN(_freehandSmoothedSpeed) ? instantSpeed : _freehandSmoothedSpeed;
+        var speedBlend = 1f - MathF.Exp(-(float)sampleSeconds / FreehandSpeedSmoothingSeconds);
+        var speed = Math.Clamp(previousSpeed + (instantSpeed - previousSpeed) * speedBlend, 0, 5000);
+        _freehandSmoothedSpeed = speed;
         var previousHeldSeconds = (float)Stopwatch.GetElapsedTime(_freehandStartedTimestamp, _freehandLastSampleTimestamp).TotalSeconds;
         var currentHeldSeconds = (float)Stopwatch.GetElapsedTime(_freehandStartedTimestamp, sampleTimestamp).TotalSeconds;
         var previousTabletPressure = _pressureBrushSamples.Count > 0
@@ -996,13 +1006,14 @@ internal sealed partial class MainForm : Form
             if (_freehandPressureBrush)
             {
                 var heldSeconds = previousHeldSeconds + (currentHeldSeconds - previousHeldSeconds) * t;
+                var interpolatedSpeed = previousSpeed + (speed - previousSpeed) * t;
                 var interpolatedPressure = InterpolateTabletPressure(
                     previousTabletPressure,
                     tabletPressure,
                     t);
                 _pressureBrushSamples.Add(new PressureBrushSample(
                     point,
-                    speed,
+                    interpolatedSpeed,
                     heldSeconds,
                     interpolatedPressure));
             }
@@ -1050,6 +1061,8 @@ internal sealed partial class MainForm : Form
         };
     }
 
+    private readonly List<PressureBrushPoint> _smoothedPressurePreview = new(1024);
+
     private void UpdateFreehandPreview()
     {
         if (_freehandMixingBrush && TryUpdateMixingBrushPreview()) return;
@@ -1062,14 +1075,30 @@ internal sealed partial class MainForm : Form
             : MaxFreehandPreviewPoints;
         if (_freehandPressureBrush)
         {
-            var previewSamples = LimitDrawingPreview(_pressureBrushSamples, previewLimit);
-            var profile = FreehandStrokeProcessor.CreatePressurePreview(
-                previewSamples,
+            // Compute pressure before any preview reduction. Resampling the whole stroke to a
+            // fixed point budget moves every old sample as the stroke grows, causing the entire
+            // preview (including its pressure filter and smoothing window) to oscillate.
+            FreehandStrokeProcessor.UpdatePressurePreviewProfile(
+                _pressureBrushSamples,
                 _freehandStrokeUnits,
+                _brushAreaPressureProfile,
+                _brushAreaPressureDistances);
+            // Two smoothing passes each depend on at most four neighbours. Only this tail can
+            // change when samples are appended or the latest pressure is updated.
+            const int smoothingContext = 8;
+            var rewriteStart = Math.Max(0, Math.Min(
+                _smoothedPressurePreview.Count,
+                _brushAreaPressureProfile.Count) - 1 - smoothingContext);
+            var contextStart = Math.Max(0, rewriteStart - smoothingContext);
+            var tail = FreehandStrokeProcessor.SmoothPressureProfile(
+                _brushAreaPressureProfile.GetRange(contextStart, _brushAreaPressureProfile.Count - contextStart),
                 _drawSettings.PressureBrushSmoothing);
-            var pressurePreviewPoints = new PointF[profile.Length];
-            var previewDiameters = new float[profile.Length];
-            for (var index = 0; index < profile.Length; index++)
+            _smoothedPressurePreview.RemoveRange(rewriteStart, _smoothedPressurePreview.Count - rewriteStart);
+            _smoothedPressurePreview.AddRange(tail.AsSpan(rewriteStart - contextStart).ToArray());
+            var profile = _smoothedPressurePreview;
+            var pressurePreviewPoints = new PointF[profile.Count];
+            var previewDiameters = new float[profile.Count];
+            for (var index = 0; index < profile.Count; index++)
             {
                 pressurePreviewPoints[index] = profile[index].Point;
                 previewDiameters[index] = profile[index].Diameter;
@@ -1079,7 +1108,8 @@ internal sealed partial class MainForm : Form
                 _freehandColor,
                 _freehandStrokeUnits,
                 previewDiameters,
-                tipShape);
+                tipShape,
+                continuous: _drawSettings.BrushContinuous);
             return;
         }
 
@@ -1107,8 +1137,17 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        IReadOnlyList<PointF> previewPoints = LimitDrawingPreview(_freehandSamples, previewLimit);
-        _stage.SetFreehandPreview(previewPoints, _freehandColor, _freehandStrokeUnits, brushShape: tipShape);
+        // A growing brush stroke must keep its existing samples in place. Re-selecting a
+        // fixed number of points across the whole trajectory makes old segments wobble.
+        IReadOnlyList<PointF> previewPoints = _freehandBrushStroke
+            ? _freehandSamples.ToArray()
+            : LimitDrawingPreview(_freehandSamples, previewLimit);
+        _stage.SetFreehandPreview(
+            previewPoints,
+            _freehandColor,
+            _freehandStrokeUnits,
+            brushShape: tipShape,
+            continuous: _freehandBrushStroke && _drawSettings.BrushContinuous);
     }
 
     private bool TryUpdateMixingBrushPreview()
@@ -1347,6 +1386,7 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
+        _smoothedPressurePreview.Clear();
         var layerCount = Math.Max(1, _scene.LayerCount);
         var frameCount = Math.Max(1, _scene.FrameCount);
         _brushAreaPreviewStage.CreateEmpty(layerCount, frameCount);
@@ -1677,6 +1717,7 @@ internal sealed partial class MainForm : Form
         _brushAreaPreviewSampleCount = 0;
         _brushAreaPressureProfile.Clear();
         _brushAreaPressureDistances.Clear();
+        _smoothedPressurePreview.Clear();
         _stage.ClearFreehandPreview();
     }
 
@@ -2180,16 +2221,12 @@ internal sealed partial class MainForm : Form
         if (!_scene.TryGetLineEndpoint(objectIndex, startEndpoint, out var endpoint)) return;
         if (Distance(endpoint, anchor) > _stage.ScreenLengthToWorld(EndpointConnectionTolerancePixels)) return;
         if (!_scene.TryGetLineEndpoint(objectIndex, !startEndpoint, out var opposite)) return;
-        var control1 = new PointF(_scene.CurveControlX[objectIndex], _scene.CurveControlY[objectIndex]);
-        var control2 = new PointF(_scene.CurveControl2X[objectIndex], _scene.CurveControl2Y[objectIndex]);
         _lineEndpointEditStarts.Add(new LineEndpointEditStart(
             objectIndex,
             startEndpoint,
             endpoint,
             opposite,
-            control1,
-            control2,
-            _scene.IsLineStraight(objectIndex)));
+            CaptureSplitLineCornerGeometry(_scene, objectIndex)));
     }
 
     private void ApplyLineEndpointDrag(PointF world, PointF pointerStart)
@@ -2204,22 +2241,42 @@ internal sealed partial class MainForm : Form
         var originalAnchor = _lineEndpointEditStarts[
             primaryEditIndex >= 0 ? primaryEditIndex : 0].OriginalEndpoint;
         var adjusted = MoveHandleWithPointer(originalAnchor, pointerStart, world);
-        var (snapped, _) = ResolveLineEndpointSnap(adjusted, layer, excludeEditedLines: true);
+        var snapped = world == pointerStart
+            ? originalAnchor
+            : ResolveLineEndpointSnap(adjusted, layer, excludeEditedLines: true).Point;
 
+        var sharedAnchor = _lineEndpointEditStarts.Count > 1;
         foreach (var edit in _lineEndpointEditStarts)
         {
-            // Moving an endpoint must never change the line's curvature: the engine re-expresses the
-            // stored cubic around the moved endpoint, which keeps a straight chord exactly straight on
-            // every frame of the drag and leaves a curved line's bend where it was captured.
-            _scene.SetLineEndpoint(
-                edit.ObjectIndex,
-                edit.StartEndpoint,
-                snapped,
-                edit.OppositeEndpoint,
-                edit.Control1,
-                edit.Control2,
-                keepStraight: edit.KeepStraight,
-                preserveCurvature: !edit.KeepStraight);
+            if (sharedAnchor)
+            {
+                // Keep the incident controls independent of the corner displacement so the
+                // tip can swing across them and reverse direction as the anchor moves.
+                SetSplitLineCornerEndpoint(_scene, edit.ObjectIndex, edit.StartEndpoint,
+                    edit.OppositeEndpoint, snapped, edit.Geometry);
+                continue;
+            }
+
+            // Spread endpoint displacement across the whole segment instead of pinning its
+            // controls to the canvas. These degree-elevated linear weights give each curve
+            // point a displacement proportional to its distance in parameter from the fixed end.
+            // Always start from pointer-down geometry to avoid drift and flat-frame locking.
+            var dx = snapped.X - edit.OriginalEndpoint.X;
+            var dy = snapped.Y - edit.OriginalEndpoint.Y;
+            var firstWeight = edit.StartEndpoint ? 2f / 3f : 1f / 3f;
+            var secondWeight = 1f - firstWeight;
+            var geometry = edit.Geometry with
+            {
+                Control1 = new PointF(edit.Geometry.Control1.X + dx * firstWeight,
+                    edit.Geometry.Control1.Y + dy * firstWeight),
+                Control2 = new PointF(edit.Geometry.Control2.X + dx * secondWeight,
+                    edit.Geometry.Control2.Y + dy * secondWeight),
+                QuadraticControl = edit.Geometry.QuadraticControl is { } quadratic
+                    ? new PointF(quadratic.X + dx * 0.5f, quadratic.Y + dy * 0.5f)
+                    : null
+            };
+            SetSplitLineCornerEndpoint(_scene, edit.ObjectIndex, edit.StartEndpoint,
+                edit.OppositeEndpoint, snapped, geometry);
         }
     }
 
@@ -2253,7 +2310,8 @@ internal sealed partial class MainForm : Form
         int layer,
         bool excludeEditedLines)
     {
-        var temporarilySnapToObjects = IsControlPressed();
+        // Ctrl selects the corner gesture; it must not also force object snapping during it.
+        var temporarilySnapToObjects = _cornerDragSession is null && IsControlPressed();
         PointF? objectCandidate = null;
         if (EndpointSnappingRequested())
         {
@@ -2289,7 +2347,20 @@ internal sealed partial class MainForm : Form
 
     private bool EndpointSnappingRequested()
     {
-        return IsControlPressed() || (_drawSettings.SnapEnabled && _drawSettings.SnapToObjects);
+        return (_cornerDragSession is null && IsControlPressed())
+            || (_drawSettings.SnapEnabled && _drawSettings.SnapToObjects);
+    }
+
+    private HashSet<int>? GetLineEndpointSnapExclusions(bool excludeEditedLines)
+    {
+        if (!excludeEditedLines) return null;
+        var excluded = _lineEndpointEditStarts.Select(edit => edit.ObjectIndex).ToHashSet();
+        if (_cornerDragSession is { } corner)
+        {
+            excluded.Add(corner.FirstObjectIndex);
+            if (corner.SecondObjectIndex >= 0) excluded.Add(corner.SecondObjectIndex);
+        }
+        return excluded;
     }
 
     private bool TrySnapToNearbyLineEndpoint(
@@ -2298,7 +2369,8 @@ internal sealed partial class MainForm : Form
         bool excludeEditedLines,
         out PointF snapped)
     {
-        var tolerance = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(LineEndpointSnapRadiusPixels));
+        var tolerance = _stage.ScreenLengthToWorld(
+            excludeEditedLines ? LineEndpointEditSnapRadiusPixels : LineEndpointSnapRadiusPixels);
         snapped = world;
         var bestDistance = tolerance;
         if (excludeEditedLines
@@ -2314,6 +2386,9 @@ internal sealed partial class MainForm : Form
                     if (!_lineEndpointSnapBuckets.TryGetValue((x, y), out var candidates)) continue;
                     foreach (var candidate in candidates)
                     {
+                        if (_cornerDragSession is { } corner
+                            && (candidate.ObjectIndex == corner.FirstObjectIndex
+                                || candidate.ObjectIndex == corner.SecondObjectIndex)) continue;
                         TrySnapToCachedEndpoint(candidate, world, ref snapped, ref bestDistance);
                     }
                 }
@@ -2327,9 +2402,7 @@ internal sealed partial class MainForm : Form
             world.Y - tolerance,
             tolerance * 2,
             tolerance * 2);
-        var editedLines = excludeEditedLines
-            ? _lineEndpointEditStarts.Select(edit => edit.ObjectIndex).ToHashSet()
-            : null;
+        var editedLines = GetLineEndpointSnapExclusions(excludeEditedLines);
         foreach (var i in _scene.QueryObjects(queryBounds, _frame))
         {
             if (_scene.ShapeKind[i] != ShapeKind.Line
@@ -2353,7 +2426,8 @@ internal sealed partial class MainForm : Form
         bool excludeEditedLines,
         out PointF snapped)
     {
-        var tolerance = Math.Max(EndpointConnectionToleranceUnits, _stage.ScreenLengthToWorld(LineEndpointSnapRadiusPixels));
+        var tolerance = _stage.ScreenLengthToWorld(
+            excludeEditedLines ? LineEndpointEditSnapRadiusPixels : LineEndpointSnapRadiusPixels);
         snapped = world;
         var bestDistance = tolerance;
         var queryBounds = new RectangleF(
@@ -2361,9 +2435,7 @@ internal sealed partial class MainForm : Form
             world.Y - tolerance,
             tolerance * 2,
             tolerance * 2);
-        var editedLines = excludeEditedLines
-            ? _lineEndpointEditStarts.Select(edit => edit.ObjectIndex).ToHashSet()
-            : null;
+        var editedLines = GetLineEndpointSnapExclusions(excludeEditedLines);
         foreach (var i in _scene.QueryObjects(queryBounds, _frame))
         {
             if (_scene.ObjectLayer[i] != layer

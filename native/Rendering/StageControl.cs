@@ -1007,6 +1007,8 @@ internal sealed partial class StageControl : Control
     public bool FreehandPreviewVisible { get; private set; }
     public IReadOnlyList<PointF> FreehandPreviewPoints { get; private set; } = Array.Empty<PointF>();
     public IReadOnlyList<float> FreehandPreviewDiameters { get; private set; } = Array.Empty<float>();
+    internal readonly record struct PressurePreviewLayer(PointF[][] Contours, Color Color);
+    internal IReadOnlyList<PressurePreviewLayer> PressurePreviewLayers { get; private set; } = [];
     public Color FreehandPreviewColor { get; private set; } = Color.White;
     public float FreehandPreviewStroke { get; private set; } = 2;
     public BrushShape? FreehandPreviewBrushShape { get; private set; }
@@ -3787,7 +3789,8 @@ internal sealed partial class StageControl : Control
         Color color,
         float stroke,
         IReadOnlyList<float>? diameters = null,
-        BrushShape? brushShape = null)
+        BrushShape? brushShape = null,
+        bool continuous = true)
     {
         FreehandPreviewVisible = points.Count > 0;
         FreehandPreviewPoints = points;
@@ -3795,6 +3798,36 @@ internal sealed partial class StageControl : Control
         FreehandPreviewColor = color;
         FreehandPreviewStroke = Math.Max(VectorUnits.MinimumStrokeUnits, stroke);
         FreehandPreviewBrushShape = brushShape;
+        PressurePreviewLayers = [];
+        if (continuous && brushShape is { IsRadiallySymmetric: true }
+            && (diameters is null || diameters.Count == points.Count) && points.Count > 0)
+        {
+            // Share the filled-preview layers with the constant-width brush, using its
+            // commit outline builder rather than a separately stroked preview path.
+            PressureBrushPoint[]? profile = null;
+            if (diameters is not null)
+            {
+                profile = new PressureBrushPoint[points.Count];
+                for (var index = 0; index < profile.Length; index++)
+                {
+                    profile[index] = new PressureBrushPoint(points[index], diameters[index]);
+                }
+            }
+            var layers = new List<PressurePreviewLayer>(brushShape.Layers.Count);
+            foreach (var layer in brushShape.Layers)
+            {
+                var tipContour = brushShape.NormalizedContour(layer.Threshold);
+                if (tipContour.Length == 0) continue;
+                var radiusScale = tipContour.Sum(point => MathF.Sqrt(point.X * point.X + point.Y * point.Y))
+                    / tipContour.Length;
+                var contours = profile is not null
+                    ? FreehandStrokeProcessor.CreateVariableWidthBrushOutlines(profile, radiusScale)
+                    : FreehandStrokeProcessor.CreateBrushOutlines(points, FreehandPreviewStroke * radiusScale);
+                var alpha = (int)Math.Clamp(Math.Round(color.A * layer.Opacity), 1, 255);
+                layers.Add(new PressurePreviewLayer(contours, Color.FromArgb(alpha, color.R, color.G, color.B)));
+            }
+            PressurePreviewLayers = layers;
+        }
         InvalidateOverlay();
     }
 
@@ -3805,6 +3838,7 @@ internal sealed partial class StageControl : Control
         FreehandPreviewPoints = Array.Empty<PointF>();
         FreehandPreviewDiameters = Array.Empty<float>();
         FreehandPreviewBrushShape = null;
+        PressurePreviewLayers = [];
         InvalidateOverlay();
     }
 

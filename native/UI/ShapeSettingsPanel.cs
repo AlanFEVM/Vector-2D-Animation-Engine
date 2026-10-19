@@ -59,16 +59,8 @@ internal sealed class ShapeSettingsPanel : UserControl
 
     private void BuildUi()
     {
-        var title = new Label
-        {
-            Text = UiLocalization.T("Shape Settings"),
-            Dock = DockStyle.Top,
-            Height = Theme.InspectorTitleHeight,
-            ForeColor = Theme.Text,
-            BackColor = Theme.Panel,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
+        var title = InspectorModuleStyle.CreateTitle(UiLocalization.T("Shape Settings"));
+        title.Dock = DockStyle.Top;
         Controls.Add(title);
 
         var content = new TableLayoutPanel
@@ -85,6 +77,8 @@ internal sealed class ShapeSettingsPanel : UserControl
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
         Controls.Add(content);
         content.BringToFront();
+        content.Dock = DockStyle.Top;
+        content.Height = Theme.InspectorRowHeight;
 
         _vertexCountLabel.Dock = DockStyle.Fill;
         _vertexCountLabel.ForeColor = Theme.Muted;

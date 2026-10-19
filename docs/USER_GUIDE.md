@@ -95,6 +95,11 @@ VectorAnimationEngine-<version>-win-x64.exe
 - 标题中的 `*` 表示当前工程有未保存修改。
 - 启动或运行环境安装失败时，先查看程序目录下的 `logs/bootstrap.log`；应用运行异常查看 `logs/native-*.log`。
 - 从源码使用仓库根目录开发启动器时，进程级热更新会先保存当前工程，再显示启动状态窗，直到新编辑器窗口完成恢复。若源码暂时无法编译，状态窗会继续保留；修正编译错误后 `dotnet watch` 会继续启动，不需要重复打开启动器。
+- 源码开发启动器使用仓库内 `artifacts/development-temp` 保存开发临时文件、NuGet 临时锁和编辑器重启暂存，不依赖系统临时目录的权限，也不修改系统环境变量。开发进程退出后才能清理该目录；未保存工程与重启恢复所需资源也可能位于其中。
+- 源码开发版将语言等用户设置保存在 `artifacts/development-user-data/<Windows SID>/settings.json`，按 Windows 用户隔离。首次读取沿用原有 AppData 设置，保存时写入工作区；请保留该目录以保留偏好。正式发行版继续使用 AppData。
+- The source development launcher keeps preferences in `artifacts/development-user-data/<Windows SID>/settings.json`, importing existing AppData preferences on first use. Keep this directory to preserve preferences. Distribution builds continue to use AppData.
+- 开发启动进程连续失败时最多自动重试三次，随后退出并提示查看 `logs/launcher.log`，避免长时间反复显示“正在启动”。源码编译错误导致的 watch 等待仍可在修正代码后继续。
+- The source development launcher uses `artifacts/development-temp` for temporary files, NuGet scratch locks and editor restart handoff without changing system environment settings. Keep this directory while the editor is running or unsaved/restart data is needed. Failed development processes retry at most three times before reporting `logs/launcher.log`; watch can still resume after compilation errors are corrected.
 - 热更新恢复会把最小化窗口恢复为普通窗口，并将已离开当前显示器工作区的坐标移回可见区域。
 
 ## 2. 五分钟上手
@@ -125,6 +130,10 @@ VectorAnimationEngine-<version>-win-x64.exe
 
 工作区标签和元件标签会随 Windows 显示缩放比例同步调整按钮尺寸；顶部工程标题按实际字体高度居中。在高 DPI 或大屏幕缩放环境中，图标放大时文字仍会保留足够显示空间，过长名称则使用省略号。
 
+属性、时间轴和工作区颜色入口在工作区标签所在的第一行内垂直居中，元件标签与吸附栏使用第二行。元件实例检查器的标签、输入框和面板高度随 DPI 同步调整；窄窗口中的透明度滑条为百分比数值保留空间。
+
+Properties, Timeline and workspace color controls are centered in the first workspace header row; symbol tabs and snapping occupy the second row. Symbol Instance labels, fields and panel height scale together with DPI, and the opacity slider reserves room for its percentage in narrow inspectors.
+
 底部状态栏中的“渲染 FPS”统计实际完成呈现的画面次数；即使时间轴帧号未变化，重复呈现也会计入。它与项目设置的“动画 FPS”是两个独立指标。
 
 三个工作区的职责不同：
@@ -148,9 +157,10 @@ VectorAnimationEngine-<version>-win-x64.exe
 - `F1` 显示或隐藏右侧检查器，`F2` 显示或隐藏时间轴。
 - `Ctrl+1` / `Ctrl+2` / `Ctrl+3` 分别切换到基础绘制（`Basic Drawing`）、场景与动画（`Scene & Animation`）、镜头与导演（`Shots & Directing`）。使用键盘上方数字键；`Ctrl+4`–`Ctrl+9` 为后续工作流模块按标签顺序预留，尚无对应模块时不执行操作。
 - 工作区标签获得焦点后，可使用方向键切换相邻工作区，`Home` / `End` 跳到首个或末个工作区。
-- 主窗口会按当前显示器的可用工作区设置初始尺寸和最小尺寸；移动到不同分辨率或 DPI 缩放比例的显示器后会重新约束窗口，并保持在可见区域内。
+- 主窗口按当前显示器的可用工作区设置初始尺寸；最小尺寸采用随 DPI 缩放的 760 × 520 逻辑像素，并限制在可用工作区内，便于分屏。移动到不同分辨率或 DPI 缩放比例的显示器后会重新约束窗口，并按调整后的实际大小布局；重启恢复时保留符合下限的分屏尺寸。
 - 窗口变窄或变矮时，Vault、右侧检查器和底部时间轴会按可用空间收紧；画布上方指标会按空间隐藏，属性、时间轴和颜色入口随工作区标签行的可用空间收紧，缩放入口保持在右侧；吸附栏收紧为六个开关，网格间距和角度步长输入框在恢复宽窗口后重新显示。空间不足时顶部 FPS 输入会暂时隐藏。工作区、网格与工具栏也会自动收紧或换列，核心窗口命令始终保留。
 - 检查器内容较长时可滚轮滚动；刷新后会尽量保留当前位置。
+- 随工具或选择出现的笔尖、混色、形状、文本、元件实例、滤镜、补间曲线、图片信息及 3D 材质／灯光面板沿用轻量模块标题；线条起始／末端连接选项使用紧凑按钮，形状参数行不会随面板空白拉高。
 - 在基础绘制、场景与动画、镜头与导演之间切换时，右侧检查器使用约 180ms 的淡入淡出和轻微上移过渡；连续切换以最后一次选择为准。窗口尺寸变化或系统关闭动画时直接显示目标面板。
 - 镜头与导演顶部相机标题与图层标题采用相同的顶部留白；相机数量、时长及帧／关键帧统计收纳到标题悬停提示中，不占用常驻参数区。
 - 场景与动画、播放及镜头与导演面板沿用着色模块的轻量标题和留白；参数标签／输入列保持一致的对齐关系，场景和相机列表与属性区保留分组间距，循环字段只显示一次文字标签。
@@ -224,7 +234,7 @@ VectorAnimationEngine-<version>-win-x64.exe
 - `Text`：单击舞台创建文本，双击已有文本再次编辑；`Ctrl+Enter` 提交，`Esc` 取消。
 - `Fill`：修改对象填色；点击活动图层当前 Cel 中由描边和已有填色边缘共同围成的空白区域可创建填色，其他图层的边缘不会参与边界计算。按住 `Alt` 时临时切换为吸管，可吸取对象的渐变色（含各色标位置）与 alpha 通道，松开 `Alt` 立即回到填色；吸取后仍处于填充工具，点按即可用吸取的材质继续填色。
 - `Ink Bottle`：给填色边界应用当前 `Stroke` 颜色与线宽。
-- `Eyedropper`：吸取填色、描边或渐变。
+- `Eyedropper`：吸取填色、描边或渐变；点在放置的图片上时吸取该处像素颜色（含透明通道，图片裁剪掉的区域与全透明像素不取样）。
 - `Gradient`：给填色或线条应用并调整渐变。
 - `Snap Point Tool / 吸附顶点工具`：为当前元件配置可复用的吸附点。左键点击添加，右键点击已有点删除；创建后的点可再次左键拖动。指针靠近可见线段端点时优先使用端点，靠近填色轮廓时使用轮廓上的最近点，否则使用点击位置；悬浮点、活动点和自动检测候选会以固定屏幕尺寸高亮。
 - `Eraser`：可分别启用擦除 `Stroke`、`Fill` 或同时擦除；启用 `Fill` 时也会擦除 Mixing Brush 区域，中段擦除会把剩余的顶点色网格拆成可独立选择的连通区域。
@@ -235,7 +245,7 @@ VectorAnimationEngine-<version>-win-x64.exe
 - `Tab` / `Shift+Tab` 在当前工具组中前后切换。
 - `[` / `]` 调整铅笔、笔刷或橡皮擦宽度。
 - 笔刷激活时按住 `Shift` 可在指针周围选择最近使用的颜色。
-- 填充工具激活时按住 `Alt` 可临时使用吸管，松开即回到填充；按住期间不会取消已在进行的拖动或平移手势。
+- 填充工具激活时按住 `Alt` 可临时使用吸管，松开即回到填充；按住期间不会取消已在进行的拖动或平移手势。吸管同样可吸取放置图片的像素颜色。
 - 拖动期间显示半透明预览，通常在松开鼠标时才正式写入工程；按 `Esc` 可取消尚未提交的操作。
 - 调整混色笔刷参数后可直接在舞台落笔；开始笔触时舞台会重新接管键盘焦点，松手提交后可立即按 `Ctrl+Z` 撤销该笔区域。
 
@@ -255,6 +265,14 @@ VectorAnimationEngine-<version>-win-x64.exe
 - 同一帧、同一图层顶部的连续混色结果会合并为区域对象。重叠位置只保留最后一次计算结果，普通对象会阻断跨对象合并。
 - Select 或 Free Transform 只选择实际命中的连通岛；`Shift` 可追加。移动、变形、删除或局部框选时会拆出所选岛，未选岛保持不变，操作仍可一次撤销。
 - Eraser 在启用 `Fill` 擦除时直接裁切区域网格，并把不再连接的剩余部分拆成独立区域。旧工程中的轨迹式 Mixing Brush 数据仍可读取和渲染。
+
+Pressure Brush 的连续圆形笔尖预览使用完整采样的压力与平滑结果，并按最终笔划的闭合轮廓显示；长距离不停笔绘制时不再反复从整条笔迹抽取固定数量的点。Direct2D 与 GDI 使用相同的预览轮廓，保留笔尖软边与透明度。
+
+Continuous round Pressure Brush previews retain the full pressure and smoothing samples and display the same closed outlines used for the committed stroke. Long uninterrupted strokes no longer repeatedly resample the whole trajectory to a fixed point count. Direct2D and GDI share the preview outlines, including brush softness and opacity.
+
+普通 Brush 的长笔划预览同样保留完整轨迹，不随笔划增长重新抽点。连续圆形笔尖使用与提交相同的等宽闭合轮廓生成方式，Direct2D 与 GDI 共用软边分层和透明度。
+
+Long Brush previews also retain the full trajectory without repeatedly selecting new samples as the stroke grows. Continuous round tips use the same constant-width outline builder as committed strokes, with shared softness layers and opacity in Direct2D and GDI.
 
 Brush 和 Pressure Brush 仍保存为闭合 Path 填色。普通同色笔刷填色相交或边界距离小于 `10 vu` 时可能自动合并；未接触的岛屿之间不会自动补成填色。
 
@@ -336,13 +354,14 @@ Distort 控制框：
 - 选择独立 Line、Pencil 描边、Path 描边或可编辑填色边界后，会显示锚点和贝塞尔控制柄；Pencil 只显示指针所在曲线段的四个手柄，避免长笔迹同时显示过多锚点。
 - `Simple Pen` 与 `Line` 新建的线段按二次贝塞尔编辑：两个端点的蓝色辅助线汇聚到同一个蓝色控制方格，选中轮廓使用浅金黄色与较深的金色光晕。`Pen`、Pencil、形状边界及其他生成来源使用三次贝塞尔与默认的两个独立方向柄，其高亮不变。复制、拆分、撤销和保存重开保留编辑类型；未记录来源的旧工程线段默认按三次编辑，已有曲线几何不变。
 - 位图、导入 SVG 与文本不显示锚点和方向柄；它们按整体对象选择，只显示整体包围框。
-- 拖动共享端点时，相连线条会保持连接。
+- 拖动共享端点时，相连线条会保持连接。端点及折点编辑的对象吸附半径为屏幕上的 8 像素，画线时仍为 32 像素；关闭吸附可自由调整。拖动新拆出的折点时排除正在编辑的两段，按住 Ctrl 创建折点不会强制开启对象吸附；抓取偏移在整个拖动中保持，回到按下位置恢复原锚点。
+  Endpoint and corner editing snaps within 8 screen pixels, while drawing retains its 32-pixel radius. Disabling snapping allows free adjustment. A new corner excludes both edited segments from snap targets; holding Ctrl to create it does not force object snapping on. The initial grab offset is preserved, and returning to the press position restores the original anchor.
 - 线段（`Line`、Pencil 描边、未填充的 Path 描边）作为独立对象编辑：**调整曲率**时可让重合的填色边界一起变化——拖动曲率方向柄（三次线段的两条方向柄、二次线段的单个控制方格）、在未选中线段上拖动中段拉弧、`Ctrl+拖动` 拉折角、拖动 Pencil 锚点，以及与边界重合的端点共享关系，都会同步该填色的对应边。**只移动线段本身**时不带动任何填色——选中整条线段拖动、拖动端点、使用变换框缩放/旋转/倾斜，填色边界保持在原处（三次贝塞尔线段同样如此）。填色也可以随时通过自己的边界控制点单独编辑。
   Strokes (`Line`, Pencil freehand, unfilled Path strokes) are independent objects: dragging a **curvature** handle (either direction handle of a cubic stroke, the single control of a quadratic one), pulling the arc of an unselected stroke, `Ctrl`+dragging a corner, dragging a Pencil anchor, or moving an endpoint shared with the fill boundary keeps a coincident fill edge in sync. **Moving the stroke itself** — dragging a selected stroke, dragging an endpoint, or scaling/rotating/skewing it with the transform box — never moves a fill edge (cubic-Bezier strokes included). Fills stay editable through their own boundary controls.
 - 拖动曲线锚点会同时平移该锚点附着的控制柄，保留原有曲率；直接拖动控制柄只调整对应切线。
-- 直接用左键拖动独立线段的端点手柄不会改变线段的曲率，也不会改变其二次或三次编辑类型：原本笔直的线段在整个拖动过程中以及松手后都保持为新的直线弦，两个控制柄按新弦的三等分点重新计算；原本弯曲的线段保留被拖动一端原有的切线，另一侧形状保持不动。二次段仍只有一个控制点，三次段仍保留两个控制柄。端点与另一条线的端点共享（例如 `Ctrl+拖动` 中段拆出的角点）时，相连线段同样保持连接且不改变曲率。
-  Dragging a stroke endpoint with the primary button never changes curvature and never changes the quadratic or cubic editing type: a segment that was straight stays the exact new chord on every frame of the drag and after release, and a curved segment keeps the tangent it had at the dragged endpoint while the opposite side stays put. Quadratic segments still have one control; cubic segments keep both handles. When an endpoint is shared with another line (for example the corner `Ctrl`+dragging a mid-arc creates), the connected lines stay joined and keep their curvature.
-- 拖动未选中线段的中段会拉出平滑弧线：被拖到的曲线上那一点按鼠标位移移动，控制点由原曲线求解，不会在第一帧跳到光标位置；控制方格从偏离中心的位置抓取时也保留初始偏移。已选中线段的本体拖动则移动整段。`Ctrl+拖动` 中段会改用角点手势：原线段在命中处拆成两条独立 Line，两条线共享命中点的端点，拖动时该共享端点跟随指针、两条线的另一端保持不动，因此得到由两条直线段组成的折角而不是曲线或单条多节点路径。拆分只在指针移动超过拖动阈值后提交，未拖动就松手会还原为原来的一条线段，一次 `Ctrl+Z` 可撤销整个手势；对已有曲线段 `Ctrl+拖动` 会按 de Casteljau 精确分割并在该处插入折角锚点，插入瞬间不改变形态。
+- 直接用左键拖动 Line 的独立端点会重新弯曲该段：被拖端跟随指针，另一端固定，位移沿整段逐渐减弱，带动较大范围的曲线一起移动，避免控制点钉在原处造成局部过度折弯。二次控制点跟随一半位移；三次方向柄从靠近被拖端到远端分别跟随三分之二、三分之一位移，不锁定原切线。二次段保留一个控制点，三次段保留两个方向柄，编辑类型不变；原本笔直的段仍保持新的直线弦。共享折点使用独立的角点拖动：所有相连端点一起移动，外侧端点及按下时的控制点保持固定，允许尖角左右摆动、切线转向和反向回弯；不会把独立端点的整段跟随规则套到折点上。单独拖动外侧端点只重塑对应线段。弯曲段可以拉平后继续反向回弯，拖回按下位置可恢复原形，一次拖动作为一步撤销。
+  Dragging an unshared Line endpoint reshapes its curve: the dragged endpoint follows the pointer, the opposite endpoint stays fixed, and displacement decreases linearly along the segment so the curve body follows instead of folding around stationary controls. The quadratic control follows half the displacement; cubic handles follow two thirds near the dragged end and one third near the fixed end, allowing the tangent to change. Quadratic segments retain one control and cubic segments retain both handles without changing degree; originally straight segments remain straight. A shared corner moves all connected endpoints together while keeping the outer endpoints and gesture-start controls fixed, allowing the tip to swing left and right and its tangents to reverse. The distributed motion used for free endpoints does not apply to shared corners. Dragging an outer endpoint reshapes only its own segment. Curves can pass through a flat position and reverse their bend. Returning to the press position restores the original shape, and each drag uses one undo step.
+- 拖动未选中线段的中段会拉出平滑弧线：被拖到的曲线上那一点按鼠标位移移动，控制点由原曲线求解，不会在第一帧跳到光标位置；控制方格从偏离中心的位置抓取时也保留初始偏移。已选中线段的本体拖动则移动整段。`Ctrl+拖动` 中段会改用角点手势：原线段在命中处拆成两条独立 Line，两条线共享命中点的端点，拖动时该共享端点跟随指针、两条线的另一端保持不动。原本笔直的线段仍得到由两条直线段组成的折角；原本弯曲的线段按 de Casteljau 精确分割，拆分瞬间不改变形态，拖动时两半各自保留拆分得到的曲率——二次段保留自己的单控制点，三次段保留两个方向柄——只移动角点而不会把弧拉直，与 Animate 的角点行为一致。拖动过程中即使某一半暂时拉平，继续拖动仍沿用切分时的控制点，拖回起点可恢复切分时的弧形。拆分只在指针移动超过拖动阈值后提交，未拖动就松手会还原为原来的一条线段，一次 `Ctrl+Z` 可撤销整个手势。
 - `Ctrl+左键` 点击可编辑曲线可插入锚点；`Ctrl+右键` 点击真实锚点可删除。
 - `Alt+单击` 曲率控制柄可把该段恢复为直线。
 - 调整矩形等填色形状的一条边后，可直接拖动同一形状的另一条未选边继续调整弧度；快速连续操作不会切换为整形移动或连通描边选择。已选边的主体拖动仍保留原有移动/分离行为。
@@ -620,9 +639,9 @@ In All view, layer rows in the same group share a background tint and swatch, us
 
 ### 运动轨（Motion）
 
-开启运动轨后，共用范围输入显示为「开始 / 结束」，标签使用主题强调色，数值表示绝对帧号。选中锚点使用单层强调色外圈；悬停帧号沿用工作台的深色底与细边框。
+开启运动轨后，共用范围输入显示为「开始 / 结束」，标签使用主题强调色，数值表示绝对帧号。选中锚点使用单层强调色外圈；悬停帧号保留原有深色提示框的尺寸、圆角和动画，仅将内容改为与时间轴一致的小方点与数字。
 
-运动轨使用带两端圆点的折返路径图标按钮，不再显示滑块或 `Motion` 文字。点击切换，选中时显示圆角方块底色；悬停显示运动轨提示，聚焦后可用空格切换。它仅在**当前工作区存在元件实例**时可用（`Basic Drawing` 与 `Scene & Animation` 均是），跟随的实例优先取舞台上的选择；没有选择时自动采用当前工作区的第一个实例，并在开启时把它同步为舞台选择。开启后舞台在正常洋葱皮之上叠加该元件在所选范围内的运动轨，范围与洋葱皮的指针范围（`Prev` / `Next`）一致。
+运动轨使用带两端圆点的折返路径图标按钮，不再显示滑块或 `Motion` 文字。点击切换，选中时显示圆角方块底色；悬停显示运动轨提示，聚焦后可用空格切换。它在**当前工作区存在元件实例**时可开启（`Basic Drawing` 与 `Scene & Animation` 均是），跟随的实例优先取舞台上的选择；没有选择时自动采用当前工作区的第一个实例，并在开启时把它同步为舞台选择。开启后舞台在正常洋葱皮之上叠加该元件在所选范围内的运动轨，范围与洋葱皮的指针范围（`Prev` / `Next`）一致。
 
 > 前提：工作区里必须已经有一个元件实例（例如从 `Vault` 拖入一个元件，或在当前符号内嵌套放置另一个符号）。若当前符号只有直接绘制的内容、没有任何实例，则没有可跟随的放置状态，开关保持灰显；禁用提示说明需先放入元件实例。
 
@@ -631,7 +650,7 @@ In All view, layer rows in the same group share a background tint and swatch, us
 - 若某帧锚点相对原始锚点被调整过，则该锚点异色显示。
 - 空白关键帧与保持帧的锚点比正常帧更浅；补间内部帧之间的轨迹线段以异色虚线显示。
 - 鼠标悬停在任意锚点上会显示该帧帧号；锚点按帧序连接，空白帧不可选中。
-- 时间轴当前帧对应的运动轨锚点以薄荷绿填充和紧凑光晕标识，轨迹虚线不发光；移动时间轴指针不改变舞台对象或运动轨锚点的实际选择。悬停提示在 Direct2D 和 GDI 中均以紧凑小标签显示「帧 N」。
+- 时间轴当前帧对应的运动轨锚点以薄荷绿填充和紧凑光晕标识，轨迹虚线不发光；移动时间轴指针不改变舞台对象或运动轨锚点的实际选择。悬停提示在 Direct2D 和 GDI 中均沿用紧凑深色提示框，内容显示小方点与帧号（如「▪ 1」），数字字体与时间轴一致，靠近画布边缘时自动避让。
 - `Scene & Animation` 中运动轨按当前二维或三维相机投影显示，支持正交与透视视图；拖动沿经过锚点的视平面移动实例，取消与撤销会恢复实例及其时间轴关键帧。Direct2D 与 GDI 回退均显示运动轨。
 
 选中与编辑：
@@ -642,7 +661,19 @@ In All view, layer rows in the same group share a background tint and swatch, us
 - `Ctrl+A` 在运动轨开启时选中范围内全部可选锚点；`Ctrl+Shift` 拖动可框选锚点。
 - 选中不超过 3 帧后，用 Free Transform 工具可对所选帧做缩放与旋转；超过 3 帧时只显示选择范围而不显示变换框。
 
-机制：运动轨与洋葱皮一样只用于参考和定位，不会新建绘制几何；拖动锚点与 Free Transform 写入的是所选帧的实例状态，与在舞台上移动实例走同一条编辑与撤销路径。关闭开关后轨道立即从舞台消失；工作区不再包含任何实例时开关自动关闭并灰显。
+机制：运动轨与洋葱皮一样只用于参考和定位，不会新建绘制几何；拖动锚点与 Free Transform 写入的是所选帧的实例状态，与在舞台上移动实例走同一条编辑与撤销路径。关闭开关后轨道立即从舞台消失。
+
+开启后运动轨绑定到当时的实例，选中其他实例、取消选择、切换工作区、进入其他绘图对象、编辑遮罩或播放均不会重新绑定或重置范围与锚点选择。目标不在当前编辑上下文或已被删除时，轨道仅暂停显示；返回原上下文或撤销删除后自动恢复。只有主动关闭运动轨开关才清空该轨道的编辑状态，且不会删除实例已记录的位置关键帧；若要跟随其他实例，请先关闭开关，选择目标后再开启。轨道暂停显示时开关仍可关闭，延迟到达的范围事件不会覆盖保留的范围。拖动中关闭开关会先取消本次未提交拖动。
+
+选择与自由变形工具下，快速连续点击运动轨锚点只操作轨迹，不会触发下方元件的双击进入编辑；锚点以外的正常双击导航不受影响。拖动未松手时快捷切帧会取消本次未提交拖动，保留此前已记录的轨迹与范围。
+
+With Select or Free Transform, rapid clicks on motion-track anchors stay in the track interaction instead of opening the underlying symbol. Ordinary double-click navigation away from anchors remains available. A frame shortcut during an unfinished drag cancels that drag while retaining previously committed motion and the track range.
+
+开发热重启与编辑器重启会保留运动轨开关、绑定实例、绝对帧范围和锚点选择，不恢复未完成的拖动会话；旧版重启数据缺少该状态时按关闭处理。该状态属于临时编辑会话，不改变工程文件格式。
+
+Development hot restarts and editor restarts retain the motion-track toggle, target instance, absolute frame range and anchor selection, but never resume an unfinished drag. Older restart data without this state defaults to off; the project file format is unchanged.
+
+Motion stays bound to the instance chosen when enabled. Selection changes, workspace navigation and playback do not reset its range or anchor selection. A missing or out-of-context target suspends the overlay; returning or undoing deletion restores it. Only switching Motion off clears its editing state, never the instance's recorded keys. Switch off and on to follow another instance; switching off during a drag cancels that uncommitted gesture first.
 
 ### 播放设置
 
@@ -806,10 +837,17 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 
 项目素材列表的操作：
 
-- 分类栏包含 `基础元件`、`3D 元件`、`外部 SVG` 和 `图片`。基础元件显示普通可复用绘制元件；3D 元件显示在 3D 场景中通过 `F8` 组合得到的空间元件；两类元件均可打开或拖入场景复用。
-- `外部 SVG` 保存源文件链接而不是把源文件复制进素材库。点击添加按钮选择并验证 SVG；双击、点击使用按钮或拖到可导入 SVG 的舞台会重新读取源文件，并把本次放置内容嵌入工程对象。也可以从资源管理器把 `.svg` 文件直接拖入素材库的资产列表区域，一次添加为外部 SVG 链接。
+- 单击选择当前行；`Ctrl+单击` 追加或取消单行，`Alt+单击` 仅取消该行；`Shift+单击` 选择可见行范围，`Ctrl+Shift` 追加范围，`Alt+Shift` 取消范围。列表聚焦时 `Ctrl+A` 全选当前可见行（不包含折叠文件夹中的隐藏行），`Shift+方向键` 扩展范围，`Enter` 打开当前素材或展开／折叠文件夹。打开、拖入和右键操作仍作用于当前行，不批量执行；列表聚焦时 `Delete` 不会删除舞台对象。
+  Click selects one row; Ctrl-click toggles it, Alt-click removes it, and Shift-click selects a visible range. Ctrl+Shift adds a range and Alt+Shift removes it. With the list focused, Ctrl+A selects visible rows, Shift+arrow extends the range, and Enter opens the current asset or toggles its folder. Open, drag and context actions target the current row; Delete does not delete stage objects while a list has focus.
+
+- 分类栏包含 `基础元件`、`3D 元件`、`SVG 素材` 和 `图片`。基础元件显示普通可复用绘制元件；3D 元件显示在 3D 场景中通过 `F8` 组合得到的空间元件；两类元件均可打开或拖入场景复用。
+- `SVG 素材` 保存工程托管副本，双击、点击放置按钮或拖到舞台会创建共享素材引用。通过 `Import SVG...` 或拖文件直接导入舞台时，也会登记共享素材；同一来源再次放置会使用已有工程内容，不会自动从外部文件更新。原文件移动或删除不影响已导入的工程。
+  SVG assets are stored in the project. Library placements share the asset; direct SVG import also registers a shared resource. Reimporting the same source uses the stored project content until an explicit update.
 - `图片` 保存位图素材：导入时图片字节会被复制进工程的 `.Vault/Images` 托管目录，源文件随后移动或删除都不影响工程（见 [11. SVG、图片与文本](#11-svg图片与文本)）。点击图片上传图标（导入图片）选择并验证图片，双击、点击使用按钮或拖到舞台会把它作为**一个整体对象**放置，可整体选择、移动、缩放和旋转，但不能 `Break Apart`。也可以从资源管理器把图片文件直接拖入素材库的资产列表区域导入素材。
-- 外部 SVG 源文件丢失时工程仍可打开，素材行会显示 `链接丢失`；右键选择 `重新定位...` 可指向新的有效 SVG，或选择删除只移除素材链接。搜索可匹配链接名称和路径，标签与素材文件夹只适用于基础元件和 3D 元件。
+- 图片和 SVG 的右键菜单提供 `从源文件更新`、`替换源文件...` 和 `创建独立副本`。更新会传播到所有引用位置，并保留各放置对象的位置、尺寸、旋转、畸变和动画；验证或读取失败时保留上一次有效内容。独立副本拥有新素材 ID，已有放置不会自动改用副本。搜索可匹配名称和路径；标签与素材文件夹仍只适用于元件。
+  Images and SVG assets support Update from Source, Replace Source, and Create Independent Copy. Updates preserve placement and animation; failed updates retain the last valid content. An independent copy receives a new asset ID without rebinding existing placements.
+- 删除未使用的素材会直接移除库项目；正在使用的素材会列出直接使用位置、受影响的嵌套元件和场景。可选择同类素材替换引用后删除，或删除素材及全部使用位置，默认取消；更新、独立副本和删除均可一次撤销。引用数量按存储的放置对象及各关键帧统计，不等于某一帧可见的实例数量。
+  Deleting an asset in use shows its usage locations and affected symbols/scenes. Replace references with an asset of the same type, or delete all uses; Cancel is the default. Updates, independent copies and deletions support a single undo.
 - 顶部搜索框采用现代紧凑外观，带左侧搜索图标、舒展的文字留白及随主题变化的圆角／直角边缘；按素材名称、类型、说明和已分配的标签名称搜索。
 - 标签下拉框：独立按某个标签筛选；可与文字搜索叠加，进一步缩小结果。
 - 右键素材时会先收起悬停预览；展开 `Set Tags` 后可直接从已有项目标签中勾选或取消勾选，每次选择后子菜单会保持打开，便于连续设置多个标签。
@@ -823,6 +861,9 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 - 悬停：稳定预览实际几何和嵌套内容；元件存在多帧时按当前工程 FPS 循环播放，单帧元件保持静态。
 
 标签定义、颜色和每个元件的分配关系会随工程保存与打开，并在编辑器重启恢复时保留。
+
+图片或 SVG 转换为元件时保留内部素材引用；复制元件也继续共享内部素材。拆散元件只解除元件容器，内部图片/SVG 仍引用库素材；SVG 继续 `Break Apart` 成原生路径后才脱离该素材。`.V2DSymbol` 版本 2 携带共享 SVG 依赖，导入其他工程时为这些依赖生成新 ID，旧版元件包仍可读取。
+Converting content to a symbol preserves asset references, as does duplicating a symbol. Breaking apart the symbol retains its internal image/SVG references; converting the SVG itself into editable paths detaches those paths. Version 2 symbol packages include shared SVG dependencies with fresh IDs on import.
 
 右键 `Break Apart / 拆散` 可把选中的实例冻结为当前帧普通几何。拆散不会删除源元件；带非 `Normal` 图层混合或启用滤镜的实例不能无损转换为普通矢量时会被拒绝，需先关闭效果再拆散。
 
@@ -858,7 +899,7 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 
 在主菜单选择 `Import Image...`，或在 Vault 的 `图片` 分类中点击添加按钮，可一次多选图片导入素材库；也可把单张图片直接拖到 Basic Drawing 舞台的一个位置放下，或把一批图片拖入素材库的资产列表区域。支持 `PNG`、`JPEG`、`BMP`、`GIF`、`TIFF` 和 `WebP`。
 
-批量导入会显示独立的进度窗口，包含已处理数量、总数、百分比与当前文件路径；第一个有效且尚未导入的文件只需确认一次设置，后续文件共用这些设置。点击 `Cancel / 取消`、按 `Esc` 或关闭进度窗口会停止后续导入，已成功导入的素材保留；取消设置对话框也会停止整批导入。重复路径会跳过，单个文件失败不会阻止后续文件，结束后统一显示成功、跳过、失败与未处理数量及最多 5 条错误详情。工程图片素材上限仍为 4096 张，导入 3000 张前需确认剩余额度足够；批量导入只添加素材，不自动把全部图片放到舞台。
+批量导入会先读取有效文件，再统一确认设置，最后写入素材库。独立进度窗口分别显示读取／写入阶段的已处理数量、总数与百分比；当前行显示文件名，悬停可查看完整路径。点击 `Cancel / 取消`、按 `Esc` 或关闭进度窗口会停止后续导入，已成功导入的素材保留；取消设置对话框也会停止整批导入。重复路径及在预览中移除的图片计为跳过，单个文件失败不会阻止后续文件，结束后统一显示成功、跳过、失败与未处理数量及最多 5 条错误详情。工程图片素材上限仍为 4096 张，导入 3000 张前需确认剩余额度足够；批量导入只添加素材，不自动把全部图片放到舞台。
 
 拖放约定：
 
@@ -868,13 +909,19 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 - 同一次拖入必须是同一种素材：图片、`.svg` 或 `.V2DSymbol` 各自一批。混入其它类型时整批拒绝，避免只导入选中内容的一部分。
 - 拖入舞台时先显示落点预览，预览使用与实际放置相同的解码尺寸和宽高比；预览来自临时副本，悬停期间不会修改工程，松开鼠标才写入。
 
-导入窗口默认显示图片预览、文件名和像素尺寸，透明区域使用棋盘格。普通导入可直接点击 `Import / 导入`，之后在舞台上移动、缩放；编辑已有素材时按钮为 `Apply / 应用`。预览在后台加载。批量导入显示数量并预览第一张，设置共用于整批。
+导入窗口默认显示图片预览、文件名和像素尺寸，透明区域使用棋盘格。普通导入可直接点击 `Import / 导入`，之后在舞台上移动、缩放；编辑已有素材时按钮为 `Apply / 应用`。预览在后台加载，切换图片时显示加载提示；无法读取的预览显示明确提示，不会一直停留在加载状态。批量导入可用左右箭头切换大图，点击 `All images / 全部图片` 展开缩略图网格；首次打开时保留当前大图并显示加载数量，首屏缩略图就绪后再切换，不先展示空黑格。准备期间再次点击可取消切换。网格支持滚轮滚动，删除图片后仍可继续滚动。Ctrl 点击切换多选、Shift 点击范围选择；移除按钮仅在缩略图悬浮或获得键盘焦点时显示，使用细线叉号与主题一致的小按钮底板；点击可移除所选图片（至少保留一张），只移出此次导入，不删除源文件。删除后保留当前图片（若仍在批次中）及滚动位置，剩余缩略图补齐空位。
 
-`Advanced settings / 高级设置` 默认折叠，支持鼠标及键盘展开。显示方式、最大分辨率和放置比例的说明在鼠标悬停对应字段标题时显示，不再占用独立说明行；底部继续显示解码尺寸与基础放置尺寸。
+`Advanced settings / 高级设置` 默认折叠，支持鼠标及键盘展开。展开后使用紧凑两列：首行是显示方式和最大分辨率，第二行是放置比例和保留透明背景；字段标题在输入框上方，说明在悬停标题时显示。底部保留解码尺寸与基础放置尺寸。文件信息、尺寸和说明使用主题辅助文字色，主要操作保持清晰强调。
 
-预览右下角的编辑图标没有按钮底色，悬停显示 `Edit image / 编辑图片` 提示，点击打开裁剪窗口。裁剪采用直观的图片编辑方式：拖动四边或四角调整裁剪框，在框内拖动图片调整构图，滚轮或放大／缩小按钮改变图片缩放；图片始终覆盖裁剪框，不会露出空白。拖过对边时停在最小范围，不翻转选区。底部可选择自由、原始比例、1:1、4:3、3:4、16:9 或 9:16；比例锁定后拖边框继续保持比例，最终像素取整可能有 1 像素误差。
+新导入默认使用 `Automatic / 自动识别`：首先检查原始解码尺寸，宽或高任一边超过 256 像素，一律选择平滑；恰好 256 像素及以内再依据有限采样中的调色板复用、透明度与连续渐变特征选择平滑或像素风。该尺寸上限对自动模式下的每张图片统一生效，包括大尺寸像素作品；可手动选择像素风覆盖整批，不受此上限限制。相邻颜色接近不直接视为平滑过渡，低对比的灰色／同色系像素贴图仍可识别为像素风。连续渐变需要相邻三点同向、近似等步长地变色；交替抖色不算连续渐变。混合批次分别识别，不把第一张的结果强加给其它图片。这是启发式识别，不保证识别所有像素作品，也不单凭尺寸小就判定为像素风。编辑已有素材时保留原显示设置，不自动覆盖。像素风在大图、缩略图和库中弹出预览窗均使用最近邻采样。
 
-`Precise crop / 精确裁剪` 默认收起，展开可输入左侧、顶部、宽度和高度；直接输入数值会切换为自由裁剪。选区聚焦时方向键移动 1 像素，Shift+方向键移动 10 像素；Esc、失去鼠标捕获或窗口失去焦点会取消正在进行的拖动并恢复原选区。`Restore full image / 恢复整图` 清除裁剪与比例锁定。点击 `Confirm crop / 确认裁剪` 返回预览，最后点击导入或应用才提交；取消裁剪窗口不改变设置，取消导入窗口不提交编辑。
+预览右下角的编辑图标没有按钮底色，悬停显示 `Edit image / 编辑图片` 提示，点击后直接在原导入窗口内切换到图片编辑页，不再叠加新窗口；窗口位置和尺寸保持不变。编辑页沿用当前显示方式：像素风（含自动识别为像素风）使用最近邻采样，放大、缩小和移动构图时保持像素边缘；平滑模式继续使用平滑插值。拖动四边或四角调整裁剪框，在框内拖动图片调整构图，滚轮或放大／缩小按钮改变图片缩放；图片始终覆盖裁剪框，不会露出空白。拖过对边时停在最小范围，不翻转选区。底部可选择自由、原始比例、1:1、4:3、3:4、16:9 或 9:16；比例锁定后拖边框继续保持比例，最终像素取整可能有 1 像素误差。
+
+编辑工具栏提供 `Flip horizontally / 水平翻转` 和 `Flip vertically / 垂直翻转`，使用镜像图标并高亮当前状态；再次点击恢复，两个方向可以组合。翻转不改变选中的源像素范围与裁剪尺寸，按先裁剪、后镜像的顺序应用于预览和最终导入；原文件不改写。编辑页点击 `Back / 返回` 可回到进入前的导入设置和滚动位置，未确认的编辑不会提交。裁剪和翻转仅作用于当前图片，切换图片后各自保留已确认的编辑，未编辑的图片保持原样；大图、网格缩略图和最终导入均使用各自的裁剪与翻转。显示方式、最大分辨率、透明背景和放置比例仍为整批共用。各图片的编辑设置随项目保存，旧项目缺少翻转字段时默认不翻转。
+
+左右按钮或缩略图切换当前图片时，预览立即请求加载，不等待设置调整的防抖计时；已有缓存直接复用，过期请求取消且不能覆盖当前图片。首次打开仍需要解码时间，设置连续调整仍保留防抖。批量预览到最后一张后，再点击右箭头显示“已经是最后一张”，不会循环跳回第一张。编辑页的“返回”只回到原来的图片预览与设置页，不执行导入；只有在预览设置页主动点击“导入／应用”才提交。
+
+`Precise crop / 精确裁剪` 默认收起，展开可输入当前显示方向下的左侧、顶部、宽度和高度；直接输入数值会切换为自由裁剪。选区聚焦时方向键移动 1 像素，Shift+方向键移动 10 像素；Esc、失去鼠标捕获或窗口失去焦点会取消正在进行的拖动并恢复原选区。`Restore full image / 恢复整图` 清除裁剪与比例锁定，保留翻转方向。点击 `Confirm edits / 确认编辑` 返回导入预览，最后点击导入或应用才提交；编辑页取消仅丢弃本次裁剪和翻转并返回原预览，关闭或取消整个导入窗口不提交编辑。
 
 拖动裁剪框时，图片与裁剪辅助线一起刷新，图片位置与缩放保持稳定；精确数值与选区尺寸仍实时更新。
 
@@ -882,7 +929,7 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 
 | 设置 | 说明 |
 | --- | --- |
-| `Image display / 显示方式` | 平滑用于照片和插画；像素风使用最近邻采样，保留硬像素边缘。 |
+| `Image display / 显示方式` | 自动识别逐张建议显示方式；可手动覆盖为平滑（照片和插画）或像素风（最近邻采样，保留硬像素边缘）。 |
 | `Maximum resolution / 最大分辨率` | 解码最长边上限，默认 `8192`；只缩小、不放大，保留源文件，不改变已有对象大小。 |
 | `Keep transparent background / 保留透明背景` | 默认保留透明通道；取消后丢弃透明度，不等于铺白底。 |
 | `Placement scale / 放置比例` | `100%` 保持当前导入比例；修改后按比例调整所有使用此素材的对象，保留各自的自定义大小。比例映射到旧整数参数，以换算后的宽高为准。 |
@@ -900,8 +947,8 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 - 位图属于**整体对象**，没有可编辑的顶点几何：未扭曲时，选择工具显示整体包围框和四角缩放手柄；扭曲后按实际边界显示选择轮廓，缩放和旋转使用 `Free Transform`。选择工具不显示填色边界的锚点和贝塞尔控制柄。使用 `Distort` 可拖动图片的扭曲包络及贝塞尔控制柄，预览实时显示，松手提交；支持撤销和工程保存。扭曲只影响该放置对象，保留图片透明度，不修改共享素材或其它放置对象。自由变换仍提供整体移动、缩放和旋转，不提供倾斜手柄。导入的 SVG、文本与未拆散的混色笔画同样按整体对象处理。
 - 位图以小于源分辨率绘制时（默认 `100` PPI 导入在 100% 缩放下约为源分辨率的四分之一），会改用按高质量滤波预先生成的缩小副本采样，而不是直接用全分辨率源做双线性缩小，从而消除旋转后的边缘锯齿。这实现了导入设置中 `Generate mipmaps` 所承诺的缩小行为；`Point`（点采样）过滤模式保持最近邻，不走这条路径。
 - 右键素材可打开 `Import Settings...` 调整显示方式、解码分辨率、透明背景和放置比例；只有比例改变时才更新已有对象尺寸。
-- 源文件被移动或改名后，素材行会标记为缺失；右键选择 `重新定位...` 指向新文件即可，素材 ID 和已有放置内容保持不变。
-- 删除图片素材会同时移除工程各处使用该书图片的位图对象，作为一次撤销事务。
+- 原始源文件移动或改名不影响工程托管的图片；只有托管副本不可用时素材行才标记缺失。右键选择 `替换源文件...` 可指定新的有效图片，素材 ID、放置变换和动画保持不变。
+- 删除图片素材前会显示使用范围，可替换引用或明确删除所有使用位置，作为一次撤销事务。
 
 ### 导出单个元件为 SVG
 
@@ -917,7 +964,7 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 
 在 Vault 元件上右键选择 `Export Symbol File...`，或在舞台右键的 `Symbol / 元件` 组中选择 `Export Symbol File...`，可把元件导出为单个 `.V2DSymbol` 文件；舞台右键导出的是当前元件。通过同一组的 `Import Symbol File...` 可把该文件导入当前工程。
 
-也可以从资源管理器将一个或多个 `.V2DSymbol` 文件拖入素材库的资产列表区域，直接导入当前工程；扩展名不区分大小写，请勿混入其它类型的文件或文件夹。多文件按顺序独立导入，失败文件会显示提示，不影响其它文件继续导入；最后成功导入的根元件会被选中。导入仍按包内记录恢复目录和标签，不会根据鼠标落点改变元件目录。图片与 `.svg` 文件也可用同样的方式拖入，会分别按图片素材和外部 SVG 链接导入；但同一次拖入不能混合不同种类。
+也可以从资源管理器将一个或多个 `.V2DSymbol` 文件拖入素材库的资产列表区域，直接导入当前工程；扩展名不区分大小写，请勿混入其它类型的文件或文件夹。多文件按顺序独立导入，失败文件会显示提示，不影响其它文件继续导入；最后成功导入的根元件会被选中。导入仍按包内记录恢复目录和标签，不会根据鼠标落点改变元件目录。图片与 `.svg` 文件也可用同样的方式拖入，会分别按图片素材和共享 SVG 素材导入；但同一次拖入不能混合不同种类。
 
 `.V2DSymbol` 是自包含的可逆元件包：文件使用 Brotli 无损压缩 UTF-8 JSON，几何、图层、Cel 曝光、关键帧和实例状态均无损保存，导入后可继续作为可编辑元件使用。
 
@@ -930,7 +977,11 @@ The Vault panel uses a muted heading, consistent category buttons and compact th
 
 ## 12. 保存、打开与工程结构
 
-主菜单和右键菜单采用统一的圆角外框、柔和悬停底色和淡色快捷键提示。参数下拉列表采用相同配色的圆角选中底色，长列表最多展开八行，其余选项可滚动选择。主菜单采用两级分组：`Project Files / 工程文件` 包含新建、打开、保存、另存为与重命名；`Import / 导入` 包含 Flash 工程、视觉转换桥、SVG 与图片入口。设置、窗口与更新公告保留在一级菜单。子菜单继续显示当前方案的快捷键。
+主菜单和右键菜单采用统一的圆角外框、柔和悬停底色和淡色快捷键提示。参数下拉列表采用相同配色的圆角选中底色，长列表最多展开八行，其余选项可滚动选择。主菜单采用两级分组：`Project Files / 工程文件` 包含新建、打开、保存、另存为与重命名；`Import / 导入` 包含 Flash 工程、视觉转换桥、SVG 与图片入口。设置、窗口与更新公告保留在一级菜单。子菜单继续显示当前方案的快捷键。菜单文字和快捷键按实际行高垂直居中，与悬停底色及箭头保持同一中心线。
+
+参数下拉列表使用居中的内缩选中底色；焦点提示遵循系统键盘提示状态，使用短下划线，不在鼠标悬浮的选项外叠加矩形边框。
+
+Parameter dropdowns use centered inset selection fills. Focus cues follow the system keyboard-cue state and use a short underline instead of an extra rectangular outline around hovered options.
 
 | 菜单项 | 快捷键 / 说明 |
 | --- | --- |
@@ -1009,8 +1060,8 @@ Project Folder/
 - 元件吸附点作为元件级静态数据保存在 `.v2dProject`，不写入图层或时间轴文件。
 - `.Vault` 保存可逆 SVG 绘制资产：普通 SVG 预览保持可用，内部可编辑场景数据采用 Brotli 无损压缩，不降低几何精度或画质。
 - `.TimeLine` 使用 `.json.br` 文件无损压缩保存图层、关键帧、Cel、场景和实例状态，打开时自动解压。
-- 新保存的工程采用格式版本 5；版本 1–4 的工程和旧版未压缩 SVG 数据仍可打开，再次保存时自动转换为压缩格式。需要使用支持此格式的新版编辑器打开转换后的工程。版本 5 新增图片素材库，旧格式版本不允许包含图片素材。
-- 外部 SVG 素材只在 `.v2dProject` 中保存稳定 ID、绝对/工程相对源路径和最后已知 SHA-256；源文件保持在原位置，不会复制到 `.Vault`。
+- 新保存的工程采用格式版本 7，保留共享 SVG 素材引用及图片/SVG 的原始更新来源。版本 1–6 的工程仍可打开；旧版未关联库素材的 SVG 保持原有独立内容，不根据名称或外观猜测关联。保存后的版本 7 工程需要新版编辑器打开。
+- SVG 素材字节保存在 `.Vault/ExternalSvg/<素材ID>.svg`，由 SHA-256 校验；放置对象保留稳定素材 ID 及自包含的 SVG 内容。原始路径只用于主动更新，工程打开不依赖该文件。
 - 图片素材把导入的字节复制到 `.Vault/Images`，并按内容的 SHA-256 校验托管副本；源文件丢失不会阻止打开工程。
 - 保存时先写入临时内容并完整校验，再替换原工程；中断后会通过事务日志恢复。
 - 打开工程会先校验路径和存储文件的 SHA-256，再按受限大小解压并校验 ID、引用和时间轴，成功后才替换当前工程；损坏、截断或解压后超出限制的数据会被拒绝。`.v2d` 容器额外拒绝路径穿越、重解析点和任何不在工程结构内的条目。
@@ -1246,8 +1297,8 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 ### 找不到导出元件或导入元件的命令
 
 - 导出命令要求存在可导出的当前元件：在 Vault 中右键元件，或在舞台右键菜单的 `Symbol / 元件` 组中使用导出项（作用于当前元件）。舞台右键菜单的 `Symbol / 元件` 组中没有可用导出项，通常说明当前没有活动的可导出元件。
-- Vault 中选中 `外部 SVG` 分类的素材时，菜单只提供外部链接相关命令，不提供元件导出。
-- Vault 中选中 `图片` 分类的素材时，菜单提供 `Place`、`Import Settings...`、`重新定位...` 和删除，不提供元件导出，也不能 `Break Apart`。
+- Vault 的 `SVG 素材` 分类提供放置、从源更新、替换来源、独立副本和删除；素材本身不提供元件导出。
+- Vault 中选中 `图片` 分类的素材时，菜单提供 `Place`、`Import Settings...`、从源更新、替换来源、独立副本和删除，不提供元件导出，也不能 `Break Apart`。
 - `Import Symbol File...` 位于舞台右键菜单的 `Symbol / 元件` 组，且始终可用；如果看不到，请确认是在舞台画布上右键，而不是在时间轴、Vault 或检查器上右键。
 - 误把 `.V2DSymbol` 当成 SVG 打开会失败：它是有独立格式版本的压缩包，请使用导入命令，而非 `Import SVG...`。
 

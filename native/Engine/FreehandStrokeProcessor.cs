@@ -253,8 +253,13 @@ internal static class FreehandStrokeProcessor
             var normals = new PointF[profile.Count];
             for (var i = 0; i < profile.Count; i++)
             {
-                var previous = profile[Math.Max(0, i - 1)].Point;
-                var next = profile[Math.Min(profile.Count - 1, i + 1)].Point;
+                // Span two neighbours on each side where available. The adjacent-only chord used
+                // to turn residual centreline jitter into a swinging offset normal, which showed
+                // up as a trembling edge along long strokes.
+                var previousIndex = i >= 2 ? i - 2 : Math.Max(0, i - 1);
+                var nextIndex = i + 2 < profile.Count ? i + 2 : Math.Min(profile.Count - 1, i + 1);
+                var previous = profile[previousIndex].Point;
+                var next = profile[nextIndex].Point;
                 var dx = next.X - previous.X;
                 var dy = next.Y - previous.Y;
                 var length = MathF.Sqrt(dx * dx + dy * dy);
@@ -407,51 +412,79 @@ internal static class FreehandStrokeProcessor
         if (source.Count <= 2) return source.ToArray();
 
         smoothing = Math.Clamp(smoothing, 0, 100);
-        var passes = smoothing >= 72 ? 3 : smoothing >= 24 ? 2 : smoothing >= 6 ? 1 : 0;
-        if (passes == 0) return source.ToArray();
+        // Samples sit roughly two screen pixels apart, so a half-width of three to four samples is
+        // about a six to eight pixel window: wide enough to damp hand tremor and pointer noise,
+        // short enough to keep direction changes responsive. The previous index-blind blend only
+        // spanned one sample and barely attenuated the wobble at all, which left the stroke width
+        // and centreline trembling along long continuous strokes.
+        var radius = (int)MathF.Round(smoothing / 100f * 4f);
+        if (radius <= 0) return source.ToArray();
 
-        var amount = smoothing / 100f * 0.42f;
         var current = source.ToArray();
-        for (var pass = 0; pass < passes; pass++)
+        var buffer = new PressureBrushPoint[current.Length];
+        for (var pass = 0; pass < 2; pass++)
         {
-            var next = new PressureBrushPoint[current.Length];
-            next[0] = current[0];
-            next[^1] = current[^1];
+            buffer[0] = current[0];
+            buffer[^1] = current[^1];
             for (var i = 1; i < current.Length - 1; i++)
             {
-                var before = current[i - 1];
-                var sample = current[i];
-                var after = current[i + 1];
-                var incomingX = sample.Point.X - before.Point.X;
-                var incomingY = sample.Point.Y - before.Point.Y;
-                var outgoingX = after.Point.X - sample.Point.X;
-                var outgoingY = after.Point.Y - sample.Point.Y;
-                var incomingLength = MathF.Sqrt(incomingX * incomingX + incomingY * incomingY);
-                var outgoingLength = MathF.Sqrt(outgoingX * outgoingX + outgoingY * outgoingY);
-                var cornerAlignment = incomingLength <= 0.0001f || outgoingLength <= 0.0001f
-                    ? 1f
-                    : (incomingX * outgoingX + incomingY * outgoingY) / (incomingLength * outgoingLength);
-                if (cornerAlignment < 0.82f)
+                // Measure the turn over two samples on either side so per-sample jitter cannot be
+                // mistaken for a deliberate corner and cancel the smoothing exactly where it is
+                // needed most.
+                var amount = CornerSmoothingAmount(current, i);
+                if (amount <= 0f)
                 {
-                    next[i] = sample;
+                    buffer[i] = current[i];
                     continue;
                 }
 
-                var averagePoint = new PointF(
-                    (before.Point.X + after.Point.X) * 0.5f,
-                    (before.Point.Y + after.Point.Y) * 0.5f);
-                var point = new PointF(
-                    sample.Point.X + (averagePoint.X - sample.Point.X) * amount,
-                    sample.Point.Y + (averagePoint.Y - sample.Point.Y) * amount);
-                var averageDiameter = (before.Diameter + after.Diameter) * 0.5f;
-                var diameter = sample.Diameter + (averageDiameter - sample.Diameter) * amount;
-                next[i] = new PressureBrushPoint(point, Math.Max(VectorUnits.StrokePointsToUnits(0.3f), diameter));
+                var start = Math.Max(0, i - radius);
+                var end = Math.Min(current.Length - 1, i + radius);
+                var weightSum = 0f;
+                var pointX = 0f;
+                var pointY = 0f;
+                var diameter = 0f;
+                for (var neighbour = start; neighbour <= end; neighbour++)
+                {
+                    var weight = radius + 1 - Math.Abs(neighbour - i);
+                    weightSum += weight;
+                    pointX += current[neighbour].Point.X * weight;
+                    pointY += current[neighbour].Point.Y * weight;
+                    diameter += current[neighbour].Diameter * weight;
+                }
+
+                buffer[i] = new PressureBrushPoint(
+                    new PointF(
+                        current[i].Point.X + (pointX / weightSum - current[i].Point.X) * amount,
+                        current[i].Point.Y + (pointY / weightSum - current[i].Point.Y) * amount),
+                    Math.Max(
+                        VectorUnits.StrokePointsToUnits(0.3f),
+                        current[i].Diameter + (diameter / weightSum - current[i].Diameter) * amount));
             }
 
-            current = next;
+            (current, buffer) = (buffer, current);
         }
 
         return current;
+    }
+
+    private static float CornerSmoothingAmount(IReadOnlyList<PressureBrushPoint> points, int index)
+    {
+        const int span = 2;
+        var before = points[Math.Max(0, index - span)].Point;
+        var sample = points[index].Point;
+        var after = points[Math.Min(points.Count - 1, index + span)].Point;
+        var incomingX = sample.X - before.X;
+        var incomingY = sample.Y - before.Y;
+        var outgoingX = after.X - sample.X;
+        var outgoingY = after.Y - sample.Y;
+        var incomingLength = MathF.Sqrt(incomingX * incomingX + incomingY * incomingY);
+        var outgoingLength = MathF.Sqrt(outgoingX * outgoingX + outgoingY * outgoingY);
+        var alignment = incomingLength <= 0.0001f || outgoingLength <= 0.0001f
+            ? 1f
+            : (incomingX * outgoingX + incomingY * outgoingY) / (incomingLength * outgoingLength);
+        // Straight runs smooth fully; a real corner keeps more of its shape.
+        return Math.Clamp((alignment - 0.3f) / 0.55f, 0f, 1f);
     }
 
     private static List<PressureBrushPoint> ReduceVariableWidthProfile(IReadOnlyList<PressureBrushPoint> source)

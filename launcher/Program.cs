@@ -49,6 +49,11 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
         var root = ResolveRepositoryRoot();
+        // Development processes can have access to the workspace while AppData is restricted.
+        // Keep preferences per Windows user and let the native store import existing settings.
+        var userId = System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
+        Environment.SetEnvironmentVariable("V2D_APPLICATION_SETTINGS_PATH", Path.Combine(
+            root, "artifacts", "development-user-data", userId, "settings.json"));
 
         using var launcherMutex = new Mutex(initiallyOwned: true, LauncherMutexName, out var createdNew);
         if (!createdNew)
@@ -121,6 +126,7 @@ internal static class Program
 
         try
         {
+            ConfigureDevelopmentTemporaryDirectory(root, logDir, startInfo);
             Log(logDir, $"Launching native app. Module hot reload: {launchOptions.ModuleHotReload}. Initial native build skipped: {skipInitialBuild}.");
             var unexpectedRestarts = 0;
             string? pendingRestartToken = null;
@@ -172,7 +178,7 @@ internal static class Program
                     && (exitCode != 0 || failedBeforeWindowReady)
                     && unexpectedRestarts < MaxUnexpectedWatchRestarts)
                 {
-                    if (ranFor >= TimeSpan.FromSeconds(30)) unexpectedRestarts = 0;
+                    if (result.MainWindowReady && ranFor >= TimeSpan.FromSeconds(30)) unexpectedRestarts = 0;
                     unexpectedRestarts++;
                     if (failedBeforeWindowReady) pendingRestartToken = launchToken;
                     var delayMilliseconds = Math.Min(2000, 250 * (1 << (unexpectedRestarts - 1)));
@@ -183,6 +189,12 @@ internal static class Program
                         $"({unexpectedRestarts}/{MaxUnexpectedWatchRestarts}); main window ready: {result.MainWindowReady}.");
                     WaitWithStartupStatus(delayMilliseconds, startupStatus);
                     continue;
+                }
+                if (result.Reason == WatchExitReason.Exited && (exitCode != 0 || failedBeforeWindowReady))
+                {
+                    DismissStartupStatus(startupStatus);
+                    ShowError("Failed to launch the development app.",
+                        $"{TranslateLauncherError("See the startup log for details:")}\n{Path.Combine(logDir, "launcher.log")}");
                 }
                 break;
             }
@@ -197,6 +209,37 @@ internal static class Program
         {
             DismissStartupStatus(startupStatus);
         }
+    }
+
+    private static void ConfigureDevelopmentTemporaryDirectory(string root, string logDir, ProcessStartInfo startInfo)
+    {
+        // Keep watch, NuGet, project resources and restart handoff in the same writable
+        // development workspace. A system TEMP inherited from another account can be inaccessible.
+        var temporaryDirectory = Path.GetFullPath(Path.Combine(root, "artifacts", "development-temp"));
+        for (var path = temporaryDirectory; path is not null; path = Path.GetDirectoryName(path))
+        {
+            if (Directory.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("The development temporary directory cannot contain reparse points.");
+        }
+        Directory.CreateDirectory(temporaryDirectory);
+        var probePath = Path.Combine(temporaryDirectory, $".write-probe-{Guid.NewGuid():N}");
+        using (var probe = new FileStream(probePath, FileMode.CreateNew, FileAccess.ReadWrite,
+                   FileShare.None, 1, FileOptions.DeleteOnClose))
+        {
+            probe.WriteByte(0);
+            probe.Flush(flushToDisk: true);
+        }
+        var scratchDirectory = Path.Combine(temporaryDirectory, "NuGetScratch");
+        // Only this launcher and its children inherit these settings; system/user settings stay intact.
+        foreach (var (name, value) in new[]
+        {
+            ("TEMP", temporaryDirectory), ("TMP", temporaryDirectory), ("NUGET_SCRATCH", scratchDirectory)
+        })
+        {
+            Environment.SetEnvironmentVariable(name, value);
+            startInfo.Environment[name] = value;
+        }
+        Log(logDir, $"Development temporary directory: {temporaryDirectory}");
     }
 
     private static int ValidateDevelopmentLauncher()
@@ -691,6 +734,9 @@ internal static class Program
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Vector2DAnimationEngine",
                 "settings.json");
+            var developmentPath = Environment.GetEnvironmentVariable("V2D_APPLICATION_SETTINGS_PATH");
+            if (!string.IsNullOrWhiteSpace(developmentPath) && File.Exists(developmentPath))
+                path = developmentPath;
             if (!File.Exists(path)) return false;
             using var document = JsonDocument.Parse(File.ReadAllText(path));
             if (!document.RootElement.TryGetProperty("Language", out var language)) return false;
@@ -715,6 +761,7 @@ internal static class Program
             ".NET SDK was not found in PATH." => "在 PATH 中找不到 .NET SDK。",
             "Install .NET SDK 8+ or run the release build instead." => "请安装 .NET SDK 8 或更高版本，或改用发布版本。",
             "Failed to launch the development app." => "无法启动开发版本。",
+            "See the startup log for details:" => "请查看启动日志了解详情：",
             _ => text
         };
     }

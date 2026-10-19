@@ -57,6 +57,7 @@ internal static class EditorRestartStore
                 Workspace = state.Workspace,
                 Frame = state.Frame,
                 SelectedObjects = state.SelectedObjects.ToArray(),
+                MotionTrack = state.MotionTrack,
                 StageView = RestartStageView.From(state.StageView),
                 Window = RestartWindowBounds.From(state.WindowBounds),
                 WindowState = state.WindowState
@@ -125,6 +126,7 @@ internal static class EditorRestartStore
                 Workspace = file.Workspace,
                 Frame = Math.Max(0, file.Frame),
                 SelectedObjects = file.SelectedObjects ?? [],
+                MotionTrack = file.MotionTrack,
                 StageView = file.StageView.ToStageViewState(),
                 WindowBounds = file.Window.ToRectangle(),
                 WindowState = file.WindowState
@@ -239,6 +241,7 @@ internal static class EditorRestartStore
         public WorkspaceView Workspace { get; init; }
         public int Frame { get; init; }
         public int[]? SelectedObjects { get; init; }
+        public MotionTrackRestartState? MotionTrack { get; init; }
         public RestartStageView StageView { get; init; } = new();
         public RestartWindowBounds Window { get; init; } = new();
         public FormWindowState WindowState { get; init; }

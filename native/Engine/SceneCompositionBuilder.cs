@@ -221,6 +221,7 @@ internal static class SceneCompositionBuilder
         public PointF Control2 { get; init; }
         public string ImportedSvgSource { get; init; } = "";
         public string ImportedSvgName { get; init; } = "";
+        public string ImportedSvgAssetId { get; init; } = "";
         public BitmapObjectData? BitmapObjectData { get; init; }
         public TextObjectData? TextObjectData { get; init; }
         public bool FillAutoMergeProtected { get; init; }
@@ -1623,6 +1624,7 @@ internal static class SceneCompositionBuilder
                 throw new InvalidOperationException("Imported SVG composition source is missing its payload.");
             }
             source.TryGetImportedSvgName(sourceObject, out var importedSvgName);
+            source.TryGetImportedSvgAssetId(sourceObject, out var importedSvgAssetId);
 
             var importedCenter = new PointF(source.X[sourceObject], source.Y[sourceObject]);
             var importedSize = new SizeF(source.Width[sourceObject], source.Height[sourceObject]);
@@ -1680,6 +1682,7 @@ internal static class SceneCompositionBuilder
             {
                 ImportedSvgSource = importedSvgSource,
                 ImportedSvgName = importedSvgName,
+                ImportedSvgAssetId = importedSvgAssetId,
                 Distortions = distortions
             };
         }
@@ -2104,7 +2107,7 @@ internal static class SceneCompositionBuilder
         var height = Math.Max(1, size.Height);
         var encodedSource = Convert.ToBase64String(Encoding.UTF8.GetBytes(source));
         return FormattableString.Invariant($"""
-            <svg xmlns="http://www.w3.org/2000/svg" xmlns:v2d="urn:vector-animation-engine:instance-appearance" v2d:multiply-tint="{(tintArgb & 0x00ffffff):X6}" width="{width:R}" height="{height:R}" viewBox="0 0 {width:R} {height:R}">
+            <svg xmlns="http://www.w3.org/2000/svg" data-v2d-asset-wrapper="1" xmlns:v2d="urn:vector-animation-engine:instance-appearance" v2d:multiply-tint="{(tintArgb & 0x00ffffff):X6}" width="{width:R}" height="{height:R}" viewBox="0 0 {width:R} {height:R}">
               <image width="{width:R}" height="{height:R}" preserveAspectRatio="none" href="data:image/svg+xml;base64,{encodedSource}"/>
             </svg>
             """);
@@ -2227,7 +2230,7 @@ internal static class SceneCompositionBuilder
         });
         var encodedSource = Convert.ToBase64String(Encoding.UTF8.GetBytes(source));
         var wrappedSource = FormattableString.Invariant($"""
-            <svg xmlns="http://www.w3.org/2000/svg" width="{outputWidth:R}" height="{outputHeight:R}" viewBox="0 0 {outputWidth:R} {outputHeight:R}">
+            <svg xmlns="http://www.w3.org/2000/svg" data-v2d-asset-wrapper="1" width="{outputWidth:R}" height="{outputHeight:R}" viewBox="0 0 {outputWidth:R} {outputHeight:R}">
               <image width="{width:R}" height="{height:R}" preserveAspectRatio="none" transform="matrix({matrix})" href="data:image/svg+xml;base64,{encodedSource}"/>
             </svg>
             """);
@@ -2395,6 +2398,9 @@ internal static class SceneCompositionBuilder
         };
         if (index >= 0)
         {
+            if (item.ImportedSvgAssetId.Length > 0
+                && !destination.TrySetImportedSvgAsset(index, item.ImportedSvgAssetId))
+                throw new InvalidOperationException("The composed SVG asset reference could not be retained.");
             if (item.SvgStrokeStyle is { } svgStyle) destination.SetSvgStrokeStyle(index, svgStyle);
             destination.FillAutoMergeProtected[index] = item.FillAutoMergeProtected;
             destination.QuadraticLineEditing[index] = item.QuadraticLineEditing;

@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+﻿﻿using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -127,6 +127,8 @@ internal sealed partial class MainForm : Form
     protected override void OnDeactivate(EventArgs e)
     {
         base.OnDeactivate(e);
+        // Alt+Tab away while Alt is held means the matching system key-up is never delivered.
+        CancelTemporaryEyedropper();
         // Losing activation while F5 is held means no key-up will arrive; settle the coalesced
         // gesture here so its deferred refresh is not stranded.
         FinishTimelineRepeatGesture();
@@ -4100,6 +4102,7 @@ internal sealed partial class MainForm : Form
         if (_undoSequenceByEntry.Count == 0) return;
         var retained = new HashSet<object>(ReferenceEqualityComparer.Instance);
         foreach (var entry in _undoStack) retained.Add(entry);
+        foreach (var entry in _sharedAssetUndoStack) retained.Add(entry);
         foreach (var entry in _sceneTimelineUndoStack) retained.Add(entry);
         foreach (var entry in _undoSequenceByEntry.Keys.Where(entry => !retained.Contains(entry)).ToArray())
         {
@@ -4148,6 +4151,16 @@ internal sealed partial class MainForm : Form
             && (!IsSceneMaskEditing()
                 || !canUndoDrawing
                 || UndoSequence(timelineUndo!) >= UndoSequence(drawingUndo!));
+        if (_sharedAssetUndoStack.TryPeek(out var assetUndo)
+            && ReferenceEquals(assetUndo.Project, _project)
+            && (!canUndoDrawing || UndoSequence(assetUndo) >= UndoSequence(drawingUndo!))
+            && (!canUndoSceneTimeline || UndoSequence(assetUndo) >= UndoSequence(timelineUndo!)))
+        {
+            _sharedAssetUndoStack.Pop();
+            _undoSequenceByEntry.Remove(assetUndo);
+            RestoreSharedAssetUndo(assetUndo);
+            return true;
+        }
         if (undoSceneTimeline)
         {
             var sceneUndo = timelineUndo!;

@@ -20,7 +20,7 @@ namespace VectorAnimationEngine;
 internal sealed class DrawingObjectSymbolPackage
 {
     internal const string FileExtension = ".V2DSymbol";
-    internal const int CurrentFormatVersion = 1;
+    internal const int CurrentFormatVersion = 2;
     internal const int MinimumReadableFormatVersion = 1;
 
     internal const int MaxSymbolCount = 10_000;
@@ -61,6 +61,16 @@ internal sealed class DrawingObjectSymbolPackage
 
     /// <summary>Asset-tag definitions (name and colour) used by the enclosed symbols.</summary>
     public TagPackageEntry[] Tags { get; init; } = [];
+
+    /// <summary>Shared SVG resources referenced by the enclosed geometry.</summary>
+    public ExternalSvgPackageEntry[] ExternalSvgAssets { get; init; } = [];
+
+    internal sealed class ExternalSvgPackageEntry
+    {
+        public string Id { get; init; } = "";
+        public string Name { get; init; } = "SVG";
+        public string Source { get; init; } = "";
+    }
 
     /// <summary>One symbol inside the package.</summary>
     internal sealed class SymbolPackageEntry
@@ -226,7 +236,7 @@ internal sealed class DrawingObjectSymbolPackage
         {
             throw new InvalidDataException("The symbol package contains no symbols.");
         }
-        if (Folders is null || Tags is null)
+        if (Folders is null || Tags is null || ExternalSvgAssets is null)
         {
             throw new InvalidDataException("The symbol package library metadata is missing.");
         }
@@ -297,6 +307,27 @@ internal sealed class DrawingObjectSymbolPackage
         RejectContainmentCycles(byId);
         ValidateFolders();
         ValidateTags();
+        ValidateExternalSvgAssets(byId.Keys);
+    }
+
+    private void ValidateExternalSvgAssets(IEnumerable<string> symbolIds)
+    {
+        if (ExternalSvgAssets.Length > VectorProject.MaxExternalSvgAssetCount
+            || FormatVersion < 2 && ExternalSvgAssets.Length > 0)
+            throw new InvalidDataException("The symbol package SVG resource collection is invalid.");
+        var ids = symbolIds.ToHashSet(StringComparer.Ordinal);
+        long totalCharacters = 0;
+        foreach (var asset in ExternalSvgAssets)
+        {
+            if (asset is null || !IsSafeId(asset.Id) || !ids.Add(asset.Id)
+                || string.IsNullOrWhiteSpace(asset.Name)
+                || asset.Name.Length > VectorProject.MaxExternalSvgAssetNameLength
+                || string.IsNullOrWhiteSpace(asset.Source) || asset.Source.Length > 8 * 1024 * 1024)
+                throw new InvalidDataException("The symbol package contains an invalid SVG resource.");
+            totalCharacters += asset.Source.Length;
+            if (totalCharacters > MaxDecodedBytes / 2)
+                throw new InvalidDataException("The symbol package SVG resources exceed the supported size limit.");
+        }
     }
 
     /// <summary>

@@ -218,16 +218,7 @@ internal sealed class SpatialMaterialPanel : UserControl
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.Controls.Add(new Label
-        {
-            Text = "3D Surface",
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.Text,
-            BackColor = Color.Transparent,
-            Font = Theme.UiFont(10, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        }, 0, 0);
+        row.Controls.Add(InspectorModuleStyle.CreateTitle("3D Surface"), 0, 0);
         _preset.Dock = DockStyle.Fill;
         _preset.Margin = new Padding(2, 2, 4, 2);
         _preset.AccessibleName = "3D material preset";

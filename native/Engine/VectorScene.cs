@@ -187,6 +187,7 @@ internal sealed partial class VectorScene : ITimelineContext
     private readonly Dictionary<int, MixingBrushRegionData> _mixingStrokeLocalRegions = new();
     private readonly Dictionary<int, string> _importedSvgSources = new();
     private readonly Dictionary<int, string> _importedSvgNames = new();
+    private readonly Dictionary<int, string> _importedSvgAssetIds = new();
     // Placed bitmap objects point at a managed image asset; the pixels are stored once
     // per asset rather than once per placed object.
     private readonly Dictionary<int, BitmapObjectData> _bitmapObjects = new();

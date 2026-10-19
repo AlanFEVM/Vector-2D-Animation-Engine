@@ -2,6 +2,14 @@ using System.Numerics;
 
 namespace VectorAnimationEngine;
 
+internal sealed record MotionTrackRestartState
+{
+    public string InstanceId { get; init; } = "";
+    public int FirstFrame { get; init; } = -1;
+    public int LastFrame { get; init; } = -1;
+    public int[] SelectedFrames { get; init; } = [];
+}
+
 /// <summary>
 /// Motion-track workbench integration: the timeline toggle, the per-frame anchor selection model,
 /// the Stage pointer session that drags selected frames, and the sampling that feeds the Stage
@@ -29,6 +37,52 @@ internal sealed partial class MainForm
     private int _motionTrackRangeFirst = -1;
     private int _motionTrackRangeLast = -1;
     private string? _motionTrackRangeInstanceId;
+
+    /// <summary>
+    /// The instance the track was switched on for. Availability is normally derived from the live
+    /// Stage selection, but a transient context change (workspace switch, navigating into a drawing
+    /// object, mask editing, a selection the operator just cleared) must not tear an enabled track
+    /// down. The pin gives the track a target that outlives those transitions: while the pinned
+    /// instance still exists the track merely goes dormant, and the state is discarded for real only
+    /// when the operator explicitly switches the track off.
+    /// </summary>
+    private string? _motionTrackPinnedInstanceId;
+
+    private MotionTrackRestartState? CaptureMotionTrackRestartState()
+    {
+        return _motionTrackEnabled && _motionTrackPinnedInstanceId is { } instanceId
+            ? new MotionTrackRestartState
+            {
+                InstanceId = instanceId,
+                FirstFrame = _motionTrackRangeFirst,
+                LastFrame = _motionTrackRangeLast,
+                SelectedFrames = _motionTrackSelectedFrames.Order().ToArray()
+            }
+            : null;
+    }
+
+    private void RestoreMotionTrackRestartState(MotionTrackRestartState? state)
+    {
+        if (state is null || string.IsNullOrWhiteSpace(state.InstanceId)
+            || state.InstanceId.Length > 256
+            || state.FirstFrame < -1 || state.LastFrame < state.FirstFrame
+            || state.LastFrame > 100_000
+            || state.SelectedFrames is { Length: > 100_001 }
+            || state.FirstFrame == -1 && state.LastFrame != -1) return;
+
+        _motionTrackEnabled = true;
+        _motionTrackPinnedInstanceId = state.InstanceId;
+        _motionTrackRangeInstanceId = state.InstanceId;
+        _motionTrackRangeFirst = state.FirstFrame;
+        _motionTrackRangeLast = state.LastFrame;
+        _motionTrackSelectedFrames.Clear();
+        foreach (var frame in state.SelectedFrames ?? [])
+        {
+            if (frame >= 0 && frame >= state.FirstFrame && frame <= state.LastFrame)
+                _motionTrackSelectedFrames.Add(frame);
+        }
+        RebuildMotionTrackPreview();
+    }
 
     /// <summary>
     /// Pointer session for dragging selected anchors. Null while no drag is in flight; the captured
@@ -59,13 +113,25 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// The symbol instance the motion track follows. The primary Stage selection wins; when nothing
+    /// The symbol instance the motion track follows. While disabled, the primary Stage selection wins; when nothing
     /// is selected the first instance in the active context is adopted instead, so the toggle is
     /// reachable without the operator first having to hunt for a nested symbol instance on the
-    /// Stage. Returns null only when the active context holds no trackable instance at all.
+    /// Stage. An enabled track resolves only its pinned target in the active context.
     /// </summary>
     private DrawingObjectInstanceDefinition? MotionTrackInstance()
     {
+        if (_motionTrackPinnedInstanceId is { } pinnedId)
+        {
+            // An enabled track keeps following the instance it was switched on for even after the
+            // operator's selection has moved away from it. Resolving the pin against the active
+            // context only means a track that left the context reports "nothing to draw" instead of
+            // quietly adopting some other instance and re-seeding its frame window.
+            return ActiveEditableInstances().FirstOrDefault(instance =>
+                string.Equals(instance.Id, pinnedId, StringComparison.Ordinal)
+                && MotionTrackSymbolFor(instance) is not null);
+        }
+
+        if (_motionTrackEnabled) return null;
         if (SelectedSceneInstance() is { } selected && MotionTrackSymbolFor(selected) is not null)
         {
             return selected;
@@ -110,18 +176,13 @@ internal sealed partial class MainForm
         // toggle could never be switched on.
         var instance = MotionTrackInstance();
         var available = instance is not null;
-        if (!available)
-        {
-            _motionTrackEnabled = false;
-            _motionTrackSelectedFrames.Clear();
-        }
 
         var symbol = instance is null ? null : MotionTrackSymbolFor(instance);
         var track = instance is null ? null : MotionTrackTimelineTrack(instance);
 
-        _timeline.MotionTrackToggleAvailable = available;
+        _timeline.MotionTrackToggleAvailable = available || _motionTrackEnabled;
         _timeline.MotionTrackEnabled = _motionTrackEnabled;
-        _timeline.MotionTrackRangeVisible = _motionTrackEnabled;
+        _timeline.MotionTrackRangeVisible = _motionTrackEnabled && available;
         if (_motionTrackEnabled && instance is not null && track is not null)
         {
             var mirrored = ResolveMotionTrackRange(instance, track);
@@ -161,9 +222,14 @@ internal sealed partial class MainForm
             _playbackSettings.Fps);
 
         // Frames that fell outside the track (or that the pointer range no longer covers) must not
-        // stay selected, or a later drag would write to a frame the operator cannot see.
-        var sampledFrames = sampled.Anchors.Select(anchor => anchor.Frame).ToHashSet();
-        _motionTrackSelectedFrames.RemoveWhere(frame => !sampledFrames.Contains(frame));
+        // stay selected, or a later drag would write to a frame the operator cannot see. An empty
+        // sample is treated as "no information" rather than "nothing left", so a degenerate rebuild
+        // cannot silently wipe a selection the operator is still working with.
+        if (sampled.HasAnchors)
+        {
+            var sampledFrames = sampled.Anchors.Select(anchor => anchor.Frame).ToHashSet();
+            _motionTrackSelectedFrames.RemoveWhere(frame => !sampledFrames.Contains(frame));
+        }
 
         _stage.SetMotionTrack(sampled, _motionTrackSelectedFrames);
         UpdateMotionTrackTransformBox();
@@ -248,11 +314,9 @@ internal sealed partial class MainForm
     /// </summary>
     private void SetMotionTrackRange(int firstFrame, int lastFrame)
     {
-        var lastValid = int.MaxValue;
-        if (MotionTrackInstance() is { } instance && MotionTrackTimelineTrack(instance) is { } track)
-        {
-            lastValid = Math.Max(0, track.Duration - 1);
-        }
+        if (!_motionTrackEnabled || MotionTrackInstance() is not { } instance
+            || MotionTrackTimelineTrack(instance) is not { } track) return;
+        var lastValid = Math.Max(0, track.Duration - 1);
 
         var first = Math.Clamp(firstFrame, 0, lastValid);
         var last = Math.Clamp(lastFrame, first, lastValid);
@@ -266,41 +330,69 @@ internal sealed partial class MainForm
 
     private void ToggleTimelineMotionTrack()
     {
+        AbortMotionTrackPointerSession();
+        _stage.Capture = false;
+        if (_motionTrackEnabled)
+        {
+            // Switching off never depends on the target still being reachable in the active context.
+            // While an enabled track is dormant its instance is out of context, and refusing here
+            // would leave the toggle checked with no way back from the UI.
+            ResetMotionTrackState();
+            RebuildMotionTrackPreview();
+            _timeline.RefreshMotionTrackControls();
+            _stage.Invalidate();
+            return;
+        }
+
         var instance = MotionTrackInstance();
         if (instance is null) return;
 
-        if (!_motionTrackEnabled
-            && !string.Equals(_selectedSceneInstanceId, instance.Id, StringComparison.Ordinal))
+        if (!string.Equals(_selectedSceneInstanceId, instance.Id, StringComparison.Ordinal))
         {
             // Adopt the fallback target as the Stage selection so the overlay, the transform box and
             // the instance actually being edited all refer to the same thing.
             SetSceneInstanceSelection(instance, additive: false);
         }
 
-        _motionTrackEnabled = !_motionTrackEnabled;
-        if (!_motionTrackEnabled)
-        {
-            _motionTrackSelectedFrames.Clear();
-            _motionTrackDragSession = null;
-            _stage.SetMotionTrack(null);
-            _stage.SetMotionTrackTransformBoxVisible(false);
-        }
-        else
-        {
-            // The track seeds its window from wherever the onion skin currently sits, so the onion
-            // skin has to be on for that seed to mean anything to the operator.
-            if (!IsTimelineOnionSkinEnabled()) ToggleTimelineOnionSkin();
+        _motionTrackEnabled = true;
+        _motionTrackPinnedInstanceId = instance.Id;
 
-            // Switching on freezes a fresh window around the playhead, so the track starts out
-            // covering exactly what the onion skin shows right now.
-            _motionTrackRangeFirst = -1;
-            _motionTrackRangeLast = -1;
-            _motionTrackRangeInstanceId = null;
-        }
+        // The track seeds its window from wherever the onion skin currently sits, so the onion skin
+        // has to be on for that seed to mean anything to the operator.
+        if (!IsTimelineOnionSkinEnabled()) ToggleTimelineOnionSkin();
+
+        // Switching on freezes a fresh window around the playhead, so the track starts out covering
+        // exactly what the onion skin shows right now.
+        _motionTrackRangeFirst = -1;
+        _motionTrackRangeLast = -1;
+        _motionTrackRangeInstanceId = null;
 
         RebuildMotionTrackPreview();
         _timeline.RefreshMotionTrackControls();
         _stage.Invalidate();
+    }
+
+    /// <summary>
+    /// The single teardown path for every piece of motion-track state. Only an operator action
+    /// (switching the toggle off) reaches it;
+    /// every other refresh treats a target that is merely out of context as dormant and leaves the
+    /// anchor selection and the frozen frame window untouched.
+    /// </summary>
+    private void ResetMotionTrackState()
+    {
+        _motionTrackEnabled = false;
+        _motionTrackPinnedInstanceId = null;
+        _motionTrackSelectedFrames.Clear();
+        _motionTrackDragSession = null;
+        _motionTrackMarqueeActive = false;
+        _motionTrackRangeFirst = -1;
+        _motionTrackRangeLast = -1;
+        _motionTrackRangeInstanceId = null;
+        ClearMotionTrackHoverHint();
+        _stage.ClearMarquee();
+        _stage.SetMotionTrack(null);
+        _stage.SetMotionTrackTransformBoxVisible(false);
+        _stage.SetMotionTrackHover(-1);
     }
 
     /// <summary>
@@ -309,21 +401,14 @@ internal sealed partial class MainForm
     /// </summary>
     private void RefreshMotionTrackToggle()
     {
+        // Availability only decides whether the toggle can be switched *on*; it must stay clickable
+        // while an enabled track is dormant so the operator always has a way to switch it back off.
+        // Binding the overlay belongs to RebuildMotionTrackPreview,
+        // which runs immediately after this on every refresh path that reaches here.
         var available = MotionTrackInstance() is not null;
-        if (!available && _motionTrackEnabled)
-        {
-            // The tracked instance disappeared (deleted, context switch, deselected): drop the
-            // overlay rather than leaving a stale track pointing at frames nobody owns.
-            _motionTrackEnabled = false;
-            _motionTrackSelectedFrames.Clear();
-            _motionTrackDragSession = null;
-            _stage.SetMotionTrack(null);
-            _stage.SetMotionTrackTransformBoxVisible(false);
-        }
-
-        _timeline.MotionTrackToggleAvailable = available;
+        _timeline.MotionTrackToggleAvailable = available || _motionTrackEnabled;
         _timeline.MotionTrackEnabled = _motionTrackEnabled;
-        _timeline.MotionTrackRangeVisible = _motionTrackEnabled;
+        _timeline.MotionTrackRangeVisible = _motionTrackEnabled && available;
         _timeline.RefreshMotionTrackControls();
     }
 
@@ -709,7 +794,7 @@ internal sealed partial class MainForm
             ClearMotionTrackHoverHint();
             return;
         }
-        _toolTip.ShowCompactAt(_stage, location, $"{UiLocalization.T("Frame")} {frame}");
+        _toolTip.ShowFrameAt(_stage, location, frame);
         _motionTrackHintVisible = true;
     }
 
@@ -742,6 +827,9 @@ internal sealed partial class MainForm
         int editFrame,
         Point location)
     {
+        if (_motionTrackDragSession is not null || !_motionTrackEnabled
+            || !_stage.MotionTrackVisible || editFrame < 0
+            || !string.Equals(MotionTrackInstance()?.Id, instance.Id, StringComparison.Ordinal)) return false;
         // One undo unit for the whole gesture: capturing here (not per move) is what makes a drag
         // that touches several frames revert in a single step.
         var scene = IsSceneCompositionContext() ? ActiveScene() : null;
@@ -770,7 +858,7 @@ internal sealed partial class MainForm
             InstanceSnapshot = scene?.CreateInstanceSnapshot(),
             TimelineSelection = scene is null ? null : _timeline.CaptureSelectionSnapshot(),
             StartStates = _motionTrackSelectedFrames
-                .Where(frame => frame >= 0)
+                .Where(frame => _stage.MotionTrack?.FindAnchor(frame) is { IsSelectable: true })
                 .ToDictionary(frame => frame, instance.EvaluateState),
             Changed = false
         };

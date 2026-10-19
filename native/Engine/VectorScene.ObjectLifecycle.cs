@@ -94,6 +94,7 @@ internal sealed partial class VectorScene
         _mixingStrokeLocalRegions.Clear();
         _importedSvgSources.Clear();
         _importedSvgNames.Clear();
+        _importedSvgAssetIds.Clear();
         _bitmapObjects.Clear();
         _textObjects.Clear();
         _objectDistortions.Clear();
@@ -190,6 +191,7 @@ internal sealed partial class VectorScene
         _mixingStrokeLocalRegions.Clear();
         _importedSvgSources.Clear();
         _importedSvgNames.Clear();
+        _importedSvgAssetIds.Clear();
         _bitmapObjects.Clear();
         _textObjects.Clear();
         _objectDistortions.Clear();
@@ -1762,6 +1764,15 @@ internal sealed partial class VectorScene
             _importedSvgNames.Remove(to);
         }
 
+        if (source._importedSvgAssetIds.TryGetValue(from, out var importedSvgAssetId))
+        {
+            _importedSvgAssetIds[to] = importedSvgAssetId;
+        }
+        else
+        {
+            _importedSvgAssetIds.Remove(to);
+        }
+
         if (source._bitmapObjects.TryGetValue(from, out var bitmapObject))
         {
             _bitmapObjects[to] = bitmapObject;
@@ -1830,6 +1841,7 @@ internal sealed partial class VectorScene
         MoveObjectDictionaryEntry(_mixingStrokeLocalRegions, from, to);
         MoveObjectDictionaryEntry(_importedSvgSources, from, to);
         MoveObjectDictionaryEntry(_importedSvgNames, from, to);
+        MoveObjectDictionaryEntry(_importedSvgAssetIds, from, to);
         MoveObjectDictionaryEntry(_bitmapObjects, from, to);
         MoveObjectDictionaryEntry(_textObjects, from, to);
         MoveObjectDictionaryEntry(_objectDistortions, from, to);
@@ -1850,6 +1862,7 @@ internal sealed partial class VectorScene
         RemapObjectDictionary(_mixingStrokeLocalRegions, oldToNew);
         RemapObjectDictionary(_importedSvgSources, oldToNew);
         RemapObjectDictionary(_importedSvgNames, oldToNew);
+        RemapObjectDictionary(_importedSvgAssetIds, oldToNew);
         RemapObjectDictionary(_bitmapObjects, oldToNew);
         RemapObjectDictionary(_textObjects, oldToNew);
         RemapObjectDictionary(_objectDistortions, oldToNew);
@@ -1959,6 +1972,10 @@ internal sealed partial class VectorScene
 
     private void RemoveImportedSvgDataOutsideObjectCount()
     {
+        foreach (var index in _importedSvgAssetIds.Keys.Where(index => index >= ObjectCount).ToArray())
+        {
+            _importedSvgAssetIds.Remove(index);
+        }
         foreach (var index in _importedSvgSources.Keys.Where(index => index >= ObjectCount).ToArray())
         {
             _importedSvgSources.Remove(index);
