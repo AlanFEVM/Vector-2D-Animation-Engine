@@ -512,6 +512,7 @@ internal sealed partial class MainForm
         _lineDragPreviewTimer.Stop();
         _pendingHoverScreen = null;
         _pendingFreehandPreview = false;
+        ApplyPendingLineToolPreview();
         ApplyPendingLineDragPreview(updateLinkedFillPreview: false);
         ApplyPendingFillEdgeBezierPreview();
         ApplyPendingDrawingTransformPreview();
@@ -525,6 +526,8 @@ internal sealed partial class MainForm
     {
         _lineDragPreviewTimer.Stop();
         _pendingLineDragWorld = null;
+        _pendingLineToolScreen = null;
+        _lineToolPreviewStarted = false;
         _pendingFillEdgeBezierWorld = null;
         _pendingDrawingTransformWorld = null;
         _pendingHoverScreen = null;

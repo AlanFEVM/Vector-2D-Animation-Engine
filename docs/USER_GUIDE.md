@@ -123,7 +123,7 @@ VectorAnimationEngine-<version>-win-x64.exe
 - 顶部栏：主菜单、工程名称、FPS 和窗口控制。属性、时间轴与工作区颜色入口位于画布标题区的中间区域；切换工作区时保留相同高度位置；颜色入口显示色样、名称和 Hex，空间较窄时收紧为色样。
 - 左侧悬浮工具栏：绘制、选择、变形、填充、擦除及 Vault。
 - 中央舞台：绘制、选择、预览和场景装配。
-- 右侧检查器：基础着色、对象、图层混合、场景和动画参数。`Shots & Directing` 工作区会用镜头管理面板替换右侧检查器，舞台区域显示场景和当前相机取景。
+- 右侧检查器：基础着色、对象、图层混合、场景和动画参数。在场景与动画的“镜头”分组或“全部”中选中相机时，显示相机管理面板和取景预览；选回普通图层恢复原检查器。
 - 底部时间轴：图层、帧、关键帧、洋葱皮和播放头。
 
 左侧工具栏的吸管、文本、填充、橡皮擦和 Vault 分别使用滴管、衬线 T、倾斜颜料桶与液滴、斜切橡皮和素材盒图标，采用与矩形等形状工具一致的半透明均匀填色和描边，随当前主题和按钮状态调整；工具操作与快捷键不变。
@@ -136,15 +136,14 @@ Properties, Timeline and workspace color controls are centered in the first work
 
 底部状态栏中的“渲染 FPS”统计实际完成呈现的画面次数；即使时间轴帧号未变化，重复呈现也会计入。它与项目设置的“动画 FPS”是两个独立指标。
 
-三个工作区的职责不同：
+两个工作区的职责不同；镜头已集成到场景与动画：
 
 | 工作区 | 用途 | 是否直接绘制 |
 | --- | --- | --- |
 | `Basic Drawing` | 编辑可复用的元件、图层和 Cel | 是 |
-| `Scene & Animation` | 把元件作为实例装配到一个场景，并设置 FPS、循环、播放范围和关键帧 | 仅编辑 Scene Mask 时可以 |
-| `Shots & Directing` | 管理一个场景中的多组独立 3D 相机，并编辑相机轨道 | 否，舞台可操作相机取景但不直接编辑场景动画 |
+| `Scene & Animation` | 装配场景、制作关键帧动画，并通过时间轴的“镜头”分组管理相机 | 仅编辑 Scene Mask 时可以 |
 
-`Shots & Directing` 与 `Scene & Animation` 共用同一个场景、舞台和连续时间轴：切换场景、2D/3D、投影和播放设置的行为一致，右侧会显示相机管理面板并暂时替换原检查器。镜头工作区的时间轴只显示相机轨道，普通场景图层和灯光轨道暂时隐藏；场景与动画工作区只显示场景图层和灯光轨道，相机轨道只在镜头与导演工作区出现。图层总控、添加/删除/排序、锁定、Outline、颜色和混合模式入口在镜头工作区隐藏或禁用。选择相机只定位到对应相机轨道，不会隐藏、切分或重新分配场景图层。
+相机不再使用单独的顶部工作区。进入 `Scene & Animation` 后，时间轴默认显示“全部”；场景时间轴初始包含“图层”“地形”“镜头”分组。“镜头”只显示相机轨道；进入时优先选中之前的相机，否则选中第一个可用相机，右侧显示相机面板。没有相机时也可从此面板新建。在“全部”中，相机轨道固定排在普通图层上方，不受图层分组排序、移动或文件夹／遮罩关系影响；相机不能移入普通分组，普通图层也不能移入“镜头”。选中普通图层后恢复场景检查器。相机仍观察完整场景，不拥有场景图层。
 
 机制：元件是可复用的绘制资产；Scene 保存元件实例，不复制其源几何。修改源元件后，引用它的场景和嵌套实例会使用新内容。
 
@@ -155,14 +154,22 @@ Properties, Timeline and workspace color controls are centered in the first work
 操作提示：
 
 - `F1` 显示或隐藏右侧检查器，`F2` 显示或隐藏时间轴。
-- `Ctrl+1` / `Ctrl+2` / `Ctrl+3` 分别切换到基础绘制（`Basic Drawing`）、场景与动画（`Scene & Animation`）、镜头与导演（`Shots & Directing`）。使用键盘上方数字键；`Ctrl+4`–`Ctrl+9` 为后续工作流模块按标签顺序预留，尚无对应模块时不执行操作。
+- `Ctrl+1` / `Ctrl+2` 切换到基础绘制（`Basic Drawing`）／场景与动画（`Scene & Animation`）；`Ctrl+3` 直接打开场景与动画时间轴里的“镜头”分组。使用键盘上方数字键；`Ctrl+4`–`Ctrl+9` 暂为预留。
 - 工作区标签获得焦点后，可使用方向键切换相邻工作区，`Home` / `End` 跳到首个或末个工作区。
 - 主窗口按当前显示器的可用工作区设置初始尺寸；最小尺寸采用随 DPI 缩放的 760 × 520 逻辑像素，并限制在可用工作区内，便于分屏。移动到不同分辨率或 DPI 缩放比例的显示器后会重新约束窗口，并按调整后的实际大小布局；重启恢复时保留符合下限的分屏尺寸。
 - 窗口变窄或变矮时，Vault、右侧检查器和底部时间轴会按可用空间收紧；画布上方指标会按空间隐藏，属性、时间轴和颜色入口随工作区标签行的可用空间收紧，缩放入口保持在右侧；吸附栏收紧为六个开关，网格间距和角度步长输入框在恢复宽窗口后重新显示。空间不足时顶部 FPS 输入会暂时隐藏。工作区、网格与工具栏也会自动收紧或换列，核心窗口命令始终保留。
 - 检查器内容较长时可滚轮滚动；刷新后会尽量保留当前位置。
 - 随工具或选择出现的笔尖、混色、形状、文本、元件实例、滤镜、补间曲线、图片信息及 3D 材质／灯光面板沿用轻量模块标题；线条起始／末端连接选项使用紧凑按钮，形状参数行不会随面板空白拉高。
+- 着色面板的描边“宽度”行采用左侧标签、右侧约半栏宽数值框的属性布局，随面板宽度等比例伸缩，切换填色／描边或调整侧栏宽度时重新按当前容器计算边界，避免沿用窄栏尺寸；在渐变模式按钮与下方颜色分组之间保留上下留白，数值框采用 32 个逻辑像素的标准高度与 11pt 常规数值／单位文字，不使用偏扁的紧凑高度。
+- “颜色”“高级设置”等折叠标题悬停、按下或展开时仅强调文字与箭头颜色，不显示整行背景高亮；键盘焦点提示保留。
+- 场景与动画的播放参数（FPS、开始、结束）与描边“宽度”使用相同的半栏输入宽度、32 个逻辑像素高度与 11pt 数值字体，循环开关保持原有样式。
+- 图层混合模式收起时采用约半栏宽、32 个逻辑像素高，文字字号与左侧“混合模式”标签一致，不套用数值输入框的 11pt 字号；面板随控件实际高度和 DPI 保留完整下沿及底部留白。展开菜单保持原有字号、行高、选项及选择行为。
+- 混合模式、描边宽度、和谐色与 HEX 完整输入框统一左右边界和 32 个逻辑像素高度；文字与数值字号分别保留，颜色通道滑条旁的小数值框仍采用紧凑布局。
+- 展开的颜色编辑区在模式按钮上下、选色区顶部与底部分隔线前保留额外留白；和谐色小色块与上方下拉框保留间隔，通道及 HEX 参数区与上方分隔线留出更大距离，不改变输入框尺寸和列对齐。
 - 在基础绘制、场景与动画、镜头与导演之间切换时，右侧检查器使用约 180ms 的淡入淡出和轻微上移过渡；连续切换以最后一次选择为准。窗口尺寸变化或系统关闭动画时直接显示目标面板。
 - 镜头与导演顶部相机标题与图层标题采用相同的顶部留白；相机数量、时长及帧／关键帧统计收纳到标题悬停提示中，不占用常驻参数区。
+- 相机单行属性采用半栏宽、32 逻辑像素高的统一输入框；文字保持常规字号，数值使用 11pt。位置与旋转各使用一个半栏宽的暗色向量输入组，XYZ 纵向排列；左侧采用主题强调色底的轴标徽章和轴向细色条，行间使用轻分隔线，点击轴标可聚焦对应数值。保留数值编辑、步进和连续编辑行为；下拉菜单及相机编辑行为保持不变。
+- 镜头与导演连续参数框采用与播放面板一致的 8 逻辑像素净间距，向量组之间及其相邻参数也沿用该间距，不额外拉大空行。
 - 场景与动画、播放及镜头与导演面板沿用着色模块的轻量标题和留白；参数标签／输入列保持一致的对齐关系，场景和相机列表与属性区保留分组间距，循环字段只显示一次文字标签。
 - 检查器的“图层”和“着色”模块标题统一采用较小的常规字号和随背景变化的柔和颜色，靠近左侧边缘。图层与下方检查器之间使用两端贴齐面板边缘的模块分隔线，颜色与着色内部分组线一致、粗细为其 1.5 倍。标题、输入行及模块之间保留较宽松的间距。
 - 画布右上角吸附开关选中后显示与时间轴开关一致的圆角胶囊底色；未选中时跟随工具栏背景。
@@ -354,8 +361,10 @@ Distort 控制框：
 - 选择独立 Line、Pencil 描边、Path 描边或可编辑填色边界后，会显示锚点和贝塞尔控制柄；Pencil 只显示指针所在曲线段的四个手柄，避免长笔迹同时显示过多锚点。
 - `Simple Pen` 与 `Line` 新建的线段按二次贝塞尔编辑：两个端点的蓝色辅助线汇聚到同一个蓝色控制方格，选中轮廓使用浅金黄色与较深的金色光晕。`Pen`、Pencil、形状边界及其他生成来源使用三次贝塞尔与默认的两个独立方向柄，其高亮不变。复制、拆分、撤销和保存重开保留编辑类型；未记录来源的旧工程线段默认按三次编辑，已有曲线几何不变。
 - 位图、导入 SVG 与文本不显示锚点和方向柄；它们按整体对象选择，只显示整体包围框。
-- 拖动共享端点时，相连线条会保持连接。端点及折点编辑的对象吸附半径为屏幕上的 8 像素，画线时仍为 32 像素；关闭吸附可自由调整。拖动新拆出的折点时排除正在编辑的两段，按住 Ctrl 创建折点不会强制开启对象吸附；抓取偏移在整个拖动中保持，回到按下位置恢复原锚点。
-  Endpoint and corner editing snaps within 8 screen pixels, while drawing retains its 32-pixel radius. Disabling snapping allows free adjustment. A new corner excludes both edited segments from snap targets; holding Ctrl to create it does not force object snapping on. The initial grab offset is preserved, and returning to the press position restores the original anchor.
+- 直线绘制、延伸分支、拉弧和折点拖动会立即处理首个移动位置，后续高频输入按显示帧合并为最新位置，减少重复吸附和几何计算。松手仍以实际松手位置提交；取消操作或丢失鼠标捕获时清空排队预览。
+  Line drawing, branch extension, arc reshaping and corner drags respond to the first move immediately, then coalesce rapid input to the latest position for each preview frame, reducing repeated snapping and geometry work. Release commits the actual release position; cancellation or capture loss clears queued previews.
+- 拖动共享端点时，相连线条会保持连接；拖动过程中实际描边与黄色编辑线、端点手柄同步刷新，直线折角也保持重合。端点及折点编辑的对象吸附半径为屏幕上的 8 像素，画线时仍为 32 像素；关闭吸附可自由调整。拖动新拆出的折点时排除正在编辑的两段，按住 Ctrl 创建折点不会强制开启对象吸附；抓取偏移在整个拖动中保持，回到按下位置恢复原锚点。
+  Connected endpoints stay joined during dragging; the actual stroke, yellow editing outline and endpoint handles update together, including straight corners. Endpoint and corner editing snaps within 8 screen pixels, while drawing retains its 32-pixel radius. Disabling snapping allows free adjustment. A new corner excludes both edited segments from snap targets; holding Ctrl to create it does not force object snapping on. The initial grab offset is preserved, and returning to the press position restores the original anchor.
 - 线段（`Line`、Pencil 描边、未填充的 Path 描边）作为独立对象编辑：**调整曲率**时可让重合的填色边界一起变化——拖动曲率方向柄（三次线段的两条方向柄、二次线段的单个控制方格）、在未选中线段上拖动中段拉弧、`Ctrl+拖动` 拉折角、拖动 Pencil 锚点，以及与边界重合的端点共享关系，都会同步该填色的对应边。**只移动线段本身**时不带动任何填色——选中整条线段拖动、拖动端点、使用变换框缩放/旋转/倾斜，填色边界保持在原处（三次贝塞尔线段同样如此）。填色也可以随时通过自己的边界控制点单独编辑。
   Strokes (`Line`, Pencil freehand, unfilled Path strokes) are independent objects: dragging a **curvature** handle (either direction handle of a cubic stroke, the single control of a quadratic one), pulling the arc of an unselected stroke, `Ctrl`+dragging a corner, dragging a Pencil anchor, or moving an endpoint shared with the fill boundary keeps a coincident fill edge in sync. **Moving the stroke itself** — dragging a selected stroke, dragging an endpoint, or scaling/rotating/skewing it with the transform box — never moves a fill edge (cubic-Bezier strokes included). Fills stay editable through their own boundary controls.
 - 拖动曲线锚点会同时平移该锚点附着的控制柄，保留原有曲率；直接拖动控制柄只调整对应切线。
@@ -472,6 +481,10 @@ In All view, layer rows in the same group share a background tint and swatch, us
 
 单击彩色方块可切换 Outline：填色和原描边暂时隐藏，内容以约 1 px 的图层色轮廓显示。该状态只影响编辑器舞台，不改变材质或工程几何。
 
+在时间轴图层列表中选中图层后，舞台会自动用该图层颜色为它当前帧的可见内容描边高亮：普通绘制图层包含其 Folder 子层内容，`Scene & Animation` 工作区高亮所选场景图层中的实例内容，编辑 Scene Mask 时高亮遮罩内容。播放、镜头/导演工作区和 3D 参考视图下不显示；图层没有可见内容时也不显示；对象数量很多时最多高亮 512 个。高亮用于初次选中图层时定位内容；使用选择或变换工具点击舞台空白可取消，活动图层仍保持选中。取消后，切帧、面板刷新或绘制不会重新开启同一图层的提示，切换选中图层后再次显示。高亮只是编辑提示，不会改变舞台选区、活动图层、材质或输出。
+
+Selecting a layer in the timeline layer list automatically outlines that layer's visible content on the Stage in the layer color. Folder descendants are included; in Scene & Animation the selected scene layer's instance content is outlined, and Scene Mask editing outlines the mask content. The outline is hidden during playback, in Shots & Directing, and in 3D reference views; it is also hidden when the layer has no visible content, and at most 512 objects are outlined. The highlight initially helps locate the selected layer: clicking blank Stage space with a selection or transform tool dismisses it while keeping the layer active. Frame changes, panel refreshes and drawing do not restore a dismissed hint for the same layer; selecting a different layer shows its hint again. This is an editor hint only and does not change the stage selection, active layer, materials, or output.
+
 ### 图层混合模式
 
 选择绘制图层或场景图层后，在右侧检查器顶部使用 `Layer > Blend Mode`。下拉菜单包含 29 种模式，包括 Multiply、Screen、Overlay、Difference、Hue、Color、Subtract、Divide、Dissolve、Isolated Group 和 Invert。
@@ -543,20 +556,52 @@ In All view, layer rows in the same group share a background tint and swatch, us
 
 ### 镜头与导演
 
+相机已并入“场景与动画”：进入后默认显示时间轴“全部”，点击“镜头”可集中编辑相机；选中相机显示右侧面板，选回普通图层恢复原检查器。镜头轨道在“全部”中始终置顶，且不能与普通图层互换分组。旧工程打开时补齐镜头分组，原有相机和关键帧保留。
+
+Cameras are integrated into Scene & Animation. The timeline opens on All; choose Shots for camera-only rows. Selecting a camera opens its inspector; selecting a regular layer restores the scene inspector. Camera rows stay above regular layers in All, independently of tab-group ordering. Camera and regular-layer groups cannot exchange tracks. Existing projects retain cameras and keys and gain the built-in Shots group. Ctrl+3 opens this group.
+
+在“镜头”或“全部”中，右键相机轨道名称，选择“删除图层”即可删除相机及其动画；支持多选删除，一次 `Ctrl+Z` 可撤销。最后一台相机也可以删除，不会删除场景物体；固定“镜头”分组仍然保留。普通场景图层仍须至少保留一层。
+
+In Shots or All, right-click a camera row name and choose Delete Layer to remove the camera and its animation. Multi-selection deletion is supported and one Ctrl+Z restores the operation. The last camera can be removed without deleting scene objects; the built-in Shots group remains. At least one regular scene layer must still remain.
+
+#### 默认 2D 与实验性 3D
+
+2D 相机的旋转输入不显示 Z 轴标记，仅保留画面旋转角度；开启实验性 3D 后恢复轴标记。
+
+The 2D camera rotation input shows only the picture rotation angle, without a Z-axis badge. Experimental 3D restores the axis badge.
+
+默认 2D 相机面板隐藏描述、相机类型、投影模式、焦距、正交尺寸、位置 Z 和旋转 X/Y。只显示名称、画面比例、二维位置、画面旋转和“缩放”；相机列表不再显示透视／正交术语。缩放百分比越大，取景越近。新建、定位、排序、删除、重置及简化相机样式入口保留。已有相机的投影和隐藏参数不变；“缩放”按原投影调整焦距或正交尺寸，不转换旧工程。启用实验性 3D 后恢复完整参数。
+
+二维“旋转”使用与“缩放”一致的半栏宽、32 逻辑像素高的单值输入框，不显示 Z 轴徽章，参数之间保留 8 逻辑像素间距。镜头属性区不显示滚动条，保留滚轮与键盘滚动；侧栏高度不足时，可在属性区空白或标签处滚轮浏览下方参数。
+
+The default 2D camera inspector hides description, camera type, projection, focal length, orthographic size, position Z and rotation X/Y. It retains name, aspect ratio, XY position, picture rotation and a single Zoom percentage (larger means closer). Creation, locate, ordering, deletion, reset and simple camera style remain available. Existing projection and hidden values are preserved; Zoom adjusts the existing projection's lens or orthographic size without converting the project. Enabling experimental 3D restores the full inspector.
+
+默认仅开放 2D 工作流。在 **设置 → 常规 → 实验功能 → 启用实验性 3D 功能** 中可以手动打开 3D，保存后立即生效，并在下次启动时保留。新设置及未记录此选项的旧设置均默认关闭。
+
+关闭时隐藏／禁用 2D/3D 切换、空间参考方向、3D Transform、灯光与三维材质面板、灯光轨道和 Vault 的 3D 元件分类。场景按正面二维视图显示，不启用三维光学。镜头面板隐藏相机类型选择、位置 Z 与旋转 X/Y，新建及重置相机均使用 2D；仍保留平移、Z 轴画面旋转、画幅及焦距／正交尺寸等二维取景操作。
+
+已有 3D 相机在列表中标记为“已禁用”，不能编辑、重置、删除或预览，其时间轴和舞台辅助图形也不会开放。关闭开关不删除或转换工程内的场景维度、相机关键帧、灯光、材质及三维元件；重新开启后可继续使用。MCP 的 3D 写入同样受此开关约束，读取仍可用。旧工程的二维显示不是原有 3D 效果的等效预览。
+
+Only 2D workflows are enabled by default. Use **Settings → General → Experimental features → Enable experimental 3D features** to opt in; saving applies the setting immediately and persists it across restarts. Older settings without this option also default to off. With the option off, 3D view switching, reference directions, spatial transforms, lights, optical materials, light tracks and the Vault 3D category are unavailable. New/reset cameras use 2D, with position Z and rotation X/Y hidden. Existing 3D cameras are disabled and read-only, without camera-track editing or previews. Project data is not deleted or converted; enabling the option restores access. MCP 3D writes are also gated, while reads remain available. The 2D view of an older project is not an equivalent preview of its original 3D appearance.
+
 镜头与导演面板采用统一主题输入框和紧凑操作栏；相机列表以柔和底色标记选中项，次级信息显示投影类型。名称、描述字段与其他检查器保持相同的边框和圆角风格。
 
-`Shots & Directing` 工作区管理同一个场景中的多组独立 3D 相机。右侧相机列表与检查器替换原场景信息面板，舞台继续显示当前场景，底部时间轴切换为 AE 风格的相机轨道模式：只显示相机轨道，普通场景图层和灯光轨道不参与镜头编辑。舞台点击不会选择或修改场景物体，只能操作当前相机的可视线框和手柄。
+在 `Scene & Animation` 的时间轴中点击“镜头”，管理同一场景中的独立相机。默认仅启用 2D；实验性 3D 开关保持原有行为。相机面板替换右侧场景检查器，舞台继续显示完整场景；选择相机时只操作相机框和手柄，不直接修改场景物体。切到“全部”可同时查看相机和场景动画，相机始终置顶。点击时间轴添加按钮或面板“新建相机”均可在镜头分组中新建相机。
 
 当前相机的取景预览显示为舞台左下角的浮动监视器，位于时间轴面板正上方。它是真正的相机视图：按相机的实际 3D 位置、三轴旋转、投影模式和焦距/正交尺寸渲染，Z 轴推拉会改变取景覆盖范围。可以拖动监视器右下角的斜纹手柄调整大小，松开后按新尺寸重新取景；尺寸会一直保持，除非舞台空间不足。预览随相机选择、播放头和参数变化刷新，不占据右侧检查器空间。预览在播放中或拖动取景手柄时暂时隐藏，停止后恢复。右侧检查器只保留相机列表和相机参数。
 
 #### 相机类型
+
+`2D Camera` 的舞台采用简易取景框：只显示当前相机的边框、四角手柄、顶部旋转手柄和名称，隐藏相机机身、视锥、三轴箭头、旋转环、焦距滑杆及其他相机线框。拖边框移动取景，拖四角等比调整范围，拖顶部手柄旋转；框内部和隐藏控件不接收相机拖动。左下角监视器仍显示实际取景。此调整不删除相机参数或已有动画；`3D Camera` 保留原有样式。
+
+The `2D Camera` Stage overlay shows only the active frame, four corner handles, top rotation handle and name. Camera bodies, frustums, axes, rotation rings, lens sliders and other camera outlines are hidden. Drag the border to move, corners to resize with the aspect ratio preserved, or the top handle to rotate. The interior and hidden controls do not accept camera drags. The lower-left monitor still shows the actual view. Parameters and animation are preserved; `3D Camera` keeps its original style.
 
 每组相机有 `Type` 参数，可选择 `2D Camera` 或 `3D Camera`。两种类型都保留真实场景与透视纵深，区别在于可编辑的通道：
 
 | 类型 | 可编辑参数 | 手柄 |
 | --- | --- | --- |
 | `3D Camera` | 完整 XYZ 位置与三轴旋转、焦距/正交尺寸 | 位置三轴箭头、三轴旋转环、焦距滑杆 |
-| `2D Camera` | X/Y 平移、**Z 推拉**、**仅 Z 轴旋转**、焦距/正交尺寸 | 位置与 Z 推拉轴、仅 Z 旋转环、焦距滑杆 |
+| `2D Camera` | X/Y 平移、**Z 推拉**、**仅 Z 轴旋转**、焦距/正交尺寸 | 简易取景框：四角等比缩放、顶部旋转、边框移动；其他参数在检查器调整 |
 
 `2D Camera` 是平面摄像台：保留 Z 轴的纵深与透视缩放效果，但 X/Y 旋转固定为 `0`，因此取景平面始终与舞台平行。切换为 `2D Camera` 时，原有的 X/Y 旋转会被归零并作为一次可撤销的提交；`Rotation X` / `Rotation Y` 输入框在 2D 类型下禁用，3D 相机手柄上也不再显示 X/Y 旋转环。Z 位置、Z 旋转和镜头参数在两种类型下都可用，经典补间会保持 Z 纵深与 Z 旋转连续。
 
@@ -573,7 +618,7 @@ In All view, layer rows in the same group share a background tint and swatch, us
 | `Ortho size` | 编辑正交相机的可视尺寸；可在时间轴上做关键帧和补间 |
 | `Reset camera` | 将当前相机恢复为默认 3D 取景 |
 
-场景仍只有一个连续时间轴。相机不会拥有场景内容图层，旧工程中的镜头图层归属只作为兼容数据读取后清空；Scene & Animation 只显示场景图层和灯光轨道，Shots & Directing 只显示相机轨道，当前场景帧范围仍由同一条时间轴决定。
+场景仍只有一个连续时间轴。相机不会拥有场景内容图层，旧工程中的镜头图层归属只作为兼容数据读取后清空；“镜头”只显示相机轨道，“全部”同时显示相机和场景图层（实验性 3D 开启时也显示灯光轨道），当前场景帧范围仍由同一条时间轴决定。
 
 #### 相机关键帧与补间
 
@@ -585,7 +630,7 @@ In All view, layer rows in the same group share a background tint and swatch, us
 - 空白相机关键帧表示该帧没有相机取景；端点、曲线或帧位置变化后，中间取景会重新求值；
 - 相机轨道的关键帧、补间和设置随场景时间轴保存，并经过独立的帧序、引用和轨道校验。
 
-相机预览会随相机选择、播放头和参数变化刷新。舞台保留相机机身、取景平面和视锥线；透视相机使用会聚视锥，正交相机使用平行引导线。
+相机预览会随相机选择、播放头和参数变化刷新。3D 相机的舞台辅助图形保留相机机身、取景平面和视锥线；透视相机使用会聚视锥，正交相机使用平行引导线。2D 相机只显示上述简易取景框。
 
 镜头与导演工作区始终显示当前场景的所有相机框，包括未选中相机、空白曝光和播放期间。选中的镜头框以橙色加粗高亮显示，未选中的框以普通蓝色细线显示；取消选择不会隐藏相机框。仅选中的镜头显示并可拖动缩放点、旋转环、轴杆和镜头滑杆；未选中的框不显示操作手柄。拖动选中镜头时其他框保持显示，播放期间手柄仅显示、不接受拖动。通过右侧相机列表或时间轴选择镜头，使用相机检查器调整位置、旋转、焦距和正交尺寸；框线随当前帧求值更新。离开导演工作区后隐藏这些辅助框。 同一视图下，绘制和命中查询复用相机框与手柄的投影结果；旋转视图、缩放、窗口尺寸、相机参数或舞台尺寸变化后重新计算，保留全部框线、操作手柄及近裁剪。
 
@@ -1215,7 +1260,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 | 按键 | 命令 |
 | --- | --- |
 | `F1` / `F2` | 显示或隐藏检查器 / 时间轴 |
-| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | 全局切换基础绘制 / 场景与动画 / 镜头与导演（键盘上方数字键） |
+| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | 切换基础绘制 / 场景与动画 / 场景时间轴的镜头分组（键盘上方数字键） |
 | `Ctrl+4`–`Ctrl+9` | 按标签顺序预留给后续工作流模块；空槽不执行操作，`Ctrl+1`–`Ctrl+9` 均不能分配给自定义工具快捷键 |
 | `Ctrl+N` / `Ctrl+O` | 新建 / 打开工程 |
 | `Ctrl+S` / `Ctrl+Shift+S` | 保存 / 另存工程 |

@@ -13,7 +13,7 @@ internal sealed class LayerBlendModePanel : Panel
     private const int PanelHeight = PanelPaddingTop
         + Theme.InspectorTitleHeight
         + Theme.InspectorContentPaddingTop + 4
-        + Theme.InspectorRowHeight
+        + Theme.ControlHeight + Theme.InspectorRowMarginVertical * 2
         + PanelPaddingBottom;
 
     private sealed record BlendModeItem(LayerBlendMode Mode, string Label)
@@ -82,7 +82,7 @@ internal sealed class LayerBlendModePanel : Panel
         Font = Theme.UiFont();
         Height = PanelHeight;
         MinimumSize = new Size(248, PanelHeight);
-        Padding = new Padding(PanelPaddingHorizontal - 8, 0, PanelPaddingHorizontal, PanelPaddingBottom);
+        Padding = new Padding(4, 0, 10, PanelPaddingBottom);
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Layer";
         Theme.StyleToolTip(_toolTip);
@@ -125,16 +125,17 @@ internal sealed class LayerBlendModePanel : Panel
 
         var row = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            Height = Theme.InspectorContentPaddingTop + 10 + Theme.ControlHeight + Theme.InspectorRowMarginVertical * 2,
             ColumnCount = 2,
             RowCount = 1,
             BackColor = Theme.Panel,
             Margin = Padding.Empty,
-            Padding = new Padding(8, Theme.InspectorContentPaddingTop + 10, 0, 0)
+            Padding = new Padding(4, Theme.InspectorContentPaddingTop + 10, 0, 0)
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.InspectorRowHeight));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeight + Theme.InspectorRowMarginVertical * 2));
         Controls.Add(row);
         row.BringToFront();
 
@@ -151,8 +152,9 @@ internal sealed class LayerBlendModePanel : Panel
 
         foreach (var item in BlendModes) _blendMode.Items.Add(new BlendModeItem(item.Mode, item.Label));
         Theme.StyleComboBox(_blendMode);
+        Theme.StyleComboBoxSelection(_blendMode, label.Font.Size, Theme.ControlHeight);
         _blendMode.Dock = DockStyle.Fill;
-        _blendMode.Margin = new Padding(0, Theme.InspectorRowMarginVertical, 0, Theme.InspectorRowMarginVertical);
+        _blendMode.Margin = Theme.InspectorFieldMargin(rightGap: false);
         _blendMode.DropDownWidth = 220;
         row.Controls.Add(_blendMode, 1, 0);
 
@@ -178,7 +180,24 @@ internal sealed class LayerBlendModePanel : Panel
 
     public event EventHandler<LayerBlendModeChangedEventArgs>? BlendModeChanged;
 
-    public int PreferredPanelHeight => PanelHeight;
+    public int PreferredPanelHeight => Math.Max(
+        (int)Math.Round(PanelHeight * DeviceDpi / 96f),
+        _blendMode.Parent is Control row
+            ? row.Top + row.Padding.Vertical + _blendMode.Height + _blendMode.Margin.Vertical + Padding.Bottom
+            : PanelHeight);
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+        if (_blendMode.Parent is not TableLayoutPanel row) return;
+        var rowHeight = _blendMode.Height + _blendMode.Margin.Vertical;
+        if (row.RowStyles[0].Height != rowHeight) row.RowStyles[0].Height = rowHeight;
+        if (row.Height != rowHeight + row.Padding.Vertical) row.Height = rowHeight + row.Padding.Vertical;
+        var requiredHeight = PreferredPanelHeight;
+        if (MinimumSize.Height != requiredHeight)
+            MinimumSize = new Size(MinimumSize.Width, requiredHeight);
+        if (Height < requiredHeight) Height = requiredHeight;
+    }
 
     public void SetLayer(string layerName, LayerBlendMode blendMode, Color layerColor)
     {

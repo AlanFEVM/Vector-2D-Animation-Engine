@@ -19,6 +19,8 @@
 
 ## Layout
 
+Read [inspector layout contracts](../../../../docs/UI_COMPOSITION.md#检查器输入框与留白契约) before changing inspector fields, including conditional tool/selection panels. The architecture document is the source of truth for half-column sizing, 32px standard field height, separate numeric/text typography, closed-selector versus popup styling, disclosure headers, color-section spacing, host gutter compensation, and screenshot acceptance. Do not enlarge fields to reference-image absolute sizes or reintroduce the former 156px harmony selector limit.
+
 - Build UI in constructors or a `BuildUi` method with programmatic docking and layout panels.
 - Prefer `Theme.ControlHeightCompact`, `ControlHeight`, `IconButtonSize`, and gap constants.
 - Give rows and tool buttons stable dimensions. Use `AutoEllipsis` or measured owner-drawn text for bounded labels.

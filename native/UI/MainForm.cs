@@ -905,6 +905,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         _stage = new StageControl(_scene)
         {
+            Experimental3DEnabled = _applicationSettings.Experimental3DEnabled,
             SimpleSelectionHighlightEnabled = _applicationSettings.SimpleSelectionHighlightEnabled,
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(_applicationSettings.WorkspaceColorArgb)
@@ -921,6 +922,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _timeline.PlaybackFps = _playbackSettings.Fps;
         _topPlaybackFps.Value = _playbackSettings.Fps;
         _timeline.FrameWidth = _applicationSettings.TimelineFrameWidth;
+        _timeline.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        _shotDirectorPanel.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        _sceneEditorPanel.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        _libraryVaultPanel.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
         _timeline.FrameHeightPreset = _applicationSettings.TimelineFrameHeight;
         _timeline.AutoKeyframeEnabled = _applicationSettings.TimelineAutoKeyframeEnabled;
         _drawSettingsPanel = new DrawSettingsPanel(_drawSettings);
@@ -1850,7 +1855,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _applicationSettings.AccentBrightnessPercent,
             _applicationSettings.FreeTransformShiftProportionalEnabled,
             _applicationSettings.SimpleSelectionHighlightEnabled,
-            _applicationSettings.WindowCornerStyle);
+            _applicationSettings.WindowCornerStyle,
+            _applicationSettings.Experimental3DEnabled);
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
         void PreviewCorners(object? sender, EventArgs e) => ApplyWindowCornerStyle(dialog.SelectedWindowCornerStyle);
         dialog.CornerPreviewChanged += PreviewCorners;
@@ -1895,6 +1901,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             AccentSaturationPercent = dialog.SelectedAccentSaturationPercent,
             AccentBrightnessPercent = dialog.SelectedAccentBrightnessPercent,
             SimpleSelectionHighlightEnabled = dialog.SimpleSelectionHighlightEnabled,
+            Experimental3DEnabled = dialog.Experimental3DEnabled,
             FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled,
             WindowCornerStyle = dialog.SelectedWindowCornerStyle
         });
@@ -1910,8 +1917,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
         }
 
+        var experimental3DChanged = _applicationSettings.Experimental3DEnabled != settings.Experimental3DEnabled;
         _applicationSettings = settings;
         RefreshShortcutMenuDisplay();
+        if (experimental3DChanged) ApplyExperimental3DSettings();
         AppHost.Current?.ApplyCodexBridgeSettings(settings);
         _stage.SimpleSelectionHighlightEnabled = settings.SimpleSelectionHighlightEnabled;
         ApplyWindowCornerStyle(settings.WindowCornerStyle);
@@ -2746,15 +2755,16 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private bool IsScene3DView()
     {
-        return IsSceneCompositionContext()
+        return _applicationSettings.Experimental3DEnabled && IsSceneCompositionContext()
             && _stage.ReferenceDimension == SceneDimension.ThreeD;
     }
 
     private bool IsSceneBuildingContext() => _timeline.Context is SceneDefinition;
 
     private bool IsShotDirectorContext() =>
-        _workspaceTabs.SelectedView == WorkspaceView.ShotDirector
-        && IsSceneBuildingContext();
+        IsSceneWorkspaceSelected && IsSceneCompositionContext()
+        && (_timeline.Context.Timeline.ActiveTabGroupId == AnimationTimeline.ShotTabGroupId
+            || SelectedTimelineShot() is not null);
 
     private bool IsSceneMaskEditing()
     {
@@ -2772,6 +2782,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private SceneDimension ActiveSceneViewDimension()
     {
+        if (!_applicationSettings.Experimental3DEnabled) return SceneDimension.TwoD;
         var scene = ActiveScene();
         if (scene is null) return SceneDimension.TwoD;
         return _sceneViewDimensions.TryGetValue(scene.Id, out var dimension)
@@ -2801,6 +2812,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void UpdateSceneSettings(SceneSettingsChangedEventArgs e)
     {
+        if (!_applicationSettings.Experimental3DEnabled) return;
         if (e.SceneIndex < 0 || e.SceneIndex >= _scenes.Count) return;
         var scene = _scenes[e.SceneIndex];
         var depth = ActiveSceneViewDimension() == SceneDimension.TwoD && e.Projection == CameraProjection.Perspective
@@ -2829,6 +2841,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void ToggleSceneDimension()
     {
+        if (!_applicationSettings.Experimental3DEnabled) return;
         var scene = ActiveScene();
         if (scene is null || IsSceneMaskEditing()) return;
         // Playback can finish on a scheduler callback before the UI-facing
@@ -2879,7 +2892,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             && !maskEditing
             && ActiveSceneViewDimension() == SceneDimension.ThreeD;
         _sceneDimensionButton.Text = isThreeD ? "3D" : "2D";
-        _sceneDimensionButton.Enabled = scene is not null && !maskEditing;
+        _sceneDimensionButton.Visible = IsSceneWorkspaceSelected && _applicationSettings.Experimental3DEnabled;
+        _sceneDimensionButton.Enabled = _applicationSettings.Experimental3DEnabled && scene is not null && !maskEditing;
         _sceneDimensionButton.AccessibleDescription = maskEditing
             ? "Scene masks are edited on the 2D reference plane"
             : isThreeD
@@ -2888,6 +2902,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         var projection = scene?.Camera.Projection ?? CameraProjection.Orthographic;
         var projectionAvailable = IsSceneWorkspaceSelected
+            && _applicationSettings.Experimental3DEnabled
             && scene is not null
             && !maskEditing;
         _sceneProjectionButton.Text = projection == CameraProjection.Perspective
@@ -3289,6 +3304,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         UpdateSceneInstanceSelectionOverlay();
         UpdateTransformOverlay();
+        RefreshStageLayerContentHighlight();
         _stage.Invalidate();
     }
 

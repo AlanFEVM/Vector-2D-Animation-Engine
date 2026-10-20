@@ -12,6 +12,28 @@ internal sealed partial class TimelineStrip
     private HashSet<string> _shotTrackIds = new(StringComparer.Ordinal);
     private bool _shotFilterActive;
     private bool _shotTracksHidden;
+    private bool _experimental3DEnabled = true;
+
+    internal void SetExperimental3DEnabled(bool enabled)
+    {
+        if (_experimental3DEnabled == enabled) return;
+        _experimental3DEnabled = enabled;
+        InvalidateTimelineStructureCache();
+        RemoveCollapsedFrameSelection();
+        PruneLayerSelection();
+        UpdateSelectedTweenFromFrameSelection(forceNotification: _selectedTween is not null);
+        EnsureActiveTrackVisible();
+        Invalidate();
+    }
+
+    private bool IsExperimentalTrackAllowed(int trackIndex)
+    {
+        if (_experimental3DEnabled || _sceneDefinition is null) return true;
+        if (IsSceneLightTrack(trackIndex)) return false;
+        var shot = _sceneDefinition.FindShot(_timeline.Tracks[trackIndex].TargetId);
+        return shot is null || shot.Settings.PinsPlanarRotation
+            && shot.StateKeyframes.All(keyframe => keyframe.Settings.PinsPlanarRotation);
+    }
 
     internal string? ActiveShotId => _activeShotId;
 
@@ -24,6 +46,7 @@ internal sealed partial class TimelineStrip
     private bool IsTrackEditableInCurrentPresentation(int trackIndex)
     {
         if (trackIndex < 0 || trackIndex >= TrackCount) return false;
+        if (!IsExperimentalTrackAllowed(trackIndex)) return false;
         if (_shotFilterActive) return IsSceneShotTrack(trackIndex);
         return !_shotTracksHidden || !IsSceneShotTrack(trackIndex);
     }
@@ -154,6 +177,7 @@ internal sealed partial class TimelineStrip
     private bool IsTrackVisibleInActiveShot(int trackIndex)
     {
         if (trackIndex < 0 || trackIndex >= TrackCount) return false;
+        if (!IsExperimentalTrackAllowed(trackIndex)) return false;
         if (!_shotFilterActive)
         {
             return !_shotTracksHidden || !IsSceneShotTrack(trackIndex);

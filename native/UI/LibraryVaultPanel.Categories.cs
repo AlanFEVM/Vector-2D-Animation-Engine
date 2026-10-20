@@ -40,6 +40,21 @@ internal sealed partial class LibraryVaultPanel
     private Func<ImageAssetDefinition, bool>? _imageAssetAvailabilityProvider;
     private Func<ImageAssetDefinition, BitmapImageRaster?>? _imageAssetPreviewProvider;
     private AssetCategory _activeAssetCategory = AssetCategory.BasicSymbols;
+    private bool _experimental3DEnabled = true;
+
+    internal void SetExperimental3DEnabled(bool enabled)
+    {
+        _experimental3DEnabled = enabled;
+        if (_assetCategoryButtons.TryGetValue(AssetCategory.ThreeDimensionalSymbols, out var button))
+        {
+            button.Visible = enabled;
+            button.Enabled = enabled;
+            if (button.Parent is TableLayoutPanel layout)
+                layout.ColumnStyles[1].Width = enabled ? 25f : 0f;
+        }
+        if (!enabled && _activeAssetCategory == AssetCategory.ThreeDimensionalSymbols)
+            SelectAssetCategory(AssetCategory.BasicSymbols);
+    }
     private string _selectedExternalSvgAssetId = "";
     private string _selectedImageAssetId = "";
 
@@ -140,6 +155,7 @@ internal sealed partial class LibraryVaultPanel
 
     private void SelectAssetCategory(AssetCategory category, bool refresh = true)
     {
+        if (!_experimental3DEnabled && category == AssetCategory.ThreeDimensionalSymbols) return;
         if (_activeAssetCategory == category)
         {
             RefreshAssetCategoryPresentation();

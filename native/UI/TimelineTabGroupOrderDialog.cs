@@ -131,7 +131,7 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
 
     public TimelineTabGroup[] Groups => _groups.ToArray();
 
-    private static bool IsBuiltIn(string id) => id is AnimationTimeline.DefaultTabGroupId or AnimationTimeline.TerrainTabGroupId;
+    private static bool IsBuiltIn(string id) => id is AnimationTimeline.DefaultTabGroupId or AnimationTimeline.TerrainTabGroupId or AnimationTimeline.ShotTabGroupId;
 
     private void ReplaceSelected(TimelineTabGroup group)
     {
@@ -147,6 +147,7 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
     {
         AnimationTimeline.DefaultTabGroupId => UiLocalization.T("Layers"),
         AnimationTimeline.TerrainTabGroupId => UiLocalization.T("Terrain"),
+        AnimationTimeline.ShotTabGroupId => UiLocalization.T("Shots"),
         _ => group.Name
     };
 
@@ -261,7 +262,7 @@ internal sealed class TimelineTabGroupOrderDialog : ModernDialogForm
         _layers.Items.Clear();
         if (id is not null) _layers.Items.AddRange(_layerNames.GetValueOrDefault(id, []).Cast<object>().ToArray());
         _layers.EndUpdate();
-        _count.Text = string.Format(UiLocalization.T("{0}/32 custom groups · Ctrl+Left/Right to reorder"), Math.Max(0, _groups.Count - 2));
+        _count.Text = string.Format(UiLocalization.T("{0}/32 custom groups · Ctrl+Left/Right to reorder"), _groups.Count(group => !IsBuiltIn(group.Id)));
         var group = _groups.FirstOrDefault(item => item.Id == id);
         _rename.Enabled = _delete.Enabled = group is not null && !IsBuiltIn(group.Id);
         _color.Enabled = group is not null;

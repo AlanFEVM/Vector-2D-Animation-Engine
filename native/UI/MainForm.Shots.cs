@@ -36,6 +36,18 @@ internal sealed partial class MainForm
         _shotDirectorPanel.Dock = DockStyle.Fill;
         _shotDirectorPanel.Visible = false;
         _shotDirectorPanel.NewShotRequested += (_, _) => AddSceneShot();
+        _shotDirectorPanel.SetSimpleCameraStyle(_applicationSettings.SimpleCameraStyleEnabled);
+        _shotDirectorPanel.CameraStyleChanged += (_, _) =>
+        {
+            FinishPointerInteractionForContextChange();
+            _applicationSettings = _applicationSettings with
+            {
+                SimpleCameraStyleEnabled = _shotDirectorPanel.SimpleCameraStyleEnabled
+            };
+            if (!ApplicationSettingsStore.TrySave(_applicationSettings))
+                AppLog.Warn("The camera style could not be saved; the current session will keep the selected style.");
+            UpdateShotFramingGizmo();
+        };
         _shotDirectorPanel.ShotActivated += (_, e) => ActivateSceneShot(e.ShotId);
         _shotDirectorPanel.ShotLocateRequested += (_, e) => LocateSceneShot(e.ShotId);
         _shotDirectorPanel.ShotRemoveRequested += (_, e) => RemoveSceneShot(e.ShotId);
@@ -109,7 +121,7 @@ internal sealed partial class MainForm
     {
         if (!_shotDirectorInitialized) return;
         var view = selectedView ?? _workspaceTabs.SelectedView;
-        var visible = view == WorkspaceView.ShotDirector;
+        var visible = view == WorkspaceView.ShotDirector || view == WorkspaceView.SceneEditor && IsShotDirectorContext();
         // Control.Visible reports effective visibility, so track the workspace intent explicitly.
         if (_shotDirectorVisible != visible)
         {
@@ -119,12 +131,50 @@ internal sealed partial class MainForm
             // stage preview reclaims or releases the panel width immediately.
             _shotDirectorPanel.Parent?.PerformLayout(_shotDirectorPanel, "Visible");
         }
+        _sceneEditPage.Visible = view == WorkspaceView.SceneEditor && !visible;
+        _layerBlendModePanel.Visible = !visible;
+        if (visible) _shotDirectorPanel.BringToFront();
 
         if (visible) RefreshShotDirectorWidth();
-        _shotPreviewOverlay.Visible = visible;
+        _shotPreviewOverlay.Visible = visible && SelectedTimelineShot() is not null;
         if (visible) _shotPreviewOverlay.BringToFront();
         UpdateShotFramingGizmo();
-        RefreshShotPreview(force: true);
+    }
+
+    private SceneShotDefinition? SelectedTimelineShot()
+    {
+        if (!IsSceneCompositionContext() || ActiveScene() is not { } scene
+            || _timeline.Context.Timeline.FindTrack(_timeline.ActiveTrackId ?? "") is not { } track
+            || scene.FindShot(track.TargetId) is not { } shot || !IsSceneShotAllowed(shot)) return null;
+        return shot;
+    }
+
+    private void RefreshIntegratedShotPresentation()
+    {
+        if (!IsSceneWorkspaceSelected) return;
+        FinishPointerInteractionForContextChange();
+        RefreshShotDirector(force: true);
+        if (IsShotDirectorContext() && _tool is not (ToolMode.Select or ToolMode.Transform or ToolMode.Hand))
+            _tool = ToolMode.Select;
+        RefreshToolButtons();
+        ApplyToolCursor();
+        UpdateTransformOverlay();
+        UpdateSceneInstanceSelectionOverlay();
+        _stage.Invalidate();
+    }
+
+    private void HandleShotTabGroupChanged()
+    {
+        if (IsSceneWorkspaceSelected && IsSceneCompositionContext()
+            && _timeline.Context.Timeline.ActiveTabGroupId == AnimationTimeline.ShotTabGroupId
+            && SelectedTimelineShot() is null && ActiveScene() is { } scene)
+        {
+            var rememberedShotId = _activeShotBySceneId.GetValueOrDefault(scene.Id, "");
+            var shot = scene.Shots.FirstOrDefault(candidate => candidate.Id == rememberedShotId && IsSceneShotAllowed(candidate))
+                ?? scene.Shots.FirstOrDefault(IsSceneShotAllowed);
+            if (shot is not null) _timeline.SelectSingleLayerTarget(shot.Id, notifyActiveLayerChanged: false);
+        }
+        RefreshIntegratedShotPresentation();
     }
 
     /// <summary>Keeps the right inspector host laid out after the director page is toggled.</summary>
@@ -145,16 +195,19 @@ internal sealed partial class MainForm
     private void RefreshShotDirector(bool force = false)
     {
         if (!_shotDirectorInitialized) return;
+        _shotDirectorPanel.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        _shotDirectorPanel.SetSimpleCameraStyle(_applicationSettings.SimpleCameraStyleEnabled);
         var scene = IsSceneBuildingContext() ? ActiveScene() : null;
         NormalizeActiveShot(scene);
         ApplyShotTimelineFilter(scene);
         SynchronizeActiveShotStateFromTimeline(scene);
-        NormalizeActiveShot(scene);
+        UpdateShotDirectorWorkspace();
         var fingerprint = ComputeShotDirectorFingerprint(scene);
         if (!force && fingerprint == _shotDirectorFingerprint)
         {
             _shotDirectorPanel.SetPlayhead(_frame);
             UpdateShotFramingGizmo();
+            RefreshShotPreview();
             return;
         }
 
@@ -185,6 +238,7 @@ internal sealed partial class MainForm
 
     private bool IsShotFramingEditable(SceneDefinition scene, string shotId)
     {
+        if (scene.FindShot(shotId) is not { } shot || !IsSceneShotAllowed(shot)) return false;
         if (_timeline.AutoKeyframeEnabled) return true;
         var track = scene.FindShotTrack(shotId);
         if (track is null) return false;
@@ -199,6 +253,7 @@ internal sealed partial class MainForm
     private bool TryResolveSceneShotEditFrame(SceneDefinition scene, string shotId, out int editFrame)
     {
         editFrame = Math.Max(0, _frame);
+        if (scene.FindShot(shotId) is not { } shot || !IsSceneShotAllowed(shot)) return false;
         if (_timeline.AutoKeyframeEnabled) return true;
         var track = scene.FindShotTrack(shotId);
         if (track is null) return false;
@@ -217,6 +272,7 @@ internal sealed partial class MainForm
 
     private void ApplySceneShotFraming(ShotDirectorFramingEventArgs e)
     {
+        if (!_applicationSettings.Experimental3DEnabled && !e.Settings.PinsPlanarRotation) return;
         var scene = ActiveScene();
         if (scene is null || scene.FindShot(e.ShotId) is null) return;
         if (!TryResolveSceneShotEditFrame(scene, e.ShotId, out var editFrame))
@@ -261,7 +317,9 @@ internal sealed partial class MainForm
                 scene.InsertShotTimelineKeyframe(shotId, editFrame);
             }
 
-            return scene.UpdateShotAtFrame(shotId, editFrame, SceneShotSettings.Default);
+            var settings = _applicationSettings.Experimental3DEnabled ? SceneShotSettings.Default
+                : (SceneShotSettings.Default with { Kind = SceneShotCameraKind.TwoD }).EnforceKind();
+            return scene.UpdateShotAtFrame(shotId, editFrame, settings);
         });
         _shotDirectorFramingPushed = null;
         PushShotDirectorFraming();
@@ -432,13 +490,13 @@ internal sealed partial class MainForm
                 null,
                 null,
                 null,
-                hideShotTracks: _workspaceTabs.SelectedView == WorkspaceView.SceneEditor
-                    && scene is not null);
+                hideShotTracks: false);
             return;
         }
 
         var activeCameraId = scene.FindShot(_activeShotId) is null ? null : _activeShotId;
         var cameraTrackIds = scene.Shots
+            .Where(IsSceneShotAllowed)
             .Select(shot => shot.Id)
             .ToArray();
         _timeline.ApplyShotFilter(
@@ -458,6 +516,12 @@ internal sealed partial class MainForm
     /// </summary>
     private void SynchronizeActiveShotStateFromTimeline(SceneDefinition? scene)
     {
+        if (_workspaceTabs.SelectedView == WorkspaceView.SceneEditor && scene is not null)
+        {
+            if (SelectedTimelineShot() is { } selectedShot) SetActiveShotState(scene, selectedShot.Id);
+            else _activeShotId = "";
+            return;
+        }
         if (_workspaceTabs.SelectedView != WorkspaceView.ShotDirector
             || scene is null
             || string.IsNullOrWhiteSpace(_timeline.ActiveTrackId)
@@ -592,9 +656,14 @@ internal sealed partial class MainForm
     {
         var scene = ActiveScene();
         if (!CommitTextEdit() || scene is null) return;
+        if (scene.ShotCount >= SceneDefinition.MaximumShots) return;
         StartSceneShotTimelineEdit(scene);
         var shot = scene.AddShot(null, ResolveDefaultShotDuration(scene), detail: null);
+        if (!_applicationSettings.Experimental3DEnabled)
+            scene.UpdateShotAtFrame(shot.Id, 0, (SceneShotSettings.Default with { Kind = SceneShotCameraKind.TwoD }).EnforceKind());
         SetActiveShotState(scene, shot.Id);
+        _timeline.RefreshTimeline();
+        _timeline.SelectSingleLayerTarget(shot.Id, notifyActiveLayerChanged: false);
         FinishSceneShotTimelineEdit(scene);
     }
 
@@ -602,6 +671,7 @@ internal sealed partial class MainForm
     {
         var scene = ActiveScene();
         if (scene is null || !CommitTextEdit()) return;
+        if (shotId.Length > 0 && (scene.FindShot(shotId) is not { } shot || !IsSceneShotAllowed(shot))) return;
         if (string.Equals(_activeShotId, shotId, StringComparison.Ordinal))
         {
             RefreshShotDirector();
@@ -609,9 +679,8 @@ internal sealed partial class MainForm
         }
 
         SetActiveShotState(scene, shotId);
-        RefreshShotDirector(force: true);
-        if (shotId.Length == 0) return;
-        _timeline.SelectSingleLayerTarget(shotId, notifyActiveLayerChanged: false);
+        if (shotId.Length > 0) _timeline.SelectSingleLayerTarget(shotId, notifyActiveLayerChanged: false);
+        RefreshIntegratedShotPresentation();
         _timeline.RefreshTimeline();
     }
 
@@ -626,7 +695,8 @@ internal sealed partial class MainForm
             || ActiveScene() is not { } scene
             || string.IsNullOrWhiteSpace(_timeline.ActiveTrackId)
             || _timeline.Context.Timeline.FindTrack(_timeline.ActiveTrackId) is not { } track
-            || scene.FindShot(track.TargetId) is not { } shot)
+            || scene.FindShot(track.TargetId) is not { } shot
+            || !IsSceneShotAllowed(shot))
         {
             return false;
         }
@@ -643,7 +713,7 @@ internal sealed partial class MainForm
     private void LocateSceneShot(string shotId)
     {
         var scene = ActiveScene();
-        if (scene is null || shotId.Length == 0) return;
+        if (scene?.FindShot(shotId) is not { } shot || !IsSceneShotAllowed(shot)) return;
         if (!string.Equals(_activeShotId, shotId, StringComparison.Ordinal))
         {
             SetActiveShotState(scene, shotId);
@@ -651,6 +721,7 @@ internal sealed partial class MainForm
         }
 
         _timeline.SelectSingleLayerTarget(shotId, notifyActiveLayerChanged: false);
+        RefreshIntegratedShotPresentation();
         _timeline.ScrollFrameIntoView(_frame);
         _timeline.RefreshTimeline();
         _stage.Invalidate();
@@ -689,6 +760,7 @@ internal sealed partial class MainForm
     {
         var scene = ActiveScene();
         if (scene is null || scene.FindShot(shotId) is null) return;
+        if (!IsSceneShotAllowed(scene.FindShot(shotId)!)) return;
         StartSceneShotTimelineEdit(scene);
         if (!scene.TryRemoveShot(shotId))
         {
@@ -706,6 +778,7 @@ internal sealed partial class MainForm
     {
         var scene = ActiveScene();
         if (scene is null || scene.FindShot(shotId) is null) return;
+        if (!IsSceneShotAllowed(scene.FindShot(shotId)!)) return;
         StartSceneShotTimelineEdit(scene);
         if (!scene.TryMoveShot(shotId, targetIndex))
         {
@@ -722,6 +795,7 @@ internal sealed partial class MainForm
     {
         var scene = ActiveScene();
         if (scene is null || scene.FindShot(e.ShotId) is null) return;
+        if (!IsSceneShotAllowed(scene.FindShot(e.ShotId)!)) return;
         ApplySceneShotEdit(scene, () =>
         {
             var changed = scene.TryRenameShot(e.ShotId, e.Name);

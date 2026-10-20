@@ -796,6 +796,13 @@ internal sealed partial class TimelineStrip : Control
         .Select(trackIndex => _timeline.Tracks[trackIndex].TargetId)
         .ToArray();
 
+    internal IReadOnlyList<string> SelectedRemovableLayerTargetIds => VisibleTrackIndices()
+        .Where(trackIndex => IsTrackSelected(trackIndex)
+            && IsTrackEditableInCurrentPresentation(trackIndex)
+            && (IsTrackLayer(trackIndex) || IsSceneShotTrack(trackIndex)))
+        .Select(trackIndex => _timeline.Tracks[trackIndex].TargetId)
+        .ToArray();
+
     public int SelectedLayerCount => SelectedLayerTrackIndices().Count;
 
     public int CurrentFrame
@@ -908,6 +915,7 @@ internal sealed partial class TimelineStrip : Control
         _sceneDefinition = context as SceneDefinition;
         _context.SynchronizeTimelineTracks();
         _timeline = _context.Timeline;
+        _presentedTabGroupId = _timeline.ActiveTabGroupId;
         _timeline.Changed += HandleTimelineChanged;
         _timeline.TabGroupsChanged += HandleTabGroupsChanged;
 
@@ -3156,7 +3164,7 @@ internal sealed partial class TimelineStrip : Control
         {
             if (location.X < layout.TrackLeft)
             {
-                if (_shotFilterActive) return;
+                if (!IsTrackEditableInCurrentPresentation(trackIndex)) return;
                 PrepareLayerTrackAction(trackIndex);
                 _layerContextMenu.Show(this, location);
             }
@@ -3182,12 +3190,6 @@ internal sealed partial class TimelineStrip : Control
 
     private void HandleLayerContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        if (_shotFilterActive)
-        {
-            e.Cancel = true;
-            return;
-        }
-
         var hasTrack = GetActiveTrackIndex() >= 0;
         var activeTrack = GetActiveTrackIndex();
         var isLayerTrack = hasTrack && IsTrackLayer(activeTrack);
@@ -3228,8 +3230,11 @@ internal sealed partial class TimelineStrip : Control
             && IsTrackMaskedContent(activeTrack);
         _moveLayerUpMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection && activeVisiblePosition > 0;
         _moveLayerDownMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection && activeVisiblePosition >= 0 && activeVisiblePosition < visibleTrackCount - 1;
-        _removeLayersMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
-        _removeLayersMenuItem.Text = selectedLayerCount > 1 ? "Delete Selected Layers" : "Delete Layer";
+        var removableLayerCount = SelectedRemovableLayerTargetIds.Count;
+        _removeLayersMenuItem.Enabled = hasTrack
+            && IsTrackEditableInCurrentPresentation(activeTrack)
+            && removableLayerCount > 0;
+        _removeLayersMenuItem.Text = removableLayerCount > 1 ? "Delete Selected Layers" : "Delete Layer";
         _showSelectedLayersMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
         _hideSelectedLayersMenuItem.Enabled = hasLayerContext && selectedLayerCount > 0;
         _renameLayerMenuItem.Enabled = hasLayerContext && hasSingleLayerSelection;
@@ -4118,6 +4123,12 @@ internal sealed partial class TimelineStrip : Control
         {
             var ordered = _visibleTrackIndicesCache.OrderByDescending(index =>
                 _timeline.TabGroupOrdinal(_timeline.Tracks[index].TabGroupId)).ToArray();
+            _visibleTrackIndicesCache.Clear();
+            _visibleTrackIndicesCache.AddRange(ordered);
+        }
+        if (_sceneDefinition is not null)
+        {
+            var ordered = _visibleTrackIndicesCache.OrderByDescending(IsSceneShotTrack).ToArray();
             _visibleTrackIndicesCache.Clear();
             _visibleTrackIndicesCache.AddRange(ordered);
         }

@@ -332,7 +332,10 @@ internal readonly record struct Reference3DPlaybackPreparationState(
     float FontSize,
     FontStyle FontStyle,
     GraphicsUnit FontUnit,
-    bool UseGpuOptics);
+    bool UseGpuOptics)
+{
+    public bool Experimental3DEnabled { get; init; } = true;
+}
 
 internal sealed partial class StageControl
 {
@@ -532,7 +535,8 @@ internal sealed partial class StageControl
             Font.Style,
             Font.Unit,
             _direct2DRenderer.ExplicitGpuDeviceActive
-                && ReferenceDimension == SceneDimension.ThreeD);
+                && ReferenceDimension == SceneDimension.ThreeD)
+        { Experimental3DEnabled = this.Experimental3DEnabled };
 
     internal void ConfigureReference3DPlaybackPreparation(
         VectorScene scene,
@@ -543,14 +547,15 @@ internal sealed partial class StageControl
         ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(composition);
 
+        Experimental3DEnabled = state.Experimental3DEnabled;
         Scene = scene;
         _frame = Math.Max(0, frame);
         CameraX = Math.Clamp(state.View.CameraX, -5_000_000f, 5_000_000f);
         CameraY = Math.Clamp(state.View.CameraY, -5_000_000f, 5_000_000f);
         Zoom = Math.Clamp(state.View.Zoom, 0.02f, 64f);
-        ReferenceDimension = state.Dimension;
-        ReferenceProjection = state.Projection;
-        _reference2DViewDirection = state.ViewDirection;
+        ReferenceDimension = Experimental3DEnabled ? state.Dimension : SceneDimension.TwoD;
+        ReferenceProjection = Experimental3DEnabled ? state.Projection : CameraProjection.Orthographic;
+        _reference2DViewDirection = Experimental3DEnabled ? state.ViewDirection : ReferenceViewDirection.Front;
         _referenceYaw = NormalizeRadians(state.Camera.Yaw);
         _referencePitch = Math.Clamp(state.Camera.Pitch, -ReferenceMaximumPitch, ReferenceMaximumPitch);
         _referenceDistance = Math.Max(0.0001f, state.Camera.Distance);
@@ -604,7 +609,22 @@ internal sealed partial class StageControl
     internal bool UsesReferenceProjection => ReferenceDimension == SceneDimension.ThreeD
         || _reference2DViewDirection != ReferenceViewDirection.Front
         || UsesSpatialFrontProjection;
-    internal bool UsesSceneOpticsProjection => UsesReferenceProjection
+    private bool _experimental3DEnabled = true;
+    internal bool Experimental3DEnabled
+    {
+        get => _experimental3DEnabled;
+        set
+        {
+            if (_experimental3DEnabled == value) return;
+            _experimental3DEnabled = value;
+            InvalidateReference3DRenderPlanCache();
+            ClearGdiBaseFrameCache();
+            _direct2DRenderer.ReleaseTarget();
+            Invalidate();
+        }
+    }
+
+    internal bool UsesSceneOpticsProjection => Experimental3DEnabled && UsesReferenceProjection
         && ReferenceEquals(_sceneCompositionResultScene, Scene)
         && _referenceSceneDefinition?.LightingInitialized == true;
     internal CameraProjection EffectiveReferenceProjection =>

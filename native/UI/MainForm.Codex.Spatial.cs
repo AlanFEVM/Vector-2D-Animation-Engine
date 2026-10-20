@@ -11,6 +11,17 @@ internal sealed partial class MainForm
         out object result)
     {
         result = new { };
+        if (!_applicationSettings.Experimental3DEnabled)
+        {
+            var spatialWrite = name is "scene_light_create" or "scene_light_update" or "scene_light_remove"
+                or "scene_camera_update";
+            var instance3DWrite = name == "scene_instance_set_transform"
+                && new[] { "z", "rotationX", "rotationY", "scaleZ" }.Any(field => arguments.TryGetProperty(field, out _));
+            var view3DWrite = name == "scene_view_update"
+                && new[] { "yaw", "pitch", "targetZ", "viewDirection" }.Any(field => arguments.TryGetProperty(field, out _));
+            if (spatialWrite || instance3DWrite || view3DWrite)
+                throw new InvalidOperationException("3D features are disabled. Enable experimental 3D features in Settings.");
+        }
         switch (name)
         {
             case "scene_lights_get":
@@ -730,6 +741,8 @@ internal sealed partial class MainForm
 
     private bool CodexSpatialSetSceneDimension(SceneDefinition scene, SceneDimension dimension)
     {
+        if (!_applicationSettings.Experimental3DEnabled && dimension == SceneDimension.ThreeD)
+            throw new InvalidOperationException("3D features are disabled. Enable experimental 3D features in Settings.");
         var viewChanged = ActiveSceneViewDimension() != dimension;
         var documentChanged = scene.Dimension != dimension;
         if (!viewChanged && !documentChanged) return false;

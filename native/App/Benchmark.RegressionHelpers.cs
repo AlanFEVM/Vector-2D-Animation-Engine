@@ -6,6 +6,14 @@ internal static partial class Benchmark
 {
     private const BindingFlags PrivateInstanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
 
+    private static void ConfigureExperimental3DForRegression(MainForm form, bool enabled = true)
+    {
+        var settingsField = RequireField(typeof(MainForm), "_applicationSettings");
+        var settings = (ApplicationSettings)settingsField.GetValue(form)!;
+        settingsField.SetValue(form, settings with { Experimental3DEnabled = enabled });
+        RequireMethod(typeof(MainForm), "ApplyExperimental3DSettings").Invoke(form, null);
+    }
+
     private static FieldInfo RequireField(
         Type type,
         string name,

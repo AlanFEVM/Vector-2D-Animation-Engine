@@ -17,6 +17,15 @@ internal sealed class SettingsDialog : ModernDialogForm
     private WindowCornerStyle _selectedWindowCornerStyle;
     private readonly CodexIntegrationPanel _codexIntegration = new() { Dock = DockStyle.Fill, Visible = false };
     private UiLanguage _selectedLanguage;
+    private readonly ModernToggleSwitch _experimental3D = new()
+    {
+        Text = "Enable experimental 3D features",
+        AccessibleName = "Enable experimental 3D features",
+        AccessibleDescription = "Off by default. Existing 3D data is preserved while 3D tools are disabled.",
+        Dock = DockStyle.Fill,
+        AutoSize = true,
+        ForeColor = Theme.Text
+    };
     private ApplicationColorTheme _selectedColorTheme;
     private int _selectedThemeHueDegrees;
     private int _selectedThemeSaturationPercent;
@@ -98,7 +107,8 @@ internal sealed class SettingsDialog : ModernDialogForm
         int selectedAccentBrightnessPercent,
         bool freeTransformShiftProportionalEnabled = true,
         bool simpleSelectionHighlightEnabled = false,
-        WindowCornerStyle windowCornerStyle = WindowCornerStyle.Square)
+        WindowCornerStyle windowCornerStyle = WindowCornerStyle.Square,
+        bool experimental3DEnabled = false)
         : base("Settings", new Size(820, 700))
     {
         var shortcuts = ShortcutProfiles.Normalize(activeShortcutProfileId, customShortcutProfiles);
@@ -106,6 +116,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         _customShortcutProfiles = shortcuts.CustomProfiles.Select(ShortcutProfiles.CloneProfile).ToArray();
         _freeTransformShiftProportionalEnabled = freeTransformShiftProportionalEnabled;
         _simpleSelectionHighlight.Checked = simpleSelectionHighlightEnabled;
+        _experimental3D.Checked = experimental3DEnabled;
         _selectedWindowCornerStyle = Enum.IsDefined(windowCornerStyle) ? windowCornerStyle : WindowCornerStyle.Square;
         _simpleSelectionHighlight.AccessibleName = "Simple selection highlight";
         _selectedLanguage = selectedLanguage;
@@ -209,7 +220,8 @@ internal sealed class SettingsDialog : ModernDialogForm
         content.Controls.Add(settingsPanels, 0, 6);
         content.Controls.Add(_simpleSelectionHighlight, 0, 7);
 
-        content.Controls.Add(new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty }, 0, 8);
+        content.Controls.Add(CreateOptionRow("Experimental features", _experimental3D), 0, 8);
+        content.RowStyles[8].Height = 46;
         var cornerSelector = CreateSegmentedSelector();
         ConfigureSelectionButton(_squareCorners, "Use square interface corners");
         ConfigureSelectionButton(_subtleRoundedCorners, "Use subtle rounded interface corners");
@@ -260,6 +272,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     public int SelectedAccentSaturationPercent => _selectedAccentSaturationPercent;
     public int SelectedAccentBrightnessPercent => _selectedAccentBrightnessPercent;
     public bool SimpleSelectionHighlightEnabled => _simpleSelectionHighlight.Checked;
+    public bool Experimental3DEnabled => _experimental3D.Checked;
     public WindowCornerStyle SelectedWindowCornerStyle => _selectedWindowCornerStyle;
     public bool FreeTransformShiftProportionalEnabled => _freeTransformShiftProportionalEnabled;
     internal event EventHandler? ThemePreviewChanged;

@@ -21,6 +21,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
     private void ResetTarget()
     {
         ClearSelectionCommands();
+        ClearLayerContentHighlightCommands();
         ClearSelectionElementGeometry();
         ClearSoftwareFramePresentation();
         ClearGpuOpticalSurfaces();

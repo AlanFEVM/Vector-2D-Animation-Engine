@@ -41,6 +41,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1280, 800)
         };
+        ConfigureExperimental3DForRegression(form);
         var project = projectField.GetValue(form) as VectorProject
             ?? throw new InvalidOperationException("3D component shortcut regression did not obtain the project.");
         var workspaceTabs = workspaceTabsField.GetValue(form) as WorkspaceTabs

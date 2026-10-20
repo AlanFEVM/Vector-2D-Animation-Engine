@@ -102,11 +102,11 @@ internal sealed partial class ShotDirectorPanel : UserControl
     internal const int ScrollBarWidth = 9;
 
     private const int InspectorPadding = 8;
-    private const int RowHeight = 28;
-    private const int RowStep = 36;
-    private const int AxisLabelHeight = 14;
-    private const int AxisRowGap = 10;
-    private const int LabelWidth = 90;
+    private const int RowHeight = Theme.ControlHeight;
+    private const int FieldGap = 8;
+    private const int RowStep = RowHeight + FieldGap;
+    private const int AxisRowGap = FieldGap;
+    private const int AxisGroupPadding = 4;
     private const int ListWidth = 214;
     private const int NarrowLayoutThreshold = 520;
     private const int NarrowListHeight = 176;
@@ -147,6 +147,24 @@ internal sealed partial class ShotDirectorPanel : UserControl
         SelectionMode = SelectionMode.One
     };
     private readonly ThemedScrollPanel _inspector = new() { BackColor = Theme.Panel, ShowScrollBar = false };
+    private readonly ModernToggleSwitch _simpleCameraStyle = new()
+    {
+        Text = "Simple camera style",
+        AccessibleName = "Simple camera style",
+        AccessibleDescription = "Show a clean camera frame. Rotation handles appear only with Free Transform.",
+        Checked = true,
+        AutoSize = false
+    };
+    private bool _updatingCameraStyle;
+
+    internal void SetSimpleCameraStyle(bool enabled)
+    {
+        _updatingCameraStyle = true;
+        try { _simpleCameraStyle.Checked = enabled; }
+        finally { _updatingCameraStyle = false; }
+    }
+
+    internal bool SimpleCameraStyleEnabled => _simpleCameraStyle.Checked;
     private readonly Label _inspectorTitle = InspectorModuleStyle.CreateTitle("Camera");
     private readonly Label _frameInfo = new() { ForeColor = Theme.Muted, BackColor = Theme.Panel, AutoEllipsis = true };
     private readonly ModernTextInput _nameEditor = new();
@@ -178,15 +196,37 @@ internal sealed partial class ShotDirectorPanel : UserControl
         AccessibleDescription = "Minimum camera frame: 1920 x 1080 vu; aspect ratio is preserved."
     };
     private readonly Button _resetCameraButton = new() { Text = "Reset camera", AutoSize = false, Height = 26 };
+    private readonly ModernNumericUpDown _zoomEditor = new()
+    {
+        Minimum = 0.01m,
+        Maximum = 10000m,
+        Increment = 1m,
+        DecimalPlaces = 2,
+        Suffix = "%",
+        ShowSuffix = true,
+        AccessibleName = "Camera zoom"
+    };
 
     private ShotDirectorState _state = new();
+    private bool _experimental3DEnabled = true;
+
+    internal void SetExperimental3DEnabled(bool enabled)
+    {
+        if (_experimental3DEnabled == enabled) return;
+        _experimental3DEnabled = enabled;
+        UpdateEditors();
+        UpdateCommandStates();
+        PerformLayout();
+    }
+
+    private bool ActiveCameraAllowed => _experimental3DEnabled || ActiveShot()?.Framing.PinsPlanarRotation == true;
     private bool _updatingEditors;
     private bool _framingEditable;
     private Control? _curveEditor;
 
     public ShotDirectorPanel()
     {
-        var cameraEditors = new[] { _positionX, _positionY, _positionZ, _rotationX, _rotationY, _rotationZ, _focalLength, _orthographicSize };
+        var cameraEditors = new[] { _positionX, _positionY, _positionZ, _rotationX, _rotationY, _rotationZ, _focalLength, _orthographicSize, _zoomEditor };
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Panel;
         // The director is hosted by the narrow right inspector. Its content switches to the
@@ -207,6 +247,11 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Controls.Add(_toolbar);
         Controls.Add(_title);
         Controls.Add(_summary);
+        Controls.Add(_simpleCameraStyle);
+        _simpleCameraStyle.CheckedChanged += (_, _) =>
+        {
+            if (!_updatingCameraStyle) CameraStyleChanged?.Invoke(this, EventArgs.Empty);
+        };
         _cameraList.DrawItem += DrawCameraItem;
         _cameraList.SelectedIndexChanged += (_, _) => SelectCameraFromList();
         UiLocalization.Watch(this);
@@ -215,6 +260,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
     }
 
     public event EventHandler? NewShotRequested;
+    public event EventHandler? CameraStyleChanged;
     public event EventHandler<ShotDirectorEventArgs>? ShotActivated;
     public event EventHandler<ShotDirectorEventArgs>? ShotLocateRequested;
     public event EventHandler<ShotDirectorEventArgs>? ShotRemoveRequested;
@@ -364,6 +410,8 @@ internal sealed partial class ShotDirectorPanel : UserControl
         Theme.StyleComboBox(_kindEditor);
         Theme.StyleComboBox(_projectionEditor);
         Theme.StyleComboBox(_aspectRatioEditor);
+        foreach (var editor in new[] { _kindEditor, _projectionEditor, _aspectRatioEditor })
+            Theme.StyleComboBoxSelection(editor, Font.Size, Theme.ControlHeight);
         _aspectRatioEditor.Items.AddRange(new object[]
         {
             new AspectRatioItem(SceneShotAspectRatio.FollowScene, "Follow scene"),
@@ -382,7 +430,11 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _projectionEditor.Items.Add(new ProjectionItem(CameraProjection.Perspective, "Perspective"));
         _projectionEditor.Items.Add(new ProjectionItem(CameraProjection.Orthographic, "Orthographic"));
         _projectionEditor.AccessibleName = "Camera projection mode";
-        foreach (var editor in cameraEditors) Theme.StyleNumeric(editor);
+        foreach (var editor in cameraEditors)
+        {
+            Theme.StyleNumeric(editor);
+            editor.Font = Theme.UiFont(11f);
+        }
         Theme.StyleButton(_resetCameraButton);
         _nameEditor.AccessibleName = "Camera name";
         _detailEditor.AccessibleName = "Camera description";
@@ -398,6 +450,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         AddAxisEditors("Rotation", [_rotationX, _rotationY, _rotationZ], ["X", "Y", "Z"]);
         AddEditor(_focalLength, "Focal length");
         AddEditor(_orthographicSize, "Ortho size");
+        AddEditor(_zoomEditor, "Zoom");
         _inspector.Content.Controls.Add(_resetCameraButton);
 
         _nameEditor.Enter += (_, _) => ShotEditStarted?.Invoke(this, EventArgs.Empty);
@@ -431,7 +484,9 @@ internal sealed partial class ShotDirectorPanel : UserControl
             editor.InteractionCanceled += (_, _) => ShotEditCompleted?.Invoke(this, EventArgs.Empty);
             editor.ValueChanged += (_, _) =>
             {
-                if (!_updatingEditors) CommitCameraSettings();
+                if (_updatingEditors) return;
+                if (editor == _zoomEditor) CommitCameraZoom();
+                else CommitCameraSettings();
             };
         }
     }
@@ -450,17 +505,65 @@ internal sealed partial class ShotDirectorPanel : UserControl
         var rowLabel = CreateInspectorLabel(label);
         rowLabel.Tag = editors.ToArray();
         _inspector.Content.Controls.Add(rowLabel);
+        var group = new Panel { BackColor = Theme.Field };
+        group.Paint += (_, e) =>
+        {
+            group.BackColor = Theme.Field;
+            using var fill = new SolidBrush(Theme.Field);
+            using var border = new Pen(SystemInformation.HighContrast ? SystemColors.WindowText : Theme.ControlOutline);
+            Theme.PaintUiSurface(e.Graphics, fill, border, group.ClientRectangle);
+            using var separator = new Pen(SystemInformation.HighContrast ? SystemColors.WindowText : Theme.Mix(Theme.Field, Theme.ControlOutline, 0.45f));
+            var visibleRowCount = editors.Count(editor => editor.Visible);
+            for (var rowIndex = 1; rowIndex < visibleRowCount; rowIndex++)
+            {
+                var separatorY = ScaleMetric(AxisGroupPadding + RowHeight * rowIndex);
+                e.Graphics.DrawLine(separator, ScaleMetric(8), separatorY, group.Width - ScaleMetric(8), separatorY);
+            }
+        };
+        _inspector.Content.Controls.Add(group);
         foreach (var editor in editors)
         {
             editor.Tag = rowLabel;
-            _inspector.Content.Controls.Add(editor);
+            editor.GroupedAppearance = true;
+            group.Controls.Add(editor);
         }
         for (var index = 0; index < editors.Count; index++)
         {
             var axisLabel = CreateInspectorLabel(axisLabels[index]);
             axisLabel.Tag = editors[index];
+            var axisName = axisLabels[index];
+            var axisEditor = editors[index];
+            var axisColor = index switch
+            {
+                0 => Color.FromArgb(190, 110, 120),
+                1 => Color.FromArgb(148, 173, 94),
+                _ => Color.FromArgb(112, 160, 200)
+            };
+            axisLabel.Text = "";
+            axisLabel.AccessibleName = axisEditor.AccessibleName;
             axisLabel.TextAlign = ContentAlignment.MiddleCenter;
-            _inspector.Content.Controls.Add(axisLabel);
+            axisLabel.BackColor = Theme.Field;
+            axisLabel.Cursor = Cursors.IBeam;
+            axisLabel.Click += (_, _) =>
+            {
+                if (axisEditor.Enabled) axisEditor.SelectNextControl(null, true, true, true, false);
+            };
+            axisLabel.Paint += (_, e) =>
+            {
+                var highContrast = SystemInformation.HighContrast;
+                var background = highContrast ? SystemColors.Window : Theme.Mix(Theme.Field, Theme.AccentSurface, 0.65f);
+                var bounds = new Rectangle(ScaleMetric(2), ScaleMetric(6), Math.Max(1, axisLabel.Width - ScaleMetric(4)), ScaleMetric(20));
+                using var fill = new SolidBrush(background);
+                using var border = new Pen(highContrast ? SystemColors.WindowText : Theme.Mix(Theme.ControlOutline, Theme.AccentSurface, 0.5f));
+                Theme.PaintUiSurface(e.Graphics, fill, border, bounds);
+                using var marker = new SolidBrush(highContrast ? SystemColors.WindowText : Theme.ReadableUiColor(background, axisColor));
+                e.Graphics.FillRectangle(marker, bounds.Left, bounds.Top + ScaleMetric(4), ScaleMetric(2), Math.Max(1, bounds.Height - ScaleMetric(8)));
+                var foreground = highContrast ? SystemColors.WindowText : Theme.ReadableText(background, axisEditor.Enabled ? Theme.Text : Theme.DisabledText);
+                TextRenderer.DrawText(e.Graphics, axisName, axisLabel.Font, bounds, foreground,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            };
+            axisEditor.EnabledChanged += (_, _) => axisLabel.Invalidate();
+            group.Controls.Add(axisLabel);
         }
     }
 
@@ -485,9 +588,20 @@ internal sealed partial class ShotDirectorPanel : UserControl
         ShotActivated?.Invoke(this, new ShotDirectorEventArgs(shot.Id));
     }
 
+    private void CommitCameraZoom()
+    {
+        if (_experimental3DEnabled || ActiveShot() is not { } shot || !ActiveCameraAllowed || !_framingEditable) return;
+        var zoom = _zoomEditor.Value / 100m;
+        if (shot.Framing.Projection == CameraProjection.Orthographic)
+            _orthographicSize.Value = Math.Clamp(28000m / zoom, _orthographicSize.Minimum, _orthographicSize.Maximum);
+        else
+            _focalLength.Value = Math.Clamp(50m * zoom, _focalLength.Minimum, _focalLength.Maximum);
+    }
+
     private void CommitCameraSettings()
     {
         if (_updatingEditors || ActiveShot() is not { } shot) return;
+        if (!ActiveCameraAllowed) return;
         var kind = (_kindEditor.SelectedItem as CameraKindItem)?.Kind ?? SceneShotCameraKind.ThreeD;
         var projection = (_projectionEditor.SelectedItem as ProjectionItem)?.Projection ?? CameraProjection.Perspective;
         var settings = new SceneShotSettings(
@@ -517,6 +631,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
     private void CommitProperties()
     {
         if (_updatingEditors || ActiveShot() is not { } shot) return;
+        if (!ActiveCameraAllowed) return;
         var name = _nameEditor.Text.Trim();
         if (name.Length == 0) name = shot.Name;
         var detail = _detailEditor.Text.Trim();
@@ -544,7 +659,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
     private void UpdateEditors()
     {
         var shot = ActiveShot();
-        var enabled = _state.IsAvailable && shot is not null;
+        var enabled = _state.IsAvailable && shot is not null && ActiveCameraAllowed;
         _updatingEditors = true;
         try
         {
@@ -583,12 +698,17 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _rotationZ.Value = (decimal)settings.RotationDegrees;
         _focalLength.Value = (decimal)settings.FocalLength;
         _orthographicSize.Value = (decimal)settings.OrthographicSize;
+        var orthographic = settings.Projection == CameraProjection.Orthographic;
+        _zoomEditor.Minimum = orthographic ? 2800000m / _orthographicSize.Maximum : _focalLength.Minimum * 2m;
+        _zoomEditor.Maximum = orthographic ? 2800000m / _orthographicSize.Minimum : _focalLength.Maximum * 2m;
+        var zoomPercent = orthographic ? 2800000m / (decimal)settings.OrthographicSize : (decimal)settings.FocalLength * 2m;
+        _zoomEditor.Value = Math.Clamp(zoomPercent, _zoomEditor.Minimum, _zoomEditor.Maximum);
     }
 
     private void ApplyEditorState()
     {
-        var enabled = _state.IsAvailable && ActiveShot() is not null && _framingEditable;
-        foreach (var editor in new[] { _positionX, _positionY, _positionZ, _rotationX, _rotationY, _rotationZ, _focalLength, _orthographicSize })
+        var enabled = _state.IsAvailable && ActiveShot() is not null && _framingEditable && ActiveCameraAllowed;
+        foreach (var editor in new[] { _positionX, _positionY, _positionZ, _rotationX, _rotationY, _rotationZ, _focalLength, _orthographicSize, _zoomEditor })
         {
             editor.Enabled = enabled;
             editor.TabStop = enabled;
@@ -606,7 +726,7 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _aspectRatioEditor.TabStop = enabled;
         _resetCameraButton.Enabled = enabled;
         _projectionEditor.Enabled = enabled;
-        _kindEditor.Enabled = enabled;
+        _kindEditor.Enabled = enabled && _experimental3DEnabled;
     }
 
     private void UpdateCommandStates()
@@ -616,9 +736,9 @@ internal sealed partial class ShotDirectorPanel : UserControl
         var hasSelection = selectedIndex >= 0;
         _addShotButton.Enabled = available;
         _locateButton.Enabled = available && hasSelection;
-        _removeButton.Enabled = available && hasSelection;
-        _moveUpButton.Enabled = available && selectedIndex > 0;
-        _moveDownButton.Enabled = available && selectedIndex >= 0 && selectedIndex < _state.Shots.Length - 1;
+        _removeButton.Enabled = available && hasSelection && ActiveCameraAllowed;
+        _moveUpButton.Enabled = available && selectedIndex > 0 && ActiveCameraAllowed;
+        _moveDownButton.Enabled = available && selectedIndex >= 0 && selectedIndex < _state.Shots.Length - 1 && ActiveCameraAllowed;
     }
 
     private int SelectedShotIndex()
@@ -698,7 +818,9 @@ internal sealed partial class ShotDirectorPanel : UserControl
         e.Graphics.FillRectangle(bar, e.Bounds.Left + ScaleMetric(2), e.Bounds.Top + ScaleMetric(7), ScaleMetric(2), Math.Max(1, e.Bounds.Height - ScaleMetric(14)));
         var projection = shot.Framing.Projection == CameraProjection.Perspective ? "Perspective" : "Orthographic";
         var title = string.Format(CultureInfo.CurrentCulture, "{0}.  {1}", e.Index + 1, shot.Name);
-        var meta = UiLocalization.T(projection);
+        var meta = !_experimental3DEnabled && !shot.Framing.PinsPlanarRotation
+            ? UiLocalization.T("3D camera (disabled)")
+            : UiLocalization.T(_experimental3DEnabled ? projection : "2D Camera");
         var textColor = Theme.ReadableText(background, Theme.Text);
         TextRenderer.DrawText(e.Graphics, title, Theme.UiFont(9f), new Rectangle(e.Bounds.Left + ScaleMetric(12), e.Bounds.Top + ScaleMetric(5), e.Bounds.Width - ScaleMetric(18), ScaleMetric(20)), textColor, TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         TextRenderer.DrawText(e.Graphics, meta, Font, new Rectangle(e.Bounds.Left + ScaleMetric(12), e.Bounds.Top + ScaleMetric(25), e.Bounds.Width - ScaleMetric(18), ScaleMetric(18)), Theme.ReadableText(background, Theme.SecondaryText), TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
@@ -723,7 +845,9 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _title.SetBounds(ScaleMetric(4), 0, Math.Max(0, Width - ScaleMetric(12)), ScaleMetric(Theme.InspectorTitleHeight));
         _summary.SetBounds(ScaleMetric(108), ScaleMetric(8), Math.Max(0, Width - ScaleMetric(116)), ScaleMetric(24));
         _toolbar.SetBounds(0, titleHeight, Width, toolbarHeight);
-        var contentTop = titleHeight + toolbarHeight;
+        _simpleCameraStyle.SetBounds(ScaleMetric(8), titleHeight + toolbarHeight,
+            Math.Max(0, Width - ScaleMetric(16)), ScaleMetric(32));
+        var contentTop = _simpleCameraStyle.Bottom;
         var narrowLayout = Width < ScaleMetric(NarrowLayoutThreshold);
         if (narrowLayout)
         {
@@ -760,20 +884,21 @@ internal sealed partial class ShotDirectorPanel : UserControl
         }
 
         var left = ScaleMetric(InspectorPadding);
-        var right = Math.Max(left + 80, _inspector.ClientSize.Width - ScaleMetric(8));
+        var right = Math.Max(left + 80, _inspector.Content.ClientSize.Width - ScaleMetric(8));
         var y = 0;
         _inspectorTitle.SetBounds(ScaleMetric(4), y, Math.Max(0, right - ScaleMetric(4)), ScaleMetric(Theme.InspectorTitleHeight));
         y += ScaleMetric(32);
 
         LayoutSingleEditor(_nameEditor, y, right); y += ScaleMetric(RowStep);
-        LayoutSingleEditor(_detailEditor, y, right); y += ScaleMetric(RowStep);
-        LayoutSingleEditor(_kindEditor, y, right); y += ScaleMetric(RowStep);
-        LayoutSingleEditor(_projectionEditor, y, right); y += ScaleMetric(RowStep);
-        LayoutSingleEditor(_aspectRatioEditor, y, right); y += ScaleMetric(RowStep + 4);
-        LayoutAxisRow(y, right, _positionX, _positionY, _positionZ); y += ScaleMetric(AxisLabelHeight + RowHeight + AxisRowGap);
-        LayoutAxisRow(y, right, _rotationX, _rotationY, _rotationZ); y += ScaleMetric(AxisLabelHeight + RowHeight + AxisRowGap);
-        LayoutSingleEditor(_focalLength, y, right); y += ScaleMetric(RowStep);
-        LayoutSingleEditor(_orthographicSize, y, right); y += ScaleMetric(RowStep + 8);
+        y = LayoutOptionalEditor(_detailEditor, y, right, _experimental3DEnabled);
+        y = LayoutOptionalEditor(_kindEditor, y, right, _experimental3DEnabled);
+        y = LayoutOptionalEditor(_projectionEditor, y, right, _experimental3DEnabled);
+        LayoutSingleEditor(_aspectRatioEditor, y, right); y += ScaleMetric(RowStep);
+        LayoutAxisRow(y, right, _positionX, _positionY, _positionZ); y += ScaleMetric(RowHeight * (_experimental3DEnabled ? 3 : 2) + AxisGroupPadding * 2 + AxisRowGap);
+        LayoutAxisRow(y, right, _rotationX, _rotationY, _rotationZ); y += ScaleMetric(_experimental3DEnabled ? RowHeight * 3 + AxisGroupPadding * 2 + AxisRowGap : RowStep);
+        y = LayoutOptionalEditor(_focalLength, y, right, _experimental3DEnabled);
+        y = LayoutOptionalEditor(_orthographicSize, y, right, _experimental3DEnabled);
+        y = LayoutOptionalEditor(_zoomEditor, y, right, !_experimental3DEnabled);
         _resetCameraButton.SetBounds(left, y, Math.Min(right - left, ScaleMetric(112)), ScaleMetric(26));
         y += ScaleMetric(34);
         if (_curveEditor is { Visible: true } curveEditor)
@@ -786,35 +911,59 @@ internal sealed partial class ShotDirectorPanel : UserControl
         _inspector.Content.PerformLayout();
     }
 
+    private int LayoutOptionalEditor(Control editor, int y, int right, bool visible)
+    {
+        editor.Visible = visible;
+        editor.TabStop = visible && editor.Enabled;
+        if (editor.Tag is Label label) label.Visible = visible;
+        if (!visible) return y;
+        LayoutSingleEditor(editor, y, right);
+        return y + ScaleMetric(RowStep);
+    }
+
     private void LayoutSingleEditor(Control editor, int y, int right)
     {
         if (editor.Tag is not Label fieldLabel) return;
-        fieldLabel.SetBounds(ScaleMetric(InspectorPadding), y, ScaleMetric(LabelWidth), ScaleMetric(RowHeight));
+        var left = ScaleMetric(InspectorPadding);
+        var start = left + (int)Math.Floor((right - left) * 0.48f);
         var fieldHeight = editor is ModernTextInput input ? Math.Max(ScaleMetric(RowHeight), input.PreferredFieldHeight) : ScaleMetric(RowHeight);
-        editor.SetBounds(ScaleMetric(InspectorPadding + LabelWidth + 6), y, Math.Max(80, right - ScaleMetric(InspectorPadding + LabelWidth + 6)), fieldHeight);
+        fieldLabel.SetBounds(left, y, Math.Max(1, start - left - ScaleMetric(6)), fieldHeight);
+        editor.SetBounds(start, y, Math.Max(1, right - start), fieldHeight);
     }
 
     private void LayoutAxisRow(int y, int right, params ModernNumericUpDown[] editors)
     {
         if (editors.Length == 0) return;
-        var axisLabelHeight = ScaleMetric(AxisLabelHeight);
-        var editorY = y + axisLabelHeight;
+        var left = ScaleMetric(InspectorPadding);
+        var start = left + (int)Math.Floor((right - left) * 0.48f);
+        var group = editors[0].Parent;
+        if (group is null) return;
+        foreach (var editor in editors)
+        {
+            var visible = _experimental3DEnabled || editor != _positionZ && editor != _rotationX && editor != _rotationY;
+            editor.Visible = visible;
+            editor.GroupedAppearance = _experimental3DEnabled || editor != _rotationZ;
+            var axisLabel = group.Controls.OfType<Label>().FirstOrDefault(label => ReferenceEquals(label.Tag, editor));
+            if (axisLabel is not null) axisLabel.Visible = visible && (_experimental3DEnabled || editor != _rotationZ);
+        }
+        editors = editors.Where(editor => _experimental3DEnabled || editor != _positionZ && editor != _rotationX && editor != _rotationY).ToArray();
+        var groupPadding = !_experimental3DEnabled && editors[0] == _rotationZ ? 0 : AxisGroupPadding;
+        group.SetBounds(start, y, Math.Max(1, right - start), ScaleMetric(RowHeight * editors.Length + groupPadding * 2));
         if (editors[0].Tag is Label fieldLabel)
         {
-            fieldLabel.SetBounds(ScaleMetric(InspectorPadding), editorY, ScaleMetric(LabelWidth), ScaleMetric(RowHeight));
+            fieldLabel.SetBounds(left, y, Math.Max(1, start - left - ScaleMetric(6)), ScaleMetric(RowHeight + groupPadding * 2));
         }
 
-        var start = ScaleMetric(InspectorPadding + LabelWidth + 6);
-        var gap = ScaleMetric(4);
-        var width = Math.Max(40, (right - start - gap * (editors.Length - 1)) / editors.Length);
+        var inset = groupPadding == 0 ? 0 : ScaleMetric(groupPadding);
+        var labelWidth = !_experimental3DEnabled && editors[0] == _rotationZ ? 0 : ScaleMetric(22);
         for (var index = 0; index < editors.Length; index++)
         {
-            var x = start + index * (width + gap);
-            editors[index].SetBounds(x, editorY, width, ScaleMetric(RowHeight));
-            var axisLabel = _inspector.Content.Controls.Cast<Control>()
+            var editorY = inset + index * ScaleMetric(RowHeight);
+            editors[index].SetBounds(inset + labelWidth, editorY, Math.Max(1, group.Width - labelWidth - inset * 2), ScaleMetric(RowHeight));
+            var axisLabel = group.Controls.Cast<Control>()
                 .OfType<Label>()
                 .FirstOrDefault(label => ReferenceEquals(label.Tag, editors[index]));
-            axisLabel?.SetBounds(x, y, width, axisLabelHeight);
+            axisLabel?.SetBounds(inset, editorY, labelWidth, ScaleMetric(RowHeight));
         }
     }
 

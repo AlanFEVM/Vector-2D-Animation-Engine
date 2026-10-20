@@ -958,6 +958,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             if (!stage.PlaybackActive)
             {
                 if (!stage.MarqueeLodPreviewActive) DrawActiveMaskOutline(stage);
+                DrawLayerContentHighlight(stage);
                 DrawSelection(stage);
                 DrawSelectionSweep(stage);
                 DrawMotionTrack(stage);
@@ -1347,6 +1348,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     public void ReloadRuntimeResources()
     {
+        ClearShotLabelResources();
         ResetTarget();
         ClearFreehandGeometryCache();
         ClearShapeGradientMaskGeometryCache();
@@ -1402,6 +1404,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
 
     public void Dispose()
     {
+        ClearShotLabelResources();
         ResetTarget();
         ClearFreehandGeometryCache();
         ClearShapeGradientMaskGeometryCache();

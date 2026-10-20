@@ -1108,6 +1108,7 @@ internal sealed partial class MainForm : Form
     {
         HookSceneOpticsEvents();
         _workspaceTabs.SelectedViewChanged += (_, e) => ShowWorkspace(e.SelectedView);
+        _workspaceTabs.ShotPageRequested += (_, _) => _timeline.SetActiveTabGroup(AnimationTimeline.ShotTabGroupId);
         _workspaceTabs.WorldGridOpacityChanged += (_, _) => _stage.WorldGridOpacity = _workspaceTabs.WorldGridOpacity / 100f;
         _workspaceTabs.WorldGridTypeChanged += (_, _) => _stage.WorldGridType = _workspaceTabs.WorldGridType;
         _brushTipPanel.ImportRequested += (_, _) => ImportBrushTip();
@@ -1153,6 +1154,7 @@ internal sealed partial class MainForm : Form
             if (!CommitTextEdit()) return;
             var cameraSelected = IsSceneBuildingContext()
                 && SynchronizeSceneShotSelectionFromTimeline();
+            RefreshIntegratedShotPresentation();
             if (IsSceneBuildingContext()
                 && !cameraSelected
                 && !SynchronizeSceneLightSelectionFromTimeline())
@@ -1164,6 +1166,7 @@ internal sealed partial class MainForm : Form
             if (_lastDrawingToolsBlocked != DrawingToolsBlocked()) RefreshToolButtons();
             RefreshLayerBlendModePanel();
             UpdateInspectorForTimelineLayerChange();
+            RefreshStageLayerContentHighlight();
             _stage.Invalidate();
         };
         _timeline.LayerVisibilityChanged += (_, _) =>
@@ -1177,6 +1180,7 @@ internal sealed partial class MainForm : Form
         };
         _timeline.AddLayerRequested += (_, _) => AddTimelineLayer();
         _timeline.TabGroupEditStarting += (_, _) => BeginTimelineTabGroupEdit();
+        _timeline.ActiveTabGroupChanged += (_, _) => HandleShotTabGroupChanged();
         _timeline.TabGroupEditCompleted += (_, _) => CompleteTimelineTabGroupEdit();
         _timeline.AddFolderLayerRequested += (_, _) => AddTimelineFolderLayer();
         _timeline.AddMaskLayerRequested += (_, _) => AddTimelineMaskLayer();
@@ -2056,6 +2060,7 @@ internal sealed partial class MainForm : Form
     {
         _timeline.RefreshTimeline();
         RefreshShotDirector();
+        RefreshStageLayerContentHighlight();
     }
 
     private void Tick()
@@ -2264,6 +2269,7 @@ internal sealed partial class MainForm : Form
             RebuildSceneComposition(refreshScenePanels: false);
         }
         RebuildOnionSkinPreview();
+        RefreshStageLayerContentHighlight();
     }
 
     private void ResetPerformanceRateSample()

@@ -189,6 +189,48 @@ internal sealed partial class StageControl
 
     internal SceneShotSettings ShotFramingGizmoSettings => _shotFramingSettings;
 
+    internal bool SimpleShotFraming { get; private set; } = true;
+    internal bool ShowShotRotationHandles { get; private set; }
+
+    internal void SetShotFramingPresentation(bool simpleStyle, bool rotationHandles)
+    {
+        if (SimpleShotFraming == simpleStyle && ShowShotRotationHandles == rotationHandles) return;
+        SimpleShotFraming = simpleStyle;
+        ShowShotRotationHandles = rotationHandles;
+        _shotFramingHoveredHandle = _shotFramingActiveHandle = ShotFramingHandleHit.None;
+        InvalidateOverlay();
+    }
+
+    internal string ShotFramingLabel => _shotFramingLabel;
+
+    internal bool TryGetVisibleShotCameraWireframe(out ShotCameraWireframeGeometry geometry)
+    {
+        geometry = default;
+        if (SimpleShotFraming || !TryGetShotCameraWireframeGeometry(out geometry)) return false;
+        if (!ShowShotRotationHandles)
+        {
+            geometry = geometry with
+            {
+                Segments = geometry.Segments.Where(segment =>
+                    ShotCameraRotationHandleForSegment(segment.Kind) == ShotFramingHandleKind.None).ToArray(),
+                Handles = geometry.Handles.Where(handle => !IsShotCameraRotationHandle(handle.Kind)).ToArray()
+            };
+        }
+        return true;
+    }
+
+    internal IEnumerable<ShotFrameDisplay> UnselectedShotFrameDisplays => SimpleShotFraming
+        ? Enumerable.Empty<ShotFrameDisplay>()
+        : ShotFrameDisplays.Where(frame => !frame.Selected);
+
+    internal IEnumerable<(ShotFramingHandleKind Kind, PointF Point)> VisibleShotFramingHandles(
+        ShotFramingGizmoGeometry geometry) => EnumerateShotFramingHandles(geometry)
+        .Where(handle => ShowShotRotationHandles || handle.Kind != ShotFramingHandleKind.Rotate)
+        .Where(handle => !SimpleShotFraming || handle.Kind is
+            ShotFramingHandleKind.TopLeft or ShotFramingHandleKind.TopRight or
+            ShotFramingHandleKind.BottomRight or ShotFramingHandleKind.BottomLeft or
+            ShotFramingHandleKind.Rotate);
+
     internal ShotFramingHandleHit ShotFramingHighlightedHandle =>
         _shotFramingActiveHandle.IsValid ? _shotFramingActiveHandle : _shotFramingHoveredHandle;
 
@@ -1250,7 +1292,7 @@ internal sealed partial class StageControl
         // targets that the user aims at directly, and the camera wireframe is drawn on top of the same
         // area. Without this the frame's edge handles became unreachable whenever the camera overlapped
         // them.
-        var handles = EnumerateShotFramingHandles(geometry);
+        var handles = VisibleShotFramingHandles(geometry);
         var frameBest = ShotFramingHandleKind.None;
         var frameBestDistance = float.MaxValue;
         foreach (var (kind, point) in handles)
@@ -1269,7 +1311,7 @@ internal sealed partial class StageControl
 
         // The camera object owns the next priority. This prevents the frame rectangle from swallowing
         // the body, axis, and lens controls when the 2D projection collapses depth.
-        if (TryGetShotCameraWireframeGeometry(out var wireframe))
+        if (TryGetVisibleShotCameraWireframe(out var wireframe))
         {
             var cameraHandle = FindNearestShotCameraHandle(wireframe, screen, hitRadius);
             if (cameraHandle != ShotFramingHandleKind.None)
@@ -1298,7 +1340,7 @@ internal sealed partial class StageControl
 
         // Nothing else claimed the point but it is inside the yellow rectangle, so the operator is
         // grabbing the frame itself. This is what makes the frame body draggable away from the camera.
-        if (IsPointInsidePolygon(geometry.Corners, new PointF(screen.X, screen.Y)))
+        if (!SimpleShotFraming && IsPointInsidePolygon(geometry.Corners, new PointF(screen.X, screen.Y)))
         {
             return new ShotFramingHandleHit(ShotFramingHandleKind.Body);
         }

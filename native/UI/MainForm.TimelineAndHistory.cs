@@ -1,4 +1,4 @@
-﻿﻿using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -1354,7 +1354,7 @@ internal sealed partial class MainForm : Form
     {
         var resolved = TryResolveSelectedTimelineTween(out var target);
         var shotTween = resolved
-            && _workspaceTabs.SelectedView == WorkspaceView.ShotDirector
+            && IsSceneWorkspaceSelected
             && target.SceneDefinition is not null
             && target.SceneDefinition.FindShot(target.Track.TargetId) is not null;
         var sceneTween = resolved
@@ -2344,6 +2344,8 @@ internal sealed partial class MainForm : Form
         var track = context.Timeline.FindTrack(trackId);
         var targetTrack = context.Timeline.FindTrack(targetTrackId);
         if (track is null || targetTrack is null || track.Id == targetTrack.Id) return;
+        if (track.TabGroupId == AnimationTimeline.ShotTabGroupId
+            || targetTrack.TabGroupId == AnimationTimeline.ShotTabGroupId) return;
         var changesGroup = !string.Equals(track.TabGroupId, targetTrack.TabGroupId, StringComparison.Ordinal);
         var transferGroup = changesGroup && (context.Timeline.TabGroupOrderingEnabled
             || context.Timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId);
@@ -2630,9 +2632,8 @@ internal sealed partial class MainForm : Form
 
     private void RemoveTimelineLayers()
     {
-        if (IsShotDirectorContext()) return;
         var context = _timeline.Context;
-        var targetIds = SelectedTimelineLayerTargetIds();
+        var targetIds = _timeline.SelectedRemovableLayerTargetIds;
         if (targetIds.Count == 0) return;
 
         var drawingScene = context switch
@@ -2675,27 +2676,37 @@ internal sealed partial class MainForm : Form
         var sceneRemovalCount = targetIds
             .Distinct(StringComparer.Ordinal)
             .Count(targetId => sceneDefinition.FindLayer(targetId) is not null);
-        if (!ConfirmTimelineLayerRemoval(sceneRemovalCount, sceneDefinition.Layers.Count)) return;
+        var shotIds = targetIds
+            .Where(targetId => sceneDefinition.FindShot(targetId) is { } shot && IsSceneShotAllowed(shot))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (!ConfirmTimelineLayerRemoval(sceneRemovalCount, sceneDefinition.Layers.Count, shotIds.Length)) return;
 
         var timelineSnapshot = sceneDefinition.Timeline.CreateSnapshot();
         var layerSnapshot = sceneDefinition.CreateLayerSnapshot();
         var sceneInstanceSnapshot = sceneDefinition.CreateInstanceSnapshot();
-        if (!_project.TryRemoveSceneLayers(sceneDefinition.Id, targetIds)) return;
+        var shotSnapshot = sceneDefinition.CreateShotSnapshot();
+        var selectionSnapshot = _timeline.CaptureSelectionSnapshot();
+        if (sceneRemovalCount > 0 && !_project.TryRemoveSceneLayers(sceneDefinition.Id, targetIds)) return;
+        foreach (var shotId in shotIds) sceneDefinition.TryRemoveShot(shotId);
+        if (shotIds.Contains(_activeShotId, StringComparer.Ordinal)) SetActiveShotState(sceneDefinition, "");
 
-        PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot, sceneInstanceSnapshot);
+        PushSceneTimelineUndo(sceneDefinition, timelineSnapshot, layerSnapshot, sceneInstanceSnapshot,
+            playheadFrame: _frame, timelineSelection: selectionSnapshot, shotSnapshot: shotSnapshot);
         ClearSelection();
         _timeline.RefreshTimeline();
         _timeline.SelectModelActiveTrack();
+        RefreshShotDirector(force: true);
         RebuildSceneComposition();
         _hierarchyPanel.RefreshScene();
         UpdateInspector();
         _stage.Invalidate();
     }
 
-    private bool ConfirmTimelineLayerRemoval(int removalCount, int layerCount)
+    private bool ConfirmTimelineLayerRemoval(int removalCount, int layerCount, int shotRemovalCount = 0)
     {
-        if (removalCount <= 0) return false;
-        if (removalCount >= layerCount)
+        if (removalCount + shotRemovalCount <= 0) return false;
+        if (removalCount > 0 && removalCount >= layerCount)
         {
             ModernMessageDialog.Show(
                 this,
@@ -2705,6 +2716,7 @@ internal sealed partial class MainForm : Form
                 MessageBoxIcon.Information);
             return false;
         }
+        removalCount += shotRemovalCount;
         if (removalCount == 1) return true;
 
         var prompt = string.Format(
@@ -2799,6 +2811,7 @@ internal sealed partial class MainForm : Form
         if (context is SceneDefinition) RebuildSceneComposition();
         else if (context is DrawingObjectDefinition) RebuildDrawingObjectUnderlay();
         else RebuildOnionSkinPreview();
+        RefreshStageLayerContentHighlight();
         _stage.Invalidate();
     }
 
@@ -3283,7 +3296,11 @@ internal sealed partial class MainForm : Form
 
     private void AddTimelineLayer()
     {
-        if (IsShotDirectorContext()) return;
+        if (IsShotDirectorContext())
+        {
+            AddSceneShot();
+            return;
+        }
         var context = _timeline.Context;
         if (context.Timeline.ActiveTabGroupId == AnimationTimeline.TerrainTabGroupId
             && CanOfferRandomFractureCollisionTerrain())
@@ -3513,6 +3530,7 @@ internal sealed partial class MainForm : Form
 
     private void ToggleActiveSceneProjection()
     {
+        if (!_applicationSettings.Experimental3DEnabled) return;
         if (!IsSceneWorkspaceSelected || !IsSceneCompositionContext()) return;
         var scene = ActiveScene();
         if (scene is null) return;

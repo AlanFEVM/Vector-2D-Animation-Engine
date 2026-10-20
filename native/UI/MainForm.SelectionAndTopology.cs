@@ -1924,6 +1924,12 @@ internal sealed partial class MainForm : Form
 
     private void UpdateTransformOverlay()
     {
+        if (IsShotDirectorContext())
+        {
+            _stage.SetTransformOverlay(false, RectangleF.Empty);
+            _stage.SetDistortOverlay(false, default);
+            return;
+        }
         Matrix4x4? referenceTransform = null;
         if (IsSceneReferenceView())
         {

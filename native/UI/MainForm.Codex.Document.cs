@@ -709,6 +709,7 @@ internal sealed partial class MainForm
         if (selectModelActive) _timeline.SelectModelActiveTrack();
         if (sceneContext) RebuildSceneComposition();
         else RebuildDrawingObjectUnderlay();
+        RefreshStageLayerContentHighlight();
         _hierarchyPanel.RefreshScene();
         _sceneEditorPanel.BindProject(_scenes, _activeSceneIndex, _drawingObjects);
         UpdateInspector();

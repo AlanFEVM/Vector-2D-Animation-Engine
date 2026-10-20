@@ -21,6 +21,7 @@ internal sealed class NumericInteractionEventArgs : EventArgs
 internal sealed class ModernNumericUpDown : UserControl
 {
     public bool UseSecondaryText { get; set; }
+    internal bool GroupedAppearance { get; set; }
 
     private const int LogicalDeadZonePixels = 4;
     private const int LogicalPixelsPerIncrement = 4;
@@ -298,7 +299,10 @@ internal sealed class ModernNumericUpDown : UserControl
                 : Theme.ControlOutline,
             Math.Max(1f, DeviceDpi / 96f));
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
-        Theme.PaintUiSurface(e.Graphics, fill, border, ClientRectangle);
+        if (GroupedAppearance && !ContainsFocus && !SystemInformation.HighContrast)
+            e.Graphics.FillRectangle(fill, ClientRectangle);
+        else
+            Theme.PaintUiSurface(e.Graphics, fill, border, ClientRectangle);
         if (!_suffixBounds.IsEmpty)
         {
             TextRenderer.DrawText(e.Graphics, Suffix, Font, _suffixBounds,

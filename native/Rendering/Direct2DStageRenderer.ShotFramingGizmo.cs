@@ -14,7 +14,7 @@ internal sealed partial class Direct2DStageRenderer
     {
         if (stage.ShotFrameCollectionVisible)
         {
-            foreach (var frame in stage.ShotFrameDisplays.Where(frame => !frame.Selected))
+            foreach (var frame in stage.UnselectedShotFrameDisplays)
             {
                 var brush = BrushFor((frame.Selected ? GdiColor.FromArgb(248, 255, 196, 96)
                     : GdiColor.FromArgb(232, 112, 204, 255)).ToArgb());
@@ -39,24 +39,28 @@ internal sealed partial class Direct2DStageRenderer
         var handleBrush = BrushFor(GdiColor.FromArgb(255, 255, 240, 168).ToArgb());
         var activeBrush = BrushFor(GdiColor.FromArgb(255, 112, 204, 255).ToArgb());
         var borderBrush = BrushFor(GdiColor.FromArgb(255, 16, 18, 22).ToArgb());
-        var hasWireframe = stage.TryGetShotCameraWireframeGeometry(out var wireframe);
+        var hasWireframe = stage.TryGetVisibleShotCameraWireframe(out var wireframe);
         if (hasWireframe) DrawShotCameraWireframe(wireframe, dpiScale, highlighted);
 
         var corners = geometry.Corners;
+        var frameBrush = stage.SimpleShotFraming ? BrushFor(Theme.Accent.ToArgb()) : accent;
         for (var index = 0; index < corners.Length; index++)
         {
+            if (stage.SimpleShotFraming)
+                _target!.DrawLine(ToVector(corners[index]), ToVector(corners[(index + 1) % corners.Length]),
+                    BrushFor(GdiColor.FromArgb(125, 16, 18, 22).ToArgb()), 3.5f * dpiScale);
             _target!.DrawLine(
                 ToVector(corners[index]),
                 ToVector(corners[(index + 1) % corners.Length]),
-                accent,
-                1.8f);
+                stage.SimpleShotFraming && highlighted == ShotFramingHandleKind.Body ? activeBrush : frameBrush,
+                (stage.SimpleShotFraming ? 1.3f : 1.8f) * dpiScale);
         }
 
         var inner = StageControl.InsetPolygon(
             corners,
             geometry.Center,
             StageControl.ShotFramingBorderBandPixels * dpiScale);
-        for (var index = 0; index < inner.Length; index++)
+        for (var index = 0; !stage.SimpleShotFraming && index < inner.Length; index++)
         {
             _target!.DrawLine(
                 ToVector(inner[index]),
@@ -65,13 +69,14 @@ internal sealed partial class Direct2DStageRenderer
                 1f);
         }
 
-        _target!.DrawLine(ToVector(geometry.RotationGripStart), ToVector(geometry.RotationHandle), accent, 1.4f);
-        if (!hasWireframe)
+        if (stage.ShowShotRotationHandles)
+            _target!.DrawLine(ToVector(geometry.RotationGripStart), ToVector(geometry.RotationHandle), accent, 1.4f);
+        if (!hasWireframe && !stage.SimpleShotFraming)
         {
             DrawShotFramingCameraMarker(geometry.Center, dpiScale, highlighted == ShotFramingHandleKind.Body);
         }
         var handleSize = StageControl.ShotFramingHandleSizePixels * dpiScale;
-        foreach (var (kind, point) in StageControl.EnumerateShotFramingHandles(geometry))
+        foreach (var (kind, point) in stage.VisibleShotFramingHandles(geometry))
         {
             var center = ToVector(point);
             var brush = kind == highlighted ? activeBrush : handleBrush;
@@ -83,8 +88,54 @@ internal sealed partial class Direct2DStageRenderer
                 continue;
             }
 
-            DrawHandle(center, brush, handleSize);
+            if (stage.SimpleShotFraming)
+            {
+                var radius = handleSize * 0.45f;
+                var ellipse = new Ellipse(center, radius, radius);
+                _target!.FillEllipse(ellipse, kind == highlighted ? frameBrush : BrushFor(Theme.PanelStrong.ToArgb()));
+                _target.DrawEllipse(ellipse, frameBrush, 1.5f * dpiScale);
+            }
+            else DrawHandle(center, brush, handleSize);
         }
+
+        if (stage.SimpleShotFraming) DrawSimpleShotFramingLabel(stage, geometry);
+    }
+
+    private Vortice.DirectWrite.IDWriteFactory? _shotLabelFactory;
+    private Vortice.DirectWrite.IDWriteTextFormat? _shotLabelFormat;
+    private (string Family, float Size) _shotLabelFont;
+
+    private void ClearShotLabelResources()
+    {
+        _shotLabelFormat?.Dispose();
+        _shotLabelFormat = null;
+        _shotLabelFactory?.Dispose();
+        _shotLabelFactory = null;
+    }
+
+    private void DrawSimpleShotFramingLabel(StageControl stage, ShotFramingGizmoGeometry geometry)
+    {
+        if (stage.ShotFramingLabel.Length == 0) return;
+        var font = (stage.Font.FontFamily.Name, stage.Font.SizeInPoints * stage.DeviceDpi / 72f);
+        if (_shotLabelFormat is null || _shotLabelFont != font)
+        {
+            _shotLabelFormat?.Dispose();
+            _shotLabelFormat = null;
+            _shotLabelFactory ??= Vortice.DirectWrite.DWrite.DWriteCreateFactory<Vortice.DirectWrite.IDWriteFactory>();
+            _shotLabelFormat = _shotLabelFactory.CreateTextFormat(font.Item1, font.Item2);
+            _shotLabelFormat.WordWrapping = Vortice.DirectWrite.WordWrapping.NoWrap;
+            _shotLabelFont = font;
+        }
+        using var layout = _shotLabelFactory!.CreateTextLayout(stage.ShotFramingLabel, _shotLabelFormat,
+            Math.Max(40f, stage.Width - 16f), font.Item2 * 2f);
+        var width = Math.Min(Math.Max(layout.Metrics.Width + 10f, 40f), Math.Max(40f, stage.Width - 16f));
+        var height = layout.Metrics.Height + 4f;
+        var left = Math.Clamp(geometry.TopLeft.X, 2f, Math.Max(2f, stage.Width - width - 2f));
+        var top = Math.Max(2f, geometry.TopLeft.Y - height - 4f);
+        _target!.FillRectangle(Rect(left, top, width, height), BrushFor(GdiColor.FromArgb(214, 18, 20, 26).ToArgb()));
+        _target.DrawText(stage.ShotFramingLabel, _shotLabelFormat,
+            Rect(left + 5f, top + 2f, width - 10f, height - 4f),
+            BrushFor(Theme.Accent.ToArgb()), DrawTextOptions.Clip);
     }
 
     private void DrawShotCameraWireframe(

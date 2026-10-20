@@ -22,7 +22,7 @@ internal sealed partial class StageControl
             try
             {
                 graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                foreach (var frame in ShotFrameDisplays.Where(frame => !frame.Selected))
+                foreach (var frame in UnselectedShotFrameDisplays)
                 {
                     using var pen = new Pen(frame.Selected ? ShotFramingAccent : ShotCameraWireframeFrame,
                         (frame.Selected ? 2.4f : 1.2f) * SpatialGizmoDpiScale);
@@ -43,26 +43,44 @@ internal sealed partial class StageControl
         try
         {
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var hasWireframe = TryGetShotCameraWireframeGeometry(out var wireframe);
+            var hasWireframe = TryGetVisibleShotCameraWireframe(out var wireframe);
             if (hasWireframe) DrawShotCameraWireframeGdi(graphics, wireframe, dpiScale, highlighted);
-            using var framePen = new Pen(ShotFramingAccent, 1.8f);
+            var frameColor = SimpleShotFraming ? Theme.Accent : ShotFramingAccent;
+            using var framePen = new Pen(SimpleShotFraming && highlighted == ShotFramingHandleKind.Body
+                ? ShotCameraWireframe : frameColor, (SimpleShotFraming ? 1.3f : 1.8f) * dpiScale);
+            if (SimpleShotFraming)
+            {
+                using var haloPen = new Pen(Color.FromArgb(125, 16, 18, 22), 3.5f * dpiScale);
+                graphics.DrawPolygon(haloPen, corners);
+            }
             using var innerPen = new Pen(ShotFramingAccentSoft, 1f) { DashStyle = DashStyle.Dot };
             using var rotationPen = new Pen(ShotFramingAccent, 1.4f);
             graphics.DrawPolygon(framePen, corners);
             var innerBand = ShotFramingBorderBandPixels * dpiScale;
-            graphics.DrawPolygon(innerPen, InsetPolygon(corners, geometry.Center, innerBand));
+            if (!SimpleShotFraming)
+                graphics.DrawPolygon(innerPen, InsetPolygon(corners, geometry.Center, innerBand));
 
-            graphics.DrawLine(rotationPen, geometry.RotationGripStart, geometry.RotationHandle);
-            if (!hasWireframe)
+            if (ShowShotRotationHandles)
+                graphics.DrawLine(rotationPen, geometry.RotationGripStart, geometry.RotationHandle);
+            if (!hasWireframe && !SimpleShotFraming)
             {
                 DrawShotFramingCameraMarker(graphics, geometry.Center, dpiScale, highlighted == ShotFramingHandleKind.Body);
             }
             var handleSize = ShotFramingHandleSizePixels * dpiScale;
-            foreach (var (kind, point) in EnumerateShotFramingHandles(geometry))
+            foreach (var (kind, point) in VisibleShotFramingHandles(geometry))
             {
                 if (kind == ShotFramingHandleKind.Rotate)
                 {
                     DrawShotFramingRotationHandle(graphics, point, handleSize, kind == highlighted);
+                    continue;
+                }
+                if (SimpleShotFraming)
+                {
+                    var radius = handleSize * 0.45f;
+                    using var fill = new SolidBrush(kind == highlighted ? frameColor : Theme.PanelStrong);
+                    using var border = new Pen(frameColor, 1.5f * dpiScale);
+                    graphics.FillEllipse(fill, point.X - radius, point.Y - radius, radius * 2, radius * 2);
+                    graphics.DrawEllipse(border, point.X - radius, point.Y - radius, radius * 2, radius * 2);
                     continue;
                 }
 
@@ -431,7 +449,7 @@ internal sealed partial class StageControl
             _shotFramingLabel,
             Font,
             bounds,
-            ShotFramingLabelText,
+            SimpleShotFraming ? Theme.Accent : ShotFramingLabelText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 

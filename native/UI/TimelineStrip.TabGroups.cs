@@ -4,6 +4,8 @@ namespace VectorAnimationEngine;
 
 internal sealed partial class TimelineStrip
 {
+    public event EventHandler? ActiveTabGroupChanged;
+    private string? _presentedTabGroupId;
     private const int ToolbarHeaderLogicalHeight = 48;
     private const int TabGroupRowLogicalHeight = 30;
     private const string TabGroupOverflowId = "__timeline_tab_group_overflow__";
@@ -128,13 +130,15 @@ internal sealed partial class TimelineStrip
             {
                 AnimationTimeline.DefaultTabGroupId => UiLocalization.T("Layers"),
                 AnimationTimeline.TerrainTabGroupId => UiLocalization.T("Terrain"),
+                AnimationTimeline.ShotTabGroupId => UiLocalization.T("Shots"),
                 _ => group.Name
             };
             items.Add(new TabGroupItem(
                 group.Id,
                 string.IsNullOrWhiteSpace(name) ? group.Id : name,
                 string.Equals(group.Id, AnimationTimeline.DefaultTabGroupId, StringComparison.Ordinal)
-                    || string.Equals(group.Id, AnimationTimeline.TerrainTabGroupId, StringComparison.Ordinal)));
+                    || string.Equals(group.Id, AnimationTimeline.TerrainTabGroupId, StringComparison.Ordinal)
+                    || string.Equals(group.Id, AnimationTimeline.ShotTabGroupId, StringComparison.Ordinal)));
         }
 
         return items;
@@ -838,7 +842,8 @@ internal sealed partial class TimelineStrip
     private static bool IsBuiltInTabGroup(string id) =>
         string.Equals(id, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)
         || string.Equals(id, AnimationTimeline.DefaultTabGroupId, StringComparison.Ordinal)
-        || string.Equals(id, AnimationTimeline.TerrainTabGroupId, StringComparison.Ordinal);
+        || string.Equals(id, AnimationTimeline.TerrainTabGroupId, StringComparison.Ordinal)
+        || string.Equals(id, AnimationTimeline.ShotTabGroupId, StringComparison.Ordinal);
 
     private void PerformTabGroupEdit(Func<bool> edit)
     {
@@ -867,13 +872,13 @@ internal sealed partial class TimelineStrip
         var selected = SelectedLayerTrackIndices();
         if (activeTrack >= 0 && selected.Count == 0 && IsTrackSelectableRow(activeTrack)) selected = [activeTrack];
         var candidates = selected
-            .Where(index => index >= 0 && index < TrackCount && IsTrackSelectableRow(index))
+            .Where(index => index >= 0 && index < TrackCount && IsTrackSelectableRow(index) && !IsSceneShotTrack(index))
             .Distinct()
             .ToArray();
         _moveLayerToTabGroupMenuItem.Enabled = candidates.Length > 0;
         if (candidates.Length == 0) return;
 
-        foreach (var item in TabGroupItems().Where(item => !string.Equals(item.Id, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)))
+        foreach (var item in TabGroupItems().Where(item => item.Id is not (AnimationTimeline.AllTabGroupId or AnimationTimeline.ShotTabGroupId)))
         {
             var child = new ToolStripMenuItem(item.Name)
             {
@@ -905,6 +910,7 @@ internal sealed partial class TimelineStrip
 
     private void MoveSelectedTracksToTabGroup(string groupId)
     {
+        if (groupId == AnimationTimeline.ShotTabGroupId) return;
         if (_shotFilterActive
             || _timeline is null
             || string.Equals(groupId, AnimationTimeline.AllTabGroupId, StringComparison.Ordinal)) return;
@@ -912,7 +918,7 @@ internal sealed partial class TimelineStrip
         var selected = SelectedLayerTrackIndices();
         if (activeTrack >= 0 && selected.Count == 0 && IsTrackSelectableRow(activeTrack)) selected = [activeTrack];
         var candidates = selected
-            .Where(index => index >= 0 && index < TrackCount && IsTrackSelectableRow(index))
+            .Where(index => index >= 0 && index < TrackCount && IsTrackSelectableRow(index) && !IsSceneShotTrack(index))
             .Distinct()
             .ToArray();
         if (candidates.Length == 0) return;
@@ -1043,6 +1049,11 @@ internal sealed partial class TimelineStrip
         EnsureCurrentFrameVisible();
         LayoutHeaderControls(CreateLayout(), IsOnionSkinControlsAvailable());
         Invalidate();
+        if (_presentedTabGroupId != _timeline.ActiveTabGroupId)
+        {
+            _presentedTabGroupId = _timeline.ActiveTabGroupId;
+            ActiveTabGroupChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private sealed class TabGroupNameDialog : ModernDialogForm

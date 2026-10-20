@@ -56,7 +56,7 @@ internal sealed class PlaybackSettingsPanel : Panel
         ForeColor = Theme.Text;
         Font = Theme.UiFont();
         Padding = new Padding(4, 10, 8, 16);
-        MinimumSize = new Size(236, 204);
+        MinimumSize = new Size(236, 220);
 
         BuildUi();
         HookEvents();
@@ -128,7 +128,7 @@ internal sealed class PlaybackSettingsPanel : Panel
         if (notifyChanged) RaiseFrameRangeChanged();
     }
 
-    public int PreferredPanelHeight => 204;
+    public int PreferredPanelHeight => 220;
 
     private void BuildUi()
     {
@@ -147,18 +147,22 @@ internal sealed class PlaybackSettingsPanel : Panel
             ColumnCount = 2, RowCount = 4, Margin = Padding.Empty,
             Padding = new Padding(4, 8, 0, 0)
         };
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         Theme.StyleNumeric(_fps);
         Theme.StyleNumeric(_startFrame);
         Theme.StyleNumeric(_endFrame);
+        foreach (var input in new[] { _fps, _startFrame, _endFrame })
+        {
+            input.Font = Theme.UiFont(11f);
+        }
         _loop.Text = "";
         _loop.AccessibleName = "Loop";
         string[] labels = ["FPS", "Loop", "Start", "End"];
         Control[] editors = [_fps, _loop, _startFrame, _endFrame];
         for (var i = 0; i < editors.Length; i++)
         {
-            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.ControlHeight + 8));
             fields.Controls.Add(new Label
             {
                 Text = labels[i], Dock = DockStyle.Fill,

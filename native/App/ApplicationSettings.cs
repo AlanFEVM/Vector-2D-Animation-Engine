@@ -62,6 +62,8 @@ internal sealed record ApplicationSettings
     /// </summary>
     public bool FreeTransformShiftProportionalEnabled { get; init; } = true;
     public bool SimpleSelectionHighlightEnabled { get; init; } = false;
+    public bool Experimental3DEnabled { get; init; } = false;
+    public bool SimpleCameraStyleEnabled { get; init; } = true;
     public WindowCornerStyle WindowCornerStyle { get; init; } = WindowCornerStyle.Square;
     public int WorkspaceColorArgb { get; init; } = DefaultWorkspaceColorArgb;
     /// <summary>Enables the loopback JSON-RPC bridge used by Codex and MCP clients.</summary>

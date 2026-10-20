@@ -1791,6 +1791,7 @@ internal static partial class Benchmark
         var undo = RequireMethod(typeof(MainForm), "UndoLastEdit");
 
         using var form = new MainForm();
+        ConfigureExperimental3DForRegression(form);
         var project = projectField.GetValue(form) as VectorProject
             ?? throw new InvalidOperationException("Camera timeline undo regression did not find the project.");
         var scene = project.Scenes[0];
@@ -1837,11 +1838,9 @@ internal static partial class Benchmark
             .Select(item => (item.Id, item.TargetId, item.Duration, Keys: item.Keyframes.ToArray(), Tweens: item.Tweens.ToArray()))
             .ToArray();
         void InvokeNoArgs(string name) => RequireMethod(typeof(MainForm), name, Type.EmptyTypes).Invoke(form, null);
-        InvokeNoArgs("AddTimelineLayer");
         InvokeNoArgs("AddTimelineFolderLayer");
         InvokeNoArgs("AddTimelineMaskLayer");
         InvokeNoArgs("MoveTimelineLayerOutOfMask");
-        InvokeNoArgs("RemoveTimelineLayers");
         InvokeNoArgs("RenameTimelineLayer");
         InvokeNoArgs("ToggleTimelineLayerLock");
         InvokeNoArgs("ToggleAllTimelineLayerVisibility");
@@ -1937,6 +1936,7 @@ internal static partial class Benchmark
 
         using (var form = new MainForm())
         {
+            ConfigureExperimental3DForRegression(form);
             var timeline = timelineField.GetValue(form) as TimelineStrip
                 ?? throw new InvalidOperationException("Frame-content selection regression lost the timeline control.");
             var playbackSettings = playbackSettingsField.GetValue(form) as PlaybackSettingsPanel
@@ -6182,6 +6182,7 @@ internal static partial class Benchmark
     {
         using var form = new MainForm { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
             Location = new Point(-30000,-30000), Size = new Size(1400,900) };
+        ConfigureExperimental3DForRegression(form);
         form.Show();
         var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
         var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
@@ -6304,6 +6305,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1400, 900)
         };
+        ConfigureExperimental3DForRegression(form);
         var workspaceTabs = (WorkspaceTabs)workspaceTabsField.GetValue(form)!;
         var project = (VectorProject)projectField.GetValue(form)!;
         var stage = (StageControl)stageField.GetValue(form)!;
@@ -7501,6 +7503,7 @@ internal static partial class Benchmark
         var shotDirectorVisibleField = RequireField(typeof(MainForm), "_shotDirectorVisible");
 
         using var form = new MainForm();
+        ConfigureExperimental3DForRegression(form);
         var workspaceTabs = workspaceTabsField.GetValue(form) as WorkspaceTabs
             ?? throw new InvalidOperationException("The shot workspace regression did not find the workspace tabs.");
         var shotPanel = shotPanelField.GetValue(form) as ShotDirectorPanel
@@ -7537,7 +7540,7 @@ internal static partial class Benchmark
             ReferenceEquals(header.Parent, body)
             && ReferenceEquals(stagePanel.Parent, body)
             && ReferenceEquals(panelHost, inspector)
-            && workspaceTabs.Views.Contains(WorkspaceView.ShotDirector)
+            && !workspaceTabs.Views.Contains(WorkspaceView.ShotDirector)
             && !(bool)(shotDirectorVisibleField.GetValue(form) ?? true),
             "The Shots & Directing workspace was not registered as a hidden right-inspector page.");
 
@@ -7549,13 +7552,12 @@ internal static partial class Benchmark
             && stagePanel.Right == inspector.Left,
             "The director page appeared outside its workspace or did not leave the scene inspector intact.");
 
-        // Scene & Animation must not present the independent camera rows; entering the Shots
-        // workspace brings them back. This is a presentation filter over one scene timeline.
         var sceneWorkflowRows = timeline.VisibleTrackRowCount;
         var sceneWorkflowHidesCameraTracks = timeline.ShotTracksHidden;
         AssertTimeline(
-            sceneWorkflowHidesCameraTracks && !timeline.HasShotFilter,
-            "Choosing the Scene & Animation workspace left the camera timeline rows visible.");
+            !sceneWorkflowHidesCameraTracks && !timeline.HasShotFilter
+            && scene.Timeline.ActiveTabGroupId == AnimationTimeline.AllTabGroupId,
+            "Scene & Animation did not open the unified All timeline.");
 
         workspaceTabs.SelectedView = WorkspaceView.ShotDirector;
         Application.DoEvents();
@@ -7573,11 +7575,13 @@ internal static partial class Benchmark
             + $"body={body.ClientSize}.");
 
         AssertTimeline(
-            timeline.HasShotFilter
+            !timeline.HasShotFilter
             && !timeline.ShotTracksHidden
             && timeline.VisibleTrackRowCount == 2
-            && timeline.VisibleTrackRowCount > sceneWorkflowRows,
-            "Entering the Shots workspace did not restore the camera-only timeline rows.");
+            && timeline.VisibleTrackRowCount < sceneWorkflowRows
+            && workspaceTabs.SelectedView == WorkspaceView.SceneEditor
+            && scene.Timeline.ActiveTabGroupId == AnimationTimeline.ShotTabGroupId,
+            "The integrated Shots group did not show camera-only rows inside Scene & Animation.");
 
         AssertTimeline(
             stageControl.ShotFramingGizmoVisible
@@ -7590,6 +7594,58 @@ internal static partial class Benchmark
             && stageControl.ShotFramingGizmoVisible
             && stageControl.ShotFramingGizmoSettings == secondSettings,
             "Selecting another camera timeline row did not update the Stage framing component.");
+
+        var cameraTrack = scene.FindShotTrack(secondShot.Id)!;
+        AssertTimeline(cameraTrack.TabGroupId == AnimationTimeline.ShotTabGroupId
+            && !scene.Timeline.SetTrackTabGroup(cameraTrack.Id, AnimationTimeline.DefaultTabGroupId)
+            && !scene.Timeline.SetTrackTabGroup(scene.Timeline.FindTrackByTargetId(scene.Layers[0].Id)!.Id, AnimationTimeline.ShotTabGroupId),
+            "Camera and scene-layer group membership was not protected.");
+        timeline.SetActiveTabGroup(AnimationTimeline.AllTabGroupId);
+        scene.Timeline.SetTabGroupOrder(scene.Timeline.TabGroups.Select(group => group.Id).Reverse().ToArray());
+        var visibleRows = (IEnumerable<int>)RequireMethod(typeof(TimelineStrip), "VisibleTrackIndices", Type.EmptyTypes).Invoke(timeline, null)!;
+        AssertTimeline(visibleRows.Take(2).All(index => scene.FindShot(scene.Timeline.Tracks[index].TargetId) is not null)
+            && timeline.VisibleTrackRowCount == sceneWorkflowRows,
+            "Camera rows did not remain pinned above regular groups in All.");
+        timeline.SelectSingleLayerTarget(scene.Layers[0].Id);
+        AssertTimeline(!(bool)shotDirectorVisibleField.GetValue(form)! && !stageControl.ShotFramingGizmoVisible,
+            "Selecting a regular layer did not restore the scene inspector.");
+
+        var removeLayers = RequireMethod(typeof(MainForm), "RemoveTimelineLayers", Type.EmptyTypes);
+        var undoRemoval = RequireMethod(typeof(MainForm), "UndoLastEdit", Type.EmptyTypes);
+        var openLayerMenu = RequireMethod(typeof(TimelineStrip), "HandleLayerContextMenuOpening");
+        var removeMenuItem = (ToolStripMenuItem)RequireField(typeof(TimelineStrip), "_removeLayersMenuItem").GetValue(timeline)!;
+        var sceneLayerCount = scene.Layers.Count;
+        timeline.SelectSingleLayerTarget(secondShot.Id);
+        var menuOpening = new System.ComponentModel.CancelEventArgs();
+        openLayerMenu.Invoke(timeline, [null, menuOpening]);
+        AssertTimeline(!menuOpening.Cancel && removeMenuItem.Enabled,
+            "Camera row deletion was disabled in All.");
+        removeLayers.Invoke(form, null);
+        AssertTimeline(scene.FindShot(secondShot.Id) is null && scene.FindShotTrack(secondShot.Id) is null
+            && scene.Layers.Count == sceneLayerCount && scene.FindShot(firstShot.Id) is not null,
+            "Deleting a camera in All did not remove only its camera and track.");
+
+        timeline.SetActiveTabGroup(AnimationTimeline.ShotTabGroupId);
+        timeline.SelectSingleLayerTarget(firstShot.Id);
+        menuOpening = new System.ComponentModel.CancelEventArgs();
+        openLayerMenu.Invoke(timeline, [null, menuOpening]);
+        AssertTimeline(!menuOpening.Cancel && removeMenuItem.Enabled,
+            "Camera row deletion was disabled in Shots.");
+        removeLayers.Invoke(form, null);
+        AssertTimeline(scene.ShotCount == 0 && timeline.VisibleTrackRowCount == 0
+            && scene.Layers.Count == sceneLayerCount
+            && scene.Timeline.TabGroups.Any(group => group.Id == AnimationTimeline.ShotTabGroupId),
+            "Deleting the final camera removed scene layers or the built-in Shots group.");
+        AssertTimeline(undoRemoval.Invoke(form, null) is true
+            && scene.FindShot(firstShot.Id) is not null && scene.FindShotTrack(firstShot.Id) is not null
+            && scene.TryEvaluateShotSettings(firstShot.Id, 0, out var restoredFirstSettings)
+            && restoredFirstSettings == firstSettings,
+            "Undo did not restore the final camera and its framing.");
+        AssertTimeline(undoRemoval.Invoke(form, null) is true
+            && scene.FindShot(secondShot.Id) is not null && scene.FindShotTrack(secondShot.Id) is not null
+            && scene.TryEvaluateShotSettings(secondShot.Id, 0, out var restoredSecondSettings)
+            && restoredSecondSettings == secondSettings,
+            "Undo did not restore the camera deleted from All.");
 
         workspaceTabs.SelectedView = WorkspaceView.BasicDrawing;
         Application.DoEvents();

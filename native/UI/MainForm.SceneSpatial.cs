@@ -74,6 +74,32 @@ internal sealed partial class MainForm : Form
         return IsSceneCompositionContext() && _stage.UsesReferenceProjection;
     }
 
+    private void ApplyExperimental3DSettings()
+    {
+        FinishPointerInteractionForContextChange();
+        StopPlayback();
+        CancelReferenceCameraKeyboardNavigation();
+        _stage.Experimental3DEnabled = _applicationSettings.Experimental3DEnabled;
+        _timeline.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        _shotDirectorPanel.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        _sceneEditorPanel.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        _libraryVaultPanel.SetExperimental3DEnabled(_applicationSettings.Experimental3DEnabled);
+        if (IsSceneWorkspaceSelected)
+            _stage.ConfigureReferenceView(ActiveScene(), ActiveSceneViewDimension(), ReferenceCameraMotion.Immediate);
+        EnsureToolValidForSceneContext();
+        UpdateSceneDimensionButton();
+        UpdateSpatialTransformPanelState();
+        RefreshSceneOpticsInspector();
+        RefreshShotDirector(force: true);
+        RefreshToolButtons();
+        ApplyToolCursor();
+        UpdateTransformOverlay();
+        _stage.Invalidate();
+    }
+
+    private bool IsSceneShotAllowed(SceneShotDefinition shot) => _applicationSettings.Experimental3DEnabled
+        || shot.Settings.PinsPlanarRotation && shot.StateKeyframes.All(keyframe => keyframe.Settings.PinsPlanarRotation);
+
     private bool IsScene2DFrontView()
     {
         return IsSceneCompositionContext()
@@ -161,7 +187,7 @@ internal sealed partial class MainForm : Form
     private void UpdateSceneSpatialControlsVisibility()
     {
         var sceneWorkspace = IsSceneWorkspaceSelected;
-        _referenceViewPad.Visible = sceneWorkspace
+        _referenceViewPad.Visible = _applicationSettings.Experimental3DEnabled && sceneWorkspace
             && IsSceneCompositionContext()
             && ActiveSceneViewDimension() == SceneDimension.TwoD;
         if (_referenceViewPad.Visible) _referenceViewPad.BringToFront();

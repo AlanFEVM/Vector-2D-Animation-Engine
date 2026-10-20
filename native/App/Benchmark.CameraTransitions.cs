@@ -6,6 +6,7 @@ internal static partial class Benchmark
 {
     private static void RunReferenceCameraTransitionRegression()
     {
+        RunExperimental3DFeatureGateRegression();
         RunReferenceCameraFrameInterpolationRegression();
         RunReferenceCameraFocusFrameRegression();
         RunReferenceCameraFocusTransitionRegression();
@@ -14,6 +15,64 @@ internal static partial class Benchmark
         RunReferenceCameraCompositionTransitionRegression();
         RunReferenceCameraStageTransitionRegression();
         Console.WriteLine("scene_reference_camera_transition=ok");
+    }
+
+    private static void RunExperimental3DFeatureGateRegression()
+    {
+        var defaults = new ApplicationSettings();
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>("{}")!;
+        var enabledSettings = System.Text.Json.JsonSerializer.Deserialize<ApplicationSettings>(
+            System.Text.Json.JsonSerializer.Serialize(defaults with { Experimental3DEnabled = true }))!;
+        if (defaults.Experimental3DEnabled || legacy.Experimental3DEnabled || !enabledSettings.Experimental3DEnabled)
+            throw new InvalidOperationException("Experimental 3D must default to off and survive a settings round trip.");
+
+        using var form = new MainForm
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-30_000, -30_000),
+            Size = new Size(1280, 800)
+        };
+        ConfigureExperimental3DForRegression(form, enabled: false);
+        var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
+        var timeline = (TimelineStrip)RequireField(typeof(MainForm), "_timeline").GetValue(form)!;
+        var definition = project.Scenes[0];
+        definition.Dimension = SceneDimension.ThreeD;
+        definition.Camera.Projection = CameraProjection.Perspective;
+        var originalCamera = definition.AddShot("Original 3D camera", definition.FrameCount);
+        var originalData = System.Text.Json.JsonSerializer.Serialize(definition.CreateShotSnapshot());
+        tabs.SelectedView = WorkspaceView.ShotDirector;
+        ConfigureExperimental3DForRegression(form, enabled: false);
+        if (stage.ReferenceDimension != SceneDimension.TwoD || stage.ReferenceProjection != CameraProjection.Orthographic
+            || definition.Dimension != SceneDimension.ThreeD || definition.Camera.Projection != CameraProjection.Perspective
+            || timeline.VisibleTrackRowCount != 0)
+            throw new InvalidOperationException("Disabled 3D must use a 2D view without converting stored scene or camera data.");
+
+        RequireMethod(typeof(MainForm), "ActivateSceneShot").Invoke(form, [originalCamera.Id]);
+        RequireMethod(typeof(MainForm), "ResetSceneShotFraming").Invoke(form, [originalCamera.Id]);
+        RequireMethod(typeof(MainForm), "RemoveSceneShot").Invoke(form, [originalCamera.Id]);
+        RequireMethod(typeof(MainForm), "ToggleSceneDimension").Invoke(form, null);
+        if (System.Text.Json.JsonSerializer.Serialize(definition.CreateShotSnapshot()) != originalData
+            || stage.ReferenceDimension != SceneDimension.TwoD)
+            throw new InvalidOperationException("Disabled 3D camera commands must not mutate existing camera data.");
+
+        RequireMethod(typeof(MainForm), "AddSceneShot").Invoke(form, null);
+        var newCamera = definition.Shots[^1];
+        if (!newCamera.Settings.PinsPlanarRotation || timeline.VisibleTrackRowCount != 1)
+            throw new InvalidOperationException("New cameras must be editable 2D cameras while experimental 3D is disabled.");
+        RequireMethod(typeof(MainForm), "ResetSceneShotFraming").Invoke(form, [newCamera.Id]);
+        if (!newCamera.Settings.PinsPlanarRotation)
+            throw new InvalidOperationException("Reset must not turn a 2D camera into a 3D camera.");
+
+        ConfigureExperimental3DForRegression(form);
+        if (stage.ReferenceDimension != SceneDimension.ThreeD || timeline.VisibleTrackRowCount != 2)
+            throw new InvalidOperationException("Enabling experimental 3D must restore stored 3D scene and camera access.");
+        ConfigureExperimental3DForRegression(form, enabled: false);
+        if (stage.ReferenceDimension != SceneDimension.TwoD || definition.Shots.Count != 2 || timeline.VisibleTrackRowCount != 1)
+            throw new InvalidOperationException("Disabling experimental 3D again must retain all cameras and restore the 2D presentation.");
+        Console.WriteLine("experimental_3d_feature_gate=ok");
     }
 
     private static void RunReferenceCameraFrameInterpolationRegression()

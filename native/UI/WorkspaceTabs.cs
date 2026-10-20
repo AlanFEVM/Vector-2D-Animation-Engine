@@ -164,10 +164,6 @@ internal sealed class WorkspaceTabs : UserControl
 
         AddWorkspaceButton(WorkspaceView.BasicDrawing, "Basic Drawing", "Start here: draw and edit a reusable symbol.");
         AddWorkspaceButton(WorkspaceView.SceneEditor, "Scene & Animation", "Arrange symbols in a scene, then animate them with keyframes.");
-        AddWorkspaceButton(
-            WorkspaceView.ShotDirector,
-            "Shots & Directing",
-            "Set up cameras and frame your shots on the scene timeline.");
 
         _indicatorTimer.Tick += (_, _) => TickIndicator();
         RefreshGridTypePresentation();
@@ -176,6 +172,7 @@ internal sealed class WorkspaceTabs : UserControl
     }
 
     public event EventHandler<WorkspaceViewChangedEventArgs>? SelectedViewChanged;
+    public event EventHandler? ShotPageRequested;
     public event EventHandler? WorldGridOpacityChanged;
     public event EventHandler? WorldGridTypeChanged;
 
@@ -234,6 +231,11 @@ internal sealed class WorkspaceTabs : UserControl
     {
         var index = ShortcutProfiles.GetWorkspaceShortcutIndex(keyData);
         if (index < 0) return false;
+        if (index == 2)
+        {
+            SelectView(WorkspaceView.ShotDirector);
+            return true;
+        }
 
         // Use visible workspace registration order, not enum values (Animation is a legacy alias).
         // Unassigned Ctrl+1..9 slots stay reserved for future workspace modules.
@@ -357,11 +359,13 @@ internal sealed class WorkspaceTabs : UserControl
 
     private void SelectView(WorkspaceView view, bool raiseEvent)
     {
+        var openShots = view == WorkspaceView.ShotDirector;
         view = NormalizeWorkspaceView(view);
         if (!_buttons.ContainsKey(view)) return;
         if (_selectedView == view)
         {
             RefreshButtons();
+            if (openShots && raiseEvent) ShotPageRequested?.Invoke(this, EventArgs.Empty);
             return;
         }
 
@@ -369,11 +373,12 @@ internal sealed class WorkspaceTabs : UserControl
         _selectedView = view;
         RefreshButtons();
         if (raiseEvent) SelectedViewChanged?.Invoke(this, new WorkspaceViewChangedEventArgs(previous, _selectedView));
+        if (openShots && raiseEvent) ShotPageRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private static WorkspaceView NormalizeWorkspaceView(WorkspaceView view)
     {
-        return view == WorkspaceView.Animation ? WorkspaceView.SceneEditor : view;
+        return view is WorkspaceView.Animation or WorkspaceView.ShotDirector ? WorkspaceView.SceneEditor : view;
     }
 
     private void ApplyPlacement()

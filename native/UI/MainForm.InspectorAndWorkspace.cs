@@ -970,6 +970,8 @@ internal sealed partial class MainForm : Form
 
     private void ShowWorkspace(WorkspaceView view)
     {
+        var openShots = view == WorkspaceView.ShotDirector;
+        if (openShots) view = WorkspaceView.SceneEditor;
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
         if (!CommitTextEdit()) return;
         if (view != _workspaceTabs.SelectedView)
@@ -986,8 +988,7 @@ internal sealed partial class MainForm : Form
         if (view != WorkspaceView.BasicDrawing) HideBrushColorPalette();
         var basicDrawing = view == WorkspaceView.BasicDrawing;
         var sceneEdit = view == WorkspaceView.SceneEditor;
-        var shotDirector = view == WorkspaceView.ShotDirector;
-        var sceneWorkspace = sceneEdit || shotDirector;
+        var sceneWorkspace = sceneEdit;
         var inspector = _basicInspectorPage.Parent;
         var animateInspector = false;
         if (_displayedInspectorWorkspace is { } previousView && previousView != view && Visible)
@@ -1005,7 +1006,7 @@ internal sealed partial class MainForm : Form
             PlaceDrawingObjectInstancePanel(sceneWorkspace);
             _workspaceHeader.Height = ScaleResponsive(74, DeviceDpi / 96d);
             _drawingObjectRow.Visible = basicDrawing;
-            _sceneDimensionButton.Visible = sceneWorkspace;
+            _sceneDimensionButton.Visible = sceneWorkspace && _applicationSettings.Experimental3DEnabled;
             _timeline.Visible = true;
             UpdateShotDirectorWorkspace(view);
             if (basicDrawing)
@@ -1015,10 +1016,10 @@ internal sealed partial class MainForm : Form
             else if (sceneWorkspace)
             {
                 BindSceneEditStage(resetView: false);
+                _timeline.Context.Timeline.SetActiveTabGroup(openShots
+                    ? AnimationTimeline.ShotTabGroupId : AnimationTimeline.AllTabGroupId);
             }
             UpdateSceneDimensionButton();
-            // Pass the scene for every scene workspace so the filter can decide presentation itself:
-            // the Shots workspace shows only camera tracks, while Scene & Animation hides them.
             ApplyShotTimelineFilter(sceneWorkspace ? ActiveScene() : null);
 
             if (!basicDrawing && !IsSceneMaskEditing() && IsBasicDrawingOnlyTool(_tool))
@@ -1030,7 +1031,7 @@ internal sealed partial class MainForm : Form
                 _stage.ClearDrawingPreview();
             }
 
-            if (shotDirector && _tool is not (ToolMode.Select or ToolMode.Hand))
+            if (IsShotDirectorContext() && _tool is not (ToolMode.Select or ToolMode.Transform or ToolMode.Hand))
             {
                 _tool = ToolMode.Select;
                 CancelTraditionalPenPath();
@@ -1050,14 +1051,16 @@ internal sealed partial class MainForm : Form
             RefreshTweenCurveInspector();
 
             _basicInspectorPage.Visible = basicDrawing;
-            _sceneEditPage.Visible = sceneEdit;
+            _sceneEditPage.Visible = sceneEdit && !IsShotDirectorContext();
             _animationPage.Visible = false;
             // The director page owns the entire right inspector while active; the shared layer
             // blend strip belongs to drawing/scene inspection and must not remain above it.
-            _layerBlendModePanel.Visible = !shotDirector;
+            _layerBlendModePanel.Visible = !IsShotDirectorContext();
             UpdateSceneSpatialControlsVisibility();
             UpdateSpatialTransformPanelState();
             RefreshSceneOpticsInspector();
+            RefreshShotDirector(force: true);
+            RefreshStageLayerContentHighlight();
             switchedInspector = true;
             _displayedInspectorWorkspace = view;
         }
@@ -1104,7 +1107,7 @@ internal sealed partial class MainForm : Form
         // from the normal scene selection/transform tools, so only navigation tools remain visible.
         if (view == WorkspaceView.ShotDirector)
         {
-            return tool is ToolMode.Select or ToolMode.Hand;
+            return tool is ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
         }
         if (tool == ToolMode.Transform3D) return view == WorkspaceView.SceneEditor;
         return view == WorkspaceView.BasicDrawing || !IsBasicDrawingOnlyTool(tool);
@@ -1112,7 +1115,9 @@ internal sealed partial class MainForm : Form
 
     private bool IsToolVisibleForCurrentContext(ToolMode tool)
     {
+        if (!_applicationSettings.Experimental3DEnabled && tool == ToolMode.Transform3D) return false;
         var workspace = _workspaceTabs.SelectedView;
+        if (IsShotDirectorContext()) return tool is ToolMode.Select or ToolMode.Transform or ToolMode.Hand;
         if (workspace == WorkspaceView.SceneEditor && IsSceneMaskEditing())
         {
             return tool != ToolMode.Transform3D;
@@ -1456,6 +1461,7 @@ internal sealed partial class MainForm : Form
     private void RefreshToolButtons()
     {
         EnsureToolValidForSceneContext();
+        _stage.SetShotFramingPresentation(_applicationSettings.SimpleCameraStyleEnabled, _tool == ToolMode.Transform);
         var workspace = _workspaceTabs.SelectedView;
         var drawingToolsBlocked = DrawingToolsBlocked();
         _lastDrawingToolsBlocked = drawingToolsBlocked;

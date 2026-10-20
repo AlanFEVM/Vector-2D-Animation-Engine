@@ -80,20 +80,24 @@ internal sealed partial class MainForm
     /// </summary>
     private void UpdateShotFramingGizmo()
     {
+        _stage.SetShotFramingPresentation(_applicationSettings.SimpleCameraStyleEnabled, _tool == ToolMode.Transform);
         ClearShotFramingFeedback();
-        if (_workspaceTabs.SelectedView != WorkspaceView.ShotDirector
+        if (!IsShotDirectorContext()
             || !IsSceneCompositionContext() || ActiveScene() is not { } scene)
         {
             _stage.ClearShotFramingGizmo();
             return;
         }
         // Blank exposures and out-of-range frames still retain a camera outline.
-        var frames = scene.Shots.Select(shot => new StageControl.ShotFrameDisplay(
+        var frames = scene.Shots.Where(IsSceneShotAllowed).Select(shot => new StageControl.ShotFrameDisplay(
             shot.Id,
             scene.TryEvaluateShotSettings(shot.Id, Math.Max(0, _frame), out var settings)
                 ? settings : shot.EvaluateSettings(Math.Max(0, _frame)),
             shot.Id == _activeShotId)).OrderBy(frame => frame.Selected).ToArray();
         _stage.SetShotFrameDisplays(frames);
+        if (scene.FindShot(_activeShotId) is { } activeShot && IsSceneShotAllowed(activeShot)
+            && frames.FirstOrDefault(frame => frame.Selected) is { Selected: true } activeFrame)
+            _stage.SetShotFramingGizmo(activeFrame.Settings, activeShot.Name);
     }
 
     private static string BuildShotFramingGizmoLabel(
@@ -133,7 +137,7 @@ internal sealed partial class MainForm
     /// <summary>Hit test for the framing gizmo; a hit takes priority over canvas selection.</summary>
     private bool TryBeginShotFramingGizmoPointer(Point screen)
     {
-        if (_workspaceTabs.SelectedView != WorkspaceView.ShotDirector
+        if (!IsShotDirectorContext()
             || _playing
             || !IsSceneCompositionContext()
             || ActiveScene() is not { } scene
@@ -613,7 +617,7 @@ internal sealed partial class MainForm
     /// <summary>Hover feedback for the framing gizmo. Returns true when the pointer is on the frame.</summary>
     private bool UpdateShotFramingGizmoCursor(Point screen)
     {
-        if (_workspaceTabs.SelectedView != WorkspaceView.ShotDirector
+        if (!IsShotDirectorContext()
             || _playing
             || !IsSceneCompositionContext()
             || !_stage.ShotFramingGizmoVisible)
@@ -746,7 +750,12 @@ internal sealed partial class MainForm
         if (!force && _shotPreviewStopwatch.ElapsedMilliseconds < ShotPreviewRefreshIntervalMilliseconds) return;
         var scene = IsSceneBuildingContext() ? ActiveScene() : null;
         var shot = scene is not null && _activeShotId.Length > 0 ? scene.FindShot(_activeShotId) : null;
-        if (scene is null || shot is null || _playing || _shotFramingPointerSession is not null)
+        if (shot is not null && !IsSceneShotAllowed(shot))
+        {
+            _shotPreviewOverlay.SetPreview(null, UiLocalization.T("3D features are disabled. Enable experimental 3D features in Settings to edit this camera."));
+            return;
+        }
+        if (scene is null || shot is null || !IsSceneShotAllowed(shot) || _playing || _shotFramingPointerSession is not null)
         {
             _shotPreviewOverlay.SetPreview(null);
             return;

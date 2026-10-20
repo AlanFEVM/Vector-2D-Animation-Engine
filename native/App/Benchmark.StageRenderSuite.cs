@@ -9766,7 +9766,8 @@ internal static partial class Benchmark
         }
 
         using var workspaceTabs = new WorkspaceTabs();
-        if (!workspaceTabs.Views.Contains(WorkspaceView.ShotDirector)
+        if (workspaceTabs.Views.Contains(WorkspaceView.ShotDirector)
+            || !workspaceTabs.Views.Contains(WorkspaceView.SceneEditor)
             || MainForm.ResolveShotDirectorWidth(4000) != 760
             || MainForm.ResolveShotDirectorWidth(1200) != 480
             || MainForm.ResolveShotDirectorWidth(300) != 360)

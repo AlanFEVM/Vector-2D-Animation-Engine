@@ -108,6 +108,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1280, 800)
         };
+        ConfigureExperimental3DForRegression(form);
         try
         {
             var palette = toolPaletteField.GetValue(form) as FlowLayoutPanel
@@ -1125,6 +1126,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1280, 800)
         };
+        ConfigureExperimental3DForRegression(form);
         var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
         var workspace = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;
         var dimension = (Button)RequireField(typeof(MainForm), "_sceneDimensionButton").GetValue(form)!;
@@ -7519,6 +7521,7 @@ internal static partial class Benchmark
             Size = new Size(1280, 800), ShowInTaskbar = false,
             StartPosition = FormStartPosition.Manual, Location = new Point(-30_000, -30_000)
         };
+        ConfigureExperimental3DForRegression(form);
         var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
         var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
         scene.CreateEmpty();
@@ -7663,6 +7666,7 @@ internal static partial class Benchmark
             Size = new Size(1280, 800), ShowInTaskbar = false,
             StartPosition = FormStartPosition.Manual, Location = new Point(-30_000, -30_000)
         };
+        ConfigureExperimental3DForRegression(form);
         var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
         var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
         scene.CreateEmpty();
@@ -8248,11 +8252,121 @@ internal static partial class Benchmark
         Console.WriteLine("consecutive_boundary_arc_pointer=ok,rapid_double_click=ok,anchors_unchanged=ok,detach_release=ok,capture_loss=ok");
     }
 
+    private static void RunLineToolPreviewCoalescingRegression()
+    {
+        using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
+        form.CreateControl();
+        form.PerformLayout();
+        var scene = (VectorScene)RequireField(typeof(MainForm), "_scene").GetValue(form)!;
+        var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
+        ((DrawSettings)RequireField(typeof(MainForm), "_drawSettings").GetValue(form)!).SnapEnabled = false;
+        stage.Size = new Size(960, 640);
+        stage.CreateControl();
+        stage.SetVisibleWorldWidth(1200);
+        var activate = RequireMethod(typeof(MainForm), "ActivateTool", [typeof(ToolMode)]);
+        var down = RequireMethod(typeof(MainForm), "StageMouseDown");
+        var move = RequireMethod(typeof(MainForm), "StageMouseMove");
+        var up = RequireMethod(typeof(MainForm), "StageMouseUp");
+        var tick = RequireMethod(typeof(MainForm), "TickLineDragPreview");
+        var pending = RequireField(typeof(MainForm), "_pendingLineToolScreen");
+        var timer = (System.Windows.Forms.Timer)RequireField(typeof(MainForm), "_lineDragPreviewTimer").GetValue(form)!;
+        Point Screen(PointF world) => Point.Round(stage.WorldToScreen(world.X, world.Y));
+        void Pointer(System.Reflection.MethodInfo method, Point point) => method.Invoke(form,
+            [stage, new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0)]);
+        Point Burst(Point first)
+        {
+            var latest = first;
+            for (var i = 1; i <= 64; i++)
+            {
+                latest = new Point(first.X + i, first.Y - i);
+                Pointer(move, latest);
+            }
+            return latest;
+        }
+        (PointF Start, PointF C1, PointF C2, PointF End)[] Geometry() =>
+            Enumerable.Range(0, scene.ObjectCount).Select(index =>
+            {
+                scene.TryGetLineCubic(index, out var start, out var c1, out var c2, out var end);
+                return (start, c1, c2, end);
+            }).ToArray();
+
+        activate.Invoke(form, [ToolMode.Line]);
+        scene.CreateEmpty();
+        var press = Screen(new PointF(-240, 0));
+        var first = Screen(new PointF(0, 120));
+        Pointer(down, press);
+        timer.Start(); // A pending hover tick must not delay the first drawing preview.
+        Pointer(move, first);
+        var firstEnd = stage.DrawingPreviewEnd;
+        AssertTimeline(stage.DrawingPreviewVisible && PointsWithin(firstEnd, stage.ScreenToWorld(first), 1f),
+            "The first Line preview was delayed by an already running hover timer.");
+        var latest = Burst(first);
+        AssertTimeline(stage.DrawingPreviewEnd == firstEnd && scene.ObjectCount == 0,
+            "A burst of Line input repeatedly rebuilt its preview or committed scene objects before the next frame.");
+        tick.Invoke(form, null);
+        AssertTimeline(PointsWithin(stage.DrawingPreviewEnd, stage.ScreenToWorld(latest), 1f)
+            && pending.GetValue(form) is null,
+            "A Line preview frame did not consume the latest pending pointer position.");
+        Pointer(move, new Point(latest.X + 5, latest.Y + 5));
+        var release = new Point(latest.X + 30, latest.Y + 20);
+        Pointer(up, release);
+        AssertTimeline(scene.ObjectCount == 1
+            && scene.TryGetLineEndpoint(0, false, out var endpoint)
+            && PointsWithin(endpoint, stage.ScreenToWorld(release), 1f)
+            && !stage.DrawingPreviewVisible && pending.GetValue(form) is null && !stage.Capture,
+            "A coalesced Line gesture committed an older queued position or retained its preview after release.");
+
+        foreach (var corner in new[] { false, true })
+        {
+            activate.Invoke(form, [ToolMode.Select]);
+            RequireMethod(typeof(MainForm), "ClearSelection").Invoke(form, [false]);
+            scene.CreateEmpty();
+            var line = scene.AddLineSegment(scene.ActiveLayer, new PointF(-240, 0), new PointF(240, 0),
+                12, Color.Transparent, Color.Black, 6);
+            scene.QuadraticLineEditing[line] = true;
+            scene.CompleteDeferredBuild();
+            var original = Geometry();
+            press = Screen(PointF.Empty);
+            RequireField(typeof(MainForm), "_startScreen").SetValue(form, press);
+            RequireField(typeof(MainForm), "_startWorld").SetValue(form, stage.ScreenToWorld(press));
+            RequireField(typeof(MainForm), "_lastMouse").SetValue(form, press);
+            var started = corner
+                ? RequireMethod(typeof(MainForm), "BeginLineCornerDrag").Invoke(form, [line, 0.5f])
+                : RequireMethod(typeof(MainForm), "BeginArcDrag").Invoke(form, [stage.ScreenToWorld(press), line]);
+            AssertTimeline(started is true, "The coalesced Line editing fixture did not start.");
+            var beforeFirst = Geometry();
+            first = new Point(press.X + 20, press.Y + 25);
+            timer.Start();
+            Pointer(move, first);
+            var firstGeometry = Geometry();
+            AssertTimeline(!firstGeometry.SequenceEqual(beforeFirst), "The first Line editing preview was delayed.");
+            latest = Burst(first);
+            AssertTimeline(Geometry().SequenceEqual(firstGeometry),
+                "A burst of arc/corner input changed geometry repeatedly before the next preview frame.");
+            tick.Invoke(form, null);
+            AssertTimeline(!Geometry().SequenceEqual(firstGeometry) && pending.GetValue(form) is null,
+                "An arc/corner preview did not apply its latest queued pointer position.");
+            var current = Geometry();
+            var grabbedPoint = corner ? current[0].End : new PointF(
+                (current[0].Start.X + 3 * current[0].C1.X + 3 * current[0].C2.X + current[0].End.X) / 8,
+                (current[0].Start.Y + 3 * current[0].C1.Y + 3 * current[0].C2.Y + current[0].End.Y) / 8);
+            AssertTimeline(PointsWithin(grabbedPoint, stage.ScreenToWorld(latest), 1f),
+                "The coalesced arc/corner did not place the grabbed curve point at the latest pointer position.");
+            Pointer(move, new Point(latest.X + 5, latest.Y + 5));
+            RequireMethod(typeof(MainForm), "FinishLostPointerCapture").Invoke(form, null);
+            tick.Invoke(form, null);
+            AssertTimeline(Geometry().SequenceEqual(original) && pending.GetValue(form) is null && !stage.Capture,
+                "Capture loss retained a queued arc/corner update or changed the restored geometry on a later tick.");
+        }
+        Console.WriteLine("line_tool_preview_coalescing=ok,first_move_immediate=ok,latest_pointer=ok,release_position=ok,capture_loss=ok");
+    }
+
     private static void RunLineEditingPointerRegression()
     {
         RunConsecutiveBoundaryArcPointerRegression();
         RunLinePointerReleaseRegression();
         RunConnectedAnchorCurveDragRegression();
+        RunLineToolPreviewCoalescingRegression();
         using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
         form.CreateControl();
         form.PerformLayout();
@@ -8409,8 +8523,16 @@ internal static partial class Benchmark
         void Pointer(System.Reflection.MethodInfo method, PointF world)
         {
             var screen = Point.Round(stage.WorldToScreen(world.X, world.Y));
+            var previousBaseFrame = stage.CreateReference3DBaseFrameRenderState().Editable;
             method.Invoke(form, [stage, new MouseEventArgs(MouseButtons.Left, 1, screen.X, screen.Y, 0)]);
-            if (method == move) flush.Invoke(form, null);
+            if (method == move)
+            {
+                flush.Invoke(form, null);
+                var currentBaseFrame = stage.CreateReference3DBaseFrameRenderState().Editable;
+                AssertTimeline(currentBaseFrame.GeometryRevision > previousBaseFrame.GeometryRevision
+                    && currentBaseFrame != previousBaseFrame,
+                    "An endpoint drag reused the old stroke cache state while its editing overlay moved.");
+            }
         }
         void AssertGeometry(PointF anchor)
         {

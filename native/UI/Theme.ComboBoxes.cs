@@ -5,10 +5,25 @@ namespace VectorAnimationEngine;
 
 internal static partial class Theme
 {
+    internal static void StyleComboBoxSelection(ComboBox box, float fontSize, int height)
+    {
+        if (StyledComboBoxes.TryGetValue(box, out var state) && state is ComboBoxSurfaceAdapter adapter)
+            adapter.SetSelectionStyle(fontSize, height);
+    }
+
     private sealed class ComboBoxSurfaceAdapter : NativeWindow
     {
         private readonly ComboBox _box;
         private bool _hovered;
+        private float? _selectionFontSize;
+        private int? _selectionHeight;
+
+        internal void SetSelectionStyle(float fontSize, int height)
+        {
+            _selectionFontSize = fontSize;
+            _selectionHeight = height;
+            RefreshSelectionHeight();
+        }
 
         internal ComboBoxSurfaceAdapter(ComboBox box)
         {
@@ -39,6 +54,8 @@ internal static partial class Theme
             // CB_SETITEMHEIGHT(-1) sizes the closed selector independently of
             // popup rows. A tall popup row must not clip a compact inspector row.
             var height = Math.Max(_box.Font.Height + 2, (int)Math.Round(16f * _box.DeviceDpi / 96f));
+            if (_selectionHeight is int selectionHeight)
+                height = Math.Max(height, (int)Math.Round(selectionHeight * _box.DeviceDpi / 96f) - 6);
             SendComboMessage(_box.Handle, 0x0153, new IntPtr(-1), new IntPtr(height));
             _box.Invalidate();
         }
@@ -122,7 +139,8 @@ internal static partial class Theme
             var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
             flags |= rtl ? TextFormatFlags.Right | TextFormatFlags.RightToLeft : TextFormatFlags.Left;
             var label = _box.SelectedIndex >= 0 ? _box.GetItemText(_box.SelectedItem) : _box.Text;
-            TextRenderer.DrawText(graphics, UiLocalization.T(label), _box.Font, bounds, foreground, flags);
+            using var selectionFont = _selectionFontSize is float fontSize ? UiFont(fontSize) : null;
+            TextRenderer.DrawText(graphics, UiLocalization.T(label), selectionFont ?? _box.Font, bounds, foreground, flags);
             var x = rtl ? arrowWidth / 2f : _box.ClientSize.Width - arrowWidth / 2f;
             var y = _box.ClientSize.Height / 2f;
             var arrowColor = highContrast ? foreground

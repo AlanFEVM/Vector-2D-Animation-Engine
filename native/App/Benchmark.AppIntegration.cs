@@ -274,6 +274,7 @@ internal static partial class Benchmark
     private static void RunInspectorCompositionWorkspaceRegression()
     {
         using var form = new MainForm { ShowInTaskbar = false, Location = new Point(-30000, -30000) };
+        ConfigureExperimental3DForRegression(form);
         form.Show();
         Application.DoEvents();
         var tabs = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;

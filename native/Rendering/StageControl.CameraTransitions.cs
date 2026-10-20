@@ -76,8 +76,10 @@ internal sealed partial class StageControl
         ReferenceCameraMotion motion)
     {
         var seed = PrepareReferenceCameraTransition();
-        var nextProjection = scene?.Camera.Projection ?? CameraProjection.Orthographic;
-        var nextDirection = ReferenceDimension != nextDimension && nextDimension == SceneDimension.TwoD
+        var nextProjection = Experimental3DEnabled
+            ? scene?.Camera.Projection ?? CameraProjection.Orthographic
+            : CameraProjection.Orthographic;
+        var nextDirection = !Experimental3DEnabled || ReferenceDimension != nextDimension && nextDimension == SceneDimension.TwoD
             ? ReferenceViewDirection.Front
             : _reference2DViewDirection;
 
@@ -102,6 +104,7 @@ internal sealed partial class StageControl
         ReferenceViewDirection direction,
         ReferenceCameraMotion motion)
     {
+        if (!Experimental3DEnabled && direction != ReferenceViewDirection.Front) return;
         var seed = PrepareReferenceCameraTransition();
         var (yaw, pitch) = ReferenceOrientation(direction, seed.LogicalTarget.Yaw, seed.LogicalTarget.Pitch);
         if (ReferenceDimension == SceneDimension.TwoD)

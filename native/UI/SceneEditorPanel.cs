@@ -46,6 +46,20 @@ internal sealed class SceneEditorPanel : UserControl
     private int _activeSceneIndex;
     private bool _updating;
 
+    internal void SetExperimental3DEnabled(bool enabled)
+    {
+        _cameraProjection.Enabled = enabled;
+        _cameraProjection.Visible = enabled;
+        if (_cameraProjection.Parent is TableLayoutPanel content)
+        {
+            var row = content.GetRow(_cameraProjection);
+            var label = content.GetControlFromPosition(0, row);
+            if (label is not null) label.Visible = enabled;
+            content.RowStyles[row].Height = enabled ? 40 : 0;
+            if (content.Parent is TableLayoutPanel root) root.RowStyles[root.GetRow(content)].Height = enabled ? 88 : 48;
+        }
+    }
+
     public SceneEditorPanel()
     {
         BackColor = Theme.Panel;

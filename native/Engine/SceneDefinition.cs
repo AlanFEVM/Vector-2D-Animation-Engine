@@ -60,6 +60,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         _instanceIndex = new LayeredInstanceIndex(_instanceView);
         _timeline.ApplyTabGroupLayerOrder = ApplyTabGroupLayerOrder;
         _timeline.AssignTabGroupToLayerBlock = AssignTabGroupToLayerBlock;
+        _timeline.EnableShotTabGroup();
+        _timeline.IsShotTarget = targetId => FindShot(targetId) is not null;
         var firstLayer = new SceneLayerDefinition { Name = "Layer 0001" };
         _layers.Add(firstLayer);
         _timeline.SynchronizeTracks([firstLayer.Id], Math.Max(1, initialFrameCount), populateNewTracks: false);
@@ -117,6 +119,8 @@ internal sealed partial class SceneDefinition : ITimelineContext, ICompositionDe
         _timeline.SynchronizeTracks(TimelineTargetIds, FrameCount, populateNewTracks: false);
         foreach (var track in _timeline.Tracks)
         {
+            if (FindShot(track.TargetId) is not null) track.TabGroupId = AnimationTimeline.ShotTabGroupId;
+            else if (track.TabGroupId == AnimationTimeline.ShotTabGroupId) track.TabGroupId = AnimationTimeline.DefaultTabGroupId;
             if (FindLight(track.TargetId) is not null
                 || FindShot(track.TargetId) is not null)
             {

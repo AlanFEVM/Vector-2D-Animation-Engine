@@ -141,6 +141,7 @@ internal static partial class Benchmark
             StartPosition = FormStartPosition.Manual,
             Location = new Point(-30000, -30000)
         };
+        ConfigureExperimental3DForRegression(form);
         var originalSettings = (ApplicationSettings)settingsField.GetValue(form)!;
         var originalLanguage = UiLocalization.CurrentLanguage;
         var timelineControl = (TimelineStrip)typeof(MainForm).GetField("_timeline", flags)!.GetValue(form)!;

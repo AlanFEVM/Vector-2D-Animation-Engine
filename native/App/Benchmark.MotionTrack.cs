@@ -63,6 +63,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1280, 800)
         };
+        ConfigureExperimental3DForRegression(form);
         var project = (VectorProject)RequireField(typeof(MainForm), "_project").GetValue(form)!;
         var stage = (StageControl)RequireField(typeof(MainForm), "_stage").GetValue(form)!;
         var workspace = (WorkspaceTabs)RequireField(typeof(MainForm), "_workspaceTabs").GetValue(form)!;

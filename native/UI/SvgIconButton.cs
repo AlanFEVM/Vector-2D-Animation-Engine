@@ -75,17 +75,15 @@ internal class SvgIconButton : Button
         var parentBack = Parent?.BackColor ?? Theme.Top;
         var fillsButton = !borderless || active || hover > 0.01f || Capture;
         var actualBackground = IsDisclosureHeader
-            ? !Enabled ? parentBack : Capture ? Theme.Mix(parentBack, Theme.PanelHover, 0.8f)
-                : Theme.Mix(parentBack, Theme.PanelHover, hover * 0.55f)
+            ? parentBack
             : fillsButton ? BackColor : parentBack;
-        if (IsDisclosureHeader && SystemInformation.HighContrast)
-            actualBackground = Enabled && (Capture || hover > 0.01f) ? SystemColors.Highlight : SystemColors.Control;
+        var disclosureEmphasized = IsDisclosureHeader && (active || hover > 0.01f || Capture);
         var foreground = SystemInformation.HighContrast
             ? IsDisclosureHeader
-                ? !Enabled ? SystemColors.GrayText : actualBackground == SystemColors.Highlight ? SystemColors.HighlightText : SystemColors.ControlText
+                ? !Enabled ? SystemColors.GrayText : disclosureEmphasized ? SystemColors.HotTrack : SystemColors.ControlText
                 : Enabled ? ForeColor : SystemColors.GrayText
             : Enabled
-                ? Theme.ReadableText(actualBackground, ForeColor)
+                ? Theme.ReadableText(actualBackground, IsDisclosureHeader ? disclosureEmphasized ? Theme.AccentLabel : Theme.Text : ForeColor)
                 : Theme.ReadableText(actualBackground, Theme.DisabledText);
         if (!IsDisclosureHeader && toolbar && Theme.IsLight && !active && Enabled && !SystemInformation.HighContrast)
         {
@@ -157,7 +155,7 @@ internal class SvgIconButton : Button
                 e.Graphics,
                 Rectangle.Inflate(ClientRectangle, -focusInset, -focusInset),
                 SystemInformation.HighContrast
-                    ? SystemColors.HighlightText
+                    ? IsDisclosureHeader ? SystemColors.ControlText : SystemColors.HighlightText
                     : Theme.ReadableUiColor(actualBackground, Theme.AccentLabel),
                 actualBackground);
         }

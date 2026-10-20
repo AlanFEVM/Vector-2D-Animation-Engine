@@ -1911,7 +1911,9 @@ internal sealed partial class StageControl : Control
         SceneDimension? viewDimension = null,
         ReferenceCameraMotion motion = ReferenceCameraMotion.Immediate)
     {
-        var nextDimension = viewDimension ?? scene?.Dimension ?? SceneDimension.TwoD;
+        var nextDimension = Experimental3DEnabled
+            ? viewDimension ?? scene?.Dimension ?? SceneDimension.TwoD
+            : SceneDimension.TwoD;
         SetReference3DSceneDefinition(scene);
         ConfigureReferenceViewCore(scene, nextDimension, motion);
     }
@@ -3391,6 +3393,7 @@ internal sealed partial class StageControl : Control
         if (!PlaybackActive)
         {
             if (!MarqueeLodPreviewActive) DrawActiveMaskOutline(g);
+            DrawLayerContentHighlight(g);
             DrawSelection(g);
             DrawSelectionSweep(g);
             DrawMotionTrack(g);

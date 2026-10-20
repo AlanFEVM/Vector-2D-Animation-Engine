@@ -7,10 +7,19 @@ internal sealed partial class AnimationTimeline
     public const string DefaultTabGroupId = "layers";
     public const string TerrainTabGroupId = "terrain";
     public const string AllTabGroupId = "all";
+    public const string ShotTabGroupId = "shots";
+    private bool _shotTabGroupEnabled;
+    internal Func<string, bool>? IsShotTarget { get; set; }
+
+    internal void EnableShotTabGroup()
+    {
+        _shotTabGroupEnabled = true;
+        if (!IsKnownTabGroupId(ShotTabGroupId)) _tabGroups.Add(new TimelineTabGroup(ShotTabGroupId, "Shots"));
+    }
 
     private const int MaximumTabGroupNameLength = 80;
     public const int MaximumCustomTabGroups = 32;
-    public bool CanCreateTabGroup => _tabGroups.Count < MaximumCustomTabGroups + 2;
+    public bool CanCreateTabGroup => _tabGroups.Count < MaximumCustomTabGroups + (_shotTabGroupEnabled ? 3 : 2);
     public bool TabGroupOrderingEnabled { get; private set; }
     internal Action? ApplyTabGroupLayerOrder { get; set; }
     internal Action<string, string>? AssignTabGroupToLayerBlock { get; set; }
@@ -36,6 +45,7 @@ internal sealed partial class AnimationTimeline
 
     public bool RenameTabGroup(string id, string name)
     {
+        if (id == ShotTabGroupId) return false;
         if (string.Equals(id, AllTabGroupId, StringComparison.Ordinal)) return false;
         var index = FindTabGroupIndex(id);
         var normalized = NormalizeTabGroupName(name);
@@ -85,6 +95,7 @@ internal sealed partial class AnimationTimeline
     {
         if (string.Equals(id, DefaultTabGroupId, StringComparison.Ordinal)
             || string.Equals(id, TerrainTabGroupId, StringComparison.Ordinal)
+            || string.Equals(id, ShotTabGroupId, StringComparison.Ordinal)
             || string.Equals(id, AllTabGroupId, StringComparison.Ordinal))
         {
             return false;
@@ -119,6 +130,7 @@ internal sealed partial class AnimationTimeline
         }
 
         var track = FindTrack(trackId);
+        if (track is not null && ((IsShotTarget?.Invoke(track.TargetId) == true) != (groupId == ShotTabGroupId))) return false;
         if (track is null || string.Equals(track.TabGroupId, groupId, StringComparison.Ordinal)) return false;
         track.TabGroupId = groupId;
         if (!_applyingTabGroupOrder)
@@ -152,6 +164,7 @@ internal sealed partial class AnimationTimeline
             || !_tabGroups.SequenceEqual(CreateDefaultTabGroups());
         _tabGroups.Clear();
         _tabGroups.AddRange(CreateDefaultTabGroups());
+        if (_shotTabGroupEnabled) EnableShotTabGroup();
         _activeTabGroupId = DefaultTabGroupId;
         TabGroupOrderingEnabled = false;
         return changed;
@@ -168,6 +181,7 @@ internal sealed partial class AnimationTimeline
 
         AddBuiltInTabGroup(DefaultTabGroupId, "Layers", suppliedById);
         AddBuiltInTabGroup(TerrainTabGroupId, "Terrain", suppliedById);
+        if (_shotTabGroupEnabled) AddBuiltInTabGroup(ShotTabGroupId, "Shots", suppliedById);
         var knownIds = _tabGroups.Select(group => group.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var group in supplied)
         {
@@ -223,7 +237,7 @@ internal sealed partial class AnimationTimeline
 
     private string NewTrackTabGroupId()
     {
-        return _activeTabGroupId is AllTabGroupId or TerrainTabGroupId
+        return _activeTabGroupId is AllTabGroupId or TerrainTabGroupId or ShotTabGroupId
             ? DefaultTabGroupId
             : NormalizeTrackTabGroupId(_activeTabGroupId);
     }

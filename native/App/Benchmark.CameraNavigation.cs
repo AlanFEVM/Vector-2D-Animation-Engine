@@ -43,6 +43,7 @@ internal static partial class Benchmark
             Location = new Point(-30_000, -30_000),
             Size = new Size(1280, 800)
         };
+        ConfigureExperimental3DForRegression(form);
         var workspaceTabs = workspaceTabsField.GetValue(form) as WorkspaceTabs
             ?? throw new InvalidOperationException("Camera keyboard fixture lost workspace tabs.");
         var dimensionButton = dimensionButtonField.GetValue(form) as Button

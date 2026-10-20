@@ -24,6 +24,8 @@ Capture at least:
 
 Inspect images for clipping, overlap, blank regions, low contrast, inconsistent spacing, text overflow, and unexpected layout shifts.
 
+For inspector alignment, follow the [architecture acceptance contract](../../../../docs/UI_COMPOSITION.md#截图验收). Capture the real preferred panel height without a minimum screenshot-height override or bottom crop. Reproduce the actual scroll-page padding and mounting hierarchy, compare field Bounds in a shared host coordinate system, and inspect label/input vertical centers. Expand the color editor and trigger affected conditional panels. Build must finish before loading the capture assembly. Report simulated scaling separately from real high-DPI validation, and do not claim popup appearance was verified from a closed-selector screenshot.
+
 ## Bound Panels
 
 For controls that require project/scene data, write a small task-specific STA harness beside the verification artifact or invoke binding methods through reflection after constructing `VectorProject`/`VectorScene`. Reuse the hosting sequence from `capture-control.ps1`; do not add test-only hooks to production controls solely for screenshots.

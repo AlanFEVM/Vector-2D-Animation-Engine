@@ -32,6 +32,14 @@ internal static class UiLocalization
     private static readonly IReadOnlyDictionary<string, string> SimplifiedChinese =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            ["Experimental features"] = "实验功能",
+            ["Simple camera style"] = "简化相机样式",
+            ["Camera zoom"] = "相机缩放",
+            ["Show a clean camera frame. Rotation handles appear only with Free Transform."] = "显示简洁取景框，仅在自由变换工具下显示旋转手柄。",
+            ["3D camera (disabled)"] = "3D 相机（已禁用）",
+            ["Enable experimental 3D features"] = "启用实验性 3D 功能",
+            ["Off by default. Existing 3D data is preserved while 3D tools are disabled."] = "默认关闭。禁用 3D 工具时，已有 3D 数据仍会保留。",
+            ["3D features are disabled. Enable experimental 3D features in Settings to edit this camera."] = "3D 功能已禁用。如需编辑此相机，请在设置中启用实验性 3D 功能。",
             ["Replace Source..."] = "替换源文件...",
             ["Update from Source"] = "从源文件更新",
             ["Create Independent Copy"] = "创建独立副本",

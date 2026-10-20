@@ -301,21 +301,21 @@ internal sealed partial class MainForm : Form
 
         if (_lineBranchDragSession is not null)
         {
-            if (e.Button == MouseButtons.Left) UpdateLineBranchDrag(e.Location);
+            if (e.Button == MouseButtons.Left) QueueLineToolPointer(e.Location);
             UpdateInteractionCursor(e.Location);
             return;
         }
 
         if (_arcDragSession is not null)
         {
-            if (e.Button == MouseButtons.Left) UpdateArcDrag(e.Location);
+            if (e.Button == MouseButtons.Left) QueueLineToolPointer(e.Location);
             UpdateInteractionCursor(e.Location);
             return;
         }
 
         if (_cornerDragSession is not null)
         {
-            if (e.Button == MouseButtons.Left) UpdateCornerDrag(e.Location);
+            if (e.Button == MouseButtons.Left) QueueLineToolPointer(e.Location);
             UpdateInteractionCursor(e.Location);
             return;
         }
@@ -439,7 +439,8 @@ internal sealed partial class MainForm : Form
         }
         else if (IsDrawingTool(_tool) && _startWorld is not null && e.Button == MouseButtons.Left)
         {
-            UpdateDrawingPreview(_startWorld.Value, _stage.ScreenToWorld(e.Location), _tool);
+            if (_tool == ToolMode.Line) QueueLineToolPointer(e.Location);
+            else UpdateDrawingPreview(_startWorld.Value, _stage.ScreenToWorld(e.Location), _tool);
         }
     }
 
@@ -597,6 +598,7 @@ internal sealed partial class MainForm : Form
         }
         else
         {
+            DismissStageLayerContentHighlight();
             ClearSelection();
         }
 
@@ -2323,6 +2325,7 @@ internal sealed partial class MainForm : Form
 
     private void BeginBlankMarqueeSelection(Point current)
     {
+        DismissStageLayerContentHighlight();
         BeginMarqueeFromPendingSelection(current);
         if (_additiveSelection) return;
 
@@ -2514,6 +2517,9 @@ internal sealed partial class MainForm : Form
             QueueFillEdgeBezierPointer(_stage.ScreenToWorld(e.Location));
         }
 
+        // Line gestures calculate their final geometry from the release position below.
+        // Do not spend another preview pass on an older queued mouse move.
+        _pendingLineToolScreen = null;
         FlushLineDragPreview();
 
         if (_fillEdgeBezierArmedSession is { } armedFillEdgeSession)
@@ -3293,6 +3299,43 @@ internal sealed partial class MainForm : Form
         _stage.Invalidate();
     }
 
+    private Point? _pendingLineToolScreen;
+    private bool _lineToolPreviewStarted;
+
+    private void QueueLineToolPointer(Point screen)
+    {
+        _pendingLineToolScreen = screen;
+        if (PointerDragExceeded(screen))
+        {
+            // Crossing the drag threshold must survive input coalescing, even if the
+            // pointer returns to its press position before the next preview frame.
+            if (_lineBranchDragSession is { } branch) branch.DragExceeded = true;
+            if (_arcDragSession is { } arc) arc.DragExceeded = true;
+            if (_cornerDragSession is { } corner) corner.DragExceeded = true;
+        }
+        if (_lineToolPreviewStarted && _lineDragPreviewTimer.Enabled) return;
+
+        // Present the first move immediately, even if a hover tick is still armed.
+        // Subsequent input replaces the pending position until the next frame/tick.
+        _lineToolPreviewStarted = true;
+        _pendingHoverScreen = null;
+        ApplyPendingLineToolPreview();
+        _lineDragPreviewTimer.Start();
+    }
+
+    private bool ApplyPendingLineToolPreview()
+    {
+        if (_pendingLineToolScreen is not { } screen) return false;
+        _pendingLineToolScreen = null;
+        if (_lineBranchDragSession is not null) UpdateLineBranchDrag(screen);
+        else if (_arcDragSession is not null) UpdateArcDrag(screen);
+        else if (_cornerDragSession is not null) UpdateCornerDrag(screen);
+        else if (_tool == ToolMode.Line && _startWorld is { } start)
+            UpdateDrawingPreview(start, _stage.ScreenToWorld(screen), ToolMode.Line);
+        else return false;
+        return true;
+    }
+
     private void QueueFillEdgeBezierPointer(PointF world)
     {
         _pendingFillEdgeBezierWorld = world;
@@ -3328,7 +3371,8 @@ internal sealed partial class MainForm : Form
 
     private void TickLineDragPreview()
     {
-        var applied = ApplyPendingLineDragPreview();
+        var applied = ApplyPendingLineToolPreview();
+        applied |= ApplyPendingLineDragPreview();
         applied |= ApplyPendingFillEdgeBezierPreview();
         applied |= ApplyPendingDrawingTransformPreview();
         applied |= ApplyPendingSceneLightGizmoPointer();
@@ -3572,7 +3616,8 @@ internal sealed partial class MainForm : Form
 
     private bool HasPendingFrameCoalescedWork()
     {
-        return _pendingLineDragWorld is not null
+        return _pendingLineToolScreen is not null
+            || _pendingLineDragWorld is not null
             || _pendingFillEdgeBezierWorld is not null
             || _pendingDrawingTransformWorld is not null
             || _pendingSceneLightGizmoScreen is not null

@@ -3567,6 +3567,9 @@ internal sealed partial class VectorScene
         CurveControlY[objectIndex] = VectorUnits.Quantize(control1.Y);
         CurveControl2X[objectIndex] = VectorUnits.Quantize(control2.X);
         CurveControl2Y[objectIndex] = VectorUnits.Quantize(control2.Y);
+        // Endpoint previews are rendered before CompleteDeferredBuild runs on release.
+        // Advance the revision now so cached strokes follow the live editing overlays.
+        GeometryRevision++;
         InvalidateDeferredTopologyQueries();
     }
 
