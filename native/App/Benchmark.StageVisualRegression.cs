@@ -1552,6 +1552,7 @@ internal static partial class Benchmark
 
     private static void RunBezierOperationPerformanceRegression()
     {
+        RunBezierPreviewIsolationRegression();
         const int addIterations = 256;
         var addScene = new VectorScene();
         addScene.CreateEmpty();

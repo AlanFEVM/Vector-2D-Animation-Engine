@@ -1108,7 +1108,12 @@ internal sealed partial class MainForm : Form
     {
         HookSceneOpticsEvents();
         _workspaceTabs.SelectedViewChanged += (_, e) => ShowWorkspace(e.SelectedView);
-        _workspaceTabs.ShotPageRequested += (_, _) => _timeline.SetActiveTabGroup(AnimationTimeline.ShotTabGroupId);
+        _workspaceTabs.ShotPageRequested += (_, _) =>
+        {
+            _timeline.SetActiveTabGroup(AnimationTimeline.ShotTabGroupId);
+            // Opening the shot page is an explicit camera-work action.
+            RevealInspectorCategory(InspectorCategory.Camera, "shot page");
+        };
         _workspaceTabs.WorldGridOpacityChanged += (_, _) => _stage.WorldGridOpacity = _workspaceTabs.WorldGridOpacity / 100f;
         _workspaceTabs.WorldGridTypeChanged += (_, _) => _stage.WorldGridType = _workspaceTabs.WorldGridType;
         _brushTipPanel.ImportRequested += (_, _) => ImportBrushTip();
@@ -2525,6 +2530,8 @@ internal sealed partial class MainForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (HandleInspectorCategoryShortcut(keyData)) return true;
+        if (HandleInspectorCategoryKey(keyData)) return true;
         var physicalKeyData = keyData;
         var profile = ShortcutProfiles.ResolveProfile(
             _applicationSettings.ActiveShortcutProfileId,

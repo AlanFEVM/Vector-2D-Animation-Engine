@@ -491,7 +491,11 @@ internal sealed partial class MainForm
         }
 
         _pendingLineDragWorld = world;
-        if (_lineDragPreviewTimer.Enabled) return;
+        if (_lineDragPreviewTimer.Enabled)
+        {
+            PostPendingFrameCoalescedWork();
+            return;
+        }
         ApplyPendingLineDragPreview();
         _lineDragPreviewTimer.Start();
     }

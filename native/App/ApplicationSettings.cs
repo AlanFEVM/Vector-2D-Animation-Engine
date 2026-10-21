@@ -8,6 +8,12 @@ internal enum ToolShortcutPreset
     NumberKeys
 }
 
+internal enum ToolbarPosition
+{
+    Left,
+    Top
+}
+
 internal enum ApplicationColorTheme
 {
     Dark,
@@ -45,6 +51,7 @@ internal sealed record ApplicationSettings
     public string ActiveShortcutProfileId { get; init; } = "";
     public ShortcutProfileRecord[] CustomShortcutProfiles { get; init; } = [];
     public UiLanguage Language { get; init; } = UiLanguage.English;
+    public ToolbarPosition ToolbarPosition { get; init; } = ToolbarPosition.Left;
     public ApplicationColorTheme ColorTheme { get; init; } = ApplicationColorTheme.Dark;
     public int ThemeHueDegrees { get; init; } = DefaultThemeHueDegrees;
     public int ThemeSaturationPercent { get; init; } = DefaultThemeSaturationPercent;
@@ -182,6 +189,7 @@ internal static class ApplicationSettingsStore
             ActiveShortcutProfileId = shortcutProfiles.ActiveProfileId,
             CustomShortcutProfiles = shortcutProfiles.CustomProfiles,
             Language = language,
+            ToolbarPosition = Enum.IsDefined(settings.ToolbarPosition) ? settings.ToolbarPosition : ToolbarPosition.Left,
             ColorTheme = colorTheme,
             ThemeHueDegrees = NormalizeHueDegrees(settings.ThemeHueDegrees),
             ThemeSaturationPercent = NormalizeSaturationPercent(settings.ThemeSaturationPercent),

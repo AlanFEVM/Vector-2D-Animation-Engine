@@ -16,6 +16,7 @@ internal sealed class SegmentedButton : Button
 internal class SvgIconButton : Button
 {
     private readonly SvgIconBitmapCache _iconCache = new();
+    private Font? _belowIconLabelFont;
 
     public SvgIconButton(SvgIconKind icon)
     {
@@ -30,6 +31,7 @@ internal class SvgIconButton : Button
     public SvgIconKind Icon { get; set; }
 
     public bool ShowsToolGroupIndicator { get; set; }
+    public bool ShowsLabelBelowIcon { get; set; }
 
     // Disclosure headers express expansion through the chevron, not a selected toolbar surface.
     public bool IsDisclosureHeader { get; set; }
@@ -117,21 +119,33 @@ internal class SvgIconButton : Button
             : hasLabel
             ? new Rectangle(ScaleLogical(2), 0, iconSlot, Height)
             : ClientRectangle;
-        _iconCache.Draw(e.Graphics, Icon, iconBounds, foreground);
+        if (ShowsLabelBelowIcon)
+        {
+            var iconSize = Math.Min(ScaleLogical(30), Math.Max(1, Height - ScaleLogical(22)));
+            iconBounds = new Rectangle((Width - iconSize) / 2, ScaleLogical(2), iconSize, iconSize);
+        }
+        var iconPadding = ShowsLabelBelowIcon
+            ? Math.Min(ScaleLogical(3), Math.Max(0, (iconBounds.Width - 1) / 2)) : 0;
+        _iconCache.Draw(e.Graphics, Icon, Rectangle.Inflate(iconBounds, -iconPadding, -iconPadding), foreground);
         if (hasLabel)
         {
+            var labelFont = ShowsLabelBelowIcon ? _belowIconLabelFont ??= Theme.UiFont(8f) : Font;
             var textBounds = new Rectangle(
                 iconSlot + ScaleLogical(IsDisclosureHeader ? 2 : 8),
                 ScaleLogical(1),
                 Math.Max(0, Width - iconSlot - ScaleLogical(IsDisclosureHeader ? 8 : 14)),
                 Math.Max(0, Height - ScaleLogical(2)));
+            if (ShowsLabelBelowIcon)
+                textBounds = new Rectangle(
+                    ScaleLogical(2), iconBounds.Bottom + ScaleLogical(1), Math.Max(0, Width - ScaleLogical(4)),
+                    Math.Max(0, Math.Min(labelFont.Height + ScaleLogical(2), Height - iconBounds.Bottom - ScaleLogical(3))));
             TextRenderer.DrawText(
                 e.Graphics,
                 Text,
-                Font,
+                labelFont,
                 textBounds,
                 foreground,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
+                (ShowsLabelBelowIcon ? TextFormatFlags.HorizontalCenter : TextFormatFlags.Left) | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform);
         }
         if (ShowsToolGroupIndicator)
         {
@@ -163,7 +177,11 @@ internal class SvgIconButton : Button
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _iconCache.Dispose();
+        if (disposing)
+        {
+            _iconCache.Dispose();
+            _belowIconLabelFont?.Dispose();
+        }
         base.Dispose(disposing);
     }
 

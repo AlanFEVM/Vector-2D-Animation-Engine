@@ -4,6 +4,94 @@ namespace VectorAnimationEngine;
 
 internal static partial class Benchmark
 {
+    private static void RunBezierPreviewIsolationRegression()
+    {
+        var scene = new VectorScene();
+        scene.CreateEmpty();
+        var outer = new[]
+        {
+            new PathBezierNode(new PointF(-900, -600), new PointF(-900, -200), new PointF(-300, -600)),
+            new PathBezierNode(new PointF(900, -600), new PointF(300, -600), new PointF(900, -200)),
+            new PathBezierNode(new PointF(900, 600), new PointF(900, 200), new PointF(300, 600)),
+            new PathBezierNode(new PointF(-900, 600), new PointF(-300, 600), new PointF(-900, 200))
+        };
+        var hole = outer.Select(node => new PathBezierNode(
+            new PointF(node.Anchor.X / 3, node.Anchor.Y / 3),
+            new PointF(node.IncomingControl.X / 3, node.IncomingControl.Y / 3),
+            new PointF(node.OutgoingControl.X / 3, node.OutgoingControl.Y / 3))).ToArray();
+        var objectIndex = scene.AppendPathBezierObjectContours(
+            0, [outer, hole], 0, Color.Teal, Color.Transparent, 8);
+        scene.CompleteDeferredBuild();
+        scene.Angle[objectIndex] = 0.37f;
+        scene.X[objectIndex] = 121;
+        scene.Y[objectIndex] = -57;
+        if (!scene.TryGetPathBezierLocalContours(objectIndex, out var initialExact)
+            || !scene.TryGetPathLocalContours(objectIndex, out var initialSampled))
+        {
+            throw new InvalidOperationException("The Bezier preview isolation fixture has no contours.");
+        }
+
+        var initialExactCopy = initialExact.Select(contour => contour.ToArray()).ToArray();
+        var initialSampledCopy = initialSampled.Select(contour => contour.ToArray()).ToArray();
+        var prepareContours = RequireMethod(
+            typeof(VectorScene), "TryPreparePathBezierContours",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        foreach (var partIndex in new[] { 0, 4 })
+        {
+            if (!scene.TryGetPathBezierLocalContours(objectIndex, out var beforeExact)
+                || !scene.TryGetPathLocalContours(objectIndex, out var beforeSampled)
+                || !scene.TryGetPathBezierSegment(objectIndex, partIndex, out var segment)
+                || !scene.SetPathBezierSegmentForPreview(
+                    objectIndex, partIndex, segment.Start,
+                    new PointF(segment.Control1.X, segment.Control1.Y - 90),
+                    new PointF(segment.Control2.X, segment.Control2.Y - 90), segment.End)
+                || !scene.TryGetPathBezierLocalContours(objectIndex, out var afterExact)
+                || !scene.TryGetPathLocalContours(objectIndex, out var afterSampled))
+            {
+                throw new InvalidOperationException("The Bezier preview isolation edit failed.");
+            }
+
+            var editedContour = partIndex / 4;
+            var untouchedContour = 1 - editedContour;
+            if (ReferenceEquals(beforeExact, afterExact)
+                || ReferenceEquals(beforeExact[editedContour], afterExact[editedContour])
+                || !ReferenceEquals(beforeExact[untouchedContour], afterExact[untouchedContour])
+                || ReferenceEquals(beforeSampled, afterSampled)
+                || !ReferenceEquals(beforeSampled[untouchedContour], afterSampled[untouchedContour]))
+            {
+                throw new InvalidOperationException("A Bezier preview did not isolate its changed contour from cached geometry.");
+            }
+
+            if (!scene.TryGetPathBezierWorldContours(objectIndex, out var world))
+                throw new InvalidOperationException("The Bezier preview lost its world contours.");
+            object?[] arguments = [world, null, null, null, true];
+            if (prepareContours.Invoke(null, arguments) is not true || arguments[2] is not PointF[][] expectedWorld)
+                throw new InvalidOperationException("The full-quality Bezier sampling reference failed.");
+            var cosine = MathF.Cos(scene.Angle[objectIndex]);
+            var sine = MathF.Sin(scene.Angle[objectIndex]);
+            var expectedLocal = expectedWorld[editedContour].Select(point =>
+            {
+                var deltaX = point.X - scene.X[objectIndex];
+                var deltaY = point.Y - scene.Y[objectIndex];
+                return VectorUnits.Quantize(new PointF(
+                    deltaX * cosine + deltaY * sine, -deltaX * sine + deltaY * cosine));
+            }).ToArray();
+            if (!afterSampled[editedContour].AsSpan().SequenceEqual(expectedLocal))
+                throw new InvalidOperationException("The optimized Bezier preview changed full-quality sampling or quantization.");
+        }
+
+        for (var contourIndex = 0; contourIndex < initialExact.Length; contourIndex++)
+        {
+            if (!initialExact[contourIndex].AsSpan().SequenceEqual(initialExactCopy[contourIndex])
+                || !initialSampled[contourIndex].AsSpan().SequenceEqual(initialSampledCopy[contourIndex]))
+                throw new InvalidOperationException("A Bezier preview mutated geometry retained by an earlier cache entry.");
+        }
+        if (!scene.CompletePathBezierPreview(objectIndex))
+            throw new InvalidOperationException("The isolated Bezier preview could not commit.");
+        Console.WriteLine("bezier_preview_contour_isolation=ok");
+        Console.WriteLine("bezier_preview_sampling_parity=ok");
+    }
+
     private static void RunBoundaryBezierHandleRegression()
     {
         RunDetachedBoundarySplitIndependenceRegression();

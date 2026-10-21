@@ -659,6 +659,13 @@ internal static class UiLocalization
             ["Free Transform"] = "任意变形",
             ["More settings"] = "更多设置",
             ["Operation preferences"] = "操作偏好",
+            ["Toolbar position"] = "工具栏位置",
+            ["Shapes"] = "形状",
+            ["Lines"] = "线条",
+            ["Snap points"] = "吸附点",
+            ["Left"] = "左侧",
+            ["Top"] = "顶部",
+            ["Left: vertical toolbar. Top: horizontal toolbar with tool groups opening as a grid."] = "左侧：纵向工具栏。顶部：横向工具栏，折叠的工具组向下展开为网格。",
             ["Shortcut profiles"] = "快捷键方案",
             ["Open operation preferences"] = "打开操作偏好",
             ["Open shortcut profiles"] = "打开快捷键方案",
@@ -1358,7 +1365,19 @@ internal static class UiLocalization
             ["The import settings could not be applied."] = "无法应用导入设置。",
             ["The image has no positive pixel size."] = "图片没有有效的像素尺寸。",
             ["Image dimensions must not exceed {0} pixels per side."] = "图片每边尺寸不得超过 {0} 像素。",
-            ["Image pixel count must not exceed {0} pixels."] = "图片总像素数不得超过 {0} 像素。"
+            ["Image pixel count must not exceed {0} pixels."] = "图片总像素数不得超过 {0} 像素。",
+            ["Physics"] = "物理",
+            ["Inspector categories"] = "右侧分类",
+            ["Properties"] = "属性",
+            ["Physics is not available."] = "物理面板尚未实现。",
+            ["Document"] = "文档",
+            ["Document information"] = "文档信息",
+            ["Location"] = "位置",
+            ["Assets"] = "素材",
+            ["Frames"] = "帧数",
+            ["Frame rate"] = "帧率",
+            ["Unsaved"] = "未保存",
+            ["Nothing here yet. Drag a symbol from the library onto the stage."] = "这里还是空的。从左侧素材栏拖一个元件到舞台。"
         };
 
     public static UiLanguage CurrentLanguage { get; private set; } = UiLanguage.English;

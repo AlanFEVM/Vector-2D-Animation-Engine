@@ -654,7 +654,7 @@ internal sealed partial class StageControl : Control
     private const int DistortPreviewMeshMinimumDivisions = 4;
     private const int DistortPreviewMeshMaximumDivisions = 5;
     private const float DistortMeshCellPixels = 48f;
-    private const double InteractiveMoveFrameBudgetMilliseconds = 8;
+    private const double InteractiveMoveFrameBudgetMilliseconds = 5.5;
     private const double SlowPointerFeedbackMilliseconds = 50;
     private const double SlowPointerLogIntervalMilliseconds = 5_000;
     private readonly Dictionary<int, SolidBrush> _brushCache = new(512);
@@ -1516,6 +1516,21 @@ internal sealed partial class StageControl : Control
     private bool CanSynchronouslyPresentInteractiveFrame()
     {
         return LastFrameUsedDirect2D && _direct2DRenderer.HardwareAccelerationActive;
+    }
+
+    internal void PresentPendingInteractiveFrame()
+    {
+        if (_paintInProgress || !Visible || !IsHandleCreated
+            || !CanSynchronouslyPresentInteractiveFrame()) return;
+        if (ShouldSynchronouslyPresentInteractiveFrame(
+                forceFinalFrame: false,
+                presentationDeferred: false,
+                hasPresentedFrame: _lastFramePresentedAt != 0,
+                elapsedSinceLastFrameMilliseconds: ElapsedMilliseconds(
+                    _lastFramePresentedAt, Stopwatch.GetTimestamp())))
+        {
+            Update();
+        }
     }
 
     private void ResetFrameSchedulerState()

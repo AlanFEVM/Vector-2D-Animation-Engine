@@ -11,6 +11,7 @@ internal sealed class SettingsDialog : ModernDialogForm
     private string _selectedShortcutProfileId;
     private ShortcutProfileRecord[] _customShortcutProfiles;
     private bool _freeTransformShiftProportionalEnabled;
+    public ToolbarPosition SelectedToolbarPosition { get; private set; }
     private readonly ModernToggleSwitch _simpleSelectionHighlight = new() { Text = "Simple selection highlight", Dock = DockStyle.Fill, AutoSize = true, ForeColor = Theme.Text };
     private readonly Button _squareCorners = new SegmentedButton { Text = "Square corners" };
     private readonly Button _subtleRoundedCorners = new SegmentedButton { Text = "Subtle rounded corners" };
@@ -108,7 +109,8 @@ internal sealed class SettingsDialog : ModernDialogForm
         bool freeTransformShiftProportionalEnabled = true,
         bool simpleSelectionHighlightEnabled = false,
         WindowCornerStyle windowCornerStyle = WindowCornerStyle.Square,
-        bool experimental3DEnabled = false)
+        bool experimental3DEnabled = false,
+        ToolbarPosition toolbarPosition = ToolbarPosition.Left)
         : base("Settings", new Size(820, 700))
     {
         var shortcuts = ShortcutProfiles.Normalize(activeShortcutProfileId, customShortcutProfiles);
@@ -144,6 +146,7 @@ internal sealed class SettingsDialog : ModernDialogForm
         _themeColorAdjustment.ValueChanged += (_, _) => ThemeColorAdjustmentChanged();
         _highlightColorAdjustment.ValueChanged += (_, _) => HighlightColorAdjustmentChanged();
         AccessibleName = "Application settings";
+        SelectedToolbarPosition = toolbarPosition;
         DialogContent.Padding = Padding.Empty;
 
         var content = new TableLayoutPanel
@@ -296,9 +299,12 @@ internal sealed class SettingsDialog : ModernDialogForm
 
     private void OpenOperationPreferences()
     {
-        using var dialog = new OperationPreferencesDialog(_freeTransformShiftProportionalEnabled);
+        using var dialog = new OperationPreferencesDialog(_freeTransformShiftProportionalEnabled, SelectedToolbarPosition);
         if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
             _freeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled;
+            SelectedToolbarPosition = dialog.SelectedToolbarPosition;
+        }
     }
 
     private void OpenShortcutProfiles()

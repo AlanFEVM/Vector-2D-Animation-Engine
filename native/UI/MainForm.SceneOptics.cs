@@ -182,6 +182,8 @@ internal sealed partial class MainForm
         if (string.IsNullOrWhiteSpace(addedLightId)) return;
         _timeline.RefreshTimeline();
         SelectSceneOpticsLight(addedLightId);
+        // A new light is a scene action; show the scene page that owns lighting.
+        RevealInspectorCategory(InspectorCategory.Scene, "scene light added");
     }
 
     private void DuplicateSceneLight(string lightId)

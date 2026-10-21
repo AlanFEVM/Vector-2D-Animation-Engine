@@ -574,6 +574,8 @@ The 2D camera rotation input shows only the picture rotation angle, without a Z-
 
 二维“旋转”使用与“缩放”一致的半栏宽、32 逻辑像素高的单值输入框，不显示 Z 轴徽章，参数之间保留 8 逻辑像素间距。镜头属性区不显示滚动条，保留滚轮与键盘滚动；侧栏高度不足时，可在属性区空白或标签处滚轮浏览下方参数。
 
+二维相机样式隐藏 Z 深度移动手柄及其连线，隐藏区域不响应手柄命中；自由变换仍可调整画面旋转。已有镜头深度数据不变，实验性 3D 中的三维相机保留深度手柄。
+
 The default 2D camera inspector hides description, camera type, projection, focal length, orthographic size, position Z and rotation X/Y. It retains name, aspect ratio, XY position, picture rotation and a single Zoom percentage (larger means closer). Creation, locate, ordering, deletion, reset and simple camera style remain available. Existing projection and hidden values are preserved; Zoom adjusts the existing projection's lens or orthographic size without converting the project. Enabling experimental 3D restores the full inspector.
 
 默认仅开放 2D 工作流。在 **设置 → 常规 → 实验功能 → 启用实验性 3D 功能** 中可以手动打开 3D，保存后立即生效，并在下次启动时保留。新设置及未记录此选项的旧设置均默认关闭。
@@ -1136,6 +1138,12 @@ Project Folder/
 
 ### 操作偏好
 
+**工具栏位置 / Toolbar position**：在操作偏好中选择 **左侧 / Left**（默认）或 **顶部 / Top**，点击 `OK` 返回设置，再点击 `Save` 即时应用并保存，下次启动仍保留。左侧沿用紧凑纵向工具栏；顶部仅使用元件页签右侧、吸附设置左侧的原有顶部空白，显示适度大小的图标及下方名称，不新增功能区高度、不压缩画布。工具按钮随可用宽度缩排，空间仍不足时可横向滚动；极窄窗口回退到原有视图操作行中的紧凑图标布局。选择、形状、线条、笔刷、填色等折叠工具组向下展开为带图标与名称的网格，点击工具后收起。取消子面板或设置窗口不改变已保存的位置。
+
+顶部工具栏不绘制容器外框，下方名称保持 8pt 字体；图标在原有图标槽内缩小显示，文字位置、按钮点击区域及整体布局保持不变。选中状态及键盘焦点提示保留，左侧工具栏、右侧分类栏和展开网格的图标不受影响。
+
+In **Settings → General → Operation preferences**, choose **Toolbar position → Left** (default) or **Top**, confirm with `OK`, then `Save`. Top uses only the existing header space between the symbol tabs and snapping controls, with smaller icons centered in their existing slots and unchanged 8pt labels underneath, without a container border; selection and keyboard focus cues remain visible. It adds no header height and takes no extra canvas space. Buttons adapt to the available width, with horizontal scrolling when needed and compact icons in the existing view-action row for very narrow windows. Grouped tools open below as a labeled grid and close after selection. The position persists across restarts; canceling either dialog leaves the saved position unchanged.
+
 点击 `Settings → General → Operation preferences... / 操作偏好...` 打开独立面板，调整与具体工具操作相关的开关。点击 `OK` 返回设置，再点击 `Save` 后写入 `settings.json`，重新打开软件仍然生效；取消子面板或设置窗口不会改变已保存值。
 
 - **Use Shift for proportional scaling / 使用 Shift 启用等比缩放**：默认**开启**。此偏好决定 `Shift` 临时切换缩放模式的方向。
@@ -1349,6 +1357,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 
 ### 性能或渲染异常
 
+- 线条、贝塞尔边界、选择拖动、二维变换和自由绘制预览会合并连续输入，只处理最新待处理位置，并主动排入 UI 队列，不再仅等待 16ms 预览定时器；定时器仍作为兜底。硬件渲染的交互同步呈现门槛为 5.5ms，不降低曲线采样精度、抗锯齿或最终画质。该门槛不是实测耗时或 180 FPS 保证；底部 `Render FPS` 统计实际完成绘制的频率，静止时不会为提高数字而持续空转重绘。
 - 在全 `Normal` 混合的 2D 绘制中，舞台会把稳定底图保留在 Direct2D GPU 资源中；笔刷预览、填色/线段首移预览、选区、贝塞尔控制柄和工具光标作为实时覆盖层更新。首移只平移缓存几何并复用底图，避免先重建整幅场景再显示位移。
 - Reference 3D 播放会启用有界的工作区帧缓存：已经绘制过的组合帧会保留为当前 Direct2D 目标上的 GPU 位图，后续播放或循环命中时只提交整帧位图，再绘制选区和交互覆盖层。帧缓存不跨窗口、尺寸、相机、灯光或工程编辑复用；这些状态变化会自动清空，缓存达到内存上限时按最早使用顺序淘汰。
 - Reference 3D 停止播放且舞台空闲时，会按后续播放顺序逐帧预渲染邻近帧；预渲染帧在切换到对应播放头时直接复用 GPU 位图。相同窗口尺寸下，连续预渲染会复用兼容渲染目标和绘制资源，减少逐帧重建；窗口尺寸改变、渲染设备重置或关闭舞台时会释放这些资源，不改变预渲染分辨率。复杂帧每次只预取一帧，慢帧完成后会短暂让出 UI；正在编辑、镜头过渡、光学交互、遮罩或软件合成状态下会自动暂停预渲染。
@@ -1402,6 +1411,16 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:43521/mcp/' -Method Post `
 点击 `Save Version` 会把所选版本设为当前源码版本，并同步 `Directory.Build.props` 中的四个版本属性；中英文分区的增删移动和条目数量会保持对齐。鸣谢在 `Acknowledgements` 页编辑，同样支持中英文标题、摘要、分组与名单，并可整体关闭以回退到内置默认鸣谢。新建版本的占位说明可以先保存，但替换前不会允许正式发布。工具会在保存和发布前检查源码文件是否被外部修改；发布取消采用协作式提交边界，正式文件替换开始后会完成校验再返回。`Preview` 直接读取内存草稿，编辑后无需先保存即可查看最终效果。正式输出仍只能位于 `artifacts\release` 或明确选择的空目录，仓库根目录开发启动器不会被替换。完整工作流和数据职责见 [Release Manager](RELEASE_MANAGER.md)。
 
 右侧检查器不显示滚动条；内容超出面板时可使用鼠标滚轮浏览下方参数。
+
+右侧 Tab 是现有检查器的直接入口，不再在底部追加占位说明。**属性**恢复按工具、选中对象和工作区显示的上下文检查器，不显示着色；无选中时保留文档信息。着色编辑器仅在**颜色**页显示，未选中图形时也能访问当前绘制颜色；选择变化仍沿用原有材质绑定和撤销行为。**镜头**进入场景与动画工作区并打开现有相机列表及属性，不必先选中时间轴中的相机；未选中相机时可从列表选择或新建。**场景**进入场景与动画并显示现有场景、播放及适用的光学设置。**物理**暂无实际编辑器，入口禁用，不显示伪功能面板。
+
+右侧分类栏使用导入的矢量图标：列表对应属性、调色板对应颜色、原子对应物理、视频对应镜头、场景图标对应场景。分类栏采用 38 逻辑像素宽的紧凑纯图标布局，不常驻显示名称，也不随语言加宽；完整名称通过悬停提示及无障碍名称提供。颜色跟随主题、选中及禁用状态，物理入口仍禁用。图标已随应用内置，不需要安装图标字体。
+
+The category rail uses the supplied vector icons in a compact, fixed 38-logical-pixel icon-only strip: list for Properties, palette for Color, atom for Physics, video for Camera, and scene for Scene. Full names remain available through hover tips and accessible names; changing language does not widen the rail. Icons follow theme, selection and disabled colors. They are built into the application and require no font installation.
+
+分类页互斥占用检查器正文，不与文档信息、图层设置或其他页上下堆叠。显式选择的页保持打开；点击属性、再次点击当前分类或在分类栏中按 `Esc` 返回上下文检查器。悬停不切换；`↑` / `↓` / `Home` / `End` 只移动焦点，`Enter` / `Space` 确认，跳过禁用项。窄窗口仅隐藏分类栏并释放其留白，不改动已选页；镜头面板打开时分类栏仍可切换其他页。返回基础绘制工作区时，镜头／场景分类恢复为属性。从场景合成中打开颜色会进入基础绘制；正在编辑场景遮罩时保留遮罩上下文。手动进入普通场景合成时，颜色分类返回属性，避免提供无效的着色操作；不支持材质编辑的 SVG／位图选择显示禁用的着色控件。
+
+The right-side tabs are direct entries to existing inspectors, not additional placeholder strips. Properties restores contextual tool/selection inspection (and document information when nothing is selected), without shading. The shading editor is shown only on Color, including current drawing colors without a selection. From scene composition, Color enters Basic Drawing; scene-mask editing retains its existing drawing context. Unsupported SVG/bitmap material targets disable the editor rather than allowing ineffective changes. Camera opens Scene & Animation and the existing camera list/properties without requiring a camera-track selection first. Scene opens the existing scene/playback and applicable optics settings. Physics is disabled until an editor exists. Pages are mutually exclusive; explicit choices remain open until another tab is selected. Properties, a repeated category click, or Escape while the rail has focus returns to contextual inspection. Arrow/Home/End navigation skips disabled tabs; Enter/Space activates. The rail remains usable with the camera inspector open. Switching workspaces exits incompatible Camera/Scene or Color pages.
 
 时间轴图层组栏右上角齿轮直接打开较大的图层组排序弹窗，可拖动组标签调整顺序，确认后应用、取消不应用。重命名、颜色与删除保留在图层组右键菜单中。
 

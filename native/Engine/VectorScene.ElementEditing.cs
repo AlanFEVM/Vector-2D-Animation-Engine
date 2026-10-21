@@ -2745,6 +2745,10 @@ internal sealed partial class VectorScene
                 return true;
             }
 
+            contours = (PathBezierNode[][])contours.Clone();
+            contour = (PathBezierNode[])contour.Clone();
+            contours[contourIndex] = contour;
+
             var preservePrevious = preserveStraightAdjacentSegments
                 && startChanged
                 && IsStraightBezierSegment(
@@ -2807,16 +2811,12 @@ internal sealed partial class VectorScene
                 };
             }
 
-            // Deep-copy every contour so renderer caches keyed on array
-            // identity always observe the edit.
-            _pathBezierLocalContours[objectIndex] = contours
-                .Select(c => (PathBezierNode[])c.Clone())
-                .ToArray();
+            _pathBezierLocalContours[objectIndex] = contours;
             if (handle is EditHandleKind.BezierControl or EditHandleKind.BezierControl2)
             {
                 // Curvature edits reshape the filled region, so keep the fill
                 // contour in sync with the bent edge.
-                ResamplePathLocalContours(objectIndex);
+                ResamplePathLocalContours(objectIndex, contourIndex);
             }
             GeometryRevision++;
             InvalidateDeferredTopologyQueries();

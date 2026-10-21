@@ -310,6 +310,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly ThemedScrollPanel _sceneEditPage = new();
     private readonly Panel _animationPage = new();
     private readonly FlowLayoutPanel _toolPalette = new();
+    private readonly Panel _stageMetrics = new();
     private SvgIconButton? _shapeToolButton;
     private FlowLayoutPanel? _shapeToolFlyout;
     private SvgIconButton? _lineToolButton;
@@ -1333,7 +1334,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         var stagePanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Stage };
         body.Controls.Add(stagePanel);
         stagePanel.BringToFront();
-        var metrics = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = Theme.Top };
+        var metrics = _stageMetrics;
+        metrics.Dock = DockStyle.Top;
+        metrics.Height = 34;
+        metrics.BackColor = Theme.Top;
         PaintBottomBorder(metrics);
         BuildEraserOptionsStrip(metrics);
         Theme.StyleButton(_sceneDimensionButton);
@@ -1452,7 +1456,12 @@ internal sealed partial class MainForm : Form, IMessageFilter
         tools.Padding = new Padding(4);
         tools.Margin = Padding.Empty;
         tools.AccessibleName = "Tools";
-        PaintFullBorder(tools);
+        tools.Paint += (_, e) =>
+        {
+            if (_applicationSettings.ToolbarPosition == ToolbarPosition.Top) return;
+            using var pen = new Pen(Theme.Border);
+            e.Graphics.DrawRectangle(pen, 0, 0, tools.Width - 1, tools.Height - 1);
+        };
         AddToolPairGroup(tools, stagePanel, _selectionToolGroup);
         AddShapeToolGroup(tools, stagePanel);
         AddLineToolGroup(tools, stagePanel);
@@ -1856,7 +1865,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _applicationSettings.FreeTransformShiftProportionalEnabled,
             _applicationSettings.SimpleSelectionHighlightEnabled,
             _applicationSettings.WindowCornerStyle,
-            _applicationSettings.Experimental3DEnabled);
+            _applicationSettings.Experimental3DEnabled,
+            _applicationSettings.ToolbarPosition);
         dialog.SetCodexSettings(_applicationSettings, AppHost.Current?.CodexBridgeStatus ?? "Stopped");
         void PreviewCorners(object? sender, EventArgs e) => ApplyWindowCornerStyle(dialog.SelectedWindowCornerStyle);
         dialog.CornerPreviewChanged += PreviewCorners;
@@ -1903,6 +1913,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             SimpleSelectionHighlightEnabled = dialog.SimpleSelectionHighlightEnabled,
             Experimental3DEnabled = dialog.Experimental3DEnabled,
             FreeTransformShiftProportionalEnabled = dialog.FreeTransformShiftProportionalEnabled,
+            ToolbarPosition = dialog.SelectedToolbarPosition,
             WindowCornerStyle = dialog.SelectedWindowCornerStyle
         });
         settings = ApplicationSettingsStore.Normalize(dialog.ApplyCodexSettingsTo(settings));
@@ -1919,6 +1930,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         var experimental3DChanged = _applicationSettings.Experimental3DEnabled != settings.Experimental3DEnabled;
         _applicationSettings = settings;
+        HideToolFlyouts();
+        LayoutToolPalette();
         RefreshShortcutMenuDisplay();
         if (experimental3DChanged) ApplyExperimental3DSettings();
         AppHost.Current?.ApplyCodexBridgeSettings(settings);
@@ -3635,8 +3648,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
         }
         tools.PerformLayout();
-        group.Flyout.Left = tools.Left + tools.Width - 1;
-        group.Flyout.Top = tools.Top + group.ParentButton.Top;
+        LayoutToolFlyout(group.Flyout, group.ParentButton);
         group.Flyout.Visible = true;
         group.Flyout.BringToFront();
         StartToolPairFlyoutVisibilityCheck(group);
@@ -3762,8 +3774,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideToolPairFlyout(_paintToolGroup);
         _shapeFlyoutHideAtUtc = default;
         tools.PerformLayout();
-        _shapeToolFlyout.Left = tools.Left + tools.Width - 1;
-        _shapeToolFlyout.Top = tools.Top + _shapeToolButton.Top;
+        LayoutToolFlyout(_shapeToolFlyout, _shapeToolButton);
         _shapeToolFlyout.Visible = true;
         _shapeToolFlyout.BringToFront();
         StartShapeFlyoutVisibilityCheck();
@@ -3970,8 +3981,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideToolPairFlyout(_paintToolGroup);
         _brushFlyoutHideAtUtc = default;
         tools.PerformLayout();
-        _brushToolFlyout.Left = tools.Left + tools.Width - 1;
-        _brushToolFlyout.Top = tools.Top + _brushToolButton.Top;
+        LayoutToolFlyout(_brushToolFlyout, _brushToolButton);
         _brushToolFlyout.Visible = true;
         _brushToolFlyout.BringToFront();
         _brushFlyoutHideTimer.Stop();
@@ -4017,8 +4027,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         HideToolPairFlyout(_paintToolGroup);
         _lineFlyoutHideAtUtc = default;
         tools.PerformLayout();
-        _lineToolFlyout.Left = tools.Left + tools.Width - 1;
-        _lineToolFlyout.Top = tools.Top + _lineToolButton.Top;
+        LayoutToolFlyout(_lineToolFlyout, _lineToolButton);
         _lineToolFlyout.Visible = true;
         _lineToolFlyout.BringToFront();
         _lineFlyoutHideTimer.Stop();

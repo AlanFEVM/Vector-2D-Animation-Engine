@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -236,6 +236,8 @@ internal sealed partial class MainForm : Form
         _brushColorPaletteHoverIndex = -1;
         _stage.ClearBrushTipCursor();
         _stage.SetBrushColorPalette(center, colors);
+        // Picking a fill color is an explicit color action; bring that page forward.
+        RevealInspectorCategory(InspectorCategory.Color, "brush color palette");
         return true;
     }
 

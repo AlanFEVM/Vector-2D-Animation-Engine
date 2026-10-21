@@ -207,6 +207,13 @@ internal sealed partial class StageControl
     {
         geometry = default;
         if (SimpleShotFraming || !TryGetShotCameraWireframeGeometry(out geometry)) return false;
+        if (!Experimental3DEnabled || _shotFramingSettings.PinsPlanarRotation)
+        {
+            geometry = geometry with
+            {
+                Handles = geometry.Handles.Where(handle => handle.Kind != ShotFramingHandleKind.CameraPositionZ).ToArray()
+            };
+        }
         if (!ShowShotRotationHandles)
         {
             geometry = geometry with
@@ -408,6 +415,8 @@ internal sealed partial class StageControl
         out PointF point)
     {
         point = PointF.Empty;
+        if (kind == ShotFramingHandleKind.CameraPositionZ
+            && (!Experimental3DEnabled || _shotFramingSettings.PinsPlanarRotation)) return false;
         if (!TryGetShotCameraWireframeGeometry(out var geometry)) return false;
         foreach (var handle in geometry.Handles)
         {

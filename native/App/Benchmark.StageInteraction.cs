@@ -8252,8 +8252,59 @@ internal static partial class Benchmark
         Console.WriteLine("consecutive_boundary_arc_pointer=ok,rapid_double_click=ok,anchors_unchanged=ok,detach_release=ok,capture_loss=ok");
     }
 
+    private static void RunInteractivePreviewSchedulingRegression()
+    {
+        AssertTimeline(
+            !StageControl.ShouldSynchronouslyPresentInteractiveFrame(false, false, true, 5.499)
+            && StageControl.ShouldSynchronouslyPresentInteractiveFrame(false, false, true, 5.5)
+            && StageControl.ShouldSynchronouslyPresentInteractiveFrame(true, false, true, 0)
+            && StageControl.ShouldSynchronouslyPresentInteractiveFrame(false, false, false, 0)
+            && !StageControl.ShouldSynchronouslyPresentInteractiveFrame(true, true, true, 100),
+            "Interactive presentation lost its 5.5 ms gate, immediate first/final frame, or deferred-release protection.");
+
+        using var form = new MainForm { ShowInTaskbar = false };
+        _ = form.Handle;
+        var queue = RequireMethod(typeof(MainForm), "QueueFillEdgeBezierPointer");
+        var apply = RequireMethod(typeof(MainForm), "ApplyPostedFrameCoalescedWork");
+        var reset = RequireMethod(typeof(MainForm), "ResetLineDragPreview");
+        var pending = RequireField(typeof(MainForm), "_pendingFillEdgeBezierWorld");
+        var generation = RequireField(typeof(MainForm), "_frameWorkGeneration");
+        var posted = RequireField(typeof(MainForm), "_postedFrameWorkGeneration");
+        var timer = (System.Windows.Forms.Timer)RequireField(typeof(MainForm), "_lineDragPreviewTimer").GetValue(form)!;
+        timer.Start();
+        var initialGeneration = (int)generation.GetValue(form)!;
+        for (var index = 0; index < 64; index++)
+            queue.Invoke(form, [new PointF(index, -index)]);
+        AssertTimeline(
+            pending.GetValue(form) is PointF latest && latest == new PointF(63, -63)
+            && (int)posted.GetValue(form)! == initialGeneration,
+            "A Bezier pointer burst did not retain its latest input and post work while the fallback timer was running.");
+        apply.Invoke(form, [initialGeneration]);
+        AssertTimeline(pending.GetValue(form) is null && (int)posted.GetValue(form)! == -1,
+            "Posted Bezier work did not consume its pending input without a timer tick.");
+
+        queue.Invoke(form, [new PointF(80, 90)]);
+        reset.Invoke(form, null);
+        AssertTimeline(pending.GetValue(form) is null && !timer.Enabled,
+            "Reset retained a pending Bezier update or fallback timer.");
+        timer.Start();
+        var currentGeneration = (int)generation.GetValue(form)!;
+        queue.Invoke(form, [new PointF(120, 140)]);
+        apply.Invoke(form, [initialGeneration]);
+        AssertTimeline(
+            pending.GetValue(form) is PointF current && current == new PointF(120, 140)
+            && (int)posted.GetValue(form)! == currentGeneration,
+            "A cancelled gesture's callback consumed or unregistered a newer gesture's work.");
+        apply.Invoke(form, [currentGeneration]);
+        AssertTimeline(pending.GetValue(form) is null,
+            "The current gesture's callback could not consume pending input after cancellation.");
+        reset.Invoke(form, null);
+        Console.WriteLine("interactive_preview_scheduling=ok,gate_ms=5.5,latest_input=ok,timer_independent=ok,cancelled_callback=ok");
+    }
+
     private static void RunLineToolPreviewCoalescingRegression()
     {
+        RunInteractivePreviewSchedulingRegression();
         using var form = new MainForm { Size = new Size(1280, 800), ShowInTaskbar = false };
         form.CreateControl();
         form.PerformLayout();

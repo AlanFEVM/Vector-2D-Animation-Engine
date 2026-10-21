@@ -8,6 +8,7 @@ internal sealed partial class MainForm : Form
 {
     private void UpdateInspector(bool refreshLineEndpointStyles = true)
     {
+        UpdateDocumentInfoPanel();
         RefreshLayerBlendModePanel();
         UpdateSpatialTransformPanelState();
         var basicInspectorScrollY = CaptureInspectorScrollPosition(_basicInspectorPage);
@@ -52,8 +53,9 @@ internal sealed partial class MainForm : Form
         var sceneInstance = SelectedSceneInstance();
         RefreshSceneOpticsInspector();
         _drawingObjectInstancePanel.Visible = sceneInstance is not null;
-        _materialEditor.Visible = sceneInstance is not null || !validSelection.Any(index =>
+        _colorMaterialAvailable = sceneInstance is not null || !validSelection.Any(index =>
             IsImportedSvgObject(index) || _scene.ShapeKind[index] == ShapeKind.Bitmap);
+        _materialEditor.Visible = _inspectorCategory == InspectorCategory.Color;
         if (sceneInstance is not null)
         {
             var sceneInstanceState = sceneInstance.EvaluateState(_frame);
@@ -236,6 +238,7 @@ internal sealed partial class MainForm : Form
             {
                 RestoreInspectorScrollPosition(_sceneEditPage, sceneInspectorScrollY);
             }
+            LayoutInspectorCategoryRail();
         }
     }
 
@@ -974,6 +977,10 @@ internal sealed partial class MainForm : Form
         if (openShots) view = WorkspaceView.SceneEditor;
         if (view == WorkspaceView.Animation) view = WorkspaceView.SceneEditor;
         if (!CommitTextEdit()) return;
+        if (view == WorkspaceView.BasicDrawing && _inspectorCategory is InspectorCategory.Camera or InspectorCategory.Scene)
+            _inspectorCategory = InspectorCategory.None;
+        if (view == WorkspaceView.SceneEditor && _inspectorCategory == InspectorCategory.Color && !IsSceneMaskEditing())
+            _inspectorCategory = InspectorCategory.None;
         if (view != _workspaceTabs.SelectedView)
         {
             // Playback owns the reference-projection scene and its background
@@ -1070,6 +1077,7 @@ internal sealed partial class MainForm : Form
             _sceneEditPage.ResumeContentLayout(performLayout: sceneWorkspace);
             inspector?.ResumeLayout(performLayout: true);
             ResumeLayout(performLayout: true);
+            LayoutInspectorCategoryRail();
             if (animateInspector)
             {
                 if (switchedInspector) _inspectorTransition?.Complete();
@@ -1606,7 +1614,35 @@ internal sealed partial class MainForm : Form
     private void LayoutToolPalette()
     {
         var tools = _toolPalette;
-        if (tools.Parent is not Control stagePanel) return;
+        if (tools.Parent is null || _stageMetrics.Parent is not Control stagePanel) return;
+
+        var top = _applicationSettings.ToolbarPosition == ToolbarPosition.Top;
+        if (top)
+        {
+            LayoutHeaderToolPalette(stagePanel);
+            return;
+        }
+        if (!ReferenceEquals(tools.Parent, stagePanel)) stagePanel.Controls.Add(tools);
+        tools.SuspendLayout();
+        tools.FlowDirection = FlowDirection.TopDown;
+        tools.Padding = new Padding(4);
+        foreach (Control control in tools.Controls)
+        {
+            control.Margin = new Padding(0, 0, 0, 4);
+            if (control is SvgIconButton button)
+            {
+                button.ShowsLabelBelowIcon = false;
+                button.Size = new Size(Theme.IconButtonSize, Theme.IconButtonSize);
+                button.Text = string.Empty;
+                button.Invalidate();
+            }
+        }
+        tools.AutoScroll = false;
+        tools.AutoScrollPosition = Point.Empty;
+        _stageMetrics.Height = 34;
+        tools.Location = new Point(6, _stageMetrics.Bottom + 6);
+        tools.Width = Theme.IconButtonSize + tools.Padding.Horizontal;
+        tools.ResumeLayout(true);
 
         var visibleStageHeight = stagePanel.ClientSize.Height;
         if (_timeline.Visible && ReferenceEquals(_timeline.Parent, this))

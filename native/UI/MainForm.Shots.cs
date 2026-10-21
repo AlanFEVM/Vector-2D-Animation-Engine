@@ -126,7 +126,7 @@ internal sealed partial class MainForm
         if (_shotDirectorVisible != visible)
         {
             _shotDirectorVisible = visible;
-            _shotDirectorPanel.Visible = visible;
+            _shotDirectorPanel.Visible = visible || _inspectorCategory == InspectorCategory.Camera;
             // Joining or leaving the docked stack changes the stage area; re-run the body layout so the
             // stage preview reclaims or releases the panel width immediately.
             _shotDirectorPanel.Parent?.PerformLayout(_shotDirectorPanel, "Visible");
@@ -134,6 +134,7 @@ internal sealed partial class MainForm
         _sceneEditPage.Visible = view == WorkspaceView.SceneEditor && !visible;
         _layerBlendModePanel.Visible = !visible;
         if (visible) _shotDirectorPanel.BringToFront();
+        LayoutInspectorCategoryRail();
 
         if (visible) RefreshShotDirectorWidth();
         _shotPreviewOverlay.Visible = visible && SelectedTimelineShot() is not null;

@@ -95,10 +95,15 @@ internal enum SvgIconKind
     TimelineFolder,
     Acknowledgements,
     FlipHorizontal,
-    FlipVertical
+    FlipVertical,
+    InspectorProperties,
+    InspectorPhysics,
+    InspectorCamera,
+    InspectorScene,
+    InspectorColor
 }
 
-internal static class SvgIcons
+internal static partial class SvgIcons
 {
     public static Bitmap CreateBitmap(
         SvgIconKind kind,
@@ -153,6 +158,13 @@ internal static class SvgIcons
 
         switch (kind)
         {
+            case SvgIconKind.InspectorProperties:
+            case SvgIconKind.InspectorPhysics:
+            case SvgIconKind.InspectorCamera:
+            case SvgIconKind.InspectorScene:
+            case SvgIconKind.InspectorColor:
+                DrawInspectorRailIcon(g, kind, r, color);
+                break;
             case SvgIconKind.AutoKeyframe:
             {
                 using var autoPen = new Pen(color, referenceSize / 14f)

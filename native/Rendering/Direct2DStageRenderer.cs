@@ -2559,6 +2559,7 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
             if (contour.Length < (open ? 2 : 3)) continue;
             sink.BeginFigure(GeometryPoint(stage, contour[0].Anchor), FigureBegin.Filled);
             var lastSegment = open ? contour.Length - 1 : contour.Length;
+            var segments = new BezierSegment[lastSegment];
             for (var nodeIndex = 0; nodeIndex < lastSegment; nodeIndex++)
             {
                 var current = contour[nodeIndex];
@@ -2566,8 +2567,9 @@ internal sealed partial class Direct2DStageRenderer : IDisposable
                 var control1 = GeometryPoint(stage, current.OutgoingControl);
                 var control2 = GeometryPoint(stage, next.IncomingControl);
                 var end = GeometryPoint(stage, next.Anchor);
-                sink.AddBezier(new BezierSegment(in control1, in control2, in end));
+                segments[nodeIndex] = new BezierSegment(in control1, in control2, in end);
             }
+            sink.AddBeziers(segments);
             sink.EndFigure(open ? FigureEnd.Open : FigureEnd.Closed);
             hasContours = true;
         }

@@ -273,17 +273,33 @@ internal sealed partial class VectorScene
             .ToArray();
     }
 
-    private void ResamplePathLocalContours(int objectIndex)
+    private void ResamplePathLocalContours(int objectIndex, int contourIndex)
     {
-        if (!TryGetPathBezierWorldContours(objectIndex, out var worldBezier)
-            || !TryPreparePathBezierContours(worldBezier, out _, out var sampledWorld, out _))
+        if (!_pathBezierLocalContours.TryGetValue(objectIndex, out var contours)
+            || !_pathLocalContours.TryGetValue(objectIndex, out var sampledLocal)
+            || (uint)contourIndex >= contours.Length
+            || sampledLocal.Length != contours.Length)
         {
             return;
         }
 
-        _pathLocalContours[objectIndex] = sampledWorld
-            .Select(contour => contour.Select(point => VectorUnits.Quantize(WorldToLocal(objectIndex, point))).ToArray())
+        var local = contours[contourIndex];
+        var world = new PathBezierNode[local.Length];
+        for (var nodeIndex = 0; nodeIndex < local.Length; nodeIndex++)
+        {
+            var node = local[nodeIndex];
+            world[nodeIndex] = new PathBezierNode(
+                LocalToWorld(objectIndex, node.Anchor.X, node.Anchor.Y),
+                LocalToWorld(objectIndex, node.IncomingControl.X, node.IncomingControl.Y),
+                LocalToWorld(objectIndex, node.OutgoingControl.X, node.OutgoingControl.Y));
+        }
+        if (!TryPreparePathBezierContours([world], out _, out var sampledWorld, out _, calculateBounds: false)) return;
+
+        var updated = (PointF[][])sampledLocal.Clone();
+        updated[contourIndex] = sampledWorld[0]
+            .Select(point => VectorUnits.Quantize(WorldToLocal(objectIndex, point)))
             .ToArray();
+        _pathLocalContours[objectIndex] = updated;
     }
 
     private void CompletePathBezierMutation(bool rebuildGeometryIndex)
@@ -302,7 +318,8 @@ internal sealed partial class VectorScene
         IReadOnlyList<PathBezierNode[]> worldContours,
         out PathBezierNode[][] exactContours,
         out PointF[][] sampledContours,
-        out RectangleF bounds)
+        out RectangleF bounds,
+        bool calculateBounds = true)
     {
         exactContours = Array.Empty<PathBezierNode[]>();
         sampledContours = Array.Empty<PointF[]>();
@@ -332,6 +349,11 @@ internal sealed partial class VectorScene
             if (cleaned.Count < 3 || Math.Abs(PolygonArea(cleaned)) < 0.5f) return false;
             exact[contourIndex] = contour;
             sampled[contourIndex] = cleaned.ToArray();
+            if (!calculateBounds)
+            {
+                hasBounds = true;
+                continue;
+            }
 
             for (var segmentIndex = 0; segmentIndex < contour.Length; segmentIndex++)
             {

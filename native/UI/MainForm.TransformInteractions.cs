@@ -3313,7 +3313,11 @@ internal sealed partial class MainForm : Form
             if (_arcDragSession is { } arc) arc.DragExceeded = true;
             if (_cornerDragSession is { } corner) corner.DragExceeded = true;
         }
-        if (_lineToolPreviewStarted && _lineDragPreviewTimer.Enabled) return;
+        if (_lineToolPreviewStarted && _lineDragPreviewTimer.Enabled)
+        {
+            PostPendingFrameCoalescedWork();
+            return;
+        }
 
         // Present the first move immediately, even if a hover tick is still armed.
         // Subsequent input replaces the pending position until the next frame/tick.
@@ -3339,7 +3343,11 @@ internal sealed partial class MainForm : Form
     private void QueueFillEdgeBezierPointer(PointF world)
     {
         _pendingFillEdgeBezierWorld = world;
-        if (_lineDragPreviewTimer.Enabled) return;
+        if (_lineDragPreviewTimer.Enabled)
+        {
+            PostPendingFrameCoalescedWork();
+            return;
+        }
         ApplyPendingFillEdgeBezierPreview();
         _lineDragPreviewTimer.Start();
     }
@@ -3347,7 +3355,11 @@ internal sealed partial class MainForm : Form
     private void QueueDrawingTransformPointer(PointF world)
     {
         _pendingDrawingTransformWorld = world;
-        if (_lineDragPreviewTimer.Enabled) return;
+        if (_lineDragPreviewTimer.Enabled)
+        {
+            PostPendingFrameCoalescedWork();
+            return;
+        }
         ApplyPendingDrawingTransformPreview();
         _lineDragPreviewTimer.Start();
     }
@@ -3364,7 +3376,11 @@ internal sealed partial class MainForm : Form
     {
         if (!_freehandDrawing) return;
         _pendingFreehandPreview = true;
-        if (_lineDragPreviewTimer.Enabled) return;
+        if (_lineDragPreviewTimer.Enabled)
+        {
+            PostPendingFrameCoalescedWork();
+            return;
+        }
         ApplyPendingFreehandPreview();
         _lineDragPreviewTimer.Start();
     }
@@ -3443,6 +3459,7 @@ internal sealed partial class MainForm : Form
         }
 
         TickLineDragPreview();
+        _stage.PresentPendingInteractiveFrame();
     }
 
     private void QueueDeferredPresentationRefresh(

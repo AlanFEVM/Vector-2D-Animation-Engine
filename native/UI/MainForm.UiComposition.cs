@@ -40,12 +40,16 @@ internal sealed partial class MainForm
         ]);
         _hierarchyWindow = new HierarchyWindow(_hierarchyPanel, ProcessCmdKey);
         BuildSceneOpticsInspectorPanels();
+        BuildInspectorCategoryRail(inspector);
 
         _animationPage.Dock = DockStyle.Fill;
         _animationPage.BackColor = Theme.Panel;
         inspector.Controls.Add(_animationPage);
         inspector.Controls.Add(_sceneEditPage);
         inspector.Controls.Add(_basicInspectorPage);
+        // Added after the pages so it docks before them: the summary owns the top
+        // strip of whichever page is active, in every workspace.
+        BuildDocumentInfoPanel();
         _layerBlendModePanel.Dock = DockStyle.Top;
         _layerBlendModePanel.Height = _layerBlendModePanel.PreferredPanelHeight;
         inspector.Controls.Add(_layerBlendModePanel);
@@ -78,6 +82,11 @@ internal sealed partial class MainForm
             new(_materialEditor), new(_brushTipPanel), new(_mixingBrushSettingsPanel),
             new(_textSettingsPanel), new(_drawSettingsPanel), new(_shapeSettingsPanel), new(_imageInspector)
         ];
+        if (_inspectorCategory == InspectorCategory.Color)
+        {
+            UiComposition.MountVertical(_colorInspectorPage.Content, [new(_materialEditor)]);
+            sections = sections.Where(section => !ReferenceEquals(section.Control, _materialEditor)).ToArray();
+        }
         var moved = sections.Any(section => !ReferenceEquals(section.Control.Parent, target));
         if (moved)
         {
